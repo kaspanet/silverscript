@@ -1,17 +1,19 @@
 [workspace]
-members = ["silverscript-lang"]
+members = ["silverscript-lang", "covenants/sdk"]
 resolver = "2"
 
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
+# edition = "2024"
 license = "MIT"
-authors = ["Unknown <unknown@example.com>"]
+authors = ["Kaspa developers"]
 repository = ""
-rust-version = "1.76"
+rust-version = "1.85.0"
 
 [workspace.dependencies]
 kaspa-consensus-core = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "covpp-reset1" }
+kaspa-hashes = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "covpp-reset1" }
 kaspa-txscript = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "covpp-reset1" }
 kaspa-txscript-errors = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "covpp-reset1" }
 blake2b_simd = "1.0.2"

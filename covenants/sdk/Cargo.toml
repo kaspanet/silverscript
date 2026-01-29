@@ -1,0 +1,18 @@
+[package]
+name = "kaspa-covenant-sdk"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+kaspa-txscript.workspace = true
+kaspa-txscript-errors.workspace = true
+kaspa-consensus-core.workspace = true
+kaspa-hashes.workspace = true
+thiserror.workspace = true
+
+[lib]
+name = "kaspa_covenant_sdk"
+path = "src/lib.rs"
