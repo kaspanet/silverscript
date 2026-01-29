@@ -10,7 +10,9 @@ use kaspa_txscript::covenants::CovenantsContext;
 use kaspa_txscript::opcodes::codes::*;
 use kaspa_txscript::script_builder::ScriptBuilder;
 use kaspa_txscript::{EngineCtx, EngineFlags, SeqCommitAccessor, TxScriptEngine};
-use silverscript_lang::compiler::{CompileOptions, CompiledContract, compile_contract, function_branch_index};
+use silverscript_lang::compiler::{
+    CompileOptions, CompiledContract, compile_contract, compile_contract_ast, function_branch_index, parse_contract_ast,
+};
 
 fn run_script_with_selector(script: Vec<u8>, selector: i64) -> Result<(), kaspa_txscript_errors::TxScriptError> {
     let sigscript = ScriptBuilder::new().add_i64(selector).unwrap().drain();
@@ -180,6 +182,55 @@ fn wrap_with_dispatch(body: Vec<u8>, selector: i64) -> Vec<u8> {
     builder.add_op(OpVerify).unwrap();
     builder.add_op(OpEndIf).unwrap();
     builder.drain()
+}
+
+#[test]
+fn compiles_without_selector_single_function() {
+    let source = r#"
+        contract Test() {
+            function main() {
+                require(1 + 2 == 3);
+            }
+        }
+    "#;
+
+    let contract = parse_contract_ast(source).expect("ast parsed");
+    let options = CompileOptions { covenants_enabled: true, without_selector: true };
+    let compiled = compile_contract_ast(&contract, options).expect("compile succeeds");
+
+    let expected = ScriptBuilder::new()
+        .add_i64(1)
+        .unwrap()
+        .add_i64(2)
+        .unwrap()
+        .add_op(OpAdd)
+        .unwrap()
+        .add_i64(3)
+        .unwrap()
+        .add_op(OpNumEqual)
+        .unwrap()
+        .add_op(OpVerify)
+        .unwrap()
+        .add_op(OpTrue)
+        .unwrap()
+        .drain();
+
+    assert_eq!(compiled.script, expected);
+}
+
+#[test]
+fn fails_without_selector_multiple_functions() {
+    let source = r#"
+        contract Test() {
+            function a() { require(true); }
+            function b() { require(true); }
+        }
+    "#;
+
+    let contract = parse_contract_ast(source).expect("ast parsed");
+    let options = CompileOptions { covenants_enabled: true, without_selector: true };
+    let err = compile_contract_ast(&contract, options).expect_err("should fail without selector for multiple functions");
+    assert!(err.to_string().contains("without_selector"));
 }
 
 #[test]
