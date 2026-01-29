@@ -1001,7 +1001,7 @@ dependencies = [
 [[package]]
 name = "kaspa-addresses"
 version = "1.1.0-rc.2"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset1#d0c5196a906b921fffe2aacdc7c113b60ef153c6"
+source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset1#728ac8b56f536350bf7f97514bd7acca8315316c"
 dependencies = [
  "borsh",
  "js-sys",
@@ -1016,7 +1016,7 @@ dependencies = [
 [[package]]
 name = "kaspa-consensus-core"
 version = "1.1.0-rc.2"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset1#d0c5196a906b921fffe2aacdc7c113b60ef153c6"
+source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset1#728ac8b56f536350bf7f97514bd7acca8315316c"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -1053,7 +1053,7 @@ dependencies = [
 [[package]]
 name = "kaspa-core"
 version = "1.1.0-rc.2"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset1#d0c5196a906b921fffe2aacdc7c113b60ef153c6"
+source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset1#728ac8b56f536350bf7f97514bd7acca8315316c"
 dependencies = [
  "anyhow",
  "cfg-if",
@@ -1078,13 +1078,14 @@ dependencies = [
  "kaspa-hashes",
  "kaspa-txscript",
  "kaspa-txscript-errors",
+ "silverscript-lang",
  "thiserror 1.0.69",
 ]
 
 [[package]]
 name = "kaspa-hashes"
 version = "1.1.0-rc.2"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset1#d0c5196a906b921fffe2aacdc7c113b60ef153c6"
+source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset1#728ac8b56f536350bf7f97514bd7acca8315316c"
 dependencies = [
  "blake2b_simd",
  "blake3",
@@ -1104,7 +1105,7 @@ dependencies = [
 [[package]]
 name = "kaspa-math"
 version = "1.1.0-rc.2"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset1#d0c5196a906b921fffe2aacdc7c113b60ef153c6"
+source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset1#728ac8b56f536350bf7f97514bd7acca8315316c"
 dependencies = [
  "borsh",
  "faster-hex",
@@ -1124,7 +1125,7 @@ dependencies = [
 [[package]]
 name = "kaspa-merkle"
 version = "1.1.0-rc.2"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset1#d0c5196a906b921fffe2aacdc7c113b60ef153c6"
+source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset1#728ac8b56f536350bf7f97514bd7acca8315316c"
 dependencies = [
  "kaspa-hashes",
 ]
@@ -1132,7 +1133,7 @@ dependencies = [
 [[package]]
 name = "kaspa-muhash"
 version = "1.1.0-rc.2"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset1#d0c5196a906b921fffe2aacdc7c113b60ef153c6"
+source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset1#728ac8b56f536350bf7f97514bd7acca8315316c"
 dependencies = [
  "kaspa-hashes",
  "kaspa-math",
@@ -1143,7 +1144,7 @@ dependencies = [
 [[package]]
 name = "kaspa-txscript"
 version = "1.1.0-rc.2"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset1#d0c5196a906b921fffe2aacdc7c113b60ef153c6"
+source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset1#728ac8b56f536350bf7f97514bd7acca8315316c"
 dependencies = [
  "blake2b_simd",
  "borsh",
@@ -1175,7 +1176,7 @@ dependencies = [
 [[package]]
 name = "kaspa-txscript-errors"
 version = "1.1.0-rc.2"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset1#d0c5196a906b921fffe2aacdc7c113b60ef153c6"
+source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset1#728ac8b56f536350bf7f97514bd7acca8315316c"
 dependencies = [
  "kaspa-hashes",
  "secp256k1",
@@ -1185,7 +1186,7 @@ dependencies = [
 [[package]]
 name = "kaspa-utils"
 version = "1.1.0-rc.2"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset1#d0c5196a906b921fffe2aacdc7c113b60ef153c6"
+source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset1#728ac8b56f536350bf7f97514bd7acca8315316c"
 dependencies = [
  "arc-swap",
  "async-channel 2.5.0",
@@ -1215,7 +1216,7 @@ dependencies = [
 [[package]]
 name = "kaspa-wasm-core"
 version = "1.1.0-rc.2"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset1#d0c5196a906b921fffe2aacdc7c113b60ef153c6"
+source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset1#728ac8b56f536350bf7f97514bd7acca8315316c"
 dependencies = [
  "faster-hex",
  "hexplay",
