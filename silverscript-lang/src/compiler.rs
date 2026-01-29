@@ -155,18 +155,19 @@ pub fn function_branch_index(source: &str, function_name: &str) -> Result<i64, C
     }
     Err(CompilerError::Unsupported(format!("function '{function_name}' not found")))
 }
+type ParsedContract<'a> = (String, Vec<String>, Vec<Pair<'a, Rule>>, HashMap<String, Expr>);
 
-fn parse_contract(source: &str) -> Result<(String, Vec<String>, Vec<Pair<'_, Rule>>, HashMap<String, Expr>), CompilerError> {
+fn parse_contract(source: &str) -> Result<ParsedContract<'_>, CompilerError> {
     let mut pairs = SilverScriptParser::parse(Rule::source_file, source)?;
     let source_pair = pairs.next().ok_or_else(|| CompilerError::Unsupported("empty source".to_string()))?;
-    let mut inner = source_pair.into_inner();
+    let inner = source_pair.into_inner();
 
     let mut contract_name = None;
     let mut contract_params: Vec<String> = Vec::new();
     let mut functions = Vec::new();
     let mut constants: HashMap<String, Expr> = HashMap::new();
 
-    while let Some(pair) = inner.next() {
+    for pair in inner {
         if pair.as_rule() == Rule::contract_definition {
             let mut contract_inner = pair.into_inner();
             let name_pair = contract_inner.next().ok_or_else(|| CompilerError::Unsupported("missing contract name".to_string()))?;
@@ -937,6 +938,11 @@ fn map_factor(pair: Pair<'_, Rule>) -> Result<BinaryOp, CompilerError> {
     }
 }
 
+struct CompilationScope<'a> {
+    env: &'a HashMap<String, Expr>,
+    params: &'a HashMap<String, i64>,
+}
+
 fn compile_expr(
     expr: &Expr,
     env: &HashMap<String, Expr>,
@@ -946,6 +952,7 @@ fn compile_expr(
     visiting: &mut HashSet<String>,
     stack_depth: &mut i64,
 ) -> Result<(), CompilerError> {
+    let scope = CompilationScope { env, params };
     match expr {
         Expr::Int(value) => {
             builder.add_i64(*value)?;
@@ -984,82 +991,68 @@ fn compile_expr(
         }
         Expr::Array(_) => Err(CompilerError::Unsupported("array literals are only supported in LockingBytecodeNullData".to_string())),
         Expr::Call { name, args } => match name.as_str() {
-            "OpSha256" => compile_opcode_call(name, args, 1, builder, env, params, options, visiting, stack_depth, OpSHA256, false),
-            "OpTxSubnetId" => {
-                compile_opcode_call(name, args, 0, builder, env, params, options, visiting, stack_depth, OpTxSubnetId, true)
-            }
-            "OpTxGas" => compile_opcode_call(name, args, 0, builder, env, params, options, visiting, stack_depth, OpTxGas, true),
+            "OpSha256" => compile_opcode_call(name, args, 1, &scope, builder, options, visiting, stack_depth, OpSHA256, false),
+            "OpTxSubnetId" => compile_opcode_call(name, args, 0, &scope, builder, options, visiting, stack_depth, OpTxSubnetId, true),
+            "OpTxGas" => compile_opcode_call(name, args, 0, &scope, builder, options, visiting, stack_depth, OpTxGas, true),
             "OpTxPayloadLen" => {
-                compile_opcode_call(name, args, 0, builder, env, params, options, visiting, stack_depth, OpTxPayloadLen, true)
+                compile_opcode_call(name, args, 0, &scope, builder, options, visiting, stack_depth, OpTxPayloadLen, true)
             }
             "OpTxPayloadSubstr" => {
-                compile_opcode_call(name, args, 2, builder, env, params, options, visiting, stack_depth, OpTxPayloadSubstr, true)
+                compile_opcode_call(name, args, 2, &scope, builder, options, visiting, stack_depth, OpTxPayloadSubstr, true)
             }
             "OpOutpointTxId" => {
-                compile_opcode_call(name, args, 1, builder, env, params, options, visiting, stack_depth, OpOutpointTxId, true)
+                compile_opcode_call(name, args, 1, &scope, builder, options, visiting, stack_depth, OpOutpointTxId, true)
             }
             "OpOutpointIndex" => {
-                compile_opcode_call(name, args, 1, builder, env, params, options, visiting, stack_depth, OpOutpointIndex, true)
+                compile_opcode_call(name, args, 1, &scope, builder, options, visiting, stack_depth, OpOutpointIndex, true)
             }
             "OpTxInputScriptSigLen" => {
-                compile_opcode_call(name, args, 1, builder, env, params, options, visiting, stack_depth, OpTxInputScriptSigLen, true)
+                compile_opcode_call(name, args, 1, &scope, builder, options, visiting, stack_depth, OpTxInputScriptSigLen, true)
             }
-            "OpTxInputScriptSigSubstr" => compile_opcode_call(
-                name,
-                args,
-                3,
-                builder,
-                env,
-                params,
-                options,
-                visiting,
-                stack_depth,
-                OpTxInputScriptSigSubstr,
-                true,
-            ),
-            "OpTxInputSeq" => {
-                compile_opcode_call(name, args, 1, builder, env, params, options, visiting, stack_depth, OpTxInputSeq, true)
+            "OpTxInputScriptSigSubstr" => {
+                compile_opcode_call(name, args, 3, &scope, builder, options, visiting, stack_depth, OpTxInputScriptSigSubstr, true)
             }
+            "OpTxInputSeq" => compile_opcode_call(name, args, 1, &scope, builder, options, visiting, stack_depth, OpTxInputSeq, true),
             "OpTxInputIsCoinbase" => {
-                compile_opcode_call(name, args, 1, builder, env, params, options, visiting, stack_depth, OpTxInputIsCoinbase, true)
+                compile_opcode_call(name, args, 1, &scope, builder, options, visiting, stack_depth, OpTxInputIsCoinbase, true)
             }
             "OpTxInputSpkLen" => {
-                compile_opcode_call(name, args, 1, builder, env, params, options, visiting, stack_depth, OpTxInputSpkLen, true)
+                compile_opcode_call(name, args, 1, &scope, builder, options, visiting, stack_depth, OpTxInputSpkLen, true)
             }
             "OpTxInputSpkSubstr" => {
-                compile_opcode_call(name, args, 3, builder, env, params, options, visiting, stack_depth, OpTxInputSpkSubstr, true)
+                compile_opcode_call(name, args, 3, &scope, builder, options, visiting, stack_depth, OpTxInputSpkSubstr, true)
             }
             "OpTxOutputSpkLen" => {
-                compile_opcode_call(name, args, 1, builder, env, params, options, visiting, stack_depth, OpTxOutputSpkLen, true)
+                compile_opcode_call(name, args, 1, &scope, builder, options, visiting, stack_depth, OpTxOutputSpkLen, true)
             }
             "OpTxOutputSpkSubstr" => {
-                compile_opcode_call(name, args, 3, builder, env, params, options, visiting, stack_depth, OpTxOutputSpkSubstr, true)
+                compile_opcode_call(name, args, 3, &scope, builder, options, visiting, stack_depth, OpTxOutputSpkSubstr, true)
             }
             "OpAuthOutputCount" => {
-                compile_opcode_call(name, args, 1, builder, env, params, options, visiting, stack_depth, OpAuthOutputCount, true)
+                compile_opcode_call(name, args, 1, &scope, builder, options, visiting, stack_depth, OpAuthOutputCount, true)
             }
             "OpAuthOutputIdx" => {
-                compile_opcode_call(name, args, 2, builder, env, params, options, visiting, stack_depth, OpAuthOutputIdx, true)
+                compile_opcode_call(name, args, 2, &scope, builder, options, visiting, stack_depth, OpAuthOutputIdx, true)
             }
             "OpInputCovenantId" => {
-                compile_opcode_call(name, args, 1, builder, env, params, options, visiting, stack_depth, OpInputCovenantId, true)
+                compile_opcode_call(name, args, 1, &scope, builder, options, visiting, stack_depth, OpInputCovenantId, true)
             }
             "OpCovInputCount" => {
-                compile_opcode_call(name, args, 1, builder, env, params, options, visiting, stack_depth, OpCovInputCount, true)
+                compile_opcode_call(name, args, 1, &scope, builder, options, visiting, stack_depth, OpCovInputCount, true)
             }
             "OpCovInputIdx" => {
-                compile_opcode_call(name, args, 2, builder, env, params, options, visiting, stack_depth, OpCovInputIdx, true)
+                compile_opcode_call(name, args, 2, &scope, builder, options, visiting, stack_depth, OpCovInputIdx, true)
             }
             "OpCovOutCount" => {
-                compile_opcode_call(name, args, 1, builder, env, params, options, visiting, stack_depth, OpCovOutCount, true)
+                compile_opcode_call(name, args, 1, &scope, builder, options, visiting, stack_depth, OpCovOutCount, true)
             }
             "OpCovOutputIdx" => {
-                compile_opcode_call(name, args, 2, builder, env, params, options, visiting, stack_depth, OpCovOutputIdx, true)
+                compile_opcode_call(name, args, 2, &scope, builder, options, visiting, stack_depth, OpCovOutputIdx, true)
             }
-            "OpNum2Bin" => compile_opcode_call(name, args, 2, builder, env, params, options, visiting, stack_depth, OpNum2Bin, true),
-            "OpBin2Num" => compile_opcode_call(name, args, 1, builder, env, params, options, visiting, stack_depth, OpBin2Num, true),
+            "OpNum2Bin" => compile_opcode_call(name, args, 2, &scope, builder, options, visiting, stack_depth, OpNum2Bin, true),
+            "OpBin2Num" => compile_opcode_call(name, args, 1, &scope, builder, options, visiting, stack_depth, OpBin2Num, true),
             "OpChainblockSeqCommit" => {
-                compile_opcode_call(name, args, 1, builder, env, params, options, visiting, stack_depth, OpChainblockSeqCommit, false)
+                compile_opcode_call(name, args, 1, &scope, builder, options, visiting, stack_depth, OpChainblockSeqCommit, false)
             }
             "bytes" => {
                 if args.len() != 1 {
@@ -1396,9 +1389,8 @@ fn compile_opcode_call(
     name: &str,
     args: &[Expr],
     expected_args: usize,
+    scope: &CompilationScope,
     builder: &mut ScriptBuilder,
-    env: &HashMap<String, Expr>,
-    params: &HashMap<String, i64>,
     options: CompileOptions,
     visiting: &mut HashSet<String>,
     stack_depth: &mut i64,
@@ -1412,7 +1404,7 @@ fn compile_opcode_call(
         require_covenants(options, name)?;
     }
     for arg in args {
-        compile_expr(arg, env, params, builder, options, visiting, stack_depth)?;
+        compile_expr(arg, scope.env, scope.params, builder, options, visiting, stack_depth)?;
     }
     builder.add_op(opcode)?;
     *stack_depth += 1 - expected_args as i64;

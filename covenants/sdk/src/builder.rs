@@ -25,6 +25,8 @@ use thiserror::Error;
 const PLACEHOLDER_END: i64 = 17;
 const MAX_PLACEHOLDER_ITERS: usize = 8;
 
+type StateTransition = dyn Fn(&mut ScriptBuilder) -> Result<&mut ScriptBuilder, ScriptBuilderError>;
+
 /// Tiny helper trait extending `ScriptBuilder` with a handful of concatenation helpers.
 trait ScriptBuilderExt {
     fn add_affixes(&mut self, prefix: &[u8], suffix: &[u8]) -> Result<&mut Self, ScriptBuilderError>;
@@ -141,7 +143,7 @@ pub struct CovenantBuilder {
     /// Optional assertion on the number of authorized outputs.
     required_auth_output_count: Option<i64>,
     /// Optional user-supplied transition closure.
-    state_transition: Option<Box<dyn Fn(&mut ScriptBuilder) -> Result<&mut ScriptBuilder, ScriptBuilderError>>>,
+    state_transition: Option<Box<StateTransition>>,
 }
 
 impl CovenantBuilder {
@@ -318,7 +320,7 @@ impl CovenantBuilder {
         descriptor: &StateDescriptor,
         targets: &[OutputTarget],
         required_auth_output_count: Option<i64>,
-        state_transition: Option<&dyn Fn(&mut ScriptBuilder) -> Result<&mut ScriptBuilder, ScriptBuilderError>>,
+        state_transition: Option<&StateTransition>,
         end: i64,
         start_offset: i64,
     ) -> Result<Vec<u8>, CovenantBuilderError> {
@@ -614,9 +616,9 @@ mod tests {
                 .build()
         }
 
-        let input_redeem_script = build_script(&old_state).expect("input builder should succeed");
-        let left_output_redeem_script = build_script(&new_state_1).expect("left output builder should succeed");
-        let right_output_redeem_script = build_script(&new_state_2).expect("right output builder should succeed");
+        let input_redeem_script = build_script(old_state.as_slice()).expect("input builder should succeed");
+        let left_output_redeem_script = build_script(new_state_1.as_slice()).expect("left output builder should succeed");
+        let right_output_redeem_script = build_script(new_state_2.as_slice()).expect("right output builder should succeed");
 
         println!("Input redeem script length: {}", input_redeem_script.len());
         println!("Left output redeem script length: {}", left_output_redeem_script.len());
@@ -643,8 +645,9 @@ mod tests {
         let mut tx = Transaction::new(TX_VERSION, vec![tx_input], vec![left_output, right_output], 0, SUBNETWORK_ID_NATIVE, 0, vec![]);
 
         // Build scriptSig: <action_data> <input_redeem_script>
-        let sig_script = TxScriptBuilder::new().add_data(&action_data).unwrap().add_data(&input_redeem_script).unwrap().drain();
-        let expected_scriptsig_len = compute_push_size(&action_data) + compute_push_size(&input_redeem_script);
+        let sig_script =
+            TxScriptBuilder::new().add_data(action_data.as_slice()).unwrap().add_data(&input_redeem_script).unwrap().drain();
+        let expected_scriptsig_len = compute_push_size(action_data.as_slice()) + compute_push_size(&input_redeem_script);
         assert_eq!(sig_script.len() as i64, expected_scriptsig_len, "ScriptSig length should match expectations");
         tx.inputs[0].signature_script = sig_script;
 
@@ -715,9 +718,9 @@ mod tests {
                 .build()
         }
 
-        let input_redeem_script = build_script(&old_state).expect("input builder should succeed");
-        let left_output_redeem_script = build_script(&new_state_1).expect("left output builder should succeed");
-        let right_output_redeem_script = build_script(&new_state_2).expect("right output builder should succeed");
+        let input_redeem_script = build_script(old_state).expect("input builder should succeed");
+        let left_output_redeem_script = build_script(new_state_1).expect("left output builder should succeed");
+        let right_output_redeem_script = build_script(new_state_2).expect("right output builder should succeed");
 
         println!("Input redeem script length: {}", input_redeem_script.len());
         println!("Left output redeem script length: {}", left_output_redeem_script.len());
@@ -744,8 +747,8 @@ mod tests {
         let mut tx = Transaction::new(TX_VERSION, vec![tx_input], vec![left_output, right_output], 0, SUBNETWORK_ID_NATIVE, 0, vec![]);
 
         // Build scriptSig: <action_data> <input_redeem_script>
-        let sig_script = TxScriptBuilder::new().add_data(&action_data).unwrap().add_data(&input_redeem_script).unwrap().drain();
-        let expected_scriptsig_len = compute_push_size(&action_data) + compute_push_size(&input_redeem_script);
+        let sig_script = TxScriptBuilder::new().add_data(action_data).unwrap().add_data(&input_redeem_script).unwrap().drain();
+        let expected_scriptsig_len = compute_push_size(action_data) + compute_push_size(&input_redeem_script);
         assert_eq!(sig_script.len() as i64, expected_scriptsig_len, "ScriptSig length should match expectations");
         tx.inputs[0].signature_script = sig_script;
 
