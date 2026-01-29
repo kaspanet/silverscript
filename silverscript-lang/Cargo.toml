@@ -21,4 +21,4 @@ pest_derive = "2.7"
 rand.workspace = true
 secp256k1.workspace = true
 thiserror.workspace = true
-solang-parser = "0.3"
+
