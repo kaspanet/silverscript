@@ -1,1 +1,6 @@
 target
+web-root
+**/.idea/
+/rust-toolchain
+/.vscode/
+*.code-workspace

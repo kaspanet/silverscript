@@ -397,17 +397,60 @@ impl Default for CovenantBuilder {
 mod tests {
     use super::*;
     use kaspa_consensus_core::{
+        Hash,
         constants::{SOMPI_PER_KASPA, TX_VERSION},
         hashing::sighash::SigHashReusedValuesUnsync,
         subnets::SUBNETWORK_ID_NATIVE,
         tx::{
-            CovenantBinding, PopulatedTransaction, Transaction, TransactionInput, TransactionOutpoint, TransactionOutput, UtxoEntry,
+            CovenantBinding, PopulatedTransaction, ScriptPublicKey, Transaction, TransactionInput, TransactionOutpoint,
+            TransactionOutput, UtxoEntry,
         },
     };
     use kaspa_txscript::{
         EngineCtx, EngineFlags, TxScriptEngine, caches::Cache, covenants::CovenantsContext, pay_to_script_hash_script,
         script_builder::ScriptBuilder as TxScriptBuilder,
     };
+    use silverscript_lang::compiler::{CompileOptions, compile_contract};
+
+    fn script_eval(script: &[u8], state: &[u8], action: &[u8]) -> Vec<Vec<u8>> {
+        let sig_cache = Cache::new(0);
+        let reused_values = SigHashReusedValuesUnsync::new();
+
+        // Build a dummy spend where the scriptPubKey is the compiled SilverScript contract.
+        let utxo_spk = ScriptPublicKey::new(0, script.to_vec().into());
+        let utxo_entry = UtxoEntry::new(0, utxo_spk.clone(), 0, false, None);
+
+        // Push args in the order expected by the contract: state then action.
+        let mut sig_builder = ScriptBuilder::new();
+        sig_builder.add_data(state).unwrap().add_data(action).unwrap();
+        let sig_script = sig_builder.drain();
+
+        let tx_input = TransactionInput::new(TransactionOutpoint::new(Hash::from_u64_word(999), 0), sig_script, 0, 0);
+        let tx = Transaction::new(
+            TX_VERSION,
+            vec![tx_input.clone()],
+            vec![TransactionOutput::new(0, utxo_spk)],
+            0,
+            SUBNETWORK_ID_NATIVE,
+            0,
+            vec![],
+        );
+
+        let populated_tx = PopulatedTransaction::new(&tx, vec![utxo_entry.clone()]);
+        let ctx = EngineCtx::new(&sig_cache).with_reused(&reused_values);
+
+        TxScriptEngine::from_transaction_input(
+            &populated_tx,
+            &tx.inputs[0],
+            0,
+            &utxo_entry,
+            ctx,
+            EngineFlags { covenants_enabled: true },
+        )
+        .execute_and_return_stacks()
+        .expect("script evaluation should execute")
+        .dstack
+    }
 
     #[test]
     fn test_builder_with_spk_verification() {
@@ -559,62 +602,55 @@ mod tests {
     /// the first output and the remainder flows to the second output.
     #[test]
     fn test_state_split_transition_with_two_outputs() {
-        const STATE_LEN_BYTES: usize = 8;
-        const STATE_LEN_I64: i64 = STATE_LEN_BYTES as i64;
-        const ACTION_LEN_BYTES: usize = 1;
+        // const STATE_LEN_BYTES: usize = 8;
+        const ACTION_LEN_BYTES: usize = 4;
 
         let current_state_value: i64 = 1_000;
-        let action_value: u8 = 5;
-        assert!((action_value as i64) <= current_state_value, "action value must not exceed state");
+        let action_value: i32 = 245;
+        assert!(action_value as i64 <= current_state_value, "action value must not exceed state");
 
         let old_state = current_state_value.to_le_bytes();
-        let new_state_1 = (action_value as i64).to_le_bytes();
-        let new_state_2 = (current_state_value - action_value as i64).to_le_bytes();
-        // TODO(serialize-u32): the engine expects minimally-encoded signed numbers; the
-        // 4-byte action blob works for the current test value but needs a generalized
-        // encoder that mirrors the VM's number format.
         let action_data = action_value.to_le_bytes();
 
-        fn transition(b: &mut ScriptBuilder) -> Result<&mut ScriptBuilder, ScriptBuilderError> {
-            // the transition function assumes the following stack:
-            // [action_data (from sig), old_state (just pushed)]
-            // and is expected to leave the new_state on top of the stack instead
+        let source = r#"
+            contract Split() {
+                function main(int s, int a) {
+                    require(0 <= s);
+                    require(0 <= a);
+                    require(a <= s);
+                    yield(OpNum2Bin(s - a, 8));
+                    yield(OpNum2Bin(a, 8));
+                }
+            }
+        "#;
 
-            b
-                // Convert stack to numeric form: [state, action]
-                .add_op(OpBin2Num)?
-                .add_op(OpSwap)?
-                .add_op(OpBin2Num)?
-                // Validate action <= state
-                .add_op(Op2Dup)?
-                .add_op(OpSwap)?
-                .add_op(OpLessThanOrEqual)?
-                .add_op(OpVerify)?
-                // Compute (state - action) while keeping originals
-                .add_op(Op2Dup)?
-                .add_op(OpSub)?
-                .add_op(OpRot)?
-                .add_op(OpDrop)?
-                // Stack now: [action, diff]
-                .add_i64(STATE_LEN_I64)?
-                .add_op(OpNum2Bin)? // diff -> bytes
-                .add_op(OpSwap)?
-                .add_i64(STATE_LEN_I64)?
-                .add_op(OpNum2Bin)?; // action -> bytes
+        let compiled = compile_contract(source, &[], CompileOptions { covenants_enabled: true, without_selector: true })
+            .expect("compile succeeds");
+        let transition_script = compiled.script;
 
-            // Provide exactly VERIFICATION_TARGETS new states (top-first order)
-            Ok(b)
-        }
+        let yielded_states = script_eval(&transition_script, old_state.as_slice(), action_data.as_slice());
+        // Stack order is bottom->top; verification consumes top first.
+        let new_state_1 = yielded_states.last().cloned().expect("top-of-stack yield present");
+        let new_state_2 = yielded_states.first().cloned().expect("second yield present");
 
-        fn build_script(state: &[u8]) -> Result<Vec<u8>, CovenantBuilderError> {
+        let expected_top = (action_value as i64).to_le_bytes();
+        let expected_bottom = (current_state_value - action_value as i64).to_le_bytes();
+        assert_eq!(new_state_1, expected_top, "top-of-stack yield should be action amount");
+        assert_eq!(new_state_2, expected_bottom, "bottom-of-stack yield should be remainder");
+
+        let build_script = |state: &[u8]| -> Result<Vec<u8>, CovenantBuilderError> {
+            let transition_script = transition_script.clone();
             CovenantBuilder::new()
                 .with_state(state.to_vec(), ACTION_LEN_BYTES)
-                .with_state_transition(transition)
+                .with_state_transition(move |b: &mut ScriptBuilder| -> Result<&mut ScriptBuilder, ScriptBuilderError> {
+                    // Stack on entry: [action_bytes, state_bytes]; reorder so action is on top for the SS contract.
+                    b.add_op(OpSwap)?.add_ops(&transition_script)
+                })
                 .require_authorized_output_count(2)
                 .verify_authorized_output_spk_at(0)
                 .verify_authorized_output_spk_at(1)
                 .build()
-        }
+        };
 
         let input_redeem_script = build_script(old_state.as_slice()).expect("input builder should succeed");
         let left_output_redeem_script = build_script(new_state_1.as_slice()).expect("left output builder should succeed");

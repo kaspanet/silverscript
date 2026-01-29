@@ -13,6 +13,9 @@ kaspa-consensus-core.workspace = true
 kaspa-hashes.workspace = true
 thiserror.workspace = true
 
+[dev-dependencies]
+silverscript-lang = { path = "../../silverscript-lang" }
+
 [lib]
 name = "kaspa_covenant_sdk"
 path = "src/lib.rs"
