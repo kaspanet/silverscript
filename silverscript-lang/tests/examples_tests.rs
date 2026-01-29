@@ -153,7 +153,7 @@ fn script_with_return_checks(script: Vec<u8>, expected: &[i64]) -> Vec<u8> {
 
 #[test]
 fn compiles_announcement_example_and_verifies() {
-    let source = load_example_source("announcement.silver");
+    let source = load_example_source("announcement.sil");
 
     let compiled = compile_contract(&source, CompileOptions::default()).expect("compile succeeds");
     let selector = selector_for(&compiled, "announce");
@@ -195,7 +195,7 @@ fn compiles_announcement_example_and_verifies() {
 
 #[test]
 fn compiles_constant_budget_example_and_verifies() {
-    let source = load_example_source("constant_budget.silver");
+    let source = load_example_source("constant_budget.sil");
 
     let compiled = compile_contract(&source, CompileOptions::default()).expect("compile succeeds");
     let selector = selector_for(&compiled, "spend");
@@ -233,7 +233,7 @@ fn compiles_constant_budget_example_and_verifies() {
 
 #[test]
 fn compiles_for_loop_example_and_verifies() {
-    let source = load_example_source("for_loop.silver");
+    let source = load_example_source("for_loop.sil");
 
     let compiled = compile_contract(&source, CompileOptions::default()).expect("compile succeeds");
     let selector = selector_for(&compiled, "check");
@@ -280,7 +280,7 @@ fn compiles_for_loop_example_and_verifies() {
 
 #[test]
 fn compiles_yield_basic_example_and_verifies() {
-    let source = load_example_source("yield_basic.silver");
+    let source = load_example_source("yield_basic.sil");
 
     let compiled = compile_contract(&source, CompileOptions::default()).expect("compile succeeds");
     let selector = selector_for(&compiled, "main");
@@ -298,7 +298,7 @@ fn compiles_yield_basic_example_and_verifies() {
 
 #[test]
 fn compiles_yield_loop_example_and_verifies() {
-    let source = load_example_source("yield_loop.silver");
+    let source = load_example_source("yield_loop.sil");
 
     let compiled = compile_contract(&source, CompileOptions::default()).expect("compile succeeds");
     let selector = selector_for(&compiled, "main");
@@ -324,7 +324,7 @@ fn build_p2sh20_script(hash: &[u8]) -> Vec<u8> {
 
 #[test]
 fn compiles_hodl_vault_example_and_verifies() {
-    let source = load_example_source("hodl_vault.silver");
+    let source = load_example_source("hodl_vault.sil");
 
     let compiled = compile_contract(&source, CompileOptions::default()).expect("compile succeeds");
     let selector = selector_for(&compiled, "spend");
@@ -390,7 +390,7 @@ fn compiles_hodl_vault_example_and_verifies() {
 
 #[test]
 fn compiles_mecenas_example_and_verifies() {
-    let source = load_example_source("mecenas.silver");
+    let source = load_example_source("mecenas.sil");
 
     let compiled = compile_contract(&source, CompileOptions::default()).expect("compile succeeds");
     let receive_selector = selector_for(&compiled, "receive");
@@ -498,7 +498,7 @@ fn compiles_mecenas_example_and_verifies() {
 
 #[test]
 fn compiles_mecenas_locktime_example_and_verifies() {
-    let source = load_example_source("mecenas_locktime.silver");
+    let source = load_example_source("mecenas_locktime.sil");
 
     let compiled = compile_contract(&source, CompileOptions::default()).expect("compile succeeds");
     let receive_selector = selector_for(&compiled, "receive");
@@ -623,7 +623,7 @@ fn compiles_mecenas_locktime_example_and_verifies() {
 
 #[test]
 fn compiles_p2pkh_example_and_verifies() {
-    let source = load_example_source("p2pkh.silver");
+    let source = load_example_source("p2pkh.sil");
 
     let compiled = compile_contract(&source, CompileOptions::default()).expect("compile succeeds");
     let selector = selector_for(&compiled, "spend");
@@ -680,7 +680,7 @@ fn compiles_p2pkh_example_and_verifies() {
 
 #[test]
 fn compiles_transfer_with_timeout_and_verifies() {
-    let source = load_example_source("transfer_with_timeout.silver");
+    let source = load_example_source("transfer_with_timeout.sil");
 
     let compiled = compile_contract(&source, CompileOptions::default()).expect("compile succeeds");
     let transfer_selector = selector_for(&compiled, "transfer");
@@ -784,7 +784,7 @@ fn compiles_transfer_with_timeout_and_verifies() {
 
 #[test]
 fn compiles_covenant_escrow_example_and_verifies() {
-    let source = load_example_source("covenant_escrow.silver");
+    let source = load_example_source("covenant_escrow.sil");
 
     let compiled = compile_contract(&source, CompileOptions::default()).expect("compile succeeds");
     let selector = selector_for(&compiled, "spend");
@@ -849,7 +849,7 @@ fn compiles_covenant_escrow_example_and_verifies() {
 
 #[test]
 fn compiles_covenant_last_will_and_verifies() {
-    let source = load_example_source("covenant_last_will.silver");
+    let source = load_example_source("covenant_last_will.sil");
 
     let compiled = compile_contract(&source, CompileOptions::default()).expect("compile succeeds");
     let inherit_selector = selector_for(&compiled, "inherit");
@@ -1016,7 +1016,7 @@ fn compiles_covenant_last_will_and_verifies() {
 
 #[test]
 fn compiles_covenant_mecenas_example_and_verifies() {
-    let source = load_example_source("covenant_mecenas.silver");
+    let source = load_example_source("covenant_mecenas.sil");
 
     let compiled = compile_contract(&source, CompileOptions::default()).expect("compile succeeds");
     let receive_selector = selector_for(&compiled, "receive");
