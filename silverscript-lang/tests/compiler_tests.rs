@@ -196,7 +196,7 @@ fn compiles_without_selector_single_function() {
 
     let contract = parse_contract_ast(source).expect("ast parsed");
     let options = CompileOptions { covenants_enabled: true, without_selector: true };
-    let compiled = compile_contract_ast(&contract, options).expect("compile succeeds");
+    let compiled = compile_contract_ast(&contract, &[], options).expect("compile succeeds");
 
     let expected = ScriptBuilder::new()
         .add_i64(1)
@@ -229,7 +229,7 @@ fn fails_without_selector_multiple_functions() {
 
     let contract = parse_contract_ast(source).expect("ast parsed");
     let options = CompileOptions { covenants_enabled: true, without_selector: true };
-    let err = compile_contract_ast(&contract, options).expect_err("should fail without selector for multiple functions");
+    let err = compile_contract_ast(&contract, &[], options).expect_err("should fail without selector for multiple functions");
     assert!(err.to_string().contains("without_selector"));
 }
 
@@ -243,7 +243,7 @@ fn compiles_basic_arithmetic_and_verifies() {
         }
     "#;
 
-    let compiled = compile_contract(source, CompileOptions::default()).expect("compile succeeds");
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
     let selector = selector_for(&compiled, "main");
 
     let body = ScriptBuilder::new()
@@ -281,7 +281,7 @@ fn compiles_contract_constants_and_verifies() {
         }
     "#;
 
-    let compiled = compile_contract(source, CompileOptions::default()).expect("compile succeeds");
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
     let selector = selector_for(&compiled, "main");
 
     let body = ScriptBuilder::new()
@@ -304,7 +304,7 @@ fn compiles_contract_constants_and_verifies() {
 }
 
 fn assert_compiled_body(source: &str, body: Vec<u8>) {
-    let compiled = compile_contract(source, CompileOptions::default()).expect("compile succeeds");
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
     let selector = selector_for(&compiled, "main");
     let expected = wrap_with_dispatch(body, selector);
     assert_eq!(compiled.script, expected);
@@ -1079,7 +1079,7 @@ fn executes_opcode_builtins_basic() {
     ];
 
     for (name, source) in cases {
-        let compiled = compile_contract(source, CompileOptions::default()).expect("compile succeeds");
+        let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
         let selector = selector_for(&compiled, "main");
         let sigscript = ScriptBuilder::new().add_i64(selector).unwrap().drain();
         let (tx, entries) = build_basic_opcode_tx(sigscript);
@@ -1104,7 +1104,7 @@ fn executes_opcode_builtins_covenants() {
         }
     "#;
 
-    let compiled = compile_contract(source, CompileOptions::default()).expect("compile succeeds");
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
     let selector = selector_for(&compiled, "main");
     let sigscript = ScriptBuilder::new().add_i64(selector).unwrap().drain();
     let covenant_id_a = Hash::from_bytes(*b"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
@@ -1140,7 +1140,7 @@ fn executes_opcode_chainblock_seq_commit() {
         }
     "#;
 
-    let compiled = compile_contract(source, CompileOptions::default()).expect("compile succeeds");
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
     let selector = selector_for(&compiled, "main");
     let sigscript = ScriptBuilder::new().add_i64(selector).unwrap().drain();
     let (tx, entries) = build_basic_opcode_tx(sigscript);
@@ -1166,7 +1166,7 @@ fn compiles_if_else_and_verifies() {
         }
     "#;
 
-    let compiled = compile_contract(source, CompileOptions::default()).expect("compile succeeds");
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
     let selector = selector_for(&compiled, "main");
 
     let body = ScriptBuilder::new()
@@ -1210,7 +1210,7 @@ fn compiles_time_op_csv_and_verifies() {
         }
     "#;
 
-    let compiled = compile_contract(source, CompileOptions::default()).expect("compile succeeds");
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
     let selector = selector_for(&compiled, "main");
 
     let body = ScriptBuilder::new().add_i64(10).unwrap().add_op(OpCheckSequenceVerify).unwrap().add_op(OpTrue).unwrap().drain();
@@ -1232,7 +1232,7 @@ fn compiles_reused_variables_and_verifies() {
         }
     "#;
 
-    let compiled = compile_contract(source, CompileOptions::default()).expect("compile succeeds");
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
     let selector = selector_for(&compiled, "main");
 
     let body = ScriptBuilder::new()
@@ -1284,7 +1284,7 @@ fn compiles_sigscript_inputs_and_verifies() {
         }
     "#;
 
-    let compiled = compile_contract(source, CompileOptions::default()).expect("compile succeeds");
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
     let selector = selector_for(&compiled, "main");
     let sigscript = ScriptBuilder::new().add_i64(3).unwrap().add_i64(4).unwrap().add_i64(selector).unwrap().drain();
 
@@ -1302,7 +1302,7 @@ fn compiles_sigscript_reused_inputs_and_verifies() {
         }
     "#;
 
-    let compiled = compile_contract(source, CompileOptions::default()).expect("compile succeeds");
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
     let selector = selector_for(&compiled, "main");
     let sigscript = ScriptBuilder::new().add_i64(3).unwrap().add_i64(selector).unwrap().drain();
 
@@ -1320,7 +1320,7 @@ fn compiles_sigscript_inputs_and_fails_on_wrong_sum() {
         }
     "#;
 
-    let compiled = compile_contract(source, CompileOptions::default()).expect("compile succeeds");
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
     let selector = selector_for(&compiled, "main");
     let sigscript = ScriptBuilder::new().add_i64(2).unwrap().add_i64(4).unwrap().add_i64(selector).unwrap().drain();
 
@@ -1338,7 +1338,7 @@ fn compiles_sigscript_reused_inputs_and_fails_on_wrong_value() {
         }
     "#;
 
-    let compiled = compile_contract(source, CompileOptions::default()).expect("compile succeeds");
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
     let selector = selector_for(&compiled, "main");
     let sigscript = ScriptBuilder::new().add_i64(4).unwrap().add_i64(selector).unwrap().drain();
 

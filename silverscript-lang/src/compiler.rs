@@ -161,23 +161,36 @@ pub enum IntrospectionKind {
     OutputLockingBytecode,
 }
 
-pub fn compile_contract(source: &str, options: CompileOptions) -> Result<CompiledContract, CompilerError> {
+pub fn compile_contract(source: &str, constructor_args: &[Expr], options: CompileOptions) -> Result<CompiledContract, CompilerError> {
     let contract = parse_contract_ast(source)?;
-    compile_contract_ast(&contract, options)
+    compile_contract_ast(&contract, constructor_args, options)
 }
 
-pub fn compile_contract_ast(contract: &ContractAst, options: CompileOptions) -> Result<CompiledContract, CompilerError> {
+pub fn compile_contract_ast(
+    contract: &ContractAst,
+    constructor_args: &[Expr],
+    options: CompileOptions,
+) -> Result<CompiledContract, CompilerError> {
     if contract.functions.is_empty() {
         return Err(CompilerError::Unsupported("contract has no functions".to_string()));
+    }
+
+    if contract.params.len() != constructor_args.len() {
+        return Err(CompilerError::Unsupported("constructor argument count mismatch".to_string()));
     }
 
     if options.without_selector && contract.functions.len() != 1 {
         return Err(CompilerError::Unsupported("without_selector requires a single function".to_string()));
     }
 
+    let mut constants = contract.constants.clone();
+    for (name, value) in contract.params.iter().zip(constructor_args.iter()) {
+        constants.insert(name.clone(), value.clone());
+    }
+
     let mut compiled_functions = Vec::new();
     for func in &contract.functions {
-        compiled_functions.push(compile_function(func, &contract.params, &contract.constants, options)?);
+        compiled_functions.push(compile_function(func, &constants, options)?);
     }
 
     let script = if options.without_selector {
@@ -237,22 +250,19 @@ pub fn parse_contract_ast(source: &str) -> Result<ContractAst, CompilerError> {
 
 fn compile_function(
     function: &FunctionAst,
-    contract_params: &[String],
-    contract_constants: &HashMap<String, Expr>,
+    constants: &HashMap<String, Expr>,
     options: CompileOptions,
 ) -> Result<(String, Vec<u8>), CompilerError> {
-    let mut param_names = contract_params.to_vec();
-    param_names.extend(function.params.iter().cloned());
-    let param_count = param_names.len();
+    let param_count = function.params.len();
     let params =
-        param_names.into_iter().enumerate().map(|(index, name)| (name, (param_count - 1 - index) as i64)).collect::<HashMap<_, _>>();
+        function.params.iter().cloned().enumerate().map(|(index, name)| (name, (param_count - 1 - index) as i64)).collect::<HashMap<_, _>>();
 
-    let mut env: HashMap<String, Expr> = contract_constants.clone();
+    let mut env: HashMap<String, Expr> = constants.clone();
     let mut builder = ScriptBuilder::new();
     let mut yields: Vec<Expr> = Vec::new();
 
     for stmt in &function.body {
-        compile_statement(stmt, &mut env, &params, &mut builder, options, contract_constants, &mut yields)?;
+        compile_statement(stmt, &mut env, &params, &mut builder, options, constants, &mut yields)?;
     }
 
     let yield_count = yields.len();
@@ -1274,6 +1284,7 @@ fn compile_expr(
                 Ok(())
             }
             "checkDataSig" => {
+                // TODO: Remove this stub
                 for arg in args {
                     compile_expr(arg, env, params, builder, options, visiting, stack_depth)?;
                 }

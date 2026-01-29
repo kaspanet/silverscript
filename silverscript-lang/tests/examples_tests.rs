@@ -11,7 +11,7 @@ use kaspa_txscript::script_builder::ScriptBuilder;
 use kaspa_txscript::{EngineCtx, EngineFlags, TxScriptEngine};
 use rand::{RngCore, thread_rng};
 use secp256k1::{Keypair, Secp256k1, SecretKey};
-use silverscript_lang::compiler::{CompileOptions, CompiledContract, compile_contract, function_branch_index};
+use silverscript_lang::compiler::{CompileOptions, CompiledContract, Expr, compile_contract, function_branch_index};
 use std::fs;
 
 fn build_null_data_script(tag: i64, message: &str) -> Vec<u8> {
@@ -155,7 +155,7 @@ fn script_with_return_checks(script: Vec<u8>, expected: &[i64]) -> Vec<u8> {
 fn compiles_announcement_example_and_verifies() {
     let source = load_example_source("announcement.sil");
 
-    let compiled = compile_contract(&source, CompileOptions::default()).expect("compile succeeds");
+    let compiled = compile_contract(&source, &[], CompileOptions::default()).expect("compile succeeds");
     let selector = selector_for(&compiled, "announce");
     let message = "A contract may not injure a human being or, through inaction, allow a human being to come to harm.";
     let announcement_script = build_null_data_script(27906, message);
@@ -197,7 +197,7 @@ fn compiles_announcement_example_and_verifies() {
 fn compiles_constant_budget_example_and_verifies() {
     let source = load_example_source("constant_budget.sil");
 
-    let compiled = compile_contract(&source, CompileOptions::default()).expect("compile succeeds");
+    let compiled = compile_contract(&source, &[], CompileOptions::default()).expect("compile succeeds");
     let selector = selector_for(&compiled, "spend");
     let recipient0 = [2u8; 20];
     let recipient1 = [3u8; 20];
@@ -235,7 +235,7 @@ fn compiles_constant_budget_example_and_verifies() {
 fn compiles_for_loop_example_and_verifies() {
     let source = load_example_source("for_loop.sil");
 
-    let compiled = compile_contract(&source, CompileOptions::default()).expect("compile succeeds");
+    let compiled = compile_contract(&source, &[], CompileOptions::default()).expect("compile succeeds");
     let selector = selector_for(&compiled, "check");
     let recipient0 = [5u8; 20];
     let recipient1 = [6u8; 20];
@@ -279,10 +279,39 @@ fn compiles_for_loop_example_and_verifies() {
 }
 
 #[test]
+fn compiles_for_loop_ctor_example_with_constructor_bounds() {
+    let source = load_example_source("for_loop_ctor.sil");
+
+    let constructor_args = [Expr::Int(0), Expr::Int(4)];
+    let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
+    let selector = selector_for(&compiled, "check");
+    let recipient0 = [5u8; 20];
+    let recipient1 = [6u8; 20];
+    let recipient2 = [7u8; 20];
+    let recipient3 = [8u8; 20];
+    let output0_script = build_p2pkh_script(&recipient0);
+    let output1_script = build_p2pkh_script(&recipient1);
+    let output2_script = build_p2pkh_script(&recipient2);
+    let output3_script = build_p2pkh_script(&recipient3);
+
+    let sigscript = ScriptBuilder::new().add_i64(selector).unwrap().drain();
+    let input_value = 10_000u64;
+    let outputs = vec![
+        (1000u64, output0_script.clone()),
+        (1001u64, output1_script.clone()),
+        (1002u64, output2_script.clone()),
+        (1003u64, output3_script.clone()),
+    ];
+    let result = run_contract_with_outputs(compiled.script, outputs, input_value, sigscript, 0);
+    assert!(result.is_ok(), "for_loop_ctor example failed: {}", result.unwrap_err());
+}
+
+#[test]
 fn compiles_yield_basic_example_and_verifies() {
     let source = load_example_source("yield_basic.sil");
 
-    let compiled = compile_contract(&source, CompileOptions::default()).expect("compile succeeds");
+    let constructor_args = [Expr::Int(8)];
+    let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
     let selector = selector_for(&compiled, "main");
     let script = script_with_return_checks(compiled.script, &[12, 8]);
     let recipient0 = [9u8; 20];
@@ -291,7 +320,7 @@ fn compiles_yield_basic_example_and_verifies() {
     let output1_script = build_p2pkh_script(&recipient1);
 
     // Test main(b=8) returns [12, 8] on stack.
-    let sigscript = ScriptBuilder::new().add_i64(8).unwrap().add_i64(selector).unwrap().drain();
+    let sigscript = ScriptBuilder::new().add_i64(selector).unwrap().drain();
     let result = run_contract_with_tx(script, output0_script, output1_script, 2000, 500, 500, sigscript, 0);
     assert!(result.is_ok(), "yield basic failed: {}", result.unwrap_err());
 }
@@ -300,7 +329,7 @@ fn compiles_yield_basic_example_and_verifies() {
 fn compiles_yield_loop_example_and_verifies() {
     let source = load_example_source("yield_loop.sil");
 
-    let compiled = compile_contract(&source, CompileOptions::default()).expect("compile succeeds");
+    let compiled = compile_contract(&source, &[], CompileOptions::default()).expect("compile succeeds");
     let selector = selector_for(&compiled, "main");
     let script = script_with_return_checks(compiled.script, &[1, 2, 3, 4]);
     let recipient0 = [11u8; 20];
@@ -325,10 +354,6 @@ fn build_p2sh20_script(hash: &[u8]) -> Vec<u8> {
 #[test]
 fn compiles_hodl_vault_example_and_verifies() {
     let source = load_example_source("hodl_vault.sil");
-
-    let compiled = compile_contract(&source, CompileOptions::default()).expect("compile succeeds");
-    let selector = selector_for(&compiled, "spend");
-
     let owner = random_keypair();
     let oracle = random_keypair();
     let owner_pk = owner.x_only_public_key().0.serialize();
@@ -339,6 +364,15 @@ fn compiles_hodl_vault_example_and_verifies() {
     let block_height = 1000u32;
     let price = 20u32;
     let oracle_message = [block_height.to_le_bytes(), price.to_le_bytes()].concat();
+
+    let constructor_args = vec![
+        Expr::Bytes(owner_pk.to_vec()),
+        Expr::Bytes(oracle_pk.to_vec()),
+        Expr::Int(min_block),
+        Expr::Int(price_target),
+    ];
+    let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
+    let selector = selector_for(&compiled, "spend");
 
     let input = TransactionInput {
         previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([7u8; 32]), index: 0 },
@@ -363,10 +397,6 @@ fn compiles_hodl_vault_example_and_verifies() {
 
     // Test spend() function call (build sigscript for spend()).
     let mut builder = ScriptBuilder::new();
-    builder.add_data(owner_pk.as_slice()).unwrap();
-    builder.add_data(oracle_pk.as_slice()).unwrap();
-    builder.add_i64(min_block).unwrap();
-    builder.add_i64(price_target).unwrap();
     builder.add_data(&signature).unwrap();
     builder.add_data(b"oracle").unwrap();
     builder.add_data(&oracle_message).unwrap();
@@ -392,9 +422,6 @@ fn compiles_hodl_vault_example_and_verifies() {
 fn compiles_mecenas_example_and_verifies() {
     let source = load_example_source("mecenas.sil");
 
-    let compiled = compile_contract(&source, CompileOptions::default()).expect("compile succeeds");
-    let receive_selector = selector_for(&compiled, "receive");
-    let reclaim_selector = selector_for(&compiled, "reclaim");
     let recipient = [1u8; 20];
     let funder_key = random_keypair();
     let funder_pk = funder_key.x_only_public_key().0.serialize();
@@ -402,12 +429,14 @@ fn compiles_mecenas_example_and_verifies() {
         blake2b_simd::Params::new().hash_length(32).to_state().update(funder_pk.as_slice()).finalize().as_bytes().to_vec();
     funder_hash.truncate(20);
     let pledge = 2000i64;
+    let constructor_args = vec![Expr::Bytes(recipient.to_vec()), Expr::Bytes(funder_hash.clone()), Expr::Int(pledge)];
+
+    let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
+    let receive_selector = selector_for(&compiled, "receive");
+    let reclaim_selector = selector_for(&compiled, "reclaim");
 
     // Test receive() with changeValue > pledge + minerFee (else branch).
     let mut sigscript = ScriptBuilder::new();
-    sigscript.add_data(&recipient).unwrap();
-    sigscript.add_data(&funder_hash).unwrap();
-    sigscript.add_i64(pledge).unwrap();
     sigscript.add_i64(receive_selector).unwrap();
     let input_value = 10000u64;
     let output0_value = pledge as u64;
@@ -428,9 +457,6 @@ fn compiles_mecenas_example_and_verifies() {
 
     // Test receive() with changeValue <= pledge + minerFee (if branch).
     let mut sigscript = ScriptBuilder::new();
-    sigscript.add_data(&recipient).unwrap();
-    sigscript.add_data(&funder_hash).unwrap();
-    sigscript.add_i64(pledge).unwrap();
     sigscript.add_i64(receive_selector).unwrap();
 
     let input_value = 6000u64;
@@ -473,9 +499,6 @@ fn compiles_mecenas_example_and_verifies() {
 
     // Test reclaim() function call (build sigscript for reclaim()).
     let mut sigscript = ScriptBuilder::new();
-    sigscript.add_data(&recipient).unwrap();
-    sigscript.add_data(&funder_hash).unwrap();
-    sigscript.add_i64(pledge).unwrap();
     sigscript.add_data(funder_pk.as_slice()).unwrap();
     sigscript.add_data(&signature).unwrap();
     sigscript.add_i64(reclaim_selector).unwrap();
@@ -500,9 +523,6 @@ fn compiles_mecenas_example_and_verifies() {
 fn compiles_mecenas_locktime_example_and_verifies() {
     let source = load_example_source("mecenas_locktime.sil");
 
-    let compiled = compile_contract(&source, CompileOptions::default()).expect("compile succeeds");
-    let receive_selector = selector_for(&compiled, "receive");
-    let reclaim_selector = selector_for(&compiled, "reclaim");
     let recipient = [3u8; 20];
     let funder_key = random_keypair();
     let funder_pk = funder_key.x_only_public_key().0.serialize();
@@ -512,6 +532,16 @@ fn compiles_mecenas_locktime_example_and_verifies() {
     let pledge_per_block = 100i64;
     let initial_block = 900u64;
     let lock_time = 1000u64;
+    let constructor_args = vec![
+        Expr::Bytes(recipient.to_vec()),
+        Expr::Bytes(funder_hash.clone()),
+        Expr::Int(pledge_per_block),
+        Expr::Bytes(initial_block.to_le_bytes().to_vec()),
+    ];
+
+    let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
+    let receive_selector = selector_for(&compiled, "receive");
+    let reclaim_selector = selector_for(&compiled, "reclaim");
     let passed_blocks = lock_time - initial_block;
     let pledge = passed_blocks as i64 * pledge_per_block;
 
@@ -529,10 +559,6 @@ fn compiles_mecenas_locktime_example_and_verifies() {
 
     // Test receive() with changeValue > pledgePerBlock + minerFee (else branch).
     let mut sigscript = ScriptBuilder::new();
-    sigscript.add_data(&recipient).unwrap();
-    sigscript.add_data(&funder_hash).unwrap();
-    sigscript.add_i64(pledge_per_block).unwrap();
-    sigscript.add_data(&initial_block.to_le_bytes()).unwrap();
     sigscript.add_i64(receive_selector).unwrap();
     let input_value = 20000u64;
     let output0_value = pledge as u64;
@@ -552,10 +578,6 @@ fn compiles_mecenas_locktime_example_and_verifies() {
 
     // Test receive() with changeValue <= pledgePerBlock + minerFee (if branch).
     let mut sigscript = ScriptBuilder::new();
-    sigscript.add_data(&recipient).unwrap();
-    sigscript.add_data(&funder_hash).unwrap();
-    sigscript.add_i64(pledge_per_block).unwrap();
-    sigscript.add_data(&initial_block.to_le_bytes()).unwrap();
     sigscript.add_i64(receive_selector).unwrap();
 
     let input_value = 11000u64;
@@ -597,10 +619,6 @@ fn compiles_mecenas_locktime_example_and_verifies() {
 
     // Test reclaim() function call (build sigscript for reclaim()).
     let mut sigscript = ScriptBuilder::new();
-    sigscript.add_data(&recipient).unwrap();
-    sigscript.add_data(&funder_hash).unwrap();
-    sigscript.add_i64(pledge_per_block).unwrap();
-    sigscript.add_data(&initial_block.to_le_bytes()).unwrap();
     sigscript.add_data(funder_pk.as_slice()).unwrap();
     sigscript.add_data(&signature).unwrap();
     sigscript.add_i64(reclaim_selector).unwrap();
@@ -625,14 +643,15 @@ fn compiles_mecenas_locktime_example_and_verifies() {
 fn compiles_p2pkh_example_and_verifies() {
     let source = load_example_source("p2pkh.sil");
 
-    let compiled = compile_contract(&source, CompileOptions::default()).expect("compile succeeds");
-    let selector = selector_for(&compiled, "spend");
-
     let owner = random_keypair();
     let pubkey_bytes = owner.x_only_public_key().0.serialize();
     let mut pkh =
         blake2b_simd::Params::new().hash_length(32).to_state().update(pubkey_bytes.as_slice()).finalize().as_bytes().to_vec();
     pkh.truncate(20);
+    let constructor_args = [Expr::Bytes(pkh.clone())];
+
+    let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
+    let selector = selector_for(&compiled, "spend");
 
     let input = TransactionInput {
         previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([5u8; 32]), index: 0 },
@@ -657,7 +676,6 @@ fn compiles_p2pkh_example_and_verifies() {
 
     // Test spend() function call (build sigscript for spend()).
     let mut sigscript = ScriptBuilder::new();
-    sigscript.add_data(&pkh).unwrap();
     sigscript.add_data(pubkey_bytes.as_slice()).unwrap();
     sigscript.add_data(&signature).unwrap();
     sigscript.add_i64(selector).unwrap();
@@ -682,15 +700,16 @@ fn compiles_p2pkh_example_and_verifies() {
 fn compiles_transfer_with_timeout_and_verifies() {
     let source = load_example_source("transfer_with_timeout.sil");
 
-    let compiled = compile_contract(&source, CompileOptions::default()).expect("compile succeeds");
-    let transfer_selector = selector_for(&compiled, "transfer");
-    let timeout_selector = selector_for(&compiled, "timeout");
-
     let sender = random_keypair();
     let recipient = random_keypair();
     let sender_pk = sender.x_only_public_key().0.serialize();
     let recipient_pk = recipient.x_only_public_key().0.serialize();
     let timeout = 1_000i64;
+    let constructor_args = vec![Expr::Bytes(sender_pk.to_vec()), Expr::Bytes(recipient_pk.to_vec()), Expr::Int(timeout)];
+
+    let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
+    let transfer_selector = selector_for(&compiled, "transfer");
+    let timeout_selector = selector_for(&compiled, "timeout");
 
     let input = TransactionInput {
         previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([6u8; 32]), index: 0 },
@@ -715,9 +734,6 @@ fn compiles_transfer_with_timeout_and_verifies() {
 
     // Test transfer() function call (build sigscript for transfer()).
     let mut sigscript = ScriptBuilder::new();
-    sigscript.add_data(sender_pk.as_slice()).unwrap();
-    sigscript.add_data(recipient_pk.as_slice()).unwrap();
-    sigscript.add_i64(timeout).unwrap();
     sigscript.add_data(&signature).unwrap();
     sigscript.add_i64(transfer_selector).unwrap();
     tx.tx.inputs[0].signature_script = sigscript.drain();
@@ -760,9 +776,6 @@ fn compiles_transfer_with_timeout_and_verifies() {
 
     // Test timeout() function call (build sigscript for timeout()).
     let mut sigscript = ScriptBuilder::new();
-    sigscript.add_data(sender_pk.as_slice()).unwrap();
-    sigscript.add_data(recipient_pk.as_slice()).unwrap();
-    sigscript.add_i64(timeout).unwrap();
     sigscript.add_data(&signature).unwrap();
     sigscript.add_i64(timeout_selector).unwrap();
     tx.tx.inputs[0].signature_script = sigscript.drain();
@@ -786,9 +799,6 @@ fn compiles_transfer_with_timeout_and_verifies() {
 fn compiles_covenant_escrow_example_and_verifies() {
     let source = load_example_source("covenant_escrow.sil");
 
-    let compiled = compile_contract(&source, CompileOptions::default()).expect("compile succeeds");
-    let selector = selector_for(&compiled, "spend");
-
     let arbiter = random_keypair();
     let arbiter_pk = arbiter.x_only_public_key().0.serialize();
     let mut arbiter_hash =
@@ -796,6 +806,10 @@ fn compiles_covenant_escrow_example_and_verifies() {
     arbiter_hash.truncate(20);
     let buyer = [10u8; 20];
     let seller = [11u8; 20];
+    let constructor_args = vec![Expr::Bytes(arbiter_hash.clone()), Expr::Bytes(buyer.to_vec()), Expr::Bytes(seller.to_vec())];
+
+    let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
+    let selector = selector_for(&compiled, "spend");
 
     let input_value = 12_000u64;
     let output0_value = input_value - 1000;
@@ -824,9 +838,6 @@ fn compiles_covenant_escrow_example_and_verifies() {
 
     // Test spend() function call (build sigscript for spend()).
     let mut sigscript = ScriptBuilder::new();
-    sigscript.add_data(&arbiter_hash).unwrap();
-    sigscript.add_data(&buyer).unwrap();
-    sigscript.add_data(&seller).unwrap();
     sigscript.add_data(arbiter_pk.as_slice()).unwrap();
     sigscript.add_data(&signature).unwrap();
     sigscript.add_i64(selector).unwrap();
@@ -851,11 +862,6 @@ fn compiles_covenant_escrow_example_and_verifies() {
 fn compiles_covenant_last_will_and_verifies() {
     let source = load_example_source("covenant_last_will.sil");
 
-    let compiled = compile_contract(&source, CompileOptions::default()).expect("compile succeeds");
-    let inherit_selector = selector_for(&compiled, "inherit");
-    let cold_selector = selector_for(&compiled, "cold");
-    let refresh_selector = selector_for(&compiled, "refresh");
-
     let inheritor = random_keypair();
     let cold = random_keypair();
     let hot = random_keypair();
@@ -871,6 +877,12 @@ fn compiles_covenant_last_will_and_verifies() {
     cold_hash.truncate(20);
     let mut hot_hash = blake2b_simd::Params::new().hash_length(32).to_state().update(hot_pk.as_slice()).finalize().as_bytes().to_vec();
     hot_hash.truncate(20);
+
+    let constructor_args = vec![Expr::Bytes(inheritor_hash.clone()), Expr::Bytes(cold_hash.clone()), Expr::Bytes(hot_hash.clone())];
+    let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
+    let inherit_selector = selector_for(&compiled, "inherit");
+    let cold_selector = selector_for(&compiled, "cold");
+    let refresh_selector = selector_for(&compiled, "refresh");
 
     let input = TransactionInput {
         previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([12u8; 32]), index: 0 },
@@ -895,9 +907,6 @@ fn compiles_covenant_last_will_and_verifies() {
 
     // Test inherit() function call (build sigscript for inherit()).
     let mut sigscript = ScriptBuilder::new();
-    sigscript.add_data(&inheritor_hash).unwrap();
-    sigscript.add_data(&cold_hash).unwrap();
-    sigscript.add_data(&hot_hash).unwrap();
     sigscript.add_data(inheritor_pk.as_slice()).unwrap();
     sigscript.add_data(&signature).unwrap();
     sigscript.add_i64(inherit_selector).unwrap();
@@ -940,9 +949,6 @@ fn compiles_covenant_last_will_and_verifies() {
 
     // Test cold() function call (build sigscript for cold()).
     let mut sigscript = ScriptBuilder::new();
-    sigscript.add_data(&inheritor_hash).unwrap();
-    sigscript.add_data(&cold_hash).unwrap();
-    sigscript.add_data(&hot_hash).unwrap();
     sigscript.add_data(cold_pk.as_slice()).unwrap();
     sigscript.add_data(&signature).unwrap();
     sigscript.add_i64(cold_selector).unwrap();
@@ -991,9 +997,6 @@ fn compiles_covenant_last_will_and_verifies() {
 
     // Test refresh() function call (build sigscript for refresh()).
     let mut sigscript = ScriptBuilder::new();
-    sigscript.add_data(&inheritor_hash).unwrap();
-    sigscript.add_data(&cold_hash).unwrap();
-    sigscript.add_data(&hot_hash).unwrap();
     sigscript.add_data(hot_pk.as_slice()).unwrap();
     sigscript.add_data(&signature).unwrap();
     sigscript.add_i64(refresh_selector).unwrap();
@@ -1018,9 +1021,6 @@ fn compiles_covenant_last_will_and_verifies() {
 fn compiles_covenant_mecenas_example_and_verifies() {
     let source = load_example_source("covenant_mecenas.sil");
 
-    let compiled = compile_contract(&source, CompileOptions::default()).expect("compile succeeds");
-    let receive_selector = selector_for(&compiled, "receive");
-    let reclaim_selector = selector_for(&compiled, "reclaim");
     let recipient = [21u8; 20];
     let funder_key = random_keypair();
     let funder_pk = funder_key.x_only_public_key().0.serialize();
@@ -1029,13 +1029,19 @@ fn compiles_covenant_mecenas_example_and_verifies() {
     funder_hash.truncate(20);
     let pledge = 2_000i64;
     let period = 10i64;
+    let constructor_args = vec![
+        Expr::Bytes(recipient.to_vec()),
+        Expr::Bytes(funder_hash.clone()),
+        Expr::Int(pledge),
+        Expr::Int(period),
+    ];
+
+    let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
+    let receive_selector = selector_for(&compiled, "receive");
+    let reclaim_selector = selector_for(&compiled, "reclaim");
 
     // Test receive() with changeValue > pledge + minerFee (else branch).
     let mut sigscript = ScriptBuilder::new();
-    sigscript.add_data(&recipient).unwrap();
-    sigscript.add_data(&funder_hash).unwrap();
-    sigscript.add_i64(pledge).unwrap();
-    sigscript.add_i64(period).unwrap();
     sigscript.add_i64(receive_selector).unwrap();
 
     let input_value = 10000u64;
@@ -1057,10 +1063,6 @@ fn compiles_covenant_mecenas_example_and_verifies() {
     assert!(result.is_ok(), "covenant mecenas example failed: {}", result.unwrap_err());
     // Test receive() with changeValue <= pledge + minerFee (if branch).
     let mut sigscript = ScriptBuilder::new();
-    sigscript.add_data(&recipient).unwrap();
-    sigscript.add_data(&funder_hash).unwrap();
-    sigscript.add_i64(pledge).unwrap();
-    sigscript.add_i64(period).unwrap();
     sigscript.add_i64(receive_selector).unwrap();
 
     let input_value = 6000u64;
@@ -1104,10 +1106,6 @@ fn compiles_covenant_mecenas_example_and_verifies() {
 
     // Test reclaim() function call (build sigscript for reclaim()).
     let mut sigscript = ScriptBuilder::new();
-    sigscript.add_data(&recipient).unwrap();
-    sigscript.add_data(&funder_hash).unwrap();
-    sigscript.add_i64(pledge).unwrap();
-    sigscript.add_i64(period).unwrap();
     sigscript.add_data(funder_pk.as_slice()).unwrap();
     sigscript.add_data(&signature).unwrap();
     sigscript.add_i64(reclaim_selector).unwrap();
