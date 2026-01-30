@@ -1,0 +1,13 @@
+contract SumSeries(int maxIterations){
+    function main(int n){
+        require(n >= 0);
+        require(n <= maxIterations);
+        int s = 0;
+        for(i,1,maxIterations+1){
+            if(i <= n){
+                s = s + i;
+            }
+        }
+        require(s == n*(n+1)/2);
+    }
+}

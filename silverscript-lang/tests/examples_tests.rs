@@ -488,6 +488,64 @@ fn runs_everything_example_and_verifies() {
 }
 
 #[test]
+fn runs_sum_series_example_with_multiple_inputs() {
+    let source = load_example_source("sum_series.sil");
+
+    let cases = [(4i64, 3i64, true), (1i64, 0i64, true), (4i64, 2i64, true), (3i64, 1i64, true)];
+
+    for (max_iterations, n, should_pass) in cases {
+        let constructor_args = [max_iterations.into()];
+        let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
+        let selector = selector_for(&compiled, "main");
+
+        let sigscript = ScriptBuilder::new().add_i64(n).unwrap().add_i64(selector).unwrap().drain();
+        let result = run_contract_with_tx(
+            compiled.script.clone(),
+            compiled.script.clone(),
+            compiled.script.clone(),
+            2000,
+            500,
+            500,
+            sigscript,
+            0,
+        );
+
+        if should_pass {
+            assert!(result.is_ok(), "sum_series({max_iterations}, {n}) should pass: {}", result.unwrap_err());
+        } else {
+            assert!(result.is_err(), "sum_series({max_iterations}, {n}) should fail");
+        }
+    }
+}
+
+#[test]
+fn runs_complex_assignments_example_and_verifies() {
+    let source = load_example_source("complex_assignments.sil");
+
+    let cases = [(4i64, 0i64), (4i64, 2i64), (4i64, 4i64), (1i64, 1i64)];
+
+    for (limit, n) in cases {
+        let constructor_args = [limit.into()];
+        let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
+        let selector = selector_for(&compiled, "main");
+
+        let sigscript = ScriptBuilder::new().add_i64(n).unwrap().add_i64(selector).unwrap().drain();
+        let result = run_contract_with_tx(
+            compiled.script.clone(),
+            compiled.script.clone(),
+            compiled.script.clone(),
+            2000,
+            500,
+            500,
+            sigscript,
+            0,
+        );
+
+        assert!(result.is_ok(), "complex_assignments({limit}, {n}) failed: {}", result.unwrap_err());
+    }
+}
+
+#[test]
 fn compiles_hodl_vault_example_and_verifies() {
     let source = load_example_source("hodl_vault.sil");
     let owner = random_keypair();
