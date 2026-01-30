@@ -64,13 +64,19 @@ pub fn compile_contract_ast(
         return Err(CompilerError::Unsupported("constructor argument count mismatch".to_string()));
     }
 
+    for (param, value) in contract.params.iter().zip(constructor_args.iter()) {
+        if !constructor_arg_matches_type(value, &param.type_name) {
+            return Err(CompilerError::Unsupported(format!("constructor argument '{}' expects {}", param.name, param.type_name)));
+        }
+    }
+
     if options.without_selector && contract.functions.len() != 1 {
         return Err(CompilerError::Unsupported("without_selector requires a single function".to_string()));
     }
 
     let mut constants = contract.constants.clone();
-    for (name, value) in contract.params.iter().zip(constructor_args.iter()) {
-        constants.insert(name.clone(), value.clone());
+    for (param, value) in contract.params.iter().zip(constructor_args.iter()) {
+        constants.insert(param.name.clone(), value.clone());
     }
 
     let mut compiled_functions = Vec::new();
@@ -108,6 +114,25 @@ pub fn compile_contract_ast(
     };
 
     Ok(CompiledContract { contract_name: contract.name.clone(), function_name: "dispatch".to_string(), script, ast: contract.clone() })
+}
+
+fn constructor_arg_matches_type(expr: &Expr, type_name: &str) -> bool {
+    match type_name {
+        "int" => matches!(expr, Expr::Int(_)),
+        "bool" => matches!(expr, Expr::Bool(_)),
+        "string" => matches!(expr, Expr::String(_)),
+        "bytes" => matches!(expr, Expr::Bytes(_)),
+        "byte" => matches!(expr, Expr::Bytes(bytes) if bytes.len() == 1),
+        "pubkey" => matches!(expr, Expr::Bytes(bytes) if bytes.len() == 32),
+        "sig" | "datasig" => matches!(expr, Expr::Bytes(bytes) if bytes.len() == 64 || bytes.len() == 65),
+        _ => {
+            if let Some(size) = type_name.strip_prefix("bytes").and_then(|v| v.parse::<usize>().ok()) {
+                matches!(expr, Expr::Bytes(bytes) if bytes.len() == size)
+            } else {
+                false
+            }
+        }
+    }
 }
 
 pub fn function_branch_index(contract: &ContractAst, function_name: &str) -> Result<i64, CompilerError> {

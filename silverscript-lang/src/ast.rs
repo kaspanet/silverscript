@@ -11,7 +11,7 @@ use chrono::NaiveDateTime;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContractAst {
     pub name: String,
-    pub params: Vec<String>,
+    pub params: Vec<ParamAst>,
     pub constants: HashMap<String, Expr>,
     pub functions: Vec<FunctionAst>,
 }
@@ -174,7 +174,7 @@ fn parse_contract_definition(pair: Pair<'_, Rule>) -> Result<ContractAst, Compil
     let mut inner = pair.into_inner();
     let name_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing contract name".to_string()))?;
     let params_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing contract parameters".to_string()))?;
-    let params = parse_parameter_list(params_pair)?;
+    let params = parse_typed_parameter_list(params_pair)?;
 
     let mut functions = Vec::new();
     let mut constants: HashMap<String, Expr> = HashMap::new();
@@ -487,20 +487,6 @@ fn parse_postfix(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
     Ok(expr)
 }
 
-fn parse_parameter_list(pair: Pair<'_, Rule>) -> Result<Vec<String>, CompilerError> {
-    let mut names = Vec::new();
-    for param in pair.into_inner() {
-        if param.as_rule() != Rule::parameter {
-            continue;
-        }
-        let mut inner = param.into_inner();
-        let _type_name = inner.next().ok_or_else(|| CompilerError::Unsupported("missing parameter type".to_string()))?;
-        let ident = inner.next().ok_or_else(|| CompilerError::Unsupported("missing parameter name".to_string()))?;
-        names.push(ident.as_str().to_string());
-    }
-    Ok(names)
-}
-
 fn parse_typed_parameter_list(pair: Pair<'_, Rule>) -> Result<Vec<ParamAst>, CompilerError> {
     let mut params = Vec::new();
     for param in pair.into_inner() {
@@ -509,7 +495,7 @@ fn parse_typed_parameter_list(pair: Pair<'_, Rule>) -> Result<Vec<ParamAst>, Com
         }
         let mut inner = param.into_inner();
         let type_name =
-            inner.next().ok_or_else(|| CompilerError::Unsupported("missing parameter type".to_string()))?.as_str().to_string();
+            inner.next().ok_or_else(|| CompilerError::Unsupported("missing parameter type".to_string()))?.as_str().trim().to_string();
         let ident = inner.next().ok_or_else(|| CompilerError::Unsupported("missing parameter name".to_string()))?.as_str().to_string();
         params.push(ParamAst { type_name, name: ident });
     }

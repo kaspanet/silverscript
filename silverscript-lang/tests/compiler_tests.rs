@@ -10,7 +10,7 @@ use kaspa_txscript::covenants::CovenantsContext;
 use kaspa_txscript::opcodes::codes::*;
 use kaspa_txscript::script_builder::ScriptBuilder;
 use kaspa_txscript::{EngineCtx, EngineFlags, SeqCommitAccessor, TxScriptEngine};
-use silverscript_lang::ast::parse_contract_ast;
+use silverscript_lang::ast::{Expr, parse_contract_ast};
 use silverscript_lang::compiler::{CompileOptions, CompiledContract, compile_contract, compile_contract_ast, function_branch_index};
 
 fn run_script_with_selector(script: Vec<u8>, selector: i64) -> Result<(), kaspa_txscript_errors::TxScriptError> {
@@ -74,6 +74,74 @@ fn run_script_with_sigscript(script: Vec<u8>, sigscript: Vec<u8>) -> Result<(), 
         EngineFlags { covenants_enabled: true },
     );
     vm.execute()
+}
+
+#[test]
+fn accepts_constructor_args_with_matching_types() {
+    let source = r#"
+        contract Types(int a, bool b, string c, bytes d, byte e, bytes4 f, pubkey pk, sig s, datasig ds) {
+            function main() {
+                require(true);
+            }
+        }
+    "#;
+    let args = vec![
+        Expr::Int(7),
+        Expr::Bool(true),
+        Expr::String("hello".to_string()),
+        Expr::Bytes(vec![1u8; 10]),
+        Expr::Bytes(vec![2u8; 1]),
+        Expr::Bytes(vec![3u8; 4]),
+        Expr::Bytes(vec![4u8; 32]),
+        Expr::Bytes(vec![5u8; 64]),
+        Expr::Bytes(vec![6u8; 64]),
+    ];
+    compile_contract(source, &args, CompileOptions::default()).expect("compile succeeds");
+}
+
+#[test]
+fn rejects_constructor_args_with_wrong_scalar_types() {
+    let source = r#"
+        contract Types(int a, bool b, string c) {
+            function main() {
+                require(true);
+            }
+        }
+    "#;
+    let args = vec![Expr::Bool(true), Expr::Int(1), Expr::Bytes(vec![1u8])];
+    assert!(compile_contract(source, &args, CompileOptions::default()).is_err());
+}
+
+#[test]
+fn rejects_constructor_args_with_wrong_byte_lengths() {
+    let source = r#"
+        contract Types(byte b, bytes4 c, pubkey pk, sig s, datasig ds) {
+            function main() {
+                require(true);
+            }
+        }
+    "#;
+    let args = vec![
+        Expr::Bytes(vec![1u8; 2]),
+        Expr::Bytes(vec![2u8; 3]),
+        Expr::Bytes(vec![3u8; 31]),
+        Expr::Bytes(vec![4u8; 63]),
+        Expr::Bytes(vec![5u8; 66]),
+    ];
+    assert!(compile_contract(source, &args, CompileOptions::default()).is_err());
+}
+
+#[test]
+fn accepts_constructor_args_with_any_bytes_length() {
+    let source = r#"
+        contract Types(bytes blob) {
+            function main() {
+                require(true);
+            }
+        }
+    "#;
+    let args = vec![Expr::Bytes(vec![9u8; 128])];
+    compile_contract(source, &args, CompileOptions::default()).expect("compile succeeds");
 }
 
 fn run_script_with_tx_and_covenants(
