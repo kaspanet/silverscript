@@ -640,6 +640,10 @@ mod tests {
 
         let build_script = |state: &[u8]| -> Result<Vec<u8>, CovenantBuilderError> {
             let transition_script = transition_script.clone();
+
+            // input leader 1
+            // input n
+
             CovenantBuilder::new()
                 .with_state(state.to_vec(), ACTION_LEN_BYTES)
                 .with_state_transition(move |b: &mut ScriptBuilder| -> Result<&mut ScriptBuilder, ScriptBuilderError> {
@@ -649,6 +653,13 @@ mod tests {
                 .require_authorized_output_count(2)
                 .verify_authorized_output_spk_at(0)
                 .verify_authorized_output_spk_at(1)
+                // I want to have a leader pattern
+                // I want the leader to read the input (state) of all the delegators
+                // ---
+                // action, old_state1 ... old_state3
+                // We assume 2 + 1 (leader) inputs
+                //
+                // I want output `x` to
                 .build()
         };
 

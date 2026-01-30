@@ -1,0 +1,37 @@
+{
+  "$schema": "https://tree-sitter.github.io/tree-sitter/assets/schemas/config.schema.json",
+  "grammars": [
+    {
+      "name": "silverscript",
+      "camelcase": "SilverScript",
+      "title": "SilverScript",
+      "scope": "source.silverscript",
+      "file-types": ["sil"],
+      "injection-regex": "^silverscript$",
+      "class-name": "TreeSitterSilverscript"
+    }
+  ],
+  "metadata": {
+    "version": "0.1.0",
+    "license": "ISC",
+    "description": "Kaspa SilverScript Lang",
+    "authors": [
+      {
+        "name": "Kaspa Developers"
+      }
+    ],
+    "links": {
+      "repository": "https://github.com/tree-sitter/tree-sitter-silverscript"
+    }
+  },
+  "bindings": {
+    "c": true,
+    "go": true,
+    "java": false,
+    "node": true,
+    "python": true,
+    "rust": true,
+    "swift": true,
+    "zig": false
+  }
+}
