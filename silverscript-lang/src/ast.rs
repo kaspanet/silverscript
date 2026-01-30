@@ -68,6 +68,7 @@ pub enum Expr {
     Call { name: String, args: Vec<Expr> },
     New { name: String, args: Vec<Expr> },
     Split { source: Box<Expr>, index: Box<Expr>, part: SplitPart },
+    Slice { source: Box<Expr>, start: Box<Expr>, end: Box<Expr> },
     Unary { op: UnaryOp, expr: Box<Expr> },
     Binary { op: BinaryOp, left: Box<Expr>, right: Box<Expr> },
     IfElse { condition: Box<Expr>, then_expr: Box<Expr>, else_expr: Box<Expr> },
@@ -444,6 +445,14 @@ fn parse_postfix(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
                 let index = Box::new(parse_expression(index_expr)?);
                 expr = Expr::Split { source: Box::new(expr), index, part: SplitPart::Left };
             }
+            Rule::slice_call => {
+                let mut slice_inner = postfix.into_inner();
+                let start_expr = slice_inner.next().ok_or_else(|| CompilerError::Unsupported("missing slice start".to_string()))?;
+                let end_expr = slice_inner.next().ok_or_else(|| CompilerError::Unsupported("missing slice end".to_string()))?;
+                let start = Box::new(parse_expression(start_expr)?);
+                let end = Box::new(parse_expression(end_expr)?);
+                expr = Expr::Slice { source: Box::new(expr), start, end };
+            }
             Rule::tuple_index => {
                 let mut index_inner = postfix.into_inner();
                 let index_expr = index_inner.next().ok_or_else(|| CompilerError::Unsupported("missing tuple index".to_string()))?;
@@ -529,13 +538,30 @@ fn parse_literal(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
         Rule::NumberLiteral => parse_number(pair.as_str()),
         Rule::HexLiteral => parse_hex_literal(pair.as_str()),
         Rule::StringLiteral => parse_string_literal(pair),
-        Rule::DateLiteral => Err(CompilerError::Unsupported("date literals are not supported".to_string())),
+        Rule::DateLiteral => parse_date_literal(pair),
         _ => Err(CompilerError::Unsupported(format!("literal not supported: {:?}", pair.as_rule()))),
     }
 }
 
 fn parse_number(raw: &str) -> Result<Expr, CompilerError> {
     let cleaned = raw.replace('_', "");
+    if let Some((base_str, exp_str)) = cleaned.split_once('e').or_else(|| cleaned.split_once('E')) {
+        if exp_str.is_empty() {
+            return Err(CompilerError::InvalidLiteral(format!("invalid number literal '{raw}'")));
+        }
+        let base: i64 = base_str.parse().map_err(|_| CompilerError::InvalidLiteral(format!("invalid number literal '{raw}'")))?;
+        let exp: i64 = exp_str.parse().map_err(|_| CompilerError::InvalidLiteral(format!("invalid number literal '{raw}'")))?;
+        if exp < 0 {
+            return Err(CompilerError::InvalidLiteral(format!("invalid number literal '{raw}'")));
+        }
+        let pow = 10i128.pow(exp as u32);
+        let value =
+            (base as i128).checked_mul(pow).ok_or_else(|| CompilerError::InvalidLiteral(format!("invalid number literal '{raw}'")))?;
+        if value > i64::MAX as i128 || value < i64::MIN as i128 {
+            return Err(CompilerError::InvalidLiteral(format!("invalid number literal '{raw}'")));
+        }
+        return Ok(Expr::Int(value as i64));
+    }
     let value: i64 = cleaned.parse().map_err(|_| CompilerError::InvalidLiteral(format!("invalid number literal '{raw}'")))?;
     Ok(Expr::Int(value))
 }
@@ -586,8 +612,14 @@ fn parse_cast(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
     if type_name == "bytes" {
         return Ok(Expr::Call { name: "bytes".to_string(), args });
     }
+    if type_name == "byte" {
+        return Ok(Expr::Call { name: "bytes1".to_string(), args });
+    }
     if type_name == "int" {
         return Ok(Expr::Call { name: "int".to_string(), args });
+    }
+    if matches!(type_name.as_str(), "sig" | "pubkey" | "datasig") {
+        return Ok(Expr::Call { name: type_name, args });
     }
     if let Some(size) = type_name.strip_prefix("bytes").and_then(|v| v.parse::<usize>().ok()) {
         return Ok(Expr::Call { name: format!("bytes{size}"), args });
@@ -598,23 +630,159 @@ fn parse_cast(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
 fn parse_number_literal(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
     let mut inner = pair.into_inner();
     let number = inner.next().ok_or_else(|| CompilerError::InvalidLiteral("missing number literal".to_string()))?;
-    if inner.next().is_some() {
-        return Err(CompilerError::Unsupported("number units are not supported yet".to_string()));
+    let value = parse_number(number.as_str())?;
+    if let Some(unit_pair) = inner.next() {
+        let unit = unit_pair.as_str();
+        return apply_number_unit(value, unit);
     }
-    parse_number(number.as_str())
+    Ok(value)
 }
 
 fn parse_hex_literal(raw: &str) -> Result<Expr, CompilerError> {
     let trimmed = raw.trim_start_matches("0x").trim_start_matches("0X");
-    if trimmed.len() % 2 != 0 {
-        return Err(CompilerError::InvalidLiteral(format!("hex literal has odd length: {raw}")));
-    }
-    let bytes = (0..trimmed.len())
+    let normalized = if trimmed.len() % 2 != 0 { format!("0{trimmed}") } else { trimmed.to_string() };
+    let bytes = (0..normalized.len())
         .step_by(2)
-        .map(|i| u8::from_str_radix(&trimmed[i..i + 2], 16))
+        .map(|i| u8::from_str_radix(&normalized[i..i + 2], 16))
         .collect::<Result<Vec<_>, _>>()
         .map_err(|_| CompilerError::InvalidLiteral(format!("invalid hex literal '{raw}'")))?;
     Ok(Expr::Bytes(bytes))
+}
+
+fn apply_number_unit(expr: Expr, unit: &str) -> Result<Expr, CompilerError> {
+    let value = match expr {
+        Expr::Int(value) => value,
+        _ => return Err(CompilerError::InvalidLiteral("number literal is not an int".to_string())),
+    };
+    let multiplier = match unit {
+        "seconds" => 1,
+        "minutes" => 60,
+        "hours" => 60 * 60,
+        "days" => 24 * 60 * 60,
+        "weeks" => 7 * 24 * 60 * 60,
+        "satoshis" | "sats" => 1,
+        "bits" => 100,
+        "finney" => 100_000,
+        "bitcoin" => 100_000_000,
+        _ => return Err(CompilerError::Unsupported(format!("number unit '{unit}' not supported"))),
+    };
+    Ok(Expr::Int(value.saturating_mul(multiplier)))
+}
+
+fn parse_date_literal(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
+    let raw = pair.as_str();
+    let start = raw
+        .find('"')
+        .or_else(|| raw.find('\''))
+        .ok_or_else(|| CompilerError::InvalidLiteral("date literal missing quotes".to_string()))?;
+    let quote = raw.as_bytes()[start] as char;
+    let end = raw[start + 1..]
+        .find(quote)
+        .map(|idx| idx + start + 1)
+        .ok_or_else(|| CompilerError::InvalidLiteral("date literal missing closing quote".to_string()))?;
+    let value = &raw[start + 1..end];
+
+    let mut parts = value.split('T');
+    let date = parts.next().ok_or_else(|| CompilerError::InvalidLiteral("date literal missing date".to_string()))?;
+    let time = parts.next().ok_or_else(|| CompilerError::InvalidLiteral("date literal missing time".to_string()))?;
+    if parts.next().is_some() {
+        return Err(CompilerError::InvalidLiteral("date literal has extra separators".to_string()));
+    }
+
+    let mut date_parts = date.split('-');
+    let year: i64 = date_parts
+        .next()
+        .ok_or_else(|| CompilerError::InvalidLiteral("date literal missing year".to_string()))?
+        .parse()
+        .map_err(|_| CompilerError::InvalidLiteral("invalid date year".to_string()))?;
+    let month: i64 = date_parts
+        .next()
+        .ok_or_else(|| CompilerError::InvalidLiteral("date literal missing month".to_string()))?
+        .parse()
+        .map_err(|_| CompilerError::InvalidLiteral("invalid date month".to_string()))?;
+    let day: i64 = date_parts
+        .next()
+        .ok_or_else(|| CompilerError::InvalidLiteral("date literal missing day".to_string()))?
+        .parse()
+        .map_err(|_| CompilerError::InvalidLiteral("invalid date day".to_string()))?;
+
+    let mut time_parts = time.split(':');
+    let hour: i64 = time_parts
+        .next()
+        .ok_or_else(|| CompilerError::InvalidLiteral("date literal missing hour".to_string()))?
+        .parse()
+        .map_err(|_| CompilerError::InvalidLiteral("invalid date hour".to_string()))?;
+    let minute: i64 = time_parts
+        .next()
+        .ok_or_else(|| CompilerError::InvalidLiteral("date literal missing minute".to_string()))?
+        .parse()
+        .map_err(|_| CompilerError::InvalidLiteral("invalid date minute".to_string()))?;
+    let second: i64 = time_parts
+        .next()
+        .ok_or_else(|| CompilerError::InvalidLiteral("date literal missing second".to_string()))?
+        .parse()
+        .map_err(|_| CompilerError::InvalidLiteral("invalid date second".to_string()))?;
+
+    if date_parts.next().is_some() || time_parts.next().is_some() {
+        return Err(CompilerError::InvalidLiteral("date literal has extra parts".to_string()));
+    }
+
+    let timestamp = unix_timestamp(year, month, day, hour, minute, second)?;
+    Ok(Expr::Int(timestamp))
+}
+
+fn unix_timestamp(year: i64, month: i64, day: i64, hour: i64, minute: i64, second: i64) -> Result<i64, CompilerError> {
+    if month < 1
+        || month > 12
+        || day < 1
+        || day > 31
+        || hour < 0
+        || hour > 23
+        || minute < 0
+        || minute > 59
+        || second < 0
+        || second > 59
+    {
+        return Err(CompilerError::InvalidLiteral("date literal out of range".to_string()));
+    }
+    let days = days_since_unix_epoch(year, month, day)?;
+    Ok(days * 86_400 + hour * 3_600 + minute * 60 + second)
+}
+
+fn days_since_unix_epoch(year: i64, month: i64, day: i64) -> Result<i64, CompilerError> {
+    if month < 1 || month > 12 {
+        return Err(CompilerError::InvalidLiteral("date literal month out of range".to_string()));
+    }
+    let days_in_month = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let mut days = 0i64;
+    let mut y = 1970;
+    while y < year {
+        days += if is_leap_year(y) { 366 } else { 365 };
+        y += 1;
+    }
+    while y > year {
+        y -= 1;
+        days -= if is_leap_year(y) { 366 } else { 365 };
+    }
+    let mut m = 1;
+    while m < month {
+        if m == 2 && is_leap_year(year) {
+            days += 29;
+        } else {
+            days += days_in_month[(m - 1) as usize];
+        }
+        m += 1;
+    }
+    let max_day = if month == 2 && is_leap_year(year) { 29 } else { days_in_month[(month - 1) as usize] };
+    if day > max_day {
+        return Err(CompilerError::InvalidLiteral("date literal day out of range".to_string()));
+    }
+    days += day - 1;
+    Ok(days)
+}
+
+fn is_leap_year(year: i64) -> bool {
+    (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
 }
 
 fn parse_string_literal(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {

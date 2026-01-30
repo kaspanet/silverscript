@@ -1,13 +1,18 @@
 pragma silverscript ^0.1.0;
 
-contract Mecenas(bytes20 recipient, bytes20 funder, int pledge) {
+contract Mecenas(bytes20 recipient, bytes20 funder, int pledge/*, int period */) {
     function receive() {
+        // require(this.age >= period);
+
+        // Check that the first output sends to the recipient
         require(tx.outputs[0].lockingBytecode == new LockingBytecodeP2PKH(recipient));
 
         int minerFee = 1000;
         int currentValue = tx.inputs[this.activeInputIndex].value;
         int changeValue = currentValue - pledge - minerFee;
 
+        // If there is not enough left for *another* pledge after this one, we send the remainder to the recipient
+        // Otherwise we send the remainder to the recipient and the change back to the contract
         if (changeValue <= pledge + minerFee) {
             require(tx.outputs[0].value == currentValue - minerFee);
         } else {

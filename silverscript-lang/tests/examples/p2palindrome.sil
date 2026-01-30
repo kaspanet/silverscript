@@ -1,0 +1,7 @@
+pragma silverscript ^0.1.0;
+
+contract P2Palindrome() {
+    function spend(string palindrome) {
+        require(palindrome.reverse() == palindrome);
+    }
+}

@@ -1,0 +1,8 @@
+pragma silverscript ^0.1.0;
+
+contract Bytes1EqualsByte() {
+    function hello(int a, byte b) {
+        bytes1 c = byte(a);
+        require(b == c);
+    }
+}

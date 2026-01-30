@@ -80,7 +80,7 @@ postfix = { primary ~ postfix_op* }
 postfix_op = _{ tuple_index | unary_suffix | split_call | slice_call }
 
 tuple_index = { "[" ~ NumberLiteral ~ "]" }
-unary_suffix = { "." ~ ("reverse()" | "length") }
+unary_suffix = { "." ~ "length" }
 split_call = { ".split" ~ "(" ~ expression ~ ")" }
 slice_call = { ".slice" ~ "(" ~ expression ~ "," ~ expression ~ ")" }
 
@@ -147,7 +147,9 @@ NullaryOp = {
     | "tx.locktime"
 }
 
-Identifier = @{ !keyword ~ ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "_")* }
+Identifier = @{ !keyword_boundary ~ ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "_")* }
+
+keyword_boundary = { keyword ~ !(ASCII_ALPHANUMERIC | "_") }
 
 keyword = {
     "pragma" | "silverscript" | "contract" | "function" | "if" | "else" | "require" | "for" | "yield"

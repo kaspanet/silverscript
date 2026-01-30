@@ -1,0 +1,16 @@
+pragma silverscript ^0.1.0;
+
+contract Bar(bytes20 pkh_bar) {
+    function funcA() {
+        require(2 == 2);
+    }
+
+    function funcB() {
+        require(2 == 2);
+    }
+
+    function execute(pubkey pk, sig s) {
+        require(blake2b(pk) == pkh_bar);
+        require(checkSig(s, pk));
+    }
+}

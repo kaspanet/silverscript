@@ -1,0 +1,23 @@
+pragma silverscript ^0.1.0;
+
+contract MultilineStatements(
+    int x,
+    string y
+) {
+    function spend(
+        int a,
+        string b
+    ) {
+        if (a == x - 2
+         && b == y) {
+            require(false);
+        } else if (b == "Hello "
+        + y) {
+            require(
+                y == "World"
+            );
+        } else {
+            require(true == !!!false);
+        }
+    }
+}

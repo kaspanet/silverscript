@@ -1,0 +1,7 @@
+pragma silverscript ^0.1.0;
+
+contract Test() {
+    function covenant() {
+        require(tx.version == 2);
+    }
+}

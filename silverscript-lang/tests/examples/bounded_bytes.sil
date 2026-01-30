@@ -1,0 +1,7 @@
+pragma silverscript ^0.1.0;
+
+contract BoundedBytes() {
+    function spend(bytes4 b, int i) {
+        require(b == bytes4(i));
+    }
+}
