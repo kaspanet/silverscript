@@ -55,7 +55,6 @@ pub type FunctionAbi = Vec<FunctionAbiEntry>;
 #[derive(Debug)]
 pub struct CompiledContract {
     pub contract_name: String,
-    pub function_name: String,
     pub script: Vec<u8>,
     pub ast: ContractAst,
     pub abi: FunctionAbi,
@@ -132,7 +131,6 @@ pub fn compile_contract_ast(
     let abi = build_function_abi(contract);
     Ok(CompiledContract {
         contract_name: contract.name.clone(),
-        function_name: "dispatch".to_string(),
         script,
         ast: contract.clone(),
         abi,
