@@ -1,0 +1,13 @@
+id = "silverscript"
+name = "SilverScript"
+version = "0.1.0"
+schema_version = 1
+description = "SilverScript language support."
+
+languages = ["languages/silverscript"]
+
+[grammars.silverscript]
+# change to real remote URL
+repository = "file:///D:/Dev/kaspa/silverscript"
+rev = "2a9dc16ec722bb9994ed81ef2d347f73853f9c04"
+path = "tree-sitter"
