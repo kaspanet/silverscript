@@ -173,7 +173,7 @@ fn build_function_abi(contract: &ContractAst) -> FunctionAbi {
 }
 
 impl CompiledContract {
-    pub fn create_sig_script(&self, function_name: &str, args: Vec<Expr>) -> Result<Vec<u8>, CompilerError> {
+    pub fn build_sig_script(&self, function_name: &str, args: Vec<Expr>) -> Result<Vec<u8>, CompilerError> {
         let function = self
             .abi
             .iter()
