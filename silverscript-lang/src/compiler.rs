@@ -59,6 +59,7 @@ pub struct CompiledContract {
     pub script: Vec<u8>,
     pub ast: ContractAst,
     pub abi: FunctionAbi,
+    pub without_selector: bool,
 }
 
 pub fn compile_contract(source: &str, constructor_args: &[Expr], options: CompileOptions) -> Result<CompiledContract, CompilerError> {
@@ -135,6 +136,7 @@ pub fn compile_contract_ast(
         script,
         ast: contract.clone(),
         abi,
+        without_selector: options.without_selector,
     })
 }
 
@@ -194,12 +196,14 @@ impl CompiledContract {
             }
         }
 
-        let selector = function_branch_index(&self.ast, function_name)?;
         let mut builder = ScriptBuilder::new();
         for arg in args {
             push_sigscript_arg(&mut builder, arg)?;
         }
-        builder.add_i64(selector)?;
+        if !self.without_selector {
+            let selector = function_branch_index(&self.ast, function_name)?;
+            builder.add_i64(selector)?;
+        }
         Ok(builder.drain())
     }
 }

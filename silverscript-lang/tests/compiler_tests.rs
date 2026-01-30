@@ -205,6 +205,24 @@ fn build_sig_script_rejects_wrong_argument_type() {
     assert!(result.is_err());
 }
 
+#[test]
+fn build_sig_script_omits_selector_without_selector() {
+    let source = r#"
+        contract Single() {
+            function spend(int a, bytes4 b) {
+                require(a == 1);
+                require(b.length == 4);
+            }
+        }
+    "#;
+    let options = CompileOptions { covenants_enabled: true, without_selector: true };
+    let compiled = compile_contract(source, &[], options).expect("compile succeeds");
+    let sigscript = compiled.build_sig_script("spend", vec![1.into(), vec![2u8; 4].into()]).expect("sigscript builds");
+
+    let expected = ScriptBuilder::new().add_i64(1).unwrap().add_data(&[2u8; 4]).unwrap().drain();
+    assert_eq!(sigscript, expected);
+}
+
 fn run_script_with_tx_and_covenants(
     script: Vec<u8>,
     tx: Transaction,
