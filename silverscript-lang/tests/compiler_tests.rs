@@ -144,6 +144,67 @@ fn accepts_constructor_args_with_any_bytes_length() {
     compile_contract(source, &args, CompileOptions::default()).expect("compile succeeds");
 }
 
+#[test]
+fn create_sig_script_builds_expected_script() {
+    let source = r#"
+        contract BoundedBytes() {
+            function spend(bytes4 b, int i) {
+                require(b == bytes4(i));
+            }
+        }
+    "#;
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let args = vec![Expr::Bytes(vec![1u8, 2, 3, 4]), Expr::Int(7)];
+    let sigscript = compiled.create_sig_script("spend", args).expect("sigscript builds");
+
+    let selector = function_branch_index(&compiled.ast, "spend").expect("selector resolved");
+    let expected = ScriptBuilder::new().add_data(&[1u8, 2, 3, 4]).unwrap().add_i64(7).unwrap().add_i64(selector).unwrap().drain();
+
+    assert_eq!(sigscript, expected);
+}
+
+#[test]
+fn create_sig_script_rejects_unknown_function() {
+    let source = r#"
+        contract C() {
+            function spend(int a) {
+                require(a == 1);
+            }
+        }
+    "#;
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let result = compiled.create_sig_script("missing", vec![Expr::Int(1)]);
+    assert!(result.is_err());
+}
+
+#[test]
+fn create_sig_script_rejects_wrong_argument_count() {
+    let source = r#"
+        contract C() {
+            function spend(int a, int b) {
+                require(a == b);
+            }
+        }
+    "#;
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let result = compiled.create_sig_script("spend", vec![Expr::Int(1)]);
+    assert!(result.is_err());
+}
+
+#[test]
+fn create_sig_script_rejects_wrong_argument_type() {
+    let source = r#"
+        contract C() {
+            function spend(bytes4 b) {
+                require(b.length == 4);
+            }
+        }
+    "#;
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let result = compiled.create_sig_script("spend", vec![Expr::Bytes(vec![1u8; 3])]);
+    assert!(result.is_err());
+}
+
 fn run_script_with_tx_and_covenants(
     script: Vec<u8>,
     tx: Transaction,
