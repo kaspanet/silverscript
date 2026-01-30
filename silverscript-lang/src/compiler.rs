@@ -211,9 +211,13 @@ fn compile_statement(
             }
             _ => Err(CompilerError::Unsupported("tuple assignment only supports split()".to_string())),
         },
-        Statement::Assign { .. } | Statement::Console { .. } => {
-            Err(CompilerError::Unsupported("statement type not supported in compiler yet".to_string()))
+        Statement::Assign { name, expr } => {
+            let updated = if let Some(previous) = env.get(name) { replace_identifier(expr, name, previous) } else { expr.clone() };
+            let resolved = resolve_expr(updated, env, &mut HashSet::new())?;
+            env.insert(name.clone(), resolved);
+            Ok(())
         }
+        Statement::Console { .. } => Err(CompilerError::Unsupported("statement type not supported in compiler yet".to_string())),
     }
 }
 
@@ -233,15 +237,47 @@ fn compile_if_statement(
     compile_expr(condition, env, params, param_types, builder, options, &mut HashSet::new(), &mut stack_depth)?;
     builder.add_op(OpIf)?;
 
-    compile_block(then_branch, env, params, param_types, builder, options, contract_constants, yields)?;
+    let original_env = env.clone();
+    let mut then_env = original_env.clone();
+    compile_block(then_branch, &mut then_env, params, param_types, builder, options, contract_constants, yields)?;
 
+    let mut else_env = original_env.clone();
     if let Some(else_branch) = else_branch {
         builder.add_op(OpElse)?;
-        compile_block(else_branch, env, params, param_types, builder, options, contract_constants, yields)?;
+        compile_block(else_branch, &mut else_env, params, param_types, builder, options, contract_constants, yields)?;
     }
 
     builder.add_op(OpEndIf)?;
+
+    let resolved_condition = resolve_expr(condition.clone(), &original_env, &mut HashSet::new())?;
+    merge_env_after_if(env, &original_env, &then_env, &else_env, &resolved_condition);
     Ok(())
+}
+
+fn merge_env_after_if(
+    env: &mut HashMap<String, Expr>,
+    original_env: &HashMap<String, Expr>,
+    then_env: &HashMap<String, Expr>,
+    else_env: &HashMap<String, Expr>,
+    condition: &Expr,
+) {
+    for (name, original_expr) in original_env {
+        let then_expr = then_env.get(name).unwrap_or(original_expr);
+        let else_expr = else_env.get(name).unwrap_or(original_expr);
+
+        if then_expr == else_expr {
+            env.insert(name.clone(), then_expr.clone());
+        } else {
+            env.insert(
+                name.clone(),
+                Expr::IfElse {
+                    condition: Box::new(condition.clone()),
+                    then_expr: Box::new(then_expr.clone()),
+                    else_expr: Box::new(else_expr.clone()),
+                },
+            );
+        }
+    }
 }
 
 fn compile_time_op_statement(
@@ -378,6 +414,11 @@ fn resolve_expr(expr: Expr, env: &HashMap<String, Expr>, visiting: &mut HashSet<
             left: Box::new(resolve_expr(*left, env, visiting)?),
             right: Box::new(resolve_expr(*right, env, visiting)?),
         }),
+        Expr::IfElse { condition, then_expr, else_expr } => Ok(Expr::IfElse {
+            condition: Box::new(resolve_expr(*condition, env, visiting)?),
+            then_expr: Box::new(resolve_expr(*then_expr, env, visiting)?),
+            else_expr: Box::new(resolve_expr(*else_expr, env, visiting)?),
+        }),
         Expr::Array(values) => {
             let mut resolved = Vec::with_capacity(values.len());
             for value in values {
@@ -406,6 +447,40 @@ fn resolve_expr(expr: Expr, env: &HashMap<String, Expr>, visiting: &mut HashSet<
         }),
         Expr::Introspection { kind, index } => Ok(Expr::Introspection { kind, index: Box::new(resolve_expr(*index, env, visiting)?) }),
         other => Ok(other),
+    }
+}
+
+fn replace_identifier(expr: &Expr, target: &str, replacement: &Expr) -> Expr {
+    match expr {
+        Expr::Identifier(name) if name == target => replacement.clone(),
+        Expr::Identifier(_) => expr.clone(),
+        Expr::Unary { op, expr: inner } => Expr::Unary { op: *op, expr: Box::new(replace_identifier(inner, target, replacement)) },
+        Expr::Binary { op, left, right } => Expr::Binary {
+            op: *op,
+            left: Box::new(replace_identifier(left, target, replacement)),
+            right: Box::new(replace_identifier(right, target, replacement)),
+        },
+        Expr::Array(values) => Expr::Array(values.iter().map(|value| replace_identifier(value, target, replacement)).collect()),
+        Expr::Call { name, args } => {
+            Expr::Call { name: name.clone(), args: args.iter().map(|arg| replace_identifier(arg, target, replacement)).collect() }
+        }
+        Expr::New { name, args } => {
+            Expr::New { name: name.clone(), args: args.iter().map(|arg| replace_identifier(arg, target, replacement)).collect() }
+        }
+        Expr::Split { source, index, part } => Expr::Split {
+            source: Box::new(replace_identifier(source, target, replacement)),
+            index: Box::new(replace_identifier(index, target, replacement)),
+            part: *part,
+        },
+        Expr::IfElse { condition, then_expr, else_expr } => Expr::IfElse {
+            condition: Box::new(replace_identifier(condition, target, replacement)),
+            then_expr: Box::new(replace_identifier(then_expr, target, replacement)),
+            else_expr: Box::new(replace_identifier(else_expr, target, replacement)),
+        },
+        Expr::Introspection { kind, index } => {
+            Expr::Introspection { kind: *kind, index: Box::new(replace_identifier(index, target, replacement)) }
+        }
+        Expr::Int(_) | Expr::Bool(_) | Expr::Bytes(_) | Expr::String(_) | Expr::Nullary(_) => expr.clone(),
     }
 }
 
@@ -442,7 +517,11 @@ fn compile_expr(
             *stack_depth += 1;
             Ok(())
         }
-        Expr::String(_) => Err(CompilerError::Unsupported("string literals are only supported via bytes(...)".to_string())),
+        Expr::String(value) => {
+            builder.add_data(value.as_bytes())?;
+            *stack_depth += 1;
+            Ok(())
+        }
         Expr::Identifier(name) => {
             if !visiting.insert(name.clone()) {
                 return Err(CompilerError::CyclicIdentifier(name.clone()));
@@ -461,6 +540,19 @@ fn compile_expr(
             }
             visiting.remove(name);
             Err(CompilerError::UndefinedIdentifier(name.clone()))
+        }
+        Expr::IfElse { condition, then_expr, else_expr } => {
+            compile_expr(condition, env, params, param_types, builder, options, visiting, stack_depth)?;
+            builder.add_op(OpIf)?;
+            *stack_depth -= 1;
+            let depth_before = *stack_depth;
+            compile_expr(then_expr, env, params, param_types, builder, options, visiting, stack_depth)?;
+            builder.add_op(OpElse)?;
+            *stack_depth = depth_before;
+            compile_expr(else_expr, env, params, param_types, builder, options, visiting, stack_depth)?;
+            builder.add_op(OpEndIf)?;
+            *stack_depth = depth_before + 1;
+            Ok(())
         }
         Expr::Array(_) => Err(CompilerError::Unsupported("array literals are only supported in LockingBytecodeNullData".to_string())),
         Expr::Call { name, args } => match name.as_str() {
@@ -537,8 +629,45 @@ fn compile_expr(
                         *stack_depth += 1;
                         Ok(())
                     }
-                    _ => Err(CompilerError::Unsupported("bytes() only supports string literals".to_string())),
+                    Expr::Identifier(name) => {
+                        if let Some(Expr::String(value)) = env.get(name) {
+                            builder.add_data(value.as_bytes())?;
+                            *stack_depth += 1;
+                            return Ok(());
+                        }
+                        if expr_is_bytes(&args[0], env, param_types) {
+                            compile_expr(&args[0], env, params, param_types, builder, options, visiting, stack_depth)?;
+                            return Ok(());
+                        }
+                        compile_expr(&args[0], env, params, param_types, builder, options, visiting, stack_depth)?;
+                        builder.add_i64(8)?;
+                        *stack_depth += 1;
+                        builder.add_op(OpNum2Bin)?;
+                        *stack_depth -= 1;
+                        Ok(())
+                    }
+                    _ => {
+                        if expr_is_bytes(&args[0], env, param_types) {
+                            compile_expr(&args[0], env, params, param_types, builder, options, visiting, stack_depth)?;
+                            Ok(())
+                        } else {
+                            compile_expr(&args[0], env, params, param_types, builder, options, visiting, stack_depth)?;
+                            builder.add_i64(8)?;
+                            *stack_depth += 1;
+                            builder.add_op(OpNum2Bin)?;
+                            *stack_depth -= 1;
+                            Ok(())
+                        }
+                    }
                 }
+            }
+            "length" => {
+                if args.len() != 1 {
+                    return Err(CompilerError::Unsupported("length() expects a single argument".to_string()));
+                }
+                compile_expr(&args[0], env, params, param_types, builder, options, visiting, stack_depth)?;
+                builder.add_op(OpSize)?;
+                Ok(())
             }
             "int" => {
                 if args.len() != 1 {
@@ -826,6 +955,16 @@ fn compile_expr(
 }
 
 fn expr_is_bytes(expr: &Expr, env: &HashMap<String, Expr>, param_types: &HashMap<String, String>) -> bool {
+    let mut visiting = HashSet::new();
+    expr_is_bytes_inner(expr, env, param_types, &mut visiting)
+}
+
+fn expr_is_bytes_inner(
+    expr: &Expr,
+    env: &HashMap<String, Expr>,
+    param_types: &HashMap<String, String>,
+    visiting: &mut HashSet<String>,
+) -> bool {
     match expr {
         Expr::Bytes(_) => true,
         Expr::String(_) => true,
@@ -852,16 +991,25 @@ fn expr_is_bytes(expr: &Expr, env: &HashMap<String, Expr>, param_types: &HashMap
         }
         Expr::Split { .. } => true,
         Expr::Binary { op: BinaryOp::Add, left, right } => {
-            expr_is_bytes(left, env, param_types) || expr_is_bytes(right, env, param_types)
+            expr_is_bytes_inner(left, env, param_types, visiting) || expr_is_bytes_inner(right, env, param_types, visiting)
+        }
+        Expr::IfElse { condition: _, then_expr, else_expr } => {
+            expr_is_bytes_inner(then_expr, env, param_types, visiting) && expr_is_bytes_inner(else_expr, env, param_types, visiting)
         }
         Expr::Introspection { kind, .. } => {
             matches!(kind, IntrospectionKind::InputLockingBytecode | IntrospectionKind::OutputLockingBytecode)
         }
         Expr::Nullary(NullaryOp::ActiveBytecode) => true,
         Expr::Identifier(name) => {
-            if let Some(expr) = env.get(name) {
-                return expr_is_bytes(expr, env, param_types);
+            if !visiting.insert(name.clone()) {
+                return false;
             }
+            if let Some(expr) = env.get(name) {
+                let result = expr_is_bytes_inner(expr, env, param_types, visiting);
+                visiting.remove(name);
+                return result;
+            }
+            visiting.remove(name);
             param_types.get(name).map(|type_name| is_bytes_type(type_name)).unwrap_or(false)
         }
         _ => false,
@@ -915,7 +1063,7 @@ fn compile_concat_operand(
 }
 
 fn is_bytes_type(type_name: &str) -> bool {
-    type_name == "bytes" || type_name.starts_with("bytes") || matches!(type_name, "pubkey" | "sig")
+    type_name == "bytes" || type_name.starts_with("bytes") || matches!(type_name, "pubkey" | "sig" | "string")
 }
 
 fn build_null_data_script(arg: &Expr) -> Result<Vec<u8>, CompilerError> {

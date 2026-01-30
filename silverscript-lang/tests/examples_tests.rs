@@ -425,6 +425,127 @@ fn build_p2sh20_script(hash: &[u8]) -> Vec<u8> {
 }
 
 #[test]
+fn runs_everything_example_and_verifies() {
+    let source = load_example_source("everything.sil");
+
+    let owner = random_keypair();
+    let owner_pk = owner.x_only_public_key().0.serialize();
+
+    let constructor_args = [7.into(), String::from("hello").into()];
+    let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
+    let selector = selector_for(&compiled, "hello");
+
+    let input = TransactionInput {
+        previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([23u8; 32]), index: 0 },
+        signature_script: vec![],
+        sequence: 500,
+        sig_op_count: 1,
+    };
+    let checked_script = ScriptBuilder::new()
+        .add_ops(&compiled.script)
+        .unwrap()
+        .add_op(OpDrop)
+        .unwrap()
+        .add_op(OpDrop)
+        .unwrap()
+        .add_op(OpTrue)
+        .unwrap()
+        .drain();
+    let output =
+        TransactionOutput { value: 5_000, script_public_key: ScriptPublicKey::new(0, checked_script.clone().into()), covenant: None };
+
+    let tx = Transaction::new(1, vec![input.clone()], vec![output.clone()], 0, Default::default(), 0, vec![]);
+    let utxo_entry = UtxoEntry::new(output.value, ScriptPublicKey::new(0, checked_script.clone().into()), 0, tx.is_coinbase(), None);
+    let mut tx = MutableTransaction::with_entries(tx, vec![utxo_entry.clone()]);
+
+    let reused_values = SigHashReusedValuesUnsync::new();
+    let sig_hash = calc_schnorr_signature_hash(&tx.as_verifiable(), 0, SIG_HASH_ALL, &reused_values);
+    let msg = secp256k1::Message::from_digest_slice(sig_hash.as_bytes().as_slice()).unwrap();
+    let sig = owner.sign_schnorr(msg);
+    let mut signature = Vec::new();
+    signature.extend_from_slice(sig.as_ref().as_slice());
+    signature.push(SIG_HASH_ALL.to_u8());
+
+    let mut sigscript = ScriptBuilder::new();
+    sigscript.add_data(owner_pk.as_slice()).unwrap();
+    sigscript.add_data(&signature).unwrap();
+    sigscript.add_i64(selector).unwrap();
+    tx.tx.inputs[0].signature_script = sigscript.drain();
+
+    let tx = tx.as_verifiable();
+    let sig_cache = Cache::new(10_000);
+    let mut vm = TxScriptEngine::from_transaction_input(
+        &tx,
+        &tx.inputs()[0],
+        0,
+        &utxo_entry,
+        EngineCtx::new(&sig_cache).with_reused(&reused_values),
+        EngineFlags { covenants_enabled: true },
+    );
+
+    let result = vm.execute();
+    assert!(result.is_ok(), "everything example failed: {}", result.unwrap_err());
+}
+
+#[test]
+fn runs_sum_series_example_with_multiple_inputs() {
+    let source = load_example_source("sum_series.sil");
+
+    let cases = [(4i64, 3i64, true), (1i64, 0i64, true), (4i64, 2i64, true), (3i64, 1i64, true)];
+
+    for (max_iterations, n, should_pass) in cases {
+        let constructor_args = [max_iterations.into()];
+        let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
+        let selector = selector_for(&compiled, "main");
+
+        let sigscript = ScriptBuilder::new().add_i64(n).unwrap().add_i64(selector).unwrap().drain();
+        let result = run_contract_with_tx(
+            compiled.script.clone(),
+            compiled.script.clone(),
+            compiled.script.clone(),
+            2000,
+            500,
+            500,
+            sigscript,
+            0,
+        );
+
+        if should_pass {
+            assert!(result.is_ok(), "sum_series({max_iterations}, {n}) should pass: {}", result.unwrap_err());
+        } else {
+            assert!(result.is_err(), "sum_series({max_iterations}, {n}) should fail");
+        }
+    }
+}
+
+#[test]
+fn runs_complex_assignments_example_and_verifies() {
+    let source = load_example_source("complex_assignments.sil");
+
+    let cases = [(4i64, 0i64), (4i64, 2i64), (4i64, 4i64), (1i64, 1i64)];
+
+    for (limit, n) in cases {
+        let constructor_args = [limit.into()];
+        let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
+        let selector = selector_for(&compiled, "main");
+
+        let sigscript = ScriptBuilder::new().add_i64(n).unwrap().add_i64(selector).unwrap().drain();
+        let result = run_contract_with_tx(
+            compiled.script.clone(),
+            compiled.script.clone(),
+            compiled.script.clone(),
+            2000,
+            500,
+            500,
+            sigscript,
+            0,
+        );
+
+        assert!(result.is_ok(), "complex_assignments({limit}, {n}) failed: {}", result.unwrap_err());
+    }
+}
+
+#[test]
 fn compiles_hodl_vault_example_and_verifies() {
     let source = load_example_source("hodl_vault.sil");
     let owner = random_keypair();

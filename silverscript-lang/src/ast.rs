@@ -56,7 +56,7 @@ pub enum TimeVar {
     TxTime,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", content = "data", rename_all = "snake_case")]
 pub enum Expr {
     Int(i64),
@@ -70,6 +70,7 @@ pub enum Expr {
     Split { source: Box<Expr>, index: Box<Expr>, part: SplitPart },
     Unary { op: UnaryOp, expr: Box<Expr> },
     Binary { op: BinaryOp, left: Box<Expr>, right: Box<Expr> },
+    IfElse { condition: Box<Expr>, then_expr: Box<Expr>, else_expr: Box<Expr> },
     Nullary(NullaryOp),
     Introspection { kind: IntrospectionKind, index: Box<Expr> },
 }
@@ -98,21 +99,21 @@ impl From<String> for Expr {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum SplitPart {
     Left,
     Right,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum UnaryOp {
     Not,
     Neg,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum BinaryOp {
     Or,
@@ -133,7 +134,7 @@ pub enum BinaryOp {
     Mod,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum NullaryOp {
     ActiveInputIndex,
@@ -144,7 +145,7 @@ pub enum NullaryOp {
     TxLockTime,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum IntrospectionKind {
     InputValue,
@@ -458,6 +459,14 @@ fn parse_postfix(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
                         expr = Expr::Split { source: source.clone(), index: split_index.clone(), part: SplitPart::Right };
                     }
                     _ => return Err(CompilerError::Unsupported("tuple indexing only supports split() results".to_string())),
+                }
+            }
+            Rule::unary_suffix => {
+                let text = postfix.as_str();
+                if text.ends_with("length") {
+                    expr = Expr::Call { name: "length".to_string(), args: vec![expr] };
+                } else {
+                    return Err(CompilerError::Unsupported("postfix operators are not supported".to_string()));
                 }
             }
             _ => {
