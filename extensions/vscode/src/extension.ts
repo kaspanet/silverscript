@@ -11,6 +11,7 @@ const TOKEN_TYPES = [
   "keyword",
   "operator",
   "function",
+  "constant",
   "variable",
   "type",
   "property",
@@ -18,7 +19,7 @@ const TOKEN_TYPES = [
   "boolean",
 ] as const;
 
-const TOKEN_MODIFIERS = ["declaration", "readonly", "defaultLibrary"] as const;
+const TOKEN_MODIFIERS = ["defaultLibrary"] as const;
 
 const legend = new vscode.SemanticTokensLegend(
   [...TOKEN_TYPES],
@@ -30,9 +31,7 @@ let outputChannel: vscode.OutputChannel | null = null;
 
 function logInfo(message: string) {
   if (!outputChannel) return;
-  outputChannel.appendLine(
-    `[${new Date().toISOString()}] ${message}`,
-  );
+  outputChannel.appendLine(`[${new Date().toISOString()}] ${message}`);
 }
 
 function logDebug(message: string) {
@@ -41,7 +40,10 @@ function logDebug(message: string) {
 }
 
 function logError(message: string, error: unknown) {
-  const err = error instanceof Error ? `${error.message}\n${error.stack ?? ""}` : String(error);
+  const err =
+    error instanceof Error
+      ? `${error.message}\n${error.stack ?? ""}`
+      : String(error);
   logInfo(`${message}\n${err}`);
 }
 
@@ -59,16 +61,11 @@ function mapCaptureToToken(captureName: string): {
   type: TokenType | null;
   modifiers: TokenModifier[];
 } {
-  // captureName examples: "function", "function.builtin", "variable.parameter"
   const parts = captureName.split(".");
   const base = parts[0];
   const mods = new Set<TokenModifier>();
 
-  // builtin -> defaultLibrary
   if (parts.includes("builtin")) mods.add("defaultLibrary");
-  // constant-ish -> readonly (you can tune this)
-  if (base === "constant") mods.add("readonly");
-  if (parts.includes("declaration")) mods.add("declaration");
 
   switch (base) {
     case "comment":
@@ -85,6 +82,8 @@ function mapCaptureToToken(captureName: string): {
       return { type: "operator", modifiers: [...mods] };
     case "function":
       return { type: "function", modifiers: [...mods] };
+    case "constant":
+      return { type: "constant", modifiers: [...mods] };
     case "type":
       return { type: "type", modifiers: [...mods] };
     case "property":
@@ -93,11 +92,6 @@ function mapCaptureToToken(captureName: string): {
       if (parts.includes("parameter"))
         return { type: "parameter", modifiers: [...mods] };
       return { type: "variable", modifiers: [...mods] };
-    case "constant":
-      return {
-        type: "variable",
-        modifiers: [...mods],
-      };
     default:
       return { type: null, modifiers: [] };
   }
@@ -271,6 +265,7 @@ class SilverScriptSemanticTokensProvider
         if (name.startsWith("comment")) return 60;
         if (name.startsWith("operator")) return 50;
         if (name.startsWith("property")) return 40;
+        if (name.startsWith("constant")) return 35;
         if (name.startsWith("variable")) return 30;
         return 0;
       };
