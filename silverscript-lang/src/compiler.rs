@@ -8,6 +8,7 @@ use crate::ast::{
     BinaryOp, ContractAst, Expr, FunctionAst, IntrospectionKind, NullaryOp, SplitPart, Statement, TimeVar, UnaryOp, parse_contract_ast,
 };
 use crate::parser::Rule;
+use chrono::NaiveDateTime;
 
 #[derive(Debug, Error)]
 pub enum CompilerError {
@@ -1179,104 +1180,9 @@ fn require_covenants(options: CompileOptions, feature: &str) -> Result<(), Compi
 }
 
 fn parse_date_value(value: &str) -> Result<i64, CompilerError> {
-    let mut parts = value.split('T');
-    let date = parts.next().ok_or_else(|| CompilerError::InvalidLiteral("date literal missing date".to_string()))?;
-    let time = parts.next().ok_or_else(|| CompilerError::InvalidLiteral("date literal missing time".to_string()))?;
-    if parts.next().is_some() {
-        return Err(CompilerError::InvalidLiteral("date literal has extra separators".to_string()));
-    }
-
-    let mut date_parts = date.split('-');
-    let year: i64 = date_parts
-        .next()
-        .ok_or_else(|| CompilerError::InvalidLiteral("date literal missing year".to_string()))?
-        .parse()
-        .map_err(|_| CompilerError::InvalidLiteral("invalid date year".to_string()))?;
-    let month: i64 = date_parts
-        .next()
-        .ok_or_else(|| CompilerError::InvalidLiteral("date literal missing month".to_string()))?
-        .parse()
-        .map_err(|_| CompilerError::InvalidLiteral("invalid date month".to_string()))?;
-    let day: i64 = date_parts
-        .next()
-        .ok_or_else(|| CompilerError::InvalidLiteral("date literal missing day".to_string()))?
-        .parse()
-        .map_err(|_| CompilerError::InvalidLiteral("invalid date day".to_string()))?;
-
-    let mut time_parts = time.split(':');
-    let hour: i64 = time_parts
-        .next()
-        .ok_or_else(|| CompilerError::InvalidLiteral("date literal missing hour".to_string()))?
-        .parse()
-        .map_err(|_| CompilerError::InvalidLiteral("invalid date hour".to_string()))?;
-    let minute: i64 = time_parts
-        .next()
-        .ok_or_else(|| CompilerError::InvalidLiteral("date literal missing minute".to_string()))?
-        .parse()
-        .map_err(|_| CompilerError::InvalidLiteral("invalid date minute".to_string()))?;
-    let second: i64 = time_parts
-        .next()
-        .ok_or_else(|| CompilerError::InvalidLiteral("date literal missing second".to_string()))?
-        .parse()
-        .map_err(|_| CompilerError::InvalidLiteral("invalid date second".to_string()))?;
-
-    if date_parts.next().is_some() || time_parts.next().is_some() {
-        return Err(CompilerError::InvalidLiteral("date literal has extra parts".to_string()));
-    }
-
-    let timestamp = unix_timestamp(year, month, day, hour, minute, second)?;
+    let timestamp = NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S")
+        .map_err(|_| CompilerError::InvalidLiteral("invalid date literal".to_string()))?
+        .and_utc()
+        .timestamp();
     Ok(timestamp)
-}
-
-fn unix_timestamp(year: i64, month: i64, day: i64, hour: i64, minute: i64, second: i64) -> Result<i64, CompilerError> {
-    if month < 1
-        || month > 12
-        || day < 1
-        || day > 31
-        || hour < 0
-        || hour > 23
-        || minute < 0
-        || minute > 59
-        || second < 0
-        || second > 59
-    {
-        return Err(CompilerError::InvalidLiteral("date literal out of range".to_string()));
-    }
-    let days = days_since_unix_epoch(year, month, day)?;
-    Ok(days * 86_400 + hour * 3_600 + minute * 60 + second)
-}
-
-fn days_since_unix_epoch(year: i64, month: i64, day: i64) -> Result<i64, CompilerError> {
-    if month < 1 || month > 12 {
-        return Err(CompilerError::InvalidLiteral("date literal month out of range".to_string()));
-    }
-    let days_in_month = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-    let mut days = 0i64;
-    let mut y = 1970;
-    while y < year {
-        days += if is_leap_year(y) { 366 } else { 365 };
-        y += 1;
-    }
-    while y > year {
-        y -= 1;
-        days -= if is_leap_year(y) { 366 } else { 365 };
-    }
-    let mut m = 1;
-    while m < month {
-        if m == 2 && is_leap_year(year) {
-            days += 29;
-        } else {
-            days += days_in_month[(m - 1) as usize];
-        }
-        m += 1;
-    }
-    let month_days = if month == 2 && is_leap_year(year) { 29 } else { days_in_month[(month - 1) as usize] };
-    if day > month_days {
-        return Err(CompilerError::InvalidLiteral("date literal day out of range".to_string()));
-    }
-    Ok(days + (day - 1))
-}
-
-fn is_leap_year(year: i64) -> bool {
-    (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
 }

@@ -58,6 +58,13 @@ fn dummy_expr_for_type(type_name: &str) -> Expr {
 
 #[test]
 fn compiles_cashc_valid_examples() {
+    // Skipped examples (from cashc valid-contract-files) and reasons:
+    // - 2_of_3_multisig.sil: uses checkMultiSig.
+    // - multiline_array_multisig.cash: uses checkMultiSig.
+    // - simple_multisig.cash: uses checkMultiSig.
+    // - trailing_comma.cash: uses checkMultiSig.
+    // - covenant_all_fields.cash: cashtoken-related logic.
+    // - token_category_comparison.cash: cashtoken-related logic.
     let examples = [
         "bitwise.sil",
         "bytes1_equals_byte.sil",
