@@ -1,0 +1,13 @@
+pragma silverscript ^0.1.0;
+
+contract Test(int x) {
+    function hello() {
+        int myVariable = 10 - 4;
+        int myOtherVariable = 20 + myVariable % 2;
+        require(myOtherVariable > x);
+
+        string x1 = "Hello \n \\ ' ''  \" World";
+        string x2 = 'Hello \n \\ " " \' World';
+        require(sha256(x1) == sha256(x2));
+    }
+}

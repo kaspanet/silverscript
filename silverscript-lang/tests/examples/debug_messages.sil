@@ -1,0 +1,8 @@
+pragma silverscript ^0.1.0;
+
+contract DebugMessages() {
+  function spend(int value) {
+    require(value == 1, "Wrong value passed");
+    require(value + 1 == 2, "Sum doesn't work");
+  }
+}

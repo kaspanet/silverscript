@@ -1,0 +1,7 @@
+pragma silverscript ^0.1.0;
+
+contract Test(bytes8 x, bytes8 y) {
+    function hello() {
+        require((x | y) == y);
+    }
+}

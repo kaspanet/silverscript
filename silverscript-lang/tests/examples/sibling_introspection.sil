@@ -1,0 +1,13 @@
+pragma silverscript ^0.1.0;
+
+contract SiblingIntrospection(bytes expectedLockingBytecode) {
+    function spend() {
+        require(this.activeInputIndex == 0);
+
+        bytes outputBytecode = tx.outputs[1].lockingBytecode;
+        require(outputBytecode == expectedLockingBytecode);
+
+        bytes inputBytecode = tx.inputs[1].lockingBytecode;
+        require(inputBytecode == expectedLockingBytecode);
+    }
+}

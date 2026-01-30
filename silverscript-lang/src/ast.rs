@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::compiler::CompilerError;
 use crate::parser::{Rule, SilverScriptParser};
+use chrono::NaiveDateTime;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContractAst {
@@ -68,6 +69,7 @@ pub enum Expr {
     Call { name: String, args: Vec<Expr> },
     New { name: String, args: Vec<Expr> },
     Split { source: Box<Expr>, index: Box<Expr>, part: SplitPart },
+    Slice { source: Box<Expr>, start: Box<Expr>, end: Box<Expr> },
     Unary { op: UnaryOp, expr: Box<Expr> },
     Binary { op: BinaryOp, left: Box<Expr>, right: Box<Expr> },
     IfElse { condition: Box<Expr>, then_expr: Box<Expr>, else_expr: Box<Expr> },
@@ -444,6 +446,14 @@ fn parse_postfix(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
                 let index = Box::new(parse_expression(index_expr)?);
                 expr = Expr::Split { source: Box::new(expr), index, part: SplitPart::Left };
             }
+            Rule::slice_call => {
+                let mut slice_inner = postfix.into_inner();
+                let start_expr = slice_inner.next().ok_or_else(|| CompilerError::Unsupported("missing slice start".to_string()))?;
+                let end_expr = slice_inner.next().ok_or_else(|| CompilerError::Unsupported("missing slice end".to_string()))?;
+                let start = Box::new(parse_expression(start_expr)?);
+                let end = Box::new(parse_expression(end_expr)?);
+                expr = Expr::Slice { source: Box::new(expr), start, end };
+            }
             Rule::tuple_index => {
                 let mut index_inner = postfix.into_inner();
                 let index_expr = index_inner.next().ok_or_else(|| CompilerError::Unsupported("missing tuple index".to_string()))?;
@@ -529,13 +539,30 @@ fn parse_literal(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
         Rule::NumberLiteral => parse_number(pair.as_str()),
         Rule::HexLiteral => parse_hex_literal(pair.as_str()),
         Rule::StringLiteral => parse_string_literal(pair),
-        Rule::DateLiteral => Err(CompilerError::Unsupported("date literals are not supported".to_string())),
+        Rule::DateLiteral => parse_date_literal(pair),
         _ => Err(CompilerError::Unsupported(format!("literal not supported: {:?}", pair.as_rule()))),
     }
 }
 
 fn parse_number(raw: &str) -> Result<Expr, CompilerError> {
     let cleaned = raw.replace('_', "");
+    if let Some((base_str, exp_str)) = cleaned.split_once('e').or_else(|| cleaned.split_once('E')) {
+        if exp_str.is_empty() {
+            return Err(CompilerError::InvalidLiteral(format!("invalid number literal '{raw}'")));
+        }
+        let base: i64 = base_str.parse().map_err(|_| CompilerError::InvalidLiteral(format!("invalid number literal '{raw}'")))?;
+        let exp: i64 = exp_str.parse().map_err(|_| CompilerError::InvalidLiteral(format!("invalid number literal '{raw}'")))?;
+        if exp < 0 {
+            return Err(CompilerError::InvalidLiteral(format!("invalid number literal '{raw}'")));
+        }
+        let pow = 10i128.pow(exp as u32);
+        let value =
+            (base as i128).checked_mul(pow).ok_or_else(|| CompilerError::InvalidLiteral(format!("invalid number literal '{raw}'")))?;
+        if value > i64::MAX as i128 || value < i64::MIN as i128 {
+            return Err(CompilerError::InvalidLiteral(format!("invalid number literal '{raw}'")));
+        }
+        return Ok(Expr::Int(value as i64));
+    }
     let value: i64 = cleaned.parse().map_err(|_| CompilerError::InvalidLiteral(format!("invalid number literal '{raw}'")))?;
     Ok(Expr::Int(value))
 }
@@ -586,8 +613,14 @@ fn parse_cast(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
     if type_name == "bytes" {
         return Ok(Expr::Call { name: "bytes".to_string(), args });
     }
+    if type_name == "byte" {
+        return Ok(Expr::Call { name: "bytes1".to_string(), args });
+    }
     if type_name == "int" {
         return Ok(Expr::Call { name: "int".to_string(), args });
+    }
+    if matches!(type_name.as_str(), "sig" | "pubkey" | "datasig") {
+        return Ok(Expr::Call { name: type_name, args });
     }
     if let Some(size) = type_name.strip_prefix("bytes").and_then(|v| v.parse::<usize>().ok()) {
         return Ok(Expr::Call { name: format!("bytes{size}"), args });
@@ -598,23 +631,63 @@ fn parse_cast(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
 fn parse_number_literal(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
     let mut inner = pair.into_inner();
     let number = inner.next().ok_or_else(|| CompilerError::InvalidLiteral("missing number literal".to_string()))?;
-    if inner.next().is_some() {
-        return Err(CompilerError::Unsupported("number units are not supported yet".to_string()));
+    let value = parse_number(number.as_str())?;
+    if let Some(unit_pair) = inner.next() {
+        let unit = unit_pair.as_str();
+        return apply_number_unit(value, unit);
     }
-    parse_number(number.as_str())
+    Ok(value)
 }
 
 fn parse_hex_literal(raw: &str) -> Result<Expr, CompilerError> {
     let trimmed = raw.trim_start_matches("0x").trim_start_matches("0X");
-    if trimmed.len() % 2 != 0 {
-        return Err(CompilerError::InvalidLiteral(format!("hex literal has odd length: {raw}")));
-    }
-    let bytes = (0..trimmed.len())
+    let normalized = if trimmed.len() % 2 != 0 { format!("0{trimmed}") } else { trimmed.to_string() };
+    let bytes = (0..normalized.len())
         .step_by(2)
-        .map(|i| u8::from_str_radix(&trimmed[i..i + 2], 16))
+        .map(|i| u8::from_str_radix(&normalized[i..i + 2], 16))
         .collect::<Result<Vec<_>, _>>()
         .map_err(|_| CompilerError::InvalidLiteral(format!("invalid hex literal '{raw}'")))?;
     Ok(Expr::Bytes(bytes))
+}
+
+fn apply_number_unit(expr: Expr, unit: &str) -> Result<Expr, CompilerError> {
+    let value = match expr {
+        Expr::Int(value) => value,
+        _ => return Err(CompilerError::InvalidLiteral("number literal is not an int".to_string())),
+    };
+    let multiplier = match unit {
+        "seconds" => 1,
+        "minutes" => 60,
+        "hours" => 60 * 60,
+        "days" => 24 * 60 * 60,
+        "weeks" => 7 * 24 * 60 * 60,
+        "satoshis" | "sats" => 1,
+        "bits" => 100,
+        "finney" => 100_000,
+        "bitcoin" => 100_000_000,
+        _ => return Err(CompilerError::Unsupported(format!("number unit '{unit}' not supported"))),
+    };
+    Ok(Expr::Int(value.saturating_mul(multiplier)))
+}
+
+fn parse_date_literal(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
+    let raw = pair.as_str();
+    let start = raw
+        .find('"')
+        .or_else(|| raw.find('\''))
+        .ok_or_else(|| CompilerError::InvalidLiteral("date literal missing quotes".to_string()))?;
+    let quote = raw.as_bytes()[start] as char;
+    let end = raw[start + 1..]
+        .find(quote)
+        .map(|idx| idx + start + 1)
+        .ok_or_else(|| CompilerError::InvalidLiteral("date literal missing closing quote".to_string()))?;
+    let value = &raw[start + 1..end];
+
+    let timestamp = NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S")
+        .map_err(|_| CompilerError::InvalidLiteral("invalid date literal".to_string()))?
+        .and_utc()
+        .timestamp();
+    Ok(Expr::Int(timestamp))
 }
 
 fn parse_string_literal(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {

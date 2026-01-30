@@ -8,6 +8,7 @@ use crate::ast::{
     BinaryOp, ContractAst, Expr, FunctionAst, IntrospectionKind, NullaryOp, SplitPart, Statement, TimeVar, UnaryOp, parse_contract_ast,
 };
 use crate::parser::Rule;
+use chrono::NaiveDateTime;
 
 #[derive(Debug, Error)]
 pub enum CompilerError {
@@ -217,7 +218,7 @@ fn compile_statement(
             env.insert(name.clone(), resolved);
             Ok(())
         }
-        Statement::Console { .. } => Err(CompilerError::Unsupported("statement type not supported in compiler yet".to_string())),
+        Statement::Console { .. } => Ok(()),
     }
 }
 
@@ -472,6 +473,11 @@ fn replace_identifier(expr: &Expr, target: &str, replacement: &Expr) -> Expr {
             index: Box::new(replace_identifier(index, target, replacement)),
             part: *part,
         },
+        Expr::Slice { source, start, end } => Expr::Slice {
+            source: Box::new(replace_identifier(source, target, replacement)),
+            start: Box::new(replace_identifier(start, target, replacement)),
+            end: Box::new(replace_identifier(end, target, replacement)),
+        },
         Expr::IfElse { condition, then_expr, else_expr } => Expr::IfElse {
             condition: Box::new(replace_identifier(condition, target, replacement)),
             then_expr: Box::new(replace_identifier(then_expr, target, replacement)),
@@ -557,6 +563,34 @@ fn compile_expr(
         Expr::Array(_) => Err(CompilerError::Unsupported("array literals are only supported in LockingBytecodeNullData".to_string())),
         Expr::Call { name, args } => match name.as_str() {
             "OpSha256" => compile_opcode_call(name, args, 1, &scope, builder, options, visiting, stack_depth, OpSHA256, false),
+            "sha256" => {
+                if args.len() != 1 {
+                    return Err(CompilerError::Unsupported("sha256() expects a single argument".to_string()));
+                }
+                compile_expr(&args[0], env, params, param_types, builder, options, visiting, stack_depth)?;
+                builder.add_op(OpSHA256)?;
+                Ok(())
+            }
+            "date" => {
+                if args.len() != 1 {
+                    return Err(CompilerError::Unsupported("date() expects a single argument".to_string()));
+                }
+                let value = match &args[0] {
+                    Expr::String(value) => value.as_str(),
+                    Expr::Identifier(name) => {
+                        if let Some(Expr::String(value)) = env.get(name) {
+                            value.as_str()
+                        } else {
+                            return Err(CompilerError::Unsupported("date() expects a string literal".to_string()));
+                        }
+                    }
+                    _ => return Err(CompilerError::Unsupported("date() expects a string literal".to_string())),
+                };
+                let timestamp = parse_date_value(value)?;
+                builder.add_i64(timestamp)?;
+                *stack_depth += 1;
+                Ok(())
+            }
             "OpTxSubnetId" => compile_opcode_call(name, args, 0, &scope, builder, options, visiting, stack_depth, OpTxSubnetId, true),
             "OpTxGas" => compile_opcode_call(name, args, 0, &scope, builder, options, visiting, stack_depth, OpTxGas, true),
             "OpTxPayloadLen" => {
@@ -620,8 +654,15 @@ fn compile_expr(
                 compile_opcode_call(name, args, 1, &scope, builder, options, visiting, stack_depth, OpChainblockSeqCommit, false)
             }
             "bytes" => {
-                if args.len() != 1 {
-                    return Err(CompilerError::Unsupported("bytes() expects a single argument".to_string()));
+                if args.is_empty() || args.len() > 2 {
+                    return Err(CompilerError::Unsupported("bytes() expects one or two arguments".to_string()));
+                }
+                if args.len() == 2 {
+                    compile_expr(&args[0], env, params, param_types, builder, options, visiting, stack_depth)?;
+                    compile_expr(&args[1], env, params, param_types, builder, options, visiting, stack_depth)?;
+                    builder.add_op(OpNum2Bin)?;
+                    *stack_depth -= 1;
+                    return Ok(());
                 }
                 match &args[0] {
                     Expr::String(value) => {
@@ -672,6 +713,13 @@ fn compile_expr(
             "int" => {
                 if args.len() != 1 {
                     return Err(CompilerError::Unsupported("int() expects a single argument".to_string()));
+                }
+                compile_expr(&args[0], env, params, param_types, builder, options, visiting, stack_depth)?;
+                Ok(())
+            }
+            "sig" | "pubkey" | "datasig" => {
+                if args.len() != 1 {
+                    return Err(CompilerError::Unsupported(format!("{name}() expects a single argument")));
                 }
                 compile_expr(&args[0], env, params, param_types, builder, options, visiting, stack_depth)?;
                 Ok(())
@@ -879,33 +927,42 @@ fn compile_expr(
             Ok(())
         }
         Expr::Split { source, index, part } => {
-            let split_index = match &**index {
-                Expr::Int(value) => *value,
-                _ => return Err(CompilerError::Unsupported("split() index must be a literal integer".to_string())),
-            };
-            if split_index < 0 {
-                return Err(CompilerError::Unsupported("split() index must be non-negative".to_string()));
-            }
             compile_expr(source, env, params, param_types, builder, options, visiting, stack_depth)?;
             match part {
                 SplitPart::Left => {
+                    compile_expr(index, env, params, param_types, builder, options, visiting, stack_depth)?;
                     builder.add_i64(0)?;
                     *stack_depth += 1;
-                    builder.add_i64(split_index)?;
-                    *stack_depth += 1;
+                    builder.add_op(OpSwap)?;
                     builder.add_op(OpSubstr)?;
                     *stack_depth -= 2;
                 }
                 SplitPart::Right => {
                     builder.add_op(OpSize)?;
                     *stack_depth += 1;
-                    builder.add_i64(split_index)?;
-                    *stack_depth += 1;
+                    compile_expr(index, env, params, param_types, builder, options, visiting, stack_depth)?;
                     builder.add_op(OpSwap)?;
                     builder.add_op(OpSubstr)?;
                     *stack_depth -= 2;
                 }
             }
+            Ok(())
+        }
+        Expr::Slice { source, start, end } => {
+            compile_expr(source, env, params, param_types, builder, options, visiting, stack_depth)?;
+            compile_expr(start, env, params, param_types, builder, options, visiting, stack_depth)?;
+            compile_expr(end, env, params, param_types, builder, options, visiting, stack_depth)?;
+
+            builder.add_op(Op2Dup)?;
+            *stack_depth += 2;
+            builder.add_op(OpSwap)?;
+            builder.add_op(OpSub)?;
+            *stack_depth -= 1;
+            builder.add_op(OpSwap)?;
+            builder.add_op(OpDrop)?;
+            *stack_depth -= 1;
+            builder.add_op(OpSubstr)?;
+            *stack_depth -= 2;
             Ok(())
         }
         Expr::Nullary(op) => {
@@ -968,6 +1025,7 @@ fn expr_is_bytes_inner(
     match expr {
         Expr::Bytes(_) => true,
         Expr::String(_) => true,
+        Expr::Slice { .. } => true,
         Expr::New { name, .. } => {
             matches!(name.as_str(), "LockingBytecodeNullData" | "LockingBytecodeP2PKH" | "LockingBytecodeP2SH20")
         }
@@ -976,6 +1034,7 @@ fn expr_is_bytes_inner(
                 name.as_str(),
                 "bytes"
                     | "blake2b"
+                    | "sha256"
                     | "OpSha256"
                     | "OpTxSubnetId"
                     | "OpTxPayloadSubstr"
@@ -1063,7 +1122,7 @@ fn compile_concat_operand(
 }
 
 fn is_bytes_type(type_name: &str) -> bool {
-    type_name == "bytes" || type_name.starts_with("bytes") || matches!(type_name, "pubkey" | "sig" | "string")
+    type_name == "bytes" || type_name == "byte" || type_name.starts_with("bytes") || matches!(type_name, "pubkey" | "sig" | "string")
 }
 
 fn build_null_data_script(arg: &Expr) -> Result<Vec<u8>, CompilerError> {
@@ -1118,4 +1177,12 @@ fn require_covenants(options: CompileOptions, feature: &str) -> Result<(), Compi
     } else {
         Err(CompilerError::Unsupported(format!("{feature} requires covenants-enabled opcodes; confirm covenants_enabled=true")))
     }
+}
+
+fn parse_date_value(value: &str) -> Result<i64, CompilerError> {
+    let timestamp = NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S")
+        .map_err(|_| CompilerError::InvalidLiteral("invalid date literal".to_string()))?
+        .and_utc()
+        .timestamp();
+    Ok(timestamp)
 }

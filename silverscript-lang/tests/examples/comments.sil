@@ -1,0 +1,24 @@
+pragma silverscript ^0.1.0;
+
+/* This is a contract with some comments
+/* It has some comment characters inside the comment too for some reason
+// line comments too
+ */
+
+contract Test(int x) {
+    // Line comments are a thing
+    function hello(sig s, pubkey pk) {
+        int i = 400 + x;
+        bytes b = 0x07364897987fe87 + bytes(x);
+
+        int myVariable = 10 - 4; // they can go at the end of the line
+        int myOtherVariable = i + myVariable % 2;
+        require(myOtherVariable /* And comments can be included within lines */ > i);
+
+        if (x > 10) {
+            require(i < 20);
+            require(checkSig(s, pk));
+        } else
+            require(b == 0x01);
+    }
+}

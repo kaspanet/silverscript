@@ -1309,3 +1309,280 @@ fn compiles_covenant_mecenas_example_and_verifies() {
     let result = vm.execute();
     assert!(result.is_ok(), "covenant mecenas reclaim failed: {}", result.unwrap_err());
 }
+
+#[test]
+fn compiles_bar_example_and_verifies() {
+    let source = load_example_source("bar.sil");
+
+    let owner = random_keypair();
+    let pubkey_bytes = owner.x_only_public_key().0.serialize();
+    let mut pkh =
+        blake2b_simd::Params::new().hash_length(32).to_state().update(pubkey_bytes.as_slice()).finalize().as_bytes().to_vec();
+    pkh.truncate(20);
+    let constructor_args = [pkh.clone().into()];
+
+    let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
+    let selector = selector_for(&compiled, "execute");
+
+    let input = TransactionInput {
+        previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([18u8; 32]), index: 0 },
+        signature_script: vec![],
+        sequence: 0,
+        sig_op_count: 1,
+    };
+    let output =
+        TransactionOutput { value: 7_000, script_public_key: ScriptPublicKey::new(0, compiled.script.clone().into()), covenant: None };
+
+    let tx = Transaction::new(1, vec![input.clone()], vec![output.clone()], 0, Default::default(), 0, vec![]);
+    let utxo_entry = UtxoEntry::new(output.value, ScriptPublicKey::new(0, compiled.script.clone().into()), 0, tx.is_coinbase(), None);
+    let mut tx = MutableTransaction::with_entries(tx, vec![utxo_entry.clone()]);
+
+    let reused_values = SigHashReusedValuesUnsync::new();
+    let sig_hash = calc_schnorr_signature_hash(&tx.as_verifiable(), 0, SIG_HASH_ALL, &reused_values);
+    let msg = secp256k1::Message::from_digest_slice(sig_hash.as_bytes().as_slice()).unwrap();
+    let sig = owner.sign_schnorr(msg);
+    let mut signature = Vec::new();
+    signature.extend_from_slice(sig.as_ref().as_slice());
+    signature.push(SIG_HASH_ALL.to_u8());
+
+    let mut sigscript = ScriptBuilder::new();
+    sigscript.add_data(pubkey_bytes.as_slice()).unwrap();
+    sigscript.add_data(&signature).unwrap();
+    sigscript.add_i64(selector).unwrap();
+    tx.tx.inputs[0].signature_script = sigscript.drain();
+
+    let tx = tx.as_verifiable();
+    let sig_cache = Cache::new(10_000);
+    let mut vm = TxScriptEngine::from_transaction_input(
+        &tx,
+        &tx.inputs()[0],
+        0,
+        &utxo_entry,
+        EngineCtx::new(&sig_cache).with_reused(&reused_values),
+        EngineFlags { covenants_enabled: true },
+    );
+
+    let result = vm.execute();
+    assert!(result.is_ok(), "bar example failed: {}", result.unwrap_err());
+}
+
+#[test]
+fn compiles_foo_example_and_verifies() {
+    let source = load_example_source("foo.sil");
+
+    let owner = random_keypair();
+    let pubkey_bytes = owner.x_only_public_key().0.serialize();
+    let mut pkh =
+        blake2b_simd::Params::new().hash_length(32).to_state().update(pubkey_bytes.as_slice()).finalize().as_bytes().to_vec();
+    pkh.truncate(20);
+    let constructor_args = [pkh.clone().into()];
+
+    let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
+    let selector = selector_for(&compiled, "execute");
+
+    let input = TransactionInput {
+        previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([19u8; 32]), index: 0 },
+        signature_script: vec![],
+        sequence: 0,
+        sig_op_count: 1,
+    };
+    let output =
+        TransactionOutput { value: 7_000, script_public_key: ScriptPublicKey::new(0, compiled.script.clone().into()), covenant: None };
+
+    let tx = Transaction::new(1, vec![input.clone()], vec![output.clone()], 0, Default::default(), 0, vec![]);
+    let utxo_entry = UtxoEntry::new(output.value, ScriptPublicKey::new(0, compiled.script.clone().into()), 0, tx.is_coinbase(), None);
+    let mut tx = MutableTransaction::with_entries(tx, vec![utxo_entry.clone()]);
+
+    let reused_values = SigHashReusedValuesUnsync::new();
+    let sig_hash = calc_schnorr_signature_hash(&tx.as_verifiable(), 0, SIG_HASH_ALL, &reused_values);
+    let msg = secp256k1::Message::from_digest_slice(sig_hash.as_bytes().as_slice()).unwrap();
+    let sig = owner.sign_schnorr(msg);
+    let mut signature = Vec::new();
+    signature.extend_from_slice(sig.as_ref().as_slice());
+    signature.push(SIG_HASH_ALL.to_u8());
+
+    let mut sigscript = ScriptBuilder::new();
+    sigscript.add_data(pubkey_bytes.as_slice()).unwrap();
+    sigscript.add_data(&signature).unwrap();
+    sigscript.add_i64(selector).unwrap();
+    tx.tx.inputs[0].signature_script = sigscript.drain();
+
+    let tx = tx.as_verifiable();
+    let sig_cache = Cache::new(10_000);
+    let mut vm = TxScriptEngine::from_transaction_input(
+        &tx,
+        &tx.inputs()[0],
+        0,
+        &utxo_entry,
+        EngineCtx::new(&sig_cache).with_reused(&reused_values),
+        EngineFlags { covenants_enabled: true },
+    );
+
+    let result = vm.execute();
+    assert!(result.is_ok(), "foo example failed: {}", result.unwrap_err());
+}
+
+#[test]
+fn compiles_bounded_bytes_example_and_verifies() {
+    let source = load_example_source("bounded_bytes.sil");
+
+    let compiled = compile_contract(&source, &[], CompileOptions::default()).expect("compile succeeds");
+    let selector = selector_for(&compiled, "spend");
+
+    let mut sigscript = ScriptBuilder::new();
+    sigscript.add_data(&[0u8; 4]).unwrap();
+    sigscript.add_i64(0).unwrap();
+    sigscript.add_i64(selector).unwrap();
+    let result = run_contract_with_tx(
+        compiled.script.clone(),
+        compiled.script.clone(),
+        compiled.script.clone(),
+        2000,
+        500,
+        500,
+        sigscript.drain(),
+        0,
+    );
+    assert!(result.is_ok(), "bounded_bytes example failed: {}", result.unwrap_err());
+
+    let mut sigscript = ScriptBuilder::new();
+    sigscript.add_data(&[0u8; 4]).unwrap();
+    sigscript.add_i64(1).unwrap();
+    sigscript.add_i64(selector).unwrap();
+    let result = run_contract_with_tx(
+        compiled.script.clone(),
+        compiled.script.clone(),
+        compiled.script.clone(),
+        2000,
+        500,
+        500,
+        sigscript.drain(),
+        0,
+    );
+    assert!(result.is_err(), "bounded_bytes mismatch should fail");
+}
+
+#[test]
+fn compiles_p2pkh_invalid_example_and_fails() {
+    let source = load_example_source("p2pkh_invalid.sil");
+
+    let owner = random_keypair();
+    let pubkey_bytes = owner.x_only_public_key().0.serialize();
+    let mut pkh =
+        blake2b_simd::Params::new().hash_length(32).to_state().update(pubkey_bytes.as_slice()).finalize().as_bytes().to_vec();
+    pkh.truncate(20);
+    let constructor_args = [pkh.clone().into()];
+
+    let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
+    let selector = selector_for(&compiled, "spend");
+
+    let input = TransactionInput {
+        previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([20u8; 32]), index: 0 },
+        signature_script: vec![],
+        sequence: 0,
+        sig_op_count: 1,
+    };
+    let output =
+        TransactionOutput { value: 7_000, script_public_key: ScriptPublicKey::new(0, compiled.script.clone().into()), covenant: None };
+
+    let tx = Transaction::new(1, vec![input.clone()], vec![output.clone()], 0, Default::default(), 0, vec![]);
+    let utxo_entry = UtxoEntry::new(output.value, ScriptPublicKey::new(0, compiled.script.clone().into()), 0, tx.is_coinbase(), None);
+    let mut tx = MutableTransaction::with_entries(tx, vec![utxo_entry.clone()]);
+
+    let reused_values = SigHashReusedValuesUnsync::new();
+    let sig_hash = calc_schnorr_signature_hash(&tx.as_verifiable(), 0, SIG_HASH_ALL, &reused_values);
+    let msg = secp256k1::Message::from_digest_slice(sig_hash.as_bytes().as_slice()).unwrap();
+    let sig = owner.sign_schnorr(msg);
+    let mut signature = Vec::new();
+    signature.extend_from_slice(sig.as_ref().as_slice());
+    signature.push(SIG_HASH_ALL.to_u8());
+
+    let mut sigscript = ScriptBuilder::new();
+    sigscript.add_data(pubkey_bytes.as_slice()).unwrap();
+    sigscript.add_data(&signature).unwrap();
+    sigscript.add_i64(selector).unwrap();
+    tx.tx.inputs[0].signature_script = sigscript.drain();
+
+    let tx = tx.as_verifiable();
+    let sig_cache = Cache::new(10_000);
+    let mut vm = TxScriptEngine::from_transaction_input(
+        &tx,
+        &tx.inputs()[0],
+        0,
+        &utxo_entry,
+        EngineCtx::new(&sig_cache).with_reused(&reused_values),
+        EngineFlags { covenants_enabled: true },
+    );
+
+    let result = vm.execute();
+    assert!(result.is_err(), "p2pkh invalid example should fail");
+}
+
+#[test]
+fn compiles_sibling_introspection_example_and_verifies() {
+    let source = load_example_source("sibling_introspection.sil");
+
+    let expected_script = ScriptBuilder::new().add_op(OpTrue).unwrap().drain();
+    let mut expected_locking_bytecode = Vec::new();
+    expected_locking_bytecode.extend_from_slice(&0u16.to_be_bytes());
+    expected_locking_bytecode.extend_from_slice(&expected_script);
+    let constructor_args = [expected_locking_bytecode.clone().into()];
+
+    let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
+    let selector = selector_for(&compiled, "spend");
+
+    let sigscript = ScriptBuilder::new().add_i64(selector).unwrap().drain();
+    let input0 = TransactionInput {
+        previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([21u8; 32]), index: 0 },
+        signature_script: sigscript,
+        sequence: 0,
+        sig_op_count: 0,
+    };
+    let input1 = TransactionInput {
+        previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([22u8; 32]), index: 1 },
+        signature_script: vec![],
+        sequence: 0,
+        sig_op_count: 0,
+    };
+
+    let output0 =
+        TransactionOutput { value: 1_000, script_public_key: ScriptPublicKey::new(0, compiled.script.clone().into()), covenant: None };
+    let output1 = TransactionOutput {
+        value: 1_000,
+        script_public_key: ScriptPublicKey::new(0, expected_locking_bytecode[2..].to_vec().into()),
+        covenant: None,
+    };
+
+    let tx = Transaction::new(
+        1,
+        vec![input0.clone(), input1.clone()],
+        vec![output0.clone(), output1.clone()],
+        0,
+        Default::default(),
+        0,
+        vec![],
+    );
+    let utxo0 = UtxoEntry::new(output0.value, ScriptPublicKey::new(0, compiled.script.clone().into()), 0, tx.is_coinbase(), None);
+    let utxo1 = UtxoEntry::new(
+        output1.value,
+        ScriptPublicKey::new(0, expected_locking_bytecode[2..].to_vec().into()),
+        0,
+        tx.is_coinbase(),
+        None,
+    );
+    let populated_tx = PopulatedTransaction::new(&tx, vec![utxo0.clone(), utxo1.clone()]);
+
+    let reused_values = SigHashReusedValuesUnsync::new();
+    let sig_cache = Cache::new(10_000);
+    let mut vm = TxScriptEngine::from_transaction_input(
+        &populated_tx,
+        &input0,
+        0,
+        &utxo0,
+        EngineCtx::new(&sig_cache).with_reused(&reused_values),
+        EngineFlags { covenants_enabled: true },
+    );
+
+    let result = vm.execute();
+    assert!(result.is_ok(), "sibling introspection example failed: {}", result.unwrap_err());
+}
