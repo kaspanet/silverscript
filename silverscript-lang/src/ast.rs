@@ -460,6 +460,14 @@ fn parse_postfix(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
                     _ => return Err(CompilerError::Unsupported("tuple indexing only supports split() results".to_string())),
                 }
             }
+            Rule::unary_suffix => {
+                let text = postfix.as_str();
+                if text.ends_with("length") {
+                    expr = Expr::Call { name: "length".to_string(), args: vec![expr] };
+                } else {
+                    return Err(CompilerError::Unsupported("postfix operators are not supported".to_string()));
+                }
+            }
             _ => {
                 return Err(CompilerError::Unsupported("postfix operators are not supported".to_string()));
             }

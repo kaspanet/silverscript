@@ -211,9 +211,11 @@ fn compile_statement(
             }
             _ => Err(CompilerError::Unsupported("tuple assignment only supports split()".to_string())),
         },
-        Statement::Assign { .. } | Statement::Console { .. } => {
-            Err(CompilerError::Unsupported("statement type not supported in compiler yet".to_string()))
+        Statement::Assign { name, expr } => {
+            env.insert(name.clone(), expr.clone());
+            Ok(())
         }
+        Statement::Console { .. } => Err(CompilerError::Unsupported("statement type not supported in compiler yet".to_string())),
     }
 }
 
@@ -442,7 +444,11 @@ fn compile_expr(
             *stack_depth += 1;
             Ok(())
         }
-        Expr::String(_) => Err(CompilerError::Unsupported("string literals are only supported via bytes(...)".to_string())),
+        Expr::String(value) => {
+            builder.add_data(value.as_bytes())?;
+            *stack_depth += 1;
+            Ok(())
+        }
         Expr::Identifier(name) => {
             if !visiting.insert(name.clone()) {
                 return Err(CompilerError::CyclicIdentifier(name.clone()));
@@ -537,8 +543,45 @@ fn compile_expr(
                         *stack_depth += 1;
                         Ok(())
                     }
-                    _ => Err(CompilerError::Unsupported("bytes() only supports string literals".to_string())),
+                    Expr::Identifier(name) => {
+                        if let Some(Expr::String(value)) = env.get(name) {
+                            builder.add_data(value.as_bytes())?;
+                            *stack_depth += 1;
+                            return Ok(());
+                        }
+                        if expr_is_bytes(&args[0], env, param_types) {
+                            compile_expr(&args[0], env, params, param_types, builder, options, visiting, stack_depth)?;
+                            return Ok(());
+                        }
+                        compile_expr(&args[0], env, params, param_types, builder, options, visiting, stack_depth)?;
+                        builder.add_i64(8)?;
+                        *stack_depth += 1;
+                        builder.add_op(OpNum2Bin)?;
+                        *stack_depth -= 1;
+                        Ok(())
+                    }
+                    _ => {
+                        if expr_is_bytes(&args[0], env, param_types) {
+                            compile_expr(&args[0], env, params, param_types, builder, options, visiting, stack_depth)?;
+                            Ok(())
+                        } else {
+                            compile_expr(&args[0], env, params, param_types, builder, options, visiting, stack_depth)?;
+                            builder.add_i64(8)?;
+                            *stack_depth += 1;
+                            builder.add_op(OpNum2Bin)?;
+                            *stack_depth -= 1;
+                            Ok(())
+                        }
+                    }
                 }
+            }
+            "length" => {
+                if args.len() != 1 {
+                    return Err(CompilerError::Unsupported("length() expects a single argument".to_string()));
+                }
+                compile_expr(&args[0], env, params, param_types, builder, options, visiting, stack_depth)?;
+                builder.add_op(OpSize)?;
+                Ok(())
             }
             "int" => {
                 if args.len() != 1 {
@@ -915,7 +958,7 @@ fn compile_concat_operand(
 }
 
 fn is_bytes_type(type_name: &str) -> bool {
-    type_name == "bytes" || type_name.starts_with("bytes") || matches!(type_name, "pubkey" | "sig")
+    type_name == "bytes" || type_name.starts_with("bytes") || matches!(type_name, "pubkey" | "sig" | "string")
 }
 
 fn build_null_data_script(arg: &Expr) -> Result<Vec<u8>, CompilerError> {

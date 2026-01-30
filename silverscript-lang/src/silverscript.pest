@@ -112,7 +112,7 @@ array = { "[" ~ (expression ~ ("," ~ expression)* ~ ","?)? ~ "]" }
 
 modifier = { "constant" }
 
-literal = { BooleanLiteral | number_literal | StringLiteral | DateLiteral | HexLiteral }
+literal = { BooleanLiteral | HexLiteral | number_literal | StringLiteral | DateLiteral }
 number_literal = { NumberLiteral ~ NumberUnit? }
 
 type_name = { "int" | "bool" | "string" | "pubkey" | "sig" | "datasig" | Bytes }
