@@ -554,11 +554,9 @@ fn runs_array_for_loop_with_length_guard() {
     let options = CompileOptions { covenants_enabled: true, without_selector: true };
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
 
-    let mut bytes = Vec::new();
-    bytes.extend(1i64.to_le_bytes());
-    bytes.extend(2i64.to_le_bytes());
-    bytes.extend(3i64.to_le_bytes());
-    let sigscript = compiled.build_sig_script("main", vec![Expr::Bytes(bytes)]).expect("sigscript builds");
+    let sigscript = compiled
+        .build_sig_script("main", vec![vec![1i64, 2i64, 3i64, 4i64].into()])
+        .expect("sigscript builds");
 
     let result = run_script_with_sigscript(compiled.script, sigscript);
     assert!(result.is_ok(), "array for-loop length-guard runtime failed: {}", result.unwrap_err());

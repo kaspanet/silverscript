@@ -103,6 +103,18 @@ impl From<String> for Expr {
     }
 }
 
+impl From<Vec<i64>> for Expr {
+    fn from(value: Vec<i64>) -> Self {
+        Expr::Array(value.into_iter().map(Expr::Int).collect())
+    }
+}
+
+impl From<Vec<Vec<u8>>> for Expr {
+    fn from(value: Vec<Vec<u8>>) -> Self {
+        Expr::Array(value.into_iter().map(Expr::Bytes).collect())
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum SplitPart {

@@ -140,7 +140,8 @@ pub fn compile_contract_ast(
 
 fn expr_matches_type(expr: &Expr, type_name: &str) -> bool {
     if is_array_type(type_name) {
-        return matches!(expr, Expr::Bytes(_));
+        return matches!(expr, Expr::Bytes(_))
+            || matches!(expr, Expr::Array(values) if array_literal_matches_type(values, type_name));
     }
     match type_name {
         "int" => matches!(expr, Expr::Int(_)),
@@ -153,6 +154,23 @@ fn expr_matches_type(expr: &Expr, type_name: &str) -> bool {
         _ => {
             if let Some(size) = type_name.strip_prefix("bytes").and_then(|v| v.parse::<usize>().ok()) {
                 matches!(expr, Expr::Bytes(bytes) if bytes.len() == size)
+            } else {
+                false
+            }
+        }
+    }
+}
+
+fn array_literal_matches_type(values: &[Expr], type_name: &str) -> bool {
+    let Some(element_type) = array_element_type(type_name) else {
+        return false;
+    };
+    match element_type {
+        "int" => values.iter().all(|value| matches!(value, Expr::Int(_))),
+        "byte" => values.iter().all(|value| matches!(value, Expr::Bytes(bytes) if bytes.len() == 1)),
+        _ => {
+            if let Some(size) = element_type.strip_prefix("bytes").and_then(|v| v.parse::<usize>().ok()) {
+                values.iter().all(|value| matches!(value, Expr::Bytes(bytes) if bytes.len() == size))
             } else {
                 false
             }
@@ -218,8 +236,24 @@ impl CompiledContract {
         }
 
         let mut builder = ScriptBuilder::new();
-        for arg in args {
-            push_sigscript_arg(&mut builder, arg)?;
+        for (input, arg) in function.inputs.iter().zip(args) {
+            if is_array_type(&input.type_name) {
+                match arg {
+                    Expr::Array(values) => {
+                        let bytes = encode_array_literal(&values, &input.type_name)?;
+                        builder.add_data(&bytes)?;
+                    }
+                    Expr::Bytes(value) => {
+                        builder.add_data(&value)?;
+                    }
+                    other => return Err(CompilerError::Unsupported(format!(
+                        "function argument '{}' expects {}",
+                        input.name, input.type_name
+                    ))),
+                }
+            } else {
+                push_sigscript_arg(&mut builder, arg)?;
+            }
         }
         if !self.without_selector {
             let selector = function_branch_index(&self.ast, function_name)?;
@@ -248,6 +282,49 @@ fn push_sigscript_arg(builder: &mut ScriptBuilder, arg: Expr) -> Result<(), Comp
         }
     }
     Ok(())
+}
+
+fn encode_array_literal(values: &[Expr], type_name: &str) -> Result<Vec<u8>, CompilerError> {
+    let element_type = array_element_type(type_name)
+        .ok_or_else(|| CompilerError::Unsupported("array element type must have known size".to_string()))?;
+    let mut out = Vec::new();
+    match element_type {
+        "int" => {
+            for value in values {
+                let Expr::Int(number) = value else {
+                    return Err(CompilerError::Unsupported("array literal element type mismatch".to_string()));
+                };
+                out.extend(number.to_le_bytes());
+            }
+        }
+        "byte" => {
+            for value in values {
+                let Expr::Bytes(bytes) = value else {
+                    return Err(CompilerError::Unsupported("array literal element type mismatch".to_string()));
+                };
+                if bytes.len() != 1 {
+                    return Err(CompilerError::Unsupported("array literal element type mismatch".to_string()));
+                }
+                out.extend(bytes);
+            }
+        }
+        _ => {
+            let size = element_type
+                .strip_prefix("bytes")
+                .and_then(|v| v.parse::<usize>().ok())
+                .ok_or_else(|| CompilerError::Unsupported("array element type must have known size".to_string()))?;
+            for value in values {
+                let Expr::Bytes(bytes) = value else {
+                    return Err(CompilerError::Unsupported("array literal element type mismatch".to_string()));
+                };
+                if bytes.len() != size {
+                    return Err(CompilerError::Unsupported("array literal element type mismatch".to_string()));
+                }
+                out.extend(bytes);
+            }
+        }
+    }
+    Ok(out)
 }
 
 pub fn function_branch_index(contract: &ContractAst, function_name: &str) -> Result<i64, CompilerError> {
