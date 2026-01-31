@@ -249,6 +249,124 @@ fn build_sig_script_omits_selector_without_selector() {
 }
 
 #[test]
+fn compiles_function_call_assignment_and_verifies() {
+    let source = r#"
+        contract Calls() {
+            function f(int a, int b) : (int, int) {
+                return(a + b, a * b);
+            }
+
+            function main() {
+                (int sum, int prod) = f(2, 3);
+                require(sum == 5);
+                require(prod == 6);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let selector = selector_for(&compiled, "main");
+    assert!(run_script_with_selector(compiled.script, selector).is_ok());
+}
+
+#[test]
+fn compiles_function_call_statement_drops_returns() {
+    let source = r#"
+        contract Calls() {
+            function f(int a) : (int) {
+                require(a >= 0);
+                return(a + 1);
+            }
+
+            function main() {
+                f(2);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let selector = selector_for(&compiled, "main");
+    assert!(compiled.script.windows(2).any(|window| window == [OpAdd, OpDrop]), "expected return value to be dropped");
+    assert!(run_script_with_selector(compiled.script, selector).is_ok());
+}
+
+#[test]
+fn rejects_function_call_assignment_with_mismatched_signature() {
+    let source = r#"
+        contract Calls() {
+            function f(int a, int b) : (int, int) {
+                return(a + b, a * b);
+            }
+
+            function main() {
+                (int sum, bytes prod) = f(2, 3);
+                require(sum == 5);
+            }
+        }
+    "#;
+
+    assert!(compile_contract(source, &[], CompileOptions::default()).is_err());
+}
+
+#[test]
+fn rejects_function_call_assignment_with_wrong_return_count() {
+    let source = r#"
+        contract Calls() {
+            function f(int a, int b) : (int, int) {
+                return(a + b, a * b);
+            }
+
+            function main() {
+                (int sum) = f(2, 3);
+                require(sum == 5);
+            }
+        }
+    "#;
+
+    assert!(compile_contract(source, &[], CompileOptions::default()).is_err());
+}
+
+#[test]
+fn allows_calling_void_function() {
+    let source = r#"
+        contract Calls() {
+            function ping(int a) {
+                require(a == 1);
+            }
+
+            function main() {
+                ping(1);
+                require(true);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let selector = selector_for(&compiled, "main");
+    assert!(run_script_with_selector(compiled.script, selector).is_ok());
+}
+
+#[test]
+fn allows_calling_void_function_fails() {
+    let source = r#"
+        contract Calls() {
+            function ping(int a) {
+                require(a == 2);
+            }
+
+            function main() {
+                ping(1);
+                require(true);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let selector = selector_for(&compiled, "main");
+    assert!(run_script_with_selector(compiled.script, selector).is_err());
+}
+
+#[test]
 fn rejects_return_without_signature() {
     let source = r#"
         contract C() {

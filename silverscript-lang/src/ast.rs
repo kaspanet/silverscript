@@ -37,6 +37,8 @@ pub enum Statement {
     VariableDefinition { type_name: String, modifiers: Vec<String>, name: String, expr: Option<Expr> },
     TupleAssignment { left_type: String, left_name: String, right_type: String, right_name: String, expr: Expr },
     ArrayPush { name: String, expr: Expr },
+    FunctionCall { name: String, args: Vec<Expr> },
+    FunctionCallAssign { bindings: Vec<ParamAst>, name: String, args: Vec<Expr> },
     Assign { name: String, expr: Expr },
     TimeOp { tx_var: TimeVar, expr: Expr, message: Option<String> },
     Require { expr: Expr, message: Option<String> },
@@ -338,6 +340,42 @@ fn parse_statement(pair: Pair<'_, Rule>) -> Result<Statement, CompilerError> {
             let then_branch = parse_block(then_block)?;
             let else_branch = inner.next().map(parse_block).transpose()?;
             Ok(Statement::If { condition: cond_expr, then_branch, else_branch })
+        }
+        Rule::call_statement => {
+            let mut inner = pair.into_inner();
+            let call_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing function call".to_string()))?;
+            match parse_function_call(call_pair)? {
+                Expr::Call { name, args } => Ok(Statement::FunctionCall { name, args }),
+                _ => Err(CompilerError::Unsupported("function call expected".to_string())),
+            }
+        }
+        Rule::function_call_assignment => {
+            let mut bindings = Vec::new();
+            let mut call_pair = None;
+            for item in pair.into_inner() {
+                if item.as_rule() == Rule::typed_binding {
+                    let mut inner = item.into_inner();
+                    let type_name = inner
+                        .next()
+                        .ok_or_else(|| CompilerError::Unsupported("missing binding type".to_string()))?
+                        .as_str()
+                        .trim()
+                        .to_string();
+                    let name = inner
+                        .next()
+                        .ok_or_else(|| CompilerError::Unsupported("missing binding name".to_string()))?
+                        .as_str()
+                        .to_string();
+                    bindings.push(ParamAst { type_name, name });
+                } else if item.as_rule() == Rule::function_call {
+                    call_pair = Some(item);
+                }
+            }
+            let call_pair = call_pair.ok_or_else(|| CompilerError::Unsupported("missing function call".to_string()))?;
+            match parse_function_call(call_pair)? {
+                Expr::Call { name, args } => Ok(Statement::FunctionCallAssign { bindings, name, args }),
+                _ => Err(CompilerError::Unsupported("function call expected".to_string())),
+            }
         }
         Rule::for_statement => {
             let mut inner = pair.into_inner();

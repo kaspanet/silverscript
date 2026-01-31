@@ -95,8 +95,9 @@ pub fn compile_contract_ast(
     }
 
     let mut compiled_functions = Vec::new();
+    let functions_map = contract.functions.iter().cloned().map(|func| (func.name.clone(), func)).collect::<HashMap<_, _>>();
     for func in &contract.functions {
-        compiled_functions.push(compile_function(func, &constants, options)?);
+        compiled_functions.push(compile_function(func, &constants, options, &functions_map)?);
     }
 
     let script = if options.without_selector {
@@ -231,6 +232,29 @@ fn contains_yield(stmt: &Statement) -> bool {
         }
         Statement::For { body, .. } => body.iter().any(contains_yield),
         _ => false,
+    }
+}
+
+fn validate_return_types(exprs: &[Expr], return_types: &[String], types: &HashMap<String, String>) -> Result<(), CompilerError> {
+    if return_types.is_empty() {
+        return Err(CompilerError::Unsupported("return requires function return types".to_string()));
+    }
+    if return_types.len() != exprs.len() {
+        return Err(CompilerError::Unsupported("return values count must match function return types".to_string()));
+    }
+    for (expr, type_name) in exprs.iter().zip(return_types.iter()) {
+        if !expr_matches_return_type(expr, type_name, types) {
+            return Err(CompilerError::Unsupported(format!("return value expects {type_name}")));
+        }
+    }
+    Ok(())
+}
+
+fn expr_matches_type_with_env(expr: &Expr, type_name: &str, types: &HashMap<String, String>) -> bool {
+    match expr {
+        Expr::Identifier(name) => types.get(name).map_or(false, |t| t == type_name),
+        Expr::Array(values) => is_array_type(type_name) && array_literal_matches_type(values, type_name),
+        _ => expr_matches_type(expr, type_name),
     }
 }
 
@@ -372,6 +396,7 @@ fn compile_function(
     function: &FunctionAst,
     constants: &HashMap<String, Expr>,
     options: CompileOptions,
+    functions: &HashMap<String, FunctionAst>,
 ) -> Result<(String, Vec<u8>), CompilerError> {
     let param_count = function.params.len();
     let params = function
@@ -385,6 +410,11 @@ fn compile_function(
     for param in &function.params {
         if is_array_type(&param.type_name) && array_element_size(&param.type_name).is_none() {
             return Err(CompilerError::Unsupported(format!("array element type must have known size: {}", param.type_name)));
+        }
+    }
+    for return_type in &function.return_types {
+        if is_array_type(return_type) && array_element_size(return_type).is_none() {
+            return Err(CompilerError::Unsupported(format!("array element type must have known size: {return_type}")));
         }
     }
     let mut env: HashMap<String, Expr> = constants.clone();
@@ -405,17 +435,6 @@ fn compile_function(
         if function.return_types.is_empty() {
             return Err(CompilerError::Unsupported("return requires function return types".to_string()));
         }
-        let Statement::Return { exprs } = function.body.last().expect("checked") else {
-            unreachable!();
-        };
-        if function.return_types.len() != exprs.len() {
-            return Err(CompilerError::Unsupported("return values count must match function return types".to_string()));
-        }
-        for (expr, type_name) in exprs.iter().zip(function.return_types.iter()) {
-            if !expr_matches_return_type(expr, type_name, &types) {
-                return Err(CompilerError::Unsupported(format!("return value expects {type_name}")));
-            }
-        }
     }
 
     let body_len = function.body.len();
@@ -425,13 +444,14 @@ fn compile_function(
                 return Err(CompilerError::Unsupported("return statement must be the last statement".to_string()));
             }
             let Statement::Return { exprs } = stmt else { unreachable!() };
+            validate_return_types(exprs, &function.return_types, &types)?;
             for expr in exprs {
                 let resolved = resolve_expr(expr.clone(), &env, &mut HashSet::new())?;
                 yields.push(resolved);
             }
             continue;
         }
-        compile_statement(stmt, &mut env, &params, &mut types, &mut builder, options, constants, &mut yields)?;
+        compile_statement(stmt, &mut env, &params, &mut types, &mut builder, options, constants, functions, &mut yields)?;
     }
 
     let yield_count = yields.len();
@@ -462,6 +482,7 @@ fn compile_statement(
     builder: &mut ScriptBuilder,
     options: CompileOptions,
     contract_constants: &HashMap<String, Expr>,
+    functions: &HashMap<String, FunctionAst>,
     yields: &mut Vec<Expr>,
 ) -> Result<(), CompilerError> {
     match stmt {
@@ -537,10 +558,11 @@ fn compile_statement(
             builder,
             options,
             contract_constants,
+            functions,
             yields,
         ),
         Statement::For { ident, start, end, body } => {
-            compile_for_statement(ident, start, end, body, env, params, types, builder, options, contract_constants, yields)
+            compile_for_statement(ident, start, end, body, env, params, types, builder, options, contract_constants, functions, yields)
         }
         Statement::Yield { expr } => {
             let mut visiting = HashSet::new();
@@ -557,6 +579,41 @@ fn compile_statement(
             }
             _ => Err(CompilerError::Unsupported("tuple assignment only supports split()".to_string())),
         },
+        Statement::FunctionCall { name, args } => {
+            let returns = compile_inline_call(name, args, types, builder, options, contract_constants, functions)?;
+            if !returns.is_empty() {
+                let mut stack_depth = 0i64;
+                for expr in returns {
+                    compile_expr(&expr, env, params, types, builder, options, &mut HashSet::new(), &mut stack_depth)?;
+                    builder.add_op(OpDrop)?;
+                    stack_depth -= 1;
+                }
+            }
+            Ok(())
+        }
+        Statement::FunctionCallAssign { bindings, name, args } => {
+            let function = functions.get(name).ok_or_else(|| CompilerError::Unsupported(format!("function '{}' not found", name)))?;
+            if function.return_types.is_empty() {
+                return Err(CompilerError::Unsupported("function has no return types".to_string()));
+            }
+            if function.return_types.len() != bindings.len() {
+                return Err(CompilerError::Unsupported("return values count must match function return types".to_string()));
+            }
+            for (binding, return_type) in bindings.iter().zip(function.return_types.iter()) {
+                if binding.type_name != *return_type {
+                    return Err(CompilerError::Unsupported("function return types must match binding types".to_string()));
+                }
+            }
+            let returns = compile_inline_call(name, args, types, builder, options, contract_constants, functions)?;
+            if returns.len() != bindings.len() {
+                return Err(CompilerError::Unsupported("return values count must match function return types".to_string()));
+            }
+            for (binding, expr) in bindings.iter().zip(returns.into_iter()) {
+                env.insert(binding.name.clone(), expr);
+                types.insert(binding.name.clone(), binding.type_name.clone());
+            }
+            Ok(())
+        }
         Statement::Assign { name, expr } => {
             if let Some(type_name) = types.get(name) {
                 if is_array_type(type_name) {
@@ -586,6 +643,73 @@ fn compile_statement(
     }
 }
 
+fn compile_inline_call(
+    name: &str,
+    args: &[Expr],
+    caller_types: &HashMap<String, String>,
+    builder: &mut ScriptBuilder,
+    options: CompileOptions,
+    contract_constants: &HashMap<String, Expr>,
+    functions: &HashMap<String, FunctionAst>,
+) -> Result<Vec<Expr>, CompilerError> {
+    let function = functions.get(name).ok_or_else(|| CompilerError::Unsupported(format!("function '{}' not found", name)))?;
+
+    if function.params.len() != args.len() {
+        return Err(CompilerError::Unsupported(format!("function '{}' expects {} arguments", name, function.params.len())));
+    }
+    for (param, arg) in function.params.iter().zip(args.iter()) {
+        if !expr_matches_type_with_env(arg, &param.type_name, caller_types) {
+            return Err(CompilerError::Unsupported(format!("function argument '{}' expects {}", param.name, param.type_name)));
+        }
+    }
+
+    let mut types = function.params.iter().map(|param| (param.name.clone(), param.type_name.clone())).collect::<HashMap<_, _>>();
+    for param in &function.params {
+        if is_array_type(&param.type_name) && array_element_size(&param.type_name).is_none() {
+            return Err(CompilerError::Unsupported(format!("array element type must have known size: {}", param.type_name)));
+        }
+    }
+
+    let mut env: HashMap<String, Expr> = contract_constants.clone();
+    for (param, arg) in function.params.iter().zip(args.iter()) {
+        env.insert(param.name.clone(), arg.clone());
+    }
+
+    let has_return = function.body.iter().any(|stmt| contains_return(stmt));
+    if has_return {
+        if !matches!(function.body.last(), Some(Statement::Return { .. })) {
+            return Err(CompilerError::Unsupported("return statement must be the last statement".to_string()));
+        }
+        if function.body[..function.body.len() - 1].iter().any(|stmt| contains_return(stmt)) {
+            return Err(CompilerError::Unsupported("return statement must be the last statement".to_string()));
+        }
+        if function.body.iter().any(|stmt| contains_yield(stmt)) {
+            return Err(CompilerError::Unsupported("return cannot be combined with yield".to_string()));
+        }
+    }
+
+    let mut yields: Vec<Expr> = Vec::new();
+    let params = HashMap::new();
+    let body_len = function.body.len();
+    for (index, stmt) in function.body.iter().enumerate() {
+        if matches!(stmt, Statement::Return { .. }) {
+            if index != body_len - 1 {
+                return Err(CompilerError::Unsupported("return statement must be the last statement".to_string()));
+            }
+            let Statement::Return { exprs } = stmt else { unreachable!() };
+            validate_return_types(exprs, &function.return_types, &types)?;
+            for expr in exprs {
+                let resolved = resolve_expr(expr.clone(), &env, &mut HashSet::new())?;
+                yields.push(resolved);
+            }
+            continue;
+        }
+        compile_statement(stmt, &mut env, &params, &mut types, builder, options, contract_constants, functions, &mut yields)?;
+    }
+
+    Ok(yields)
+}
+
 fn compile_if_statement(
     condition: &Expr,
     then_branch: &[Statement],
@@ -596,6 +720,7 @@ fn compile_if_statement(
     builder: &mut ScriptBuilder,
     options: CompileOptions,
     contract_constants: &HashMap<String, Expr>,
+    functions: &HashMap<String, FunctionAst>,
     yields: &mut Vec<Expr>,
 ) -> Result<(), CompilerError> {
     let mut stack_depth = 0i64;
@@ -605,13 +730,13 @@ fn compile_if_statement(
     let original_env = env.clone();
     let mut then_env = original_env.clone();
     let mut then_types = types.clone();
-    compile_block(then_branch, &mut then_env, params, &mut then_types, builder, options, contract_constants, yields)?;
+    compile_block(then_branch, &mut then_env, params, &mut then_types, builder, options, contract_constants, functions, yields)?;
 
     let mut else_env = original_env.clone();
     if let Some(else_branch) = else_branch {
         builder.add_op(OpElse)?;
         let mut else_types = types.clone();
-        compile_block(else_branch, &mut else_env, params, &mut else_types, builder, options, contract_constants, yields)?;
+        compile_block(else_branch, &mut else_env, params, &mut else_types, builder, options, contract_constants, functions, yields)?;
     }
 
     builder.add_op(OpEndIf)?;
@@ -679,10 +804,11 @@ fn compile_block(
     builder: &mut ScriptBuilder,
     options: CompileOptions,
     contract_constants: &HashMap<String, Expr>,
+    functions: &HashMap<String, FunctionAst>,
     yields: &mut Vec<Expr>,
 ) -> Result<(), CompilerError> {
     for stmt in statements {
-        compile_statement(stmt, env, params, types, builder, options, contract_constants, yields)?;
+        compile_statement(stmt, env, params, types, builder, options, contract_constants, functions, yields)?;
     }
     Ok(())
 }
@@ -699,6 +825,7 @@ fn compile_for_statement(
     builder: &mut ScriptBuilder,
     options: CompileOptions,
     contract_constants: &HashMap<String, Expr>,
+    functions: &HashMap<String, FunctionAst>,
     yields: &mut Vec<Expr>,
 ) -> Result<(), CompilerError> {
     let start = eval_const_int(start_expr, contract_constants)?;
@@ -711,7 +838,7 @@ fn compile_for_statement(
     let previous = env.get(&name).cloned();
     for value in start..end {
         env.insert(name.clone(), Expr::Int(value));
-        compile_block(body, env, params, types, builder, options, contract_constants, yields)?;
+        compile_block(body, env, params, types, builder, options, contract_constants, functions, yields)?;
     }
 
     match previous {
