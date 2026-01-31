@@ -617,6 +617,7 @@ fn compile_statement(
                 name,
                 args,
                 types,
+                env,
                 builder,
                 options,
                 contract_constants,
@@ -651,6 +652,7 @@ fn compile_statement(
                 name,
                 args,
                 types,
+                env,
                 builder,
                 options,
                 contract_constants,
@@ -699,7 +701,8 @@ fn compile_statement(
 fn compile_inline_call(
     name: &str,
     args: &[Expr],
-    caller_types: &HashMap<String, String>,
+    caller_types: &mut HashMap<String, String>,
+    caller_env: &mut HashMap<String, Expr>,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
     contract_constants: &HashMap<String, Expr>,
@@ -731,8 +734,14 @@ fn compile_inline_call(
     }
 
     let mut env: HashMap<String, Expr> = contract_constants.clone();
-    for (param, arg) in function.params.iter().zip(args.iter()) {
-        env.insert(param.name.clone(), arg.clone());
+    for (index, (param, arg)) in function.params.iter().zip(args.iter()).enumerate() {
+        let resolved = resolve_expr(arg.clone(), caller_env, &mut HashSet::new())?;
+        let temp_name = format!("__arg_{name}_{index}");
+        env.insert(temp_name.clone(), resolved.clone());
+        types.insert(temp_name.clone(), param.type_name.clone());
+        env.insert(param.name.clone(), Expr::Identifier(temp_name.clone()));
+        caller_env.insert(temp_name.clone(), resolved);
+        caller_types.insert(temp_name, param.type_name.clone());
     }
 
     let has_return = function.body.iter().any(|stmt| contains_return(stmt));
@@ -777,6 +786,15 @@ fn compile_inline_call(
             callee_index,
             &mut yields,
         )?;
+    }
+
+    for (name, value) in env.iter() {
+        if name.starts_with("__arg_") {
+            if let Some(type_name) = types.get(name) {
+                caller_types.entry(name.clone()).or_insert_with(|| type_name.clone());
+            }
+            caller_env.entry(name.clone()).or_insert_with(|| value.clone());
+        }
     }
 
     Ok(yields)
@@ -1017,6 +1035,9 @@ fn eval_const_int(expr: &Expr, constants: &HashMap<String, Expr>) -> Result<i64,
 fn resolve_expr(expr: Expr, env: &HashMap<String, Expr>, visiting: &mut HashSet<String>) -> Result<Expr, CompilerError> {
     match expr {
         Expr::Identifier(name) => {
+            if name.starts_with("__arg_") {
+                return Ok(Expr::Identifier(name));
+            }
             if let Some(value) = env.get(&name) {
                 if !visiting.insert(name.clone()) {
                     return Err(CompilerError::CyclicIdentifier(name));
@@ -1590,16 +1611,38 @@ fn compile_expr(
             Ok(())
         }
         Expr::ArrayIndex { source, index } => {
-            let element_type = match source.as_ref() {
-                Expr::Identifier(name) => types
-                    .get(name)
-                    .and_then(|t| array_element_type(t))
-                    .ok_or_else(|| CompilerError::Unsupported("array index requires array identifier".to_string()))?,
-                _ => return Err(CompilerError::Unsupported("array index requires array identifier".to_string())),
+            let resolved_source = match source.as_ref() {
+                Expr::Identifier(_) => source.as_ref().clone(),
+                _ => resolve_expr(*source.clone(), env, visiting)?,
+            };
+            let element_type = match &resolved_source {
+                Expr::Identifier(name) => {
+                    let type_name = types.get(name).or_else(|| {
+                        env.get(name).and_then(|value| {
+                            if let Expr::Identifier(inner) = value {
+                                types.get(inner)
+                            } else {
+                                None
+                            }
+                        })
+                    });
+                    type_name
+                        .and_then(|t| array_element_type(t))
+                        .ok_or_else(|| {
+                            CompilerError::Unsupported(format!(
+                                "array index requires array identifier: {name}"
+                            ))
+                        })?
+                }
+                _ => {
+                    return Err(CompilerError::Unsupported(
+                        "array index requires array identifier".to_string(),
+                    ))
+                }
             };
             let element_size = fixed_type_size(element_type)
                 .ok_or_else(|| CompilerError::Unsupported("array element type must have known size".to_string()))?;
-            compile_expr(source, env, params, types, builder, options, visiting, stack_depth)?;
+            compile_expr(&resolved_source, env, params, types, builder, options, visiting, stack_depth)?;
             compile_expr(index, env, params, types, builder, options, visiting, stack_depth)?;
             builder.add_i64(element_size)?;
             *stack_depth += 1;

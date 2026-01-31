@@ -266,7 +266,8 @@ fn compiles_function_call_assignment_and_verifies() {
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
     let selector = selector_for(&compiled, "main");
-    assert!(run_script_with_selector(compiled.script, selector).is_ok());
+    let result = run_script_with_selector(compiled.script, selector);
+    assert!(result.is_ok(), "array/loop/function-call example failed: {}", result.unwrap_err());
 }
 
 #[test]
@@ -343,7 +344,8 @@ fn allows_calling_void_function() {
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
     let selector = selector_for(&compiled, "main");
-    assert!(run_script_with_selector(compiled.script, selector).is_ok());
+    let result = run_script_with_selector(compiled.script, selector);
+    assert!(result.is_ok(), "array/loop/function-call example failed: {}", result.unwrap_err());
 }
 
 #[test]
@@ -420,7 +422,8 @@ fn allows_call_chain_with_earlier_defined_functions() {
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
     let selector = selector_for(&compiled, "main");
-    assert!(run_script_with_selector(compiled.script, selector).is_ok());
+    let result = run_script_with_selector(compiled.script, selector);
+    assert!(result.is_ok(), "array/loop/function-call example failed: {}", result.unwrap_err());
 }
 #[test]
 fn allows_calling_void_function_fails() {
@@ -826,6 +829,36 @@ fn runs_array_for_loop_with_length_guard() {
 
     let result = run_script_with_sigscript(compiled.script, sigscript);
     assert!(result.is_ok(), "array for-loop length-guard runtime failed: {}", result.unwrap_err());
+}
+
+#[test]
+fn runs_array_loop_and_function_calls_example() {
+    let source = r#"
+        contract Arrays() {
+            function sumArray(int[] arr) : (int) {
+                require(arr.length == 3);
+                int sum = 0;
+                for (i, 0, 3) {
+                    sum = sum + arr[i];
+                }
+                return(sum);
+            }
+
+            function main() {
+                int[] x;
+                x.push(1);
+                x.push(2);
+                x.push(3);
+                (int total) = sumArray(x);
+                require(total == 6);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let selector = selector_for(&compiled, "main");
+    let result = run_script_with_selector(compiled.script, selector);
+    assert!(result.is_ok(), "array/loop/function-call example failed: {}", result.unwrap_err());
 }
 
 #[test]
