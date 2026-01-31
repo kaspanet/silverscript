@@ -175,6 +175,13 @@ pub enum IntrospectionKind {
     OutputLockingBytecode,
 }
 
+fn validate_user_identifier(name: &str) -> Result<(), CompilerError> {
+    if name.starts_with("__") {
+        return Err(CompilerError::Unsupported("identifier cannot start with '__'".to_string()));
+    }
+    Ok(())
+}
+
 pub fn parse_contract_ast(source: &str) -> Result<ContractAst, CompilerError> {
     let mut pairs = SilverScriptParser::parse(Rule::source_file, source)?;
     let source_pair = pairs.next().ok_or_else(|| CompilerError::Unsupported("empty source".to_string()))?;
@@ -214,6 +221,7 @@ fn parse_contract_definition(pair: Pair<'_, Rule>) -> Result<ContractAst, Compil
                         const_inner.next().ok_or_else(|| CompilerError::Unsupported("missing constant type".to_string()))?;
                     let name_pair =
                         const_inner.next().ok_or_else(|| CompilerError::Unsupported("missing constant name".to_string()))?;
+                    validate_user_identifier(name_pair.as_str())?;
                     let expr_pair =
                         const_inner.next().ok_or_else(|| CompilerError::Unsupported("missing constant initializer".to_string()))?;
                     let expr = parse_expression(expr_pair)?;
@@ -275,6 +283,7 @@ fn parse_statement(pair: Pair<'_, Rule>) -> Result<Statement, CompilerError> {
             }
 
             let ident = inner.next().ok_or_else(|| CompilerError::Unsupported("missing variable name".to_string()))?;
+            validate_user_identifier(ident.as_str())?;
             let expr = inner.next().map(parse_expression).transpose()?;
             Ok(Statement::VariableDefinition { type_name, modifiers, name: ident.as_str().to_string(), expr })
         }
@@ -286,6 +295,8 @@ fn parse_statement(pair: Pair<'_, Rule>) -> Result<Statement, CompilerError> {
             let right_type =
                 inner.next().ok_or_else(|| CompilerError::Unsupported("missing right tuple type".to_string()))?.as_str().to_string();
             let right_ident = inner.next().ok_or_else(|| CompilerError::Unsupported("missing right tuple name".to_string()))?;
+            validate_user_identifier(left_ident.as_str())?;
+            validate_user_identifier(right_ident.as_str())?;
             let expr_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing tuple expression".to_string()))?;
 
             let expr = parse_expression(expr_pair)?;
@@ -366,6 +377,7 @@ fn parse_statement(pair: Pair<'_, Rule>) -> Result<Statement, CompilerError> {
                         .ok_or_else(|| CompilerError::Unsupported("missing binding name".to_string()))?
                         .as_str()
                         .to_string();
+                    validate_user_identifier(&name)?;
                     bindings.push(ParamAst { type_name, name });
                 } else if item.as_rule() == Rule::function_call {
                     call_pair = Some(item);
@@ -380,6 +392,7 @@ fn parse_statement(pair: Pair<'_, Rule>) -> Result<Statement, CompilerError> {
         Rule::for_statement => {
             let mut inner = pair.into_inner();
             let ident = inner.next().ok_or_else(|| CompilerError::Unsupported("missing for loop identifier".to_string()))?;
+            validate_user_identifier(ident.as_str())?;
             let start_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing for loop start".to_string()))?;
             let end_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing for loop end".to_string()))?;
             let block_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing for loop body".to_string()))?;
@@ -580,6 +593,7 @@ fn parse_typed_parameter_list(pair: Pair<'_, Rule>) -> Result<Vec<ParamAst>, Com
         let type_name =
             inner.next().ok_or_else(|| CompilerError::Unsupported("missing parameter type".to_string()))?.as_str().trim().to_string();
         let ident = inner.next().ok_or_else(|| CompilerError::Unsupported("missing parameter name".to_string()))?.as_str().to_string();
+        validate_user_identifier(&ident)?;
         params.push(ParamAst { type_name, name: ident });
     }
     Ok(params)

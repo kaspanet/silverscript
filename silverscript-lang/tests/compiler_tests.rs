@@ -206,6 +206,28 @@ fn build_sig_script_rejects_wrong_argument_type() {
 }
 
 #[test]
+fn rejects_double_underscore_variable_names() {
+    let source = r#"
+        contract Bad() {
+            function main() {
+                int __tmp = 1;
+                require(__tmp == 1);
+            }
+        }
+    "#;
+    assert!(parse_contract_ast(source).is_err());
+
+    let source = r#"
+        contract Bad(int __arg) {
+            function main() {
+                require(__arg == 1);
+            }
+        }
+    "#;
+    assert!(parse_contract_ast(source).is_err());
+}
+
+#[test]
 fn build_sig_script_rejects_mismatched_bytes_length() {
     let source = r#"
         contract C() {
