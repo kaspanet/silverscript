@@ -7,6 +7,10 @@ use thiserror::Error;
 use crate::ast::{
     BinaryOp, ContractAst, Expr, FunctionAst, IntrospectionKind, NullaryOp, SplitPart, Statement, TimeVar, UnaryOp, parse_contract_ast,
 };
+use crate::debug::{
+    DebugConstantMapping, DebugEvent, DebugEventKind, DebugFunctionRange, DebugInfo, DebugParamMapping, DebugRecorder,
+    DebugVariableUpdate,
+};
 use crate::parser::Rule;
 use chrono::NaiveDateTime;
 
@@ -30,11 +34,12 @@ pub enum CompilerError {
 pub struct CompileOptions {
     pub covenants_enabled: bool,
     pub without_selector: bool,
+    pub record_debug_spans: bool,
 }
 
 impl Default for CompileOptions {
     fn default() -> Self {
-        Self { covenants_enabled: true, without_selector: false }
+        Self { covenants_enabled: true, without_selector: false, record_debug_spans: false }
     }
 }
 
@@ -59,17 +64,27 @@ pub struct CompiledContract {
     pub ast: ContractAst,
     pub abi: FunctionAbi,
     pub without_selector: bool,
+    pub debug_info: Option<DebugInfo>,
 }
 
 pub fn compile_contract(source: &str, constructor_args: &[Expr], options: CompileOptions) -> Result<CompiledContract, CompilerError> {
     let contract = parse_contract_ast(source)?;
-    compile_contract_ast(&contract, constructor_args, options)
+    compile_contract_impl(&contract, constructor_args, options, Some(source))
 }
 
 pub fn compile_contract_ast(
     contract: &ContractAst,
     constructor_args: &[Expr],
     options: CompileOptions,
+) -> Result<CompiledContract, CompilerError> {
+    compile_contract_impl(contract, constructor_args, options, None)
+}
+
+fn compile_contract_impl(
+    contract: &ContractAst,
+    constructor_args: &[Expr],
+    options: CompileOptions,
+    source: Option<&str>,
 ) -> Result<CompiledContract, CompilerError> {
     if contract.functions.is_empty() {
         return Err(CompilerError::Unsupported("contract has no functions".to_string()));
@@ -95,6 +110,19 @@ pub fn compile_contract_ast(
     }
 
     let mut compiled_functions = Vec::new();
+    let mut recorder = if options.record_debug_spans { Some(DebugRecorder::default()) } else { None };
+
+    // Record constructor params as constants for debugging
+    if let Some(ref mut rec) = recorder {
+        for (param, value) in contract.params.iter().zip(constructor_args.iter()) {
+            rec.record_constant(DebugConstantMapping {
+                name: param.name.clone(),
+                type_name: param.type_name.clone(),
+                value: value.clone(),
+            });
+        }
+    }
+
     let functions_map = contract.functions.iter().cloned().map(|func| (func.name.clone(), func)).collect::<HashMap<_, _>>();
     let function_order =
         contract.functions.iter().enumerate().map(|(index, func)| (func.name.clone(), index)).collect::<HashMap<_, _>>();
@@ -103,42 +131,146 @@ pub fn compile_contract_ast(
     }
 
     let script = if options.without_selector {
-        compiled_functions.first().ok_or_else(|| CompilerError::Unsupported("contract has no functions".to_string()))?.1.clone()
+        let compiled =
+            compiled_functions.first().ok_or_else(|| CompilerError::Unsupported("contract has no functions".to_string()))?;
+        emit_events_with_offset(&compiled.events, 0, &mut recorder);
+        emit_variable_updates_with_offset(&compiled.variable_updates, 0, &mut recorder);
+        record_function_range(&compiled.name, 0, compiled.script.len(), &mut recorder);
+        record_param_mappings(&compiled.param_mappings, &mut recorder);
+        compiled.script.clone()
     } else {
         let mut builder = ScriptBuilder::new();
         let total = compiled_functions.len();
-        for (index, (_, script)) in compiled_functions.iter().enumerate() {
-            builder.add_op(OpDup)?;
-            builder.add_i64(index as i64)?;
-            builder.add_op(OpNumEqual)?;
-            builder.add_op(OpIf)?;
-            builder.add_op(OpDrop)?;
-            builder.add_ops(script)?;
-            if index == total - 1 {
-                builder.add_op(OpElse)?;
+        for (index, compiled) in compiled_functions.iter().enumerate() {
+            record_synthetic_event(&mut builder, &mut recorder, "dispatcher/synthetic", |builder| {
+                builder.add_op(OpDup)?;
+                builder.add_i64(index as i64)?;
+                builder.add_op(OpNumEqual)?;
+                builder.add_op(OpIf)?;
                 builder.add_op(OpDrop)?;
-                builder.add_op(OpFalse)?;
-                builder.add_op(OpVerify)?;
-            } else {
-                builder.add_op(OpElse)?;
-            }
+                Ok(())
+            })?;
+
+            let func_start = builder.script().len();
+            builder.add_ops(&compiled.script)?;
+            emit_events_with_offset(&compiled.events, func_start, &mut recorder);
+            emit_variable_updates_with_offset(&compiled.variable_updates, func_start, &mut recorder);
+            record_function_range(&compiled.name, func_start, func_start + compiled.script.len(), &mut recorder);
+            record_param_mappings(&compiled.param_mappings, &mut recorder);
+
+            record_synthetic_event(&mut builder, &mut recorder, "dispatcher/synthetic", |builder| {
+                if index == total - 1 {
+                    builder.add_op(OpElse)?;
+                    builder.add_op(OpDrop)?;
+                    builder.add_op(OpFalse)?;
+                    builder.add_op(OpVerify)?;
+                } else {
+                    builder.add_op(OpElse)?;
+                }
+                Ok(())
+            })?;
         }
 
-        for _ in 0..total {
-            builder.add_op(OpEndIf)?;
-        }
+        record_synthetic_event(&mut builder, &mut recorder, "dispatcher/synthetic", |builder| {
+            for _ in 0..total {
+                builder.add_op(OpEndIf)?;
+            }
+            Ok(())
+        })?;
 
         builder.drain()
     };
 
     let abi = build_function_abi(contract);
+    let debug_info = recorder.map(|rec| rec.into_debug_info(source.unwrap_or_default().to_string()));
     Ok(CompiledContract {
         contract_name: contract.name.clone(),
         script,
         ast: contract.clone(),
         abi,
         without_selector: options.without_selector,
+        debug_info,
     })
+}
+
+#[derive(Debug)]
+struct CompiledFunction {
+    name: String,
+    script: Vec<u8>,
+    events: Vec<DebugEvent>,
+    variable_updates: Vec<DebugVariableUpdate>,
+    param_mappings: Vec<DebugParamMapping>,
+}
+
+fn emit_events_with_offset(events: &[DebugEvent], offset: usize, recorder: &mut Option<DebugRecorder>) {
+    let Some(recorder) = recorder.as_mut() else {
+        return;
+    };
+    for event in events {
+        recorder.record(DebugEvent {
+            bytecode_start: event.bytecode_start + offset,
+            bytecode_end: event.bytecode_end + offset,
+            span: event.span,
+            kind: event.kind.clone(),
+        });
+    }
+}
+
+fn emit_variable_updates_with_offset(updates: &[DebugVariableUpdate], offset: usize, recorder: &mut Option<DebugRecorder>) {
+    let Some(recorder) = recorder.as_mut() else {
+        return;
+    };
+    for update in updates {
+        recorder.record_variable_update(DebugVariableUpdate {
+            name: update.name.clone(),
+            type_name: update.type_name.clone(),
+            expr: update.expr.clone(),
+            bytecode_offset: update.bytecode_offset + offset,
+            span: update.span,
+            function: update.function.clone(),
+        });
+    }
+}
+
+fn record_function_range(name: &str, start: usize, end: usize, recorder: &mut Option<DebugRecorder>) {
+    let Some(recorder) = recorder.as_mut() else {
+        return;
+    };
+    recorder.record_function(DebugFunctionRange { name: name.to_string(), bytecode_start: start, bytecode_end: end });
+}
+
+fn record_param_mappings(params: &[DebugParamMapping], recorder: &mut Option<DebugRecorder>) {
+    let Some(recorder) = recorder.as_mut() else {
+        return;
+    };
+    for param in params {
+        recorder.record_param(param.clone());
+    }
+}
+
+fn record_synthetic_event<F>(
+    builder: &mut ScriptBuilder,
+    recorder: &mut Option<DebugRecorder>,
+    label: &str,
+    f: F,
+) -> Result<(), CompilerError>
+where
+    F: FnOnce(&mut ScriptBuilder) -> Result<(), CompilerError>,
+{
+    let start = builder.script().len();
+    f(builder)?;
+    let end = builder.script().len();
+    if end > start {
+        if let Some(recorder) = recorder.as_mut() {
+            recorder.record(DebugEvent {
+                bytecode_start: start,
+                bytecode_end: end,
+                span: None,
+                kind: DebugEventKind::Synthetic { label: label.to_string() },
+            });
+        }
+    }
+    Ok(())
 }
 
 fn expr_matches_type(expr: &Expr, type_name: &str) -> bool {
@@ -401,7 +533,7 @@ fn compile_function(
     options: CompileOptions,
     functions: &HashMap<String, FunctionAst>,
     function_order: &HashMap<String, usize>,
-) -> Result<(String, Vec<u8>), CompilerError> {
+) -> Result<CompiledFunction, CompilerError> {
     let param_count = function.params.len();
     let params = function
         .params
@@ -410,6 +542,21 @@ fn compile_function(
         .enumerate()
         .map(|(index, name)| (name, (param_count - 1 - index) as i64))
         .collect::<HashMap<_, _>>();
+    let param_mappings = if options.record_debug_spans {
+        function
+            .params
+            .iter()
+            .enumerate()
+            .map(|(index, param)| DebugParamMapping {
+                name: param.name.clone(),
+                type_name: param.type_name.clone(),
+                stack_index: (param_count - 1 - index) as i64,
+                function: function.name.clone(),
+            })
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
     let mut types = function.params.iter().map(|param| (param.name.clone(), param.type_name.clone())).collect::<HashMap<_, _>>();
     for param in &function.params {
         if is_array_type(&param.type_name) && array_element_size(&param.type_name).is_none() {
@@ -424,6 +571,8 @@ fn compile_function(
     let mut env: HashMap<String, Expr> = constants.clone();
     let mut builder = ScriptBuilder::new();
     let mut yields: Vec<Expr> = Vec::new();
+    let mut recorder = if options.record_debug_spans { Some(DebugRecorder::default()) } else { None };
+    let mut variable_updates: Vec<DebugVariableUpdate> = Vec::new();
 
     let has_return = function.body.iter().any(contains_return);
     if has_return {
@@ -447,7 +596,7 @@ fn compile_function(
             if index != body_len - 1 {
                 return Err(CompilerError::Unsupported("return statement must be the last statement".to_string()));
             }
-            let Statement::Return { exprs } = stmt else { unreachable!() };
+            let Statement::Return { exprs, .. } = stmt else { unreachable!() };
             validate_return_types(exprs, &function.return_types, &types)?;
             for expr in exprs {
                 let resolved = resolve_expr(expr.clone(), &env, &mut HashSet::new())?;
@@ -467,6 +616,9 @@ fn compile_function(
             function_order,
             function_index,
             &mut yields,
+            &mut recorder,
+            &mut variable_updates,
+            &function.name,
         )?;
     }
 
@@ -487,7 +639,8 @@ fn compile_function(
             builder.add_op(OpDrop)?;
         }
     }
-    Ok((function.name.clone(), builder.drain()))
+    let events = recorder.map(|rec| rec.into_events()).unwrap_or_default();
+    Ok(CompiledFunction { name: function.name.clone(), script: builder.drain(), events, variable_updates, param_mappings })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -503,8 +656,26 @@ fn compile_statement(
     function_order: &HashMap<String, usize>,
     function_index: usize,
     yields: &mut Vec<Expr>,
+    recorder: &mut Option<DebugRecorder>,
+    variable_updates: &mut Vec<DebugVariableUpdate>,
+    function_name: &str,
 ) -> Result<(), CompilerError> {
-    match stmt {
+    let start = builder.script().len();
+    let mut record_update = |name: &str, type_name: &str, expr: Expr| -> Result<(), CompilerError> {
+        if recorder.is_some() {
+            let resolved = resolve_expr(expr, env, &mut HashSet::new())?;
+            variable_updates.push(DebugVariableUpdate {
+                name: name.to_string(),
+                type_name: type_name.to_string(),
+                expr: resolved,
+                bytecode_offset: start,
+                span: stmt.span(),
+                function: function_name.to_string(),
+            });
+        }
+        Ok(())
+    };
+    let result = match stmt {
         Statement::VariableDefinition { type_name, name, expr, .. } => {
             if is_array_type(type_name) {
                 if array_element_size(type_name).is_none() {
@@ -521,18 +692,20 @@ fn compile_statement(
                     Some(_) => return Err(CompilerError::Unsupported("array initializer must be another array".to_string())),
                     None => Expr::Bytes(Vec::new()),
                 };
+                record_update(name, type_name, initial.clone())?;
                 env.insert(name.clone(), initial);
                 types.insert(name.clone(), type_name.clone());
                 Ok(())
             } else {
                 let expr =
                     expr.clone().ok_or_else(|| CompilerError::Unsupported("variable definition requires initializer".to_string()))?;
+                record_update(name, type_name, expr.clone())?;
                 env.insert(name.clone(), expr);
                 types.insert(name.clone(), type_name.clone());
                 Ok(())
             }
         }
-        Statement::ArrayPush { name, expr } => {
+        Statement::ArrayPush { name, expr, .. } => {
             let array_type = types.get(name).ok_or_else(|| CompilerError::UndefinedIdentifier(name.clone()))?;
             if !is_array_type(array_type) {
                 return Err(CompilerError::Unsupported("push() only supported on arrays".to_string()));
@@ -557,6 +730,7 @@ fn compile_statement(
 
             let current = env.get(name).cloned().unwrap_or_else(|| Expr::Bytes(Vec::new()));
             let updated = Expr::Binary { op: BinaryOp::Add, left: Box::new(current), right: Box::new(element_expr) };
+            record_update(name, array_type, updated.clone())?;
             env.insert(name.clone(), updated);
             Ok(())
         }
@@ -567,7 +741,7 @@ fn compile_statement(
             Ok(())
         }
         Statement::TimeOp { tx_var, expr, .. } => compile_time_op_statement(tx_var, expr, env, params, types, builder, options),
-        Statement::If { condition, then_branch, else_branch } => compile_if_statement(
+        Statement::If { condition, then_branch, else_branch, .. } => compile_if_statement(
             condition,
             then_branch,
             else_branch.as_deref(),
@@ -581,8 +755,11 @@ fn compile_statement(
             function_order,
             function_index,
             yields,
+            recorder,
+            variable_updates,
+            function_name,
         ),
-        Statement::For { ident, start, end, body } => compile_for_statement(
+        Statement::For { ident, start, end, body, .. } => compile_for_statement(
             ident,
             start,
             end,
@@ -597,23 +774,30 @@ fn compile_statement(
             function_order,
             function_index,
             yields,
+            recorder,
+            variable_updates,
+            function_name,
         ),
-        Statement::Yield { expr } => {
+        Statement::Yield { expr, .. } => {
             let mut visiting = HashSet::new();
             let resolved = resolve_expr(expr.clone(), env, &mut visiting)?;
             yields.push(resolved);
             Ok(())
         }
         Statement::Return { .. } => Err(CompilerError::Unsupported("return statement must be the last statement".to_string())),
-        Statement::TupleAssignment { left_name, right_name, expr, .. } => match expr.clone() {
+        Statement::TupleAssignment { left_type, left_name, right_type, right_name, expr, .. } => match expr.clone() {
             Expr::Split { source, index, .. } => {
-                env.insert(left_name.clone(), Expr::Split { source: source.clone(), index: index.clone(), part: SplitPart::Left });
-                env.insert(right_name.clone(), Expr::Split { source, index, part: SplitPart::Right });
+                let left_expr = Expr::Split { source: source.clone(), index: index.clone(), part: SplitPart::Left };
+                let right_expr = Expr::Split { source, index, part: SplitPart::Right };
+                record_update(left_name, left_type, left_expr.clone())?;
+                record_update(right_name, right_type, right_expr.clone())?;
+                env.insert(left_name.clone(), left_expr);
+                env.insert(right_name.clone(), right_expr);
                 Ok(())
             }
             _ => Err(CompilerError::Unsupported("tuple assignment only supports split()".to_string())),
         },
-        Statement::FunctionCall { name, args } => {
+        Statement::FunctionCall { name, args, .. } => {
             let returns = compile_inline_call(
                 name,
                 args,
@@ -636,7 +820,7 @@ fn compile_statement(
             }
             Ok(())
         }
-        Statement::FunctionCallAssign { bindings, name, args } => {
+        Statement::FunctionCallAssign { bindings, name, args, .. } => {
             let function = functions.get(name).ok_or_else(|| CompilerError::Unsupported(format!("function '{}' not found", name)))?;
             if function.return_types.is_empty() {
                 return Err(CompilerError::Unsupported("function has no return types".to_string()));
@@ -665,12 +849,25 @@ fn compile_statement(
                 return Err(CompilerError::Unsupported("return values count must match function return types".to_string()));
             }
             for (binding, expr) in bindings.iter().zip(returns.into_iter()) {
+                // Store the expression directly without resolution - the debugger will evaluate it
+                // Note: These expressions may contain internal names from inline expansion,
+                // so evaluation may fail, but the variable will still appear in the list.
+                if recorder.is_some() {
+                    variable_updates.push(DebugVariableUpdate {
+                        name: binding.name.clone(),
+                        type_name: binding.type_name.clone(),
+                        expr: expr.clone(),
+                        bytecode_offset: start,
+                        span: stmt.span(),
+                        function: function_name.to_string(),
+                    });
+                }
                 env.insert(binding.name.clone(), expr);
                 types.insert(binding.name.clone(), binding.type_name.clone());
             }
             Ok(())
         }
-        Statement::Assign { name, expr } => {
+        Statement::Assign { name, expr, .. } => {
             if let Some(type_name) = types.get(name) {
                 if is_array_type(type_name) {
                     match expr {
@@ -692,11 +889,29 @@ fn compile_statement(
             }
             let updated = if let Some(previous) = env.get(name) { replace_identifier(expr, name, previous) } else { expr.clone() };
             let resolved = resolve_expr(updated, env, &mut HashSet::new())?;
+            let type_name = types.get(name).cloned().unwrap_or_else(|| "unknown".to_string());
+            record_update(name, &type_name, resolved.clone())?;
             env.insert(name.clone(), resolved);
             Ok(())
         }
         Statement::Console { .. } => Ok(()),
+    };
+
+    if result.is_ok() {
+        let end = builder.script().len();
+        if end > start {
+            if let Some(recorder) = recorder.as_mut() {
+                recorder.record(DebugEvent {
+                    bytecode_start: start,
+                    bytecode_end: end,
+                    span: stmt.span(),
+                    kind: DebugEventKind::Statement { stmt_type: stmt.kind_name().to_string() },
+                });
+            }
+        }
     }
+
+    result
 }
 
 fn compile_inline_call(
@@ -760,13 +975,15 @@ fn compile_inline_call(
 
     let mut yields: Vec<Expr> = Vec::new();
     let params = HashMap::new();
+    let mut inline_recorder: Option<DebugRecorder> = None;
+    let mut inline_variable_updates: Vec<DebugVariableUpdate> = Vec::new();
     let body_len = function.body.len();
     for (index, stmt) in function.body.iter().enumerate() {
         if matches!(stmt, Statement::Return { .. }) {
             if index != body_len - 1 {
                 return Err(CompilerError::Unsupported("return statement must be the last statement".to_string()));
             }
-            let Statement::Return { exprs } = stmt else { unreachable!() };
+            let Statement::Return { exprs, .. } = stmt else { unreachable!() };
             validate_return_types(exprs, &function.return_types, &types)?;
             for expr in exprs {
                 let resolved = resolve_expr(expr.clone(), &env, &mut HashSet::new())?;
@@ -786,6 +1003,9 @@ fn compile_inline_call(
             function_order,
             callee_index,
             &mut yields,
+            &mut inline_recorder,
+            &mut inline_variable_updates,
+            &function.name,
         )?;
     }
 
@@ -816,6 +1036,9 @@ fn compile_if_statement(
     function_order: &HashMap<String, usize>,
     function_index: usize,
     yields: &mut Vec<Expr>,
+    recorder: &mut Option<DebugRecorder>,
+    variable_updates: &mut Vec<DebugVariableUpdate>,
+    function_name: &str,
 ) -> Result<(), CompilerError> {
     let mut stack_depth = 0i64;
     compile_expr(condition, env, params, types, builder, options, &mut HashSet::new(), &mut stack_depth)?;
@@ -836,6 +1059,9 @@ fn compile_if_statement(
         function_order,
         function_index,
         yields,
+        recorder,
+        variable_updates,
+        function_name,
     )?;
 
     let mut else_env = original_env.clone();
@@ -854,6 +1080,9 @@ fn compile_if_statement(
             function_order,
             function_index,
             yields,
+            recorder,
+            variable_updates,
+            function_name,
         )?;
     }
 
@@ -927,6 +1156,9 @@ fn compile_block(
     function_order: &HashMap<String, usize>,
     function_index: usize,
     yields: &mut Vec<Expr>,
+    recorder: &mut Option<DebugRecorder>,
+    variable_updates: &mut Vec<DebugVariableUpdate>,
+    function_name: &str,
 ) -> Result<(), CompilerError> {
     for stmt in statements {
         compile_statement(
@@ -941,6 +1173,9 @@ fn compile_block(
             function_order,
             function_index,
             yields,
+            recorder,
+            variable_updates,
+            function_name,
         )?;
     }
     Ok(())
@@ -962,6 +1197,9 @@ fn compile_for_statement(
     function_order: &HashMap<String, usize>,
     function_index: usize,
     yields: &mut Vec<Expr>,
+    recorder: &mut Option<DebugRecorder>,
+    variable_updates: &mut Vec<DebugVariableUpdate>,
+    function_name: &str,
 ) -> Result<(), CompilerError> {
     let start = eval_const_int(start_expr, contract_constants)?;
     let end = eval_const_int(end_expr, contract_constants)?;
@@ -985,6 +1223,9 @@ fn compile_for_statement(
             function_order,
             function_index,
             yields,
+            recorder,
+            variable_updates,
+            function_name,
         )?;
     }
 
