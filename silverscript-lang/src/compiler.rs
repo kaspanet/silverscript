@@ -1618,27 +1618,13 @@ fn compile_expr(
             let element_type = match &resolved_source {
                 Expr::Identifier(name) => {
                     let type_name = types.get(name).or_else(|| {
-                        env.get(name).and_then(|value| {
-                            if let Expr::Identifier(inner) = value {
-                                types.get(inner)
-                            } else {
-                                None
-                            }
-                        })
+                        env.get(name).and_then(|value| if let Expr::Identifier(inner) = value { types.get(inner) } else { None })
                     });
                     type_name
                         .and_then(|t| array_element_type(t))
-                        .ok_or_else(|| {
-                            CompilerError::Unsupported(format!(
-                                "array index requires array identifier: {name}"
-                            ))
-                        })?
+                        .ok_or_else(|| CompilerError::Unsupported(format!("array index requires array identifier: {name}")))?
                 }
-                _ => {
-                    return Err(CompilerError::Unsupported(
-                        "array index requires array identifier".to_string(),
-                    ))
-                }
+                _ => return Err(CompilerError::Unsupported("array index requires array identifier".to_string())),
             };
             let element_size = fixed_type_size(element_type)
                 .ok_or_else(|| CompilerError::Unsupported("array element type must have known size".to_string()))?;

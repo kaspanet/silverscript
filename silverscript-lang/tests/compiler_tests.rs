@@ -834,12 +834,15 @@ fn runs_array_for_loop_with_length_guard() {
 #[test]
 fn runs_array_loop_and_function_calls_example() {
     let source = r#"
-        contract Arrays() {
+        contract Sum() {
+            int constant MAX_ARRAY_SIZE = 5;
             function sumArray(int[] arr) : (int) {
-                require(arr.length == 3);
+                require(arr.length <= MAX_ARRAY_SIZE);
                 int sum = 0;
-                for (i, 0, 3) {
-                    sum = sum + arr[i];
+                for (i, 0, MAX_ARRAY_SIZE) {
+                    if (i < arr.length) {
+                       sum = sum + arr[i];
+                    }
                 }
                 return(sum);
             }
