@@ -245,7 +245,7 @@ impl CompiledContract {
                     Expr::Bytes(value) => {
                         builder.add_data(&value)?;
                     }
-                    other => {
+                    _ => {
                         return Err(CompilerError::Unsupported(format!(
                             "function argument '{}' expects {}",
                             input.name, input.type_name
