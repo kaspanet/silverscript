@@ -140,8 +140,7 @@ pub fn compile_contract_ast(
 
 fn expr_matches_type(expr: &Expr, type_name: &str) -> bool {
     if is_array_type(type_name) {
-        return matches!(expr, Expr::Bytes(_))
-            || matches!(expr, Expr::Array(values) if array_literal_matches_type(values, type_name));
+        return matches!(expr, Expr::Bytes(_)) || matches!(expr, Expr::Array(values) if array_literal_matches_type(values, type_name));
     }
     match type_name {
         "int" => matches!(expr, Expr::Int(_)),
@@ -246,10 +245,12 @@ impl CompiledContract {
                     Expr::Bytes(value) => {
                         builder.add_data(&value)?;
                     }
-                    other => return Err(CompilerError::Unsupported(format!(
-                        "function argument '{}' expects {}",
-                        input.name, input.type_name
-                    ))),
+                    other => {
+                        return Err(CompilerError::Unsupported(format!(
+                            "function argument '{}' expects {}",
+                            input.name, input.type_name
+                        )));
+                    }
                 }
             } else {
                 push_sigscript_arg(&mut builder, arg)?;
@@ -495,7 +496,9 @@ fn compile_statement(
                                 return Ok(());
                             }
                             Some(_) => {
-                                return Err(CompilerError::Unsupported("array assignment requires compatible array types".to_string()));
+                                return Err(CompilerError::Unsupported(
+                                    "array assignment requires compatible array types".to_string(),
+                                ));
                             }
                             None => return Err(CompilerError::UndefinedIdentifier(other.clone())),
                         },

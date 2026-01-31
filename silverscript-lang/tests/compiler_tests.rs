@@ -206,6 +206,31 @@ fn build_sig_script_rejects_wrong_argument_type() {
 }
 
 #[test]
+fn build_sig_script_rejects_mismatched_bytes_length() {
+    let source = r#"
+        contract C() {
+            function spend(bytes4 b) {
+                require(b.length == 4);
+            }
+        }
+    "#;
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let result = compiled.build_sig_script("spend", vec![Expr::Bytes(vec![1u8; 5])]);
+    assert!(result.is_err());
+
+    let source = r#"
+        contract C() {
+            function spend(bytes5 b) {
+                require(b.length == 5);
+            }
+        }
+    "#;
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let result = compiled.build_sig_script("spend", vec![Expr::Bytes(vec![1u8; 4])]);
+    assert!(result.is_err());
+}
+
+#[test]
 fn build_sig_script_omits_selector_without_selector() {
     let source = r#"
         contract Single() {
@@ -554,9 +579,7 @@ fn runs_array_for_loop_with_length_guard() {
     let options = CompileOptions { covenants_enabled: true, without_selector: true };
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
 
-    let sigscript = compiled
-        .build_sig_script("main", vec![vec![1i64, 2i64, 3i64, 4i64].into()])
-        .expect("sigscript builds");
+    let sigscript = compiled.build_sig_script("main", vec![vec![1i64, 2i64, 3i64, 4i64].into()]).expect("sigscript builds");
 
     let result = run_script_with_sigscript(compiled.script, sigscript);
     assert!(result.is_ok(), "array for-loop length-guard runtime failed: {}", result.unwrap_err());
