@@ -32,8 +32,9 @@ pub struct ParamAst {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "data", rename_all = "snake_case")]
 pub enum Statement {
-    VariableDefinition { type_name: String, modifiers: Vec<String>, name: String, expr: Expr },
+    VariableDefinition { type_name: String, modifiers: Vec<String>, name: String, expr: Option<Expr> },
     TupleAssignment { left_type: String, left_name: String, right_type: String, right_name: String, expr: Expr },
+    ArrayPush { name: String, expr: Expr },
     Assign { name: String, expr: Expr },
     TimeOp { tx_var: TimeVar, expr: Expr, message: Option<String> },
     Require { expr: Expr, message: Option<String> },
@@ -70,6 +71,7 @@ pub enum Expr {
     New { name: String, args: Vec<Expr> },
     Split { source: Box<Expr>, index: Box<Expr>, part: SplitPart },
     Slice { source: Box<Expr>, start: Box<Expr>, end: Box<Expr> },
+    ArrayIndex { source: Box<Expr>, index: Box<Expr> },
     Unary { op: UnaryOp, expr: Box<Expr> },
     Binary { op: BinaryOp, left: Box<Expr>, right: Box<Expr> },
     IfElse { condition: Box<Expr>, then_expr: Box<Expr>, else_expr: Box<Expr> },
@@ -233,8 +235,12 @@ fn parse_statement(pair: Pair<'_, Rule>) -> Result<Statement, CompilerError> {
         }
         Rule::variable_definition => {
             let mut inner = pair.into_inner();
-            let type_name =
-                inner.next().ok_or_else(|| CompilerError::Unsupported("missing variable type".to_string()))?.as_str().to_string();
+            let type_name = inner
+                .next()
+                .ok_or_else(|| CompilerError::Unsupported("missing variable type".to_string()))?
+                .as_str()
+                .trim()
+                .to_string();
 
             let mut modifiers = Vec::new();
             while let Some(p) = inner.peek() {
@@ -245,8 +251,7 @@ fn parse_statement(pair: Pair<'_, Rule>) -> Result<Statement, CompilerError> {
             }
 
             let ident = inner.next().ok_or_else(|| CompilerError::Unsupported("missing variable name".to_string()))?;
-            let expr_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing variable initializer".to_string()))?;
-            let expr = parse_expression(expr_pair)?;
+            let expr = inner.next().map(parse_expression).transpose()?;
             Ok(Statement::VariableDefinition { type_name, modifiers, name: ident.as_str().to_string(), expr })
         }
         Rule::tuple_assignment => {
@@ -267,6 +272,13 @@ fn parse_statement(pair: Pair<'_, Rule>) -> Result<Statement, CompilerError> {
                 right_name: right_ident.as_str().to_string(),
                 expr,
             })
+        }
+        Rule::push_statement => {
+            let mut inner = pair.into_inner();
+            let ident = inner.next().ok_or_else(|| CompilerError::Unsupported("missing push target".to_string()))?;
+            let expr_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing push expression".to_string()))?;
+            let expr = parse_expression(expr_pair)?;
+            Ok(Statement::ArrayPush { name: ident.as_str().to_string(), expr })
         }
         Rule::assign_statement => {
             let mut inner = pair.into_inner();
@@ -457,18 +469,20 @@ fn parse_postfix(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
             Rule::tuple_index => {
                 let mut index_inner = postfix.into_inner();
                 let index_expr = index_inner.next().ok_or_else(|| CompilerError::Unsupported("missing tuple index".to_string()))?;
-                let index = match parse_expression(index_expr)? {
-                    Expr::Int(value) => value,
-                    _ => return Err(CompilerError::Unsupported("tuple index must be a literal integer".to_string())),
-                };
-                match (&expr, index) {
-                    (Expr::Split { source, index: split_index, .. }, 0) => {
+                let index = parse_expression(index_expr)?;
+                match (&expr, &index) {
+                    (Expr::Split { source, index: split_index, .. }, Expr::Int(0)) => {
                         expr = Expr::Split { source: source.clone(), index: split_index.clone(), part: SplitPart::Left };
                     }
-                    (Expr::Split { source, index: split_index, .. }, 1) => {
+                    (Expr::Split { source, index: split_index, .. }, Expr::Int(1)) => {
                         expr = Expr::Split { source: source.clone(), index: split_index.clone(), part: SplitPart::Right };
                     }
-                    _ => return Err(CompilerError::Unsupported("tuple indexing only supports split() results".to_string())),
+                    (Expr::Split { .. }, _) => {
+                        return Err(CompilerError::Unsupported("tuple index must be 0 or 1".to_string()));
+                    }
+                    _ => {
+                        expr = Expr::ArrayIndex { source: Box::new(expr), index: Box::new(index) };
+                    }
                 }
             }
             Rule::unary_suffix => {

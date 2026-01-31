@@ -20,6 +20,7 @@ block = { "{" ~ statement* ~ "}" | statement }
 statement = _{
     variable_definition
     | tuple_assignment
+    | push_statement
     | assign_statement
     | time_op_statement
     | require_statement
@@ -29,8 +30,9 @@ statement = _{
     | console_statement
 }
 
-variable_definition = { type_name ~ modifier* ~ Identifier ~ "=" ~ expression ~ ";" }
+variable_definition = { type_name ~ modifier* ~ Identifier ~ ("=" ~ expression)? ~ ";" }
 tuple_assignment = { type_name ~ Identifier ~ "," ~ type_name ~ Identifier ~ "=" ~ expression ~ ";" }
+push_statement = { Identifier ~ ".push" ~ "(" ~ expression ~ ")" ~ ";" }
 assign_statement = { Identifier ~ "=" ~ expression ~ ";" }
 
 time_op_statement = { "require" ~ "(" ~ TxVar ~ ">=" ~ expression ~ ("," ~ require_message)? ~ ")" ~ ";" }
@@ -79,7 +81,7 @@ unary_op = { "!" | "-" }
 postfix = { primary ~ postfix_op* }
 postfix_op = _{ tuple_index | unary_suffix | split_call | slice_call }
 
-tuple_index = { "[" ~ NumberLiteral ~ "]" }
+tuple_index = { "[" ~ expression ~ "]" }
 unary_suffix = { "." ~ "length" }
 split_call = { ".split" ~ "(" ~ expression ~ ")" }
 slice_call = { ".slice" ~ "(" ~ expression ~ "," ~ expression ~ ")" }
@@ -115,7 +117,9 @@ modifier = { "constant" }
 literal = { BooleanLiteral | HexLiteral | number_literal | StringLiteral | DateLiteral }
 number_literal = { NumberLiteral ~ NumberUnit? }
 
-type_name = { "int" | "bool" | "string" | "pubkey" | "sig" | "datasig" | Bytes }
+type_name = { base_type ~ array_suffix? }
+base_type = { "int" | "bool" | "string" | "pubkey" | "sig" | "datasig" | Bytes }
+array_suffix = { "[]" }
 
 VersionLiteral = @{ ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT+ }
 

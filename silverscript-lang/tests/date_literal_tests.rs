@@ -6,7 +6,7 @@ fn extract_first_expr(source: &str) -> Expr {
     let function = &ast.functions[0];
     let statement = &function.body[0];
     match statement {
-        Statement::VariableDefinition { expr, .. } => expr.clone(),
+        Statement::VariableDefinition { expr, .. } => expr.clone().expect("missing initializer"),
         Statement::Require { expr, .. } => expr.clone(),
         _ => panic!("unexpected statement"),
     }

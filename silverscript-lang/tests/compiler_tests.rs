@@ -223,6 +223,214 @@ fn build_sig_script_omits_selector_without_selector() {
     assert_eq!(sigscript, expected);
 }
 
+#[test]
+fn compiles_int_array_length_to_expected_script() {
+    let source = r#"
+        contract Arrays() {
+            function main() {
+                int[] x;
+                require(x.length == 0);
+            }
+        }
+    "#;
+    let options = CompileOptions { covenants_enabled: true, without_selector: true };
+    let compiled = compile_contract(source, &[], options).expect("compile succeeds");
+
+    let expected = ScriptBuilder::new()
+        .add_data(&[])
+        .unwrap()
+        .add_op(OpSize)
+        .unwrap()
+        .add_op(OpSwap)
+        .unwrap()
+        .add_op(OpDrop)
+        .unwrap()
+        .add_i64(8)
+        .unwrap()
+        .add_op(OpDiv)
+        .unwrap()
+        .add_i64(0)
+        .unwrap()
+        .add_op(OpNumEqual)
+        .unwrap()
+        .add_op(OpVerify)
+        .unwrap()
+        .add_op(OpTrue)
+        .unwrap()
+        .drain();
+
+    assert_eq!(compiled.script, expected);
+}
+
+#[test]
+fn compiles_int_array_push_to_expected_script() {
+    let source = r#"
+        contract Arrays() {
+            function main() {
+                int[] x;
+                x.push(7);
+                require(x.length == 1);
+            }
+        }
+    "#;
+    let options = CompileOptions { covenants_enabled: true, without_selector: true };
+    let compiled = compile_contract(source, &[], options).expect("compile succeeds");
+
+    let expected = ScriptBuilder::new()
+        .add_data(&[])
+        .unwrap()
+        .add_i64(7)
+        .unwrap()
+        .add_i64(8)
+        .unwrap()
+        .add_op(OpNum2Bin)
+        .unwrap()
+        .add_op(OpCat)
+        .unwrap()
+        .add_op(OpSize)
+        .unwrap()
+        .add_op(OpSwap)
+        .unwrap()
+        .add_op(OpDrop)
+        .unwrap()
+        .add_i64(8)
+        .unwrap()
+        .add_op(OpDiv)
+        .unwrap()
+        .add_i64(1)
+        .unwrap()
+        .add_op(OpNumEqual)
+        .unwrap()
+        .add_op(OpVerify)
+        .unwrap()
+        .add_op(OpTrue)
+        .unwrap()
+        .drain();
+
+    assert_eq!(compiled.script, expected);
+}
+
+#[test]
+fn compiles_int_array_index_to_expected_script() {
+    let source = r#"
+        contract Arrays() {
+            function main() {
+                int[] x;
+                x.push(7);
+                require(x[0] == 7);
+            }
+        }
+    "#;
+    let options = CompileOptions { covenants_enabled: true, without_selector: true };
+    let compiled = compile_contract(source, &[], options).expect("compile succeeds");
+
+    let expected = ScriptBuilder::new()
+        .add_data(&[])
+        .unwrap()
+        .add_i64(7)
+        .unwrap()
+        .add_i64(8)
+        .unwrap()
+        .add_op(OpNum2Bin)
+        .unwrap()
+        .add_op(OpCat)
+        .unwrap()
+        .add_i64(0)
+        .unwrap()
+        .add_i64(8)
+        .unwrap()
+        .add_op(OpMul)
+        .unwrap()
+        .add_op(OpDup)
+        .unwrap()
+        .add_i64(8)
+        .unwrap()
+        .add_op(OpAdd)
+        .unwrap()
+        .add_op(OpSubstr)
+        .unwrap()
+        .add_op(OpBin2Num)
+        .unwrap()
+        .add_i64(7)
+        .unwrap()
+        .add_op(OpNumEqual)
+        .unwrap()
+        .add_op(OpVerify)
+        .unwrap()
+        .add_op(OpTrue)
+        .unwrap()
+        .drain();
+
+    assert_eq!(compiled.script, expected);
+}
+
+#[test]
+fn runs_array_runtime_examples() {
+    let source = r#"
+        contract Arrays() {
+            function main() {
+                int[] x;
+                x.push(7);
+                x.push(9);
+                require(x.length == 2);
+                require(x[0] == 7);
+                require(x[1] == 9);
+            }
+        }
+    "#;
+    let options = CompileOptions { covenants_enabled: true, without_selector: true };
+    let compiled = compile_contract(source, &[], options).expect("compile succeeds");
+    let sigscript = ScriptBuilder::new().drain();
+    let result = run_script_with_sigscript(compiled.script, sigscript);
+    assert!(result.is_ok(), "array runtime example failed: {}", result.unwrap_err());
+}
+
+#[test]
+fn allows_array_assignment_with_compatible_types() {
+    let source = r#"
+        contract Arrays() {
+            function main() {
+                int[] x;
+                int[] y;
+                x = y;
+                require(x.length == 0);
+            }
+        }
+    "#;
+    let options = CompileOptions { covenants_enabled: true, without_selector: true };
+    let compiled = compile_contract(source, &[], options).expect("compile succeeds");
+    let sigscript = ScriptBuilder::new().drain();
+    let result = run_script_with_sigscript(compiled.script, sigscript);
+    assert!(result.is_ok(), "array assignment runtime failed: {}", result.unwrap_err());
+}
+
+#[test]
+fn rejects_unsized_array_type() {
+    let source = r#"
+        contract Arrays() {
+            function main() {
+                bytes[] x;
+            }
+        }
+    "#;
+    let options = CompileOptions { covenants_enabled: true, without_selector: true };
+    assert!(compile_contract(source, &[], options).is_err());
+}
+
+#[test]
+fn rejects_array_element_assignment() {
+    let source = r#"
+        contract Arrays() {
+            function main() {
+                int[] x;
+                x[3] = 9;
+            }
+        }
+    "#;
+    let options = CompileOptions { covenants_enabled: true, without_selector: true };
+    assert!(compile_contract(source, &[], options).is_err());
+}
+
 fn run_script_with_tx_and_covenants(
     script: Vec<u8>,
     tx: Transaction,
