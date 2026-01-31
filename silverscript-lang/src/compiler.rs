@@ -275,10 +275,7 @@ fn compile_function(
     let mut types = function.params.iter().map(|param| (param.name.clone(), param.type_name.clone())).collect::<HashMap<_, _>>();
     for param in &function.params {
         if is_array_type(&param.type_name) && array_element_size(&param.type_name).is_none() {
-            return Err(CompilerError::Unsupported(format!(
-                "array element type must have known size: {}",
-                param.type_name
-            )));
+            return Err(CompilerError::Unsupported(format!("array element type must have known size: {}", param.type_name)));
         }
     }
     let mut env: HashMap<String, Expr> = constants.clone();
@@ -323,36 +320,25 @@ fn compile_statement(
         Statement::VariableDefinition { type_name, name, expr, .. } => {
             if is_array_type(type_name) {
                 if array_element_size(type_name).is_none() {
-                    return Err(CompilerError::Unsupported(format!(
-                        "array element type must have known size: {type_name}"
-                    )));
+                    return Err(CompilerError::Unsupported(format!("array element type must have known size: {type_name}")));
                 }
                 let initial = match expr {
-                    Some(Expr::Identifier(other)) => {
-                        match types.get(other) {
-                            Some(other_type) if other_type == type_name => Expr::Identifier(other.clone()),
-                            Some(_) => {
-                                return Err(CompilerError::Unsupported(
-                                    "array assignment requires compatible array types".to_string(),
-                                ))
-                            }
-                            None => return Err(CompilerError::UndefinedIdentifier(other.clone())),
+                    Some(Expr::Identifier(other)) => match types.get(other) {
+                        Some(other_type) if other_type == type_name => Expr::Identifier(other.clone()),
+                        Some(_) => {
+                            return Err(CompilerError::Unsupported("array assignment requires compatible array types".to_string()));
                         }
-                    }
-                    Some(_) => {
-                        return Err(CompilerError::Unsupported(
-                            "array initializer must be another array".to_string(),
-                        ))
-                    }
+                        None => return Err(CompilerError::UndefinedIdentifier(other.clone())),
+                    },
+                    Some(_) => return Err(CompilerError::Unsupported("array initializer must be another array".to_string())),
                     None => Expr::Bytes(Vec::new()),
                 };
                 env.insert(name.clone(), initial);
                 types.insert(name.clone(), type_name.clone());
                 Ok(())
             } else {
-                let expr = expr.clone().ok_or_else(|| {
-                    CompilerError::Unsupported("variable definition requires initializer".to_string())
-                })?;
+                let expr =
+                    expr.clone().ok_or_else(|| CompilerError::Unsupported("variable definition requires initializer".to_string()))?;
                 env.insert(name.clone(), expr);
                 types.insert(name.clone(), type_name.clone());
                 Ok(())
@@ -363,12 +349,10 @@ fn compile_statement(
             if !is_array_type(array_type) {
                 return Err(CompilerError::Unsupported("push() only supported on arrays".to_string()));
             }
-            let element_type = array_element_type(array_type).ok_or_else(|| {
-                CompilerError::Unsupported("array element type must have known size".to_string())
-            })?;
-            let element_size = array_element_size(array_type).ok_or_else(|| {
-                CompilerError::Unsupported("array element type must have known size".to_string())
-            })?;
+            let element_type = array_element_type(array_type)
+                .ok_or_else(|| CompilerError::Unsupported("array element type must have known size".to_string()))?;
+            let element_size = array_element_size(array_type)
+                .ok_or_else(|| CompilerError::Unsupported("array element type must have known size".to_string()))?;
             let element_expr = if element_type == "int" {
                 Expr::Call { name: "bytes8".to_string(), args: vec![expr.clone()] }
             } else if element_type == "byte" {
@@ -384,11 +368,7 @@ fn compile_statement(
             };
 
             let current = env.get(name).cloned().unwrap_or_else(|| Expr::Bytes(Vec::new()));
-            let updated = Expr::Binary {
-                op: BinaryOp::Add,
-                left: Box::new(current),
-                right: Box::new(element_expr),
-            };
+            let updated = Expr::Binary { op: BinaryOp::Add, left: Box::new(current), right: Box::new(element_expr) };
             env.insert(name.clone(), updated);
             Ok(())
         }
@@ -438,17 +418,11 @@ fn compile_statement(
                                 return Ok(());
                             }
                             Some(_) => {
-                                return Err(CompilerError::Unsupported(
-                                    "array assignment requires compatible array types".to_string(),
-                                ))
+                                return Err(CompilerError::Unsupported("array assignment requires compatible array types".to_string()));
                             }
                             None => return Err(CompilerError::UndefinedIdentifier(other.clone())),
                         },
-                        _ => {
-                            return Err(CompilerError::Unsupported(
-                                "array assignment only supports array identifiers".to_string(),
-                            ))
-                        }
+                        _ => return Err(CompilerError::Unsupported("array assignment only supports array identifiers".to_string())),
                     }
                 }
             }
@@ -1111,8 +1085,8 @@ fn compile_expr(
             Ok(())
         }
         Expr::Binary { op, left, right } => {
-            let bytes_eq = matches!(op, BinaryOp::Eq | BinaryOp::Ne)
-                && (expr_is_bytes(left, env, types) || expr_is_bytes(right, env, types));
+            let bytes_eq =
+                matches!(op, BinaryOp::Eq | BinaryOp::Ne) && (expr_is_bytes(left, env, types) || expr_is_bytes(right, env, types));
             let bytes_add = matches!(op, BinaryOp::Add) && (expr_is_bytes(left, env, types) || expr_is_bytes(right, env, types));
             if bytes_add {
                 compile_concat_operand(left, env, params, types, builder, options, visiting, stack_depth)?;
@@ -1213,18 +1187,14 @@ fn compile_expr(
         }
         Expr::ArrayIndex { source, index } => {
             let element_type = match source.as_ref() {
-                Expr::Identifier(name) => types.get(name).and_then(|t| array_element_type(t)).ok_or_else(|| {
-                    CompilerError::Unsupported("array index requires array identifier".to_string())
-                })?,
-                _ => {
-                    return Err(CompilerError::Unsupported(
-                        "array index requires array identifier".to_string(),
-                    ))
-                }
+                Expr::Identifier(name) => types
+                    .get(name)
+                    .and_then(|t| array_element_type(t))
+                    .ok_or_else(|| CompilerError::Unsupported("array index requires array identifier".to_string()))?,
+                _ => return Err(CompilerError::Unsupported("array index requires array identifier".to_string())),
             };
-            let element_size = fixed_type_size(element_type).ok_or_else(|| {
-                CompilerError::Unsupported("array element type must have known size".to_string())
-            })?;
+            let element_size = fixed_type_size(element_type)
+                .ok_or_else(|| CompilerError::Unsupported("array element type must have known size".to_string()))?;
             compile_expr(source, env, params, types, builder, options, visiting, stack_depth)?;
             compile_expr(index, env, params, types, builder, options, visiting, stack_depth)?;
             builder.add_i64(element_size)?;
@@ -1356,11 +1326,9 @@ fn expr_is_bytes_inner(
         }
         Expr::Nullary(NullaryOp::ActiveBytecode) => true,
         Expr::ArrayIndex { source, .. } => match source.as_ref() {
-            Expr::Identifier(name) => types
-                .get(name)
-                .and_then(|type_name| array_element_type(type_name))
-                .map(|element| element != "int")
-                .unwrap_or(false),
+            Expr::Identifier(name) => {
+                types.get(name).and_then(|type_name| array_element_type(type_name)).map(|element| element != "int").unwrap_or(false)
+            }
             _ => false,
         },
         Expr::Identifier(name) => {
