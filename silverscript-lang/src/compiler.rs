@@ -219,7 +219,7 @@ fn contains_return(stmt: &Statement) -> bool {
     match stmt {
         Statement::Return { .. } => true,
         Statement::If { then_branch, else_branch, .. } => {
-            then_branch.iter().any(contains_return) || else_branch.as_ref().map_or(false, |branch| branch.iter().any(contains_return))
+            then_branch.iter().any(contains_return) || else_branch.as_ref().is_some_and(|branch| branch.iter().any(contains_return))
         }
         Statement::For { body, .. } => body.iter().any(contains_return),
         _ => false,
@@ -230,7 +230,7 @@ fn contains_yield(stmt: &Statement) -> bool {
     match stmt {
         Statement::Yield { .. } => true,
         Statement::If { then_branch, else_branch, .. } => {
-            then_branch.iter().any(contains_yield) || else_branch.as_ref().map_or(false, |branch| branch.iter().any(contains_yield))
+            then_branch.iter().any(contains_yield) || else_branch.as_ref().is_some_and(|branch| branch.iter().any(contains_yield))
         }
         Statement::For { body, .. } => body.iter().any(contains_yield),
         _ => false,
@@ -254,7 +254,7 @@ fn validate_return_types(exprs: &[Expr], return_types: &[String], types: &HashMa
 
 fn expr_matches_type_with_env(expr: &Expr, type_name: &str, types: &HashMap<String, String>) -> bool {
     match expr {
-        Expr::Identifier(name) => types.get(name).map_or(false, |t| t == type_name),
+        Expr::Identifier(name) => types.get(name).is_some_and(|t| t == type_name),
         Expr::Array(values) => is_array_type(type_name) && array_literal_matches_type(values, type_name),
         _ => expr_matches_type(expr, type_name),
     }
@@ -262,7 +262,7 @@ fn expr_matches_type_with_env(expr: &Expr, type_name: &str, types: &HashMap<Stri
 
 fn expr_matches_return_type(expr: &Expr, type_name: &str, types: &HashMap<String, String>) -> bool {
     match expr {
-        Expr::Identifier(name) => types.get(name).map_or(false, |t| t == type_name),
+        Expr::Identifier(name) => types.get(name).is_some_and(|t| t == type_name),
         Expr::Array(values) => is_array_type(type_name) && array_literal_matches_type(values, type_name),
         Expr::Int(_) | Expr::Bool(_) | Expr::Bytes(_) | Expr::String(_) => expr_matches_type(expr, type_name),
         _ => true,
@@ -425,15 +425,15 @@ fn compile_function(
     let mut builder = ScriptBuilder::new();
     let mut yields: Vec<Expr> = Vec::new();
 
-    let has_return = function.body.iter().any(|stmt| contains_return(stmt));
+    let has_return = function.body.iter().any(contains_return);
     if has_return {
         if !matches!(function.body.last(), Some(Statement::Return { .. })) {
             return Err(CompilerError::Unsupported("return statement must be the last statement".to_string()));
         }
-        if function.body[..function.body.len() - 1].iter().any(|stmt| contains_return(stmt)) {
+        if function.body[..function.body.len() - 1].iter().any(contains_return) {
             return Err(CompilerError::Unsupported("return statement must be the last statement".to_string()));
         }
-        if function.body.iter().any(|stmt| contains_yield(stmt)) {
+        if function.body.iter().any(contains_yield) {
             return Err(CompilerError::Unsupported("return cannot be combined with yield".to_string()));
         }
         if function.return_types.is_empty() {
@@ -490,6 +490,7 @@ fn compile_function(
     Ok((function.name.clone(), builder.drain()))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn compile_statement(
     stmt: &Statement,
     env: &mut HashMap<String, Expr>,
@@ -744,15 +745,15 @@ fn compile_inline_call(
         caller_types.insert(temp_name, param.type_name.clone());
     }
 
-    let has_return = function.body.iter().any(|stmt| contains_return(stmt));
+    let has_return = function.body.iter().any(contains_return);
     if has_return {
         if !matches!(function.body.last(), Some(Statement::Return { .. })) {
             return Err(CompilerError::Unsupported("return statement must be the last statement".to_string()));
         }
-        if function.body[..function.body.len() - 1].iter().any(|stmt| contains_return(stmt)) {
+        if function.body[..function.body.len() - 1].iter().any(contains_return) {
             return Err(CompilerError::Unsupported("return statement must be the last statement".to_string()));
         }
-        if function.body.iter().any(|stmt| contains_yield(stmt)) {
+        if function.body.iter().any(contains_yield) {
             return Err(CompilerError::Unsupported("return cannot be combined with yield".to_string()));
         }
     }
@@ -800,6 +801,7 @@ fn compile_inline_call(
     Ok(yields)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn compile_if_statement(
     condition: &Expr,
     then_branch: &[Statement],
@@ -912,6 +914,7 @@ fn compile_time_op_statement(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn compile_block(
     statements: &[Statement],
     env: &mut HashMap<String, Expr>,
