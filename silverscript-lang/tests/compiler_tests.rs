@@ -249,6 +249,55 @@ fn build_sig_script_omits_selector_without_selector() {
 }
 
 #[test]
+fn rejects_return_without_signature() {
+    let source = r#"
+        contract C() {
+            function main() {
+                return(1);
+            }
+        }
+    "#;
+    assert!(compile_contract(source, &[], CompileOptions::default()).is_err());
+}
+
+#[test]
+fn rejects_return_not_last_statement() {
+    let source = r#"
+        contract C() {
+            function main() : (int) {
+                return(1);
+                require(true);
+            }
+        }
+    "#;
+    assert!(compile_contract(source, &[], CompileOptions::default()).is_err());
+}
+
+#[test]
+fn rejects_return_value_count_mismatch() {
+    let source = r#"
+        contract C() {
+            function main() : (int, int) {
+                return(1);
+            }
+        }
+    "#;
+    assert!(compile_contract(source, &[], CompileOptions::default()).is_err());
+}
+
+#[test]
+fn rejects_return_type_mismatch() {
+    let source = r#"
+        contract C() {
+            function main(bool b) : (int) {
+                return(b);
+            }
+        }
+    "#;
+    assert!(compile_contract(source, &[], CompileOptions::default()).is_err());
+}
+
+#[test]
 fn compiles_int_array_length_to_expected_script() {
     let source = r#"
         contract Arrays() {

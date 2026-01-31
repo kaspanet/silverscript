@@ -333,6 +333,28 @@ fn compiles_yield_loop_example_and_verifies() {
 }
 
 #[test]
+fn compiles_return_basic_example_and_verifies() {
+    let source = r#"
+        contract ReturnTest() {
+            function main(int a, int b) : (int, int) {
+                return(a + 1, b + 2);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let script = script_with_return_checks(compiled.script.clone(), &[2, 5]);
+    let recipient0 = [13u8; 20];
+    let recipient1 = [14u8; 20];
+    let output0_script = build_p2pkh_script(&recipient0);
+    let output1_script = build_p2pkh_script(&recipient1);
+
+    let sigscript = compiled.build_sig_script("main", vec![1.into(), 3.into()]).expect("sigscript builds");
+    let result = run_contract_with_tx(script, output0_script, output1_script, 2000, 500, 500, sigscript, 0);
+    assert!(result.is_ok(), "return basic failed: {}", result.unwrap_err());
+}
+
+#[test]
 fn runs_token_example_and_verifies() {
     let source = load_example_source("token.sil");
 

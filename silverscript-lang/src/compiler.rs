@@ -212,6 +212,37 @@ fn array_element_size(type_name: &str) -> Option<i64> {
     array_element_type(type_name).and_then(fixed_type_size)
 }
 
+fn contains_return(stmt: &Statement) -> bool {
+    match stmt {
+        Statement::Return { .. } => true,
+        Statement::If { then_branch, else_branch, .. } => {
+            then_branch.iter().any(contains_return) || else_branch.as_ref().map_or(false, |branch| branch.iter().any(contains_return))
+        }
+        Statement::For { body, .. } => body.iter().any(contains_return),
+        _ => false,
+    }
+}
+
+fn contains_yield(stmt: &Statement) -> bool {
+    match stmt {
+        Statement::Yield { .. } => true,
+        Statement::If { then_branch, else_branch, .. } => {
+            then_branch.iter().any(contains_yield) || else_branch.as_ref().map_or(false, |branch| branch.iter().any(contains_yield))
+        }
+        Statement::For { body, .. } => body.iter().any(contains_yield),
+        _ => false,
+    }
+}
+
+fn expr_matches_return_type(expr: &Expr, type_name: &str, types: &HashMap<String, String>) -> bool {
+    match expr {
+        Expr::Identifier(name) => types.get(name).map_or(false, |t| t == type_name),
+        Expr::Array(values) => is_array_type(type_name) && array_literal_matches_type(values, type_name),
+        Expr::Int(_) | Expr::Bool(_) | Expr::Bytes(_) | Expr::String(_) => expr_matches_type(expr, type_name),
+        _ => true,
+    }
+}
+
 impl CompiledContract {
     pub fn build_sig_script(&self, function_name: &str, args: Vec<Expr>) -> Result<Vec<u8>, CompilerError> {
         let function = self
@@ -360,7 +391,46 @@ fn compile_function(
     let mut builder = ScriptBuilder::new();
     let mut yields: Vec<Expr> = Vec::new();
 
-    for stmt in &function.body {
+    let has_return = function.body.iter().any(|stmt| contains_return(stmt));
+    if has_return {
+        if !matches!(function.body.last(), Some(Statement::Return { .. })) {
+            return Err(CompilerError::Unsupported("return statement must be the last statement".to_string()));
+        }
+        if function.body[..function.body.len() - 1].iter().any(|stmt| contains_return(stmt)) {
+            return Err(CompilerError::Unsupported("return statement must be the last statement".to_string()));
+        }
+        if function.body.iter().any(|stmt| contains_yield(stmt)) {
+            return Err(CompilerError::Unsupported("return cannot be combined with yield".to_string()));
+        }
+        if function.return_types.is_empty() {
+            return Err(CompilerError::Unsupported("return requires function return types".to_string()));
+        }
+        let Statement::Return { exprs } = function.body.last().expect("checked") else {
+            unreachable!();
+        };
+        if function.return_types.len() != exprs.len() {
+            return Err(CompilerError::Unsupported("return values count must match function return types".to_string()));
+        }
+        for (expr, type_name) in exprs.iter().zip(function.return_types.iter()) {
+            if !expr_matches_return_type(expr, type_name, &types) {
+                return Err(CompilerError::Unsupported(format!("return value expects {type_name}")));
+            }
+        }
+    }
+
+    let body_len = function.body.len();
+    for (index, stmt) in function.body.iter().enumerate() {
+        if matches!(stmt, Statement::Return { .. }) {
+            if index != body_len - 1 {
+                return Err(CompilerError::Unsupported("return statement must be the last statement".to_string()));
+            }
+            let Statement::Return { exprs } = stmt else { unreachable!() };
+            for expr in exprs {
+                let resolved = resolve_expr(expr.clone(), &env, &mut HashSet::new())?;
+                yields.push(resolved);
+            }
+            continue;
+        }
         compile_statement(stmt, &mut env, &params, &mut types, &mut builder, options, constants, &mut yields)?;
     }
 
@@ -478,6 +548,7 @@ fn compile_statement(
             yields.push(resolved);
             Ok(())
         }
+        Statement::Return { .. } => Err(CompilerError::Unsupported("return statement must be the last statement".to_string())),
         Statement::TupleAssignment { left_name, right_name, expr, .. } => match expr.clone() {
             Expr::Split { source, index, .. } => {
                 env.insert(left_name.clone(), Expr::Split { source: source.clone(), index: index.clone(), part: SplitPart::Left });

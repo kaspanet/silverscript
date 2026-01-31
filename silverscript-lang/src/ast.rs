@@ -20,6 +20,8 @@ pub struct ContractAst {
 pub struct FunctionAst {
     pub name: String,
     pub params: Vec<ParamAst>,
+    #[serde(default)]
+    pub return_types: Vec<String>,
     pub body: Vec<Statement>,
 }
 
@@ -41,6 +43,7 @@ pub enum Statement {
     If { condition: Expr, then_branch: Vec<Statement>, else_branch: Option<Vec<Statement>> },
     For { ident: String, start: Expr, end: Expr, body: Vec<Statement> },
     Yield { expr: Expr },
+    Return { exprs: Vec<Expr> },
     Console { args: Vec<ConsoleArg> },
 }
 
@@ -227,13 +230,20 @@ fn parse_function_definition(pair: Pair<'_, Rule>) -> Result<FunctionAst, Compil
     let name_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing function name".to_string()))?;
     let params_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing function parameters".to_string()))?;
     let params = parse_typed_parameter_list(params_pair)?;
+    let mut return_types = Vec::new();
+    if let Some(next) = inner.peek() {
+        if next.as_rule() == Rule::return_type_list {
+            let return_pair = inner.next().expect("checked");
+            return_types = parse_return_type_list(return_pair)?;
+        }
+    }
 
     let mut body = Vec::new();
     for stmt in inner {
         body.push(parse_statement(stmt)?);
     }
 
-    Ok(FunctionAst { name: name_pair.as_str().to_string(), params, body })
+    Ok(FunctionAst { name: name_pair.as_str().to_string(), params, return_types, body })
 }
 
 fn parse_statement(pair: Pair<'_, Rule>) -> Result<Statement, CompilerError> {
@@ -350,6 +360,15 @@ fn parse_statement(pair: Pair<'_, Rule>) -> Result<Statement, CompilerError> {
                 return Err(CompilerError::Unsupported("yield() expects a single argument".to_string()));
             }
             Ok(Statement::Yield { expr: args[0].clone() })
+        }
+        Rule::return_statement => {
+            let mut inner = pair.into_inner();
+            let list_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing return arguments".to_string()))?;
+            let args = parse_expression_list(list_pair)?;
+            if args.is_empty() {
+                return Err(CompilerError::Unsupported("return() expects at least one argument".to_string()));
+            }
+            Ok(Statement::Return { exprs: args })
         }
         Rule::console_statement => {
             let mut inner = pair.into_inner();
@@ -526,6 +545,16 @@ fn parse_typed_parameter_list(pair: Pair<'_, Rule>) -> Result<Vec<ParamAst>, Com
         params.push(ParamAst { type_name, name: ident });
     }
     Ok(params)
+}
+
+fn parse_return_type_list(pair: Pair<'_, Rule>) -> Result<Vec<String>, CompilerError> {
+    let mut types = Vec::new();
+    for item in pair.into_inner() {
+        if item.as_rule() == Rule::type_name {
+            types.push(item.as_str().trim().to_string());
+        }
+    }
+    Ok(types)
 }
 
 fn parse_primary(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {

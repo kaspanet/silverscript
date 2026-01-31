@@ -8,12 +8,13 @@ version_operator = { "^" | "~" | ">=" | ">" | "<" | "<=" | "=" }
 
 contract_definition = { "contract" ~ Identifier ~ parameter_list ~ "{" ~ contract_item* ~ "}" }
 contract_item = { constant_definition | function_definition }
-function_definition = { "function" ~ Identifier ~ parameter_list ~ "{" ~ statement* ~ "}" }
+function_definition = { "function" ~ Identifier ~ parameter_list ~ return_type_list? ~ "{" ~ statement* ~ "}" }
 
 constant_definition = { type_name ~ "constant" ~ Identifier ~ "=" ~ expression ~ ";" }
 
 parameter_list = { "(" ~ (parameter ~ ("," ~ parameter)* ~ ","?)? ~ ")" }
 parameter = { type_name ~ Identifier }
+return_type_list = { ":" ~ "(" ~ (type_name ~ ("," ~ type_name)* ~ ","?)? ~ ")" }
 
 block = { "{" ~ statement* ~ "}" | statement }
 
@@ -21,6 +22,7 @@ statement = _{
     variable_definition
     | tuple_assignment
     | push_statement
+    | return_statement
     | assign_statement
     | time_op_statement
     | require_statement
@@ -34,6 +36,7 @@ variable_definition = { type_name ~ modifier* ~ Identifier ~ ("=" ~ expression)?
 tuple_assignment = { type_name ~ Identifier ~ "," ~ type_name ~ Identifier ~ "=" ~ expression ~ ";" }
 push_statement = { Identifier ~ ".push" ~ "(" ~ expression ~ ")" ~ ";" }
 assign_statement = { Identifier ~ "=" ~ expression ~ ";" }
+return_statement = { "return" ~ expression_list ~ ";" }
 
 time_op_statement = { "require" ~ "(" ~ TxVar ~ ">=" ~ expression ~ ("," ~ require_message)? ~ ")" ~ ";" }
 require_statement = { "require" ~ "(" ~ expression ~ ("," ~ require_message)? ~ ")" ~ ";" }
@@ -156,7 +159,7 @@ Identifier = @{ !keyword_boundary ~ ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "_")* }
 keyword_boundary = { keyword ~ !(ASCII_ALPHANUMERIC | "_") }
 
 keyword = {
-    "pragma" | "silverscript" | "contract" | "function" | "if" | "else" | "require" | "for" | "yield"
+    "pragma" | "silverscript" | "contract" | "function" | "if" | "else" | "require" | "for" | "yield" | "return"
     | "console.log" | "new" | "true" | "false" | "constant" | "date"
     | "int" | "bool" | "string" | "pubkey" | "sig" | "datasig" | "byte" | "bytes"
     | "this.age" | "tx.time" | "this.activeInputIndex" | "this.activeBytecode"
