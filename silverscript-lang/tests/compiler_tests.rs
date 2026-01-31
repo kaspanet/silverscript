@@ -347,6 +347,82 @@ fn allows_calling_void_function() {
 }
 
 #[test]
+fn recursive_fibonacci_inlining_behavior() {
+    let source = r#"
+        contract Fib() {
+            function fib(int n) : (int) {
+                int result = 0;
+                if (n <= 1) {
+                    result = n;
+                } else {
+                    (int a) = fib(n - 1);
+                    (int b) = fib(n - 2);
+                    result = a + b;
+                }
+                return(result);
+            }
+
+            function main(int n, int expected) {
+                require(fib(n) == expected);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("recursive call should fail");
+    assert!(err.to_string().contains("earlier-defined"));
+}
+
+#[test]
+fn rejects_calling_later_defined_function() {
+    let source = r#"
+        contract Calls() {
+            function first() {
+                second();
+            }
+
+            function second() {
+                require(true);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("forward call should fail");
+    assert!(err.to_string().contains("earlier-defined"));
+}
+
+#[test]
+fn allows_call_chain_with_earlier_defined_functions() {
+    let source = r#"
+        contract Calls() {
+            function h(int x) : (int) {
+                require(x > 0);
+                return(x + 1);
+            }
+
+            function g(int y) : (int) {
+                require(y > 1);
+                (int z) = h(2);
+                return(z + y);
+            }
+
+            function f(int w) : (int) {
+                require(w > 2);
+                (int v) = g(3);
+                return(v + w);
+            }
+
+            function main() {
+                (int out) = f(4);
+                require(out == 10);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let selector = selector_for(&compiled, "main");
+    assert!(run_script_with_selector(compiled.script, selector).is_ok());
+}
+#[test]
 fn allows_calling_void_function_fails() {
     let source = r#"
         contract Calls() {

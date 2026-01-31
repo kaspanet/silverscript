@@ -96,8 +96,10 @@ pub fn compile_contract_ast(
 
     let mut compiled_functions = Vec::new();
     let functions_map = contract.functions.iter().cloned().map(|func| (func.name.clone(), func)).collect::<HashMap<_, _>>();
-    for func in &contract.functions {
-        compiled_functions.push(compile_function(func, &constants, options, &functions_map)?);
+    let function_order =
+        contract.functions.iter().enumerate().map(|(index, func)| (func.name.clone(), index)).collect::<HashMap<_, _>>();
+    for (index, func) in contract.functions.iter().enumerate() {
+        compiled_functions.push(compile_function(func, index, &constants, options, &functions_map, &function_order)?);
     }
 
     let script = if options.without_selector {
@@ -394,9 +396,11 @@ pub fn function_branch_index(contract: &ContractAst, function_name: &str) -> Res
 
 fn compile_function(
     function: &FunctionAst,
+    function_index: usize,
     constants: &HashMap<String, Expr>,
     options: CompileOptions,
     functions: &HashMap<String, FunctionAst>,
+    function_order: &HashMap<String, usize>,
 ) -> Result<(String, Vec<u8>), CompilerError> {
     let param_count = function.params.len();
     let params = function
@@ -451,7 +455,19 @@ fn compile_function(
             }
             continue;
         }
-        compile_statement(stmt, &mut env, &params, &mut types, &mut builder, options, constants, functions, &mut yields)?;
+        compile_statement(
+            stmt,
+            &mut env,
+            &params,
+            &mut types,
+            &mut builder,
+            options,
+            constants,
+            functions,
+            function_order,
+            function_index,
+            &mut yields,
+        )?;
     }
 
     let yield_count = yields.len();
@@ -483,6 +499,8 @@ fn compile_statement(
     options: CompileOptions,
     contract_constants: &HashMap<String, Expr>,
     functions: &HashMap<String, FunctionAst>,
+    function_order: &HashMap<String, usize>,
+    function_index: usize,
     yields: &mut Vec<Expr>,
 ) -> Result<(), CompilerError> {
     match stmt {
@@ -559,11 +577,26 @@ fn compile_statement(
             options,
             contract_constants,
             functions,
+            function_order,
+            function_index,
             yields,
         ),
-        Statement::For { ident, start, end, body } => {
-            compile_for_statement(ident, start, end, body, env, params, types, builder, options, contract_constants, functions, yields)
-        }
+        Statement::For { ident, start, end, body } => compile_for_statement(
+            ident,
+            start,
+            end,
+            body,
+            env,
+            params,
+            types,
+            builder,
+            options,
+            contract_constants,
+            functions,
+            function_order,
+            function_index,
+            yields,
+        ),
         Statement::Yield { expr } => {
             let mut visiting = HashSet::new();
             let resolved = resolve_expr(expr.clone(), env, &mut visiting)?;
@@ -580,7 +613,17 @@ fn compile_statement(
             _ => Err(CompilerError::Unsupported("tuple assignment only supports split()".to_string())),
         },
         Statement::FunctionCall { name, args } => {
-            let returns = compile_inline_call(name, args, types, builder, options, contract_constants, functions)?;
+            let returns = compile_inline_call(
+                name,
+                args,
+                types,
+                builder,
+                options,
+                contract_constants,
+                functions,
+                function_order,
+                function_index,
+            )?;
             if !returns.is_empty() {
                 let mut stack_depth = 0i64;
                 for expr in returns {
@@ -604,7 +647,17 @@ fn compile_statement(
                     return Err(CompilerError::Unsupported("function return types must match binding types".to_string()));
                 }
             }
-            let returns = compile_inline_call(name, args, types, builder, options, contract_constants, functions)?;
+            let returns = compile_inline_call(
+                name,
+                args,
+                types,
+                builder,
+                options,
+                contract_constants,
+                functions,
+                function_order,
+                function_index,
+            )?;
             if returns.len() != bindings.len() {
                 return Err(CompilerError::Unsupported("return values count must match function return types".to_string()));
             }
@@ -651,8 +704,15 @@ fn compile_inline_call(
     options: CompileOptions,
     contract_constants: &HashMap<String, Expr>,
     functions: &HashMap<String, FunctionAst>,
+    function_order: &HashMap<String, usize>,
+    caller_index: usize,
 ) -> Result<Vec<Expr>, CompilerError> {
     let function = functions.get(name).ok_or_else(|| CompilerError::Unsupported(format!("function '{}' not found", name)))?;
+    let callee_index =
+        function_order.get(name).copied().ok_or_else(|| CompilerError::Unsupported(format!("function '{}' not found", name)))?;
+    if callee_index >= caller_index {
+        return Err(CompilerError::Unsupported("functions may only call earlier-defined functions".to_string()));
+    }
 
     if function.params.len() != args.len() {
         return Err(CompilerError::Unsupported(format!("function '{}' expects {} arguments", name, function.params.len())));
@@ -704,7 +764,19 @@ fn compile_inline_call(
             }
             continue;
         }
-        compile_statement(stmt, &mut env, &params, &mut types, builder, options, contract_constants, functions, &mut yields)?;
+        compile_statement(
+            stmt,
+            &mut env,
+            &params,
+            &mut types,
+            builder,
+            options,
+            contract_constants,
+            functions,
+            function_order,
+            callee_index,
+            &mut yields,
+        )?;
     }
 
     Ok(yields)
@@ -721,6 +793,8 @@ fn compile_if_statement(
     options: CompileOptions,
     contract_constants: &HashMap<String, Expr>,
     functions: &HashMap<String, FunctionAst>,
+    function_order: &HashMap<String, usize>,
+    function_index: usize,
     yields: &mut Vec<Expr>,
 ) -> Result<(), CompilerError> {
     let mut stack_depth = 0i64;
@@ -730,13 +804,37 @@ fn compile_if_statement(
     let original_env = env.clone();
     let mut then_env = original_env.clone();
     let mut then_types = types.clone();
-    compile_block(then_branch, &mut then_env, params, &mut then_types, builder, options, contract_constants, functions, yields)?;
+    compile_block(
+        then_branch,
+        &mut then_env,
+        params,
+        &mut then_types,
+        builder,
+        options,
+        contract_constants,
+        functions,
+        function_order,
+        function_index,
+        yields,
+    )?;
 
     let mut else_env = original_env.clone();
     if let Some(else_branch) = else_branch {
         builder.add_op(OpElse)?;
         let mut else_types = types.clone();
-        compile_block(else_branch, &mut else_env, params, &mut else_types, builder, options, contract_constants, functions, yields)?;
+        compile_block(
+            else_branch,
+            &mut else_env,
+            params,
+            &mut else_types,
+            builder,
+            options,
+            contract_constants,
+            functions,
+            function_order,
+            function_index,
+            yields,
+        )?;
     }
 
     builder.add_op(OpEndIf)?;
@@ -805,10 +903,24 @@ fn compile_block(
     options: CompileOptions,
     contract_constants: &HashMap<String, Expr>,
     functions: &HashMap<String, FunctionAst>,
+    function_order: &HashMap<String, usize>,
+    function_index: usize,
     yields: &mut Vec<Expr>,
 ) -> Result<(), CompilerError> {
     for stmt in statements {
-        compile_statement(stmt, env, params, types, builder, options, contract_constants, functions, yields)?;
+        compile_statement(
+            stmt,
+            env,
+            params,
+            types,
+            builder,
+            options,
+            contract_constants,
+            functions,
+            function_order,
+            function_index,
+            yields,
+        )?;
     }
     Ok(())
 }
@@ -826,6 +938,8 @@ fn compile_for_statement(
     options: CompileOptions,
     contract_constants: &HashMap<String, Expr>,
     functions: &HashMap<String, FunctionAst>,
+    function_order: &HashMap<String, usize>,
+    function_index: usize,
     yields: &mut Vec<Expr>,
 ) -> Result<(), CompilerError> {
     let start = eval_const_int(start_expr, contract_constants)?;
@@ -838,7 +952,19 @@ fn compile_for_statement(
     let previous = env.get(&name).cloned();
     for value in start..end {
         env.insert(name.clone(), Expr::Int(value));
-        compile_block(body, env, params, types, builder, options, contract_constants, functions, yields)?;
+        compile_block(
+            body,
+            env,
+            params,
+            types,
+            builder,
+            options,
+            contract_constants,
+            functions,
+            function_order,
+            function_index,
+            yields,
+        )?;
     }
 
     match previous {
