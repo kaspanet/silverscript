@@ -2148,6 +2148,44 @@ fn compiles_sigscript_inputs_and_verifies() {
 }
 
 #[test]
+fn compiles_script_size_and_runs_sum_array() {
+    let source = r#"
+        contract Sum() {
+            int constant MAX_ARRAY_SIZE = 5;
+            function sumArray(int[] arr) : (int) {
+                require(arr.length <= MAX_ARRAY_SIZE);
+                int sum = 0;
+                for (i, 0, MAX_ARRAY_SIZE) {
+                    if (i < arr.length) {
+                       sum = sum + arr[i];
+                    }
+                }
+                return(sum);
+            }
+
+            function main(int expected_script_size) {
+                require(expected_script_size == this.scriptSize);
+                int[] x;
+                x.push(1);
+                x.push(2);
+                x.push(3);
+                (int total) = sumArray(x);
+                require(total == 6);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let expected_size = compiled.script.len() as i64;
+    let sigscript = compiled
+        .build_sig_script("main", vec![Expr::Int(expected_size)])
+        .expect("sigscript builds");
+
+    let result = run_script_with_sigscript(compiled.script, sigscript);
+    assert!(result.is_ok(), "script size contract failed: {}", result.unwrap_err());
+}
+
+#[test]
 fn compiles_sigscript_reused_inputs_and_verifies() {
     let source = r#"
         contract Test() {
