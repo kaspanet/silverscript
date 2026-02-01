@@ -1,6 +1,6 @@
 pragma silverscript ^0.1.0;
 
-contract LastWill(bytes20 inheritor, bytes20 cold, bytes20 hot) {
+contract LastWill(bytes32 inheritor, bytes32 cold, bytes32 hot) {
     function inherit(pubkey pk, sig s) {
         require(this.age >= 180);
         require(blake2b(pk) == inheritor);

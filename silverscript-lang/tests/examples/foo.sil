@@ -1,6 +1,6 @@
 pragma silverscript ^0.1.0;
 
-contract Foo(bytes20 pkh_foo) {
+contract Foo(bytes32 pkh_foo) {
     function execute(pubkey pk, sig s) {
         require(blake2b(pk) == pkh_foo);
         require(checkSig(s, pk));

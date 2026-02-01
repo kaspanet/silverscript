@@ -1,6 +1,6 @@
 pragma silverscript ^0.1.0;
 
-contract Bar(bytes20 pkh_bar) {
+contract Bar(bytes32 pkh_bar) {
     function funcA() {
         require(2 == 2);
     }

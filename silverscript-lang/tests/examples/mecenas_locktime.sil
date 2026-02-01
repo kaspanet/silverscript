@@ -2,7 +2,7 @@ pragma silverscript ^0.1.0;
 
 contract Mecenas(
     bytes20 recipient,
-    bytes20 funder,
+    bytes32 funder,
     int pledgePerBlock,
     bytes8 initialBlock,
 ) {
@@ -27,7 +27,7 @@ contract Mecenas(
             require(tx.outputs[1].value == changeValue);
 
             bytes bcValue = 8 + bytes8(tx.locktime) + this.activeBytecode.split(9)[1];
-            bytes23 lockValue = new LockingBytecodeP2SH20(blake2b(bcValue));
+            bytes35 lockValue = new LockingBytecodeP2SH(blake2b(bcValue));
             require(tx.outputs[1].lockingBytecode == lockValue);
         }
     }

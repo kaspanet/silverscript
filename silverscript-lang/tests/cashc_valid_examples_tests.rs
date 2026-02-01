@@ -8,7 +8,7 @@ use kaspa_consensus_core::tx::{
 };
 use kaspa_txscript::caches::Cache;
 use kaspa_txscript::script_builder::ScriptBuilder;
-use kaspa_txscript::{EngineCtx, EngineFlags, TxScriptEngine};
+use kaspa_txscript::{EngineCtx, EngineFlags, TxScriptEngine, pay_to_script_hash_script};
 use rand::{RngCore, thread_rng};
 use secp256k1::{Keypair, Message, Secp256k1, SecretKey};
 use silverscript_lang::ast::Expr;
@@ -88,12 +88,6 @@ fn random_keypair() -> Keypair {
     }
 }
 
-fn blake2b_20(data: &[u8]) -> Vec<u8> {
-    let mut out = Params::new().hash_length(32).to_state().update(data).finalize().as_bytes().to_vec();
-    out.truncate(20);
-    out
-}
-
 fn build_sigscript(args: &[ArgValue], selector: i64) -> Vec<u8> {
     let mut builder = ScriptBuilder::new();
     for arg in args {
@@ -117,17 +111,6 @@ fn build_sigscript(args: &[ArgValue], selector: i64) -> Vec<u8> {
 }
 
 fn build_p2pkh_script(hash: &[u8]) -> Vec<u8> {
-    ScriptBuilder::new()
-        .add_op(kaspa_txscript::opcodes::codes::OpBlake2b)
-        .unwrap()
-        .add_data(hash)
-        .unwrap()
-        .add_op(kaspa_txscript::opcodes::codes::OpEqual)
-        .unwrap()
-        .drain()
-}
-
-fn build_p2sh20_script(hash: &[u8]) -> Vec<u8> {
     ScriptBuilder::new()
         .add_op(kaspa_txscript::opcodes::codes::OpBlake2b)
         .unwrap()
@@ -287,7 +270,6 @@ fn runs_cashc_valid_examples() {
             "cast_hash_checksig.sil" => {
                 let constructor_args = vec![];
                 let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
-                let selector = function_branch_index(&compiled.ast, "hello").expect("selector resolved");
                 let (mut tx, utxo, reused) = build_tx_context(
                     compiled.script.clone(),
                     vec![(1_000, compiled.script.clone()), (1_000, compiled.script.clone())],
@@ -298,7 +280,8 @@ fn runs_cashc_valid_examples() {
                 let keypair = random_keypair();
                 let pubkey_bytes = keypair.x_only_public_key().0.serialize().to_vec();
                 let signature = sign_tx(&tx, &reused, &keypair);
-                let sigscript = build_sigscript(&[ArgValue::Bytes(pubkey_bytes), ArgValue::Bytes(signature)], selector);
+                let sigscript =
+                    compiled.build_sig_script("hello", vec![pubkey_bytes.into(), signature.clone().into()]).expect("sigscript builds");
                 tx.tx.inputs[0].signature_script = sigscript;
                 let result = execute_tx(tx, utxo, reused);
                 assert!(result.is_ok(), "{example} failed: {}", result.unwrap_err());
@@ -625,10 +608,9 @@ fn runs_cashc_valid_examples() {
             "p2pkh-logs.sil" | "p2pkh_with_assignment.sil" => {
                 let keypair = random_keypair();
                 let pubkey_bytes = keypair.x_only_public_key().0.serialize().to_vec();
-                let pkh = blake2b_20(&pubkey_bytes);
+                let pkh = Params::new().hash_length(32).to_state().update(pubkey_bytes.as_slice()).finalize().as_bytes().to_vec();
                 let constructor_args = vec![pkh.into()];
                 let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
-                let selector = function_branch_index(&compiled.ast, "spend").expect("selector resolved");
                 let (mut tx, utxo, reused) = build_tx_context(
                     compiled.script.clone(),
                     vec![(1_000, compiled.script.clone()), (1_000, compiled.script.clone())],
@@ -637,7 +619,8 @@ fn runs_cashc_valid_examples() {
                     1,
                 );
                 let signature = sign_tx(&tx, &reused, &keypair);
-                let sigscript = build_sigscript(&[ArgValue::Bytes(pubkey_bytes), ArgValue::Bytes(signature)], selector);
+                let sigscript =
+                    compiled.build_sig_script("spend", vec![pubkey_bytes.into(), signature.clone().into()]).expect("sigscript builds");
                 tx.tx.inputs[0].signature_script = sigscript;
                 let result = execute_tx(tx, utxo, reused);
                 assert!(result.is_ok(), "{example} failed: {}", result.unwrap_err());
@@ -645,10 +628,9 @@ fn runs_cashc_valid_examples() {
             "p2pkh_with_cast.sil" => {
                 let keypair = random_keypair();
                 let pubkey_bytes = keypair.x_only_public_key().0.serialize().to_vec();
-                let pkh = blake2b_20(&pubkey_bytes);
+                let pkh = Params::new().hash_length(32).to_state().update(pubkey_bytes.as_slice()).finalize().as_bytes().to_vec();
                 let constructor_args = vec![pkh.into()];
                 let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
-                let selector = function_branch_index(&compiled.ast, "spend").expect("selector resolved");
                 let (mut tx, utxo, reused) = build_tx_context(
                     compiled.script.clone(),
                     vec![(1_000, compiled.script.clone()), (1_000, compiled.script.clone())],
@@ -657,7 +639,8 @@ fn runs_cashc_valid_examples() {
                     1,
                 );
                 let signature = sign_tx(&tx, &reused, &keypair);
-                let sigscript = build_sigscript(&[ArgValue::Bytes(pubkey_bytes), ArgValue::Bytes(signature)], selector);
+                let sigscript =
+                    compiled.build_sig_script("spend", vec![pubkey_bytes.into(), signature.clone().into()]).expect("sigscript builds");
                 tx.tx.inputs[0].signature_script = sigscript;
                 let result = execute_tx(tx, utxo, reused);
                 assert!(result.is_ok(), "{example} failed: {}", result.unwrap_err());
@@ -820,7 +803,7 @@ fn runs_cashc_valid_examples() {
             }
             "simulating_state.sil" => {
                 let recipient = vec![1u8; 20];
-                let funder = vec![2u8; 20];
+                let funder = vec![2u8; 32];
                 let pledge_per_block = 10i64;
                 let initial_block_value = 5i64;
                 let initial_block = initial_block_value.to_le_bytes().to_vec();
@@ -852,8 +835,7 @@ fn runs_cashc_valid_examples() {
                     out.extend_from_slice(&active_bytecode[9..]);
                     out
                 };
-                let new_contract_hash = blake2b_20(&new_contract);
-                let output1_script = build_p2sh20_script(&new_contract_hash);
+                let output1_script = pay_to_script_hash_script(&new_contract).script().to_vec();
 
                 let output0_script = build_p2pkh_script(&recipient);
 

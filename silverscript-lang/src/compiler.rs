@@ -1622,12 +1622,6 @@ fn compile_expr(
                 }
                 compile_expr(&args[0], env, params, types, builder, options, visiting, stack_depth, script_size)?;
                 builder.add_op(OpBlake2b)?;
-                builder.add_i64(0)?;
-                *stack_depth += 1;
-                builder.add_i64(20)?;
-                *stack_depth += 1;
-                builder.add_op(OpSubstr)?;
-                *stack_depth -= 2;
                 Ok(())
             }
             "checkSig" => {
@@ -1701,6 +1695,30 @@ fn compile_expr(
                 builder.add_op(OpCat)?;
                 *stack_depth -= 1;
                 builder.add_data(&[0x14])?;
+                *stack_depth += 1;
+                builder.add_op(OpCat)?;
+                *stack_depth -= 1;
+                builder.add_op(OpSwap)?;
+                builder.add_op(OpCat)?;
+                *stack_depth -= 1;
+                builder.add_data(&[OpEqual])?;
+                *stack_depth += 1;
+                builder.add_op(OpCat)?;
+                *stack_depth -= 1;
+                Ok(())
+            }
+            "LockingBytecodeP2SH" => {
+                if args.len() != 1 {
+                    return Err(CompilerError::Unsupported("LockingBytecodeP2SH expects a single bytes32 argument".to_string()));
+                }
+                compile_expr(&args[0], env, params, types, builder, options, visiting, stack_depth, script_size)?;
+                builder.add_data(&[0x00, 0x00])?;
+                *stack_depth += 1;
+                builder.add_data(&[OpBlake2b])?;
+                *stack_depth += 1;
+                builder.add_op(OpCat)?;
+                *stack_depth -= 1;
+                builder.add_data(&[0x20])?;
                 *stack_depth += 1;
                 builder.add_op(OpCat)?;
                 *stack_depth -= 1;

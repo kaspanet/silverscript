@@ -8,7 +8,7 @@ use kaspa_consensus_core::tx::{
 use kaspa_txscript::caches::Cache;
 use kaspa_txscript::opcodes::codes::*;
 use kaspa_txscript::script_builder::ScriptBuilder;
-use kaspa_txscript::{EngineCtx, EngineFlags, TxScriptEngine};
+use kaspa_txscript::{EngineCtx, EngineFlags, TxScriptEngine, pay_to_script_hash_script};
 use rand::{RngCore, thread_rng};
 use secp256k1::{Keypair, Secp256k1, SecretKey};
 use silverscript_lang::compiler::{CompileOptions, compile_contract};
@@ -430,10 +430,6 @@ fn build_p2pkh_script(hash: &[u8]) -> Vec<u8> {
     ScriptBuilder::new().add_op(OpBlake2b).unwrap().add_data(hash).unwrap().add_op(OpEqual).unwrap().drain()
 }
 
-fn build_p2sh20_script(hash: &[u8]) -> Vec<u8> {
-    ScriptBuilder::new().add_op(OpBlake2b).unwrap().add_data(hash).unwrap().add_op(OpEqual).unwrap().drain()
-}
-
 #[test]
 fn runs_everything_example_and_verifies() {
     let source = load_example_source("everything.sil");
@@ -615,9 +611,8 @@ fn compiles_mecenas_example_and_verifies() {
     let recipient = [1u8; 20];
     let funder_key = random_keypair();
     let funder_pk = funder_key.x_only_public_key().0.serialize();
-    let mut funder_hash =
+    let funder_hash =
         blake2b_simd::Params::new().hash_length(32).to_state().update(funder_pk.as_slice()).finalize().as_bytes().to_vec();
-    funder_hash.truncate(20);
     let pledge = 2000i64;
     let constructor_args = vec![recipient.to_vec().into(), funder_hash.clone().into(), pledge.into()];
 
@@ -710,9 +705,8 @@ fn compiles_mecenas_locktime_example_and_verifies() {
     let recipient = [3u8; 20];
     let funder_key = random_keypair();
     let funder_pk = funder_key.x_only_public_key().0.serialize();
-    let mut funder_hash =
+    let funder_hash =
         blake2b_simd::Params::new().hash_length(32).to_state().update(funder_pk.as_slice()).finalize().as_bytes().to_vec();
-    funder_hash.truncate(20);
     let pledge_per_block = 100i64;
     let initial_block = 900u64;
     let lock_time = 1000u64;
@@ -735,9 +729,7 @@ fn compiles_mecenas_locktime_example_and_verifies() {
     bc_value.push(8u8);
     bc_value.extend_from_slice(&lock_time.to_le_bytes());
     bc_value.extend_from_slice(&active_bytecode[9..]);
-    let mut hash = blake2b_simd::Params::new().hash_length(32).to_state().update(&bc_value).finalize().as_bytes().to_vec();
-    hash.truncate(20);
-    let output1_script = build_p2sh20_script(&hash);
+    let output1_script = pay_to_script_hash_script(&bc_value).script().to_vec();
 
     // Test receive() with changeValue > pledgePerBlock + minerFee (else branch).
     let sigscript = compiled.build_sig_script("receive", vec![]).expect("sigscript builds");
@@ -823,9 +815,7 @@ fn compiles_p2pkh_example_and_verifies() {
 
     let owner = random_keypair();
     let pubkey_bytes = owner.x_only_public_key().0.serialize();
-    let mut pkh =
-        blake2b_simd::Params::new().hash_length(32).to_state().update(pubkey_bytes.as_slice()).finalize().as_bytes().to_vec();
-    pkh.truncate(20);
+    let pkh = blake2b_simd::Params::new().hash_length(32).to_state().update(pubkey_bytes.as_slice()).finalize().as_bytes().to_vec();
     let constructor_args = [pkh.clone().into()];
 
     let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
@@ -970,9 +960,8 @@ fn compiles_covenant_escrow_example_and_verifies() {
 
     let arbiter = random_keypair();
     let arbiter_pk = arbiter.x_only_public_key().0.serialize();
-    let mut arbiter_hash =
+    let arbiter_hash =
         blake2b_simd::Params::new().hash_length(32).to_state().update(arbiter_pk.as_slice()).finalize().as_bytes().to_vec();
-    arbiter_hash.truncate(20);
     let buyer = [10u8; 20];
     let seller = [11u8; 20];
     let constructor_args = vec![arbiter_hash.clone().into(), buyer.to_vec().into(), seller.to_vec().into()];
@@ -1035,14 +1024,10 @@ fn compiles_covenant_last_will_and_verifies() {
     let cold_pk = cold.x_only_public_key().0.serialize();
     let hot_pk = hot.x_only_public_key().0.serialize();
 
-    let mut inheritor_hash =
+    let inheritor_hash =
         blake2b_simd::Params::new().hash_length(32).to_state().update(inheritor_pk.as_slice()).finalize().as_bytes().to_vec();
-    inheritor_hash.truncate(20);
-    let mut cold_hash =
-        blake2b_simd::Params::new().hash_length(32).to_state().update(cold_pk.as_slice()).finalize().as_bytes().to_vec();
-    cold_hash.truncate(20);
-    let mut hot_hash = blake2b_simd::Params::new().hash_length(32).to_state().update(hot_pk.as_slice()).finalize().as_bytes().to_vec();
-    hot_hash.truncate(20);
+    let cold_hash = blake2b_simd::Params::new().hash_length(32).to_state().update(cold_pk.as_slice()).finalize().as_bytes().to_vec();
+    let hot_hash = blake2b_simd::Params::new().hash_length(32).to_state().update(hot_pk.as_slice()).finalize().as_bytes().to_vec();
 
     let constructor_args = vec![inheritor_hash.clone().into(), cold_hash.clone().into(), hot_hash.clone().into()];
     let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
@@ -1181,9 +1166,8 @@ fn compiles_covenant_mecenas_example_and_verifies() {
     let recipient = [21u8; 20];
     let funder_key = random_keypair();
     let funder_pk = funder_key.x_only_public_key().0.serialize();
-    let mut funder_hash =
+    let funder_hash =
         blake2b_simd::Params::new().hash_length(32).to_state().update(funder_pk.as_slice()).finalize().as_bytes().to_vec();
-    funder_hash.truncate(20);
     let pledge = 2_000i64;
     let period = 10i64;
     let constructor_args = vec![recipient.to_vec().into(), funder_hash.clone().into(), pledge.into(), period.into()];
@@ -1278,9 +1262,7 @@ fn compiles_bar_example_and_verifies() {
 
     let owner = random_keypair();
     let pubkey_bytes = owner.x_only_public_key().0.serialize();
-    let mut pkh =
-        blake2b_simd::Params::new().hash_length(32).to_state().update(pubkey_bytes.as_slice()).finalize().as_bytes().to_vec();
-    pkh.truncate(20);
+    let pkh = blake2b_simd::Params::new().hash_length(32).to_state().update(pubkey_bytes.as_slice()).finalize().as_bytes().to_vec();
     let constructor_args = [pkh.clone().into()];
 
     let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
@@ -1331,9 +1313,7 @@ fn compiles_foo_example_and_verifies() {
 
     let owner = random_keypair();
     let pubkey_bytes = owner.x_only_public_key().0.serialize();
-    let mut pkh =
-        blake2b_simd::Params::new().hash_length(32).to_state().update(pubkey_bytes.as_slice()).finalize().as_bytes().to_vec();
-    pkh.truncate(20);
+    let pkh = blake2b_simd::Params::new().hash_length(32).to_state().update(pubkey_bytes.as_slice()).finalize().as_bytes().to_vec();
     let constructor_args = [pkh.clone().into()];
 
     let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
@@ -1400,9 +1380,7 @@ fn compiles_p2pkh_invalid_example_and_fails() {
 
     let owner = random_keypair();
     let pubkey_bytes = owner.x_only_public_key().0.serialize();
-    let mut pkh =
-        blake2b_simd::Params::new().hash_length(32).to_state().update(pubkey_bytes.as_slice()).finalize().as_bytes().to_vec();
-    pkh.truncate(20);
+    let pkh = blake2b_simd::Params::new().hash_length(20).to_state().update(pubkey_bytes.as_slice()).finalize().as_bytes().to_vec();
     let constructor_args = [pkh.clone().into()];
 
     let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
