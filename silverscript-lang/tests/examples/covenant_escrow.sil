@@ -1,6 +1,6 @@
 pragma silverscript ^0.1.0;
 
-contract Escrow(bytes32 arbiter, bytes20 buyer, bytes20 seller) {
+contract Escrow(bytes32 arbiter, pubkey buyer, pubkey seller) {
     function spend(pubkey pk, sig s) {
         require(blake2b(pk) == arbiter);
         require(checkSig(s, pk));
@@ -11,8 +11,8 @@ contract Escrow(bytes32 arbiter, bytes20 buyer, bytes20 seller) {
         require(tx.outputs[0].value == amount);
 
         // Check that the transaction sends to either the buyer or the seller
-        bytes25 buyerLock = new LockingBytecodeP2PKH(buyer);
-        bytes25 sellerLock = new LockingBytecodeP2PKH(seller);
+        bytes34 buyerLock = new LockingBytecodeP2PK(buyer);
+        bytes34 sellerLock = new LockingBytecodeP2PK(seller);
         bool sendsToBuyer = tx.outputs[0].lockingBytecode == buyerLock;
         bool sendsToSeller = tx.outputs[0].lockingBytecode == sellerLock;
         require(sendsToBuyer || sendsToSeller);

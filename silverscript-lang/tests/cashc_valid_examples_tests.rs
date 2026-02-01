@@ -110,15 +110,8 @@ fn build_sigscript(args: &[ArgValue], selector: i64) -> Vec<u8> {
     builder.drain()
 }
 
-fn build_p2pkh_script(hash: &[u8]) -> Vec<u8> {
-    ScriptBuilder::new()
-        .add_op(kaspa_txscript::opcodes::codes::OpBlake2b)
-        .unwrap()
-        .add_data(hash)
-        .unwrap()
-        .add_op(kaspa_txscript::opcodes::codes::OpEqual)
-        .unwrap()
-        .drain()
+fn build_p2pk_script(pubkey: &[u8]) -> Vec<u8> {
+    ScriptBuilder::new().add_data(pubkey).unwrap().add_op(kaspa_txscript::opcodes::codes::OpCheckSig).unwrap().drain()
 }
 
 fn build_tx_context(
@@ -802,7 +795,7 @@ fn runs_cashc_valid_examples() {
                 assert!(result.is_err(), "{example} should fail");
             }
             "simulating_state.sil" => {
-                let recipient = vec![1u8; 20];
+                let recipient = vec![1u8; 32];
                 let funder = vec![2u8; 32];
                 let pledge_per_block = 10i64;
                 let initial_block_value = 5i64;
@@ -837,7 +830,7 @@ fn runs_cashc_valid_examples() {
                 };
                 let output1_script = pay_to_script_hash_script(&new_contract).script().to_vec();
 
-                let output0_script = build_p2pkh_script(&recipient);
+                let output0_script = build_p2pk_script(&recipient);
 
                 let sigscript = build_sigscript(&[], selector);
                 let (mut tx, utxo, reused) = build_tx_context(

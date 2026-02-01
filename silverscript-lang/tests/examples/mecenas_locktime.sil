@@ -1,13 +1,13 @@
 pragma silverscript ^0.1.0;
 
 contract Mecenas(
-    bytes20 recipient,
+    pubkey recipient,
     bytes32 funder,
     int pledgePerBlock,
     bytes8 initialBlock,
 ) {
     function receive() {
-        bytes25 recipientLockingBytecode = new LockingBytecodeP2PKH(recipient);
+        bytes34 recipientLockingBytecode = new LockingBytecodeP2PK(recipient);
         require(tx.outputs[0].lockingBytecode == recipientLockingBytecode);
 
         int initial = int(initialBlock);

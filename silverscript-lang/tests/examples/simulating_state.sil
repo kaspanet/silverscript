@@ -1,14 +1,14 @@
 pragma silverscript ^0.1.0;
 
 contract SimulatingState(
-    bytes20 recipient,
+    pubkey recipient,
     bytes32 funder,
     int pledgePerBlock,
     bytes8 initialBlock,
 ) {
     function receive() {
         // Check that the first output sends to the recipient
-        bytes25 recipientLockingBytecode = new LockingBytecodeP2PKH(recipient);
+        bytes34 recipientLockingBytecode = new LockingBytecodeP2PK(recipient);
         require(tx.outputs[0].lockingBytecode == recipientLockingBytecode);
 
         // Check that time has passed and that time locks are enabled

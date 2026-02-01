@@ -193,10 +193,10 @@ fn compiles_constant_budget_example_and_verifies() {
     let source = load_example_source("constant_budget.sil");
 
     let compiled = compile_contract(&source, &[], CompileOptions::default()).expect("compile succeeds");
-    let recipient0 = [2u8; 20];
-    let recipient1 = [3u8; 20];
-    let output0_script = build_p2pkh_script(&recipient0);
-    let output1_script = build_p2pkh_script(&recipient1);
+    let recipient0 = [2u8; 32];
+    let recipient1 = [3u8; 32];
+    let output0_script = build_p2pk_script(&recipient0);
+    let output1_script = build_p2pk_script(&recipient1);
 
     // Test spend() with output1 >= MIN_CHANGE (if branch).
     let sigscript = compiled.build_sig_script("spend", vec![]).expect("sigscript builds");
@@ -230,14 +230,14 @@ fn compiles_for_loop_example_and_verifies() {
     let source = load_example_source("for_loop.sil");
 
     let compiled = compile_contract(&source, &[], CompileOptions::default()).expect("compile succeeds");
-    let recipient0 = [5u8; 20];
-    let recipient1 = [6u8; 20];
-    let recipient2 = [7u8; 20];
-    let recipient3 = [8u8; 20];
-    let output0_script = build_p2pkh_script(&recipient0);
-    let output1_script = build_p2pkh_script(&recipient1);
-    let output2_script = build_p2pkh_script(&recipient2);
-    let output3_script = build_p2pkh_script(&recipient3);
+    let recipient0 = [5u8; 32];
+    let recipient1 = [6u8; 32];
+    let recipient2 = [7u8; 32];
+    let recipient3 = [8u8; 32];
+    let output0_script = build_p2pk_script(&recipient0);
+    let output1_script = build_p2pk_script(&recipient1);
+    let output2_script = build_p2pk_script(&recipient2);
+    let output3_script = build_p2pk_script(&recipient3);
 
     // Test check() with loop bounds START..END.
     let sigscript = compiled.build_sig_script("check", vec![]).expect("sigscript builds");
@@ -277,14 +277,14 @@ fn compiles_for_loop_ctor_example_with_constructor_bounds() {
 
     let constructor_args = [(0).into(), (4).into()];
     let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
-    let recipient0 = [5u8; 20];
-    let recipient1 = [6u8; 20];
-    let recipient2 = [7u8; 20];
-    let recipient3 = [8u8; 20];
-    let output0_script = build_p2pkh_script(&recipient0);
-    let output1_script = build_p2pkh_script(&recipient1);
-    let output2_script = build_p2pkh_script(&recipient2);
-    let output3_script = build_p2pkh_script(&recipient3);
+    let recipient0 = [5u8; 32];
+    let recipient1 = [6u8; 32];
+    let recipient2 = [7u8; 32];
+    let recipient3 = [8u8; 32];
+    let output0_script = build_p2pk_script(&recipient0);
+    let output1_script = build_p2pk_script(&recipient1);
+    let output2_script = build_p2pk_script(&recipient2);
+    let output3_script = build_p2pk_script(&recipient3);
 
     let sigscript = compiled.build_sig_script("check", vec![]).expect("sigscript builds");
     let input_value = 10_000u64;
@@ -304,10 +304,10 @@ fn compiles_yield_basic_example_and_verifies() {
 
     let compiled = compile_contract(&source, &[], CompileOptions::default()).expect("compile succeeds");
     let script = script_with_return_checks(compiled.script.clone(), &[12, 8]);
-    let recipient0 = [9u8; 20];
-    let recipient1 = [10u8; 20];
-    let output0_script = build_p2pkh_script(&recipient0);
-    let output1_script = build_p2pkh_script(&recipient1);
+    let recipient0 = [9u8; 32];
+    let recipient1 = [10u8; 32];
+    let output0_script = build_p2pk_script(&recipient0);
+    let output1_script = build_p2pk_script(&recipient1);
 
     // Test main(b=8) returns [12, 8] on stack.
     let sigscript = compiled.build_sig_script("main", vec![8.into()]).expect("sigscript builds");
@@ -321,10 +321,10 @@ fn compiles_yield_loop_example_and_verifies() {
 
     let compiled = compile_contract(&source, &[], CompileOptions::default()).expect("compile succeeds");
     let script = script_with_return_checks(compiled.script.clone(), &[1, 2, 3, 4]);
-    let recipient0 = [11u8; 20];
-    let recipient1 = [12u8; 20];
-    let output0_script = build_p2pkh_script(&recipient0);
-    let output1_script = build_p2pkh_script(&recipient1);
+    let recipient0 = [11u8; 32];
+    let recipient1 = [12u8; 32];
+    let output0_script = build_p2pk_script(&recipient0);
+    let output1_script = build_p2pk_script(&recipient1);
 
     // Test main() returns loop values [1,2,3,4] on stack.
     let sigscript = compiled.build_sig_script("main", vec![]).expect("sigscript builds");
@@ -344,10 +344,10 @@ fn compiles_return_basic_example_and_verifies() {
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
     let script = script_with_return_checks(compiled.script.clone(), &[2, 5]);
-    let recipient0 = [13u8; 20];
-    let recipient1 = [14u8; 20];
-    let output0_script = build_p2pkh_script(&recipient0);
-    let output1_script = build_p2pkh_script(&recipient1);
+    let recipient0 = [13u8; 32];
+    let recipient1 = [14u8; 32];
+    let output0_script = build_p2pk_script(&recipient0);
+    let output1_script = build_p2pk_script(&recipient1);
 
     let sigscript = compiled.build_sig_script("main", vec![1.into(), 3.into()]).expect("sigscript builds");
     let result = run_contract_with_tx(script, output0_script, output1_script, 2000, 500, 500, sigscript, 0);
@@ -426,8 +426,8 @@ fn runs_token_example_and_verifies() {
     assert!(result.is_ok(), "token example failed: {}", result.unwrap_err());
 }
 
-fn build_p2pkh_script(hash: &[u8]) -> Vec<u8> {
-    ScriptBuilder::new().add_op(OpBlake2b).unwrap().add_data(hash).unwrap().add_op(OpEqual).unwrap().drain()
+fn build_p2pk_script(pubkey: &[u8]) -> Vec<u8> {
+    ScriptBuilder::new().add_data(pubkey).unwrap().add_op(OpCheckSig).unwrap().drain()
 }
 
 #[test]
@@ -608,7 +608,7 @@ fn compiles_hodl_vault_example_and_verifies() {
 fn compiles_mecenas_example_and_verifies() {
     let source = load_example_source("mecenas.sil");
 
-    let recipient = [1u8; 20];
+    let recipient = [1u8; 32];
     let funder_key = random_keypair();
     let funder_pk = funder_key.x_only_public_key().0.serialize();
     let funder_hash =
@@ -623,7 +623,7 @@ fn compiles_mecenas_example_and_verifies() {
     let input_value = 10000u64;
     let output0_value = pledge as u64;
     let output1_value = input_value - pledge as u64 - 1000;
-    let output0_script = build_p2pkh_script(&recipient);
+    let output0_script = build_p2pk_script(&recipient);
 
     let result = run_contract_with_tx(
         compiled.script.clone(),
@@ -643,7 +643,7 @@ fn compiles_mecenas_example_and_verifies() {
     let input_value = 6000u64;
     let output0_value = input_value - 1000;
     let output1_value = 0u64;
-    let output0_script = build_p2pkh_script(&recipient);
+    let output0_script = build_p2pk_script(&recipient);
 
     let result = run_contract_with_tx(
         compiled.script.clone(),
@@ -702,7 +702,7 @@ fn compiles_mecenas_example_and_verifies() {
 fn compiles_mecenas_locktime_example_and_verifies() {
     let source = load_example_source("mecenas_locktime.sil");
 
-    let recipient = [3u8; 20];
+    let recipient = [3u8; 32];
     let funder_key = random_keypair();
     let funder_pk = funder_key.x_only_public_key().0.serialize();
     let funder_hash =
@@ -721,7 +721,7 @@ fn compiles_mecenas_locktime_example_and_verifies() {
     let passed_blocks = lock_time - initial_block;
     let pledge = passed_blocks as i64 * pledge_per_block;
 
-    let output0_script = build_p2pkh_script(&recipient);
+    let output0_script = build_p2pk_script(&recipient);
     let mut active_bytecode = Vec::with_capacity(2 + compiled.script.len());
     active_bytecode.extend_from_slice(&0u16.to_be_bytes());
     active_bytecode.extend_from_slice(&compiled.script);
@@ -962,15 +962,15 @@ fn compiles_covenant_escrow_example_and_verifies() {
     let arbiter_pk = arbiter.x_only_public_key().0.serialize();
     let arbiter_hash =
         blake2b_simd::Params::new().hash_length(32).to_state().update(arbiter_pk.as_slice()).finalize().as_bytes().to_vec();
-    let buyer = [10u8; 20];
-    let seller = [11u8; 20];
+    let buyer = [10u8; 32];
+    let seller = [11u8; 32];
     let constructor_args = vec![arbiter_hash.clone().into(), buyer.to_vec().into(), seller.to_vec().into()];
 
     let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
 
     let input_value = 12_000u64;
     let output0_value = input_value - 1000;
-    let output0_script = build_p2pkh_script(&buyer);
+    let output0_script = build_p2pk_script(&buyer);
 
     let input = TransactionInput {
         previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([10u8; 32]), index: 0 },
@@ -1163,7 +1163,7 @@ fn compiles_covenant_last_will_and_verifies() {
 fn compiles_covenant_mecenas_example_and_verifies() {
     let source = load_example_source("covenant_mecenas.sil");
 
-    let recipient = [21u8; 20];
+    let recipient = [21u8; 32];
     let funder_key = random_keypair();
     let funder_pk = funder_key.x_only_public_key().0.serialize();
     let funder_hash =
@@ -1180,7 +1180,7 @@ fn compiles_covenant_mecenas_example_and_verifies() {
     let input_value = 10000u64;
     let output0_value = pledge as u64;
     let output1_value = input_value - pledge as u64 - 1000;
-    let output0_script = build_p2pkh_script(&recipient);
+    let output0_script = build_p2pk_script(&recipient);
 
     let result = run_contract_with_tx_sequence(
         compiled.script.clone(),
@@ -1200,7 +1200,7 @@ fn compiles_covenant_mecenas_example_and_verifies() {
     let input_value = 6000u64;
     let output0_value = input_value - 1000;
     let output1_value = 0u64;
-    let output0_script = build_p2pkh_script(&recipient);
+    let output0_script = build_p2pk_script(&recipient);
 
     let result = run_contract_with_tx_sequence(
         compiled.script.clone(),

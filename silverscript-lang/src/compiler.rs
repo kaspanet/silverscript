@@ -1659,49 +1659,17 @@ fn compile_expr(
                 *stack_depth += 1;
                 Ok(())
             }
-            "LockingBytecodeP2PKH" => {
+            "LockingBytecodeP2PK" => {
                 if args.len() != 1 {
-                    return Err(CompilerError::Unsupported("LockingBytecodeP2PKH expects a single bytes20 argument".to_string()));
+                    return Err(CompilerError::Unsupported("LockingBytecodeP2PK expects a single pubkey argument".to_string()));
                 }
                 compile_expr(&args[0], env, params, types, builder, options, visiting, stack_depth, script_size)?;
-                builder.add_data(&[0x00, 0x00])?;
+                builder.add_data(&[0x00, 0x00, OpData32])?;
                 *stack_depth += 1;
-                builder.add_data(&[OpBlake2b])?;
-                *stack_depth += 1;
-                builder.add_op(OpCat)?;
-                *stack_depth -= 1;
-                builder.add_data(&[0x14])?;
-                *stack_depth += 1;
-                builder.add_op(OpCat)?;
-                *stack_depth -= 1;
                 builder.add_op(OpSwap)?;
                 builder.add_op(OpCat)?;
                 *stack_depth -= 1;
-                builder.add_data(&[OpEqual])?;
-                *stack_depth += 1;
-                builder.add_op(OpCat)?;
-                *stack_depth -= 1;
-                Ok(())
-            }
-            "LockingBytecodeP2SH20" => {
-                if args.len() != 1 {
-                    return Err(CompilerError::Unsupported("LockingBytecodeP2SH20 expects a single bytes20 argument".to_string()));
-                }
-                compile_expr(&args[0], env, params, types, builder, options, visiting, stack_depth, script_size)?;
-                builder.add_data(&[0x00, 0x00])?;
-                *stack_depth += 1;
-                builder.add_data(&[OpBlake2b])?;
-                *stack_depth += 1;
-                builder.add_op(OpCat)?;
-                *stack_depth -= 1;
-                builder.add_data(&[0x14])?;
-                *stack_depth += 1;
-                builder.add_op(OpCat)?;
-                *stack_depth -= 1;
-                builder.add_op(OpSwap)?;
-                builder.add_op(OpCat)?;
-                *stack_depth -= 1;
-                builder.add_data(&[OpEqual])?;
+                builder.add_data(&[OpCheckSig])?;
                 *stack_depth += 1;
                 builder.add_op(OpCat)?;
                 *stack_depth -= 1;
@@ -1973,7 +1941,7 @@ fn expr_is_bytes_inner(
         Expr::String(_) => true,
         Expr::Slice { .. } => true,
         Expr::New { name, .. } => {
-            matches!(name.as_str(), "LockingBytecodeNullData" | "LockingBytecodeP2PKH" | "LockingBytecodeP2SH20")
+            matches!(name.as_str(), "LockingBytecodeNullData" | "LockingBytecodeP2PK" | "LockingBytecodeP2SH")
         }
         Expr::Call { name, .. } => {
             matches!(
