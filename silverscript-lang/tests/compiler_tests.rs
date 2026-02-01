@@ -1,3 +1,4 @@
+use kaspa_addresses::{Address, Prefix, Version};
 use kaspa_consensus_core::Hash;
 use kaspa_consensus_core::hashing::sighash::SigHashReusedValuesUnsync;
 use kaspa_consensus_core::subnets::SubnetworkId;
@@ -9,8 +10,7 @@ use kaspa_txscript::caches::Cache;
 use kaspa_txscript::covenants::CovenantsContext;
 use kaspa_txscript::opcodes::codes::*;
 use kaspa_txscript::script_builder::ScriptBuilder;
-use kaspa_txscript::{EngineCtx, EngineFlags, SeqCommitAccessor, TxScriptEngine, pay_to_address_script};
-use kaspa_addresses::{Address, Prefix, Version};
+use kaspa_txscript::{EngineCtx, EngineFlags, SeqCommitAccessor, TxScriptEngine, pay_to_address_script, pay_to_script_hash_script};
 use silverscript_lang::ast::{Expr, parse_contract_ast};
 use silverscript_lang::compiler::{CompileOptions, CompiledContract, compile_contract, compile_contract_ast, function_branch_index};
 
@@ -952,9 +952,7 @@ fn locking_bytecode_p2pk_matches_pay_to_address_script() {
     expected.extend_from_slice(&spk.version().to_be_bytes());
     expected.extend_from_slice(spk.script());
 
-    let sigscript = compiled
-        .build_sig_script("main", vec![pubkey.into(), expected.into()])
-        .expect("sigscript builds");
+    let sigscript = compiled.build_sig_script("main", vec![pubkey.into(), expected.into()]).expect("sigscript builds");
     let result = run_script_with_sigscript(compiled.script, sigscript);
     assert!(result.is_ok(), "p2pk locking bytecode mismatch: {}", result.unwrap_err());
 }
@@ -978,11 +976,32 @@ fn locking_bytecode_p2sh_matches_pay_to_address_script() {
     expected.extend_from_slice(&spk.version().to_be_bytes());
     expected.extend_from_slice(spk.script());
 
-    let sigscript = compiled
-        .build_sig_script("main", vec![hash.into(), expected.into()])
-        .expect("sigscript builds");
+    let sigscript = compiled.build_sig_script("main", vec![hash.into(), expected.into()]).expect("sigscript builds");
     let result = run_script_with_sigscript(compiled.script, sigscript);
     assert!(result.is_ok(), "p2sh locking bytecode mismatch: {}", result.unwrap_err());
+}
+
+#[test]
+fn locking_bytecode_p2sh_from_redeem_script_matches_pay_to_script_hash_script() {
+    let source = r#"
+        contract Test() {
+            function main(bytes redeem_script, bytes expected) {
+                bytes spk = new LockingBytecodeP2SHFromRedeemScript(redeem_script);
+                require(spk == expected);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let redeem_script = vec![OpTrue];
+    let spk = pay_to_script_hash_script(&redeem_script);
+    let mut expected = Vec::new();
+    expected.extend_from_slice(&spk.version().to_be_bytes());
+    expected.extend_from_slice(spk.script());
+
+    let sigscript = compiled.build_sig_script("main", vec![redeem_script.into(), expected.into()]).expect("sigscript builds");
+    let result = run_script_with_sigscript(compiled.script, sigscript);
+    assert!(result.is_ok(), "p2sh-from-redeem-script locking bytecode mismatch: {}", result.unwrap_err());
 }
 
 fn run_script_with_tx_and_covenants(

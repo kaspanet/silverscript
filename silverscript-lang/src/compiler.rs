@@ -1699,6 +1699,33 @@ fn compile_expr(
                 *stack_depth -= 1;
                 Ok(())
             }
+            "LockingBytecodeP2SHFromRedeemScript" => {
+                if args.len() != 1 {
+                    return Err(CompilerError::Unsupported(
+                        "LockingBytecodeP2SHFromRedeemScript expects a single redeem_script argument".to_string(),
+                    ));
+                }
+                compile_expr(&args[0], env, params, types, builder, options, visiting, stack_depth, script_size)?;
+                builder.add_op(OpBlake2b)?;
+                builder.add_data(&[0x00, 0x00])?;
+                *stack_depth += 1;
+                builder.add_data(&[OpBlake2b])?;
+                *stack_depth += 1;
+                builder.add_op(OpCat)?;
+                *stack_depth -= 1;
+                builder.add_data(&[0x20])?;
+                *stack_depth += 1;
+                builder.add_op(OpCat)?;
+                *stack_depth -= 1;
+                builder.add_op(OpSwap)?;
+                builder.add_op(OpCat)?;
+                *stack_depth -= 1;
+                builder.add_data(&[OpEqual])?;
+                *stack_depth += 1;
+                builder.add_op(OpCat)?;
+                *stack_depth -= 1;
+                Ok(())
+            }
             _ => Err(CompilerError::Unsupported(format!("unknown constructor: {name}"))),
         },
         Expr::Unary { op, expr } => {
@@ -1940,9 +1967,10 @@ fn expr_is_bytes_inner(
         Expr::Bytes(_) => true,
         Expr::String(_) => true,
         Expr::Slice { .. } => true,
-        Expr::New { name, .. } => {
-            matches!(name.as_str(), "LockingBytecodeNullData" | "LockingBytecodeP2PK" | "LockingBytecodeP2SH")
-        }
+        Expr::New { name, .. } => matches!(
+            name.as_str(),
+            "LockingBytecodeNullData" | "LockingBytecodeP2PK" | "LockingBytecodeP2SH" | "LockingBytecodeP2SHFromRedeemScript"
+        ),
         Expr::Call { name, .. } => {
             matches!(
                 name.as_str(),
