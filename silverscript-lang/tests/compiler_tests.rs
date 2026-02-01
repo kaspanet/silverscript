@@ -9,7 +9,8 @@ use kaspa_txscript::caches::Cache;
 use kaspa_txscript::covenants::CovenantsContext;
 use kaspa_txscript::opcodes::codes::*;
 use kaspa_txscript::script_builder::ScriptBuilder;
-use kaspa_txscript::{EngineCtx, EngineFlags, SeqCommitAccessor, TxScriptEngine};
+use kaspa_txscript::{EngineCtx, EngineFlags, SeqCommitAccessor, TxScriptEngine, pay_to_address_script};
+use kaspa_addresses::{Address, Prefix, Version};
 use silverscript_lang::ast::{Expr, parse_contract_ast};
 use silverscript_lang::compiler::{CompileOptions, CompiledContract, compile_contract, compile_contract_ast, function_branch_index};
 
@@ -930,6 +931,58 @@ fn rejects_array_element_assignment() {
     "#;
     let options = CompileOptions { covenants_enabled: true, without_selector: true };
     assert!(compile_contract(source, &[], options).is_err());
+}
+
+#[test]
+fn locking_bytecode_p2pk_matches_pay_to_address_script() {
+    let source = r#"
+        contract Test() {
+            function main(pubkey pk, bytes expected) {
+                bytes spk = new LockingBytecodeP2PK(pk);
+                require(spk == expected);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let pubkey = vec![0x11u8; 32];
+    let address = Address::new(Prefix::Mainnet, Version::PubKey, &pubkey);
+    let spk = pay_to_address_script(&address);
+    let mut expected = Vec::new();
+    expected.extend_from_slice(&spk.version().to_be_bytes());
+    expected.extend_from_slice(spk.script());
+
+    let sigscript = compiled
+        .build_sig_script("main", vec![pubkey.into(), expected.into()])
+        .expect("sigscript builds");
+    let result = run_script_with_sigscript(compiled.script, sigscript);
+    assert!(result.is_ok(), "p2pk locking bytecode mismatch: {}", result.unwrap_err());
+}
+
+#[test]
+fn locking_bytecode_p2sh_matches_pay_to_address_script() {
+    let source = r#"
+        contract Test() {
+            function main(bytes32 hash, bytes expected) {
+                bytes spk = new LockingBytecodeP2SH(hash);
+                require(spk == expected);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let hash = vec![0x22u8; 32];
+    let address = Address::new(Prefix::Mainnet, Version::ScriptHash, &hash);
+    let spk = pay_to_address_script(&address);
+    let mut expected = Vec::new();
+    expected.extend_from_slice(&spk.version().to_be_bytes());
+    expected.extend_from_slice(spk.script());
+
+    let sigscript = compiled
+        .build_sig_script("main", vec![hash.into(), expected.into()])
+        .expect("sigscript builds");
+    let result = run_script_with_sigscript(compiled.script, sigscript);
+    assert!(result.is_ok(), "p2sh locking bytecode mismatch: {}", result.unwrap_err());
 }
 
 fn run_script_with_tx_and_covenants(

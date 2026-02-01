@@ -12,6 +12,7 @@ rust-version = "1.85.0"
 
 [workspace.dependencies]
 kaspa-consensus-core = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "covpp-reset1" }
+kaspa-addresses = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "covpp-reset1" }
 kaspa-hashes = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "covpp-reset1" }
 kaspa-txscript = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "covpp-reset1" }
 kaspa-txscript-errors = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "covpp-reset1" }
