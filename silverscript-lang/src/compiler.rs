@@ -786,6 +786,7 @@ fn compile_statement(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn compile_inline_call(
     name: &str,
     args: &[Expr],
@@ -2009,6 +2010,7 @@ fn expr_is_bytes_inner(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn compile_opcode_call(
     name: &str,
     args: &[Expr],
