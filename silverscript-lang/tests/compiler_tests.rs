@@ -2177,12 +2177,79 @@ fn compiles_script_size_and_runs_sum_array() {
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
     let expected_size = compiled.script.len() as i64;
-    let sigscript = compiled
-        .build_sig_script("main", vec![Expr::Int(expected_size)])
-        .expect("sigscript builds");
+    let sigscript = compiled.build_sig_script("main", vec![Expr::Int(expected_size)]).expect("sigscript builds");
 
     let result = run_script_with_sigscript(compiled.script, sigscript);
     assert!(result.is_ok(), "script size contract failed: {}", result.unwrap_err());
+}
+
+fn data_prefix_for_size(data_len: usize) -> Vec<u8> {
+    let dummy_data = vec![0u8; data_len];
+    let mut builder = ScriptBuilder::new();
+    builder.add_data(&dummy_data).unwrap();
+    let script = builder.drain();
+    script[..script.len() - data_len].to_vec()
+}
+
+#[test]
+fn compiles_script_size_data_prefix_small_script() {
+    let source = r#"
+        contract PrefixSmall() {
+            function main(bytes expected_data_prefix) {
+                require(expected_data_prefix == this.scriptSizeDataPrefix);
+                require(true);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let expected_prefix = data_prefix_for_size(compiled.script.len());
+    let sigscript = compiled.build_sig_script("main", vec![Expr::Bytes(expected_prefix)]).expect("sigscript builds");
+
+    let result = run_script_with_sigscript(compiled.script, sigscript);
+    assert!(result.is_ok(), "scriptSizeDataPrefix small failed: {}", result.unwrap_err());
+}
+
+#[test]
+fn compiles_script_size_data_prefix_medium_script() {
+    let source = r#"
+        contract PrefixMedium() {
+            function main(bytes expected_data_prefix) {
+                require(expected_data_prefix == this.scriptSizeDataPrefix);
+                for (i, 0, 100) {
+                    require(true);
+                }
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let expected_prefix = data_prefix_for_size(compiled.script.len());
+    let sigscript = compiled.build_sig_script("main", vec![Expr::Bytes(expected_prefix)]).expect("sigscript builds");
+
+    let result = run_script_with_sigscript(compiled.script, sigscript);
+    assert!(result.is_ok(), "scriptSizeDataPrefix medium failed: {}", result.unwrap_err());
+}
+
+#[test]
+fn compiles_script_size_data_prefix_large_script() {
+    let source = r#"
+        contract PrefixLarge() {
+            function main(bytes expected_data_prefix) {
+                require(expected_data_prefix == this.scriptSizeDataPrefix);
+                for (i, 0, 300) {
+                    require(true);
+                }
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let expected_prefix = data_prefix_for_size(compiled.script.len());
+    let sigscript = compiled.build_sig_script("main", vec![Expr::Bytes(expected_prefix)]).expect("sigscript builds");
+
+    let result = run_script_with_sigscript(compiled.script, sigscript);
+    assert!(result.is_ok(), "scriptSizeDataPrefix large failed: {}", result.unwrap_err());
 }
 
 #[test]

@@ -104,23 +104,11 @@ pub fn compile_contract_ast(
     for _ in 0..32 {
         let mut compiled_functions = Vec::new();
         for (index, func) in contract.functions.iter().enumerate() {
-            compiled_functions.push(compile_function(
-                func,
-                index,
-                &constants,
-                options,
-                &functions_map,
-                &function_order,
-                script_size,
-            )?);
+            compiled_functions.push(compile_function(func, index, &constants, options, &functions_map, &function_order, script_size)?);
         }
 
         let script = if options.without_selector {
-            compiled_functions
-                .first()
-                .ok_or_else(|| CompilerError::Unsupported("contract has no functions".to_string()))?
-                .1
-                .clone()
+            compiled_functions.first().ok_or_else(|| CompilerError::Unsupported("contract has no functions".to_string()))?.1.clone()
         } else {
             let mut builder = ScriptBuilder::new();
             let total = compiled_functions.len();
@@ -211,6 +199,7 @@ fn statement_uses_script_size(stmt: &Statement) -> bool {
 fn expr_uses_script_size(expr: &Expr) -> bool {
     match expr {
         Expr::Nullary(NullaryOp::ThisScriptSize) => true,
+        Expr::Nullary(NullaryOp::ThisScriptSizeDataPrefix) => true,
         Expr::Unary { expr, .. } => expr_uses_script_size(expr),
         Expr::Binary { left, right, .. } => expr_uses_script_size(left) || expr_uses_script_size(right),
         Expr::IfElse { condition, then_expr, else_expr } => {
@@ -570,17 +559,7 @@ fn compile_function(
     } else {
         let mut stack_depth = 0i64;
         for expr in &yields {
-            compile_expr(
-                expr,
-                &env,
-                &params,
-                &types,
-                &mut builder,
-                options,
-                &mut HashSet::new(),
-                &mut stack_depth,
-                script_size,
-            )?;
+            compile_expr(expr, &env, &params, &types, &mut builder, options, &mut HashSet::new(), &mut stack_depth, script_size)?;
         }
         for _ in 0..param_count {
             builder.add_i64(yield_count as i64)?;
@@ -664,17 +643,7 @@ fn compile_statement(
         }
         Statement::Require { expr, .. } => {
             let mut stack_depth = 0i64;
-            compile_expr(
-                expr,
-                env,
-                params,
-                types,
-                builder,
-                options,
-                &mut HashSet::new(),
-                &mut stack_depth,
-                script_size,
-            )?;
+            compile_expr(expr, env, params, types, builder, options, &mut HashSet::new(), &mut stack_depth, script_size)?;
             builder.add_op(OpVerify)?;
             Ok(())
         }
@@ -746,17 +715,7 @@ fn compile_statement(
             if !returns.is_empty() {
                 let mut stack_depth = 0i64;
                 for expr in returns {
-                    compile_expr(
-                        &expr,
-                        env,
-                        params,
-                        types,
-                        builder,
-                        options,
-                        &mut HashSet::new(),
-                        &mut stack_depth,
-                        script_size,
-                    )?;
+                    compile_expr(&expr, env, params, types, builder, options, &mut HashSet::new(), &mut stack_depth, script_size)?;
                     builder.add_op(OpDrop)?;
                     stack_depth -= 1;
                 }
@@ -949,17 +908,7 @@ fn compile_if_statement(
     script_size: Option<i64>,
 ) -> Result<(), CompilerError> {
     let mut stack_depth = 0i64;
-    compile_expr(
-        condition,
-        env,
-        params,
-        types,
-        builder,
-        options,
-        &mut HashSet::new(),
-        &mut stack_depth,
-        script_size,
-    )?;
+    compile_expr(condition, env, params, types, builder, options, &mut HashSet::new(), &mut stack_depth, script_size)?;
     builder.add_op(OpIf)?;
 
     let original_env = env.clone();
@@ -1044,17 +993,7 @@ fn compile_time_op_statement(
     script_size: Option<i64>,
 ) -> Result<(), CompilerError> {
     let mut stack_depth = 0i64;
-    compile_expr(
-        expr,
-        env,
-        params,
-        types,
-        builder,
-        options,
-        &mut HashSet::new(),
-        &mut stack_depth,
-        script_size,
-    )?;
+    compile_expr(expr, env, params, types, builder, options, &mut HashSet::new(), &mut stack_depth, script_size)?;
 
     match tx_var {
         TimeVar::ThisAge => {
@@ -1406,50 +1345,144 @@ fn compile_expr(
             "OpTxSubnetId" => {
                 compile_opcode_call(name, args, 0, &scope, builder, options, visiting, stack_depth, OpTxSubnetId, true, script_size)
             }
-            "OpTxGas" => compile_opcode_call(name, args, 0, &scope, builder, options, visiting, stack_depth, OpTxGas, true, script_size),
+            "OpTxGas" => {
+                compile_opcode_call(name, args, 0, &scope, builder, options, visiting, stack_depth, OpTxGas, true, script_size)
+            }
             "OpTxPayloadLen" => {
                 compile_opcode_call(name, args, 0, &scope, builder, options, visiting, stack_depth, OpTxPayloadLen, true, script_size)
             }
-            "OpTxPayloadSubstr" => {
-                compile_opcode_call(name, args, 2, &scope, builder, options, visiting, stack_depth, OpTxPayloadSubstr, true, script_size)
-            }
+            "OpTxPayloadSubstr" => compile_opcode_call(
+                name,
+                args,
+                2,
+                &scope,
+                builder,
+                options,
+                visiting,
+                stack_depth,
+                OpTxPayloadSubstr,
+                true,
+                script_size,
+            ),
             "OpOutpointTxId" => {
                 compile_opcode_call(name, args, 1, &scope, builder, options, visiting, stack_depth, OpOutpointTxId, true, script_size)
             }
             "OpOutpointIndex" => {
                 compile_opcode_call(name, args, 1, &scope, builder, options, visiting, stack_depth, OpOutpointIndex, true, script_size)
             }
-            "OpTxInputScriptSigLen" => {
-                compile_opcode_call(name, args, 1, &scope, builder, options, visiting, stack_depth, OpTxInputScriptSigLen, true, script_size)
+            "OpTxInputScriptSigLen" => compile_opcode_call(
+                name,
+                args,
+                1,
+                &scope,
+                builder,
+                options,
+                visiting,
+                stack_depth,
+                OpTxInputScriptSigLen,
+                true,
+                script_size,
+            ),
+            "OpTxInputScriptSigSubstr" => compile_opcode_call(
+                name,
+                args,
+                3,
+                &scope,
+                builder,
+                options,
+                visiting,
+                stack_depth,
+                OpTxInputScriptSigSubstr,
+                true,
+                script_size,
+            ),
+            "OpTxInputSeq" => {
+                compile_opcode_call(name, args, 1, &scope, builder, options, visiting, stack_depth, OpTxInputSeq, true, script_size)
             }
-            "OpTxInputScriptSigSubstr" => {
-                compile_opcode_call(name, args, 3, &scope, builder, options, visiting, stack_depth, OpTxInputScriptSigSubstr, true, script_size)
-            }
-            "OpTxInputSeq" => compile_opcode_call(name, args, 1, &scope, builder, options, visiting, stack_depth, OpTxInputSeq, true, script_size),
-            "OpTxInputIsCoinbase" => {
-                compile_opcode_call(name, args, 1, &scope, builder, options, visiting, stack_depth, OpTxInputIsCoinbase, true, script_size)
-            }
+            "OpTxInputIsCoinbase" => compile_opcode_call(
+                name,
+                args,
+                1,
+                &scope,
+                builder,
+                options,
+                visiting,
+                stack_depth,
+                OpTxInputIsCoinbase,
+                true,
+                script_size,
+            ),
             "OpTxInputSpkLen" => {
                 compile_opcode_call(name, args, 1, &scope, builder, options, visiting, stack_depth, OpTxInputSpkLen, true, script_size)
             }
-            "OpTxInputSpkSubstr" => {
-                compile_opcode_call(name, args, 3, &scope, builder, options, visiting, stack_depth, OpTxInputSpkSubstr, true, script_size)
-            }
-            "OpTxOutputSpkLen" => {
-                compile_opcode_call(name, args, 1, &scope, builder, options, visiting, stack_depth, OpTxOutputSpkLen, true, script_size)
-            }
-            "OpTxOutputSpkSubstr" => {
-                compile_opcode_call(name, args, 3, &scope, builder, options, visiting, stack_depth, OpTxOutputSpkSubstr, true, script_size)
-            }
-            "OpAuthOutputCount" => {
-                compile_opcode_call(name, args, 1, &scope, builder, options, visiting, stack_depth, OpAuthOutputCount, true, script_size)
-            }
+            "OpTxInputSpkSubstr" => compile_opcode_call(
+                name,
+                args,
+                3,
+                &scope,
+                builder,
+                options,
+                visiting,
+                stack_depth,
+                OpTxInputSpkSubstr,
+                true,
+                script_size,
+            ),
+            "OpTxOutputSpkLen" => compile_opcode_call(
+                name,
+                args,
+                1,
+                &scope,
+                builder,
+                options,
+                visiting,
+                stack_depth,
+                OpTxOutputSpkLen,
+                true,
+                script_size,
+            ),
+            "OpTxOutputSpkSubstr" => compile_opcode_call(
+                name,
+                args,
+                3,
+                &scope,
+                builder,
+                options,
+                visiting,
+                stack_depth,
+                OpTxOutputSpkSubstr,
+                true,
+                script_size,
+            ),
+            "OpAuthOutputCount" => compile_opcode_call(
+                name,
+                args,
+                1,
+                &scope,
+                builder,
+                options,
+                visiting,
+                stack_depth,
+                OpAuthOutputCount,
+                true,
+                script_size,
+            ),
             "OpAuthOutputIdx" => {
                 compile_opcode_call(name, args, 2, &scope, builder, options, visiting, stack_depth, OpAuthOutputIdx, true, script_size)
             }
-            "OpInputCovenantId" => {
-                compile_opcode_call(name, args, 1, &scope, builder, options, visiting, stack_depth, OpInputCovenantId, true, script_size)
-            }
+            "OpInputCovenantId" => compile_opcode_call(
+                name,
+                args,
+                1,
+                &scope,
+                builder,
+                options,
+                visiting,
+                stack_depth,
+                OpInputCovenantId,
+                true,
+                script_size,
+            ),
             "OpCovInputCount" => {
                 compile_opcode_call(name, args, 1, &scope, builder, options, visiting, stack_depth, OpCovInputCount, true, script_size)
             }
@@ -1462,11 +1495,25 @@ fn compile_expr(
             "OpCovOutputIdx" => {
                 compile_opcode_call(name, args, 2, &scope, builder, options, visiting, stack_depth, OpCovOutputIdx, true, script_size)
             }
-            "OpNum2Bin" => compile_opcode_call(name, args, 2, &scope, builder, options, visiting, stack_depth, OpNum2Bin, true, script_size),
-            "OpBin2Num" => compile_opcode_call(name, args, 1, &scope, builder, options, visiting, stack_depth, OpBin2Num, true, script_size),
-            "OpChainblockSeqCommit" => {
-                compile_opcode_call(name, args, 1, &scope, builder, options, visiting, stack_depth, OpChainblockSeqCommit, false, script_size)
+            "OpNum2Bin" => {
+                compile_opcode_call(name, args, 2, &scope, builder, options, visiting, stack_depth, OpNum2Bin, true, script_size)
             }
+            "OpBin2Num" => {
+                compile_opcode_call(name, args, 1, &scope, builder, options, visiting, stack_depth, OpBin2Num, true, script_size)
+            }
+            "OpChainblockSeqCommit" => compile_opcode_call(
+                name,
+                args,
+                1,
+                &scope,
+                builder,
+                options,
+                visiting,
+                stack_depth,
+                OpChainblockSeqCommit,
+                false,
+                script_size,
+            ),
             "bytes" => {
                 if args.is_empty() || args.len() > 2 {
                     return Err(CompilerError::Unsupported("bytes() expects one or two arguments".to_string()));
@@ -1841,8 +1888,18 @@ fn compile_expr(
                 }
                 NullaryOp::ThisScriptSize => {
                     let size = script_size
-                        .ok_or_else(|| CompilerError::Unsupported("this.script_size is only available at compile time".to_string()))?;
+                        .ok_or_else(|| CompilerError::Unsupported("this.scriptSize is only available at compile time".to_string()))?;
                     builder.add_i64(size)?;
+                }
+                NullaryOp::ThisScriptSizeDataPrefix => {
+                    let size = script_size.ok_or_else(|| {
+                        CompilerError::Unsupported("this.scriptSizeDataPrefix is only available at compile time".to_string())
+                    })?;
+                    let size: usize = size.try_into().map_err(|_| {
+                        CompilerError::Unsupported("this.scriptSizeDataPrefix requires a non-negative script size".to_string())
+                    })?;
+                    let prefix = data_prefix(size);
+                    builder.add_data(&prefix)?;
                 }
                 NullaryOp::TxInputsLength => {
                     builder.add_op(OpTxInputCount)?;
@@ -1929,6 +1986,7 @@ fn expr_is_bytes_inner(
             matches!(kind, IntrospectionKind::InputLockingBytecode | IntrospectionKind::OutputLockingBytecode)
         }
         Expr::Nullary(NullaryOp::ActiveBytecode) => true,
+        Expr::Nullary(NullaryOp::ThisScriptSizeDataPrefix) => true,
         Expr::ArrayIndex { source, .. } => match source.as_ref() {
             Expr::Identifier(name) => {
                 types.get(name).and_then(|type_name| array_element_type(type_name)).map(|element| element != "int").unwrap_or(false)
@@ -2067,4 +2125,37 @@ fn parse_date_value(value: &str) -> Result<i64, CompilerError> {
         .and_utc()
         .timestamp();
     Ok(timestamp)
+}
+
+fn data_prefix(data_len: usize) -> Vec<u8> {
+    let dummy_data = vec![0u8; data_len];
+    let mut builder = ScriptBuilder::new();
+    builder.add_data(&dummy_data).unwrap();
+    let script = builder.drain();
+    script[..script.len() - data_len].to_vec()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Op0, OpPushData1, OpPushData2, data_prefix};
+
+    #[test]
+    fn data_prefix_encodes_small_pushes() {
+        assert_eq!(data_prefix(0), vec![Op0]);
+        // For a single 0x00 byte, ScriptBuilder uses Op0, so the prefix is empty.
+        assert_eq!(data_prefix(1), Vec::<u8>::new());
+        assert_eq!(data_prefix(2), vec![2u8]);
+        assert_eq!(data_prefix(75), vec![75u8]);
+    }
+
+    #[test]
+    fn data_prefix_encodes_pushdata1() {
+        assert_eq!(data_prefix(76), vec![OpPushData1, 76u8]);
+        assert_eq!(data_prefix(255), vec![OpPushData1, 255u8]);
+    }
+
+    #[test]
+    fn data_prefix_encodes_pushdata2() {
+        assert_eq!(data_prefix(256), vec![OpPushData2, 0x00, 0x01]);
+    }
 }
