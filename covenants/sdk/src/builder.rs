@@ -422,7 +422,7 @@ mod tests {
 
         // Push args in the order expected by the contract: state then action.
         let mut sig_builder = ScriptBuilder::new();
-        sig_builder.add_data(state).unwrap().add_data(action).unwrap();
+        sig_builder.add_data(action).unwrap().add_data(state).unwrap();
         let sig_script = sig_builder.drain();
 
         let tx_input = TransactionInput::new(TransactionOutpoint::new(Hash::from_u64_word(999), 0), sig_script, 0, 0);
@@ -614,7 +614,7 @@ mod tests {
 
         let source = r#"
             contract Split() {
-                function main(int s, int a) {
+                entrypoint function main(int a, int s) {
                     require(0 <= s);
                     require(0 <= a);
                     require(a <= s);
@@ -624,8 +624,8 @@ mod tests {
             }
         "#;
 
-        let compiled = compile_contract(source, &[], CompileOptions { covenants_enabled: true, without_selector: true })
-            .expect("compile succeeds");
+        let compiled =
+            compile_contract(source, &[], CompileOptions { allow_yield: true, ..Default::default() }).expect("compile succeeds");
         let transition_script = compiled.script;
 
         let yielded_states = script_eval(&transition_script, old_state.as_slice(), action_data.as_slice());
@@ -643,8 +643,7 @@ mod tests {
             CovenantBuilder::new()
                 .with_state(state.to_vec(), ACTION_LEN_BYTES)
                 .with_state_transition(move |b: &mut ScriptBuilder| -> Result<&mut ScriptBuilder, ScriptBuilderError> {
-                    // Stack on entry: [action_bytes, state_bytes]; reorder so action is on top for the SS contract.
-                    b.add_op(OpSwap)?.add_ops(&transition_script)
+                    b.add_ops(&transition_script)
                 })
                 .require_authorized_output_count(2)
                 .verify_authorized_output_spk_at(0)
