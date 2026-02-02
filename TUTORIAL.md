@@ -139,15 +139,60 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-**Compile Options:**
+**Building Signature Scripts Programmatically:**
+
+After compiling a contract, you can build signature scripts (unlocking scripts) for its entrypoint functions:
 
 ```rust
-let options = CompileOptions {
-    covenants_enabled: true,    // Enable covenant features
-    allow_yield: false,         // Allow yield statements (experimental)
-    allow_entrypoint_return: false, // Allow return in entrypoints
-};
+use silverscript_lang::ast::Expr;
+
+let source = r#"
+    pragma silverscript ^0.1.0;
+    
+    contract TransferWithTimeout(pubkey sender, pubkey recipient, int timeout) {
+        entrypoint function transfer(sig recipientSig) {
+            require(checkSig(recipientSig, recipient));
+        }
+        
+        entrypoint function reclaim(sig senderSig) {
+            require(checkSig(senderSig, sender));
+            require(tx.time >= timeout);
+        }
+    }
+"#;
+
+let sender_pk = vec![3u8; 32];
+let recipient_pk = vec![4u8; 32];
+let timeout = 1640000000i64;
+let compiled = compile_contract(
+    source,
+    &[sender_pk.into(), recipient_pk.into(), timeout.into()],
+    CompileOptions::default()
+)?;
+
+// Build sigscript for multiple entrypoints
+let sig = vec![5u8; 64];
+
+// For 'transfer' function (selector = 0)
+let transfer_sigscript = compiled.build_sig_script(
+    "transfer",
+    vec![sig.clone().into()]
+)?;
+// transfer_sigscript contains: <signature> <0> (selector 0)
+
+// For 'reclaim' function (selector = 1)
+let reclaim_sigscript = compiled.build_sig_script(
+    "reclaim",
+    vec![sig.into()]
+)?;
+// reclaim_sigscript contains: <signature> <1> (selector 1)
 ```
+
+The `build_sig_script` method automatically:
+- Validates argument count and types
+- Encodes arguments properly for the Kaspa script stack
+- Appends the function selector for contracts with multiple entrypoints
+- Omits the selector for contracts with a single entrypoint
 
 ---
 
@@ -275,7 +320,7 @@ entrypoint function spend(sig s, pubkey pk) {
 }
 ```
 
-A contract must have at least one entrypoint function. Contracts with multiple entrypoints use function selectors automatically (unless there's only one entrypoint).
+A contract must have at least one entrypoint function. Contracts with multiple entrypoints use function selectors automatically.
 
 ### Function Parameters and Return Types
 
@@ -515,14 +560,23 @@ Format: `YYYY-MM-DDThh:mm:ss`
 
 ### Arrays
 
-Arrays can contain integers or fixed-size byte values:
+Arrays must be built dynamically using the `.push()` method:
 
 ```javascript
-// Integer array
-int[] numbers = [1, 2, 3, 4, 5];
+// Declare an array
+int[] numbers;
+bytes32[] hashes;
 
-// Bytes array
-bytes[] dataArray = [0x01, 0x02, 0x03];
+// Build array with push
+numbers.push(1);
+numbers.push(2);
+numbers.push(3);
+numbers.push(4);
+numbers.push(5);
+
+// Build bytes32 array
+hashes.push(0x1111111111111111111111111111111111111111111111111111111111111111);
+hashes.push(0x2222222222222222222222222222222222222222222222222222222222222222);
 
 // Access array elements
 int first = numbers[0];
@@ -530,18 +584,6 @@ int second = numbers[1];
 
 // Array length
 int count = numbers.length;
-```
-
-**Trailing Commas:**
-
-Trailing commas are allowed in arrays:
-
-```javascript
-int[] numbers = [
-    1,
-    2,
-    3,  // Trailing comma is OK
-];
 ```
 
 ### String Operations
