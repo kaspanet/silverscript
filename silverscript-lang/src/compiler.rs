@@ -27,16 +27,10 @@ pub enum CompilerError {
     ScriptBuild(#[from] ScriptBuilderError),
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct CompileOptions {
     pub allow_yield: bool,
     pub allow_entrypoint_return: bool,
-}
-
-impl Default for CompileOptions {
-    fn default() -> Self {
-        Self { allow_yield: false, allow_entrypoint_return: false }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
