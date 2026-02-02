@@ -30,14 +30,13 @@ pub enum CompilerError {
 #[derive(Debug, Clone, Copy)]
 pub struct CompileOptions {
     pub covenants_enabled: bool,
-    pub without_selector: bool,
     pub allow_yield: bool,
     pub allow_entrypoint_return: bool,
 }
 
 impl Default for CompileOptions {
     fn default() -> Self {
-        Self { covenants_enabled: true, without_selector: false, allow_yield: false, allow_entrypoint_return: false }
+        Self { covenants_enabled: true, allow_yield: false, allow_entrypoint_return: false }
     }
 }
 
@@ -93,9 +92,7 @@ pub fn compile_contract_ast(
         }
     }
 
-    if options.without_selector && entrypoint_functions.len() != 1 {
-        return Err(CompilerError::Unsupported("without_selector requires a single entrypoint function".to_string()));
-    }
+    let without_selector = entrypoint_functions.len() == 1;
 
     let mut constants = contract.constants.clone();
     for (param, value) in contract.params.iter().zip(constructor_args.iter()) {
@@ -125,7 +122,7 @@ pub fn compile_contract_ast(
             }
         }
 
-        let script = if options.without_selector {
+        let script = if without_selector {
             compiled_entrypoints
                 .first()
                 .ok_or_else(|| CompilerError::Unsupported("contract has no entrypoint functions".to_string()))?
@@ -164,7 +161,7 @@ pub fn compile_contract_ast(
                 script,
                 ast: contract.clone(),
                 abi,
-                without_selector: options.without_selector,
+                without_selector,
             });
         }
 
@@ -175,7 +172,7 @@ pub fn compile_contract_ast(
                 script,
                 ast: contract.clone(),
                 abi,
-                without_selector: options.without_selector,
+                without_selector,
             });
         }
         script_size = Some(actual_size);

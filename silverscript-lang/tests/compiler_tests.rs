@@ -14,20 +14,20 @@ use kaspa_txscript::{EngineCtx, EngineFlags, SeqCommitAccessor, TxScriptEngine, 
 use silverscript_lang::ast::{Expr, parse_contract_ast};
 use silverscript_lang::compiler::{CompileOptions, CompiledContract, compile_contract, compile_contract_ast, function_branch_index};
 
-fn run_script_with_selector(script: Vec<u8>, selector: i64) -> Result<(), kaspa_txscript_errors::TxScriptError> {
-    let sigscript = ScriptBuilder::new().add_i64(selector).unwrap().drain();
+fn run_script_with_selector(script: Vec<u8>, selector: Option<i64>) -> Result<(), kaspa_txscript_errors::TxScriptError> {
+    let sigscript = selector_sigscript(selector);
     run_script_with_sigscript(script, sigscript)
 }
 
 fn run_script_with_tx(
     script: Vec<u8>,
-    selector: i64,
+    selector: Option<i64>,
     lock_time: u64,
     sequence: u64,
 ) -> Result<(), kaspa_txscript_errors::TxScriptError> {
     let reused_values = SigHashReusedValuesUnsync::new();
     let sig_cache = Cache::new(10_000);
-    let sigscript = ScriptBuilder::new().add_i64(selector).unwrap().drain();
+    let sigscript = selector_sigscript(selector);
 
     let input = TransactionInput {
         previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([0u8; 32]), index: 0 },
@@ -49,6 +49,14 @@ fn run_script_with_tx(
         EngineFlags { covenants_enabled: true },
     );
     vm.execute()
+}
+
+fn selector_sigscript(selector: Option<i64>) -> Vec<u8> {
+    let mut builder = ScriptBuilder::new();
+    if let Some(selector) = selector {
+        builder.add_i64(selector).unwrap();
+    }
+    builder.drain()
 }
 
 fn run_script_with_sigscript(script: Vec<u8>, sigscript: Vec<u8>) -> Result<(), kaspa_txscript_errors::TxScriptError> {
@@ -158,8 +166,14 @@ fn build_sig_script_builds_expected_script() {
     let args = vec![Expr::Bytes(vec![1u8, 2, 3, 4]), Expr::Int(7)];
     let sigscript = compiled.build_sig_script("spend", args).expect("sigscript builds");
 
-    let selector = function_branch_index(&compiled.ast, "spend").expect("selector resolved");
-    let expected = ScriptBuilder::new().add_data(&[1u8, 2, 3, 4]).unwrap().add_i64(7).unwrap().add_i64(selector).unwrap().drain();
+    let selector = selector_for(&compiled, "spend");
+    let mut builder = ScriptBuilder::new();
+    builder.add_data(&[1u8, 2, 3, 4]).unwrap();
+    builder.add_i64(7).unwrap();
+    if let Some(selector) = selector {
+        builder.add_i64(selector).unwrap();
+    }
+    let expected = builder.drain();
 
     assert_eq!(sigscript, expected);
 }
@@ -311,9 +325,8 @@ fn build_sig_script_omits_selector_without_selector() {
             }
         }
     "#;
-    let options =
-        CompileOptions { covenants_enabled: true, without_selector: true, allow_yield: false, allow_entrypoint_return: false };
-    let compiled = compile_contract(source, &[], options).expect("compile succeeds");
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    assert!(compiled.without_selector);
     let sigscript = compiled.build_sig_script("spend", vec![1.into(), vec![2u8; 4].into()]).expect("sigscript builds");
 
     let expected = ScriptBuilder::new().add_i64(1).unwrap().add_data(&[2u8; 4]).unwrap().drain();
@@ -577,8 +590,7 @@ fn compiles_int_array_length_to_expected_script() {
             }
         }
     "#;
-    let options =
-        CompileOptions { covenants_enabled: true, without_selector: true, allow_yield: false, allow_entrypoint_return: false };
+    let options = CompileOptions { covenants_enabled: true, allow_yield: false, allow_entrypoint_return: false };
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
 
     let expected = ScriptBuilder::new()
@@ -618,8 +630,7 @@ fn compiles_int_array_push_to_expected_script() {
             }
         }
     "#;
-    let options =
-        CompileOptions { covenants_enabled: true, without_selector: true, allow_yield: false, allow_entrypoint_return: false };
+    let options = CompileOptions { covenants_enabled: true, allow_yield: false, allow_entrypoint_return: false };
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
 
     let expected = ScriptBuilder::new()
@@ -667,8 +678,7 @@ fn compiles_int_array_index_to_expected_script() {
             }
         }
     "#;
-    let options =
-        CompileOptions { covenants_enabled: true, without_selector: true, allow_yield: false, allow_entrypoint_return: false };
+    let options = CompileOptions { covenants_enabled: true, allow_yield: false, allow_entrypoint_return: false };
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
 
     let expected = ScriptBuilder::new()
@@ -725,8 +735,7 @@ fn runs_array_runtime_examples() {
             }
         }
     "#;
-    let options =
-        CompileOptions { covenants_enabled: true, without_selector: true, allow_yield: false, allow_entrypoint_return: false };
+    let options = CompileOptions { covenants_enabled: true, allow_yield: false, allow_entrypoint_return: false };
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
     let sigscript = ScriptBuilder::new().drain();
     let result = run_script_with_sigscript(compiled.script, sigscript);
@@ -744,8 +753,7 @@ fn compiles_bytes20_array_push_without_num2bin() {
             }
         }
     "#;
-    let options =
-        CompileOptions { covenants_enabled: true, without_selector: true, allow_yield: false, allow_entrypoint_return: false };
+    let options = CompileOptions { covenants_enabled: true, allow_yield: false, allow_entrypoint_return: false };
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
 
     let value =
@@ -794,8 +802,7 @@ fn runs_bytes20_array_runtime_example() {
             }
         }
     "#;
-    let options =
-        CompileOptions { covenants_enabled: true, without_selector: true, allow_yield: false, allow_entrypoint_return: false };
+    let options = CompileOptions { covenants_enabled: true, allow_yield: false, allow_entrypoint_return: false };
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
     let sigscript = ScriptBuilder::new().drain();
     let result = run_script_with_sigscript(compiled.script, sigscript);
@@ -815,8 +822,7 @@ fn allows_array_equality_comparison() {
             }
         }
     "#;
-    let options =
-        CompileOptions { covenants_enabled: true, without_selector: true, allow_yield: false, allow_entrypoint_return: false };
+    let options = CompileOptions { covenants_enabled: true, allow_yield: false, allow_entrypoint_return: false };
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
     let sigscript = ScriptBuilder::new().drain();
     let result = run_script_with_sigscript(compiled.script, sigscript);
@@ -836,8 +842,7 @@ fn fails_array_equality_comparison() {
             }
         }
     "#;
-    let options =
-        CompileOptions { covenants_enabled: true, without_selector: true, allow_yield: false, allow_entrypoint_return: false };
+    let options = CompileOptions { covenants_enabled: true, allow_yield: false, allow_entrypoint_return: false };
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
     let sigscript = ScriptBuilder::new().drain();
     let result = run_script_with_sigscript(compiled.script, sigscript);
@@ -858,8 +863,7 @@ fn allows_array_inequality_with_different_sizes() {
             }
         }
     "#;
-    let options =
-        CompileOptions { covenants_enabled: true, without_selector: true, allow_yield: false, allow_entrypoint_return: false };
+    let options = CompileOptions { covenants_enabled: true, allow_yield: false, allow_entrypoint_return: false };
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
     let sigscript = ScriptBuilder::new().drain();
     let result = run_script_with_sigscript(compiled.script, sigscript);
@@ -881,8 +885,7 @@ fn runs_array_for_loop_example() {
             }
         }
     "#;
-    let options =
-        CompileOptions { covenants_enabled: true, without_selector: true, allow_yield: false, allow_entrypoint_return: false };
+    let options = CompileOptions { covenants_enabled: true, allow_yield: false, allow_entrypoint_return: false };
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
     let sigscript = ScriptBuilder::new().drain();
     let result = run_script_with_sigscript(compiled.script, sigscript);
@@ -905,8 +908,7 @@ fn runs_array_for_loop_with_length_guard() {
             }
         }
     "#;
-    let options =
-        CompileOptions { covenants_enabled: true, without_selector: true, allow_yield: false, allow_entrypoint_return: false };
+    let options = CompileOptions { covenants_enabled: true, allow_yield: false, allow_entrypoint_return: false };
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
 
     let sigscript = compiled.build_sig_script("main", vec![vec![1i64, 2i64, 3i64, 4i64].into()]).expect("sigscript builds");
@@ -960,8 +962,7 @@ fn allows_array_assignment_with_compatible_types() {
             }
         }
     "#;
-    let options =
-        CompileOptions { covenants_enabled: true, without_selector: true, allow_yield: false, allow_entrypoint_return: false };
+    let options = CompileOptions { covenants_enabled: true, allow_yield: false, allow_entrypoint_return: false };
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
     let sigscript = ScriptBuilder::new().drain();
     let result = run_script_with_sigscript(compiled.script, sigscript);
@@ -977,8 +978,7 @@ fn rejects_unsized_array_type() {
             }
         }
     "#;
-    let options =
-        CompileOptions { covenants_enabled: true, without_selector: true, allow_yield: false, allow_entrypoint_return: false };
+    let options = CompileOptions { covenants_enabled: true, allow_yield: false, allow_entrypoint_return: false };
     assert!(compile_contract(source, &[], options).is_err());
 }
 
@@ -992,8 +992,7 @@ fn rejects_array_element_assignment() {
             }
         }
     "#;
-    let options =
-        CompileOptions { covenants_enabled: true, without_selector: true, allow_yield: false, allow_entrypoint_return: false };
+    let options = CompileOptions { covenants_enabled: true, allow_yield: false, allow_entrypoint_return: false };
     assert!(compile_contract(source, &[], options).is_err());
 }
 
@@ -1155,24 +1154,32 @@ fn build_covenant_opcode_tx(sigscript: Vec<u8>, covenant_id_a: Hash, covenant_id
     (tx, entries)
 }
 
-fn selector_for(compiled: &CompiledContract, function_name: &str) -> i64 {
-    function_branch_index(&compiled.ast, function_name).expect("selector resolved")
+fn selector_for(compiled: &CompiledContract, function_name: &str) -> Option<i64> {
+    if compiled.without_selector {
+        None
+    } else {
+        Some(function_branch_index(&compiled.ast, function_name).expect("selector resolved"))
+    }
 }
 
-fn wrap_with_dispatch(body: Vec<u8>, selector: i64) -> Vec<u8> {
-    let mut builder = ScriptBuilder::new();
-    builder.add_op(OpDup).unwrap();
-    builder.add_i64(selector).unwrap();
-    builder.add_op(OpNumEqual).unwrap();
-    builder.add_op(OpIf).unwrap();
-    builder.add_op(OpDrop).unwrap();
-    builder.add_ops(&body).unwrap();
-    builder.add_op(OpElse).unwrap();
-    builder.add_op(OpDrop).unwrap();
-    builder.add_op(OpFalse).unwrap();
-    builder.add_op(OpVerify).unwrap();
-    builder.add_op(OpEndIf).unwrap();
-    builder.drain()
+fn wrap_with_dispatch(body: Vec<u8>, selector: Option<i64>) -> Vec<u8> {
+    if let Some(selector) = selector {
+        let mut builder = ScriptBuilder::new();
+        builder.add_op(OpDup).unwrap();
+        builder.add_i64(selector).unwrap();
+        builder.add_op(OpNumEqual).unwrap();
+        builder.add_op(OpIf).unwrap();
+        builder.add_op(OpDrop).unwrap();
+        builder.add_ops(&body).unwrap();
+        builder.add_op(OpElse).unwrap();
+        builder.add_op(OpDrop).unwrap();
+        builder.add_op(OpFalse).unwrap();
+        builder.add_op(OpVerify).unwrap();
+        builder.add_op(OpEndIf).unwrap();
+        builder.drain()
+    } else {
+        body
+    }
 }
 
 #[test]
@@ -1186,9 +1193,8 @@ fn compiles_without_selector_single_function() {
     "#;
 
     let contract = parse_contract_ast(source).expect("ast parsed");
-    let options =
-        CompileOptions { covenants_enabled: true, without_selector: true, allow_yield: false, allow_entrypoint_return: false };
-    let compiled = compile_contract_ast(&contract, &[], options).expect("compile succeeds");
+    let compiled = compile_contract_ast(&contract, &[], CompileOptions::default()).expect("compile succeeds");
+    assert!(compiled.without_selector);
 
     let expected = ScriptBuilder::new()
         .add_i64(1)
@@ -1211,7 +1217,7 @@ fn compiles_without_selector_single_function() {
 }
 
 #[test]
-fn fails_without_selector_multiple_functions() {
+fn compiles_with_selector_multiple_entrypoints() {
     let source = r#"
         contract Test() {
             entrypoint function a() { require(true); }
@@ -1220,10 +1226,12 @@ fn fails_without_selector_multiple_functions() {
     "#;
 
     let contract = parse_contract_ast(source).expect("ast parsed");
-    let options =
-        CompileOptions { covenants_enabled: true, without_selector: true, allow_yield: false, allow_entrypoint_return: false };
-    let err = compile_contract_ast(&contract, &[], options).expect_err("should fail without selector for multiple functions");
-    assert!(err.to_string().contains("without_selector"));
+    let compiled = compile_contract_ast(&contract, &[], CompileOptions::default()).expect("compile succeeds");
+    assert!(!compiled.without_selector);
+    let selector = function_branch_index(&compiled.ast, "a").expect("selector resolved");
+    let sigscript = compiled.build_sig_script("a", vec![]).expect("sigscript builds");
+    let expected = ScriptBuilder::new().add_i64(selector).unwrap().drain();
+    assert_eq!(sigscript, expected);
 }
 
 #[test]
@@ -2074,7 +2082,7 @@ fn executes_opcode_builtins_basic() {
     for (name, source) in cases {
         let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
         let selector = selector_for(&compiled, "main");
-        let sigscript = ScriptBuilder::new().add_i64(selector).unwrap().drain();
+        let sigscript = selector_sigscript(selector);
         let (tx, entries) = build_basic_opcode_tx(sigscript);
         let result = run_script_with_tx_and_covenants(compiled.script, tx, entries, None);
         assert!(result.is_ok(), "opcode builtin {name} failed: {}", result.unwrap_err());
@@ -2099,7 +2107,7 @@ fn executes_opcode_builtins_covenants() {
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
     let selector = selector_for(&compiled, "main");
-    let sigscript = ScriptBuilder::new().add_i64(selector).unwrap().drain();
+    let sigscript = selector_sigscript(selector);
     let covenant_id_a = Hash::from_bytes(*b"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
     let covenant_id_b = Hash::from_bytes(*b"BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB");
     let (tx, entries) = build_covenant_opcode_tx(sigscript, covenant_id_a, covenant_id_b);
@@ -2135,7 +2143,7 @@ fn executes_opcode_chainblock_seq_commit() {
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
     let selector = selector_for(&compiled, "main");
-    let sigscript = ScriptBuilder::new().add_i64(selector).unwrap().drain();
+    let sigscript = selector_sigscript(selector);
     let (tx, entries) = build_basic_opcode_tx(sigscript);
 
     let block = Hash::from_bytes(*b"0123456789abcdef0123456789abcdef");
@@ -2279,7 +2287,13 @@ fn compiles_sigscript_inputs_and_verifies() {
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
     let selector = selector_for(&compiled, "main");
-    let sigscript = ScriptBuilder::new().add_i64(3).unwrap().add_i64(4).unwrap().add_i64(selector).unwrap().drain();
+    let mut builder = ScriptBuilder::new();
+    builder.add_i64(3).unwrap();
+    builder.add_i64(4).unwrap();
+    if let Some(selector) = selector {
+        builder.add_i64(selector).unwrap();
+    }
+    let sigscript = builder.drain();
 
     let result = run_script_with_sigscript(compiled.script, sigscript);
     assert!(result.is_ok(), "sigscript test failed: {}", result.unwrap_err());
@@ -2402,7 +2416,12 @@ fn compiles_sigscript_reused_inputs_and_verifies() {
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
     let selector = selector_for(&compiled, "main");
-    let sigscript = ScriptBuilder::new().add_i64(3).unwrap().add_i64(selector).unwrap().drain();
+    let mut builder = ScriptBuilder::new();
+    builder.add_i64(3).unwrap();
+    if let Some(selector) = selector {
+        builder.add_i64(selector).unwrap();
+    }
+    let sigscript = builder.drain();
 
     let result = run_script_with_sigscript(compiled.script, sigscript);
     assert!(result.is_ok(), "sigscript reuse test failed: {}", result.unwrap_err());
@@ -2420,7 +2439,13 @@ fn compiles_sigscript_inputs_and_fails_on_wrong_sum() {
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
     let selector = selector_for(&compiled, "main");
-    let sigscript = ScriptBuilder::new().add_i64(2).unwrap().add_i64(4).unwrap().add_i64(selector).unwrap().drain();
+    let mut builder = ScriptBuilder::new();
+    builder.add_i64(2).unwrap();
+    builder.add_i64(4).unwrap();
+    if let Some(selector) = selector {
+        builder.add_i64(selector).unwrap();
+    }
+    let sigscript = builder.drain();
 
     let result = run_script_with_sigscript(compiled.script, sigscript);
     assert!(result.is_err());
@@ -2438,7 +2463,12 @@ fn compiles_sigscript_reused_inputs_and_fails_on_wrong_value() {
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
     let selector = selector_for(&compiled, "main");
-    let sigscript = ScriptBuilder::new().add_i64(4).unwrap().add_i64(selector).unwrap().drain();
+    let mut builder = ScriptBuilder::new();
+    builder.add_i64(4).unwrap();
+    if let Some(selector) = selector {
+        builder.add_i64(selector).unwrap();
+    }
+    let sigscript = builder.drain();
 
     let result = run_script_with_sigscript(compiled.script, sigscript);
     assert!(result.is_err());

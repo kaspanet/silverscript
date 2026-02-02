@@ -21,8 +21,12 @@ fn temp_dir(name: &str) -> PathBuf {
     dir
 }
 
-fn run_script_with_selector(script: Vec<u8>, selector: i64) -> Result<(), kaspa_txscript_errors::TxScriptError> {
-    let sigscript = ScriptBuilder::new().add_i64(selector).unwrap().drain();
+fn run_script_with_selector(script: Vec<u8>, selector: Option<i64>) -> Result<(), kaspa_txscript_errors::TxScriptError> {
+    let mut builder = ScriptBuilder::new();
+    if let Some(selector) = selector {
+        builder.add_i64(selector).unwrap();
+    }
+    let sigscript = builder.drain();
     let reused_values = SigHashReusedValuesUnsync::new();
     let sig_cache = Cache::new(10_000);
 
@@ -100,6 +104,10 @@ fn silverc_accepts_constructor_args_and_output_flag() {
     let json = fs::read_to_string(&out_path).expect("read output");
     let compiled: CompiledContract = serde_json::from_str(&json).expect("parse compiled contract");
     assert_eq!(compiled.contract_name, "WithCtor");
-    let selector = function_branch_index(&compiled.ast, "main").expect("selector resolved");
+    let selector = if compiled.without_selector {
+        None
+    } else {
+        Some(function_branch_index(&compiled.ast, "main").expect("selector resolved"))
+    };
     assert!(run_script_with_selector(compiled.script, selector).is_ok());
 }

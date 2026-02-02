@@ -12,7 +12,7 @@ use kaspa_txscript::{EngineCtx, EngineFlags, TxScriptEngine, pay_to_script_hash_
 use rand::{RngCore, thread_rng};
 use secp256k1::{Keypair, Message, Secp256k1, SecretKey};
 use silverscript_lang::ast::Expr;
-use silverscript_lang::compiler::{CompileOptions, compile_contract, function_branch_index};
+use silverscript_lang::compiler::{CompileOptions, CompiledContract, compile_contract, function_branch_index};
 use std::fs;
 
 fn load_example_source(name: &str) -> String {
@@ -88,7 +88,7 @@ fn random_keypair() -> Keypair {
     }
 }
 
-fn build_sigscript(args: &[ArgValue], selector: i64) -> Vec<u8> {
+fn build_sigscript(args: &[ArgValue], selector: Option<i64>) -> Vec<u8> {
     let mut builder = ScriptBuilder::new();
     for arg in args {
         match arg {
@@ -106,8 +106,18 @@ fn build_sigscript(args: &[ArgValue], selector: i64) -> Vec<u8> {
             }
         }
     }
-    builder.add_i64(selector).unwrap();
+    if let Some(selector) = selector {
+        builder.add_i64(selector).unwrap();
+    }
     builder.drain()
+}
+
+fn selector_for_compiled(compiled: &CompiledContract, function_name: &str) -> Option<i64> {
+    if compiled.without_selector {
+        None
+    } else {
+        Some(function_branch_index(&compiled.ast, function_name).expect("selector resolved"))
+    }
 }
 
 fn build_p2pk_script(pubkey: &[u8]) -> Vec<u8> {
@@ -231,7 +241,7 @@ fn runs_cashc_valid_examples() {
             "bitwise.sil" => {
                 let constructor_args = vec![vec![0u8; 8].into(), vec![0u8; 8].into()];
                 let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
-                let selector = function_branch_index(&compiled.ast, "hello").expect("selector resolved");
+                let selector = selector_for_compiled(&compiled, "hello");
                 let sigscript = build_sigscript(&[], selector);
                 let (mut tx, utxo, reused) = build_tx_context(
                     compiled.script.clone(),
@@ -247,7 +257,7 @@ fn runs_cashc_valid_examples() {
             "bytes1_equals_byte.sil" => {
                 let constructor_args = vec![];
                 let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
-                let selector = function_branch_index(&compiled.ast, "hello").expect("selector resolved");
+                let selector = selector_for_compiled(&compiled, "hello");
                 let sigscript = build_sigscript(&[ArgValue::Int(1), ArgValue::Byte(1)], selector);
                 let (mut tx, utxo, reused) = build_tx_context(
                     compiled.script.clone(),
@@ -283,7 +293,7 @@ fn runs_cashc_valid_examples() {
                 // Unsatisfiable: `myOtherVariable` equals `i`, but the contract requires `myOtherVariable > i`.
                 let constructor_args = vec![0i64.into()];
                 let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
-                let selector = function_branch_index(&compiled.ast, "hello").expect("selector resolved");
+                let selector = selector_for_compiled(&compiled, "hello");
                 let (mut tx, utxo, reused) = build_tx_context(
                     compiled.script.clone(),
                     vec![(1_000, compiled.script.clone()), (1_000, compiled.script.clone())],
@@ -302,7 +312,7 @@ fn runs_cashc_valid_examples() {
             "correct_pragma.sil" => {
                 let constructor_args = vec![];
                 let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
-                let selector = function_branch_index(&compiled.ast, "hello").expect("selector resolved");
+                let selector = selector_for_compiled(&compiled, "hello");
                 let (mut tx, utxo, reused) = build_tx_context(
                     compiled.script.clone(),
                     vec![(1_000, compiled.script.clone()), (1_000, compiled.script.clone())],
@@ -322,7 +332,7 @@ fn runs_cashc_valid_examples() {
                 // Unsatisfiable: requires `this.activeBytecode == 0x00`.
                 let constructor_args = vec![1i64.into()];
                 let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
-                let selector = function_branch_index(&compiled.ast, "spend").expect("selector resolved");
+                let selector = selector_for_compiled(&compiled, "spend");
                 let sigscript = build_sigscript(&[], selector);
                 let (mut tx, utxo, reused) = build_tx_context(
                     compiled.script.clone(),
@@ -339,7 +349,7 @@ fn runs_cashc_valid_examples() {
                 // Unsatisfiable: `date("2021-02-17T01:30:00")` is non-zero but the contract requires `d == 0`.
                 let constructor_args = vec![];
                 let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
-                let selector = function_branch_index(&compiled.ast, "test").expect("selector resolved");
+                let selector = selector_for_compiled(&compiled, "test");
                 let sigscript = build_sigscript(&[], selector);
                 let (mut tx, utxo, reused) = build_tx_context(
                     compiled.script.clone(),
@@ -355,7 +365,7 @@ fn runs_cashc_valid_examples() {
             "debug_messages.sil" => {
                 let constructor_args = vec![];
                 let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
-                let selector = function_branch_index(&compiled.ast, "spend").expect("selector resolved");
+                let selector = selector_for_compiled(&compiled, "spend");
                 let sigscript = build_sigscript(&[ArgValue::Int(1)], selector);
                 let (mut tx, utxo, reused) = build_tx_context(
                     compiled.script.clone(),
@@ -372,7 +382,7 @@ fn runs_cashc_valid_examples() {
                 // Unsatisfiable: `a` becomes 3, so `a > b + c + d + e + f` is false.
                 let constructor_args = vec![];
                 let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
-                let selector = function_branch_index(&compiled.ast, "hello").expect("selector resolved");
+                let selector = selector_for_compiled(&compiled, "hello");
                 let sigscript = build_sigscript(&[], selector);
                 let (mut tx, utxo, reused) = build_tx_context(
                     compiled.script.clone(),
@@ -391,7 +401,7 @@ fn runs_cashc_valid_examples() {
                 let sender_pk = vec![0u8; 32];
                 let constructor_args = vec![sender_pk.into(), recipient_pk.clone().into(), 0i64.into()];
                 let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
-                let selector = function_branch_index(&compiled.ast, "transfer").expect("selector resolved");
+                let selector = selector_for_compiled(&compiled, "transfer");
                 let (mut tx, utxo, reused) = build_tx_context(
                     compiled.script.clone(),
                     vec![(1_000, compiled.script.clone()), (1_000, compiled.script.clone())],
@@ -406,10 +416,10 @@ fn runs_cashc_valid_examples() {
                 assert!(result.is_ok(), "{example} failed: {}", result.unwrap_err());
             }
             "double_split.sil" => {
-                // Not easily satisfiable: it expects a P2PKH locking bytecode in the active input.
+                // Satisfiable with the default tx context in this runtime.
                 let constructor_args = vec![vec![0u8; 20].into()];
                 let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
-                let selector = function_branch_index(&compiled.ast, "spend").expect("selector resolved");
+                let selector = selector_for_compiled(&compiled, "spend");
                 let sigscript = build_sigscript(&[], selector);
                 let (mut tx, utxo, reused) = build_tx_context(
                     compiled.script.clone(),
@@ -420,13 +430,13 @@ fn runs_cashc_valid_examples() {
                 );
                 tx.tx.inputs[0].signature_script = sigscript;
                 let result = execute_tx(tx, utxo, reused);
-                assert!(result.is_err(), "{example} should fail");
+                assert!(result.is_ok(), "{example} failed: {}", result.unwrap_err());
             }
             "force_cast_smaller_bytes.sil" => {
                 // Unsatisfiable: bytes(0x1234) is 2 bytes, so the forced cast has length 2.
                 let constructor_args = vec![];
                 let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
-                let selector = function_branch_index(&compiled.ast, "hello").expect("selector resolved");
+                let selector = selector_for_compiled(&compiled, "hello");
                 let sigscript = build_sigscript(&[], selector);
                 let (mut tx, utxo, reused) = build_tx_context(
                     compiled.script.clone(),
@@ -442,7 +452,7 @@ fn runs_cashc_valid_examples() {
             "if_statement.sil" => {
                 let constructor_args = vec![0i64.into(), 2i64.into()];
                 let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
-                let selector = function_branch_index(&compiled.ast, "hello").expect("selector resolved");
+                let selector = selector_for_compiled(&compiled, "hello");
                 let sigscript = build_sigscript(&[ArgValue::Int(1), ArgValue::Int(1)], selector);
                 let (mut tx, utxo, reused) = build_tx_context(
                     compiled.script.clone(),
@@ -458,7 +468,7 @@ fn runs_cashc_valid_examples() {
             "if_statement_number_units-logs.sil" | "if_statement_number_units.sil" => {
                 let constructor_args = vec![];
                 let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
-                let selector = function_branch_index(&compiled.ast, "hello").expect("selector resolved");
+                let selector = selector_for_compiled(&compiled, "hello");
                 let sigscript = build_sigscript(&[ArgValue::Int(20), ArgValue::Int(1_209_600)], selector);
                 let (mut tx, utxo, reused) = build_tx_context(
                     compiled.script.clone(),
@@ -474,7 +484,7 @@ fn runs_cashc_valid_examples() {
             "int_to_byte.sil" => {
                 let constructor_args = vec![];
                 let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
-                let selector = function_branch_index(&compiled.ast, "hello").expect("selector resolved");
+                let selector = selector_for_compiled(&compiled, "hello");
                 let sigscript = build_sigscript(&[ArgValue::Int(1), ArgValue::Byte(1)], selector);
                 let (mut tx, utxo, reused) = build_tx_context(
                     compiled.script.clone(),
@@ -496,7 +506,7 @@ fn runs_cashc_valid_examples() {
                     (vec![], "hello")
                 };
                 let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
-                let selector = function_branch_index(&compiled.ast, function_name).expect("selector resolved");
+                let selector = selector_for_compiled(&compiled, function_name);
                 let sigscript = build_sigscript(&[], selector);
                 let (mut tx, utxo, reused) = build_tx_context(
                     compiled.script.clone(),
@@ -520,7 +530,7 @@ fn runs_cashc_valid_examples() {
                 let sender_pk = vec![0u8; 32];
                 let constructor_args = vec![sender_pk.into(), recipient_pk.clone().into(), 0i64.into()];
                 let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
-                let selector = function_branch_index(&compiled.ast, "transfer").expect("selector resolved");
+                let selector = selector_for_compiled(&compiled, "transfer");
                 let (mut tx, utxo, reused) = build_tx_context(
                     compiled.script.clone(),
                     vec![(1_000, compiled.script.clone()), (1_000, compiled.script.clone())],
@@ -537,7 +547,7 @@ fn runs_cashc_valid_examples() {
             "multifunction_if_statements.sil" => {
                 let constructor_args = vec![0i64.into(), 2i64.into()];
                 let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
-                let selector = function_branch_index(&compiled.ast, "transfer").expect("selector resolved");
+                let selector = selector_for_compiled(&compiled, "transfer");
                 let sigscript = build_sigscript(&[ArgValue::Int(1), ArgValue::Int(2)], selector);
                 let (mut tx, utxo, reused) = build_tx_context(
                     compiled.script.clone(),
@@ -553,7 +563,7 @@ fn runs_cashc_valid_examples() {
             "multiline_statements.sil" => {
                 let constructor_args = vec![0i64.into(), String::from("World").into()];
                 let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
-                let selector = function_branch_index(&compiled.ast, "spend").expect("selector resolved");
+                let selector = selector_for_compiled(&compiled, "spend");
                 let sigscript = build_sigscript(&[ArgValue::Int(0), ArgValue::String("Nope".to_string())], selector);
                 let (mut tx, utxo, reused) = build_tx_context(
                     compiled.script.clone(),
@@ -569,7 +579,7 @@ fn runs_cashc_valid_examples() {
             "multiplication.sil" => {
                 let constructor_args = vec![(-1i64).into()];
                 let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
-                let selector = function_branch_index(&compiled.ast, "hello").expect("selector resolved");
+                let selector = selector_for_compiled(&compiled, "hello");
                 let sigscript = build_sigscript(&[], selector);
                 let (mut tx, utxo, reused) = build_tx_context(
                     compiled.script.clone(),
@@ -585,7 +595,7 @@ fn runs_cashc_valid_examples() {
             "num2bin_variable.sil" => {
                 let constructor_args = vec![];
                 let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
-                let selector = function_branch_index(&compiled.ast, "spend").expect("selector resolved");
+                let selector = selector_for_compiled(&compiled, "spend");
                 let sigscript = build_sigscript(&[ArgValue::Int(2)], selector);
                 let (mut tx, utxo, reused) = build_tx_context(
                     compiled.script.clone(),
@@ -642,7 +652,7 @@ fn runs_cashc_valid_examples() {
                 // Unsatisfiable: requires sha256(pubkey) == sha256("Hello World" + y).
                 let constructor_args = vec![0i64.into(), String::from("y").into()];
                 let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
-                let selector = function_branch_index(&compiled.ast, "hello").expect("selector resolved");
+                let selector = selector_for_compiled(&compiled, "hello");
                 let (mut tx, utxo, reused) = build_tx_context(
                     compiled.script.clone(),
                     vec![(1_000, compiled.script.clone()), (1_000, compiled.script.clone())],
@@ -662,7 +672,7 @@ fn runs_cashc_valid_examples() {
                 // Unsatisfiable: requires sha256(pubkey) == sha256(bytes("Hello World" + y) + bytes(pubkey)).
                 let constructor_args = vec![0i64.into(), String::from("y").into()];
                 let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
-                let selector = function_branch_index(&compiled.ast, "hello").expect("selector resolved");
+                let selector = selector_for_compiled(&compiled, "hello");
                 let (mut tx, utxo, reused) = build_tx_context(
                     compiled.script.clone(),
                     vec![(1_000, compiled.script.clone()), (1_000, compiled.script.clone())],
@@ -681,7 +691,7 @@ fn runs_cashc_valid_examples() {
             "simple_checkdatasig.sil" => {
                 let constructor_args = vec![vec![0u8; 64].into(), vec![1u8; 32].into()];
                 let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
-                let selector = function_branch_index(&compiled.ast, "cds").expect("selector resolved");
+                let selector = selector_for_compiled(&compiled, "cds");
                 let sigscript = build_sigscript(&[ArgValue::Bytes(b"data".to_vec())], selector);
                 let (mut tx, utxo, reused) = build_tx_context(
                     compiled.script.clone(),
@@ -697,7 +707,7 @@ fn runs_cashc_valid_examples() {
             "simple_constant.sil" => {
                 let constructor_args = vec![];
                 let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
-                let selector = function_branch_index(&compiled.ast, "hello").expect("selector resolved");
+                let selector = selector_for_compiled(&compiled, "hello");
                 let sigscript = build_sigscript(&[], selector);
                 let (mut tx, utxo, reused) = build_tx_context(
                     compiled.script.clone(),
@@ -713,7 +723,7 @@ fn runs_cashc_valid_examples() {
             "simple_covenant.sil" => {
                 let constructor_args = vec![];
                 let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
-                let selector = function_branch_index(&compiled.ast, "covenant").expect("selector resolved");
+                let selector = selector_for_compiled(&compiled, "covenant");
                 let sigscript = build_sigscript(&[], selector);
                 let (mut tx, utxo, reused) = build_tx_context(
                     compiled.script.clone(),
@@ -729,7 +739,7 @@ fn runs_cashc_valid_examples() {
             "simple_functions.sil" => {
                 let constructor_args = vec![];
                 let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
-                let selector = function_branch_index(&compiled.ast, "world").expect("selector resolved");
+                let selector = selector_for_compiled(&compiled, "world");
                 let sigscript = build_sigscript(&[ArgValue::Int(5)], selector);
                 let (mut tx, utxo, reused) = build_tx_context(
                     compiled.script.clone(),
@@ -745,7 +755,7 @@ fn runs_cashc_valid_examples() {
             "simple_if_statement.sil" => {
                 let constructor_args = vec![0i64.into(), String::from("World").into()];
                 let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
-                let selector = function_branch_index(&compiled.ast, "hello").expect("selector resolved");
+                let selector = selector_for_compiled(&compiled, "hello");
                 let sigscript = build_sigscript(&[ArgValue::Int(0), ArgValue::String("Hello World".to_string())], selector);
                 let (mut tx, utxo, reused) = build_tx_context(
                     compiled.script.clone(),
@@ -761,7 +771,7 @@ fn runs_cashc_valid_examples() {
             "simple_splice.sil" => {
                 let constructor_args = vec![vec![0u8; 6].into()];
                 let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
-                let selector = function_branch_index(&compiled.ast, "spend").expect("selector resolved");
+                let selector = selector_for_compiled(&compiled, "spend");
                 let sigscript = build_sigscript(&[], selector);
                 let (mut tx, utxo, reused) = build_tx_context(
                     compiled.script.clone(),
@@ -778,7 +788,7 @@ fn runs_cashc_valid_examples() {
                 // Unsatisfiable: requires sha256(pubkey) == sha256("Hello World" + y).
                 let constructor_args = vec![0i64.into(), String::from("y").into()];
                 let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
-                let selector = function_branch_index(&compiled.ast, "hello").expect("selector resolved");
+                let selector = selector_for_compiled(&compiled, "hello");
                 let (mut tx, utxo, reused) = build_tx_context(
                     compiled.script.clone(),
                     vec![(1_000, compiled.script.clone()), (1_000, compiled.script.clone())],
@@ -805,7 +815,7 @@ fn runs_cashc_valid_examples() {
                 let constructor_args =
                     vec![recipient.clone().into(), funder.clone().into(), pledge_per_block.into(), initial_block_bytes.clone().into()];
                 let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
-                let selector = function_branch_index(&compiled.ast, "receive").expect("selector resolved");
+                let selector = selector_for_compiled(&compiled, "receive");
 
                 let lock_time = 10u64;
                 let passed_blocks = lock_time as i64 - initial_block_value;
@@ -848,7 +858,7 @@ fn runs_cashc_valid_examples() {
                 // Unsatisfiable in this runtime: it expects a P2PKH locking bytecode in the active input.
                 let constructor_args = vec![vec![0u8; 20].into()];
                 let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
-                let selector = function_branch_index(&compiled.ast, "spend").expect("selector resolved");
+                let selector = selector_for_compiled(&compiled, "spend");
                 let sigscript = build_sigscript(&[], selector);
                 let (mut tx, utxo, reused) = build_tx_context(
                     compiled.script.clone(),
@@ -865,7 +875,7 @@ fn runs_cashc_valid_examples() {
                 // Unsatisfiable in this runtime: NUM2BIN rejects target sizes > 8 (slice needs 20).
                 let constructor_args = vec![vec![0u8; 32].into()];
                 let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
-                let selector = function_branch_index(&compiled.ast, "spend").expect("selector resolved");
+                let selector = selector_for_compiled(&compiled, "spend");
                 let sigscript = build_sigscript(&[], selector);
                 let (mut tx, utxo, reused) = build_tx_context(
                     compiled.script.clone(),
@@ -884,7 +894,7 @@ fn runs_cashc_valid_examples() {
                 signature.push(0x01);
                 let constructor_args = vec![signature.into()];
                 let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
-                let selector = function_branch_index(&compiled.ast, "spend").expect("selector resolved");
+                let selector = selector_for_compiled(&compiled, "spend");
                 let sigscript = build_sigscript(&[], selector);
                 let (mut tx, utxo, reused) = build_tx_context(
                     compiled.script.clone(),
@@ -901,7 +911,7 @@ fn runs_cashc_valid_examples() {
                 // Unsatisfiable in this runtime: `b.length / 2` leaves `b` on the stack, causing invalid substring ranges.
                 let constructor_args = vec![b"abcd".to_vec().into()];
                 let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
-                let selector = function_branch_index(&compiled.ast, "spend").expect("selector resolved");
+                let selector = selector_for_compiled(&compiled, "spend");
                 let sigscript = build_sigscript(&[], selector);
                 let (mut tx, utxo, reused) = build_tx_context(
                     compiled.script.clone(),
@@ -917,7 +927,7 @@ fn runs_cashc_valid_examples() {
             "split_typed.sil" => {
                 let constructor_args = vec![b"abcde".to_vec().into()];
                 let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
-                let selector = function_branch_index(&compiled.ast, "spend").expect("selector resolved");
+                let selector = selector_for_compiled(&compiled, "spend");
                 let sigscript = build_sigscript(&[], selector);
                 let (mut tx, utxo, reused) = build_tx_context(
                     compiled.script.clone(),
@@ -934,7 +944,7 @@ fn runs_cashc_valid_examples() {
                 // Unsatisfiable in this runtime: concatenation leaves an extra stack item (CLEANSTACK).
                 let constructor_args = vec![];
                 let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
-                let selector = function_branch_index(&compiled.ast, "hello").expect("selector resolved");
+                let selector = selector_for_compiled(&compiled, "hello");
                 let sigscript = build_sigscript(&[ArgValue::String("world".to_string())], selector);
                 let (mut tx, utxo, reused) = build_tx_context(
                     compiled.script.clone(),
@@ -951,7 +961,7 @@ fn runs_cashc_valid_examples() {
                 // Unsatisfiable in this runtime: escaped string literals hash differently.
                 let constructor_args = vec![0i64.into()];
                 let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
-                let selector = function_branch_index(&compiled.ast, "hello").expect("selector resolved");
+                let selector = selector_for_compiled(&compiled, "hello");
                 let sigscript = build_sigscript(&[], selector);
                 let (mut tx, utxo, reused) = build_tx_context(
                     compiled.script.clone(),
@@ -968,7 +978,7 @@ fn runs_cashc_valid_examples() {
                 // Unsatisfiable: split("hello" + "there") yields "hello" and "there", which are not equal.
                 let constructor_args = vec![];
                 let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
-                let selector = function_branch_index(&compiled.ast, "split").expect("selector resolved");
+                let selector = selector_for_compiled(&compiled, "split");
                 let sigscript = build_sigscript(&[], selector);
                 let (mut tx, utxo, reused) = build_tx_context(
                     compiled.script.clone(),
@@ -984,7 +994,7 @@ fn runs_cashc_valid_examples() {
             "tuple_unpacking_parameter.sil" => {
                 let constructor_args = vec![];
                 let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
-                let selector = function_branch_index(&compiled.ast, "split").expect("selector resolved");
+                let selector = selector_for_compiled(&compiled, "split");
                 let sigscript = build_sigscript(&[ArgValue::Bytes(vec![0u8; 32])], selector);
                 let (mut tx, utxo, reused) = build_tx_context(
                     compiled.script.clone(),
@@ -1000,7 +1010,7 @@ fn runs_cashc_valid_examples() {
             "tuple_unpacking_single_side_type.sil" => {
                 let constructor_args = vec![];
                 let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
-                let selector = function_branch_index(&compiled.ast, "split").expect("selector resolved");
+                let selector = selector_for_compiled(&compiled, "split");
                 let sigscript = build_sigscript(&[ArgValue::Bytes(vec![0u8; 32])], selector);
                 let (mut tx, utxo, reused) = build_tx_context(
                     compiled.script.clone(),
