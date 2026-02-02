@@ -5,6 +5,7 @@
   "functions": [
     {
       "name": "main",
+      "entrypoint": true,
       "params": [
         { "type_name": "int", "name": "a" },
         { "type_name": "int", "name": "b" }

@@ -1,5 +1,5 @@
 contract SumSeries(int maxIterations){
-    function main(int n){
+    entrypoint function main(int n){
         require(n >= 0);
         require(n <= maxIterations);
         int s = 0;

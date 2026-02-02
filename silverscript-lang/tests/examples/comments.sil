@@ -7,7 +7,7 @@ pragma silverscript ^0.1.0;
 
 contract Test(int x) {
     // Line comments are a thing
-    function hello(sig s, pubkey pk) {
+    entrypoint function hello(sig s, pubkey pk) {
         int i = 400 + x;
         bytes b = 0x07364897987fe87 + bytes(x);
 

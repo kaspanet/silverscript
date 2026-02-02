@@ -1,7 +1,7 @@
 pragma silverscript ^0.1.0;
 
 contract Token(int max_outs) {
-    function split(pubkey owner_pk, sig s, int in_amount, int num_outs, pubkey recipient_pk) {
+    entrypoint function split(pubkey owner_pk, sig s, int in_amount, int num_outs, pubkey recipient_pk) {
         require(checkSig(s, owner_pk));
         for(i,0,max_outs){
             if( i < num_outs ){

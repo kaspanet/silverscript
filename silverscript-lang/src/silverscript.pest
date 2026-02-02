@@ -8,7 +8,8 @@ version_operator = { "^" | "~" | ">=" | ">" | "<" | "<=" | "=" }
 
 contract_definition = { "contract" ~ Identifier ~ parameter_list ~ "{" ~ contract_item* ~ "}" }
 contract_item = { constant_definition | function_definition }
-function_definition = { "function" ~ Identifier ~ parameter_list ~ return_type_list? ~ "{" ~ statement* ~ "}" }
+entrypoint = { "entrypoint" }
+function_definition = { entrypoint? ~ "function" ~ Identifier ~ parameter_list ~ return_type_list? ~ "{" ~ statement* ~ "}" }
 
 constant_definition = { type_name ~ "constant" ~ Identifier ~ "=" ~ expression ~ ";" }
 
@@ -166,7 +167,7 @@ Identifier = @{ !keyword_boundary ~ ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "_")* }
 keyword_boundary = { keyword ~ !(ASCII_ALPHANUMERIC | "_") }
 
 keyword = {
-    "pragma" | "silverscript" | "contract" | "function" | "if" | "else" | "require" | "for" | "yield" | "return"
+    "pragma" | "silverscript" | "contract" | "entrypoint" | "function" | "if" | "else" | "require" | "for" | "yield" | "return"
     | "console.log" | "new" | "true" | "false" | "constant" | "date"
     | "int" | "bool" | "string" | "pubkey" | "sig" | "datasig" | "byte" | "bytes"
     | "this.age" | "tx.time" | "this.activeInputIndex" | "this.activeBytecode" | "this.scriptSizeDataPrefix" | "this.scriptSize"

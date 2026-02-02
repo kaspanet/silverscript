@@ -5,6 +5,7 @@
   "functions": [
     {
       "name": "main",
+      "entrypoint": true,
       "params": [],
       "body": [
         {

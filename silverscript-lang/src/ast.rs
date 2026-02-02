@@ -21,6 +21,8 @@ pub struct FunctionAst {
     pub name: String,
     pub params: Vec<ParamAst>,
     #[serde(default)]
+    pub entrypoint: bool,
+    #[serde(default)]
     pub return_types: Vec<String>,
     pub body: Vec<Statement>,
 }
@@ -239,7 +241,15 @@ fn parse_contract_definition(pair: Pair<'_, Rule>) -> Result<ContractAst, Compil
 
 fn parse_function_definition(pair: Pair<'_, Rule>) -> Result<FunctionAst, CompilerError> {
     let mut inner = pair.into_inner();
-    let name_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing function name".to_string()))?;
+    let mut entrypoint = false;
+    let name_pair = match inner.next() {
+        Some(pair) if pair.as_rule() == Rule::entrypoint => {
+            entrypoint = true;
+            inner.next().ok_or_else(|| CompilerError::Unsupported("missing function name".to_string()))?
+        }
+        Some(pair) => pair,
+        None => return Err(CompilerError::Unsupported("missing function name".to_string())),
+    };
     let params_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing function parameters".to_string()))?;
     let params = parse_typed_parameter_list(params_pair)?;
     let mut return_types = Vec::new();
@@ -255,7 +265,7 @@ fn parse_function_definition(pair: Pair<'_, Rule>) -> Result<FunctionAst, Compil
         body.push(parse_statement(stmt)?);
     }
 
-    Ok(FunctionAst { name: name_pair.as_str().to_string(), params, return_types, body })
+    Ok(FunctionAst { name: name_pair.as_str().to_string(), params, entrypoint, return_types, body })
 }
 
 fn parse_statement(pair: Pair<'_, Rule>) -> Result<Statement, CompilerError> {

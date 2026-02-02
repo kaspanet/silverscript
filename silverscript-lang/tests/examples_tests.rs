@@ -338,13 +338,14 @@ fn compiles_yield_loop_example_and_verifies() {
 fn compiles_return_basic_example_and_verifies() {
     let source = r#"
         contract ReturnTest() {
-            function main(int a, int b) : (int, int) {
+            entrypoint function main(int a, int b) : (int, int) {
                 return(a + 1, b + 2);
             }
         }
     "#;
 
-    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let options = CompileOptions { allow_entrypoint_return: true, ..CompileOptions::default() };
+    let compiled = compile_contract(source, &[], options).expect("compile succeeds");
     let script = script_with_return_checks(compiled.script.clone(), &[2, 5]);
     let recipient0 = [13u8; 32];
     let recipient1 = [14u8; 32];

@@ -1,7 +1,7 @@
 pragma silverscript ^0.1.0;
 
 contract Mecenas(pubkey recipient, bytes32 funder, int pledge/*, int period */) {
-    function receive() {
+    entrypoint function receive() {
         // require(this.age >= period);
 
         // Check that the first output sends to the recipient
@@ -22,7 +22,7 @@ contract Mecenas(pubkey recipient, bytes32 funder, int pledge/*, int period */) 
         }
     }
 
-    function reclaim(pubkey pk, sig s) {
+    entrypoint function reclaim(pubkey pk, sig s) {
         require(blake2b(pk) == funder);
         require(checkSig(s, pk));
     }

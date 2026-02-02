@@ -1,7 +1,7 @@
 pragma silverscript ^0.1.0;
 
 contract IfStatement(int x, int y) {
-    function hello(int a, int b) {
+    entrypoint function hello(int a, int b) {
         int d = a + b;
         d = d - a;
         if (d == x - 2) {

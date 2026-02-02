@@ -1,7 +1,7 @@
 pragma silverscript ^0.1.0;
 
 contract Announcement() {
-    function announce() {
+    entrypoint function announce() {
         bytes announcement = new LockingBytecodeNullData([
             27906,
             bytes('A contract may not injure a human being or, through inaction, allow a human being to come to harm.')

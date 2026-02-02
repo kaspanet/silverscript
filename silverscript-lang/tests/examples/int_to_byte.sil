@@ -1,7 +1,7 @@
 pragma silverscript ^0.1.0;
 
 contract IntToByte() {
-    function hello(int a, byte b) {
+    entrypoint function hello(int a, byte b) {
         byte c = byte(a);
         require(b == c);
     }

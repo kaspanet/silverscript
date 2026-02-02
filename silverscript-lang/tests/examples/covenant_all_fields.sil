@@ -1,7 +1,7 @@
 pragma silverscript ^0.1.0;
 
 contract Covenant() {
-    function spend() {
+    entrypoint function spend() {
         require(tx.version == 2);
         require(tx.locktime == 0);
         require(tx.inputs.length == 1);

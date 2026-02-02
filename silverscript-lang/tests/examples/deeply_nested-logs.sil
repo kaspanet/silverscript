@@ -6,12 +6,12 @@ contract TransferWithTimeout(
     int timeout
 ) {
     // Require recipient's signature to match
-    function transfer(sig recipientSig) {
+    entrypoint function transfer(sig recipientSig) {
         require(checkSig(recipientSig, recipient));
     }
 
     // Require timeout time to be reached and sender's signature to match
-    function timeout(sig senderSig) {
+    entrypoint function timeout(sig senderSig) {
         require(checkSig(senderSig, sender));
         if (timeout > 0) {
             if (timeout < 10) {

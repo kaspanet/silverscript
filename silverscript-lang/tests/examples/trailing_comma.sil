@@ -4,7 +4,7 @@ contract Contract(
     pubkey ownerPk,
     pubkey oraclePk,
 ) {
-    function spend(
+    entrypoint function spend(
         sig ownerSig,
         datasig oracleMsgSig,
         sig oracleTxSig,

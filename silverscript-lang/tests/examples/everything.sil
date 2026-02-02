@@ -5,7 +5,7 @@
 
 contract Test(int x, string y) {
     // Line comments are a thing
-    function hello(pubkey pk, sig s) {
+    entrypoint function hello(pubkey pk, sig s) {
         int i = 400 + x;
         bytes b = 0x007364897987fe87 + bytes(y);
 

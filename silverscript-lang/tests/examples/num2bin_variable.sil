@@ -1,7 +1,7 @@
 pragma silverscript ^0.1.0;
 
 contract Num2Bin() {
-    function spend(int size) {
+    entrypoint function spend(int size) {
         bytes byte_ = bytes(10, size);
         require(int(byte_) == 10);
     }
