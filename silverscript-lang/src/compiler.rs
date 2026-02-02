@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use kaspa_txscript::opcodes::codes::*;
 use kaspa_txscript::script_builder::{ScriptBuilder, ScriptBuilderError};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::ast::{
@@ -40,13 +41,13 @@ impl Default for CompileOptions {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FunctionInputAbi {
     pub name: String,
     pub type_name: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FunctionAbiEntry {
     pub name: String,
     pub inputs: Vec<FunctionInputAbi>,
@@ -54,7 +55,7 @@ pub struct FunctionAbiEntry {
 
 pub type FunctionAbi = Vec<FunctionAbiEntry>;
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct CompiledContract {
     pub contract_name: String,
     pub script: Vec<u8>,
