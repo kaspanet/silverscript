@@ -947,16 +947,13 @@ bytes extracted = data.slice(start, end);
 
 ## Complete Examples
 
-### Pay-to-Public-Key-Hash (P2PKH)
+### Pay-to-Public-Key (P2PK)
 
 ```javascript
 pragma silverscript ^0.1.0;
 
-contract P2PKH(bytes32 pkh) {
-    entrypoint function spend(pubkey pk, sig s) {
-        // Verify the public key hashes to the expected value
-        require(blake2b(pk) == pkh);
-        
+contract P2PK(pubkey pk) {
+    entrypoint function spend(sig s) {      
         // Verify the signature
         require(checkSig(s, pk));
     }
@@ -964,10 +961,9 @@ contract P2PKH(bytes32 pkh) {
 ```
 
 **Constructor arguments:**
-- `pkh`: The BLAKE2b hash of the recipient's public key
+- `pk`: The recipient's public key
 
 **Spend arguments:**
-- `pk`: The recipient's public key
 - `s`: A signature from the private key corresponding to `pk`
 
 ### Transfer with Timeout
