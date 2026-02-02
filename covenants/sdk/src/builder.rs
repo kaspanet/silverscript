@@ -27,6 +27,11 @@ const MAX_PLACEHOLDER_ITERS: usize = 8;
 
 type StateTransition = dyn Fn(&mut ScriptBuilder) -> Result<&mut ScriptBuilder, ScriptBuilderError>;
 
+enum StateTransitionSource {
+    Closure(Box<StateTransition>),
+    Script(Vec<u8>),
+}
+
 /// Tiny helper trait extending `ScriptBuilder` with a handful of concatenation helpers.
 trait ScriptBuilderExt {
     fn add_affixes(&mut self, prefix: &[u8], suffix: &[u8]) -> Result<&mut Self, ScriptBuilderError>;
@@ -143,7 +148,7 @@ pub struct CovenantBuilder {
     /// Optional assertion on the number of authorized outputs.
     required_auth_output_count: Option<i64>,
     /// Optional user-supplied transition closure.
-    state_transition: Option<Box<StateTransition>>,
+    state_transition: Option<StateTransitionSource>,
 }
 
 impl CovenantBuilder {
@@ -198,7 +203,17 @@ impl CovenantBuilder {
     where
         F: Fn(&mut ScriptBuilder) -> Result<&mut ScriptBuilder, ScriptBuilderError> + 'static,
     {
-        self.state_transition = Some(Box::new(transition));
+        self.state_transition = Some(StateTransitionSource::Closure(Box::new(transition)));
+        self
+    }
+
+    /// Injects a pre-built transition script (raw opcodes) instead of a closure.
+    ///
+    /// This is useful when the transition logic is already compiled or shared across builders.
+    /// The script is appended directly and is expected to leave the required new-state blobs
+    /// on the stack for subsequent verification.
+    pub fn with_state_transition_script(mut self, transition_script: Vec<u8>) -> Self {
+        self.state_transition = Some(StateTransitionSource::Script(transition_script));
         self
     }
 
@@ -234,7 +249,7 @@ impl CovenantBuilder {
                 &descriptor,
                 &targets,
                 required_auth_output_count,
-                state_transition.as_deref(),
+                state_transition.as_ref(),
                 end,
                 start_offset,
             )?;
@@ -320,7 +335,7 @@ impl CovenantBuilder {
         descriptor: &StateDescriptor,
         targets: &[OutputTarget],
         required_auth_output_count: Option<i64>,
-        state_transition: Option<&StateTransition>,
+        state_transition: Option<&StateTransitionSource>,
         end: i64,
         start_offset: i64,
     ) -> Result<Vec<u8>, CovenantBuilderError> {
@@ -328,14 +343,20 @@ impl CovenantBuilder {
 
         builder.add_data(descriptor.state_bytes())?;
 
-        if let Some(transition) = state_transition {
-            // the transition function assumes the following stack:
-            // [action_data (from sig), old_state (just pushed)]
-            // and is expected to leave the new_state on top of the stack instead
-            transition(&mut builder)?;
-        } else {
-            assert_eq!(descriptor.state_push_size, descriptor.action_push_size);
-            builder.add_op(OpDrop)?;
+        match state_transition {
+            Some(StateTransitionSource::Closure(transition)) => {
+                // the transition function assumes the following stack:
+                // [action_data (from sig), old_state (just pushed)]
+                // and is expected to leave the new_state on top of the stack instead
+                transition(&mut builder)?;
+            }
+            Some(StateTransitionSource::Script(script)) => {
+                builder.add_ops(script)?;
+            }
+            None => {
+                assert_eq!(descriptor.state_push_size, descriptor.action_push_size);
+                builder.add_op(OpDrop)?;
+            }
         }
 
         if let Some(count) = required_auth_output_count {
@@ -476,6 +497,21 @@ mod tests {
 
         assert!(script.contains(&OpAuthOutputCount));
         assert!(script.contains(&OpAuthOutputIdx));
+    }
+
+    #[test]
+    fn test_builder_with_transition_script() {
+        let state = vec![0x01; 4];
+        let transition_script = ScriptBuilder::new().add_op(OpSwap).unwrap().add_op(OpDrop).unwrap().drain();
+
+        let script = CovenantBuilder::new()
+            .with_state(state, 4)
+            .with_state_transition_script(transition_script.clone())
+            .verify_output_spk_at(0)
+            .build()
+            .expect("builder should succeed with script transition");
+
+        assert!(script.windows(transition_script.len()).any(|w| w == transition_script.as_slice()));
     }
 
     /// Test the complete covenant execution flow end-to-end.
@@ -642,9 +678,7 @@ mod tests {
             let transition_script = transition_script.clone();
             CovenantBuilder::new()
                 .with_state(state.to_vec(), ACTION_LEN_BYTES)
-                .with_state_transition(move |b: &mut ScriptBuilder| -> Result<&mut ScriptBuilder, ScriptBuilderError> {
-                    b.add_ops(&transition_script)
-                })
+                .with_state_transition_script(transition_script)
                 .require_authorized_output_count(2)
                 .verify_authorized_output_spk_at(0)
                 .verify_authorized_output_spk_at(1)
