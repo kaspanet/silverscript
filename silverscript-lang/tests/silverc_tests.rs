@@ -3,7 +3,10 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use kaspa_consensus_core::hashing::sighash::SigHashReusedValuesUnsync;
-use kaspa_consensus_core::tx::{PopulatedTransaction, ScriptPublicKey, Transaction, TransactionId, TransactionInput, TransactionOutpoint, TransactionOutput, UtxoEntry};
+use kaspa_consensus_core::tx::{
+    PopulatedTransaction, ScriptPublicKey, Transaction, TransactionId, TransactionInput, TransactionOutpoint, TransactionOutput,
+    UtxoEntry,
+};
 use kaspa_txscript::caches::Cache;
 use kaspa_txscript::script_builder::ScriptBuilder;
 use kaspa_txscript::{EngineCtx, EngineFlags, TxScriptEngine};
