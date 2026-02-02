@@ -30,11 +30,12 @@ pub enum CompilerError {
 pub struct CompileOptions {
     pub covenants_enabled: bool,
     pub without_selector: bool,
+    pub allow_yield: bool,
 }
 
 impl Default for CompileOptions {
     fn default() -> Self {
-        Self { covenants_enabled: true, without_selector: false }
+        Self { covenants_enabled: true, without_selector: false, allow_yield: false }
     }
 }
 
@@ -504,6 +505,10 @@ fn compile_function(
     let mut builder = ScriptBuilder::new();
     let mut yields: Vec<Expr> = Vec::new();
 
+    if !options.allow_yield && function.body.iter().any(contains_yield) {
+        return Err(CompilerError::Unsupported("yield requires allow_yield=true".to_string()));
+    }
+
     let has_return = function.body.iter().any(contains_return);
     if has_return {
         if !matches!(function.body.last(), Some(Statement::Return { .. })) {
@@ -832,6 +837,10 @@ fn compile_inline_call(
         env.insert(param.name.clone(), Expr::Identifier(temp_name.clone()));
         caller_env.insert(temp_name.clone(), resolved);
         caller_types.insert(temp_name, param.type_name.clone());
+    }
+
+    if !options.allow_yield && function.body.iter().any(contains_yield) {
+        return Err(CompilerError::Unsupported("yield requires allow_yield=true".to_string()));
     }
 
     let has_return = function.body.iter().any(contains_return);

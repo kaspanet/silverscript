@@ -229,6 +229,21 @@ fn rejects_double_underscore_variable_names() {
 }
 
 #[test]
+fn rejects_yield_without_allow_option() {
+    let source = r#"
+        contract YieldDefaultDisallowed() {
+            function main() {
+                int x = 1;
+                yield(x + 1);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("yield should be disallowed by default");
+    assert!(err.to_string().contains("yield requires allow_yield=true"));
+}
+
+#[test]
 fn build_sig_script_rejects_mismatched_bytes_length() {
     let source = r#"
         contract C() {
@@ -263,7 +278,7 @@ fn build_sig_script_omits_selector_without_selector() {
             }
         }
     "#;
-    let options = CompileOptions { covenants_enabled: true, without_selector: true };
+    let options = CompileOptions { covenants_enabled: true, without_selector: true, allow_yield: false };
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
     let sigscript = compiled.build_sig_script("spend", vec![1.into(), vec![2u8; 4].into()]).expect("sigscript builds");
 
@@ -527,7 +542,7 @@ fn compiles_int_array_length_to_expected_script() {
             }
         }
     "#;
-    let options = CompileOptions { covenants_enabled: true, without_selector: true };
+    let options = CompileOptions { covenants_enabled: true, without_selector: true, allow_yield: false };
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
 
     let expected = ScriptBuilder::new()
@@ -567,7 +582,7 @@ fn compiles_int_array_push_to_expected_script() {
             }
         }
     "#;
-    let options = CompileOptions { covenants_enabled: true, without_selector: true };
+    let options = CompileOptions { covenants_enabled: true, without_selector: true, allow_yield: false };
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
 
     let expected = ScriptBuilder::new()
@@ -615,7 +630,7 @@ fn compiles_int_array_index_to_expected_script() {
             }
         }
     "#;
-    let options = CompileOptions { covenants_enabled: true, without_selector: true };
+    let options = CompileOptions { covenants_enabled: true, without_selector: true, allow_yield: false };
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
 
     let expected = ScriptBuilder::new()
@@ -672,7 +687,7 @@ fn runs_array_runtime_examples() {
             }
         }
     "#;
-    let options = CompileOptions { covenants_enabled: true, without_selector: true };
+    let options = CompileOptions { covenants_enabled: true, without_selector: true, allow_yield: false };
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
     let sigscript = ScriptBuilder::new().drain();
     let result = run_script_with_sigscript(compiled.script, sigscript);
@@ -690,7 +705,7 @@ fn compiles_bytes20_array_push_without_num2bin() {
             }
         }
     "#;
-    let options = CompileOptions { covenants_enabled: true, without_selector: true };
+    let options = CompileOptions { covenants_enabled: true, without_selector: true, allow_yield: false };
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
 
     let value =
@@ -739,7 +754,7 @@ fn runs_bytes20_array_runtime_example() {
             }
         }
     "#;
-    let options = CompileOptions { covenants_enabled: true, without_selector: true };
+    let options = CompileOptions { covenants_enabled: true, without_selector: true, allow_yield: false };
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
     let sigscript = ScriptBuilder::new().drain();
     let result = run_script_with_sigscript(compiled.script, sigscript);
@@ -759,7 +774,7 @@ fn allows_array_equality_comparison() {
             }
         }
     "#;
-    let options = CompileOptions { covenants_enabled: true, without_selector: true };
+    let options = CompileOptions { covenants_enabled: true, without_selector: true, allow_yield: false };
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
     let sigscript = ScriptBuilder::new().drain();
     let result = run_script_with_sigscript(compiled.script, sigscript);
@@ -779,7 +794,7 @@ fn fails_array_equality_comparison() {
             }
         }
     "#;
-    let options = CompileOptions { covenants_enabled: true, without_selector: true };
+    let options = CompileOptions { covenants_enabled: true, without_selector: true, allow_yield: false };
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
     let sigscript = ScriptBuilder::new().drain();
     let result = run_script_with_sigscript(compiled.script, sigscript);
@@ -800,7 +815,7 @@ fn allows_array_inequality_with_different_sizes() {
             }
         }
     "#;
-    let options = CompileOptions { covenants_enabled: true, without_selector: true };
+    let options = CompileOptions { covenants_enabled: true, without_selector: true, allow_yield: false };
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
     let sigscript = ScriptBuilder::new().drain();
     let result = run_script_with_sigscript(compiled.script, sigscript);
@@ -822,7 +837,7 @@ fn runs_array_for_loop_example() {
             }
         }
     "#;
-    let options = CompileOptions { covenants_enabled: true, without_selector: true };
+    let options = CompileOptions { covenants_enabled: true, without_selector: true, allow_yield: false };
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
     let sigscript = ScriptBuilder::new().drain();
     let result = run_script_with_sigscript(compiled.script, sigscript);
@@ -845,7 +860,7 @@ fn runs_array_for_loop_with_length_guard() {
             }
         }
     "#;
-    let options = CompileOptions { covenants_enabled: true, without_selector: true };
+    let options = CompileOptions { covenants_enabled: true, without_selector: true, allow_yield: false };
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
 
     let sigscript = compiled.build_sig_script("main", vec![vec![1i64, 2i64, 3i64, 4i64].into()]).expect("sigscript builds");
@@ -899,7 +914,7 @@ fn allows_array_assignment_with_compatible_types() {
             }
         }
     "#;
-    let options = CompileOptions { covenants_enabled: true, without_selector: true };
+    let options = CompileOptions { covenants_enabled: true, without_selector: true, allow_yield: false };
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
     let sigscript = ScriptBuilder::new().drain();
     let result = run_script_with_sigscript(compiled.script, sigscript);
@@ -915,7 +930,7 @@ fn rejects_unsized_array_type() {
             }
         }
     "#;
-    let options = CompileOptions { covenants_enabled: true, without_selector: true };
+    let options = CompileOptions { covenants_enabled: true, without_selector: true, allow_yield: false };
     assert!(compile_contract(source, &[], options).is_err());
 }
 
@@ -929,7 +944,7 @@ fn rejects_array_element_assignment() {
             }
         }
     "#;
-    let options = CompileOptions { covenants_enabled: true, without_selector: true };
+    let options = CompileOptions { covenants_enabled: true, without_selector: true, allow_yield: false };
     assert!(compile_contract(source, &[], options).is_err());
 }
 
@@ -1122,7 +1137,7 @@ fn compiles_without_selector_single_function() {
     "#;
 
     let contract = parse_contract_ast(source).expect("ast parsed");
-    let options = CompileOptions { covenants_enabled: true, without_selector: true };
+    let options = CompileOptions { covenants_enabled: true, without_selector: true, allow_yield: false };
     let compiled = compile_contract_ast(&contract, &[], options).expect("compile succeeds");
 
     let expected = ScriptBuilder::new()
@@ -1155,7 +1170,7 @@ fn fails_without_selector_multiple_functions() {
     "#;
 
     let contract = parse_contract_ast(source).expect("ast parsed");
-    let options = CompileOptions { covenants_enabled: true, without_selector: true };
+    let options = CompileOptions { covenants_enabled: true, without_selector: true, allow_yield: false };
     let err = compile_contract_ast(&contract, &[], options).expect_err("should fail without selector for multiple functions");
     assert!(err.to_string().contains("without_selector"));
 }
