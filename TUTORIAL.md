@@ -292,8 +292,6 @@ SilverScript supports both single-line and multi-line comments:
  */
 
 int x = 10; // Comments can appear at the end of lines
-
-/* Comments can be /* nested */ like this */
 ```
 
 ---
@@ -329,13 +327,13 @@ Functions can have multiple parameters and return values:
 ```javascript
 // Function with return type
 function add(int a, int b): (int) {
-    return a + b;
+    return (a + b);
 }
 
 // Multiple return values
 function split(bytes32 data): (bytes16, bytes16) {
     bytes16 left, bytes16 right = data.split(16);
-    return left, right;
+    return (left, right);
 }
 
 // Using the return value
@@ -427,13 +425,6 @@ else
     require(false);
 ```
 
-Ternary-like expressions using if-else:
-
-```javascript
-int value = (x > 10) ? 100 : 50; // Not directly supported
-// Use if-else statements instead
-```
-
 ### Require Statements
 
 The `require` statement enforces conditions. If the condition is false, the contract execution fails:
@@ -512,7 +503,7 @@ string apostrophe = 'It\'s working';
 ```javascript
 bytes data = 0x1234abcd;
 bytes empty = 0x;
-bytes pubkey = 0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef;
+bytes pubkeyBytes = 0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef;
 ```
 
 ### Number Units
@@ -648,7 +639,7 @@ bytes fromString = bytes("hello");
 
 // Cast to specific byte size
 bytes32 hash = bytes32(data);
-bytes65 signature = bytes65(sig);
+bytes65 signatureBytes = bytes65(sigBytes);
 
 // Cast to pubkey or sig
 pubkey pk = pubkey(keyBytes);
@@ -767,10 +758,10 @@ int locktime = tx.locktime;
 
 ```javascript
 // Age of the UTXO being spent (in seconds)
-int age = this.age;
+require(this.age >= 0);
 
 // Transaction locktime
-int txTime = tx.time;
+require(tx.time >= 0);
 ```
 
 ### Input Introspection
@@ -781,10 +772,6 @@ Access properties of transaction inputs:
 // Access input at index i
 int inputValue = tx.inputs[i].value;
 bytes inputScript = tx.inputs[i].lockingBytecode;
-bytes txHash = tx.inputs[i].outpointTransactionHash;
-int outpointIdx = tx.inputs[i].outpointIndex;
-bytes unlockScript = tx.inputs[i].unlockingBytecode;
-int seqNum = tx.inputs[i].sequenceNumber;
 ```
 
 **Example:**
@@ -931,16 +918,16 @@ entrypoint function example() {
 Unpack multiple values from function returns or split operations:
 
 ```javascript
-// Unpack split results
-bytes16 left, bytes16 right = data.split(16);
-
 // Function with multiple returns
 function getPair(): (int, int) {
-    return 10, 20;
+    return (10, 20);
 }
 
-// Unpack function results
-(int x, int y) = getPair();
+// Unpack split results and function results
+entrypoint function example(bytes32 data) {
+    bytes16 left, bytes16 right = data.split(16);
+    (int x, int y) = getPair();
+}
 ```
 
 **In Function Parameters:**
