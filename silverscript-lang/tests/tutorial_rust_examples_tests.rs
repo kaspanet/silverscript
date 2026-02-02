@@ -1,5 +1,5 @@
 use silverscript_lang::ast::Expr;
-use silverscript_lang::compiler::{compile_contract, CompileOptions};
+use silverscript_lang::compiler::{CompileOptions, compile_contract};
 
 #[test]
 fn tutorial_rust_programmatic_compilation_example() {
@@ -43,22 +43,14 @@ fn tutorial_rust_build_sigscript_multiple_entrypoints_example() {
     let sender_pk = vec![3u8; 32];
     let recipient_pk = vec![4u8; 32];
     let timeout = 1_640_000_000i64;
-    let compiled = compile_contract(
-        source,
-        &[sender_pk.into(), recipient_pk.into(), timeout.into()],
-        CompileOptions::default(),
-    )
-    .expect("multi-entrypoint example should compile");
+    let compiled = compile_contract(source, &[sender_pk.into(), recipient_pk.into(), timeout.into()], CompileOptions::default())
+        .expect("multi-entrypoint example should compile");
 
     assert!(!compiled.without_selector, "multiple entrypoints should require a selector");
 
     let sig = vec![5u8; 64];
-    let transfer_sigscript = compiled
-        .build_sig_script("transfer", vec![sig.clone().into()])
-        .expect("transfer sigscript should build");
-    let reclaim_sigscript = compiled
-        .build_sig_script("reclaim", vec![sig.into()])
-        .expect("reclaim sigscript should build");
+    let transfer_sigscript = compiled.build_sig_script("transfer", vec![sig.clone().into()]).expect("transfer sigscript should build");
+    let reclaim_sigscript = compiled.build_sig_script("reclaim", vec![sig.into()]).expect("reclaim sigscript should build");
 
     assert!(!transfer_sigscript.is_empty());
     assert!(!reclaim_sigscript.is_empty());
