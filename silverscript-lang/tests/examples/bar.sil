@@ -9,7 +9,7 @@ contract Bar(bytes32 pkh_bar) {
         require(2 == 2);
     }
 
-    function execute(pubkey pk, sig s) {
+    entrypoint function execute(pubkey pk, sig s) {
         require(blake2b(pk) == pkh_bar);
         require(checkSig(s, pk));
     }

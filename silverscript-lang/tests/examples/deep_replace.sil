@@ -1,7 +1,7 @@
 pragma silverscript ^0.1.0;
 
 contract DeepReplace() {
-    function hello() {
+    entrypoint function hello() {
         int a = 1;
         int b = 2;
         int c = 3;

@@ -302,7 +302,8 @@ fn compiles_for_loop_ctor_example_with_constructor_bounds() {
 fn compiles_yield_basic_example_and_verifies() {
     let source = load_example_source("yield_basic.sil");
 
-    let compiled = compile_contract(&source, &[], CompileOptions::default()).expect("compile succeeds");
+    let options = CompileOptions { allow_yield: true, ..CompileOptions::default() };
+    let compiled = compile_contract(&source, &[], options).expect("compile succeeds");
     let script = script_with_return_checks(compiled.script.clone(), &[12, 8]);
     let recipient0 = [9u8; 32];
     let recipient1 = [10u8; 32];
@@ -319,7 +320,8 @@ fn compiles_yield_basic_example_and_verifies() {
 fn compiles_yield_loop_example_and_verifies() {
     let source = load_example_source("yield_loop.sil");
 
-    let compiled = compile_contract(&source, &[], CompileOptions::default()).expect("compile succeeds");
+    let options = CompileOptions { allow_yield: true, ..CompileOptions::default() };
+    let compiled = compile_contract(&source, &[], options).expect("compile succeeds");
     let script = script_with_return_checks(compiled.script.clone(), &[1, 2, 3, 4]);
     let recipient0 = [11u8; 32];
     let recipient1 = [12u8; 32];
@@ -336,13 +338,14 @@ fn compiles_yield_loop_example_and_verifies() {
 fn compiles_return_basic_example_and_verifies() {
     let source = r#"
         contract ReturnTest() {
-            function main(int a, int b) : (int, int) {
+            entrypoint function main(int a, int b) : (int, int) {
                 return(a + 1, b + 2);
             }
         }
     "#;
 
-    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let options = CompileOptions { allow_entrypoint_return: true, ..CompileOptions::default() };
+    let compiled = compile_contract(source, &[], options).expect("compile succeeds");
     let script = script_with_return_checks(compiled.script.clone(), &[2, 5]);
     let recipient0 = [13u8; 32];
     let recipient1 = [14u8; 32];
@@ -364,7 +367,8 @@ fn runs_token_example_and_verifies() {
     let recipient_pk = recipient.x_only_public_key().0.serialize();
 
     let constructor_args = [(4).into()];
-    let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
+    let options = CompileOptions { allow_yield: true, ..CompileOptions::default() };
+    let compiled = compile_contract(&source, &constructor_args, options).expect("compile succeeds");
 
     let in_amount = 4_000i64;
     let num_outs = 4i64;

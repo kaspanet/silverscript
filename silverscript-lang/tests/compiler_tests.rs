@@ -81,7 +81,7 @@ fn run_script_with_sigscript(script: Vec<u8>, sigscript: Vec<u8>) -> Result<(), 
 fn accepts_constructor_args_with_matching_types() {
     let source = r#"
         contract Types(int a, bool b, string c, bytes d, byte e, bytes4 f, pubkey pk, sig s, datasig ds) {
-            function main() {
+            entrypoint function main() {
                 require(true);
             }
         }
@@ -104,7 +104,7 @@ fn accepts_constructor_args_with_matching_types() {
 fn rejects_constructor_args_with_wrong_scalar_types() {
     let source = r#"
         contract Types(int a, bool b, string c) {
-            function main() {
+            entrypoint function main() {
                 require(true);
             }
         }
@@ -117,7 +117,7 @@ fn rejects_constructor_args_with_wrong_scalar_types() {
 fn rejects_constructor_args_with_wrong_byte_lengths() {
     let source = r#"
         contract Types(byte b, bytes4 c, pubkey pk, sig s, datasig ds) {
-            function main() {
+            entrypoint function main() {
                 require(true);
             }
         }
@@ -136,7 +136,7 @@ fn rejects_constructor_args_with_wrong_byte_lengths() {
 fn accepts_constructor_args_with_any_bytes_length() {
     let source = r#"
         contract Types(bytes blob) {
-            function main() {
+            entrypoint function main() {
                 require(true);
             }
         }
@@ -149,7 +149,7 @@ fn accepts_constructor_args_with_any_bytes_length() {
 fn build_sig_script_builds_expected_script() {
     let source = r#"
         contract BoundedBytes() {
-            function spend(bytes4 b, int i) {
+            entrypoint function spend(bytes4 b, int i) {
                 require(b == bytes4(i));
             }
         }
@@ -168,7 +168,7 @@ fn build_sig_script_builds_expected_script() {
 fn build_sig_script_rejects_unknown_function() {
     let source = r#"
         contract C() {
-            function spend(int a) {
+            entrypoint function spend(int a) {
                 require(a == 1);
             }
         }
@@ -182,7 +182,7 @@ fn build_sig_script_rejects_unknown_function() {
 fn build_sig_script_rejects_wrong_argument_count() {
     let source = r#"
         contract C() {
-            function spend(int a, int b) {
+            entrypoint function spend(int a, int b) {
                 require(a == b);
             }
         }
@@ -196,7 +196,7 @@ fn build_sig_script_rejects_wrong_argument_count() {
 fn build_sig_script_rejects_wrong_argument_type() {
     let source = r#"
         contract C() {
-            function spend(bytes4 b) {
+            entrypoint function spend(bytes4 b) {
                 require(b.length == 4);
             }
         }
@@ -210,7 +210,7 @@ fn build_sig_script_rejects_wrong_argument_type() {
 fn rejects_double_underscore_variable_names() {
     let source = r#"
         contract Bad() {
-            function main() {
+            entrypoint function main() {
                 int __tmp = 1;
                 require(__tmp == 1);
             }
@@ -220,7 +220,7 @@ fn rejects_double_underscore_variable_names() {
 
     let source = r#"
         contract Bad(int __arg) {
-            function main() {
+            entrypoint function main() {
                 require(__arg == 1);
             }
         }
@@ -229,10 +229,58 @@ fn rejects_double_underscore_variable_names() {
 }
 
 #[test]
+fn rejects_yield_without_allow_option() {
+    let source = r#"
+        contract YieldDefaultDisallowed() {
+            entrypoint function main() {
+                int x = 1;
+                yield(x + 1);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("yield should be disallowed by default");
+    assert!(err.to_string().contains("yield requires allow_yield=true"));
+}
+
+#[test]
+fn rejects_external_call_without_entrypoint() {
+    let source = r#"
+        contract Entry() {
+            function helper() {
+                require(true);
+            }
+
+            entrypoint function main() {
+                require(true);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let result = compiled.build_sig_script("helper", vec![Expr::Int(1)]);
+    assert!(result.is_err());
+}
+
+#[test]
+fn rejects_entrypoint_return_by_default() {
+    let source = r#"
+        contract EntryReturn() {
+            entrypoint function main() : (int) {
+                return(1);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("entrypoint return should be disallowed by default");
+    assert!(err.to_string().contains("entrypoint return requires allow_entrypoint_return=true"));
+}
+
+#[test]
 fn build_sig_script_rejects_mismatched_bytes_length() {
     let source = r#"
         contract C() {
-            function spend(bytes4 b) {
+            entrypoint function spend(bytes4 b) {
                 require(b.length == 4);
             }
         }
@@ -243,7 +291,7 @@ fn build_sig_script_rejects_mismatched_bytes_length() {
 
     let source = r#"
         contract C() {
-            function spend(bytes5 b) {
+            entrypoint function spend(bytes5 b) {
                 require(b.length == 5);
             }
         }
@@ -257,13 +305,14 @@ fn build_sig_script_rejects_mismatched_bytes_length() {
 fn build_sig_script_omits_selector_without_selector() {
     let source = r#"
         contract Single() {
-            function spend(int a, bytes4 b) {
+            entrypoint function spend(int a, bytes4 b) {
                 require(a == 1);
                 require(b.length == 4);
             }
         }
     "#;
-    let options = CompileOptions { covenants_enabled: true, without_selector: true };
+    let options =
+        CompileOptions { covenants_enabled: true, without_selector: true, allow_yield: false, allow_entrypoint_return: false };
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
     let sigscript = compiled.build_sig_script("spend", vec![1.into(), vec![2u8; 4].into()]).expect("sigscript builds");
 
@@ -279,7 +328,7 @@ fn compiles_function_call_assignment_and_verifies() {
                 return(a + b, a * b);
             }
 
-            function main() {
+            entrypoint function main() {
                 (int sum, int prod) = f(2, 3);
                 require(sum == 5);
                 require(prod == 6);
@@ -302,7 +351,7 @@ fn compiles_function_call_statement_drops_returns() {
                 return(a + 1);
             }
 
-            function main() {
+            entrypoint function main() {
                 f(2);
             }
         }
@@ -322,7 +371,7 @@ fn rejects_function_call_assignment_with_mismatched_signature() {
                 return(a + b, a * b);
             }
 
-            function main() {
+            entrypoint function main() {
                 (int sum, bytes prod) = f(2, 3);
                 require(sum == 5);
             }
@@ -340,7 +389,7 @@ fn rejects_function_call_assignment_with_wrong_return_count() {
                 return(a + b, a * b);
             }
 
-            function main() {
+            entrypoint function main() {
                 (int sum) = f(2, 3);
                 require(sum == 5);
             }
@@ -358,7 +407,7 @@ fn allows_calling_void_function() {
                 require(a == 1);
             }
 
-            function main() {
+            entrypoint function main() {
                 ping(1);
                 require(true);
             }
@@ -387,21 +436,22 @@ fn recursive_fibonacci_inlining_behavior() {
                 return(result);
             }
 
-            function main(int n, int expected) {
-                require(fib(n) == expected);
+            entrypoint function main(int n) {
+                require(fib(n) > 0);
             }
         }
     "#;
 
     let err = compile_contract(source, &[], CompileOptions::default()).expect_err("recursive call should fail");
-    assert!(err.to_string().contains("earlier-defined"));
+    let err_msg = err.to_string();
+    assert!(err_msg.contains("unknown function"), "expected 'unknown function' error, got: {err_msg}");
 }
 
 #[test]
 fn rejects_calling_later_defined_function() {
     let source = r#"
         contract Calls() {
-            function first() {
+            entrypoint function first() {
                 second();
             }
 
@@ -436,7 +486,7 @@ fn allows_call_chain_with_earlier_defined_functions() {
                 return(v + w);
             }
 
-            function main() {
+            entrypoint function main() {
                 (int out) = f(4);
                 require(out == 10);
             }
@@ -456,7 +506,7 @@ fn allows_calling_void_function_fails() {
                 require(a == 2);
             }
 
-            function main() {
+            entrypoint function main() {
                 ping(1);
                 require(true);
             }
@@ -472,7 +522,7 @@ fn allows_calling_void_function_fails() {
 fn rejects_return_without_signature() {
     let source = r#"
         contract C() {
-            function main() {
+            entrypoint function main() {
                 return(1);
             }
         }
@@ -484,7 +534,7 @@ fn rejects_return_without_signature() {
 fn rejects_return_not_last_statement() {
     let source = r#"
         contract C() {
-            function main() : (int) {
+            entrypoint function main() : (int) {
                 return(1);
                 require(true);
             }
@@ -497,7 +547,7 @@ fn rejects_return_not_last_statement() {
 fn rejects_return_value_count_mismatch() {
     let source = r#"
         contract C() {
-            function main() : (int, int) {
+            entrypoint function main() : (int, int) {
                 return(1);
             }
         }
@@ -509,7 +559,7 @@ fn rejects_return_value_count_mismatch() {
 fn rejects_return_type_mismatch() {
     let source = r#"
         contract C() {
-            function main(bool b) : (int) {
+            entrypoint function main(bool b) : (int) {
                 return(b);
             }
         }
@@ -521,13 +571,14 @@ fn rejects_return_type_mismatch() {
 fn compiles_int_array_length_to_expected_script() {
     let source = r#"
         contract Arrays() {
-            function main() {
+            entrypoint function main() {
                 int[] x;
                 require(x.length == 0);
             }
         }
     "#;
-    let options = CompileOptions { covenants_enabled: true, without_selector: true };
+    let options =
+        CompileOptions { covenants_enabled: true, without_selector: true, allow_yield: false, allow_entrypoint_return: false };
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
 
     let expected = ScriptBuilder::new()
@@ -560,14 +611,15 @@ fn compiles_int_array_length_to_expected_script() {
 fn compiles_int_array_push_to_expected_script() {
     let source = r#"
         contract Arrays() {
-            function main() {
+            entrypoint function main() {
                 int[] x;
                 x.push(7);
                 require(x.length == 1);
             }
         }
     "#;
-    let options = CompileOptions { covenants_enabled: true, without_selector: true };
+    let options =
+        CompileOptions { covenants_enabled: true, without_selector: true, allow_yield: false, allow_entrypoint_return: false };
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
 
     let expected = ScriptBuilder::new()
@@ -608,14 +660,15 @@ fn compiles_int_array_push_to_expected_script() {
 fn compiles_int_array_index_to_expected_script() {
     let source = r#"
         contract Arrays() {
-            function main() {
+            entrypoint function main() {
                 int[] x;
                 x.push(7);
                 require(x[0] == 7);
             }
         }
     "#;
-    let options = CompileOptions { covenants_enabled: true, without_selector: true };
+    let options =
+        CompileOptions { covenants_enabled: true, without_selector: true, allow_yield: false, allow_entrypoint_return: false };
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
 
     let expected = ScriptBuilder::new()
@@ -662,7 +715,7 @@ fn compiles_int_array_index_to_expected_script() {
 fn runs_array_runtime_examples() {
     let source = r#"
         contract Arrays() {
-            function main() {
+            entrypoint function main() {
                 int[] x;
                 x.push(7);
                 x.push(9);
@@ -672,7 +725,8 @@ fn runs_array_runtime_examples() {
             }
         }
     "#;
-    let options = CompileOptions { covenants_enabled: true, without_selector: true };
+    let options =
+        CompileOptions { covenants_enabled: true, without_selector: true, allow_yield: false, allow_entrypoint_return: false };
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
     let sigscript = ScriptBuilder::new().drain();
     let result = run_script_with_sigscript(compiled.script, sigscript);
@@ -683,14 +737,15 @@ fn runs_array_runtime_examples() {
 fn compiles_bytes20_array_push_without_num2bin() {
     let source = r#"
         contract Arrays() {
-            function main() {
+            entrypoint function main() {
                 bytes20[] x;
                 x.push(0x0102030405060708090a0b0c0d0e0f1011121314);
                 require(x.length == 1);
             }
         }
     "#;
-    let options = CompileOptions { covenants_enabled: true, without_selector: true };
+    let options =
+        CompileOptions { covenants_enabled: true, without_selector: true, allow_yield: false, allow_entrypoint_return: false };
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
 
     let value =
@@ -729,7 +784,7 @@ fn compiles_bytes20_array_push_without_num2bin() {
 fn runs_bytes20_array_runtime_example() {
     let source = r#"
         contract Arrays() {
-            function main() {
+            entrypoint function main() {
                 bytes20[] x;
                 x.push(0x0102030405060708090a0b0c0d0e0f1011121314);
                 x.push(0x1111111111111111111111111111111111111111);
@@ -739,7 +794,8 @@ fn runs_bytes20_array_runtime_example() {
             }
         }
     "#;
-    let options = CompileOptions { covenants_enabled: true, without_selector: true };
+    let options =
+        CompileOptions { covenants_enabled: true, without_selector: true, allow_yield: false, allow_entrypoint_return: false };
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
     let sigscript = ScriptBuilder::new().drain();
     let result = run_script_with_sigscript(compiled.script, sigscript);
@@ -750,7 +806,7 @@ fn runs_bytes20_array_runtime_example() {
 fn allows_array_equality_comparison() {
     let source = r#"
         contract Arrays() {
-            function main() {
+            entrypoint function main() {
                 bytes20[] x;
                 bytes20[] y;
                 x.push(0x0102030405060708090a0b0c0d0e0f1011121314);
@@ -759,7 +815,8 @@ fn allows_array_equality_comparison() {
             }
         }
     "#;
-    let options = CompileOptions { covenants_enabled: true, without_selector: true };
+    let options =
+        CompileOptions { covenants_enabled: true, without_selector: true, allow_yield: false, allow_entrypoint_return: false };
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
     let sigscript = ScriptBuilder::new().drain();
     let result = run_script_with_sigscript(compiled.script, sigscript);
@@ -770,7 +827,7 @@ fn allows_array_equality_comparison() {
 fn fails_array_equality_comparison() {
     let source = r#"
         contract Arrays() {
-            function main() {
+            entrypoint function main() {
                 bytes20[] x;
                 bytes20[] y;
                 x.push(0x0102030405060708090a0b0c0d0e0f1011121314);
@@ -779,7 +836,8 @@ fn fails_array_equality_comparison() {
             }
         }
     "#;
-    let options = CompileOptions { covenants_enabled: true, without_selector: true };
+    let options =
+        CompileOptions { covenants_enabled: true, without_selector: true, allow_yield: false, allow_entrypoint_return: false };
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
     let sigscript = ScriptBuilder::new().drain();
     let result = run_script_with_sigscript(compiled.script, sigscript);
@@ -790,7 +848,7 @@ fn fails_array_equality_comparison() {
 fn allows_array_inequality_with_different_sizes() {
     let source = r#"
         contract Arrays() {
-            function main() {
+            entrypoint function main() {
                 bytes20[] x;
                 bytes20[] y;
                 x.push(0x0102030405060708090a0b0c0d0e0f1011121314);
@@ -800,7 +858,8 @@ fn allows_array_inequality_with_different_sizes() {
             }
         }
     "#;
-    let options = CompileOptions { covenants_enabled: true, without_selector: true };
+    let options =
+        CompileOptions { covenants_enabled: true, without_selector: true, allow_yield: false, allow_entrypoint_return: false };
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
     let sigscript = ScriptBuilder::new().drain();
     let result = run_script_with_sigscript(compiled.script, sigscript);
@@ -811,7 +870,7 @@ fn allows_array_inequality_with_different_sizes() {
 fn runs_array_for_loop_example() {
     let source = r#"
         contract Arrays() {
-            function main() {
+            entrypoint function main() {
                 int[] x;
                 x.push(1);
                 x.push(2);
@@ -822,7 +881,8 @@ fn runs_array_for_loop_example() {
             }
         }
     "#;
-    let options = CompileOptions { covenants_enabled: true, without_selector: true };
+    let options =
+        CompileOptions { covenants_enabled: true, without_selector: true, allow_yield: false, allow_entrypoint_return: false };
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
     let sigscript = ScriptBuilder::new().drain();
     let result = run_script_with_sigscript(compiled.script, sigscript);
@@ -835,7 +895,7 @@ fn runs_array_for_loop_with_length_guard() {
         contract Arrays() {
             int constant MAX_ARRAY_SIZE = 7;
 
-            function main(int[] x) {
+            entrypoint function main(int[] x) {
                 require(x.length <= MAX_ARRAY_SIZE);
                 for (i, 1, MAX_ARRAY_SIZE) {
                     if (i < x.length) {
@@ -845,7 +905,8 @@ fn runs_array_for_loop_with_length_guard() {
             }
         }
     "#;
-    let options = CompileOptions { covenants_enabled: true, without_selector: true };
+    let options =
+        CompileOptions { covenants_enabled: true, without_selector: true, allow_yield: false, allow_entrypoint_return: false };
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
 
     let sigscript = compiled.build_sig_script("main", vec![vec![1i64, 2i64, 3i64, 4i64].into()]).expect("sigscript builds");
@@ -870,7 +931,7 @@ fn runs_array_loop_and_function_calls_example() {
                 return(sum);
             }
 
-            function main() {
+            entrypoint function main() {
                 int[] x;
                 x.push(1);
                 x.push(2);
@@ -891,7 +952,7 @@ fn runs_array_loop_and_function_calls_example() {
 fn allows_array_assignment_with_compatible_types() {
     let source = r#"
         contract Arrays() {
-            function main() {
+            entrypoint function main() {
                 int[] x;
                 int[] y;
                 x = y;
@@ -899,7 +960,8 @@ fn allows_array_assignment_with_compatible_types() {
             }
         }
     "#;
-    let options = CompileOptions { covenants_enabled: true, without_selector: true };
+    let options =
+        CompileOptions { covenants_enabled: true, without_selector: true, allow_yield: false, allow_entrypoint_return: false };
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
     let sigscript = ScriptBuilder::new().drain();
     let result = run_script_with_sigscript(compiled.script, sigscript);
@@ -910,12 +972,13 @@ fn allows_array_assignment_with_compatible_types() {
 fn rejects_unsized_array_type() {
     let source = r#"
         contract Arrays() {
-            function main() {
+            entrypoint function main() {
                 bytes[] x;
             }
         }
     "#;
-    let options = CompileOptions { covenants_enabled: true, without_selector: true };
+    let options =
+        CompileOptions { covenants_enabled: true, without_selector: true, allow_yield: false, allow_entrypoint_return: false };
     assert!(compile_contract(source, &[], options).is_err());
 }
 
@@ -923,13 +986,14 @@ fn rejects_unsized_array_type() {
 fn rejects_array_element_assignment() {
     let source = r#"
         contract Arrays() {
-            function main() {
+            entrypoint function main() {
                 int[] x;
                 x[3] = 9;
             }
         }
     "#;
-    let options = CompileOptions { covenants_enabled: true, without_selector: true };
+    let options =
+        CompileOptions { covenants_enabled: true, without_selector: true, allow_yield: false, allow_entrypoint_return: false };
     assert!(compile_contract(source, &[], options).is_err());
 }
 
@@ -937,7 +1001,7 @@ fn rejects_array_element_assignment() {
 fn locking_bytecode_p2pk_matches_pay_to_address_script() {
     let source = r#"
         contract Test() {
-            function main(pubkey pk, bytes expected) {
+            entrypoint function main(pubkey pk, bytes expected) {
                 bytes spk = new LockingBytecodeP2PK(pk);
                 require(spk == expected);
             }
@@ -961,7 +1025,7 @@ fn locking_bytecode_p2pk_matches_pay_to_address_script() {
 fn locking_bytecode_p2sh_matches_pay_to_address_script() {
     let source = r#"
         contract Test() {
-            function main(bytes32 hash, bytes expected) {
+            entrypoint function main(bytes32 hash, bytes expected) {
                 bytes spk = new LockingBytecodeP2SH(hash);
                 require(spk == expected);
             }
@@ -985,7 +1049,7 @@ fn locking_bytecode_p2sh_matches_pay_to_address_script() {
 fn locking_bytecode_p2sh_from_redeem_script_matches_pay_to_script_hash_script() {
     let source = r#"
         contract Test() {
-            function main(bytes redeem_script, bytes expected) {
+            entrypoint function main(bytes redeem_script, bytes expected) {
                 bytes spk = new LockingBytecodeP2SHFromRedeemScript(redeem_script);
                 require(spk == expected);
             }
@@ -1115,14 +1179,15 @@ fn wrap_with_dispatch(body: Vec<u8>, selector: i64) -> Vec<u8> {
 fn compiles_without_selector_single_function() {
     let source = r#"
         contract Test() {
-            function main() {
+            entrypoint function main() {
                 require(1 + 2 == 3);
             }
         }
     "#;
 
     let contract = parse_contract_ast(source).expect("ast parsed");
-    let options = CompileOptions { covenants_enabled: true, without_selector: true };
+    let options =
+        CompileOptions { covenants_enabled: true, without_selector: true, allow_yield: false, allow_entrypoint_return: false };
     let compiled = compile_contract_ast(&contract, &[], options).expect("compile succeeds");
 
     let expected = ScriptBuilder::new()
@@ -1149,13 +1214,14 @@ fn compiles_without_selector_single_function() {
 fn fails_without_selector_multiple_functions() {
     let source = r#"
         contract Test() {
-            function a() { require(true); }
-            function b() { require(true); }
+            entrypoint function a() { require(true); }
+            entrypoint function b() { require(true); }
         }
     "#;
 
     let contract = parse_contract_ast(source).expect("ast parsed");
-    let options = CompileOptions { covenants_enabled: true, without_selector: true };
+    let options =
+        CompileOptions { covenants_enabled: true, without_selector: true, allow_yield: false, allow_entrypoint_return: false };
     let err = compile_contract_ast(&contract, &[], options).expect_err("should fail without selector for multiple functions");
     assert!(err.to_string().contains("without_selector"));
 }
@@ -1164,7 +1230,7 @@ fn fails_without_selector_multiple_functions() {
 fn compiles_basic_arithmetic_and_verifies() {
     let source = r#"
         contract Test() {
-            function main() {
+            entrypoint function main() {
                 require(1 + 2 == 3);
             }
         }
@@ -1202,7 +1268,7 @@ fn compiles_contract_constants_and_verifies() {
         contract Test() {
             int constant MAX_SUPPLY = 1_000_000;
 
-            function main() {
+            entrypoint function main() {
                 require(MAX_SUPPLY == 1_000_000);
             }
         }
@@ -1243,7 +1309,7 @@ fn compiles_opcode_builtins() {
         (
             r#"
                 contract Test() {
-                    function main() {
+                    entrypoint function main() {
                         require(OpSha256(bytes("msg")) == bytes("hash"));
                     }
                 }
@@ -1266,7 +1332,7 @@ fn compiles_opcode_builtins() {
         (
             r#"
                 contract Test() {
-                    function main() {
+                    entrypoint function main() {
                         require(OpTxSubnetId() == bytes("subnet"));
                     }
                 }
@@ -1287,7 +1353,7 @@ fn compiles_opcode_builtins() {
         (
             r#"
                 contract Test() {
-                    function main() {
+                    entrypoint function main() {
                         require(OpTxGas() == 0);
                     }
                 }
@@ -1308,7 +1374,7 @@ fn compiles_opcode_builtins() {
         (
             r#"
                 contract Test() {
-                    function main() {
+                    entrypoint function main() {
                         require(OpTxPayloadLen() >= 0);
                     }
                 }
@@ -1329,7 +1395,7 @@ fn compiles_opcode_builtins() {
         (
             r#"
                 contract Test() {
-                    function main() {
+                    entrypoint function main() {
                         require(OpTxPayloadSubstr(1, 3) == bytes("ok"));
                     }
                 }
@@ -1354,7 +1420,7 @@ fn compiles_opcode_builtins() {
         (
             r#"
                 contract Test() {
-                    function main() {
+                    entrypoint function main() {
                         require(OpOutpointTxId(0) == bytes("txid"));
                     }
                 }
@@ -1377,7 +1443,7 @@ fn compiles_opcode_builtins() {
         (
             r#"
                 contract Test() {
-                    function main() {
+                    entrypoint function main() {
                         require(OpOutpointIndex(0) == 0);
                     }
                 }
@@ -1400,7 +1466,7 @@ fn compiles_opcode_builtins() {
         (
             r#"
                 contract Test() {
-                    function main() {
+                    entrypoint function main() {
                         require(OpTxInputScriptSigLen(0) >= 0);
                     }
                 }
@@ -1423,7 +1489,7 @@ fn compiles_opcode_builtins() {
         (
             r#"
                 contract Test() {
-                    function main() {
+                    entrypoint function main() {
                         require(OpTxInputScriptSigSubstr(0, 0, 1) == bytes("sig"));
                     }
                 }
@@ -1450,7 +1516,7 @@ fn compiles_opcode_builtins() {
         (
             r#"
                 contract Test() {
-                    function main() {
+                    entrypoint function main() {
                         require(OpTxInputSeq(0) == bytes("seq"));
                     }
                 }
@@ -1473,7 +1539,7 @@ fn compiles_opcode_builtins() {
         (
             r#"
                 contract Test() {
-                    function main() {
+                    entrypoint function main() {
                         require(OpTxInputIsCoinbase(0) == 0);
                     }
                 }
@@ -1496,7 +1562,7 @@ fn compiles_opcode_builtins() {
         (
             r#"
                 contract Test() {
-                    function main() {
+                    entrypoint function main() {
                         require(OpTxInputSpkLen(0) >= 0);
                     }
                 }
@@ -1519,7 +1585,7 @@ fn compiles_opcode_builtins() {
         (
             r#"
                 contract Test() {
-                    function main() {
+                    entrypoint function main() {
                         require(OpTxInputSpkSubstr(0, 0, 1) == bytes("spk"));
                     }
                 }
@@ -1546,7 +1612,7 @@ fn compiles_opcode_builtins() {
         (
             r#"
                 contract Test() {
-                    function main() {
+                    entrypoint function main() {
                         require(OpTxOutputSpkLen(0) >= 0);
                     }
                 }
@@ -1569,7 +1635,7 @@ fn compiles_opcode_builtins() {
         (
             r#"
                 contract Test() {
-                    function main() {
+                    entrypoint function main() {
                         require(OpTxOutputSpkSubstr(0, 0, 1) == bytes("out"));
                     }
                 }
@@ -1596,7 +1662,7 @@ fn compiles_opcode_builtins() {
         (
             r#"
                 contract Test() {
-                    function main() {
+                    entrypoint function main() {
                         require(OpAuthOutputCount(0) >= 0);
                     }
                 }
@@ -1619,7 +1685,7 @@ fn compiles_opcode_builtins() {
         (
             r#"
                 contract Test() {
-                    function main() {
+                    entrypoint function main() {
                         require(OpAuthOutputIdx(0, 0) >= 0);
                     }
                 }
@@ -1644,7 +1710,7 @@ fn compiles_opcode_builtins() {
         (
             r#"
                 contract Test() {
-                    function main() {
+                    entrypoint function main() {
                         require(OpInputCovenantId(0) == bytes("cov"));
                     }
                 }
@@ -1667,7 +1733,7 @@ fn compiles_opcode_builtins() {
         (
             r#"
                 contract Test() {
-                    function main() {
+                    entrypoint function main() {
                         require(OpCovInputCount(bytes("c1")) >= 0);
                     }
                 }
@@ -1690,7 +1756,7 @@ fn compiles_opcode_builtins() {
         (
             r#"
                 contract Test() {
-                    function main() {
+                    entrypoint function main() {
                         require(OpCovInputIdx(bytes("c1"), 0) >= 0);
                     }
                 }
@@ -1715,7 +1781,7 @@ fn compiles_opcode_builtins() {
         (
             r#"
                 contract Test() {
-                    function main() {
+                    entrypoint function main() {
                         require(OpCovOutCount(bytes("c1")) >= 0);
                     }
                 }
@@ -1738,7 +1804,7 @@ fn compiles_opcode_builtins() {
         (
             r#"
                 contract Test() {
-                    function main() {
+                    entrypoint function main() {
                         require(OpCovOutputIdx(bytes("c1"), 0) >= 0);
                     }
                 }
@@ -1763,7 +1829,7 @@ fn compiles_opcode_builtins() {
         (
             r#"
                 contract Test() {
-                    function main() {
+                    entrypoint function main() {
                         require(OpNum2Bin(5, 2) == bytes("bin"));
                     }
                 }
@@ -1788,7 +1854,7 @@ fn compiles_opcode_builtins() {
         (
             r#"
                 contract Test() {
-                    function main() {
+                    entrypoint function main() {
                         require(OpBin2Num(bytes("a")) == 5);
                     }
                 }
@@ -1811,7 +1877,7 @@ fn compiles_opcode_builtins() {
         (
             r#"
                 contract Test() {
-                    function main() {
+                    entrypoint function main() {
                         require(OpChainblockSeqCommit(bytes("block")) == bytes("commit"));
                     }
                 }
@@ -1845,7 +1911,7 @@ fn executes_opcode_builtins_basic() {
             "sha256",
             r#"
                 contract Test() {
-                    function main() {
+                    entrypoint function main() {
                         require(OpSha256(bytes("msg")) == OpSha256(bytes("msg")));
                     }
                 }
@@ -1855,7 +1921,7 @@ fn executes_opcode_builtins_basic() {
             "subnet_id",
             r#"
                 contract Test() {
-                    function main() {
+                    entrypoint function main() {
                         require(OpTxSubnetId() == bytes("abcdefghijklmnopqrst"));
                     }
                 }
@@ -1865,7 +1931,7 @@ fn executes_opcode_builtins_basic() {
             "gas",
             r#"
                 contract Test() {
-                    function main() {
+                    entrypoint function main() {
                         require(OpTxGas() == 123);
                     }
                 }
@@ -1875,7 +1941,7 @@ fn executes_opcode_builtins_basic() {
             "payload_len",
             r#"
                 contract Test() {
-                    function main() {
+                    entrypoint function main() {
                         require(OpTxPayloadLen() == 12);
                     }
                 }
@@ -1885,7 +1951,7 @@ fn executes_opcode_builtins_basic() {
             "payload_substr",
             r#"
                 contract Test() {
-                    function main() {
+                    entrypoint function main() {
                         require(OpTxPayloadSubstr(0, 7) == bytes("payload"));
                     }
                 }
@@ -1895,7 +1961,7 @@ fn executes_opcode_builtins_basic() {
             "outpoint_txid",
             r#"
                 contract Test() {
-                    function main() {
+                    entrypoint function main() {
                         require(OpOutpointTxId(0) == bytes("0123456789abcdef0123456789abcdef"));
                     }
                 }
@@ -1905,7 +1971,7 @@ fn executes_opcode_builtins_basic() {
             "outpoint_index",
             r#"
                 contract Test() {
-                    function main() {
+                    entrypoint function main() {
                         require(OpOutpointIndex(0) == 7);
                     }
                 }
@@ -1915,8 +1981,8 @@ fn executes_opcode_builtins_basic() {
             "sigscript_len",
             r#"
                 contract Test() {
-                    function dummy() { require(true); }
-                    function main() {
+                    entrypoint function dummy() { require(true); }
+                    entrypoint function main() {
                         require(OpTxInputScriptSigLen(0) == 1);
                     }
                 }
@@ -1926,8 +1992,8 @@ fn executes_opcode_builtins_basic() {
             "sigscript_substr",
             r#"
                 contract Test() {
-                    function dummy() { require(true); }
-                    function main() {
+                    entrypoint function dummy() { require(true); }
+                    entrypoint function main() {
                         require(OpTxInputScriptSigSubstr(0, 0, 1) == bytes("Q"));
                     }
                 }
@@ -1937,7 +2003,7 @@ fn executes_opcode_builtins_basic() {
             "input_seq",
             r#"
                 contract Test() {
-                    function main() {
+                    entrypoint function main() {
                         require(OpTxInputSeq(0) == bytes("sequence"));
                     }
                 }
@@ -1947,7 +2013,7 @@ fn executes_opcode_builtins_basic() {
             "is_coinbase",
             r#"
                 contract Test() {
-                    function main() {
+                    entrypoint function main() {
                         require(OpTxInputIsCoinbase(0) == 0);
                     }
                 }
@@ -1957,7 +2023,7 @@ fn executes_opcode_builtins_basic() {
             "input_spk_len",
             r#"
                 contract Test() {
-                    function main() {
+                    entrypoint function main() {
                         require(OpTxInputSpkLen(0) == OpTxInputSpkLen(0));
                     }
                 }
@@ -1967,7 +2033,7 @@ fn executes_opcode_builtins_basic() {
             "input_spk_substr",
             r#"
                 contract Test() {
-                    function main() {
+                    entrypoint function main() {
                         require(OpTxInputSpkSubstr(0, 0, 1) == OpTxInputSpkSubstr(0, 0, 1));
                     }
                 }
@@ -1977,7 +2043,7 @@ fn executes_opcode_builtins_basic() {
             "output_spk_len",
             r#"
                 contract Test() {
-                    function main() {
+                    entrypoint function main() {
                         require(OpTxOutputSpkLen(0) == 8);
                     }
                 }
@@ -1987,7 +2053,7 @@ fn executes_opcode_builtins_basic() {
             "output_spk_substr",
             r#"
                 contract Test() {
-                    function main() {
+                    entrypoint function main() {
                         require(OpTxOutputSpkSubstr(0, 2, 8) == bytes("outspk"));
                     }
                 }
@@ -1997,7 +2063,7 @@ fn executes_opcode_builtins_basic() {
             "num2bin_bin2num",
             r#"
                 contract Test() {
-                    function main() {
+                    entrypoint function main() {
                         require(OpBin2Num(OpNum2Bin(5, 2)) == 5);
                     }
                 }
@@ -2019,7 +2085,7 @@ fn executes_opcode_builtins_basic() {
 fn executes_opcode_builtins_covenants() {
     let source = r#"
         contract Test() {
-            function main() {
+            entrypoint function main() {
                 require(OpAuthOutputCount(0) == 2);
                 require(OpAuthOutputIdx(0, 1) == 2);
                 require(OpInputCovenantId(0) == bytes("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"));
@@ -2061,7 +2127,7 @@ fn executes_opcode_chainblock_seq_commit() {
 
     let source = r#"
         contract Test() {
-            function main() {
+            entrypoint function main() {
                 require(OpChainblockSeqCommit(bytes("0123456789abcdef0123456789abcdef")) == bytes("fedcba9876543210fedcba9876543210"));
             }
         }
@@ -2083,7 +2149,7 @@ fn executes_opcode_chainblock_seq_commit() {
 fn compiles_if_else_and_verifies() {
     let source = r#"
         contract Test() {
-            function main() {
+            entrypoint function main() {
                 if (1 < 2) {
                     require(true);
                 } else {
@@ -2131,7 +2197,7 @@ fn compiles_if_else_and_verifies() {
 fn compiles_time_op_csv_and_verifies() {
     let source = r#"
         contract Test() {
-            function main() {
+            entrypoint function main() {
                 require(this.age >= 10);
             }
         }
@@ -2151,7 +2217,7 @@ fn compiles_time_op_csv_and_verifies() {
 fn compiles_reused_variables_and_verifies() {
     let source = r#"
         contract Test() {
-            function main() {
+            entrypoint function main() {
                 int a = 2 + 3;
                 int b = a * a + a;
                 require(b == 30);
@@ -2205,7 +2271,7 @@ fn compiles_reused_variables_and_verifies() {
 fn compiles_sigscript_inputs_and_verifies() {
     let source = r#"
         contract Test() {
-            function main(int a, int b) {
+            entrypoint function main(int a, int b) {
                 require(a + b == 7);
             }
         }
@@ -2235,7 +2301,7 @@ fn compiles_script_size_and_runs_sum_array() {
                 return(sum);
             }
 
-            function main(int expected_script_size) {
+            entrypoint function main(int expected_script_size) {
                 require(expected_script_size == this.scriptSize);
                 int[] x;
                 x.push(1);
@@ -2267,7 +2333,7 @@ fn data_prefix_for_size(data_len: usize) -> Vec<u8> {
 fn compiles_script_size_data_prefix_small_script() {
     let source = r#"
         contract PrefixSmall() {
-            function main(bytes expected_data_prefix) {
+            entrypoint function main(bytes expected_data_prefix) {
                 require(expected_data_prefix == this.scriptSizeDataPrefix);
                 require(true);
             }
@@ -2286,7 +2352,7 @@ fn compiles_script_size_data_prefix_small_script() {
 fn compiles_script_size_data_prefix_medium_script() {
     let source = r#"
         contract PrefixMedium() {
-            function main(bytes expected_data_prefix) {
+            entrypoint function main(bytes expected_data_prefix) {
                 require(expected_data_prefix == this.scriptSizeDataPrefix);
                 for (i, 0, 100) {
                     require(true);
@@ -2307,7 +2373,7 @@ fn compiles_script_size_data_prefix_medium_script() {
 fn compiles_script_size_data_prefix_large_script() {
     let source = r#"
         contract PrefixLarge() {
-            function main(bytes expected_data_prefix) {
+            entrypoint function main(bytes expected_data_prefix) {
                 require(expected_data_prefix == this.scriptSizeDataPrefix);
                 for (i, 0, 300) {
                     require(true);
@@ -2328,7 +2394,7 @@ fn compiles_script_size_data_prefix_large_script() {
 fn compiles_sigscript_reused_inputs_and_verifies() {
     let source = r#"
         contract Test() {
-            function main(int a) {
+            entrypoint function main(int a) {
                 require(a * a + a == 12);
             }
         }
@@ -2346,7 +2412,7 @@ fn compiles_sigscript_reused_inputs_and_verifies() {
 fn compiles_sigscript_inputs_and_fails_on_wrong_sum() {
     let source = r#"
         contract Test() {
-            function main(int a, int b) {
+            entrypoint function main(int a, int b) {
                 require(a + b == 7);
             }
         }
@@ -2364,7 +2430,7 @@ fn compiles_sigscript_inputs_and_fails_on_wrong_sum() {
 fn compiles_sigscript_reused_inputs_and_fails_on_wrong_value() {
     let source = r#"
         contract Test() {
-            function main(int a) {
+            entrypoint function main(int a) {
                 require(a * a + a == 12);
             }
         }

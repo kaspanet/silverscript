@@ -1,7 +1,7 @@
 pragma silverscript ^0.1.0;
 
 contract Slice(bytes32 data) {
-    function spend() {
+    entrypoint function spend() {
         bytes20 pkh = data.slice(0, 20);
         require(pkh == bytes20(0));
     }

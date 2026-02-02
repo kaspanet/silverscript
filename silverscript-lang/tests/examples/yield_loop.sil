@@ -2,7 +2,7 @@ contract YieldLoop() {
     int constant START = 0;
     int constant END = 4;
 
-    function main() {
+    entrypoint function main() {
         for(i, START, END) {
             yield(i + 1);
         }

@@ -1,7 +1,7 @@
 pragma silverscript ^0.1.0;
 
 contract MultiFunctionIfStatements(int x, int y) {
-    function transfer(int a, int b) {
+    entrypoint function transfer(int a, int b) {
         int d = a + b;
         d = d - a;
         if (d == x) {
@@ -15,7 +15,7 @@ contract MultiFunctionIfStatements(int x, int y) {
         require(d == y);
     }
 
-    function timeout(int b) {
+    entrypoint function timeout(int b) {
         int d = b;
         d = d + 2;
         if (d == x) {

@@ -30,11 +30,13 @@ pub enum CompilerError {
 pub struct CompileOptions {
     pub covenants_enabled: bool,
     pub without_selector: bool,
+    pub allow_yield: bool,
+    pub allow_entrypoint_return: bool,
 }
 
 impl Default for CompileOptions {
     fn default() -> Self {
-        Self { covenants_enabled: true, without_selector: false }
+        Self { covenants_enabled: true, without_selector: false, allow_yield: false, allow_entrypoint_return: false }
     }
 }
 
@@ -75,6 +77,11 @@ pub fn compile_contract_ast(
         return Err(CompilerError::Unsupported("contract has no functions".to_string()));
     }
 
+    let entrypoint_functions: Vec<&FunctionAst> = contract.functions.iter().filter(|func| func.entrypoint).collect();
+    if entrypoint_functions.is_empty() {
+        return Err(CompilerError::Unsupported("contract has no entrypoint functions".to_string()));
+    }
+
     if contract.params.len() != constructor_args.len() {
         return Err(CompilerError::Unsupported("constructor argument count mismatch".to_string()));
     }
@@ -85,8 +92,8 @@ pub fn compile_contract_ast(
         }
     }
 
-    if options.without_selector && contract.functions.len() != 1 {
-        return Err(CompilerError::Unsupported("without_selector requires a single function".to_string()));
+    if options.without_selector && entrypoint_functions.len() != 1 {
+        return Err(CompilerError::Unsupported("without_selector requires a single entrypoint function".to_string()));
     }
 
     let mut constants = contract.constants.clone();
@@ -102,17 +109,31 @@ pub fn compile_contract_ast(
 
     let mut script_size = if uses_script_size { Some(100i64) } else { None };
     for _ in 0..32 {
-        let mut compiled_functions = Vec::new();
+        let mut compiled_entrypoints = Vec::new();
         for (index, func) in contract.functions.iter().enumerate() {
-            compiled_functions.push(compile_function(func, index, &constants, options, &functions_map, &function_order, script_size)?);
+            if func.entrypoint {
+                compiled_entrypoints.push(compile_function(
+                    func,
+                    index,
+                    &constants,
+                    options,
+                    &functions_map,
+                    &function_order,
+                    script_size,
+                )?);
+            }
         }
 
         let script = if options.without_selector {
-            compiled_functions.first().ok_or_else(|| CompilerError::Unsupported("contract has no functions".to_string()))?.1.clone()
+            compiled_entrypoints
+                .first()
+                .ok_or_else(|| CompilerError::Unsupported("contract has no entrypoint functions".to_string()))?
+                .1
+                .clone()
         } else {
             let mut builder = ScriptBuilder::new();
-            let total = compiled_functions.len();
-            for (index, (_, script)) in compiled_functions.iter().enumerate() {
+            let total = compiled_entrypoints.len();
+            for (index, (_, script)) in compiled_entrypoints.iter().enumerate() {
                 builder.add_op(OpDup)?;
                 builder.add_i64(index as i64)?;
                 builder.add_op(OpNumEqual)?;
@@ -262,6 +283,7 @@ fn build_function_abi(contract: &ContractAst) -> FunctionAbi {
     contract
         .functions
         .iter()
+        .filter(|func| func.entrypoint)
         .map(|func| FunctionAbiEntry {
             name: func.name.clone(),
             inputs: func
@@ -467,6 +489,7 @@ pub fn function_branch_index(contract: &ContractAst, function_name: &str) -> Res
     contract
         .functions
         .iter()
+        .filter(|func| func.entrypoint)
         .position(|func| func.name == function_name)
         .map(|index| index as i64)
         .ok_or_else(|| CompilerError::Unsupported(format!("function '{function_name}' not found")))
@@ -503,6 +526,14 @@ fn compile_function(
     let mut env: HashMap<String, Expr> = constants.clone();
     let mut builder = ScriptBuilder::new();
     let mut yields: Vec<Expr> = Vec::new();
+
+    if !options.allow_yield && function.body.iter().any(contains_yield) {
+        return Err(CompilerError::Unsupported("yield requires allow_yield=true".to_string()));
+    }
+
+    if function.entrypoint && !options.allow_entrypoint_return && function.body.iter().any(contains_return) {
+        return Err(CompilerError::Unsupported("entrypoint return requires allow_entrypoint_return=true".to_string()));
+    }
 
     let has_return = function.body.iter().any(contains_return);
     if has_return {
@@ -832,6 +863,14 @@ fn compile_inline_call(
         env.insert(param.name.clone(), Expr::Identifier(temp_name.clone()));
         caller_env.insert(temp_name.clone(), resolved);
         caller_types.insert(temp_name, param.type_name.clone());
+    }
+
+    if !options.allow_yield && function.body.iter().any(contains_yield) {
+        return Err(CompilerError::Unsupported("yield requires allow_yield=true".to_string()));
+    }
+
+    if function.entrypoint && !options.allow_entrypoint_return && function.body.iter().any(contains_return) {
+        return Err(CompilerError::Unsupported("entrypoint return requires allow_entrypoint_return=true".to_string()));
     }
 
     let has_return = function.body.iter().any(contains_return);

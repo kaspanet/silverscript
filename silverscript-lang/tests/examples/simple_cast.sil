@@ -1,7 +1,7 @@
 pragma silverscript ^0.1.0;
 
 contract Test(int x, string y) {
-    function hello(sig s, pubkey pk) {
+    entrypoint function hello(sig s, pubkey pk) {
         int myVariable = 10 - int(true);
         int myOtherVariable = 20 + myVariable % 2;
         require(myOtherVariable > x);

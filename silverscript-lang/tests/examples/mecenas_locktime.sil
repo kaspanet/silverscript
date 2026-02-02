@@ -6,7 +6,7 @@ contract Mecenas(
     int pledgePerBlock,
     bytes8 initialBlock,
 ) {
-    function receive() {
+    entrypoint function receive() {
         bytes34 recipientLockingBytecode = new LockingBytecodeP2PK(recipient);
         require(tx.outputs[0].lockingBytecode == recipientLockingBytecode);
 
@@ -32,7 +32,7 @@ contract Mecenas(
         }
     }
 
-    function reclaim(pubkey pk, sig s) {
+    entrypoint function reclaim(pubkey pk, sig s) {
         require(blake2b(pk) == funder);
         require(checkSig(s, pk));
     }

@@ -1,7 +1,7 @@
 pragma silverscript ^0.1.0;
 
 contract Test(sig signature) {
-    function spend() {
+    entrypoint function spend() {
         // Assume Schnorr
         bytes hashtype1 = signature.split(64)[1];
         bytes1 hashtype2 = signature.slice(64, 65);

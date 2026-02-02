@@ -1,7 +1,7 @@
 pragma silverscript ^0.1.0;
 
 contract Test(int x, string y) {
-    function hello(int a, string b) {
+    entrypoint function hello(int a, string b) {
         if (a == x - 2) {
             require(false);
         } else if (b == "Hello " + y)

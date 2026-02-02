@@ -16,7 +16,7 @@ fn compiles_from_ast_json_require() {
 
     let source = r#"
         contract Test() {
-            function main(int a, int b) {
+            entrypoint function main(int a, int b) {
                 require(a + b == 7);
             }
         }
@@ -29,17 +29,18 @@ fn compiles_from_ast_json_require() {
 #[test]
 fn compiles_from_ast_json_yield() {
     let ast = load_ast("yield_test.ast.json");
-    let compiled_from_ast = compile_contract_ast(&ast, &[], CompileOptions::default()).expect("compile from AST succeeds");
+    let options = CompileOptions { allow_yield: true, ..CompileOptions::default() };
+    let compiled_from_ast = compile_contract_ast(&ast, &[], options).expect("compile from AST succeeds");
 
     let source = r#"
         contract YieldTest() {
-            function main() {
+            entrypoint function main() {
                 int x = 5;
                 yield(x + 2);
             }
         }
     "#;
-    let compiled_from_source = compile_contract(source, &[], CompileOptions::default()).expect("compile from source succeeds");
+    let compiled_from_source = compile_contract(source, &[], options).expect("compile from source succeeds");
 
     assert_eq!(compiled_from_ast.script, compiled_from_source.script);
 }

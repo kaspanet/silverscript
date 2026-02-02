@@ -1,7 +1,7 @@
 pragma silverscript ^0.1.0;
 
 contract Test() {
-    function split() {
+    entrypoint function split() {
         string s1 = "hello";
         string s2 = "there";
         string hello, string there = (s1+s2).split(5);

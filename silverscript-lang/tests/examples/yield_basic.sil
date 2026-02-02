@@ -1,5 +1,5 @@
 contract YieldBasic() {
-    function main(int b) {
+    entrypoint function main(int b) {
         int a = 5;
         int x = a + 7;
         yield(x);
