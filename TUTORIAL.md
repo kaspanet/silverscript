@@ -56,7 +56,7 @@
 
 ## Introduction
 
-SilverScript is a CashScript-inspired smart contract language that compiles to Kaspa script. It enables you to write Bitcoin-like smart contracts with a high-level, JavaScript-like syntax. SilverScript contracts can enforce complex spending conditions, create covenants, and enable advanced cryptocurrency applications on the Kaspa network.
+SilverScript is a CashScript-inspired smart contract language that compiles to Kaspa script. It enables you to write Bitcoin-like smart contracts with a high-level, Solidity-like syntax. SilverScript contracts can enforce complex spending conditions, create covenants, and enable advanced cryptocurrency applications on the Kaspa network.
 
 ---
 

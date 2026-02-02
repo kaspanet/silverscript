@@ -590,7 +590,7 @@ fn compiles_int_array_length_to_expected_script() {
             }
         }
     "#;
-    let options = CompileOptions { covenants_enabled: true, allow_yield: false, allow_entrypoint_return: false };
+    let options = CompileOptions { allow_yield: false, allow_entrypoint_return: false };
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
 
     let expected = ScriptBuilder::new()
@@ -630,7 +630,7 @@ fn compiles_int_array_push_to_expected_script() {
             }
         }
     "#;
-    let options = CompileOptions { covenants_enabled: true, allow_yield: false, allow_entrypoint_return: false };
+    let options = CompileOptions { allow_yield: false, allow_entrypoint_return: false };
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
 
     let expected = ScriptBuilder::new()
@@ -678,7 +678,7 @@ fn compiles_int_array_index_to_expected_script() {
             }
         }
     "#;
-    let options = CompileOptions { covenants_enabled: true, allow_yield: false, allow_entrypoint_return: false };
+    let options = CompileOptions { allow_yield: false, allow_entrypoint_return: false };
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
 
     let expected = ScriptBuilder::new()
@@ -735,7 +735,7 @@ fn runs_array_runtime_examples() {
             }
         }
     "#;
-    let options = CompileOptions { covenants_enabled: true, allow_yield: false, allow_entrypoint_return: false };
+    let options = CompileOptions { allow_yield: false, allow_entrypoint_return: false };
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
     let sigscript = ScriptBuilder::new().drain();
     let result = run_script_with_sigscript(compiled.script, sigscript);
@@ -753,7 +753,7 @@ fn compiles_bytes20_array_push_without_num2bin() {
             }
         }
     "#;
-    let options = CompileOptions { covenants_enabled: true, allow_yield: false, allow_entrypoint_return: false };
+    let options = CompileOptions { allow_yield: false, allow_entrypoint_return: false };
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
 
     let value =
@@ -802,7 +802,7 @@ fn runs_bytes20_array_runtime_example() {
             }
         }
     "#;
-    let options = CompileOptions { covenants_enabled: true, allow_yield: false, allow_entrypoint_return: false };
+    let options = CompileOptions { allow_yield: false, allow_entrypoint_return: false };
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
     let sigscript = ScriptBuilder::new().drain();
     let result = run_script_with_sigscript(compiled.script, sigscript);
@@ -822,7 +822,7 @@ fn allows_array_equality_comparison() {
             }
         }
     "#;
-    let options = CompileOptions { covenants_enabled: true, allow_yield: false, allow_entrypoint_return: false };
+    let options = CompileOptions { allow_yield: false, allow_entrypoint_return: false };
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
     let sigscript = ScriptBuilder::new().drain();
     let result = run_script_with_sigscript(compiled.script, sigscript);
@@ -842,7 +842,7 @@ fn fails_array_equality_comparison() {
             }
         }
     "#;
-    let options = CompileOptions { covenants_enabled: true, allow_yield: false, allow_entrypoint_return: false };
+    let options = CompileOptions { allow_yield: false, allow_entrypoint_return: false };
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
     let sigscript = ScriptBuilder::new().drain();
     let result = run_script_with_sigscript(compiled.script, sigscript);
@@ -863,7 +863,7 @@ fn allows_array_inequality_with_different_sizes() {
             }
         }
     "#;
-    let options = CompileOptions { covenants_enabled: true, allow_yield: false, allow_entrypoint_return: false };
+    let options = CompileOptions { allow_yield: false, allow_entrypoint_return: false };
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
     let sigscript = ScriptBuilder::new().drain();
     let result = run_script_with_sigscript(compiled.script, sigscript);
@@ -885,7 +885,7 @@ fn runs_array_for_loop_example() {
             }
         }
     "#;
-    let options = CompileOptions { covenants_enabled: true, allow_yield: false, allow_entrypoint_return: false };
+    let options = CompileOptions { allow_yield: false, allow_entrypoint_return: false };
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
     let sigscript = ScriptBuilder::new().drain();
     let result = run_script_with_sigscript(compiled.script, sigscript);
@@ -908,7 +908,7 @@ fn runs_array_for_loop_with_length_guard() {
             }
         }
     "#;
-    let options = CompileOptions { covenants_enabled: true, allow_yield: false, allow_entrypoint_return: false };
+    let options = CompileOptions { allow_yield: false, allow_entrypoint_return: false };
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
 
     let sigscript = compiled.build_sig_script("main", vec![vec![1i64, 2i64, 3i64, 4i64].into()]).expect("sigscript builds");
@@ -962,7 +962,7 @@ fn allows_array_assignment_with_compatible_types() {
             }
         }
     "#;
-    let options = CompileOptions { covenants_enabled: true, allow_yield: false, allow_entrypoint_return: false };
+    let options = CompileOptions { allow_yield: false, allow_entrypoint_return: false };
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
     let sigscript = ScriptBuilder::new().drain();
     let result = run_script_with_sigscript(compiled.script, sigscript);
@@ -978,7 +978,7 @@ fn rejects_unsized_array_type() {
             }
         }
     "#;
-    let options = CompileOptions { covenants_enabled: true, allow_yield: false, allow_entrypoint_return: false };
+    let options = CompileOptions { allow_yield: false, allow_entrypoint_return: false };
     assert!(compile_contract(source, &[], options).is_err());
 }
 
@@ -992,7 +992,7 @@ fn rejects_array_element_assignment() {
             }
         }
     "#;
-    let options = CompileOptions { covenants_enabled: true, allow_yield: false, allow_entrypoint_return: false };
+    let options = CompileOptions { allow_yield: false, allow_entrypoint_return: false };
     assert!(compile_contract(source, &[], options).is_err());
 }
 
