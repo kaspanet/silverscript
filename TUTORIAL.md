@@ -47,10 +47,8 @@
     - [Constants](#constants)
     - [Tuple Unpacking](#tuple-unpacking)
     - [Split and Slice Operations](#split-and-slice-operations)
-    - [Console Logging (Debug)](#console-logging-debug)
 13. [Complete Examples](#complete-examples)
-    - [Pay-to-Public-Key-Hash (P2PKH)](#pay-to-public-key-hash-p2pkh)
-    - [Multi-Signature (2-of-3)](#multi-signature-2-of-3)
+    - [Pay-to-Public-Key (P2PK)](#pay-to-public-key-p2pk)
     - [Transfer with Timeout](#transfer-with-timeout)
     - [Recurring Payment (Mecenas)](#recurring-payment-mecenas)
 
