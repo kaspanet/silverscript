@@ -766,10 +766,9 @@ fn apply_number_unit(expr: Expr, unit: &str) -> Result<Expr, CompilerError> {
         "hours" => 60 * 60,
         "days" => 24 * 60 * 60,
         "weeks" => 7 * 24 * 60 * 60,
-        "satoshis" | "sats" => 1,
-        "bits" => 100,
-        "finney" => 100_000,
-        "bitcoin" => 100_000_000,
+        "litras" => 1,
+        "grains" => 100_000,
+        "kas" => 100_000_000,
         _ => return Err(CompilerError::Unsupported(format!("number unit '{unit}' not supported"))),
     };
     Ok(Expr::Int(value.saturating_mul(multiplier)))

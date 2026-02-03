@@ -56,7 +56,7 @@
 
 ## Introduction
 
-SilverScript is a CashScript-inspired smart contract language that compiles to Kaspa script. It enables you to write Bitcoin-like smart contracts with a high-level, Solidity-like syntax. SilverScript contracts can enforce complex spending conditions, create covenants, and enable advanced cryptocurrency applications on the Kaspa network.
+SilverScript is a CashScript-inspired smart contract language that compiles to Kaspa script. It enables you to write Kaspa smart contracts with a high-level, Solidity-like syntax. SilverScript contracts can enforce complex spending conditions, create covenants, and enable advanced cryptocurrency applications on the Kaspa network.
 
 ---
 
@@ -511,10 +511,9 @@ SilverScript supports convenient number units for values and time:
 **Value Units:**
 
 ```javascript
-int amount1 = 1000 satoshis;  // or 'sats'
-int amount2 = 10 finney;
-int amount3 = 100 bits;
-int amount4 = 1 bitcoin;
+int amount1 = 1000 litras;
+int amount2 = 10 grains;
+int amount3 = 1 kas;
 ```
 
 **Time Units:**
@@ -532,7 +531,7 @@ Example usage:
 ```javascript
 entrypoint function withdraw() {
     require(this.age >= 30 days);
-    require(tx.outputs[0].value >= 10000 satoshis);
+    require(tx.outputs[0].value >= 10000 litras);
 }
 ```
 
@@ -795,7 +794,7 @@ bytes lockingScript = tx.outputs[i].lockingBytecode;
 
 ```javascript
 entrypoint function transfer() {
-    // Ensure first output has at least 10000 satoshis
+    // Ensure first output has at least 10000 litras
     require(tx.outputs[0].value >= 10000);
 }
 ```

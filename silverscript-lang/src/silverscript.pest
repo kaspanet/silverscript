@@ -134,7 +134,7 @@ VersionLiteral = @{ ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT+ }
 
 BooleanLiteral = { "true" | "false" }
 
-NumberUnit = { "satoshis" | "sats" | "finney" | "bits" | "bitcoin" | "seconds" | "minutes" | "hours" | "days" | "weeks" }
+NumberUnit = { "litras" | "grains" | "kas" | "seconds" | "minutes" | "hours" | "days" | "weeks" }
 
 NumberLiteral = @{ "-"? ~ NumberPart ~ ExponentPart? }
 NumberPart = { ASCII_DIGIT+ ~ ("_" ~ ASCII_DIGIT+ )* }
