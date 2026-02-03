@@ -1,10 +1,10 @@
 # Credits and Third-Party Licenses
 
-SilverScript is a programming language for Bitcoin Cash smart contracts. While the SilverScript compiler is an original implementation, this project incorporates and builds upon work from the CashScript project.
+SilverScript is a programming language for Kaspa smart contracts. While the SilverScript compiler is an original implementation, this project incorporates and builds upon work from the CashScript project.
 
 ## Acknowledgements
 
-- **CashScript**: SilverScript is heavily inspired by the [CashScript](https://cashscript.org/) language. We are grateful to Rosco Kalis and the CashScript contributors for their work in advancing Bitcoin Cash smart contract development.
+- **CashScript**: SilverScript is heavily inspired by the [CashScript](https://cashscript.org/) language. We are grateful to Rosco Kalis and the CashScript contributors for their work in advancing script-based smart contract languages.
 
 ## Third-Party Components
 
