@@ -126,9 +126,10 @@ modifier = { "constant" }
 literal = { BooleanLiteral | HexLiteral | number_literal | StringLiteral | DateLiteral }
 number_literal = { NumberLiteral ~ NumberUnit? }
 
-type_name = { base_type ~ array_suffix? }
+type_name = { base_type ~ bounded_array_suffix? }
 base_type = { "int" | "bool" | "string" | "pubkey" | "sig" | "datasig" | Bytes }
-array_suffix = { "[]" }
+bounded_array_suffix = { "[" ~ ArraySize ~ "]" }
+ArraySize = @{ ASCII_NONZERO_DIGIT ~ ASCII_DIGIT* }
 
 VersionLiteral = @{ ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT+ }
 
@@ -140,8 +141,7 @@ NumberLiteral = @{ "-"? ~ NumberPart ~ ExponentPart? }
 NumberPart = { ASCII_DIGIT+ ~ ("_" ~ ASCII_DIGIT+ )* }
 ExponentPart = { ("e" | "E") ~ NumberPart }
 
-Bytes = { "bytes" ~ Bound? | "byte" }
-Bound = { ASCII_NONZERO_DIGIT ~ ASCII_DIGIT* }
+Bytes = { "bytes" | "byte" }
 
 StringLiteral = @{ "\"" ~ ("\\\"" | !("\"" | "\r" | "\n") ~ ANY)* ~ "\"" | "'" ~ ("\\'" | !("'" | "\r" | "\n") ~ ANY)* ~ "'" }
 

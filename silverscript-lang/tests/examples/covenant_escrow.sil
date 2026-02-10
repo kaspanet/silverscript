@@ -1,6 +1,6 @@
 pragma silverscript ^0.1.0;
 
-contract Escrow(bytes32 arbiter, pubkey buyer, pubkey seller) {
+contract Escrow(byte[32] arbiter, pubkey buyer, pubkey seller) {
     entrypoint function spend(pubkey pk, sig s) {
         require(blake2b(pk) == arbiter);
         require(checkSig(s, pk));

@@ -56,6 +56,11 @@ pub struct CompiledContract {
     pub without_selector: bool,
 }
 
+pub enum ArrayType {
+    Unbounded,
+    Bounded,
+}
+
 pub fn compile_contract(source: &str, constructor_args: &[Expr], options: CompileOptions) -> Result<CompiledContract, CompilerError> {
     let contract = parse_contract_ast(source)?;
     compile_contract_ast(&contract, constructor_args, options)
@@ -232,9 +237,17 @@ fn expr_uses_script_size(expr: &Expr) -> bool {
 }
 
 fn expr_matches_type(expr: &Expr, type_name: &str) -> bool {
-    if is_array_type(type_name) {
-        return matches!(expr, Expr::Bytes(_)) || matches!(expr, Expr::Array(values) if array_literal_matches_type(values, type_name));
+    if let Some(array_type) = is_array_type(type_name) {
+        return match array_type {
+            ArrayType::Unbounded => {
+                matches_unbounded_array_type(expr, type_name)
+            }
+            ArrayType::Bounded => {
+                matches_bounded_array_type(expr, type_name)
+            }
+        }
     }
+
     match type_name {
         "int" => matches!(expr, Expr::Int(_)),
         "bool" => matches!(expr, Expr::Bool(_)),
@@ -243,30 +256,52 @@ fn expr_matches_type(expr: &Expr, type_name: &str) -> bool {
         "byte" => matches!(expr, Expr::Bytes(bytes) if bytes.len() == 1),
         "pubkey" => matches!(expr, Expr::Bytes(bytes) if bytes.len() == 32),
         "sig" | "datasig" => matches!(expr, Expr::Bytes(bytes) if bytes.len() == 64 || bytes.len() == 65),
-        _ => {
-            if let Some(size) = type_name.strip_prefix("bytes").and_then(|v| v.parse::<usize>().ok()) {
-                matches!(expr, Expr::Bytes(bytes) if bytes.len() == size)
-            } else {
-                false
-            }
-        }
+        _ => false,
     }
 }
 
+fn matches_unbounded_array_type(expr: &Expr, type_name: &str) -> bool {
+    matches!(expr, Expr::Bytes(_)) || matches!(expr, Expr::Array(values) if array_literal_matches_type(values, type_name))
+}
+
+fn matches_bounded_array_type(expr: &Expr, type_name: &str) -> bool {
+    if let Some((base_type, expected_size)) = parse_bounded_array_type(type_name) {
+        return match (base_type, expr) {
+            ("byte", Expr::Bytes(bytes)) => bytes.len() == expected_size,
+            ("int", Expr::Array(values)) => {
+                values.len() == expected_size && values.iter().all(|v| matches!(v, Expr::Int(_)))
+            }
+            ("bool", Expr::Array(values)) => {
+                values.len() == expected_size && values.iter().all(|v| matches!(v, Expr::Bool(_)))
+            }
+            _ => false,
+        }
+    }
+
+    false
+}
+
 fn array_literal_matches_type(values: &[Expr], type_name: &str) -> bool {
+    if let Some((base, expected_size)) = parse_bounded_array_type(type_name) {
+        if values.len() != expected_size {
+            return false;
+        }
+        return match base {
+            "byte" => values.iter().all(|v| matches!(v, Expr::Bytes(b) if b.len() == 1)),
+            "int" => values.iter().all(|v| matches!(v, Expr::Int(_))),
+            "bool" => values.iter().all(|v| matches!(v, Expr::Bool(_))),
+            _ => false,
+        };
+    }
+
     let Some(element_type) = array_element_type(type_name) else {
         return false;
     };
     match element_type {
         "int" => values.iter().all(|value| matches!(value, Expr::Int(_))),
         "byte" => values.iter().all(|value| matches!(value, Expr::Bytes(bytes) if bytes.len() == 1)),
-        _ => {
-            if let Some(size) = element_type.strip_prefix("bytes").and_then(|v| v.parse::<usize>().ok()) {
-                values.iter().all(|value| matches!(value, Expr::Bytes(bytes) if bytes.len() == size))
-            } else {
-                false
-            }
-        }
+        "bool" => values.iter().all(|value| matches!(value, Expr::Bool(_))),
+        _ => false,
     }
 }
 
@@ -286,19 +321,60 @@ fn build_function_abi(contract: &ContractAst) -> FunctionAbi {
         .collect()
 }
 
-fn is_array_type(type_name: &str) -> bool {
+fn is_array_type(type_name: &str) -> Option<ArrayType> {
+    if is_array_unbounded_type(type_name) {
+        return Some(ArrayType::Unbounded)
+    }
+
+    if is_array_bounded_type(type_name) {
+        return Some(ArrayType::Bounded)
+    }
+
+    None
+}
+
+fn is_array_unbounded_type(type_name: &str) -> bool {
     type_name.ends_with("[]")
 }
 
+fn is_array_bounded_type(type_name: &str) -> bool {
+    type_name.contains('[') && type_name.ends_with(']') && !type_name.ends_with("[]")
+}
+
+fn parse_bounded_array_type(type_name: &str) -> Option<(&str, usize)> {
+    if let Some(idx) = type_name.find('[') {
+        let base = &type_name[..idx];
+        let size_str = type_name[idx+1..].strip_suffix(']')?;
+        let size = size_str.parse::<usize>().ok()?;
+        Some((base, size))
+    } else {
+        None
+    }
+}
+
 fn array_element_type(type_name: &str) -> Option<&str> {
+    if is_array_bounded_type(type_name) {
+        return Some(type_name)
+    }
     type_name.strip_suffix("[]")
 }
 
 fn fixed_type_size(type_name: &str) -> Option<i64> {
+    if let Some((base, size)) = parse_bounded_array_type(type_name) {
+        let element_size = match base {
+            "byte" => 1,
+            "int" => 8,
+            "bool" => 1,
+            _ => return None,
+        };
+        return Some(element_size * size as i64);
+    }
+
     match type_name {
         "int" => Some(8),
         "byte" => Some(1),
-        _ => type_name.strip_prefix("bytes").and_then(|v| v.parse::<i64>().ok()),
+        "bool" => Some(1),
+        _ => None,
     }
 }
 
@@ -346,7 +422,7 @@ fn validate_return_types(exprs: &[Expr], return_types: &[String], types: &HashMa
 fn expr_matches_type_with_env(expr: &Expr, type_name: &str, types: &HashMap<String, String>) -> bool {
     match expr {
         Expr::Identifier(name) => types.get(name).is_some_and(|t| t == type_name),
-        Expr::Array(values) => is_array_type(type_name) && array_literal_matches_type(values, type_name),
+        Expr::Array(values) => is_array_type(type_name).is_some() && array_literal_matches_type(values, type_name),
         _ => expr_matches_type(expr, type_name),
     }
 }
@@ -354,7 +430,7 @@ fn expr_matches_type_with_env(expr: &Expr, type_name: &str, types: &HashMap<Stri
 fn expr_matches_return_type(expr: &Expr, type_name: &str, types: &HashMap<String, String>) -> bool {
     match expr {
         Expr::Identifier(name) => types.get(name).is_some_and(|t| t == type_name),
-        Expr::Array(values) => is_array_type(type_name) && array_literal_matches_type(values, type_name),
+        Expr::Array(values) => is_array_type(type_name).is_some() && array_literal_matches_type(values, type_name),
         Expr::Int(_) | Expr::Bool(_) | Expr::Bytes(_) | Expr::String(_) => expr_matches_type(expr, type_name),
         _ => true,
     }
@@ -384,7 +460,7 @@ impl CompiledContract {
 
         let mut builder = ScriptBuilder::new();
         for (input, arg) in function.inputs.iter().zip(args) {
-            if is_array_type(&input.type_name) {
+            if is_array_type(&input.type_name).is_some() {
                 match arg {
                     Expr::Array(values) => {
                         let bytes = encode_array_literal(&values, &input.type_name)?;
@@ -505,12 +581,12 @@ fn compile_function(
         .collect::<HashMap<_, _>>();
     let mut types = function.params.iter().map(|param| (param.name.clone(), param.type_name.clone())).collect::<HashMap<_, _>>();
     for param in &function.params {
-        if is_array_type(&param.type_name) && array_element_size(&param.type_name).is_none() {
+        if is_array_type(&param.type_name).is_some() && array_element_size(&param.type_name).is_none() {
             return Err(CompilerError::Unsupported(format!("array element type must have known size: {}", param.type_name)));
         }
     }
     for return_type in &function.return_types {
-        if is_array_type(return_type) && array_element_size(return_type).is_none() {
+        if is_array_type(return_type).is_some() && array_element_size(return_type).is_none() {
             return Err(CompilerError::Unsupported(format!("array element type must have known size: {return_type}")));
         }
     }
@@ -609,7 +685,7 @@ fn compile_statement(
 ) -> Result<(), CompilerError> {
     match stmt {
         Statement::VariableDefinition { type_name, name, expr, .. } => {
-            if is_array_type(type_name) {
+            if is_array_type(type_name).is_some() {
                 if array_element_size(type_name).is_none() {
                     return Err(CompilerError::Unsupported(format!("array element type must have known size: {type_name}")));
                 }
@@ -637,7 +713,7 @@ fn compile_statement(
         }
         Statement::ArrayPush { name, expr } => {
             let array_type = types.get(name).ok_or_else(|| CompilerError::UndefinedIdentifier(name.clone()))?;
-            if !is_array_type(array_type) {
+            if !is_array_type(array_type).is_some() {
                 return Err(CompilerError::Unsupported("push() only supported on arrays".to_string()));
             }
             let element_type = array_element_type(array_type)
@@ -781,7 +857,7 @@ fn compile_statement(
         }
         Statement::Assign { name, expr } => {
             if let Some(type_name) = types.get(name) {
-                if is_array_type(type_name) {
+                if is_array_type(type_name).is_some() {
                     match expr {
                         Expr::Identifier(other) => match types.get(other) {
                             Some(other_type) if other_type == type_name => {
@@ -840,7 +916,7 @@ fn compile_inline_call(
 
     let mut types = function.params.iter().map(|param| (param.name.clone(), param.type_name.clone())).collect::<HashMap<_, _>>();
     for param in &function.params {
-        if is_array_type(&param.type_name) && array_element_size(&param.type_name).is_none() {
+        if is_array_type(&param.type_name).is_some() && array_element_size(&param.type_name).is_none() {
             return Err(CompilerError::Unsupported(format!("array element type must have known size: {}", param.type_name)));
         }
     }
@@ -1532,14 +1608,17 @@ fn compile_expr(
                 compile_expr(&args[0], env, params, types, builder, options, visiting, stack_depth, script_size)?;
                 Ok(())
             }
-            name if name.starts_with("bytes") => {
-                let size = name
-                    .strip_prefix("bytes")
-                    .and_then(|v| v.parse::<i64>().ok())
-                    .ok_or_else(|| CompilerError::Unsupported(format!("{name}() is not supported")))?;
+            name if is_array_bounded_type(name) => {
                 if args.len() != 1 {
                     return Err(CompilerError::Unsupported(format!("{name}() expects a single argument")));
                 }
+
+                let size = {
+                    let bracket_pos = name.find('[').ok_or_else(|| CompilerError::Unsupported(format!("Invalid array type: {name}")))?;
+                    let size_str = &name[bracket_pos + 1..name.len() - 1];
+                    size_str.parse::<i64>().map_err(|_| CompilerError::Unsupported(format!("Invalid array size: {size_str}")))?
+                };
+
                 compile_expr(&args[0], env, params, types, builder, options, visiting, stack_depth, script_size)?;
                 builder.add_i64(size)?;
                 *stack_depth += 1;
@@ -1995,7 +2074,7 @@ fn compile_concat_operand(
 }
 
 fn is_bytes_type(type_name: &str) -> bool {
-    is_array_type(type_name)
+    is_array_type(type_name).is_some()
         || type_name == "bytes"
         || type_name == "byte"
         || type_name.starts_with("bytes")
@@ -2067,7 +2146,7 @@ fn data_prefix(data_len: usize) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Op0, OpPushData1, OpPushData2, data_prefix};
+    use super::{Op0, OpPushData1, OpPushData2, data_prefix, array_element_size};
 
     #[test]
     fn data_prefix_encodes_small_pushes() {
@@ -2087,5 +2166,10 @@ mod tests {
     #[test]
     fn data_prefix_encodes_pushdata2() {
         assert_eq!(data_prefix(256), vec![OpPushData2, 0x00, 0x01]);
+    }
+
+    #[test]
+    fn bounded_array_element_size() {
+        assert_eq!(array_element_size("byte[2]"), Some(2))
     }
 }

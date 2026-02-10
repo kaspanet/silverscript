@@ -719,7 +719,7 @@ fn parse_cast(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
         return Ok(Expr::Call { name: "bytes".to_string(), args });
     }
     if type_name == "byte" {
-        return Ok(Expr::Call { name: "bytes1".to_string(), args });
+        return Ok(Expr::Call { name: "byte".to_string(), args });
     }
     if type_name == "int" {
         return Ok(Expr::Call { name: "int".to_string(), args });
@@ -727,8 +727,8 @@ fn parse_cast(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
     if matches!(type_name.as_str(), "sig" | "pubkey" | "datasig") {
         return Ok(Expr::Call { name: type_name, args });
     }
-    if let Some(size) = type_name.strip_prefix("bytes").and_then(|v| v.parse::<usize>().ok()) {
-        return Ok(Expr::Call { name: format!("bytes{size}"), args });
+    if let Some((_base, _size)) = parse_bounded_array_type(&type_name) {
+        return Ok(Expr::Call { name: type_name, args });
     }
     Err(CompilerError::Unsupported(format!("cast type not supported: {type_name}")))
 }
@@ -742,6 +742,29 @@ fn parse_number_literal(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
         return apply_number_unit(value, unit);
     }
     Ok(value)
+}
+
+fn parse_bounded_array_type(type_name: &str) -> Option<(&str, usize)> {
+    if !type_name.ends_with(']') {
+        return None;
+    }
+
+    let bracket_pos = type_name.find('[')?;
+
+    let base_type = &type_name[..bracket_pos];
+    let size_str = &type_name[bracket_pos + 1..type_name.len() - 1];
+
+    if base_type.is_empty() || base_type.contains(char::is_whitespace) {
+        return None;
+    }
+
+    if size_str.is_empty() || size_str.contains(char::is_whitespace) {
+        return None;
+    }
+
+    let size = size_str.parse::<usize>().ok()?;
+
+    Some((base_type, size))
 }
 
 fn parse_hex_literal(raw: &str) -> Result<Expr, CompilerError> {
@@ -950,5 +973,130 @@ fn map_factor(pair: Pair<'_, Rule>) -> Result<BinaryOp, CompilerError> {
             _ => Err(CompilerError::Unsupported("unexpected factor operator".to_string())),
         },
         _ => Err(CompilerError::Unsupported("unexpected factor operator".to_string())),
+    }
+}
+
+#[cfg(test)]
+pub mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_bounded_array_type_valid_byte_arrays() {
+        assert_eq!(parse_bounded_array_type("byte[1]"), Some(("byte", 1)));
+
+        assert_eq!(parse_bounded_array_type("byte[4]"), Some(("byte", 4)));
+        assert_eq!(parse_bounded_array_type("byte[32]"), Some(("byte", 32)));
+        assert_eq!(parse_bounded_array_type("byte[64]"), Some(("byte", 64)));
+
+        assert_eq!(parse_bounded_array_type("byte[100]"), Some(("byte", 100)));
+        assert_eq!(parse_bounded_array_type("byte[256]"), Some(("byte", 256)));
+    }
+
+    #[test]
+    fn test_parse_bounded_array_type_valid_int_arrays() {
+        assert_eq!(parse_bounded_array_type("int[5]"), Some(("int", 5)));
+        assert_eq!(parse_bounded_array_type("int[10]"), Some(("int", 10)));
+        assert_eq!(parse_bounded_array_type("int[100]"), Some(("int", 100)));
+    }
+
+    #[test]
+    fn test_parse_bounded_array_type_valid_bool_arrays() {
+        assert_eq!(parse_bounded_array_type("bool[3]"), Some(("bool", 3)));
+        assert_eq!(parse_bounded_array_type("bool[10]"), Some(("bool", 10)));
+    }
+
+    #[test]
+    fn test_parse_bounded_array_type_invalid_no_brackets() {
+        assert_eq!(parse_bounded_array_type("byte"), None);
+        assert_eq!(parse_bounded_array_type("int"), None);
+        assert_eq!(parse_bounded_array_type("bytes"), None);
+    }
+
+    #[test]
+    fn test_parse_bounded_array_type_invalid_unbounded() {
+        assert_eq!(parse_bounded_array_type("byte[]"), None);
+        assert_eq!(parse_bounded_array_type("int[]"), None);
+    }
+
+    #[test]
+    fn test_parse_bounded_array_type_invalid_missing_closing_bracket() {
+        assert_eq!(parse_bounded_array_type("byte[32"), None);
+        assert_eq!(parse_bounded_array_type("int[10"), None);
+    }
+
+    #[test]
+    fn test_parse_bounded_array_type_invalid_missing_opening_bracket() {
+        assert_eq!(parse_bounded_array_type("byte32]"), None);
+        assert_eq!(parse_bounded_array_type("int10]"), None);
+    }
+
+    #[test]
+    fn test_parse_bounded_array_type_invalid_non_numeric_size() {
+        assert_eq!(parse_bounded_array_type("byte[abc]"), None);
+        assert_eq!(parse_bounded_array_type("int[xyz]"), None);
+    }
+
+    #[test]
+    fn test_parse_bounded_array_type_invalid_negative_size() {
+        assert_eq!(parse_bounded_array_type("byte[-1]"), None);
+        assert_eq!(parse_bounded_array_type("int[-10]"), None);
+    }
+
+    #[test]
+    fn test_parse_bounded_array_type_invalid_float_size() {
+        assert_eq!(parse_bounded_array_type("byte[3.14]"), None);
+        assert_eq!(parse_bounded_array_type("int[10.5]"), None);
+    }
+
+    #[test]
+    fn test_parse_bounded_array_type_invalid_extra_characters() {
+        assert_eq!(parse_bounded_array_type("byte[ 32]"), None);
+        assert_eq!(parse_bounded_array_type("byte[32 ]"), None);
+        assert_eq!(parse_bounded_array_type("byte [32]"), None);
+
+        assert_eq!(parse_bounded_array_type("byte[32]x"), None);
+    }
+
+    #[test]
+    fn test_parse_bounded_array_type_invalid_multiple_brackets() {
+        assert_eq!(parse_bounded_array_type("byte[[32]]"), None);
+        assert_eq!(parse_bounded_array_type("byte[32][10]"), None);
+    }
+
+    #[test]
+    fn test_parse_bounded_array_type_old_syntax_not_supported() {
+        assert_eq!(parse_bounded_array_type("bytes32"), None);
+        assert_eq!(parse_bounded_array_type("bytes4"), None);
+        assert_eq!(parse_bounded_array_type("bytes1"), None);
+    }
+
+    #[test]
+    fn test_parse_bounded_array_type_empty_base_type() {
+        assert_eq!(parse_bounded_array_type("[32]"), None);
+        assert_eq!(parse_bounded_array_type("[10]"), None);
+    }
+
+    #[test]
+    fn test_parse_bounded_array_type_whitespace_in_size() {
+        assert_eq!(parse_bounded_array_type("byte[ 32]"), None);
+        assert_eq!(parse_bounded_array_type("byte[32 ]"), None);
+        assert_eq!(parse_bounded_array_type("byte[ 32 ]"), None);
+        assert_eq!(parse_bounded_array_type("int[\t10]"), None);
+        assert_eq!(parse_bounded_array_type("int[10\n]"), None);
+    }
+
+    #[test]
+    fn test_parse_bounded_array_type_whitespace_in_base_type() {
+        assert_eq!(parse_bounded_array_type("byte [32]"), None);
+        assert_eq!(parse_bounded_array_type(" byte[32]"), None);
+        assert_eq!(parse_bounded_array_type("byte\t[32]"), None);
+        assert_eq!(parse_bounded_array_type("by te[32]"), None);
+    }
+
+    #[test]
+    fn test_parse_bounded_array_type_leading_zeros() {
+        assert_eq!(parse_bounded_array_type("byte[032]"), Some(("byte", 32)));
+        assert_eq!(parse_bounded_array_type("int[010]"), Some(("int", 10)));
+        assert_eq!(parse_bounded_array_type("byte[00001]"), Some(("byte", 1)));
     }
 }
