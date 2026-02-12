@@ -1,0 +1,60 @@
+{
+  "name": "tree-sitter-silverscript",
+  "version": "0.1.0",
+  "description": "Kaspa SilverScript Lang",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tree-sitter/tree-sitter-silverscript.git"
+  },
+  "license": "ISC",
+  "author": {
+    "name": "Kaspa Developers"
+  },
+  "main": "bindings/node",
+  "types": "bindings/node",
+  "keywords": [
+    "incremental",
+    "parsing",
+    "tree-sitter",
+    "silverscript"
+  ],
+  "files": [
+    "grammar.js",
+    "tree-sitter.json",
+    "binding.gyp",
+    "prebuilds/**",
+    "bindings/node/*",
+    "queries/*",
+    "src/**",
+    "*.wasm"
+  ],
+  "dependencies": {
+    "node-addon-api": "8.5.0",
+    "node-gyp-build": "4.8.4"
+  },
+  "devDependencies": {
+    "prebuildify": "6.0.1",
+    "tree-sitter": "0.25.0",
+    "tree-sitter-cli": "0.26.3"
+  },
+  "peerDependencies": {
+    "tree-sitter": "0.25.0"
+  },
+  "peerDependenciesMeta": {
+    "tree-sitter": {
+      "optional": true
+    }
+  },
+  "scripts": {
+    "install": "node-gyp-build",
+    "sync:highlights": "node scripts/sync-highlights.mjs",
+    "generate": "npm run generate:raw && npm run sync:highlights",
+    "generate:raw": "tree-sitter generate",
+    "build": "npm run generate && npm run build:raw",
+    "build:raw": "tree-sitter build --wasm",
+    "prestart": "npm run build",
+    "start": "tree-sitter playground",
+    "test": "node --test bindings/node/*_test.js"
+  }
+}

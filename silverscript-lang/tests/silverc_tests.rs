@@ -88,7 +88,7 @@ fn silverc_accepts_constructor_args_and_output_flag() {
         }
     "#;
     fs::write(&src_path, source).expect("write source");
-    let ctor_args = vec![Expr::Int(7)];
+    let ctor_args = vec![Expr::int(7)];
     fs::write(&ctor_path, serde_json::to_string(&ctor_args).expect("serialize ctor args")).expect("write ctor args");
 
     let status = Command::new(env!("CARGO_BIN_EXE_silverc"))

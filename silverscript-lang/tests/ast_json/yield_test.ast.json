@@ -1,7 +1,7 @@
 {
   "name": "YieldTest",
   "params": [],
-  "constants": {},
+  "constants": [],
   "functions": [
     {
       "name": "main",
@@ -11,7 +11,7 @@
         {
           "kind": "variable_definition",
           "data": {
-            "type_ref": { "base": "int" },
+            "type_name": "int",
             "modifiers": [],
             "name": "x",
             "expr": { "kind": "int", "data": 5 }

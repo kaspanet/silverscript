@@ -1,14 +1,14 @@
 {
   "name": "Test",
   "params": [],
-  "constants": {},
+  "constants": [],
   "functions": [
     {
       "name": "main",
       "entrypoint": true,
       "params": [
-        { "type_ref": { "base": "int" }, "name": "a" },
-        { "type_ref": { "base": "int" }, "name": "b" }
+        { "type_name": "int", "name": "a" },
+        { "type_name": "int", "name": "b" }
       ],
       "body": [
         {

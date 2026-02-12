@@ -1,52 +1,119 @@
-use std::collections::HashMap;
+use std::fmt;
 
+use chrono::NaiveDateTime;
 use pest::Parser;
 use pest::iterators::Pair;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
-use crate::compiler::CompilerError;
+use crate::errors::CompilerError;
 use crate::parser::{Rule, SilverScriptParser};
-use chrono::NaiveDateTime;
+pub use crate::span::{Span, SpanUtils};
+
+#[derive(Debug, Clone)]
+struct TypeName<'i> {
+    name: String,
+    span: Span<'i>,
+}
+
+#[derive(Debug, Clone)]
+struct Identifier<'i> {
+    name: String,
+    span: Span<'i>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ContractAst {
+pub struct ContractAst<'i> {
     pub name: String,
-    pub params: Vec<ParamAst>,
+    pub params: Vec<ParamAst<'i>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub fields: Vec<ContractFieldAst>,
-    pub constants: HashMap<String, Expr>,
-    pub functions: Vec<FunctionAst>,
+    pub fields: Vec<ContractFieldAst<'i>>,
+    pub constants: Vec<ConstantAst<'i>>,
+    pub functions: Vec<FunctionAst<'i>>,
+    #[serde(skip_deserializing)]
+    pub span: Span<'i>,
+    #[serde(skip_deserializing)]
+    pub name_span: Span<'i>,
+}
+
+impl<'i> fmt::Display for ContractAst<'i> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut value = serde_json::to_value(self).map_err(|_| fmt::Error)?;
+        rewrite_expr_kind_tags(&mut value);
+        let pretty = serde_json::to_string_pretty(&value).map_err(|_| fmt::Error)?;
+        f.write_str(&pretty)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ContractFieldAst {
-    pub type_ref: TypeRef,
+pub struct FunctionAst<'i> {
     pub name: String,
-    pub expr: Expr,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FunctionAst {
-    pub name: String,
-    pub params: Vec<ParamAst>,
-    #[serde(default)]
+    pub params: Vec<ParamAst<'i>>,
     pub entrypoint: bool,
     #[serde(default)]
-    pub return_types: Vec<TypeRef>,
-    pub body: Vec<Statement>,
+    pub return_types: Vec<String>,
+    pub body: Vec<Statement<'i>>,
+    #[serde(skip_deserializing)]
+    pub return_type_spans: Vec<Span<'i>>,
+    #[serde(skip_deserializing)]
+    pub span: Span<'i>,
+    #[serde(skip_deserializing)]
+    pub name_span: Span<'i>,
+    #[serde(skip_deserializing)]
+    pub body_span: Span<'i>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ParamAst {
+pub struct ParamAst<'i> {
+    pub type_name: String,
+    pub name: String,
+    #[serde(skip_deserializing)]
+    pub span: Span<'i>,
+    #[serde(skip_deserializing)]
+    pub type_span: Span<'i>,
+    #[serde(skip_deserializing)]
+    pub name_span: Span<'i>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConstantAst<'i> {
+    pub type_name: String,
+    pub name: String,
+    pub expr: Expr<'i>,
+    #[serde(skip_deserializing)]
+    pub span: Span<'i>,
+    #[serde(skip_deserializing)]
+    pub type_span: Span<'i>,
+    #[serde(skip_deserializing)]
+    pub name_span: Span<'i>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContractFieldAst<'i> {
     pub type_ref: TypeRef,
     pub name: String,
+    pub expr: Expr<'i>,
+    #[serde(skip_deserializing)]
+    pub span: Span<'i>,
+    #[serde(skip_deserializing)]
+    pub type_span: Span<'i>,
+    #[serde(skip_deserializing)]
+    pub name_span: Span<'i>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StateBindingAst {
+pub struct StateBindingAst<'i> {
     pub field_name: String,
     pub type_ref: TypeRef,
     pub name: String,
+    #[serde(skip_deserializing)]
+    pub span: Span<'i>,
+    #[serde(skip_deserializing)]
+    pub field_span: Span<'i>,
+    #[serde(skip_deserializing)]
+    pub type_span: Span<'i>,
+    #[serde(skip_deserializing)]
+    pub name_span: Span<'i>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -123,28 +190,166 @@ impl TypeRef {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "data", rename_all = "snake_case")]
-pub enum Statement {
-    VariableDefinition { type_ref: TypeRef, modifiers: Vec<String>, name: String, expr: Option<Expr> },
-    TupleAssignment { left_type_ref: TypeRef, left_name: String, right_type_ref: TypeRef, right_name: String, expr: Expr },
-    ArrayPush { name: String, expr: Expr },
-    FunctionCall { name: String, args: Vec<Expr> },
-    FunctionCallAssign { bindings: Vec<ParamAst>, name: String, args: Vec<Expr> },
-    StateFunctionCallAssign { bindings: Vec<StateBindingAst>, name: String, args: Vec<Expr> },
-    Assign { name: String, expr: Expr },
-    TimeOp { tx_var: TimeVar, expr: Expr, message: Option<String> },
-    Require { expr: Expr, message: Option<String> },
-    If { condition: Expr, then_branch: Vec<Statement>, else_branch: Option<Vec<Statement>> },
-    For { ident: String, start: Expr, end: Expr, body: Vec<Statement> },
-    Yield { expr: Expr },
-    Return { exprs: Vec<Expr> },
-    Console { args: Vec<ConsoleArg> },
+pub enum Statement<'i> {
+    VariableDefinition {
+        type_name: String,
+        #[serde(default)]
+        modifiers: Vec<String>,
+        name: String,
+        expr: Option<Expr<'i>>,
+        #[serde(skip_deserializing)]
+        span: Span<'i>,
+        #[serde(skip_deserializing)]
+        type_span: Span<'i>,
+        #[serde(skip_deserializing)]
+        modifier_spans: Vec<Span<'i>>,
+        #[serde(skip_deserializing)]
+        name_span: Span<'i>,
+    },
+    TupleAssignment {
+        left_type: String,
+        left_name: String,
+        right_type: String,
+        right_name: String,
+        expr: Expr<'i>,
+        #[serde(skip_deserializing)]
+        span: Span<'i>,
+        #[serde(skip_deserializing)]
+        left_type_span: Span<'i>,
+        #[serde(skip_deserializing)]
+        left_name_span: Span<'i>,
+        #[serde(skip_deserializing)]
+        right_type_span: Span<'i>,
+        #[serde(skip_deserializing)]
+        right_name_span: Span<'i>,
+    },
+    ArrayPush {
+        name: String,
+        expr: Expr<'i>,
+        #[serde(skip_deserializing)]
+        span: Span<'i>,
+        #[serde(skip_deserializing)]
+        name_span: Span<'i>,
+    },
+    FunctionCall {
+        name: String,
+        args: Vec<Expr<'i>>,
+        #[serde(skip_deserializing)]
+        span: Span<'i>,
+        #[serde(skip_deserializing)]
+        name_span: Span<'i>,
+    },
+    FunctionCallAssign {
+        bindings: Vec<TypedBindingAst<'i>>,
+        name: String,
+        args: Vec<Expr<'i>>,
+        #[serde(skip_deserializing)]
+        span: Span<'i>,
+        #[serde(skip_deserializing)]
+        name_span: Span<'i>,
+    },
+    StateFunctionCallAssign {
+        bindings: Vec<StateBindingAst<'i>>,
+        name: String,
+        args: Vec<Expr<'i>>,
+        #[serde(skip_deserializing)]
+        span: Span<'i>,
+        #[serde(skip_deserializing)]
+        name_span: Span<'i>,
+    },
+    Assign {
+        name: String,
+        expr: Expr<'i>,
+        #[serde(skip_deserializing)]
+        span: Span<'i>,
+        #[serde(skip_deserializing)]
+        name_span: Span<'i>,
+    },
+    TimeOp {
+        tx_var: TimeVar,
+        expr: Expr<'i>,
+        message: Option<String>,
+        #[serde(skip_deserializing)]
+        span: Span<'i>,
+        #[serde(skip_deserializing)]
+        tx_var_span: Span<'i>,
+        #[serde(skip_deserializing)]
+        message_span: Option<Span<'i>>,
+    },
+    Require {
+        expr: Expr<'i>,
+        message: Option<String>,
+        #[serde(skip_deserializing)]
+        span: Span<'i>,
+        #[serde(skip_deserializing)]
+        message_span: Option<Span<'i>>,
+    },
+    If {
+        condition: Expr<'i>,
+        then_branch: Vec<Statement<'i>>,
+        else_branch: Option<Vec<Statement<'i>>>,
+        #[serde(skip_deserializing)]
+        span: Span<'i>,
+        #[serde(skip_deserializing)]
+        then_span: Span<'i>,
+        #[serde(skip_deserializing)]
+        else_span: Option<Span<'i>>,
+    },
+    For {
+        ident: String,
+        start: Expr<'i>,
+        end: Expr<'i>,
+        body: Vec<Statement<'i>>,
+        #[serde(skip_deserializing)]
+        span: Span<'i>,
+        #[serde(skip_deserializing)]
+        ident_span: Span<'i>,
+        #[serde(skip_deserializing)]
+        body_span: Span<'i>,
+    },
+    Yield {
+        expr: Expr<'i>,
+        #[serde(skip_deserializing)]
+        span: Span<'i>,
+    },
+    Return {
+        exprs: Vec<Expr<'i>>,
+        #[serde(skip_deserializing)]
+        span: Span<'i>,
+    },
+    Console {
+        args: Vec<ConsoleArg<'i>>,
+        #[serde(skip_deserializing)]
+        span: Span<'i>,
+    },
+}
+
+impl<'i> Statement<'i> {
+    pub fn span(&self) -> Span<'i> {
+        match self {
+            Statement::VariableDefinition { span, .. }
+            | Statement::TupleAssignment { span, .. }
+            | Statement::ArrayPush { span, .. }
+            | Statement::FunctionCall { span, .. }
+            | Statement::FunctionCallAssign { span, .. }
+            | Statement::StateFunctionCallAssign { span, .. }
+            | Statement::Assign { span, .. }
+            | Statement::Return { span, .. }
+            | Statement::TimeOp { span, .. }
+            | Statement::Require { span, .. }
+            | Statement::If { span, .. }
+            | Statement::For { span, .. }
+            | Statement::Yield { span, .. }
+            | Statement::Console { span, .. } => *span,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "data", rename_all = "snake_case")]
-pub enum ConsoleArg {
-    Identifier(String),
-    Literal(Expr),
+pub enum ConsoleArg<'i> {
+    Identifier(String, #[serde(skip_deserializing)] Span<'i>),
+    Literal(Expr<'i>),
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -154,85 +359,291 @@ pub enum TimeVar {
     TxTime,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Expr<'i> {
+    // TODO: evaluate splitting kind in two:
+    //   - actual Expressions
+    //   - user defined primitive Values
+    #[serde(flatten)]
+    pub kind: ExprKind<'i>,
+    #[serde(skip_deserializing)]
+    pub span: Span<'i>,
+}
+
+impl<'i> Expr<'i> {
+    pub fn new(kind: ExprKind<'i>, span: Span<'i>) -> Self {
+        Self { kind, span }
+    }
+
+    pub fn int(value: i64) -> Self {
+        Self::new(ExprKind::Int(value), Span::default())
+    }
+
+    pub fn bool(value: bool) -> Self {
+        Self::new(ExprKind::Bool(value), Span::default())
+    }
+
+    pub fn bytes(value: Vec<u8>) -> Self {
+        Self::new(ExprKind::Bytes(value), Span::default())
+    }
+
+    pub fn string(value: impl Into<String>) -> Self {
+        Self::new(ExprKind::String(value.into()), Span::default())
+    }
+
+    pub fn identifier(value: impl Into<String>) -> Self {
+        Self::new(ExprKind::Identifier(value.into()), Span::default())
+    }
+
+    pub fn call(name: impl Into<String>, args: Vec<Expr<'i>>) -> Self {
+        Self::new(ExprKind::Call { name: name.into(), args, name_span: Span::default() }, Span::default())
+    }
+}
+
+impl<'i> From<i64> for Expr<'i> {
+    fn from(value: i64) -> Self {
+        Expr::int(value)
+    }
+}
+
+impl<'i> From<bool> for Expr<'i> {
+    fn from(value: bool) -> Self {
+        Expr::bool(value)
+    }
+}
+
+impl<'i> From<Vec<u8>> for Expr<'i> {
+    fn from(value: Vec<u8>) -> Self {
+        Expr::bytes(value)
+    }
+}
+
+impl<'i> From<String> for Expr<'i> {
+    fn from(value: String) -> Self {
+        Expr::string(value)
+    }
+}
+
+impl<'i> From<&str> for Expr<'i> {
+    fn from(value: &str) -> Self {
+        Expr::string(value)
+    }
+}
+
+impl<'i> From<Vec<i64>> for Expr<'i> {
+    fn from(values: Vec<i64>) -> Self {
+        let exprs = values.into_iter().map(Expr::int).collect();
+        Expr::new(ExprKind::Array(exprs), Span::default())
+    }
+}
+
+impl<'i> From<Vec<Expr<'i>>> for Expr<'i> {
+    fn from(values: Vec<Expr<'i>>) -> Self {
+        Expr::new(ExprKind::Array(values), Span::default())
+    }
+}
+
+impl<'i> From<Vec<Vec<u8>>> for Expr<'i> {
+    fn from(values: Vec<Vec<u8>>) -> Self {
+        let exprs = values.into_iter().map(Expr::bytes).collect();
+        Expr::new(ExprKind::Array(exprs), Span::default())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "data", rename_all = "snake_case")]
-pub enum Expr {
+pub enum ExprKind<'i> {
     Int(i64),
     Bool(bool),
-    Byte(u8),
+    Bytes(Vec<u8>),
     String(String),
+    DateLiteral(i64),
     Identifier(String),
-    Array(Vec<Expr>),
-    Call { name: String, args: Vec<Expr> },
-    New { name: String, args: Vec<Expr> },
-    Split { source: Box<Expr>, index: Box<Expr>, part: SplitPart },
-    Slice { source: Box<Expr>, start: Box<Expr>, end: Box<Expr> },
-    ArrayIndex { source: Box<Expr>, index: Box<Expr> },
-    Unary { op: UnaryOp, expr: Box<Expr> },
-    Binary { op: BinaryOp, left: Box<Expr>, right: Box<Expr> },
-    IfElse { condition: Box<Expr>, then_expr: Box<Expr>, else_expr: Box<Expr> },
+    Array(Vec<Expr<'i>>),
+    Call {
+        name: String,
+        args: Vec<Expr<'i>>,
+        #[serde(skip_deserializing)]
+        name_span: Span<'i>,
+    },
+    New {
+        name: String,
+        args: Vec<Expr<'i>>,
+        #[serde(skip_deserializing)]
+        name_span: Span<'i>,
+    },
+    Split {
+        source: Box<Expr<'i>>,
+        index: Box<Expr<'i>>,
+        part: SplitPart,
+        #[serde(skip_deserializing)]
+        span: Span<'i>,
+    },
+    Slice {
+        source: Box<Expr<'i>>,
+        start: Box<Expr<'i>>,
+        end: Box<Expr<'i>>,
+        #[serde(skip_deserializing)]
+        span: Span<'i>,
+    },
+    ArrayIndex {
+        source: Box<Expr<'i>>,
+        index: Box<Expr<'i>>,
+    },
+    Unary {
+        op: UnaryOp,
+        expr: Box<Expr<'i>>,
+    },
+    Binary {
+        op: BinaryOp,
+        left: Box<Expr<'i>>,
+        right: Box<Expr<'i>>,
+    },
+    IfElse {
+        condition: Box<Expr<'i>>,
+        then_expr: Box<Expr<'i>>,
+        else_expr: Box<Expr<'i>>,
+    },
     Nullary(NullaryOp),
-    Introspection { kind: IntrospectionKind, index: Box<Expr> },
-    StateObject(Vec<StateFieldExpr>),
+    Introspection {
+        root: IntrospectionRoot,
+        field: IntrospectionField,
+        index: Box<Expr<'i>>,
+        #[serde(skip_deserializing)]
+        field_span: Span<'i>,
+    },
+    StateObject(Vec<StateFieldExpr<'i>>),
+    NumberWithUnit {
+        value: i64,
+        unit: String,
+    },
+    Cast {
+        type_name: String,
+        args: Vec<Expr<'i>>,
+        #[serde(skip_deserializing)]
+        type_span: Span<'i>,
+    },
+    UnarySuffix {
+        source: Box<Expr<'i>>,
+        kind: UnarySuffixKind,
+        #[serde(skip_deserializing)]
+        span: Span<'i>,
+    },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct StateFieldExpr {
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StateFieldExpr<'i> {
     pub name: String,
-    pub expr: Expr,
+    pub expr: Expr<'i>,
+    #[serde(skip_deserializing)]
+    pub span: Span<'i>,
+    #[serde(skip_deserializing)]
+    pub name_span: Span<'i>,
 }
 
-impl From<i64> for Expr {
-    fn from(value: i64) -> Self {
-        Expr::Int(value)
+fn rewrite_expr_kind_tags(value: &mut Value) {
+    match value {
+        Value::Array(items) => {
+            for item in items {
+                rewrite_expr_kind_tags(item);
+            }
+        }
+        Value::Object(object) => {
+            for child in object.values_mut() {
+                rewrite_expr_kind_tags(child);
+            }
+
+            let kind = object.get("kind").and_then(Value::as_str).map(str::to_owned);
+            if let Some(kind) = kind {
+                if is_expr_kind_tag(&kind) {
+                    let data = object.remove("data").unwrap_or(Value::Null);
+                    object.remove("kind");
+                    object.insert(kind, data);
+                }
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
     }
 }
 
-impl From<bool> for Expr {
-    fn from(value: bool) -> Self {
-        Expr::Bool(value)
-    }
+fn is_expr_kind_tag(kind: &str) -> bool {
+    matches!(
+        kind,
+        "int"
+            | "bool"
+            | "bytes"
+            | "string"
+            | "date_literal"
+            | "identifier"
+            | "array"
+            | "call"
+            | "new"
+            | "split"
+            | "slice"
+            | "array_index"
+            | "unary"
+            | "binary"
+            | "if_else"
+            | "nullary"
+            | "introspection"
+            | "state_object"
+            | "number_with_unit"
+            | "cast"
+            | "unary_suffix"
+    )
 }
 
-impl From<Vec<u8>> for Expr {
-    fn from(value: Vec<u8>) -> Self {
-        Expr::Array(value.into_iter().map(Expr::Byte).collect())
-    }
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TypedBindingAst<'i> {
+    pub type_name: String,
+    pub name: String,
+    #[serde(skip_deserializing)]
+    pub span: Span<'i>,
+    #[serde(skip_deserializing)]
+    pub type_span: Span<'i>,
+    #[serde(skip_deserializing)]
+    pub name_span: Span<'i>,
 }
 
-impl From<String> for Expr {
-    fn from(value: String) -> Self {
-        Expr::String(value)
-    }
-}
-
-impl From<Vec<i64>> for Expr {
-    fn from(value: Vec<i64>) -> Self {
-        Expr::Array(value.into_iter().map(Expr::Int).collect())
-    }
-}
-
-impl From<Vec<Vec<u8>>> for Expr {
-    fn from(value: Vec<Vec<u8>>) -> Self {
-        Expr::Array(value.into_iter().map(|bytes| Expr::Array(bytes.into_iter().map(Expr::Byte).collect())).collect())
-    }
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SplitPart {
     Left,
     Right,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum UnaryOp {
-    Not,
-    Neg,
+pub enum UnarySuffixKind {
+    Reverse,
+    Length,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+// TODO: this enum structure assumes fields are common to root, while possibly true at a start
+// it may ends up false soon. An alternative would be to make their own dedicated validator per anchors
+pub enum IntrospectionRoot {
+    Inputs,
+    Outputs,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IntrospectionField {
+    Value,
+    ScriptPubKey,
+    // TODO: check what's envisioned, the grammar allows the following:
+    OutpointTransactionHash,
+    OutpointIndex,
+    UnlockingBytecode,
+    SequenceNumber,
+    TokenCategory,
+    NftCommitment,
+    TokenAmount,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BinaryOp {
     Or,
@@ -253,7 +664,14 @@ pub enum BinaryOp {
     Mod,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UnaryOp {
+    Not,
+    Neg,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NullaryOp {
     ActiveInputIndex,
@@ -264,23 +682,6 @@ pub enum NullaryOp {
     TxOutputsLength,
     TxVersion,
     TxLockTime,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "snake_case")]
-pub enum IntrospectionKind {
-    InputValue,
-    InputScriptPubKey,
-    InputSigScript,
-    OutputValue,
-    OutputScriptPubKey,
-}
-
-fn validate_user_identifier(name: &str) -> Result<(), CompilerError> {
-    if name.starts_with("__") {
-        return Err(CompilerError::Unsupported("identifier cannot start with '__'".to_string()));
-    }
-    Ok(())
 }
 
 pub fn parse_type_ref(type_name: &str) -> Result<TypeRef, CompilerError> {
@@ -294,7 +695,7 @@ fn parse_type_name_pair(pair: Pair<'_, Rule>) -> Result<TypeRef, CompilerError> 
         return Err(CompilerError::Unsupported("expected type name".to_string()));
     }
 
-    let mut inner = pair.clone().into_inner();
+    let mut inner = pair.into_inner();
     let base = match inner.next().ok_or_else(|| CompilerError::Unsupported("missing base type".to_string()))?.as_str() {
         "int" => TypeBase::Int,
         "bool" => TypeBase::Bool,
@@ -320,9 +721,7 @@ fn parse_type_name_pair(pair: Pair<'_, Rule>) -> Result<TypeRef, CompilerError> 
                     if let Ok(size) = raw.parse::<usize>() { ArrayDim::Fixed(size) } else { ArrayDim::Constant(raw.to_string()) }
                 }
                 Rule::Identifier => ArrayDim::Constant(size_pair.as_str().to_string()),
-                _ => {
-                    return Err(CompilerError::Unsupported("invalid array dimension".to_string()));
-                }
+                _ => return Err(CompilerError::Unsupported("invalid array dimension".to_string())),
             },
         };
         array_dims.push(dim);
@@ -331,7 +730,7 @@ fn parse_type_name_pair(pair: Pair<'_, Rule>) -> Result<TypeRef, CompilerError> 
     Ok(TypeRef { base, array_dims })
 }
 
-pub fn parse_contract_ast(source: &str) -> Result<ContractAst, CompilerError> {
+pub fn parse_contract_ast<'i>(source: &'i str) -> Result<ContractAst<'i>, CompilerError> {
     let mut pairs = SilverScriptParser::parse(Rule::source_file, source)?;
     let source_pair = pairs.next().ok_or_else(|| CompilerError::Unsupported("empty source".to_string()))?;
     let mut contract = None;
@@ -345,15 +744,19 @@ pub fn parse_contract_ast(source: &str) -> Result<ContractAst, CompilerError> {
     contract.ok_or_else(|| CompilerError::Unsupported("no contract definition".to_string()))
 }
 
-fn parse_contract_definition(pair: Pair<'_, Rule>) -> Result<ContractAst, CompilerError> {
+fn parse_contract_definition<'i>(pair: Pair<'i, Rule>) -> Result<ContractAst<'i>, CompilerError> {
+    let span = Span::from(pair.as_span());
+
     let mut inner = pair.into_inner();
     let name_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing contract name".to_string()))?;
     let params_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing contract parameters".to_string()))?;
+
+    let Identifier { name, span: name_span } = parse_identifier(name_pair)?;
     let params = parse_typed_parameter_list(params_pair)?;
 
     let mut functions = Vec::new();
     let mut fields = Vec::new();
-    let mut constants: HashMap<String, Expr> = HashMap::new();
+    let mut constants = Vec::new();
 
     for item_pair in inner {
         if item_pair.as_rule() != Rule::contract_item {
@@ -362,286 +765,348 @@ fn parse_contract_definition(pair: Pair<'_, Rule>) -> Result<ContractAst, Compil
         let mut item_inner = item_pair.into_inner();
         if let Some(inner_item) = item_inner.next() {
             match inner_item.as_rule() {
-                Rule::function_definition => {
-                    functions.push(parse_function_definition(inner_item)?);
-                }
-                Rule::contract_field_definition => {
-                    let mut field_inner = inner_item.into_inner();
-                    let type_pair = field_inner.next().ok_or_else(|| CompilerError::Unsupported("missing field type".to_string()))?;
-                    let type_ref = parse_type_name_pair(type_pair)?;
-                    let name_pair = field_inner.next().ok_or_else(|| CompilerError::Unsupported("missing field name".to_string()))?;
-                    validate_user_identifier(name_pair.as_str())?;
-                    let expr_pair =
-                        field_inner.next().ok_or_else(|| CompilerError::Unsupported("missing field initializer".to_string()))?;
-                    let expr = parse_expression(expr_pair)?;
-                    fields.push(ContractFieldAst { type_ref, name: name_pair.as_str().to_string(), expr });
-                }
-                Rule::constant_definition => {
-                    let mut const_inner = inner_item.into_inner();
-                    let _type_name =
-                        const_inner.next().ok_or_else(|| CompilerError::Unsupported("missing constant type".to_string()))?;
-                    let name_pair =
-                        const_inner.next().ok_or_else(|| CompilerError::Unsupported("missing constant name".to_string()))?;
-                    validate_user_identifier(name_pair.as_str())?;
-                    let expr_pair =
-                        const_inner.next().ok_or_else(|| CompilerError::Unsupported("missing constant initializer".to_string()))?;
-                    let expr = parse_expression(expr_pair)?;
-                    constants.insert(name_pair.as_str().to_string(), expr);
-                }
+                Rule::function_definition => functions.push(parse_function_definition(inner_item)?),
+                Rule::contract_field_definition => fields.push(parse_contract_field_definition(inner_item)?),
+                Rule::constant_definition => constants.push(parse_constant_definition(inner_item)?),
                 _ => {}
             }
         }
     }
 
-    Ok(ContractAst { name: name_pair.as_str().to_string(), params, fields, constants, functions })
+    Ok(ContractAst { name, params, fields, constants, functions, span, name_span })
 }
 
-fn parse_function_definition(pair: Pair<'_, Rule>) -> Result<FunctionAst, CompilerError> {
+fn parse_function_definition<'i>(pair: Pair<'i, Rule>) -> Result<FunctionAst<'i>, CompilerError> {
+    let span = Span::from(pair.as_span());
     let mut inner = pair.into_inner();
-    let mut entrypoint = false;
-    let name_pair = match inner.next() {
-        Some(pair) if pair.as_rule() == Rule::entrypoint => {
-            entrypoint = true;
-            inner.next().ok_or_else(|| CompilerError::Unsupported("missing function name".to_string()))?
-        }
-        Some(pair) => pair,
-        None => return Err(CompilerError::Unsupported("missing function name".to_string())),
+
+    let first = inner.next().ok_or_else(|| CompilerError::Unsupported("missing function name".to_string()))?;
+    let (entrypoint, name_pair) = if first.as_rule() == Rule::entrypoint {
+        let name_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing function name".to_string()))?;
+        (true, name_pair)
+    } else {
+        (false, first)
     };
+
     let params_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing function parameters".to_string()))?;
     let params = parse_typed_parameter_list(params_pair)?;
+
     let mut return_types = Vec::new();
+    let mut return_type_spans = Vec::new();
     if let Some(next) = inner.peek() {
         if next.as_rule() == Rule::return_type_list {
             let return_pair = inner.next().expect("checked");
-            return_types = parse_return_type_list(return_pair)?;
+            let (types, spans) = parse_return_type_list(return_pair)?;
+            return_types = types;
+            return_type_spans = spans;
         }
     }
 
+    let Identifier { name, span: name_span } = parse_identifier(name_pair)?;
+
     let mut body = Vec::new();
+    let mut body_span = span;
+    let mut has_stmt = false;
     for stmt in inner {
+        let stmt_span = Span::from(stmt.as_span());
+        if !has_stmt {
+            body_span = stmt_span;
+            has_stmt = true;
+        } else {
+            body_span = body_span.join(&stmt_span);
+        }
         body.push(parse_statement(stmt)?);
     }
 
-    Ok(FunctionAst { name: name_pair.as_str().to_string(), params, entrypoint, return_types, body })
+    Ok(FunctionAst { name, entrypoint, params, return_types, return_type_spans, body, span, name_span, body_span })
 }
 
-fn parse_statement(pair: Pair<'_, Rule>) -> Result<Statement, CompilerError> {
+fn parse_constant_definition<'i>(pair: Pair<'i, Rule>) -> Result<ConstantAst<'i>, CompilerError> {
+    let span = Span::from(pair.as_span());
+    let mut inner = pair.into_inner();
+
+    let type_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing constant type".to_string()))?;
+    let name_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing constant name".to_string()))?;
+    let expr_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing constant initializer".to_string()))?;
+
+    let expr = parse_expression(expr_pair)?;
+
+    let TypeName { name: type_name, span: type_span } = parse_type_name(type_pair);
+    let Identifier { name, span: name_span } = parse_identifier(name_pair)?;
+
+    Ok(ConstantAst { type_name, name, expr, span, type_span, name_span })
+}
+
+fn parse_contract_field_definition<'i>(pair: Pair<'i, Rule>) -> Result<ContractFieldAst<'i>, CompilerError> {
+    let span = Span::from(pair.as_span());
+    let mut inner = pair.into_inner();
+
+    let type_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing field type".to_string()))?;
+    let type_span = Span::from(type_pair.as_span());
+    let type_ref = parse_type_name_pair(type_pair)?;
+    let name_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing field name".to_string()))?;
+    let expr_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing field initializer".to_string()))?;
+
+    let expr = parse_expression(expr_pair)?;
+    let Identifier { name, span: name_span } = parse_identifier(name_pair)?;
+
+    Ok(ContractFieldAst { type_ref, name, expr, span, type_span, name_span })
+}
+
+fn parse_statement<'i>(pair: Pair<'i, Rule>) -> Result<Statement<'i>, CompilerError> {
+    let span = Span::from(pair.as_span());
     match pair.as_rule() {
         Rule::statement => {
             if let Some(inner) = pair.into_inner().next() {
                 parse_statement(inner)
             } else {
-                Err(CompilerError::Unsupported("empty statement".to_string()))
+                Err(CompilerError::Unsupported("empty statement".to_string()).with_span(&span))
             }
         }
         Rule::variable_definition => {
             let mut inner = pair.into_inner();
-            let type_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing variable type".to_string()))?;
-            let type_ref = parse_type_name_pair(type_pair)?;
+            let type_pair =
+                inner.next().ok_or_else(|| CompilerError::Unsupported("missing variable type".to_string()).with_span(&span))?;
 
             let mut modifiers = Vec::new();
+            let mut modifier_spans = Vec::new();
             while let Some(p) = inner.peek() {
                 if p.as_rule() != Rule::modifier {
                     break;
                 }
-                modifiers.push(inner.next().expect("checked").as_str().to_string());
+                let modifier = inner.next().expect("checked");
+                modifiers.push(modifier.as_str().to_string());
+                modifier_spans.push(Span::from(modifier.as_span()));
             }
 
-            let ident = inner.next().ok_or_else(|| CompilerError::Unsupported("missing variable name".to_string()))?;
-            validate_user_identifier(ident.as_str())?;
-            let expr = inner.next().map(parse_expression).transpose()?;
-            Ok(Statement::VariableDefinition { type_ref, modifiers, name: ident.as_str().to_string(), expr })
+            let ident =
+                inner.next().ok_or_else(|| CompilerError::Unsupported("missing variable name".to_string()).with_span(&span))?;
+            let expr = match inner.next() {
+                Some(expr_pair) => Some(parse_expression(expr_pair).map_err(|err| err.with_span(&span))?),
+                None => None,
+            };
+            let Identifier { name, span: name_span } = parse_identifier(ident).map_err(|err| err.with_span(&span))?;
+            let TypeName { name: type_name, span: type_span } = parse_type_name(type_pair);
+            Ok(Statement::VariableDefinition { type_name, modifiers, name, expr, span, type_span, modifier_spans, name_span })
         }
         Rule::tuple_assignment => {
             let mut inner = pair.into_inner();
-            let left_type_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing left tuple type".to_string()))?;
-            let left_type_ref = parse_type_name_pair(left_type_pair)?;
-            let left_ident = inner.next().ok_or_else(|| CompilerError::Unsupported("missing left tuple name".to_string()))?;
-            let right_type_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing right tuple type".to_string()))?;
-            let right_type_ref = parse_type_name_pair(right_type_pair)?;
-            let right_ident = inner.next().ok_or_else(|| CompilerError::Unsupported("missing right tuple name".to_string()))?;
-            validate_user_identifier(left_ident.as_str())?;
-            validate_user_identifier(right_ident.as_str())?;
-            let expr_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing tuple expression".to_string()))?;
+            let left_type =
+                inner.next().ok_or_else(|| CompilerError::Unsupported("missing left tuple type".to_string()).with_span(&span))?;
+            let left_ident =
+                inner.next().ok_or_else(|| CompilerError::Unsupported("missing left tuple name".to_string()).with_span(&span))?;
+            let right_type =
+                inner.next().ok_or_else(|| CompilerError::Unsupported("missing right tuple type".to_string()).with_span(&span))?;
+            let right_ident =
+                inner.next().ok_or_else(|| CompilerError::Unsupported("missing right tuple name".to_string()).with_span(&span))?;
+            let expr_pair =
+                inner.next().ok_or_else(|| CompilerError::Unsupported("missing tuple expression".to_string()).with_span(&span))?;
 
-            let expr = parse_expression(expr_pair)?;
+            let expr = parse_expression(expr_pair).map_err(|err| err.with_span(&span))?;
+            let TypeName { name: left_type, span: left_type_span } = parse_type_name(left_type);
+            let Identifier { name: left_name, span: left_name_span } =
+                parse_identifier(left_ident).map_err(|err| err.with_span(&span))?;
+            let TypeName { name: right_type, span: right_type_span } = parse_type_name(right_type);
+            let Identifier { name: right_name, span: right_name_span } =
+                parse_identifier(right_ident).map_err(|err| err.with_span(&span))?;
             Ok(Statement::TupleAssignment {
-                left_type_ref,
-                left_name: left_ident.as_str().to_string(),
-                right_type_ref,
-                right_name: right_ident.as_str().to_string(),
+                left_type,
+                left_name,
+                right_type,
+                right_name,
                 expr,
+                span,
+                left_type_span,
+                left_name_span,
+                right_type_span,
+                right_name_span,
             })
         }
         Rule::push_statement => {
             let mut inner = pair.into_inner();
-            let ident = inner.next().ok_or_else(|| CompilerError::Unsupported("missing push target".to_string()))?;
-            let expr_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing push expression".to_string()))?;
-            let expr = parse_expression(expr_pair)?;
-            Ok(Statement::ArrayPush { name: ident.as_str().to_string(), expr })
+            let ident = inner.next().ok_or_else(|| CompilerError::Unsupported("missing push target".to_string()).with_span(&span))?;
+            let expr_pair =
+                inner.next().ok_or_else(|| CompilerError::Unsupported("missing push expression".to_string()).with_span(&span))?;
+            let expr = parse_expression(expr_pair).map_err(|err| err.with_span(&span))?;
+            let Identifier { name, span: name_span } = parse_identifier(ident).map_err(|err| err.with_span(&span))?;
+            Ok(Statement::ArrayPush { name, expr, span, name_span })
         }
-        Rule::assign_statement => {
+        Rule::function_call_assignment => {
             let mut inner = pair.into_inner();
-            let ident = inner.next().ok_or_else(|| CompilerError::Unsupported("missing assignment name".to_string()))?;
-            let expr_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing assignment expression".to_string()))?;
-            let expr = parse_expression(expr_pair)?;
-            Ok(Statement::Assign { name: ident.as_str().to_string(), expr })
+            let mut bindings = Vec::new();
+            while let Some(p) = inner.peek() {
+                if p.as_rule() != Rule::typed_binding {
+                    break;
+                }
+                let binding = inner.next().expect("checked");
+                bindings.push(parse_typed_binding(binding).map_err(|err| err.with_span(&span))?);
+            }
+            let call_pair =
+                inner.next().ok_or_else(|| CompilerError::Unsupported("missing function call".to_string()).with_span(&span))?;
+            let (Identifier { name, span: name_span }, args) =
+                parse_function_call_parts(call_pair).map_err(|err| err.with_span(&span))?;
+            Ok(Statement::FunctionCallAssign { bindings, name, args, span, name_span })
         }
-        Rule::time_op_statement => {
+        Rule::state_function_call_assignment => {
             let mut inner = pair.into_inner();
-            let tx_var = inner.next().ok_or_else(|| CompilerError::Unsupported("missing time op variable".to_string()))?;
-            let expr_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing time op expression".to_string()))?;
-            let message = inner.next().map(parse_require_message).transpose()?;
-
-            let expr = parse_expression(expr_pair)?;
-            let tx_var = match tx_var.as_str() {
-                "this.age" => TimeVar::ThisAge,
-                "tx.time" => TimeVar::TxTime,
-                other => return Err(CompilerError::Unsupported(format!("unsupported time variable: {other}"))),
-            };
-            Ok(Statement::TimeOp { tx_var, expr, message })
-        }
-        Rule::require_statement => {
-            let mut inner = pair.into_inner();
-            let expr_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing require expression".to_string()))?;
-            let message = inner.next().map(parse_require_message).transpose()?;
-            let expr = parse_expression(expr_pair)?;
-            Ok(Statement::Require { expr, message })
-        }
-        Rule::if_statement => {
-            let mut inner = pair.into_inner();
-            let cond_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing if condition".to_string()))?;
-            let cond_expr = parse_expression(cond_pair)?;
-            let then_block = inner.next().ok_or_else(|| CompilerError::Unsupported("missing if block".to_string()))?;
-            let then_branch = parse_block(then_block)?;
-            let else_branch = inner.next().map(parse_block).transpose()?;
-            Ok(Statement::If { condition: cond_expr, then_branch, else_branch })
+            let mut bindings = Vec::new();
+            while let Some(p) = inner.peek() {
+                if p.as_rule() != Rule::state_typed_binding {
+                    break;
+                }
+                let binding = inner.next().expect("checked");
+                bindings.push(parse_state_typed_binding(binding).map_err(|err| err.with_span(&span))?);
+            }
+            let call_pair =
+                inner.next().ok_or_else(|| CompilerError::Unsupported("missing function call".to_string()).with_span(&span))?;
+            let (Identifier { name, span: name_span }, args) =
+                parse_function_call_parts(call_pair).map_err(|err| err.with_span(&span))?;
+            Ok(Statement::StateFunctionCallAssign { bindings, name, args, span, name_span })
         }
         Rule::call_statement => {
             let mut inner = pair.into_inner();
-            let call_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing function call".to_string()))?;
-            match parse_function_call(call_pair)? {
-                Expr::Call { name, args } => Ok(Statement::FunctionCall { name, args }),
-                _ => Err(CompilerError::Unsupported("function call expected".to_string())),
-            }
+            let call_pair =
+                inner.next().ok_or_else(|| CompilerError::Unsupported("missing call statement".to_string()).with_span(&span))?;
+            let (Identifier { name, span: name_span }, args) =
+                parse_function_call_parts(call_pair).map_err(|err| err.with_span(&span))?;
+            Ok(Statement::FunctionCall { name, args, span, name_span })
         }
-        Rule::function_call_assignment => {
-            let mut bindings = Vec::new();
-            let mut call_pair = None;
-            for item in pair.into_inner() {
-                if item.as_rule() == Rule::typed_binding {
-                    let mut inner = item.into_inner();
-                    let type_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing binding type".to_string()))?;
-                    let type_ref = parse_type_name_pair(type_pair)?;
-                    let name = inner
-                        .next()
-                        .ok_or_else(|| CompilerError::Unsupported("missing binding name".to_string()))?
-                        .as_str()
-                        .to_string();
-                    validate_user_identifier(&name)?;
-                    bindings.push(ParamAst { type_ref, name });
-                } else if item.as_rule() == Rule::function_call {
-                    call_pair = Some(item);
-                }
-            }
-            let call_pair = call_pair.ok_or_else(|| CompilerError::Unsupported("missing function call".to_string()))?;
-            match parse_function_call(call_pair)? {
-                Expr::Call { name, args } => Ok(Statement::FunctionCallAssign { bindings, name, args }),
-                _ => Err(CompilerError::Unsupported("function call expected".to_string())),
-            }
-        }
-        Rule::state_function_call_assignment => {
-            let mut bindings = Vec::new();
-            let mut call_pair = None;
-            for item in pair.into_inner() {
-                if item.as_rule() == Rule::state_typed_binding {
-                    let mut inner = item.into_inner();
-                    let field_name = inner
-                        .next()
-                        .ok_or_else(|| CompilerError::Unsupported("missing state field name".to_string()))?
-                        .as_str()
-                        .to_string();
-                    let type_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing binding type".to_string()))?;
-                    let type_ref = parse_type_name_pair(type_pair)?;
-                    let name = inner
-                        .next()
-                        .ok_or_else(|| CompilerError::Unsupported("missing binding name".to_string()))?
-                        .as_str()
-                        .to_string();
-                    validate_user_identifier(&field_name)?;
-                    validate_user_identifier(&name)?;
-                    bindings.push(StateBindingAst { field_name, type_ref, name });
-                } else if item.as_rule() == Rule::function_call {
-                    call_pair = Some(item);
-                }
-            }
-            let call_pair = call_pair.ok_or_else(|| CompilerError::Unsupported("missing function call".to_string()))?;
-            match parse_function_call(call_pair)? {
-                Expr::Call { name, args } => Ok(Statement::StateFunctionCallAssign { bindings, name, args }),
-                _ => Err(CompilerError::Unsupported("function call expected".to_string())),
-            }
-        }
-        Rule::for_statement => {
+        Rule::assign_statement => {
             let mut inner = pair.into_inner();
-            let ident = inner.next().ok_or_else(|| CompilerError::Unsupported("missing for loop identifier".to_string()))?;
-            validate_user_identifier(ident.as_str())?;
-            let start_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing for loop start".to_string()))?;
-            let end_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing for loop end".to_string()))?;
-            let block_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing for loop body".to_string()))?;
-
-            let start_expr = parse_expression(start_pair)?;
-            let end_expr = parse_expression(end_pair)?;
-            let body = parse_block(block_pair)?;
-
-            Ok(Statement::For { ident: ident.as_str().to_string(), start: start_expr, end: end_expr, body })
-        }
-        Rule::yield_statement => {
-            let mut inner = pair.into_inner();
-            let list_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing yield arguments".to_string()))?;
-            let args = parse_expression_list(list_pair)?;
-            if args.len() != 1 {
-                return Err(CompilerError::Unsupported("yield() expects a single argument".to_string()));
-            }
-            Ok(Statement::Yield { expr: args[0].clone() })
+            let ident =
+                inner.next().ok_or_else(|| CompilerError::Unsupported("missing assignment name".to_string()).with_span(&span))?;
+            let expr_pair = inner
+                .next()
+                .ok_or_else(|| CompilerError::Unsupported("missing assignment expression".to_string()).with_span(&span))?;
+            let expr = parse_expression(expr_pair).map_err(|err| err.with_span(&span))?;
+            let Identifier { name, span: name_span } = parse_identifier(ident).map_err(|err| err.with_span(&span))?;
+            Ok(Statement::Assign { name, expr, span, name_span })
         }
         Rule::return_statement => {
             let mut inner = pair.into_inner();
-            let list_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing return arguments".to_string()))?;
-            let args = parse_expression_list(list_pair)?;
-            if args.is_empty() {
-                return Err(CompilerError::Unsupported("return() expects at least one argument".to_string()));
+            let list_pair =
+                inner.next().ok_or_else(|| CompilerError::Unsupported("missing return values".to_string()).with_span(&span))?;
+            let exprs = parse_expression_list(list_pair).map_err(|err| err.with_span(&span))?;
+            Ok(Statement::Return { exprs, span })
+        }
+        Rule::time_op_statement => {
+            let mut inner = pair.into_inner();
+            let tx_var =
+                inner.next().ok_or_else(|| CompilerError::Unsupported("missing time op variable".to_string()).with_span(&span))?;
+            let expr_pair =
+                inner.next().ok_or_else(|| CompilerError::Unsupported("missing time op expression".to_string()).with_span(&span))?;
+            let message = inner.next().map(parse_require_message).transpose().map_err(|err| err.with_span(&span))?;
+
+            let expr = parse_expression(expr_pair).map_err(|err| err.with_span(&span))?;
+            let tx_var_span = Span::from(tx_var.as_span());
+            let tx_var_value = match tx_var.as_str() {
+                "this.age" => TimeVar::ThisAge,
+                "tx.time" => TimeVar::TxTime,
+                other => {
+                    return Err(CompilerError::Unsupported(format!("unsupported time variable: {other}")).with_span(&tx_var_span));
+                }
+            };
+            let (message, message_span) = message.unzip();
+            Ok(Statement::TimeOp { tx_var: tx_var_value, expr, message, span, tx_var_span, message_span })
+        }
+        Rule::require_statement => {
+            let mut inner = pair.into_inner();
+            let expr_pair =
+                inner.next().ok_or_else(|| CompilerError::Unsupported("missing require expression".to_string()).with_span(&span))?;
+            let message = inner.next().map(parse_require_message).transpose().map_err(|err| err.with_span(&span))?;
+            let expr = parse_expression(expr_pair).map_err(|err| err.with_span(&span))?;
+            let (message, message_span) = message.unzip();
+            Ok(Statement::Require { expr, message, span, message_span })
+        }
+        Rule::if_statement => {
+            let mut inner = pair.into_inner();
+            let cond_pair =
+                inner.next().ok_or_else(|| CompilerError::Unsupported("missing if condition".to_string()).with_span(&span))?;
+            let cond_expr = parse_expression(cond_pair).map_err(|err| err.with_span(&span))?;
+            let then_block =
+                inner.next().ok_or_else(|| CompilerError::Unsupported("missing if block".to_string()).with_span(&span))?;
+            let (then_branch, then_span) = parse_block(then_block).map_err(|err| err.with_span(&span))?;
+            let else_data = inner.next().map(parse_block).transpose().map_err(|err| err.with_span(&span))?;
+            let (else_branch, else_span) = match else_data {
+                Some((branch, span)) => (Some(branch), Some(span)),
+                None => (None, None),
+            };
+            Ok(Statement::If { condition: cond_expr, then_branch, else_branch, span, then_span, else_span })
+        }
+        Rule::for_statement => {
+            let mut inner = pair.into_inner();
+            let ident =
+                inner.next().ok_or_else(|| CompilerError::Unsupported("missing for loop identifier".to_string()).with_span(&span))?;
+            let start_pair =
+                inner.next().ok_or_else(|| CompilerError::Unsupported("missing for loop start".to_string()).with_span(&span))?;
+            let end_pair =
+                inner.next().ok_or_else(|| CompilerError::Unsupported("missing for loop end".to_string()).with_span(&span))?;
+            let block_pair =
+                inner.next().ok_or_else(|| CompilerError::Unsupported("missing for loop body".to_string()).with_span(&span))?;
+
+            let start_expr = parse_expression(start_pair).map_err(|err| err.with_span(&span))?;
+            let end_expr = parse_expression(end_pair).map_err(|err| err.with_span(&span))?;
+            let (body, body_span) = parse_block(block_pair).map_err(|err| err.with_span(&span))?;
+            let Identifier { name: ident, span: ident_span } = parse_identifier(ident).map_err(|err| err.with_span(&span))?;
+
+            Ok(Statement::For { ident, start: start_expr, end: end_expr, body, span, ident_span, body_span })
+        }
+        Rule::yield_statement => {
+            let mut inner = pair.into_inner();
+            let list_pair =
+                inner.next().ok_or_else(|| CompilerError::Unsupported("missing yield arguments".to_string()).with_span(&span))?;
+            let args = parse_expression_list(list_pair).map_err(|err| err.with_span(&span))?;
+            if args.len() != 1 {
+                return Err(CompilerError::Unsupported("yield() expects a single argument".to_string()).with_span(&span));
             }
-            Ok(Statement::Return { exprs: args })
+            Ok(Statement::Yield { expr: args[0].clone(), span })
         }
         Rule::console_statement => {
             let mut inner = pair.into_inner();
-            let list_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing console arguments".to_string()))?;
-            let args = parse_console_parameter_list(list_pair)?;
-            Ok(Statement::Console { args })
+            let list_pair =
+                inner.next().ok_or_else(|| CompilerError::Unsupported("missing console arguments".to_string()).with_span(&span))?;
+            let args = parse_console_parameter_list(list_pair).map_err(|err| err.with_span(&span))?;
+            Ok(Statement::Console { args, span })
         }
-        _ => Err(CompilerError::Unsupported(format!("unexpected statement: {:?}", pair.as_rule()))),
+        _ => Err(CompilerError::Unsupported(format!("unexpected statement: {:?}", pair.as_rule())).with_span(&span)),
     }
 }
 
-fn parse_block(pair: Pair<'_, Rule>) -> Result<Vec<Statement>, CompilerError> {
+fn parse_block<'i>(pair: Pair<'i, Rule>) -> Result<(Vec<Statement<'i>>, Span<'i>), CompilerError> {
+    let span = Span::from(pair.as_span());
     match pair.as_rule() {
         Rule::block => {
             let mut statements = Vec::new();
-            for stmt in pair.into_inner() {
-                statements.push(parse_statement(stmt)?);
+            let mut block_span: Option<Span<'i>> = None;
+            for stmt_pair in pair.into_inner() {
+                let stmt = parse_statement(stmt_pair)?;
+                let stmt_span = stmt.span();
+                block_span = Some(match block_span {
+                    None => stmt_span,
+                    Some(prev) => prev.join(&stmt_span),
+                });
+                statements.push(stmt);
             }
-            Ok(statements)
+            Ok((statements, block_span.unwrap_or(span)))
         }
-        _ => Ok(vec![parse_statement(pair)?]),
+        _ => {
+            let stmt = parse_statement(pair)?;
+            let stmt_span = stmt.span();
+            Ok((vec![stmt], stmt_span))
+        }
     }
 }
 
-fn parse_console_parameter_list(pair: Pair<'_, Rule>) -> Result<Vec<ConsoleArg>, CompilerError> {
+fn parse_console_parameter_list<'i>(pair: Pair<'i, Rule>) -> Result<Vec<ConsoleArg<'i>>, CompilerError> {
     let mut args = Vec::new();
+
     for param in pair.into_inner() {
         let value = if param.as_rule() == Rule::console_parameter { single_inner(param)? } else { param };
         match value.as_rule() {
-            Rule::Identifier => args.push(ConsoleArg::Identifier(value.as_str().to_string())),
+            Rule::Identifier => {
+                let Identifier { name, span } = parse_identifier(value)?;
+                args.push(ConsoleArg::Identifier(name, span));
+            }
             Rule::literal => args.push(ConsoleArg::Literal(parse_literal(single_inner(value)?)?)),
             _ => return Err(CompilerError::Unsupported("console.log arguments not supported".to_string())),
         }
@@ -649,15 +1114,44 @@ fn parse_console_parameter_list(pair: Pair<'_, Rule>) -> Result<Vec<ConsoleArg>,
     Ok(args)
 }
 
-fn parse_require_message(pair: Pair<'_, Rule>) -> Result<String, CompilerError> {
+fn parse_typed_binding<'i>(pair: Pair<'i, Rule>) -> Result<TypedBindingAst<'i>, CompilerError> {
+    let span = Span::from(pair.as_span());
+    let mut inner = pair.into_inner();
+
+    let type_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing binding type".to_string()))?;
+    let ident_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing binding name".to_string()))?;
+
+    let TypeName { name: type_name, span: type_span } = parse_type_name(type_pair);
+    let Identifier { name, span: name_span } = parse_identifier(ident_pair)?;
+
+    Ok(TypedBindingAst { type_name, name, span, type_span, name_span })
+}
+
+fn parse_state_typed_binding<'i>(pair: Pair<'i, Rule>) -> Result<StateBindingAst<'i>, CompilerError> {
+    let span = Span::from(pair.as_span());
+    let mut inner = pair.into_inner();
+
+    let field_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing state field name".to_string()))?;
+    let type_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing binding type".to_string()))?;
+    let ident_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing binding name".to_string()))?;
+
+    let Identifier { name: field_name, span: field_span } = parse_identifier(field_pair)?;
+    let type_span = Span::from(type_pair.as_span());
+    let type_ref = parse_type_name_pair(type_pair)?;
+    let Identifier { name, span: name_span } = parse_identifier(ident_pair)?;
+
+    Ok(StateBindingAst { field_name, type_ref, name, span, field_span, type_span, name_span })
+}
+
+fn parse_require_message<'i>(pair: Pair<'i, Rule>) -> Result<(String, Span<'i>), CompilerError> {
     let inner = single_inner(pair)?;
     match parse_string_literal(inner)? {
-        Expr::String(value) => Ok(value),
+        Expr { kind: ExprKind::String(value), span } => Ok((value, span)),
         _ => Err(CompilerError::Unsupported("require message must be a string literal".to_string())),
     }
 }
 
-fn parse_expression(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
+fn parse_expression<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {
     match pair.as_rule() {
         Rule::expression => parse_expression(single_inner(pair)?),
         Rule::logical_or => parse_infix(pair, parse_expression, map_logical_or),
@@ -675,11 +1169,14 @@ fn parse_expression(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
         Rule::parenthesized => parse_expression(single_inner(pair)?),
         Rule::literal => parse_literal(single_inner(pair)?),
         Rule::number_literal => parse_number_literal(pair),
-        Rule::NumberLiteral => parse_number(pair.as_str()),
-        Rule::BooleanLiteral => Ok(Expr::Bool(pair.as_str() == "true")),
-        Rule::HexLiteral => parse_hex_literal(pair.as_str()),
-        Rule::Identifier => Ok(Expr::Identifier(pair.as_str().to_string())),
-        Rule::NullaryOp => parse_nullary(pair.as_str()),
+        Rule::NumberLiteral => parse_number_expr(pair),
+        Rule::BooleanLiteral => Ok(Expr::new(ExprKind::Bool(pair.as_str() == "true"), Span::from(pair.as_span()))),
+        Rule::HexLiteral => parse_hex_literal(pair),
+        Rule::Identifier => {
+            let Identifier { name, span } = parse_identifier(pair)?;
+            Ok(Expr::new(ExprKind::Identifier(name), span))
+        }
+        Rule::NullaryOp => parse_nullary(pair.as_str(), Span::from(pair.as_span())),
         Rule::introspection => parse_introspection(pair),
         Rule::array => parse_array(pair),
         Rule::function_call => parse_function_call(pair),
@@ -698,7 +1195,8 @@ fn parse_expression(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
     }
 }
 
-fn parse_unary(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
+fn parse_unary<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {
+    let span = Span::from(pair.as_span());
     let mut inner = pair.into_inner();
     let mut ops = Vec::new();
     while let Some(op) = inner.peek() {
@@ -716,22 +1214,55 @@ fn parse_unary(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
 
     let mut expr = parse_expression(inner.next().ok_or_else(|| CompilerError::Unsupported("missing unary operand".to_string()))?)?;
     for op in ops.into_iter().rev() {
-        expr = Expr::Unary { op, expr: Box::new(expr) };
+        expr = Expr::new(ExprKind::Unary { op, expr: Box::new(expr) }, span);
     }
     Ok(expr)
 }
 
-fn parse_postfix(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
+fn parse_postfix<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {
     let mut inner = pair.into_inner();
     let primary = inner.next().ok_or_else(|| CompilerError::Unsupported("missing primary in postfix".to_string()))?;
     let mut expr = parse_primary(primary)?;
     for postfix in inner {
+        let postfix_span = Span::from(postfix.as_span());
         match postfix.as_rule() {
             Rule::split_call => {
                 let mut split_inner = postfix.into_inner();
                 let index_expr = split_inner.next().ok_or_else(|| CompilerError::Unsupported("missing split index".to_string()))?;
                 let index = Box::new(parse_expression(index_expr)?);
-                expr = Expr::Split { source: Box::new(expr), index, part: SplitPart::Left };
+                let span = expr.span.join(&postfix_span);
+                expr = Expr::new(ExprKind::Split { source: Box::new(expr), index, part: SplitPart::Left, span: postfix_span }, span);
+            }
+            Rule::tuple_index => {
+                let mut index_inner = postfix.into_inner();
+                let index_pair = index_inner.next().ok_or_else(|| CompilerError::Unsupported("missing tuple index".to_string()))?;
+                let index_expr = parse_expression(index_pair)?;
+                let index_span = index_expr.span;
+                let span = expr.span.join(&postfix_span);
+                if let ExprKind::Split { source, index: split_index, span: split_span, .. } = &expr.kind {
+                    let part = match index_expr.kind {
+                        ExprKind::Int(0) => SplitPart::Left,
+                        ExprKind::Int(1) => SplitPart::Right,
+                        _ => {
+                            return Err(CompilerError::Unsupported("split() index must be 0 or 1".to_string()).with_span(&index_span));
+                        }
+                    };
+                    expr = Expr::new(
+                        ExprKind::Split { source: source.clone(), index: split_index.clone(), part, span: *split_span },
+                        span,
+                    );
+                } else {
+                    expr = Expr::new(ExprKind::ArrayIndex { source: Box::new(expr), index: Box::new(index_expr) }, span);
+                }
+            }
+            Rule::unary_suffix => {
+                let kind = match postfix.as_str() {
+                    ".reverse()" => UnarySuffixKind::Reverse,
+                    ".length" => UnarySuffixKind::Length,
+                    other => return Err(CompilerError::Unsupported(format!("unknown unary suffix '{other}'"))),
+                };
+                let span = expr.span.join(&postfix_span);
+                expr = Expr::new(ExprKind::UnarySuffix { source: Box::new(expr), kind, span: postfix_span }, span);
             }
             Rule::slice_call => {
                 let mut slice_inner = postfix.into_inner();
@@ -739,34 +1270,8 @@ fn parse_postfix(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
                 let end_expr = slice_inner.next().ok_or_else(|| CompilerError::Unsupported("missing slice end".to_string()))?;
                 let start = Box::new(parse_expression(start_expr)?);
                 let end = Box::new(parse_expression(end_expr)?);
-                expr = Expr::Slice { source: Box::new(expr), start, end };
-            }
-            Rule::tuple_index => {
-                let mut index_inner = postfix.into_inner();
-                let index_expr = index_inner.next().ok_or_else(|| CompilerError::Unsupported("missing tuple index".to_string()))?;
-                let index = parse_expression(index_expr)?;
-                match (&expr, &index) {
-                    (Expr::Split { source, index: split_index, .. }, Expr::Int(0)) => {
-                        expr = Expr::Split { source: source.clone(), index: split_index.clone(), part: SplitPart::Left };
-                    }
-                    (Expr::Split { source, index: split_index, .. }, Expr::Int(1)) => {
-                        expr = Expr::Split { source: source.clone(), index: split_index.clone(), part: SplitPart::Right };
-                    }
-                    (Expr::Split { .. }, _) => {
-                        return Err(CompilerError::Unsupported("tuple index must be 0 or 1".to_string()));
-                    }
-                    _ => {
-                        expr = Expr::ArrayIndex { source: Box::new(expr), index: Box::new(index) };
-                    }
-                }
-            }
-            Rule::unary_suffix => {
-                let text = postfix.as_str();
-                if text.ends_with("length") {
-                    expr = Expr::Call { name: "length".to_string(), args: vec![expr] };
-                } else {
-                    return Err(CompilerError::Unsupported("postfix operators are not supported".to_string()));
-                }
+                let span = expr.span.join(&postfix_span);
+                expr = Expr::new(ExprKind::Slice { source: Box::new(expr), start, end, span: postfix_span }, span);
             }
             _ => {
                 return Err(CompilerError::Unsupported("postfix operators are not supported".to_string()));
@@ -776,39 +1281,50 @@ fn parse_postfix(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
     Ok(expr)
 }
 
-fn parse_typed_parameter_list(pair: Pair<'_, Rule>) -> Result<Vec<ParamAst>, CompilerError> {
+fn parse_typed_parameter_list<'i>(pair: Pair<'i, Rule>) -> Result<Vec<ParamAst<'i>>, CompilerError> {
     let mut params = Vec::new();
     for param in pair.into_inner() {
         if param.as_rule() != Rule::parameter {
             continue;
         }
+
+        let param_span = Span::from(param.as_span());
         let mut inner = param.into_inner();
+
         let type_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing parameter type".to_string()))?;
-        let type_ref = parse_type_name_pair(type_pair)?;
-        let ident = inner.next().ok_or_else(|| CompilerError::Unsupported("missing parameter name".to_string()))?.as_str().to_string();
-        validate_user_identifier(&ident)?;
-        params.push(ParamAst { type_ref, name: ident });
+        let ident_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing parameter name".to_string()))?;
+
+        let Identifier { name, span: name_span } = parse_identifier(ident_pair)?;
+        let TypeName { name: type_name, span: type_span } = parse_type_name(type_pair);
+
+        params.push(ParamAst { type_name, name, span: param_span, type_span, name_span });
     }
     Ok(params)
 }
 
-fn parse_return_type_list(pair: Pair<'_, Rule>) -> Result<Vec<TypeRef>, CompilerError> {
-    let mut types = Vec::new();
-    for item in pair.into_inner() {
-        if item.as_rule() == Rule::type_name {
-            let type_ref = parse_type_name_pair(item)?;
-            types.push(type_ref);
+fn parse_return_type_list<'i>(pair: Pair<'i, Rule>) -> Result<(Vec<String>, Vec<Span<'i>>), CompilerError> {
+    let mut return_types = Vec::new();
+    let mut return_spans = Vec::new();
+    for user_type in pair.into_inner() {
+        if user_type.as_rule() != Rule::type_name {
+            continue;
         }
+        let TypeName { name: type_name, span: type_span } = parse_type_name(user_type);
+        return_types.push(type_name);
+        return_spans.push(type_span);
     }
-    Ok(types)
+    Ok((return_types, return_spans))
 }
 
-fn parse_primary(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
+fn parse_primary<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {
     match pair.as_rule() {
         Rule::parenthesized => parse_expression(single_inner(pair)?),
         Rule::literal => parse_literal(single_inner(pair)?),
-        Rule::Identifier => Ok(Expr::Identifier(pair.as_str().to_string())),
-        Rule::NullaryOp => parse_nullary(pair.as_str()),
+        Rule::Identifier => {
+            let Identifier { name, span } = parse_identifier(pair)?;
+            Ok(Expr::new(ExprKind::Identifier(name), span))
+        }
+        Rule::NullaryOp => parse_nullary(pair.as_str(), Span::from(pair.as_span())),
         Rule::introspection => parse_introspection(pair),
         Rule::array => parse_array(pair),
         Rule::function_call => parse_function_call(pair),
@@ -820,87 +1336,115 @@ fn parse_primary(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
     }
 }
 
-fn parse_state_object(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
+fn parse_state_object<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {
+    let span = Span::from(pair.as_span());
     let mut fields = Vec::new();
     for field_pair in pair.into_inner() {
         if field_pair.as_rule() != Rule::state_entry {
             continue;
         }
+        let field_span = Span::from(field_pair.as_span());
         let mut inner = field_pair.into_inner();
-        let name =
-            inner.next().ok_or_else(|| CompilerError::Unsupported("missing state field name".to_string()))?.as_str().to_string();
-        validate_user_identifier(&name)?;
+        let name_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing state field name".to_string()))?;
         let expr_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing state field expression".to_string()))?;
+        let Identifier { name, span: name_span } = parse_identifier(name_pair)?;
         let expr = parse_expression(expr_pair)?;
-        fields.push(StateFieldExpr { name, expr });
+        fields.push(StateFieldExpr { name, expr, span: field_span, name_span });
     }
-    Ok(Expr::StateObject(fields))
+    Ok(Expr::new(ExprKind::StateObject(fields), span))
 }
 
-fn parse_literal(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
+fn parse_literal<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {
     match pair.as_rule() {
-        Rule::BooleanLiteral => Ok(Expr::Bool(pair.as_str() == "true")),
+        Rule::BooleanLiteral => Ok(Expr::new(ExprKind::Bool(pair.as_str() == "true"), Span::from(pair.as_span()))),
         Rule::number_literal => parse_number_literal(pair),
-        Rule::NumberLiteral => parse_number(pair.as_str()),
-        Rule::HexLiteral => parse_hex_literal(pair.as_str()),
+        Rule::NumberLiteral => parse_number_expr(pair),
+        Rule::HexLiteral => parse_hex_literal(pair),
         Rule::StringLiteral => parse_string_literal(pair),
         Rule::DateLiteral => parse_date_literal(pair),
         _ => Err(CompilerError::Unsupported(format!("literal not supported: {:?}", pair.as_rule()))),
     }
 }
 
-fn parse_number(raw: &str) -> Result<Expr, CompilerError> {
-    let cleaned = raw.replace('_', "");
-    if let Some((base_str, exp_str)) = cleaned.split_once('e').or_else(|| cleaned.split_once('E')) {
-        if exp_str.is_empty() {
-            return Err(CompilerError::InvalidLiteral(format!("invalid number literal '{raw}'")));
-        }
-        let base: i64 = base_str.parse().map_err(|_| CompilerError::InvalidLiteral(format!("invalid number literal '{raw}'")))?;
-        let exp: i64 = exp_str.parse().map_err(|_| CompilerError::InvalidLiteral(format!("invalid number literal '{raw}'")))?;
-        if exp < 0 {
-            return Err(CompilerError::InvalidLiteral(format!("invalid number literal '{raw}'")));
-        }
-        let pow = 10i128.pow(exp as u32);
-        let value =
-            (base as i128).checked_mul(pow).ok_or_else(|| CompilerError::InvalidLiteral(format!("invalid number literal '{raw}'")))?;
-        if value > i64::MAX as i128 || value < i64::MIN as i128 {
-            return Err(CompilerError::InvalidLiteral(format!("invalid number literal '{raw}'")));
-        }
-        return Ok(Expr::Int(value as i64));
-    }
-    let value: i64 = cleaned.parse().map_err(|_| CompilerError::InvalidLiteral(format!("invalid number literal '{raw}'")))?;
-    Ok(Expr::Int(value))
+fn parse_number_expr<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {
+    let span = Span::from(pair.as_span());
+    let value = parse_number(pair.as_str())?;
+    Ok(Expr::new(ExprKind::Int(value), span))
 }
 
-fn parse_array(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
+fn parse_number(raw: &str) -> Result<i64, CompilerError> {
+    let raw = raw.trim();
+    let mut parts = raw.split(['e', 'E']);
+    let base_raw = parts.next().unwrap_or("");
+    let exp_raw = parts.next();
+
+    // nothing allowed after having the exponent
+    if parts.next().is_some() {
+        return Err(CompilerError::InvalidLiteral(format!("invalid number literal '{raw}'")));
+    }
+
+    let base_clean = base_raw.replace('_', "");
+    if base_clean.is_empty() || base_clean == "-" {
+        return Err(CompilerError::InvalidLiteral(format!("invalid number literal '{raw}'")));
+    }
+    let mut value =
+        base_clean.parse::<i128>().map_err(|_| CompilerError::InvalidLiteral(format!("invalid number literal '{raw}'")))?;
+
+    if let Some(exp_raw) = exp_raw {
+        let exp_clean = exp_raw.replace('_', "");
+
+        // rejects negative exponent
+        let exp = exp_clean.parse::<u32>().map_err(|_| CompilerError::InvalidLiteral(format!("invalid number literal '{raw}'")))?;
+        let pow = 10i128.checked_pow(exp).ok_or_else(|| CompilerError::InvalidLiteral(format!("number literal overflow '{raw}'")))?;
+        value = value.checked_mul(pow).ok_or_else(|| CompilerError::InvalidLiteral(format!("number literal overflow '{raw}'")))?;
+    }
+
+    if value < i64::MIN as i128 || value > i64::MAX as i128 {
+        return Err(CompilerError::InvalidLiteral(format!("number literal overflow '{raw}'")));
+    }
+
+    Ok(value as i64)
+}
+
+fn parse_array<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {
+    let span = Span::from(pair.as_span());
     let mut values = Vec::new();
     for expr_pair in pair.into_inner() {
         values.push(parse_expression(expr_pair)?);
     }
-    Ok(Expr::Array(values))
+    Ok(Expr::new(ExprKind::Array(values), span))
 }
 
-fn parse_function_call(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
+fn parse_function_call_parts<'i>(pair: Pair<'i, Rule>) -> Result<(Identifier<'i>, Vec<Expr<'i>>), CompilerError> {
     let mut inner = pair.into_inner();
-    let name = inner.next().ok_or_else(|| CompilerError::Unsupported("missing function name".to_string()))?.as_str().to_string();
+    let name_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing function name".to_string()))?;
     let args = match inner.next() {
         Some(list) => parse_expression_list(list)?,
         None => Vec::new(),
     };
-    Ok(Expr::Call { name, args })
+    let name = parse_identifier(name_pair)?;
+    Ok((name, args))
 }
 
-fn parse_instantiation(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
+fn parse_function_call<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {
+    let span = Span::from(pair.as_span());
+    let (Identifier { name, span: name_span }, args) = parse_function_call_parts(pair)?;
+    Ok(Expr::new(ExprKind::Call { name, args, name_span }, span))
+}
+
+fn parse_instantiation<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {
+    let span = Span::from(pair.as_span());
     let mut inner = pair.into_inner();
-    let name = inner.next().ok_or_else(|| CompilerError::Unsupported("missing constructor name".to_string()))?.as_str().to_string();
+    let name_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing constructor name".to_string()))?;
     let args = match inner.next() {
         Some(list) => parse_expression_list(list)?,
         None => Vec::new(),
     };
-    Ok(Expr::New { name, args })
+    let Identifier { name, span: name_span } = parse_identifier(name_pair)?;
+    Ok(Expr::new(ExprKind::New { name, args, name_span }, span))
 }
 
-fn parse_expression_list(pair: Pair<'_, Rule>) -> Result<Vec<Expr>, CompilerError> {
+fn parse_expression_list<'i>(pair: Pair<'i, Rule>) -> Result<Vec<Expr<'i>>, CompilerError> {
     let mut args = Vec::new();
     for expr_pair in pair.into_inner() {
         args.push(parse_expression(expr_pair)?);
@@ -908,56 +1452,33 @@ fn parse_expression_list(pair: Pair<'_, Rule>) -> Result<Vec<Expr>, CompilerErro
     Ok(args)
 }
 
-fn parse_cast(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
+fn parse_cast<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {
+    let span = Span::from(pair.as_span());
     let mut inner = pair.into_inner();
-    let type_name = inner.next().ok_or_else(|| CompilerError::Unsupported("missing cast type".to_string()))?.as_str().to_string();
+    let type_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing cast type".to_string()))?;
     let args = match inner.next() {
         Some(list) => parse_expression_list(list)?,
         None => Vec::new(),
     };
-    if type_name == "bytes" {
-        return Ok(Expr::Call { name: "bytes".to_string(), args });
-    }
-    if type_name == "byte" {
-        return Ok(Expr::Call { name: "byte[1]".to_string(), args });
-    }
-    if type_name == "int" {
-        return Ok(Expr::Call { name: "int".to_string(), args });
-    }
-    if matches!(type_name.as_str(), "sig" | "pubkey" | "datasig") {
-        return Ok(Expr::Call { name: type_name, args });
-    }
-    // Handle single byte cast (duplicate check removed above)
-    // Support type[N] syntax
-    if let Some(bracket_pos) = type_name.find('[') {
-        if type_name.ends_with(']') {
-            let _base_type = &type_name[..bracket_pos];
-            let size_str = &type_name[bracket_pos + 1..type_name.len() - 1];
-            // Support both type[N] and type[] (dynamic array)
-            if size_str.is_empty() {
-                // Dynamic array cast like byte[]
-                return Ok(Expr::Call { name: type_name.to_string(), args });
-            } else if let Ok(_size) = size_str.parse::<usize>() {
-                // Fixed-size array cast like byte[32]
-                return Ok(Expr::Call { name: type_name.to_string(), args });
-            }
-        }
-    }
-    Err(CompilerError::Unsupported(format!("cast type not supported: {type_name}")))
+    let TypeName { name: type_name, span: type_span } = parse_type_name(type_pair);
+    Ok(Expr::new(ExprKind::Cast { type_name, args, type_span }, span))
 }
 
-fn parse_number_literal(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
+fn parse_number_literal<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {
+    let span = Span::from(pair.as_span());
     let mut inner = pair.into_inner();
     let number = inner.next().ok_or_else(|| CompilerError::InvalidLiteral("missing number literal".to_string()))?;
     let value = parse_number(number.as_str())?;
-    if let Some(unit_pair) = inner.next() {
-        let unit = unit_pair.as_str();
-        return apply_number_unit(value, unit);
+    let expr = Expr::new(ExprKind::Int(value), span);
+    if let Some(unit) = inner.next() {
+        return apply_number_unit(expr, unit.as_str());
     }
-    Ok(value)
+    Ok(expr)
 }
 
-fn parse_hex_literal(raw: &str) -> Result<Expr, CompilerError> {
+fn parse_hex_literal<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {
+    let span = Span::from(pair.as_span());
+    let raw = pair.as_str();
     let trimmed = raw.trim_start_matches("0x").trim_start_matches("0X");
     let normalized = if trimmed.len() % 2 != 0 { format!("0{trimmed}") } else { trimmed.to_string() };
     let bytes = (0..normalized.len())
@@ -965,13 +1486,13 @@ fn parse_hex_literal(raw: &str) -> Result<Expr, CompilerError> {
         .map(|i| u8::from_str_radix(&normalized[i..i + 2], 16))
         .collect::<Result<Vec<_>, _>>()
         .map_err(|_| CompilerError::InvalidLiteral(format!("invalid hex literal '{raw}'")))?;
-    // Convert Vec<u8> to Expr::Array of Expr::Byte
-    Ok(Expr::Array(bytes.into_iter().map(Expr::Byte).collect()))
+    Ok(Expr::new(ExprKind::Bytes(bytes), span))
 }
 
-fn apply_number_unit(expr: Expr, unit: &str) -> Result<Expr, CompilerError> {
-    let value = match expr {
-        Expr::Int(value) => value,
+fn apply_number_unit<'i>(expr: Expr<'i>, unit: &str) -> Result<Expr<'i>, CompilerError> {
+    let span = expr.span;
+    let value = match expr.kind {
+        ExprKind::Int(value) => value,
         _ => return Err(CompilerError::InvalidLiteral("number literal is not an int".to_string())),
     };
     let multiplier = match unit {
@@ -985,41 +1506,37 @@ fn apply_number_unit(expr: Expr, unit: &str) -> Result<Expr, CompilerError> {
         "kas" => 100_000_000,
         _ => return Err(CompilerError::Unsupported(format!("number unit '{unit}' not supported"))),
     };
-    Ok(Expr::Int(value.saturating_mul(multiplier)))
+    Ok(Expr::new(ExprKind::Int(value.saturating_mul(multiplier)), span))
 }
 
-fn parse_date_literal(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
+fn parse_string_literal<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {
+    let span = Span::from(pair.as_span());
     let raw = pair.as_str();
-    let start = raw
-        .find('"')
-        .or_else(|| raw.find('\''))
-        .ok_or_else(|| CompilerError::InvalidLiteral("date literal missing quotes".to_string()))?;
-    let quote = raw.as_bytes()[start] as char;
-    let end = raw[start + 1..]
-        .find(quote)
-        .map(|idx| idx + start + 1)
-        .ok_or_else(|| CompilerError::InvalidLiteral("date literal missing closing quote".to_string()))?;
-    let value = &raw[start + 1..end];
-
-    let timestamp = NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S")
-        .map_err(|_| CompilerError::InvalidLiteral("invalid date literal".to_string()))?
-        .and_utc()
-        .timestamp();
-    Ok(Expr::Int(timestamp))
-}
-
-fn parse_string_literal(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
-    let raw = pair.as_str();
-    let unquoted = if raw.starts_with('"') && raw.ends_with('"') || raw.starts_with('\'') && raw.ends_with('\'') {
+    let unquoted = if (raw.starts_with('"') && raw.ends_with('"')) || (raw.starts_with('\'') && raw.ends_with('\'')) {
         &raw[1..raw.len() - 1]
     } else {
         raw
     };
     let unescaped = unquoted.replace("\\\"", "\"").replace("\\'", "'");
-    Ok(Expr::String(unescaped))
+    Ok(Expr::new(ExprKind::String(unescaped), span))
 }
 
-fn parse_nullary(raw: &str) -> Result<Expr, CompilerError> {
+fn parse_date_literal<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {
+    let span = Span::from(pair.as_span());
+    let mut inner = pair.into_inner();
+    let string_pair = inner.next().ok_or_else(|| CompilerError::InvalidLiteral("missing date literal".to_string()))?;
+    let value = match parse_string_literal(string_pair)? {
+        Expr { kind: ExprKind::String(value), .. } => value,
+        _ => return Err(CompilerError::InvalidLiteral("invalid date literal".to_string())),
+    };
+    let timestamp = NaiveDateTime::parse_from_str(&value, "%Y-%m-%dT%H:%M:%S")
+        .map_err(|_| CompilerError::InvalidLiteral(format!("invalid date literal '{value}'")))?
+        .and_utc()
+        .timestamp();
+    Ok(Expr::new(ExprKind::DateLiteral(timestamp), span))
+}
+
+fn parse_nullary<'i>(raw: &str, span: Span<'i>) -> Result<Expr<'i>, CompilerError> {
     let op = match raw {
         "this.activeInputIndex" => NullaryOp::ActiveInputIndex,
         "this.activeScriptPubKey" => NullaryOp::ActiveScriptPubKey,
@@ -1031,45 +1548,50 @@ fn parse_nullary(raw: &str) -> Result<Expr, CompilerError> {
         "tx.locktime" => NullaryOp::TxLockTime,
         _ => return Err(CompilerError::Unsupported(format!("unknown nullary op: {raw}"))),
     };
-    Ok(Expr::Nullary(op))
+    Ok(Expr::new(ExprKind::Nullary(op), span))
 }
 
-fn parse_introspection(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
+fn parse_introspection<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {
+    let span = Span::from(pair.as_span());
     let text = pair.as_str();
     let mut inner = pair.into_inner();
     let index_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing introspection index".to_string()))?;
     let field_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing introspection field".to_string()))?;
 
     let index = Box::new(parse_expression(index_pair)?);
-    let field = field_pair.as_str();
+    let field_raw = field_pair.as_str();
+    let field = match field_raw {
+        ".value" => IntrospectionField::Value,
+        ".scriptPubKey" => IntrospectionField::ScriptPubKey,
+        // TODO: check what's envisioned, the grammar allows the following:
+        ".outpointTransactionHash" => IntrospectionField::OutpointTransactionHash,
+        ".outpointIndex" => IntrospectionField::OutpointIndex,
+        ".unlockingBytecode" => IntrospectionField::UnlockingBytecode,
+        ".sequenceNumber" => IntrospectionField::SequenceNumber,
+        ".tokenCategory" => IntrospectionField::TokenCategory,
+        ".nftCommitment" => IntrospectionField::NftCommitment,
+        ".tokenAmount" => IntrospectionField::TokenAmount,
+        _ => return Err(CompilerError::Unsupported(format!("unknown introspection field: {field_raw}"))),
+    };
 
-    let kind = if text.starts_with("tx.inputs") {
-        match field {
-            ".value" => IntrospectionKind::InputValue,
-            ".scriptPubKey" => IntrospectionKind::InputScriptPubKey,
-            ".sigScript" => IntrospectionKind::InputSigScript,
-            _ => return Err(CompilerError::Unsupported(format!("input field '{field}' not supported"))),
-        }
+    let root = if text.starts_with("tx.inputs") {
+        IntrospectionRoot::Inputs
     } else if text.starts_with("tx.outputs") {
-        match field {
-            ".value" => IntrospectionKind::OutputValue,
-            ".scriptPubKey" => IntrospectionKind::OutputScriptPubKey,
-            _ => return Err(CompilerError::Unsupported(format!("output field '{field}' not supported"))),
-        }
+        IntrospectionRoot::Outputs
     } else {
         return Err(CompilerError::Unsupported("unknown introspection root".to_string()));
     };
 
-    Ok(Expr::Introspection { kind, index })
+    Ok(Expr::new(ExprKind::Introspection { root, field, index, field_span: Span::from(field_pair.as_span()) }, span))
 }
 
 fn single_inner(pair: Pair<'_, Rule>) -> Result<Pair<'_, Rule>, CompilerError> {
     pair.into_inner().next().ok_or_else(|| CompilerError::Unsupported("expected inner pair".to_string()))
 }
 
-fn parse_infix<F, G>(pair: Pair<'_, Rule>, mut parse_operand: F, mut map_op: G) -> Result<Expr, CompilerError>
+fn parse_infix<'i, F, G>(pair: Pair<'i, Rule>, mut parse_operand: F, mut map_op: G) -> Result<Expr<'i>, CompilerError>
 where
-    F: FnMut(Pair<'_, Rule>) -> Result<Expr, CompilerError>,
+    F: FnMut(Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError>,
     G: FnMut(Pair<'_, Rule>) -> Result<BinaryOp, CompilerError>,
 {
     let mut inner = pair.into_inner();
@@ -1080,7 +1602,8 @@ where
         let rhs = inner.next().ok_or_else(|| CompilerError::Unsupported("missing infix rhs".to_string()))?;
         let op = map_op(op_pair)?;
         let rhs_expr = parse_operand(rhs)?;
-        expr = Expr::Binary { op, left: Box::new(expr), right: Box::new(rhs_expr) };
+        let span = expr.span.join(&rhs_expr.span);
+        expr = Expr::new(ExprKind::Binary { op, left: Box::new(expr), right: Box::new(rhs_expr) }, span);
     }
 
     Ok(expr)
@@ -1166,4 +1689,20 @@ fn map_factor(pair: Pair<'_, Rule>) -> Result<BinaryOp, CompilerError> {
         },
         _ => Err(CompilerError::Unsupported("unexpected factor operator".to_string())),
     }
+}
+
+fn parse_type_name<'i>(pair: Pair<'i, Rule>) -> TypeName<'i> {
+    TypeName { name: pair.as_str().trim().to_string(), span: Span::from(pair.as_span()) }
+}
+
+// validate user input
+fn parse_identifier<'i>(pair: Pair<'i, Rule>) -> Result<Identifier<'i>, CompilerError> {
+    let span = Span::from(pair.as_span());
+    let value = pair.as_str().to_string();
+
+    if value.starts_with("__") {
+        return Err(CompilerError::Unsupported("identifiers starting with '__' are reserved".to_string()));
+    }
+
+    Ok(Identifier { name: value, span })
 }

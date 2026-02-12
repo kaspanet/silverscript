@@ -1,0 +1,7 @@
+name = "SilverScript"
+grammar = "silverscript"
+path_suffixes = ["sil"]
+language_servers = ["silverscript-lsp"]
+
+line_comments = ["// "]
+block_comment = { start = "/*", prefix = "* ", end = "*/", tab_size = 1 }
