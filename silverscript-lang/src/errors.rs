@@ -1,19 +1,13 @@
 use kaspa_txscript::script_builder::ScriptBuilderError;
 use thiserror::Error;
 
-use crate::parser::Rule;
+pub use crate::diagnostic::{ErrorSpan, ParseDiagnostic, ParseDiagnosticLabel, ParseDisplayLocation, ParseErrorInterpretation};
 use crate::span;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ErrorSpan {
-    pub start: usize,
-    pub end: usize,
-}
 
 #[derive(Debug, Error)]
 pub enum CompilerError {
     #[error("parse error: {0}")]
-    Parse(#[from] pest::error::Error<Rule>),
+    Parse(#[from] ParseDiagnostic),
     #[error("unsupported feature: {0}")]
     Unsupported(String),
     #[error("invalid literal: {0}")]
@@ -24,6 +18,7 @@ pub enum CompilerError {
     CyclicIdentifier(String),
     #[error("script build error: {0}")]
     ScriptBuild(#[from] ScriptBuilderError),
+    // QUESTION: not entierly sure about this pattern
     #[error("{source}")]
     Context {
         #[source]
@@ -33,26 +28,10 @@ pub enum CompilerError {
 }
 
 impl CompilerError {
-    pub fn kind(&self) -> &CompilerError {
-        self.base()
-    }
-
-    pub fn into_kind(self) -> CompilerError {
-        self.into_base()
-    }
-
-    pub fn base(&self) -> &Self {
+    pub fn root(&self) -> &CompilerError {
         let mut current = self;
         while let Self::Context { source, .. } = current {
             current = source;
-        }
-        current
-    }
-
-    pub fn into_base(self) -> Self {
-        let mut current = self;
-        while let Self::Context { source, .. } = current {
-            current = *source;
         }
         current
     }
@@ -65,7 +44,7 @@ impl CompilerError {
     }
 
     pub fn with_span(self, span: &span::Span<'_>) -> Self {
-        if self.span().is_some() || matches!(self.base(), Self::Parse(_)) {
+        if self.span().is_some() || matches!(self.root(), Self::Parse(_)) {
             return self;
         }
         Self::Context { source: Box::new(self), span: ErrorSpan { start: span.start(), end: span.end() } }

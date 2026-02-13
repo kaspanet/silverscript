@@ -1,13 +1,12 @@
 use std::fmt;
 
 use chrono::NaiveDateTime;
-use pest::Parser;
 use pest::iterators::Pair;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::errors::CompilerError;
-use crate::parser::{Rule, SilverScriptParser};
+use crate::parser::{Rule, parse_source_file};
 pub use crate::span::{Span, SpanUtils};
 
 #[derive(Debug, Clone)]
@@ -731,7 +730,7 @@ fn parse_type_name_pair(pair: Pair<'_, Rule>) -> Result<TypeRef, CompilerError> 
 }
 
 pub fn parse_contract_ast<'i>(source: &'i str) -> Result<ContractAst<'i>, CompilerError> {
-    let mut pairs = SilverScriptParser::parse(Rule::source_file, source)?;
+    let mut pairs = parse_source_file(source)?;
     let source_pair = pairs.next().ok_or_else(|| CompilerError::Unsupported("empty source".to_string()))?;
     let mut contract = None;
 
