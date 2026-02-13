@@ -1,0 +1,173 @@
+{
+  "Pragma Directive": {
+    "prefix": "pragma",
+    "body": [
+      "pragma silverscript ^${1:0.1.0};"
+    ],
+    "description": "SilverScript pragma directive"
+  },
+  "Contract": {
+    "prefix": "contract",
+    "body": [
+      "pragma silverscript ^${1:0.1.0};",
+      "",
+      "contract ${2:MyContract}(${3:pubkey owner}) {",
+      "    entrypoint function ${4:spend}(${5:sig s}) {",
+      "        $0",
+      "    }",
+      "}"
+    ],
+    "description": "Complete contract with pragma"
+  },
+  "Entrypoint Function": {
+    "prefix": "entrypoint",
+    "body": [
+      "entrypoint function ${1:name}(${2:sig s}) {",
+      "    $0",
+      "}"
+    ],
+    "description": "Entrypoint function"
+  },
+  "Function": {
+    "prefix": "function",
+    "body": [
+      "function ${1:name}(${2:int x}) {",
+      "    $0",
+      "}"
+    ],
+    "description": "Internal function"
+  },
+  "Function with Return Type": {
+    "prefix": "functionret",
+    "body": [
+      "function ${1:name}(${2:int x}): (${3:int}) {",
+      "    $0",
+      "    return (${4:result});",
+      "}"
+    ],
+    "description": "Function with return type"
+  },
+  "Require": {
+    "prefix": "require",
+    "body": [
+      "require(${1:condition});"
+    ],
+    "description": "Require assertion"
+  },
+  "Require with Message": {
+    "prefix": "requiremsg",
+    "body": [
+      "require(${1:condition}, \"${2:error message}\");"
+    ],
+    "description": "Require assertion with error message"
+  },
+  "If Statement": {
+    "prefix": "if",
+    "body": [
+      "if (${1:condition}) {",
+      "    $0",
+      "}"
+    ],
+    "description": "If statement"
+  },
+  "If-Else Statement": {
+    "prefix": "ifelse",
+    "body": [
+      "if (${1:condition}) {",
+      "    $2",
+      "} else {",
+      "    $0",
+      "}"
+    ],
+    "description": "If-else statement"
+  },
+  "For Loop": {
+    "prefix": "for",
+    "body": [
+      "for (${1:i}, ${2:0}, ${3:END}) {",
+      "    $0",
+      "}"
+    ],
+    "description": "For loop"
+  },
+  "Constant": {
+    "prefix": "constant",
+    "body": [
+      "${1:int} constant ${2:NAME} = ${3:value};"
+    ],
+    "description": "Constant declaration"
+  },
+  "P2PK Contract": {
+    "prefix": "p2pkh",
+    "body": [
+      "pragma silverscript ^0.1.0;",
+      "",
+      "contract P2PK(pubkey pk) {",
+      "    entrypoint function spend(sig s) {",
+      "        require(checkSig(s, pk));",
+      "    }",
+      "}"
+    ],
+    "description": "Pay-to-Public-Key contract template"
+  },
+  "Covenant Pattern": {
+    "prefix": "covenant",
+    "body": [
+      "// Enforce output locking bytecode",
+      "bytes34 ${1:recipientLock} = new LockingBytecodeP2PK(${2:recipient});",
+      "require(tx.outputs[${3:0}].lockingBytecode == ${1:recipientLock});",
+      "require(tx.outputs[${3:0}].value >= ${4:amount});"
+    ],
+    "description": "Covenant output check pattern"
+  },
+  "Check Signature": {
+    "prefix": "checksig",
+    "body": [
+      "require(checkSig(${1:s}, ${2:pk}));"
+    ],
+    "description": "Signature verification"
+  },
+  "Time Lock": {
+    "prefix": "timelock",
+    "body": [
+      "require(${1|this.age,tx.time|} >= ${2:timeout});"
+    ],
+    "description": "Time lock check"
+  },
+  "Yield": {
+    "prefix": "yield",
+    "body": [
+      "yield(${1:expression});"
+    ],
+    "description": "Yield statement"
+  },
+  "Console Log": {
+    "prefix": "consolelog",
+    "body": [
+      "console.log(${1:value});"
+    ],
+    "description": "Debug console.log"
+  },
+  "Transfer with Timeout": {
+    "prefix": "transfertimeout",
+    "body": [
+      "pragma silverscript ^0.1.0;",
+      "",
+      "contract TransferWithTimeout(",
+      "    pubkey sender,",
+      "    pubkey recipient,",
+      "    int timeout",
+      ") {",
+      "    entrypoint function transfer(sig recipientSig) {",
+      "        require(checkSig(recipientSig, recipient));",
+      "    }",
+      "",
+      "    entrypoint function reclaim(sig senderSig) {",
+      "        require(checkSig(senderSig, sender));",
+      "        require(tx.time >= timeout);",
+      "    }",
+      "}"
+    ],
+    "description": "Transfer with timeout contract template"
+  }
+}

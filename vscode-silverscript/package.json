@@ -1,0 +1,57 @@
+{
+  "name": "silverscript",
+  "displayName": "SilverScript",
+  "description": "Syntax highlighting and snippets for SilverScript (.sil) — a smart contract language for Kaspa",
+  "version": "0.1.0",
+  "publisher": "kaspanet",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kaspanet/silverscript"
+  },
+  "bugs": {
+    "url": "https://github.com/kaspanet/silverscript/issues"
+  },
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Snippets"
+  ],
+  "keywords": [
+    "silverscript",
+    "kaspa",
+    "smart contracts",
+    "blockchain",
+    "sil"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "silverscript",
+        "aliases": [
+          "SilverScript",
+          "silverscript"
+        ],
+        "extensions": [
+          ".sil"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "silverscript",
+        "scopeName": "source.silverscript",
+        "path": "./syntaxes/silverscript.tmLanguage.json"
+      }
+    ],
+    "snippets": [
+      {
+        "language": "silverscript",
+        "path": "./snippets/silverscript.json"
+      }
+    ]
+  }
+}
