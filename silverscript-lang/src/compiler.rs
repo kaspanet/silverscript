@@ -981,7 +981,6 @@ impl<'a> FunctionBodyCompiler<'a> {
             callee_compiler.compile_statement(stmt, &mut env, &params, &mut types, &mut yields)?;
         }
         self.inline_frame_counter = callee_compiler.inline_frame_counter;
-        drop(callee_compiler);
         // Remap inline-local sequence numbers and merge events/updates back into
         // the parent function recorder.
         self.debug_recorder.merge_inline_events(&debug_recorder);

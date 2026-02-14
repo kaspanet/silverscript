@@ -259,11 +259,10 @@ impl<'a> DebugSession<'a> {
                 return Ok(false);
             }
 
-            if mapping_matches_offset(&target, offset) {
-                if self.engine.is_executing() {
+            if mapping_matches_offset(&target, offset)
+                && self.engine.is_executing() {
                     return Ok(true);
                 }
-            }
 
             if self.step_opcode()?.is_none() {
                 return Ok(false);
@@ -334,8 +333,8 @@ impl<'a> DebugSession<'a> {
     pub fn stacks_snapshot(&self) -> StackSnapshot {
         let stacks = self.engine.stacks();
         StackSnapshot {
-            dstack: stacks.dstack.iter().map(|item| hex::encode(item)).collect(),
-            astack: stacks.astack.iter().map(|item| hex::encode(item)).collect(),
+            dstack: stacks.dstack.iter().map(hex::encode).collect(),
+            astack: stacks.astack.iter().map(hex::encode).collect(),
         }
     }
 
@@ -391,7 +390,7 @@ impl<'a> DebugSession<'a> {
             .source_mappings
             .iter()
             .filter(|mapping| self.is_steppable_mapping(mapping))
-            .any(|mapping| mapping.span.map_or(false, |span| line >= span.line && line <= span.end_line));
+            .any(|mapping| mapping.span.is_some_and(|span| line >= span.line && line <= span.end_line));
         if valid {
             self.breakpoints.insert(line);
         }
@@ -704,7 +703,7 @@ impl<'a> DebugSession<'a> {
     /// Returns the current main stack as hex-encoded strings.
     pub fn stack(&self) -> Vec<String> {
         let stacks = self.engine.stacks();
-        stacks.dstack.iter().map(|item| hex::encode(item)).collect()
+        stacks.dstack.iter().map(hex::encode).collect()
     }
 
     fn evaluate_update_with_shadow_vm(&self, function_name: &str, update: &DebugVariableUpdate) -> Result<DebugValue, String> {
