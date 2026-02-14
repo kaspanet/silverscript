@@ -26,13 +26,7 @@ where
     assert!(contract_path.exists(), "example contract not found: {}", contract_path.display());
 
     let source = fs::read_to_string(&contract_path)?;
-    with_session_for_source(
-        &source,
-        vec![Expr::Int(3), Expr::Int(10)],
-        "hello",
-        vec![Expr::Int(5), Expr::Int(5)],
-        &mut f,
-    )
+    with_session_for_source(&source, vec![Expr::Int(3), Expr::Int(10)], "hello", vec![Expr::Int(5), Expr::Int(5)], &mut f)
 }
 
 // Generic harness that compiles a contract and boots a debugger session for a selected function call.
@@ -284,10 +278,7 @@ contract InlineStep() {
 
         let into = session.step_into()?.ok_or("step into failed")?.mapping.ok_or("missing mapping after step into")?;
         assert_eq!(into.call_depth, 1, "step into should enter inline callee");
-        assert!(
-            session.call_stack().iter().any(|name| name == "add1"),
-            "inline call stack should include callee name"
-        );
+        assert!(session.call_stack().iter().any(|name| name == "add1"), "inline call stack should include callee name");
 
         let out = session.step_out()?.ok_or("step out failed")?.mapping.ok_or("missing mapping after step out")?;
         assert_eq!(out.call_depth, 0, "step out should return to caller depth");

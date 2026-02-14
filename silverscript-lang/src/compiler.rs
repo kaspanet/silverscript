@@ -1297,10 +1297,9 @@ fn resolve_expr_internal(
             start: Box::new(resolve_expr_internal(*start, env, visiting, preserve_inline_args)?),
             end: Box::new(resolve_expr_internal(*end, env, visiting, preserve_inline_args)?),
         }),
-        Expr::Introspection { kind, index } => Ok(Expr::Introspection {
-            kind,
-            index: Box::new(resolve_expr_internal(*index, env, visiting, preserve_inline_args)?),
-        }),
+        Expr::Introspection { kind, index } => {
+            Ok(Expr::Introspection { kind, index: Box::new(resolve_expr_internal(*index, env, visiting, preserve_inline_args)?) })
+        }
         other => Ok(other),
     }
 }

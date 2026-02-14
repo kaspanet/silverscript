@@ -132,32 +132,12 @@ impl FunctionDebugRecorder {
         Ok(())
     }
 
-    pub fn record_inline_call_enter(
-        &mut self,
-        span: Option<SourceSpan>,
-        bytecode_offset: usize,
-        callee: &str,
-    ) -> Option<u32> {
-        self.push_event(
-            bytecode_offset,
-            bytecode_offset,
-            span,
-            DebugEventKind::InlineCallEnter { callee: callee.to_string() },
-        )
+    pub fn record_inline_call_enter(&mut self, span: Option<SourceSpan>, bytecode_offset: usize, callee: &str) -> Option<u32> {
+        self.push_event(bytecode_offset, bytecode_offset, span, DebugEventKind::InlineCallEnter { callee: callee.to_string() })
     }
 
-    pub fn record_inline_call_exit(
-        &mut self,
-        span: Option<SourceSpan>,
-        bytecode_offset: usize,
-        callee: &str,
-    ) -> Option<u32> {
-        self.push_event(
-            bytecode_offset,
-            bytecode_offset,
-            span,
-            DebugEventKind::InlineCallExit { callee: callee.to_string() },
-        )
+    pub fn record_inline_call_exit(&mut self, span: Option<SourceSpan>, bytecode_offset: usize, callee: &str) -> Option<u32> {
+        self.push_event(bytecode_offset, bytecode_offset, span, DebugEventKind::InlineCallExit { callee: callee.to_string() })
     }
 
     pub fn merge_inline_events(&mut self, inline: &FunctionDebugRecorder) {

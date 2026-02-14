@@ -232,9 +232,9 @@ impl<'a> DebugSession<'a> {
         let mut search_from = self.current_step_index;
 
         loop {
-            let Some(target_index) = self.next_steppable_mapping_index(search_from, |mapping| {
-                predicate(mapping.call_depth, current_depth)
-            }) else {
+            let Some(target_index) =
+                self.next_steppable_mapping_index(search_from, |mapping| predicate(mapping.call_depth, current_depth))
+            else {
                 while self.step_opcode()?.is_some() {}
                 return Ok(None);
             };
@@ -284,9 +284,11 @@ impl<'a> DebugSession<'a> {
             }
             let offset = self.current_byte_offset();
             if self.engine.is_executing() {
-                let found = self.source_mappings.iter().enumerate().find(|(_, mapping)| {
-                    self.is_steppable_mapping(mapping) && mapping_matches_offset(mapping, offset)
-                });
+                let found = self
+                    .source_mappings
+                    .iter()
+                    .enumerate()
+                    .find(|(_, mapping)| self.is_steppable_mapping(mapping) && mapping_matches_offset(mapping, offset));
                 if let Some((index, _)) = found {
                     self.current_step_index = Some(index);
                     return Ok(());
@@ -320,12 +322,7 @@ impl<'a> DebugSession<'a> {
     pub fn state(&self) -> SessionState {
         let executed = self.pc.saturating_sub(1);
         let opcode = self.op_displays.get(executed).cloned();
-        SessionState {
-            pc: self.pc,
-            opcode,
-            mapping: self.current_location(),
-            stack: self.stack(),
-        }
+        SessionState { pc: self.pc, opcode, mapping: self.current_location(), stack: self.stack() }
     }
 
     /// Returns true if the script engine is still running.
@@ -581,9 +578,7 @@ impl<'a> DebugSession<'a> {
 
     /// Returns the debug mapping for the current bytecode position.
     pub fn current_location(&self) -> Option<DebugMapping> {
-        self.current_step_mapping()
-            .cloned()
-            .or_else(|| self.mapping_for_offset(self.current_byte_offset()).cloned())
+        self.current_step_mapping().cloned().or_else(|| self.mapping_for_offset(self.current_byte_offset()).cloned())
     }
 
     /// Returns the current bytecode offset in the script.
@@ -688,11 +683,7 @@ impl<'a> DebugSession<'a> {
         matches!(&mapping.kind, MappingKind::Statement {} | MappingKind::Virtual {})
     }
 
-    fn next_steppable_mapping_index(
-        &self,
-        from: Option<usize>,
-        predicate: impl Fn(&DebugMapping) -> bool,
-    ) -> Option<usize> {
+    fn next_steppable_mapping_index(&self, from: Option<usize>, predicate: impl Fn(&DebugMapping) -> bool) -> Option<usize> {
         let start = from.map(|index| index.saturating_add(1)).unwrap_or(0);
         for index in start..self.source_mappings.len() {
             let mapping = self.source_mappings.get(index)?;
