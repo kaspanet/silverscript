@@ -14,6 +14,8 @@ use kaspa_txscript::{EngineCtx, EngineFlags, SeqCommitAccessor, TxScriptEngine, 
 use silverscript_lang::ast::{Expr, parse_contract_ast};
 use silverscript_lang::compiler::{CompileOptions, CompiledContract, compile_contract, compile_contract_ast, function_branch_index};
 
+const OPTIONS: CompileOptions = CompileOptions { allow_yield: false, allow_entrypoint_return: false, record_debug_infos: false };
+
 fn run_script_with_selector(script: Vec<u8>, selector: Option<i64>) -> Result<(), kaspa_txscript_errors::TxScriptError> {
     let sigscript = selector_sigscript(selector);
     run_script_with_sigscript(script, sigscript)
@@ -590,8 +592,7 @@ fn compiles_int_array_length_to_expected_script() {
             }
         }
     "#;
-    let options = CompileOptions { allow_yield: false, allow_entrypoint_return: false };
-    let compiled = compile_contract(source, &[], options).expect("compile succeeds");
+    let compiled = compile_contract(source, &[], OPTIONS).expect("compile succeeds");
 
     let expected = ScriptBuilder::new()
         .add_data(&[])
@@ -630,8 +631,7 @@ fn compiles_int_array_push_to_expected_script() {
             }
         }
     "#;
-    let options = CompileOptions { allow_yield: false, allow_entrypoint_return: false };
-    let compiled = compile_contract(source, &[], options).expect("compile succeeds");
+    let compiled = compile_contract(source, &[], OPTIONS).expect("compile succeeds");
 
     let expected = ScriptBuilder::new()
         .add_data(&[])
@@ -678,8 +678,7 @@ fn compiles_int_array_index_to_expected_script() {
             }
         }
     "#;
-    let options = CompileOptions { allow_yield: false, allow_entrypoint_return: false };
-    let compiled = compile_contract(source, &[], options).expect("compile succeeds");
+    let compiled = compile_contract(source, &[], OPTIONS).expect("compile succeeds");
 
     let expected = ScriptBuilder::new()
         .add_data(&[])
@@ -735,8 +734,7 @@ fn runs_array_runtime_examples() {
             }
         }
     "#;
-    let options = CompileOptions { allow_yield: false, allow_entrypoint_return: false };
-    let compiled = compile_contract(source, &[], options).expect("compile succeeds");
+    let compiled = compile_contract(source, &[], OPTIONS).expect("compile succeeds");
     let sigscript = ScriptBuilder::new().drain();
     let result = run_script_with_sigscript(compiled.script, sigscript);
     assert!(result.is_ok(), "array runtime example failed: {}", result.unwrap_err());
@@ -753,8 +751,7 @@ fn compiles_bytes20_array_push_without_num2bin() {
             }
         }
     "#;
-    let options = CompileOptions { allow_yield: false, allow_entrypoint_return: false };
-    let compiled = compile_contract(source, &[], options).expect("compile succeeds");
+    let compiled = compile_contract(source, &[], OPTIONS).expect("compile succeeds");
 
     let value =
         vec![0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14];
@@ -802,8 +799,7 @@ fn runs_bytes20_array_runtime_example() {
             }
         }
     "#;
-    let options = CompileOptions { allow_yield: false, allow_entrypoint_return: false };
-    let compiled = compile_contract(source, &[], options).expect("compile succeeds");
+    let compiled = compile_contract(source, &[], OPTIONS).expect("compile succeeds");
     let sigscript = ScriptBuilder::new().drain();
     let result = run_script_with_sigscript(compiled.script, sigscript);
     assert!(result.is_ok(), "bytes20 array runtime example failed: {}", result.unwrap_err());
@@ -822,8 +818,7 @@ fn allows_array_equality_comparison() {
             }
         }
     "#;
-    let options = CompileOptions { allow_yield: false, allow_entrypoint_return: false };
-    let compiled = compile_contract(source, &[], options).expect("compile succeeds");
+    let compiled = compile_contract(source, &[], OPTIONS).expect("compile succeeds");
     let sigscript = ScriptBuilder::new().drain();
     let result = run_script_with_sigscript(compiled.script, sigscript);
     assert!(result.is_ok(), "array equality runtime failed: {}", result.unwrap_err());
@@ -842,8 +837,7 @@ fn fails_array_equality_comparison() {
             }
         }
     "#;
-    let options = CompileOptions { allow_yield: false, allow_entrypoint_return: false };
-    let compiled = compile_contract(source, &[], options).expect("compile succeeds");
+    let compiled = compile_contract(source, &[], OPTIONS).expect("compile succeeds");
     let sigscript = ScriptBuilder::new().drain();
     let result = run_script_with_sigscript(compiled.script, sigscript);
     assert!(result.is_err());
@@ -863,8 +857,7 @@ fn allows_array_inequality_with_different_sizes() {
             }
         }
     "#;
-    let options = CompileOptions { allow_yield: false, allow_entrypoint_return: false };
-    let compiled = compile_contract(source, &[], options).expect("compile succeeds");
+    let compiled = compile_contract(source, &[], OPTIONS).expect("compile succeeds");
     let sigscript = ScriptBuilder::new().drain();
     let result = run_script_with_sigscript(compiled.script, sigscript);
     assert!(result.is_ok(), "array inequality runtime failed: {}", result.unwrap_err());
@@ -885,8 +878,7 @@ fn runs_array_for_loop_example() {
             }
         }
     "#;
-    let options = CompileOptions { allow_yield: false, allow_entrypoint_return: false };
-    let compiled = compile_contract(source, &[], options).expect("compile succeeds");
+    let compiled = compile_contract(source, &[], OPTIONS).expect("compile succeeds");
     let sigscript = ScriptBuilder::new().drain();
     let result = run_script_with_sigscript(compiled.script, sigscript);
     assert!(result.is_ok(), "array for-loop runtime failed: {}", result.unwrap_err());
@@ -908,8 +900,7 @@ fn runs_array_for_loop_with_length_guard() {
             }
         }
     "#;
-    let options = CompileOptions { allow_yield: false, allow_entrypoint_return: false };
-    let compiled = compile_contract(source, &[], options).expect("compile succeeds");
+    let compiled = compile_contract(source, &[], OPTIONS).expect("compile succeeds");
 
     let sigscript = compiled.build_sig_script("main", vec![vec![1i64, 2i64, 3i64, 4i64].into()]).expect("sigscript builds");
 
@@ -962,8 +953,7 @@ fn allows_array_assignment_with_compatible_types() {
             }
         }
     "#;
-    let options = CompileOptions { allow_yield: false, allow_entrypoint_return: false };
-    let compiled = compile_contract(source, &[], options).expect("compile succeeds");
+    let compiled = compile_contract(source, &[], OPTIONS).expect("compile succeeds");
     let sigscript = ScriptBuilder::new().drain();
     let result = run_script_with_sigscript(compiled.script, sigscript);
     assert!(result.is_ok(), "array assignment runtime failed: {}", result.unwrap_err());
@@ -978,8 +968,7 @@ fn rejects_unsized_array_type() {
             }
         }
     "#;
-    let options = CompileOptions { allow_yield: false, allow_entrypoint_return: false };
-    assert!(compile_contract(source, &[], options).is_err());
+    assert!(compile_contract(source, &[], OPTIONS).is_err());
 }
 
 #[test]
@@ -992,8 +981,7 @@ fn rejects_array_element_assignment() {
             }
         }
     "#;
-    let options = CompileOptions { allow_yield: false, allow_entrypoint_return: false };
-    assert!(compile_contract(source, &[], options).is_err());
+    assert!(compile_contract(source, &[], OPTIONS).is_err());
 }
 
 #[test]
@@ -1007,7 +995,7 @@ fn locking_bytecode_p2pk_matches_pay_to_address_script() {
         }
     "#;
 
-    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let compiled = compile_contract(source, &[], OPTIONS).expect("compile succeeds");
     let pubkey = vec![0x11u8; 32];
     let address = Address::new(Prefix::Mainnet, Version::PubKey, &pubkey);
     let spk = pay_to_address_script(&address);
@@ -1031,7 +1019,7 @@ fn locking_bytecode_p2sh_matches_pay_to_address_script() {
         }
     "#;
 
-    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let compiled = compile_contract(source, &[], OPTIONS).expect("compile succeeds");
     let hash = vec![0x22u8; 32];
     let address = Address::new(Prefix::Mainnet, Version::ScriptHash, &hash);
     let spk = pay_to_address_script(&address);
@@ -1055,7 +1043,7 @@ fn locking_bytecode_p2sh_from_redeem_script_matches_pay_to_script_hash_script() 
         }
     "#;
 
-    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let compiled = compile_contract(source, &[], OPTIONS).expect("compile succeeds");
     let redeem_script = vec![OpTrue];
     let spk = pay_to_script_hash_script(&redeem_script);
     let mut expected = Vec::new();

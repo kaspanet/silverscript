@@ -16,6 +16,22 @@ pub struct ContractAst {
     pub functions: Vec<FunctionAst>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SourceSpan {
+    pub line: u32,
+    pub col: u32,
+    pub end_line: u32,
+    pub end_col: u32,
+}
+
+impl SourceSpan {
+    pub fn from_span(span: pest::Span<'_>) -> Self {
+        let (line, col) = span.start_pos().line_col();
+        let (end_line, end_col) = span.end_pos().line_col();
+        Self { line: line as u32, col: col as u32, end_line: end_line as u32, end_col: end_col as u32 }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FunctionAst {
     pub name: String,
@@ -34,8 +50,16 @@ pub struct ParamAst {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Statement {
+    #[serde(skip)]
+    pub span: Option<SourceSpan>,
+    #[serde(flatten)]
+    pub kind: StatementKind,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "data", rename_all = "snake_case")]
-pub enum Statement {
+pub enum StatementKind {
     VariableDefinition { type_name: String, modifiers: Vec<String>, name: String, expr: Option<Expr> },
     TupleAssignment { left_type: String, left_name: String, right_type: String, right_name: String, expr: Expr },
     ArrayPush { name: String, expr: Expr },
@@ -269,14 +293,17 @@ fn parse_function_definition(pair: Pair<'_, Rule>) -> Result<FunctionAst, Compil
 }
 
 fn parse_statement(pair: Pair<'_, Rule>) -> Result<Statement, CompilerError> {
-    match pair.as_rule() {
-        Rule::statement => {
-            if let Some(inner) = pair.into_inner().next() {
-                parse_statement(inner)
-            } else {
-                Err(CompilerError::Unsupported("empty statement".to_string()))
-            }
-        }
+    if pair.as_rule() == Rule::statement {
+        return if let Some(inner) = pair.into_inner().next() {
+            parse_statement(inner)
+        } else {
+            Err(CompilerError::Unsupported("empty statement".to_string()))
+        };
+    }
+
+    let span = Some(SourceSpan::from_span(pair.as_span()));
+
+    let kind = match pair.as_rule() {
         Rule::variable_definition => {
             let mut inner = pair.into_inner();
             let type_name = inner
@@ -297,7 +324,7 @@ fn parse_statement(pair: Pair<'_, Rule>) -> Result<Statement, CompilerError> {
             let ident = inner.next().ok_or_else(|| CompilerError::Unsupported("missing variable name".to_string()))?;
             validate_user_identifier(ident.as_str())?;
             let expr = inner.next().map(parse_expression).transpose()?;
-            Ok(Statement::VariableDefinition { type_name, modifiers, name: ident.as_str().to_string(), expr })
+            StatementKind::VariableDefinition { type_name, modifiers, name: ident.as_str().to_string(), expr }
         }
         Rule::tuple_assignment => {
             let mut inner = pair.into_inner();
@@ -312,27 +339,27 @@ fn parse_statement(pair: Pair<'_, Rule>) -> Result<Statement, CompilerError> {
             let expr_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing tuple expression".to_string()))?;
 
             let expr = parse_expression(expr_pair)?;
-            Ok(Statement::TupleAssignment {
+            StatementKind::TupleAssignment {
                 left_type,
                 left_name: left_ident.as_str().to_string(),
                 right_type,
                 right_name: right_ident.as_str().to_string(),
                 expr,
-            })
+            }
         }
         Rule::push_statement => {
             let mut inner = pair.into_inner();
             let ident = inner.next().ok_or_else(|| CompilerError::Unsupported("missing push target".to_string()))?;
             let expr_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing push expression".to_string()))?;
             let expr = parse_expression(expr_pair)?;
-            Ok(Statement::ArrayPush { name: ident.as_str().to_string(), expr })
+            StatementKind::ArrayPush { name: ident.as_str().to_string(), expr }
         }
         Rule::assign_statement => {
             let mut inner = pair.into_inner();
             let ident = inner.next().ok_or_else(|| CompilerError::Unsupported("missing assignment name".to_string()))?;
             let expr_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing assignment expression".to_string()))?;
             let expr = parse_expression(expr_pair)?;
-            Ok(Statement::Assign { name: ident.as_str().to_string(), expr })
+            StatementKind::Assign { name: ident.as_str().to_string(), expr }
         }
         Rule::time_op_statement => {
             let mut inner = pair.into_inner();
@@ -346,14 +373,14 @@ fn parse_statement(pair: Pair<'_, Rule>) -> Result<Statement, CompilerError> {
                 "tx.time" => TimeVar::TxTime,
                 other => return Err(CompilerError::Unsupported(format!("unsupported time variable: {other}"))),
             };
-            Ok(Statement::TimeOp { tx_var, expr, message })
+            StatementKind::TimeOp { tx_var, expr, message }
         }
         Rule::require_statement => {
             let mut inner = pair.into_inner();
             let expr_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing require expression".to_string()))?;
             let message = inner.next().map(parse_require_message).transpose()?;
             let expr = parse_expression(expr_pair)?;
-            Ok(Statement::Require { expr, message })
+            StatementKind::Require { expr, message }
         }
         Rule::if_statement => {
             let mut inner = pair.into_inner();
@@ -362,14 +389,14 @@ fn parse_statement(pair: Pair<'_, Rule>) -> Result<Statement, CompilerError> {
             let then_block = inner.next().ok_or_else(|| CompilerError::Unsupported("missing if block".to_string()))?;
             let then_branch = parse_block(then_block)?;
             let else_branch = inner.next().map(parse_block).transpose()?;
-            Ok(Statement::If { condition: cond_expr, then_branch, else_branch })
+            StatementKind::If { condition: cond_expr, then_branch, else_branch }
         }
         Rule::call_statement => {
             let mut inner = pair.into_inner();
             let call_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing function call".to_string()))?;
             match parse_function_call(call_pair)? {
-                Expr::Call { name, args } => Ok(Statement::FunctionCall { name, args }),
-                _ => Err(CompilerError::Unsupported("function call expected".to_string())),
+                Expr::Call { name, args } => StatementKind::FunctionCall { name, args },
+                _ => return Err(CompilerError::Unsupported("function call expected".to_string())),
             }
         }
         Rule::function_call_assignment => {
@@ -397,8 +424,8 @@ fn parse_statement(pair: Pair<'_, Rule>) -> Result<Statement, CompilerError> {
             }
             let call_pair = call_pair.ok_or_else(|| CompilerError::Unsupported("missing function call".to_string()))?;
             match parse_function_call(call_pair)? {
-                Expr::Call { name, args } => Ok(Statement::FunctionCallAssign { bindings, name, args }),
-                _ => Err(CompilerError::Unsupported("function call expected".to_string())),
+                Expr::Call { name, args } => StatementKind::FunctionCallAssign { bindings, name, args },
+                _ => return Err(CompilerError::Unsupported("function call expected".to_string())),
             }
         }
         Rule::for_statement => {
@@ -413,7 +440,7 @@ fn parse_statement(pair: Pair<'_, Rule>) -> Result<Statement, CompilerError> {
             let end_expr = parse_expression(end_pair)?;
             let body = parse_block(block_pair)?;
 
-            Ok(Statement::For { ident: ident.as_str().to_string(), start: start_expr, end: end_expr, body })
+            StatementKind::For { ident: ident.as_str().to_string(), start: start_expr, end: end_expr, body }
         }
         Rule::yield_statement => {
             let mut inner = pair.into_inner();
@@ -422,7 +449,7 @@ fn parse_statement(pair: Pair<'_, Rule>) -> Result<Statement, CompilerError> {
             if args.len() != 1 {
                 return Err(CompilerError::Unsupported("yield() expects a single argument".to_string()));
             }
-            Ok(Statement::Yield { expr: args[0].clone() })
+            StatementKind::Yield { expr: args[0].clone() }
         }
         Rule::return_statement => {
             let mut inner = pair.into_inner();
@@ -431,16 +458,18 @@ fn parse_statement(pair: Pair<'_, Rule>) -> Result<Statement, CompilerError> {
             if args.is_empty() {
                 return Err(CompilerError::Unsupported("return() expects at least one argument".to_string()));
             }
-            Ok(Statement::Return { exprs: args })
+            StatementKind::Return { exprs: args }
         }
         Rule::console_statement => {
             let mut inner = pair.into_inner();
             let list_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing console arguments".to_string()))?;
             let args = parse_console_parameter_list(list_pair)?;
-            Ok(Statement::Console { args })
+            StatementKind::Console { args }
         }
-        _ => Err(CompilerError::Unsupported(format!("unexpected statement: {:?}", pair.as_rule()))),
-    }
+        _ => return Err(CompilerError::Unsupported(format!("unexpected statement: {:?}", pair.as_rule()))),
+    };
+
+    Ok(Statement { span, kind })
 }
 
 fn parse_block(pair: Pair<'_, Rule>) -> Result<Vec<Statement>, CompilerError> {
