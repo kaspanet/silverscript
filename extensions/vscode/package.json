@@ -1,8 +1,17 @@
 {
   "name": "silverscript",
+  "publisher": "IzioDev",
   "displayName": "SilverScript",
   "description": "Kaspa SilverScript",
   "version": "0.1.0",
+  "repository": {
+    "url": "https://github.com/kaspanet/silverscript",
+    "directory": "extensions/vscode"
+  },
+  "license": "ISC",
+  "author": {
+    "name": "Kaspa Developers"
+  },
   "engines": {
     "vscode": "^1.108.0"
   },
@@ -74,6 +83,7 @@
     "@types/vscode": "1.108.1",
     "@vscode/test-cli": "0.0.12",
     "@vscode/test-electron": "2.5.2",
+    "@vscode/vsce": "^3.7.1",
     "esbuild": "0.27.2",
     "eslint": "9.39.2",
     "npm-run-all": "4.1.5",
@@ -81,7 +91,7 @@
     "typescript-eslint": "8.52.0"
   },
   "dependencies": {
-    "web-tree-sitter": "0.26.3",
-    "vscode-languageclient": "9.0.1"
+    "vscode-languageclient": "9.0.1",
+    "web-tree-sitter": "0.26.3"
   }
 }

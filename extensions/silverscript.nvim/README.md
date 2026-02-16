@@ -1,5 +1,3 @@
-TODO: share highlights.scm with Zed
-
 Requirements:
 
 - nvim-treesitter
