@@ -33,11 +33,29 @@
 
 (nullary_op) @variable.builtin
 
-(introspection) @variable.builtin
+(output_root) @variable.builtin
 
-(output_field) @property
+(input_root) @variable.builtin
 
-(input_field) @property
+(tuple_index
+  "[" @operator
+  "]" @operator)
+
+(output_field
+  "." @operator)
+
+(input_field
+  "." @operator)
+
+(unknown_field
+  "." @operator)
+
+(output_field_name) @property
+
+(input_field_name) @property
+
+(unknown_field
+  name: (identifier) @property)
 
 [
   "pragma"

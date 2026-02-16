@@ -542,6 +542,22 @@
   {
     "type": "input_field",
     "named": true,
+    "fields": {
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "input_field_name",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "input_field_name",
+    "named": true,
     "fields": {}
   },
   {
@@ -566,24 +582,49 @@
   {
     "type": "introspection",
     "named": true,
-    "fields": {},
-    "children": {
-      "multiple": true,
-      "required": true,
-      "types": [
-        {
-          "type": "expression",
-          "named": true
-        },
-        {
-          "type": "input_field",
-          "named": true
-        },
-        {
-          "type": "output_field",
-          "named": true
-        }
-      ]
+    "fields": {
+      "field": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "input_field",
+            "named": true
+          },
+          {
+            "type": "output_field",
+            "named": true
+          },
+          {
+            "type": "unknown_field",
+            "named": true
+          }
+        ]
+      },
+      "index": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "tuple_index",
+            "named": true
+          }
+        ]
+      },
+      "root": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "input_root",
+            "named": true
+          },
+          {
+            "type": "output_root",
+            "named": true
+          }
+        ]
+      }
     }
   },
   {
@@ -683,6 +724,22 @@
   },
   {
     "type": "output_field",
+    "named": true,
+    "fields": {
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "output_field_name",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "output_field_name",
     "named": true,
     "fields": {}
   },
@@ -1268,6 +1325,22 @@
     "fields": {}
   },
   {
+    "type": "unknown_field",
+    "named": true,
+    "fields": {
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
     "type": "variable_definition",
     "named": true,
     "fields": {
@@ -1540,6 +1613,10 @@
     "named": false
   },
   {
+    "type": "input_root",
+    "named": true
+  },
+  {
     "type": "int",
     "named": false
   },
@@ -1578,6 +1655,10 @@
   {
     "type": "outpointTransactionHash",
     "named": false
+  },
+  {
+    "type": "output_root",
+    "named": true
   },
   {
     "type": "pragma",
@@ -1652,19 +1733,11 @@
     "named": false
   },
   {
-    "type": "tx.inputs",
-    "named": false
-  },
-  {
     "type": "tx.inputs.length",
     "named": false
   },
   {
     "type": "tx.locktime",
-    "named": false
-  },
-  {
-    "type": "tx.outputs",
     "named": false
   },
   {

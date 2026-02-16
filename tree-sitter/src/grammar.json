@@ -1811,24 +1811,37 @@
           "type": "SEQ",
           "members": [
             {
-              "type": "STRING",
-              "value": "tx.outputs"
+              "type": "FIELD",
+              "name": "root",
+              "content": {
+                "type": "SYMBOL",
+                "name": "output_root"
+              }
             },
             {
-              "type": "STRING",
-              "value": "["
+              "type": "FIELD",
+              "name": "index",
+              "content": {
+                "type": "SYMBOL",
+                "name": "tuple_index"
+              }
             },
             {
-              "type": "SYMBOL",
-              "name": "expression"
-            },
-            {
-              "type": "STRING",
-              "value": "]"
-            },
-            {
-              "type": "SYMBOL",
-              "name": "output_field"
+              "type": "FIELD",
+              "name": "field",
+              "content": {
+                "type": "CHOICE",
+                "members": [
+                  {
+                    "type": "SYMBOL",
+                    "name": "output_field"
+                  },
+                  {
+                    "type": "SYMBOL",
+                    "name": "unknown_field"
+                  }
+                ]
+              }
             }
           ]
         },
@@ -1836,28 +1849,49 @@
           "type": "SEQ",
           "members": [
             {
-              "type": "STRING",
-              "value": "tx.inputs"
+              "type": "FIELD",
+              "name": "root",
+              "content": {
+                "type": "SYMBOL",
+                "name": "input_root"
+              }
             },
             {
-              "type": "STRING",
-              "value": "["
+              "type": "FIELD",
+              "name": "index",
+              "content": {
+                "type": "SYMBOL",
+                "name": "tuple_index"
+              }
             },
             {
-              "type": "SYMBOL",
-              "name": "expression"
-            },
-            {
-              "type": "STRING",
-              "value": "]"
-            },
-            {
-              "type": "SYMBOL",
-              "name": "input_field"
+              "type": "FIELD",
+              "name": "field",
+              "content": {
+                "type": "CHOICE",
+                "members": [
+                  {
+                    "type": "SYMBOL",
+                    "name": "input_field"
+                  },
+                  {
+                    "type": "SYMBOL",
+                    "name": "unknown_field"
+                  }
+                ]
+              }
             }
           ]
         }
       ]
+    },
+    "output_root": {
+      "type": "STRING",
+      "value": "tx.outputs"
+    },
+    "input_root": {
+      "type": "STRING",
+      "value": "tx.inputs"
     },
     "output_field": {
       "type": "SEQ",
@@ -1867,29 +1901,37 @@
           "value": "."
         },
         {
-          "type": "CHOICE",
-          "members": [
-            {
-              "type": "STRING",
-              "value": "value"
-            },
-            {
-              "type": "STRING",
-              "value": "lockingBytecode"
-            },
-            {
-              "type": "STRING",
-              "value": "tokenCategory"
-            },
-            {
-              "type": "STRING",
-              "value": "nftCommitment"
-            },
-            {
-              "type": "STRING",
-              "value": "tokenAmount"
-            }
-          ]
+          "type": "FIELD",
+          "name": "name",
+          "content": {
+            "type": "SYMBOL",
+            "name": "output_field_name"
+          }
+        }
+      ]
+    },
+    "output_field_name": {
+      "type": "CHOICE",
+      "members": [
+        {
+          "type": "STRING",
+          "value": "value"
+        },
+        {
+          "type": "STRING",
+          "value": "lockingBytecode"
+        },
+        {
+          "type": "STRING",
+          "value": "tokenCategory"
+        },
+        {
+          "type": "STRING",
+          "value": "nftCommitment"
+        },
+        {
+          "type": "STRING",
+          "value": "tokenAmount"
         }
       ]
     },
@@ -1901,47 +1943,76 @@
           "value": "."
         },
         {
-          "type": "CHOICE",
-          "members": [
-            {
-              "type": "STRING",
-              "value": "value"
-            },
-            {
-              "type": "STRING",
-              "value": "lockingBytecode"
-            },
-            {
-              "type": "STRING",
-              "value": "outpointTransactionHash"
-            },
-            {
-              "type": "STRING",
-              "value": "outpointIndex"
-            },
-            {
-              "type": "STRING",
-              "value": "unlockingBytecode"
-            },
-            {
-              "type": "STRING",
-              "value": "sequenceNumber"
-            },
-            {
-              "type": "STRING",
-              "value": "tokenCategory"
-            },
-            {
-              "type": "STRING",
-              "value": "nftCommitment"
-            },
-            {
-              "type": "STRING",
-              "value": "tokenAmount"
-            }
-          ]
+          "type": "FIELD",
+          "name": "name",
+          "content": {
+            "type": "SYMBOL",
+            "name": "input_field_name"
+          }
         }
       ]
+    },
+    "input_field_name": {
+      "type": "CHOICE",
+      "members": [
+        {
+          "type": "STRING",
+          "value": "value"
+        },
+        {
+          "type": "STRING",
+          "value": "lockingBytecode"
+        },
+        {
+          "type": "STRING",
+          "value": "outpointTransactionHash"
+        },
+        {
+          "type": "STRING",
+          "value": "outpointIndex"
+        },
+        {
+          "type": "STRING",
+          "value": "unlockingBytecode"
+        },
+        {
+          "type": "STRING",
+          "value": "sequenceNumber"
+        },
+        {
+          "type": "STRING",
+          "value": "tokenCategory"
+        },
+        {
+          "type": "STRING",
+          "value": "nftCommitment"
+        },
+        {
+          "type": "STRING",
+          "value": "tokenAmount"
+        }
+      ]
+    },
+    "unknown_field": {
+      "type": "PREC",
+      "value": -1,
+      "content": {
+        "type": "SEQ",
+        "members": [
+          {
+            "type": "STRING",
+            "value": "."
+          },
+          {
+            "type": "FIELD",
+            "name": "name",
+            "content": {
+              "type": "SYMBOL",
+              "name": "identifier"
+            }
+          }
+        ]
+      }
     },
     "array": {
       "type": "SEQ",

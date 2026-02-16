@@ -309,37 +309,49 @@ export default grammar({
 
     introspection: ($) =>
       choice(
-        seq("tx.outputs", "[", $.expression, "]", $.output_field),
-        seq("tx.inputs", "[", $.expression, "]", $.input_field),
-      ),
-
-    output_field: ($) =>
-      seq(
-        ".",
-        choice(
-          "value",
-          "lockingBytecode",
-          "tokenCategory",
-          "nftCommitment",
-          "tokenAmount",
+        seq(
+          field("root", $.output_root),
+          field("index", $.tuple_index),
+          field("field", choice($.output_field, $.unknown_field)),
+        ),
+        seq(
+          field("root", $.input_root),
+          field("index", $.tuple_index),
+          field("field", choice($.input_field, $.unknown_field)),
         ),
       ),
 
-    input_field: ($) =>
-      seq(
-        ".",
-        choice(
-          "value",
-          "lockingBytecode",
-          "outpointTransactionHash",
-          "outpointIndex",
-          "unlockingBytecode",
-          "sequenceNumber",
-          "tokenCategory",
-          "nftCommitment",
-          "tokenAmount",
-        ),
+    output_root: (_) => "tx.outputs",
+
+    input_root: (_) => "tx.inputs",
+
+    output_field: ($) => seq(".", field("name", $.output_field_name)),
+
+    output_field_name: (_) =>
+      choice(
+        "value",
+        "lockingBytecode",
+        "tokenCategory",
+        "nftCommitment",
+        "tokenAmount",
       ),
+
+    input_field: ($) => seq(".", field("name", $.input_field_name)),
+
+    input_field_name: (_) =>
+      choice(
+        "value",
+        "lockingBytecode",
+        "outpointTransactionHash",
+        "outpointIndex",
+        "unlockingBytecode",
+        "sequenceNumber",
+        "tokenCategory",
+        "nftCommitment",
+        "tokenAmount",
+      ),
+
+    unknown_field: ($) => prec(-1, seq(".", field("name", $.identifier))),
 
     array: ($) => seq("[", optional(commaSep($.expression)), "]"),
 
