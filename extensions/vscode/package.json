@@ -3,7 +3,7 @@
   "publisher": "IzioDev",
   "displayName": "SilverScript",
   "description": "Kaspa SilverScript",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "repository": {
     "url": "https://github.com/kaspanet/silverscript",
     "directory": "extensions/vscode"

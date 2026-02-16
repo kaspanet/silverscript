@@ -16,4 +16,4 @@ vsc-extension-quickstart.md
 # keep these
 !assets/**
 !queries/**
-!node_modules/web-tree-sitter/tree-sitter.wasm
+!node_modules/web-tree-sitter/**
