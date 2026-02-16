@@ -8,11 +8,11 @@ languages = ["languages/silverscript"]
 
 [grammars.silverscript]
 # useful for development
-repository = "file:///D:/Dev/kaspa/silverscript"
+# repository = "file:///D:/Dev/kaspa/silverscript"
 
 # @TODO(izio): change before merge
-#repository = "https://github.com/IzioDev/silverscript-new"
-rev = "25764b1953c5827958353c4d2702a40d1059900c"
+repository = "https://github.com/IzioDev/silverscript-new"
+rev = "656ca84b1d37628520b61a72df24d384d680433c"
 path = "tree-sitter"
 
 [language_servers.silverscript-lsp]
