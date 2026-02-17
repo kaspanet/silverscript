@@ -375,9 +375,8 @@ fn fixed_type_size(type_name: &str) -> Option<i64> {
     match type_name {
         "int" => Some(8),
         "byte" => Some(1),
-        "bytes" => None, // Dynamic size
         _ => {
-            // Check for new type[N] syntax
+            // Check for type[N] syntax
             if let (Some(elem_type), Some(size)) = (array_element_type(type_name), array_size(type_name)) {
                 if elem_type == "byte" {
                     return Some(size as i64);
@@ -554,7 +553,7 @@ fn encode_array_literal(values: &[Expr], type_name: &str) -> Result<Vec<u8>, Com
             }
         }
         _ => {
-            // Support new type[N] syntax for nested arrays
+            // Handle nested arrays like byte[4][] where element is byte[4]
             let size = if let (Some(inner_elem), Some(inner_size)) = (array_element_type(element_type), array_size(element_type)) {
                 if inner_elem == "byte" {
                     Some(inner_size)
@@ -749,23 +748,23 @@ fn compile_statement(
                 let expr =
                     expr.clone().ok_or_else(|| CompilerError::Unsupported("variable definition requires initializer".to_string()))?;
                 
-                // Validate that the initializer matches the declared type
-                if !expr_matches_type(&expr, type_name) {
-                    return Err(CompilerError::Unsupported(format!(
-                        "initializer type mismatch: expected {}, got incompatible expression", 
-                        type_name
-                    )));
-                }
-                
-                // For array literals, check size matches for fixed-size arrays
-                if let Some(expected_size) = array_size(type_name) {
-                    if let Expr::Array(values) = &expr {
+                // For array literals, validate that the size matches the declared type
+                if let Expr::Array(values) = &expr {
+                    if let Some(expected_size) = array_size(type_name) {
                         if values.len() != expected_size {
                             return Err(CompilerError::Unsupported(format!(
                                 "array size mismatch: expected {} elements for type {}, got {}",
                                 expected_size, type_name, values.len()
                             )));
                         }
+                    }
+                    
+                    // Validate element types match
+                    if !array_literal_matches_type(values, type_name) {
+                        return Err(CompilerError::Unsupported(format!(
+                            "array element type mismatch for type {}", 
+                            type_name
+                        )));
                     }
                 }
                 
@@ -2182,7 +2181,7 @@ fn is_bytes_type(type_name: &str) -> bool {
     if type_name == "bytes" || type_name == "byte" || matches!(type_name, "pubkey" | "sig" | "string") {
         return true;
     }
-    // Support new byte[N] syntax
+    // Check for byte[N] arrays
     if let Some(elem_type) = array_element_type(type_name) {
         if elem_type == "byte" || elem_type == "bytes" {
             return true;
