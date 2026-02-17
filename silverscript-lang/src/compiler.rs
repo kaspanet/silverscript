@@ -748,6 +748,27 @@ fn compile_statement(
                 // Fixed-size arrays like byte[N] can be initialized from expressions
                 let expr =
                     expr.clone().ok_or_else(|| CompilerError::Unsupported("variable definition requires initializer".to_string()))?;
+                
+                // Validate that the initializer matches the declared type
+                if !expr_matches_type(&expr, type_name) {
+                    return Err(CompilerError::Unsupported(format!(
+                        "initializer type mismatch: expected {}, got incompatible expression", 
+                        type_name
+                    )));
+                }
+                
+                // For array literals, check size matches for fixed-size arrays
+                if let Some(expected_size) = array_size(type_name) {
+                    if let Expr::Array(values) = &expr {
+                        if values.len() != expected_size {
+                            return Err(CompilerError::Unsupported(format!(
+                                "array size mismatch: expected {} elements for type {}, got {}",
+                                expected_size, type_name, values.len()
+                            )));
+                        }
+                    }
+                }
+                
                 env.insert(name.clone(), expr);
                 types.insert(name.clone(), type_name.clone());
                 Ok(())

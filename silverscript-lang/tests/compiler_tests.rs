@@ -2514,3 +2514,63 @@ fn compile_time_length_for_fixed_size_byte_array() {
     assert!(compiled.script.contains(&0x53), "Should contain OP_3 for compile-time length");
 }
 
+
+#[test]
+fn accepts_fixed_size_array_init_with_correct_size() {
+    let source = r#"
+        contract Test() {
+            entrypoint function test() {
+                int[4] nums = [1, 2, 3, 4];
+                byte[3] data = 0x010203;
+                require(nums.length == 4);
+                require(data.length == 3);
+            }
+        }
+    "#;
+    compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+}
+
+#[test]
+fn rejects_fixed_size_array_init_with_too_few_elements() {
+    let source = r#"
+        contract Test() {
+            entrypoint function test() {
+                int[4] nums = [1, 2, 3];  // Too few
+            }
+        }
+    "#;
+    let result = compile_contract(source, &[], CompileOptions::default());
+    assert!(result.is_err(), "Should reject array with too few elements");
+    let err_msg = format!("{:?}", result.unwrap_err());
+    assert!(err_msg.contains("type mismatch") || err_msg.contains("size mismatch"), 
+           "Error should mention type or size mismatch");
+}
+
+#[test]
+fn rejects_fixed_size_array_init_with_too_many_elements() {
+    let source = r#"
+        contract Test() {
+            entrypoint function test() {
+                int[3] nums = [1, 2, 3, 4, 5];  // Too many
+            }
+        }
+    "#;
+    let result = compile_contract(source, &[], CompileOptions::default());
+    assert!(result.is_err(), "Should reject array with too many elements");
+    let err_msg = format!("{:?}", result.unwrap_err());
+    assert!(err_msg.contains("type mismatch") || err_msg.contains("size mismatch"),
+           "Error should mention type or size mismatch");
+}
+
+#[test]
+fn accepts_fixed_size_byte_array_init() {
+    let source = r#"
+        contract Test() {
+            entrypoint function test() {
+                byte[32] hash = 0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f;
+                require(hash.length == 32);
+            }
+        }
+    "#;
+    compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+}
