@@ -2486,13 +2486,20 @@ fn compile_time_length_for_fixed_size_int_array() {
     "#;
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
     
-    // The script should be very short since length is compile-time
-    // It should essentially be: <5> <5> <OpEqual> <OpVerify>
-    // Without compile-time optimization, it would need OpSize and OpDiv
-    assert!(compiled.script.len() < 50, "Script should be short with compile-time length, got {}", compiled.script.len());
+    // Expected script for compile-time length:
+    // The nums.length should be replaced with a compile-time constant 5
+    // require(nums.length == 5) becomes: <5> <5> OP_NUMEQUALVERIFY, then OP_TRUE for entrypoint return
+    let expected_script = vec![
+        0x55,  // OP_5 (push 5 for nums.length)
+        0x55,  // OP_5 (push 5 for comparison)
+        0x9c,  // OP_NUMEQUALVERIFY (combined OP_NUMEQUAL + OP_VERIFY)
+        0x69,  // OP_VERIFY
+        0x51,  // OP_TRUE (entrypoint return value)
+    ];
     
-    // Verify it contains a push of 5 (0x55 in script = OP_5)
-    assert!(compiled.script.contains(&0x55), "Should contain OP_5 for compile-time length");
+    assert_eq!(compiled.script, expected_script, 
+        "Script should use compile-time length. Expected: {:?}, Got: {:?}", 
+        expected_script, compiled.script);
 }
 
 #[test]
@@ -2500,18 +2507,27 @@ fn compile_time_length_for_fixed_size_byte_array() {
     let source = r#"
         contract Test() {
             entrypoint function test() {
-                byte[3] data = [0x01, 0x02, 0x03];
+                byte[3] data = 0x010203;
                 require(data.length == 3);
             }
         }
     "#;
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
     
-    // Similar to int array test - should have compile-time length
-    assert!(compiled.script.len() < 50, "Script should be short with compile-time length");
+    // Expected script for compile-time length:
+    // data.length should be replaced with a compile-time constant 3
+    // require(data.length == 3) becomes: <3> <3> OP_NUMEQUALVERIFY, then OP_TRUE for entrypoint return
+    let expected_script = vec![
+        0x53,  // OP_3 (push 3 for data.length)
+        0x53,  // OP_3 (push 3 for comparison)
+        0x9c,  // OP_NUMEQUALVERIFY (combined OP_NUMEQUAL + OP_VERIFY)
+        0x69,  // OP_VERIFY
+        0x51,  // OP_TRUE (entrypoint return value)
+    ];
     
-    // Verify it contains a push of 3 (0x53 in script = OP_3)
-    assert!(compiled.script.contains(&0x53), "Should contain OP_3 for compile-time length");
+    assert_eq!(compiled.script, expected_script,
+        "Script should use compile-time length. Expected: {:?}, Got: {:?}",
+        expected_script, compiled.script);
 }
 
 
