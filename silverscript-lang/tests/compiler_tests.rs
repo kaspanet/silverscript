@@ -2592,38 +2592,36 @@ fn accepts_fixed_size_byte_array_init() {
 }
 
 #[test]
-fn accepts_array_type_with_constant_in_logic() {
-    // Test that constants can be used with array types in logic
-    // Note: Using constant identifiers directly in type syntax (e.g., int[SIZE]) 
-    // is parsed by the grammar but not yet fully implemented in type resolution
+fn accepts_array_type_with_constant_size() {
+    // Test that constants can be used in array type declarations like int[SIZE]
     let source = r#"
         contract Test() {
             int constant SIZE = 4;
             entrypoint function test() {
-                int[4] nums = [1, 2, 3, 4];
+                int[SIZE] nums = [1, 2, 3, 4];
                 require(nums.length == SIZE);
             }
         }
     "#;
-    compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds with constant and array");
+    compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds with int[SIZE]");
 }
 
 #[test]
-fn compile_time_length_with_constant_comparison() {
-    // Test that array.length is computed at compile-time and can be compared with constants
+fn compile_time_length_with_constant_size() {
+    // Test that array.length is computed at compile-time for arrays with constant sizes
     let source = r#"
         contract Test() {
             int constant SIZE = 5;
             entrypoint function test() {
-                int[5] nums = [1, 2, 3, 4, 5];
+                int[SIZE] nums = [1, 2, 3, 4, 5];
                 require(nums.length == SIZE);
             }
         }
     "#;
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
     
-    // Expected script for compile-time length with constant comparison:
-    // nums.length should be replaced with compile-time constant 5
+    // Expected script for compile-time length with constant size:
+    // nums.length should be replaced with compile-time constant 5 (from SIZE)
     // SIZE constant should also be replaced with 5
     // require(nums.length == SIZE) becomes: <5> <5> OP_NUMEQUALVERIFY
     let expected_script = vec![
@@ -2637,4 +2635,18 @@ fn compile_time_length_with_constant_comparison() {
     assert_eq!(compiled.script, expected_script,
         "Script should use compile-time length with constant. Expected: {:?}, Got: {:?}",
         expected_script, compiled.script);
+}
+
+#[test]
+fn accepts_byte_array_with_constant_size() {
+    // Test that constants work with byte arrays too
+    let source = r#"
+        contract Test() {
+            int constant HASH_SIZE = 32;
+            entrypoint function test(byte[HASH_SIZE] hash) {
+                require(hash.length == HASH_SIZE);
+            }
+        }
+    "#;
+    compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds with byte[HASH_SIZE]");
 }
