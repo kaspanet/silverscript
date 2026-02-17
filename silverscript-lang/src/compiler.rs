@@ -732,9 +732,7 @@ fn infer_fixed_array_literal_type(values: &[Expr]) -> Option<String> {
         return None;
     }
     let first_type = infer_fixed_type_from_literal_expr(values.first()?)?;
-    if fixed_type_size(&first_type).is_none() {
-        return None;
-    }
+    fixed_type_size(&first_type)?;
     if values.iter().skip(1).all(|value| infer_fixed_type_from_literal_expr(value).as_deref() == Some(first_type.as_str())) {
         Some(format!("{}[]", first_type))
     } else {
