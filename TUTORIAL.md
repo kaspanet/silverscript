@@ -818,7 +818,7 @@ Transaction introspection allows contracts to examine the transaction that is sp
 int inputIdx = this.activeInputIndex;
 
 // Active bytecode (current contract's scriptPubKey)
-byte[] script = this.activeBytecode;
+byte[] script = this.activeScriptPubKey;
 
 // Number of inputs
 int inputCount = tx.inputs.length;

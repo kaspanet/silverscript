@@ -2658,7 +2658,7 @@ fn compile_expr(
                 NullaryOp::ActiveInputIndex => {
                     builder.add_op(OpTxInputIndex)?;
                 }
-                NullaryOp::ActiveBytecode => {
+                NullaryOp::ActiveScriptPubKey => {
                     builder.add_op(OpTxInputIndex)?;
                     builder.add_op(OpTxInputSpk)?;
                 }
@@ -2772,7 +2772,7 @@ fn expr_is_bytes_inner(
                 IntrospectionKind::InputScriptPubKey | IntrospectionKind::InputSigScript | IntrospectionKind::OutputScriptPubKey
             )
         }
-        Expr::Nullary(NullaryOp::ActiveBytecode) => true,
+        Expr::Nullary(NullaryOp::ActiveScriptPubKey) => true,
         Expr::Nullary(NullaryOp::ThisScriptSizeDataPrefix) => true,
         Expr::ArrayIndex { source, .. } => match source.as_ref() {
             Expr::Identifier(name) => {

@@ -161,7 +161,7 @@ pub enum BinaryOp {
 #[serde(rename_all = "snake_case")]
 pub enum NullaryOp {
     ActiveInputIndex,
-    ActiveBytecode,
+    ActiveScriptPubKey,
     ThisScriptSize,
     ThisScriptSizeDataPrefix,
     TxInputsLength,
@@ -822,7 +822,7 @@ fn parse_string_literal(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
 fn parse_nullary(raw: &str) -> Result<Expr, CompilerError> {
     let op = match raw {
         "this.activeInputIndex" => NullaryOp::ActiveInputIndex,
-        "this.activeBytecode" => NullaryOp::ActiveBytecode,
+        "this.activeScriptPubKey" => NullaryOp::ActiveScriptPubKey,
         "this.scriptSize" => NullaryOp::ThisScriptSize,
         "this.scriptSizeDataPrefix" => NullaryOp::ThisScriptSizeDataPrefix,
         "tx.inputs.length" => NullaryOp::TxInputsLength,

@@ -342,7 +342,7 @@ fn runs_cashc_valid_examples() {
                 assert!(result.is_ok(), "{example} failed: {}", result.unwrap_err());
             }
             "covenant.sil" => {
-                // Unsatisfiable: requires `this.activeBytecode == 0x00`.
+                // Unsatisfiable: requires `this.activeScriptPubKey == 0x00`.
                 let constructor_args = vec![1i64.into()];
                 let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
                 let selector = selector_for_compiled(&compiled, "spend");
