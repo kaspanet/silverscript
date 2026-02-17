@@ -92,7 +92,7 @@ The `args.json` file should contain an array of constructor argument expressions
 
 ```json
 [
-  {"kind": "bytes", "data": [1, 2, 3, 4]},
+  {"kind": "byte[]", "data": [1, 2, 3, 4]},
   {"kind": "int", "data": 12345}
 ]
 ```
@@ -240,9 +240,7 @@ SilverScript supports the following data types:
 | `int` | 64-bit signed integer | `42`, `-100`, `1000` |
 | `bool` | Boolean value | `true`, `false` |
 | `string` | UTF-8 string | `"hello"`, `'world'` |
-| `bytes` | Dynamic byte array | `0x1234`, `0xabcdef` |
-| `byte[N]` | Fixed-size byte array (N = 1-255) | `byte[32]`, `byte[65]` |
-| `byte` | Single byte (alias for `byte[1]`) | `byte` |
+| `byte` | Single byte | `byte` |
 | `pubkey` | Public key (32 bytes) | `pubkey` |
 | `sig` | Signature (64 or 65 bytes) | `sig` |
 | `datasig` | Data signature (64 or 65 bytes) | `datasig` |

@@ -419,7 +419,12 @@ fn contains_yield(stmt: &Statement) -> bool {
     }
 }
 
-fn validate_return_types(exprs: &[Expr], return_types: &[String], types: &HashMap<String, String>) -> Result<(), CompilerError> {
+fn validate_return_types(
+    exprs: &[Expr],
+    return_types: &[String],
+    types: &HashMap<String, String>,
+    constants: &HashMap<String, Expr>,
+) -> Result<(), CompilerError> {
     if return_types.is_empty() {
         return Err(CompilerError::Unsupported("return requires function return types".to_string()));
     }
@@ -427,27 +432,99 @@ fn validate_return_types(exprs: &[Expr], return_types: &[String], types: &HashMa
         return Err(CompilerError::Unsupported("return values count must match function return types".to_string()));
     }
     for (expr, type_name) in exprs.iter().zip(return_types.iter()) {
-        if !expr_matches_return_type(expr, type_name, types) {
+        if !expr_matches_return_type(expr, type_name, types, constants) {
             return Err(CompilerError::Unsupported(format!("return value expects {type_name}")));
         }
     }
     Ok(())
 }
 
-fn expr_matches_type_with_env(expr: &Expr, type_name: &str, types: &HashMap<String, String>) -> bool {
+fn has_explicit_array_size(type_name: &str) -> bool {
+    if let Some(bracket_pos) = type_name.rfind('[') {
+        if type_name.ends_with(']') {
+            let size_str = &type_name[bracket_pos + 1..type_name.len() - 1];
+            return !size_str.is_empty();
+        }
+    }
+    false
+}
+
+fn is_array_type_assignable(actual: &str, expected: &str, constants: &HashMap<String, Expr>) -> bool {
+    if actual == expected {
+        return true;
+    }
+
+    if !is_array_type(actual) || !is_array_type(expected) {
+        return false;
+    }
+
+    if array_element_type(actual) != array_element_type(expected) {
+        return false;
+    }
+
+    if !has_explicit_array_size(expected) {
+        return true;
+    }
+
+    match (array_size_with_constants(actual, constants), array_size_with_constants(expected, constants)) {
+        (Some(actual_size), Some(expected_size)) => actual_size == expected_size,
+        _ => actual == expected,
+    }
+}
+
+fn is_type_assignable(actual: &str, expected: &str, constants: &HashMap<String, Expr>) -> bool {
+    actual == expected || is_array_type_assignable(actual, expected, constants)
+}
+
+fn expr_matches_type_with_env(
+    expr: &Expr,
+    type_name: &str,
+    types: &HashMap<String, String>,
+    constants: &HashMap<String, Expr>,
+) -> bool {
     match expr {
-        Expr::Identifier(name) => types.get(name).is_some_and(|t| t == type_name),
+        Expr::Identifier(name) => types.get(name).is_some_and(|t| is_type_assignable(t, type_name, constants)),
         Expr::Array(values) => is_array_type(type_name) && array_literal_matches_type(values, type_name),
         _ => expr_matches_type(expr, type_name),
     }
 }
 
-fn expr_matches_return_type(expr: &Expr, type_name: &str, types: &HashMap<String, String>) -> bool {
+fn expr_matches_return_type(expr: &Expr, type_name: &str, types: &HashMap<String, String>, constants: &HashMap<String, Expr>) -> bool {
     match expr {
-        Expr::Identifier(name) => types.get(name).is_some_and(|t| t == type_name),
+        Expr::Identifier(name) => types.get(name).is_some_and(|t| is_type_assignable(t, type_name, constants)),
         Expr::Array(values) => is_array_type(type_name) && array_literal_matches_type(values, type_name),
         Expr::Int(_) | Expr::Bool(_) | Expr::Byte(_) | Expr::String(_) => expr_matches_type(expr, type_name),
         _ => true,
+    }
+}
+
+fn infer_fixed_array_type_from_initializer(
+    declared_type: &str,
+    initializer: Option<&Expr>,
+    types: &HashMap<String, String>,
+    constants: &HashMap<String, Expr>,
+) -> Option<String> {
+    if !declared_type.ends_with("[]") {
+        return None;
+    }
+
+    let element_type = array_element_type(declared_type)?;
+    let init = initializer?;
+
+    match init {
+        Expr::Array(values) => {
+            let inferred = format!("{element_type}[{}]", values.len());
+            if array_literal_matches_type(values, &inferred) { Some(inferred) } else { None }
+        }
+        Expr::Identifier(name) => {
+            let other_type = types.get(name)?;
+            if !is_array_type(other_type) || array_element_type(other_type) != Some(element_type) {
+                return None;
+            }
+            let size = array_size_with_constants(other_type, constants)?;
+            Some(format!("{element_type}[{size}]"))
+        }
+        _ => None,
     }
 }
 
@@ -658,7 +735,7 @@ fn compile_function(
                 return Err(CompilerError::Unsupported("return statement must be the last statement".to_string()));
             }
             let Statement::Return { exprs } = stmt else { unreachable!() };
-            validate_return_types(exprs, &function.return_types, &types)?;
+            validate_return_types(exprs, &function.return_types, &types, constants)?;
             for expr in exprs {
                 let resolved = resolve_expr(expr.clone(), &env, &mut HashSet::new())?;
                 yields.push(resolved);
@@ -729,21 +806,33 @@ fn compile_statement(
 ) -> Result<(), CompilerError> {
     match stmt {
         Statement::VariableDefinition { type_name, name, expr, .. } => {
+            let effective_type_name = if is_array_type(type_name) && array_size_with_constants(type_name, contract_constants).is_none()
+            {
+                infer_fixed_array_type_from_initializer(type_name, expr.as_ref(), types, contract_constants)
+                    .unwrap_or_else(|| type_name.clone())
+            } else {
+                type_name.clone()
+            };
+
             // Check if this is a fixed-size array (e.g., byte[N]) or dynamic array (e.g., byte[])
-            let is_fixed_size_array = is_array_type(type_name) && array_size_with_constants(type_name, contract_constants).is_some();
-            let is_dynamic_array = is_array_type(type_name) && array_size_with_constants(type_name, contract_constants).is_none();
+            let is_fixed_size_array =
+                is_array_type(&effective_type_name) && array_size_with_constants(&effective_type_name, contract_constants).is_some();
+            let is_dynamic_array =
+                is_array_type(&effective_type_name) && array_size_with_constants(&effective_type_name, contract_constants).is_none();
 
             if is_dynamic_array {
-                if array_element_size(type_name).is_none() {
-                    return Err(CompilerError::Unsupported(format!("array element type must have known size: {type_name}")));
+                if array_element_size(&effective_type_name).is_none() {
+                    return Err(CompilerError::Unsupported(format!("array element type must have known size: {effective_type_name}")));
                 }
 
                 // For byte[] (dynamic byte arrays), allow initialization from any bytes expression
-                let is_byte_array_type = type_name.starts_with("byte[") && type_name.ends_with("[]");
+                let is_byte_array_type = effective_type_name.starts_with("byte[") && effective_type_name.ends_with("[]");
 
                 let initial = match expr {
                     Some(Expr::Identifier(other)) => match types.get(other) {
-                        Some(other_type) if other_type == type_name => Expr::Identifier(other.clone()),
+                        Some(other_type) if is_type_assignable(other_type, &effective_type_name, contract_constants) => {
+                            Expr::Identifier(other.clone())
+                        }
                         Some(_) => {
                             return Err(CompilerError::Unsupported("array assignment requires compatible array types".to_string()));
                         }
@@ -757,7 +846,7 @@ fn compile_statement(
                     None => Expr::Array(Vec::new()),
                 };
                 env.insert(name.clone(), initial);
-                types.insert(name.clone(), type_name.clone());
+                types.insert(name.clone(), effective_type_name.clone());
                 Ok(())
             } else if is_fixed_size_array {
                 // Fixed-size arrays like byte[N] can be initialized from expressions
@@ -766,31 +855,34 @@ fn compile_statement(
 
                 // For array literals, validate that the size matches the declared type
                 if let Expr::Array(values) = &expr {
-                    if let Some(expected_size) = array_size_with_constants(type_name, contract_constants) {
+                    if let Some(expected_size) = array_size_with_constants(&effective_type_name, contract_constants) {
                         if values.len() != expected_size {
                             return Err(CompilerError::Unsupported(format!(
                                 "array size mismatch: expected {} elements for type {}, got {}",
                                 expected_size,
-                                type_name,
+                                effective_type_name,
                                 values.len()
                             )));
                         }
                     }
 
                     // Validate element types match
-                    if !array_literal_matches_type(values, type_name) {
-                        return Err(CompilerError::Unsupported(format!("array element type mismatch for type {}", type_name)));
+                    if !array_literal_matches_type(values, &effective_type_name) {
+                        return Err(CompilerError::Unsupported(format!(
+                            "array element type mismatch for type {}",
+                            effective_type_name
+                        )));
                     }
                 }
 
                 env.insert(name.clone(), expr);
-                types.insert(name.clone(), type_name.clone());
+                types.insert(name.clone(), effective_type_name.clone());
                 Ok(())
             } else {
                 let expr =
                     expr.clone().ok_or_else(|| CompilerError::Unsupported("variable definition requires initializer".to_string()))?;
                 env.insert(name.clone(), expr);
-                types.insert(name.clone(), type_name.clone());
+                types.insert(name.clone(), effective_type_name.clone());
                 Ok(())
             }
         }
@@ -986,7 +1078,7 @@ fn compile_statement(
                 if is_array_type(type_name) {
                     match expr {
                         Expr::Identifier(other) => match types.get(other) {
-                            Some(other_type) if other_type == type_name => {
+                            Some(other_type) if is_type_assignable(other_type, type_name, contract_constants) => {
                                 env.insert(name.clone(), Expr::Identifier(other.clone()));
                                 return Ok(());
                             }
@@ -1035,7 +1127,7 @@ fn compile_inline_call(
         return Err(CompilerError::Unsupported(format!("function '{}' expects {} arguments", name, function.params.len())));
     }
     for (param, arg) in function.params.iter().zip(args.iter()) {
-        if !expr_matches_type_with_env(arg, &param.type_name, caller_types) {
+        if !expr_matches_type_with_env(arg, &param.type_name, caller_types, contract_constants) {
             return Err(CompilerError::Unsupported(format!("function argument '{}' expects {}", param.name, param.type_name)));
         }
     }
@@ -1088,7 +1180,7 @@ fn compile_inline_call(
                 return Err(CompilerError::Unsupported("return statement must be the last statement".to_string()));
             }
             let Statement::Return { exprs } = stmt else { unreachable!() };
-            validate_return_types(exprs, &function.return_types, &types)?;
+            validate_return_types(exprs, &function.return_types, &types, contract_constants)?;
             for expr in exprs {
                 let resolved = resolve_expr(expr.clone(), &env, &mut HashSet::new())?;
                 yields.push(resolved);

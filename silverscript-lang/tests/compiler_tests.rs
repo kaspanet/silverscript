@@ -2529,6 +2529,42 @@ fn compile_time_length_for_fixed_size_byte_array() {
 }
 
 #[test]
+fn compile_time_length_for_inferred_array_sizes() {
+    let source = r#"
+        contract Test() {
+            entrypoint function test() {
+                byte[] data = 0x1234abcd;
+                int[] nums = [1, 2, 3];
+                require(data.length == 4);
+                require(nums.length == 3);
+            }
+        }
+    "#;
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+
+    // Both lengths should be compile-time constants (no OP_SIZE path):
+    // require(data.length == 4) -> OP_4 OP_4 OP_NUMEQUALVERIFY
+    // require(nums.length == 3) -> OP_3 OP_3 OP_NUMEQUALVERIFY
+    let expected_script = vec![
+        0x54, // OP_4 (data.length)
+        0x54, // OP_4
+        0x9c, // OP_NUMEQUALVERIFY
+        0x69, // OP_VERIFY
+        0x53, // OP_3 (nums.length)
+        0x53, // OP_3
+        0x9c, // OP_NUMEQUALVERIFY
+        0x69, // OP_VERIFY
+        0x51, // OP_TRUE
+    ];
+
+    assert_eq!(
+        compiled.script, expected_script,
+        "Script should use compile-time inferred lengths. Expected: {:?}, Got: {:?}",
+        expected_script, compiled.script
+    );
+}
+
+#[test]
 fn accepts_fixed_size_array_init_with_correct_size() {
     let source = r#"
         contract Test() {
