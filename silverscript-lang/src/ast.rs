@@ -35,9 +35,35 @@ pub struct ParamAst {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TypeRef {
-    pub base: String,
+    pub base: TypeBase,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub array_dims: Vec<ArrayDim>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum TypeBase {
+    Int,
+    Bool,
+    String,
+    Pubkey,
+    Sig,
+    Datasig,
+    Byte,
+}
+
+impl TypeBase {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            TypeBase::Int => "int",
+            TypeBase::Bool => "bool",
+            TypeBase::String => "string",
+            TypeBase::Pubkey => "pubkey",
+            TypeBase::Sig => "sig",
+            TypeBase::Datasig => "datasig",
+            TypeBase::Byte => "byte",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -50,7 +76,7 @@ pub enum ArrayDim {
 
 impl TypeRef {
     pub fn type_name(&self) -> String {
-        let mut out = self.base.clone();
+        let mut out = self.base.as_str().to_string();
         for dim in &self.array_dims {
             match dim {
                 ArrayDim::Dynamic => out.push_str("[]"),
@@ -245,7 +271,16 @@ fn parse_type_name_pair(pair: Pair<'_, Rule>) -> Result<TypeRef, CompilerError> 
     }
 
     let mut inner = pair.clone().into_inner();
-    let base = inner.next().ok_or_else(|| CompilerError::Unsupported("missing base type".to_string()))?.as_str().to_string();
+    let base = match inner.next().ok_or_else(|| CompilerError::Unsupported("missing base type".to_string()))?.as_str() {
+        "int" => TypeBase::Int,
+        "bool" => TypeBase::Bool,
+        "string" => TypeBase::String,
+        "pubkey" => TypeBase::Pubkey,
+        "sig" => TypeBase::Sig,
+        "datasig" => TypeBase::Datasig,
+        "byte" => TypeBase::Byte,
+        other => return Err(CompilerError::Unsupported(format!("unknown base type: {other}"))),
+    };
 
     let mut array_dims = Vec::new();
     for suffix in inner {

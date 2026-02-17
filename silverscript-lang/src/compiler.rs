@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::ast::{
-    ArrayDim, BinaryOp, ContractAst, Expr, FunctionAst, IntrospectionKind, NullaryOp, SplitPart, Statement, TimeVar, TypeRef, UnaryOp,
-    parse_contract_ast, parse_type_ref,
+    ArrayDim, BinaryOp, ContractAst, Expr, FunctionAst, IntrospectionKind, NullaryOp, SplitPart, Statement, TimeVar, TypeBase,
+    TypeRef, UnaryOp, parse_contract_ast, parse_type_ref,
 };
 use crate::parser::Rule;
 use chrono::NaiveDateTime;
@@ -255,7 +255,7 @@ fn expr_matches_type_ref(expr: &Expr, type_ref: &TypeRef) -> bool {
         if let Some(size) = array_size_ref(type_ref) {
             // For fixed-size arrays like byte[4], int[3]
             if let Some(element_type) = array_element_type_ref(type_ref) {
-                if element_type.base == "byte" {
+                if element_type.base == TypeBase::Byte {
                     // byte[N] should match Expr::Array of Expr::Byte with exact length N
                     return byte_array_len(expr) == Some(size);
                 }
@@ -266,15 +266,14 @@ fn expr_matches_type_ref(expr: &Expr, type_ref: &TypeRef) -> bool {
         // Dynamic arrays type[]
         return is_byte_array(expr) || matches!(expr, Expr::Array(values) if array_literal_matches_type_ref(values, type_ref));
     }
-    match type_ref.base.as_str() {
-        "int" => matches!(expr, Expr::Int(_)),
-        "bool" => matches!(expr, Expr::Bool(_)),
-        "string" => matches!(expr, Expr::String(_)),
-        "byte" => matches!(expr, Expr::Byte(_)),
-        "pubkey" => byte_array_len(expr) == Some(32),
-        "sig" => byte_array_len(expr) == Some(65),
-        "datasig" => byte_array_len(expr) == Some(64),
-        _ => false,
+    match type_ref.base {
+        TypeBase::Int => matches!(expr, Expr::Int(_)),
+        TypeBase::Bool => matches!(expr, Expr::Bool(_)),
+        TypeBase::String => matches!(expr, Expr::String(_)),
+        TypeBase::Byte => matches!(expr, Expr::Byte(_)),
+        TypeBase::Pubkey => byte_array_len(expr) == Some(32),
+        TypeBase::Sig => byte_array_len(expr) == Some(65),
+        TypeBase::Datasig => byte_array_len(expr) == Some(64),
     }
 }
 
@@ -371,24 +370,24 @@ fn array_size_with_constants_ref(type_ref: &TypeRef, constants: &HashMap<String,
 fn fixed_type_size_ref(type_ref: &TypeRef) -> Option<i64> {
     if !type_ref.array_dims.is_empty() {
         if let (Some(elem_type), Some(size)) = (array_element_type_ref(type_ref), array_size_ref(type_ref)) {
-            if elem_type.base == "byte" && elem_type.array_dims.is_empty() {
+            if elem_type.base == TypeBase::Byte && elem_type.array_dims.is_empty() {
                 return Some(size as i64);
             }
-            if elem_type.base == "int" && elem_type.array_dims.is_empty() {
+            if elem_type.base == TypeBase::Int && elem_type.array_dims.is_empty() {
                 return Some((size * 8) as i64);
             }
         }
         return None;
     }
 
-    match type_ref.base.as_str() {
-        "int" => Some(8),
-        "bool" => Some(1),
-        "byte" => Some(1),
-        "pubkey" => Some(32),
-        "sig" => Some(65),
-        "datasig" => Some(64),
-        _ => None,
+    match type_ref.base {
+        TypeBase::Int => Some(8),
+        TypeBase::Bool => Some(1),
+        TypeBase::Byte => Some(1),
+        TypeBase::Pubkey => Some(32),
+        TypeBase::Sig => Some(65),
+        TypeBase::Datasig => Some(64),
+        TypeBase::String => None,
     }
 }
 
