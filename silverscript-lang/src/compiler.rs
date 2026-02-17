@@ -2108,6 +2108,7 @@ fn expr_is_bytes_inner(
                     | "OpInputCovenantId"
                     | "OpNum2Bin"
                     | "OpChainblockSeqCommit"
+                    | "bytes"
             ) || name.starts_with("byte[")
         }
         Expr::Split { .. } => true,
