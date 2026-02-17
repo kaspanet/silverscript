@@ -23,21 +23,67 @@ pub struct FunctionAst {
     #[serde(default)]
     pub entrypoint: bool,
     #[serde(default)]
-    pub return_types: Vec<String>,
+    pub return_types: Vec<TypeRef>,
     pub body: Vec<Statement>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ParamAst {
-    pub type_name: String,
+    pub type_ref: TypeRef,
     pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TypeRef {
+    pub base: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub array_dims: Vec<ArrayDim>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+pub enum ArrayDim {
+    Dynamic,
+    Fixed(usize),
+    Constant(String),
+}
+
+impl TypeRef {
+    pub fn type_name(&self) -> String {
+        let mut out = self.base.clone();
+        for dim in &self.array_dims {
+            match dim {
+                ArrayDim::Dynamic => out.push_str("[]"),
+                ArrayDim::Fixed(size) => out.push_str(&format!("[{size}]")),
+                ArrayDim::Constant(name) => out.push_str(&format!("[{name}]")),
+            }
+        }
+        out
+    }
+
+    pub fn is_array(&self) -> bool {
+        !self.array_dims.is_empty()
+    }
+
+    pub fn element_type(&self) -> Option<Self> {
+        if self.array_dims.is_empty() {
+            return None;
+        }
+        let mut element = self.clone();
+        element.array_dims.pop();
+        Some(element)
+    }
+
+    pub fn array_size(&self) -> Option<&ArrayDim> {
+        self.array_dims.last()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "data", rename_all = "snake_case")]
 pub enum Statement {
-    VariableDefinition { type_name: String, modifiers: Vec<String>, name: String, expr: Option<Expr> },
-    TupleAssignment { left_type: String, left_name: String, right_type: String, right_name: String, expr: Expr },
+    VariableDefinition { type_ref: TypeRef, modifiers: Vec<String>, name: String, expr: Option<Expr> },
+    TupleAssignment { left_type_ref: TypeRef, left_name: String, right_type_ref: TypeRef, right_name: String, expr: Expr },
     ArrayPush { name: String, expr: Expr },
     FunctionCall { name: String, args: Vec<Expr> },
     FunctionCallAssign { bindings: Vec<ParamAst>, name: String, args: Vec<Expr> },
@@ -187,6 +233,45 @@ fn validate_user_identifier(name: &str) -> Result<(), CompilerError> {
     Ok(())
 }
 
+pub fn parse_type_ref(type_name: &str) -> Result<TypeRef, CompilerError> {
+    let mut pairs = SilverScriptParser::parse(Rule::type_name, type_name)?;
+    let pair = pairs.next().ok_or_else(|| CompilerError::Unsupported("missing type name".to_string()))?;
+    parse_type_name_pair(pair)
+}
+
+fn parse_type_name_pair(pair: Pair<'_, Rule>) -> Result<TypeRef, CompilerError> {
+    if pair.as_rule() != Rule::type_name {
+        return Err(CompilerError::Unsupported("expected type name".to_string()));
+    }
+
+    let mut inner = pair.clone().into_inner();
+    let base = inner.next().ok_or_else(|| CompilerError::Unsupported("missing base type".to_string()))?.as_str().to_string();
+
+    let mut array_dims = Vec::new();
+    for suffix in inner {
+        if suffix.as_rule() != Rule::array_suffix {
+            continue;
+        }
+        let mut suffix_inner = suffix.into_inner();
+        let dim = match suffix_inner.next() {
+            None => ArrayDim::Dynamic,
+            Some(size_pair) => match size_pair.as_rule() {
+                Rule::array_size => {
+                    let raw = size_pair.as_str().trim();
+                    if let Ok(size) = raw.parse::<usize>() { ArrayDim::Fixed(size) } else { ArrayDim::Constant(raw.to_string()) }
+                }
+                Rule::Identifier => ArrayDim::Constant(size_pair.as_str().to_string()),
+                _ => {
+                    return Err(CompilerError::Unsupported("invalid array dimension".to_string()));
+                }
+            },
+        };
+        array_dims.push(dim);
+    }
+
+    Ok(TypeRef { base, array_dims })
+}
+
 pub fn parse_contract_ast(source: &str) -> Result<ContractAst, CompilerError> {
     let mut pairs = SilverScriptParser::parse(Rule::source_file, source)?;
     let source_pair = pairs.next().ok_or_else(|| CompilerError::Unsupported("empty source".to_string()))?;
@@ -280,12 +365,8 @@ fn parse_statement(pair: Pair<'_, Rule>) -> Result<Statement, CompilerError> {
         }
         Rule::variable_definition => {
             let mut inner = pair.into_inner();
-            let type_name = inner
-                .next()
-                .ok_or_else(|| CompilerError::Unsupported("missing variable type".to_string()))?
-                .as_str()
-                .trim()
-                .to_string();
+            let type_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing variable type".to_string()))?;
+            let type_ref = parse_type_name_pair(type_pair)?;
 
             let mut modifiers = Vec::new();
             while let Some(p) = inner.peek() {
@@ -298,15 +379,15 @@ fn parse_statement(pair: Pair<'_, Rule>) -> Result<Statement, CompilerError> {
             let ident = inner.next().ok_or_else(|| CompilerError::Unsupported("missing variable name".to_string()))?;
             validate_user_identifier(ident.as_str())?;
             let expr = inner.next().map(parse_expression).transpose()?;
-            Ok(Statement::VariableDefinition { type_name, modifiers, name: ident.as_str().to_string(), expr })
+            Ok(Statement::VariableDefinition { type_ref, modifiers, name: ident.as_str().to_string(), expr })
         }
         Rule::tuple_assignment => {
             let mut inner = pair.into_inner();
-            let left_type =
-                inner.next().ok_or_else(|| CompilerError::Unsupported("missing left tuple type".to_string()))?.as_str().to_string();
+            let left_type_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing left tuple type".to_string()))?;
+            let left_type_ref = parse_type_name_pair(left_type_pair)?;
             let left_ident = inner.next().ok_or_else(|| CompilerError::Unsupported("missing left tuple name".to_string()))?;
-            let right_type =
-                inner.next().ok_or_else(|| CompilerError::Unsupported("missing right tuple type".to_string()))?.as_str().to_string();
+            let right_type_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing right tuple type".to_string()))?;
+            let right_type_ref = parse_type_name_pair(right_type_pair)?;
             let right_ident = inner.next().ok_or_else(|| CompilerError::Unsupported("missing right tuple name".to_string()))?;
             validate_user_identifier(left_ident.as_str())?;
             validate_user_identifier(right_ident.as_str())?;
@@ -314,9 +395,9 @@ fn parse_statement(pair: Pair<'_, Rule>) -> Result<Statement, CompilerError> {
 
             let expr = parse_expression(expr_pair)?;
             Ok(Statement::TupleAssignment {
-                left_type,
+                left_type_ref,
                 left_name: left_ident.as_str().to_string(),
-                right_type,
+                right_type_ref,
                 right_name: right_ident.as_str().to_string(),
                 expr,
             })
@@ -379,19 +460,15 @@ fn parse_statement(pair: Pair<'_, Rule>) -> Result<Statement, CompilerError> {
             for item in pair.into_inner() {
                 if item.as_rule() == Rule::typed_binding {
                     let mut inner = item.into_inner();
-                    let type_name = inner
-                        .next()
-                        .ok_or_else(|| CompilerError::Unsupported("missing binding type".to_string()))?
-                        .as_str()
-                        .trim()
-                        .to_string();
+                    let type_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing binding type".to_string()))?;
+                    let type_ref = parse_type_name_pair(type_pair)?;
                     let name = inner
                         .next()
                         .ok_or_else(|| CompilerError::Unsupported("missing binding name".to_string()))?
                         .as_str()
                         .to_string();
                     validate_user_identifier(&name)?;
-                    bindings.push(ParamAst { type_name, name });
+                    bindings.push(ParamAst { type_ref, name });
                 } else if item.as_rule() == Rule::function_call {
                     call_pair = Some(item);
                 }
@@ -602,20 +679,21 @@ fn parse_typed_parameter_list(pair: Pair<'_, Rule>) -> Result<Vec<ParamAst>, Com
             continue;
         }
         let mut inner = param.into_inner();
-        let type_name =
-            inner.next().ok_or_else(|| CompilerError::Unsupported("missing parameter type".to_string()))?.as_str().trim().to_string();
+        let type_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing parameter type".to_string()))?;
+        let type_ref = parse_type_name_pair(type_pair)?;
         let ident = inner.next().ok_or_else(|| CompilerError::Unsupported("missing parameter name".to_string()))?.as_str().to_string();
         validate_user_identifier(&ident)?;
-        params.push(ParamAst { type_name, name: ident });
+        params.push(ParamAst { type_ref, name: ident });
     }
     Ok(params)
 }
 
-fn parse_return_type_list(pair: Pair<'_, Rule>) -> Result<Vec<String>, CompilerError> {
+fn parse_return_type_list(pair: Pair<'_, Rule>) -> Result<Vec<TypeRef>, CompilerError> {
     let mut types = Vec::new();
     for item in pair.into_inner() {
         if item.as_rule() == Rule::type_name {
-            types.push(item.as_str().trim().to_string());
+            let type_ref = parse_type_name_pair(item)?;
+            types.push(type_ref);
         }
     }
     Ok(types)

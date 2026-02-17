@@ -6,7 +6,8 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::ast::{
-    BinaryOp, ContractAst, Expr, FunctionAst, IntrospectionKind, NullaryOp, SplitPart, Statement, TimeVar, UnaryOp, parse_contract_ast,
+    ArrayDim, BinaryOp, ContractAst, Expr, FunctionAst, IntrospectionKind, NullaryOp, SplitPart, Statement, TimeVar, TypeRef, UnaryOp,
+    parse_contract_ast, parse_type_ref,
 };
 use crate::parser::Rule;
 use chrono::NaiveDateTime;
@@ -80,8 +81,9 @@ pub fn compile_contract_ast(
     }
 
     for (param, value) in contract.params.iter().zip(constructor_args.iter()) {
-        if !expr_matches_type(value, &param.type_name) {
-            return Err(CompilerError::Unsupported(format!("constructor argument '{}' expects {}", param.name, param.type_name)));
+        let param_type_name = type_name_from_ref(&param.type_ref);
+        if !expr_matches_type(value, &param_type_name) {
+            return Err(CompilerError::Unsupported(format!("constructor argument '{}' expects {}", param.name, param_type_name)));
         }
     }
 
@@ -247,24 +249,24 @@ fn byte_array_len(expr: &Expr) -> Option<usize> {
     }
 }
 
-fn expr_matches_type(expr: &Expr, type_name: &str) -> bool {
-    if is_array_type(type_name) {
+fn expr_matches_type_ref(expr: &Expr, type_ref: &TypeRef) -> bool {
+    if is_array_type_ref(type_ref) {
         // Check for fixed-size array type[N]
-        if let Some(size) = array_size(type_name) {
+        if let Some(size) = array_size_ref(type_ref) {
             // For fixed-size arrays like byte[4], int[3]
-            if let Some(element_type) = array_element_type(type_name) {
-                if element_type == "byte" {
+            if let Some(element_type) = array_element_type_ref(type_ref) {
+                if element_type.base == "byte" {
                     // byte[N] should match Expr::Array of Expr::Byte with exact length N
                     return byte_array_len(expr) == Some(size);
                 }
                 // For other fixed-size arrays, match array literal
-                return matches!(expr, Expr::Array(values) if values.len() == size && array_literal_matches_type(values, type_name));
+                return matches!(expr, Expr::Array(values) if values.len() == size && array_literal_matches_type_ref(values, type_ref));
             }
         }
         // Dynamic arrays type[]
-        return is_byte_array(expr) || matches!(expr, Expr::Array(values) if array_literal_matches_type(values, type_name));
+        return is_byte_array(expr) || matches!(expr, Expr::Array(values) if array_literal_matches_type_ref(values, type_ref));
     }
-    match type_name {
+    match type_ref.base.as_str() {
         "int" => matches!(expr, Expr::Int(_)),
         "bool" => matches!(expr, Expr::Bool(_)),
         "string" => matches!(expr, Expr::String(_)),
@@ -272,54 +274,47 @@ fn expr_matches_type(expr: &Expr, type_name: &str) -> bool {
         "pubkey" => byte_array_len(expr) == Some(32),
         "sig" => byte_array_len(expr) == Some(65),
         "datasig" => byte_array_len(expr) == Some(64),
-        _ => {
-            // Check for byte[N] type syntax
-            if let Some(size) = array_size(type_name) {
-                if let Some(elem_type) = array_element_type(type_name) {
-                    if elem_type == "byte" {
-                        return byte_array_len(expr) == Some(size);
-                    }
-                }
-            }
-            false
-        }
+        _ => false,
     }
 }
 
-fn array_literal_matches_type(values: &[Expr], type_name: &str) -> bool {
-    let Some(element_type) = array_element_type(type_name) else {
+fn array_literal_matches_type_ref(values: &[Expr], type_ref: &TypeRef) -> bool {
+    let Some(element_type) = array_element_type_ref(type_ref) else {
         return false;
     };
 
     // Check if this is a fixed-size array
-    if let Some(expected_size) = array_size(type_name) {
+    if let Some(expected_size) = array_size_ref(type_ref) {
         if values.len() != expected_size {
             return false;
         }
     }
 
-    values.iter().all(|value| expr_matches_type(value, element_type))
+    values.iter().all(|value| expr_matches_type_ref(value, &element_type))
 }
 
-fn array_literal_matches_type_with_env(
+fn array_literal_matches_type_with_env_ref(
     values: &[Expr],
-    type_name: &str,
+    type_ref: &TypeRef,
     types: &HashMap<String, String>,
     constants: &HashMap<String, Expr>,
 ) -> bool {
-    let Some(element_type) = array_element_type(type_name) else {
+    let Some(element_type) = array_element_type_ref(type_ref) else {
         return false;
     };
 
-    if let Some(expected_size) = array_size_with_constants(type_name, constants) {
+    if let Some(expected_size) = array_size_with_constants_ref(type_ref, constants) {
         if values.len() != expected_size {
             return false;
         }
     }
 
     values.iter().all(|value| match value {
-        Expr::Identifier(name) => types.get(name).is_some_and(|value_type| is_type_assignable(value_type, element_type, constants)),
-        _ => expr_matches_type(value, element_type),
+        Expr::Identifier(name) => types
+            .get(name)
+            .and_then(|value_type| parse_type_ref(value_type).ok())
+            .is_some_and(|value_type| is_type_assignable_ref(&value_type, &element_type, constants)),
+        _ => expr_matches_type_ref(value, &element_type),
     })
 }
 
@@ -333,88 +328,72 @@ fn build_function_abi(contract: &ContractAst) -> FunctionAbi {
             inputs: func
                 .params
                 .iter()
-                .map(|param| FunctionInputAbi { name: param.name.clone(), type_name: param.type_name.clone() })
+                .map(|param| FunctionInputAbi { name: param.name.clone(), type_name: type_name_from_ref(&param.type_ref) })
                 .collect(),
         })
         .collect()
 }
 
-fn is_array_type(type_name: &str) -> bool {
-    type_name.ends_with("]")
+fn type_name_from_ref(type_ref: &TypeRef) -> String {
+    type_ref.type_name()
 }
 
-fn array_element_type(type_name: &str) -> Option<&str> {
-    if let Some(stripped) = type_name.strip_suffix("[]") {
-        return Some(stripped);
-    }
-    // Handle type[N] syntax
-    if let Some(bracket_pos) = type_name.rfind('[') {
-        if type_name.ends_with(']') {
-            return Some(&type_name[..bracket_pos]);
-        }
-    }
-    None
+fn is_array_type_ref(type_ref: &TypeRef) -> bool {
+    type_ref.is_array()
 }
 
-fn array_size(type_name: &str) -> Option<usize> {
-    // Extract size from type[N] syntax
-    if let Some(bracket_pos) = type_name.rfind('[') {
-        if type_name.ends_with(']') {
-            let size_str = &type_name[bracket_pos + 1..type_name.len() - 1];
-            if !size_str.is_empty() {
-                return size_str.parse::<usize>().ok();
-            }
-        }
-    }
-    None
+fn array_element_type_ref(type_ref: &TypeRef) -> Option<TypeRef> {
+    type_ref.element_type()
 }
 
-fn array_size_with_constants(type_name: &str, constants: &HashMap<String, Expr>) -> Option<usize> {
-    // Extract size from type[N] syntax, supporting both numeric literals and constants
-    if let Some(bracket_pos) = type_name.rfind('[') {
-        if type_name.ends_with(']') {
-            let size_str = &type_name[bracket_pos + 1..type_name.len() - 1];
-            if !size_str.is_empty() {
-                // First try to parse as a number
-                if let Ok(size) = size_str.parse::<usize>() {
-                    return Some(size);
-                }
-                // If not a number, try to resolve as a constant
-                if let Some(Expr::Int(value)) = constants.get(size_str) {
-                    if *value >= 0 {
-                        return Some(*value as usize);
-                    }
+fn array_size_ref(type_ref: &TypeRef) -> Option<usize> {
+    match type_ref.array_size()? {
+        ArrayDim::Fixed(size) => Some(*size),
+        _ => None,
+    }
+}
+
+fn array_size_with_constants_ref(type_ref: &TypeRef, constants: &HashMap<String, Expr>) -> Option<usize> {
+    match type_ref.array_size()? {
+        ArrayDim::Fixed(size) => Some(*size),
+        ArrayDim::Constant(name) => {
+            if let Some(Expr::Int(value)) = constants.get(name) {
+                if *value >= 0 {
+                    return Some(*value as usize);
                 }
             }
+            None
         }
+        ArrayDim::Dynamic => None,
     }
-    None
 }
 
-fn fixed_type_size(type_name: &str) -> Option<i64> {
-    match type_name {
+fn fixed_type_size_ref(type_ref: &TypeRef) -> Option<i64> {
+    if !type_ref.array_dims.is_empty() {
+        if let (Some(elem_type), Some(size)) = (array_element_type_ref(type_ref), array_size_ref(type_ref)) {
+            if elem_type.base == "byte" && elem_type.array_dims.is_empty() {
+                return Some(size as i64);
+            }
+            if elem_type.base == "int" && elem_type.array_dims.is_empty() {
+                return Some((size * 8) as i64);
+            }
+        }
+        return None;
+    }
+
+    match type_ref.base.as_str() {
         "int" => Some(8),
         "bool" => Some(1),
         "byte" => Some(1),
         "pubkey" => Some(32),
         "sig" => Some(65),
         "datasig" => Some(64),
-        _ => {
-            // Check for type[N] syntax
-            if let (Some(elem_type), Some(size)) = (array_element_type(type_name), array_size(type_name)) {
-                if elem_type == "byte" {
-                    return Some(size as i64);
-                } else if elem_type == "int" {
-                    return Some((size * 8) as i64);
-                }
-            }
-            None
-        }
+        _ => None,
     }
 }
 
-fn array_element_size(type_name: &str) -> Option<i64> {
-    array_element_type(type_name).and_then(fixed_type_size)
+fn array_element_size_ref(type_ref: &TypeRef) -> Option<i64> {
+    array_element_type_ref(type_ref).and_then(|element| fixed_type_size_ref(&element))
 }
 
 fn contains_return(stmt: &Statement) -> bool {
@@ -441,7 +420,7 @@ fn contains_yield(stmt: &Statement) -> bool {
 
 fn validate_return_types(
     exprs: &[Expr],
-    return_types: &[String],
+    return_types: &[TypeRef],
     types: &HashMap<String, String>,
     constants: &HashMap<String, Expr>,
 ) -> Result<(), CompilerError> {
@@ -451,49 +430,161 @@ fn validate_return_types(
     if return_types.len() != exprs.len() {
         return Err(CompilerError::Unsupported("return values count must match function return types".to_string()));
     }
-    for (expr, type_name) in exprs.iter().zip(return_types.iter()) {
-        if !expr_matches_return_type(expr, type_name, types, constants) {
+    for (expr, return_type) in exprs.iter().zip(return_types.iter()) {
+        if !expr_matches_return_type_ref(expr, return_type, types, constants) {
+            let type_name = type_name_from_ref(return_type);
             return Err(CompilerError::Unsupported(format!("return value expects {type_name}")));
         }
     }
     Ok(())
 }
 
-fn has_explicit_array_size(type_name: &str) -> bool {
-    if let Some(bracket_pos) = type_name.rfind('[') {
-        if type_name.ends_with(']') {
-            let size_str = &type_name[bracket_pos + 1..type_name.len() - 1];
-            return !size_str.is_empty();
-        }
-    }
-    false
+fn has_explicit_array_size_ref(type_ref: &TypeRef) -> bool {
+    !matches!(type_ref.array_size(), Some(ArrayDim::Dynamic) | None)
 }
 
-fn is_array_type_assignable(actual: &str, expected: &str, constants: &HashMap<String, Expr>) -> bool {
+fn is_array_type_assignable_ref(actual: &TypeRef, expected: &TypeRef, constants: &HashMap<String, Expr>) -> bool {
     if actual == expected {
         return true;
     }
 
-    if !is_array_type(actual) || !is_array_type(expected) {
+    if !is_array_type_ref(actual) || !is_array_type_ref(expected) {
         return false;
     }
 
-    if array_element_type(actual) != array_element_type(expected) {
+    if array_element_type_ref(actual) != array_element_type_ref(expected) {
         return false;
     }
 
-    if !has_explicit_array_size(expected) {
+    if !has_explicit_array_size_ref(expected) {
         return true;
     }
 
-    match (array_size_with_constants(actual, constants), array_size_with_constants(expected, constants)) {
+    match (array_size_with_constants_ref(actual, constants), array_size_with_constants_ref(expected, constants)) {
         (Some(actual_size), Some(expected_size)) => actual_size == expected_size,
         _ => actual == expected,
     }
 }
 
+fn is_type_assignable_ref(actual: &TypeRef, expected: &TypeRef, constants: &HashMap<String, Expr>) -> bool {
+    actual == expected || is_array_type_assignable_ref(actual, expected, constants)
+}
+
+fn expr_matches_type_with_env_ref(
+    expr: &Expr,
+    type_ref: &TypeRef,
+    types: &HashMap<String, String>,
+    constants: &HashMap<String, Expr>,
+) -> bool {
+    match expr {
+        Expr::Identifier(name) => {
+            types.get(name).and_then(|t| parse_type_ref(t).ok()).is_some_and(|t| is_type_assignable_ref(&t, type_ref, constants))
+        }
+        Expr::Array(values) => is_array_type_ref(type_ref) && array_literal_matches_type_ref(values, type_ref),
+        _ => expr_matches_type_ref(expr, type_ref),
+    }
+}
+
+fn expr_matches_return_type_ref(
+    expr: &Expr,
+    type_ref: &TypeRef,
+    types: &HashMap<String, String>,
+    constants: &HashMap<String, Expr>,
+) -> bool {
+    match expr {
+        Expr::Identifier(name) => {
+            types.get(name).and_then(|t| parse_type_ref(t).ok()).is_some_and(|t| is_type_assignable_ref(&t, type_ref, constants))
+        }
+        Expr::Array(values) => is_array_type_ref(type_ref) && array_literal_matches_type_ref(values, type_ref),
+        Expr::Int(_) | Expr::Bool(_) | Expr::Byte(_) | Expr::String(_) => expr_matches_type_ref(expr, type_ref),
+        _ => true,
+    }
+}
+
+fn infer_fixed_array_type_from_initializer_ref(
+    declared_type: &TypeRef,
+    initializer: Option<&Expr>,
+    types: &HashMap<String, String>,
+    constants: &HashMap<String, Expr>,
+) -> Option<TypeRef> {
+    if !declared_type.array_size().is_some_and(|dim| matches!(dim, ArrayDim::Dynamic)) {
+        return None;
+    }
+
+    let element_type = array_element_type_ref(declared_type)?;
+    let init = initializer?;
+
+    match init {
+        Expr::Array(values) => {
+            let mut inferred = element_type.clone();
+            inferred.array_dims.push(ArrayDim::Fixed(values.len()));
+            if array_literal_matches_type_with_env_ref(values, &inferred, types, constants) { Some(inferred) } else { None }
+        }
+        Expr::Identifier(name) => {
+            let other_type = parse_type_ref(types.get(name)?).ok()?;
+            if !is_array_type_ref(&other_type) || array_element_type_ref(&other_type) != Some(element_type.clone()) {
+                return None;
+            }
+            let size = array_size_with_constants_ref(&other_type, constants)?;
+            let mut inferred = element_type;
+            inferred.array_dims.push(ArrayDim::Fixed(size));
+            Some(inferred)
+        }
+        _ => None,
+    }
+}
+
+fn expr_matches_type(expr: &Expr, type_name: &str) -> bool {
+    parse_type_ref(type_name).is_ok_and(|type_ref| expr_matches_type_ref(expr, &type_ref))
+}
+
+fn array_literal_matches_type_with_env(
+    values: &[Expr],
+    type_name: &str,
+    types: &HashMap<String, String>,
+    constants: &HashMap<String, Expr>,
+) -> bool {
+    parse_type_ref(type_name).is_ok_and(|type_ref| array_literal_matches_type_with_env_ref(values, &type_ref, types, constants))
+}
+
+fn is_array_type(type_name: &str) -> bool {
+    parse_type_ref(type_name).is_ok_and(|type_ref| is_array_type_ref(&type_ref))
+}
+
+fn array_element_type(type_name: &str) -> Option<String> {
+    let type_ref = parse_type_ref(type_name).ok()?;
+    let element = array_element_type_ref(&type_ref)?;
+    Some(type_name_from_ref(&element))
+}
+
+fn array_size(type_name: &str) -> Option<usize> {
+    let type_ref = parse_type_ref(type_name).ok()?;
+    array_size_ref(&type_ref)
+}
+
+fn array_size_with_constants(type_name: &str, constants: &HashMap<String, Expr>) -> Option<usize> {
+    let type_ref = parse_type_ref(type_name).ok()?;
+    array_size_with_constants_ref(&type_ref, constants)
+}
+
+fn fixed_type_size(type_name: &str) -> Option<i64> {
+    let type_ref = parse_type_ref(type_name).ok()?;
+    fixed_type_size_ref(&type_ref)
+}
+
+fn array_element_size(type_name: &str) -> Option<i64> {
+    let type_ref = parse_type_ref(type_name).ok()?;
+    array_element_size_ref(&type_ref)
+}
+
 fn is_type_assignable(actual: &str, expected: &str, constants: &HashMap<String, Expr>) -> bool {
-    actual == expected || is_array_type_assignable(actual, expected, constants)
+    let Ok(actual_type) = parse_type_ref(actual) else {
+        return false;
+    };
+    let Ok(expected_type) = parse_type_ref(expected) else {
+        return false;
+    };
+    is_type_assignable_ref(&actual_type, &expected_type, constants)
 }
 
 fn expr_matches_type_with_env(
@@ -502,20 +593,7 @@ fn expr_matches_type_with_env(
     types: &HashMap<String, String>,
     constants: &HashMap<String, Expr>,
 ) -> bool {
-    match expr {
-        Expr::Identifier(name) => types.get(name).is_some_and(|t| is_type_assignable(t, type_name, constants)),
-        Expr::Array(values) => is_array_type(type_name) && array_literal_matches_type(values, type_name),
-        _ => expr_matches_type(expr, type_name),
-    }
-}
-
-fn expr_matches_return_type(expr: &Expr, type_name: &str, types: &HashMap<String, String>, constants: &HashMap<String, Expr>) -> bool {
-    match expr {
-        Expr::Identifier(name) => types.get(name).is_some_and(|t| is_type_assignable(t, type_name, constants)),
-        Expr::Array(values) => is_array_type(type_name) && array_literal_matches_type(values, type_name),
-        Expr::Int(_) | Expr::Bool(_) | Expr::Byte(_) | Expr::String(_) => expr_matches_type(expr, type_name),
-        _ => true,
-    }
+    parse_type_ref(type_name).is_ok_and(|type_ref| expr_matches_type_with_env_ref(expr, &type_ref, types, constants))
 }
 
 fn infer_fixed_array_type_from_initializer(
@@ -524,28 +602,8 @@ fn infer_fixed_array_type_from_initializer(
     types: &HashMap<String, String>,
     constants: &HashMap<String, Expr>,
 ) -> Option<String> {
-    if !declared_type.ends_with("[]") {
-        return None;
-    }
-
-    let element_type = array_element_type(declared_type)?;
-    let init = initializer?;
-
-    match init {
-        Expr::Array(values) => {
-            let inferred = format!("{element_type}[{}]", values.len());
-            if array_literal_matches_type_with_env(values, &inferred, types, constants) { Some(inferred) } else { None }
-        }
-        Expr::Identifier(name) => {
-            let other_type = types.get(name)?;
-            if !is_array_type(other_type) || array_element_type(other_type) != Some(element_type) {
-                return None;
-            }
-            let size = array_size_with_constants(other_type, constants)?;
-            Some(format!("{element_type}[{size}]"))
-        }
-        _ => None,
-    }
+    let declared_type = parse_type_ref(declared_type).ok()?;
+    infer_fixed_array_type_from_initializer_ref(&declared_type, initializer, types, constants).map(|t| type_name_from_ref(&t))
 }
 
 impl CompiledContract {
@@ -693,7 +751,7 @@ fn encode_fixed_size_value(value: &Expr, type_name: &str) -> Result<Vec<u8>, Com
 
                 let mut encoded = Vec::new();
                 for value in values {
-                    encoded.extend(encode_fixed_size_value(value, element_type)?);
+                    encoded.extend(encode_fixed_size_value(value, &element_type)?);
                 }
                 return Ok(encoded);
             }
@@ -707,11 +765,11 @@ fn encode_array_literal(values: &[Expr], type_name: &str) -> Result<Vec<u8>, Com
     let element_type = array_element_type(type_name)
         .ok_or_else(|| CompilerError::Unsupported("array element type must have known size".to_string()))?;
     let mut out = Vec::new();
-    if fixed_type_size(element_type).is_none() {
+    if fixed_type_size(&element_type).is_none() {
         return Err(CompilerError::Unsupported("array element type must have known size".to_string()));
     }
     for value in values {
-        out.extend(encode_fixed_size_value(value, element_type)?);
+        out.extend(encode_fixed_size_value(value, &element_type)?);
     }
     Ok(out)
 }
@@ -770,15 +828,18 @@ fn compile_function(
         .enumerate()
         .map(|(index, name)| (name, (param_count - 1 - index) as i64))
         .collect::<HashMap<_, _>>();
-    let mut types = function.params.iter().map(|param| (param.name.clone(), param.type_name.clone())).collect::<HashMap<_, _>>();
+    let mut types =
+        function.params.iter().map(|param| (param.name.clone(), type_name_from_ref(&param.type_ref))).collect::<HashMap<_, _>>();
     for param in &function.params {
-        if is_array_type(&param.type_name) && array_element_size(&param.type_name).is_none() {
-            return Err(CompilerError::Unsupported(format!("array element type must have known size: {}", param.type_name)));
+        let param_type_name = type_name_from_ref(&param.type_ref);
+        if is_array_type(&param_type_name) && array_element_size(&param_type_name).is_none() {
+            return Err(CompilerError::Unsupported(format!("array element type must have known size: {}", param_type_name)));
         }
     }
     for return_type in &function.return_types {
-        if is_array_type(return_type) && array_element_size(return_type).is_none() {
-            return Err(CompilerError::Unsupported(format!("array element type must have known size: {return_type}")));
+        let return_type_name = type_name_from_ref(return_type);
+        if is_array_type(&return_type_name) && array_element_size(&return_type_name).is_none() {
+            return Err(CompilerError::Unsupported(format!("array element type must have known size: {return_type_name}")));
         }
     }
     let mut env: HashMap<String, Expr> = constants.clone();
@@ -886,14 +947,15 @@ fn compile_statement(
     script_size: Option<i64>,
 ) -> Result<(), CompilerError> {
     match stmt {
-        Statement::VariableDefinition { type_name, name, expr, .. } => {
-            let effective_type_name = if is_array_type(type_name) && array_size_with_constants(type_name, contract_constants).is_none()
-            {
-                infer_fixed_array_type_from_initializer(type_name, expr.as_ref(), types, contract_constants)
-                    .unwrap_or_else(|| type_name.clone())
-            } else {
-                type_name.clone()
-            };
+        Statement::VariableDefinition { type_ref, name, expr, .. } => {
+            let type_name = type_name_from_ref(type_ref);
+            let effective_type_name =
+                if is_array_type(&type_name) && array_size_with_constants(&type_name, contract_constants).is_none() {
+                    infer_fixed_array_type_from_initializer(&type_name, expr.as_ref(), types, contract_constants)
+                        .unwrap_or_else(|| type_name.clone())
+                } else {
+                    type_name.clone()
+                };
 
             // Check if this is a fixed-size array (e.g., byte[N]) or dynamic array (e.g., byte[])
             let is_fixed_size_array =
@@ -1135,7 +1197,9 @@ fn compile_statement(
                 return Err(CompilerError::Unsupported("return values count must match function return types".to_string()));
             }
             for (binding, return_type) in bindings.iter().zip(function.return_types.iter()) {
-                if binding.type_name != *return_type {
+                let binding_type_name = type_name_from_ref(&binding.type_ref);
+                let return_type_name = type_name_from_ref(return_type);
+                if binding_type_name != return_type_name {
                     return Err(CompilerError::Unsupported("function return types must match binding types".to_string()));
                 }
             }
@@ -1157,7 +1221,7 @@ fn compile_statement(
             }
             for (binding, expr) in bindings.iter().zip(returns.into_iter()) {
                 env.insert(binding.name.clone(), expr);
-                types.insert(binding.name.clone(), binding.type_name.clone());
+                types.insert(binding.name.clone(), type_name_from_ref(&binding.type_ref));
             }
             Ok(())
         }
@@ -1215,15 +1279,18 @@ fn compile_inline_call(
         return Err(CompilerError::Unsupported(format!("function '{}' expects {} arguments", name, function.params.len())));
     }
     for (param, arg) in function.params.iter().zip(args.iter()) {
-        if !expr_matches_type_with_env(arg, &param.type_name, caller_types, contract_constants) {
-            return Err(CompilerError::Unsupported(format!("function argument '{}' expects {}", param.name, param.type_name)));
+        let param_type_name = type_name_from_ref(&param.type_ref);
+        if !expr_matches_type_with_env(arg, &param_type_name, caller_types, contract_constants) {
+            return Err(CompilerError::Unsupported(format!("function argument '{}' expects {}", param.name, param_type_name)));
         }
     }
 
-    let mut types = function.params.iter().map(|param| (param.name.clone(), param.type_name.clone())).collect::<HashMap<_, _>>();
+    let mut types =
+        function.params.iter().map(|param| (param.name.clone(), type_name_from_ref(&param.type_ref))).collect::<HashMap<_, _>>();
     for param in &function.params {
-        if is_array_type(&param.type_name) && array_element_size(&param.type_name).is_none() {
-            return Err(CompilerError::Unsupported(format!("array element type must have known size: {}", param.type_name)));
+        let param_type_name = type_name_from_ref(&param.type_ref);
+        if is_array_type(&param_type_name) && array_element_size(&param_type_name).is_none() {
+            return Err(CompilerError::Unsupported(format!("array element type must have known size: {}", param_type_name)));
         }
     }
 
@@ -1231,11 +1298,12 @@ fn compile_inline_call(
     for (index, (param, arg)) in function.params.iter().zip(args.iter()).enumerate() {
         let resolved = resolve_expr(arg.clone(), caller_env, &mut HashSet::new())?;
         let temp_name = format!("__arg_{name}_{index}");
+        let param_type_name = type_name_from_ref(&param.type_ref);
         env.insert(temp_name.clone(), resolved.clone());
-        types.insert(temp_name.clone(), param.type_name.clone());
+        types.insert(temp_name.clone(), param_type_name.clone());
         env.insert(param.name.clone(), Expr::Identifier(temp_name.clone()));
         caller_env.insert(temp_name.clone(), resolved);
-        caller_types.insert(temp_name, param.type_name.clone());
+        caller_types.insert(temp_name, param_type_name);
     }
 
     if !options.allow_yield && function.body.iter().any(contains_yield) {
@@ -2604,7 +2672,7 @@ fn compile_expr(
                 }
                 _ => return Err(CompilerError::Unsupported("array index requires array identifier".to_string())),
             };
-            let element_size = fixed_type_size(element_type)
+            let element_size = fixed_type_size(&element_type)
                 .ok_or_else(|| CompilerError::Unsupported("array element type must have known size".to_string()))?;
             compile_expr(
                 &resolved_source,
