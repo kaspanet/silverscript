@@ -247,12 +247,25 @@ SilverScript supports the following data types:
 
 **Array Types:**
 
-You can create arrays by appending `[]` to any type:
+You can create arrays by appending `[]` or `[N]` to any type:
 
 ```javascript
 int[] numbers;
+int[4] fixedNumbers;
+byte[] data;
+byte[32] hash;
 byte[32][] hashes;
 pubkey[] publicKeys;
+```
+
+- `type[]` = array type where the size may be inferred from initialization.
+- `type[N]` = fixed-size array type with compile-time size `N`.
+
+When a `type[]` variable is initialized with a literal, SilverScript infers a fixed size from context:
+
+```javascript
+byte[] data = 0x1234abcd;  // inferred as byte[4]
+int[] nums = [1, 2, 3];    // inferred as int[3]
 ```
 
 ### Variables
@@ -265,7 +278,11 @@ entrypoint function example() {
     int myNumber = 42;
     bool flag = true;
     string message = "Hello World";
+
+    // Array initialization
     byte[] data = 0x1234abcd;
+    int[] nums = [1, 2, 3];
+    int[4] fixed = [10, 20, 30, 40];
     
     // Declaration without initialization
     int uninitializedValue;
@@ -546,21 +563,27 @@ Format: `YYYY-MM-DDThh:mm:ss`
 
 ### Arrays
 
-Arrays must be built dynamically using the `.push()` method:
+SilverScript supports both direct array initialization and dynamic building with `.push()`:
 
 ```javascript
-// Declare an array
-int[] numbers;
-byte[32][] hashes;
+// Direct initialization (size inferred from literals)
+int[] nums = [1, 2, 3];           // inferred as int[3]
+byte[] data = 0x1234abcd;         // inferred as byte[4]
 
-// Build array with push
+// Explicit fixed-size initialization
+int[4] fixedNums = [1, 2, 3, 4];
+byte[4] tag = 0x01020304;
+
+// Dynamic building with push
+int[] numbers;
 numbers.push(1);
 numbers.push(2);
 numbers.push(3);
 numbers.push(4);
 numbers.push(5);
 
-// Build byte[32] array
+// Build byte[32] array dynamically
+byte[32][] hashes;
 hashes.push(0x1111111111111111111111111111111111111111111111111111111111111111);
 hashes.push(0x2222222222222222222222222222222222222222222222222222222222222222);
 
@@ -570,6 +593,10 @@ int second = numbers[1];
 
 // Array length
 int count = numbers.length;
+
+// For fixed-size arrays (including inferred ones), length is compile-time
+require(nums.length == 3);
+require(data.length == 4);
 ```
 
 ### String Operations
