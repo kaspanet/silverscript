@@ -226,7 +226,36 @@ fn expr_uses_script_size(expr: &Expr) -> bool {
         }
         Expr::ArrayIndex { source, index } => expr_uses_script_size(source) || expr_uses_script_size(index),
         Expr::Introspection { index, .. } => expr_uses_script_size(index),
-        Expr::Int(_) | Expr::Bool(_) | Expr::Bytes(_) | Expr::String(_) | Expr::Identifier(_) => false,
+        Expr::Int(_) | Expr::Bool(_) | Expr::Byte(_) | Expr::String(_) | Expr::Identifier(_) => false,
+        Expr::Nullary(_) => false,
+    }
+}
+
+// Helper to check if an expression is an array of bytes
+fn is_byte_array(expr: &Expr) -> bool {
+    match expr {
+        Expr::Array(values) => values.iter().all(|v| matches!(v, Expr::Byte(_))),
+        _ => false,
+    }
+}
+
+// Helper to get the length of a byte array
+fn byte_array_len(expr: &Expr) -> Option<usize> {
+    match expr {
+        Expr::Array(values) if values.iter().all(|v| matches!(v, Expr::Byte(_))) => Some(values.len()),
+        _ => None,
+    }
+}
+
+fn is_const_folded(expr: &Expr) -> bool {
+    match expr {
+        Expr::Int(_) | Expr::Bool(_) | Expr::Byte(_) | Expr::String(_) | Expr::Identifier(_) => false,
+        Expr::Array(values) => values.iter().any(is_const_folded),
+        Expr::Call { .. } | Expr::New { .. } | Expr::Split { .. } | Expr::Slice { .. } => true,
+        Expr::Unary { expr, .. } => is_const_folded(expr),
+        Expr::Binary { left, right, .. } => is_const_folded(left) || is_const_folded(right),
+        Expr::ArrayIndex { .. } | Expr::IfElse { .. } => true,
+        Expr::Introspection { .. } => true,
         Expr::Nullary(_) => false,
     }
 }
@@ -238,28 +267,28 @@ fn expr_matches_type(expr: &Expr, type_name: &str) -> bool {
             // For fixed-size arrays like byte[4], int[3]
             if let Some(element_type) = array_element_type(type_name) {
                 if element_type == "byte" {
-                    // byte[N] should match Expr::Bytes with exact length N
-                    return matches!(expr, Expr::Bytes(bytes) if bytes.len() == size);
+                    // byte[N] should match Expr::Array of Expr::Byte with exact length N
+                    return byte_array_len(expr) == Some(size);
                 }
                 // For other fixed-size arrays, match array literal
                 return matches!(expr, Expr::Array(values) if values.len() == size && array_literal_matches_type(values, type_name));
             }
         }
         // Dynamic arrays type[]
-        return matches!(expr, Expr::Bytes(_)) || matches!(expr, Expr::Array(values) if array_literal_matches_type(values, type_name));
+        return is_byte_array(expr) || matches!(expr, Expr::Array(values) if array_literal_matches_type(values, type_name));
     }
     match type_name {
         "int" => matches!(expr, Expr::Int(_)),
         "bool" => matches!(expr, Expr::Bool(_)),
         "string" => matches!(expr, Expr::String(_)),
-        "bytes" => matches!(expr, Expr::Bytes(_)),
-        "byte" => matches!(expr, Expr::Bytes(bytes) if bytes.len() == 1),
-        "pubkey" => matches!(expr, Expr::Bytes(bytes) if bytes.len() == 32),
-        "sig" | "datasig" => matches!(expr, Expr::Bytes(bytes) if bytes.len() == 64 || bytes.len() == 65),
+        "bytes" => is_byte_array(expr),
+        "byte" => matches!(expr, Expr::Byte(_)),
+        "pubkey" => byte_array_len(expr) == Some(32),
+        "sig" | "datasig" => matches!(byte_array_len(expr), Some(64) | Some(65)),
         _ => {
             // Internal: Check for bytesN which is not parsed from source but may exist in AST
             if let Some(size) = type_name.strip_prefix("bytes").and_then(|v| v.parse::<usize>().ok()) {
-                matches!(expr, Expr::Bytes(bytes) if bytes.len() == size)
+                byte_array_len(expr) == Some(size)
             } else {
                 false
             }
@@ -281,11 +310,11 @@ fn array_literal_matches_type(values: &[Expr], type_name: &str) -> bool {
     
     match element_type {
         "int" => values.iter().all(|value| matches!(value, Expr::Int(_))),
-        "byte" => values.iter().all(|value| matches!(value, Expr::Bytes(bytes) if bytes.len() == 1)),
+        "byte" => values.iter().all(|value| matches!(value, Expr::Byte(_))),
         _ => {
             // Internal: Check for bytesN (used in internal AST representation)
             if let Some(size) = element_type.strip_prefix("bytes").and_then(|v| v.parse::<usize>().ok()) {
-                values.iter().all(|value| matches!(value, Expr::Bytes(bytes) if bytes.len() == size))
+                values.iter().all(|value| byte_array_len(value) == Some(size))
             } else if element_type.contains('[') {
                 // Support nested fixed-size arrays like byte[4]
                 values.iter().all(|value| expr_matches_type(value, element_type))
@@ -418,7 +447,7 @@ fn expr_matches_return_type(expr: &Expr, type_name: &str, types: &HashMap<String
     match expr {
         Expr::Identifier(name) => types.get(name).is_some_and(|t| t == type_name),
         Expr::Array(values) => is_array_type(type_name) && array_literal_matches_type(values, type_name),
-        Expr::Int(_) | Expr::Bool(_) | Expr::Bytes(_) | Expr::String(_) => expr_matches_type(expr, type_name),
+        Expr::Int(_) | Expr::Bool(_) | Expr::Byte(_) | Expr::String(_) => expr_matches_type(expr, type_name),
         _ => true,
     }
 }
@@ -449,12 +478,19 @@ impl CompiledContract {
         for (input, arg) in function.inputs.iter().zip(args) {
             if is_array_type(&input.type_name) {
                 match arg {
-                    Expr::Array(values) => {
-                        let bytes = encode_array_literal(&values, &input.type_name)?;
-                        builder.add_data(&bytes)?;
-                    }
-                    Expr::Bytes(value) => {
-                        builder.add_data(&value)?;
+                    Expr::Array(ref values) => {
+                        // Check if it's a byte array or other array type
+                        if is_byte_array(&arg) {
+                            // Extract bytes from Expr::Byte array
+                            let bytes: Vec<u8> = values.iter().filter_map(|v| {
+                                if let Expr::Byte(b) = v { Some(*b) } else { None }
+                            }).collect();
+                            builder.add_data(&bytes)?;
+                        } else {
+                            // Regular array - encode it
+                            let bytes = encode_array_literal(&values, &input.type_name)?;
+                            builder.add_data(&bytes)?;
+                        }
                     }
                     _ => {
                         return Err(CompilerError::Unsupported(format!(
@@ -486,8 +522,12 @@ fn push_sigscript_arg(builder: &mut ScriptBuilder, arg: Expr) -> Result<(), Comp
         Expr::String(value) => {
             builder.add_data(value.as_bytes())?;
         }
-        Expr::Bytes(value) => {
-            builder.add_data(&value)?;
+        Expr::Array(values) if is_byte_array(&Expr::Array(values.clone())) => {
+            // Handle byte arrays
+            let bytes: Vec<u8> = values.iter().filter_map(|v| {
+                if let Expr::Byte(b) = v { Some(*b) } else { None }
+            }).collect();
+            builder.add_data(&bytes)?;
         }
         _ => {
             return Err(CompilerError::Unsupported("signature script arguments must be literals".to_string()));
@@ -511,13 +551,10 @@ fn encode_array_literal(values: &[Expr], type_name: &str) -> Result<Vec<u8>, Com
         }
         "byte" => {
             for value in values {
-                let Expr::Bytes(bytes) = value else {
+                let Expr::Byte(b) = value else {
                     return Err(CompilerError::Unsupported("array literal element type mismatch".to_string()));
                 };
-                if bytes.len() != 1 {
-                    return Err(CompilerError::Unsupported("array literal element type mismatch".to_string()));
-                }
-                out.extend(bytes);
+                out.push(*b);
             }
         }
         _ => {
@@ -539,13 +576,22 @@ fn encode_array_literal(values: &[Expr], type_name: &str) -> Result<Vec<u8>, Com
                 })
                 .ok_or_else(|| CompilerError::Unsupported("array element type must have known size".to_string()))?;
             for value in values {
-                let Expr::Bytes(bytes) = value else {
-                    return Err(CompilerError::Unsupported("array literal element type mismatch".to_string()));
-                };
-                if bytes.len() != size {
+                // Each element should be a byte array of the expected size
+                if let Some(len) = byte_array_len(value) {
+                    if len != size {
+                        return Err(CompilerError::Unsupported("array literal element type mismatch".to_string()));
+                    }
+                    // Extract bytes from the array
+                    if let Expr::Array(bytes_exprs) = value {
+                        for byte_expr in bytes_exprs {
+                            if let Expr::Byte(b) = byte_expr {
+                                out.push(*b);
+                            }
+                        }
+                    }
+                } else {
                     return Err(CompilerError::Unsupported("array literal element type mismatch".to_string()));
                 }
-                out.extend(bytes);
             }
         }
     }
@@ -702,7 +748,7 @@ fn compile_statement(
                         None => return Err(CompilerError::UndefinedIdentifier(other.clone())),
                     },
                     Some(_) => return Err(CompilerError::Unsupported("array initializer must be another array".to_string())),
-                    None => Expr::Bytes(Vec::new()),
+                    None => Expr::Array(Vec::new()),
                 };
                 env.insert(name.clone(), initial);
                 types.insert(name.clone(), type_name.clone());
@@ -768,7 +814,7 @@ fn compile_statement(
                 return Err(CompilerError::Unsupported("array element type not supported".to_string()));
             };
 
-            let current = env.get(name).cloned().unwrap_or_else(|| Expr::Bytes(Vec::new()));
+            let current = env.get(name).cloned().unwrap_or_else(|| Expr::Array(Vec::new()));
             let updated = Expr::Binary { op: BinaryOp::Add, left: Box::new(current), right: Box::new(element_expr) };
             env.insert(name.clone(), updated);
             Ok(())
@@ -1375,7 +1421,7 @@ fn replace_identifier(expr: &Expr, target: &str, replacement: &Expr) -> Expr {
         Expr::Introspection { kind, index } => {
             Expr::Introspection { kind: *kind, index: Box::new(replace_identifier(index, target, replacement)) }
         }
-        Expr::Int(_) | Expr::Bool(_) | Expr::Bytes(_) | Expr::String(_) | Expr::Nullary(_) => expr.clone(),
+        Expr::Int(_) | Expr::Bool(_) | Expr::Byte(_) | Expr::String(_) | Expr::Nullary(_) => expr.clone(),
     }
 }
 
@@ -1408,8 +1454,17 @@ fn compile_expr(
             *stack_depth += 1;
             Ok(())
         }
-        Expr::Bytes(bytes) => {
-            builder.add_data(bytes)?;
+        Expr::Byte(b) => {
+            builder.add_data(&[*b])?;
+            *stack_depth += 1;
+            Ok(())
+        }
+        Expr::Array(values) if is_byte_array(&Expr::Array(values.clone())) => {
+            // Handle byte arrays
+            let bytes: Vec<u8> = values.iter().filter_map(|v| {
+                if let Expr::Byte(b) = v { Some(*b) } else { None }
+            }).collect();
+            builder.add_data(&bytes)?;
             *stack_depth += 1;
             Ok(())
         }
@@ -2007,7 +2062,8 @@ fn expr_is_bytes_inner(
     visiting: &mut HashSet<String>,
 ) -> bool {
     match expr {
-        Expr::Bytes(_) => true,
+        Expr::Byte(_) => true,
+        Expr::Array(values) => is_byte_array(&Expr::Array(values.clone())),
         Expr::String(_) => true,
         Expr::Slice { .. } => true,
         Expr::New { name, .. } => matches!(
@@ -2142,8 +2198,12 @@ fn build_null_data_script(arg: &Expr) -> Result<Vec<u8>, CompilerError> {
             Expr::Int(value) => {
                 builder.add_i64(*value)?;
             }
-            Expr::Bytes(bytes) => {
-                builder.add_data(bytes)?;
+            Expr::Array(values) if is_byte_array(&Expr::Array(values.clone())) => {
+                // Handle byte arrays
+                let bytes: Vec<u8> = values.iter().filter_map(|v| {
+                    if let Expr::Byte(b) = v { Some(*b) } else { None }
+                }).collect();
+                builder.add_data(&bytes)?;
             }
             Expr::String(value) => {
                 builder.add_data(value.as_bytes())?;

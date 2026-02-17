@@ -70,7 +70,7 @@ pub enum TimeVar {
 pub enum Expr {
     Int(i64),
     Bool(bool),
-    Bytes(Vec<u8>),
+    Byte(u8),
     String(String),
     Identifier(String),
     Array(Vec<Expr>),
@@ -100,7 +100,7 @@ impl From<bool> for Expr {
 
 impl From<Vec<u8>> for Expr {
     fn from(value: Vec<u8>) -> Self {
-        Expr::Bytes(value)
+        Expr::Array(value.into_iter().map(Expr::Byte).collect())
     }
 }
 
@@ -118,7 +118,7 @@ impl From<Vec<i64>> for Expr {
 
 impl From<Vec<Vec<u8>>> for Expr {
     fn from(value: Vec<Vec<u8>>) -> Self {
-        Expr::Array(value.into_iter().map(Expr::Bytes).collect())
+        Expr::Array(value.into_iter().map(|bytes| Expr::Array(bytes.into_iter().map(Expr::Byte).collect())).collect())
     }
 }
 
@@ -766,7 +766,8 @@ fn parse_hex_literal(raw: &str) -> Result<Expr, CompilerError> {
         .map(|i| u8::from_str_radix(&normalized[i..i + 2], 16))
         .collect::<Result<Vec<_>, _>>()
         .map_err(|_| CompilerError::InvalidLiteral(format!("invalid hex literal '{raw}'")))?;
-    Ok(Expr::Bytes(bytes))
+    // Convert Vec<u8> to Expr::Array of Expr::Byte
+    Ok(Expr::Array(bytes.into_iter().map(Expr::Byte).collect()))
 }
 
 fn apply_number_unit(expr: Expr, unit: &str) -> Result<Expr, CompilerError> {
