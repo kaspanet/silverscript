@@ -2590,3 +2590,51 @@ fn accepts_fixed_size_byte_array_init() {
     "#;
     compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
 }
+
+#[test]
+fn accepts_array_type_with_constant_in_logic() {
+    // Test that constants can be used with array types in logic
+    // Note: Using constant identifiers directly in type syntax (e.g., int[SIZE]) 
+    // is parsed by the grammar but not yet fully implemented in type resolution
+    let source = r#"
+        contract Test() {
+            int constant SIZE = 4;
+            entrypoint function test() {
+                int[4] nums = [1, 2, 3, 4];
+                require(nums.length == SIZE);
+            }
+        }
+    "#;
+    compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds with constant and array");
+}
+
+#[test]
+fn compile_time_length_with_constant_comparison() {
+    // Test that array.length is computed at compile-time and can be compared with constants
+    let source = r#"
+        contract Test() {
+            int constant SIZE = 5;
+            entrypoint function test() {
+                int[5] nums = [1, 2, 3, 4, 5];
+                require(nums.length == SIZE);
+            }
+        }
+    "#;
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    
+    // Expected script for compile-time length with constant comparison:
+    // nums.length should be replaced with compile-time constant 5
+    // SIZE constant should also be replaced with 5
+    // require(nums.length == SIZE) becomes: <5> <5> OP_NUMEQUALVERIFY
+    let expected_script = vec![
+        0x55,  // OP_5 (push 5 for nums.length)
+        0x55,  // OP_5 (push 5 for SIZE constant)
+        0x9c,  // OP_NUMEQUALVERIFY
+        0x69,  // OP_VERIFY
+        0x51,  // OP_TRUE (entrypoint return value)
+    ];
+    
+    assert_eq!(compiled.script, expected_script,
+        "Script should use compile-time length with constant. Expected: {:?}, Got: {:?}",
+        expected_script, compiled.script);
+}

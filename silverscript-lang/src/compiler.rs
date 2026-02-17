@@ -247,19 +247,6 @@ fn byte_array_len(expr: &Expr) -> Option<usize> {
     }
 }
 
-fn is_const_folded(expr: &Expr) -> bool {
-    match expr {
-        Expr::Int(_) | Expr::Bool(_) | Expr::Byte(_) | Expr::String(_) | Expr::Identifier(_) => false,
-        Expr::Array(values) => values.iter().any(is_const_folded),
-        Expr::Call { .. } | Expr::New { .. } | Expr::Split { .. } | Expr::Slice { .. } => true,
-        Expr::Unary { expr, .. } => is_const_folded(expr),
-        Expr::Binary { left, right, .. } => is_const_folded(left) || is_const_folded(right),
-        Expr::ArrayIndex { .. } | Expr::IfElse { .. } => true,
-        Expr::Introspection { .. } => true,
-        Expr::Nullary(_) => false,
-    }
-}
-
 fn expr_matches_type(expr: &Expr, type_name: &str) -> bool {
     if is_array_type(type_name) {
         // Check for fixed-size array type[N]
@@ -483,7 +470,7 @@ impl CompiledContract {
                             builder.add_data(&bytes)?;
                         } else {
                             // Regular array - encode it
-                            let bytes = encode_array_literal(&values, &input.type_name)?;
+                            let bytes = encode_array_literal(values, &input.type_name)?;
                             builder.add_data(&bytes)?;
                         }
                     }
