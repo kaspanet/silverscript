@@ -652,7 +652,7 @@ fn compiles_int_array_length_to_expected_script() {
             }
         }
     "#;
-    let options = CompileOptions { allow_yield: false, allow_entrypoint_return: false };
+    let options = CompileOptions::default();
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
 
     let expected = ScriptBuilder::new()
@@ -692,7 +692,7 @@ fn compiles_int_array_push_to_expected_script() {
             }
         }
     "#;
-    let options = CompileOptions { allow_yield: false, allow_entrypoint_return: false };
+    let options = CompileOptions::default();
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
 
     let expected = ScriptBuilder::new()
@@ -740,7 +740,7 @@ fn compiles_int_array_index_to_expected_script() {
             }
         }
     "#;
-    let options = CompileOptions { allow_yield: false, allow_entrypoint_return: false };
+    let options = CompileOptions::default();
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
 
     let expected = ScriptBuilder::new()
@@ -797,11 +797,133 @@ fn runs_array_runtime_examples() {
             }
         }
     "#;
-    let options = CompileOptions { allow_yield: false, allow_entrypoint_return: false };
+    let options = CompileOptions::default();
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
     let sigscript = ScriptBuilder::new().drain();
     let result = run_script_with_sigscript(compiled.script, sigscript);
     assert!(result.is_ok(), "array runtime example failed: {}", result.unwrap_err());
+}
+
+#[test]
+fn allows_concat_of_int_arrays_with_plus() {
+    let source = r#"
+        contract Arrays() {
+            entrypoint function main() {
+                int[] a = [1, 2];
+                int[] b = [3, 4];
+                int[4] c = a + b;
+
+                require(c.length == 4);
+                require(c[0] == 1);
+                require(c[1] == 2);
+                require(c[2] == 3);
+                require(c[3] == 4);
+            }
+        }
+    "#;
+
+    let options = CompileOptions::default();
+    let compiled = compile_contract(source, &[], options).expect("compile succeeds");
+    let sigscript = ScriptBuilder::new().drain();
+    let result = run_script_with_sigscript(compiled.script, sigscript);
+    assert!(result.is_ok(), "int[] concatenation runtime failed: {}", result.unwrap_err());
+}
+
+#[test]
+fn allows_concat_of_byte_arrays_with_plus() {
+    let source = r#"
+        contract Arrays() {
+            entrypoint function main() {
+                byte[] a = 0x0102;
+                byte[] b = 0x0304;
+                byte[4] c = a + b;
+
+                require(c.length == 4);
+                require(c == 0x01020304);
+            }
+        }
+    "#;
+
+    let options = CompileOptions::default();
+    let compiled = compile_contract(source, &[], options).expect("compile succeeds");
+    let sigscript = ScriptBuilder::new().drain();
+    let result = run_script_with_sigscript(compiled.script, sigscript);
+    assert!(result.is_ok(), "byte[] concatenation runtime failed: {}", result.unwrap_err());
+}
+
+#[test]
+fn allows_concat_of_fixed_size_byte_array_elements_with_plus() {
+    let source = r#"
+        contract Arrays() {
+            entrypoint function main() {
+                byte[2][] a = [0x0102, 0x0304];
+                byte[2][] b = [0x0506];
+                byte[2][3] c = a + b;
+
+                require(c.length == 3);
+                require(c[0] == 0x0102);
+                require(c[1] == 0x0304);
+                require(c[2] == 0x0506);
+            }
+        }
+    "#;
+
+    let options = CompileOptions::default();
+    let compiled = compile_contract(source, &[], options).expect("compile succeeds");
+    let sigscript = ScriptBuilder::new().drain();
+    let result = run_script_with_sigscript(compiled.script, sigscript);
+    assert!(result.is_ok(), "byte[N][] concatenation runtime failed: {}", result.unwrap_err());
+}
+
+#[test]
+fn allows_concat_of_bool_arrays_with_plus() {
+    let source = r#"
+        contract Arrays() {
+            entrypoint function main() {
+                bool[] a = [true, false];
+                bool[] b = [true, false];
+                bool[4] c = a + b;
+
+                require(c.length == 4);
+                require(c[0]);
+                require(!c[1]);
+                require(c[2]);
+                require(!c[3]);
+            }
+        }
+    "#;
+
+    let options = CompileOptions::default();
+    let compiled = compile_contract(source, &[], options).expect("compile succeeds");
+    let sigscript = ScriptBuilder::new().drain();
+    let result = run_script_with_sigscript(compiled.script, sigscript);
+    assert!(result.is_ok(), "bool[] concatenation runtime failed: {}", result.unwrap_err());
+}
+
+#[test]
+fn allows_concat_of_pubkey_arrays_with_plus() {
+    let source = r#"
+        contract Arrays() {
+            entrypoint function main() {
+                pubkey p1 = 0x0202020202020202020202020202020202020202020202020202020202020202;
+                pubkey p2 = 0x0303030303030303030303030303030303030303030303030303030303030303;
+
+                pubkey[] a = [p1];
+                pubkey[] b = [p2];
+                pubkey[2] c = a + b;
+
+                require(c.length == 2);
+                require(c[0] == p1);
+                require(c[1] == p2);
+            }
+        }
+    "#;
+
+    let options = CompileOptions::default();
+    let compiled = compile_contract(source, &[], options).expect("compile succeeds");
+    let sigscript = ScriptBuilder::new().drain();
+    let result = run_script_with_sigscript(compiled.script, sigscript);
+    assert!(result.is_ok(), "pubkey[] concatenation runtime failed: {}", result.unwrap_err());
 }
 
 #[test]
@@ -815,7 +937,7 @@ fn compiles_bytes20_array_push_without_num2bin() {
             }
         }
     "#;
-    let options = CompileOptions { allow_yield: false, allow_entrypoint_return: false };
+    let options = CompileOptions::default();
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
 
     let value =
@@ -864,7 +986,7 @@ fn runs_bytes20_array_runtime_example() {
             }
         }
     "#;
-    let options = CompileOptions { allow_yield: false, allow_entrypoint_return: false };
+    let options = CompileOptions::default();
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
     let sigscript = ScriptBuilder::new().drain();
     let result = run_script_with_sigscript(compiled.script, sigscript);
@@ -884,7 +1006,7 @@ fn allows_array_equality_comparison() {
             }
         }
     "#;
-    let options = CompileOptions { allow_yield: false, allow_entrypoint_return: false };
+    let options = CompileOptions::default();
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
     let sigscript = ScriptBuilder::new().drain();
     let result = run_script_with_sigscript(compiled.script, sigscript);
@@ -904,7 +1026,7 @@ fn fails_array_equality_comparison() {
             }
         }
     "#;
-    let options = CompileOptions { allow_yield: false, allow_entrypoint_return: false };
+    let options = CompileOptions::default();
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
     let sigscript = ScriptBuilder::new().drain();
     let result = run_script_with_sigscript(compiled.script, sigscript);
@@ -925,7 +1047,7 @@ fn allows_array_inequality_with_different_sizes() {
             }
         }
     "#;
-    let options = CompileOptions { allow_yield: false, allow_entrypoint_return: false };
+    let options = CompileOptions::default();
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
     let sigscript = ScriptBuilder::new().drain();
     let result = run_script_with_sigscript(compiled.script, sigscript);
@@ -947,7 +1069,7 @@ fn runs_array_for_loop_example() {
             }
         }
     "#;
-    let options = CompileOptions { allow_yield: false, allow_entrypoint_return: false };
+    let options = CompileOptions::default();
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
     let sigscript = ScriptBuilder::new().drain();
     let result = run_script_with_sigscript(compiled.script, sigscript);
@@ -970,7 +1092,7 @@ fn runs_array_for_loop_with_length_guard() {
             }
         }
     "#;
-    let options = CompileOptions { allow_yield: false, allow_entrypoint_return: false };
+    let options = CompileOptions::default();
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
 
     let sigscript = compiled.build_sig_script("main", vec![vec![1i64, 2i64, 3i64, 4i64].into()]).expect("sigscript builds");
@@ -1024,7 +1146,7 @@ fn allows_array_assignment_with_compatible_types() {
             }
         }
     "#;
-    let options = CompileOptions { allow_yield: false, allow_entrypoint_return: false };
+    let options = CompileOptions::default();
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
     let sigscript = ScriptBuilder::new().drain();
     let result = run_script_with_sigscript(compiled.script, sigscript);
@@ -1040,7 +1162,7 @@ fn rejects_unsized_array_type() {
             }
         }
     "#;
-    let options = CompileOptions { allow_yield: false, allow_entrypoint_return: false };
+    let options = CompileOptions::default();
     assert!(compile_contract(source, &[], options).is_err());
 }
 
@@ -1054,7 +1176,7 @@ fn rejects_array_element_assignment() {
             }
         }
     "#;
-    let options = CompileOptions { allow_yield: false, allow_entrypoint_return: false };
+    let options = CompileOptions::default();
     assert!(compile_contract(source, &[], options).is_err());
 }
 

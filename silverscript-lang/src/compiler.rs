@@ -297,14 +297,29 @@ fn array_literal_matches_type(values: &[Expr], type_name: &str) -> bool {
         }
     }
 
-    match element_type {
-        "int" => values.iter().all(|value| matches!(value, Expr::Int(_))),
-        "byte" => values.iter().all(|value| matches!(value, Expr::Byte(_))),
-        _ => {
-            // Support nested fixed-size arrays like byte[4]
-            if element_type.contains('[') { values.iter().all(|value| expr_matches_type(value, element_type)) } else { false }
+    values.iter().all(|value| expr_matches_type(value, element_type))
+}
+
+fn array_literal_matches_type_with_env(
+    values: &[Expr],
+    type_name: &str,
+    types: &HashMap<String, String>,
+    constants: &HashMap<String, Expr>,
+) -> bool {
+    let Some(element_type) = array_element_type(type_name) else {
+        return false;
+    };
+
+    if let Some(expected_size) = array_size_with_constants(type_name, constants) {
+        if values.len() != expected_size {
+            return false;
         }
     }
+
+    values.iter().all(|value| match value {
+        Expr::Identifier(name) => types.get(name).is_some_and(|value_type| is_type_assignable(value_type, element_type, constants)),
+        _ => expr_matches_type(value, element_type),
+    })
 }
 
 fn build_function_abi(contract: &ContractAst) -> FunctionAbi {
@@ -378,7 +393,9 @@ fn array_size_with_constants(type_name: &str, constants: &HashMap<String, Expr>)
 fn fixed_type_size(type_name: &str) -> Option<i64> {
     match type_name {
         "int" => Some(8),
+        "bool" => Some(1),
         "byte" => Some(1),
+        "pubkey" => Some(32),
         _ => {
             // Check for type[N] syntax
             if let (Some(elem_type), Some(size)) = (array_element_type(type_name), array_size(type_name)) {
@@ -514,7 +531,7 @@ fn infer_fixed_array_type_from_initializer(
     match init {
         Expr::Array(values) => {
             let inferred = format!("{element_type}[{}]", values.len());
-            if array_literal_matches_type(values, &inferred) { Some(inferred) } else { None }
+            if array_literal_matches_type_with_env(values, &inferred, types, constants) { Some(inferred) } else { None }
         }
         Expr::Identifier(name) => {
             let other_type = types.get(name)?;
@@ -609,57 +626,120 @@ fn push_sigscript_arg(builder: &mut ScriptBuilder, arg: Expr) -> Result<(), Comp
     Ok(())
 }
 
+fn encode_fixed_size_value(value: &Expr, type_name: &str) -> Result<Vec<u8>, CompilerError> {
+    match type_name {
+        "int" => {
+            let Expr::Int(number) = value else {
+                return Err(CompilerError::Unsupported("array literal element type mismatch".to_string()));
+            };
+            Ok(number.to_le_bytes().to_vec())
+        }
+        "bool" => {
+            let Expr::Bool(flag) = value else {
+                return Err(CompilerError::Unsupported("array literal element type mismatch".to_string()));
+            };
+            Ok(vec![u8::from(*flag)])
+        }
+        "byte" => {
+            let Expr::Byte(byte) = value else {
+                return Err(CompilerError::Unsupported("array literal element type mismatch".to_string()));
+            };
+            Ok(vec![*byte])
+        }
+        "pubkey" => {
+            let Some(len) = byte_array_len(value) else {
+                return Err(CompilerError::Unsupported("array literal element type mismatch".to_string()));
+            };
+            if len != 32 {
+                return Err(CompilerError::Unsupported("array literal element type mismatch".to_string()));
+            }
+            let Expr::Array(bytes_exprs) = value else {
+                return Err(CompilerError::Unsupported("array literal element type mismatch".to_string()));
+            };
+            Ok(bytes_exprs.iter().filter_map(|value| if let Expr::Byte(byte) = value { Some(*byte) } else { None }).collect())
+        }
+        _ => {
+            // Handle fixed-size byte arrays like byte[N]
+            if let (Some(inner_type), Some(size)) = (array_element_type(type_name), array_size(type_name)) {
+                if inner_type == "byte" {
+                    let Some(len) = byte_array_len(value) else {
+                        return Err(CompilerError::Unsupported("array literal element type mismatch".to_string()));
+                    };
+                    if len != size {
+                        return Err(CompilerError::Unsupported("array literal element type mismatch".to_string()));
+                    }
+                    let Expr::Array(bytes_exprs) = value else {
+                        return Err(CompilerError::Unsupported("array literal element type mismatch".to_string()));
+                    };
+                    return Ok(bytes_exprs
+                        .iter()
+                        .filter_map(|value| if let Expr::Byte(byte) = value { Some(*byte) } else { None })
+                        .collect());
+                }
+            }
+
+            // Handle nested fixed-size arrays with known element sizes.
+            if let Expr::Array(values) = value {
+                let element_type = array_element_type(type_name)
+                    .ok_or_else(|| CompilerError::Unsupported("array element type must have known size".to_string()))?;
+                let expected_len = array_size(type_name)
+                    .ok_or_else(|| CompilerError::Unsupported("array literal element type mismatch".to_string()))?;
+                if values.len() != expected_len {
+                    return Err(CompilerError::Unsupported("array literal element type mismatch".to_string()));
+                }
+
+                let mut encoded = Vec::new();
+                for value in values {
+                    encoded.extend(encode_fixed_size_value(value, element_type)?);
+                }
+                return Ok(encoded);
+            }
+
+            Err(CompilerError::Unsupported("array literal element type mismatch".to_string()))
+        }
+    }
+}
+
 fn encode_array_literal(values: &[Expr], type_name: &str) -> Result<Vec<u8>, CompilerError> {
     let element_type = array_element_type(type_name)
         .ok_or_else(|| CompilerError::Unsupported("array element type must have known size".to_string()))?;
     let mut out = Vec::new();
-    match element_type {
-        "int" => {
-            for value in values {
-                let Expr::Int(number) = value else {
-                    return Err(CompilerError::Unsupported("array literal element type mismatch".to_string()));
-                };
-                out.extend(number.to_le_bytes());
-            }
-        }
-        "byte" => {
-            for value in values {
-                let Expr::Byte(b) = value else {
-                    return Err(CompilerError::Unsupported("array literal element type mismatch".to_string()));
-                };
-                out.push(*b);
-            }
-        }
-        _ => {
-            // Handle nested arrays like byte[4][] where element is byte[4]
-            let size = if let (Some(inner_elem), Some(inner_size)) = (array_element_type(element_type), array_size(element_type)) {
-                if inner_elem == "byte" { Some(inner_size) } else { None }
-            } else {
-                None
-            }
-            .ok_or_else(|| CompilerError::Unsupported("array element type must have known size".to_string()))?;
-
-            for value in values {
-                // Each element should be a byte array of the expected size
-                if let Some(len) = byte_array_len(value) {
-                    if len != size {
-                        return Err(CompilerError::Unsupported("array literal element type mismatch".to_string()));
-                    }
-                    // Extract bytes from the array
-                    if let Expr::Array(bytes_exprs) = value {
-                        for byte_expr in bytes_exprs {
-                            if let Expr::Byte(b) = byte_expr {
-                                out.push(*b);
-                            }
-                        }
-                    }
-                } else {
-                    return Err(CompilerError::Unsupported("array literal element type mismatch".to_string()));
-                }
-            }
-        }
+    if fixed_type_size(element_type).is_none() {
+        return Err(CompilerError::Unsupported("array element type must have known size".to_string()));
+    }
+    for value in values {
+        out.extend(encode_fixed_size_value(value, element_type)?);
     }
     Ok(out)
+}
+
+fn infer_fixed_type_from_literal_expr(expr: &Expr) -> Option<String> {
+    match expr {
+        Expr::Int(_) => Some("int".to_string()),
+        Expr::Bool(_) => Some("bool".to_string()),
+        Expr::Byte(_) => Some("byte".to_string()),
+        Expr::Array(values) if is_byte_array(expr) => Some(format!("byte[{}]", values.len())),
+        Expr::Array(values) => {
+            let nested_type = infer_fixed_array_literal_type(values)?;
+            Some(nested_type.trim_end_matches("[]").to_string())
+        }
+        _ => None,
+    }
+}
+
+fn infer_fixed_array_literal_type(values: &[Expr]) -> Option<String> {
+    if values.is_empty() {
+        return None;
+    }
+    let first_type = infer_fixed_type_from_literal_expr(values.first()?)?;
+    if fixed_type_size(&first_type).is_none() {
+        return None;
+    }
+    if values.iter().skip(1).all(|value| infer_fixed_type_from_literal_expr(value).as_deref() == Some(first_type.as_str())) {
+        Some(format!("{}[]", first_type))
+    } else {
+        None
+    }
 }
 
 pub fn function_branch_index(contract: &ContractAst, function_name: &str) -> Result<i64, CompilerError> {
@@ -842,6 +922,12 @@ fn compile_statement(
                         // byte[] can be initialized from any bytes expression
                         e.clone()
                     }
+                    Some(Expr::Array(values)) => {
+                        if !array_literal_matches_type_with_env(values, &effective_type_name, types, contract_constants) {
+                            return Err(CompilerError::Unsupported("array initializer must be another array".to_string()));
+                        }
+                        resolve_expr(Expr::Array(values.clone()), env, &mut HashSet::new())?
+                    }
                     Some(_) => return Err(CompilerError::Unsupported("array initializer must be another array".to_string())),
                     None => Expr::Array(Vec::new()),
                 };
@@ -867,7 +953,7 @@ fn compile_statement(
                     }
 
                     // Validate element types match
-                    if !array_literal_matches_type(values, &effective_type_name) {
+                    if !array_literal_matches_type_with_env(values, &effective_type_name, types, contract_constants) {
                         return Err(CompilerError::Unsupported(format!(
                             "array element type mismatch for type {}",
                             effective_type_name
@@ -875,7 +961,8 @@ fn compile_statement(
                     }
                 }
 
-                env.insert(name.clone(), expr);
+                let stored_expr = if matches!(expr, Expr::Array(_)) { resolve_expr(expr, env, &mut HashSet::new())? } else { expr };
+                env.insert(name.clone(), stored_expr);
                 types.insert(name.clone(), effective_type_name.clone());
                 Ok(())
             } else {
@@ -1617,6 +1704,17 @@ fn compile_expr(
             *stack_depth += 1;
             Ok(())
         }
+        Expr::Array(values) => {
+            if let Some(array_type) = infer_fixed_array_literal_type(values) {
+                let encoded = encode_array_literal(values, &array_type)?;
+                builder.add_data(&encoded)?;
+                *stack_depth += 1;
+                return Ok(());
+            }
+            Err(CompilerError::Unsupported(
+                "array literals are only supported for fixed-size element arrays and in LockingBytecodeNullData".to_string(),
+            ))
+        }
         Expr::String(value) => {
             builder.add_data(value.as_bytes())?;
             *stack_depth += 1;
@@ -1627,6 +1725,15 @@ fn compile_expr(
                 return Err(CompilerError::CyclicIdentifier(name.clone()));
             }
             if let Some(expr) = env.get(name) {
+                if let (Some(type_name), Expr::Array(values)) = (types.get(name), expr) {
+                    if is_array_type(type_name) {
+                        let encoded = encode_array_literal(values, type_name)?;
+                        builder.add_data(&encoded)?;
+                        *stack_depth += 1;
+                        visiting.remove(name);
+                        return Ok(());
+                    }
+                }
                 compile_expr(expr, env, params, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
                 visiting.remove(name);
                 return Ok(());
@@ -1654,7 +1761,6 @@ fn compile_expr(
             *stack_depth = depth_before + 1;
             Ok(())
         }
-        Expr::Array(_) => Err(CompilerError::Unsupported("array literals are only supported in LockingBytecodeNullData".to_string())),
         Expr::Call { name, args } => match name.as_str() {
             "OpSha256" => compile_opcode_call(
                 name,
@@ -2668,7 +2774,8 @@ fn expr_is_bytes_inner(
                 return false;
             }
             if let Some(expr) = env.get(name) {
-                let result = expr_is_bytes_inner(expr, env, types, visiting);
+                let result = expr_is_bytes_inner(expr, env, types, visiting)
+                    || types.get(name).map(|type_name| is_bytes_type(type_name)).unwrap_or(false);
                 visiting.remove(name);
                 return result;
             }

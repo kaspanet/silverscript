@@ -599,6 +599,63 @@ require(nums.length == 3);
 require(data.length == 4);
 ```
 
+**Array Concatenation:**
+
+You can concatenate arrays with `+` when element types are compatible.
+
+This works for array types whose element size is known at compile time, including:
+- `byte[]` (element type `byte`)
+- `int[]` (element type `int`)
+- `bool[]` (element type `bool`)
+- `pubkey[]` (element type `pubkey`)
+- `byte[N][]` (element type `byte[N]`)
+
+Examples:
+
+```javascript
+// int[] + int[]
+int[] a = [1, 2];
+int[] b = [3, 4];
+int[4] c = a + b;
+
+require(c.length == 4);
+require(c[0] == 1);
+require(c[1] == 2);
+require(c[2] == 3);
+require(c[3] == 4);
+
+// byte[] + byte[]
+byte[] p = 0x0102;
+byte[] q = 0x0304;
+byte[4] r = p + q;
+require(r == 0x01020304);
+
+// bool[] + bool[]
+bool[] f1 = [true, false];
+bool[] f2 = [true, false];
+bool[4] f = f1 + f2;
+require(f[0]);
+require(!f[1]);
+require(f[2]);
+require(!f[3]);
+
+// pubkey[] + pubkey[]
+pubkey k1 = 0x0202020202020202020202020202020202020202020202020202020202020202;
+pubkey k2 = 0x0303030303030303030303030303030303030303030303030303030303030303;
+pubkey[] ks1 = [k1];
+pubkey[] ks2 = [k2];
+pubkey[2] ks = ks1 + ks2;
+require(ks[0] == k1);
+require(ks[1] == k2);
+
+// byte[N][] + byte[N][]
+byte[2][] x = [0x0102, 0x0304];
+byte[2][] y = [0x0506];
+byte[2][3] z = x + y;
+require(z.length == 3);
+require(z[2] == 0x0506);
+```
+
 ### String Operations
 
 **Concatenation:**
