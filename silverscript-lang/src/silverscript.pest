@@ -127,8 +127,9 @@ literal = { BooleanLiteral | HexLiteral | number_literal | StringLiteral | DateL
 number_literal = { NumberLiteral ~ NumberUnit? }
 
 type_name = { base_type ~ array_suffix? }
-base_type = { "int" | "bool" | "string" | "pubkey" | "sig" | "datasig" | Bytes }
-array_suffix = { "[]" }
+base_type = { "int" | "bool" | "string" | "pubkey" | "sig" | "datasig" | "bytes" | "byte" }
+array_suffix = { "[" ~ array_size? ~ "]" }
+array_size = { ASCII_NONZERO_DIGIT ~ ASCII_DIGIT* }
 
 VersionLiteral = @{ ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT+ }
 
@@ -140,8 +141,7 @@ NumberLiteral = @{ "-"? ~ NumberPart ~ ExponentPart? }
 NumberPart = { ASCII_DIGIT+ ~ ("_" ~ ASCII_DIGIT+ )* }
 ExponentPart = { ("e" | "E") ~ NumberPart }
 
-Bytes = { "bytes" ~ Bound? | "byte" }
-Bound = { ASCII_NONZERO_DIGIT ~ ASCII_DIGIT* }
+
 
 StringLiteral = @{ "\"" ~ ("\\\"" | !("\"" | "\r" | "\n") ~ ANY)* ~ "\"" | "'" ~ ("\\'" | !("'" | "\r" | "\n") ~ ANY)* ~ "'" }
 
