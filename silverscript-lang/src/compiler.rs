@@ -685,7 +685,11 @@ fn compile_statement(
 ) -> Result<(), CompilerError> {
     match stmt {
         Statement::VariableDefinition { type_name, name, expr, .. } => {
-            if is_array_type(type_name) {
+            // Check if this is a fixed-size array (e.g., byte[N]) or dynamic array (e.g., byte[])
+            let is_fixed_size_array = is_array_type(type_name) && array_size(type_name).is_some();
+            let is_dynamic_array = is_array_type(type_name) && array_size(type_name).is_none();
+            
+            if is_dynamic_array {
                 if array_element_size(type_name).is_none() {
                     return Err(CompilerError::Unsupported(format!("array element type must have known size: {type_name}")));
                 }
@@ -701,6 +705,13 @@ fn compile_statement(
                     None => Expr::Bytes(Vec::new()),
                 };
                 env.insert(name.clone(), initial);
+                types.insert(name.clone(), type_name.clone());
+                Ok(())
+            } else if is_fixed_size_array {
+                // Fixed-size arrays like byte[N] can be initialized from expressions
+                let expr =
+                    expr.clone().ok_or_else(|| CompilerError::Unsupported("variable definition requires initializer".to_string()))?;
+                env.insert(name.clone(), expr);
                 types.insert(name.clone(), type_name.clone());
                 Ok(())
             } else {

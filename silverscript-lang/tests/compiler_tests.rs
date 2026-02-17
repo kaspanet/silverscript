@@ -88,7 +88,7 @@ fn run_script_with_sigscript(script: Vec<u8>, sigscript: Vec<u8>) -> Result<(), 
 #[test]
 fn accepts_constructor_args_with_matching_types() {
     let source = r#"
-        contract Types(int a, bool b, string c, bytes d, byte e, bytes4 f, pubkey pk, sig s, datasig ds) {
+        contract Types(int a, bool b, string c, bytes d, byte e, byte[4] f, pubkey pk, sig s, datasig ds) {
             entrypoint function main() {
                 require(true);
             }
@@ -124,7 +124,7 @@ fn rejects_constructor_args_with_wrong_scalar_types() {
 #[test]
 fn rejects_constructor_args_with_wrong_byte_lengths() {
     let source = r#"
-        contract Types(byte b, bytes4 c, pubkey pk, sig s, datasig ds) {
+        contract Types(byte b, byte[4] c, pubkey pk, sig s, datasig ds) {
             entrypoint function main() {
                 require(true);
             }
@@ -157,8 +157,8 @@ fn accepts_constructor_args_with_any_bytes_length() {
 fn build_sig_script_builds_expected_script() {
     let source = r#"
         contract BoundedBytes() {
-            entrypoint function spend(bytes4 b, int i) {
-                require(b == bytes4(i));
+            entrypoint function spend(byte[4] b, int i) {
+                require(b == byte[4](i));
             }
         }
     "#;
@@ -210,7 +210,7 @@ fn build_sig_script_rejects_wrong_argument_count() {
 fn build_sig_script_rejects_wrong_argument_type() {
     let source = r#"
         contract C() {
-            entrypoint function spend(bytes4 b) {
+            entrypoint function spend(byte[4] b) {
                 require(b.length == 4);
             }
         }
@@ -294,7 +294,7 @@ fn rejects_entrypoint_return_by_default() {
 fn build_sig_script_rejects_mismatched_bytes_length() {
     let source = r#"
         contract C() {
-            entrypoint function spend(bytes4 b) {
+            entrypoint function spend(byte[4] b) {
                 require(b.length == 4);
             }
         }
@@ -305,7 +305,7 @@ fn build_sig_script_rejects_mismatched_bytes_length() {
 
     let source = r#"
         contract C() {
-            entrypoint function spend(bytes5 b) {
+            entrypoint function spend(byte[5] b) {
                 require(b.length == 5);
             }
         }
@@ -319,7 +319,7 @@ fn build_sig_script_rejects_mismatched_bytes_length() {
 fn build_sig_script_omits_selector_without_selector() {
     let source = r#"
         contract Single() {
-            entrypoint function spend(int a, bytes4 b) {
+            entrypoint function spend(int a, byte[4] b) {
                 require(a == 1);
                 require(b.length == 4);
             }
@@ -747,7 +747,7 @@ fn compiles_bytes20_array_push_without_num2bin() {
     let source = r#"
         contract Arrays() {
             entrypoint function main() {
-                bytes20[] x;
+                byte[20][] x;
                 x.push(0x0102030405060708090a0b0c0d0e0f1011121314);
                 require(x.length == 1);
             }
@@ -793,7 +793,7 @@ fn runs_bytes20_array_runtime_example() {
     let source = r#"
         contract Arrays() {
             entrypoint function main() {
-                bytes20[] x;
+                byte[20][] x;
                 x.push(0x0102030405060708090a0b0c0d0e0f1011121314);
                 x.push(0x1111111111111111111111111111111111111111);
                 require(x.length == 2);
@@ -806,7 +806,7 @@ fn runs_bytes20_array_runtime_example() {
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
     let sigscript = ScriptBuilder::new().drain();
     let result = run_script_with_sigscript(compiled.script, sigscript);
-    assert!(result.is_ok(), "bytes20 array runtime example failed: {}", result.unwrap_err());
+    assert!(result.is_ok(), "byte[20] array runtime example failed: {}", result.unwrap_err());
 }
 
 #[test]
@@ -814,8 +814,8 @@ fn allows_array_equality_comparison() {
     let source = r#"
         contract Arrays() {
             entrypoint function main() {
-                bytes20[] x;
-                bytes20[] y;
+                byte[20][] x;
+                byte[20][] y;
                 x.push(0x0102030405060708090a0b0c0d0e0f1011121314);
                 y.push(0x0102030405060708090a0b0c0d0e0f1011121314);
                 require(x == y);
@@ -834,8 +834,8 @@ fn fails_array_equality_comparison() {
     let source = r#"
         contract Arrays() {
             entrypoint function main() {
-                bytes20[] x;
-                bytes20[] y;
+                byte[20][] x;
+                byte[20][] y;
                 x.push(0x0102030405060708090a0b0c0d0e0f1011121314);
                 y.push(0x2222222222222222222222222222222222222222);
                 require(x == y);
@@ -854,8 +854,8 @@ fn allows_array_inequality_with_different_sizes() {
     let source = r#"
         contract Arrays() {
             entrypoint function main() {
-                bytes20[] x;
-                bytes20[] y;
+                byte[20][] x;
+                byte[20][] y;
                 x.push(0x0102030405060708090a0b0c0d0e0f1011121314);
                 y.push(0x0102030405060708090a0b0c0d0e0f1011121314);
                 y.push(0x2222222222222222222222222222222222222222);
@@ -1024,7 +1024,7 @@ fn locking_bytecode_p2pk_matches_pay_to_address_script() {
 fn locking_bytecode_p2sh_matches_pay_to_address_script() {
     let source = r#"
         contract Test() {
-            entrypoint function main(bytes32 hash, bytes expected) {
+            entrypoint function main(byte[32] hash, bytes expected) {
                 bytes spk = new LockingBytecodeP2SH(hash);
                 require(spk == expected);
             }

@@ -1,6 +1,6 @@
 pragma silverscript ^0.1.0;
 
-contract Slice(bytes20 pkh) {
+contract Slice(byte[20] pkh) {
     entrypoint function spend() {
         bytes actualPkh = tx.inputs[this.activeInputIndex].lockingBytecode.slice(3, 23);
         require(pkh == actualPkh);

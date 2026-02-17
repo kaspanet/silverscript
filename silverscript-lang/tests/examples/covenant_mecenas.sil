@@ -1,11 +1,11 @@
 pragma silverscript ^0.1.0;
 
-contract Mecenas(pubkey recipient, bytes32 funder, int pledge, int period) {
+contract Mecenas(pubkey recipient, byte[32] funder, int pledge, int period) {
     entrypoint function receive() {
         require(this.age >= period);
 
         // Check that the first output sends to the recipient
-        bytes34 recipientLockingBytecode = new LockingBytecodeP2PK(recipient);
+        byte[34] recipientLockingBytecode = new LockingBytecodeP2PK(recipient);
         require(tx.outputs[0].lockingBytecode == recipientLockingBytecode);
 
         // Calculate the value that's left

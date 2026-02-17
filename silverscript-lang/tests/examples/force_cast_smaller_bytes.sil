@@ -3,7 +3,7 @@ pragma silverscript ^0.1.0;
 contract Test() {
     entrypoint function hello() {
         // Have to know what you're doing to force cast
-        bytes3 byte_ = bytes3(bytes(0x1234));
+        byte[3] byte_ = byte[3](bytes(0x1234));
         require(byte_.length == 1);
     }
 }

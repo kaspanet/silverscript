@@ -1,6 +1,6 @@
 pragma silverscript ^0.1.0;
 
-contract Mecenas(pubkey recipient, bytes32 funder, int pledge/*, int period */) {
+contract Mecenas(pubkey recipient, byte[32] funder, int pledge/*, int period */) {
     entrypoint function receive() {
         // require(this.age >= period);
 

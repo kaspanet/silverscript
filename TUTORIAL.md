@@ -203,7 +203,7 @@ Every SilverScript program defines a single contract. A contract has a name, opt
 ```javascript
 pragma silverscript ^0.1.0;
 
-contract MyContract(int param1, bytes32 param2) {
+contract MyContract(int param1, byte[32] param2) {
     // Contract constants (optional)
     int constant MAX_VALUE = 1000;
     
@@ -241,8 +241,8 @@ SilverScript supports the following data types:
 | `bool` | Boolean value | `true`, `false` |
 | `string` | UTF-8 string | `"hello"`, `'world'` |
 | `bytes` | Dynamic byte array | `0x1234`, `0xabcdef` |
-| `byteN` | Fixed-size byte array (N = 1-255) | `bytes32`, `bytes65` |
-| `byte` | Single byte (alias for `bytes1`) | `byte` |
+| `byte[N]` | Fixed-size byte array (N = 1-255) | `byte[32]`, `byte[65]` |
+| `byte` | Single byte (alias for `byte[1]`) | `byte` |
 | `pubkey` | Public key (32 bytes) | `pubkey` |
 | `sig` | Signature (64 or 65 bytes) | `sig` |
 | `datasig` | Data signature (64 or 65 bytes) | `datasig` |
@@ -253,7 +253,7 @@ You can create arrays by appending `[]` to any type:
 
 ```javascript
 int[] numbers;
-bytes32[] hashes;
+byte[32][] hashes;
 pubkey[] publicKeys;
 ```
 
@@ -329,8 +329,8 @@ function add(int a, int b): (int) {
 }
 
 // Multiple return values
-function split(bytes32 data): (bytes16, bytes16) {
-    bytes16 left, bytes16 right = data.split(16);
+function split(byte[32] data): (byte[16], byte[16]) {
+    byte[16] left, byte[16] right = data.split(16);
     return (left, right);
 }
 
@@ -553,7 +553,7 @@ Arrays must be built dynamically using the `.push()` method:
 ```javascript
 // Declare an array
 int[] numbers;
-bytes32[] hashes;
+byte[32][] hashes;
 
 // Build array with push
 numbers.push(1);
@@ -562,7 +562,7 @@ numbers.push(3);
 numbers.push(4);
 numbers.push(5);
 
-// Build bytes32 array
+// Build byte[32] array
 hashes.push(0x1111111111111111111111111111111111111111111111111111111111111111);
 hashes.push(0x2222222222222222222222222222222222222222222222222222222222222222);
 
@@ -635,8 +635,8 @@ bytes fromInt = bytes(42);
 bytes fromString = bytes("hello");
 
 // Cast to specific byte size
-bytes32 hash = bytes32(data);
-bytes65 signatureBytes = bytes65(sigBytes);
+byte[32] hash = byte[32](data);
+byte[65] signatureBytes = byte[65](sigBytes);
 
 // Cast to pubkey or sig
 pubkey pk = pubkey(keyBytes);
@@ -649,7 +649,7 @@ int number = int(someData);
 **Example:**
 
 ```javascript
-entrypoint function example(pubkey pk, bytes65 sigBytes) {
+entrypoint function example(pubkey pk, byte[65] sigBytes) {
     sig s = sig(sigBytes);
     require(checkSig(s, pk));
 }
@@ -661,21 +661,21 @@ entrypoint function example(pubkey pk, bytes65 sigBytes) {
 
 ### Cryptographic Functions
 
-**`blake2b(bytes data): bytes32`**
+**`blake2b(bytes data): byte[32]`**
 
 Compute the BLAKE2b hash of the input:
 
 ```javascript
-bytes32 hash = blake2b(data);
-bytes32 pkh = blake2b(pk);
+byte[32] hash = blake2b(data);
+byte[32] pkh = blake2b(pk);
 ```
 
-**`sha256(bytes data): bytes32`**
+**`sha256(bytes data): byte[32]`**
 
 Compute the SHA-256 hash:
 
 ```javascript
-bytes32 hash = sha256(data);
+byte[32] hash = sha256(data);
 ```
 
 **`checkSig(sig signature, pubkey publicKey): bool`**
@@ -702,7 +702,7 @@ bytes b2 = bytes("hello");
 Convert integer to bytes with specific size:
 
 ```javascript
-bytes8 b = bytes(1234, 8);
+byte[8] b = bytes(1234, 8);
 ```
 
 **`int(bool value): int`**
@@ -807,31 +807,31 @@ Covenants are contracts that enforce conditions on how funds can be spent. They 
 
 ### Creating Locking Bytecode
 
-**`new LockingBytecodeP2PK(pubkey pk): bytes34`**
+**`new LockingBytecodeP2PK(pubkey pk): byte[34]`**
 
 Create a Pay-to-Public-Key locking script:
 
 ```javascript
-bytes34 lockScript = new LockingBytecodeP2PK(recipientPubkey);
+byte[34] lockScript = new LockingBytecodeP2PK(recipientPubkey);
 require(tx.outputs[0].lockingBytecode == lockScript);
 ```
 
-**`new LockingBytecodeP2SH(bytes32 scriptHash): bytes35`**
+**`new LockingBytecodeP2SH(byte[32] scriptHash): byte[35]`**
 
 Create a Pay-to-Script-Hash locking script:
 
 ```javascript
-bytes32 redeemScriptHash = blake2b(redeemScript);
-bytes35 lockScript = new LockingBytecodeP2SH(redeemScriptHash);
+byte[32] redeemScriptHash = blake2b(redeemScript);
+byte[35] lockScript = new LockingBytecodeP2SH(redeemScriptHash);
 require(tx.outputs[0].lockingBytecode == lockScript);
 ```
 
-**`new LockingBytecodeP2SHFromRedeemScript(bytes redeemScript): bytes35`**
+**`new LockingBytecodeP2SHFromRedeemScript(bytes redeemScript): byte[35]`**
 
 Create P2SH locking script directly from redeem script:
 
 ```javascript
-bytes35 lockScript = new LockingBytecodeP2SHFromRedeemScript(redeemScript);
+byte[35] lockScript = new LockingBytecodeP2SHFromRedeemScript(redeemScript);
 ```
 
 ### Covenant Examples
@@ -844,7 +844,7 @@ pragma silverscript ^0.1.0;
 contract SimpleCovenant(pubkey recipient) {
     entrypoint function spend() {
         // First output must go to the recipient
-        bytes34 recipientLock = new LockingBytecodeP2PK(recipient);
+        byte[34] recipientLock = new LockingBytecodeP2PK(recipient);
         require(tx.outputs[0].lockingBytecode == recipientLock);
     }
 }
@@ -861,7 +861,7 @@ contract RecurringPayment(pubkey recipient, int paymentAmount, int period) {
         require(this.age >= period);
         
         // First output must pay the recipient
-        bytes34 recipientLock = new LockingBytecodeP2PK(recipient);
+        byte[34] recipientLock = new LockingBytecodeP2PK(recipient);
         require(tx.outputs[0].lockingBytecode == recipientLock);
         require(tx.outputs[0].value >= paymentAmount);
         
@@ -921,8 +921,8 @@ function getPair(): (int, int) {
 }
 
 // Unpack split results and function results
-entrypoint function example(bytes32 data) {
-    bytes16 left, bytes16 right = data.split(16);
+entrypoint function example(byte[32] data) {
+    byte[16] left, byte[16] right = data.split(16);
     (int x, int y) = getPair();
 }
 ```
@@ -930,8 +930,8 @@ entrypoint function example(bytes32 data) {
 **In Function Parameters:**
 
 ```javascript
-entrypoint function example(bytes32 data) {
-    bytes16 x, bytes16 y = data.split(16);
+entrypoint function example(byte[32] data) {
+    byte[16] x, byte[16] y = data.split(16);
     require(x == y);
 }
 ```
@@ -950,7 +950,7 @@ bytes left = data.split(4)[0];   // 0x11223344
 bytes right = data.split(4)[1];  // 0x55667788
 
 // Direct tuple unpacking with types
-bytes4 a, bytes4 b = data.split(4);
+byte[4] a, byte[4] b = data.split(4);
 ```
 
 **Slice:**
@@ -1031,14 +1031,14 @@ A contract that releases periodic payments to a beneficiary:
 ```javascript
 pragma silverscript ^0.1.0;
 
-contract Mecenas(pubkey recipient, bytes32 funder, int pledge, int period) {
+contract Mecenas(pubkey recipient, byte[32] funder, int pledge, int period) {
     // Periodic payment to recipient
     entrypoint function receive() {
         // Must wait for the period to elapse
         require(this.age >= period);
 
         // Check that the first output sends to the recipient
-        bytes34 recipientLockingBytecode = new LockingBytecodeP2PK(recipient);
+        byte[34] recipientLockingBytecode = new LockingBytecodeP2PK(recipient);
         require(tx.outputs[0].lockingBytecode == recipientLockingBytecode);
 
         // Calculate the value that's left

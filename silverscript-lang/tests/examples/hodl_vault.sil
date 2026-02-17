@@ -7,7 +7,7 @@ contract HodlVault(
     int priceTarget
 ) {
     entrypoint function spend(sig ownerSig, datasig oracleSig, bytes oracleMessage) {
-        bytes4 blockHeightBin, bytes4 priceBin = oracleMessage.split(4);
+        byte[4] blockHeightBin, byte[4] priceBin = oracleMessage.split(4);
         int blockHeight = int(blockHeightBin);
         int price = int(priceBin);
 
