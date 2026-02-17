@@ -407,6 +407,74 @@ fn rejects_function_call_assignment_with_wrong_return_count() {
 }
 
 #[test]
+fn rejects_internal_function_call_with_wrong_fixed_array_arg_size() {
+    let source = r#"
+        contract Calls() {
+            function f(byte[4] b) {
+                require(b.length == 4);
+            }
+
+            entrypoint function main() {
+                f(0x010203);
+            }
+        }
+    "#;
+
+    assert!(compile_contract(source, &[], CompileOptions::default()).is_err());
+}
+
+#[test]
+fn accepts_internal_function_call_with_matching_fixed_array_arg_size() {
+    let source = r#"
+        contract Calls() {
+            function f(byte[4] b) {
+                require(b.length == 4);
+            }
+
+            entrypoint function main() {
+                f(0x01020304);
+            }
+        }
+    "#;
+
+    compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+}
+
+#[test]
+fn rejects_internal_function_call_with_wrong_fixed_int_array_arg_size() {
+    let source = r#"
+        contract Calls() {
+            function f(int[4] a) {
+                require(a.length == 4);
+            }
+
+            entrypoint function main() {
+                f([1, 2, 3]);
+            }
+        }
+    "#;
+
+    assert!(compile_contract(source, &[], CompileOptions::default()).is_err());
+}
+
+#[test]
+fn accepts_internal_function_call_with_matching_fixed_int_array_arg_size() {
+    let source = r#"
+        contract Calls() {
+            function f(int[4] a) {
+                require(a.length == 4);
+            }
+
+            entrypoint function main() {
+                f([1, 2, 3, 4]);
+            }
+        }
+    "#;
+
+    compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+}
+
+#[test]
 fn allows_calling_void_function() {
     let source = r#"
         contract Calls() {
