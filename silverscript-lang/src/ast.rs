@@ -726,20 +726,20 @@ fn parse_cast(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
     if matches!(type_name.as_str(), "sig" | "pubkey" | "datasig") {
         return Ok(Expr::Call { name: type_name, args });
     }
-    // Internal representation: byte[N] casts are converted to bytesN function calls
-    // Note: The grammar no longer accepts bytesN syntax directly
-    if let Some(size) = type_name.strip_prefix("bytes").and_then(|v| v.parse::<usize>().ok()) {
-        return Ok(Expr::Call { name: format!("bytes{size}"), args });
-    }
-    // Support new byte[N] syntax
+    // Support type[N] syntax - convert to internal bytesN function for byte[N]
     if let Some(bracket_pos) = type_name.find('[') {
         if type_name.ends_with(']') {
             let base_type = &type_name[..bracket_pos];
             let size_str = &type_name[bracket_pos + 1..type_name.len() - 1];
-            if base_type == "byte" && !size_str.is_empty() {
+            if !size_str.is_empty() {
                 if let Ok(size) = size_str.parse::<usize>() {
-                    // Convert byte[N] to internal bytesN representation
-                    return Ok(Expr::Call { name: format!("bytes{size}"), args });
+                    // Convert byte[N] to bytesN for internal representation
+                    if base_type == "byte" {
+                        return Ok(Expr::Call { name: format!("bytes{size}"), args });
+                    }
+                    // For other types like int[N], we'd need different handling
+                    // For now, return the full type name as the function
+                    return Ok(Expr::Call { name: type_name.to_string(), args });
                 }
             }
         }
