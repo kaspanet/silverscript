@@ -52,10 +52,10 @@ fn dummy_expr_for_type(type_name: &str) -> Expr {
         return String::from("aa").into();
     }
     if type_name == "bytes" {
-        return Vec::<u8>::new().into();  // Empty byte array
+        return Vec::<u8>::new().into(); // Empty byte array
     }
     if type_name == "pubkey" {
-        return vec![0u8; 32].into();  // Converts to Expr::Array of Expr::Byte
+        return vec![0u8; 32].into(); // Converts to Expr::Array of Expr::Byte
     }
     if type_name == "sig" {
         return vec![0u8; 64].into();

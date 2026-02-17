@@ -732,11 +732,13 @@ fn parse_cast(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
         if type_name.ends_with(']') {
             let _base_type = &type_name[..bracket_pos];
             let size_str = &type_name[bracket_pos + 1..type_name.len() - 1];
-            if !size_str.is_empty() {
-                if let Ok(_size) = size_str.parse::<usize>() {
-                    // Convert type[N] casts to a call with the full type name
-                    return Ok(Expr::Call { name: type_name.to_string(), args });
-                }
+            // Support both type[N] and type[] (dynamic array)
+            if size_str.is_empty() {
+                // Dynamic array cast like byte[]
+                return Ok(Expr::Call { name: type_name.to_string(), args });
+            } else if let Ok(_size) = size_str.parse::<usize>() {
+                // Fixed-size array cast like byte[32]
+                return Ok(Expr::Call { name: type_name.to_string(), args });
             }
         }
     }

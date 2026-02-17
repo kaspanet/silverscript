@@ -290,24 +290,20 @@ fn array_literal_matches_type(values: &[Expr], type_name: &str) -> bool {
     let Some(element_type) = array_element_type(type_name) else {
         return false;
     };
-    
+
     // Check if this is a fixed-size array
     if let Some(expected_size) = array_size(type_name) {
         if values.len() != expected_size {
             return false;
         }
     }
-    
+
     match element_type {
         "int" => values.iter().all(|value| matches!(value, Expr::Int(_))),
         "byte" => values.iter().all(|value| matches!(value, Expr::Byte(_))),
         _ => {
             // Support nested fixed-size arrays like byte[4]
-            if element_type.contains('[') {
-                values.iter().all(|value| expr_matches_type(value, element_type))
-            } else {
-                false
-            }
+            if element_type.contains('[') { values.iter().all(|value| expr_matches_type(value, element_type)) } else { false }
         }
     }
 }
@@ -486,9 +482,8 @@ impl CompiledContract {
                         // Check if it's a byte array or other array type
                         if is_byte_array(&arg) {
                             // Extract bytes from Expr::Byte array
-                            let bytes: Vec<u8> = values.iter().filter_map(|v| {
-                                if let Expr::Byte(b) = v { Some(*b) } else { None }
-                            }).collect();
+                            let bytes: Vec<u8> =
+                                values.iter().filter_map(|v| if let Expr::Byte(b) = v { Some(*b) } else { None }).collect();
                             builder.add_data(&bytes)?;
                         } else {
                             // Regular array - encode it
@@ -528,9 +523,7 @@ fn push_sigscript_arg(builder: &mut ScriptBuilder, arg: Expr) -> Result<(), Comp
         }
         Expr::Array(values) if is_byte_array(&Expr::Array(values.clone())) => {
             // Handle byte arrays
-            let bytes: Vec<u8> = values.iter().filter_map(|v| {
-                if let Expr::Byte(b) = v { Some(*b) } else { None }
-            }).collect();
+            let bytes: Vec<u8> = values.iter().filter_map(|v| if let Expr::Byte(b) = v { Some(*b) } else { None }).collect();
             builder.add_data(&bytes)?;
         }
         _ => {
@@ -564,16 +557,12 @@ fn encode_array_literal(values: &[Expr], type_name: &str) -> Result<Vec<u8>, Com
         _ => {
             // Handle nested arrays like byte[4][] where element is byte[4]
             let size = if let (Some(inner_elem), Some(inner_size)) = (array_element_type(element_type), array_size(element_type)) {
-                if inner_elem == "byte" {
-                    Some(inner_size)
-                } else {
-                    None
-                }
+                if inner_elem == "byte" { Some(inner_size) } else { None }
             } else {
                 None
             }
             .ok_or_else(|| CompilerError::Unsupported("array element type must have known size".to_string()))?;
-            
+
             for value in values {
                 // Each element should be a byte array of the expected size
                 if let Some(len) = byte_array_len(value) {
@@ -702,7 +691,18 @@ fn compile_function(
     } else {
         let mut stack_depth = 0i64;
         for expr in &yields {
-            compile_expr(expr, &env, &params, &types, &mut builder, options, &mut HashSet::new(), &mut stack_depth, script_size, constants)?;
+            compile_expr(
+                expr,
+                &env,
+                &params,
+                &types,
+                &mut builder,
+                options,
+                &mut HashSet::new(),
+                &mut stack_depth,
+                script_size,
+                constants,
+            )?;
         }
         for _ in 0..param_count {
             builder.add_i64(yield_count as i64)?;
@@ -733,7 +733,7 @@ fn compile_statement(
             // Check if this is a fixed-size array (e.g., byte[N]) or dynamic array (e.g., byte[])
             let is_fixed_size_array = is_array_type(type_name) && array_size_with_constants(type_name, contract_constants).is_some();
             let is_dynamic_array = is_array_type(type_name) && array_size_with_constants(type_name, contract_constants).is_none();
-            
+
             if is_dynamic_array {
                 if array_element_size(type_name).is_none() {
                     return Err(CompilerError::Unsupported(format!("array element type must have known size: {type_name}")));
@@ -756,27 +756,26 @@ fn compile_statement(
                 // Fixed-size arrays like byte[N] can be initialized from expressions
                 let expr =
                     expr.clone().ok_or_else(|| CompilerError::Unsupported("variable definition requires initializer".to_string()))?;
-                
+
                 // For array literals, validate that the size matches the declared type
                 if let Expr::Array(values) = &expr {
                     if let Some(expected_size) = array_size_with_constants(type_name, contract_constants) {
                         if values.len() != expected_size {
                             return Err(CompilerError::Unsupported(format!(
                                 "array size mismatch: expected {} elements for type {}, got {}",
-                                expected_size, type_name, values.len()
+                                expected_size,
+                                type_name,
+                                values.len()
                             )));
                         }
                     }
-                    
+
                     // Validate element types match
                     if !array_literal_matches_type(values, type_name) {
-                        return Err(CompilerError::Unsupported(format!(
-                            "array element type mismatch for type {}", 
-                            type_name
-                        )));
+                        return Err(CompilerError::Unsupported(format!("array element type mismatch for type {}", type_name)));
                     }
                 }
-                
+
                 env.insert(name.clone(), expr);
                 types.insert(name.clone(), type_name.clone());
                 Ok(())
@@ -802,7 +801,7 @@ fn compile_statement(
             } else if element_type == "byte" {
                 Expr::Call { name: "byte[1]".to_string(), args: vec![expr.clone()] }
             } else if element_type.contains('[') && element_type.starts_with("byte") {
-                // Handle byte[N] type  
+                // Handle byte[N] type
                 if expr_is_bytes(expr, env, types) {
                     expr.clone()
                 } else {
@@ -839,7 +838,18 @@ fn compile_statement(
         }
         Statement::Require { expr, .. } => {
             let mut stack_depth = 0i64;
-            compile_expr(expr, env, params, types, builder, options, &mut HashSet::new(), &mut stack_depth, script_size, contract_constants)?;
+            compile_expr(
+                expr,
+                env,
+                params,
+                types,
+                builder,
+                options,
+                &mut HashSet::new(),
+                &mut stack_depth,
+                script_size,
+                contract_constants,
+            )?;
             builder.add_op(OpVerify)?;
             Ok(())
         }
@@ -911,7 +921,18 @@ fn compile_statement(
             if !returns.is_empty() {
                 let mut stack_depth = 0i64;
                 for expr in returns {
-                    compile_expr(&expr, env, params, types, builder, options, &mut HashSet::new(), &mut stack_depth, script_size, contract_constants)?;
+                    compile_expr(
+                        &expr,
+                        env,
+                        params,
+                        types,
+                        builder,
+                        options,
+                        &mut HashSet::new(),
+                        &mut stack_depth,
+                        script_size,
+                        contract_constants,
+                    )?;
                     builder.add_op(OpDrop)?;
                     stack_depth -= 1;
                 }
@@ -1113,7 +1134,18 @@ fn compile_if_statement(
     script_size: Option<i64>,
 ) -> Result<(), CompilerError> {
     let mut stack_depth = 0i64;
-    compile_expr(condition, env, params, types, builder, options, &mut HashSet::new(), &mut stack_depth, script_size, contract_constants)?;
+    compile_expr(
+        condition,
+        env,
+        params,
+        types,
+        builder,
+        options,
+        &mut HashSet::new(),
+        &mut stack_depth,
+        script_size,
+        contract_constants,
+    )?;
     builder.add_op(OpIf)?;
 
     let original_env = env.clone();
@@ -1481,9 +1513,7 @@ fn compile_expr(
         }
         Expr::Array(values) if is_byte_array(&Expr::Array(values.clone())) => {
             // Handle byte arrays
-            let bytes: Vec<u8> = values.iter().filter_map(|v| {
-                if let Expr::Byte(b) = v { Some(*b) } else { None }
-            }).collect();
+            let bytes: Vec<u8> = values.iter().filter_map(|v| if let Expr::Byte(b) = v { Some(*b) } else { None }).collect();
             builder.add_data(&bytes)?;
             *stack_depth += 1;
             Ok(())
@@ -1527,7 +1557,19 @@ fn compile_expr(
         }
         Expr::Array(_) => Err(CompilerError::Unsupported("array literals are only supported in LockingBytecodeNullData".to_string())),
         Expr::Call { name, args } => match name.as_str() {
-            "OpSha256" => compile_opcode_call(name, args, 1, &scope, builder, options, visiting, stack_depth, OpSHA256, script_size, contract_constants),
+            "OpSha256" => compile_opcode_call(
+                name,
+                args,
+                1,
+                &scope,
+                builder,
+                options,
+                visiting,
+                stack_depth,
+                OpSHA256,
+                script_size,
+                contract_constants,
+            ),
             "sha256" => {
                 if args.len() != 1 {
                     return Err(CompilerError::Unsupported("sha256() expects a single argument".to_string()));
@@ -1556,25 +1598,97 @@ fn compile_expr(
                 *stack_depth += 1;
                 Ok(())
             }
-            "OpTxSubnetId" => {
-                compile_opcode_call(name, args, 0, &scope, builder, options, visiting, stack_depth, OpTxSubnetId, script_size, contract_constants)
-            }
-            "OpTxGas" => compile_opcode_call(name, args, 0, &scope, builder, options, visiting, stack_depth, OpTxGas, script_size, contract_constants),
-            "OpTxPayloadLen" => {
-                compile_opcode_call(name, args, 0, &scope, builder, options, visiting, stack_depth, OpTxPayloadLen, script_size, contract_constants)
-            }
-            "OpTxPayloadSubstr" => {
-                compile_opcode_call(name, args, 2, &scope, builder, options, visiting, stack_depth, OpTxPayloadSubstr, script_size, contract_constants)
-            }
-            "OpOutpointTxId" => {
-                compile_opcode_call(name, args, 1, &scope, builder, options, visiting, stack_depth, OpOutpointTxId, script_size, contract_constants)
-            }
-            "OpOutpointIndex" => {
-                compile_opcode_call(name, args, 1, &scope, builder, options, visiting, stack_depth, OpOutpointIndex, script_size, contract_constants)
-            }
-            "OpTxInputScriptSigLen" => {
-                compile_opcode_call(name, args, 1, &scope, builder, options, visiting, stack_depth, OpTxInputScriptSigLen, script_size, contract_constants)
-            }
+            "OpTxSubnetId" => compile_opcode_call(
+                name,
+                args,
+                0,
+                &scope,
+                builder,
+                options,
+                visiting,
+                stack_depth,
+                OpTxSubnetId,
+                script_size,
+                contract_constants,
+            ),
+            "OpTxGas" => compile_opcode_call(
+                name,
+                args,
+                0,
+                &scope,
+                builder,
+                options,
+                visiting,
+                stack_depth,
+                OpTxGas,
+                script_size,
+                contract_constants,
+            ),
+            "OpTxPayloadLen" => compile_opcode_call(
+                name,
+                args,
+                0,
+                &scope,
+                builder,
+                options,
+                visiting,
+                stack_depth,
+                OpTxPayloadLen,
+                script_size,
+                contract_constants,
+            ),
+            "OpTxPayloadSubstr" => compile_opcode_call(
+                name,
+                args,
+                2,
+                &scope,
+                builder,
+                options,
+                visiting,
+                stack_depth,
+                OpTxPayloadSubstr,
+                script_size,
+                contract_constants,
+            ),
+            "OpOutpointTxId" => compile_opcode_call(
+                name,
+                args,
+                1,
+                &scope,
+                builder,
+                options,
+                visiting,
+                stack_depth,
+                OpOutpointTxId,
+                script_size,
+                contract_constants,
+            ),
+            "OpOutpointIndex" => compile_opcode_call(
+                name,
+                args,
+                1,
+                &scope,
+                builder,
+                options,
+                visiting,
+                stack_depth,
+                OpOutpointIndex,
+                script_size,
+                contract_constants,
+            ),
+            "OpTxInputScriptSigLen" => compile_opcode_call(
+                name,
+                args,
+                1,
+                &scope,
+                builder,
+                options,
+                visiting,
+                stack_depth,
+                OpTxInputScriptSigLen,
+                script_size,
+                contract_constants,
+            ),
             "OpTxInputScriptSigSubstr" => compile_opcode_call(
                 name,
                 args,
@@ -1588,57 +1702,243 @@ fn compile_expr(
                 script_size,
                 contract_constants,
             ),
-            "OpTxInputSeq" => {
-                compile_opcode_call(name, args, 1, &scope, builder, options, visiting, stack_depth, OpTxInputSeq, script_size, contract_constants)
-            }
-            "OpTxInputIsCoinbase" => {
-                compile_opcode_call(name, args, 1, &scope, builder, options, visiting, stack_depth, OpTxInputIsCoinbase, script_size, contract_constants)
-            }
-            "OpTxInputSpkLen" => {
-                compile_opcode_call(name, args, 1, &scope, builder, options, visiting, stack_depth, OpTxInputSpkLen, script_size, contract_constants)
-            }
-            "OpTxInputSpkSubstr" => {
-                compile_opcode_call(name, args, 3, &scope, builder, options, visiting, stack_depth, OpTxInputSpkSubstr, script_size, contract_constants)
-            }
-            "OpTxOutputSpkLen" => {
-                compile_opcode_call(name, args, 1, &scope, builder, options, visiting, stack_depth, OpTxOutputSpkLen, script_size, contract_constants)
-            }
-            "OpTxOutputSpkSubstr" => {
-                compile_opcode_call(name, args, 3, &scope, builder, options, visiting, stack_depth, OpTxOutputSpkSubstr, script_size, contract_constants)
-            }
-            "OpAuthOutputCount" => {
-                compile_opcode_call(name, args, 1, &scope, builder, options, visiting, stack_depth, OpAuthOutputCount, script_size, contract_constants)
-            }
-            "OpAuthOutputIdx" => {
-                compile_opcode_call(name, args, 2, &scope, builder, options, visiting, stack_depth, OpAuthOutputIdx, script_size, contract_constants)
-            }
-            "OpInputCovenantId" => {
-                compile_opcode_call(name, args, 1, &scope, builder, options, visiting, stack_depth, OpInputCovenantId, script_size, contract_constants)
-            }
-            "OpCovInputCount" => {
-                compile_opcode_call(name, args, 1, &scope, builder, options, visiting, stack_depth, OpCovInputCount, script_size, contract_constants)
-            }
-            "OpCovInputIdx" => {
-                compile_opcode_call(name, args, 2, &scope, builder, options, visiting, stack_depth, OpCovInputIdx, script_size, contract_constants)
-            }
-            "OpCovOutCount" => {
-                compile_opcode_call(name, args, 1, &scope, builder, options, visiting, stack_depth, OpCovOutCount, script_size, contract_constants)
-            }
-            "OpCovOutputIdx" => {
-                compile_opcode_call(name, args, 2, &scope, builder, options, visiting, stack_depth, OpCovOutputIdx, script_size, contract_constants)
-            }
-            "OpNum2Bin" => compile_opcode_call(name, args, 2, &scope, builder, options, visiting, stack_depth, OpNum2Bin, script_size, contract_constants),
-            "OpBin2Num" => compile_opcode_call(name, args, 1, &scope, builder, options, visiting, stack_depth, OpBin2Num, script_size, contract_constants),
-            "OpChainblockSeqCommit" => {
-                compile_opcode_call(name, args, 1, &scope, builder, options, visiting, stack_depth, OpChainblockSeqCommit, script_size, contract_constants)
-            }
+            "OpTxInputSeq" => compile_opcode_call(
+                name,
+                args,
+                1,
+                &scope,
+                builder,
+                options,
+                visiting,
+                stack_depth,
+                OpTxInputSeq,
+                script_size,
+                contract_constants,
+            ),
+            "OpTxInputIsCoinbase" => compile_opcode_call(
+                name,
+                args,
+                1,
+                &scope,
+                builder,
+                options,
+                visiting,
+                stack_depth,
+                OpTxInputIsCoinbase,
+                script_size,
+                contract_constants,
+            ),
+            "OpTxInputSpkLen" => compile_opcode_call(
+                name,
+                args,
+                1,
+                &scope,
+                builder,
+                options,
+                visiting,
+                stack_depth,
+                OpTxInputSpkLen,
+                script_size,
+                contract_constants,
+            ),
+            "OpTxInputSpkSubstr" => compile_opcode_call(
+                name,
+                args,
+                3,
+                &scope,
+                builder,
+                options,
+                visiting,
+                stack_depth,
+                OpTxInputSpkSubstr,
+                script_size,
+                contract_constants,
+            ),
+            "OpTxOutputSpkLen" => compile_opcode_call(
+                name,
+                args,
+                1,
+                &scope,
+                builder,
+                options,
+                visiting,
+                stack_depth,
+                OpTxOutputSpkLen,
+                script_size,
+                contract_constants,
+            ),
+            "OpTxOutputSpkSubstr" => compile_opcode_call(
+                name,
+                args,
+                3,
+                &scope,
+                builder,
+                options,
+                visiting,
+                stack_depth,
+                OpTxOutputSpkSubstr,
+                script_size,
+                contract_constants,
+            ),
+            "OpAuthOutputCount" => compile_opcode_call(
+                name,
+                args,
+                1,
+                &scope,
+                builder,
+                options,
+                visiting,
+                stack_depth,
+                OpAuthOutputCount,
+                script_size,
+                contract_constants,
+            ),
+            "OpAuthOutputIdx" => compile_opcode_call(
+                name,
+                args,
+                2,
+                &scope,
+                builder,
+                options,
+                visiting,
+                stack_depth,
+                OpAuthOutputIdx,
+                script_size,
+                contract_constants,
+            ),
+            "OpInputCovenantId" => compile_opcode_call(
+                name,
+                args,
+                1,
+                &scope,
+                builder,
+                options,
+                visiting,
+                stack_depth,
+                OpInputCovenantId,
+                script_size,
+                contract_constants,
+            ),
+            "OpCovInputCount" => compile_opcode_call(
+                name,
+                args,
+                1,
+                &scope,
+                builder,
+                options,
+                visiting,
+                stack_depth,
+                OpCovInputCount,
+                script_size,
+                contract_constants,
+            ),
+            "OpCovInputIdx" => compile_opcode_call(
+                name,
+                args,
+                2,
+                &scope,
+                builder,
+                options,
+                visiting,
+                stack_depth,
+                OpCovInputIdx,
+                script_size,
+                contract_constants,
+            ),
+            "OpCovOutCount" => compile_opcode_call(
+                name,
+                args,
+                1,
+                &scope,
+                builder,
+                options,
+                visiting,
+                stack_depth,
+                OpCovOutCount,
+                script_size,
+                contract_constants,
+            ),
+            "OpCovOutputIdx" => compile_opcode_call(
+                name,
+                args,
+                2,
+                &scope,
+                builder,
+                options,
+                visiting,
+                stack_depth,
+                OpCovOutputIdx,
+                script_size,
+                contract_constants,
+            ),
+            "OpNum2Bin" => compile_opcode_call(
+                name,
+                args,
+                2,
+                &scope,
+                builder,
+                options,
+                visiting,
+                stack_depth,
+                OpNum2Bin,
+                script_size,
+                contract_constants,
+            ),
+            "OpBin2Num" => compile_opcode_call(
+                name,
+                args,
+                1,
+                &scope,
+                builder,
+                options,
+                visiting,
+                stack_depth,
+                OpBin2Num,
+                script_size,
+                contract_constants,
+            ),
+            "OpChainblockSeqCommit" => compile_opcode_call(
+                name,
+                args,
+                1,
+                &scope,
+                builder,
+                options,
+                visiting,
+                stack_depth,
+                OpChainblockSeqCommit,
+                script_size,
+                contract_constants,
+            ),
             "bytes" => {
                 if args.is_empty() || args.len() > 2 {
                     return Err(CompilerError::Unsupported("bytes() expects one or two arguments".to_string()));
                 }
                 if args.len() == 2 {
-                    compile_expr(&args[0], env, params, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
-                    compile_expr(&args[1], env, params, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
+                    compile_expr(
+                        &args[0],
+                        env,
+                        params,
+                        types,
+                        builder,
+                        options,
+                        visiting,
+                        stack_depth,
+                        script_size,
+                        contract_constants,
+                    )?;
+                    compile_expr(
+                        &args[1],
+                        env,
+                        params,
+                        types,
+                        builder,
+                        options,
+                        visiting,
+                        stack_depth,
+                        script_size,
+                        contract_constants,
+                    )?;
                     builder.add_op(OpNum2Bin)?;
                     *stack_depth -= 1;
                     return Ok(());
@@ -1656,10 +1956,32 @@ fn compile_expr(
                             return Ok(());
                         }
                         if expr_is_bytes(&args[0], env, types) {
-                            compile_expr(&args[0], env, params, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
+                            compile_expr(
+                                &args[0],
+                                env,
+                                params,
+                                types,
+                                builder,
+                                options,
+                                visiting,
+                                stack_depth,
+                                script_size,
+                                contract_constants,
+                            )?;
                             return Ok(());
                         }
-                        compile_expr(&args[0], env, params, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
+                        compile_expr(
+                            &args[0],
+                            env,
+                            params,
+                            types,
+                            builder,
+                            options,
+                            visiting,
+                            stack_depth,
+                            script_size,
+                            contract_constants,
+                        )?;
                         builder.add_i64(8)?;
                         *stack_depth += 1;
                         builder.add_op(OpNum2Bin)?;
@@ -1668,10 +1990,32 @@ fn compile_expr(
                     }
                     _ => {
                         if expr_is_bytes(&args[0], env, types) {
-                            compile_expr(&args[0], env, params, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
+                            compile_expr(
+                                &args[0],
+                                env,
+                                params,
+                                types,
+                                builder,
+                                options,
+                                visiting,
+                                stack_depth,
+                                script_size,
+                                contract_constants,
+                            )?;
                             Ok(())
                         } else {
-                            compile_expr(&args[0], env, params, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
+                            compile_expr(
+                                &args[0],
+                                env,
+                                params,
+                                types,
+                                builder,
+                                options,
+                                visiting,
+                                stack_depth,
+                                script_size,
+                                contract_constants,
+                            )?;
                             builder.add_i64(8)?;
                             *stack_depth += 1;
                             builder.add_op(OpNum2Bin)?;
@@ -1696,7 +2040,18 @@ fn compile_expr(
                         }
                         // Runtime length for dynamic arrays
                         if let Some(element_size) = array_element_size(type_name) {
-                            compile_expr(&args[0], env, params, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
+                            compile_expr(
+                                &args[0],
+                                env,
+                                params,
+                                types,
+                                builder,
+                                options,
+                                visiting,
+                                stack_depth,
+                                script_size,
+                                contract_constants,
+                            )?;
                             builder.add_op(OpSize)?;
                             builder.add_op(OpSwap)?;
                             builder.add_op(OpDrop)?;
@@ -1727,20 +2082,68 @@ fn compile_expr(
                 Ok(())
             }
             name if name.starts_with("byte[") && name.ends_with(']') => {
-                // Handle byte[N] cast - extract size from byte[N]
-                let size_part = &name[5..name.len()-1];
-                let size = size_part
-                    .parse::<i64>()
-                    .map_err(|_| CompilerError::Unsupported(format!("{name}() is not supported")))?;
-                if args.len() != 1 {
-                    return Err(CompilerError::Unsupported(format!("{name}() expects a single argument")));
+                let size_part = &name[5..name.len() - 1];
+                if size_part.is_empty() {
+                    // Handle byte[] cast (dynamic array) - just compile the argument as-is
+                    if args.len() != 1 && args.len() != 2 {
+                        return Err(CompilerError::Unsupported(format!("{name}() expects 1 or 2 arguments")));
+                    }
+                    compile_expr(
+                        &args[0],
+                        env,
+                        params,
+                        types,
+                        builder,
+                        options,
+                        visiting,
+                        stack_depth,
+                        script_size,
+                        contract_constants,
+                    )?;
+                    if args.len() == 2 {
+                        // byte[](value, size) - OpNum2Bin with size parameter
+                        compile_expr(
+                            &args[1],
+                            env,
+                            params,
+                            types,
+                            builder,
+                            options,
+                            visiting,
+                            stack_depth,
+                            script_size,
+                            contract_constants,
+                        )?;
+                        *stack_depth += 1;
+                        builder.add_op(OpNum2Bin)?;
+                        *stack_depth -= 1;
+                    }
+                    Ok(())
+                } else {
+                    // Handle byte[N] cast - extract size from byte[N]
+                    let size =
+                        size_part.parse::<i64>().map_err(|_| CompilerError::Unsupported(format!("{name}() is not supported")))?;
+                    if args.len() != 1 {
+                        return Err(CompilerError::Unsupported(format!("{name}() expects a single argument")));
+                    }
+                    compile_expr(
+                        &args[0],
+                        env,
+                        params,
+                        types,
+                        builder,
+                        options,
+                        visiting,
+                        stack_depth,
+                        script_size,
+                        contract_constants,
+                    )?;
+                    builder.add_i64(size)?;
+                    *stack_depth += 1;
+                    builder.add_op(OpNum2Bin)?;
+                    *stack_depth -= 1;
+                    Ok(())
                 }
-                compile_expr(&args[0], env, params, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
-                builder.add_i64(size)?;
-                *stack_depth += 1;
-                builder.add_op(OpNum2Bin)?;
-                *stack_depth -= 1;
-                Ok(())
             }
             "blake2b" => {
                 if args.len() != 1 {
@@ -1867,8 +2270,30 @@ fn compile_expr(
                 matches!(op, BinaryOp::Eq | BinaryOp::Ne) && (expr_is_bytes(left, env, types) || expr_is_bytes(right, env, types));
             let bytes_add = matches!(op, BinaryOp::Add) && (expr_is_bytes(left, env, types) || expr_is_bytes(right, env, types));
             if bytes_add {
-                compile_concat_operand(left, env, params, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
-                compile_concat_operand(right, env, params, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
+                compile_concat_operand(
+                    left,
+                    env,
+                    params,
+                    types,
+                    builder,
+                    options,
+                    visiting,
+                    stack_depth,
+                    script_size,
+                    contract_constants,
+                )?;
+                compile_concat_operand(
+                    right,
+                    env,
+                    params,
+                    types,
+                    builder,
+                    options,
+                    visiting,
+                    stack_depth,
+                    script_size,
+                    contract_constants,
+                )?;
             } else {
                 compile_expr(left, env, params, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
                 compile_expr(right, env, params, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
@@ -1975,7 +2400,18 @@ fn compile_expr(
             };
             let element_size = fixed_type_size(element_type)
                 .ok_or_else(|| CompilerError::Unsupported("array element type must have known size".to_string()))?;
-            compile_expr(&resolved_source, env, params, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
+            compile_expr(
+                &resolved_source,
+                env,
+                params,
+                types,
+                builder,
+                options,
+                visiting,
+                stack_depth,
+                script_size,
+                contract_constants,
+            )?;
             compile_expr(index, env, params, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
             builder.add_i64(element_size)?;
             *stack_depth += 1;
@@ -2108,7 +2544,6 @@ fn expr_is_bytes_inner(
                     | "OpInputCovenantId"
                     | "OpNum2Bin"
                     | "OpChainblockSeqCommit"
-                    | "bytes"
             ) || name.starts_with("byte[")
         }
         Expr::Split { .. } => true,
@@ -2163,7 +2598,18 @@ fn compile_opcode_call(
         return Err(CompilerError::Unsupported(format!("{name}() expects {expected_args} argument(s)")));
     }
     for arg in args {
-        compile_expr(arg, scope.env, scope.params, scope.types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
+        compile_expr(
+            arg,
+            scope.env,
+            scope.params,
+            scope.types,
+            builder,
+            options,
+            visiting,
+            stack_depth,
+            script_size,
+            contract_constants,
+        )?;
     }
     builder.add_op(opcode)?;
     *stack_depth += 1 - expected_args as i64;
@@ -2220,18 +2666,16 @@ fn build_null_data_script(arg: &Expr) -> Result<Vec<u8>, CompilerError> {
             }
             Expr::Array(values) if is_byte_array(&Expr::Array(values.clone())) => {
                 // Handle byte arrays
-                let bytes: Vec<u8> = values.iter().filter_map(|v| {
-                    if let Expr::Byte(b) = v { Some(*b) } else { None }
-                }).collect();
+                let bytes: Vec<u8> = values.iter().filter_map(|v| if let Expr::Byte(b) = v { Some(*b) } else { None }).collect();
                 builder.add_data(&bytes)?;
             }
             Expr::String(value) => {
                 builder.add_data(value.as_bytes())?;
             }
-            Expr::Call { name, args } if name == "bytes" => {
+            Expr::Call { name, args } if name == "byte[]" => {
                 if args.len() != 1 {
                     return Err(CompilerError::Unsupported(
-                        "bytes() in LockingBytecodeNullData expects a single argument".to_string(),
+                        "byte[]() in LockingBytecodeNullData expects a single argument".to_string(),
                     ));
                 }
                 match &args[0] {
@@ -2240,7 +2684,7 @@ fn build_null_data_script(arg: &Expr) -> Result<Vec<u8>, CompilerError> {
                     }
                     _ => {
                         return Err(CompilerError::Unsupported(
-                            "bytes() in LockingBytecodeNullData only supports string literals".to_string(),
+                            "byte[]() in LockingBytecodeNullData only supports string literals".to_string(),
                         ));
                     }
                 }

@@ -9,7 +9,7 @@ contract Test(int x, string y) {
         string hw = "Hello World";
         hw = hw + y;
 
-        require(sha256(pk) == sha256(bytes(hw) + bytes(pk)));
+        require(sha256(pk) == sha256(byte[](hw) + byte[](pk)));
         require(checkSig(s, pk));
     }
 }

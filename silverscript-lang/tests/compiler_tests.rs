@@ -99,7 +99,7 @@ fn accepts_constructor_args_with_matching_types() {
         Expr::Bool(true),
         Expr::String("hello".to_string()),
         vec![1u8; 10].into(),
-        Expr::Byte(2),  // Single byte for type 'byte'
+        Expr::Byte(2), // Single byte for type 'byte'
         vec![3u8; 4].into(),
         vec![4u8; 32].into(),
         vec![5u8; 64].into(),
@@ -130,13 +130,7 @@ fn rejects_constructor_args_with_wrong_byte_lengths() {
             }
         }
     "#;
-    let args = vec![
-        vec![1u8; 2].into(),
-        vec![2u8; 3].into(),
-        vec![3u8; 31].into(),
-        vec![4u8; 63].into(),
-        vec![5u8; 66].into(),
-    ];
+    let args = vec![vec![1u8; 2].into(), vec![2u8; 3].into(), vec![3u8; 31].into(), vec![4u8; 63].into(), vec![5u8; 66].into()];
     assert!(compile_contract(source, &args, CompileOptions::default()).is_err());
 }
 
@@ -2485,21 +2479,23 @@ fn compile_time_length_for_fixed_size_int_array() {
         }
     "#;
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
-    
+
     // Expected script for compile-time length:
     // The nums.length should be replaced with a compile-time constant 5
     // require(nums.length == 5) becomes: <5> <5> OP_NUMEQUALVERIFY, then OP_TRUE for entrypoint return
     let expected_script = vec![
-        0x55,  // OP_5 (push 5 for nums.length)
-        0x55,  // OP_5 (push 5 for comparison)
-        0x9c,  // OP_NUMEQUALVERIFY (combined OP_NUMEQUAL + OP_VERIFY)
-        0x69,  // OP_VERIFY
-        0x51,  // OP_TRUE (entrypoint return value)
+        0x55, // OP_5 (push 5 for nums.length)
+        0x55, // OP_5 (push 5 for comparison)
+        0x9c, // OP_NUMEQUALVERIFY (combined OP_NUMEQUAL + OP_VERIFY)
+        0x69, // OP_VERIFY
+        0x51, // OP_TRUE (entrypoint return value)
     ];
-    
-    assert_eq!(compiled.script, expected_script, 
-        "Script should use compile-time length. Expected: {:?}, Got: {:?}", 
-        expected_script, compiled.script);
+
+    assert_eq!(
+        compiled.script, expected_script,
+        "Script should use compile-time length. Expected: {:?}, Got: {:?}",
+        expected_script, compiled.script
+    );
 }
 
 #[test]
@@ -2513,23 +2509,24 @@ fn compile_time_length_for_fixed_size_byte_array() {
         }
     "#;
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
-    
+
     // Expected script for compile-time length:
     // data.length should be replaced with a compile-time constant 3
     // require(data.length == 3) becomes: <3> <3> OP_NUMEQUALVERIFY, then OP_TRUE for entrypoint return
     let expected_script = vec![
-        0x53,  // OP_3 (push 3 for data.length)
-        0x53,  // OP_3 (push 3 for comparison)
-        0x9c,  // OP_NUMEQUALVERIFY (combined OP_NUMEQUAL + OP_VERIFY)
-        0x69,  // OP_VERIFY
-        0x51,  // OP_TRUE (entrypoint return value)
+        0x53, // OP_3 (push 3 for data.length)
+        0x53, // OP_3 (push 3 for comparison)
+        0x9c, // OP_NUMEQUALVERIFY (combined OP_NUMEQUAL + OP_VERIFY)
+        0x69, // OP_VERIFY
+        0x51, // OP_TRUE (entrypoint return value)
     ];
-    
-    assert_eq!(compiled.script, expected_script,
-        "Script should use compile-time length. Expected: {:?}, Got: {:?}",
-        expected_script, compiled.script);
-}
 
+    assert_eq!(
+        compiled.script, expected_script,
+        "Script should use compile-time length. Expected: {:?}, Got: {:?}",
+        expected_script, compiled.script
+    );
+}
 
 #[test]
 fn accepts_fixed_size_array_init_with_correct_size() {
@@ -2558,8 +2555,7 @@ fn rejects_fixed_size_array_init_with_too_few_elements() {
     let result = compile_contract(source, &[], CompileOptions::default());
     assert!(result.is_err(), "Should reject array with too few elements");
     let err_msg = format!("{:?}", result.unwrap_err());
-    assert!(err_msg.contains("type mismatch") || err_msg.contains("size mismatch"), 
-           "Error should mention type or size mismatch");
+    assert!(err_msg.contains("type mismatch") || err_msg.contains("size mismatch"), "Error should mention type or size mismatch");
 }
 
 #[test]
@@ -2574,8 +2570,7 @@ fn rejects_fixed_size_array_init_with_too_many_elements() {
     let result = compile_contract(source, &[], CompileOptions::default());
     assert!(result.is_err(), "Should reject array with too many elements");
     let err_msg = format!("{:?}", result.unwrap_err());
-    assert!(err_msg.contains("type mismatch") || err_msg.contains("size mismatch"),
-           "Error should mention type or size mismatch");
+    assert!(err_msg.contains("type mismatch") || err_msg.contains("size mismatch"), "Error should mention type or size mismatch");
 }
 
 #[test]
@@ -2619,22 +2614,24 @@ fn compile_time_length_with_constant_size() {
         }
     "#;
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
-    
+
     // Expected script for compile-time length with constant size:
     // nums.length should be replaced with compile-time constant 5 (from SIZE)
     // SIZE constant should also be replaced with 5
     // require(nums.length == SIZE) becomes: <5> <5> OP_NUMEQUALVERIFY
     let expected_script = vec![
-        0x55,  // OP_5 (push 5 for nums.length)
-        0x55,  // OP_5 (push 5 for SIZE constant)
-        0x9c,  // OP_NUMEQUALVERIFY
-        0x69,  // OP_VERIFY
-        0x51,  // OP_TRUE (entrypoint return value)
+        0x55, // OP_5 (push 5 for nums.length)
+        0x55, // OP_5 (push 5 for SIZE constant)
+        0x9c, // OP_NUMEQUALVERIFY
+        0x69, // OP_VERIFY
+        0x51, // OP_TRUE (entrypoint return value)
     ];
-    
-    assert_eq!(compiled.script, expected_script,
+
+    assert_eq!(
+        compiled.script, expected_script,
         "Script should use compile-time length with constant. Expected: {:?}, Got: {:?}",
-        expected_script, compiled.script);
+        expected_script, compiled.script
+    );
 }
 
 #[test]
