@@ -51,7 +51,7 @@ fn dummy_expr_for_type(type_name: &str) -> Expr {
     if type_name == "string" {
         return String::from("aa").into();
     }
-    if type_name == "bytes" {
+    if type_name == "byte[]" {
         return Vec::<u8>::new().into(); // Empty byte array
     }
     if type_name == "pubkey" {
@@ -67,7 +67,7 @@ fn dummy_expr_for_type(type_name: &str) -> Expr {
     if let Some(size) = type_name.strip_prefix("bytes").and_then(|v| v.parse::<usize>().ok()) {
         return vec![0u8; size].into();
     }
-    // Support new byte[N] syntax
+    // Support byte[N] syntax
     if let Some(bracket_pos) = type_name.find('[') {
         if type_name.ends_with(']') {
             let base_type = &type_name[..bracket_pos];

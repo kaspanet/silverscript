@@ -88,7 +88,7 @@ fn run_script_with_sigscript(script: Vec<u8>, sigscript: Vec<u8>) -> Result<(), 
 #[test]
 fn accepts_constructor_args_with_matching_types() {
     let source = r#"
-        contract Types(int a, bool b, string c, bytes d, byte e, byte[4] f, pubkey pk, sig s, datasig ds) {
+        contract Types(int a, bool b, string c, byte[] d, byte e, byte[4] f, pubkey pk, sig s, datasig ds) {
             entrypoint function main() {
                 require(true);
             }
@@ -137,7 +137,7 @@ fn rejects_constructor_args_with_wrong_byte_lengths() {
 #[test]
 fn accepts_constructor_args_with_any_bytes_length() {
     let source = r#"
-        contract Types(bytes blob) {
+        contract Types(byte[] blob) {
             entrypoint function main() {
                 require(true);
             }
@@ -379,7 +379,7 @@ fn rejects_function_call_assignment_with_mismatched_signature() {
             }
 
             entrypoint function main() {
-                (int sum, bytes prod) = f(2, 3);
+                (int sum, byte[] prod) = f(2, 3);
                 require(sum == 5);
             }
         }
@@ -994,8 +994,8 @@ fn rejects_array_element_assignment() {
 fn locking_bytecode_p2pk_matches_pay_to_address_script() {
     let source = r#"
         contract Test() {
-            entrypoint function main(pubkey pk, bytes expected) {
-                bytes spk = new LockingBytecodeP2PK(pk);
+            entrypoint function main(pubkey pk, byte[] expected) {
+                byte[] spk = new LockingBytecodeP2PK(pk);
                 require(spk == expected);
             }
         }
@@ -1018,8 +1018,8 @@ fn locking_bytecode_p2pk_matches_pay_to_address_script() {
 fn locking_bytecode_p2sh_matches_pay_to_address_script() {
     let source = r#"
         contract Test() {
-            entrypoint function main(byte[32] hash, bytes expected) {
-                bytes spk = new LockingBytecodeP2SH(hash);
+            entrypoint function main(byte[32] hash, byte[] expected) {
+                byte[] spk = new LockingBytecodeP2SH(hash);
                 require(spk == expected);
             }
         }
@@ -1042,8 +1042,8 @@ fn locking_bytecode_p2sh_matches_pay_to_address_script() {
 fn locking_bytecode_p2sh_from_redeem_script_matches_pay_to_script_hash_script() {
     let source = r#"
         contract Test() {
-            entrypoint function main(bytes redeem_script, bytes expected) {
-                bytes spk = new LockingBytecodeP2SHFromRedeemScript(redeem_script);
+            entrypoint function main(byte[] redeem_script, byte[] expected) {
+                byte[] spk = new LockingBytecodeP2SHFromRedeemScript(redeem_script);
                 require(spk == expected);
             }
         }
@@ -2341,7 +2341,7 @@ fn data_prefix_for_size(data_len: usize) -> Vec<u8> {
 fn compiles_script_size_data_prefix_small_script() {
     let source = r#"
         contract PrefixSmall() {
-            entrypoint function main(bytes expected_data_prefix) {
+            entrypoint function main(byte[] expected_data_prefix) {
                 require(expected_data_prefix == this.scriptSizeDataPrefix);
                 require(true);
             }
@@ -2360,7 +2360,7 @@ fn compiles_script_size_data_prefix_small_script() {
 fn compiles_script_size_data_prefix_medium_script() {
     let source = r#"
         contract PrefixMedium() {
-            entrypoint function main(bytes expected_data_prefix) {
+            entrypoint function main(byte[] expected_data_prefix) {
                 require(expected_data_prefix == this.scriptSizeDataPrefix);
                 for (i, 0, 100) {
                     require(true);
@@ -2381,7 +2381,7 @@ fn compiles_script_size_data_prefix_medium_script() {
 fn compiles_script_size_data_prefix_large_script() {
     let source = r#"
         contract PrefixLarge() {
-            entrypoint function main(bytes expected_data_prefix) {
+            entrypoint function main(byte[] expected_data_prefix) {
                 require(expected_data_prefix == this.scriptSizeDataPrefix);
                 for (i, 0, 300) {
                     require(true);

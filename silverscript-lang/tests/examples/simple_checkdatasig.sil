@@ -1,7 +1,7 @@
 pragma silverscript ^0.1.0;
 
 contract Test(datasig s, pubkey pk) {
-    entrypoint function cds(bytes data) {
+    entrypoint function cds(byte[] data) {
         require(checkDataSig(s, data, pk));
     }
 }

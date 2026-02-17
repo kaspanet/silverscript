@@ -127,7 +127,7 @@ literal = { BooleanLiteral | HexLiteral | number_literal | StringLiteral | DateL
 number_literal = { NumberLiteral ~ NumberUnit? }
 
 type_name = { base_type ~ array_suffix* }
-base_type = { "int" | "bool" | "string" | "pubkey" | "sig" | "datasig" | "bytes" | "byte" }
+base_type = { "int" | "bool" | "string" | "pubkey" | "sig" | "datasig" | "byte" }
 array_suffix = { "[" ~ array_size? ~ "]" }
 array_size = { Identifier | (ASCII_NONZERO_DIGIT ~ ASCII_DIGIT*) }
 
@@ -169,7 +169,7 @@ keyword_boundary = { keyword ~ !(ASCII_ALPHANUMERIC | "_") }
 keyword = {
     "pragma" | "silverscript" | "contract" | "entrypoint" | "function" | "if" | "else" | "require" | "for" | "yield" | "return"
     | "console.log" | "new" | "true" | "false" | "constant" | "date"
-    | "int" | "bool" | "string" | "pubkey" | "sig" | "datasig" | "byte" | "bytes"
+    | "int" | "bool" | "string" | "pubkey" | "sig" | "datasig" | "byte"
     | "this.age" | "tx.time" | "this.activeInputIndex" | "this.activeBytecode" | "this.scriptSizeDataPrefix" | "this.scriptSize"
     | "tx.inputs.length" | "tx.outputs.length" | "tx.version" | "tx.locktime"
 }

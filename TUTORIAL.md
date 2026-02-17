@@ -267,7 +267,7 @@ entrypoint function example() {
     int myNumber = 42;
     bool flag = true;
     string message = "Hello World";
-    bytes data = 0x1234abcd;
+    byte[] data = 0x1234abcd;
     
     // Declaration without initialization
     int uninitializedValue;
@@ -499,9 +499,9 @@ string apostrophe = 'It\'s working';
 **Hex Literals:**
 
 ```javascript
-bytes data = 0x1234abcd;
-bytes empty = 0x;
-bytes pubkeyBytes = 0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef;
+byte[] data = 0x1234abcd;
+byte[] empty = 0x;
+byte[] pubkeyBytes = 0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef;
 ```
 
 ### Number Units
@@ -592,19 +592,19 @@ int len = message.length;  // 11
 **Concatenation:**
 
 ```javascript
-bytes a = 0x1234;
-bytes b = 0x5678;
-bytes combined = a + b;  // 0x12345678
+byte[] a = 0x1234;
+byte[] b = 0x5678;
+byte[] combined = a + b;  // 0x12345678
 ```
 
 **Split:**
 
-Split bytes at a specific index:
+Split byte[] at a specific index:
 
 ```javascript
-bytes data = 0x1234567890abcdef;
-bytes left = data.split(4)[0];   // 0x12345678
-bytes right = data.split(4)[1];  // 0x90abcdef
+byte[] data = 0x1234567890abcdef;
+byte[] left = data.split(4)[0];   // 0x12345678
+byte[] right = data.split(4)[1];  // 0x90abcdef
 ```
 
 **Slice:**
@@ -612,14 +612,14 @@ bytes right = data.split(4)[1];  // 0x90abcdef
 Extract a range of bytes:
 
 ```javascript
-bytes data = 0x123456789abcdef;
-bytes middle = data.slice(2, 5);  // bytes from index 2 to 5 (exclusive)
+byte[] data = 0x123456789abcdef;
+byte[] middle = data.slice(2, 5);  // byte[] from index 2 to 5 (exclusive)
 ```
 
 **Length:**
 
 ```javascript
-bytes data = 0x1234;
+byte[] data = 0x1234;
 int size = data.length;  // 2
 ```
 
@@ -631,8 +631,8 @@ SilverScript supports explicit type casting:
 
 ```javascript
 // Cast to bytes
-bytes fromInt = bytes(42);
-bytes fromString = bytes("hello");
+byte[] fromInt = byte[](42);
+byte[] fromString = byte[]("hello");
 
 // Cast to specific byte size
 byte[32] hash = byte[32](data);
@@ -661,7 +661,7 @@ entrypoint function example(pubkey pk, byte[65] sigBytes) {
 
 ### Cryptographic Functions
 
-**`blake2b(bytes data): byte[32]`**
+**`blake2b(byte[] data): byte[32]`**
 
 Compute the BLAKE2b hash of the input:
 
@@ -670,7 +670,7 @@ byte[32] hash = blake2b(data);
 byte[32] pkh = blake2b(pk);
 ```
 
-**`sha256(bytes data): byte[32]`**
+**`sha256(byte[] data): byte[32]`**
 
 Compute the SHA-256 hash:
 
@@ -688,21 +688,21 @@ require(checkSig(s, pk));
 
 ### Type Conversion Functions
 
-**`bytes(value): bytes`**
+**`byte[](value): bytes`**
 
 Convert to bytes:
 
 ```javascript
-bytes b1 = bytes(42);
-bytes b2 = bytes("hello");
+byte[] b1 = byte[](42);
+byte[] b2 = byte[]("hello");
 ```
 
-**`bytes(int value, int size): bytes`**
+**`byte[](int value, int size): bytes`**
 
-Convert integer to bytes with specific size:
+Convert integer to byte[] with specific size:
 
 ```javascript
-byte[8] b = bytes(1234, 8);
+byte[8] b = byte[](1234, 8);
 ```
 
 **`int(bool value): int`**
@@ -713,7 +713,7 @@ Convert boolean to integer (true = 1, false = 0):
 int x = int(false);  // 0
 ```
 
-**`length(bytes value): int`**
+**`length(byte[] value): int`**
 
 Get the length of a byte array:
 
@@ -736,7 +736,7 @@ Transaction introspection allows contracts to examine the transaction that is sp
 int inputIdx = this.activeInputIndex;
 
 // Active bytecode (current contract's locking script)
-bytes script = this.activeBytecode;
+byte[] script = this.activeBytecode;
 
 // Number of inputs
 int inputCount = tx.inputs.length;
@@ -768,7 +768,7 @@ Access properties of transaction inputs:
 ```javascript
 // Access input at index i
 int inputValue = tx.inputs[i].value;
-bytes inputScript = tx.inputs[i].lockingBytecode;
+byte[] inputScript = tx.inputs[i].lockingBytecode;
 ```
 
 **Example:**
@@ -787,7 +787,7 @@ Access properties of transaction outputs:
 ```javascript
 // Access output at index i
 int outputValue = tx.outputs[i].value;
-bytes lockingScript = tx.outputs[i].lockingBytecode;
+byte[] lockingScript = tx.outputs[i].lockingBytecode;
 ```
 
 **Example:**
@@ -826,7 +826,7 @@ byte[35] lockScript = new LockingBytecodeP2SH(redeemScriptHash);
 require(tx.outputs[0].lockingBytecode == lockScript);
 ```
 
-**`new LockingBytecodeP2SHFromRedeemScript(bytes redeemScript): byte[35]`**
+**`new LockingBytecodeP2SHFromRedeemScript(byte[] redeemScript): byte[35]`**
 
 Create P2SH locking script directly from redeem script:
 
@@ -872,7 +872,7 @@ contract RecurringPayment(pubkey recipient, int paymentAmount, int period) {
         
         // If sufficient funds remain, send change back to contract
         if (changeValue >= paymentAmount + minerFee) {
-            bytes changeBytecode = tx.inputs[this.activeInputIndex].lockingBytecode;
+            byte[] changeBytecode = tx.inputs[this.activeInputIndex].lockingBytecode;
             require(tx.outputs[1].lockingBytecode == changeBytecode);
             require(tx.outputs[1].value == changeValue);
         }
@@ -940,14 +940,14 @@ entrypoint function example(byte[32] data) {
 
 **Split:**
 
-Divide bytes into two parts at a given index:
+Divide byte[] into two parts at a given index:
 
 ```javascript
-bytes data = 0x1122334455667788;
+byte[] data = 0x1122334455667788;
 
 // Split at byte 4
-bytes left = data.split(4)[0];   // 0x11223344
-bytes right = data.split(4)[1];  // 0x55667788
+byte[] left = data.split(4)[0];   // 0x11223344
+byte[] right = data.split(4)[1];  // 0x55667788
 
 // Direct tuple unpacking with types
 byte[4] a, byte[4] b = data.split(4);
@@ -958,15 +958,15 @@ byte[4] a, byte[4] b = data.split(4);
 Extract a substring of bytes:
 
 ```javascript
-bytes data = 0x1122334455667788;
+byte[] data = 0x1122334455667788;
 
-// Get bytes from index 2 to 5 (exclusive)
-bytes middle = data.slice(2, 5);  // 0x334455
+// Get byte[] from index 2 to 5 (exclusive)
+byte[] middle = data.slice(2, 5);  // 0x334455
 
 // Variable indices
 int start = 1;
 int end = 4;
-bytes extracted = data.slice(start, end);
+byte[] extracted = data.slice(start, end);
 ```
 
 ---
@@ -1053,7 +1053,7 @@ contract Mecenas(pubkey recipient, byte[32] funder, int pledge, int period) {
             require(tx.outputs[0].value == currentValue - minerFee);
         } else {
             require(tx.outputs[0].value == pledge);
-            bytes changeBytecode = tx.inputs[this.activeInputIndex].lockingBytecode;
+            byte[] changeBytecode = tx.inputs[this.activeInputIndex].lockingBytecode;
             require(tx.outputs[1].lockingBytecode == changeBytecode);
             require(tx.outputs[1].value == changeValue);
         }

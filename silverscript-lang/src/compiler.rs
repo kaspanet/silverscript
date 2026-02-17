@@ -268,7 +268,6 @@ fn expr_matches_type(expr: &Expr, type_name: &str) -> bool {
         "int" => matches!(expr, Expr::Int(_)),
         "bool" => matches!(expr, Expr::Bool(_)),
         "string" => matches!(expr, Expr::String(_)),
-        "bytes" => is_byte_array(expr),
         "byte" => matches!(expr, Expr::Byte(_)),
         "pubkey" => byte_array_len(expr) == Some(32),
         "sig" | "datasig" => matches!(byte_array_len(expr), Some(64) | Some(65)),
@@ -738,6 +737,10 @@ fn compile_statement(
                 if array_element_size(type_name).is_none() {
                     return Err(CompilerError::Unsupported(format!("array element type must have known size: {type_name}")));
                 }
+
+                // For byte[] (dynamic byte arrays), allow initialization from any bytes expression
+                let is_byte_array_type = type_name.starts_with("byte[") && type_name.ends_with("[]");
+
                 let initial = match expr {
                     Some(Expr::Identifier(other)) => match types.get(other) {
                         Some(other_type) if other_type == type_name => Expr::Identifier(other.clone()),
@@ -746,6 +749,10 @@ fn compile_statement(
                         }
                         None => return Err(CompilerError::UndefinedIdentifier(other.clone())),
                     },
+                    Some(e) if is_byte_array_type => {
+                        // byte[] can be initialized from any bytes expression
+                        e.clone()
+                    }
                     Some(_) => return Err(CompilerError::Unsupported("array initializer must be another array".to_string())),
                     None => Expr::Array(Vec::new()),
                 };

@@ -20,7 +20,7 @@ contract Mecenas(pubkey recipient, byte[32] funder, int pledge, int period) {
             require(tx.outputs[0].value == currentValue - minerFee);
         } else {
             require(tx.outputs[0].value == pledge);
-            bytes changeBytecode = tx.inputs[this.activeInputIndex].lockingBytecode;
+            byte[] changeBytecode = tx.inputs[this.activeInputIndex].lockingBytecode;
             require(tx.outputs[1].lockingBytecode == changeBytecode);
             require(tx.outputs[1].value == changeValue);
         }

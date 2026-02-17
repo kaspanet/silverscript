@@ -26,7 +26,7 @@ contract Mecenas(
             require(tx.outputs[0].value == pledge);
             require(tx.outputs[1].value == changeValue);
 
-            bytes bcValue = 8 + byte[8](tx.locktime) + this.activeBytecode.split(9)[1];
+            byte[] bcValue = 8 + byte[8](tx.locktime) + this.activeBytecode.split(9)[1];
             byte[35] lockValue = new LockingBytecodeP2SH(blake2b(bcValue));
             require(tx.outputs[1].lockingBytecode == lockValue);
         }
