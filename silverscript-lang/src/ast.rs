@@ -718,7 +718,7 @@ fn parse_cast(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
         return Ok(Expr::Call { name: "bytes".to_string(), args });
     }
     if type_name == "byte" {
-        return Ok(Expr::Call { name: "bytes1".to_string(), args });
+        return Ok(Expr::Call { name: "byte[1]".to_string(), args });
     }
     if type_name == "int" {
         return Ok(Expr::Call { name: "int".to_string(), args });
@@ -726,19 +726,15 @@ fn parse_cast(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
     if matches!(type_name.as_str(), "sig" | "pubkey" | "datasig") {
         return Ok(Expr::Call { name: type_name, args });
     }
-    // Support type[N] syntax - convert to internal bytesN function for byte[N]
+    // Handle single byte cast (duplicate check removed above)
+    // Support type[N] syntax
     if let Some(bracket_pos) = type_name.find('[') {
         if type_name.ends_with(']') {
-            let base_type = &type_name[..bracket_pos];
+            let _base_type = &type_name[..bracket_pos];
             let size_str = &type_name[bracket_pos + 1..type_name.len() - 1];
             if !size_str.is_empty() {
-                if let Ok(size) = size_str.parse::<usize>() {
-                    // Convert byte[N] to bytesN for internal representation
-                    if base_type == "byte" {
-                        return Ok(Expr::Call { name: format!("bytes{size}"), args });
-                    }
-                    // For other types like int[N], we'd need different handling
-                    // For now, return the full type name as the function
+                if let Ok(_size) = size_str.parse::<usize>() {
+                    // Convert type[N] casts to a call with the full type name
                     return Ok(Expr::Call { name: type_name.to_string(), args });
                 }
             }

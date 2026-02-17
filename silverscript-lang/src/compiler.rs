@@ -286,12 +286,15 @@ fn expr_matches_type(expr: &Expr, type_name: &str) -> bool {
         "pubkey" => byte_array_len(expr) == Some(32),
         "sig" | "datasig" => matches!(byte_array_len(expr), Some(64) | Some(65)),
         _ => {
-            // Internal: Check for bytesN which is not parsed from source but may exist in AST
-            if let Some(size) = type_name.strip_prefix("bytes").and_then(|v| v.parse::<usize>().ok()) {
-                byte_array_len(expr) == Some(size)
-            } else {
-                false
+            // Check for byte[N] type syntax
+            if let Some(size) = array_size(type_name) {
+                if let Some(elem_type) = array_element_type(type_name) {
+                    if elem_type == "byte" {
+                        return byte_array_len(expr) == Some(size);
+                    }
+                }
             }
+            false
         }
     }
 }
@@ -312,11 +315,8 @@ fn array_literal_matches_type(values: &[Expr], type_name: &str) -> bool {
         "int" => values.iter().all(|value| matches!(value, Expr::Int(_))),
         "byte" => values.iter().all(|value| matches!(value, Expr::Byte(_))),
         _ => {
-            // Internal: Check for bytesN (used in internal AST representation)
-            if let Some(size) = element_type.strip_prefix("bytes").and_then(|v| v.parse::<usize>().ok()) {
-                values.iter().all(|value| byte_array_len(value) == Some(size))
-            } else if element_type.contains('[') {
-                // Support nested fixed-size arrays like byte[4]
+            // Support nested fixed-size arrays like byte[4]
+            if element_type.contains('[') {
                 values.iter().all(|value| expr_matches_type(value, element_type))
             } else {
                 false
@@ -377,10 +377,6 @@ fn fixed_type_size(type_name: &str) -> Option<i64> {
         "byte" => Some(1),
         "bytes" => None, // Dynamic size
         _ => {
-            // Internal: Check for bytesN (used in internal representation)
-            if let Some(size) = type_name.strip_prefix("bytes").and_then(|v| v.parse::<i64>().ok()) {
-                return Some(size);
-            }
             // Check for new type[N] syntax
             if let (Some(elem_type), Some(size)) = (array_element_type(type_name), array_size(type_name)) {
                 if elem_type == "byte" {
@@ -558,23 +554,18 @@ fn encode_array_literal(values: &[Expr], type_name: &str) -> Result<Vec<u8>, Com
             }
         }
         _ => {
-            // Internal: Check for bytesN (used in internal representation)
-            let size = element_type
-                .strip_prefix("bytes")
-                .and_then(|v| v.parse::<usize>().ok())
-                .or_else(|| {
-                    // Support new type[N] syntax
-                    if let (Some(inner_elem), Some(inner_size)) = (array_element_type(element_type), array_size(element_type)) {
-                        if inner_elem == "byte" {
-                            Some(inner_size)
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    }
-                })
-                .ok_or_else(|| CompilerError::Unsupported("array element type must have known size".to_string()))?;
+            // Support new type[N] syntax for nested arrays
+            let size = if let (Some(inner_elem), Some(inner_size)) = (array_element_type(element_type), array_size(element_type)) {
+                if inner_elem == "byte" {
+                    Some(inner_size)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+            .ok_or_else(|| CompilerError::Unsupported("array element type must have known size".to_string()))?;
+            
             for value in values {
                 // Each element should be a byte array of the expected size
                 if let Some(len) = byte_array_len(value) {
@@ -778,25 +769,23 @@ fn compile_statement(
             let _element_size = array_element_size(array_type)
                 .ok_or_else(|| CompilerError::Unsupported("array element type must have known size".to_string()))?;
             let element_expr = if element_type == "int" {
-                Expr::Call { name: "bytes8".to_string(), args: vec![expr.clone()] }
+                Expr::Call { name: "byte[8]".to_string(), args: vec![expr.clone()] }
             } else if element_type == "byte" {
-                Expr::Call { name: "bytes1".to_string(), args: vec![expr.clone()] }
-            } else if element_type.starts_with("bytes") || (element_type.contains('[') && element_type.starts_with("byte")) {
-                // Handle both old bytesN and new byte[N] syntax
+                Expr::Call { name: "byte[1]".to_string(), args: vec![expr.clone()] }
+            } else if element_type.contains('[') && element_type.starts_with("byte") {
+                // Handle byte[N] type  
                 if expr_is_bytes(expr, env, types) {
                     expr.clone()
                 } else {
-                    // Try old syntax first
-                    if let Some(size) = element_type.strip_prefix("bytes").and_then(|v| v.parse::<usize>().ok()) {
-                        Expr::Call { name: format!("bytes{size}"), args: vec![expr.clone()] }
-                    } else if let Some(bracket_pos) = element_type.find('[') {
-                        // Try new byte[N] syntax
+                    // Try byte[N] syntax
+                    if let Some(bracket_pos) = element_type.find('[') {
                         if element_type.ends_with(']') {
                             let base_type = &element_type[..bracket_pos];
                             let size_str = &element_type[bracket_pos + 1..element_type.len() - 1];
                             if base_type == "byte" {
-                                if let Ok(size) = size_str.parse::<usize>() {
-                                    Expr::Call { name: format!("bytes{size}"), args: vec![expr.clone()] }
+                                if let Ok(_size) = size_str.parse::<usize>() {
+                                    // Cast expression to byte[N]
+                                    Expr::Call { name: element_type.to_string(), args: vec![expr.clone()] }
                                 } else {
                                     return Err(CompilerError::Unsupported("invalid array size".to_string()));
                                 }
@@ -1705,11 +1694,12 @@ fn compile_expr(
                 compile_expr(&args[0], env, params, types, builder, options, visiting, stack_depth, script_size)?;
                 Ok(())
             }
-            name if name.starts_with("bytes") => {
-                let size = name
-                    .strip_prefix("bytes")
-                    .and_then(|v| v.parse::<i64>().ok())
-                    .ok_or_else(|| CompilerError::Unsupported(format!("{name}() is not supported")))?;
+            name if name.starts_with("byte[") && name.ends_with(']') => {
+                // Handle byte[N] cast - extract size from byte[N]
+                let size_part = &name[5..name.len()-1];
+                let size = size_part
+                    .parse::<i64>()
+                    .map_err(|_| CompilerError::Unsupported(format!("{name}() is not supported")))?;
                 if args.len() != 1 {
                     return Err(CompilerError::Unsupported(format!("{name}() expects a single argument")));
                 }
@@ -2073,8 +2063,7 @@ fn expr_is_bytes_inner(
         Expr::Call { name, .. } => {
             matches!(
                 name.as_str(),
-                "bytes"
-                    | "blake2b"
+                "blake2b"
                     | "sha256"
                     | "OpSha256"
                     | "OpTxSubnetId"
@@ -2087,7 +2076,7 @@ fn expr_is_bytes_inner(
                     | "OpInputCovenantId"
                     | "OpNum2Bin"
                     | "OpChainblockSeqCommit"
-            ) || name.starts_with("bytes")
+            ) || name.starts_with("byte[")
         }
         Expr::Split { .. } => true,
         Expr::Binary { op: BinaryOp::Add, left, right } => {
@@ -2170,10 +2159,6 @@ fn compile_concat_operand(
 
 fn is_bytes_type(type_name: &str) -> bool {
     if type_name == "bytes" || type_name == "byte" || matches!(type_name, "pubkey" | "sig" | "string") {
-        return true;
-    }
-    // Internal: Check for bytesN (used in internal representation)
-    if type_name.starts_with("bytes") && type_name[5..].parse::<usize>().is_ok() {
         return true;
     }
     // Support new byte[N] syntax
