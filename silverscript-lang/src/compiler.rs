@@ -1611,6 +1611,14 @@ fn compile_expr(
                 }
                 if let Expr::Identifier(name) = &args[0] {
                     if let Some(type_name) = types.get(name) {
+                        // Check if this is a fixed-size array type[N]
+                        if let Some(array_size) = array_size(type_name) {
+                            // Compile-time length for fixed-size arrays
+                            builder.add_i64(array_size as i64)?;
+                            *stack_depth += 1;
+                            return Ok(());
+                        }
+                        // Runtime length for dynamic arrays
                         if let Some(element_size) = array_element_size(type_name) {
                             compile_expr(&args[0], env, params, types, builder, options, visiting, stack_depth, script_size)?;
                             builder.add_op(OpSize)?;

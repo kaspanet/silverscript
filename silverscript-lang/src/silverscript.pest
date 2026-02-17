@@ -129,7 +129,7 @@ number_literal = { NumberLiteral ~ NumberUnit? }
 type_name = { base_type ~ array_suffix* }
 base_type = { "int" | "bool" | "string" | "pubkey" | "sig" | "datasig" | "bytes" | "byte" }
 array_suffix = { "[" ~ array_size? ~ "]" }
-array_size = { ASCII_NONZERO_DIGIT ~ ASCII_DIGIT* }
+array_size = { Identifier | (ASCII_NONZERO_DIGIT ~ ASCII_DIGIT*) }
 
 VersionLiteral = @{ ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT+ }
 

@@ -2473,3 +2473,44 @@ fn compiles_sigscript_reused_inputs_and_fails_on_wrong_value() {
     let result = run_script_with_sigscript(compiled.script, sigscript);
     assert!(result.is_err());
 }
+
+#[test]
+fn compile_time_length_for_fixed_size_int_array() {
+    let source = r#"
+        contract Test() {
+            entrypoint function test() {
+                int[5] nums = [1, 2, 3, 4, 5];
+                require(nums.length == 5);
+            }
+        }
+    "#;
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    
+    // The script should be very short since length is compile-time
+    // It should essentially be: <5> <5> <OpEqual> <OpVerify>
+    // Without compile-time optimization, it would need OpSize and OpDiv
+    assert!(compiled.script.len() < 50, "Script should be short with compile-time length, got {}", compiled.script.len());
+    
+    // Verify it contains a push of 5 (0x55 in script = OP_5)
+    assert!(compiled.script.contains(&0x55), "Should contain OP_5 for compile-time length");
+}
+
+#[test]
+fn compile_time_length_for_fixed_size_byte_array() {
+    let source = r#"
+        contract Test() {
+            entrypoint function test() {
+                byte[3] data = [0x01, 0x02, 0x03];
+                require(data.length == 3);
+            }
+        }
+    "#;
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    
+    // Similar to int array test - should have compile-time length
+    assert!(compiled.script.len() < 50, "Script should be short with compile-time length");
+    
+    // Verify it contains a push of 3 (0x53 in script = OP_3)
+    assert!(compiled.script.contains(&0x53), "Should contain OP_3 for compile-time length");
+}
+
