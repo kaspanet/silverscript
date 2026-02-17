@@ -41,7 +41,7 @@
     - [Input Introspection](#input-introspection)
     - [Output Introspection](#output-introspection)
 11. [Covenants](#covenants)
-    - [Creating Locking Bytecode](#creating-locking-bytecode)
+    - [Creating ScriptPubKey](#creating-scriptpubkey)
     - [Covenant Examples](#covenant-examples)
 12. [Advanced Features](#advanced-features)
     - [Constants](#constants)
@@ -139,7 +139,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 **Building Signature Scripts Programmatically:**
 
-After compiling a contract, you can build signature scripts (unlocking scripts) for its entrypoint functions:
+After compiling a contract, you can build signature scripts for its entrypoint functions:
 
 ```rust
 use silverscript_lang::ast::Expr;
@@ -817,7 +817,7 @@ Transaction introspection allows contracts to examine the transaction that is sp
 // Current active input index
 int inputIdx = this.activeInputIndex;
 
-// Active bytecode (current contract's locking script)
+// Active bytecode (current contract's scriptPubKey)
 byte[] script = this.activeBytecode;
 
 // Number of inputs
@@ -850,7 +850,7 @@ Access properties of transaction inputs:
 ```javascript
 // Access input at index i
 int inputValue = tx.inputs[i].value;
-byte[] inputScript = tx.inputs[i].lockingBytecode;
+byte[] inputScript = tx.inputs[i].scriptPubKey;
 ```
 
 **Example:**
@@ -869,7 +869,7 @@ Access properties of transaction outputs:
 ```javascript
 // Access output at index i
 int outputValue = tx.outputs[i].value;
-byte[] lockingScript = tx.outputs[i].lockingBytecode;
+byte[] outputScriptPubKey = tx.outputs[i].scriptPubKey;
 ```
 
 **Example:**
@@ -887,33 +887,33 @@ entrypoint function transfer() {
 
 Covenants are contracts that enforce conditions on how funds can be spent. They use transaction introspection to validate outputs.
 
-### Creating Locking Bytecode
+### Creating ScriptPubKey
 
-**`new LockingBytecodeP2PK(pubkey pk): byte[34]`**
+**`new ScriptPubKeyP2PK(pubkey pk): byte[34]`**
 
-Create a Pay-to-Public-Key locking script:
+Create a Pay-to-Public-Key scriptPubKey:
 
 ```javascript
-byte[34] lockScript = new LockingBytecodeP2PK(recipientPubkey);
-require(tx.outputs[0].lockingBytecode == lockScript);
+byte[34] outputScriptPubKey = new ScriptPubKeyP2PK(recipientPubkey);
+require(tx.outputs[0].scriptPubKey == outputScriptPubKey);
 ```
 
-**`new LockingBytecodeP2SH(byte[32] scriptHash): byte[35]`**
+**`new ScriptPubKeyP2SH(byte[32] scriptHash): byte[35]`**
 
-Create a Pay-to-Script-Hash locking script:
+Create a Pay-to-Script-Hash scriptPubKey:
 
 ```javascript
 byte[32] redeemScriptHash = blake2b(redeemScript);
-byte[35] lockScript = new LockingBytecodeP2SH(redeemScriptHash);
-require(tx.outputs[0].lockingBytecode == lockScript);
+byte[35] outputScriptPubKey = new ScriptPubKeyP2SH(redeemScriptHash);
+require(tx.outputs[0].scriptPubKey == outputScriptPubKey);
 ```
 
-**`new LockingBytecodeP2SHFromRedeemScript(byte[] redeemScript): byte[35]`**
+**`new ScriptPubKeyP2SHFromRedeemScript(byte[] redeemScript): byte[35]`**
 
-Create P2SH locking script directly from redeem script:
+Create a P2SH scriptPubKey directly from a redeem script:
 
 ```javascript
-byte[35] lockScript = new LockingBytecodeP2SHFromRedeemScript(redeemScript);
+byte[35] outputScriptPubKey = new ScriptPubKeyP2SHFromRedeemScript(redeemScript);
 ```
 
 ### Covenant Examples
@@ -926,8 +926,8 @@ pragma silverscript ^0.1.0;
 contract SimpleCovenant(pubkey recipient) {
     entrypoint function spend() {
         // First output must go to the recipient
-        byte[34] recipientLock = new LockingBytecodeP2PK(recipient);
-        require(tx.outputs[0].lockingBytecode == recipientLock);
+        byte[34] recipientScriptPubKey = new ScriptPubKeyP2PK(recipient);
+        require(tx.outputs[0].scriptPubKey == recipientScriptPubKey);
     }
 }
 ```
@@ -943,8 +943,8 @@ contract RecurringPayment(pubkey recipient, int paymentAmount, int period) {
         require(this.age >= period);
         
         // First output must pay the recipient
-        byte[34] recipientLock = new LockingBytecodeP2PK(recipient);
-        require(tx.outputs[0].lockingBytecode == recipientLock);
+        byte[34] recipientScriptPubKey = new ScriptPubKeyP2PK(recipient);
+        require(tx.outputs[0].scriptPubKey == recipientScriptPubKey);
         require(tx.outputs[0].value >= paymentAmount);
         
         // Calculate change
@@ -954,8 +954,8 @@ contract RecurringPayment(pubkey recipient, int paymentAmount, int period) {
         
         // If sufficient funds remain, send change back to contract
         if (changeValue >= paymentAmount + minerFee) {
-            byte[] changeBytecode = tx.inputs[this.activeInputIndex].lockingBytecode;
-            require(tx.outputs[1].lockingBytecode == changeBytecode);
+            byte[] changeScriptPubKey = tx.inputs[this.activeInputIndex].scriptPubKey;
+            require(tx.outputs[1].scriptPubKey == changeScriptPubKey);
             require(tx.outputs[1].value == changeValue);
         }
     }
@@ -1120,8 +1120,8 @@ contract Mecenas(pubkey recipient, byte[32] funder, int pledge, int period) {
         require(this.age >= period);
 
         // Check that the first output sends to the recipient
-        byte[34] recipientLockingBytecode = new LockingBytecodeP2PK(recipient);
-        require(tx.outputs[0].lockingBytecode == recipientLockingBytecode);
+        byte[34] recipientScriptPubKey = new ScriptPubKeyP2PK(recipient);
+        require(tx.outputs[0].scriptPubKey == recipientScriptPubKey);
 
         // Calculate the value that's left
         int minerFee = 1000;
@@ -1135,8 +1135,8 @@ contract Mecenas(pubkey recipient, byte[32] funder, int pledge, int period) {
             require(tx.outputs[0].value == currentValue - minerFee);
         } else {
             require(tx.outputs[0].value == pledge);
-            byte[] changeBytecode = tx.inputs[this.activeInputIndex].lockingBytecode;
-            require(tx.outputs[1].lockingBytecode == changeBytecode);
+            byte[] changeScriptPubKey = tx.inputs[this.activeInputIndex].scriptPubKey;
+            require(tx.outputs[1].scriptPubKey == changeScriptPubKey);
             require(tx.outputs[1].value == changeValue);
         }
     }

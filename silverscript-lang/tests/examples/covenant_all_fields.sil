@@ -9,8 +9,8 @@ contract Covenant() {
         require(this.activeInputIndex == 0);
         require(this.activeBytecode.length == 300);
         require(tx.inputs[0].value == 10000);
-        require(tx.inputs[0].lockingBytecode.length == 10000);
+        require(tx.inputs[0].scriptPubKey.length == 10000);
         require(tx.outputs[0].value == 10000);
-        require(tx.outputs[0].lockingBytecode.length == 100);
+        require(tx.outputs[0].scriptPubKey.length == 100);
     }
 }

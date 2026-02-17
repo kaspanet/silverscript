@@ -2,7 +2,7 @@ pragma silverscript ^0.1.0;
 
 contract DoubleSplit(byte[20] pkh) {
     entrypoint function spend() {
-        byte[] actualPkh = tx.inputs[this.activeInputIndex].lockingBytecode.split(23)[0].split(3)[1];
+        byte[] actualPkh = tx.inputs[this.activeInputIndex].scriptPubKey.split(23)[0].split(3)[1];
         require(pkh == actualPkh);
     }
 }

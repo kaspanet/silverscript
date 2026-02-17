@@ -116,8 +116,8 @@ introspection = {
     | ("tx.inputs" ~ "[" ~ expression ~ "]" ~ input_field)
 }
 
-output_field = { "." ~ ("value" | "lockingBytecode" | "tokenCategory" | "nftCommitment" | "tokenAmount") }
-input_field = { "." ~ ("value" | "lockingBytecode" | "outpointTransactionHash" | "outpointIndex" | "unlockingBytecode" | "sequenceNumber" | "tokenCategory" | "nftCommitment" | "tokenAmount") }
+output_field = { "." ~ ("value" | "scriptPubKey") }
+input_field = { "." ~ ("value" | "scriptPubKey" | "outpointTransactionHash" | "outpointIndex" | "sigScript") }
 
 array = { "[" ~ (expression ~ ("," ~ expression)* ~ ","?)? ~ "]" }
 

@@ -8,8 +8,8 @@ contract SimulatingState(
 ) {
     entrypoint function receive() {
         // Check that the first output sends to the recipient
-        byte[34] recipientLockingBytecode = new LockingBytecodeP2PK(recipient);
-        require(tx.outputs[0].lockingBytecode == recipientLockingBytecode);
+            byte[34] recipientScriptPubKey = new ScriptPubKeyP2PK(recipient);
+        require(tx.outputs[0].scriptPubKey == recipientScriptPubKey);
 
         // Check that time has passed and that time locks are enabled
         int initial = int(initialBlock);
@@ -42,8 +42,8 @@ contract SimulatingState(
 
             // Create the locking bytecode for the new contract and check that
             // the change output sends to that contract
-            byte[35] newContractLock = new LockingBytecodeP2SH(blake2b(newContract));
-            require(tx.outputs[1].lockingBytecode == newContractLock);
+                byte[35] newContractLock = new ScriptPubKeyP2SH(blake2b(newContract));
+            require(tx.outputs[1].scriptPubKey == newContractLock);
         }
     }
 

@@ -2391,9 +2391,9 @@ fn compile_expr(
                 *stack_depth += 1;
                 Ok(())
             }
-            "LockingBytecodeP2PK" => {
+            "ScriptPubKeyP2PK" => {
                 if args.len() != 1 {
-                    return Err(CompilerError::Unsupported("LockingBytecodeP2PK expects a single pubkey argument".to_string()));
+                    return Err(CompilerError::Unsupported("ScriptPubKeyP2PK expects a single pubkey argument".to_string()));
                 }
                 compile_expr(&args[0], env, params, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
                 builder.add_data(&[0x00, 0x00, OpData32])?;
@@ -2407,9 +2407,9 @@ fn compile_expr(
                 *stack_depth -= 1;
                 Ok(())
             }
-            "LockingBytecodeP2SH" => {
+            "ScriptPubKeyP2SH" => {
                 if args.len() != 1 {
-                    return Err(CompilerError::Unsupported("LockingBytecodeP2SH expects a single bytes32 argument".to_string()));
+                    return Err(CompilerError::Unsupported("ScriptPubKeyP2SH expects a single bytes32 argument".to_string()));
                 }
                 compile_expr(&args[0], env, params, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
                 builder.add_data(&[0x00, 0x00])?;
@@ -2431,10 +2431,10 @@ fn compile_expr(
                 *stack_depth -= 1;
                 Ok(())
             }
-            "LockingBytecodeP2SHFromRedeemScript" => {
+            "ScriptPubKeyP2SHFromRedeemScript" => {
                 if args.len() != 1 {
                     return Err(CompilerError::Unsupported(
-                        "LockingBytecodeP2SHFromRedeemScript expects a single redeem_script argument".to_string(),
+                        "ScriptPubKeyP2SHFromRedeemScript expects a single redeem_script argument".to_string(),
                     ));
                 }
                 compile_expr(&args[0], env, params, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
@@ -2696,13 +2696,20 @@ fn compile_expr(
                 IntrospectionKind::InputValue => {
                     builder.add_op(OpTxInputAmount)?;
                 }
-                IntrospectionKind::InputLockingBytecode => {
+                IntrospectionKind::InputScriptPubKey => {
                     builder.add_op(OpTxInputSpk)?;
+                }
+                IntrospectionKind::InputSigScript => {
+                    builder.add_op(OpDup)?;
+                    builder.add_op(OpTxInputScriptSigLen)?;
+                    builder.add_i64(0)?;
+                    builder.add_op(OpSwap)?;
+                    builder.add_op(OpTxInputScriptSigSubstr)?;
                 }
                 IntrospectionKind::OutputValue => {
                     builder.add_op(OpTxOutputAmount)?;
                 }
-                IntrospectionKind::OutputLockingBytecode => {
+                IntrospectionKind::OutputScriptPubKey => {
                     builder.add_op(OpTxOutputSpk)?;
                 }
             }
@@ -2729,7 +2736,7 @@ fn expr_is_bytes_inner(
         Expr::Slice { .. } => true,
         Expr::New { name, .. } => matches!(
             name.as_str(),
-            "LockingBytecodeNullData" | "LockingBytecodeP2PK" | "LockingBytecodeP2SH" | "LockingBytecodeP2SHFromRedeemScript"
+            "LockingBytecodeNullData" | "ScriptPubKeyP2PK" | "ScriptPubKeyP2SH" | "ScriptPubKeyP2SHFromRedeemScript"
         ),
         Expr::Call { name, .. } => {
             matches!(
@@ -2757,7 +2764,10 @@ fn expr_is_bytes_inner(
             expr_is_bytes_inner(then_expr, env, types, visiting) && expr_is_bytes_inner(else_expr, env, types, visiting)
         }
         Expr::Introspection { kind, .. } => {
-            matches!(kind, IntrospectionKind::InputLockingBytecode | IntrospectionKind::OutputLockingBytecode)
+            matches!(
+                kind,
+                IntrospectionKind::InputScriptPubKey | IntrospectionKind::InputSigScript | IntrospectionKind::OutputScriptPubKey
+            )
         }
         Expr::Nullary(NullaryOp::ActiveBytecode) => true,
         Expr::Nullary(NullaryOp::ThisScriptSizeDataPrefix) => true,

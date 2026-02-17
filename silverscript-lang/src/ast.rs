@@ -174,9 +174,10 @@ pub enum NullaryOp {
 #[serde(rename_all = "snake_case")]
 pub enum IntrospectionKind {
     InputValue,
-    InputLockingBytecode,
+    InputScriptPubKey,
+    InputSigScript,
     OutputValue,
-    OutputLockingBytecode,
+    OutputScriptPubKey,
 }
 
 fn validate_user_identifier(name: &str) -> Result<(), CompilerError> {
@@ -845,13 +846,14 @@ fn parse_introspection(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
     let kind = if text.starts_with("tx.inputs") {
         match field {
             ".value" => IntrospectionKind::InputValue,
-            ".lockingBytecode" => IntrospectionKind::InputLockingBytecode,
+            ".scriptPubKey" => IntrospectionKind::InputScriptPubKey,
+            ".sigScript" => IntrospectionKind::InputSigScript,
             _ => return Err(CompilerError::Unsupported(format!("input field '{field}' not supported"))),
         }
     } else if text.starts_with("tx.outputs") {
         match field {
             ".value" => IntrospectionKind::OutputValue,
-            ".lockingBytecode" => IntrospectionKind::OutputLockingBytecode,
+            ".scriptPubKey" => IntrospectionKind::OutputScriptPubKey,
             _ => return Err(CompilerError::Unsupported(format!("output field '{field}' not supported"))),
         }
     } else {

@@ -22,7 +22,7 @@ contract LastWill(byte[32] inheritor, byte[32] cold, byte[32] hot) {
         require(tx.outputs[0].value == amount);
 
         // Check that the funds are sent back to the contract
-        byte[] selfLock = tx.inputs[this.activeInputIndex].lockingBytecode;
-        require(tx.outputs[0].lockingBytecode == selfLock);
+        byte[] selfLock = tx.inputs[this.activeInputIndex].scriptPubKey;
+        require(tx.outputs[0].scriptPubKey == selfLock);
     }
 }

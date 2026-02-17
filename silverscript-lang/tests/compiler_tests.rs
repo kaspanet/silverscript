@@ -1185,7 +1185,7 @@ fn locking_bytecode_p2pk_matches_pay_to_address_script() {
     let source = r#"
         contract Test() {
             entrypoint function main(pubkey pk, byte[] expected) {
-                byte[] spk = new LockingBytecodeP2PK(pk);
+                byte[] spk = new ScriptPubKeyP2PK(pk);
                 require(spk == expected);
             }
         }
@@ -1209,7 +1209,7 @@ fn locking_bytecode_p2sh_matches_pay_to_address_script() {
     let source = r#"
         contract Test() {
             entrypoint function main(byte[32] hash, byte[] expected) {
-                byte[] spk = new LockingBytecodeP2SH(hash);
+                byte[] spk = new ScriptPubKeyP2SH(hash);
                 require(spk == expected);
             }
         }
@@ -1233,7 +1233,7 @@ fn locking_bytecode_p2sh_from_redeem_script_matches_pay_to_script_hash_script() 
     let source = r#"
         contract Test() {
             entrypoint function main(byte[] redeem_script, byte[] expected) {
-                byte[] spk = new LockingBytecodeP2SHFromRedeemScript(redeem_script);
+                byte[] spk = new ScriptPubKeyP2SHFromRedeemScript(redeem_script);
                 require(spk == expected);
             }
         }

@@ -4,10 +4,10 @@ contract SiblingIntrospection(byte[] expectedLockingBytecode) {
     entrypoint function spend() {
         require(this.activeInputIndex == 0);
 
-        byte[] outputBytecode = tx.outputs[1].lockingBytecode;
+        byte[] outputBytecode = tx.outputs[1].scriptPubKey;
         require(outputBytecode == expectedLockingBytecode);
 
-        byte[] inputBytecode = tx.inputs[1].lockingBytecode;
+        byte[] inputBytecode = tx.inputs[1].scriptPubKey;
         require(inputBytecode == expectedLockingBytecode);
     }
 }

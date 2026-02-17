@@ -7,8 +7,8 @@ contract Mecenas(
     byte[8] initialBlock,
 ) {
     entrypoint function receive() {
-        byte[34] recipientLockingBytecode = new LockingBytecodeP2PK(recipient);
-        require(tx.outputs[0].lockingBytecode == recipientLockingBytecode);
+        byte[34] recipientScriptPubKey = new ScriptPubKeyP2PK(recipient);
+        require(tx.outputs[0].scriptPubKey == recipientScriptPubKey);
 
         int initial = int(initialBlock);
         require(tx.time >= initial);
@@ -27,8 +27,8 @@ contract Mecenas(
             require(tx.outputs[1].value == changeValue);
 
             byte[] bcValue = 8 + byte[8](tx.locktime) + this.activeBytecode.split(9)[1];
-            byte[35] lockValue = new LockingBytecodeP2SH(blake2b(bcValue));
-            require(tx.outputs[1].lockingBytecode == lockValue);
+            byte[35] lockValue = new ScriptPubKeyP2SH(blake2b(bcValue));
+            require(tx.outputs[1].scriptPubKey == lockValue);
         }
     }
 
