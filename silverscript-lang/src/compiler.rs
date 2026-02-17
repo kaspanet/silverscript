@@ -257,7 +257,7 @@ fn expr_matches_type(expr: &Expr, type_name: &str) -> bool {
         "pubkey" => matches!(expr, Expr::Bytes(bytes) if bytes.len() == 32),
         "sig" | "datasig" => matches!(expr, Expr::Bytes(bytes) if bytes.len() == 64 || bytes.len() == 65),
         _ => {
-            // Support old bytesN syntax for backward compatibility
+            // Internal: Check for bytesN which is not parsed from source but may exist in AST
             if let Some(size) = type_name.strip_prefix("bytes").and_then(|v| v.parse::<usize>().ok()) {
                 matches!(expr, Expr::Bytes(bytes) if bytes.len() == size)
             } else {
@@ -283,7 +283,7 @@ fn array_literal_matches_type(values: &[Expr], type_name: &str) -> bool {
         "int" => values.iter().all(|value| matches!(value, Expr::Int(_))),
         "byte" => values.iter().all(|value| matches!(value, Expr::Bytes(bytes) if bytes.len() == 1)),
         _ => {
-            // Support old bytesN syntax
+            // Internal: Check for bytesN (used in internal AST representation)
             if let Some(size) = element_type.strip_prefix("bytes").and_then(|v| v.parse::<usize>().ok()) {
                 values.iter().all(|value| matches!(value, Expr::Bytes(bytes) if bytes.len() == size))
             } else if element_type.contains('[') {
@@ -348,7 +348,7 @@ fn fixed_type_size(type_name: &str) -> Option<i64> {
         "byte" => Some(1),
         "bytes" => None, // Dynamic size
         _ => {
-            // Check for old bytesN syntax (for backward compatibility during transition)
+            // Internal: Check for bytesN (used in internal representation)
             if let Some(size) = type_name.strip_prefix("bytes").and_then(|v| v.parse::<i64>().ok()) {
                 return Some(size);
             }
@@ -521,7 +521,7 @@ fn encode_array_literal(values: &[Expr], type_name: &str) -> Result<Vec<u8>, Com
             }
         }
         _ => {
-            // Support old bytesN syntax
+            // Internal: Check for bytesN (used in internal representation)
             let size = element_type
                 .strip_prefix("bytes")
                 .and_then(|v| v.parse::<usize>().ok())
@@ -2108,7 +2108,7 @@ fn is_bytes_type(type_name: &str) -> bool {
     if type_name == "bytes" || type_name == "byte" || matches!(type_name, "pubkey" | "sig" | "string") {
         return true;
     }
-    // Support old bytesN syntax
+    // Internal: Check for bytesN (used in internal representation)
     if type_name.starts_with("bytes") && type_name[5..].parse::<usize>().is_ok() {
         return true;
     }

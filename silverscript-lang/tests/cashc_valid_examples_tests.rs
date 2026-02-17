@@ -63,7 +63,7 @@ fn dummy_expr_for_type(type_name: &str) -> Expr {
     if type_name == "datasig" {
         return vec![0u8; 64].into();
     }
-    // Support old bytesN syntax
+    // Internal: Handle bytesN (used in internal representation, not parsed from source)
     if let Some(size) = type_name.strip_prefix("bytes").and_then(|v| v.parse::<usize>().ok()) {
         return vec![0u8; size].into();
     }
