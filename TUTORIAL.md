@@ -169,7 +169,7 @@ let compiled = compile_contract(
 )?;
 
 // Build sigscript for multiple entrypoints
-let sig = vec![5u8; 64];
+let sig = vec![5u8; 65];
 
 // For 'transfer' function (selector = 0)
 let transfer_sigscript = compiled.build_sig_script(
@@ -242,8 +242,8 @@ SilverScript supports the following data types:
 | `string` | UTF-8 string | `"hello"`, `'world'` |
 | `byte` | Single byte | `byte` |
 | `pubkey` | Public key (32 bytes) | `pubkey` |
-| `sig` | Signature (64 or 65 bytes) | `sig` |
-| `datasig` | Data signature (64 or 65 bytes) | `datasig` |
+| `sig` | Signature (65 bytes) | `sig` |
+| `datasig` | Data signature (64 bytes) | `datasig` |
 
 **Array Types:**
 

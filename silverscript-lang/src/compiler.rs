@@ -270,7 +270,8 @@ fn expr_matches_type(expr: &Expr, type_name: &str) -> bool {
         "string" => matches!(expr, Expr::String(_)),
         "byte" => matches!(expr, Expr::Byte(_)),
         "pubkey" => byte_array_len(expr) == Some(32),
-        "sig" | "datasig" => matches!(byte_array_len(expr), Some(64) | Some(65)),
+        "sig" => byte_array_len(expr) == Some(65),
+        "datasig" => byte_array_len(expr) == Some(64),
         _ => {
             // Check for byte[N] type syntax
             if let Some(size) = array_size(type_name) {
@@ -396,6 +397,8 @@ fn fixed_type_size(type_name: &str) -> Option<i64> {
         "bool" => Some(1),
         "byte" => Some(1),
         "pubkey" => Some(32),
+        "sig" => Some(65),
+        "datasig" => Some(64),
         _ => {
             // Check for type[N] syntax
             if let (Some(elem_type), Some(size)) = (array_element_type(type_name), array_size(type_name)) {
