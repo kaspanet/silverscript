@@ -102,7 +102,7 @@ fn accepts_constructor_args_with_matching_types() {
         Expr::Byte(2), // Single byte for type 'byte'
         vec![3u8; 4].into(),
         vec![4u8; 32].into(),
-        vec![5u8; 64].into(),
+        vec![5u8; 65].into(),
         vec![6u8; 64].into(),
     ];
     compile_contract(source, &args, CompileOptions::default()).expect("compile succeeds");
@@ -132,6 +132,26 @@ fn rejects_constructor_args_with_wrong_byte_lengths() {
     "#;
     let args = vec![vec![1u8; 2].into(), vec![2u8; 3].into(), vec![3u8; 31].into(), vec![4u8; 63].into(), vec![5u8; 66].into()];
     assert!(compile_contract(source, &args, CompileOptions::default()).is_err());
+}
+
+#[test]
+fn enforces_exact_sig_and_datasig_lengths_in_constructor_args() {
+    let source = r#"
+        contract Types(sig s, datasig ds) {
+            entrypoint function main() {
+                require(true);
+            }
+        }
+    "#;
+
+    let valid_args = vec![vec![7u8; 65].into(), vec![8u8; 64].into()];
+    compile_contract(source, &valid_args, CompileOptions::default()).expect("compile succeeds");
+
+    let invalid_sig = vec![vec![7u8; 64].into(), vec![8u8; 64].into()];
+    assert!(compile_contract(source, &invalid_sig, CompileOptions::default()).is_err());
+
+    let invalid_datasig = vec![vec![7u8; 65].into(), vec![8u8; 65].into()];
+    assert!(compile_contract(source, &invalid_datasig, CompileOptions::default()).is_err());
 }
 
 #[test]

@@ -58,7 +58,7 @@ fn dummy_expr_for_type(type_name: &str) -> Expr {
         return vec![0u8; 32].into(); // Converts to Expr::Array of Expr::Byte
     }
     if type_name == "sig" {
-        return vec![0u8; 64].into();
+        return vec![0u8; 65].into();
     }
     if type_name == "datasig" {
         return vec![0u8; 64].into();
