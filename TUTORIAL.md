@@ -42,6 +42,7 @@
     - [Output Introspection](#output-introspection)
 11. [Covenants](#covenants)
     - [Creating ScriptPubKey](#creating-scriptpubkey)
+    - [State Transition Helper](#state-transition-helper)
     - [Covenant Examples](#covenant-examples)
 12. [Advanced Features](#advanced-features)
     - [Constants](#constants)
@@ -915,6 +916,37 @@ Create a P2SH scriptPubKey directly from a redeem script:
 ```javascript
 byte[35] outputScriptPubKey = new ScriptPubKeyP2SHFromRedeemScript(redeemScript);
 ```
+
+### State Transition Helper
+
+**`validateOutputState(int outputIndex, object newState)`**
+
+Validates that `tx.outputs[outputIndex].scriptPubKey` is a P2SH paying to the **same contract code** with **updated state fields**.
+
+Small example:
+
+```javascript
+pragma silverscript ^0.1.0;
+
+contract Counter(int initCount, byte[2] initTag) {
+    int count = initCount;
+    byte[2] tag = initTag;
+
+    entrypoint function step() {
+        validateOutputState(0, { count: count + 1, tag: tag });
+    }
+}
+```
+
+What this checks:
+
+- Reads the current redeem script from the active input sigscript.
+- Keeps the contract tail (the immutable "rest of script") unchanged.
+- Rebuilds a new redeem script using the provided next field values (`count`, `tag`) + the same tail.
+- Computes the P2SH scriptPubKey for that new redeem script.
+- Verifies output `0` has exactly that scriptPubKey.
+
+In practice, this enforces that the transaction creates the next valid contract state rather than an arbitrary output script.
 
 ### Covenant Examples
 

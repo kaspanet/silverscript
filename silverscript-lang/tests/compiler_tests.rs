@@ -1745,9 +1745,9 @@ fn compiles_validate_output_state_to_expected_script() {
 #[test]
 fn runs_validate_output_state() {
     let source = r#"
-        contract C(int init_x, byte[2] init_y) {
-            int x = init_x;
-            byte[2] y = init_y;
+        contract C(int initX, byte[2] initY) {
+            int x = initX;
+            byte[2] y = initY;
 
             entrypoint function main() {
                 validateOutputState(0,{x:x+1,y:0x3412});
@@ -1787,6 +1787,157 @@ fn runs_validate_output_state() {
         EngineFlags { covenants_enabled: true },
     );
     assert!(vm.execute().is_ok());
+}
+
+#[test]
+fn fails_validate_output_state_with_wrong_output_index() {
+    let source = r#"
+        contract C(int initX, byte[2] initY) {
+            int x = initX;
+            byte[2] y = initY;
+
+            entrypoint function main() {
+                validateOutputState(0,{x:x+1,y:0x3412});
+            }
+        }
+    "#;
+
+    let input_compiled =
+        compile_contract(source, &[5.into(), vec![1u8, 2u8].into()], CompileOptions::default()).expect("compile succeeds");
+    let expected_output_state =
+        compile_contract(source, &[6.into(), vec![0x34u8, 0x12u8].into()], CompileOptions::default()).expect("compile succeeds");
+
+    let reused_values = SigHashReusedValuesUnsync::new();
+    let sig_cache = Cache::new(10_000);
+    let sigscript = ScriptBuilder::new().add_data(&input_compiled.script).unwrap().drain();
+
+    let input = TransactionInput {
+        previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([0u8; 32]), index: 0 },
+        signature_script: sigscript,
+        sequence: 0,
+        sig_op_count: 0,
+    };
+
+    let input_spk = pay_to_script_hash_script(&input_compiled.script);
+    let matching_spk = pay_to_script_hash_script(&expected_output_state.script);
+    let wrong_spk = pay_to_script_hash_script(&input_compiled.script);
+
+    let output0 = TransactionOutput { value: 1000, script_public_key: wrong_spk, covenant: None };
+    let output1 = TransactionOutput { value: 1000, script_public_key: matching_spk, covenant: None };
+    let tx = Transaction::new(1, vec![input.clone()], vec![output0, output1], 0, Default::default(), 0, vec![]);
+    let utxo_entry = UtxoEntry::new(1000, input_spk, 0, tx.is_coinbase(), None);
+    let populated_tx = PopulatedTransaction::new(&tx, vec![utxo_entry.clone()]);
+
+    let mut vm = TxScriptEngine::from_transaction_input(
+        &populated_tx,
+        &input,
+        0,
+        &utxo_entry,
+        EngineCtx::new(&sig_cache).with_reused(&reused_values),
+        EngineFlags { covenants_enabled: true },
+    );
+    assert!(vm.execute().is_err());
+}
+
+#[test]
+fn fails_validate_output_state_with_mismatched_next_state_fields() {
+    let source = r#"
+        contract C(int initX, byte[2] initY) {
+            int x = initX;
+            byte[2] y = initY;
+
+            entrypoint function main() {
+                validateOutputState(0,{x:x+1,y:0x3412});
+            }
+        }
+    "#;
+
+    let input_compiled =
+        compile_contract(source, &[5.into(), vec![1u8, 2u8].into()], CompileOptions::default()).expect("compile succeeds");
+    let wrong_output_state =
+        compile_contract(source, &[7.into(), vec![0x34u8, 0x12u8].into()], CompileOptions::default()).expect("compile succeeds");
+
+    let reused_values = SigHashReusedValuesUnsync::new();
+    let sig_cache = Cache::new(10_000);
+    let sigscript = ScriptBuilder::new().add_data(&input_compiled.script).unwrap().drain();
+
+    let input = TransactionInput {
+        previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([0u8; 32]), index: 0 },
+        signature_script: sigscript,
+        sequence: 0,
+        sig_op_count: 0,
+    };
+
+    let input_spk = pay_to_script_hash_script(&input_compiled.script);
+    let wrong_output_spk = pay_to_script_hash_script(&wrong_output_state.script);
+    let output = TransactionOutput { value: 1000, script_public_key: wrong_output_spk, covenant: None };
+    let tx = Transaction::new(1, vec![input.clone()], vec![output], 0, Default::default(), 0, vec![]);
+    let utxo_entry = UtxoEntry::new(1000, input_spk, 0, tx.is_coinbase(), None);
+    let populated_tx = PopulatedTransaction::new(&tx, vec![utxo_entry.clone()]);
+
+    let mut vm = TxScriptEngine::from_transaction_input(
+        &populated_tx,
+        &input,
+        0,
+        &utxo_entry,
+        EngineCtx::new(&sig_cache).with_reused(&reused_values),
+        EngineFlags { covenants_enabled: true },
+    );
+    assert!(vm.execute().is_err());
+}
+
+#[test]
+fn rejects_validate_output_state_with_malformed_state_object() {
+    let source = r#"
+        contract C(int initX, byte[2] initY) {
+            int x = initX;
+            byte[2] y = initY;
+
+            entrypoint function main() {
+                validateOutputState(0,{x:x+1});
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[5.into(), vec![1u8, 2u8].into()], CompileOptions::default())
+        .expect_err("state object missing fields should fail");
+    assert!(err.to_string().contains("new_state must include all contract fields exactly once"), "unexpected error: {err}");
+}
+
+#[test]
+fn rejects_validate_output_state_with_duplicate_state_field() {
+    let source = r#"
+        contract C(int initX, byte[2] initY) {
+            int x = initX;
+            byte[2] y = initY;
+
+            entrypoint function main() {
+                validateOutputState(0,{x:x+1,y:0x3412,x:x+2});
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[5.into(), vec![1u8, 2u8].into()], CompileOptions::default())
+        .expect_err("state object duplicate fields should fail");
+    assert!(err.to_string().contains("duplicate state field 'x'"), "unexpected error: {err}");
+}
+
+#[test]
+fn rejects_validate_output_state_with_unknown_state_field() {
+    let source = r#"
+        contract C(int initX, byte[2] initY) {
+            int x = initX;
+            byte[2] y = initY;
+
+            entrypoint function main() {
+                validateOutputState(0,{x:x+1,y:0x3412,z:1});
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[5.into(), vec![1u8, 2u8].into()], CompileOptions::default())
+        .expect_err("state object with unknown field should fail");
+    assert!(err.to_string().contains("new_state must include all contract fields exactly once"), "unexpected error: {err}");
 }
 
 fn assert_compiled_body(source: &str, body: Vec<u8>) {
