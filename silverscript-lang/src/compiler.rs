@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::ast::{
-    ArrayDim, BinaryOp, ContractAst, Expr, FunctionAst, IntrospectionKind, NullaryOp, SplitPart, Statement, TimeVar, TypeBase,
-    TypeRef, UnaryOp, parse_contract_ast, parse_type_ref,
+    ArrayDim, BinaryOp, ContractAst, ContractFieldAst, Expr, FunctionAst, IntrospectionKind, NullaryOp, SplitPart, Statement, TimeVar,
+    TypeBase, TypeRef, UnaryOp, parse_contract_ast, parse_type_ref,
 };
 use crate::parser::Rule;
 use chrono::NaiveDateTime;
@@ -102,12 +102,16 @@ pub fn compile_contract_ast(
 
     let mut script_size = if uses_script_size { Some(100i64) } else { None };
     for _ in 0..32 {
+        let (_contract_fields, field_prolog_script) = compile_contract_fields(&contract.fields, &constants, options, script_size)?;
+
         let mut compiled_entrypoints = Vec::new();
         for (index, func) in contract.functions.iter().enumerate() {
             if func.entrypoint {
                 compiled_entrypoints.push(compile_function(
                     func,
                     index,
+                    &contract.fields,
+                    field_prolog_script.len(),
                     &constants,
                     options,
                     &functions_map,
@@ -117,7 +121,7 @@ pub fn compile_contract_ast(
             }
         }
 
-        let script = if without_selector {
+        let entrypoint_script = if without_selector {
             compiled_entrypoints
                 .first()
                 .ok_or_else(|| CompilerError::Unsupported("contract has no entrypoint functions".to_string()))?
@@ -150,6 +154,9 @@ pub fn compile_contract_ast(
             builder.drain()
         };
 
+        let mut script = field_prolog_script.clone();
+        script.extend(entrypoint_script);
+
         if !uses_script_size {
             return Ok(CompiledContract {
                 contract_name: contract.name.clone(),
@@ -180,7 +187,69 @@ fn contract_uses_script_size(contract: &ContractAst) -> bool {
     if contract.constants.values().any(expr_uses_script_size) {
         return true;
     }
+    if contract.fields.iter().any(|field| expr_uses_script_size(&field.expr)) {
+        return true;
+    }
     contract.functions.iter().any(|func| func.body.iter().any(statement_uses_script_size))
+}
+
+fn compile_contract_fields(
+    fields: &[ContractFieldAst],
+    base_constants: &HashMap<String, Expr>,
+    options: CompileOptions,
+    script_size: Option<i64>,
+) -> Result<(HashMap<String, Expr>, Vec<u8>), CompilerError> {
+    let mut env = base_constants.clone();
+    let mut field_values = HashMap::new();
+    let mut field_types = HashMap::new();
+    let mut builder = ScriptBuilder::new();
+    let params = HashMap::new();
+
+    for field in fields {
+        if env.contains_key(&field.name) {
+            return Err(CompilerError::Unsupported(format!("duplicate contract field name: {}", field.name)));
+        }
+
+        let type_name = type_name_from_ref(&field.type_ref);
+        if is_array_type(&type_name) && array_element_size(&type_name).is_none() {
+            return Err(CompilerError::Unsupported(format!("array element type must have known size: {type_name}")));
+        }
+
+        let mut resolve_visiting = HashSet::new();
+        let resolved = resolve_expr(field.expr.clone(), &env, &mut resolve_visiting)?;
+        if !expr_matches_type_ref(&resolved, &field.type_ref) {
+            return Err(CompilerError::Unsupported(format!("contract field '{}' expects {}", field.name, type_name)));
+        }
+
+        let mut compile_visiting = HashSet::new();
+        let mut stack_depth = 0i64;
+        if field.type_ref.array_dims.is_empty() && field.type_ref.base == TypeBase::Int {
+            let Expr::Int(value) = resolved else {
+                return Err(CompilerError::Unsupported(format!("contract field '{}' expects compile-time int value", field.name)));
+            };
+            builder.add_data(&value.to_le_bytes())?;
+            builder.add_op(OpBin2Num)?;
+        } else {
+            compile_expr(
+                &resolved,
+                &env,
+                &params,
+                &field_types,
+                &mut builder,
+                options,
+                &mut compile_visiting,
+                &mut stack_depth,
+                script_size,
+                &env,
+            )?;
+        }
+
+        env.insert(field.name.clone(), resolved.clone());
+        field_values.insert(field.name.clone(), resolved);
+        field_types.insert(field.name.clone(), type_name);
+    }
+
+    Ok((field_values, builder.drain()))
 }
 
 fn statement_uses_script_size(stmt: &Statement) -> bool {
@@ -188,7 +257,7 @@ fn statement_uses_script_size(stmt: &Statement) -> bool {
         Statement::VariableDefinition { expr, .. } => expr.as_ref().is_some_and(expr_uses_script_size),
         Statement::TupleAssignment { expr, .. } => expr_uses_script_size(expr),
         Statement::ArrayPush { expr, .. } => expr_uses_script_size(expr),
-        Statement::FunctionCall { args, .. } => args.iter().any(expr_uses_script_size),
+        Statement::FunctionCall { name, args } => name == "validateOutputState" || args.iter().any(expr_uses_script_size),
         Statement::FunctionCallAssign { args, .. } => args.iter().any(expr_uses_script_size),
         Statement::Assign { expr, .. } => expr_uses_script_size(expr),
         Statement::TimeOp { expr, .. } => expr_uses_script_size(expr),
@@ -220,6 +289,7 @@ fn expr_uses_script_size(expr: &Expr) -> bool {
             expr_uses_script_size(condition) || expr_uses_script_size(then_expr) || expr_uses_script_size(else_expr)
         }
         Expr::Array(values) => values.iter().any(expr_uses_script_size),
+        Expr::StateObject(fields) => fields.iter().any(|field| expr_uses_script_size(&field.expr)),
         Expr::Call { args, .. } => args.iter().any(expr_uses_script_size),
         Expr::New { args, .. } => args.iter().any(expr_uses_script_size),
         Expr::Split { source, index, .. } => expr_uses_script_size(source) || expr_uses_script_size(index),
@@ -813,22 +883,33 @@ pub fn function_branch_index(contract: &ContractAst, function_name: &str) -> Res
 fn compile_function(
     function: &FunctionAst,
     function_index: usize,
+    contract_fields: &[ContractFieldAst],
+    contract_field_prefix_len: usize,
     constants: &HashMap<String, Expr>,
     options: CompileOptions,
     functions: &HashMap<String, FunctionAst>,
     function_order: &HashMap<String, usize>,
     script_size: Option<i64>,
 ) -> Result<(String, Vec<u8>), CompilerError> {
+    let contract_field_count = contract_fields.len();
     let param_count = function.params.len();
-    let params = function
+    let mut params = function
         .params
         .iter()
         .map(|param| param.name.clone())
         .enumerate()
-        .map(|(index, name)| (name, (param_count - 1 - index) as i64))
+        .map(|(index, name)| (name, (contract_field_count + (param_count - 1 - index)) as i64))
         .collect::<HashMap<_, _>>();
+
+    for (index, field) in contract_fields.iter().enumerate() {
+        params.insert(field.name.clone(), (contract_field_count - 1 - index) as i64);
+    }
+
     let mut types =
         function.params.iter().map(|param| (param.name.clone(), type_name_from_ref(&param.type_ref))).collect::<HashMap<_, _>>();
+    for field in contract_fields {
+        types.insert(field.name.clone(), type_name_from_ref(&field.type_ref));
+    }
     for param in &function.params {
         let param_type_name = type_name_from_ref(&param.type_ref);
         if is_array_type(&param_type_name) && array_element_size(&param_type_name).is_none() {
@@ -890,6 +971,8 @@ fn compile_function(
             &mut types,
             &mut builder,
             options,
+            contract_fields,
+            contract_field_prefix_len,
             constants,
             functions,
             function_order,
@@ -902,6 +985,9 @@ fn compile_function(
     let yield_count = yields.len();
     if yield_count == 0 {
         for _ in 0..param_count {
+            builder.add_op(OpDrop)?;
+        }
+        for _ in 0..contract_field_count {
             builder.add_op(OpDrop)?;
         }
         builder.add_op(OpTrue)?;
@@ -926,6 +1012,11 @@ fn compile_function(
             builder.add_op(OpRoll)?;
             builder.add_op(OpDrop)?;
         }
+        for _ in 0..contract_field_count {
+            builder.add_i64(yield_count as i64)?;
+            builder.add_op(OpRoll)?;
+            builder.add_op(OpDrop)?;
+        }
     }
     Ok((function.name.clone(), builder.drain()))
 }
@@ -938,6 +1029,8 @@ fn compile_statement(
     types: &mut HashMap<String, String>,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
+    contract_fields: &[ContractFieldAst],
+    contract_field_prefix_len: usize,
     contract_constants: &HashMap<String, Expr>,
     functions: &HashMap<String, FunctionAst>,
     function_order: &HashMap<String, usize>,
@@ -1113,6 +1206,8 @@ fn compile_statement(
             types,
             builder,
             options,
+            contract_fields,
+            contract_field_prefix_len,
             contract_constants,
             functions,
             function_order,
@@ -1130,6 +1225,8 @@ fn compile_statement(
             types,
             builder,
             options,
+            contract_fields,
+            contract_field_prefix_len,
             contract_constants,
             functions,
             function_order,
@@ -1153,6 +1250,20 @@ fn compile_statement(
             _ => Err(CompilerError::Unsupported("tuple assignment only supports split()".to_string())),
         },
         Statement::FunctionCall { name, args } => {
+            if name == "validateOutputState" {
+                return compile_validate_output_state_statement(
+                    args,
+                    env,
+                    params,
+                    types,
+                    builder,
+                    options,
+                    contract_fields,
+                    contract_field_prefix_len,
+                    script_size,
+                    contract_constants,
+                );
+            }
             let returns = compile_inline_call(
                 name,
                 args,
@@ -1254,6 +1365,178 @@ fn compile_statement(
 }
 
 #[allow(clippy::too_many_arguments)]
+fn compile_validate_output_state_statement(
+    args: &[Expr],
+    env: &HashMap<String, Expr>,
+    params: &HashMap<String, i64>,
+    types: &HashMap<String, String>,
+    builder: &mut ScriptBuilder,
+    options: CompileOptions,
+    contract_fields: &[ContractFieldAst],
+    contract_field_prefix_len: usize,
+    script_size: Option<i64>,
+    contract_constants: &HashMap<String, Expr>,
+) -> Result<(), CompilerError> {
+    if args.len() != 2 {
+        return Err(CompilerError::Unsupported("validateOutputState(output_idx, new_state) expects 2 arguments".to_string()));
+    }
+    if contract_fields.is_empty() {
+        return Err(CompilerError::Unsupported("validateOutputState requires contract fields".to_string()));
+    }
+
+    let output_idx = &args[0];
+    let Expr::StateObject(state_entries) = &args[1] else {
+        return Err(CompilerError::Unsupported("validateOutputState second argument must be an object literal".to_string()));
+    };
+
+    let mut provided = HashMap::new();
+    for entry in state_entries {
+        if provided.insert(entry.name.as_str(), &entry.expr).is_some() {
+            return Err(CompilerError::Unsupported(format!("duplicate state field '{}'", entry.name)));
+        }
+    }
+    if provided.len() != contract_fields.len() {
+        return Err(CompilerError::Unsupported("new_state must include all contract fields exactly once".to_string()));
+    }
+
+    let mut stack_depth = 0i64;
+    for field in contract_fields {
+        let Some(new_value) = provided.remove(field.name.as_str()) else {
+            return Err(CompilerError::Unsupported(format!("missing state field '{}'", field.name)));
+        };
+
+        if field.type_ref.array_dims.is_empty() && field.type_ref.base == TypeBase::Int {
+            compile_expr(
+                new_value,
+                env,
+                params,
+                types,
+                builder,
+                options,
+                &mut HashSet::new(),
+                &mut stack_depth,
+                script_size,
+                contract_constants,
+            )?;
+            builder.add_i64(8)?;
+            stack_depth += 1;
+            builder.add_op(OpNum2Bin)?;
+            stack_depth -= 1;
+            builder.add_data(&[0x08])?;
+            stack_depth += 1;
+            builder.add_op(OpSwap)?;
+            builder.add_op(OpCat)?;
+            stack_depth -= 1;
+            builder.add_data(&[OpBin2Num])?;
+            stack_depth += 1;
+            builder.add_op(OpCat)?;
+            stack_depth -= 1;
+            continue;
+        }
+
+        let field_size = if field.type_ref.base == TypeBase::Byte {
+            if field.type_ref.array_dims.is_empty() {
+                Some(1usize)
+            } else {
+                array_size_with_constants_ref(&field.type_ref, contract_constants)
+            }
+        } else {
+            None
+        };
+
+        let Some(field_size) = field_size else {
+            return Err(CompilerError::Unsupported(format!(
+                "validateOutputState does not support field type {}",
+                type_name_from_ref(&field.type_ref)
+            )));
+        };
+
+        compile_expr(
+            new_value,
+            env,
+            params,
+            types,
+            builder,
+            options,
+            &mut HashSet::new(),
+            &mut stack_depth,
+            script_size,
+            contract_constants,
+        )?;
+        let prefix = data_prefix(field_size);
+        builder.add_data(&prefix)?;
+        stack_depth += 1;
+        builder.add_op(OpSwap)?;
+        builder.add_op(OpCat)?;
+        stack_depth -= 1;
+    }
+
+    let script_size_value =
+        script_size.ok_or_else(|| CompilerError::Unsupported("validateOutputState requires this.scriptSize".to_string()))?;
+
+    builder.add_op(OpTxInputIndex)?;
+    stack_depth += 1;
+    builder.add_op(OpDup)?;
+    stack_depth += 1;
+    builder.add_op(OpTxInputScriptSigLen)?;
+    builder.add_op(OpDup)?;
+    stack_depth += 1;
+    builder.add_i64(script_size_value)?;
+    stack_depth += 1;
+    builder.add_op(OpSub)?;
+    stack_depth -= 1;
+    builder.add_i64(contract_field_prefix_len as i64)?;
+    stack_depth += 1;
+    builder.add_op(OpAdd)?;
+    stack_depth -= 1;
+    builder.add_op(OpSwap)?;
+    builder.add_op(OpTxInputScriptSigSubstr)?;
+    stack_depth -= 2;
+
+    for _ in 0..contract_fields.len() {
+        builder.add_op(OpCat)?;
+        stack_depth -= 1;
+    }
+
+    builder.add_op(OpBlake2b)?;
+    builder.add_data(&[0x00, 0x00])?;
+    stack_depth += 1;
+    builder.add_data(&[OpBlake2b])?;
+    stack_depth += 1;
+    builder.add_op(OpCat)?;
+    stack_depth -= 1;
+    builder.add_data(&[0x20])?;
+    stack_depth += 1;
+    builder.add_op(OpCat)?;
+    stack_depth -= 1;
+    builder.add_op(OpSwap)?;
+    builder.add_op(OpCat)?;
+    stack_depth -= 1;
+    builder.add_data(&[OpEqual])?;
+    stack_depth += 1;
+    builder.add_op(OpCat)?;
+    stack_depth -= 1;
+
+    compile_expr(
+        output_idx,
+        env,
+        params,
+        types,
+        builder,
+        options,
+        &mut HashSet::new(),
+        &mut stack_depth,
+        Some(script_size_value),
+        contract_constants,
+    )?;
+    builder.add_op(OpTxOutputSpk)?;
+    builder.add_op(OpEqual)?;
+    builder.add_op(OpVerify)?;
+
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
 fn compile_inline_call(
     name: &str,
     args: &[Expr],
@@ -1349,6 +1632,8 @@ fn compile_inline_call(
             &mut types,
             builder,
             options,
+            &[],
+            0,
             contract_constants,
             functions,
             function_order,
@@ -1380,6 +1665,8 @@ fn compile_if_statement(
     types: &mut HashMap<String, String>,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
+    contract_fields: &[ContractFieldAst],
+    contract_field_prefix_len: usize,
     contract_constants: &HashMap<String, Expr>,
     functions: &HashMap<String, FunctionAst>,
     function_order: &HashMap<String, usize>,
@@ -1412,6 +1699,8 @@ fn compile_if_statement(
         &mut then_types,
         builder,
         options,
+        contract_fields,
+        contract_field_prefix_len,
         contract_constants,
         functions,
         function_order,
@@ -1431,6 +1720,8 @@ fn compile_if_statement(
             &mut else_types,
             builder,
             options,
+            contract_fields,
+            contract_field_prefix_len,
             contract_constants,
             functions,
             function_order,
@@ -1507,6 +1798,8 @@ fn compile_block(
     types: &mut HashMap<String, String>,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
+    contract_fields: &[ContractFieldAst],
+    contract_field_prefix_len: usize,
     contract_constants: &HashMap<String, Expr>,
     functions: &HashMap<String, FunctionAst>,
     function_order: &HashMap<String, usize>,
@@ -1522,6 +1815,8 @@ fn compile_block(
             types,
             builder,
             options,
+            contract_fields,
+            contract_field_prefix_len,
             contract_constants,
             functions,
             function_order,
@@ -1544,6 +1839,8 @@ fn compile_for_statement(
     types: &mut HashMap<String, String>,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
+    contract_fields: &[ContractFieldAst],
+    contract_field_prefix_len: usize,
     contract_constants: &HashMap<String, Expr>,
     functions: &HashMap<String, FunctionAst>,
     function_order: &HashMap<String, usize>,
@@ -1568,6 +1865,8 @@ fn compile_for_statement(
             types,
             builder,
             options,
+            contract_fields,
+            contract_field_prefix_len,
             contract_constants,
             functions,
             function_order,
@@ -1659,6 +1958,13 @@ fn resolve_expr(expr: Expr, env: &HashMap<String, Expr>, visiting: &mut HashSet<
             }
             Ok(Expr::Array(resolved))
         }
+        Expr::StateObject(fields) => {
+            let mut resolved_fields = Vec::with_capacity(fields.len());
+            for field in fields {
+                resolved_fields.push(crate::ast::StateFieldExpr { name: field.name, expr: resolve_expr(field.expr, env, visiting)? });
+            }
+            Ok(Expr::StateObject(resolved_fields))
+        }
         Expr::Call { name, args } => {
             let mut resolved = Vec::with_capacity(args.len());
             for arg in args {
@@ -1698,6 +2004,15 @@ fn replace_identifier(expr: &Expr, target: &str, replacement: &Expr) -> Expr {
             right: Box::new(replace_identifier(right, target, replacement)),
         },
         Expr::Array(values) => Expr::Array(values.iter().map(|value| replace_identifier(value, target, replacement)).collect()),
+        Expr::StateObject(fields) => Expr::StateObject(
+            fields
+                .iter()
+                .map(|field| crate::ast::StateFieldExpr {
+                    name: field.name.clone(),
+                    expr: replace_identifier(&field.expr, target, replacement),
+                })
+                .collect(),
+        ),
         Expr::Call { name, args } => {
             Expr::Call { name: name.clone(), args: args.iter().map(|arg| replace_identifier(arg, target, replacement)).collect() }
         }
@@ -1782,6 +2097,9 @@ fn compile_expr(
             Err(CompilerError::Unsupported(
                 "array literals are only supported for fixed-size element arrays and in LockingBytecodeNullData".to_string(),
             ))
+        }
+        Expr::StateObject(_) => {
+            Err(CompilerError::Unsupported("state object literals are only supported in validateOutputState()".to_string()))
         }
         Expr::String(value) => {
             builder.add_data(value.as_bytes())?;
@@ -2802,6 +3120,7 @@ fn expr_is_bytes_inner(
     match expr {
         Expr::Byte(_) => true,
         Expr::Array(values) => is_byte_array(&Expr::Array(values.clone())),
+        Expr::StateObject(_) => false,
         Expr::String(_) => true,
         Expr::Slice { .. } => true,
         Expr::New { name, .. } => matches!(

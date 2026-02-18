@@ -7,11 +7,12 @@ version_constraint = { version_operator? ~ VersionLiteral }
 version_operator = { "^" | "~" | ">=" | ">" | "<" | "<=" | "=" }
 
 contract_definition = { "contract" ~ Identifier ~ parameter_list ~ "{" ~ contract_item* ~ "}" }
-contract_item = { constant_definition | function_definition }
+contract_item = { constant_definition | contract_field_definition | function_definition }
 entrypoint = { "entrypoint" }
 function_definition = { entrypoint? ~ "function" ~ Identifier ~ parameter_list ~ return_type_list? ~ "{" ~ statement* ~ "}" }
 
 constant_definition = { type_name ~ "constant" ~ Identifier ~ "=" ~ expression ~ ";" }
+contract_field_definition = { type_name ~ Identifier ~ "=" ~ expression ~ ";" }
 
 parameter_list = { "(" ~ (parameter ~ ("," ~ parameter)* ~ ","?)? ~ ")" }
 parameter = { type_name ~ Identifier }
@@ -100,12 +101,16 @@ primary = _{
     | cast
     | function_call
     | instantiation
+    | state_object
     | introspection
     | array
     | NullaryOp
     | Identifier
     | literal
 }
+
+state_object = { "{" ~ (state_entry ~ ("," ~ state_entry)* ~ ","?)? ~ "}" }
+state_entry = { Identifier ~ ":" ~ expression }
 
 parenthesized = { "(" ~ expression ~ ")" }
 cast = { type_name ~ "(" ~ expression ~ ("," ~ expression)? ~ ","? ~ ")" }
