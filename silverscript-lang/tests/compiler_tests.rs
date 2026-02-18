@@ -85,6 +85,37 @@ fn run_script_with_sigscript(script: Vec<u8>, sigscript: Vec<u8>) -> Result<(), 
     vm.execute()
 }
 
+fn sigscript_push_script(script: &[u8]) -> Vec<u8> {
+    ScriptBuilder::new().add_data(script).unwrap().drain()
+}
+
+fn test_input(index: u32, signature_script: Vec<u8>) -> TransactionInput {
+    TransactionInput {
+        previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([index as u8; 32]), index },
+        signature_script,
+        sequence: 0,
+        sig_op_count: 0,
+    }
+}
+
+fn execute_input(tx: Transaction, entries: Vec<UtxoEntry>, input_idx: usize) -> Result<(), kaspa_txscript_errors::TxScriptError> {
+    let reused_values = SigHashReusedValuesUnsync::new();
+    let sig_cache = Cache::new(10_000);
+    let input = tx.inputs[input_idx].clone();
+    let populated_tx = PopulatedTransaction::new(&tx, entries);
+    let utxo_entry = populated_tx.utxo(input_idx).expect("utxo entry for selected input");
+
+    let mut vm = TxScriptEngine::from_transaction_input(
+        &populated_tx,
+        &input,
+        input_idx,
+        utxo_entry,
+        EngineCtx::new(&sig_cache).with_reused(&reused_values),
+        EngineFlags { covenants_enabled: true },
+    );
+    vm.execute()
+}
+
 #[test]
 fn accepts_constructor_args_with_matching_types() {
     let source = r#"
@@ -1758,35 +1789,219 @@ fn runs_validate_output_state() {
     let input_compiled =
         compile_contract(source, &[5.into(), vec![1u8, 2u8].into()], CompileOptions::default()).expect("compile succeeds");
 
-    let reused_values = SigHashReusedValuesUnsync::new();
-    let sig_cache = Cache::new(10_000);
-    let sigscript = ScriptBuilder::new().add_data(&input_compiled.script).unwrap().drain();
-
-    let input = TransactionInput {
-        previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([0u8; 32]), index: 0 },
-        signature_script: sigscript,
-        sequence: 0,
-        sig_op_count: 0,
-    };
+    let input = test_input(0, sigscript_push_script(&input_compiled.script));
 
     let output_compiled =
         compile_contract(source, &[6.into(), vec![0x34u8, 0x12u8].into()], CompileOptions::default()).expect("compile succeeds");
     let input_spk = pay_to_script_hash_script(&input_compiled.script);
     let output_spk = pay_to_script_hash_script(&output_compiled.script);
     let output = TransactionOutput { value: 1000, script_public_key: output_spk, covenant: None };
-    let tx = Transaction::new(1, vec![input.clone()], vec![output.clone()], 0, Default::default(), 0, vec![]);
+    let tx = Transaction::new(1, vec![input], vec![output.clone()], 0, Default::default(), 0, vec![]);
     let utxo_entry = UtxoEntry::new(output.value, input_spk, 0, tx.is_coinbase(), None);
-    let populated_tx = PopulatedTransaction::new(&tx, vec![utxo_entry.clone()]);
 
-    let mut vm = TxScriptEngine::from_transaction_input(
-        &populated_tx,
-        &input,
-        0,
-        &utxo_entry,
-        EngineCtx::new(&sig_cache).with_reused(&reused_values),
-        EngineFlags { covenants_enabled: true },
-    );
-    assert!(vm.execute().is_ok());
+    let result = execute_input(tx, vec![utxo_entry], 0);
+    assert!(result.is_ok(), "validateOutputState runtime failed: {}", result.unwrap_err());
+}
+
+#[test]
+fn compiles_read_input_state_to_expected_script() {
+    let source = r#"
+        contract C(int initX, byte[2] initY) {
+            int x = initX;
+            byte[2] y = initY;
+
+            entrypoint function main() {
+                {x: int in1_x, y: byte[2] in1_y} = readInputState(1);
+                require(in1_x > 7);
+                require(in1_y == 0x3412);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[5.into(), vec![1u8, 2u8].into()], CompileOptions::default()).expect("compile succeeds");
+
+    let expected = ScriptBuilder::new()
+        // ---- Prolog state on active input: x=5, y=0x0102 ----
+        // push x payload (8-byte LE)
+        .add_data(&5i64.to_le_bytes())
+        .unwrap()
+        // decode x to numeric form
+        .add_op(OpBin2Num)
+        .unwrap()
+        // push y payload bytes
+        .add_data(&[1u8, 2u8])
+        .unwrap()
+
+        // ---- in1_x = readInputState(1).x ----
+        // input index for start computation
+        .add_i64(1)
+        .unwrap()
+        // same input index for scriptSig length
+        .add_i64(1)
+        .unwrap()
+        // len(sigScript of input 1)
+        .add_op(OpTxInputScriptSigLen)
+        .unwrap()
+        // this.scriptSize
+        .add_i64(compiled.script.len() as i64)
+        .unwrap()
+        // base = sig_len - script_size
+        .add_op(OpSub)
+        .unwrap()
+        // skip int pushdata prefix byte (0x08)
+        .add_i64(1)
+        .unwrap()
+        // start_x = base + 1
+        .add_op(OpAdd)
+        .unwrap()
+
+        // input index for end computation
+        .add_i64(1)
+        .unwrap()
+        // len(sigScript of input 1)
+        .add_op(OpTxInputScriptSigLen)
+        .unwrap()
+        // this.scriptSize
+        .add_i64(compiled.script.len() as i64)
+        .unwrap()
+        // base = sig_len - script_size
+        .add_op(OpSub)
+        .unwrap()
+        // skip int prefix
+        .add_i64(1)
+        .unwrap()
+        // start_x = base + 1
+        .add_op(OpAdd)
+        .unwrap()
+        // int payload length
+        .add_i64(8)
+        .unwrap()
+        // end_x = start_x + 8
+        .add_op(OpAdd)
+        .unwrap()
+        // bytes = sigScriptSubstr(input=1, start_x, end_x)
+        .add_op(OpTxInputScriptSigSubstr)
+        .unwrap()
+        // decode bytes -> int
+        .add_op(OpBin2Num)
+        .unwrap()
+        // literal threshold
+        .add_i64(7)
+        .unwrap()
+        // in1_x > 7
+        .add_op(OpGreaterThan)
+        .unwrap()
+        // enforce require(in1_x > 7)
+        .add_op(OpVerify)
+        .unwrap()
+
+        // ---- in1_y = readInputState(1).y ----
+        // input index for y start computation
+        .add_i64(1)
+        .unwrap()
+        // same input index for scriptSig length
+        .add_i64(1)
+        .unwrap()
+        // len(sigScript of input 1)
+        .add_op(OpTxInputScriptSigLen)
+        .unwrap()
+        // this.scriptSize
+        .add_i64(compiled.script.len() as i64)
+        .unwrap()
+        // base = sig_len - script_size
+        .add_op(OpSub)
+        .unwrap()
+        // skip x encoded chunk (10 bytes) + y pushdata prefix (1 byte)
+        .add_i64(11)
+        .unwrap()
+        // start_y = base + 11
+        .add_op(OpAdd)
+        .unwrap()
+
+        // input index for y end computation
+        .add_i64(1)
+        .unwrap()
+        // len(sigScript of input 1)
+        .add_op(OpTxInputScriptSigLen)
+        .unwrap()
+        // this.scriptSize
+        .add_i64(compiled.script.len() as i64)
+        .unwrap()
+        // base = sig_len - script_size
+        .add_op(OpSub)
+        .unwrap()
+        // skip x chunk + y prefix
+        .add_i64(11)
+        .unwrap()
+        // start_y = base + 11
+        .add_op(OpAdd)
+        .unwrap()
+        // y payload length
+        .add_i64(2)
+        .unwrap()
+        // end_y = start_y + 2
+        .add_op(OpAdd)
+        .unwrap()
+        // bytes = sigScriptSubstr(input=1, start_y, end_y)
+        .add_op(OpTxInputScriptSigSubstr)
+        .unwrap()
+        // expected y bytes
+        .add_data(&[0x34, 0x12])
+        .unwrap()
+        // in1_y == 0x3412
+        .add_op(OpEqual)
+        .unwrap()
+        // enforce require(in1_y == 0x3412)
+        .add_op(OpVerify)
+        .unwrap()
+
+        // drop original y field from active-input state prolog
+        .add_op(OpDrop)
+        .unwrap()
+        // drop original x field from active-input state prolog
+        .add_op(OpDrop)
+        .unwrap()
+        // success
+        .add_op(OpTrue)
+        .unwrap()
+        .drain();
+
+    assert_eq!(compiled.script, expected);
+}
+
+#[test]
+fn runs_read_input_state() {
+    let source = r#"
+        contract C(int initX, byte[2] initY) {
+            int x = initX;
+            byte[2] y = initY;
+
+            entrypoint function main() {
+                {x: int in1_x, y: byte[2] in1_y} = readInputState(1);
+                require(in1_x > 7);
+                require(in1_y == 0x3412);
+            }
+        }
+    "#;
+
+    let active_compiled =
+        compile_contract(source, &[5.into(), vec![1u8, 2u8].into()], CompileOptions::default()).expect("compile succeeds");
+    let input1_compiled =
+        compile_contract(source, &[8.into(), vec![0x34u8, 0x12u8].into()], CompileOptions::default()).expect("compile succeeds");
+
+    let input0 = test_input(0, vec![]);
+    let input1 = test_input(1, sigscript_push_script(&input1_compiled.script));
+
+    let output = TransactionOutput {
+        value: 1000,
+        script_public_key: ScriptPublicKey::new(0, active_compiled.script.clone().into()),
+        covenant: None,
+    };
+    let tx = Transaction::new(1, vec![input0.clone(), input1], vec![output.clone()], 0, Default::default(), 0, vec![]);
+    let utxo0 = UtxoEntry::new(output.value, output.script_public_key.clone(), 0, tx.is_coinbase(), None);
+    let utxo1 = UtxoEntry::new(1000, ScriptPublicKey::new(0, vec![OpTrue].into()), 0, tx.is_coinbase(), None);
+    let result = execute_input(tx, vec![utxo0, utxo1], 0);
+    assert!(result.is_ok(), "readInputState runtime failed: {}", result.unwrap_err());
 }
 
 #[test]
@@ -1807,16 +2022,7 @@ fn fails_validate_output_state_with_wrong_output_index() {
     let expected_output_state =
         compile_contract(source, &[6.into(), vec![0x34u8, 0x12u8].into()], CompileOptions::default()).expect("compile succeeds");
 
-    let reused_values = SigHashReusedValuesUnsync::new();
-    let sig_cache = Cache::new(10_000);
-    let sigscript = ScriptBuilder::new().add_data(&input_compiled.script).unwrap().drain();
-
-    let input = TransactionInput {
-        previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([0u8; 32]), index: 0 },
-        signature_script: sigscript,
-        sequence: 0,
-        sig_op_count: 0,
-    };
+    let input = test_input(0, sigscript_push_script(&input_compiled.script));
 
     let input_spk = pay_to_script_hash_script(&input_compiled.script);
     let matching_spk = pay_to_script_hash_script(&expected_output_state.script);
@@ -1824,19 +2030,11 @@ fn fails_validate_output_state_with_wrong_output_index() {
 
     let output0 = TransactionOutput { value: 1000, script_public_key: wrong_spk, covenant: None };
     let output1 = TransactionOutput { value: 1000, script_public_key: matching_spk, covenant: None };
-    let tx = Transaction::new(1, vec![input.clone()], vec![output0, output1], 0, Default::default(), 0, vec![]);
+    let tx = Transaction::new(1, vec![input], vec![output0, output1], 0, Default::default(), 0, vec![]);
     let utxo_entry = UtxoEntry::new(1000, input_spk, 0, tx.is_coinbase(), None);
-    let populated_tx = PopulatedTransaction::new(&tx, vec![utxo_entry.clone()]);
 
-    let mut vm = TxScriptEngine::from_transaction_input(
-        &populated_tx,
-        &input,
-        0,
-        &utxo_entry,
-        EngineCtx::new(&sig_cache).with_reused(&reused_values),
-        EngineFlags { covenants_enabled: true },
-    );
-    assert!(vm.execute().is_err());
+    let result = execute_input(tx, vec![utxo_entry], 0);
+    assert!(result.is_err());
 }
 
 #[test]
@@ -1857,33 +2055,16 @@ fn fails_validate_output_state_with_mismatched_next_state_fields() {
     let wrong_output_state =
         compile_contract(source, &[7.into(), vec![0x34u8, 0x12u8].into()], CompileOptions::default()).expect("compile succeeds");
 
-    let reused_values = SigHashReusedValuesUnsync::new();
-    let sig_cache = Cache::new(10_000);
-    let sigscript = ScriptBuilder::new().add_data(&input_compiled.script).unwrap().drain();
-
-    let input = TransactionInput {
-        previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([0u8; 32]), index: 0 },
-        signature_script: sigscript,
-        sequence: 0,
-        sig_op_count: 0,
-    };
+    let input = test_input(0, sigscript_push_script(&input_compiled.script));
 
     let input_spk = pay_to_script_hash_script(&input_compiled.script);
     let wrong_output_spk = pay_to_script_hash_script(&wrong_output_state.script);
     let output = TransactionOutput { value: 1000, script_public_key: wrong_output_spk, covenant: None };
-    let tx = Transaction::new(1, vec![input.clone()], vec![output], 0, Default::default(), 0, vec![]);
+    let tx = Transaction::new(1, vec![input], vec![output], 0, Default::default(), 0, vec![]);
     let utxo_entry = UtxoEntry::new(1000, input_spk, 0, tx.is_coinbase(), None);
-    let populated_tx = PopulatedTransaction::new(&tx, vec![utxo_entry.clone()]);
 
-    let mut vm = TxScriptEngine::from_transaction_input(
-        &populated_tx,
-        &input,
-        0,
-        &utxo_entry,
-        EngineCtx::new(&sig_cache).with_reused(&reused_values),
-        EngineFlags { covenants_enabled: true },
-    );
-    assert!(vm.execute().is_err());
+    let result = execute_input(tx, vec![utxo_entry], 0);
+    assert!(result.is_err());
 }
 
 #[test]

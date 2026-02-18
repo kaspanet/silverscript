@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::ast::{
-    ArrayDim, BinaryOp, ContractAst, ContractFieldAst, Expr, FunctionAst, IntrospectionKind, NullaryOp, SplitPart, Statement, TimeVar,
-    TypeBase, TypeRef, UnaryOp, parse_contract_ast, parse_type_ref,
+    ArrayDim, BinaryOp, ContractAst, ContractFieldAst, Expr, FunctionAst, IntrospectionKind, NullaryOp, SplitPart, StateBindingAst,
+    Statement, TimeVar, TypeBase, TypeRef, UnaryOp, parse_contract_ast, parse_type_ref,
 };
 use crate::parser::Rule;
 use chrono::NaiveDateTime;
@@ -259,6 +259,7 @@ fn statement_uses_script_size(stmt: &Statement) -> bool {
         Statement::ArrayPush { expr, .. } => expr_uses_script_size(expr),
         Statement::FunctionCall { name, args } => name == "validateOutputState" || args.iter().any(expr_uses_script_size),
         Statement::FunctionCallAssign { args, .. } => args.iter().any(expr_uses_script_size),
+        Statement::StateFunctionCallAssign { name, args, .. } => name == "readInputState" || args.iter().any(expr_uses_script_size),
         Statement::Assign { expr, .. } => expr_uses_script_size(expr),
         Statement::TimeOp { expr, .. } => expr_uses_script_size(expr),
         Statement::Require { expr, .. } => expr_uses_script_size(expr),
@@ -1298,6 +1299,23 @@ fn compile_statement(
             }
             Ok(())
         }
+        Statement::StateFunctionCallAssign { bindings, name, args } => {
+            if name == "readInputState" {
+                return compile_read_input_state_statement(
+                    bindings,
+                    args,
+                    env,
+                    types,
+                    contract_fields,
+                    script_size,
+                    contract_constants,
+                );
+            }
+            Err(CompilerError::Unsupported(format!(
+                "state destructuring assignment is only supported for readInputState(), got '{}()'",
+                name
+            )))
+        }
         Statement::FunctionCallAssign { bindings, name, args } => {
             let function = functions.get(name).ok_or_else(|| CompilerError::Unsupported(format!("function '{}' not found", name)))?;
             if function.return_types.is_empty() {
@@ -1362,6 +1380,123 @@ fn compile_statement(
         }
         Statement::Console { .. } => Ok(()),
     }
+}
+
+fn encoded_field_chunk_size(field: &ContractFieldAst, contract_constants: &HashMap<String, Expr>) -> Result<usize, CompilerError> {
+    if field.type_ref.array_dims.is_empty() && field.type_ref.base == TypeBase::Int {
+        return Ok(10);
+    }
+
+    if field.type_ref.base != TypeBase::Byte {
+        return Err(CompilerError::Unsupported(format!(
+            "readInputState does not support field type {}",
+            type_name_from_ref(&field.type_ref)
+        )));
+    }
+
+    let payload_size = if field.type_ref.array_dims.is_empty() {
+        1usize
+    } else {
+        array_size_with_constants_ref(&field.type_ref, contract_constants).ok_or_else(|| {
+            CompilerError::Unsupported(format!("readInputState does not support field type {}", type_name_from_ref(&field.type_ref)))
+        })?
+    };
+
+    Ok(data_prefix(payload_size).len() + payload_size)
+}
+
+fn read_input_state_binding_expr(
+    input_idx: &Expr,
+    field: &ContractFieldAst,
+    field_chunk_offset: usize,
+    script_size_value: i64,
+    contract_constants: &HashMap<String, Expr>,
+) -> Result<Expr, CompilerError> {
+    let (field_payload_offset, field_payload_len, decode_int) =
+        if field.type_ref.array_dims.is_empty() && field.type_ref.base == TypeBase::Int {
+            (field_chunk_offset + 1, 8usize, true)
+        } else if field.type_ref.base == TypeBase::Byte {
+            let payload_len = if field.type_ref.array_dims.is_empty() {
+                1usize
+            } else {
+                array_size_with_constants_ref(&field.type_ref, contract_constants).ok_or_else(|| {
+                    CompilerError::Unsupported(format!(
+                        "readInputState does not support field type {}",
+                        type_name_from_ref(&field.type_ref)
+                    ))
+                })?
+            };
+            (field_chunk_offset + data_prefix(payload_len).len(), payload_len, false)
+        } else {
+            return Err(CompilerError::Unsupported(format!(
+                "readInputState does not support field type {}",
+                type_name_from_ref(&field.type_ref)
+            )));
+        };
+
+    let sig_len = Expr::Call { name: "OpTxInputScriptSigLen".to_string(), args: vec![input_idx.clone()] };
+    let start = Expr::Binary {
+        op: BinaryOp::Add,
+        left: Box::new(Expr::Binary { op: BinaryOp::Sub, left: Box::new(sig_len), right: Box::new(Expr::Int(script_size_value)) }),
+        right: Box::new(Expr::Int(field_payload_offset as i64)),
+    };
+    let end = Expr::Binary { op: BinaryOp::Add, left: Box::new(start.clone()), right: Box::new(Expr::Int(field_payload_len as i64)) };
+    let substr = Expr::Call { name: "OpTxInputScriptSigSubstr".to_string(), args: vec![input_idx.clone(), start, end] };
+
+    if decode_int { Ok(Expr::Call { name: "OpBin2Num".to_string(), args: vec![substr] }) } else { Ok(substr) }
+}
+
+fn compile_read_input_state_statement(
+    bindings: &[StateBindingAst],
+    args: &[Expr],
+    env: &mut HashMap<String, Expr>,
+    types: &mut HashMap<String, String>,
+    contract_fields: &[ContractFieldAst],
+    script_size: Option<i64>,
+    contract_constants: &HashMap<String, Expr>,
+) -> Result<(), CompilerError> {
+    if args.len() != 1 {
+        return Err(CompilerError::Unsupported("readInputState(input_idx) expects 1 argument".to_string()));
+    }
+    if contract_fields.is_empty() {
+        return Err(CompilerError::Unsupported("readInputState requires contract fields".to_string()));
+    }
+    let script_size_value =
+        script_size.ok_or_else(|| CompilerError::Unsupported("readInputState requires this.scriptSize".to_string()))?;
+
+    let mut bindings_by_field: HashMap<&str, &StateBindingAst> = HashMap::new();
+    for binding in bindings {
+        if bindings_by_field.insert(binding.field_name.as_str(), binding).is_some() {
+            return Err(CompilerError::Unsupported(format!("duplicate state field '{}'", binding.field_name)));
+        }
+    }
+    if bindings_by_field.len() != contract_fields.len() {
+        return Err(CompilerError::Unsupported("readInputState bindings must include all contract fields exactly once".to_string()));
+    }
+
+    let input_idx = args[0].clone();
+    let mut field_chunk_offset = 0usize;
+
+    for field in contract_fields {
+        let binding = bindings_by_field.get(field.name.as_str()).ok_or_else(|| {
+            CompilerError::Unsupported("readInputState bindings must include all contract fields exactly once".to_string())
+        })?;
+
+        let binding_type = type_name_from_ref(&binding.type_ref);
+        let field_type = type_name_from_ref(&field.type_ref);
+        if binding_type != field_type {
+            return Err(CompilerError::Unsupported(format!("readInputState binding '{}' expects {}", binding.name, field_type)));
+        }
+
+        let binding_expr =
+            read_input_state_binding_expr(&input_idx, field, field_chunk_offset, script_size_value, contract_constants)?;
+        env.insert(binding.name.clone(), binding_expr);
+        types.insert(binding.name.clone(), binding_type);
+
+        field_chunk_offset += encoded_field_chunk_size(field, contract_constants)?;
+    }
+
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]

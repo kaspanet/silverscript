@@ -42,6 +42,13 @@ pub struct ParamAst {
     pub name: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StateBindingAst {
+    pub field_name: String,
+    pub type_ref: TypeRef,
+    pub name: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TypeRef {
     pub base: TypeBase,
@@ -122,6 +129,7 @@ pub enum Statement {
     ArrayPush { name: String, expr: Expr },
     FunctionCall { name: String, args: Vec<Expr> },
     FunctionCallAssign { bindings: Vec<ParamAst>, name: String, args: Vec<Expr> },
+    StateFunctionCallAssign { bindings: Vec<StateBindingAst>, name: String, args: Vec<Expr> },
     Assign { name: String, expr: Expr },
     TimeOp { tx_var: TimeVar, expr: Expr, message: Option<String> },
     Require { expr: Expr, message: Option<String> },
@@ -539,6 +547,37 @@ fn parse_statement(pair: Pair<'_, Rule>) -> Result<Statement, CompilerError> {
             let call_pair = call_pair.ok_or_else(|| CompilerError::Unsupported("missing function call".to_string()))?;
             match parse_function_call(call_pair)? {
                 Expr::Call { name, args } => Ok(Statement::FunctionCallAssign { bindings, name, args }),
+                _ => Err(CompilerError::Unsupported("function call expected".to_string())),
+            }
+        }
+        Rule::state_function_call_assignment => {
+            let mut bindings = Vec::new();
+            let mut call_pair = None;
+            for item in pair.into_inner() {
+                if item.as_rule() == Rule::state_typed_binding {
+                    let mut inner = item.into_inner();
+                    let field_name = inner
+                        .next()
+                        .ok_or_else(|| CompilerError::Unsupported("missing state field name".to_string()))?
+                        .as_str()
+                        .to_string();
+                    let type_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing binding type".to_string()))?;
+                    let type_ref = parse_type_name_pair(type_pair)?;
+                    let name = inner
+                        .next()
+                        .ok_or_else(|| CompilerError::Unsupported("missing binding name".to_string()))?
+                        .as_str()
+                        .to_string();
+                    validate_user_identifier(&field_name)?;
+                    validate_user_identifier(&name)?;
+                    bindings.push(StateBindingAst { field_name, type_ref, name });
+                } else if item.as_rule() == Rule::function_call {
+                    call_pair = Some(item);
+                }
+            }
+            let call_pair = call_pair.ok_or_else(|| CompilerError::Unsupported("missing function call".to_string()))?;
+            match parse_function_call(call_pair)? {
+                Expr::Call { name, args } => Ok(Statement::StateFunctionCallAssign { bindings, name, args }),
                 _ => Err(CompilerError::Unsupported("function call expected".to_string())),
             }
         }
