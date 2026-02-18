@@ -1790,6 +1790,228 @@ fn runs_validate_output_state() {
 }
 
 #[test]
+fn compiles_read_input_state_to_expected_script() {
+    let source = r#"
+        contract C(int initX, byte[2] initY) {
+            int x = initX;
+            byte[2] y = initY;
+
+            entrypoint function main() {
+                {x: int in1_x, y: byte[2] in1_y} = readInputState(1);
+                require(in1_x > 7);
+                require(in1_y == 0x3412);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[5.into(), vec![1u8, 2u8].into()], CompileOptions::default()).expect("compile succeeds");
+
+    let expected = ScriptBuilder::new()
+        // ---- Prolog state on active input: x=5, y=0x0102 ----
+        // push x payload (8-byte LE)
+        .add_data(&5i64.to_le_bytes())
+        .unwrap()
+        // decode x to numeric form
+        .add_op(OpBin2Num)
+        .unwrap()
+        // push y payload bytes
+        .add_data(&[1u8, 2u8])
+        .unwrap()
+
+        // ---- in1_x = readInputState(1).x ----
+        // input index for start computation
+        .add_i64(1)
+        .unwrap()
+        // same input index for scriptSig length
+        .add_i64(1)
+        .unwrap()
+        // len(sigScript of input 1)
+        .add_op(OpTxInputScriptSigLen)
+        .unwrap()
+        // this.scriptSize
+        .add_i64(compiled.script.len() as i64)
+        .unwrap()
+        // base = sig_len - script_size
+        .add_op(OpSub)
+        .unwrap()
+        // skip int pushdata prefix byte (0x08)
+        .add_i64(1)
+        .unwrap()
+        // start_x = base + 1
+        .add_op(OpAdd)
+        .unwrap()
+
+        // input index for end computation
+        .add_i64(1)
+        .unwrap()
+        // len(sigScript of input 1)
+        .add_op(OpTxInputScriptSigLen)
+        .unwrap()
+        // this.scriptSize
+        .add_i64(compiled.script.len() as i64)
+        .unwrap()
+        // base = sig_len - script_size
+        .add_op(OpSub)
+        .unwrap()
+        // skip int prefix
+        .add_i64(1)
+        .unwrap()
+        // start_x = base + 1
+        .add_op(OpAdd)
+        .unwrap()
+        // int payload length
+        .add_i64(8)
+        .unwrap()
+        // end_x = start_x + 8
+        .add_op(OpAdd)
+        .unwrap()
+        // bytes = sigScriptSubstr(input=1, start_x, end_x)
+        .add_op(OpTxInputScriptSigSubstr)
+        .unwrap()
+        // decode bytes -> int
+        .add_op(OpBin2Num)
+        .unwrap()
+        // literal threshold
+        .add_i64(7)
+        .unwrap()
+        // in1_x > 7
+        .add_op(OpGreaterThan)
+        .unwrap()
+        // enforce require(in1_x > 7)
+        .add_op(OpVerify)
+        .unwrap()
+
+        // ---- in1_y = readInputState(1).y ----
+        // input index for y start computation
+        .add_i64(1)
+        .unwrap()
+        // same input index for scriptSig length
+        .add_i64(1)
+        .unwrap()
+        // len(sigScript of input 1)
+        .add_op(OpTxInputScriptSigLen)
+        .unwrap()
+        // this.scriptSize
+        .add_i64(compiled.script.len() as i64)
+        .unwrap()
+        // base = sig_len - script_size
+        .add_op(OpSub)
+        .unwrap()
+        // skip x encoded chunk (10 bytes) + y pushdata prefix (1 byte)
+        .add_i64(11)
+        .unwrap()
+        // start_y = base + 11
+        .add_op(OpAdd)
+        .unwrap()
+
+        // input index for y end computation
+        .add_i64(1)
+        .unwrap()
+        // len(sigScript of input 1)
+        .add_op(OpTxInputScriptSigLen)
+        .unwrap()
+        // this.scriptSize
+        .add_i64(compiled.script.len() as i64)
+        .unwrap()
+        // base = sig_len - script_size
+        .add_op(OpSub)
+        .unwrap()
+        // skip x chunk + y prefix
+        .add_i64(11)
+        .unwrap()
+        // start_y = base + 11
+        .add_op(OpAdd)
+        .unwrap()
+        // y payload length
+        .add_i64(2)
+        .unwrap()
+        // end_y = start_y + 2
+        .add_op(OpAdd)
+        .unwrap()
+        // bytes = sigScriptSubstr(input=1, start_y, end_y)
+        .add_op(OpTxInputScriptSigSubstr)
+        .unwrap()
+        // expected y bytes
+        .add_data(&[0x34, 0x12])
+        .unwrap()
+        // in1_y == 0x3412
+        .add_op(OpEqual)
+        .unwrap()
+        // enforce require(in1_y == 0x3412)
+        .add_op(OpVerify)
+        .unwrap()
+
+        // drop original y field from active-input state prolog
+        .add_op(OpDrop)
+        .unwrap()
+        // drop original x field from active-input state prolog
+        .add_op(OpDrop)
+        .unwrap()
+        // success
+        .add_op(OpTrue)
+        .unwrap()
+        .drain();
+
+    assert_eq!(compiled.script, expected);
+}
+
+#[test]
+fn runs_read_input_state() {
+    let source = r#"
+        contract C(int initX, byte[2] initY) {
+            int x = initX;
+            byte[2] y = initY;
+
+            entrypoint function main() {
+                {x: int in1_x, y: byte[2] in1_y} = readInputState(1);
+                require(in1_x > 7);
+                require(in1_y == 0x3412);
+            }
+        }
+    "#;
+
+    let active_compiled =
+        compile_contract(source, &[5.into(), vec![1u8, 2u8].into()], CompileOptions::default()).expect("compile succeeds");
+    let input1_compiled =
+        compile_contract(source, &[8.into(), vec![0x34u8, 0x12u8].into()], CompileOptions::default()).expect("compile succeeds");
+
+    let reused_values = SigHashReusedValuesUnsync::new();
+    let sig_cache = Cache::new(10_000);
+
+    let input0 = TransactionInput {
+        previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([0u8; 32]), index: 0 },
+        signature_script: vec![],
+        sequence: 0,
+        sig_op_count: 0,
+    };
+    let input1_sigscript = ScriptBuilder::new().add_data(&input1_compiled.script).unwrap().drain();
+    let input1 = TransactionInput {
+        previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([1u8; 32]), index: 1 },
+        signature_script: input1_sigscript,
+        sequence: 0,
+        sig_op_count: 0,
+    };
+
+    let output =
+        TransactionOutput { value: 1000, script_public_key: ScriptPublicKey::new(0, active_compiled.script.clone().into()), covenant: None };
+    let tx = Transaction::new(1, vec![input0.clone(), input1], vec![output.clone()], 0, Default::default(), 0, vec![]);
+    let utxo0 = UtxoEntry::new(output.value, output.script_public_key.clone(), 0, tx.is_coinbase(), None);
+    let utxo1 = UtxoEntry::new(1000, ScriptPublicKey::new(0, vec![OpTrue].into()), 0, tx.is_coinbase(), None);
+    let populated_tx = PopulatedTransaction::new(&tx, vec![utxo0.clone(), utxo1]);
+
+    let mut vm = TxScriptEngine::from_transaction_input(
+        &populated_tx,
+        &input0,
+        0,
+        &utxo0,
+        EngineCtx::new(&sig_cache).with_reused(&reused_values),
+        EngineFlags { covenants_enabled: true },
+    );
+    let result = vm.execute();
+    assert!(result.is_ok(), "readInputState runtime failed: {}", result.unwrap_err());
+}
+
+#[test]
 fn fails_validate_output_state_with_wrong_output_index() {
     let source = r#"
         contract C(int initX, byte[2] initY) {

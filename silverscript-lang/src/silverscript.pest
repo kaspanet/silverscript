@@ -24,6 +24,7 @@ statement = _{
     variable_definition
     | tuple_assignment
     | push_statement
+    | state_function_call_assignment
     | function_call_assignment
     | call_statement
     | return_statement
@@ -40,7 +41,9 @@ variable_definition = { type_name ~ modifier* ~ Identifier ~ ("=" ~ expression)?
 tuple_assignment = { type_name ~ Identifier ~ "," ~ type_name ~ Identifier ~ "=" ~ expression ~ ";" }
 push_statement = { Identifier ~ ".push" ~ "(" ~ expression ~ ")" ~ ";" }
 function_call_assignment = { "(" ~ typed_binding ~ ("," ~ typed_binding)* ~ ","? ~ ")" ~ "=" ~ function_call ~ ";" }
+state_function_call_assignment = { "{" ~ state_typed_binding ~ ("," ~ state_typed_binding)* ~ ","? ~ "}" ~ "=" ~ function_call ~ ";" }
 typed_binding = { type_name ~ Identifier }
+state_typed_binding = { Identifier ~ ":" ~ type_name ~ Identifier }
 call_statement = { function_call ~ ";" }
 assign_statement = { Identifier ~ "=" ~ expression ~ ";" }
 return_statement = { "return" ~ expression_list ~ ";" }
