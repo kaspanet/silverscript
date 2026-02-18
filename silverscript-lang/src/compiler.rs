@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::ast::{
-    ArrayDim, BinaryOp, ContractAst, Expr, FunctionAst, IntrospectionKind, NullaryOp, SplitPart, Statement, TimeVar, TypeBase,
-    TypeRef, UnaryOp, parse_contract_ast, parse_type_ref,
+    ArrayDim, BinaryOp, ContractAst, ContractFieldAst, Expr, FunctionAst, IntrospectionKind, NullaryOp, SplitPart, Statement, TimeVar,
+    TypeBase, TypeRef, UnaryOp, parse_contract_ast, parse_type_ref,
 };
 use crate::parser::Rule;
 use chrono::NaiveDateTime;
@@ -102,12 +102,15 @@ pub fn compile_contract_ast(
 
     let mut script_size = if uses_script_size { Some(100i64) } else { None };
     for _ in 0..32 {
+        let (_contract_fields, field_prolog_script) = compile_contract_fields(&contract.fields, &constants, options, script_size)?;
+
         let mut compiled_entrypoints = Vec::new();
         for (index, func) in contract.functions.iter().enumerate() {
             if func.entrypoint {
                 compiled_entrypoints.push(compile_function(
                     func,
                     index,
+                    &contract.fields,
                     &constants,
                     options,
                     &functions_map,
@@ -117,7 +120,7 @@ pub fn compile_contract_ast(
             }
         }
 
-        let script = if without_selector {
+        let entrypoint_script = if without_selector {
             compiled_entrypoints
                 .first()
                 .ok_or_else(|| CompilerError::Unsupported("contract has no entrypoint functions".to_string()))?
@@ -150,6 +153,9 @@ pub fn compile_contract_ast(
             builder.drain()
         };
 
+        let mut script = field_prolog_script.clone();
+        script.extend(entrypoint_script);
+
         if !uses_script_size {
             return Ok(CompiledContract {
                 contract_name: contract.name.clone(),
@@ -180,7 +186,61 @@ fn contract_uses_script_size(contract: &ContractAst) -> bool {
     if contract.constants.values().any(expr_uses_script_size) {
         return true;
     }
+    if contract.fields.iter().any(|field| expr_uses_script_size(&field.expr)) {
+        return true;
+    }
     contract.functions.iter().any(|func| func.body.iter().any(statement_uses_script_size))
+}
+
+fn compile_contract_fields(
+    fields: &[ContractFieldAst],
+    base_constants: &HashMap<String, Expr>,
+    options: CompileOptions,
+    script_size: Option<i64>,
+) -> Result<(HashMap<String, Expr>, Vec<u8>), CompilerError> {
+    let mut env = base_constants.clone();
+    let mut field_values = HashMap::new();
+    let mut field_types = HashMap::new();
+    let mut builder = ScriptBuilder::new();
+    let params = HashMap::new();
+
+    for field in fields {
+        if env.contains_key(&field.name) {
+            return Err(CompilerError::Unsupported(format!("duplicate contract field name: {}", field.name)));
+        }
+
+        let type_name = type_name_from_ref(&field.type_ref);
+        if is_array_type(&type_name) && array_element_size(&type_name).is_none() {
+            return Err(CompilerError::Unsupported(format!("array element type must have known size: {type_name}")));
+        }
+
+        let mut resolve_visiting = HashSet::new();
+        let resolved = resolve_expr(field.expr.clone(), &env, &mut resolve_visiting)?;
+        if !expr_matches_type_ref(&resolved, &field.type_ref) {
+            return Err(CompilerError::Unsupported(format!("contract field '{}' expects {}", field.name, type_name)));
+        }
+
+        let mut compile_visiting = HashSet::new();
+        let mut stack_depth = 0i64;
+        compile_expr(
+            &resolved,
+            &env,
+            &params,
+            &field_types,
+            &mut builder,
+            options,
+            &mut compile_visiting,
+            &mut stack_depth,
+            script_size,
+            &env,
+        )?;
+
+        env.insert(field.name.clone(), resolved.clone());
+        field_values.insert(field.name.clone(), resolved);
+        field_types.insert(field.name.clone(), type_name);
+    }
+
+    Ok((field_values, builder.drain()))
 }
 
 fn statement_uses_script_size(stmt: &Statement) -> bool {
@@ -813,22 +873,32 @@ pub fn function_branch_index(contract: &ContractAst, function_name: &str) -> Res
 fn compile_function(
     function: &FunctionAst,
     function_index: usize,
+    contract_fields: &[ContractFieldAst],
     constants: &HashMap<String, Expr>,
     options: CompileOptions,
     functions: &HashMap<String, FunctionAst>,
     function_order: &HashMap<String, usize>,
     script_size: Option<i64>,
 ) -> Result<(String, Vec<u8>), CompilerError> {
+    let contract_field_count = contract_fields.len();
     let param_count = function.params.len();
-    let params = function
+    let mut params = function
         .params
         .iter()
         .map(|param| param.name.clone())
         .enumerate()
-        .map(|(index, name)| (name, (param_count - 1 - index) as i64))
+        .map(|(index, name)| (name, (contract_field_count + (param_count - 1 - index)) as i64))
         .collect::<HashMap<_, _>>();
+
+    for (index, field) in contract_fields.iter().enumerate() {
+        params.insert(field.name.clone(), (contract_field_count - 1 - index) as i64);
+    }
+
     let mut types =
         function.params.iter().map(|param| (param.name.clone(), type_name_from_ref(&param.type_ref))).collect::<HashMap<_, _>>();
+    for field in contract_fields {
+        types.insert(field.name.clone(), type_name_from_ref(&field.type_ref));
+    }
     for param in &function.params {
         let param_type_name = type_name_from_ref(&param.type_ref);
         if is_array_type(&param_type_name) && array_element_size(&param_type_name).is_none() {
@@ -904,6 +974,9 @@ fn compile_function(
         for _ in 0..param_count {
             builder.add_op(OpDrop)?;
         }
+        for _ in 0..contract_field_count {
+            builder.add_op(OpDrop)?;
+        }
         builder.add_op(OpTrue)?;
     } else {
         let mut stack_depth = 0i64;
@@ -922,6 +995,11 @@ fn compile_function(
             )?;
         }
         for _ in 0..param_count {
+            builder.add_i64(yield_count as i64)?;
+            builder.add_op(OpRoll)?;
+            builder.add_op(OpDrop)?;
+        }
+        for _ in 0..contract_field_count {
             builder.add_i64(yield_count as i64)?;
             builder.add_op(OpRoll)?;
             builder.add_op(OpDrop)?;

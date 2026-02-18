@@ -1508,6 +1508,65 @@ fn compiles_contract_constants_and_verifies() {
     assert!(run_script_with_selector(compiled.script, selector).is_ok());
 }
 
+#[test]
+fn compiles_contract_fields_as_script_prolog() {
+    let source = r#"
+        contract C() {
+            int x = 5;
+            byte[2] y = 0x1234;
+
+            entrypoint function main() {
+                require(x == 5);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let expected = ScriptBuilder::new()
+        .add_i64(5)
+        .unwrap()
+        .add_data(&[0x12, 0x34])
+        .unwrap()
+        .add_i64(1)
+        .unwrap()
+        .add_op(OpPick)
+        .unwrap()
+        .add_i64(5)
+        .unwrap()
+        .add_op(OpNumEqual)
+        .unwrap()
+        .add_op(OpVerify)
+        .unwrap()
+        .add_op(OpDrop)
+        .unwrap()
+        .add_op(OpDrop)
+        .unwrap()
+        .add_op(OpTrue)
+        .unwrap()
+        .drain();
+
+    assert_eq!(compiled.script, expected);
+}
+
+#[test]
+fn runs_contract_with_fields_prolog() {
+    let source = r#"
+        contract C() {
+            int x = 5;
+            byte[2] y = 0x1234;
+
+            entrypoint function main() {
+                require(x == 5);
+                require(y == 0x1234);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let selector = selector_for(&compiled, "main");
+    assert!(run_script_with_selector(compiled.script, selector).is_ok());
+}
+
 fn assert_compiled_body(source: &str, body: Vec<u8>) {
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
     let selector = selector_for(&compiled, "main");
