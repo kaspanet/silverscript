@@ -1523,7 +1523,9 @@ fn compiles_contract_fields_as_script_prolog() {
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
     let expected = ScriptBuilder::new()
-        .add_i64(5)
+        .add_data(&5i64.to_le_bytes())
+        .unwrap()
+        .add_op(OpBin2Num)
         .unwrap()
         .add_data(&[0x12, 0x34])
         .unwrap()
@@ -1565,6 +1567,226 @@ fn runs_contract_with_fields_prolog() {
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
     let selector = selector_for(&compiled, "main");
     assert!(run_script_with_selector(compiled.script, selector).is_ok());
+}
+
+#[test]
+fn compiles_validate_output_state_to_expected_script() {
+    let source = r#"
+        contract C(int init_x, byte[2] init_y) {
+            int x = init_x;
+            byte[2] y = init_y;
+
+            entrypoint function main() {
+                validateOutputState(0,{x:x+1,y:0x3412});
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[5.into(), vec![1u8, 2u8].into()], CompileOptions::default()).expect("compile succeeds");
+
+    let expected = ScriptBuilder::new()
+        // <x> as fixed-size int field encoding: <PUSHDATA8><8-byte little-endian><OpBin2Num>
+        .add_data(&5i64.to_le_bytes())
+        .unwrap()
+        .add_op(OpBin2Num)
+        .unwrap()
+        // <y>
+        .add_data(&[1u8, 2u8])
+        .unwrap()
+
+        // ---- Build new_state.x = x + 1 ----
+        // push depth index of x (x is second item from top: y=0, x=1)
+        .add_i64(1)
+        .unwrap()
+        // duplicate x from stack
+        .add_op(OpPick)
+        .unwrap()
+        // push literal 1
+        .add_i64(1)
+        .unwrap()
+        // x + 1
+        .add_op(OpAdd)
+        .unwrap()
+
+        // ---- Convert x+1 to fixed-size int field chunk: <0x08><8-byte payload><OpBin2Num> ----
+        // convert numeric value to 8-byte payload
+        .add_i64(8)
+        .unwrap()
+        .add_op(OpNum2Bin)
+        .unwrap()
+        // prepend PUSHDATA8 prefix byte
+        .add_data(&[0x08])
+        .unwrap()
+        .add_op(OpSwap)
+        .unwrap()
+        .add_op(OpCat)
+        .unwrap()
+        // append OpBin2Num opcode byte
+        .add_data(&[OpBin2Num])
+        .unwrap()
+        .add_op(OpCat)
+        .unwrap()
+
+        // ---- Build new_state.y pushdata chunk ----
+        // raw y bytes
+        .add_data(&[0x34, 0x12])
+        .unwrap()
+        // pushdata prefix for 2-byte data is 0x02
+        .add_data(&[0x02])
+        .unwrap()
+        // reorder to prefix || data
+        .add_op(OpSwap)
+        .unwrap()
+        // resulting chunk: <0x02><0x3412>
+        .add_op(OpCat)
+        .unwrap()
+
+        // ---- Extract REST_OF_SCRIPT from current input signature script ----
+        // current input index
+        .add_op(OpTxInputIndex)
+        .unwrap()
+        // duplicate index for len + substr
+        .add_op(OpDup)
+        .unwrap()
+        // sigscript length at current input
+        .add_op(OpTxInputScriptSigLen)
+        .unwrap()
+        // duplicate sigscript length; one copy becomes substr length
+        .add_op(OpDup)
+        .unwrap()
+        // script_size of currently compiled contract (new redeem target)
+        .add_i64(compiled.script.len() as i64)
+        .unwrap()
+        // sigscript_len - script_size => bytes before current redeem
+        .add_op(OpSub)
+        .unwrap()
+        // add fixed current-state field prefix length: len(<x><y>) = 13
+        .add_i64(13)
+        .unwrap()
+        // start offset of REST_OF_SCRIPT inside sigscript
+        .add_op(OpAdd)
+        .unwrap()
+        // reorder for OpTxInputScriptSigSubstr(index, start, length)
+        .add_op(OpSwap)
+        .unwrap()
+        // read REST_OF_SCRIPT from current input sigscript
+        .add_op(OpTxInputScriptSigSubstr)
+        .unwrap()
+
+        // ---- new_redeem_script = <new x><new y><REST_OF_SCRIPT> ----
+        // concatenate y_chunk with rest
+        .add_op(OpCat)
+        .unwrap()
+        // prepend x_chunk
+        .add_op(OpCat)
+        .unwrap()
+
+        // ---- Build expected P2SH scriptPubKey bytes for new_redeem_script ----
+        // hash160-equivalent in this system: blake2b(redeem)
+        .add_op(OpBlake2b)
+        .unwrap()
+        // version bytes
+        .add_data(&[0x00, 0x00])
+        .unwrap()
+        // locking opcode prefix OP_BLAKE2B
+        .add_data(&[OpBlake2b])
+        .unwrap()
+        // version || OP_BLAKE2B
+        .add_op(OpCat)
+        .unwrap()
+        // pushdata-length byte for 32-byte hash
+        .add_data(&[0x20])
+        .unwrap()
+        // version || OP_BLAKE2B || push32
+        .add_op(OpCat)
+        .unwrap()
+        // bring hash to top
+        .add_op(OpSwap)
+        .unwrap()
+        // append hash bytes
+        .add_op(OpCat)
+        .unwrap()
+        // trailing OP_EQUAL
+        .add_data(&[OpEqual])
+        .unwrap()
+        // final expected output scriptPubKey bytes
+        .add_op(OpCat)
+        .unwrap()
+
+        // ---- Compare against tx.outputs[0].scriptPubKey ----
+        // output index argument
+        .add_i64(0)
+        .unwrap()
+        // fetch tx.outputs[0].scriptPubKey
+        .add_op(OpTxOutputSpk)
+        .unwrap()
+        // expected == actual
+        .add_op(OpEqual)
+        .unwrap()
+        // enforce match
+        .add_op(OpVerify)
+        .unwrap()
+
+        // ---- Entrypoint epilogue cleanup for original state fields ----
+        // drop original y
+        .add_op(OpDrop)
+        .unwrap()
+        // drop original x
+        .add_op(OpDrop)
+        .unwrap()
+        // final success value
+        .add_op(OpTrue)
+        .unwrap()
+        .drain();
+
+    assert_eq!(compiled.script, expected);
+}
+
+#[test]
+fn runs_validate_output_state() {
+    let source = r#"
+        contract C(int init_x, byte[2] init_y) {
+            int x = init_x;
+            byte[2] y = init_y;
+
+            entrypoint function main() {
+                validateOutputState(0,{x:x+1,y:0x3412});
+            }
+        }
+    "#;
+
+    let input_compiled =
+        compile_contract(source, &[5.into(), vec![1u8, 2u8].into()], CompileOptions::default()).expect("compile succeeds");
+
+    let reused_values = SigHashReusedValuesUnsync::new();
+    let sig_cache = Cache::new(10_000);
+    let sigscript = ScriptBuilder::new().add_data(&input_compiled.script).unwrap().drain();
+
+    let input = TransactionInput {
+        previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([0u8; 32]), index: 0 },
+        signature_script: sigscript,
+        sequence: 0,
+        sig_op_count: 0,
+    };
+
+    let output_compiled =
+        compile_contract(source, &[6.into(), vec![0x34u8, 0x12u8].into()], CompileOptions::default()).expect("compile succeeds");
+    let input_spk = pay_to_script_hash_script(&input_compiled.script);
+    let output_spk = pay_to_script_hash_script(&output_compiled.script);
+    let output = TransactionOutput { value: 1000, script_public_key: output_spk, covenant: None };
+    let tx = Transaction::new(1, vec![input.clone()], vec![output.clone()], 0, Default::default(), 0, vec![]);
+    let utxo_entry = UtxoEntry::new(output.value, input_spk, 0, tx.is_coinbase(), None);
+    let populated_tx = PopulatedTransaction::new(&tx, vec![utxo_entry.clone()]);
+
+    let mut vm = TxScriptEngine::from_transaction_input(
+        &populated_tx,
+        &input,
+        0,
+        &utxo_entry,
+        EngineCtx::new(&sig_cache).with_reused(&reused_values),
+        EngineFlags { covenants_enabled: true },
+    );
+    assert!(vm.execute().is_ok());
 }
 
 fn assert_compiled_body(source: &str, body: Vec<u8>) {

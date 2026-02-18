@@ -165,6 +165,13 @@ pub enum Expr {
     IfElse { condition: Box<Expr>, then_expr: Box<Expr>, else_expr: Box<Expr> },
     Nullary(NullaryOp),
     Introspection { kind: IntrospectionKind, index: Box<Expr> },
+    StateObject(Vec<StateFieldExpr>),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StateFieldExpr {
+    pub name: String,
+    pub expr: Expr,
 }
 
 impl From<i64> for Expr {
@@ -639,13 +646,15 @@ fn parse_expression(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
         Rule::function_call => parse_function_call(pair),
         Rule::instantiation => parse_instantiation(pair),
         Rule::cast => parse_cast(pair),
+        Rule::state_object => parse_state_object(pair),
         Rule::split_call
         | Rule::slice_call
         | Rule::tuple_index
         | Rule::unary_suffix
         | Rule::StringLiteral
         | Rule::DateLiteral
-        | Rule::type_name => Err(CompilerError::Unsupported(format!("expression not supported: {:?}", pair.as_rule()))),
+        | Rule::type_name
+        | Rule::state_entry => Err(CompilerError::Unsupported(format!("expression not supported: {:?}", pair.as_rule()))),
         _ => Err(CompilerError::Unsupported(format!("unexpected expression: {:?}", pair.as_rule()))),
     }
 }
@@ -766,9 +775,27 @@ fn parse_primary(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
         Rule::function_call => parse_function_call(pair),
         Rule::instantiation => parse_instantiation(pair),
         Rule::cast => parse_cast(pair),
+        Rule::state_object => parse_state_object(pair),
         Rule::expression => parse_expression(pair),
         _ => Err(CompilerError::Unsupported(format!("primary not supported: {:?}", pair.as_rule()))),
     }
+}
+
+fn parse_state_object(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
+    let mut fields = Vec::new();
+    for field_pair in pair.into_inner() {
+        if field_pair.as_rule() != Rule::state_entry {
+            continue;
+        }
+        let mut inner = field_pair.into_inner();
+        let name =
+            inner.next().ok_or_else(|| CompilerError::Unsupported("missing state field name".to_string()))?.as_str().to_string();
+        validate_user_identifier(&name)?;
+        let expr_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing state field expression".to_string()))?;
+        let expr = parse_expression(expr_pair)?;
+        fields.push(StateFieldExpr { name, expr });
+    }
+    Ok(Expr::StateObject(fields))
 }
 
 fn parse_literal(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {

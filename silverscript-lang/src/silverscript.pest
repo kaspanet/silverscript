@@ -101,12 +101,16 @@ primary = _{
     | cast
     | function_call
     | instantiation
+    | state_object
     | introspection
     | array
     | NullaryOp
     | Identifier
     | literal
 }
+
+state_object = { "{" ~ (state_entry ~ ("," ~ state_entry)* ~ ","?)? ~ "}" }
+state_entry = { Identifier ~ ":" ~ expression }
 
 parenthesized = { "(" ~ expression ~ ")" }
 cast = { type_name ~ "(" ~ expression ~ ("," ~ expression)? ~ ","? ~ ")" }
