@@ -1,0 +1,301 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "SilverScript",
+  "scopeName": "source.silverscript",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#pragma" },
+    { "include": "#contract-definition" },
+    { "include": "#function-definition" },
+    { "include": "#introspection-this" },
+    { "include": "#introspection-tx-nullary" },
+    { "include": "#introspection-tx-indexed" },
+    { "include": "#console-log" },
+    { "include": "#date-literal" },
+    { "include": "#instantiation" },
+    { "include": "#keywords" },
+    { "include": "#builtin-functions" },
+    { "include": "#types" },
+    { "include": "#constants" },
+    { "include": "#number-with-unit" },
+    { "include": "#numbers" },
+    { "include": "#strings" },
+    { "include": "#operators" },
+    { "include": "#postfix-methods" },
+    { "include": "#postfix-properties" },
+    { "include": "#punctuation" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.block.silverscript",
+          "begin": "/\\*",
+          "end": "\\*/",
+          "beginCaptures": { "0": { "name": "punctuation.definition.comment.begin.silverscript" } },
+          "endCaptures": { "0": { "name": "punctuation.definition.comment.end.silverscript" } }
+        },
+        {
+          "name": "comment.line.double-slash.silverscript",
+          "match": "//.*$",
+          "captures": { "0": { "name": "comment.line.double-slash.silverscript" } }
+        }
+      ]
+    },
+    "pragma": {
+      "patterns": [
+        {
+          "match": "\\b(pragma)\\s+(silverscript)\\s+([^;]+)",
+          "captures": {
+            "1": { "name": "keyword.other.pragma.silverscript" },
+            "2": { "name": "entity.name.tag.silverscript" },
+            "3": { "name": "constant.other.version.silverscript" }
+          }
+        }
+      ]
+    },
+    "contract-definition": {
+      "patterns": [
+        {
+          "match": "\\b(contract)\\s+([a-zA-Z_][a-zA-Z0-9_]*)",
+          "captures": {
+            "1": { "name": "keyword.other.contract.silverscript" },
+            "2": { "name": "entity.name.type.contract.silverscript" }
+          }
+        }
+      ]
+    },
+    "function-definition": {
+      "patterns": [
+        {
+          "match": "\\b(entrypoint)\\s+(function)\\s+([a-zA-Z_][a-zA-Z0-9_]*)",
+          "captures": {
+            "1": { "name": "keyword.other.entrypoint.silverscript" },
+            "2": { "name": "keyword.other.function.silverscript" },
+            "3": { "name": "entity.name.function.silverscript" }
+          }
+        },
+        {
+          "match": "\\b(function)\\s+([a-zA-Z_][a-zA-Z0-9_]*)",
+          "captures": {
+            "1": { "name": "keyword.other.function.silverscript" },
+            "2": { "name": "entity.name.function.silverscript" }
+          }
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.silverscript",
+          "match": "\\b(if|else|for|return|yield|require)\\b"
+        },
+        {
+          "name": "keyword.other.silverscript",
+          "match": "\\b(pragma|contract|entrypoint|function|new|constant)\\b"
+        }
+      ]
+    },
+    "introspection-this": {
+      "patterns": [
+        {
+          "name": "variable.language.this.silverscript",
+          "match": "\\b(this\\.scriptSizeDataPrefix|this\\.scriptSize|this\\.activeInputIndex|this\\.activeBytecode|this\\.age)\\b"
+        }
+      ]
+    },
+    "introspection-tx-nullary": {
+      "patterns": [
+        {
+          "name": "variable.language.tx.silverscript",
+          "match": "\\b(tx\\.inputs\\.length|tx\\.outputs\\.length|tx\\.version|tx\\.locktime|tx\\.time)\\b"
+        }
+      ]
+    },
+    "introspection-tx-indexed": {
+      "patterns": [
+        {
+          "match": "\\b(tx\\.outputs)\\s*(\\[)",
+          "captures": {
+            "1": { "name": "variable.language.tx.silverscript" },
+            "2": { "name": "punctuation.bracket.square.silverscript" }
+          }
+        },
+        {
+          "match": "\\b(tx\\.inputs)\\s*(\\[)",
+          "captures": {
+            "1": { "name": "variable.language.tx.silverscript" },
+            "2": { "name": "punctuation.bracket.square.silverscript" }
+          }
+        },
+        {
+          "match": "\\.(value|lockingBytecode|tokenCategory|nftCommitment|tokenAmount|outpointTransactionHash|outpointIndex|unlockingBytecode|sequenceNumber)\\b",
+          "captures": {
+            "1": { "name": "support.variable.property.silverscript" }
+          }
+        }
+      ]
+    },
+    "console-log": {
+      "patterns": [
+        {
+          "match": "\\b(console\\.log)\\b",
+          "name": "keyword.other.debug.silverscript"
+        }
+      ]
+    },
+    "date-literal": {
+      "patterns": [
+        {
+          "match": "\\b(date)\\s*(?=\\()",
+          "captures": {
+            "1": { "name": "support.function.date.silverscript" }
+          }
+        }
+      ]
+    },
+    "instantiation": {
+      "patterns": [
+        {
+          "match": "\\b(new)\\s+(LockingBytecodeP2SHFromRedeemScript|LockingBytecodeP2SH|LockingBytecodeP2PK|LockingBytecodeNullData)\\b",
+          "captures": {
+            "1": { "name": "keyword.other.new.silverscript" },
+            "2": { "name": "support.class.silverscript" }
+          }
+        }
+      ]
+    },
+    "builtin-functions": {
+      "patterns": [
+        {
+          "name": "support.function.builtin.silverscript",
+          "match": "\\b(blake2b|sha256|checkSig|checkMultiSig|checkDataSig|OpNum2Bin|OpBin2Num|length)\\b"
+        }
+      ]
+    },
+    "types": {
+      "patterns": [
+        {
+          "name": "storage.type.silverscript",
+          "match": "\\b(bytes)([1-9][0-9]*)\\b"
+        },
+        {
+          "name": "storage.type.silverscript",
+          "match": "\\b(int|bool|string|pubkey|sig|datasig|byte|bytes)\\b"
+        }
+      ]
+    },
+    "constants": {
+      "patterns": [
+        {
+          "name": "constant.language.boolean.silverscript",
+          "match": "\\b(true|false)\\b"
+        }
+      ]
+    },
+    "number-with-unit": {
+      "patterns": [
+        {
+          "match": "(?<=[0-9])\\s+(litras|grains|kas|seconds|minutes|hours|days|weeks)\\b",
+          "captures": {
+            "1": { "name": "support.constant.unit.silverscript" }
+          }
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.hex.silverscript",
+          "match": "\\b0[xX][0-9a-fA-F]*\\b"
+        },
+        {
+          "name": "constant.numeric.decimal.silverscript",
+          "match": "\\b-?[0-9][0-9_]*([eE][0-9][0-9_]*)?\\b"
+        }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.silverscript",
+          "begin": "\"",
+          "end": "\"",
+          "beginCaptures": { "0": { "name": "punctuation.definition.string.begin.silverscript" } },
+          "endCaptures": { "0": { "name": "punctuation.definition.string.end.silverscript" } },
+          "patterns": [
+            {
+              "name": "constant.character.escape.silverscript",
+              "match": "\\\\."
+            }
+          ]
+        },
+        {
+          "name": "string.quoted.single.silverscript",
+          "begin": "'",
+          "end": "'",
+          "beginCaptures": { "0": { "name": "punctuation.definition.string.begin.silverscript" } },
+          "endCaptures": { "0": { "name": "punctuation.definition.string.end.silverscript" } },
+          "patterns": [
+            {
+              "name": "constant.character.escape.silverscript",
+              "match": "\\\\."
+            }
+          ]
+        }
+      ]
+    },
+    "operators": {
+      "patterns": [
+        {
+          "name": "keyword.operator.logical.silverscript",
+          "match": "\\|\\||&&|!"
+        },
+        {
+          "name": "keyword.operator.comparison.silverscript",
+          "match": "==|!=|<=|>=|<|>"
+        },
+        {
+          "name": "keyword.operator.arithmetic.silverscript",
+          "match": "\\+|-|\\*|/|%"
+        },
+        {
+          "name": "keyword.operator.bitwise.silverscript",
+          "match": "\\||\\^|&"
+        },
+        {
+          "name": "keyword.operator.assignment.silverscript",
+          "match": "="
+        }
+      ]
+    },
+    "postfix-methods": {
+      "patterns": [
+        {
+          "match": "\\.(split|slice|push)\\s*(?=\\()",
+          "captures": {
+            "1": { "name": "support.function.method.silverscript" }
+          }
+        }
+      ]
+    },
+    "postfix-properties": {
+      "patterns": [
+        {
+          "match": "\\.(length)\\b",
+          "captures": {
+            "1": { "name": "support.variable.property.silverscript" }
+          }
+        }
+      ]
+    },
+    "punctuation": {
+      "patterns": [
+        {
+          "name": "punctuation.separator.silverscript",
+          "match": "[;,]"
+        }
+      ]
+    }
+  }
+}
