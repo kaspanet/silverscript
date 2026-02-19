@@ -12,7 +12,6 @@ pub struct ErrorSpan {
 #[non_exhaustive]
 pub enum ParseErrorInterpretation {
     MissingSemicolon,
-    MissingColon,
     Unclassified,
 }
 
@@ -20,7 +19,6 @@ impl ParseErrorInterpretation {
     pub const fn code(self) -> &'static str {
         match self {
             Self::MissingSemicolon => "missing_semicolon",
-            Self::MissingColon => "missing_colon",
             Self::Unclassified => "parse_error",
         }
     }
@@ -28,7 +26,6 @@ impl ParseErrorInterpretation {
     pub fn from_code(code: &str) -> Option<Self> {
         match code {
             "missing_semicolon" => Some(Self::MissingSemicolon),
-            "missing_colon" => Some(Self::MissingColon),
             "parse_error" => Some(Self::Unclassified),
             _ => None,
         }

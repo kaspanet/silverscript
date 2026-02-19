@@ -17,3 +17,8 @@ pub fn parse_expression(input: &str) -> Result<Pairs<'_, Rule>, ParseDiagnostic>
     pest::set_error_detail(true);
     SilverScriptParser::parse(Rule::expression, input).map_err(|err| crate::diagnostic::interpret_parse_error(input, &err))
 }
+
+pub fn parse_type_name(input: &str) -> Result<Pairs<'_, Rule>, ParseDiagnostic> {
+    pest::set_error_detail(true);
+    SilverScriptParser::parse(Rule::type_name, input).map_err(|err| crate::diagnostic::interpret_parse_error(input, &err))
+}

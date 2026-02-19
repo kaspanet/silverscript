@@ -11,7 +11,7 @@
         {
           "kind": "variable_definition",
           "data": {
-            "type_name": "int",
+            "type_ref": { "base": "int" },
             "modifiers": [],
             "name": "x",
             "expr": { "kind": "int", "data": 5 }

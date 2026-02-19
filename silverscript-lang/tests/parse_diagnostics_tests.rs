@@ -5,7 +5,7 @@ use silverscript_lang::errors::{CompilerError, ParseErrorInterpretation};
 fn full_diagnostic_from_missing_semicolon() {
     let source = r#"
         contract Foo() {
-            function bar(bytes data) {
+            function bar(byte[] data) {
                 int x = a + b
                 int t = x + a;
             }

@@ -3512,3 +3512,32 @@ fn accepts_byte_array_with_constant_size() {
     "#;
     compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds with byte[HASH_SIZE]");
 }
+
+#[test]
+fn blake2b_int_and_byte_cast_forms_compile_to_identical_script() {
+    let source_plain = r#"
+        contract Test() {
+            entrypoint function test() {
+                int x = 5;
+                require(blake2b(x).length == 32);
+            }
+        }
+    "#;
+
+    let source_cast = r#"
+        contract Test() {
+            entrypoint function test() {
+                int x = 5;
+                require(blake2b(byte[](x)).length == 32);
+            }
+        }
+    "#;
+
+    let compiled_plain = compile_contract(source_plain, &[], CompileOptions::default()).expect("plain form compiles");
+    let compiled_cast = compile_contract(source_cast, &[], CompileOptions::default()).expect("byte-cast form compiles");
+
+    assert_eq!(
+        compiled_plain.script, compiled_cast.script,
+        "blake2b(x) and blake2b(byte[](x)) should currently compile to identical scripts"
+    );
+}

@@ -12,8 +12,6 @@
 
 (type_name) @type
 
-(bytes_type) @type
-
 (contract_definition
   name: (identifier) @type)
 
@@ -22,6 +20,9 @@
 
 (constant_definition
   name: (identifier) @constant)
+
+(contract_field_definition
+  name: (identifier) @property)
 
 (variable_definition
   name: (identifier) @variable)
@@ -47,15 +48,24 @@
 (input_field
   "." @operator)
 
-(unknown_field
-  "." @operator)
-
 (output_field_name) @property
 
 (input_field_name) @property
 
-(unknown_field
-  name: (identifier) @property)
+(state_entry
+  (identifier) @property)
+
+(state_typed_binding
+  (identifier) @property
+  ":"
+  (type_name)
+  (identifier) @variable)
+
+(function_call
+  (identifier) @function.builtin
+  (#match? @function.builtin "^(readInputState|validateOutputState|verifyOutputState|verifyOutputStates)$"))
+
+(array_bound) @number
 
 [
   "pragma"

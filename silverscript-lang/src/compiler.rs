@@ -5,8 +5,8 @@ use kaspa_txscript::script_builder::ScriptBuilder;
 use serde::{Deserialize, Serialize};
 
 use crate::ast::{
-    ArrayDim, BinaryOp, ContractAst, ContractFieldAst, Expr, ExprKind, FunctionAst, IntrospectionField, IntrospectionRoot, NullaryOp,
-    SplitPart, StateBindingAst, StateFieldExpr, Statement, TimeVar, TypeBase, TypeRef, UnaryOp, UnarySuffixKind, parse_contract_ast,
+    ArrayDim, BinaryOp, ContractAst, ContractFieldAst, Expr, ExprKind, FunctionAst, IntrospectionKind, NullaryOp, SplitPart,
+    StateBindingAst, StateFieldExpr, Statement, TimeVar, TypeBase, TypeRef, UnaryOp, UnarySuffixKind, parse_contract_ast,
     parse_type_ref,
 };
 pub use crate::errors::{CompilerError, ErrorSpan};
@@ -69,8 +69,9 @@ pub fn compile_contract_ast<'i>(
     }
 
     for (param, value) in contract.params.iter().zip(constructor_args.iter()) {
-        if !expr_matches_type(value, &param.type_name) {
-            return Err(CompilerError::Unsupported(format!("constructor argument '{}' expects {}", param.name, param.type_name)));
+        let param_type_name = type_name_from_ref(&param.type_ref);
+        if !expr_matches_type(value, &param_type_name) {
+            return Err(CompilerError::Unsupported(format!("constructor argument '{}' expects {}", param.name, param_type_name)));
         }
     }
 
@@ -280,7 +281,6 @@ fn expr_uses_script_size<'i>(expr: &Expr<'i>) -> bool {
         ExprKind::Array(values) => values.iter().any(expr_uses_script_size),
         ExprKind::Call { args, .. } => args.iter().any(expr_uses_script_size),
         ExprKind::New { args, .. } => args.iter().any(expr_uses_script_size),
-        ExprKind::Cast { args, .. } => args.iter().any(expr_uses_script_size),
         ExprKind::Split { source, index, .. } => expr_uses_script_size(source) || expr_uses_script_size(index),
         ExprKind::Slice { source, start, end, .. } => {
             expr_uses_script_size(source) || expr_uses_script_size(start) || expr_uses_script_size(end)
@@ -401,7 +401,7 @@ fn build_function_abi<'i>(contract: &ContractAst<'i>) -> FunctionAbi {
             inputs: func
                 .params
                 .iter()
-                .map(|param| FunctionInputAbi { name: param.name.clone(), type_name: param.type_name.clone() })
+                .map(|param| FunctionInputAbi { name: param.name.clone(), type_name: type_name_from_ref(&param.type_ref) })
                 .collect(),
         })
         .collect()
@@ -493,7 +493,7 @@ fn contains_yield(stmt: &Statement<'_>) -> bool {
 
 fn validate_return_types<'i>(
     exprs: &[Expr<'i>],
-    return_types: &[String],
+    return_types: &[TypeRef],
     types: &HashMap<String, String>,
     constants: &HashMap<String, Expr<'i>>,
 ) -> Result<(), CompilerError> {
@@ -504,8 +504,8 @@ fn validate_return_types<'i>(
         return Err(CompilerError::Unsupported("return values count must match function return types".to_string()));
     }
     for (expr, return_type) in exprs.iter().zip(return_types.iter()) {
-        if !expr_matches_return_type(expr, return_type, types, constants) {
-            let type_name = return_type.as_str();
+        if !expr_matches_return_type_ref(expr, return_type, types, constants) {
+            let type_name = type_name_from_ref(return_type);
             return Err(CompilerError::Unsupported(format!("return value expects {type_name}")));
         }
     }
@@ -556,15 +556,6 @@ fn expr_matches_type_with_env_ref<'i>(
         ExprKind::Array(values) => is_array_type_ref(type_ref) && array_literal_matches_type_ref(values, type_ref),
         _ => expr_matches_type_ref(expr, type_ref),
     }
-}
-
-fn expr_matches_return_type<'i>(
-    expr: &Expr<'i>,
-    type_name: &str,
-    types: &HashMap<String, String>,
-    constants: &HashMap<String, Expr<'i>>,
-) -> bool {
-    parse_type_ref(type_name).is_ok_and(|type_ref| expr_matches_return_type_ref(expr, &type_ref, types, constants))
 }
 
 fn expr_matches_return_type_ref<'i>(
@@ -924,18 +915,19 @@ fn compile_function<'i>(
         params.insert(field.name.clone(), (contract_field_count - 1 - index) as i64);
     }
 
-    let mut types = function.params.iter().map(|param| (param.name.clone(), param.type_name.clone())).collect::<HashMap<_, _>>();
+    let mut types =
+        function.params.iter().map(|param| (param.name.clone(), type_name_from_ref(&param.type_ref))).collect::<HashMap<_, _>>();
     for field in contract_fields {
         types.insert(field.name.clone(), type_name_from_ref(&field.type_ref));
     }
     for param in &function.params {
-        let param_type_name = param.type_name.clone();
+        let param_type_name = type_name_from_ref(&param.type_ref);
         if is_array_type(&param_type_name) && array_element_size(&param_type_name).is_none() {
             return Err(CompilerError::Unsupported(format!("array element type must have known size: {}", param_type_name)));
         }
     }
     for return_type in &function.return_types {
-        let return_type_name = return_type.clone();
+        let return_type_name = type_name_from_ref(return_type);
         if is_array_type(&return_type_name) && array_element_size(&return_type_name).is_none() {
             return Err(CompilerError::Unsupported(format!("array element type must have known size: {return_type_name}")));
         }
@@ -1058,8 +1050,8 @@ fn compile_statement<'i>(
     script_size: Option<i64>,
 ) -> Result<(), CompilerError> {
     match stmt {
-        Statement::VariableDefinition { type_name, name, expr, .. } => {
-            let type_name = type_name.clone();
+        Statement::VariableDefinition { type_ref, name, expr, .. } => {
+            let type_name = type_name_from_ref(type_ref);
             let effective_type_name =
                 if is_array_type(&type_name) && array_size_with_constants(&type_name, contract_constants).is_none() {
                     infer_fixed_array_type_from_initializer(&type_name, expr.as_ref(), types, contract_constants)
@@ -1374,7 +1366,7 @@ fn compile_statement<'i>(
                 return Err(CompilerError::Unsupported("return values count must match function return types".to_string()));
             }
             for (binding, return_type) in bindings.iter().zip(function.return_types.iter()) {
-                if binding.type_name != *return_type {
+                if binding.type_ref != *return_type {
                     return Err(CompilerError::Unsupported("function return types must match binding types".to_string()));
                 }
             }
@@ -1396,7 +1388,7 @@ fn compile_statement<'i>(
             }
             for (binding, expr) in bindings.iter().zip(returns.into_iter()) {
                 env.insert(binding.name.clone(), expr);
-                types.insert(binding.name.clone(), binding.type_name.clone());
+                types.insert(binding.name.clone(), type_name_from_ref(&binding.type_ref));
             }
             Ok(())
         }
@@ -1759,15 +1751,16 @@ fn compile_inline_call<'i>(
         return Err(CompilerError::Unsupported(format!("function '{}' expects {} arguments", name, function.params.len())));
     }
     for (param, arg) in function.params.iter().zip(args.iter()) {
-        let param_type_name = param.type_name.clone();
+        let param_type_name = type_name_from_ref(&param.type_ref);
         if !expr_matches_type_with_env(arg, &param_type_name, caller_types, contract_constants) {
             return Err(CompilerError::Unsupported(format!("function argument '{}' expects {}", param.name, param_type_name)));
         }
     }
 
-    let mut types = function.params.iter().map(|param| (param.name.clone(), param.type_name.clone())).collect::<HashMap<_, _>>();
+    let mut types =
+        function.params.iter().map(|param| (param.name.clone(), type_name_from_ref(&param.type_ref))).collect::<HashMap<_, _>>();
     for param in &function.params {
-        let param_type_name = param.type_name.clone();
+        let param_type_name = type_name_from_ref(&param.type_ref);
         if is_array_type(&param_type_name) && array_element_size(&param_type_name).is_none() {
             return Err(CompilerError::Unsupported(format!("array element type must have known size: {}", param_type_name)));
         }
@@ -1777,9 +1770,9 @@ fn compile_inline_call<'i>(
     for (index, (param, arg)) in function.params.iter().zip(args.iter()).enumerate() {
         let resolved = resolve_expr(arg.clone(), caller_env, &mut HashSet::new())?;
         let temp_name = format!("__arg_{name}_{index}");
-        let param_type_name = param.type_name.clone();
+        let param_type_name = type_name_from_ref(&param.type_ref);
         env.insert(temp_name.clone(), resolved.clone());
-        types.insert(temp_name.clone(), param.type_name.clone());
+        types.insert(temp_name.clone(), param_type_name.clone());
         env.insert(param.name.clone(), Expr::new(ExprKind::Identifier(temp_name.clone()), span::Span::default()));
         caller_env.insert(temp_name.clone(), resolved);
         caller_types.insert(temp_name, param_type_name);
@@ -2201,13 +2194,6 @@ fn resolve_expr<'i>(
             }
             Ok(Expr::new(ExprKind::New { name, args: resolved, name_span }, span))
         }
-        ExprKind::Cast { type_name, args, type_span } => {
-            let mut resolved = Vec::with_capacity(args.len());
-            for arg in args {
-                resolved.push(resolve_expr(arg, env, visiting)?);
-            }
-            Ok(Expr::new(ExprKind::Cast { type_name, args: resolved, type_span }, span))
-        }
         ExprKind::Split { source, index, part, span: split_span } => Ok(Expr::new(
             ExprKind::Split {
                 source: Box::new(resolve_expr(*source, env, visiting)?),
@@ -2224,10 +2210,9 @@ fn resolve_expr<'i>(
             },
             span,
         )),
-        ExprKind::Introspection { root, field, index, field_span } => Ok(Expr::new(
-            ExprKind::Introspection { root, field, index: Box::new(resolve_expr(*index, env, visiting)?), field_span },
-            span,
-        )),
+        ExprKind::Introspection { kind, index, field_span } => {
+            Ok(Expr::new(ExprKind::Introspection { kind, index: Box::new(resolve_expr(*index, env, visiting)?), field_span }, span))
+        }
         ExprKind::UnarySuffix { source, kind, span: suffix_span } => Ok(Expr::new(
             ExprKind::UnarySuffix { source: Box::new(resolve_expr(*source, env, visiting)?), kind, span: suffix_span },
             span,
@@ -2280,14 +2265,6 @@ fn replace_identifier<'i>(expr: &Expr<'i>, target: &str, replacement: &Expr<'i>)
             },
             span,
         ),
-        ExprKind::Cast { type_name, args, type_span } => Expr::new(
-            ExprKind::Cast {
-                type_name: type_name.clone(),
-                args: args.iter().map(|arg| replace_identifier(arg, target, replacement)).collect(),
-                type_span: *type_span,
-            },
-            span,
-        ),
         ExprKind::Split { source, index, part, span: split_span } => Expr::new(
             ExprKind::Split {
                 source: Box::new(replace_identifier(source, target, replacement)),
@@ -2329,10 +2306,9 @@ fn replace_identifier<'i>(expr: &Expr<'i>, target: &str, replacement: &Expr<'i>)
             },
             span,
         ),
-        ExprKind::Introspection { root, field, index, field_span } => Expr::new(
+        ExprKind::Introspection { kind, index, field_span } => Expr::new(
             ExprKind::Introspection {
-                root: *root,
-                field: *field,
+                kind: *kind,
                 index: Box::new(replace_identifier(index, target, replacement)),
                 field_span: *field_span,
             },
@@ -2459,17 +2435,6 @@ fn compile_expr<'i>(
         ExprKind::Call { name, args, .. } => {
             compile_call_expr(name.as_str(), args, &scope, builder, options, visiting, stack_depth, script_size, contract_constants)
         }
-        ExprKind::Cast { type_name, args, .. } => compile_call_expr(
-            type_name.as_str(),
-            args,
-            &scope,
-            builder,
-            options,
-            visiting,
-            stack_depth,
-            script_size,
-            contract_constants,
-        ),
         ExprKind::New { name, args, .. } => match name.as_str() {
             "LockingBytecodeNullData" => {
                 if args.len() != 1 {
@@ -2789,32 +2754,36 @@ fn compile_expr<'i>(
             *stack_depth += 1;
             Ok(())
         }
-        ExprKind::Introspection { root, field, index, .. } => {
+        ExprKind::Introspection { kind, index, .. } => {
             compile_expr(index, env, params, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
-            match (root, field) {
-                (IntrospectionRoot::Inputs, IntrospectionField::Value) => {
+            match kind {
+                IntrospectionKind::InputValue => {
                     builder.add_op(OpTxInputAmount)?;
                 }
-                (IntrospectionRoot::Inputs, IntrospectionField::ScriptPubKey) => {
+                IntrospectionKind::InputScriptPubKey => {
                     builder.add_op(OpTxInputSpk)?;
                 }
-                (IntrospectionRoot::Inputs, IntrospectionField::OutpointTransactionHash) => {
+                IntrospectionKind::InputSigScript => {
+                    builder.add_op(OpDup)?;
+                    builder.add_op(OpTxInputScriptSigLen)?;
+                    builder.add_i64(0)?;
+                    builder.add_op(OpSwap)?;
+                    builder.add_op(OpTxInputScriptSigSubstr)?;
+                }
+                IntrospectionKind::InputOutpointTransactionHash => {
                     builder.add_op(OpOutpointTxId)?;
                 }
-                (IntrospectionRoot::Inputs, IntrospectionField::OutpointIndex) => {
+                IntrospectionKind::InputOutpointIndex => {
                     builder.add_op(OpOutpointIndex)?;
                 }
-                (IntrospectionRoot::Inputs, IntrospectionField::SequenceNumber) => {
+                IntrospectionKind::InputSequenceNumber => {
                     builder.add_op(OpTxInputSeq)?;
                 }
-                (IntrospectionRoot::Outputs, IntrospectionField::Value) => {
+                IntrospectionKind::OutputValue => {
                     builder.add_op(OpTxOutputAmount)?;
                 }
-                (IntrospectionRoot::Outputs, IntrospectionField::ScriptPubKey) => {
+                IntrospectionKind::OutputScriptPubKey => {
                     builder.add_op(OpTxOutputSpk)?;
-                }
-                _ => {
-                    return Err(CompilerError::Unsupported(format!("unsupported introspection field: {root:?}.{field:?}")));
                 }
             }
             Ok(())
@@ -2907,11 +2876,12 @@ fn expr_is_bytes_inner<'i>(
         ExprKind::IfElse { condition: _, then_expr, else_expr } => {
             expr_is_bytes_inner(then_expr, env, types, visiting) && expr_is_bytes_inner(else_expr, env, types, visiting)
         }
-        ExprKind::Introspection { root, field, .. } => matches!(
-            (root, field),
-            (IntrospectionRoot::Inputs, IntrospectionField::ScriptPubKey)
-                | (IntrospectionRoot::Inputs, IntrospectionField::OutpointTransactionHash)
-                | (IntrospectionRoot::Outputs, IntrospectionField::ScriptPubKey)
+        ExprKind::Introspection { kind, .. } => matches!(
+            kind,
+            IntrospectionKind::InputScriptPubKey
+                | IntrospectionKind::InputSigScript
+                | IntrospectionKind::InputOutpointTransactionHash
+                | IntrospectionKind::OutputScriptPubKey
         ),
         ExprKind::Nullary(NullaryOp::ActiveScriptPubKey) => true,
         ExprKind::Nullary(NullaryOp::ThisScriptSizeDataPrefix) => true,
@@ -2934,7 +2904,6 @@ fn expr_is_bytes_inner<'i>(
             visiting.remove(name);
             types.get(name).map(|type_name| is_bytes_type(type_name)).unwrap_or(false)
         }
-        ExprKind::Cast { type_name, .. } => is_bytes_type(type_name),
         ExprKind::UnarySuffix { kind, .. } => matches!(kind, UnarySuffixKind::Reverse),
         _ => false,
     }
@@ -3490,28 +3459,6 @@ fn compile_call_expr<'i>(
             )?;
             Ok(())
         }
-        "byte" => {
-            if args.len() != 1 {
-                return Err(CompilerError::Unsupported("byte() expects a single argument".to_string()));
-            }
-            compile_expr(
-                &args[0],
-                scope.env,
-                scope.params,
-                scope.types,
-                builder,
-                options,
-                visiting,
-                stack_depth,
-                script_size,
-                contract_constants,
-            )?;
-            builder.add_i64(1)?;
-            *stack_depth += 1;
-            builder.add_op(OpNum2Bin)?;
-            *stack_depth -= 1;
-            Ok(())
-        }
         "sig" | "pubkey" | "datasig" => {
             if args.len() != 1 {
                 return Err(CompilerError::Unsupported(format!("{name}() expects a single argument")));
@@ -3530,59 +3477,68 @@ fn compile_call_expr<'i>(
             )?;
             Ok(())
         }
-        "byte[]" => compile_call_expr("bytes", args, scope, builder, options, visiting, stack_depth, script_size, contract_constants),
-        other if other.starts_with("byte[") && other.ends_with(']') => {
-            let size = other
-                .strip_prefix("byte[")
-                .and_then(|v| v.strip_suffix(']'))
-                .and_then(|v| v.parse::<i64>().ok())
-                .ok_or_else(|| CompilerError::Unsupported(format!("{other}() is not supported")))?;
-            if args.len() != 1 {
-                return Err(CompilerError::Unsupported(format!("{other}() expects a single argument")));
+        name if name.starts_with("byte[") && name.ends_with(']') => {
+            let size_part = &name[5..name.len() - 1];
+            if size_part.is_empty() {
+                // Handle byte[] cast (dynamic array) - just compile the argument as-is
+                if args.len() != 1 && args.len() != 2 {
+                    return Err(CompilerError::Unsupported(format!("{name}() expects 1 or 2 arguments")));
+                }
+                compile_expr(
+                    &args[0],
+                    scope.env,
+                    scope.params,
+                    scope.types,
+                    builder,
+                    options,
+                    visiting,
+                    stack_depth,
+                    script_size,
+                    contract_constants,
+                )?;
+                if args.len() == 2 {
+                    // byte[](value, size) - OpNum2Bin with size parameter
+                    compile_expr(
+                        &args[1],
+                        scope.env,
+                        scope.params,
+                        scope.types,
+                        builder,
+                        options,
+                        visiting,
+                        stack_depth,
+                        script_size,
+                        contract_constants,
+                    )?;
+                    *stack_depth += 1;
+                    builder.add_op(OpNum2Bin)?;
+                    *stack_depth -= 1;
+                }
+                Ok(())
+            } else {
+                // Handle byte[N] cast - extract size from byte[N]
+                let size = size_part.parse::<i64>().map_err(|_| CompilerError::Unsupported(format!("{name}() is not supported")))?;
+                if args.len() != 1 {
+                    return Err(CompilerError::Unsupported(format!("{name}() expects a single argument")));
+                }
+                compile_expr(
+                    &args[0],
+                    scope.env,
+                    scope.params,
+                    scope.types,
+                    builder,
+                    options,
+                    visiting,
+                    stack_depth,
+                    script_size,
+                    contract_constants,
+                )?;
+                builder.add_i64(size)?;
+                *stack_depth += 1;
+                builder.add_op(OpNum2Bin)?;
+                *stack_depth -= 1;
+                Ok(())
             }
-            compile_expr(
-                &args[0],
-                scope.env,
-                scope.params,
-                scope.types,
-                builder,
-                options,
-                visiting,
-                stack_depth,
-                script_size,
-                contract_constants,
-            )?;
-            builder.add_i64(size)?;
-            *stack_depth += 1;
-            builder.add_op(OpNum2Bin)?;
-            *stack_depth -= 1;
-            Ok(())
-        }
-        other if other.starts_with("bytes") => {
-            let size = other
-                .strip_prefix("bytes")
-                .and_then(|v| v.parse::<i64>().ok())
-                .ok_or_else(|| CompilerError::Unsupported(format!("{other}() is not supported")))?;
-            if args.len() != 1 {
-                return Err(CompilerError::Unsupported(format!("{other}() expects a single argument")));
-            }
-            compile_expr(
-                &args[0],
-                scope.env,
-                scope.params,
-                scope.types,
-                builder,
-                options,
-                visiting,
-                stack_depth,
-                script_size,
-                contract_constants,
-            )?;
-            builder.add_i64(size)?;
-            *stack_depth += 1;
-            builder.add_op(OpNum2Bin)?;
-            *stack_depth -= 1;
-            Ok(())
         }
         "blake2b" => {
             if args.len() != 1 {
@@ -3769,23 +3725,6 @@ fn build_null_data_script<'i>(arg: &Expr<'i>) -> Result<Vec<u8>, CompilerError> 
                     _ => {
                         return Err(CompilerError::Unsupported(
                             "byte[]() in LockingBytecodeNullData only supports string literals".to_string(),
-                        ));
-                    }
-                }
-            }
-            ExprKind::Cast { type_name, args, .. } if type_name == "bytes" || type_name == "byte[]" => {
-                if args.len() != 1 {
-                    return Err(CompilerError::Unsupported(
-                        "bytes() in LockingBytecodeNullData expects a single argument".to_string(),
-                    ));
-                }
-                match &args[0].kind {
-                    ExprKind::String(value) => {
-                        builder.add_data(value.as_bytes())?;
-                    }
-                    _ => {
-                        return Err(CompilerError::Unsupported(
-                            "bytes() in LockingBytecodeNullData only supports string literals".to_string(),
                         ));
                     }
                 }

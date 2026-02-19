@@ -4,7 +4,6 @@ use super::parse::{ErrorSpan, ParseDiagnostic, ParseDiagnosticLabel, ParseErrorI
 use crate::parser::Rule;
 
 const MISSING_SEMICOLON_EXPECTED_TOKENS: &[&str] = &["WHITESPACE", "/*", "//", ";"];
-const MISSING_COLON_EXPECTED_TOKENS: &[&str] = &["WHITESPACE", "/*", "//", ":"];
 
 #[derive(Clone, Copy)]
 enum SpanStrategy {
@@ -51,14 +50,6 @@ const INTERPRETATION_SPECS: &[InterpretationSpec] = &[
         primary_label: Some("expected ';' to terminate statement"),
         notes: &[],
     },
-    InterpretationSpec {
-        interpretation: ParseErrorInterpretation::MissingColon,
-        span_strategy: SpanStrategy::PreviousNonWhitespaceOrFailure,
-        expected_tokens_override: Some(MISSING_COLON_EXPECTED_TOKENS),
-        help: Some("return type declarations must start with ':'"),
-        primary_label: Some("expected ':' before return type list"),
-        notes: &[],
-    },
     UNCLASSIFIED_SPEC,
 ];
 
@@ -68,10 +59,8 @@ struct InterpretationHeuristic {
     matches: fn(&ParseAttemptData) -> bool,
 }
 
-const INTERPRETATION_HEURISTICS: &[InterpretationHeuristic] = &[
-    InterpretationHeuristic { interpretation: ParseErrorInterpretation::MissingSemicolon, matches: expects_semicolon },
-    InterpretationHeuristic { interpretation: ParseErrorInterpretation::MissingColon, matches: expects_colon_in_return_type },
-];
+const INTERPRETATION_HEURISTICS: &[InterpretationHeuristic] =
+    &[InterpretationHeuristic { interpretation: ParseErrorInterpretation::MissingSemicolon, matches: expects_semicolon }];
 
 #[derive(Default)]
 struct ParseAttemptData {
@@ -104,6 +93,8 @@ impl ParseAttemptData {
         self.expected_tokens.iter().any(|candidate| candidate == token)
     }
 
+    // remove once used by one of the heuristic matcher
+    #[allow(dead_code)]
     fn includes_rule(&self, rule: Rule) -> bool {
         self.rules.contains(&rule)
     }
@@ -112,7 +103,7 @@ impl ParseAttemptData {
 pub(crate) fn interpret_parse_error(input: &str, err: &pest::error::Error<Rule>) -> ParseDiagnostic {
     let failure_pos = error_start_offset(err);
     let attempt_data = ParseAttemptData::from_error(err);
-    let interpretation = classify_interpretation(&attempt_data, input, failure_pos);
+    let interpretation = classify_interpretation(&attempt_data);
     let spec = interpretation_spec(interpretation);
     let span = spec.span_strategy.resolve(input, failure_pos);
     let primary_message = match interpretation {
@@ -130,30 +121,16 @@ pub(crate) fn interpret_parse_error(input: &str, err: &pest::error::Error<Rule>)
     diagnostic
 }
 
-fn classify_interpretation(attempt_data: &ParseAttemptData, input: &str, failure_pos: usize) -> ParseErrorInterpretation {
+fn classify_interpretation(attempt_data: &ParseAttemptData) -> ParseErrorInterpretation {
     INTERPRETATION_HEURISTICS
         .iter()
-        .find(|heuristic| {
-            (heuristic.matches)(attempt_data)
-                && match heuristic.interpretation {
-                    ParseErrorInterpretation::MissingColon => has_return_type_without_colon_prefix(input, failure_pos),
-                    _ => true,
-                }
-        })
+        .find(|heuristic| (heuristic.matches)(attempt_data))
         .map(|heuristic| heuristic.interpretation)
         .unwrap_or(ParseErrorInterpretation::Unclassified)
 }
 
 fn expects_semicolon(attempt_data: &ParseAttemptData) -> bool {
     attempt_data.expects_token(";")
-}
-
-fn expects_colon_in_return_type(attempt_data: &ParseAttemptData) -> bool {
-    attempt_data.expects_token(":") && attempt_data.includes_rule(Rule::return_type_list)
-}
-
-fn has_return_type_without_colon_prefix(input: &str, failure_pos: usize) -> bool {
-    input.get(failure_pos..).and_then(|tail| tail.chars().find(|ch| !ch.is_whitespace())).is_some_and(|ch| ch == '(')
 }
 
 fn interpretation_spec(interpretation: ParseErrorInterpretation) -> &'static InterpretationSpec {

@@ -53,7 +53,12 @@ export default grammar({
         "}",
       ),
 
-    contract_item: ($) => choice($.constant_definition, $.function_definition),
+    contract_item: ($) =>
+      choice(
+        $.constant_definition,
+        $.contract_field_definition,
+        $.function_definition,
+      ),
 
     function_definition: ($) =>
       seq(
@@ -77,6 +82,15 @@ export default grammar({
         ";",
       ),
 
+    contract_field_definition: ($) =>
+      seq(
+        $.type_name,
+        field("name", $.identifier),
+        "=",
+        field("value", $.expression),
+        ";",
+      ),
+
     parameter_list: ($) => seq("(", optional(commaSep($.parameter)), ")"),
 
     parameter: ($) => seq($.type_name, $.identifier),
@@ -86,14 +100,12 @@ export default grammar({
 
     block: ($) => choice(seq("{", repeat($.statement), "}"), $.statement),
 
-    block_no_else: ($) =>
-      choice(seq("{", repeat($.statement), "}"), $.statement_no_else),
-
     statement: ($) =>
       choice(
         $.variable_definition,
         $.tuple_assignment,
         $.push_statement,
+        $.state_function_call_assignment,
         $.function_call_assignment,
         $.call_statement,
         $.return_statement,
@@ -101,23 +113,6 @@ export default grammar({
         $.time_op_statement,
         $.require_statement,
         $.if_statement,
-        $.for_statement,
-        $.yield_statement,
-        $.console_statement,
-      ),
-
-    statement_no_else: ($) =>
-      choice(
-        $.variable_definition,
-        $.tuple_assignment,
-        $.push_statement,
-        $.function_call_assignment,
-        $.call_statement,
-        $.return_statement,
-        $.assign_statement,
-        $.time_op_statement,
-        $.require_statement,
-        $.if_statement_no_else,
         $.for_statement,
         $.yield_statement,
         $.console_statement,
@@ -150,7 +145,20 @@ export default grammar({
     function_call_assignment: ($) =>
       seq("(", commaSep($.typed_binding), ")", "=", $.function_call, ";"),
 
+    state_function_call_assignment: ($) =>
+      seq(
+        "{",
+        commaSep($.state_typed_binding),
+        "}",
+        "=",
+        $.function_call,
+        ";",
+      ),
+
     typed_binding: ($) => seq($.type_name, $.identifier),
+
+    state_typed_binding: ($) =>
+      seq($.identifier, ":", $.type_name, $.identifier),
 
     call_statement: ($) => seq($.function_call, ";"),
 
@@ -185,11 +193,15 @@ export default grammar({
 
     if_statement: ($) =>
       prec.right(
-        seq("if", "(", $.expression, ")", $.block_no_else, "else", $.block),
+        seq(
+          "if",
+          "(",
+          $.expression,
+          ")",
+          $.block,
+          optional(seq("else", $.block)),
+        ),
       ),
-
-    if_statement_no_else: ($) =>
-      prec.right(seq("if", "(", $.expression, ")", $.block_no_else)),
 
     for_statement: ($) =>
       seq(
@@ -281,6 +293,7 @@ export default grammar({
         $.cast,
         $.function_call,
         $.instantiation,
+        $.state_object,
         $.introspection,
         $.array,
         $.nullary_op,
@@ -307,17 +320,21 @@ export default grammar({
 
     instantiation: ($) => seq("new", $.identifier, $.expression_list),
 
+    state_object: ($) => seq("{", optional(commaSep($.state_entry)), "}"),
+
+    state_entry: ($) => seq($.identifier, ":", $.expression),
+
     introspection: ($) =>
       choice(
         seq(
           field("root", $.output_root),
           field("index", $.tuple_index),
-          field("field", choice($.output_field, $.unknown_field)),
+          field("field", $.output_field),
         ),
         seq(
           field("root", $.input_root),
           field("index", $.tuple_index),
-          field("field", choice($.input_field, $.unknown_field)),
+          field("field", $.input_field),
         ),
       ),
 
@@ -328,44 +345,33 @@ export default grammar({
     output_field: ($) => seq(".", field("name", $.output_field_name)),
 
     output_field_name: (_) =>
-      choice(
-        "value",
-        "lockingBytecode",
-        "tokenCategory",
-        "nftCommitment",
-        "tokenAmount",
-      ),
+      choice("value", "scriptPubKey"),
 
     input_field: ($) => seq(".", field("name", $.input_field_name)),
 
     input_field_name: (_) =>
       choice(
         "value",
-        "lockingBytecode",
+        "scriptPubKey",
         "outpointTransactionHash",
         "outpointIndex",
-        "unlockingBytecode",
-        "sequenceNumber",
-        "tokenCategory",
-        "nftCommitment",
-        "tokenAmount",
+        "sigScript",
       ),
-
-    unknown_field: ($) => prec(-1, seq(".", field("name", $.identifier))),
 
     array: ($) => seq("[", optional(commaSep($.expression)), "]"),
 
     modifier: (_) => "constant",
 
-    type_name: ($) => seq($.base_type, optional($.array_suffix)),
+    type_name: ($) => seq($.base_type, repeat($.array_suffix)),
 
-    base_type: ($) =>
-      choice("int", "bool", "string", "pubkey", "sig", "datasig", $.bytes_type),
+    base_type: (_) =>
+      choice("int", "bool", "string", "pubkey", "sig", "datasig", "byte"),
 
-    array_suffix: (_) => "[]",
+    array_suffix: ($) => seq("[", optional($.array_size), "]"),
 
-    bytes_type: (_) =>
-      choice("byte", "bytes", token(prec(1, /bytes[1-9][0-9]*/))),
+    array_size: ($) => choice($.identifier, $.array_bound),
+
+    array_bound: (_) => token(/[1-9][0-9]*/),
 
     literal: ($) =>
       choice(
@@ -407,7 +413,7 @@ export default grammar({
     nullary_op: (_) =>
       choice(
         "this.activeInputIndex",
-        "this.activeBytecode",
+        "this.activeScriptPubKey",
         "this.scriptSizeDataPrefix",
         "this.scriptSize",
         "tx.inputs.length",

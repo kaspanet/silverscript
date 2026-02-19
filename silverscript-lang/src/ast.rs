@@ -3,17 +3,10 @@ use std::fmt;
 use chrono::NaiveDateTime;
 use pest::iterators::Pair;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 use crate::errors::CompilerError;
-use crate::parser::{Rule, parse_source_file};
+use crate::parser::{Rule, parse_source_file, parse_type_name as parse_type_name_rule};
 pub use crate::span::{Span, SpanUtils};
-
-#[derive(Debug, Clone)]
-struct TypeName<'i> {
-    name: String,
-    span: Span<'i>,
-}
 
 #[derive(Debug, Clone)]
 struct Identifier<'i> {
@@ -37,11 +30,22 @@ pub struct ContractAst<'i> {
 
 impl<'i> fmt::Display for ContractAst<'i> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut value = serde_json::to_value(self).map_err(|_| fmt::Error)?;
-        rewrite_expr_kind_tags(&mut value);
-        let pretty = serde_json::to_string_pretty(&value).map_err(|_| fmt::Error)?;
+        let pretty = serde_json::to_string_pretty(self).map_err(|_| fmt::Error)?;
         f.write_str(&pretty)
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContractFieldAst<'i> {
+    pub type_ref: TypeRef,
+    pub name: String,
+    pub expr: Expr<'i>,
+    #[serde(skip_deserializing)]
+    pub span: Span<'i>,
+    #[serde(skip_deserializing)]
+    pub type_span: Span<'i>,
+    #[serde(skip_deserializing)]
+    pub name_span: Span<'i>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -50,7 +54,7 @@ pub struct FunctionAst<'i> {
     pub params: Vec<ParamAst<'i>>,
     pub entrypoint: bool,
     #[serde(default)]
-    pub return_types: Vec<String>,
+    pub return_types: Vec<TypeRef>,
     pub body: Vec<Statement<'i>>,
     #[serde(skip_deserializing)]
     pub return_type_spans: Vec<Span<'i>>,
@@ -64,34 +68,8 @@ pub struct FunctionAst<'i> {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ParamAst<'i> {
-    pub type_name: String,
-    pub name: String,
-    #[serde(skip_deserializing)]
-    pub span: Span<'i>,
-    #[serde(skip_deserializing)]
-    pub type_span: Span<'i>,
-    #[serde(skip_deserializing)]
-    pub name_span: Span<'i>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ConstantAst<'i> {
-    pub type_name: String,
-    pub name: String,
-    pub expr: Expr<'i>,
-    #[serde(skip_deserializing)]
-    pub span: Span<'i>,
-    #[serde(skip_deserializing)]
-    pub type_span: Span<'i>,
-    #[serde(skip_deserializing)]
-    pub name_span: Span<'i>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ContractFieldAst<'i> {
     pub type_ref: TypeRef,
     pub name: String,
-    pub expr: Expr<'i>,
     #[serde(skip_deserializing)]
     pub span: Span<'i>,
     #[serde(skip_deserializing)]
@@ -191,7 +169,7 @@ impl TypeRef {
 #[serde(tag = "kind", content = "data", rename_all = "snake_case")]
 pub enum Statement<'i> {
     VariableDefinition {
-        type_name: String,
+        type_ref: TypeRef,
         #[serde(default)]
         modifiers: Vec<String>,
         name: String,
@@ -206,9 +184,9 @@ pub enum Statement<'i> {
         name_span: Span<'i>,
     },
     TupleAssignment {
-        left_type: String,
+        left_type_ref: TypeRef,
         left_name: String,
-        right_type: String,
+        right_type_ref: TypeRef,
         right_name: String,
         expr: Expr<'i>,
         #[serde(skip_deserializing)]
@@ -239,7 +217,7 @@ pub enum Statement<'i> {
         name_span: Span<'i>,
     },
     FunctionCallAssign {
-        bindings: Vec<TypedBindingAst<'i>>,
+        bindings: Vec<ParamAst<'i>>,
         name: String,
         args: Vec<Expr<'i>>,
         #[serde(skip_deserializing)]
@@ -505,8 +483,7 @@ pub enum ExprKind<'i> {
     },
     Nullary(NullaryOp),
     Introspection {
-        root: IntrospectionRoot,
-        field: IntrospectionField,
+        kind: IntrospectionKind,
         index: Box<Expr<'i>>,
         #[serde(skip_deserializing)]
         field_span: Span<'i>,
@@ -515,12 +492,6 @@ pub enum ExprKind<'i> {
     NumberWithUnit {
         value: i64,
         unit: String,
-    },
-    Cast {
-        type_name: String,
-        args: Vec<Expr<'i>>,
-        #[serde(skip_deserializing)]
-        type_span: Span<'i>,
     },
     UnarySuffix {
         source: Box<Expr<'i>>,
@@ -540,70 +511,6 @@ pub struct StateFieldExpr<'i> {
     pub name_span: Span<'i>,
 }
 
-fn rewrite_expr_kind_tags(value: &mut Value) {
-    match value {
-        Value::Array(items) => {
-            for item in items {
-                rewrite_expr_kind_tags(item);
-            }
-        }
-        Value::Object(object) => {
-            for child in object.values_mut() {
-                rewrite_expr_kind_tags(child);
-            }
-
-            let kind = object.get("kind").and_then(Value::as_str).map(str::to_owned);
-            if let Some(kind) = kind {
-                if is_expr_kind_tag(&kind) {
-                    let data = object.remove("data").unwrap_or(Value::Null);
-                    object.remove("kind");
-                    object.insert(kind, data);
-                }
-            }
-        }
-        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
-    }
-}
-
-fn is_expr_kind_tag(kind: &str) -> bool {
-    matches!(
-        kind,
-        "int"
-            | "bool"
-            | "bytes"
-            | "string"
-            | "date_literal"
-            | "identifier"
-            | "array"
-            | "call"
-            | "new"
-            | "split"
-            | "slice"
-            | "array_index"
-            | "unary"
-            | "binary"
-            | "if_else"
-            | "nullary"
-            | "introspection"
-            | "state_object"
-            | "number_with_unit"
-            | "cast"
-            | "unary_suffix"
-    )
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TypedBindingAst<'i> {
-    pub type_name: String,
-    pub name: String,
-    #[serde(skip_deserializing)]
-    pub span: Span<'i>,
-    #[serde(skip_deserializing)]
-    pub type_span: Span<'i>,
-    #[serde(skip_deserializing)]
-    pub name_span: Span<'i>,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SplitPart {
@@ -613,33 +520,9 @@ pub enum SplitPart {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum UnarySuffixKind {
-    Reverse,
-    Length,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-// TODO: this enum structure assumes fields are common to root, while possibly true at a start
-// it may ends up false soon. An alternative would be to make their own dedicated validator per anchors
-pub enum IntrospectionRoot {
-    Inputs,
-    Outputs,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum IntrospectionField {
-    Value,
-    ScriptPubKey,
-    // TODO: check what's envisioned, the grammar allows the following:
-    OutpointTransactionHash,
-    OutpointIndex,
-    UnlockingBytecode,
-    SequenceNumber,
-    TokenCategory,
-    NftCommitment,
-    TokenAmount,
+pub enum UnaryOp {
+    Not,
+    Neg,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -665,13 +548,6 @@ pub enum BinaryOp {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum UnaryOp {
-    Not,
-    Neg,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
 pub enum NullaryOp {
     ActiveInputIndex,
     ActiveScriptPubKey,
@@ -683,8 +559,44 @@ pub enum NullaryOp {
     TxLockTime,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IntrospectionKind {
+    InputValue,
+    InputScriptPubKey,
+    InputSigScript,
+    /// not supported yet
+    InputOutpointTransactionHash,
+    /// not supported yet
+    InputOutpointIndex,
+    /// not supported yet
+    InputSequenceNumber,
+    OutputValue,
+    OutputScriptPubKey,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConstantAst<'i> {
+    pub type_ref: TypeRef,
+    pub name: String,
+    pub expr: Expr<'i>,
+    #[serde(skip_deserializing)]
+    pub span: Span<'i>,
+    #[serde(skip_deserializing)]
+    pub type_span: Span<'i>,
+    #[serde(skip_deserializing)]
+    pub name_span: Span<'i>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UnarySuffixKind {
+    Reverse,
+    Length,
+}
+
 pub fn parse_type_ref(type_name: &str) -> Result<TypeRef, CompilerError> {
-    let mut pairs = SilverScriptParser::parse(Rule::type_name, type_name)?;
+    let mut pairs = parse_type_name_rule(type_name)?;
     let pair = pairs.next().ok_or_else(|| CompilerError::Unsupported("missing type name".to_string()))?;
     parse_type_name_pair(pair)
 }
@@ -804,18 +716,17 @@ fn parse_function_definition<'i>(pair: Pair<'i, Rule>) -> Result<FunctionAst<'i>
     let Identifier { name, span: name_span } = parse_identifier(name_pair)?;
 
     let mut body = Vec::new();
-    let mut body_span = span;
-    let mut has_stmt = false;
-    for stmt in inner {
-        let stmt_span = Span::from(stmt.as_span());
-        if !has_stmt {
-            body_span = stmt_span;
-            has_stmt = true;
-        } else {
-            body_span = body_span.join(&stmt_span);
-        }
-        body.push(parse_statement(stmt)?);
+    let mut body_span: Option<Span<'i>> = None;
+    for stmt_pair in inner {
+        let stmt = parse_statement(stmt_pair)?;
+        let stmt_span = stmt.span();
+        body_span = Some(match body_span {
+            None => stmt_span,
+            Some(prev) => prev.join(&stmt_span),
+        });
+        body.push(stmt);
     }
+    let body_span = body_span.unwrap_or(span);
 
     Ok(FunctionAst { name, entrypoint, params, return_types, return_type_spans, body, span, name_span, body_span })
 }
@@ -830,10 +741,11 @@ fn parse_constant_definition<'i>(pair: Pair<'i, Rule>) -> Result<ConstantAst<'i>
 
     let expr = parse_expression(expr_pair)?;
 
-    let TypeName { name: type_name, span: type_span } = parse_type_name(type_pair);
+    let type_span = Span::from(type_pair.as_span());
+    let type_ref = parse_type_name_pair(type_pair)?;
     let Identifier { name, span: name_span } = parse_identifier(name_pair)?;
 
-    Ok(ConstantAst { type_name, name, expr, span, type_span, name_span })
+    Ok(ConstantAst { type_ref, name, expr, span, type_span, name_span })
 }
 
 fn parse_contract_field_definition<'i>(pair: Pair<'i, Rule>) -> Result<ContractFieldAst<'i>, CompilerError> {
@@ -866,6 +778,8 @@ fn parse_statement<'i>(pair: Pair<'i, Rule>) -> Result<Statement<'i>, CompilerEr
             let mut inner = pair.into_inner();
             let type_pair =
                 inner.next().ok_or_else(|| CompilerError::Unsupported("missing variable type".to_string()).with_span(&span))?;
+            let type_span = Span::from(type_pair.as_span());
+            let type_ref = parse_type_name_pair(type_pair).map_err(|err| err.with_span(&span))?;
 
             let mut modifiers = Vec::new();
             let mut modifier_spans = Vec::new();
@@ -885,16 +799,15 @@ fn parse_statement<'i>(pair: Pair<'i, Rule>) -> Result<Statement<'i>, CompilerEr
                 None => None,
             };
             let Identifier { name, span: name_span } = parse_identifier(ident).map_err(|err| err.with_span(&span))?;
-            let TypeName { name: type_name, span: type_span } = parse_type_name(type_pair);
-            Ok(Statement::VariableDefinition { type_name, modifiers, name, expr, span, type_span, modifier_spans, name_span })
+            Ok(Statement::VariableDefinition { type_ref, modifiers, name, expr, span, type_span, modifier_spans, name_span })
         }
         Rule::tuple_assignment => {
             let mut inner = pair.into_inner();
-            let left_type =
+            let left_type_pair =
                 inner.next().ok_or_else(|| CompilerError::Unsupported("missing left tuple type".to_string()).with_span(&span))?;
             let left_ident =
                 inner.next().ok_or_else(|| CompilerError::Unsupported("missing left tuple name".to_string()).with_span(&span))?;
-            let right_type =
+            let right_type_pair =
                 inner.next().ok_or_else(|| CompilerError::Unsupported("missing right tuple type".to_string()).with_span(&span))?;
             let right_ident =
                 inner.next().ok_or_else(|| CompilerError::Unsupported("missing right tuple name".to_string()).with_span(&span))?;
@@ -902,16 +815,18 @@ fn parse_statement<'i>(pair: Pair<'i, Rule>) -> Result<Statement<'i>, CompilerEr
                 inner.next().ok_or_else(|| CompilerError::Unsupported("missing tuple expression".to_string()).with_span(&span))?;
 
             let expr = parse_expression(expr_pair).map_err(|err| err.with_span(&span))?;
-            let TypeName { name: left_type, span: left_type_span } = parse_type_name(left_type);
+            let left_type_span = Span::from(left_type_pair.as_span());
+            let left_type_ref = parse_type_name_pair(left_type_pair).map_err(|err| err.with_span(&span))?;
             let Identifier { name: left_name, span: left_name_span } =
                 parse_identifier(left_ident).map_err(|err| err.with_span(&span))?;
-            let TypeName { name: right_type, span: right_type_span } = parse_type_name(right_type);
+            let right_type_span = Span::from(right_type_pair.as_span());
+            let right_type_ref = parse_type_name_pair(right_type_pair).map_err(|err| err.with_span(&span))?;
             let Identifier { name: right_name, span: right_name_span } =
                 parse_identifier(right_ident).map_err(|err| err.with_span(&span))?;
             Ok(Statement::TupleAssignment {
-                left_type,
+                left_type_ref,
                 left_name,
-                right_type,
+                right_type_ref,
                 right_name,
                 expr,
                 span,
@@ -1113,17 +1028,18 @@ fn parse_console_parameter_list<'i>(pair: Pair<'i, Rule>) -> Result<Vec<ConsoleA
     Ok(args)
 }
 
-fn parse_typed_binding<'i>(pair: Pair<'i, Rule>) -> Result<TypedBindingAst<'i>, CompilerError> {
+fn parse_typed_binding<'i>(pair: Pair<'i, Rule>) -> Result<ParamAst<'i>, CompilerError> {
     let span = Span::from(pair.as_span());
     let mut inner = pair.into_inner();
 
     let type_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing binding type".to_string()))?;
     let ident_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing binding name".to_string()))?;
 
-    let TypeName { name: type_name, span: type_span } = parse_type_name(type_pair);
+    let type_span = Span::from(type_pair.as_span());
+    let type_ref = parse_type_name_pair(type_pair)?;
     let Identifier { name, span: name_span } = parse_identifier(ident_pair)?;
 
-    Ok(TypedBindingAst { type_name, name, span, type_span, name_span })
+    Ok(ParamAst { type_ref, name, span, type_span, name_span })
 }
 
 fn parse_state_typed_binding<'i>(pair: Pair<'i, Rule>) -> Result<StateBindingAst<'i>, CompilerError> {
@@ -1294,22 +1210,23 @@ fn parse_typed_parameter_list<'i>(pair: Pair<'i, Rule>) -> Result<Vec<ParamAst<'
         let ident_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing parameter name".to_string()))?;
 
         let Identifier { name, span: name_span } = parse_identifier(ident_pair)?;
-        let TypeName { name: type_name, span: type_span } = parse_type_name(type_pair);
+        let type_span = Span::from(type_pair.as_span());
+        let type_ref = parse_type_name_pair(type_pair)?;
 
-        params.push(ParamAst { type_name, name, span: param_span, type_span, name_span });
+        params.push(ParamAst { type_ref, name, span: param_span, type_span, name_span });
     }
     Ok(params)
 }
 
-fn parse_return_type_list<'i>(pair: Pair<'i, Rule>) -> Result<(Vec<String>, Vec<Span<'i>>), CompilerError> {
+fn parse_return_type_list<'i>(pair: Pair<'i, Rule>) -> Result<(Vec<TypeRef>, Vec<Span<'i>>), CompilerError> {
     let mut return_types = Vec::new();
     let mut return_spans = Vec::new();
     for user_type in pair.into_inner() {
         if user_type.as_rule() != Rule::type_name {
             continue;
         }
-        let TypeName { name: type_name, span: type_span } = parse_type_name(user_type);
-        return_types.push(type_name);
+        let type_span = Span::from(user_type.as_span());
+        return_types.push(parse_type_name_pair(user_type)?);
         return_spans.push(type_span);
     }
     Ok((return_types, return_spans))
@@ -1454,13 +1371,44 @@ fn parse_expression_list<'i>(pair: Pair<'i, Rule>) -> Result<Vec<Expr<'i>>, Comp
 fn parse_cast<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {
     let span = Span::from(pair.as_span());
     let mut inner = pair.into_inner();
+
     let type_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing cast type".to_string()))?;
-    let args = match inner.next() {
-        Some(list) => parse_expression_list(list)?,
-        None => Vec::new(),
-    };
-    let TypeName { name: type_name, span: type_span } = parse_type_name(type_pair);
-    Ok(Expr::new(ExprKind::Cast { type_name, args, type_span }, span))
+    let type_name = type_pair.as_str().trim().to_string();
+    let type_span = Span::from(type_pair.as_span());
+
+    let mut args = Vec::new();
+    for part in inner {
+        args.push(parse_expression(part)?);
+    }
+
+    if type_name == "bytes" {
+        return Ok(Expr::new(ExprKind::Call { name: "bytes".to_string(), args, name_span: type_span }, span));
+    }
+
+    if type_name == "byte" {
+        return Ok(Expr::new(ExprKind::Call { name: "byte[1]".to_string(), args, name_span: type_span }, span));
+    }
+
+    if type_name == "int" {
+        return Ok(Expr::new(ExprKind::Call { name: "int".to_string(), args, name_span: type_span }, span));
+    }
+
+    if matches!(type_name.as_str(), "sig" | "pubkey" | "datasig") {
+        return Ok(Expr::new(ExprKind::Call { name: type_name, args, name_span: type_span }, span));
+    }
+
+    // Handle single byte cast (duplicate check removed above)
+    // Support type[N] syntax
+    if let Some(bracket_pos) = type_name.find('[') {
+        if type_name.ends_with(']') {
+            let size_str = &type_name[bracket_pos + 1..type_name.len() - 1];
+            if size_str.is_empty() || size_str.parse::<usize>().is_ok() {
+                return Ok(Expr::new(ExprKind::Call { name: type_name, args, name_span: type_span }, span));
+            }
+        }
+    }
+
+    Err(CompilerError::Unsupported(format!("cast type not supported: {type_name}")))
 }
 
 fn parse_number_literal<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {
@@ -1559,29 +1507,28 @@ fn parse_introspection<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerErr
 
     let index = Box::new(parse_expression(index_pair)?);
     let field_raw = field_pair.as_str();
-    let field = match field_raw {
-        ".value" => IntrospectionField::Value,
-        ".scriptPubKey" => IntrospectionField::ScriptPubKey,
-        // TODO: check what's envisioned, the grammar allows the following:
-        ".outpointTransactionHash" => IntrospectionField::OutpointTransactionHash,
-        ".outpointIndex" => IntrospectionField::OutpointIndex,
-        ".unlockingBytecode" => IntrospectionField::UnlockingBytecode,
-        ".sequenceNumber" => IntrospectionField::SequenceNumber,
-        ".tokenCategory" => IntrospectionField::TokenCategory,
-        ".nftCommitment" => IntrospectionField::NftCommitment,
-        ".tokenAmount" => IntrospectionField::TokenAmount,
-        _ => return Err(CompilerError::Unsupported(format!("unknown introspection field: {field_raw}"))),
-    };
-
-    let root = if text.starts_with("tx.inputs") {
-        IntrospectionRoot::Inputs
+    let kind = if text.starts_with("tx.inputs") {
+        match field_raw {
+            ".value" => IntrospectionKind::InputValue,
+            ".scriptPubKey" => IntrospectionKind::InputScriptPubKey,
+            ".sigScript" => IntrospectionKind::InputSigScript,
+            // TODO: support this
+            ".outpointTransactionHash" => IntrospectionKind::InputOutpointTransactionHash,
+            ".outpointIndex" => IntrospectionKind::InputOutpointIndex,
+            ".sequenceNumber" => IntrospectionKind::InputSequenceNumber,
+            _ => return Err(CompilerError::Unsupported(format!("input field '{field_raw}' not supported"))),
+        }
     } else if text.starts_with("tx.outputs") {
-        IntrospectionRoot::Outputs
+        match field_raw {
+            ".value" => IntrospectionKind::OutputValue,
+            ".scriptPubKey" => IntrospectionKind::OutputScriptPubKey,
+            _ => return Err(CompilerError::Unsupported(format!("output field '{field_raw}' not supported"))),
+        }
     } else {
         return Err(CompilerError::Unsupported("unknown introspection root".to_string()));
     };
 
-    Ok(Expr::new(ExprKind::Introspection { root, field, index, field_span: Span::from(field_pair.as_span()) }, span))
+    Ok(Expr::new(ExprKind::Introspection { kind, index, field_span: Span::from(field_pair.as_span()) }, span))
 }
 
 fn single_inner(pair: Pair<'_, Rule>) -> Result<Pair<'_, Rule>, CompilerError> {
@@ -1688,10 +1635,6 @@ fn map_factor(pair: Pair<'_, Rule>) -> Result<BinaryOp, CompilerError> {
         },
         _ => Err(CompilerError::Unsupported("unexpected factor operator".to_string())),
     }
-}
-
-fn parse_type_name<'i>(pair: Pair<'i, Rule>) -> TypeName<'i> {
-    TypeName { name: pair.as_str().trim().to_string(), span: Span::from(pair.as_span()) }
 }
 
 // validate user input

@@ -58,3 +58,29 @@ fn populates_slice_expression_spans() {
     assert_span_text(source, start.span.as_str(), "1");
     assert_span_text(source, end.span.as_str(), "3");
 }
+
+#[test]
+fn normalizes_byte_cast_to_byte1_call_in_ast() {
+    let source = r#"
+        contract CastTest() {
+            function main(int a) {
+                byte c = byte(a);
+            }
+        }
+    "#;
+    let contract = parse_contract_ast(source).expect("contract should parse");
+    let stmt = &contract.functions[0].body[0];
+
+    let Statement::VariableDefinition { expr: Some(expr), .. } = stmt else {
+        panic!("expected a variable definition with expression");
+    };
+    let ExprKind::Call { name, args, name_span } = &expr.kind else {
+        panic!("expected cast to normalize into a call");
+    };
+
+    assert_eq!(name, "byte[1]");
+    assert_eq!(args.len(), 1);
+    assert_span_text(source, expr.span.as_str(), "byte(a)");
+    assert_span_text(source, name_span.as_str(), "byte");
+    assert_span_text(source, args[0].span.as_str(), "a");
+}

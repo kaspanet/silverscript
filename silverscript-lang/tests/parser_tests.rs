@@ -50,3 +50,24 @@ fn parses_arrays_and_introspection() {
         panic!("{}", err);
     }
 }
+
+#[test]
+fn parses_input_sigscript_and_rejects_output_sigscript() {
+    let input_ok = r#"
+        contract SigScriptCheck() {
+            function verify(int idx) {
+                require(tx.inputs[idx].sigScript.length >= 0);
+            }
+        }
+    "#;
+    assert!(parse_source_file(input_ok).is_ok());
+
+    let input_bad = r#"
+        contract SigScriptCheck() {
+            function verify(int idx) {
+                require(tx.outputs[idx].sigScript.length >= 0);
+            }
+        }
+    "#;
+    assert!(parse_source_file(input_bad).is_err());
+}
