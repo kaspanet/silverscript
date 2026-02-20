@@ -12,7 +12,7 @@ languages = ["languages/silverscript"]
 
 # @TODO(izio): change before merge
 repository = "https://github.com/IzioDev/silverscript-new"
-rev = "656ca84b1d37628520b61a72df24d384d680433c"
+rev = "591d7a9263c3fe579fc89eaeba77e557be08f0d2"
 path = "tree-sitter"
 
 [language_servers.silverscript-lsp]
