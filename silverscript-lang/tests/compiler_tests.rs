@@ -130,7 +130,7 @@ fn accepts_constructor_args_with_matching_types() {
         Expr::bool(true),
         Expr::string("hello".to_string()),
         Expr::bytes(vec![1u8; 10]),
-        Expr::bytes(vec![2u8; 1]),
+        Expr::byte(2),
         Expr::bytes(vec![3u8; 4]),
         Expr::bytes(vec![4u8; 32]),
         Expr::bytes(vec![5u8; 65]),

@@ -360,8 +360,12 @@ impl<'i> Expr<'i> {
         Self::new(ExprKind::Bool(value), Span::default())
     }
 
+    pub fn byte(value: u8) -> Self {
+        Self::new(ExprKind::Byte(value), Span::default())
+    }
+
     pub fn bytes(value: Vec<u8>) -> Self {
-        Self::new(ExprKind::Bytes(value), Span::default())
+        Self::new(ExprKind::Array(value.into_iter().map(Expr::byte).collect()), Span::default())
     }
 
     pub fn string(value: impl Into<String>) -> Self {
@@ -432,7 +436,7 @@ impl<'i> From<Vec<Vec<u8>>> for Expr<'i> {
 pub enum ExprKind<'i> {
     Int(i64),
     Bool(bool),
-    Bytes(Vec<u8>),
+    Byte(u8),
     String(String),
     DateLiteral(i64),
     Identifier(String),
@@ -736,13 +740,13 @@ fn parse_constant_definition<'i>(pair: Pair<'i, Rule>) -> Result<ConstantAst<'i>
     let mut inner = pair.into_inner();
 
     let type_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing constant type".to_string()))?;
+    let type_span = Span::from(type_pair.as_span());
+    let type_ref = parse_type_name_pair(type_pair)?;
+
     let name_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing constant name".to_string()))?;
     let expr_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing constant initializer".to_string()))?;
 
     let expr = parse_expression(expr_pair)?;
-
-    let type_span = Span::from(type_pair.as_span());
-    let type_ref = parse_type_name_pair(type_pair)?;
     let Identifier { name, span: name_span } = parse_identifier(name_pair)?;
 
     Ok(ConstantAst { type_ref, name, expr, span, type_span, name_span })
@@ -794,11 +798,11 @@ fn parse_statement<'i>(pair: Pair<'i, Rule>) -> Result<Statement<'i>, CompilerEr
 
             let ident =
                 inner.next().ok_or_else(|| CompilerError::Unsupported("missing variable name".to_string()).with_span(&span))?;
+            let Identifier { name, span: name_span } = parse_identifier(ident).map_err(|err| err.with_span(&span))?;
             let expr = match inner.next() {
                 Some(expr_pair) => Some(parse_expression(expr_pair).map_err(|err| err.with_span(&span))?),
                 None => None,
             };
-            let Identifier { name, span: name_span } = parse_identifier(ident).map_err(|err| err.with_span(&span))?;
             Ok(Statement::VariableDefinition { type_ref, modifiers, name, expr, span, type_span, modifier_spans, name_span })
         }
         Rule::tuple_assignment => {
@@ -814,15 +818,18 @@ fn parse_statement<'i>(pair: Pair<'i, Rule>) -> Result<Statement<'i>, CompilerEr
             let expr_pair =
                 inner.next().ok_or_else(|| CompilerError::Unsupported("missing tuple expression".to_string()).with_span(&span))?;
 
-            let expr = parse_expression(expr_pair).map_err(|err| err.with_span(&span))?;
-            let left_type_span = Span::from(left_type_pair.as_span());
-            let left_type_ref = parse_type_name_pair(left_type_pair).map_err(|err| err.with_span(&span))?;
             let Identifier { name: left_name, span: left_name_span } =
                 parse_identifier(left_ident).map_err(|err| err.with_span(&span))?;
-            let right_type_span = Span::from(right_type_pair.as_span());
-            let right_type_ref = parse_type_name_pair(right_type_pair).map_err(|err| err.with_span(&span))?;
             let Identifier { name: right_name, span: right_name_span } =
                 parse_identifier(right_ident).map_err(|err| err.with_span(&span))?;
+
+            let right_type_span = Span::from(right_type_pair.as_span());
+            let right_type_ref = parse_type_name_pair(right_type_pair).map_err(|err| err.with_span(&span))?;
+
+            let left_type_span = Span::from(left_type_pair.as_span());
+            let left_type_ref = parse_type_name_pair(left_type_pair).map_err(|err| err.with_span(&span))?;
+
+            let expr = parse_expression(expr_pair).map_err(|err| err.with_span(&span))?;
             Ok(Statement::TupleAssignment {
                 left_type_ref,
                 left_name,
@@ -841,8 +848,8 @@ fn parse_statement<'i>(pair: Pair<'i, Rule>) -> Result<Statement<'i>, CompilerEr
             let ident = inner.next().ok_or_else(|| CompilerError::Unsupported("missing push target".to_string()).with_span(&span))?;
             let expr_pair =
                 inner.next().ok_or_else(|| CompilerError::Unsupported("missing push expression".to_string()).with_span(&span))?;
-            let expr = parse_expression(expr_pair).map_err(|err| err.with_span(&span))?;
             let Identifier { name, span: name_span } = parse_identifier(ident).map_err(|err| err.with_span(&span))?;
+            let expr = parse_expression(expr_pair).map_err(|err| err.with_span(&span))?;
             Ok(Statement::ArrayPush { name, expr, span, name_span })
         }
         Rule::function_call_assignment => {
@@ -1042,6 +1049,14 @@ fn parse_typed_binding<'i>(pair: Pair<'i, Rule>) -> Result<ParamAst<'i>, Compile
     Ok(ParamAst { type_ref, name, span, type_span, name_span })
 }
 
+fn parse_require_message<'i>(pair: Pair<'i, Rule>) -> Result<(String, Span<'i>), CompilerError> {
+    let inner = single_inner(pair)?;
+    match parse_string_literal(inner)? {
+        Expr { kind: ExprKind::String(value), span } => Ok((value, span)),
+        _ => Err(CompilerError::Unsupported("require message must be a string literal".to_string())),
+    }
+}
+
 fn parse_state_typed_binding<'i>(pair: Pair<'i, Rule>) -> Result<StateBindingAst<'i>, CompilerError> {
     let span = Span::from(pair.as_span());
     let mut inner = pair.into_inner();
@@ -1056,14 +1071,6 @@ fn parse_state_typed_binding<'i>(pair: Pair<'i, Rule>) -> Result<StateBindingAst
     let Identifier { name, span: name_span } = parse_identifier(ident_pair)?;
 
     Ok(StateBindingAst { field_name, type_ref, name, span, field_span, type_span, name_span })
-}
-
-fn parse_require_message<'i>(pair: Pair<'i, Rule>) -> Result<(String, Span<'i>), CompilerError> {
-    let inner = single_inner(pair)?;
-    match parse_string_literal(inner)? {
-        Expr { kind: ExprKind::String(value), span } => Ok((value, span)),
-        _ => Err(CompilerError::Unsupported("require message must be a string literal".to_string())),
-    }
 }
 
 fn parse_expression<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {
@@ -1148,6 +1155,15 @@ fn parse_postfix<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {
                 let span = expr.span.join(&postfix_span);
                 expr = Expr::new(ExprKind::Split { source: Box::new(expr), index, part: SplitPart::Left, span: postfix_span }, span);
             }
+            Rule::slice_call => {
+                let mut slice_inner = postfix.into_inner();
+                let start_expr = slice_inner.next().ok_or_else(|| CompilerError::Unsupported("missing slice start".to_string()))?;
+                let end_expr = slice_inner.next().ok_or_else(|| CompilerError::Unsupported("missing slice end".to_string()))?;
+                let start = Box::new(parse_expression(start_expr)?);
+                let end = Box::new(parse_expression(end_expr)?);
+                let span = expr.span.join(&postfix_span);
+                expr = Expr::new(ExprKind::Slice { source: Box::new(expr), start, end, span: postfix_span }, span);
+            }
             Rule::tuple_index => {
                 let mut index_inner = postfix.into_inner();
                 let index_pair = index_inner.next().ok_or_else(|| CompilerError::Unsupported("missing tuple index".to_string()))?;
@@ -1178,15 +1194,6 @@ fn parse_postfix<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {
                 };
                 let span = expr.span.join(&postfix_span);
                 expr = Expr::new(ExprKind::UnarySuffix { source: Box::new(expr), kind, span: postfix_span }, span);
-            }
-            Rule::slice_call => {
-                let mut slice_inner = postfix.into_inner();
-                let start_expr = slice_inner.next().ok_or_else(|| CompilerError::Unsupported("missing slice start".to_string()))?;
-                let end_expr = slice_inner.next().ok_or_else(|| CompilerError::Unsupported("missing slice end".to_string()))?;
-                let start = Box::new(parse_expression(start_expr)?);
-                let end = Box::new(parse_expression(end_expr)?);
-                let span = expr.span.join(&postfix_span);
-                expr = Expr::new(ExprKind::Slice { source: Box::new(expr), start, end, span: postfix_span }, span);
             }
             _ => {
                 return Err(CompilerError::Unsupported("postfix operators are not supported".to_string()));
@@ -1433,7 +1440,10 @@ fn parse_hex_literal<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError
         .map(|i| u8::from_str_radix(&normalized[i..i + 2], 16))
         .collect::<Result<Vec<_>, _>>()
         .map_err(|_| CompilerError::InvalidLiteral(format!("invalid hex literal '{raw}'")))?;
-    Ok(Expr::new(ExprKind::Bytes(bytes), span))
+    Ok(Expr::new(
+        ExprKind::Array(bytes.into_iter().map(|byte| Expr::new(ExprKind::Byte(byte), span)).collect()),
+        span,
+    ))
 }
 
 fn apply_number_unit<'i>(expr: Expr<'i>, unit: &str) -> Result<Expr<'i>, CompilerError> {
@@ -1456,18 +1466,6 @@ fn apply_number_unit<'i>(expr: Expr<'i>, unit: &str) -> Result<Expr<'i>, Compile
     Ok(Expr::new(ExprKind::Int(value.saturating_mul(multiplier)), span))
 }
 
-fn parse_string_literal<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {
-    let span = Span::from(pair.as_span());
-    let raw = pair.as_str();
-    let unquoted = if (raw.starts_with('"') && raw.ends_with('"')) || (raw.starts_with('\'') && raw.ends_with('\'')) {
-        &raw[1..raw.len() - 1]
-    } else {
-        raw
-    };
-    let unescaped = unquoted.replace("\\\"", "\"").replace("\\'", "'");
-    Ok(Expr::new(ExprKind::String(unescaped), span))
-}
-
 fn parse_date_literal<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {
     let span = Span::from(pair.as_span());
     let mut inner = pair.into_inner();
@@ -1481,6 +1479,18 @@ fn parse_date_literal<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerErro
         .and_utc()
         .timestamp();
     Ok(Expr::new(ExprKind::DateLiteral(timestamp), span))
+}
+
+fn parse_string_literal<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {
+    let span = Span::from(pair.as_span());
+    let raw = pair.as_str();
+    let unquoted = if (raw.starts_with('"') && raw.ends_with('"')) || (raw.starts_with('\'') && raw.ends_with('\'')) {
+        &raw[1..raw.len() - 1]
+    } else {
+        raw
+    };
+    let unescaped = unquoted.replace("\\\"", "\"").replace("\\'", "'");
+    Ok(Expr::new(ExprKind::String(unescaped), span))
 }
 
 fn parse_nullary<'i>(raw: &str, span: Span<'i>) -> Result<Expr<'i>, CompilerError> {

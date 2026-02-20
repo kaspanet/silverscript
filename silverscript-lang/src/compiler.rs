@@ -30,14 +30,12 @@ pub struct FunctionAbiEntry {
     pub inputs: Vec<FunctionInputAbi>,
 }
 
-pub type FunctionAbi = Vec<FunctionAbiEntry>;
-
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CompiledContract<'i> {
     pub contract_name: String,
     pub script: Vec<u8>,
     pub ast: ContractAst<'i>,
-    pub abi: FunctionAbi,
+    pub function_entries: Vec<FunctionAbiEntry>,
     pub without_selector: bool,
 }
 
@@ -86,7 +84,7 @@ pub fn compile_contract_ast<'i>(
     let functions_map = contract.functions.iter().cloned().map(|func| (func.name.clone(), func)).collect::<HashMap<_, _>>();
     let function_order =
         contract.functions.iter().enumerate().map(|(index, func)| (func.name.clone(), index)).collect::<HashMap<_, _>>();
-    let abi = build_function_abi(contract);
+    let function_abi_entries = build_function_abi_entries(contract);
     let uses_script_size = contract_uses_script_size(contract);
 
     let mut script_size = if uses_script_size { Some(100i64) } else { None };
@@ -151,7 +149,7 @@ pub fn compile_contract_ast<'i>(
                 contract_name: contract.name.clone(),
                 script,
                 ast: contract.clone(),
-                abi,
+                function_entries: function_abi_entries,
                 without_selector,
             });
         }
@@ -162,7 +160,7 @@ pub fn compile_contract_ast<'i>(
                 contract_name: contract.name.clone(),
                 script,
                 ast: contract.clone(),
-                abi,
+                function_entries: function_abi_entries,
                 without_selector,
             });
         }
@@ -290,7 +288,7 @@ fn expr_uses_script_size<'i>(expr: &Expr<'i>) -> bool {
         ExprKind::Introspection { index, .. } => expr_uses_script_size(index),
         ExprKind::Int(_)
         | ExprKind::Bool(_)
-        | ExprKind::Bytes(_)
+        | ExprKind::Byte(_)
         | ExprKind::String(_)
         | ExprKind::Identifier(_)
         | ExprKind::DateLiteral(_)
@@ -300,52 +298,39 @@ fn expr_uses_script_size<'i>(expr: &Expr<'i>) -> bool {
     }
 }
 
-fn byte_array_len<'i>(expr: &Expr<'i>) -> Option<usize> {
-    match &expr.kind {
-        ExprKind::Bytes(bytes) => Some(bytes.len()),
-        ExprKind::Array(values) => values
-            .iter()
-            .map(|value| match &value.kind {
-                ExprKind::Bytes(bytes) if bytes.len() == 1 => Some(()),
-                _ => None,
-            })
-            .collect::<Option<Vec<_>>>()
-            .map(|_| values.len()),
-        _ => None,
-    }
-}
-
 fn is_byte_array<'i>(expr: &Expr<'i>) -> bool {
     byte_array_len(expr).is_some()
 }
 
+fn byte_array_len<'i>(expr: &Expr<'i>) -> Option<usize> {
+    match &expr.kind {
+        ExprKind::Array(values) if values.iter().all(|value| matches!(&value.kind, ExprKind::Byte(_))) => Some(values.len()),
+        _ => None,
+    }
+}
+
+/// Does the expression match the expected type passed as a secondary argument.
+///
+/// If type is a fixed-size array (known at parsing time), it also verifies the array length.
 fn expr_matches_type_ref<'i>(expr: &Expr<'i>, type_ref: &TypeRef) -> bool {
     if is_array_type_ref(type_ref) {
-        if !has_explicit_array_size_ref(type_ref) {
-            return is_byte_array(expr)
-                || matches!(&expr.kind, ExprKind::Array(values) if array_literal_matches_type_ref(values, type_ref));
-        }
-
-        return match &expr.kind {
-            ExprKind::Bytes(bytes) => {
-                let Some(element_type) = array_element_type_ref(type_ref) else {
-                    return false;
-                };
-                if element_type.base != TypeBase::Byte || !element_type.array_dims.is_empty() {
-                    return false;
+        if let Some(size) = array_size_ref(type_ref) {
+            if let Some(element_type) = array_element_type_ref(type_ref) {
+                if element_type.base == TypeBase::Byte {
+                    return byte_array_len(expr) == Some(size);
                 }
-                array_size_ref(type_ref).is_none_or(|size| bytes.len() == size)
+                return matches!(&expr.kind, ExprKind::Array(values) if values.len() == size && array_literal_matches_type_ref(values, type_ref));
             }
-            ExprKind::Array(values) => array_literal_matches_type_ref(values, type_ref),
-            _ => false,
-        };
+        }
+        return is_byte_array(expr)
+            || matches!(&expr.kind, ExprKind::Array(values) if array_literal_matches_type_ref(values, type_ref));
     }
 
     match type_ref.base {
         TypeBase::Int => matches!(&expr.kind, ExprKind::Int(_) | ExprKind::DateLiteral(_)),
         TypeBase::Bool => matches!(&expr.kind, ExprKind::Bool(_)),
         TypeBase::String => matches!(&expr.kind, ExprKind::String(_)),
-        TypeBase::Byte => matches!(&expr.kind, ExprKind::Bytes(bytes) if bytes.len() == 1),
+        TypeBase::Byte => matches!(&expr.kind, ExprKind::Byte(_)),
         TypeBase::Pubkey => byte_array_len(expr) == Some(32),
         TypeBase::Sig => byte_array_len(expr) == Some(65),
         TypeBase::Datasig => byte_array_len(expr) == Some(64),
@@ -391,7 +376,7 @@ fn array_literal_matches_type_with_env_ref<'i>(
     })
 }
 
-fn build_function_abi<'i>(contract: &ContractAst<'i>) -> FunctionAbi {
+fn build_function_abi_entries<'i>(contract: &ContractAst<'i>) -> Vec<FunctionAbiEntry> {
     contract
         .functions
         .iter()
@@ -569,7 +554,7 @@ fn expr_matches_return_type_ref<'i>(
             types.get(name).and_then(|t| parse_type_ref(t).ok()).is_some_and(|t| is_type_assignable_ref(&t, type_ref, constants))
         }
         ExprKind::Array(values) => is_array_type_ref(type_ref) && array_literal_matches_type_ref(values, type_ref),
-        ExprKind::Int(_) | ExprKind::DateLiteral(_) | ExprKind::Bool(_) | ExprKind::Bytes(_) | ExprKind::String(_) => {
+        ExprKind::Int(_) | ExprKind::DateLiteral(_) | ExprKind::Bool(_) | ExprKind::Byte(_) | ExprKind::String(_) => {
             expr_matches_type_ref(expr, type_ref)
         }
         _ => true,
@@ -594,14 +579,6 @@ fn infer_fixed_array_type_from_initializer_ref<'i>(
             let mut inferred = element_type.clone();
             inferred.array_dims.push(ArrayDim::Fixed(values.len()));
             if array_literal_matches_type_with_env_ref(values, &inferred, types, constants) { Some(inferred) } else { None }
-        }
-        ExprKind::Bytes(bytes) => {
-            if element_type.base != TypeBase::Byte || !element_type.array_dims.is_empty() {
-                return None;
-            }
-            let mut inferred = element_type.clone();
-            inferred.array_dims.push(ArrayDim::Fixed(bytes.len()));
-            Some(inferred)
         }
         ExprKind::Identifier(name) => {
             let other_type = parse_type_ref(types.get(name)?).ok()?;
@@ -692,7 +669,7 @@ fn infer_fixed_array_type_from_initializer<'i>(
 impl<'i> CompiledContract<'i> {
     pub fn build_sig_script(&self, function_name: &str, args: Vec<Expr<'i>>) -> Result<Vec<u8>, CompilerError> {
         let function = self
-            .abi
+            .function_entries
             .iter()
             .find(|entry| entry.name == function_name)
             .ok_or_else(|| CompilerError::Unsupported(format!("function '{}' not found", function_name)))?;
@@ -716,11 +693,16 @@ impl<'i> CompiledContract<'i> {
             if is_array_type(&input.type_name) {
                 match arg.kind {
                     ExprKind::Array(values) => {
-                        let bytes = encode_array_literal(&values, &input.type_name)?;
-                        builder.add_data(&bytes)?;
-                    }
-                    ExprKind::Bytes(value) => {
-                        builder.add_data(&value)?;
+                        if values.iter().all(|value| matches!(&value.kind, ExprKind::Byte(_))) {
+                            let bytes: Vec<u8> = values
+                                .iter()
+                                .filter_map(|value| if let ExprKind::Byte(byte) = &value.kind { Some(*byte) } else { None })
+                                .collect();
+                            builder.add_data(&bytes)?;
+                        } else {
+                            let bytes = encode_array_literal(&values, &input.type_name)?;
+                            builder.add_data(&bytes)?;
+                        }
                     }
                     _ => {
                         return Err(CompilerError::Unsupported(format!(
@@ -749,11 +731,16 @@ fn push_sigscript_arg<'i>(builder: &mut ScriptBuilder, arg: Expr<'i>) -> Result<
         ExprKind::Bool(value) => {
             builder.add_i64(if value { 1 } else { 0 })?;
         }
+        ExprKind::Byte(value) => {
+            builder.add_data(&[value])?;
+        }
         ExprKind::String(value) => {
             builder.add_data(value.as_bytes())?;
         }
-        ExprKind::Bytes(value) => {
-            builder.add_data(&value)?;
+        ExprKind::Array(values) if values.iter().all(|value| matches!(&value.kind, ExprKind::Byte(_))) => {
+            let bytes: Vec<u8> =
+                values.iter().filter_map(|value| if let ExprKind::Byte(byte) = &value.kind { Some(*byte) } else { None }).collect();
+            builder.add_data(&bytes)?;
         }
         ExprKind::DateLiteral(value) => {
             builder.add_i64(value)?;
@@ -781,39 +768,43 @@ fn encode_fixed_size_value<'i>(value: &Expr<'i>, type_name: &str) -> Result<Vec<
             Ok(vec![u8::from(*flag)])
         }
         "byte" => {
-            let ExprKind::Bytes(bytes) = &value.kind else {
+            let ExprKind::Byte(byte) = &value.kind else {
                 return Err(CompilerError::Unsupported("array literal element type mismatch".to_string()));
             };
-            if bytes.len() != 1 {
-                return Err(CompilerError::Unsupported("array literal element type mismatch".to_string()));
-            }
-            Ok(bytes.clone())
+            Ok(vec![*byte])
         }
         "pubkey" => {
-            let ExprKind::Bytes(bytes) = &value.kind else {
+            let Some(len) = byte_array_len(value) else {
                 return Err(CompilerError::Unsupported("array literal element type mismatch".to_string()));
             };
-            if bytes.len() != 32 {
+            if len != 32 {
                 return Err(CompilerError::Unsupported("array literal element type mismatch".to_string()));
             }
-            Ok(bytes.clone())
+            let ExprKind::Array(bytes_exprs) = &value.kind else {
+                return Err(CompilerError::Unsupported("array literal element type mismatch".to_string()));
+            };
+            Ok(bytes_exprs
+                .iter()
+                .filter_map(|value| if let ExprKind::Byte(byte) = &value.kind { Some(*byte) } else { None })
+                .collect())
         }
         _ => {
             // Handle fixed-size byte arrays like byte[N]
             if let (Some(inner_type), Some(size)) = (array_element_type(type_name), array_size(type_name)) {
                 if inner_type == "byte" {
-                    return match &value.kind {
-                        ExprKind::Bytes(bytes) if bytes.len() == size => Ok(bytes.clone()),
-                        ExprKind::Array(values) if values.len() == size => values
-                            .iter()
-                            .map(|value| match &value.kind {
-                                ExprKind::Bytes(bytes) if bytes.len() == 1 => Some(bytes[0]),
-                                _ => None,
-                            })
-                            .collect::<Option<Vec<_>>>()
-                            .ok_or_else(|| CompilerError::Unsupported("array literal element type mismatch".to_string())),
-                        _ => Err(CompilerError::Unsupported("array literal element type mismatch".to_string())),
+                    let Some(len) = byte_array_len(value) else {
+                        return Err(CompilerError::Unsupported("array literal element type mismatch".to_string()));
                     };
+                    if len != size {
+                        return Err(CompilerError::Unsupported("array literal element type mismatch".to_string()));
+                    }
+                    let ExprKind::Array(bytes_exprs) = &value.kind else {
+                        return Err(CompilerError::Unsupported("array literal element type mismatch".to_string()));
+                    };
+                    return Ok(bytes_exprs
+                        .iter()
+                        .filter_map(|value| if let ExprKind::Byte(byte) = &value.kind { Some(*byte) } else { None })
+                        .collect());
                 }
             }
 
@@ -856,8 +847,7 @@ fn infer_fixed_type_from_literal_expr<'i>(expr: &Expr<'i>) -> Option<String> {
     match &expr.kind {
         ExprKind::Int(_) | ExprKind::DateLiteral(_) => Some("int".to_string()),
         ExprKind::Bool(_) => Some("bool".to_string()),
-        ExprKind::Bytes(bytes) if bytes.len() == 1 => Some("byte".to_string()),
-        ExprKind::Bytes(bytes) => Some(format!("byte[{}]", bytes.len())),
+        ExprKind::Byte(_) => Some("byte".to_string()),
         ExprKind::Array(values) if is_byte_array(expr) => Some(format!("byte[{}]", values.len())),
         ExprKind::Array(values) => {
             let nested_type = infer_fixed_array_literal_type(values)?;
@@ -962,11 +952,10 @@ fn compile_function<'i>(
 
     let body_len = function.body.len();
     for (index, stmt) in function.body.iter().enumerate() {
-        if matches!(stmt, Statement::Return { .. }) {
+        if let Statement::Return { exprs, .. } = stmt {
             if index != body_len - 1 {
                 return Err(CompilerError::Unsupported("return statement must be the last statement".to_string()));
             }
-            let Statement::Return { exprs, .. } = stmt else { unreachable!() };
             validate_return_types(exprs, &function.return_types, &types, constants)?;
             for expr in exprs {
                 let resolved = resolve_expr(expr.clone(), &env, &mut HashSet::new()).map_err(|err| err.with_span(&expr.span))?;
@@ -1075,8 +1064,7 @@ fn compile_statement<'i>(
                 let is_byte_array_type = effective_type_name.starts_with("byte[") && effective_type_name.ends_with("[]");
 
                 let initial = match expr {
-                    Some(e) if matches!(&e.kind, ExprKind::Identifier(_)) => {
-                        let ExprKind::Identifier(other) = &e.kind else { unreachable!() };
+                    Some(Expr { kind: ExprKind::Identifier(other), .. }) => {
                         match types.get(other) {
                             Some(other_type) if is_type_assignable(other_type, &effective_type_name, contract_constants) => {
                                 Expr::new(ExprKind::Identifier(other.clone()), span::Span::default())
@@ -1093,8 +1081,7 @@ fn compile_statement<'i>(
                         // byte[] can be initialized from any bytes expression
                         e.clone()
                     }
-                    Some(e) if matches!(&e.kind, ExprKind::Array(_)) => {
-                        let ExprKind::Array(values) = &e.kind else { unreachable!() };
+                    Some(e @ Expr { kind: ExprKind::Array(values), .. }) => {
                         if !array_literal_matches_type_with_env(values, &effective_type_name, types, contract_constants) {
                             return Err(CompilerError::Unsupported("array initializer must be another array".to_string()));
                         }
@@ -1803,11 +1790,10 @@ fn compile_inline_call<'i>(
     let params = HashMap::new();
     let body_len = function.body.len();
     for (index, stmt) in function.body.iter().enumerate() {
-        if matches!(stmt, Statement::Return { .. }) {
+        if let Statement::Return { exprs, .. } = stmt {
             if index != body_len - 1 {
                 return Err(CompilerError::Unsupported("return statement must be the last statement".to_string()));
             }
-            let Statement::Return { exprs, .. } = stmt else { unreachable!() };
             validate_return_types(exprs, &function.return_types, &types, contract_constants)
                 .map_err(|err| err.with_span(&stmt.span()))?;
             for expr in exprs {
@@ -2316,7 +2302,7 @@ fn replace_identifier<'i>(expr: &Expr<'i>, target: &str, replacement: &Expr<'i>)
         ),
         ExprKind::Int(_)
         | ExprKind::Bool(_)
-        | ExprKind::Bytes(_)
+        | ExprKind::Byte(_)
         | ExprKind::String(_)
         | ExprKind::DateLiteral(_)
         | ExprKind::StateObject(_)
@@ -2355,8 +2341,8 @@ fn compile_expr<'i>(
             *stack_depth += 1;
             Ok(())
         }
-        ExprKind::Bytes(bytes) => {
-            builder.add_data(bytes)?;
+        ExprKind::Byte(byte) => {
+            builder.add_data(&[*byte])?;
             *stack_depth += 1;
             Ok(())
         }
@@ -2841,9 +2827,9 @@ fn expr_is_bytes_inner<'i>(
     visiting: &mut HashSet<String>,
 ) -> bool {
     match &expr.kind {
-        ExprKind::Bytes(_) => true,
+        ExprKind::Byte(_) => true,
         ExprKind::String(_) => true,
-        ExprKind::Array(_) => true,
+        ExprKind::Array(values) => values.iter().all(|value| matches!(&value.kind, ExprKind::Byte(_))),
         ExprKind::Slice { .. } => true,
         ExprKind::New { name, .. } => matches!(
             name.as_str(),
@@ -3706,8 +3692,12 @@ fn build_null_data_script<'i>(arg: &Expr<'i>) -> Result<Vec<u8>, CompilerError> 
             ExprKind::DateLiteral(value) => {
                 builder.add_i64(*value)?;
             }
-            ExprKind::Bytes(bytes) => {
-                builder.add_data(bytes)?;
+            ExprKind::Array(values) if values.iter().all(|value| matches!(&value.kind, ExprKind::Byte(_))) => {
+                let bytes: Vec<u8> = values
+                    .iter()
+                    .filter_map(|value| if let ExprKind::Byte(byte) = &value.kind { Some(*byte) } else { None })
+                    .collect();
+                builder.add_data(&bytes)?;
             }
             ExprKind::String(value) => {
                 builder.add_data(value.as_bytes())?;

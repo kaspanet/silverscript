@@ -19,8 +19,8 @@ fn tutorial_rust_programmatic_compilation_example() {
 
     assert_eq!(compiled.contract_name, "MyContract");
     assert!(!compiled.script.is_empty());
-    assert_eq!(compiled.abi.len(), 1);
-    assert_eq!(compiled.abi[0].name, "spend");
+    assert_eq!(compiled.function_entries.len(), 1);
+    assert_eq!(compiled.function_entries[0].name, "spend");
 }
 
 #[test]
