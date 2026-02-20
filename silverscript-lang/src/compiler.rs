@@ -1,32 +1,16 @@
 use std::collections::{HashMap, HashSet};
 
 use kaspa_txscript::opcodes::codes::*;
-use kaspa_txscript::script_builder::{ScriptBuilder, ScriptBuilderError};
+use kaspa_txscript::script_builder::ScriptBuilder;
 use serde::{Deserialize, Serialize};
-use thiserror::Error;
 
 use crate::ast::{
-    ArrayDim, BinaryOp, ContractAst, ContractFieldAst, Expr, FunctionAst, IntrospectionKind, NullaryOp, SplitPart, StateBindingAst,
-    Statement, TimeVar, TypeBase, TypeRef, UnaryOp, parse_contract_ast, parse_type_ref,
+    ArrayDim, BinaryOp, ContractAst, ContractFieldAst, Expr, ExprKind, FunctionAst, IntrospectionKind, NullaryOp, SplitPart,
+    StateBindingAst, StateFieldExpr, Statement, TimeVar, TypeBase, TypeRef, UnaryOp, UnarySuffixKind, parse_contract_ast,
+    parse_type_ref,
 };
-use crate::parser::Rule;
-use chrono::NaiveDateTime;
-
-#[derive(Debug, Error)]
-pub enum CompilerError {
-    #[error("parse error: {0}")]
-    Parse(#[from] pest::error::Error<Rule>),
-    #[error("unsupported feature: {0}")]
-    Unsupported(String),
-    #[error("invalid literal: {0}")]
-    InvalidLiteral(String),
-    #[error("undefined identifier: {0}")]
-    UndefinedIdentifier(String),
-    #[error("cyclic identifier reference: {0}")]
-    CyclicIdentifier(String),
-    #[error("script build error: {0}")]
-    ScriptBuild(#[from] ScriptBuilderError),
-}
+pub use crate::errors::{CompilerError, ErrorSpan};
+use crate::span;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct CompileOptions {
@@ -46,32 +30,34 @@ pub struct FunctionAbiEntry {
     pub inputs: Vec<FunctionInputAbi>,
 }
 
-pub type FunctionAbi = Vec<FunctionAbiEntry>;
-
 #[derive(Debug, Serialize, Deserialize)]
-pub struct CompiledContract {
+pub struct CompiledContract<'i> {
     pub contract_name: String,
     pub script: Vec<u8>,
-    pub ast: ContractAst,
-    pub abi: FunctionAbi,
+    pub ast: ContractAst<'i>,
+    pub function_entries: Vec<FunctionAbiEntry>,
     pub without_selector: bool,
 }
 
-pub fn compile_contract(source: &str, constructor_args: &[Expr], options: CompileOptions) -> Result<CompiledContract, CompilerError> {
+pub fn compile_contract<'i>(
+    source: &'i str,
+    constructor_args: &[Expr<'i>],
+    options: CompileOptions,
+) -> Result<CompiledContract<'i>, CompilerError> {
     let contract = parse_contract_ast(source)?;
     compile_contract_ast(&contract, constructor_args, options)
 }
 
-pub fn compile_contract_ast(
-    contract: &ContractAst,
-    constructor_args: &[Expr],
+pub fn compile_contract_ast<'i>(
+    contract: &ContractAst<'i>,
+    constructor_args: &[Expr<'i>],
     options: CompileOptions,
-) -> Result<CompiledContract, CompilerError> {
+) -> Result<CompiledContract<'i>, CompilerError> {
     if contract.functions.is_empty() {
         return Err(CompilerError::Unsupported("contract has no functions".to_string()));
     }
 
-    let entrypoint_functions: Vec<&FunctionAst> = contract.functions.iter().filter(|func| func.entrypoint).collect();
+    let entrypoint_functions: Vec<&FunctionAst<'i>> = contract.functions.iter().filter(|func| func.entrypoint).collect();
     if entrypoint_functions.is_empty() {
         return Err(CompilerError::Unsupported("contract has no entrypoint functions".to_string()));
     }
@@ -89,7 +75,8 @@ pub fn compile_contract_ast(
 
     let without_selector = entrypoint_functions.len() == 1;
 
-    let mut constants = contract.constants.clone();
+    let mut constants: HashMap<String, Expr<'i>> =
+        contract.constants.iter().map(|constant| (constant.name.clone(), constant.expr.clone())).collect();
     for (param, value) in contract.params.iter().zip(constructor_args.iter()) {
         constants.insert(param.name.clone(), value.clone());
     }
@@ -97,7 +84,7 @@ pub fn compile_contract_ast(
     let functions_map = contract.functions.iter().cloned().map(|func| (func.name.clone(), func)).collect::<HashMap<_, _>>();
     let function_order =
         contract.functions.iter().enumerate().map(|(index, func)| (func.name.clone(), index)).collect::<HashMap<_, _>>();
-    let abi = build_function_abi(contract);
+    let function_abi_entries = build_function_abi_entries(contract);
     let uses_script_size = contract_uses_script_size(contract);
 
     let mut script_size = if uses_script_size { Some(100i64) } else { None };
@@ -162,7 +149,7 @@ pub fn compile_contract_ast(
                 contract_name: contract.name.clone(),
                 script,
                 ast: contract.clone(),
-                abi,
+                function_entries: function_abi_entries,
                 without_selector,
             });
         }
@@ -173,7 +160,7 @@ pub fn compile_contract_ast(
                 contract_name: contract.name.clone(),
                 script,
                 ast: contract.clone(),
-                abi,
+                function_entries: function_abi_entries,
                 without_selector,
             });
         }
@@ -183,8 +170,8 @@ pub fn compile_contract_ast(
     Err(CompilerError::Unsupported("script size did not stabilize".to_string()))
 }
 
-fn contract_uses_script_size(contract: &ContractAst) -> bool {
-    if contract.constants.values().any(expr_uses_script_size) {
+fn contract_uses_script_size<'i>(contract: &ContractAst<'i>) -> bool {
+    if contract.constants.iter().any(|constant| expr_uses_script_size(&constant.expr)) {
         return true;
     }
     if contract.fields.iter().any(|field| expr_uses_script_size(&field.expr)) {
@@ -193,12 +180,12 @@ fn contract_uses_script_size(contract: &ContractAst) -> bool {
     contract.functions.iter().any(|func| func.body.iter().any(statement_uses_script_size))
 }
 
-fn compile_contract_fields(
-    fields: &[ContractFieldAst],
-    base_constants: &HashMap<String, Expr>,
+fn compile_contract_fields<'i>(
+    fields: &[ContractFieldAst<'i>],
+    base_constants: &HashMap<String, Expr<'i>>,
     options: CompileOptions,
     script_size: Option<i64>,
-) -> Result<(HashMap<String, Expr>, Vec<u8>), CompilerError> {
+) -> Result<(HashMap<String, Expr<'i>>, Vec<u8>), CompilerError> {
     let mut env = base_constants.clone();
     let mut field_values = HashMap::new();
     let mut field_types = HashMap::new();
@@ -224,7 +211,7 @@ fn compile_contract_fields(
         let mut compile_visiting = HashSet::new();
         let mut stack_depth = 0i64;
         if field.type_ref.array_dims.is_empty() && field.type_ref.base == TypeBase::Int {
-            let Expr::Int(value) = resolved else {
+            let ExprKind::Int(value) = &resolved.kind else {
                 return Err(CompilerError::Unsupported(format!("contract field '{}' expects compile-time int value", field.name)));
             };
             builder.add_data(&value.to_le_bytes())?;
@@ -252,18 +239,18 @@ fn compile_contract_fields(
     Ok((field_values, builder.drain()))
 }
 
-fn statement_uses_script_size(stmt: &Statement) -> bool {
+fn statement_uses_script_size(stmt: &Statement<'_>) -> bool {
     match stmt {
         Statement::VariableDefinition { expr, .. } => expr.as_ref().is_some_and(expr_uses_script_size),
         Statement::TupleAssignment { expr, .. } => expr_uses_script_size(expr),
         Statement::ArrayPush { expr, .. } => expr_uses_script_size(expr),
-        Statement::FunctionCall { name, args } => name == "validateOutputState" || args.iter().any(expr_uses_script_size),
+        Statement::FunctionCall { name, args, .. } => name == "validateOutputState" || args.iter().any(expr_uses_script_size),
         Statement::FunctionCallAssign { args, .. } => args.iter().any(expr_uses_script_size),
         Statement::StateFunctionCallAssign { name, args, .. } => name == "readInputState" || args.iter().any(expr_uses_script_size),
         Statement::Assign { expr, .. } => expr_uses_script_size(expr),
         Statement::TimeOp { expr, .. } => expr_uses_script_size(expr),
         Statement::Require { expr, .. } => expr_uses_script_size(expr),
-        Statement::If { condition, then_branch, else_branch } => {
+        Statement::If { condition, then_branch, else_branch, .. } => {
             expr_uses_script_size(condition)
                 || then_branch.iter().any(statement_uses_script_size)
                 || else_branch.as_ref().is_some_and(|branch| branch.iter().any(statement_uses_script_size))
@@ -271,89 +258,90 @@ fn statement_uses_script_size(stmt: &Statement) -> bool {
         Statement::For { start, end, body, .. } => {
             expr_uses_script_size(start) || expr_uses_script_size(end) || body.iter().any(statement_uses_script_size)
         }
-        Statement::Yield { expr } => expr_uses_script_size(expr),
-        Statement::Return { exprs } => exprs.iter().any(expr_uses_script_size),
-        Statement::Console { args } => args.iter().any(|arg| match arg {
-            crate::ast::ConsoleArg::Identifier(_) => false,
+        Statement::Yield { expr, .. } => expr_uses_script_size(expr),
+        Statement::Return { exprs, .. } => exprs.iter().any(expr_uses_script_size),
+        Statement::Console { args, .. } => args.iter().any(|arg| match arg {
+            crate::ast::ConsoleArg::Identifier(_, _) => false,
             crate::ast::ConsoleArg::Literal(expr) => expr_uses_script_size(expr),
         }),
     }
 }
 
-fn expr_uses_script_size(expr: &Expr) -> bool {
-    match expr {
-        Expr::Nullary(NullaryOp::ThisScriptSize) => true,
-        Expr::Nullary(NullaryOp::ThisScriptSizeDataPrefix) => true,
-        Expr::Unary { expr, .. } => expr_uses_script_size(expr),
-        Expr::Binary { left, right, .. } => expr_uses_script_size(left) || expr_uses_script_size(right),
-        Expr::IfElse { condition, then_expr, else_expr } => {
+fn expr_uses_script_size<'i>(expr: &Expr<'i>) -> bool {
+    match &expr.kind {
+        ExprKind::Nullary(NullaryOp::ThisScriptSize) => true,
+        ExprKind::Nullary(NullaryOp::ThisScriptSizeDataPrefix) => true,
+        ExprKind::Unary { expr, .. } => expr_uses_script_size(expr),
+        ExprKind::Binary { left, right, .. } => expr_uses_script_size(left) || expr_uses_script_size(right),
+        ExprKind::IfElse { condition, then_expr, else_expr } => {
             expr_uses_script_size(condition) || expr_uses_script_size(then_expr) || expr_uses_script_size(else_expr)
         }
-        Expr::Array(values) => values.iter().any(expr_uses_script_size),
-        Expr::StateObject(fields) => fields.iter().any(|field| expr_uses_script_size(&field.expr)),
-        Expr::Call { args, .. } => args.iter().any(expr_uses_script_size),
-        Expr::New { args, .. } => args.iter().any(expr_uses_script_size),
-        Expr::Split { source, index, .. } => expr_uses_script_size(source) || expr_uses_script_size(index),
-        Expr::Slice { source, start, end } => {
+        ExprKind::Array(values) => values.iter().any(expr_uses_script_size),
+        ExprKind::Call { args, .. } => args.iter().any(expr_uses_script_size),
+        ExprKind::New { args, .. } => args.iter().any(expr_uses_script_size),
+        ExprKind::Split { source, index, .. } => expr_uses_script_size(source) || expr_uses_script_size(index),
+        ExprKind::Slice { source, start, end, .. } => {
             expr_uses_script_size(source) || expr_uses_script_size(start) || expr_uses_script_size(end)
         }
-        Expr::ArrayIndex { source, index } => expr_uses_script_size(source) || expr_uses_script_size(index),
-        Expr::Introspection { index, .. } => expr_uses_script_size(index),
-        Expr::Int(_) | Expr::Bool(_) | Expr::Byte(_) | Expr::String(_) | Expr::Identifier(_) => false,
-        Expr::Nullary(_) => false,
+        ExprKind::UnarySuffix { source, .. } => expr_uses_script_size(source),
+        ExprKind::ArrayIndex { source, index } => expr_uses_script_size(source) || expr_uses_script_size(index),
+        ExprKind::Introspection { index, .. } => expr_uses_script_size(index),
+        ExprKind::Int(_)
+        | ExprKind::Bool(_)
+        | ExprKind::Byte(_)
+        | ExprKind::String(_)
+        | ExprKind::Identifier(_)
+        | ExprKind::DateLiteral(_)
+        | ExprKind::NumberWithUnit { .. }
+        | ExprKind::Nullary(_) => false,
+        ExprKind::StateObject(fields) => fields.iter().any(|field| expr_uses_script_size(&field.expr)),
     }
 }
 
-// Helper to check if an expression is an array of bytes
-fn is_byte_array(expr: &Expr) -> bool {
-    match expr {
-        Expr::Array(values) => values.iter().all(|v| matches!(v, Expr::Byte(_))),
-        _ => false,
-    }
+fn is_byte_array<'i>(expr: &Expr<'i>) -> bool {
+    byte_array_len(expr).is_some()
 }
 
-// Helper to get the length of a byte array
-fn byte_array_len(expr: &Expr) -> Option<usize> {
-    match expr {
-        Expr::Array(values) if values.iter().all(|v| matches!(v, Expr::Byte(_))) => Some(values.len()),
+fn byte_array_len<'i>(expr: &Expr<'i>) -> Option<usize> {
+    match &expr.kind {
+        ExprKind::Array(values) if values.iter().all(|value| matches!(&value.kind, ExprKind::Byte(_))) => Some(values.len()),
         _ => None,
     }
 }
 
-fn expr_matches_type_ref(expr: &Expr, type_ref: &TypeRef) -> bool {
+/// Does the expression match the expected type passed as a secondary argument.
+///
+/// If type is a fixed-size array (known at parsing time), it also verifies the array length.
+fn expr_matches_type_ref<'i>(expr: &Expr<'i>, type_ref: &TypeRef) -> bool {
     if is_array_type_ref(type_ref) {
-        // Check for fixed-size array type[N]
         if let Some(size) = array_size_ref(type_ref) {
-            // For fixed-size arrays like byte[4], int[3]
             if let Some(element_type) = array_element_type_ref(type_ref) {
                 if element_type.base == TypeBase::Byte {
-                    // byte[N] should match Expr::Array of Expr::Byte with exact length N
                     return byte_array_len(expr) == Some(size);
                 }
-                // For other fixed-size arrays, match array literal
-                return matches!(expr, Expr::Array(values) if values.len() == size && array_literal_matches_type_ref(values, type_ref));
+                return matches!(&expr.kind, ExprKind::Array(values) if values.len() == size && array_literal_matches_type_ref(values, type_ref));
             }
         }
-        // Dynamic arrays type[]
-        return is_byte_array(expr) || matches!(expr, Expr::Array(values) if array_literal_matches_type_ref(values, type_ref));
+        return is_byte_array(expr)
+            || matches!(&expr.kind, ExprKind::Array(values) if array_literal_matches_type_ref(values, type_ref));
     }
+
     match type_ref.base {
-        TypeBase::Int => matches!(expr, Expr::Int(_)),
-        TypeBase::Bool => matches!(expr, Expr::Bool(_)),
-        TypeBase::String => matches!(expr, Expr::String(_)),
-        TypeBase::Byte => matches!(expr, Expr::Byte(_)),
+        TypeBase::Int => matches!(&expr.kind, ExprKind::Int(_) | ExprKind::DateLiteral(_)),
+        TypeBase::Bool => matches!(&expr.kind, ExprKind::Bool(_)),
+        TypeBase::String => matches!(&expr.kind, ExprKind::String(_)),
+        TypeBase::Byte => matches!(&expr.kind, ExprKind::Byte(_)),
         TypeBase::Pubkey => byte_array_len(expr) == Some(32),
         TypeBase::Sig => byte_array_len(expr) == Some(65),
         TypeBase::Datasig => byte_array_len(expr) == Some(64),
     }
 }
 
-fn array_literal_matches_type_ref(values: &[Expr], type_ref: &TypeRef) -> bool {
+fn array_literal_matches_type_ref<'i>(values: &[Expr<'i>], type_ref: &TypeRef) -> bool {
     let Some(element_type) = array_element_type_ref(type_ref) else {
         return false;
     };
 
-    // Check if this is a fixed-size array
     if let Some(expected_size) = array_size_ref(type_ref) {
         if values.len() != expected_size {
             return false;
@@ -363,11 +351,11 @@ fn array_literal_matches_type_ref(values: &[Expr], type_ref: &TypeRef) -> bool {
     values.iter().all(|value| expr_matches_type_ref(value, &element_type))
 }
 
-fn array_literal_matches_type_with_env_ref(
-    values: &[Expr],
+fn array_literal_matches_type_with_env_ref<'i>(
+    values: &[Expr<'i>],
     type_ref: &TypeRef,
     types: &HashMap<String, String>,
-    constants: &HashMap<String, Expr>,
+    constants: &HashMap<String, Expr<'i>>,
 ) -> bool {
     let Some(element_type) = array_element_type_ref(type_ref) else {
         return false;
@@ -379,8 +367,8 @@ fn array_literal_matches_type_with_env_ref(
         }
     }
 
-    values.iter().all(|value| match value {
-        Expr::Identifier(name) => types
+    values.iter().all(|value| match &value.kind {
+        ExprKind::Identifier(name) => types
             .get(name)
             .and_then(|value_type| parse_type_ref(value_type).ok())
             .is_some_and(|value_type| is_type_assignable_ref(&value_type, &element_type, constants)),
@@ -388,7 +376,7 @@ fn array_literal_matches_type_with_env_ref(
     })
 }
 
-fn build_function_abi(contract: &ContractAst) -> FunctionAbi {
+fn build_function_abi_entries<'i>(contract: &ContractAst<'i>) -> Vec<FunctionAbiEntry> {
     contract
         .functions
         .iter()
@@ -423,11 +411,11 @@ fn array_size_ref(type_ref: &TypeRef) -> Option<usize> {
     }
 }
 
-fn array_size_with_constants_ref(type_ref: &TypeRef, constants: &HashMap<String, Expr>) -> Option<usize> {
+fn array_size_with_constants_ref<'i>(type_ref: &TypeRef, constants: &HashMap<String, Expr<'i>>) -> Option<usize> {
     match type_ref.array_size()? {
         ArrayDim::Fixed(size) => Some(*size),
         ArrayDim::Constant(name) => {
-            if let Some(Expr::Int(value)) = constants.get(name) {
+            if let Some(Expr { kind: ExprKind::Int(value), .. }) = constants.get(name) {
                 if *value >= 0 {
                     return Some(*value as usize);
                 }
@@ -466,7 +454,7 @@ fn array_element_size_ref(type_ref: &TypeRef) -> Option<i64> {
     array_element_type_ref(type_ref).and_then(|element| fixed_type_size_ref(&element))
 }
 
-fn contains_return(stmt: &Statement) -> bool {
+fn contains_return(stmt: &Statement<'_>) -> bool {
     match stmt {
         Statement::Return { .. } => true,
         Statement::If { then_branch, else_branch, .. } => {
@@ -477,7 +465,7 @@ fn contains_return(stmt: &Statement) -> bool {
     }
 }
 
-fn contains_yield(stmt: &Statement) -> bool {
+fn contains_yield(stmt: &Statement<'_>) -> bool {
     match stmt {
         Statement::Yield { .. } => true,
         Statement::If { then_branch, else_branch, .. } => {
@@ -488,11 +476,11 @@ fn contains_yield(stmt: &Statement) -> bool {
     }
 }
 
-fn validate_return_types(
-    exprs: &[Expr],
+fn validate_return_types<'i>(
+    exprs: &[Expr<'i>],
     return_types: &[TypeRef],
     types: &HashMap<String, String>,
-    constants: &HashMap<String, Expr>,
+    constants: &HashMap<String, Expr<'i>>,
 ) -> Result<(), CompilerError> {
     if return_types.is_empty() {
         return Err(CompilerError::Unsupported("return requires function return types".to_string()));
@@ -513,7 +501,7 @@ fn has_explicit_array_size_ref(type_ref: &TypeRef) -> bool {
     !matches!(type_ref.array_size(), Some(ArrayDim::Dynamic) | None)
 }
 
-fn is_array_type_assignable_ref(actual: &TypeRef, expected: &TypeRef, constants: &HashMap<String, Expr>) -> bool {
+fn is_array_type_assignable_ref<'i>(actual: &TypeRef, expected: &TypeRef, constants: &HashMap<String, Expr<'i>>) -> bool {
     if actual == expected {
         return true;
     }
@@ -536,46 +524,48 @@ fn is_array_type_assignable_ref(actual: &TypeRef, expected: &TypeRef, constants:
     }
 }
 
-fn is_type_assignable_ref(actual: &TypeRef, expected: &TypeRef, constants: &HashMap<String, Expr>) -> bool {
+fn is_type_assignable_ref<'i>(actual: &TypeRef, expected: &TypeRef, constants: &HashMap<String, Expr<'i>>) -> bool {
     actual == expected || is_array_type_assignable_ref(actual, expected, constants)
 }
 
-fn expr_matches_type_with_env_ref(
-    expr: &Expr,
+fn expr_matches_type_with_env_ref<'i>(
+    expr: &Expr<'i>,
     type_ref: &TypeRef,
     types: &HashMap<String, String>,
-    constants: &HashMap<String, Expr>,
+    constants: &HashMap<String, Expr<'i>>,
 ) -> bool {
-    match expr {
-        Expr::Identifier(name) => {
+    match &expr.kind {
+        ExprKind::Identifier(name) => {
             types.get(name).and_then(|t| parse_type_ref(t).ok()).is_some_and(|t| is_type_assignable_ref(&t, type_ref, constants))
         }
-        Expr::Array(values) => is_array_type_ref(type_ref) && array_literal_matches_type_ref(values, type_ref),
+        ExprKind::Array(values) => is_array_type_ref(type_ref) && array_literal_matches_type_ref(values, type_ref),
         _ => expr_matches_type_ref(expr, type_ref),
     }
 }
 
-fn expr_matches_return_type_ref(
-    expr: &Expr,
+fn expr_matches_return_type_ref<'i>(
+    expr: &Expr<'i>,
     type_ref: &TypeRef,
     types: &HashMap<String, String>,
-    constants: &HashMap<String, Expr>,
+    constants: &HashMap<String, Expr<'i>>,
 ) -> bool {
-    match expr {
-        Expr::Identifier(name) => {
+    match &expr.kind {
+        ExprKind::Identifier(name) => {
             types.get(name).and_then(|t| parse_type_ref(t).ok()).is_some_and(|t| is_type_assignable_ref(&t, type_ref, constants))
         }
-        Expr::Array(values) => is_array_type_ref(type_ref) && array_literal_matches_type_ref(values, type_ref),
-        Expr::Int(_) | Expr::Bool(_) | Expr::Byte(_) | Expr::String(_) => expr_matches_type_ref(expr, type_ref),
+        ExprKind::Array(values) => is_array_type_ref(type_ref) && array_literal_matches_type_ref(values, type_ref),
+        ExprKind::Int(_) | ExprKind::DateLiteral(_) | ExprKind::Bool(_) | ExprKind::Byte(_) | ExprKind::String(_) => {
+            expr_matches_type_ref(expr, type_ref)
+        }
         _ => true,
     }
 }
 
-fn infer_fixed_array_type_from_initializer_ref(
+fn infer_fixed_array_type_from_initializer_ref<'i>(
     declared_type: &TypeRef,
-    initializer: Option<&Expr>,
+    initializer: Option<&Expr<'i>>,
     types: &HashMap<String, String>,
-    constants: &HashMap<String, Expr>,
+    constants: &HashMap<String, Expr<'i>>,
 ) -> Option<TypeRef> {
     if !declared_type.array_size().is_some_and(|dim| matches!(dim, ArrayDim::Dynamic)) {
         return None;
@@ -584,13 +574,13 @@ fn infer_fixed_array_type_from_initializer_ref(
     let element_type = array_element_type_ref(declared_type)?;
     let init = initializer?;
 
-    match init {
-        Expr::Array(values) => {
+    match &init.kind {
+        ExprKind::Array(values) => {
             let mut inferred = element_type.clone();
             inferred.array_dims.push(ArrayDim::Fixed(values.len()));
             if array_literal_matches_type_with_env_ref(values, &inferred, types, constants) { Some(inferred) } else { None }
         }
-        Expr::Identifier(name) => {
+        ExprKind::Identifier(name) => {
             let other_type = parse_type_ref(types.get(name)?).ok()?;
             if !is_array_type_ref(&other_type) || array_element_type_ref(&other_type) != Some(element_type.clone()) {
                 return None;
@@ -604,15 +594,15 @@ fn infer_fixed_array_type_from_initializer_ref(
     }
 }
 
-fn expr_matches_type(expr: &Expr, type_name: &str) -> bool {
+fn expr_matches_type<'i>(expr: &Expr<'i>, type_name: &str) -> bool {
     parse_type_ref(type_name).is_ok_and(|type_ref| expr_matches_type_ref(expr, &type_ref))
 }
 
-fn array_literal_matches_type_with_env(
-    values: &[Expr],
+fn array_literal_matches_type_with_env<'i>(
+    values: &[Expr<'i>],
     type_name: &str,
     types: &HashMap<String, String>,
-    constants: &HashMap<String, Expr>,
+    constants: &HashMap<String, Expr<'i>>,
 ) -> bool {
     parse_type_ref(type_name).is_ok_and(|type_ref| array_literal_matches_type_with_env_ref(values, &type_ref, types, constants))
 }
@@ -632,7 +622,7 @@ fn array_size(type_name: &str) -> Option<usize> {
     array_size_ref(&type_ref)
 }
 
-fn array_size_with_constants(type_name: &str, constants: &HashMap<String, Expr>) -> Option<usize> {
+fn array_size_with_constants<'i>(type_name: &str, constants: &HashMap<String, Expr<'i>>) -> Option<usize> {
     let type_ref = parse_type_ref(type_name).ok()?;
     array_size_with_constants_ref(&type_ref, constants)
 }
@@ -647,7 +637,7 @@ fn array_element_size(type_name: &str) -> Option<i64> {
     array_element_size_ref(&type_ref)
 }
 
-fn is_type_assignable(actual: &str, expected: &str, constants: &HashMap<String, Expr>) -> bool {
+fn is_type_assignable<'i>(actual: &str, expected: &str, constants: &HashMap<String, Expr<'i>>) -> bool {
     let Ok(actual_type) = parse_type_ref(actual) else {
         return false;
     };
@@ -657,29 +647,29 @@ fn is_type_assignable(actual: &str, expected: &str, constants: &HashMap<String, 
     is_type_assignable_ref(&actual_type, &expected_type, constants)
 }
 
-fn expr_matches_type_with_env(
-    expr: &Expr,
+fn expr_matches_type_with_env<'i>(
+    expr: &Expr<'i>,
     type_name: &str,
     types: &HashMap<String, String>,
-    constants: &HashMap<String, Expr>,
+    constants: &HashMap<String, Expr<'i>>,
 ) -> bool {
     parse_type_ref(type_name).is_ok_and(|type_ref| expr_matches_type_with_env_ref(expr, &type_ref, types, constants))
 }
 
-fn infer_fixed_array_type_from_initializer(
+fn infer_fixed_array_type_from_initializer<'i>(
     declared_type: &str,
-    initializer: Option<&Expr>,
+    initializer: Option<&Expr<'i>>,
     types: &HashMap<String, String>,
-    constants: &HashMap<String, Expr>,
+    constants: &HashMap<String, Expr<'i>>,
 ) -> Option<String> {
     let declared_type = parse_type_ref(declared_type).ok()?;
     infer_fixed_array_type_from_initializer_ref(&declared_type, initializer, types, constants).map(|t| type_name_from_ref(&t))
 }
 
-impl CompiledContract {
-    pub fn build_sig_script(&self, function_name: &str, args: Vec<Expr>) -> Result<Vec<u8>, CompilerError> {
+impl<'i> CompiledContract<'i> {
+    pub fn build_sig_script(&self, function_name: &str, args: Vec<Expr<'i>>) -> Result<Vec<u8>, CompilerError> {
         let function = self
-            .abi
+            .function_entries
             .iter()
             .find(|entry| entry.name == function_name)
             .ok_or_else(|| CompilerError::Unsupported(format!("function '{}' not found", function_name)))?;
@@ -701,17 +691,16 @@ impl CompiledContract {
         let mut builder = ScriptBuilder::new();
         for (input, arg) in function.inputs.iter().zip(args) {
             if is_array_type(&input.type_name) {
-                match arg {
-                    Expr::Array(ref values) => {
-                        // Check if it's a byte array or other array type
-                        if is_byte_array(&arg) {
-                            // Extract bytes from Expr::Byte array
-                            let bytes: Vec<u8> =
-                                values.iter().filter_map(|v| if let Expr::Byte(b) = v { Some(*b) } else { None }).collect();
+                match arg.kind {
+                    ExprKind::Array(values) => {
+                        if values.iter().all(|value| matches!(&value.kind, ExprKind::Byte(_))) {
+                            let bytes: Vec<u8> = values
+                                .iter()
+                                .filter_map(|value| if let ExprKind::Byte(byte) = &value.kind { Some(*byte) } else { None })
+                                .collect();
                             builder.add_data(&bytes)?;
                         } else {
-                            // Regular array - encode it
-                            let bytes = encode_array_literal(values, &input.type_name)?;
+                            let bytes = encode_array_literal(&values, &input.type_name)?;
                             builder.add_data(&bytes)?;
                         }
                     }
@@ -734,21 +723,27 @@ impl CompiledContract {
     }
 }
 
-fn push_sigscript_arg(builder: &mut ScriptBuilder, arg: Expr) -> Result<(), CompilerError> {
-    match arg {
-        Expr::Int(value) => {
+fn push_sigscript_arg<'i>(builder: &mut ScriptBuilder, arg: Expr<'i>) -> Result<(), CompilerError> {
+    match arg.kind {
+        ExprKind::Int(value) => {
             builder.add_i64(value)?;
         }
-        Expr::Bool(value) => {
+        ExprKind::Bool(value) => {
             builder.add_i64(if value { 1 } else { 0 })?;
         }
-        Expr::String(value) => {
+        ExprKind::Byte(value) => {
+            builder.add_data(&[value])?;
+        }
+        ExprKind::String(value) => {
             builder.add_data(value.as_bytes())?;
         }
-        Expr::Array(values) if is_byte_array(&Expr::Array(values.clone())) => {
-            // Handle byte arrays
-            let bytes: Vec<u8> = values.iter().filter_map(|v| if let Expr::Byte(b) = v { Some(*b) } else { None }).collect();
+        ExprKind::Array(values) if values.iter().all(|value| matches!(&value.kind, ExprKind::Byte(_))) => {
+            let bytes: Vec<u8> =
+                values.iter().filter_map(|value| if let ExprKind::Byte(byte) = &value.kind { Some(*byte) } else { None }).collect();
             builder.add_data(&bytes)?;
+        }
+        ExprKind::DateLiteral(value) => {
+            builder.add_i64(value)?;
         }
         _ => {
             return Err(CompilerError::Unsupported("signature script arguments must be literals".to_string()));
@@ -757,22 +752,23 @@ fn push_sigscript_arg(builder: &mut ScriptBuilder, arg: Expr) -> Result<(), Comp
     Ok(())
 }
 
-fn encode_fixed_size_value(value: &Expr, type_name: &str) -> Result<Vec<u8>, CompilerError> {
+fn encode_fixed_size_value<'i>(value: &Expr<'i>, type_name: &str) -> Result<Vec<u8>, CompilerError> {
     match type_name {
         "int" => {
-            let Expr::Int(number) = value else {
-                return Err(CompilerError::Unsupported("array literal element type mismatch".to_string()));
+            let number = match &value.kind {
+                ExprKind::Int(number) | ExprKind::DateLiteral(number) => *number,
+                _ => return Err(CompilerError::Unsupported("array literal element type mismatch".to_string())),
             };
             Ok(number.to_le_bytes().to_vec())
         }
         "bool" => {
-            let Expr::Bool(flag) = value else {
+            let ExprKind::Bool(flag) = &value.kind else {
                 return Err(CompilerError::Unsupported("array literal element type mismatch".to_string()));
             };
             Ok(vec![u8::from(*flag)])
         }
         "byte" => {
-            let Expr::Byte(byte) = value else {
+            let ExprKind::Byte(byte) = &value.kind else {
                 return Err(CompilerError::Unsupported("array literal element type mismatch".to_string()));
             };
             Ok(vec![*byte])
@@ -784,10 +780,13 @@ fn encode_fixed_size_value(value: &Expr, type_name: &str) -> Result<Vec<u8>, Com
             if len != 32 {
                 return Err(CompilerError::Unsupported("array literal element type mismatch".to_string()));
             }
-            let Expr::Array(bytes_exprs) = value else {
+            let ExprKind::Array(bytes_exprs) = &value.kind else {
                 return Err(CompilerError::Unsupported("array literal element type mismatch".to_string()));
             };
-            Ok(bytes_exprs.iter().filter_map(|value| if let Expr::Byte(byte) = value { Some(*byte) } else { None }).collect())
+            Ok(bytes_exprs
+                .iter()
+                .filter_map(|value| if let ExprKind::Byte(byte) = &value.kind { Some(*byte) } else { None })
+                .collect())
         }
         _ => {
             // Handle fixed-size byte arrays like byte[N]
@@ -799,18 +798,18 @@ fn encode_fixed_size_value(value: &Expr, type_name: &str) -> Result<Vec<u8>, Com
                     if len != size {
                         return Err(CompilerError::Unsupported("array literal element type mismatch".to_string()));
                     }
-                    let Expr::Array(bytes_exprs) = value else {
+                    let ExprKind::Array(bytes_exprs) = &value.kind else {
                         return Err(CompilerError::Unsupported("array literal element type mismatch".to_string()));
                     };
                     return Ok(bytes_exprs
                         .iter()
-                        .filter_map(|value| if let Expr::Byte(byte) = value { Some(*byte) } else { None })
+                        .filter_map(|value| if let ExprKind::Byte(byte) = &value.kind { Some(*byte) } else { None })
                         .collect());
                 }
             }
 
             // Handle nested fixed-size arrays with known element sizes.
-            if let Expr::Array(values) = value {
+            if let ExprKind::Array(values) = &value.kind {
                 let element_type = array_element_type(type_name)
                     .ok_or_else(|| CompilerError::Unsupported("array element type must have known size".to_string()))?;
                 let expected_len = array_size(type_name)
@@ -831,7 +830,7 @@ fn encode_fixed_size_value(value: &Expr, type_name: &str) -> Result<Vec<u8>, Com
     }
 }
 
-fn encode_array_literal(values: &[Expr], type_name: &str) -> Result<Vec<u8>, CompilerError> {
+fn encode_array_literal<'i>(values: &[Expr<'i>], type_name: &str) -> Result<Vec<u8>, CompilerError> {
     let element_type = array_element_type(type_name)
         .ok_or_else(|| CompilerError::Unsupported("array element type must have known size".to_string()))?;
     let mut out = Vec::new();
@@ -844,13 +843,13 @@ fn encode_array_literal(values: &[Expr], type_name: &str) -> Result<Vec<u8>, Com
     Ok(out)
 }
 
-fn infer_fixed_type_from_literal_expr(expr: &Expr) -> Option<String> {
-    match expr {
-        Expr::Int(_) => Some("int".to_string()),
-        Expr::Bool(_) => Some("bool".to_string()),
-        Expr::Byte(_) => Some("byte".to_string()),
-        Expr::Array(values) if is_byte_array(expr) => Some(format!("byte[{}]", values.len())),
-        Expr::Array(values) => {
+fn infer_fixed_type_from_literal_expr<'i>(expr: &Expr<'i>) -> Option<String> {
+    match &expr.kind {
+        ExprKind::Int(_) | ExprKind::DateLiteral(_) => Some("int".to_string()),
+        ExprKind::Bool(_) => Some("bool".to_string()),
+        ExprKind::Byte(_) => Some("byte".to_string()),
+        ExprKind::Array(values) if is_byte_array(expr) => Some(format!("byte[{}]", values.len())),
+        ExprKind::Array(values) => {
             let nested_type = infer_fixed_array_literal_type(values)?;
             Some(nested_type.trim_end_matches("[]").to_string())
         }
@@ -858,7 +857,7 @@ fn infer_fixed_type_from_literal_expr(expr: &Expr) -> Option<String> {
     }
 }
 
-fn infer_fixed_array_literal_type(values: &[Expr]) -> Option<String> {
+fn infer_fixed_array_literal_type<'i>(values: &[Expr<'i>]) -> Option<String> {
     if values.is_empty() {
         return None;
     }
@@ -871,7 +870,7 @@ fn infer_fixed_array_literal_type(values: &[Expr]) -> Option<String> {
     }
 }
 
-pub fn function_branch_index(contract: &ContractAst, function_name: &str) -> Result<i64, CompilerError> {
+pub fn function_branch_index<'i>(contract: &ContractAst<'i>, function_name: &str) -> Result<i64, CompilerError> {
     contract
         .functions
         .iter()
@@ -881,14 +880,14 @@ pub fn function_branch_index(contract: &ContractAst, function_name: &str) -> Res
         .ok_or_else(|| CompilerError::Unsupported(format!("function '{function_name}' not found")))
 }
 
-fn compile_function(
-    function: &FunctionAst,
+fn compile_function<'i>(
+    function: &FunctionAst<'i>,
     function_index: usize,
-    contract_fields: &[ContractFieldAst],
+    contract_fields: &[ContractFieldAst<'i>],
     contract_field_prefix_len: usize,
-    constants: &HashMap<String, Expr>,
+    constants: &HashMap<String, Expr<'i>>,
     options: CompileOptions,
-    functions: &HashMap<String, FunctionAst>,
+    functions: &HashMap<String, FunctionAst<'i>>,
     function_order: &HashMap<String, usize>,
     script_size: Option<i64>,
 ) -> Result<(String, Vec<u8>), CompilerError> {
@@ -923,7 +922,7 @@ fn compile_function(
             return Err(CompilerError::Unsupported(format!("array element type must have known size: {return_type_name}")));
         }
     }
-    let mut env: HashMap<String, Expr> = constants.clone();
+    let mut env: HashMap<String, Expr<'i>> = constants.clone();
     let mut builder = ScriptBuilder::new();
     let mut yields: Vec<Expr> = Vec::new();
 
@@ -953,14 +952,13 @@ fn compile_function(
 
     let body_len = function.body.len();
     for (index, stmt) in function.body.iter().enumerate() {
-        if matches!(stmt, Statement::Return { .. }) {
+        if let Statement::Return { exprs, .. } = stmt {
             if index != body_len - 1 {
                 return Err(CompilerError::Unsupported("return statement must be the last statement".to_string()));
             }
-            let Statement::Return { exprs } = stmt else { unreachable!() };
             validate_return_types(exprs, &function.return_types, &types, constants)?;
             for expr in exprs {
-                let resolved = resolve_expr(expr.clone(), &env, &mut HashSet::new())?;
+                let resolved = resolve_expr(expr.clone(), &env, &mut HashSet::new()).map_err(|err| err.with_span(&expr.span))?;
                 yields.push(resolved);
             }
             continue;
@@ -980,7 +978,8 @@ fn compile_function(
             function_index,
             &mut yields,
             script_size,
-        )?;
+        )
+        .map_err(|err| err.with_span(&stmt.span()))?;
     }
 
     let yield_count = yields.len();
@@ -1023,20 +1022,20 @@ fn compile_function(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn compile_statement(
-    stmt: &Statement,
-    env: &mut HashMap<String, Expr>,
+fn compile_statement<'i>(
+    stmt: &Statement<'i>,
+    env: &mut HashMap<String, Expr<'i>>,
     params: &HashMap<String, i64>,
     types: &mut HashMap<String, String>,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
-    contract_fields: &[ContractFieldAst],
+    contract_fields: &[ContractFieldAst<'i>],
     contract_field_prefix_len: usize,
-    contract_constants: &HashMap<String, Expr>,
-    functions: &HashMap<String, FunctionAst>,
+    contract_constants: &HashMap<String, Expr<'i>>,
+    functions: &HashMap<String, FunctionAst<'i>>,
     function_order: &HashMap<String, usize>,
     function_index: usize,
-    yields: &mut Vec<Expr>,
+    yields: &mut Vec<Expr<'i>>,
     script_size: Option<i64>,
 ) -> Result<(), CompilerError> {
     match stmt {
@@ -1065,9 +1064,9 @@ fn compile_statement(
                 let is_byte_array_type = effective_type_name.starts_with("byte[") && effective_type_name.ends_with("[]");
 
                 let initial = match expr {
-                    Some(Expr::Identifier(other)) => match types.get(other) {
+                    Some(Expr { kind: ExprKind::Identifier(other), .. }) => match types.get(other) {
                         Some(other_type) if is_type_assignable(other_type, &effective_type_name, contract_constants) => {
-                            Expr::Identifier(other.clone())
+                            Expr::new(ExprKind::Identifier(other.clone()), span::Span::default())
                         }
                         Some(_) => {
                             return Err(CompilerError::Unsupported("array assignment requires compatible array types".to_string()));
@@ -1078,14 +1077,14 @@ fn compile_statement(
                         // byte[] can be initialized from any bytes expression
                         e.clone()
                     }
-                    Some(Expr::Array(values)) => {
+                    Some(e @ Expr { kind: ExprKind::Array(values), .. }) => {
                         if !array_literal_matches_type_with_env(values, &effective_type_name, types, contract_constants) {
                             return Err(CompilerError::Unsupported("array initializer must be another array".to_string()));
                         }
-                        resolve_expr(Expr::Array(values.clone()), env, &mut HashSet::new())?
+                        resolve_expr(Expr::new(ExprKind::Array(values.clone()), e.span), env, &mut HashSet::new())?
                     }
                     Some(_) => return Err(CompilerError::Unsupported("array initializer must be another array".to_string())),
-                    None => Expr::Array(Vec::new()),
+                    None => Expr::new(ExprKind::Array(Vec::new()), span::Span::default()),
                 };
                 env.insert(name.clone(), initial);
                 types.insert(name.clone(), effective_type_name.clone());
@@ -1096,7 +1095,7 @@ fn compile_statement(
                     expr.clone().ok_or_else(|| CompilerError::Unsupported("variable definition requires initializer".to_string()))?;
 
                 // For array literals, validate that the size matches the declared type
-                if let Expr::Array(values) = &expr {
+                if let ExprKind::Array(values) = &expr.kind {
                     if let Some(expected_size) = array_size_with_constants(&effective_type_name, contract_constants) {
                         if values.len() != expected_size {
                             return Err(CompilerError::Unsupported(format!(
@@ -1117,7 +1116,8 @@ fn compile_statement(
                     }
                 }
 
-                let stored_expr = if matches!(expr, Expr::Array(_)) { resolve_expr(expr, env, &mut HashSet::new())? } else { expr };
+                let stored_expr =
+                    if matches!(&expr.kind, ExprKind::Array(_)) { resolve_expr(expr, env, &mut HashSet::new())? } else { expr };
                 env.insert(name.clone(), stored_expr);
                 types.insert(name.clone(), effective_type_name.clone());
                 Ok(())
@@ -1129,7 +1129,7 @@ fn compile_statement(
                 Ok(())
             }
         }
-        Statement::ArrayPush { name, expr } => {
+        Statement::ArrayPush { name, expr, .. } => {
             let array_type = types.get(name).ok_or_else(|| CompilerError::UndefinedIdentifier(name.clone()))?;
             if !is_array_type(array_type) {
                 return Err(CompilerError::Unsupported("push() only supported on arrays".to_string()));
@@ -1139,9 +1139,15 @@ fn compile_statement(
             let _element_size = array_element_size(array_type)
                 .ok_or_else(|| CompilerError::Unsupported("array element type must have known size".to_string()))?;
             let element_expr = if element_type == "int" {
-                Expr::Call { name: "byte[8]".to_string(), args: vec![expr.clone()] }
+                Expr::new(
+                    ExprKind::Call { name: "byte[8]".to_string(), args: vec![expr.clone()], name_span: span::Span::default() },
+                    span::Span::default(),
+                )
             } else if element_type == "byte" {
-                Expr::Call { name: "byte[1]".to_string(), args: vec![expr.clone()] }
+                Expr::new(
+                    ExprKind::Call { name: "byte[1]".to_string(), args: vec![expr.clone()], name_span: span::Span::default() },
+                    span::Span::default(),
+                )
             } else if element_type.contains('[') && element_type.starts_with("byte") {
                 // Handle byte[N] type
                 if expr_is_bytes(expr, env, types) {
@@ -1155,7 +1161,14 @@ fn compile_statement(
                             if base_type == "byte" {
                                 if let Ok(_size) = size_str.parse::<usize>() {
                                     // Cast expression to byte[N]
-                                    Expr::Call { name: element_type.to_string(), args: vec![expr.clone()] }
+                                    Expr::new(
+                                        ExprKind::Call {
+                                            name: element_type.to_string(),
+                                            args: vec![expr.clone()],
+                                            name_span: span::Span::default(),
+                                        },
+                                        span::Span::default(),
+                                    )
                                 } else {
                                     return Err(CompilerError::Unsupported("invalid array size".to_string()));
                                 }
@@ -1173,8 +1186,11 @@ fn compile_statement(
                 return Err(CompilerError::Unsupported("array element type not supported".to_string()));
             };
 
-            let current = env.get(name).cloned().unwrap_or_else(|| Expr::Array(Vec::new()));
-            let updated = Expr::Binary { op: BinaryOp::Add, left: Box::new(current), right: Box::new(element_expr) };
+            let current = env.get(name).cloned().unwrap_or_else(|| Expr::new(ExprKind::Array(Vec::new()), span::Span::default()));
+            let updated = Expr::new(
+                ExprKind::Binary { op: BinaryOp::Add, left: Box::new(current), right: Box::new(element_expr) },
+                span::Span::default(),
+            );
             env.insert(name.clone(), updated);
             Ok(())
         }
@@ -1198,7 +1214,7 @@ fn compile_statement(
         Statement::TimeOp { tx_var, expr, .. } => {
             compile_time_op_statement(tx_var, expr, env, params, types, builder, options, script_size, contract_constants)
         }
-        Statement::If { condition, then_branch, else_branch } => compile_if_statement(
+        Statement::If { condition, then_branch, else_branch, .. } => compile_if_statement(
             condition,
             then_branch,
             else_branch.as_deref(),
@@ -1216,7 +1232,7 @@ fn compile_statement(
             yields,
             script_size,
         ),
-        Statement::For { ident, start, end, body } => compile_for_statement(
+        Statement::For { ident, start, end, body, .. } => compile_for_statement(
             ident,
             start,
             end,
@@ -1235,22 +1251,30 @@ fn compile_statement(
             yields,
             script_size,
         ),
-        Statement::Yield { expr } => {
+        Statement::Yield { expr, .. } => {
             let mut visiting = HashSet::new();
             let resolved = resolve_expr(expr.clone(), env, &mut visiting)?;
             yields.push(resolved);
             Ok(())
         }
         Statement::Return { .. } => Err(CompilerError::Unsupported("return statement must be the last statement".to_string())),
-        Statement::TupleAssignment { left_name, right_name, expr, .. } => match expr.clone() {
-            Expr::Split { source, index, .. } => {
-                env.insert(left_name.clone(), Expr::Split { source: source.clone(), index: index.clone(), part: SplitPart::Left });
-                env.insert(right_name.clone(), Expr::Split { source, index, part: SplitPart::Right });
+        Statement::TupleAssignment { left_name, right_name, expr, .. } => match &expr.kind {
+            ExprKind::Split { source, index, span: split_span, .. } => {
+                let left_expr = Expr::new(
+                    ExprKind::Split { source: source.clone(), index: index.clone(), part: SplitPart::Left, span: *split_span },
+                    span::Span::default(),
+                );
+                let right_expr = Expr::new(
+                    ExprKind::Split { source: source.clone(), index: index.clone(), part: SplitPart::Right, span: *split_span },
+                    span::Span::default(),
+                );
+                env.insert(left_name.clone(), left_expr);
+                env.insert(right_name.clone(), right_expr);
                 Ok(())
             }
             _ => Err(CompilerError::Unsupported("tuple assignment only supports split()".to_string())),
         },
-        Statement::FunctionCall { name, args } => {
+        Statement::FunctionCall { name, args, .. } => {
             if name == "validateOutputState" {
                 return compile_validate_output_state_statement(
                     args,
@@ -1299,7 +1323,7 @@ fn compile_statement(
             }
             Ok(())
         }
-        Statement::StateFunctionCallAssign { bindings, name, args } => {
+        Statement::StateFunctionCallAssign { bindings, name, args, .. } => {
             if name == "readInputState" {
                 return compile_read_input_state_statement(
                     bindings,
@@ -1316,7 +1340,7 @@ fn compile_statement(
                 name
             )))
         }
-        Statement::FunctionCallAssign { bindings, name, args } => {
+        Statement::FunctionCallAssign { bindings, name, args, .. } => {
             let function = functions.get(name).ok_or_else(|| CompilerError::Unsupported(format!("function '{}' not found", name)))?;
             if function.return_types.is_empty() {
                 return Err(CompilerError::Unsupported("function has no return types".to_string()));
@@ -1325,9 +1349,7 @@ fn compile_statement(
                 return Err(CompilerError::Unsupported("return values count must match function return types".to_string()));
             }
             for (binding, return_type) in bindings.iter().zip(function.return_types.iter()) {
-                let binding_type_name = type_name_from_ref(&binding.type_ref);
-                let return_type_name = type_name_from_ref(return_type);
-                if binding_type_name != return_type_name {
+                if binding.type_ref != *return_type {
                     return Err(CompilerError::Unsupported("function return types must match binding types".to_string()));
                 }
             }
@@ -1353,13 +1375,14 @@ fn compile_statement(
             }
             Ok(())
         }
-        Statement::Assign { name, expr } => {
-            if let Some(type_name) = types.get(name) {
+        Statement::Assign { name, expr, .. } => {
+            let name_value = name.as_str();
+            if let Some(type_name) = types.get(name_value) {
                 if is_array_type(type_name) {
-                    match expr {
-                        Expr::Identifier(other) => match types.get(other) {
-                            Some(other_type) if is_type_assignable(other_type, type_name, contract_constants) => {
-                                env.insert(name.clone(), Expr::Identifier(other.clone()));
+                    match &expr.kind {
+                        ExprKind::Identifier(other) => match types.get(other) {
+                            Some(other_type) if other_type == type_name => {
+                                env.insert(name.clone(), Expr::new(ExprKind::Identifier(other.clone()), span::Span::default()));
                                 return Ok(());
                             }
                             Some(_) => {
@@ -1369,11 +1392,14 @@ fn compile_statement(
                             }
                             None => return Err(CompilerError::UndefinedIdentifier(other.clone())),
                         },
-                        _ => return Err(CompilerError::Unsupported("array assignment only supports array identifiers".to_string())),
+                        _ => {
+                            return Err(CompilerError::Unsupported("array assignment only supports array identifiers".to_string()));
+                        }
                     }
                 }
             }
-            let updated = if let Some(previous) = env.get(name) { replace_identifier(expr, name, previous) } else { expr.clone() };
+            let updated =
+                if let Some(previous) = env.get(name_value) { replace_identifier(expr, name_value, previous) } else { expr.clone() };
             let resolved = resolve_expr(updated, env, &mut HashSet::new())?;
             env.insert(name.clone(), resolved);
             Ok(())
@@ -1382,7 +1408,10 @@ fn compile_statement(
     }
 }
 
-fn encoded_field_chunk_size(field: &ContractFieldAst, contract_constants: &HashMap<String, Expr>) -> Result<usize, CompilerError> {
+fn encoded_field_chunk_size<'i>(
+    field: &ContractFieldAst<'i>,
+    contract_constants: &HashMap<String, Expr<'i>>,
+) -> Result<usize, CompilerError> {
     if field.type_ref.array_dims.is_empty() && field.type_ref.base == TypeBase::Int {
         return Ok(10);
     }
@@ -1405,13 +1434,13 @@ fn encoded_field_chunk_size(field: &ContractFieldAst, contract_constants: &HashM
     Ok(data_prefix(payload_size).len() + payload_size)
 }
 
-fn read_input_state_binding_expr(
-    input_idx: &Expr,
-    field: &ContractFieldAst,
+fn read_input_state_binding_expr<'i>(
+    input_idx: &Expr<'i>,
+    field: &ContractFieldAst<'i>,
     field_chunk_offset: usize,
     script_size_value: i64,
-    contract_constants: &HashMap<String, Expr>,
-) -> Result<Expr, CompilerError> {
+    contract_constants: &HashMap<String, Expr<'i>>,
+) -> Result<Expr<'i>, CompilerError> {
     let (field_payload_offset, field_payload_len, decode_int) =
         if field.type_ref.array_dims.is_empty() && field.type_ref.base == TypeBase::Int {
             (field_chunk_offset + 1, 8usize, true)
@@ -1434,26 +1463,35 @@ fn read_input_state_binding_expr(
             )));
         };
 
-    let sig_len = Expr::Call { name: "OpTxInputScriptSigLen".to_string(), args: vec![input_idx.clone()] };
-    let start = Expr::Binary {
-        op: BinaryOp::Add,
-        left: Box::new(Expr::Binary { op: BinaryOp::Sub, left: Box::new(sig_len), right: Box::new(Expr::Int(script_size_value)) }),
-        right: Box::new(Expr::Int(field_payload_offset as i64)),
-    };
-    let end = Expr::Binary { op: BinaryOp::Add, left: Box::new(start.clone()), right: Box::new(Expr::Int(field_payload_len as i64)) };
-    let substr = Expr::Call { name: "OpTxInputScriptSigSubstr".to_string(), args: vec![input_idx.clone(), start, end] };
+    let sig_len = Expr::call("OpTxInputScriptSigLen", vec![input_idx.clone()]);
+    let start = Expr::new(
+        ExprKind::Binary {
+            op: BinaryOp::Add,
+            left: Box::new(Expr::new(
+                ExprKind::Binary { op: BinaryOp::Sub, left: Box::new(sig_len), right: Box::new(Expr::int(script_size_value)) },
+                span::Span::default(),
+            )),
+            right: Box::new(Expr::int(field_payload_offset as i64)),
+        },
+        span::Span::default(),
+    );
+    let end = Expr::new(
+        ExprKind::Binary { op: BinaryOp::Add, left: Box::new(start.clone()), right: Box::new(Expr::int(field_payload_len as i64)) },
+        span::Span::default(),
+    );
+    let substr = Expr::call("OpTxInputScriptSigSubstr", vec![input_idx.clone(), start, end]);
 
-    if decode_int { Ok(Expr::Call { name: "OpBin2Num".to_string(), args: vec![substr] }) } else { Ok(substr) }
+    if decode_int { Ok(Expr::call("OpBin2Num", vec![substr])) } else { Ok(substr) }
 }
 
-fn compile_read_input_state_statement(
-    bindings: &[StateBindingAst],
-    args: &[Expr],
-    env: &mut HashMap<String, Expr>,
+fn compile_read_input_state_statement<'i>(
+    bindings: &[StateBindingAst<'i>],
+    args: &[Expr<'i>],
+    env: &mut HashMap<String, Expr<'i>>,
     types: &mut HashMap<String, String>,
-    contract_fields: &[ContractFieldAst],
+    contract_fields: &[ContractFieldAst<'i>],
     script_size: Option<i64>,
-    contract_constants: &HashMap<String, Expr>,
+    contract_constants: &HashMap<String, Expr<'i>>,
 ) -> Result<(), CompilerError> {
     if args.len() != 1 {
         return Err(CompilerError::Unsupported("readInputState(input_idx) expects 1 argument".to_string()));
@@ -1464,7 +1502,7 @@ fn compile_read_input_state_statement(
     let script_size_value =
         script_size.ok_or_else(|| CompilerError::Unsupported("readInputState requires this.scriptSize".to_string()))?;
 
-    let mut bindings_by_field: HashMap<&str, &StateBindingAst> = HashMap::new();
+    let mut bindings_by_field: HashMap<&str, &StateBindingAst<'i>> = HashMap::new();
     for binding in bindings {
         if bindings_by_field.insert(binding.field_name.as_str(), binding).is_some() {
             return Err(CompilerError::Unsupported(format!("duplicate state field '{}'", binding.field_name)));
@@ -1501,16 +1539,16 @@ fn compile_read_input_state_statement(
 
 #[allow(clippy::too_many_arguments)]
 fn compile_validate_output_state_statement(
-    args: &[Expr],
-    env: &HashMap<String, Expr>,
+    args: &[Expr<'_>],
+    env: &HashMap<String, Expr<'_>>,
     params: &HashMap<String, i64>,
     types: &HashMap<String, String>,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
-    contract_fields: &[ContractFieldAst],
+    contract_fields: &[ContractFieldAst<'_>],
     contract_field_prefix_len: usize,
     script_size: Option<i64>,
-    contract_constants: &HashMap<String, Expr>,
+    contract_constants: &HashMap<String, Expr<'_>>,
 ) -> Result<(), CompilerError> {
     if args.len() != 2 {
         return Err(CompilerError::Unsupported("validateOutputState(output_idx, new_state) expects 2 arguments".to_string()));
@@ -1520,7 +1558,7 @@ fn compile_validate_output_state_statement(
     }
 
     let output_idx = &args[0];
-    let Expr::StateObject(state_entries) = &args[1] else {
+    let ExprKind::StateObject(state_entries) = &args[1].kind else {
         return Err(CompilerError::Unsupported("validateOutputState second argument must be an object literal".to_string()));
     };
 
@@ -1672,19 +1710,19 @@ fn compile_validate_output_state_statement(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn compile_inline_call(
+fn compile_inline_call<'i>(
     name: &str,
-    args: &[Expr],
+    args: &[Expr<'i>],
     caller_types: &mut HashMap<String, String>,
-    caller_env: &mut HashMap<String, Expr>,
+    caller_env: &mut HashMap<String, Expr<'i>>,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
-    contract_constants: &HashMap<String, Expr>,
-    functions: &HashMap<String, FunctionAst>,
+    contract_constants: &HashMap<String, Expr<'i>>,
+    functions: &HashMap<String, FunctionAst<'i>>,
     function_order: &HashMap<String, usize>,
     caller_index: usize,
     script_size: Option<i64>,
-) -> Result<Vec<Expr>, CompilerError> {
+) -> Result<Vec<Expr<'i>>, CompilerError> {
     let function = functions.get(name).ok_or_else(|| CompilerError::Unsupported(format!("function '{}' not found", name)))?;
     let callee_index =
         function_order.get(name).copied().ok_or_else(|| CompilerError::Unsupported(format!("function '{}' not found", name)))?;
@@ -1711,14 +1749,14 @@ fn compile_inline_call(
         }
     }
 
-    let mut env: HashMap<String, Expr> = contract_constants.clone();
+    let mut env: HashMap<String, Expr<'i>> = contract_constants.clone();
     for (index, (param, arg)) in function.params.iter().zip(args.iter()).enumerate() {
         let resolved = resolve_expr(arg.clone(), caller_env, &mut HashSet::new())?;
         let temp_name = format!("__arg_{name}_{index}");
         let param_type_name = type_name_from_ref(&param.type_ref);
         env.insert(temp_name.clone(), resolved.clone());
         types.insert(temp_name.clone(), param_type_name.clone());
-        env.insert(param.name.clone(), Expr::Identifier(temp_name.clone()));
+        env.insert(param.name.clone(), Expr::new(ExprKind::Identifier(temp_name.clone()), span::Span::default()));
         caller_env.insert(temp_name.clone(), resolved);
         caller_types.insert(temp_name, param_type_name);
     }
@@ -1744,18 +1782,18 @@ fn compile_inline_call(
         }
     }
 
-    let mut yields: Vec<Expr> = Vec::new();
+    let mut yields: Vec<Expr<'i>> = Vec::new();
     let params = HashMap::new();
     let body_len = function.body.len();
     for (index, stmt) in function.body.iter().enumerate() {
-        if matches!(stmt, Statement::Return { .. }) {
+        if let Statement::Return { exprs, .. } = stmt {
             if index != body_len - 1 {
                 return Err(CompilerError::Unsupported("return statement must be the last statement".to_string()));
             }
-            let Statement::Return { exprs } = stmt else { unreachable!() };
-            validate_return_types(exprs, &function.return_types, &types, contract_constants)?;
+            validate_return_types(exprs, &function.return_types, &types, contract_constants)
+                .map_err(|err| err.with_span(&stmt.span()))?;
             for expr in exprs {
-                let resolved = resolve_expr(expr.clone(), &env, &mut HashSet::new())?;
+                let resolved = resolve_expr(expr.clone(), &env, &mut HashSet::new()).map_err(|err| err.with_span(&expr.span))?;
                 yields.push(resolved);
             }
             continue;
@@ -1775,7 +1813,8 @@ fn compile_inline_call(
             callee_index,
             &mut yields,
             script_size,
-        )?;
+        )
+        .map_err(|err| err.with_span(&stmt.span()))?;
     }
 
     for (name, value) in env.iter() {
@@ -1791,22 +1830,22 @@ fn compile_inline_call(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn compile_if_statement(
-    condition: &Expr,
-    then_branch: &[Statement],
-    else_branch: Option<&[Statement]>,
-    env: &mut HashMap<String, Expr>,
+fn compile_if_statement<'i>(
+    condition: &Expr<'i>,
+    then_branch: &[Statement<'i>],
+    else_branch: Option<&[Statement<'i>]>,
+    env: &mut HashMap<String, Expr<'i>>,
     params: &HashMap<String, i64>,
     types: &mut HashMap<String, String>,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
-    contract_fields: &[ContractFieldAst],
+    contract_fields: &[ContractFieldAst<'i>],
     contract_field_prefix_len: usize,
-    contract_constants: &HashMap<String, Expr>,
-    functions: &HashMap<String, FunctionAst>,
+    contract_constants: &HashMap<String, Expr<'i>>,
+    functions: &HashMap<String, FunctionAst<'i>>,
     function_order: &HashMap<String, usize>,
     function_index: usize,
-    yields: &mut Vec<Expr>,
+    yields: &mut Vec<Expr<'i>>,
     script_size: Option<i64>,
 ) -> Result<(), CompilerError> {
     let mut stack_depth = 0i64;
@@ -1873,12 +1912,12 @@ fn compile_if_statement(
     Ok(())
 }
 
-fn merge_env_after_if(
-    env: &mut HashMap<String, Expr>,
-    original_env: &HashMap<String, Expr>,
-    then_env: &HashMap<String, Expr>,
-    else_env: &HashMap<String, Expr>,
-    condition: &Expr,
+fn merge_env_after_if<'i>(
+    env: &mut HashMap<String, Expr<'i>>,
+    original_env: &HashMap<String, Expr<'i>>,
+    then_env: &HashMap<String, Expr<'i>>,
+    else_env: &HashMap<String, Expr<'i>>,
+    condition: &Expr<'i>,
 ) {
     for (name, original_expr) in original_env {
         let then_expr = then_env.get(name).unwrap_or(original_expr);
@@ -1889,26 +1928,29 @@ fn merge_env_after_if(
         } else {
             env.insert(
                 name.clone(),
-                Expr::IfElse {
-                    condition: Box::new(condition.clone()),
-                    then_expr: Box::new(then_expr.clone()),
-                    else_expr: Box::new(else_expr.clone()),
-                },
+                Expr::new(
+                    ExprKind::IfElse {
+                        condition: Box::new(condition.clone()),
+                        then_expr: Box::new(then_expr.clone()),
+                        else_expr: Box::new(else_expr.clone()),
+                    },
+                    span::Span::default(),
+                ),
             );
         }
     }
 }
 
-fn compile_time_op_statement(
+fn compile_time_op_statement<'i>(
     tx_var: &TimeVar,
-    expr: &Expr,
-    env: &mut HashMap<String, Expr>,
+    expr: &Expr<'i>,
+    env: &mut HashMap<String, Expr<'i>>,
     params: &HashMap<String, i64>,
     types: &HashMap<String, String>,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
     script_size: Option<i64>,
-    contract_constants: &HashMap<String, Expr>,
+    contract_constants: &HashMap<String, Expr<'i>>,
 ) -> Result<(), CompilerError> {
     let mut stack_depth = 0i64;
     compile_expr(expr, env, params, types, builder, options, &mut HashSet::new(), &mut stack_depth, script_size, contract_constants)?;
@@ -1926,20 +1968,20 @@ fn compile_time_op_statement(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn compile_block(
-    statements: &[Statement],
-    env: &mut HashMap<String, Expr>,
+fn compile_block<'i>(
+    statements: &[Statement<'i>],
+    env: &mut HashMap<String, Expr<'i>>,
     params: &HashMap<String, i64>,
     types: &mut HashMap<String, String>,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
-    contract_fields: &[ContractFieldAst],
+    contract_fields: &[ContractFieldAst<'i>],
     contract_field_prefix_len: usize,
-    contract_constants: &HashMap<String, Expr>,
-    functions: &HashMap<String, FunctionAst>,
+    contract_constants: &HashMap<String, Expr<'i>>,
+    functions: &HashMap<String, FunctionAst<'i>>,
     function_order: &HashMap<String, usize>,
     function_index: usize,
-    yields: &mut Vec<Expr>,
+    yields: &mut Vec<Expr<'i>>,
     script_size: Option<i64>,
 ) -> Result<(), CompilerError> {
     for stmt in statements {
@@ -1958,29 +2000,30 @@ fn compile_block(
             function_index,
             yields,
             script_size,
-        )?;
+        )
+        .map_err(|err| err.with_span(&stmt.span()))?;
     }
     Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
-fn compile_for_statement(
+fn compile_for_statement<'i>(
     ident: &str,
-    start_expr: &Expr,
-    end_expr: &Expr,
-    body: &[Statement],
-    env: &mut HashMap<String, Expr>,
+    start_expr: &Expr<'i>,
+    end_expr: &Expr<'i>,
+    body: &[Statement<'i>],
+    env: &mut HashMap<String, Expr<'i>>,
     params: &HashMap<String, i64>,
     types: &mut HashMap<String, String>,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
-    contract_fields: &[ContractFieldAst],
+    contract_fields: &[ContractFieldAst<'i>],
     contract_field_prefix_len: usize,
-    contract_constants: &HashMap<String, Expr>,
-    functions: &HashMap<String, FunctionAst>,
+    contract_constants: &HashMap<String, Expr<'i>>,
+    functions: &HashMap<String, FunctionAst<'i>>,
     function_order: &HashMap<String, usize>,
     function_index: usize,
-    yields: &mut Vec<Expr>,
+    yields: &mut Vec<Expr<'i>>,
     script_size: Option<i64>,
 ) -> Result<(), CompilerError> {
     let start = eval_const_int(start_expr, contract_constants)?;
@@ -1992,7 +2035,7 @@ fn compile_for_statement(
     let name = ident.to_string();
     let previous = env.get(&name).cloned();
     for value in start..end {
-        env.insert(name.clone(), Expr::Int(value));
+        env.insert(name.clone(), Expr::int(value));
         compile_block(
             body,
             env,
@@ -2023,16 +2066,17 @@ fn compile_for_statement(
     Ok(())
 }
 
-fn eval_const_int(expr: &Expr, constants: &HashMap<String, Expr>) -> Result<i64, CompilerError> {
-    match expr {
-        Expr::Int(value) => Ok(*value),
-        Expr::Identifier(name) => match constants.get(name) {
+fn eval_const_int<'i>(expr: &Expr<'i>, constants: &HashMap<String, Expr<'i>>) -> Result<i64, CompilerError> {
+    match &expr.kind {
+        ExprKind::Int(value) => Ok(*value),
+        ExprKind::DateLiteral(value) => Ok(*value),
+        ExprKind::Identifier(name) => match constants.get(name) {
             Some(value) => eval_const_int(value, constants),
             None => Err(CompilerError::Unsupported("for loop bounds must be constant integers".to_string())),
         },
-        Expr::Unary { op: UnaryOp::Neg, expr } => Ok(-eval_const_int(expr, constants)?),
-        Expr::Unary { .. } => Err(CompilerError::Unsupported("for loop bounds must be constant integers".to_string())),
-        Expr::Binary { op, left, right } => {
+        ExprKind::Unary { op: UnaryOp::Neg, expr } => Ok(-eval_const_int(expr, constants)?),
+        ExprKind::Unary { .. } => Err(CompilerError::Unsupported("for loop bounds must be constant integers".to_string())),
+        ExprKind::Binary { op, left, right } => {
             let lhs = eval_const_int(left, constants)?;
             let rhs = eval_const_int(right, constants)?;
             match op {
@@ -2058,11 +2102,16 @@ fn eval_const_int(expr: &Expr, constants: &HashMap<String, Expr>) -> Result<i64,
     }
 }
 
-fn resolve_expr(expr: Expr, env: &HashMap<String, Expr>, visiting: &mut HashSet<String>) -> Result<Expr, CompilerError> {
-    match expr {
-        Expr::Identifier(name) => {
+fn resolve_expr<'i>(
+    expr: Expr<'i>,
+    env: &HashMap<String, Expr<'i>>,
+    visiting: &mut HashSet<String>,
+) -> Result<Expr<'i>, CompilerError> {
+    let Expr { kind, span } = expr;
+    match kind {
+        ExprKind::Identifier(name) => {
             if name.starts_with("__arg_") {
-                return Ok(Expr::Identifier(name));
+                return Ok(Expr::new(ExprKind::Identifier(name), span));
             }
             if let Some(value) = env.get(&name) {
                 if !visiting.insert(name.clone()) {
@@ -2072,123 +2121,201 @@ fn resolve_expr(expr: Expr, env: &HashMap<String, Expr>, visiting: &mut HashSet<
                 visiting.remove(&name);
                 Ok(resolved)
             } else {
-                Ok(Expr::Identifier(name))
+                Ok(Expr::new(ExprKind::Identifier(name), span))
             }
         }
-        Expr::Unary { op, expr } => Ok(Expr::Unary { op, expr: Box::new(resolve_expr(*expr, env, visiting)?) }),
-        Expr::Binary { op, left, right } => Ok(Expr::Binary {
-            op,
-            left: Box::new(resolve_expr(*left, env, visiting)?),
-            right: Box::new(resolve_expr(*right, env, visiting)?),
-        }),
-        Expr::IfElse { condition, then_expr, else_expr } => Ok(Expr::IfElse {
-            condition: Box::new(resolve_expr(*condition, env, visiting)?),
-            then_expr: Box::new(resolve_expr(*then_expr, env, visiting)?),
-            else_expr: Box::new(resolve_expr(*else_expr, env, visiting)?),
-        }),
-        Expr::Array(values) => {
+        ExprKind::Unary { op, expr } => {
+            Ok(Expr::new(ExprKind::Unary { op, expr: Box::new(resolve_expr(*expr, env, visiting)?) }, span))
+        }
+        ExprKind::Binary { op, left, right } => Ok(Expr::new(
+            ExprKind::Binary {
+                op,
+                left: Box::new(resolve_expr(*left, env, visiting)?),
+                right: Box::new(resolve_expr(*right, env, visiting)?),
+            },
+            span,
+        )),
+        ExprKind::IfElse { condition, then_expr, else_expr } => Ok(Expr::new(
+            ExprKind::IfElse {
+                condition: Box::new(resolve_expr(*condition, env, visiting)?),
+                then_expr: Box::new(resolve_expr(*then_expr, env, visiting)?),
+                else_expr: Box::new(resolve_expr(*else_expr, env, visiting)?),
+            },
+            span,
+        )),
+        ExprKind::Array(values) => {
             let mut resolved = Vec::with_capacity(values.len());
             for value in values {
                 resolved.push(resolve_expr(value, env, visiting)?);
             }
-            Ok(Expr::Array(resolved))
+            Ok(Expr::new(ExprKind::Array(resolved), span))
         }
-        Expr::StateObject(fields) => {
+        ExprKind::StateObject(fields) => {
             let mut resolved_fields = Vec::with_capacity(fields.len());
             for field in fields {
-                resolved_fields.push(crate::ast::StateFieldExpr { name: field.name, expr: resolve_expr(field.expr, env, visiting)? });
+                resolved_fields.push(StateFieldExpr {
+                    name: field.name,
+                    expr: resolve_expr(field.expr, env, visiting)?,
+                    span: field.span,
+                    name_span: field.name_span,
+                });
             }
-            Ok(Expr::StateObject(resolved_fields))
+            Ok(Expr::new(ExprKind::StateObject(resolved_fields), span))
         }
-        Expr::Call { name, args } => {
+        ExprKind::Call { name, args, name_span } => {
             let mut resolved = Vec::with_capacity(args.len());
             for arg in args {
                 resolved.push(resolve_expr(arg, env, visiting)?);
             }
-            Ok(Expr::Call { name, args: resolved })
+            Ok(Expr::new(ExprKind::Call { name, args: resolved, name_span }, span))
         }
-        Expr::New { name, args } => {
+        ExprKind::New { name, args, name_span } => {
             let mut resolved = Vec::with_capacity(args.len());
             for arg in args {
                 resolved.push(resolve_expr(arg, env, visiting)?);
             }
-            Ok(Expr::New { name, args: resolved })
+            Ok(Expr::new(ExprKind::New { name, args: resolved, name_span }, span))
         }
-        Expr::Split { source, index, part } => Ok(Expr::Split {
-            source: Box::new(resolve_expr(*source, env, visiting)?),
-            index: Box::new(resolve_expr(*index, env, visiting)?),
-            part,
-        }),
-        Expr::ArrayIndex { source, index } => Ok(Expr::ArrayIndex {
-            source: Box::new(resolve_expr(*source, env, visiting)?),
-            index: Box::new(resolve_expr(*index, env, visiting)?),
-        }),
-        Expr::Introspection { kind, index } => Ok(Expr::Introspection { kind, index: Box::new(resolve_expr(*index, env, visiting)?) }),
-        other => Ok(other),
+        ExprKind::Split { source, index, part, span: split_span } => Ok(Expr::new(
+            ExprKind::Split {
+                source: Box::new(resolve_expr(*source, env, visiting)?),
+                index: Box::new(resolve_expr(*index, env, visiting)?),
+                part,
+                span: split_span,
+            },
+            span,
+        )),
+        ExprKind::ArrayIndex { source, index } => Ok(Expr::new(
+            ExprKind::ArrayIndex {
+                source: Box::new(resolve_expr(*source, env, visiting)?),
+                index: Box::new(resolve_expr(*index, env, visiting)?),
+            },
+            span,
+        )),
+        ExprKind::Introspection { kind, index, field_span } => {
+            Ok(Expr::new(ExprKind::Introspection { kind, index: Box::new(resolve_expr(*index, env, visiting)?), field_span }, span))
+        }
+        ExprKind::UnarySuffix { source, kind, span: suffix_span } => Ok(Expr::new(
+            ExprKind::UnarySuffix { source: Box::new(resolve_expr(*source, env, visiting)?), kind, span: suffix_span },
+            span,
+        )),
+        ExprKind::Slice { source, start, end, span: slice_span } => Ok(Expr::new(
+            ExprKind::Slice {
+                source: Box::new(resolve_expr(*source, env, visiting)?),
+                start: Box::new(resolve_expr(*start, env, visiting)?),
+                end: Box::new(resolve_expr(*end, env, visiting)?),
+                span: slice_span,
+            },
+            span,
+        )),
+        other => Ok(Expr::new(other, span)),
     }
 }
 
-fn replace_identifier(expr: &Expr, target: &str, replacement: &Expr) -> Expr {
-    match expr {
-        Expr::Identifier(name) if name == target => replacement.clone(),
-        Expr::Identifier(_) => expr.clone(),
-        Expr::Unary { op, expr: inner } => Expr::Unary { op: *op, expr: Box::new(replace_identifier(inner, target, replacement)) },
-        Expr::Binary { op, left, right } => Expr::Binary {
-            op: *op,
-            left: Box::new(replace_identifier(left, target, replacement)),
-            right: Box::new(replace_identifier(right, target, replacement)),
-        },
-        Expr::Array(values) => Expr::Array(values.iter().map(|value| replace_identifier(value, target, replacement)).collect()),
-        Expr::StateObject(fields) => Expr::StateObject(
-            fields
-                .iter()
-                .map(|field| crate::ast::StateFieldExpr {
-                    name: field.name.clone(),
-                    expr: replace_identifier(&field.expr, target, replacement),
-                })
-                .collect(),
+fn replace_identifier<'i>(expr: &Expr<'i>, target: &str, replacement: &Expr<'i>) -> Expr<'i> {
+    let span = expr.span;
+    match &expr.kind {
+        ExprKind::Identifier(name) if name == target => replacement.clone(),
+        ExprKind::Identifier(_) => expr.clone(),
+        ExprKind::Unary { op, expr: inner } => {
+            Expr::new(ExprKind::Unary { op: *op, expr: Box::new(replace_identifier(inner, target, replacement)) }, span)
+        }
+        ExprKind::Binary { op, left, right } => Expr::new(
+            ExprKind::Binary {
+                op: *op,
+                left: Box::new(replace_identifier(left, target, replacement)),
+                right: Box::new(replace_identifier(right, target, replacement)),
+            },
+            span,
         ),
-        Expr::Call { name, args } => {
-            Expr::Call { name: name.clone(), args: args.iter().map(|arg| replace_identifier(arg, target, replacement)).collect() }
+        ExprKind::Array(values) => {
+            Expr::new(ExprKind::Array(values.iter().map(|value| replace_identifier(value, target, replacement)).collect()), span)
         }
-        Expr::New { name, args } => {
-            Expr::New { name: name.clone(), args: args.iter().map(|arg| replace_identifier(arg, target, replacement)).collect() }
-        }
-        Expr::Split { source, index, part } => Expr::Split {
-            source: Box::new(replace_identifier(source, target, replacement)),
-            index: Box::new(replace_identifier(index, target, replacement)),
-            part: *part,
-        },
-        Expr::Slice { source, start, end } => Expr::Slice {
-            source: Box::new(replace_identifier(source, target, replacement)),
-            start: Box::new(replace_identifier(start, target, replacement)),
-            end: Box::new(replace_identifier(end, target, replacement)),
-        },
-        Expr::ArrayIndex { source, index } => Expr::ArrayIndex {
-            source: Box::new(replace_identifier(source, target, replacement)),
-            index: Box::new(replace_identifier(index, target, replacement)),
-        },
-        Expr::IfElse { condition, then_expr, else_expr } => Expr::IfElse {
-            condition: Box::new(replace_identifier(condition, target, replacement)),
-            then_expr: Box::new(replace_identifier(then_expr, target, replacement)),
-            else_expr: Box::new(replace_identifier(else_expr, target, replacement)),
-        },
-        Expr::Introspection { kind, index } => {
-            Expr::Introspection { kind: *kind, index: Box::new(replace_identifier(index, target, replacement)) }
-        }
-        Expr::Int(_) | Expr::Bool(_) | Expr::Byte(_) | Expr::String(_) | Expr::Nullary(_) => expr.clone(),
+        ExprKind::Call { name, args, name_span } => Expr::new(
+            ExprKind::Call {
+                name: name.clone(),
+                args: args.iter().map(|arg| replace_identifier(arg, target, replacement)).collect(),
+                name_span: *name_span,
+            },
+            span,
+        ),
+        ExprKind::New { name, args, name_span } => Expr::new(
+            ExprKind::New {
+                name: name.clone(),
+                args: args.iter().map(|arg| replace_identifier(arg, target, replacement)).collect(),
+                name_span: *name_span,
+            },
+            span,
+        ),
+        ExprKind::Split { source, index, part, span: split_span } => Expr::new(
+            ExprKind::Split {
+                source: Box::new(replace_identifier(source, target, replacement)),
+                index: Box::new(replace_identifier(index, target, replacement)),
+                part: *part,
+                span: *split_span,
+            },
+            span,
+        ),
+        ExprKind::UnarySuffix { source, kind, span: suffix_span } => Expr::new(
+            ExprKind::UnarySuffix {
+                source: Box::new(replace_identifier(source, target, replacement)),
+                kind: *kind,
+                span: *suffix_span,
+            },
+            span,
+        ),
+        ExprKind::Slice { source, start, end, span: slice_span } => Expr::new(
+            ExprKind::Slice {
+                source: Box::new(replace_identifier(source, target, replacement)),
+                start: Box::new(replace_identifier(start, target, replacement)),
+                end: Box::new(replace_identifier(end, target, replacement)),
+                span: *slice_span,
+            },
+            span,
+        ),
+        ExprKind::ArrayIndex { source, index } => Expr::new(
+            ExprKind::ArrayIndex {
+                source: Box::new(replace_identifier(source, target, replacement)),
+                index: Box::new(replace_identifier(index, target, replacement)),
+            },
+            span,
+        ),
+        ExprKind::IfElse { condition, then_expr, else_expr } => Expr::new(
+            ExprKind::IfElse {
+                condition: Box::new(replace_identifier(condition, target, replacement)),
+                then_expr: Box::new(replace_identifier(then_expr, target, replacement)),
+                else_expr: Box::new(replace_identifier(else_expr, target, replacement)),
+            },
+            span,
+        ),
+        ExprKind::Introspection { kind, index, field_span } => Expr::new(
+            ExprKind::Introspection {
+                kind: *kind,
+                index: Box::new(replace_identifier(index, target, replacement)),
+                field_span: *field_span,
+            },
+            span,
+        ),
+        ExprKind::Int(_)
+        | ExprKind::Bool(_)
+        | ExprKind::Byte(_)
+        | ExprKind::String(_)
+        | ExprKind::DateLiteral(_)
+        | ExprKind::StateObject(_)
+        | ExprKind::NumberWithUnit { .. }
+        | ExprKind::Nullary(_) => expr.clone(),
     }
 }
 
-struct CompilationScope<'a> {
-    env: &'a HashMap<String, Expr>,
+struct CompilationScope<'a, 'i> {
+    env: &'a HashMap<String, Expr<'i>>,
     params: &'a HashMap<String, i64>,
     types: &'a HashMap<String, String>,
 }
 
-fn compile_expr(
-    expr: &Expr,
-    env: &HashMap<String, Expr>,
+fn compile_expr<'i>(
+    expr: &Expr<'i>,
+    env: &HashMap<String, Expr<'i>>,
     params: &HashMap<String, i64>,
     types: &HashMap<String, String>,
     builder: &mut ScriptBuilder,
@@ -2196,63 +2323,44 @@ fn compile_expr(
     visiting: &mut HashSet<String>,
     stack_depth: &mut i64,
     script_size: Option<i64>,
-    contract_constants: &HashMap<String, Expr>,
+    contract_constants: &HashMap<String, Expr<'i>>,
 ) -> Result<(), CompilerError> {
     let scope = CompilationScope { env, params, types };
-    match expr {
-        Expr::Int(value) => {
+    match &expr.kind {
+        ExprKind::Int(value) => {
             builder.add_i64(*value)?;
             *stack_depth += 1;
             Ok(())
         }
-        Expr::Bool(value) => {
+        ExprKind::Bool(value) => {
             builder.add_op(if *value { OpTrue } else { OpFalse })?;
             *stack_depth += 1;
             Ok(())
         }
-        Expr::Byte(b) => {
-            builder.add_data(&[*b])?;
+        ExprKind::Byte(byte) => {
+            builder.add_data(&[*byte])?;
             *stack_depth += 1;
             Ok(())
         }
-        Expr::Array(values) if is_byte_array(&Expr::Array(values.clone())) => {
-            // Handle byte arrays
-            let bytes: Vec<u8> = values.iter().filter_map(|v| if let Expr::Byte(b) = v { Some(*b) } else { None }).collect();
-            builder.add_data(&bytes)?;
-            *stack_depth += 1;
-            Ok(())
-        }
-        Expr::Array(values) => {
-            if let Some(array_type) = infer_fixed_array_literal_type(values) {
-                let encoded = encode_array_literal(values, &array_type)?;
-                builder.add_data(&encoded)?;
-                *stack_depth += 1;
-                return Ok(());
-            }
-            Err(CompilerError::Unsupported(
-                "array literals are only supported for fixed-size element arrays and in LockingBytecodeNullData".to_string(),
-            ))
-        }
-        Expr::StateObject(_) => {
-            Err(CompilerError::Unsupported("state object literals are only supported in validateOutputState()".to_string()))
-        }
-        Expr::String(value) => {
+        ExprKind::String(value) => {
             builder.add_data(value.as_bytes())?;
             *stack_depth += 1;
             Ok(())
         }
-        Expr::Identifier(name) => {
+        ExprKind::Identifier(name) => {
             if !visiting.insert(name.clone()) {
                 return Err(CompilerError::CyclicIdentifier(name.clone()));
             }
             if let Some(expr) = env.get(name) {
-                if let (Some(type_name), Expr::Array(values)) = (types.get(name), expr) {
-                    if is_array_type(type_name) {
-                        let encoded = encode_array_literal(values, type_name)?;
-                        builder.add_data(&encoded)?;
-                        *stack_depth += 1;
-                        visiting.remove(name);
-                        return Ok(());
+                if let Some(type_name) = types.get(name) {
+                    if let ExprKind::Array(values) = &expr.kind {
+                        if is_array_type(type_name) {
+                            let encoded = encode_array_literal(values, type_name)?;
+                            builder.add_data(&encoded)?;
+                            *stack_depth += 1;
+                            visiting.remove(name);
+                            return Ok(());
+                        }
                     }
                 }
                 compile_expr(expr, env, params, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
@@ -2269,7 +2377,15 @@ fn compile_expr(
             visiting.remove(name);
             Err(CompilerError::UndefinedIdentifier(name.clone()))
         }
-        Expr::IfElse { condition, then_expr, else_expr } => {
+        ExprKind::DateLiteral(value) => {
+            builder.add_i64(*value)?;
+            *stack_depth += 1;
+            Ok(())
+        }
+        ExprKind::NumberWithUnit { .. } => {
+            Err(CompilerError::Unsupported("number units must be normalized during parsing".to_string()))
+        }
+        ExprKind::IfElse { condition, then_expr, else_expr } => {
             compile_expr(condition, env, params, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
             builder.add_op(OpIf)?;
             *stack_depth -= 1;
@@ -2282,629 +2398,26 @@ fn compile_expr(
             *stack_depth = depth_before + 1;
             Ok(())
         }
-        Expr::Call { name, args } => match name.as_str() {
-            "OpSha256" => compile_opcode_call(
-                name,
-                args,
-                1,
-                &scope,
-                builder,
-                options,
-                visiting,
-                stack_depth,
-                OpSHA256,
-                script_size,
-                contract_constants,
-            ),
-            "sha256" => {
-                if args.len() != 1 {
-                    return Err(CompilerError::Unsupported("sha256() expects a single argument".to_string()));
-                }
-                compile_expr(&args[0], env, params, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
-                builder.add_op(OpSHA256)?;
-                Ok(())
-            }
-            "date" => {
-                if args.len() != 1 {
-                    return Err(CompilerError::Unsupported("date() expects a single argument".to_string()));
-                }
-                let value = match &args[0] {
-                    Expr::String(value) => value.as_str(),
-                    Expr::Identifier(name) => {
-                        if let Some(Expr::String(value)) = env.get(name) {
-                            value.as_str()
-                        } else {
-                            return Err(CompilerError::Unsupported("date() expects a string literal".to_string()));
-                        }
-                    }
-                    _ => return Err(CompilerError::Unsupported("date() expects a string literal".to_string())),
-                };
-                let timestamp = parse_date_value(value)?;
-                builder.add_i64(timestamp)?;
+        ExprKind::Array(values) => {
+            if values.is_empty() {
+                builder.add_data(&[])?;
                 *stack_depth += 1;
-                Ok(())
+                return Ok(());
             }
-            "OpTxSubnetId" => compile_opcode_call(
-                name,
-                args,
-                0,
-                &scope,
-                builder,
-                options,
-                visiting,
-                stack_depth,
-                OpTxSubnetId,
-                script_size,
-                contract_constants,
-            ),
-            "OpTxGas" => compile_opcode_call(
-                name,
-                args,
-                0,
-                &scope,
-                builder,
-                options,
-                visiting,
-                stack_depth,
-                OpTxGas,
-                script_size,
-                contract_constants,
-            ),
-            "OpTxPayloadLen" => compile_opcode_call(
-                name,
-                args,
-                0,
-                &scope,
-                builder,
-                options,
-                visiting,
-                stack_depth,
-                OpTxPayloadLen,
-                script_size,
-                contract_constants,
-            ),
-            "OpTxPayloadSubstr" => compile_opcode_call(
-                name,
-                args,
-                2,
-                &scope,
-                builder,
-                options,
-                visiting,
-                stack_depth,
-                OpTxPayloadSubstr,
-                script_size,
-                contract_constants,
-            ),
-            "OpOutpointTxId" => compile_opcode_call(
-                name,
-                args,
-                1,
-                &scope,
-                builder,
-                options,
-                visiting,
-                stack_depth,
-                OpOutpointTxId,
-                script_size,
-                contract_constants,
-            ),
-            "OpOutpointIndex" => compile_opcode_call(
-                name,
-                args,
-                1,
-                &scope,
-                builder,
-                options,
-                visiting,
-                stack_depth,
-                OpOutpointIndex,
-                script_size,
-                contract_constants,
-            ),
-            "OpTxInputScriptSigLen" => compile_opcode_call(
-                name,
-                args,
-                1,
-                &scope,
-                builder,
-                options,
-                visiting,
-                stack_depth,
-                OpTxInputScriptSigLen,
-                script_size,
-                contract_constants,
-            ),
-            "OpTxInputScriptSigSubstr" => compile_opcode_call(
-                name,
-                args,
-                3,
-                &scope,
-                builder,
-                options,
-                visiting,
-                stack_depth,
-                OpTxInputScriptSigSubstr,
-                script_size,
-                contract_constants,
-            ),
-            "OpTxInputSeq" => compile_opcode_call(
-                name,
-                args,
-                1,
-                &scope,
-                builder,
-                options,
-                visiting,
-                stack_depth,
-                OpTxInputSeq,
-                script_size,
-                contract_constants,
-            ),
-            "OpTxInputIsCoinbase" => compile_opcode_call(
-                name,
-                args,
-                1,
-                &scope,
-                builder,
-                options,
-                visiting,
-                stack_depth,
-                OpTxInputIsCoinbase,
-                script_size,
-                contract_constants,
-            ),
-            "OpTxInputSpkLen" => compile_opcode_call(
-                name,
-                args,
-                1,
-                &scope,
-                builder,
-                options,
-                visiting,
-                stack_depth,
-                OpTxInputSpkLen,
-                script_size,
-                contract_constants,
-            ),
-            "OpTxInputSpkSubstr" => compile_opcode_call(
-                name,
-                args,
-                3,
-                &scope,
-                builder,
-                options,
-                visiting,
-                stack_depth,
-                OpTxInputSpkSubstr,
-                script_size,
-                contract_constants,
-            ),
-            "OpTxOutputSpkLen" => compile_opcode_call(
-                name,
-                args,
-                1,
-                &scope,
-                builder,
-                options,
-                visiting,
-                stack_depth,
-                OpTxOutputSpkLen,
-                script_size,
-                contract_constants,
-            ),
-            "OpTxOutputSpkSubstr" => compile_opcode_call(
-                name,
-                args,
-                3,
-                &scope,
-                builder,
-                options,
-                visiting,
-                stack_depth,
-                OpTxOutputSpkSubstr,
-                script_size,
-                contract_constants,
-            ),
-            "OpAuthOutputCount" => compile_opcode_call(
-                name,
-                args,
-                1,
-                &scope,
-                builder,
-                options,
-                visiting,
-                stack_depth,
-                OpAuthOutputCount,
-                script_size,
-                contract_constants,
-            ),
-            "OpAuthOutputIdx" => compile_opcode_call(
-                name,
-                args,
-                2,
-                &scope,
-                builder,
-                options,
-                visiting,
-                stack_depth,
-                OpAuthOutputIdx,
-                script_size,
-                contract_constants,
-            ),
-            "OpInputCovenantId" => compile_opcode_call(
-                name,
-                args,
-                1,
-                &scope,
-                builder,
-                options,
-                visiting,
-                stack_depth,
-                OpInputCovenantId,
-                script_size,
-                contract_constants,
-            ),
-            "OpCovInputCount" => compile_opcode_call(
-                name,
-                args,
-                1,
-                &scope,
-                builder,
-                options,
-                visiting,
-                stack_depth,
-                OpCovInputCount,
-                script_size,
-                contract_constants,
-            ),
-            "OpCovInputIdx" => compile_opcode_call(
-                name,
-                args,
-                2,
-                &scope,
-                builder,
-                options,
-                visiting,
-                stack_depth,
-                OpCovInputIdx,
-                script_size,
-                contract_constants,
-            ),
-            "OpCovOutCount" => compile_opcode_call(
-                name,
-                args,
-                1,
-                &scope,
-                builder,
-                options,
-                visiting,
-                stack_depth,
-                OpCovOutCount,
-                script_size,
-                contract_constants,
-            ),
-            "OpCovOutputIdx" => compile_opcode_call(
-                name,
-                args,
-                2,
-                &scope,
-                builder,
-                options,
-                visiting,
-                stack_depth,
-                OpCovOutputIdx,
-                script_size,
-                contract_constants,
-            ),
-            "OpNum2Bin" => compile_opcode_call(
-                name,
-                args,
-                2,
-                &scope,
-                builder,
-                options,
-                visiting,
-                stack_depth,
-                OpNum2Bin,
-                script_size,
-                contract_constants,
-            ),
-            "OpBin2Num" => compile_opcode_call(
-                name,
-                args,
-                1,
-                &scope,
-                builder,
-                options,
-                visiting,
-                stack_depth,
-                OpBin2Num,
-                script_size,
-                contract_constants,
-            ),
-            "OpChainblockSeqCommit" => compile_opcode_call(
-                name,
-                args,
-                1,
-                &scope,
-                builder,
-                options,
-                visiting,
-                stack_depth,
-                OpChainblockSeqCommit,
-                script_size,
-                contract_constants,
-            ),
-            "bytes" => {
-                if args.is_empty() || args.len() > 2 {
-                    return Err(CompilerError::Unsupported("bytes() expects one or two arguments".to_string()));
-                }
-                if args.len() == 2 {
-                    compile_expr(
-                        &args[0],
-                        env,
-                        params,
-                        types,
-                        builder,
-                        options,
-                        visiting,
-                        stack_depth,
-                        script_size,
-                        contract_constants,
-                    )?;
-                    compile_expr(
-                        &args[1],
-                        env,
-                        params,
-                        types,
-                        builder,
-                        options,
-                        visiting,
-                        stack_depth,
-                        script_size,
-                        contract_constants,
-                    )?;
-                    builder.add_op(OpNum2Bin)?;
-                    *stack_depth -= 1;
-                    return Ok(());
-                }
-                match &args[0] {
-                    Expr::String(value) => {
-                        builder.add_data(value.as_bytes())?;
-                        *stack_depth += 1;
-                        Ok(())
-                    }
-                    Expr::Identifier(name) => {
-                        if let Some(Expr::String(value)) = env.get(name) {
-                            builder.add_data(value.as_bytes())?;
-                            *stack_depth += 1;
-                            return Ok(());
-                        }
-                        if expr_is_bytes(&args[0], env, types) {
-                            compile_expr(
-                                &args[0],
-                                env,
-                                params,
-                                types,
-                                builder,
-                                options,
-                                visiting,
-                                stack_depth,
-                                script_size,
-                                contract_constants,
-                            )?;
-                            return Ok(());
-                        }
-                        compile_expr(
-                            &args[0],
-                            env,
-                            params,
-                            types,
-                            builder,
-                            options,
-                            visiting,
-                            stack_depth,
-                            script_size,
-                            contract_constants,
-                        )?;
-                        builder.add_i64(8)?;
-                        *stack_depth += 1;
-                        builder.add_op(OpNum2Bin)?;
-                        *stack_depth -= 1;
-                        Ok(())
-                    }
-                    _ => {
-                        if expr_is_bytes(&args[0], env, types) {
-                            compile_expr(
-                                &args[0],
-                                env,
-                                params,
-                                types,
-                                builder,
-                                options,
-                                visiting,
-                                stack_depth,
-                                script_size,
-                                contract_constants,
-                            )?;
-                            Ok(())
-                        } else {
-                            compile_expr(
-                                &args[0],
-                                env,
-                                params,
-                                types,
-                                builder,
-                                options,
-                                visiting,
-                                stack_depth,
-                                script_size,
-                                contract_constants,
-                            )?;
-                            builder.add_i64(8)?;
-                            *stack_depth += 1;
-                            builder.add_op(OpNum2Bin)?;
-                            *stack_depth -= 1;
-                            Ok(())
-                        }
-                    }
-                }
-            }
-            "length" => {
-                if args.len() != 1 {
-                    return Err(CompilerError::Unsupported("length() expects a single argument".to_string()));
-                }
-                if let Expr::Identifier(name) = &args[0] {
-                    if let Some(type_name) = types.get(name) {
-                        // Check if this is a fixed-size array type[N] (supporting constants)
-                        if let Some(array_size) = array_size_with_constants(type_name, contract_constants) {
-                            // Compile-time length for fixed-size arrays
-                            builder.add_i64(array_size as i64)?;
-                            *stack_depth += 1;
-                            return Ok(());
-                        }
-                        // Runtime length for dynamic arrays
-                        if let Some(element_size) = array_element_size(type_name) {
-                            compile_expr(
-                                &args[0],
-                                env,
-                                params,
-                                types,
-                                builder,
-                                options,
-                                visiting,
-                                stack_depth,
-                                script_size,
-                                contract_constants,
-                            )?;
-                            builder.add_op(OpSize)?;
-                            builder.add_op(OpSwap)?;
-                            builder.add_op(OpDrop)?;
-                            builder.add_i64(element_size)?;
-                            *stack_depth += 1;
-                            builder.add_op(OpDiv)?;
-                            *stack_depth -= 1;
-                            return Ok(());
-                        }
-                    }
-                }
-                compile_expr(&args[0], env, params, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
-                builder.add_op(OpSize)?;
-                Ok(())
-            }
-            "int" => {
-                if args.len() != 1 {
-                    return Err(CompilerError::Unsupported("int() expects a single argument".to_string()));
-                }
-                compile_expr(&args[0], env, params, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
-                Ok(())
-            }
-            "sig" | "pubkey" | "datasig" => {
-                if args.len() != 1 {
-                    return Err(CompilerError::Unsupported(format!("{name}() expects a single argument")));
-                }
-                compile_expr(&args[0], env, params, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
-                Ok(())
-            }
-            name if name.starts_with("byte[") && name.ends_with(']') => {
-                let size_part = &name[5..name.len() - 1];
-                if size_part.is_empty() {
-                    // Handle byte[] cast (dynamic array) - just compile the argument as-is
-                    if args.len() != 1 && args.len() != 2 {
-                        return Err(CompilerError::Unsupported(format!("{name}() expects 1 or 2 arguments")));
-                    }
-                    compile_expr(
-                        &args[0],
-                        env,
-                        params,
-                        types,
-                        builder,
-                        options,
-                        visiting,
-                        stack_depth,
-                        script_size,
-                        contract_constants,
-                    )?;
-                    if args.len() == 2 {
-                        // byte[](value, size) - OpNum2Bin with size parameter
-                        compile_expr(
-                            &args[1],
-                            env,
-                            params,
-                            types,
-                            builder,
-                            options,
-                            visiting,
-                            stack_depth,
-                            script_size,
-                            contract_constants,
-                        )?;
-                        *stack_depth += 1;
-                        builder.add_op(OpNum2Bin)?;
-                        *stack_depth -= 1;
-                    }
-                    Ok(())
-                } else {
-                    // Handle byte[N] cast - extract size from byte[N]
-                    let size =
-                        size_part.parse::<i64>().map_err(|_| CompilerError::Unsupported(format!("{name}() is not supported")))?;
-                    if args.len() != 1 {
-                        return Err(CompilerError::Unsupported(format!("{name}() expects a single argument")));
-                    }
-                    compile_expr(
-                        &args[0],
-                        env,
-                        params,
-                        types,
-                        builder,
-                        options,
-                        visiting,
-                        stack_depth,
-                        script_size,
-                        contract_constants,
-                    )?;
-                    builder.add_i64(size)?;
-                    *stack_depth += 1;
-                    builder.add_op(OpNum2Bin)?;
-                    *stack_depth -= 1;
-                    Ok(())
-                }
-            }
-            "blake2b" => {
-                if args.len() != 1 {
-                    return Err(CompilerError::Unsupported("blake2b() expects a single argument".to_string()));
-                }
-                compile_expr(&args[0], env, params, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
-                builder.add_op(OpBlake2b)?;
-                Ok(())
-            }
-            "checkSig" => {
-                if args.len() != 2 {
-                    return Err(CompilerError::Unsupported("checkSig() expects 2 arguments".to_string()));
-                }
-                compile_expr(&args[0], env, params, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
-                compile_expr(&args[1], env, params, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
-                builder.add_op(OpCheckSig)?;
-                *stack_depth -= 1;
-                Ok(())
-            }
-            "checkDataSig" => {
-                // TODO: Remove this stub
-                for arg in args {
-                    compile_expr(arg, env, params, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
-                }
-                for _ in 0..args.len() {
-                    builder.add_op(OpDrop)?;
-                    *stack_depth -= 1;
-                }
-                builder.add_op(OpTrue)?;
-                *stack_depth += 1;
-                Ok(())
-            }
-            _ => Err(CompilerError::Unsupported(format!("unknown function call: {name}"))),
-        },
-        Expr::New { name, args } => match name.as_str() {
+            let inferred_type = infer_fixed_array_literal_type(values)
+                .ok_or_else(|| CompilerError::Unsupported("array literal type cannot be inferred".to_string()))?;
+            let encoded = encode_array_literal(values, &inferred_type)?;
+            builder.add_data(&encoded)?;
+            *stack_depth += 1;
+            Ok(())
+        }
+        ExprKind::StateObject(_) => {
+            Err(CompilerError::Unsupported("state object literals are only supported in validateOutputState".to_string()))
+        }
+        ExprKind::Call { name, args, .. } => {
+            compile_call_expr(name.as_str(), args, &scope, builder, options, visiting, stack_depth, script_size, contract_constants)
+        }
+        ExprKind::New { name, args, .. } => match name.as_str() {
             "LockingBytecodeNullData" => {
                 if args.len() != 1 {
                     return Err(CompilerError::Unsupported("LockingBytecodeNullData expects a single array argument".to_string()));
@@ -2981,9 +2494,9 @@ fn compile_expr(
                 *stack_depth -= 1;
                 Ok(())
             }
-            _ => Err(CompilerError::Unsupported(format!("unknown constructor: {name}"))),
+            name => Err(CompilerError::Unsupported(format!("unknown constructor: {name}"))),
         },
-        Expr::Unary { op, expr } => {
+        ExprKind::Unary { op, expr } => {
             compile_expr(expr, env, params, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
             match op {
                 UnaryOp::Not => builder.add_op(OpNot)?,
@@ -2991,7 +2504,7 @@ fn compile_expr(
             };
             Ok(())
         }
-        Expr::Binary { op, left, right } => {
+        ExprKind::Binary { op, left, right } => {
             let bytes_eq =
                 matches!(op, BinaryOp::Eq | BinaryOp::Ne) && (expr_is_bytes(left, env, types) || expr_is_bytes(right, env, types));
             let bytes_add = matches!(op, BinaryOp::Add) && (expr_is_bytes(left, env, types) || expr_is_bytes(right, env, types));
@@ -3086,37 +2599,64 @@ fn compile_expr(
             *stack_depth -= 1;
             Ok(())
         }
-        Expr::Split { source, index, part } => {
+        ExprKind::Split { source, index, part, .. } => compile_split_part(
+            source,
+            index,
+            *part,
+            env,
+            params,
+            types,
+            builder,
+            options,
+            visiting,
+            stack_depth,
+            script_size,
+            contract_constants,
+        ),
+        ExprKind::UnarySuffix { source, kind, .. } => match kind {
+            UnarySuffixKind::Length => compile_length_expr(
+                source,
+                env,
+                params,
+                types,
+                builder,
+                options,
+                visiting,
+                stack_depth,
+                script_size,
+                contract_constants,
+            ),
+            UnarySuffixKind::Reverse => Err(CompilerError::Unsupported("reverse() is not supported".to_string())),
+        },
+        ExprKind::Slice { source, start, end, .. } => {
             compile_expr(source, env, params, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
-            match part {
-                SplitPart::Left => {
-                    compile_expr(index, env, params, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
-                    builder.add_i64(0)?;
-                    *stack_depth += 1;
-                    builder.add_op(OpSwap)?;
-                    builder.add_op(OpSubstr)?;
-                    *stack_depth -= 2;
-                }
-                SplitPart::Right => {
-                    builder.add_op(OpSize)?;
-                    *stack_depth += 1;
-                    compile_expr(index, env, params, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
-                    builder.add_op(OpSwap)?;
-                    builder.add_op(OpSubstr)?;
-                    *stack_depth -= 2;
-                }
-            }
+            compile_expr(start, env, params, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
+            compile_expr(end, env, params, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
+
+            builder.add_op(Op2Dup)?;
+            *stack_depth += 2;
+            builder.add_op(OpSwap)?;
+            builder.add_op(OpSub)?;
+            *stack_depth -= 1;
+            builder.add_op(OpSwap)?;
+            builder.add_op(OpDrop)?;
+            *stack_depth -= 1;
+            builder.add_op(OpSubstr)?;
+            *stack_depth -= 2;
             Ok(())
         }
-        Expr::ArrayIndex { source, index } => {
+        ExprKind::ArrayIndex { source, index } => {
             let resolved_source = match source.as_ref() {
-                Expr::Identifier(_) => source.as_ref().clone(),
+                Expr { kind: ExprKind::Identifier(_), .. } => source.as_ref().clone(),
                 _ => resolve_expr(*source.clone(), env, visiting)?,
             };
-            let element_type = match &resolved_source {
-                Expr::Identifier(name) => {
+            let element_type = match &resolved_source.kind {
+                ExprKind::Identifier(name) => {
                     let type_name = types.get(name).or_else(|| {
-                        env.get(name).and_then(|value| if let Expr::Identifier(inner) = value { types.get(inner) } else { None })
+                        env.get(name).and_then(|value| match &value.kind {
+                            ExprKind::Identifier(inner) => types.get(inner),
+                            _ => None,
+                        })
                     });
                     type_name
                         .and_then(|t| array_element_type(t))
@@ -3156,24 +2696,7 @@ fn compile_expr(
             }
             Ok(())
         }
-        Expr::Slice { source, start, end } => {
-            compile_expr(source, env, params, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
-            compile_expr(start, env, params, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
-            compile_expr(end, env, params, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
-
-            builder.add_op(Op2Dup)?;
-            *stack_depth += 2;
-            builder.add_op(OpSwap)?;
-            builder.add_op(OpSub)?;
-            *stack_depth -= 1;
-            builder.add_op(OpSwap)?;
-            builder.add_op(OpDrop)?;
-            *stack_depth -= 1;
-            builder.add_op(OpSubstr)?;
-            *stack_depth -= 2;
-            Ok(())
-        }
-        Expr::Nullary(op) => {
+        ExprKind::Nullary(op) => {
             match op {
                 NullaryOp::ActiveInputIndex => {
                     builder.add_op(OpTxInputIndex)?;
@@ -3213,7 +2736,7 @@ fn compile_expr(
             *stack_depth += 1;
             Ok(())
         }
-        Expr::Introspection { kind, index } => {
+        ExprKind::Introspection { kind, index, .. } => {
             compile_expr(index, env, params, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
             match kind {
                 IntrospectionKind::InputValue => {
@@ -3229,6 +2752,15 @@ fn compile_expr(
                     builder.add_op(OpSwap)?;
                     builder.add_op(OpTxInputScriptSigSubstr)?;
                 }
+                IntrospectionKind::InputOutpointTransactionHash => {
+                    builder.add_op(OpOutpointTxId)?;
+                }
+                IntrospectionKind::InputOutpointIndex => {
+                    builder.add_op(OpOutpointIndex)?;
+                }
+                IntrospectionKind::InputSequenceNumber => {
+                    builder.add_op(OpTxInputSeq)?;
+                }
                 IntrospectionKind::OutputValue => {
                     builder.add_op(OpTxOutputAmount)?;
                 }
@@ -3241,31 +2773,70 @@ fn compile_expr(
     }
 }
 
-fn expr_is_bytes(expr: &Expr, env: &HashMap<String, Expr>, types: &HashMap<String, String>) -> bool {
+#[allow(clippy::too_many_arguments)]
+fn compile_split_part<'i>(
+    source: &Expr<'i>,
+    index: &Expr<'i>,
+    part: SplitPart,
+    env: &HashMap<String, Expr<'i>>,
+    params: &HashMap<String, i64>,
+    types: &HashMap<String, String>,
+    builder: &mut ScriptBuilder,
+    options: CompileOptions,
+    visiting: &mut HashSet<String>,
+    stack_depth: &mut i64,
+    script_size: Option<i64>,
+    contract_constants: &HashMap<String, Expr<'i>>,
+) -> Result<(), CompilerError> {
+    compile_expr(source, env, params, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
+    match part {
+        SplitPart::Left => {
+            compile_expr(index, env, params, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
+            builder.add_i64(0)?;
+            *stack_depth += 1;
+            builder.add_op(OpSwap)?;
+            builder.add_op(OpSubstr)?;
+            *stack_depth -= 2;
+            Ok(())
+        }
+        SplitPart::Right => {
+            builder.add_op(OpSize)?;
+            *stack_depth += 1;
+            compile_expr(index, env, params, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
+            builder.add_op(OpSwap)?;
+            builder.add_op(OpSubstr)?;
+            *stack_depth -= 2;
+            Ok(())
+        }
+    }
+}
+
+fn expr_is_bytes<'i>(expr: &Expr<'i>, env: &HashMap<String, Expr<'i>>, types: &HashMap<String, String>) -> bool {
     let mut visiting = HashSet::new();
     expr_is_bytes_inner(expr, env, types, &mut visiting)
 }
 
-fn expr_is_bytes_inner(
-    expr: &Expr,
-    env: &HashMap<String, Expr>,
+fn expr_is_bytes_inner<'i>(
+    expr: &Expr<'i>,
+    env: &HashMap<String, Expr<'i>>,
     types: &HashMap<String, String>,
     visiting: &mut HashSet<String>,
 ) -> bool {
-    match expr {
-        Expr::Byte(_) => true,
-        Expr::Array(values) => is_byte_array(&Expr::Array(values.clone())),
-        Expr::StateObject(_) => false,
-        Expr::String(_) => true,
-        Expr::Slice { .. } => true,
-        Expr::New { name, .. } => matches!(
+    match &expr.kind {
+        ExprKind::Byte(_) => true,
+        ExprKind::String(_) => true,
+        ExprKind::Array(values) => values.iter().all(|value| matches!(&value.kind, ExprKind::Byte(_))),
+        ExprKind::Slice { .. } => true,
+        ExprKind::New { name, .. } => matches!(
             name.as_str(),
             "LockingBytecodeNullData" | "ScriptPubKeyP2PK" | "ScriptPubKeyP2SH" | "ScriptPubKeyP2SHFromRedeemScript"
         ),
-        Expr::Call { name, .. } => {
+        ExprKind::Call { name, .. } => {
+            let name = name.as_str();
             matches!(
-                name.as_str(),
-                "blake2b"
+                name,
+                "bytes"
+                    | "blake2b"
                     | "sha256"
                     | "OpSha256"
                     | "OpTxSubnetId"
@@ -3280,28 +2851,29 @@ fn expr_is_bytes_inner(
                     | "OpChainblockSeqCommit"
             ) || name.starts_with("byte[")
         }
-        Expr::Split { .. } => true,
-        Expr::Binary { op: BinaryOp::Add, left, right } => {
+        ExprKind::Split { .. } => true,
+        ExprKind::Binary { op: BinaryOp::Add, left, right } => {
             expr_is_bytes_inner(left, env, types, visiting) || expr_is_bytes_inner(right, env, types, visiting)
         }
-        Expr::IfElse { condition: _, then_expr, else_expr } => {
+        ExprKind::IfElse { condition: _, then_expr, else_expr } => {
             expr_is_bytes_inner(then_expr, env, types, visiting) && expr_is_bytes_inner(else_expr, env, types, visiting)
         }
-        Expr::Introspection { kind, .. } => {
-            matches!(
-                kind,
-                IntrospectionKind::InputScriptPubKey | IntrospectionKind::InputSigScript | IntrospectionKind::OutputScriptPubKey
-            )
-        }
-        Expr::Nullary(NullaryOp::ActiveScriptPubKey) => true,
-        Expr::Nullary(NullaryOp::ThisScriptSizeDataPrefix) => true,
-        Expr::ArrayIndex { source, .. } => match source.as_ref() {
-            Expr::Identifier(name) => {
+        ExprKind::Introspection { kind, .. } => matches!(
+            kind,
+            IntrospectionKind::InputScriptPubKey
+                | IntrospectionKind::InputSigScript
+                | IntrospectionKind::InputOutpointTransactionHash
+                | IntrospectionKind::OutputScriptPubKey
+        ),
+        ExprKind::Nullary(NullaryOp::ActiveScriptPubKey) => true,
+        ExprKind::Nullary(NullaryOp::ThisScriptSizeDataPrefix) => true,
+        ExprKind::ArrayIndex { source, .. } => match &source.kind {
+            ExprKind::Identifier(name) => {
                 types.get(name).and_then(|type_name| array_element_type(type_name)).map(|element| element != "int").unwrap_or(false)
             }
             _ => false,
         },
-        Expr::Identifier(name) => {
+        ExprKind::Identifier(name) => {
             if !visiting.insert(name.clone()) {
                 return false;
             }
@@ -3314,23 +2886,734 @@ fn expr_is_bytes_inner(
             visiting.remove(name);
             types.get(name).map(|type_name| is_bytes_type(type_name)).unwrap_or(false)
         }
+        ExprKind::UnarySuffix { kind, .. } => matches!(kind, UnarySuffixKind::Reverse),
         _ => false,
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn compile_opcode_call(
+fn compile_length_expr<'i>(
+    expr: &Expr<'i>,
+    env: &HashMap<String, Expr<'i>>,
+    params: &HashMap<String, i64>,
+    types: &HashMap<String, String>,
+    builder: &mut ScriptBuilder,
+    options: CompileOptions,
+    visiting: &mut HashSet<String>,
+    stack_depth: &mut i64,
+    script_size: Option<i64>,
+    contract_constants: &HashMap<String, Expr<'i>>,
+) -> Result<(), CompilerError> {
+    if let ExprKind::Identifier(name) = &expr.kind {
+        if let Some(type_name) = types.get(name) {
+            if let Some(size) = array_size_with_constants(type_name, contract_constants) {
+                builder.add_i64(size as i64)?;
+                *stack_depth += 1;
+                return Ok(());
+            }
+            if let Some(element_size) = array_element_size(type_name) {
+                compile_expr(expr, env, params, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
+                builder.add_op(OpSize)?;
+                builder.add_op(OpSwap)?;
+                builder.add_op(OpDrop)?;
+                builder.add_i64(element_size)?;
+                *stack_depth += 1;
+                builder.add_op(OpDiv)?;
+                *stack_depth -= 1;
+                return Ok(());
+            }
+        }
+    }
+    if let ExprKind::Array(values) = &expr.kind {
+        builder.add_i64(values.len() as i64)?;
+        *stack_depth += 1;
+        return Ok(());
+    }
+    compile_expr(expr, env, params, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
+    builder.add_op(OpSize)?;
+    Ok(())
+}
+
+fn compile_call_expr<'i>(
     name: &str,
-    args: &[Expr],
+    args: &[Expr<'i>],
+    scope: &CompilationScope<'_, 'i>,
+    builder: &mut ScriptBuilder,
+    options: CompileOptions,
+    visiting: &mut HashSet<String>,
+    stack_depth: &mut i64,
+    script_size: Option<i64>,
+    contract_constants: &HashMap<String, Expr<'i>>,
+) -> Result<(), CompilerError> {
+    match name {
+        "OpSha256" => compile_opcode_call(
+            name,
+            args,
+            1,
+            scope,
+            builder,
+            options,
+            visiting,
+            stack_depth,
+            OpSHA256,
+            script_size,
+            contract_constants,
+        ),
+        "sha256" => {
+            if args.len() != 1 {
+                return Err(CompilerError::Unsupported("sha256() expects a single argument".to_string()));
+            }
+            compile_expr(
+                &args[0],
+                scope.env,
+                scope.params,
+                scope.types,
+                builder,
+                options,
+                visiting,
+                stack_depth,
+                script_size,
+                contract_constants,
+            )?;
+            builder.add_op(OpSHA256)?;
+            Ok(())
+        }
+        "OpTxSubnetId" => compile_opcode_call(
+            name,
+            args,
+            0,
+            scope,
+            builder,
+            options,
+            visiting,
+            stack_depth,
+            OpTxSubnetId,
+            script_size,
+            contract_constants,
+        ),
+        "OpTxGas" => compile_opcode_call(
+            name,
+            args,
+            0,
+            scope,
+            builder,
+            options,
+            visiting,
+            stack_depth,
+            OpTxGas,
+            script_size,
+            contract_constants,
+        ),
+        "OpTxPayloadLen" => compile_opcode_call(
+            name,
+            args,
+            0,
+            scope,
+            builder,
+            options,
+            visiting,
+            stack_depth,
+            OpTxPayloadLen,
+            script_size,
+            contract_constants,
+        ),
+        "OpTxPayloadSubstr" => compile_opcode_call(
+            name,
+            args,
+            2,
+            scope,
+            builder,
+            options,
+            visiting,
+            stack_depth,
+            OpTxPayloadSubstr,
+            script_size,
+            contract_constants,
+        ),
+        "OpOutpointTxId" => compile_opcode_call(
+            name,
+            args,
+            1,
+            scope,
+            builder,
+            options,
+            visiting,
+            stack_depth,
+            OpOutpointTxId,
+            script_size,
+            contract_constants,
+        ),
+        "OpOutpointIndex" => compile_opcode_call(
+            name,
+            args,
+            1,
+            scope,
+            builder,
+            options,
+            visiting,
+            stack_depth,
+            OpOutpointIndex,
+            script_size,
+            contract_constants,
+        ),
+        "OpTxInputScriptSigLen" => compile_opcode_call(
+            name,
+            args,
+            1,
+            scope,
+            builder,
+            options,
+            visiting,
+            stack_depth,
+            OpTxInputScriptSigLen,
+            script_size,
+            contract_constants,
+        ),
+        "OpTxInputScriptSigSubstr" => compile_opcode_call(
+            name,
+            args,
+            3,
+            scope,
+            builder,
+            options,
+            visiting,
+            stack_depth,
+            OpTxInputScriptSigSubstr,
+            script_size,
+            contract_constants,
+        ),
+        "OpTxInputSeq" => compile_opcode_call(
+            name,
+            args,
+            1,
+            scope,
+            builder,
+            options,
+            visiting,
+            stack_depth,
+            OpTxInputSeq,
+            script_size,
+            contract_constants,
+        ),
+        "OpTxInputIsCoinbase" => compile_opcode_call(
+            name,
+            args,
+            1,
+            scope,
+            builder,
+            options,
+            visiting,
+            stack_depth,
+            OpTxInputIsCoinbase,
+            script_size,
+            contract_constants,
+        ),
+        "OpTxInputSpkLen" => compile_opcode_call(
+            name,
+            args,
+            1,
+            scope,
+            builder,
+            options,
+            visiting,
+            stack_depth,
+            OpTxInputSpkLen,
+            script_size,
+            contract_constants,
+        ),
+        "OpTxInputSpkSubstr" => compile_opcode_call(
+            name,
+            args,
+            3,
+            scope,
+            builder,
+            options,
+            visiting,
+            stack_depth,
+            OpTxInputSpkSubstr,
+            script_size,
+            contract_constants,
+        ),
+        "OpTxOutputSpkLen" => compile_opcode_call(
+            name,
+            args,
+            1,
+            scope,
+            builder,
+            options,
+            visiting,
+            stack_depth,
+            OpTxOutputSpkLen,
+            script_size,
+            contract_constants,
+        ),
+        "OpTxOutputSpkSubstr" => compile_opcode_call(
+            name,
+            args,
+            3,
+            scope,
+            builder,
+            options,
+            visiting,
+            stack_depth,
+            OpTxOutputSpkSubstr,
+            script_size,
+            contract_constants,
+        ),
+        "OpAuthOutputCount" => compile_opcode_call(
+            name,
+            args,
+            1,
+            scope,
+            builder,
+            options,
+            visiting,
+            stack_depth,
+            OpAuthOutputCount,
+            script_size,
+            contract_constants,
+        ),
+        "OpAuthOutputIdx" => compile_opcode_call(
+            name,
+            args,
+            2,
+            scope,
+            builder,
+            options,
+            visiting,
+            stack_depth,
+            OpAuthOutputIdx,
+            script_size,
+            contract_constants,
+        ),
+        "OpInputCovenantId" => compile_opcode_call(
+            name,
+            args,
+            1,
+            scope,
+            builder,
+            options,
+            visiting,
+            stack_depth,
+            OpInputCovenantId,
+            script_size,
+            contract_constants,
+        ),
+        "OpCovInputCount" => compile_opcode_call(
+            name,
+            args,
+            1,
+            scope,
+            builder,
+            options,
+            visiting,
+            stack_depth,
+            OpCovInputCount,
+            script_size,
+            contract_constants,
+        ),
+        "OpCovInputIdx" => compile_opcode_call(
+            name,
+            args,
+            2,
+            scope,
+            builder,
+            options,
+            visiting,
+            stack_depth,
+            OpCovInputIdx,
+            script_size,
+            contract_constants,
+        ),
+        "OpCovOutCount" => compile_opcode_call(
+            name,
+            args,
+            1,
+            scope,
+            builder,
+            options,
+            visiting,
+            stack_depth,
+            OpCovOutCount,
+            script_size,
+            contract_constants,
+        ),
+        "OpCovOutputIdx" => compile_opcode_call(
+            name,
+            args,
+            2,
+            scope,
+            builder,
+            options,
+            visiting,
+            stack_depth,
+            OpCovOutputIdx,
+            script_size,
+            contract_constants,
+        ),
+        "OpNum2Bin" => compile_opcode_call(
+            name,
+            args,
+            2,
+            scope,
+            builder,
+            options,
+            visiting,
+            stack_depth,
+            OpNum2Bin,
+            script_size,
+            contract_constants,
+        ),
+        "OpBin2Num" => compile_opcode_call(
+            name,
+            args,
+            1,
+            scope,
+            builder,
+            options,
+            visiting,
+            stack_depth,
+            OpBin2Num,
+            script_size,
+            contract_constants,
+        ),
+        "OpChainblockSeqCommit" => compile_opcode_call(
+            name,
+            args,
+            1,
+            scope,
+            builder,
+            options,
+            visiting,
+            stack_depth,
+            OpChainblockSeqCommit,
+            script_size,
+            contract_constants,
+        ),
+        "bytes" => {
+            if args.is_empty() || args.len() > 2 {
+                return Err(CompilerError::Unsupported("bytes() expects one or two arguments".to_string()));
+            }
+            if args.len() == 2 {
+                compile_expr(
+                    &args[0],
+                    scope.env,
+                    scope.params,
+                    scope.types,
+                    builder,
+                    options,
+                    visiting,
+                    stack_depth,
+                    script_size,
+                    contract_constants,
+                )?;
+                compile_expr(
+                    &args[1],
+                    scope.env,
+                    scope.params,
+                    scope.types,
+                    builder,
+                    options,
+                    visiting,
+                    stack_depth,
+                    script_size,
+                    contract_constants,
+                )?;
+                builder.add_op(OpNum2Bin)?;
+                *stack_depth -= 1;
+                return Ok(());
+            }
+            match &args[0].kind {
+                ExprKind::String(value) => {
+                    builder.add_data(value.as_bytes())?;
+                    *stack_depth += 1;
+                    Ok(())
+                }
+                ExprKind::Identifier(name) => {
+                    if let Some(expr) = scope.env.get(name) {
+                        if let ExprKind::String(value) = &expr.kind {
+                            builder.add_data(value.as_bytes())?;
+                            *stack_depth += 1;
+                            return Ok(());
+                        }
+                    }
+                    if expr_is_bytes(&args[0], scope.env, scope.types) {
+                        compile_expr(
+                            &args[0],
+                            scope.env,
+                            scope.params,
+                            scope.types,
+                            builder,
+                            options,
+                            visiting,
+                            stack_depth,
+                            script_size,
+                            contract_constants,
+                        )?;
+                        return Ok(());
+                    }
+                    compile_expr(
+                        &args[0],
+                        scope.env,
+                        scope.params,
+                        scope.types,
+                        builder,
+                        options,
+                        visiting,
+                        stack_depth,
+                        script_size,
+                        contract_constants,
+                    )?;
+                    builder.add_i64(8)?;
+                    *stack_depth += 1;
+                    builder.add_op(OpNum2Bin)?;
+                    *stack_depth -= 1;
+                    Ok(())
+                }
+                _ => {
+                    if expr_is_bytes(&args[0], scope.env, scope.types) {
+                        compile_expr(
+                            &args[0],
+                            scope.env,
+                            scope.params,
+                            scope.types,
+                            builder,
+                            options,
+                            visiting,
+                            stack_depth,
+                            script_size,
+                            contract_constants,
+                        )?;
+                        Ok(())
+                    } else {
+                        compile_expr(
+                            &args[0],
+                            scope.env,
+                            scope.params,
+                            scope.types,
+                            builder,
+                            options,
+                            visiting,
+                            stack_depth,
+                            script_size,
+                            contract_constants,
+                        )?;
+                        builder.add_i64(8)?;
+                        *stack_depth += 1;
+                        builder.add_op(OpNum2Bin)?;
+                        *stack_depth -= 1;
+                        Ok(())
+                    }
+                }
+            }
+        }
+        "length" => {
+            if args.len() != 1 {
+                return Err(CompilerError::Unsupported("length() expects a single argument".to_string()));
+            }
+            compile_length_expr(
+                &args[0],
+                scope.env,
+                scope.params,
+                scope.types,
+                builder,
+                options,
+                visiting,
+                stack_depth,
+                script_size,
+                contract_constants,
+            )
+        }
+        "int" => {
+            if args.len() != 1 {
+                return Err(CompilerError::Unsupported("int() expects a single argument".to_string()));
+            }
+            compile_expr(
+                &args[0],
+                scope.env,
+                scope.params,
+                scope.types,
+                builder,
+                options,
+                visiting,
+                stack_depth,
+                script_size,
+                contract_constants,
+            )?;
+            Ok(())
+        }
+        "sig" | "pubkey" | "datasig" => {
+            if args.len() != 1 {
+                return Err(CompilerError::Unsupported(format!("{name}() expects a single argument")));
+            }
+            compile_expr(
+                &args[0],
+                scope.env,
+                scope.params,
+                scope.types,
+                builder,
+                options,
+                visiting,
+                stack_depth,
+                script_size,
+                contract_constants,
+            )?;
+            Ok(())
+        }
+        name if name.starts_with("byte[") && name.ends_with(']') => {
+            let size_part = &name[5..name.len() - 1];
+            if size_part.is_empty() {
+                // Handle byte[] cast (dynamic array) - just compile the argument as-is
+                if args.len() != 1 && args.len() != 2 {
+                    return Err(CompilerError::Unsupported(format!("{name}() expects 1 or 2 arguments")));
+                }
+                compile_expr(
+                    &args[0],
+                    scope.env,
+                    scope.params,
+                    scope.types,
+                    builder,
+                    options,
+                    visiting,
+                    stack_depth,
+                    script_size,
+                    contract_constants,
+                )?;
+                if args.len() == 2 {
+                    // byte[](value, size) - OpNum2Bin with size parameter
+                    compile_expr(
+                        &args[1],
+                        scope.env,
+                        scope.params,
+                        scope.types,
+                        builder,
+                        options,
+                        visiting,
+                        stack_depth,
+                        script_size,
+                        contract_constants,
+                    )?;
+                    *stack_depth += 1;
+                    builder.add_op(OpNum2Bin)?;
+                    *stack_depth -= 1;
+                }
+                Ok(())
+            } else {
+                // Handle byte[N] cast - extract size from byte[N]
+                let size = size_part.parse::<i64>().map_err(|_| CompilerError::Unsupported(format!("{name}() is not supported")))?;
+                if args.len() != 1 {
+                    return Err(CompilerError::Unsupported(format!("{name}() expects a single argument")));
+                }
+                compile_expr(
+                    &args[0],
+                    scope.env,
+                    scope.params,
+                    scope.types,
+                    builder,
+                    options,
+                    visiting,
+                    stack_depth,
+                    script_size,
+                    contract_constants,
+                )?;
+                builder.add_i64(size)?;
+                *stack_depth += 1;
+                builder.add_op(OpNum2Bin)?;
+                *stack_depth -= 1;
+                Ok(())
+            }
+        }
+        "blake2b" => {
+            if args.len() != 1 {
+                return Err(CompilerError::Unsupported("blake2b() expects a single argument".to_string()));
+            }
+            compile_expr(
+                &args[0],
+                scope.env,
+                scope.params,
+                scope.types,
+                builder,
+                options,
+                visiting,
+                stack_depth,
+                script_size,
+                contract_constants,
+            )?;
+            builder.add_op(OpBlake2b)?;
+            Ok(())
+        }
+        "checkSig" => {
+            if args.len() != 2 {
+                return Err(CompilerError::Unsupported("checkSig() expects 2 arguments".to_string()));
+            }
+            compile_expr(
+                &args[0],
+                scope.env,
+                scope.params,
+                scope.types,
+                builder,
+                options,
+                visiting,
+                stack_depth,
+                script_size,
+                contract_constants,
+            )?;
+            compile_expr(
+                &args[1],
+                scope.env,
+                scope.params,
+                scope.types,
+                builder,
+                options,
+                visiting,
+                stack_depth,
+                script_size,
+                contract_constants,
+            )?;
+            builder.add_op(OpCheckSig)?;
+            *stack_depth -= 1;
+            Ok(())
+        }
+        "checkDataSig" => {
+            // TODO: Remove this stub
+            for arg in args {
+                compile_expr(
+                    arg,
+                    scope.env,
+                    scope.params,
+                    scope.types,
+                    builder,
+                    options,
+                    visiting,
+                    stack_depth,
+                    script_size,
+                    contract_constants,
+                )?;
+            }
+            for _ in 0..args.len() {
+                builder.add_op(OpDrop)?;
+                *stack_depth -= 1;
+            }
+            builder.add_op(OpTrue)?;
+            *stack_depth += 1;
+            Ok(())
+        }
+        _ => Err(CompilerError::Unsupported(format!("unknown function call: {name}"))),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compile_opcode_call<'i>(
+    name: &str,
+    args: &[Expr<'i>],
     expected_args: usize,
-    scope: &CompilationScope,
+    scope: &CompilationScope<'_, 'i>,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
     visiting: &mut HashSet<String>,
     stack_depth: &mut i64,
     opcode: u8,
     script_size: Option<i64>,
-    contract_constants: &HashMap<String, Expr>,
+    contract_constants: &HashMap<String, Expr<'i>>,
 ) -> Result<(), CompilerError> {
     if args.len() != expected_args {
         return Err(CompilerError::Unsupported(format!("{name}() expects {expected_args} argument(s)")));
@@ -3354,9 +3637,9 @@ fn compile_opcode_call(
     Ok(())
 }
 
-fn compile_concat_operand(
-    expr: &Expr,
-    env: &HashMap<String, Expr>,
+fn compile_concat_operand<'i>(
+    expr: &Expr<'i>,
+    env: &HashMap<String, Expr<'i>>,
     params: &HashMap<String, i64>,
     types: &HashMap<String, String>,
     builder: &mut ScriptBuilder,
@@ -3364,7 +3647,7 @@ fn compile_concat_operand(
     visiting: &mut HashSet<String>,
     stack_depth: &mut i64,
     script_size: Option<i64>,
-    contract_constants: &HashMap<String, Expr>,
+    contract_constants: &HashMap<String, Expr<'i>>,
 ) -> Result<(), CompilerError> {
     compile_expr(expr, env, params, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
     if !expr_is_bytes(expr, env, types) {
@@ -3389,35 +3672,40 @@ fn is_bytes_type(type_name: &str) -> bool {
     is_array_type(type_name)
 }
 
-fn build_null_data_script(arg: &Expr) -> Result<Vec<u8>, CompilerError> {
-    let elements = match arg {
-        Expr::Array(items) => items,
+fn build_null_data_script<'i>(arg: &Expr<'i>) -> Result<Vec<u8>, CompilerError> {
+    let elements = match &arg.kind {
+        ExprKind::Array(items) => items,
         _ => return Err(CompilerError::Unsupported("LockingBytecodeNullData expects an array literal".to_string())),
     };
 
     let mut builder = ScriptBuilder::new();
     builder.add_op(OpReturn)?;
     for item in elements {
-        match item {
-            Expr::Int(value) => {
+        match &item.kind {
+            ExprKind::Int(value) => {
                 builder.add_i64(*value)?;
             }
-            Expr::Array(values) if is_byte_array(&Expr::Array(values.clone())) => {
-                // Handle byte arrays
-                let bytes: Vec<u8> = values.iter().filter_map(|v| if let Expr::Byte(b) = v { Some(*b) } else { None }).collect();
+            ExprKind::DateLiteral(value) => {
+                builder.add_i64(*value)?;
+            }
+            ExprKind::Array(values) if values.iter().all(|value| matches!(&value.kind, ExprKind::Byte(_))) => {
+                let bytes: Vec<u8> = values
+                    .iter()
+                    .filter_map(|value| if let ExprKind::Byte(byte) = &value.kind { Some(*byte) } else { None })
+                    .collect();
                 builder.add_data(&bytes)?;
             }
-            Expr::String(value) => {
+            ExprKind::String(value) => {
                 builder.add_data(value.as_bytes())?;
             }
-            Expr::Call { name, args } if name == "byte[]" => {
+            ExprKind::Call { name, args, .. } if name == "bytes" || name == "byte[]" => {
                 if args.len() != 1 {
                     return Err(CompilerError::Unsupported(
                         "byte[]() in LockingBytecodeNullData expects a single argument".to_string(),
                     ));
                 }
-                match &args[0] {
-                    Expr::String(value) => {
+                match &args[0].kind {
+                    ExprKind::String(value) => {
                         builder.add_data(value.as_bytes())?;
                     }
                     _ => {
@@ -3427,7 +3715,9 @@ fn build_null_data_script(arg: &Expr) -> Result<Vec<u8>, CompilerError> {
                     }
                 }
             }
-            _ => return Err(CompilerError::Unsupported("LockingBytecodeNullData only supports int or bytes literals".to_string())),
+            _ => {
+                return Err(CompilerError::Unsupported("LockingBytecodeNullData only supports int or bytes literals".to_string()));
+            }
         }
     }
 
@@ -3436,14 +3726,6 @@ fn build_null_data_script(arg: &Expr) -> Result<Vec<u8>, CompilerError> {
     spk_bytes.extend_from_slice(&0u16.to_be_bytes());
     spk_bytes.extend_from_slice(&script);
     Ok(spk_bytes)
-}
-
-fn parse_date_value(value: &str) -> Result<i64, CompilerError> {
-    let timestamp = NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S")
-        .map_err(|_| CompilerError::InvalidLiteral("invalid date literal".to_string()))?
-        .and_utc()
-        .timestamp();
-    Ok(timestamp)
 }
 
 fn data_prefix(data_len: usize) -> Vec<u8> {

@@ -3,7 +3,7 @@ use std::fs;
 use silverscript_lang::ast::ContractAst;
 use silverscript_lang::compiler::{CompileOptions, compile_contract, compile_contract_ast};
 
-fn load_ast(name: &str) -> ContractAst {
+fn load_ast(name: &str) -> ContractAst<'_> {
     let path = format!("{}/tests/ast_json/{name}", env!("CARGO_MANIFEST_DIR"));
     let json = fs::read_to_string(&path).unwrap_or_else(|err| panic!("failed to read {path}: {err}"));
     serde_json::from_str(&json).unwrap_or_else(|err| panic!("failed to parse {path}: {err}"))

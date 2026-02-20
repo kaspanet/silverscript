@@ -1,7 +1,7 @@
 {
   "name": "YieldTest",
   "params": [],
-  "constants": {},
+  "constants": [],
   "functions": [
     {
       "name": "main",

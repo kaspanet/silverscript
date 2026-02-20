@@ -1,0 +1,19 @@
+id = "silverscript"
+name = "SilverScript"
+version = "0.1.0"
+schema_version = 1
+description = "SilverScript language support."
+
+languages = ["languages/silverscript"]
+
+[grammars.silverscript]
+# useful for development
+# repository = "file:///D:/Dev/kaspa/silverscript"
+
+repository = "https://github.com/rusty-kaspa/silverscript"
+# @TODO(izio): bump after squash merge
+rev = "8064ce2fd8588e4fca4499dad0669b80ea5b4165"
+path = "tree-sitter"
+
+[language_servers.silverscript-lsp]
+command = "silverscript-lsp"

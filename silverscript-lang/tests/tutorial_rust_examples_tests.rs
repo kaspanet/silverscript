@@ -13,14 +13,14 @@ fn tutorial_rust_programmatic_compilation_example() {
         }
     "#;
 
-    let constructor_args = vec![Expr::Int(100)];
+    let constructor_args = vec![Expr::int(100)];
     let compiled = compile_contract(source, &constructor_args, CompileOptions::default())
         .expect("programmatic compilation example should compile");
 
     assert_eq!(compiled.contract_name, "MyContract");
     assert!(!compiled.script.is_empty());
-    assert_eq!(compiled.abi.len(), 1);
-    assert_eq!(compiled.abi[0].name, "spend");
+    assert_eq!(compiled.function_entries.len(), 1);
+    assert_eq!(compiled.function_entries[0].name, "spend");
 }
 
 #[test]

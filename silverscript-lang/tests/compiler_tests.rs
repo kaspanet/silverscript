@@ -126,15 +126,15 @@ fn accepts_constructor_args_with_matching_types() {
         }
     "#;
     let args = vec![
-        Expr::Int(7),
-        Expr::Bool(true),
-        Expr::String("hello".to_string()),
-        vec![1u8; 10].into(),
-        Expr::Byte(2), // Single byte for type 'byte'
-        vec![3u8; 4].into(),
-        vec![4u8; 32].into(),
-        vec![5u8; 65].into(),
-        vec![6u8; 64].into(),
+        Expr::int(7),
+        Expr::bool(true),
+        Expr::string("hello".to_string()),
+        Expr::bytes(vec![1u8; 10]),
+        Expr::byte(2),
+        Expr::bytes(vec![3u8; 4]),
+        Expr::bytes(vec![4u8; 32]),
+        Expr::bytes(vec![5u8; 65]),
+        Expr::bytes(vec![6u8; 64]),
     ];
     compile_contract(source, &args, CompileOptions::default()).expect("compile succeeds");
 }
@@ -148,7 +148,7 @@ fn rejects_constructor_args_with_wrong_scalar_types() {
             }
         }
     "#;
-    let args = vec![Expr::Bool(true), Expr::Int(1), vec![1u8].into()];
+    let args = vec![Expr::bool(true), Expr::int(1), Expr::bytes(vec![1u8])];
     assert!(compile_contract(source, &args, CompileOptions::default()).is_err());
 }
 
@@ -161,7 +161,13 @@ fn rejects_constructor_args_with_wrong_byte_lengths() {
             }
         }
     "#;
-    let args = vec![vec![1u8; 2].into(), vec![2u8; 3].into(), vec![3u8; 31].into(), vec![4u8; 63].into(), vec![5u8; 66].into()];
+    let args = vec![
+        Expr::bytes(vec![1u8; 2]),
+        Expr::bytes(vec![2u8; 3]),
+        Expr::bytes(vec![3u8; 31]),
+        Expr::bytes(vec![4u8; 63]),
+        Expr::bytes(vec![5u8; 66]),
+    ];
     assert!(compile_contract(source, &args, CompileOptions::default()).is_err());
 }
 
@@ -194,7 +200,7 @@ fn accepts_constructor_args_with_any_bytes_length() {
             }
         }
     "#;
-    let args = vec![vec![9u8; 128].into()];
+    let args = vec![Expr::bytes(vec![9u8; 128])];
     compile_contract(source, &args, CompileOptions::default()).expect("compile succeeds");
 }
 
@@ -208,7 +214,7 @@ fn build_sig_script_builds_expected_script() {
         }
     "#;
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
-    let args = vec![vec![1u8, 2, 3, 4].into(), Expr::Int(7)];
+    let args = vec![Expr::bytes(vec![1u8, 2, 3, 4]), Expr::int(7)];
     let sigscript = compiled.build_sig_script("spend", args).expect("sigscript builds");
 
     let selector = selector_for(&compiled, "spend");
@@ -233,7 +239,7 @@ fn build_sig_script_rejects_unknown_function() {
         }
     "#;
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
-    let result = compiled.build_sig_script("missing", vec![Expr::Int(1)]);
+    let result = compiled.build_sig_script("missing", vec![Expr::int(1)]);
     assert!(result.is_err());
 }
 
@@ -247,7 +253,7 @@ fn build_sig_script_rejects_wrong_argument_count() {
         }
     "#;
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
-    let result = compiled.build_sig_script("spend", vec![Expr::Int(1)]);
+    let result = compiled.build_sig_script("spend", vec![Expr::int(1)]);
     assert!(result.is_err());
 }
 
@@ -261,7 +267,7 @@ fn build_sig_script_rejects_wrong_argument_type() {
         }
     "#;
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
-    let result = compiled.build_sig_script("spend", vec![vec![1u8; 3].into()]);
+    let result = compiled.build_sig_script("spend", vec![Expr::bytes(vec![1u8; 3])]);
     assert!(result.is_err());
 }
 
@@ -317,7 +323,7 @@ fn rejects_external_call_without_entrypoint() {
     "#;
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
-    let result = compiled.build_sig_script("helper", vec![Expr::Int(1)]);
+    let result = compiled.build_sig_script("helper", vec![Expr::int(1)]);
     assert!(result.is_err());
 }
 
@@ -345,7 +351,7 @@ fn build_sig_script_rejects_mismatched_bytes_length() {
         }
     "#;
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
-    let result = compiled.build_sig_script("spend", vec![vec![1u8; 5].into()]);
+    let result = compiled.build_sig_script("spend", vec![Expr::bytes(vec![1u8; 5])]);
     assert!(result.is_err());
 
     let source = r#"
@@ -356,7 +362,7 @@ fn build_sig_script_rejects_mismatched_bytes_length() {
         }
     "#;
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
-    let result = compiled.build_sig_script("spend", vec![vec![1u8; 4].into()]);
+    let result = compiled.build_sig_script("spend", vec![Expr::bytes(vec![1u8; 4])]);
     assert!(result.is_err());
 }
 
@@ -1389,7 +1395,7 @@ fn build_covenant_opcode_tx(sigscript: Vec<u8>, covenant_id_a: Hash, covenant_id
     (tx, entries)
 }
 
-fn selector_for(compiled: &CompiledContract, function_name: &str) -> Option<i64> {
+fn selector_for(compiled: &CompiledContract<'_>, function_name: &str) -> Option<i64> {
     if compiled.without_selector {
         None
     } else {
@@ -3146,7 +3152,7 @@ fn compiles_script_size_and_runs_sum_array() {
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
     let expected_size = compiled.script.len() as i64;
-    let sigscript = compiled.build_sig_script("main", vec![Expr::Int(expected_size)]).expect("sigscript builds");
+    let sigscript = compiled.build_sig_script("main", vec![Expr::int(expected_size)]).expect("sigscript builds");
 
     let result = run_script_with_sigscript(compiled.script, sigscript);
     assert!(result.is_ok(), "script size contract failed: {}", result.unwrap_err());
@@ -3173,7 +3179,7 @@ fn compiles_script_size_data_prefix_small_script() {
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
     let expected_prefix = data_prefix_for_size(compiled.script.len());
-    let sigscript = compiled.build_sig_script("main", vec![expected_prefix.into()]).expect("sigscript builds");
+    let sigscript = compiled.build_sig_script("main", vec![Expr::bytes(expected_prefix)]).expect("sigscript builds");
 
     let result = run_script_with_sigscript(compiled.script, sigscript);
     assert!(result.is_ok(), "scriptSizeDataPrefix small failed: {}", result.unwrap_err());
@@ -3194,7 +3200,7 @@ fn compiles_script_size_data_prefix_medium_script() {
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
     let expected_prefix = data_prefix_for_size(compiled.script.len());
-    let sigscript = compiled.build_sig_script("main", vec![expected_prefix.into()]).expect("sigscript builds");
+    let sigscript = compiled.build_sig_script("main", vec![Expr::bytes(expected_prefix)]).expect("sigscript builds");
 
     let result = run_script_with_sigscript(compiled.script, sigscript);
     assert!(result.is_ok(), "scriptSizeDataPrefix medium failed: {}", result.unwrap_err());
@@ -3215,7 +3221,7 @@ fn compiles_script_size_data_prefix_large_script() {
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
     let expected_prefix = data_prefix_for_size(compiled.script.len());
-    let sigscript = compiled.build_sig_script("main", vec![expected_prefix.into()]).expect("sigscript builds");
+    let sigscript = compiled.build_sig_script("main", vec![Expr::bytes(expected_prefix)]).expect("sigscript builds");
 
     let result = run_script_with_sigscript(compiled.script, sigscript);
     assert!(result.is_ok(), "scriptSizeDataPrefix large failed: {}", result.unwrap_err());
@@ -3505,4 +3511,33 @@ fn accepts_byte_array_with_constant_size() {
         }
     "#;
     compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds with byte[HASH_SIZE]");
+}
+
+#[test]
+fn blake2b_int_and_byte_cast_forms_compile_to_identical_script() {
+    let source_plain = r#"
+        contract Test() {
+            entrypoint function test() {
+                int x = 5;
+                require(blake2b(x).length == 32);
+            }
+        }
+    "#;
+
+    let source_cast = r#"
+        contract Test() {
+            entrypoint function test() {
+                int x = 5;
+                require(blake2b(byte[](x)).length == 32);
+            }
+        }
+    "#;
+
+    let compiled_plain = compile_contract(source_plain, &[], CompileOptions::default()).expect("plain form compiles");
+    let compiled_cast = compile_contract(source_cast, &[], CompileOptions::default()).expect("byte-cast form compiles");
+
+    assert_eq!(
+        compiled_plain.script, compiled_cast.script,
+        "blake2b(x) and blake2b(byte[](x)) should currently compile to identical scripts"
+    );
 }

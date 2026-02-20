@@ -2,7 +2,7 @@ use std::env;
 use std::fs;
 use std::path::PathBuf;
 
-use silverscript_lang::ast::Expr;
+use silverscript_lang::ast::{Expr, parse_contract_ast};
 use silverscript_lang::compiler::{CompileOptions, compile_contract};
 
 fn main() {
@@ -15,16 +15,30 @@ fn main() {
 fn run() -> Result<(), String> {
     let args = env::args().skip(1).collect::<Vec<_>>();
     if args.is_empty() {
-        return Err("usage: silverc <src.sil> [--constructor-args ctor.json] [-o dst.json]".to_string());
+        return Err(
+            "usage: silverc <src.sil> [--constructor-args ctor.json] [-o dst.json] [--dump-ast] [--dump-ast-out ast.json]".to_string()
+        );
     }
 
     let mut src: Option<String> = None;
     let mut ctor_args_path: Option<String> = None;
     let mut out_path: Option<String> = None;
+    let mut dump_ast = false;
+    let mut dump_ast_out_path: Option<String> = None;
 
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
+            "--dump-ast" => {
+                dump_ast = true;
+                i += 1;
+            }
+            "--dump-ast-out" => {
+                let value = args.get(i + 1).ok_or_else(|| "--dump-ast-out requires a path".to_string())?;
+                dump_ast_out_path = Some(value.clone());
+                dump_ast = true;
+                i += 2;
+            }
             "--constructor-args" => {
                 let value = args.get(i + 1).ok_or_else(|| "--constructor-args requires a path".to_string())?;
                 ctor_args_path = Some(value.clone());
@@ -50,6 +64,17 @@ fn run() -> Result<(), String> {
 
     let src = src.ok_or_else(|| "missing source file".to_string())?;
     let source = fs::read_to_string(&src).map_err(|err| format!("failed to read {src}: {err}"))?;
+
+    if dump_ast {
+        let ast = parse_contract_ast(&source).map_err(|err| format!("parse error: {err}"))?;
+        let rendered = ast.to_string();
+        if let Some(path) = dump_ast_out_path {
+            fs::write(&path, rendered).map_err(|err| format!("failed to write {path}: {err}"))?;
+        } else {
+            println!("{ast}");
+        }
+        return Ok(());
+    }
 
     let constructor_args = if let Some(path) = ctor_args_path {
         let json = fs::read_to_string(&path).map_err(|err| format!("failed to read {path}: {err}"))?;
