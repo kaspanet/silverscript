@@ -7,7 +7,7 @@ contract Test(int x, string y) {
     // Line comments are a thing
     entrypoint function hello(pubkey pk, sig s) {
         int i = 400 + x;
-        bytes b = 0x007364897987fe87 + bytes(y);
+        byte[] b = 0x007364897987fe87 + byte[](y);
 
         int myVariable = 10 - int(false); // they can go at the end of the line
         int myOtherVariable = (i + myVariable) % 2;
@@ -16,7 +16,7 @@ contract Test(int x, string y) {
         myOtherVariable = i;
         myVariable = 10;
 
-        require(blake2b(b) != blake2b(bytes(myVariable)));
+        require(blake2b(b) != blake2b(byte[](myVariable)));
         require(this.age >= 500);
         require(y.length > 1);
 

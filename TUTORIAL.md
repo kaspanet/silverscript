@@ -41,7 +41,8 @@
     - [Input Introspection](#input-introspection)
     - [Output Introspection](#output-introspection)
 11. [Covenants](#covenants)
-    - [Creating Locking Bytecode](#creating-locking-bytecode)
+    - [Creating ScriptPubKey](#creating-scriptpubkey)
+    - [State Transition Helper](#state-transition-helper)
     - [Covenant Examples](#covenant-examples)
 12. [Advanced Features](#advanced-features)
     - [Constants](#constants)
@@ -92,7 +93,7 @@ The `args.json` file should contain an array of constructor argument expressions
 
 ```json
 [
-  {"kind": "bytes", "data": [1, 2, 3, 4]},
+  {"kind": "byte[]", "data": [1, 2, 3, 4]},
   {"kind": "int", "data": 12345}
 ]
 ```
@@ -139,7 +140,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 **Building Signature Scripts Programmatically:**
 
-After compiling a contract, you can build signature scripts (unlocking scripts) for its entrypoint functions:
+After compiling a contract, you can build signature scripts for its entrypoint functions:
 
 ```rust
 use silverscript_lang::ast::Expr;
@@ -169,7 +170,7 @@ let compiled = compile_contract(
 )?;
 
 // Build sigscript for multiple entrypoints
-let sig = vec![5u8; 64];
+let sig = vec![5u8; 65];
 
 // For 'transfer' function (selector = 0)
 let transfer_sigscript = compiled.build_sig_script(
@@ -203,7 +204,7 @@ Every SilverScript program defines a single contract. A contract has a name, opt
 ```javascript
 pragma silverscript ^0.1.0;
 
-contract MyContract(int param1, bytes32 param2) {
+contract MyContract(int param1, byte[32] param2) {
     // Contract constants (optional)
     int constant MAX_VALUE = 1000;
     
@@ -240,21 +241,32 @@ SilverScript supports the following data types:
 | `int` | 64-bit signed integer | `42`, `-100`, `1000` |
 | `bool` | Boolean value | `true`, `false` |
 | `string` | UTF-8 string | `"hello"`, `'world'` |
-| `bytes` | Dynamic byte array | `0x1234`, `0xabcdef` |
-| `byteN` | Fixed-size byte array (N = 1-255) | `bytes32`, `bytes65` |
-| `byte` | Single byte (alias for `bytes1`) | `byte` |
+| `byte` | Single byte | `byte` |
 | `pubkey` | Public key (32 bytes) | `pubkey` |
-| `sig` | Signature (64 or 65 bytes) | `sig` |
-| `datasig` | Data signature (64 or 65 bytes) | `datasig` |
+| `sig` | Signature (65 bytes) | `sig` |
+| `datasig` | Data signature (64 bytes) | `datasig` |
 
 **Array Types:**
 
-You can create arrays by appending `[]` to any type:
+You can create arrays by appending `[]` or `[N]` to any type:
 
 ```javascript
 int[] numbers;
-bytes32[] hashes;
+int[4] fixedNumbers;
+byte[] data;
+byte[32] hash;
+byte[32][] hashes;
 pubkey[] publicKeys;
+```
+
+- `type[]` = array type where the size may be inferred from initialization.
+- `type[N]` = fixed-size array type with compile-time size `N`.
+
+When a `type[]` variable is initialized with a literal, SilverScript infers a fixed size from context:
+
+```javascript
+byte[] data = 0x1234abcd;  // inferred as byte[4]
+int[] nums = [1, 2, 3];    // inferred as int[3]
 ```
 
 ### Variables
@@ -267,7 +279,11 @@ entrypoint function example() {
     int myNumber = 42;
     bool flag = true;
     string message = "Hello World";
-    bytes data = 0x1234abcd;
+
+    // Array initialization
+    byte[] data = 0x1234abcd;
+    int[] nums = [1, 2, 3];
+    int[4] fixed = [10, 20, 30, 40];
     
     // Declaration without initialization
     int uninitializedValue;
@@ -329,8 +345,8 @@ function add(int a, int b): (int) {
 }
 
 // Multiple return values
-function split(bytes32 data): (bytes16, bytes16) {
-    bytes16 left, bytes16 right = data.split(16);
+function split(byte[32] data): (byte[16], byte[16]) {
+    byte[16] left, byte[16] right = data.split(16);
     return (left, right);
 }
 
@@ -499,9 +515,9 @@ string apostrophe = 'It\'s working';
 **Hex Literals:**
 
 ```javascript
-bytes data = 0x1234abcd;
-bytes empty = 0x;
-bytes pubkeyBytes = 0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef;
+byte[] data = 0x1234abcd;
+byte[] empty = 0x;
+byte[] pubkeyBytes = 0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef;
 ```
 
 ### Number Units
@@ -548,21 +564,27 @@ Format: `YYYY-MM-DDThh:mm:ss`
 
 ### Arrays
 
-Arrays must be built dynamically using the `.push()` method:
+SilverScript supports both direct array initialization and dynamic building with `.push()`:
 
 ```javascript
-// Declare an array
-int[] numbers;
-bytes32[] hashes;
+// Direct initialization (size inferred from literals)
+int[] nums = [1, 2, 3];           // inferred as int[3]
+byte[] data = 0x1234abcd;         // inferred as byte[4]
 
-// Build array with push
+// Explicit fixed-size initialization
+int[4] fixedNums = [1, 2, 3, 4];
+byte[4] tag = 0x01020304;
+
+// Dynamic building with push
+int[] numbers;
 numbers.push(1);
 numbers.push(2);
 numbers.push(3);
 numbers.push(4);
 numbers.push(5);
 
-// Build bytes32 array
+// Build byte[32] array dynamically
+byte[32][] hashes;
 hashes.push(0x1111111111111111111111111111111111111111111111111111111111111111);
 hashes.push(0x2222222222222222222222222222222222222222222222222222222222222222);
 
@@ -572,6 +594,67 @@ int second = numbers[1];
 
 // Array length
 int count = numbers.length;
+
+// For fixed-size arrays (including inferred ones), length is compile-time
+require(nums.length == 3);
+require(data.length == 4);
+```
+
+**Array Concatenation:**
+
+You can concatenate arrays with `+` when element types are compatible.
+
+This works for array types whose element size is known at compile time, including:
+- `byte[]` (element type `byte`)
+- `int[]` (element type `int`)
+- `bool[]` (element type `bool`)
+- `pubkey[]` (element type `pubkey`)
+- `byte[N][]` (element type `byte[N]`)
+
+Examples:
+
+```javascript
+// int[] + int[]
+int[] a = [1, 2];
+int[] b = [3, 4];
+int[4] c = a + b;
+
+require(c.length == 4);
+require(c[0] == 1);
+require(c[1] == 2);
+require(c[2] == 3);
+require(c[3] == 4);
+
+// byte[] + byte[]
+byte[] p = 0x0102;
+byte[] q = 0x0304;
+byte[4] r = p + q;
+require(r == 0x01020304);
+
+// bool[] + bool[]
+bool[] f1 = [true, false];
+bool[] f2 = [true, false];
+bool[4] f = f1 + f2;
+require(f[0]);
+require(!f[1]);
+require(f[2]);
+require(!f[3]);
+
+// pubkey[] + pubkey[]
+pubkey k1 = 0x0202020202020202020202020202020202020202020202020202020202020202;
+pubkey k2 = 0x0303030303030303030303030303030303030303030303030303030303030303;
+pubkey[] ks1 = [k1];
+pubkey[] ks2 = [k2];
+pubkey[2] ks = ks1 + ks2;
+require(ks[0] == k1);
+require(ks[1] == k2);
+
+// byte[N][] + byte[N][]
+byte[2][] x = [0x0102, 0x0304];
+byte[2][] y = [0x0506];
+byte[2][3] z = x + y;
+require(z.length == 3);
+require(z[2] == 0x0506);
 ```
 
 ### String Operations
@@ -592,19 +675,19 @@ int len = message.length;  // 11
 **Concatenation:**
 
 ```javascript
-bytes a = 0x1234;
-bytes b = 0x5678;
-bytes combined = a + b;  // 0x12345678
+byte[] a = 0x1234;
+byte[] b = 0x5678;
+byte[] combined = a + b;  // 0x12345678
 ```
 
 **Split:**
 
-Split bytes at a specific index:
+Split byte[] at a specific index:
 
 ```javascript
-bytes data = 0x1234567890abcdef;
-bytes left = data.split(4)[0];   // 0x12345678
-bytes right = data.split(4)[1];  // 0x90abcdef
+byte[] data = 0x1234567890abcdef;
+byte[] left = data.split(4)[0];   // 0x12345678
+byte[] right = data.split(4)[1];  // 0x90abcdef
 ```
 
 **Slice:**
@@ -612,14 +695,14 @@ bytes right = data.split(4)[1];  // 0x90abcdef
 Extract a range of bytes:
 
 ```javascript
-bytes data = 0x123456789abcdef;
-bytes middle = data.slice(2, 5);  // bytes from index 2 to 5 (exclusive)
+byte[] data = 0x123456789abcdef;
+byte[] middle = data.slice(2, 5);  // byte[] from index 2 to 5 (exclusive)
 ```
 
 **Length:**
 
 ```javascript
-bytes data = 0x1234;
+byte[] data = 0x1234;
 int size = data.length;  // 2
 ```
 
@@ -631,12 +714,12 @@ SilverScript supports explicit type casting:
 
 ```javascript
 // Cast to bytes
-bytes fromInt = bytes(42);
-bytes fromString = bytes("hello");
+byte[] fromInt = byte[](42);
+byte[] fromString = byte[]("hello");
 
 // Cast to specific byte size
-bytes32 hash = bytes32(data);
-bytes65 signatureBytes = bytes65(sigBytes);
+byte[32] hash = byte[32](data);
+byte[65] signatureBytes = byte[65](sigBytes);
 
 // Cast to pubkey or sig
 pubkey pk = pubkey(keyBytes);
@@ -649,7 +732,7 @@ int number = int(someData);
 **Example:**
 
 ```javascript
-entrypoint function example(pubkey pk, bytes65 sigBytes) {
+entrypoint function example(pubkey pk, byte[65] sigBytes) {
     sig s = sig(sigBytes);
     require(checkSig(s, pk));
 }
@@ -661,21 +744,21 @@ entrypoint function example(pubkey pk, bytes65 sigBytes) {
 
 ### Cryptographic Functions
 
-**`blake2b(bytes data): bytes32`**
+**`blake2b(byte[] data): byte[32]`**
 
 Compute the BLAKE2b hash of the input:
 
 ```javascript
-bytes32 hash = blake2b(data);
-bytes32 pkh = blake2b(pk);
+byte[32] hash = blake2b(data);
+byte[32] pkh = blake2b(pk);
 ```
 
-**`sha256(bytes data): bytes32`**
+**`sha256(byte[] data): byte[32]`**
 
 Compute the SHA-256 hash:
 
 ```javascript
-bytes32 hash = sha256(data);
+byte[32] hash = sha256(data);
 ```
 
 **`checkSig(sig signature, pubkey publicKey): bool`**
@@ -688,21 +771,21 @@ require(checkSig(s, pk));
 
 ### Type Conversion Functions
 
-**`bytes(value): bytes`**
+**`byte[](value): bytes`**
 
 Convert to bytes:
 
 ```javascript
-bytes b1 = bytes(42);
-bytes b2 = bytes("hello");
+byte[] b1 = byte[](42);
+byte[] b2 = byte[]("hello");
 ```
 
-**`bytes(int value, int size): bytes`**
+**`byte[](int value, int size): bytes`**
 
-Convert integer to bytes with specific size:
+Convert integer to byte[] with specific size:
 
 ```javascript
-bytes8 b = bytes(1234, 8);
+byte[8] b = byte[](1234, 8);
 ```
 
 **`int(bool value): int`**
@@ -713,7 +796,7 @@ Convert boolean to integer (true = 1, false = 0):
 int x = int(false);  // 0
 ```
 
-**`length(bytes value): int`**
+**`length(byte[] value): int`**
 
 Get the length of a byte array:
 
@@ -735,8 +818,8 @@ Transaction introspection allows contracts to examine the transaction that is sp
 // Current active input index
 int inputIdx = this.activeInputIndex;
 
-// Active bytecode (current contract's locking script)
-bytes script = this.activeBytecode;
+// Active bytecode (current contract's scriptPubKey)
+byte[] script = this.activeScriptPubKey;
 
 // Number of inputs
 int inputCount = tx.inputs.length;
@@ -768,7 +851,7 @@ Access properties of transaction inputs:
 ```javascript
 // Access input at index i
 int inputValue = tx.inputs[i].value;
-bytes inputScript = tx.inputs[i].lockingBytecode;
+byte[] inputScript = tx.inputs[i].scriptPubKey;
 ```
 
 **Example:**
@@ -787,7 +870,7 @@ Access properties of transaction outputs:
 ```javascript
 // Access output at index i
 int outputValue = tx.outputs[i].value;
-bytes lockingScript = tx.outputs[i].lockingBytecode;
+byte[] outputScriptPubKey = tx.outputs[i].scriptPubKey;
 ```
 
 **Example:**
@@ -805,34 +888,65 @@ entrypoint function transfer() {
 
 Covenants are contracts that enforce conditions on how funds can be spent. They use transaction introspection to validate outputs.
 
-### Creating Locking Bytecode
+### Creating ScriptPubKey
 
-**`new LockingBytecodeP2PK(pubkey pk): bytes34`**
+**`new ScriptPubKeyP2PK(pubkey pk): byte[34]`**
 
-Create a Pay-to-Public-Key locking script:
-
-```javascript
-bytes34 lockScript = new LockingBytecodeP2PK(recipientPubkey);
-require(tx.outputs[0].lockingBytecode == lockScript);
-```
-
-**`new LockingBytecodeP2SH(bytes32 scriptHash): bytes35`**
-
-Create a Pay-to-Script-Hash locking script:
+Create a Pay-to-Public-Key scriptPubKey:
 
 ```javascript
-bytes32 redeemScriptHash = blake2b(redeemScript);
-bytes35 lockScript = new LockingBytecodeP2SH(redeemScriptHash);
-require(tx.outputs[0].lockingBytecode == lockScript);
+byte[34] outputScriptPubKey = new ScriptPubKeyP2PK(recipientPubkey);
+require(tx.outputs[0].scriptPubKey == outputScriptPubKey);
 ```
 
-**`new LockingBytecodeP2SHFromRedeemScript(bytes redeemScript): bytes35`**
+**`new ScriptPubKeyP2SH(byte[32] scriptHash): byte[35]`**
 
-Create P2SH locking script directly from redeem script:
+Create a Pay-to-Script-Hash scriptPubKey:
 
 ```javascript
-bytes35 lockScript = new LockingBytecodeP2SHFromRedeemScript(redeemScript);
+byte[32] redeemScriptHash = blake2b(redeemScript);
+byte[35] outputScriptPubKey = new ScriptPubKeyP2SH(redeemScriptHash);
+require(tx.outputs[0].scriptPubKey == outputScriptPubKey);
 ```
+
+**`new ScriptPubKeyP2SHFromRedeemScript(byte[] redeemScript): byte[35]`**
+
+Create a P2SH scriptPubKey directly from a redeem script:
+
+```javascript
+byte[35] outputScriptPubKey = new ScriptPubKeyP2SHFromRedeemScript(redeemScript);
+```
+
+### State Transition Helper
+
+**`validateOutputState(int outputIndex, object newState)`**
+
+Validates that `tx.outputs[outputIndex].scriptPubKey` is a P2SH paying to the **same contract code** with **updated state fields**.
+
+Small example:
+
+```javascript
+pragma silverscript ^0.1.0;
+
+contract Counter(int initCount, byte[2] initTag) {
+    int count = initCount;
+    byte[2] tag = initTag;
+
+    entrypoint function step() {
+        validateOutputState(0, { count: count + 1, tag: tag });
+    }
+}
+```
+
+What this checks:
+
+- Reads the current redeem script from the active input sigscript.
+- Keeps the contract tail (the immutable "rest of script") unchanged.
+- Rebuilds a new redeem script using the provided next field values (`count`, `tag`) + the same tail.
+- Computes the P2SH scriptPubKey for that new redeem script.
+- Verifies output `0` has exactly that scriptPubKey.
+
+In practice, this enforces that the transaction creates the next valid contract state rather than an arbitrary output script.
 
 ### Covenant Examples
 
@@ -844,8 +958,8 @@ pragma silverscript ^0.1.0;
 contract SimpleCovenant(pubkey recipient) {
     entrypoint function spend() {
         // First output must go to the recipient
-        bytes34 recipientLock = new LockingBytecodeP2PK(recipient);
-        require(tx.outputs[0].lockingBytecode == recipientLock);
+        byte[34] recipientScriptPubKey = new ScriptPubKeyP2PK(recipient);
+        require(tx.outputs[0].scriptPubKey == recipientScriptPubKey);
     }
 }
 ```
@@ -861,8 +975,8 @@ contract RecurringPayment(pubkey recipient, int paymentAmount, int period) {
         require(this.age >= period);
         
         // First output must pay the recipient
-        bytes34 recipientLock = new LockingBytecodeP2PK(recipient);
-        require(tx.outputs[0].lockingBytecode == recipientLock);
+        byte[34] recipientScriptPubKey = new ScriptPubKeyP2PK(recipient);
+        require(tx.outputs[0].scriptPubKey == recipientScriptPubKey);
         require(tx.outputs[0].value >= paymentAmount);
         
         // Calculate change
@@ -872,8 +986,8 @@ contract RecurringPayment(pubkey recipient, int paymentAmount, int period) {
         
         // If sufficient funds remain, send change back to contract
         if (changeValue >= paymentAmount + minerFee) {
-            bytes changeBytecode = tx.inputs[this.activeInputIndex].lockingBytecode;
-            require(tx.outputs[1].lockingBytecode == changeBytecode);
+            byte[] changeScriptPubKey = tx.inputs[this.activeInputIndex].scriptPubKey;
+            require(tx.outputs[1].scriptPubKey == changeScriptPubKey);
             require(tx.outputs[1].value == changeValue);
         }
     }
@@ -921,8 +1035,8 @@ function getPair(): (int, int) {
 }
 
 // Unpack split results and function results
-entrypoint function example(bytes32 data) {
-    bytes16 left, bytes16 right = data.split(16);
+entrypoint function example(byte[32] data) {
+    byte[16] left, byte[16] right = data.split(16);
     (int x, int y) = getPair();
 }
 ```
@@ -930,8 +1044,8 @@ entrypoint function example(bytes32 data) {
 **In Function Parameters:**
 
 ```javascript
-entrypoint function example(bytes32 data) {
-    bytes16 x, bytes16 y = data.split(16);
+entrypoint function example(byte[32] data) {
+    byte[16] x, byte[16] y = data.split(16);
     require(x == y);
 }
 ```
@@ -940,17 +1054,17 @@ entrypoint function example(bytes32 data) {
 
 **Split:**
 
-Divide bytes into two parts at a given index:
+Divide byte[] into two parts at a given index:
 
 ```javascript
-bytes data = 0x1122334455667788;
+byte[] data = 0x1122334455667788;
 
 // Split at byte 4
-bytes left = data.split(4)[0];   // 0x11223344
-bytes right = data.split(4)[1];  // 0x55667788
+byte[] left = data.split(4)[0];   // 0x11223344
+byte[] right = data.split(4)[1];  // 0x55667788
 
 // Direct tuple unpacking with types
-bytes4 a, bytes4 b = data.split(4);
+byte[4] a, byte[4] b = data.split(4);
 ```
 
 **Slice:**
@@ -958,15 +1072,15 @@ bytes4 a, bytes4 b = data.split(4);
 Extract a substring of bytes:
 
 ```javascript
-bytes data = 0x1122334455667788;
+byte[] data = 0x1122334455667788;
 
-// Get bytes from index 2 to 5 (exclusive)
-bytes middle = data.slice(2, 5);  // 0x334455
+// Get byte[] from index 2 to 5 (exclusive)
+byte[] middle = data.slice(2, 5);  // 0x334455
 
 // Variable indices
 int start = 1;
 int end = 4;
-bytes extracted = data.slice(start, end);
+byte[] extracted = data.slice(start, end);
 ```
 
 ---
@@ -1031,15 +1145,15 @@ A contract that releases periodic payments to a beneficiary:
 ```javascript
 pragma silverscript ^0.1.0;
 
-contract Mecenas(pubkey recipient, bytes32 funder, int pledge, int period) {
+contract Mecenas(pubkey recipient, byte[32] funder, int pledge, int period) {
     // Periodic payment to recipient
     entrypoint function receive() {
         // Must wait for the period to elapse
         require(this.age >= period);
 
         // Check that the first output sends to the recipient
-        bytes34 recipientLockingBytecode = new LockingBytecodeP2PK(recipient);
-        require(tx.outputs[0].lockingBytecode == recipientLockingBytecode);
+        byte[34] recipientScriptPubKey = new ScriptPubKeyP2PK(recipient);
+        require(tx.outputs[0].scriptPubKey == recipientScriptPubKey);
 
         // Calculate the value that's left
         int minerFee = 1000;
@@ -1053,8 +1167,8 @@ contract Mecenas(pubkey recipient, bytes32 funder, int pledge, int period) {
             require(tx.outputs[0].value == currentValue - minerFee);
         } else {
             require(tx.outputs[0].value == pledge);
-            bytes changeBytecode = tx.inputs[this.activeInputIndex].lockingBytecode;
-            require(tx.outputs[1].lockingBytecode == changeBytecode);
+            byte[] changeScriptPubKey = tx.inputs[this.activeInputIndex].scriptPubKey;
+            require(tx.outputs[1].scriptPubKey == changeScriptPubKey);
             require(tx.outputs[1].value == changeValue);
         }
     }

@@ -7,8 +7,8 @@
       "name": "main",
       "entrypoint": true,
       "params": [
-        { "type_name": "int", "name": "a" },
-        { "type_name": "int", "name": "b" }
+        { "type_ref": { "base": "int" }, "name": "a" },
+        { "type_ref": { "base": "int" }, "name": "b" }
       ],
       "body": [
         {

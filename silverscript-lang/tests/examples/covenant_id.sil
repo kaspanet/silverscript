@@ -1,0 +1,33 @@
+pragma silverscript ^0.1.0;
+
+contract CovenantId(int max_ins, int max_outs, int init_amount) {
+    int amount = init_amount;
+    entrypoint function main(int[] output_amounts) {
+        require(output_amounts.length <= max_outs);
+        byte[32] covid = OpInputCovenantId(this.activeInputIndex);
+        
+        int in_count = OpCovInputCount(covid);
+        require(in_count <= max_ins);
+
+        int in_sum = 0;
+        for(i,0,max_ins){
+            if( i < in_count ){
+                int in_idx = OpCovInputIdx(covid, i);
+                {amount: int in_amount} = readInputState(in_idx);
+                in_sum = in_sum + in_amount;
+            }
+        }
+
+        int out_sum = 0;
+        for(i,0,max_outs){
+            if( i < output_amounts.length ){
+                int out_idx = OpCovOutputIdx(covid, i);
+                int out_amount = output_amounts[i];
+                out_sum = out_sum + out_amount;
+                validateOutputState(out_idx, {amount: out_amount});
+            }
+        }
+
+        require(in_sum >= out_sum);
+    }
+}

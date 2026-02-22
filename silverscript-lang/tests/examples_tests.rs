@@ -2,10 +2,11 @@ use kaspa_consensus_core::hashing::sighash::SigHashReusedValuesUnsync;
 use kaspa_consensus_core::hashing::sighash::calc_schnorr_signature_hash;
 use kaspa_consensus_core::hashing::sighash_type::SIG_HASH_ALL;
 use kaspa_consensus_core::tx::{
-    MutableTransaction, PopulatedTransaction, ScriptPublicKey, Transaction, TransactionId, TransactionInput, TransactionOutpoint,
-    TransactionOutput, UtxoEntry, VerifiableTransaction,
+    CovenantBinding, MutableTransaction, PopulatedTransaction, ScriptPublicKey, Transaction, TransactionId, TransactionInput,
+    TransactionOutpoint, TransactionOutput, UtxoEntry, VerifiableTransaction,
 };
 use kaspa_txscript::caches::Cache;
+use kaspa_txscript::covenants::CovenantsContext;
 use kaspa_txscript::opcodes::codes::*;
 use kaspa_txscript::script_builder::ScriptBuilder;
 use kaspa_txscript::{EngineCtx, EngineFlags, TxScriptEngine, pay_to_script_hash_script};
@@ -145,6 +146,10 @@ fn script_with_return_checks(script: Vec<u8>, expected: &[i64]) -> Vec<u8> {
     }
     builder.add_op(OpTrue).unwrap();
     builder.drain()
+}
+
+fn sigscript_push_script(script: &[u8]) -> Vec<u8> {
+    ScriptBuilder::new().add_data(script).unwrap().drain()
 }
 
 #[test]
@@ -1258,6 +1263,107 @@ fn compiles_covenant_mecenas_example_and_verifies() {
 
     let result = vm.execute();
     assert!(result.is_ok(), "covenant mecenas reclaim failed: {}", result.unwrap_err());
+}
+
+#[test]
+fn compiles_covenant_id_example_and_verifies() {
+    let source = load_example_source("covenant_id.sil");
+
+    let max_ins = 2i64;
+    let max_outs = 2i64;
+    let covenant_id = kaspa_consensus_core::Hash::from_bytes(*b"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+    let other_covenant_id = kaspa_consensus_core::Hash::from_bytes(*b"BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB");
+
+    let execute_case = |out0_amount: i64, out1_amount: i64| {
+        let active_compiled =
+            compile_contract(&source, &[max_ins.into(), max_outs.into(), 1_000i64.into()], CompileOptions::default())
+                .expect("compile succeeds");
+        let input1_compiled = compile_contract(&source, &[max_ins.into(), max_outs.into(), 600i64.into()], CompileOptions::default())
+            .expect("compile succeeds");
+        let output0_compiled =
+            compile_contract(&source, &[max_ins.into(), max_outs.into(), out0_amount.into()], CompileOptions::default())
+                .expect("compile succeeds");
+        let output1_compiled =
+            compile_contract(&source, &[max_ins.into(), max_outs.into(), out1_amount.into()], CompileOptions::default())
+                .expect("compile succeeds");
+
+        let mut active_sigscript =
+            active_compiled.build_sig_script("main", vec![vec![out0_amount, out1_amount].into()]).expect("sigscript builds");
+        active_sigscript.extend_from_slice(&sigscript_push_script(&active_compiled.script));
+
+        let input0 = TransactionInput {
+            previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([24u8; 32]), index: 0 },
+            signature_script: active_sigscript,
+            sequence: 0,
+            sig_op_count: 0,
+        };
+        let input1 = TransactionInput {
+            previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([25u8; 32]), index: 1 },
+            signature_script: sigscript_push_script(&input1_compiled.script),
+            sequence: 0,
+            sig_op_count: 0,
+        };
+        let input2 = TransactionInput {
+            previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([26u8; 32]), index: 2 },
+            signature_script: vec![],
+            sequence: 0,
+            sig_op_count: 0,
+        };
+
+        let output0 = TransactionOutput {
+            value: 1,
+            script_public_key: pay_to_script_hash_script(&output0_compiled.script),
+            covenant: Some(CovenantBinding { authorizing_input: 0, covenant_id }),
+        };
+
+        let output1 = TransactionOutput {
+            value: 100,
+            script_public_key: ScriptPublicKey::new(0, vec![OpTrue].into()),
+            covenant: Some(CovenantBinding { authorizing_input: 2, covenant_id: other_covenant_id }),
+        };
+
+        let output2 = TransactionOutput {
+            value: 1,
+            script_public_key: pay_to_script_hash_script(&output1_compiled.script),
+            covenant: Some(CovenantBinding { authorizing_input: 0, covenant_id }),
+        };
+
+        let tx = Transaction::new(
+            1,
+            vec![input0.clone(), input1, input2],
+            vec![output0, output1, output2],
+            0,
+            Default::default(),
+            0,
+            vec![],
+        );
+
+        let utxo0 = UtxoEntry::new(1_600, pay_to_script_hash_script(&active_compiled.script), 0, tx.is_coinbase(), Some(covenant_id));
+        let utxo1 = UtxoEntry::new(700, pay_to_script_hash_script(&input1_compiled.script), 0, tx.is_coinbase(), Some(covenant_id));
+        let utxo2 = UtxoEntry::new(300, ScriptPublicKey::new(0, vec![OpTrue].into()), 0, tx.is_coinbase(), Some(other_covenant_id));
+
+        let reused_values = SigHashReusedValuesUnsync::new();
+        let sig_cache = Cache::new(10_000);
+        let populated_tx = PopulatedTransaction::new(&tx, vec![utxo0, utxo1, utxo2]);
+        let cov_ctx = CovenantsContext::from_tx(&populated_tx).expect("covenants context builds");
+
+        let mut vm = TxScriptEngine::from_transaction_input(
+            &populated_tx,
+            &input0,
+            0,
+            populated_tx.utxo(0).expect("utxo entry for input 0"),
+            EngineCtx::new(&sig_cache).with_reused(&reused_values).with_covenants_ctx(&cov_ctx),
+            EngineFlags { covenants_enabled: true },
+        );
+
+        vm.execute()
+    };
+
+    let result = execute_case(800, 700);
+    assert!(result.is_ok(), "covenant_id example should pass with in_sum >= out_sum: {}", result.unwrap_err());
+
+    let result = execute_case(1000, 700);
+    assert!(result.is_err(), "covenant_id example should fail when out_sum exceeds in_sum");
 }
 
 #[test]

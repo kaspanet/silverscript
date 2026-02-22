@@ -2,18 +2,18 @@ pragma silverscript ^0.1.0;
 
 contract Announcement() {
     entrypoint function announce() {
-        bytes announcement = new LockingBytecodeNullData([
+        byte[] announcement = new LockingBytecodeNullData([
             27906,
-            bytes('A contract may not injure a human being or, through inaction, allow a human being to come to harm.')
+            byte[]('A contract may not injure a human being or, through inaction, allow a human being to come to harm.')
         ]);
 
         require(tx.outputs[0].value == 0);
-        require(tx.outputs[0].lockingBytecode == announcement);
+        require(tx.outputs[0].scriptPubKey == announcement);
 
         int minerFee = 1000;
         int changeAmount = tx.inputs[this.activeInputIndex].value - minerFee;
         if (changeAmount >= minerFee) {
-            require(tx.outputs[1].lockingBytecode == tx.inputs[this.activeInputIndex].lockingBytecode);
+            require(tx.outputs[1].scriptPubKey == tx.inputs[this.activeInputIndex].scriptPubKey);
             require(tx.outputs[1].value == changeAmount);
         }
     }

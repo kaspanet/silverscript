@@ -7,11 +7,12 @@ version_constraint = { version_operator? ~ VersionLiteral }
 version_operator = { "^" | "~" | ">=" | ">" | "<" | "<=" | "=" }
 
 contract_definition = { "contract" ~ Identifier ~ parameter_list ~ "{" ~ contract_item* ~ "}" }
-contract_item = { constant_definition | function_definition }
+contract_item = { constant_definition | contract_field_definition | function_definition }
 entrypoint = { "entrypoint" }
 function_definition = { entrypoint? ~ "function" ~ Identifier ~ parameter_list ~ return_type_list? ~ "{" ~ statement* ~ "}" }
 
 constant_definition = { type_name ~ "constant" ~ Identifier ~ "=" ~ expression ~ ";" }
+contract_field_definition = { type_name ~ Identifier ~ "=" ~ expression ~ ";" }
 
 parameter_list = { "(" ~ (parameter ~ ("," ~ parameter)* ~ ","?)? ~ ")" }
 parameter = { type_name ~ Identifier }
@@ -23,6 +24,7 @@ statement = _{
     variable_definition
     | tuple_assignment
     | push_statement
+    | state_function_call_assignment
     | function_call_assignment
     | call_statement
     | return_statement
@@ -39,7 +41,9 @@ variable_definition = { type_name ~ modifier* ~ Identifier ~ ("=" ~ expression)?
 tuple_assignment = { type_name ~ Identifier ~ "," ~ type_name ~ Identifier ~ "=" ~ expression ~ ";" }
 push_statement = { Identifier ~ ".push" ~ "(" ~ expression ~ ")" ~ ";" }
 function_call_assignment = { "(" ~ typed_binding ~ ("," ~ typed_binding)* ~ ","? ~ ")" ~ "=" ~ function_call ~ ";" }
+state_function_call_assignment = { "{" ~ state_typed_binding ~ ("," ~ state_typed_binding)* ~ ","? ~ "}" ~ "=" ~ function_call ~ ";" }
 typed_binding = { type_name ~ Identifier }
+state_typed_binding = { Identifier ~ ":" ~ type_name ~ Identifier }
 call_statement = { function_call ~ ";" }
 assign_statement = { Identifier ~ "=" ~ expression ~ ";" }
 return_statement = { "return" ~ expression_list ~ ";" }
@@ -100,12 +104,16 @@ primary = _{
     | cast
     | function_call
     | instantiation
+    | state_object
     | introspection
     | array
     | NullaryOp
     | Identifier
     | literal
 }
+
+state_object = { "{" ~ (state_entry ~ ("," ~ state_entry)* ~ ","?)? ~ "}" }
+state_entry = { Identifier ~ ":" ~ expression }
 
 parenthesized = { "(" ~ expression ~ ")" }
 cast = { type_name ~ "(" ~ expression ~ ("," ~ expression)? ~ ","? ~ ")" }
@@ -116,8 +124,8 @@ introspection = {
     | ("tx.inputs" ~ "[" ~ expression ~ "]" ~ input_field)
 }
 
-output_field = { "." ~ ("value" | "lockingBytecode" | "tokenCategory" | "nftCommitment" | "tokenAmount") }
-input_field = { "." ~ ("value" | "lockingBytecode" | "outpointTransactionHash" | "outpointIndex" | "unlockingBytecode" | "sequenceNumber" | "tokenCategory" | "nftCommitment" | "tokenAmount") }
+output_field = { "." ~ ("value" | "scriptPubKey") }
+input_field = { "." ~ ("value" | "scriptPubKey" | "outpointTransactionHash" | "outpointIndex" | "sigScript") }
 
 array = { "[" ~ (expression ~ ("," ~ expression)* ~ ","?)? ~ "]" }
 
@@ -126,9 +134,10 @@ modifier = { "constant" }
 literal = { BooleanLiteral | HexLiteral | number_literal | StringLiteral | DateLiteral }
 number_literal = { NumberLiteral ~ NumberUnit? }
 
-type_name = { base_type ~ array_suffix? }
-base_type = { "int" | "bool" | "string" | "pubkey" | "sig" | "datasig" | Bytes }
-array_suffix = { "[]" }
+type_name = { base_type ~ array_suffix* }
+base_type = { "int" | "bool" | "string" | "pubkey" | "sig" | "datasig" | "byte" }
+array_suffix = { "[" ~ array_size? ~ "]" }
+array_size = { Identifier | (ASCII_NONZERO_DIGIT ~ ASCII_DIGIT*) }
 
 VersionLiteral = @{ ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT+ }
 
@@ -140,8 +149,7 @@ NumberLiteral = @{ "-"? ~ NumberPart ~ ExponentPart? }
 NumberPart = { ASCII_DIGIT+ ~ ("_" ~ ASCII_DIGIT+ )* }
 ExponentPart = { ("e" | "E") ~ NumberPart }
 
-Bytes = { "bytes" ~ Bound? | "byte" }
-Bound = { ASCII_NONZERO_DIGIT ~ ASCII_DIGIT* }
+
 
 StringLiteral = @{ "\"" ~ ("\\\"" | !("\"" | "\r" | "\n") ~ ANY)* ~ "\"" | "'" ~ ("\\'" | !("'" | "\r" | "\n") ~ ANY)* ~ "'" }
 
@@ -153,7 +161,7 @@ TxVar = { "this.age" | "tx.time" }
 
 NullaryOp = {
     "this.activeInputIndex"
-    | "this.activeBytecode"
+    | "this.activeScriptPubKey"
     | "this.scriptSizeDataPrefix"
     | "this.scriptSize"
     | "tx.inputs.length"
@@ -169,8 +177,8 @@ keyword_boundary = { keyword ~ !(ASCII_ALPHANUMERIC | "_") }
 keyword = {
     "pragma" | "silverscript" | "contract" | "entrypoint" | "function" | "if" | "else" | "require" | "for" | "yield" | "return"
     | "console.log" | "new" | "true" | "false" | "constant" | "date"
-    | "int" | "bool" | "string" | "pubkey" | "sig" | "datasig" | "byte" | "bytes"
-    | "this.age" | "tx.time" | "this.activeInputIndex" | "this.activeBytecode" | "this.scriptSizeDataPrefix" | "this.scriptSize"
+    | "int" | "bool" | "string" | "pubkey" | "sig" | "datasig" | "byte"
+    | "this.age" | "tx.time" | "this.activeInputIndex" | "this.activeScriptPubKey" | "this.scriptSizeDataPrefix" | "this.scriptSize"
     | "tx.inputs.length" | "tx.outputs.length" | "tx.version" | "tx.locktime"
 }
 

@@ -34,7 +34,7 @@ fn parses_timeops_and_console() {
 #[test]
 fn parses_arrays_and_introspection() {
     let input = r#"
-        contract Complex(bytes20 hash) {
+        contract Complex(byte[20] hash) {
             function verify(int idx) {
                 int a = [1, 2, 3][0];
                 int b = (a * 2).split(1).length;

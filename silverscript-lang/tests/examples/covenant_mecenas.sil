@@ -1,12 +1,12 @@
 pragma silverscript ^0.1.0;
 
-contract Mecenas(pubkey recipient, bytes32 funder, int pledge, int period) {
+contract Mecenas(pubkey recipient, byte[32] funder, int pledge, int period) {
     entrypoint function receive() {
         require(this.age >= period);
 
         // Check that the first output sends to the recipient
-        bytes34 recipientLockingBytecode = new LockingBytecodeP2PK(recipient);
-        require(tx.outputs[0].lockingBytecode == recipientLockingBytecode);
+        byte[34] recipientScriptPubKey = new ScriptPubKeyP2PK(recipient);
+        require(tx.outputs[0].scriptPubKey == recipientScriptPubKey);
 
         // Calculate the value that's left
         int minerFee = 1000;
@@ -20,8 +20,8 @@ contract Mecenas(pubkey recipient, bytes32 funder, int pledge, int period) {
             require(tx.outputs[0].value == currentValue - minerFee);
         } else {
             require(tx.outputs[0].value == pledge);
-            bytes changeBytecode = tx.inputs[this.activeInputIndex].lockingBytecode;
-            require(tx.outputs[1].lockingBytecode == changeBytecode);
+            byte[] changeScriptPubKey = tx.inputs[this.activeInputIndex].scriptPubKey;
+            require(tx.outputs[1].scriptPubKey == changeScriptPubKey);
             require(tx.outputs[1].value == changeValue);
         }
     }
