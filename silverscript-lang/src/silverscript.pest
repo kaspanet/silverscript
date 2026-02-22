@@ -134,8 +134,12 @@ modifier = { "constant" }
 literal = { BooleanLiteral | HexLiteral | number_literal | StringLiteral | DateLiteral }
 number_literal = { NumberLiteral ~ NumberUnit? }
 
-type_name = { base_type ~ array_suffix* }
-base_type = { "int" | "bool" | "string" | "pubkey" | "sig" | "datasig" | "byte" }
+type_name = { (base_type | legacy_bytes_type) ~ array_suffix* }
+base_type = @{
+    ("int" | "bool" | "string" | "pubkey" | "sig" | "datasig" | "byte")
+    ~ !(ASCII_ALPHANUMERIC | "_")
+}
+legacy_bytes_type = @{ "bytes" ~ ASCII_DIGIT* ~ !(ASCII_ALPHANUMERIC | "_") }
 array_suffix = { "[" ~ array_size? ~ "]" }
 array_size = { Identifier | (ASCII_NONZERO_DIGIT ~ ASCII_DIGIT*) }
 
@@ -177,7 +181,7 @@ keyword_boundary = { keyword ~ !(ASCII_ALPHANUMERIC | "_") }
 keyword = {
     "pragma" | "silverscript" | "contract" | "entrypoint" | "function" | "if" | "else" | "require" | "for" | "yield" | "return"
     | "console.log" | "new" | "true" | "false" | "constant" | "date"
-    | "int" | "bool" | "string" | "pubkey" | "sig" | "datasig" | "byte"
+    | "int" | "bool" | "string" | "pubkey" | "sig" | "datasig" | "byte" | "bytes"
     | "this.age" | "tx.time" | "this.activeInputIndex" | "this.activeScriptPubKey" | "this.scriptSizeDataPrefix" | "this.scriptSize"
     | "tx.inputs.length" | "tx.outputs.length" | "tx.version" | "tx.locktime"
 }

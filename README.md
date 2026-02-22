@@ -17,9 +17,21 @@ This repository is a Rust workspace. The main crate is `silverscript-lang`.
 cargo test -p silverscript-lang
 ```
 
+## Debugger
+
+The workspace includes a source-level debugger for stepping through scripts:
+
+```bash
+cargo run -p silverscript-lang --bin sil-debug -- \
+  silverscript-lang/tests/examples/if_statement.sil \
+  --function hello \
+  --ctor-arg 3 --ctor-arg 10 \
+  --arg 1 --arg 2
+```
+
 ## Layout
 
-- `silverscript-lang/` – compiler, parser, and tests
+- `silverscript-lang/` – compiler, parser, debugger, and tests
 - `silverscript-lang/tests/examples/` – example contracts (`.sil` files)
 
 ## Documentation

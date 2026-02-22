@@ -12,17 +12,24 @@ use chrono::NaiveDateTime;
 pub struct ContractAst {
     pub name: String,
     pub params: Vec<ParamAst>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub fields: Vec<ContractFieldAst>,
     pub constants: HashMap<String, Expr>,
     pub functions: Vec<FunctionAst>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ContractFieldAst {
-    pub type_ref: TypeRef,
-    pub name: String,
-    pub expr: Expr,
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SourceSpan {
+    pub line: u32,
+    pub col: u32,
+    pub end_line: u32,
+    pub end_col: u32,
+}
+
+impl SourceSpan {
+    pub fn from_span(span: pest::Span<'_>) -> Self {
+        let (line, col) = span.start_pos().line_col();
+        let (end_line, end_col) = span.end_pos().line_col();
+        Self { line: line as u32, col: col as u32, end_line: end_line as u32, end_col: end_col as u32 }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -32,104 +39,32 @@ pub struct FunctionAst {
     #[serde(default)]
     pub entrypoint: bool,
     #[serde(default)]
-    pub return_types: Vec<TypeRef>,
+    pub return_types: Vec<String>,
     pub body: Vec<Statement>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ParamAst {
-    pub type_ref: TypeRef,
+    pub type_name: String,
     pub name: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StateBindingAst {
-    pub field_name: String,
-    pub type_ref: TypeRef,
-    pub name: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct TypeRef {
-    pub base: TypeBase,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub array_dims: Vec<ArrayDim>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum TypeBase {
-    Int,
-    Bool,
-    String,
-    Pubkey,
-    Sig,
-    Datasig,
-    Byte,
-}
-
-impl TypeBase {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            TypeBase::Int => "int",
-            TypeBase::Bool => "bool",
-            TypeBase::String => "string",
-            TypeBase::Pubkey => "pubkey",
-            TypeBase::Sig => "sig",
-            TypeBase::Datasig => "datasig",
-            TypeBase::Byte => "byte",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
-pub enum ArrayDim {
-    Dynamic,
-    Fixed(usize),
-    Constant(String),
-}
-
-impl TypeRef {
-    pub fn type_name(&self) -> String {
-        let mut out = self.base.as_str().to_string();
-        for dim in &self.array_dims {
-            match dim {
-                ArrayDim::Dynamic => out.push_str("[]"),
-                ArrayDim::Fixed(size) => out.push_str(&format!("[{size}]")),
-                ArrayDim::Constant(name) => out.push_str(&format!("[{name}]")),
-            }
-        }
-        out
-    }
-
-    pub fn is_array(&self) -> bool {
-        !self.array_dims.is_empty()
-    }
-
-    pub fn element_type(&self) -> Option<Self> {
-        if self.array_dims.is_empty() {
-            return None;
-        }
-        let mut element = self.clone();
-        element.array_dims.pop();
-        Some(element)
-    }
-
-    pub fn array_size(&self) -> Option<&ArrayDim> {
-        self.array_dims.last()
-    }
+pub struct Statement {
+    #[serde(skip)]
+    pub span: Option<SourceSpan>,
+    #[serde(flatten)]
+    pub kind: StatementKind,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "data", rename_all = "snake_case")]
-pub enum Statement {
-    VariableDefinition { type_ref: TypeRef, modifiers: Vec<String>, name: String, expr: Option<Expr> },
-    TupleAssignment { left_type_ref: TypeRef, left_name: String, right_type_ref: TypeRef, right_name: String, expr: Expr },
+pub enum StatementKind {
+    VariableDefinition { type_name: String, modifiers: Vec<String>, name: String, expr: Option<Expr> },
+    TupleAssignment { left_type: String, left_name: String, right_type: String, right_name: String, expr: Expr },
     ArrayPush { name: String, expr: Expr },
     FunctionCall { name: String, args: Vec<Expr> },
     FunctionCallAssign { bindings: Vec<ParamAst>, name: String, args: Vec<Expr> },
-    StateFunctionCallAssign { bindings: Vec<StateBindingAst>, name: String, args: Vec<Expr> },
     Assign { name: String, expr: Expr },
     TimeOp { tx_var: TimeVar, expr: Expr, message: Option<String> },
     Require { expr: Expr, message: Option<String> },
@@ -159,7 +94,7 @@ pub enum TimeVar {
 pub enum Expr {
     Int(i64),
     Bool(bool),
-    Byte(u8),
+    Bytes(Vec<u8>),
     String(String),
     Identifier(String),
     Array(Vec<Expr>),
@@ -173,13 +108,6 @@ pub enum Expr {
     IfElse { condition: Box<Expr>, then_expr: Box<Expr>, else_expr: Box<Expr> },
     Nullary(NullaryOp),
     Introspection { kind: IntrospectionKind, index: Box<Expr> },
-    StateObject(Vec<StateFieldExpr>),
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct StateFieldExpr {
-    pub name: String,
-    pub expr: Expr,
 }
 
 impl From<i64> for Expr {
@@ -196,7 +124,7 @@ impl From<bool> for Expr {
 
 impl From<Vec<u8>> for Expr {
     fn from(value: Vec<u8>) -> Self {
-        Expr::Array(value.into_iter().map(Expr::Byte).collect())
+        Expr::Bytes(value)
     }
 }
 
@@ -204,6 +132,17 @@ impl From<String> for Expr {
     fn from(value: String) -> Self {
         Expr::String(value)
     }
+}
+
+fn normalize_type_name(raw: &str) -> String {
+    let type_name = raw.trim();
+    if type_name == "byte[]" {
+        return "bytes".to_string();
+    }
+    if let Some(size) = type_name.strip_prefix("byte[").and_then(|v| v.strip_suffix(']')).and_then(|v| v.parse::<usize>().ok()) {
+        return format!("bytes{size}");
+    }
+    type_name.to_string()
 }
 
 impl From<Vec<i64>> for Expr {
@@ -214,7 +153,7 @@ impl From<Vec<i64>> for Expr {
 
 impl From<Vec<Vec<u8>>> for Expr {
     fn from(value: Vec<Vec<u8>>) -> Self {
-        Expr::Array(value.into_iter().map(|bytes| Expr::Array(bytes.into_iter().map(Expr::Byte).collect())).collect())
+        Expr::Array(value.into_iter().map(Expr::Bytes).collect())
     }
 }
 
@@ -257,7 +196,7 @@ pub enum BinaryOp {
 #[serde(rename_all = "snake_case")]
 pub enum NullaryOp {
     ActiveInputIndex,
-    ActiveScriptPubKey,
+    ActiveBytecode,
     ThisScriptSize,
     ThisScriptSizeDataPrefix,
     TxInputsLength,
@@ -270,10 +209,9 @@ pub enum NullaryOp {
 #[serde(rename_all = "snake_case")]
 pub enum IntrospectionKind {
     InputValue,
-    InputScriptPubKey,
-    InputSigScript,
+    InputLockingBytecode,
     OutputValue,
-    OutputScriptPubKey,
+    OutputLockingBytecode,
 }
 
 fn validate_user_identifier(name: &str) -> Result<(), CompilerError> {
@@ -281,54 +219,6 @@ fn validate_user_identifier(name: &str) -> Result<(), CompilerError> {
         return Err(CompilerError::Unsupported("identifier cannot start with '__'".to_string()));
     }
     Ok(())
-}
-
-pub fn parse_type_ref(type_name: &str) -> Result<TypeRef, CompilerError> {
-    let mut pairs = SilverScriptParser::parse(Rule::type_name, type_name)?;
-    let pair = pairs.next().ok_or_else(|| CompilerError::Unsupported("missing type name".to_string()))?;
-    parse_type_name_pair(pair)
-}
-
-fn parse_type_name_pair(pair: Pair<'_, Rule>) -> Result<TypeRef, CompilerError> {
-    if pair.as_rule() != Rule::type_name {
-        return Err(CompilerError::Unsupported("expected type name".to_string()));
-    }
-
-    let mut inner = pair.clone().into_inner();
-    let base = match inner.next().ok_or_else(|| CompilerError::Unsupported("missing base type".to_string()))?.as_str() {
-        "int" => TypeBase::Int,
-        "bool" => TypeBase::Bool,
-        "string" => TypeBase::String,
-        "pubkey" => TypeBase::Pubkey,
-        "sig" => TypeBase::Sig,
-        "datasig" => TypeBase::Datasig,
-        "byte" => TypeBase::Byte,
-        other => return Err(CompilerError::Unsupported(format!("unknown base type: {other}"))),
-    };
-
-    let mut array_dims = Vec::new();
-    for suffix in inner {
-        if suffix.as_rule() != Rule::array_suffix {
-            continue;
-        }
-        let mut suffix_inner = suffix.into_inner();
-        let dim = match suffix_inner.next() {
-            None => ArrayDim::Dynamic,
-            Some(size_pair) => match size_pair.as_rule() {
-                Rule::array_size => {
-                    let raw = size_pair.as_str().trim();
-                    if let Ok(size) = raw.parse::<usize>() { ArrayDim::Fixed(size) } else { ArrayDim::Constant(raw.to_string()) }
-                }
-                Rule::Identifier => ArrayDim::Constant(size_pair.as_str().to_string()),
-                _ => {
-                    return Err(CompilerError::Unsupported("invalid array dimension".to_string()));
-                }
-            },
-        };
-        array_dims.push(dim);
-    }
-
-    Ok(TypeRef { base, array_dims })
 }
 
 pub fn parse_contract_ast(source: &str) -> Result<ContractAst, CompilerError> {
@@ -352,7 +242,6 @@ fn parse_contract_definition(pair: Pair<'_, Rule>) -> Result<ContractAst, Compil
     let params = parse_typed_parameter_list(params_pair)?;
 
     let mut functions = Vec::new();
-    let mut fields = Vec::new();
     let mut constants: HashMap<String, Expr> = HashMap::new();
 
     for item_pair in inner {
@@ -364,17 +253,6 @@ fn parse_contract_definition(pair: Pair<'_, Rule>) -> Result<ContractAst, Compil
             match inner_item.as_rule() {
                 Rule::function_definition => {
                     functions.push(parse_function_definition(inner_item)?);
-                }
-                Rule::contract_field_definition => {
-                    let mut field_inner = inner_item.into_inner();
-                    let type_pair = field_inner.next().ok_or_else(|| CompilerError::Unsupported("missing field type".to_string()))?;
-                    let type_ref = parse_type_name_pair(type_pair)?;
-                    let name_pair = field_inner.next().ok_or_else(|| CompilerError::Unsupported("missing field name".to_string()))?;
-                    validate_user_identifier(name_pair.as_str())?;
-                    let expr_pair =
-                        field_inner.next().ok_or_else(|| CompilerError::Unsupported("missing field initializer".to_string()))?;
-                    let expr = parse_expression(expr_pair)?;
-                    fields.push(ContractFieldAst { type_ref, name: name_pair.as_str().to_string(), expr });
                 }
                 Rule::constant_definition => {
                     let mut const_inner = inner_item.into_inner();
@@ -393,7 +271,7 @@ fn parse_contract_definition(pair: Pair<'_, Rule>) -> Result<ContractAst, Compil
         }
     }
 
-    Ok(ContractAst { name: name_pair.as_str().to_string(), params, fields, constants, functions })
+    Ok(ContractAst { name: name_pair.as_str().to_string(), params, constants, functions })
 }
 
 fn parse_function_definition(pair: Pair<'_, Rule>) -> Result<FunctionAst, CompilerError> {
@@ -426,18 +304,22 @@ fn parse_function_definition(pair: Pair<'_, Rule>) -> Result<FunctionAst, Compil
 }
 
 fn parse_statement(pair: Pair<'_, Rule>) -> Result<Statement, CompilerError> {
-    match pair.as_rule() {
-        Rule::statement => {
-            if let Some(inner) = pair.into_inner().next() {
-                parse_statement(inner)
-            } else {
-                Err(CompilerError::Unsupported("empty statement".to_string()))
-            }
-        }
+    if pair.as_rule() == Rule::statement {
+        return if let Some(inner) = pair.into_inner().next() {
+            parse_statement(inner)
+        } else {
+            Err(CompilerError::Unsupported("empty statement".to_string()))
+        };
+    }
+
+    let span = Some(SourceSpan::from_span(pair.as_span()));
+
+    let kind = match pair.as_rule() {
         Rule::variable_definition => {
             let mut inner = pair.into_inner();
-            let type_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing variable type".to_string()))?;
-            let type_ref = parse_type_name_pair(type_pair)?;
+            let type_name = normalize_type_name(
+                inner.next().ok_or_else(|| CompilerError::Unsupported("missing variable type".to_string()))?.as_str().trim(),
+            );
 
             let mut modifiers = Vec::new();
             while let Some(p) = inner.peek() {
@@ -450,42 +332,44 @@ fn parse_statement(pair: Pair<'_, Rule>) -> Result<Statement, CompilerError> {
             let ident = inner.next().ok_or_else(|| CompilerError::Unsupported("missing variable name".to_string()))?;
             validate_user_identifier(ident.as_str())?;
             let expr = inner.next().map(parse_expression).transpose()?;
-            Ok(Statement::VariableDefinition { type_ref, modifiers, name: ident.as_str().to_string(), expr })
+            StatementKind::VariableDefinition { type_name, modifiers, name: ident.as_str().to_string(), expr }
         }
         Rule::tuple_assignment => {
             let mut inner = pair.into_inner();
-            let left_type_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing left tuple type".to_string()))?;
-            let left_type_ref = parse_type_name_pair(left_type_pair)?;
+            let left_type = normalize_type_name(
+                inner.next().ok_or_else(|| CompilerError::Unsupported("missing left tuple type".to_string()))?.as_str(),
+            );
             let left_ident = inner.next().ok_or_else(|| CompilerError::Unsupported("missing left tuple name".to_string()))?;
-            let right_type_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing right tuple type".to_string()))?;
-            let right_type_ref = parse_type_name_pair(right_type_pair)?;
+            let right_type = normalize_type_name(
+                inner.next().ok_or_else(|| CompilerError::Unsupported("missing right tuple type".to_string()))?.as_str(),
+            );
             let right_ident = inner.next().ok_or_else(|| CompilerError::Unsupported("missing right tuple name".to_string()))?;
             validate_user_identifier(left_ident.as_str())?;
             validate_user_identifier(right_ident.as_str())?;
             let expr_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing tuple expression".to_string()))?;
 
             let expr = parse_expression(expr_pair)?;
-            Ok(Statement::TupleAssignment {
-                left_type_ref,
+            StatementKind::TupleAssignment {
+                left_type,
                 left_name: left_ident.as_str().to_string(),
-                right_type_ref,
+                right_type,
                 right_name: right_ident.as_str().to_string(),
                 expr,
-            })
+            }
         }
         Rule::push_statement => {
             let mut inner = pair.into_inner();
             let ident = inner.next().ok_or_else(|| CompilerError::Unsupported("missing push target".to_string()))?;
             let expr_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing push expression".to_string()))?;
             let expr = parse_expression(expr_pair)?;
-            Ok(Statement::ArrayPush { name: ident.as_str().to_string(), expr })
+            StatementKind::ArrayPush { name: ident.as_str().to_string(), expr }
         }
         Rule::assign_statement => {
             let mut inner = pair.into_inner();
             let ident = inner.next().ok_or_else(|| CompilerError::Unsupported("missing assignment name".to_string()))?;
             let expr_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing assignment expression".to_string()))?;
             let expr = parse_expression(expr_pair)?;
-            Ok(Statement::Assign { name: ident.as_str().to_string(), expr })
+            StatementKind::Assign { name: ident.as_str().to_string(), expr }
         }
         Rule::time_op_statement => {
             let mut inner = pair.into_inner();
@@ -499,14 +383,14 @@ fn parse_statement(pair: Pair<'_, Rule>) -> Result<Statement, CompilerError> {
                 "tx.time" => TimeVar::TxTime,
                 other => return Err(CompilerError::Unsupported(format!("unsupported time variable: {other}"))),
             };
-            Ok(Statement::TimeOp { tx_var, expr, message })
+            StatementKind::TimeOp { tx_var, expr, message }
         }
         Rule::require_statement => {
             let mut inner = pair.into_inner();
             let expr_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing require expression".to_string()))?;
             let message = inner.next().map(parse_require_message).transpose()?;
             let expr = parse_expression(expr_pair)?;
-            Ok(Statement::Require { expr, message })
+            StatementKind::Require { expr, message }
         }
         Rule::if_statement => {
             let mut inner = pair.into_inner();
@@ -515,14 +399,14 @@ fn parse_statement(pair: Pair<'_, Rule>) -> Result<Statement, CompilerError> {
             let then_block = inner.next().ok_or_else(|| CompilerError::Unsupported("missing if block".to_string()))?;
             let then_branch = parse_block(then_block)?;
             let else_branch = inner.next().map(parse_block).transpose()?;
-            Ok(Statement::If { condition: cond_expr, then_branch, else_branch })
+            StatementKind::If { condition: cond_expr, then_branch, else_branch }
         }
         Rule::call_statement => {
             let mut inner = pair.into_inner();
             let call_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing function call".to_string()))?;
             match parse_function_call(call_pair)? {
-                Expr::Call { name, args } => Ok(Statement::FunctionCall { name, args }),
-                _ => Err(CompilerError::Unsupported("function call expected".to_string())),
+                Expr::Call { name, args } => StatementKind::FunctionCall { name, args },
+                _ => return Err(CompilerError::Unsupported("function call expected".to_string())),
             }
         }
         Rule::function_call_assignment => {
@@ -531,54 +415,24 @@ fn parse_statement(pair: Pair<'_, Rule>) -> Result<Statement, CompilerError> {
             for item in pair.into_inner() {
                 if item.as_rule() == Rule::typed_binding {
                     let mut inner = item.into_inner();
-                    let type_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing binding type".to_string()))?;
-                    let type_ref = parse_type_name_pair(type_pair)?;
+                    let type_name = normalize_type_name(
+                        inner.next().ok_or_else(|| CompilerError::Unsupported("missing binding type".to_string()))?.as_str().trim(),
+                    );
                     let name = inner
                         .next()
                         .ok_or_else(|| CompilerError::Unsupported("missing binding name".to_string()))?
                         .as_str()
                         .to_string();
                     validate_user_identifier(&name)?;
-                    bindings.push(ParamAst { type_ref, name });
+                    bindings.push(ParamAst { type_name, name });
                 } else if item.as_rule() == Rule::function_call {
                     call_pair = Some(item);
                 }
             }
             let call_pair = call_pair.ok_or_else(|| CompilerError::Unsupported("missing function call".to_string()))?;
             match parse_function_call(call_pair)? {
-                Expr::Call { name, args } => Ok(Statement::FunctionCallAssign { bindings, name, args }),
-                _ => Err(CompilerError::Unsupported("function call expected".to_string())),
-            }
-        }
-        Rule::state_function_call_assignment => {
-            let mut bindings = Vec::new();
-            let mut call_pair = None;
-            for item in pair.into_inner() {
-                if item.as_rule() == Rule::state_typed_binding {
-                    let mut inner = item.into_inner();
-                    let field_name = inner
-                        .next()
-                        .ok_or_else(|| CompilerError::Unsupported("missing state field name".to_string()))?
-                        .as_str()
-                        .to_string();
-                    let type_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing binding type".to_string()))?;
-                    let type_ref = parse_type_name_pair(type_pair)?;
-                    let name = inner
-                        .next()
-                        .ok_or_else(|| CompilerError::Unsupported("missing binding name".to_string()))?
-                        .as_str()
-                        .to_string();
-                    validate_user_identifier(&field_name)?;
-                    validate_user_identifier(&name)?;
-                    bindings.push(StateBindingAst { field_name, type_ref, name });
-                } else if item.as_rule() == Rule::function_call {
-                    call_pair = Some(item);
-                }
-            }
-            let call_pair = call_pair.ok_or_else(|| CompilerError::Unsupported("missing function call".to_string()))?;
-            match parse_function_call(call_pair)? {
-                Expr::Call { name, args } => Ok(Statement::StateFunctionCallAssign { bindings, name, args }),
-                _ => Err(CompilerError::Unsupported("function call expected".to_string())),
+                Expr::Call { name, args } => StatementKind::FunctionCallAssign { bindings, name, args },
+                _ => return Err(CompilerError::Unsupported("function call expected".to_string())),
             }
         }
         Rule::for_statement => {
@@ -593,7 +447,7 @@ fn parse_statement(pair: Pair<'_, Rule>) -> Result<Statement, CompilerError> {
             let end_expr = parse_expression(end_pair)?;
             let body = parse_block(block_pair)?;
 
-            Ok(Statement::For { ident: ident.as_str().to_string(), start: start_expr, end: end_expr, body })
+            StatementKind::For { ident: ident.as_str().to_string(), start: start_expr, end: end_expr, body }
         }
         Rule::yield_statement => {
             let mut inner = pair.into_inner();
@@ -602,7 +456,7 @@ fn parse_statement(pair: Pair<'_, Rule>) -> Result<Statement, CompilerError> {
             if args.len() != 1 {
                 return Err(CompilerError::Unsupported("yield() expects a single argument".to_string()));
             }
-            Ok(Statement::Yield { expr: args[0].clone() })
+            StatementKind::Yield { expr: args[0].clone() }
         }
         Rule::return_statement => {
             let mut inner = pair.into_inner();
@@ -611,16 +465,18 @@ fn parse_statement(pair: Pair<'_, Rule>) -> Result<Statement, CompilerError> {
             if args.is_empty() {
                 return Err(CompilerError::Unsupported("return() expects at least one argument".to_string()));
             }
-            Ok(Statement::Return { exprs: args })
+            StatementKind::Return { exprs: args }
         }
         Rule::console_statement => {
             let mut inner = pair.into_inner();
             let list_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing console arguments".to_string()))?;
             let args = parse_console_parameter_list(list_pair)?;
-            Ok(Statement::Console { args })
+            StatementKind::Console { args }
         }
-        _ => Err(CompilerError::Unsupported(format!("unexpected statement: {:?}", pair.as_rule()))),
-    }
+        _ => return Err(CompilerError::Unsupported(format!("unexpected statement: {:?}", pair.as_rule()))),
+    };
+
+    Ok(Statement { span, kind })
 }
 
 fn parse_block(pair: Pair<'_, Rule>) -> Result<Vec<Statement>, CompilerError> {
@@ -685,15 +541,13 @@ fn parse_expression(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
         Rule::function_call => parse_function_call(pair),
         Rule::instantiation => parse_instantiation(pair),
         Rule::cast => parse_cast(pair),
-        Rule::state_object => parse_state_object(pair),
         Rule::split_call
         | Rule::slice_call
         | Rule::tuple_index
         | Rule::unary_suffix
         | Rule::StringLiteral
         | Rule::DateLiteral
-        | Rule::type_name
-        | Rule::state_entry => Err(CompilerError::Unsupported(format!("expression not supported: {:?}", pair.as_rule()))),
+        | Rule::type_name => Err(CompilerError::Unsupported(format!("expression not supported: {:?}", pair.as_rule()))),
         _ => Err(CompilerError::Unsupported(format!("unexpected expression: {:?}", pair.as_rule()))),
     }
 }
@@ -783,21 +637,21 @@ fn parse_typed_parameter_list(pair: Pair<'_, Rule>) -> Result<Vec<ParamAst>, Com
             continue;
         }
         let mut inner = param.into_inner();
-        let type_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing parameter type".to_string()))?;
-        let type_ref = parse_type_name_pair(type_pair)?;
+        let type_name = normalize_type_name(
+            inner.next().ok_or_else(|| CompilerError::Unsupported("missing parameter type".to_string()))?.as_str().trim(),
+        );
         let ident = inner.next().ok_or_else(|| CompilerError::Unsupported("missing parameter name".to_string()))?.as_str().to_string();
         validate_user_identifier(&ident)?;
-        params.push(ParamAst { type_ref, name: ident });
+        params.push(ParamAst { type_name, name: ident });
     }
     Ok(params)
 }
 
-fn parse_return_type_list(pair: Pair<'_, Rule>) -> Result<Vec<TypeRef>, CompilerError> {
+fn parse_return_type_list(pair: Pair<'_, Rule>) -> Result<Vec<String>, CompilerError> {
     let mut types = Vec::new();
     for item in pair.into_inner() {
         if item.as_rule() == Rule::type_name {
-            let type_ref = parse_type_name_pair(item)?;
-            types.push(type_ref);
+            types.push(normalize_type_name(item.as_str().trim()));
         }
     }
     Ok(types)
@@ -814,27 +668,9 @@ fn parse_primary(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
         Rule::function_call => parse_function_call(pair),
         Rule::instantiation => parse_instantiation(pair),
         Rule::cast => parse_cast(pair),
-        Rule::state_object => parse_state_object(pair),
         Rule::expression => parse_expression(pair),
         _ => Err(CompilerError::Unsupported(format!("primary not supported: {:?}", pair.as_rule()))),
     }
-}
-
-fn parse_state_object(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
-    let mut fields = Vec::new();
-    for field_pair in pair.into_inner() {
-        if field_pair.as_rule() != Rule::state_entry {
-            continue;
-        }
-        let mut inner = field_pair.into_inner();
-        let name =
-            inner.next().ok_or_else(|| CompilerError::Unsupported("missing state field name".to_string()))?.as_str().to_string();
-        validate_user_identifier(&name)?;
-        let expr_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing state field expression".to_string()))?;
-        let expr = parse_expression(expr_pair)?;
-        fields.push(StateFieldExpr { name, expr });
-    }
-    Ok(Expr::StateObject(fields))
 }
 
 fn parse_literal(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
@@ -910,7 +746,8 @@ fn parse_expression_list(pair: Pair<'_, Rule>) -> Result<Vec<Expr>, CompilerErro
 
 fn parse_cast(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
     let mut inner = pair.into_inner();
-    let type_name = inner.next().ok_or_else(|| CompilerError::Unsupported("missing cast type".to_string()))?.as_str().to_string();
+    let type_name =
+        normalize_type_name(inner.next().ok_or_else(|| CompilerError::Unsupported("missing cast type".to_string()))?.as_str());
     let args = match inner.next() {
         Some(list) => parse_expression_list(list)?,
         None => Vec::new(),
@@ -919,7 +756,7 @@ fn parse_cast(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
         return Ok(Expr::Call { name: "bytes".to_string(), args });
     }
     if type_name == "byte" {
-        return Ok(Expr::Call { name: "byte[1]".to_string(), args });
+        return Ok(Expr::Call { name: "bytes1".to_string(), args });
     }
     if type_name == "int" {
         return Ok(Expr::Call { name: "int".to_string(), args });
@@ -927,21 +764,8 @@ fn parse_cast(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
     if matches!(type_name.as_str(), "sig" | "pubkey" | "datasig") {
         return Ok(Expr::Call { name: type_name, args });
     }
-    // Handle single byte cast (duplicate check removed above)
-    // Support type[N] syntax
-    if let Some(bracket_pos) = type_name.find('[') {
-        if type_name.ends_with(']') {
-            let _base_type = &type_name[..bracket_pos];
-            let size_str = &type_name[bracket_pos + 1..type_name.len() - 1];
-            // Support both type[N] and type[] (dynamic array)
-            if size_str.is_empty() {
-                // Dynamic array cast like byte[]
-                return Ok(Expr::Call { name: type_name.to_string(), args });
-            } else if let Ok(_size) = size_str.parse::<usize>() {
-                // Fixed-size array cast like byte[32]
-                return Ok(Expr::Call { name: type_name.to_string(), args });
-            }
-        }
+    if let Some(size) = type_name.strip_prefix("bytes").and_then(|v| v.parse::<usize>().ok()) {
+        return Ok(Expr::Call { name: format!("bytes{size}"), args });
     }
     Err(CompilerError::Unsupported(format!("cast type not supported: {type_name}")))
 }
@@ -965,8 +789,7 @@ fn parse_hex_literal(raw: &str) -> Result<Expr, CompilerError> {
         .map(|i| u8::from_str_radix(&normalized[i..i + 2], 16))
         .collect::<Result<Vec<_>, _>>()
         .map_err(|_| CompilerError::InvalidLiteral(format!("invalid hex literal '{raw}'")))?;
-    // Convert Vec<u8> to Expr::Array of Expr::Byte
-    Ok(Expr::Array(bytes.into_iter().map(Expr::Byte).collect()))
+    Ok(Expr::Bytes(bytes))
 }
 
 fn apply_number_unit(expr: Expr, unit: &str) -> Result<Expr, CompilerError> {
@@ -1022,7 +845,7 @@ fn parse_string_literal(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
 fn parse_nullary(raw: &str) -> Result<Expr, CompilerError> {
     let op = match raw {
         "this.activeInputIndex" => NullaryOp::ActiveInputIndex,
-        "this.activeScriptPubKey" => NullaryOp::ActiveScriptPubKey,
+        "this.activeBytecode" | "this.activeScriptPubKey" => NullaryOp::ActiveBytecode,
         "this.scriptSize" => NullaryOp::ThisScriptSize,
         "this.scriptSizeDataPrefix" => NullaryOp::ThisScriptSizeDataPrefix,
         "tx.inputs.length" => NullaryOp::TxInputsLength,
@@ -1046,14 +869,13 @@ fn parse_introspection(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
     let kind = if text.starts_with("tx.inputs") {
         match field {
             ".value" => IntrospectionKind::InputValue,
-            ".scriptPubKey" => IntrospectionKind::InputScriptPubKey,
-            ".sigScript" => IntrospectionKind::InputSigScript,
+            ".lockingBytecode" | ".scriptPubKey" => IntrospectionKind::InputLockingBytecode,
             _ => return Err(CompilerError::Unsupported(format!("input field '{field}' not supported"))),
         }
     } else if text.starts_with("tx.outputs") {
         match field {
             ".value" => IntrospectionKind::OutputValue,
-            ".scriptPubKey" => IntrospectionKind::OutputScriptPubKey,
+            ".lockingBytecode" | ".scriptPubKey" => IntrospectionKind::OutputLockingBytecode,
             _ => return Err(CompilerError::Unsupported(format!("output field '{field}' not supported"))),
         }
     } else {
