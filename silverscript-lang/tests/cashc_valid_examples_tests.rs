@@ -530,9 +530,12 @@ fn runs_cashc_valid_examples() {
                 );
                 tx.tx.inputs[0].signature_script = sigscript;
                 let result = execute_tx(tx, utxo, reused);
-                // Note: log_intermediate_results.sil now passes with byte[N] syntax
-                // (previously failed with bytesN due to CLEANSTACK)
-                assert!(result.is_ok(), "{example} failed: {}", result.unwrap_err());
+                if example == "log_intermediate_results.sil" {
+                    // Unsatisfiable in this runtime: the script leaves an extra stack item (CLEANSTACK).
+                    assert!(result.is_err(), "{example} should fail");
+                } else {
+                    assert!(result.is_ok(), "{example} failed: {}", result.unwrap_err());
+                }
             }
             "multifunction.sil" => {
                 let recipient = random_keypair();

@@ -1670,7 +1670,7 @@ fn compile_expr(
                 *stack_depth += 1;
                 Ok(())
             }
-            "LockingBytecodeP2PK" => {
+            "LockingBytecodeP2PK" | "ScriptPubKeyP2PK" => {
                 if args.len() != 1 {
                     return Err(CompilerError::Unsupported("LockingBytecodeP2PK expects a single pubkey argument".to_string()));
                 }
@@ -1686,7 +1686,7 @@ fn compile_expr(
                 *stack_depth -= 1;
                 Ok(())
             }
-            "LockingBytecodeP2SH" => {
+            "LockingBytecodeP2SH" | "ScriptPubKeyP2SH" => {
                 if args.len() != 1 {
                     return Err(CompilerError::Unsupported("LockingBytecodeP2SH expects a single bytes32 argument".to_string()));
                 }
@@ -1974,7 +1974,12 @@ fn expr_is_bytes_inner(
         Expr::Slice { .. } => true,
         Expr::New { name, .. } => matches!(
             name.as_str(),
-            "LockingBytecodeNullData" | "LockingBytecodeP2PK" | "LockingBytecodeP2SH" | "LockingBytecodeP2SHFromRedeemScript"
+            "LockingBytecodeNullData"
+                | "LockingBytecodeP2PK"
+                | "ScriptPubKeyP2PK"
+                | "LockingBytecodeP2SH"
+                | "ScriptPubKeyP2SH"
+                | "LockingBytecodeP2SHFromRedeemScript"
         ),
         Expr::Call { name, .. } => {
             matches!(
