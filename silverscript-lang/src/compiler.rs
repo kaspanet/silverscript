@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::ast::{
-    BinaryOp, ConsoleArg, ContractAst, ContractFieldAst, Expr, FunctionAst, IntrospectionKind, NullaryOp, SourceSpan, SplitPart,
-    StateBindingAst, Statement, StatementKind, TimeVar, UnaryOp, parse_contract_ast,
+    ArrayDim, BinaryOp, ConsoleArg, ContractAst, ContractFieldAst, Expr, FunctionAst, IntrospectionKind, NullaryOp, SourceSpan,
+    SplitPart, StateBindingAst, Statement, StatementKind, TimeVar, TypeBase, TypeRef, UnaryOp, parse_contract_ast,
 };
 use crate::debug::DebugInfo;
 use crate::debug::labels::synthetic;
@@ -365,6 +365,18 @@ fn array_element_size(type_name: &str) -> Option<i64> {
     array_element_type(type_name).and_then(fixed_type_size)
 }
 
+fn type_name_from_ref(type_ref: &TypeRef) -> String {
+    if type_ref.base == TypeBase::Byte {
+        return match type_ref.array_dims.as_slice() {
+            [] => "byte".to_string(),
+            [ArrayDim::Dynamic] => "bytes".to_string(),
+            [ArrayDim::Fixed(size)] => format!("bytes{size}"),
+            _ => type_ref.type_name(),
+        };
+    }
+    type_ref.type_name()
+}
+
 fn compile_contract_fields(
     fields: &[ContractFieldAst],
     base_constants: &HashMap<String, Expr>,
@@ -516,15 +528,16 @@ fn validate_function_body(function: &FunctionAst, options: CompileOptions) -> Re
     Ok(has_return)
 }
 
-fn validate_return_types(exprs: &[Expr], return_types: &[String], types: &HashMap<String, String>) -> Result<(), CompilerError> {
+fn validate_return_types(exprs: &[Expr], return_types: &[TypeRef], types: &HashMap<String, String>) -> Result<(), CompilerError> {
     if return_types.is_empty() {
         return Err(CompilerError::Unsupported("return requires function return types".to_string()));
     }
     if return_types.len() != exprs.len() {
         return Err(CompilerError::Unsupported("return values count must match function return types".to_string()));
     }
-    for (expr, type_name) in exprs.iter().zip(return_types.iter()) {
-        if !expr_matches_return_type(expr, type_name, types) {
+    for (expr, type_ref) in exprs.iter().zip(return_types.iter()) {
+        let type_name = type_name_from_ref(type_ref);
+        if !expr_matches_return_type(expr, &type_name, types) {
             return Err(CompilerError::Unsupported(format!("return value expects {type_name}")));
         }
     }
@@ -707,8 +720,11 @@ fn compile_function(
     }
 
     for return_type in &function.return_types {
-        if is_array_type(return_type) && array_element_size(return_type).is_none() {
-            return Err(CompilerError::Unsupported(format!("array element type must have known size: {return_type}")));
+        let return_type_name = type_name_from_ref(return_type);
+        if is_array_type(&return_type_name) && array_element_size(&return_type_name).is_none() {
+            return Err(CompilerError::Unsupported(format!(
+                "array element type must have known size: {return_type_name}"
+            )));
         }
     }
 
@@ -989,11 +1005,11 @@ impl<'a> FunctionBodyCompiler<'a> {
                         return Err(CompilerError::Unsupported("return values count must match function return types".to_string()));
                     }
                     for (binding, return_type) in bindings.iter().zip(function.return_types.iter()) {
-                        if binding.type_name != *return_type {
+                        if binding.type_name != type_name_from_ref(return_type) {
                             return Err(CompilerError::Unsupported("function return types must match binding types".to_string()));
                         }
                     }
-                    function.return_types.clone()
+                    function.return_types.iter().map(type_name_from_ref).collect::<Vec<_>>()
                 };
                 let returns = self.compile_inline_call(name, args, params, types, env, stmt.span)?;
                 if returns.len() != return_types.len() {

@@ -48,7 +48,7 @@ pub struct FunctionAst {
     #[serde(default)]
     pub entrypoint: bool,
     #[serde(default)]
-    pub return_types: Vec<String>,
+    pub return_types: Vec<TypeRef>,
     pub body: Vec<Statement>,
 }
 
@@ -63,6 +63,61 @@ pub struct StateBindingAst {
     pub field_name: String,
     pub type_name: String,
     pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TypeRef {
+    pub base: TypeBase,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub array_dims: Vec<ArrayDim>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum TypeBase {
+    Int,
+    Bool,
+    String,
+    Pubkey,
+    Sig,
+    Datasig,
+    Byte,
+}
+
+impl TypeBase {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            TypeBase::Int => "int",
+            TypeBase::Bool => "bool",
+            TypeBase::String => "string",
+            TypeBase::Pubkey => "pubkey",
+            TypeBase::Sig => "sig",
+            TypeBase::Datasig => "datasig",
+            TypeBase::Byte => "byte",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+pub enum ArrayDim {
+    Dynamic,
+    Fixed(usize),
+    Constant(String),
+}
+
+impl TypeRef {
+    pub fn type_name(&self) -> String {
+        let mut out = self.base.as_str().to_string();
+        for dim in &self.array_dims {
+            match dim {
+                ArrayDim::Dynamic => out.push_str("[]"),
+                ArrayDim::Fixed(size) => out.push_str(&format!("[{size}]")),
+                ArrayDim::Constant(name) => out.push_str(&format!("[{name}]")),
+            }
+        }
+        out
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -243,6 +298,65 @@ fn validate_user_identifier(name: &str) -> Result<(), CompilerError> {
         return Err(CompilerError::Unsupported("identifier cannot start with '__'".to_string()));
     }
     Ok(())
+}
+
+pub fn parse_type_ref(type_name: &str) -> Result<TypeRef, CompilerError> {
+    let mut pairs = SilverScriptParser::parse(Rule::type_name, type_name)?;
+    let pair = pairs.next().ok_or_else(|| CompilerError::Unsupported("missing type name".to_string()))?;
+    parse_type_name_pair(pair)
+}
+
+fn parse_type_name_pair(pair: Pair<'_, Rule>) -> Result<TypeRef, CompilerError> {
+    if pair.as_rule() != Rule::type_name {
+        return Err(CompilerError::Unsupported("expected type name".to_string()));
+    }
+
+    let mut inner = pair.clone().into_inner();
+    let base_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing base type".to_string()))?;
+
+    let (base, mut array_dims) = match base_pair.as_rule() {
+        Rule::base_type => {
+            let base = match base_pair.as_str() {
+                "int" => TypeBase::Int,
+                "bool" => TypeBase::Bool,
+                "string" => TypeBase::String,
+                "pubkey" => TypeBase::Pubkey,
+                "sig" => TypeBase::Sig,
+                "datasig" => TypeBase::Datasig,
+                "byte" => TypeBase::Byte,
+                other => return Err(CompilerError::Unsupported(format!("unknown base type: {other}"))),
+            };
+            (base, Vec::new())
+        }
+        Rule::legacy_bytes_type => {
+            let raw = base_pair.as_str();
+            if raw == "bytes" {
+                (TypeBase::Byte, vec![ArrayDim::Dynamic])
+            } else if let Some(size) = raw.strip_prefix("bytes").and_then(|v| v.parse::<usize>().ok()) {
+                (TypeBase::Byte, vec![ArrayDim::Fixed(size)])
+            } else {
+                return Err(CompilerError::Unsupported(format!("invalid bytes type: {raw}")));
+            }
+        }
+        _ => return Err(CompilerError::Unsupported("invalid type root".to_string())),
+    };
+
+    for suffix in inner {
+        if suffix.as_rule() != Rule::array_suffix {
+            continue;
+        }
+        let mut suffix_inner = suffix.into_inner();
+        let dim = match suffix_inner.next() {
+            None => ArrayDim::Dynamic,
+            Some(size_pair) => {
+                let raw = size_pair.as_str().trim();
+                if let Ok(size) = raw.parse::<usize>() { ArrayDim::Fixed(size) } else { ArrayDim::Constant(raw.to_string()) }
+            }
+        };
+        array_dims.push(dim);
+    }
+
+    Ok(TypeRef { base, array_dims })
 }
 
 pub fn parse_contract_ast(source: &str) -> Result<ContractAst, CompilerError> {
@@ -722,11 +836,12 @@ fn parse_typed_parameter_list(pair: Pair<'_, Rule>) -> Result<Vec<ParamAst>, Com
     Ok(params)
 }
 
-fn parse_return_type_list(pair: Pair<'_, Rule>) -> Result<Vec<String>, CompilerError> {
+fn parse_return_type_list(pair: Pair<'_, Rule>) -> Result<Vec<TypeRef>, CompilerError> {
     let mut types = Vec::new();
     for item in pair.into_inner() {
         if item.as_rule() == Rule::type_name {
-            types.push(normalize_type_name(item.as_str().trim()));
+            let normalized = normalize_type_name(item.as_str().trim());
+            types.push(parse_type_ref(&normalized)?);
         }
     }
     Ok(types)
