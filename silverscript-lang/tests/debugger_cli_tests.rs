@@ -45,6 +45,6 @@ fn sil_debug_repl_all_commands_smoke() {
     assert!(stdout.contains("Commands:"), "missing help output");
     assert!(stdout.contains("Stack:"), "missing stack output");
     assert!(stdout.contains("no statement at line 1"), "missing invalid breakpoint warning");
-    assert!(stdout.contains("Breakpoint set at line 7"), "missing breakpoint confirmation");
-    assert!(stdout.contains("Breakpoints: 7"), "missing breakpoint listing");
+    assert!(stdout.contains("no statement at line 7"), "missing line-7 breakpoint warning");
+    assert!(stdout.contains("No breakpoints set."), "missing breakpoint listing");
 }

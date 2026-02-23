@@ -7,9 +7,9 @@ use kaspa_txscript::script_builder::ScriptBuilder;
 use kaspa_txscript::{DynOpcodeImplementation, EngineCtx, EngineFlags, TxScriptEngine, parse_script};
 use serde::{Deserialize, Serialize};
 
-use crate::ast::{Expr, SourceSpan};
+use crate::ast::Expr;
 use crate::compiler::compile_debug_expr;
-use crate::debug::{DebugFunctionRange, DebugInfo, DebugMapping, DebugParamMapping, DebugVariableUpdate, MappingKind};
+use crate::debug::{DebugFunctionRange, DebugInfo, DebugMapping, DebugParamMapping, DebugVariableUpdate, MappingKind, SourceSpan};
 
 pub type DebugTx<'a> = PopulatedTransaction<'a>;
 pub type DebugReused = SigHashReusedValuesUnsync;
@@ -775,7 +775,7 @@ impl<'a> DebugSession<'a> {
         match expr {
             Expr::Int(v) => DebugValue::Int(*v),
             Expr::Bool(v) => DebugValue::Bool(*v),
-            Expr::Bytes(v) => DebugValue::Bytes(v.clone()),
+            Expr::Byte(v) => DebugValue::Bytes(vec![*v]),
             Expr::String(v) => DebugValue::String(v.clone()),
             _ => DebugValue::Unknown("complex expression".to_string()),
         }

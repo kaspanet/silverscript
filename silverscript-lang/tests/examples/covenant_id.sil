@@ -5,7 +5,7 @@ contract CovenantId(int max_ins, int max_outs, int init_amount) {
     entrypoint function main(int[] output_amounts) {
         require(output_amounts.length <= max_outs);
         byte[32] covid = OpInputCovenantId(this.activeInputIndex);
-
+        
         int in_count = OpCovInputCount(covid);
         require(in_count <= max_ins);
 

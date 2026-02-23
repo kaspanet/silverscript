@@ -103,6 +103,10 @@ fn parse_hex_bytes(raw: &str) -> Result<Vec<u8>, Box<dyn Error>> {
     Ok(hex::decode(normalized)?)
 }
 
+fn bytes_expr(bytes: Vec<u8>) -> Expr {
+    Expr::Array(bytes.into_iter().map(Expr::Byte).collect())
+}
+
 pub fn parse_typed_arg(type_name: &str, raw: &str) -> Result<Expr, Box<dyn Error>> {
     // Support array inputs until the LSP exists by allowing:
     // - JSON arrays: [1,2,3] or ["0x01","0x02"]
@@ -123,8 +127,10 @@ pub fn parse_typed_arg(type_name: &str, raw: &str) -> Result<Expr, Box<dyn Error
             }
             return Ok(Expr::Array(out));
         }
-        // If not JSON, accept hex bytes for already-encoded arrays.
-        return Ok(Expr::Bytes(parse_hex_bytes(trimmed)?));
+        if element_type == "byte" {
+            return Ok(bytes_expr(parse_hex_bytes(trimmed)?));
+        }
+        return Err(format!("unsupported array literal format for '{type_name}'").into());
     }
 
     match type_name {
@@ -135,14 +141,43 @@ pub fn parse_typed_arg(type_name: &str, raw: &str) -> Result<Expr, Box<dyn Error
             _ => Err(format!("invalid bool '{raw}' (expected true/false)").into()),
         },
         "string" => Ok(Expr::String(raw.to_string())),
-        "bytes" | "byte" | "pubkey" | "sig" | "datasig" => Ok(Expr::Bytes(parse_hex_bytes(raw)?)),
+        "byte" => {
+            let bytes = parse_hex_bytes(raw)?;
+            if bytes.len() == 1 { Ok(Expr::Byte(bytes[0])) } else { Err(format!("byte expects 1 byte, got {}", bytes.len()).into()) }
+        }
+        "bytes" => Ok(bytes_expr(parse_hex_bytes(raw)?)),
+        "pubkey" => {
+            let bytes = parse_hex_bytes(raw)?;
+            if bytes.len() != 32 {
+                return Err(format!("pubkey expects 32 bytes, got {}", bytes.len()).into());
+            }
+            Ok(bytes_expr(bytes))
+        }
+        "sig" => {
+            let bytes = parse_hex_bytes(raw)?;
+            if bytes.len() != 65 {
+                return Err(format!("sig expects 65 bytes, got {}", bytes.len()).into());
+            }
+            Ok(bytes_expr(bytes))
+        }
+        "datasig" => {
+            let bytes = parse_hex_bytes(raw)?;
+            if bytes.len() != 64 {
+                return Err(format!("datasig expects 64 bytes, got {}", bytes.len()).into());
+            }
+            Ok(bytes_expr(bytes))
+        }
         other => {
-            if let Some(size) = other.strip_prefix("bytes").and_then(|v| v.parse::<usize>().ok()) {
+            let size = other
+                .strip_prefix("bytes")
+                .and_then(|v| v.parse::<usize>().ok())
+                .or_else(|| other.strip_prefix("byte[").and_then(|v| v.strip_suffix(']')).and_then(|v| v.parse::<usize>().ok()));
+            if let Some(size) = size {
                 let bytes = parse_hex_bytes(raw)?;
                 if bytes.len() != size {
                     return Err(format!("{other} expects {size} bytes, got {}", bytes.len()).into());
                 }
-                Ok(Expr::Bytes(bytes))
+                Ok(bytes_expr(bytes))
             } else {
                 Err(format!("unsupported arg type '{other}'").into())
             }

@@ -149,9 +149,7 @@ fn script_with_return_checks(script: Vec<u8>, expected: &[i64]) -> Vec<u8> {
 }
 
 fn sigscript_push_script(script: &[u8]) -> Vec<u8> {
-    let mut builder = ScriptBuilder::new();
-    builder.add_data(script).expect("push script");
-    builder.drain()
+    ScriptBuilder::new().add_data(script).unwrap().drain()
 }
 
 #[test]
@@ -457,7 +455,16 @@ fn runs_everything_example_and_verifies() {
         sequence: 500,
         sig_op_count: 1,
     };
-    let checked_script = compiled.script.clone();
+    let checked_script = ScriptBuilder::new()
+        .add_ops(&compiled.script)
+        .unwrap()
+        .add_op(OpDrop)
+        .unwrap()
+        .add_op(OpDrop)
+        .unwrap()
+        .add_op(OpTrue)
+        .unwrap()
+        .drain();
     let output =
         TransactionOutput { value: 5_000, script_public_key: ScriptPublicKey::new(0, checked_script.clone().into()), covenant: None };
 

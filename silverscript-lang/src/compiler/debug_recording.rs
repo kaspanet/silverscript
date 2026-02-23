@@ -2,10 +2,10 @@ use std::collections::{HashMap, HashSet};
 
 use kaspa_txscript::script_builder::ScriptBuilder;
 
-use crate::ast::{Expr, FunctionAst, ParamAst, SourceSpan, Statement};
+use crate::ast::{Expr, FunctionAst, ParamAst};
 use crate::debug::{
     DebugConstantMapping, DebugEvent, DebugEventKind, DebugFunctionRange, DebugInfo, DebugParamMapping, DebugRecorder,
-    DebugVariableUpdate,
+    DebugVariableUpdate, SourceSpan,
 };
 
 use super::{CompilerError, resolve_expr_for_debug};
@@ -37,6 +37,7 @@ pub struct FunctionDebugRecorder {
     frame_id: u32,
 }
 
+#[allow(dead_code)]
 impl FunctionDebugRecorder {
     pub fn new(enabled: bool, function: &FunctionAst) -> Self {
         let mut recorder = Self { function_name: function.name.clone(), enabled, call_depth: 0, frame_id: 0, ..Default::default() };
@@ -97,16 +98,16 @@ impl FunctionDebugRecorder {
         for (index, param) in function.params.iter().enumerate() {
             self.param_mappings.push(DebugParamMapping {
                 name: param.name.clone(),
-                type_name: param.type_name.clone(),
+                type_name: param.type_ref.type_name(),
                 stack_index: (param_count - 1 - index) as i64,
                 function: function.name.clone(),
             });
         }
     }
 
-    pub fn record_statement(&mut self, stmt: &Statement, bytecode_start: usize, bytecode_len: usize) -> Option<u32> {
+    pub fn record_statement(&mut self, span: Option<SourceSpan>, bytecode_start: usize, bytecode_len: usize) -> Option<u32> {
         let kind = if bytecode_len == 0 { DebugEventKind::Virtual {} } else { DebugEventKind::Statement {} };
-        self.push_event(bytecode_start, bytecode_start + bytecode_len, stmt.span, kind)
+        self.push_event(bytecode_start, bytecode_start + bytecode_len, span, kind)
     }
 
     pub fn record_virtual_step(&mut self, span: Option<SourceSpan>, bytecode_offset: usize) -> Option<u32> {
@@ -115,13 +116,13 @@ impl FunctionDebugRecorder {
 
     pub fn record_statement_updates(
         &mut self,
-        stmt: &Statement,
+        span: Option<SourceSpan>,
         bytecode_start: usize,
         bytecode_end: usize,
         variables: Vec<(String, String, Expr)>,
     ) {
-        if let Some(sequence) = self.record_statement(stmt, bytecode_start, bytecode_end.saturating_sub(bytecode_start)) {
-            self.record_variable_updates(variables, bytecode_end, stmt.span, sequence);
+        if let Some(sequence) = self.record_statement(span, bytecode_start, bytecode_end.saturating_sub(bytecode_start)) {
+            self.record_variable_updates(variables, bytecode_end, span, sequence);
         }
     }
 
@@ -152,7 +153,7 @@ impl FunctionDebugRecorder {
                 env,
                 &mut variables,
                 &param.name,
-                &param.type_name,
+                &param.type_ref.type_name(),
                 env.get(&param.name).cloned().unwrap_or(Expr::Identifier(param.name.clone())),
             )?;
         }
@@ -264,7 +265,7 @@ impl DebugSink {
         for (param, value) in params.iter().zip(values.iter()) {
             rec.record_constant(DebugConstantMapping {
                 name: param.name.clone(),
-                type_name: param.type_name.clone(),
+                type_name: param.type_ref.type_name(),
                 value: value.clone(),
             });
         }

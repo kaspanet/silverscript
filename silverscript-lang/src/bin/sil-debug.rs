@@ -195,7 +195,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut ctor_args = Vec::with_capacity(raw_ctor_args.len());
     for (param, raw) in parsed_contract.params.iter().zip(raw_ctor_args.iter()) {
-        ctor_args.push(common::parse_typed_arg(&param.type_name, raw)?);
+        ctor_args.push(common::parse_typed_arg(&param.type_ref.type_name(), raw)?);
     }
 
     let compile_opts = CompileOptions { record_debug_infos: true, ..Default::default() };

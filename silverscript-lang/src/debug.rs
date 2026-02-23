@@ -1,7 +1,15 @@
-use crate::ast::{Expr, SourceSpan};
+use crate::ast::Expr;
 use serde::{Deserialize, Serialize};
 
 pub mod session;
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SourceSpan {
+    pub line: u32,
+    pub col: u32,
+    pub end_line: u32,
+    pub end_col: u32,
+}
 
 pub mod labels {
     pub mod synthetic {
