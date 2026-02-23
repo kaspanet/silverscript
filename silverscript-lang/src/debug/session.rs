@@ -100,6 +100,7 @@ pub struct DebugSession<'a> {
     uses_sequence_order: bool,
     source_lines: Vec<String>,
     breakpoints: HashSet<u32>,
+    executed_sequences: HashSet<u32>,
 }
 
 struct ShadowParamValue {
@@ -166,11 +167,15 @@ impl<'a> DebugSession<'a> {
             })
             .cloned()
             .collect();
-        if uses_sequence_order {
-            source_mappings.sort_by_key(|mapping| (mapping.sequence, mapping.bytecode_start, mapping.bytecode_end));
-        } else {
-            source_mappings.sort_by_key(|mapping| (mapping.bytecode_start, mapping.bytecode_end));
-        }
+        source_mappings.sort_by_key(|mapping| {
+            (
+                mapping.bytecode_start,
+                mapping.bytecode_end,
+                mapping_kind_order(&mapping.kind),
+                mapping.call_depth,
+                if uses_sequence_order { mapping.sequence } else { 0 },
+            )
+        });
 
         Ok(Self {
             engine,
@@ -185,6 +190,7 @@ impl<'a> DebugSession<'a> {
             uses_sequence_order,
             source_lines,
             breakpoints: HashSet::new(),
+            executed_sequences: HashSet::new(),
         })
     }
 
@@ -241,6 +247,7 @@ impl<'a> DebugSession<'a> {
 
             if self.advance_to_mapping(target_index)? {
                 self.current_step_index = Some(target_index);
+                self.mark_mapping_executed(target_index);
                 return Ok(Some(self.state()));
             }
 
@@ -289,6 +296,7 @@ impl<'a> DebugSession<'a> {
                     .find(|(_, mapping)| self.is_steppable_mapping(mapping) && mapping_matches_offset(mapping, offset));
                 if let Some((index, _)) = found {
                     self.current_step_index = Some(index);
+                    self.mark_mapping_executed(index);
                     return Ok(());
                 }
             }
@@ -629,7 +637,10 @@ impl<'a> DebugSession<'a> {
                 return false;
             }
             if self.uses_sequence_order {
-                update.frame_id == frame_id && update.sequence <= sequence
+                update.frame_id == frame_id
+                    && self.executed_sequences.contains(&update.sequence)
+                    && update.sequence < sequence
+                    && update.bytecode_offset <= offset
             } else {
                 update.bytecode_offset <= offset
             }
@@ -675,6 +686,12 @@ impl<'a> DebugSession<'a> {
 
     fn current_step_sequence_and_frame(&self) -> (u32, u32) {
         self.current_step_mapping().map(|mapping| (mapping.sequence, mapping.frame_id)).unwrap_or((0, 0))
+    }
+
+    fn mark_mapping_executed(&mut self, mapping_index: usize) {
+        if let Some(mapping) = self.source_mappings.get(mapping_index) {
+            self.executed_sequences.insert(mapping.sequence);
+        }
     }
 
     fn is_steppable_mapping(&self, mapping: &DebugMapping) -> bool {
@@ -875,6 +892,16 @@ fn build_opcode_offsets(opcodes: &[Option<DebugOpcode<'_>>]) -> (Vec<usize>, usi
         }
     }
     (offsets, offset)
+}
+
+fn mapping_kind_order(kind: &MappingKind) -> u8 {
+    match kind {
+        MappingKind::InlineCallEnter { .. } => 0,
+        MappingKind::Virtual {} => 1,
+        MappingKind::Statement {} => 2,
+        MappingKind::InlineCallExit { .. } => 3,
+        MappingKind::Synthetic { .. } => 4,
+    }
 }
 
 fn mapping_matches_offset(mapping: &DebugMapping, offset: usize) -> bool {

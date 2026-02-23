@@ -35,30 +35,50 @@ pub struct FunctionDebugRecorder {
     next_seq: u32,
     call_depth: u32,
     frame_id: u32,
+    next_frame_id: u32,
 }
 
 #[allow(dead_code)]
 impl FunctionDebugRecorder {
     pub fn new(enabled: bool, function: &FunctionAst) -> Self {
-        let mut recorder = Self { function_name: function.name.clone(), enabled, call_depth: 0, frame_id: 0, ..Default::default() };
+        let mut recorder = Self {
+            function_name: function.name.clone(),
+            enabled,
+            call_depth: 0,
+            frame_id: 0,
+            next_frame_id: 1,
+            ..Default::default()
+        };
         recorder.record_params(function);
         recorder
     }
 
-    pub fn inline(enabled: bool, function_name: String, call_depth: u32, frame_id: u32) -> Self {
-        Self { function_name, enabled, call_depth, frame_id, ..Default::default() }
+    pub fn inline(enabled: bool, function_name: String, call_depth: u32, frame_id: u32, next_frame_id: u32) -> Self {
+        Self { function_name, enabled, call_depth, frame_id, next_frame_id, ..Default::default() }
     }
 
     pub fn sequence_count(&self) -> u32 {
         self.next_seq
     }
 
+    pub fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+
     pub fn call_depth(&self) -> u32 {
         self.call_depth
     }
 
-    pub fn new_inline_child(&self, frame_id: u32) -> Self {
-        Self::inline(self.enabled, self.function_name.clone(), self.call_depth().saturating_add(1), frame_id)
+    pub fn new_inline_child(&mut self) -> Self {
+        let frame_id = self.next_frame_id;
+        self.next_frame_id = self.next_frame_id.saturating_add(1);
+        Self::inline(
+            self.enabled,
+            self.function_name.clone(),
+            self.call_depth().saturating_add(1),
+            frame_id,
+            self.next_frame_id,
+        )
     }
 
     fn next_sequence(&mut self) -> u32 {
@@ -196,6 +216,7 @@ impl FunctionDebugRecorder {
 
     pub fn merge_inline_events(&mut self, inline: &FunctionDebugRecorder) {
         if !self.enabled || inline.events.is_empty() {
+            self.next_frame_id = self.next_frame_id.max(inline.next_frame_id);
             return;
         }
         let mut seq_map: HashMap<u32, u32> = HashMap::new();
@@ -218,6 +239,7 @@ impl FunctionDebugRecorder {
                 self.variable_updates.push(update);
             }
         }
+        self.next_frame_id = self.next_frame_id.max(inline.next_frame_id);
     }
 
     pub(super) fn record_variable_updates(

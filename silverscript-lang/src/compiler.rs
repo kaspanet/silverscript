@@ -9,7 +9,7 @@ use crate::ast::{
     ArrayDim, BinaryOp, ContractAst, ContractFieldAst, Expr, FunctionAst, IntrospectionKind, NullaryOp, SplitPart, StateBindingAst,
     Statement, StatementKind, TimeVar, TypeBase, TypeRef, UnaryOp, parse_contract_ast, parse_type_ref,
 };
-use crate::debug::DebugInfo;
+use crate::debug::{DebugInfo, SourceSpan};
 use crate::debug::labels::synthetic;
 use crate::parser::Rule;
 use chrono::NaiveDateTime;
@@ -524,6 +524,39 @@ fn contains_yield(stmt: &Statement) -> bool {
     }
 }
 
+fn collect_debug_variable_updates(
+    before_env: &HashMap<String, Expr>,
+    after_env: &HashMap<String, Expr>,
+    types: &HashMap<String, String>,
+    recorder: &FunctionDebugRecorder,
+) -> Result<Vec<(String, String, Expr)>, CompilerError> {
+    if !recorder.is_enabled() {
+        return Ok(Vec::new());
+    }
+
+    let mut names: Vec<String> = after_env.keys().cloned().collect();
+    names.sort_unstable();
+
+    let mut updates = Vec::new();
+    for name in names {
+        if name.starts_with("__arg_") {
+            continue;
+        }
+        let Some(after_expr) = after_env.get(&name) else {
+            continue;
+        };
+        if before_env.get(&name).is_some_and(|before_expr| before_expr == after_expr) {
+            continue;
+        }
+        let Some(type_name) = types.get(&name) else {
+            continue;
+        };
+        recorder.variable_update(after_env, &mut updates, &name, type_name, after_expr.clone())?;
+    }
+
+    Ok(updates)
+}
+
 fn validate_return_types(
     exprs: &[Expr],
     return_types: &[TypeRef],
@@ -998,6 +1031,7 @@ fn compile_function(
     let body_len = function.body.len();
     for (index, stmt) in function.body.iter().enumerate() {
         let start = builder.script().len();
+        let env_before = recorder.is_enabled().then(|| env.clone());
         if matches!(stmt.kind, StatementKind::Return { .. }) {
             if index != body_len - 1 {
                 return Err(CompilerError::Unsupported("return statement must be the last statement".to_string()));
@@ -1008,7 +1042,12 @@ fn compile_function(
                 let resolved = resolve_expr(expr.clone(), &env, &mut HashSet::new())?;
                 yields.push(resolved);
             }
-            recorder.record_statement_updates(stmt, start, builder.script().len(), Vec::new());
+            let updates = if let Some(before_env) = env_before.as_ref() {
+                collect_debug_variable_updates(before_env, &env, &types, &recorder)?
+            } else {
+                Vec::new()
+            };
+            recorder.record_statement_updates(stmt, start, builder.script().len(), updates);
             continue;
         }
         compile_statement(
@@ -1029,7 +1068,12 @@ fn compile_function(
             &mut recorder,
         )?;
         let end = builder.script().len();
-        recorder.record_statement_updates(stmt, start, end, Vec::new());
+        let updates = if let Some(before_env) = env_before.as_ref() {
+            collect_debug_variable_updates(before_env, &env, &types, &recorder)?
+        } else {
+            Vec::new()
+        };
+        recorder.record_statement_updates(stmt, start, end, updates);
     }
 
     let yield_count = yields.len();
@@ -1320,6 +1364,8 @@ fn compile_statement(
             let returns = compile_inline_call(
                 name,
                 args,
+                stmt.span,
+                params,
                 types,
                 env,
                 builder,
@@ -1387,6 +1433,8 @@ fn compile_statement(
             let returns = compile_inline_call(
                 name,
                 args,
+                stmt.span,
+                params,
                 types,
                 env,
                 builder,
@@ -1729,6 +1777,8 @@ fn compile_validate_output_state_statement(
 fn compile_inline_call(
     name: &str,
     args: &[Expr],
+    call_span: Option<SourceSpan>,
+    caller_params: &HashMap<String, i64>,
     caller_types: &mut HashMap<String, String>,
     caller_env: &mut HashMap<String, Expr>,
     builder: &mut ScriptBuilder,
@@ -1799,11 +1849,16 @@ fn compile_inline_call(
         }
     }
 
+    let call_start = builder.script().len();
+    debug_recorder.record_inline_call_enter(call_span, call_start, name);
+    let mut inline_recorder = debug_recorder.new_inline_child();
+
     let mut yields: Vec<Expr> = Vec::new();
-    let params = HashMap::new();
+    let params = caller_params.clone();
     let body_len = function.body.len();
     for (index, stmt) in function.body.iter().enumerate() {
         let start = builder.script().len();
+        let env_before = inline_recorder.is_enabled().then(|| env.clone());
         if matches!(stmt.kind, StatementKind::Return { .. }) {
             if index != body_len - 1 {
                 return Err(CompilerError::Unsupported("return statement must be the last statement".to_string()));
@@ -1814,7 +1869,12 @@ fn compile_inline_call(
                 let resolved = resolve_expr(expr.clone(), &env, &mut HashSet::new())?;
                 yields.push(resolved);
             }
-            debug_recorder.record_statement_updates(stmt, start, builder.script().len(), Vec::new());
+            let updates = if let Some(before_env) = env_before.as_ref() {
+                collect_debug_variable_updates(before_env, &env, &types, &inline_recorder)?
+            } else {
+                Vec::new()
+            };
+            inline_recorder.record_statement_updates(stmt, start, builder.script().len(), updates);
             continue;
         }
         compile_statement(
@@ -1832,11 +1892,19 @@ fn compile_inline_call(
             callee_index,
             &mut yields,
             script_size,
-            debug_recorder,
+            &mut inline_recorder,
         )?;
         let end = builder.script().len();
-        debug_recorder.record_statement_updates(stmt, start, end, Vec::new());
+        let updates = if let Some(before_env) = env_before.as_ref() {
+            collect_debug_variable_updates(before_env, &env, &types, &inline_recorder)?
+        } else {
+            Vec::new()
+        };
+        inline_recorder.record_statement_updates(stmt, start, end, updates);
     }
+
+    debug_recorder.merge_inline_events(&inline_recorder);
+    debug_recorder.record_inline_call_exit(call_span, builder.script().len(), name);
 
     for (name, value) in env.iter() {
         if name.starts_with("__arg_") {
@@ -2008,6 +2076,7 @@ fn compile_block(
 ) -> Result<(), CompilerError> {
     for stmt in statements {
         let start = builder.script().len();
+        let env_before = debug_recorder.is_enabled().then(|| env.clone());
         compile_statement(
             stmt,
             env,
@@ -2026,7 +2095,12 @@ fn compile_block(
             debug_recorder,
         )?;
         let end = builder.script().len();
-        debug_recorder.record_statement_updates(stmt, start, end, Vec::new());
+        let updates = if let Some(before_env) = env_before.as_ref() {
+            collect_debug_variable_updates(before_env, env, types, debug_recorder)?
+        } else {
+            Vec::new()
+        };
+        debug_recorder.record_statement_updates(stmt, start, end, updates);
     }
     Ok(())
 }

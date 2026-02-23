@@ -231,3 +231,91 @@ contract VirtualBp() {
         Ok(())
     })
 }
+
+#[test]
+fn debug_session_tracks_local_variable_updates() -> Result<(), Box<dyn Error>> {
+    let source = r#"pragma silverscript ^0.1.0;
+
+contract LocalVars() {
+    entrypoint function main(int a) {
+        int x = a + 1;
+        x = x + 2;
+        require(x > 0);
+    }
+}
+"#;
+
+    with_session_for_source(source, vec![], "main", vec![Expr::Int(3)], |session| {
+        session.run_to_first_executed_statement()?;
+        assert!(session.variable_by_name("x").is_err(), "x should not exist before its statement executes");
+
+        session.step_over()?;
+        let x_after_init = session.variable_by_name("x")?;
+        assert_eq!(session.format_value(&x_after_init.type_name, &x_after_init.value), "4");
+
+        session.step_over()?;
+        let x_after_assign = session.variable_by_name("x")?;
+        assert_eq!(session.format_value(&x_after_assign.type_name, &x_after_assign.value), "6");
+        Ok(())
+    })
+}
+
+#[test]
+fn debug_session_hits_if_header_breakpoint() -> Result<(), Box<dyn Error>> {
+    with_session(|session| {
+        session.run_to_first_executed_statement()?;
+        assert!(session.add_breakpoint(7), "expected if-header line to accept breakpoints");
+
+        let hit = session.continue_to_breakpoint()?;
+        assert!(hit.is_some(), "expected to stop at if-header breakpoint");
+
+        let span = session.current_span().ok_or("missing span at breakpoint")?;
+        assert!((span.line..=span.end_line).contains(&7), "breakpoint should resolve to line 7 span");
+        Ok(())
+    })
+}
+
+#[test]
+fn debug_session_step_over_and_out_handle_inline_calls() -> Result<(), Box<dyn Error>> {
+    let source = r#"pragma silverscript ^0.1.0;
+
+contract InlineCalls() {
+    function addOne(int x) : (int) {
+        int y = x + 1;
+        return(y);
+    }
+
+    entrypoint function main(int a) {
+        (int b) = addOne(a);
+        require(b == a + 1);
+    }
+}
+"#;
+
+    with_session_for_source(source, vec![], "main", vec![Expr::Int(3)], |session| {
+        session.run_to_first_executed_statement()?;
+        let start = session.current_span().ok_or("missing start span")?;
+        assert_eq!(start.line, 10);
+
+        session.step_over()?;
+        let after_over = session.current_span().ok_or("missing span after step_over")?;
+        assert_eq!(after_over.line, 11, "step_over should stay in caller and move past inline call");
+        Ok(())
+    })?;
+
+    with_session_for_source(source, vec![], "main", vec![Expr::Int(3)], |session| {
+        session.run_to_first_executed_statement()?;
+        session.step_into()?;
+        let in_callee = session.current_span().ok_or("missing span in callee")?;
+        assert_eq!(in_callee.line, 5, "step_into should enter callee body");
+        assert_eq!(session.call_stack(), vec!["addOne".to_string()]);
+
+        session.step_out()?;
+        let after_out = session.current_span().ok_or("missing span after step_out")?;
+        assert_eq!(after_out.line, 11, "step_out should return to caller after inline call");
+        assert!(session.call_stack().is_empty(), "call stack should unwind after step_out");
+        Ok(())
+    })?;
+
+    Ok(())
+}
