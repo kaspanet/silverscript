@@ -7,7 +7,7 @@ use thiserror::Error;
 
 use crate::ast::{
     ArrayDim, BinaryOp, ContractAst, ContractFieldAst, Expr, FunctionAst, IntrospectionKind, NullaryOp, SplitPart, StateBindingAst,
-    Statement, TimeVar, TypeBase, TypeRef, UnaryOp, parse_contract_ast, parse_type_ref,
+    Statement, StatementKind, TimeVar, TypeBase, TypeRef, UnaryOp, parse_contract_ast, parse_type_ref,
 };
 use crate::debug::DebugInfo;
 use crate::debug::labels::synthetic;
@@ -287,27 +287,29 @@ fn compile_contract_fields(
 }
 
 fn statement_uses_script_size(stmt: &Statement) -> bool {
-    match stmt {
-        Statement::VariableDefinition { expr, .. } => expr.as_ref().is_some_and(expr_uses_script_size),
-        Statement::TupleAssignment { expr, .. } => expr_uses_script_size(expr),
-        Statement::ArrayPush { expr, .. } => expr_uses_script_size(expr),
-        Statement::FunctionCall { name, args } => name == "validateOutputState" || args.iter().any(expr_uses_script_size),
-        Statement::FunctionCallAssign { args, .. } => args.iter().any(expr_uses_script_size),
-        Statement::StateFunctionCallAssign { name, args, .. } => name == "readInputState" || args.iter().any(expr_uses_script_size),
-        Statement::Assign { expr, .. } => expr_uses_script_size(expr),
-        Statement::TimeOp { expr, .. } => expr_uses_script_size(expr),
-        Statement::Require { expr, .. } => expr_uses_script_size(expr),
-        Statement::If { condition, then_branch, else_branch } => {
+    match &stmt.kind {
+        StatementKind::VariableDefinition { expr, .. } => expr.as_ref().is_some_and(expr_uses_script_size),
+        StatementKind::TupleAssignment { expr, .. } => expr_uses_script_size(expr),
+        StatementKind::ArrayPush { expr, .. } => expr_uses_script_size(expr),
+        StatementKind::FunctionCall { name, args } => name == "validateOutputState" || args.iter().any(expr_uses_script_size),
+        StatementKind::FunctionCallAssign { args, .. } => args.iter().any(expr_uses_script_size),
+        StatementKind::StateFunctionCallAssign { name, args, .. } => {
+            name == "readInputState" || args.iter().any(expr_uses_script_size)
+        }
+        StatementKind::Assign { expr, .. } => expr_uses_script_size(expr),
+        StatementKind::TimeOp { expr, .. } => expr_uses_script_size(expr),
+        StatementKind::Require { expr, .. } => expr_uses_script_size(expr),
+        StatementKind::If { condition, then_branch, else_branch } => {
             expr_uses_script_size(condition)
                 || then_branch.iter().any(statement_uses_script_size)
                 || else_branch.as_ref().is_some_and(|branch| branch.iter().any(statement_uses_script_size))
         }
-        Statement::For { start, end, body, .. } => {
+        StatementKind::For { start, end, body, .. } => {
             expr_uses_script_size(start) || expr_uses_script_size(end) || body.iter().any(statement_uses_script_size)
         }
-        Statement::Yield { expr } => expr_uses_script_size(expr),
-        Statement::Return { exprs } => exprs.iter().any(expr_uses_script_size),
-        Statement::Console { args } => args.iter().any(|arg| match arg {
+        StatementKind::Yield { expr } => expr_uses_script_size(expr),
+        StatementKind::Return { exprs } => exprs.iter().any(expr_uses_script_size),
+        StatementKind::Console { args } => args.iter().any(|arg| match arg {
             crate::ast::ConsoleArg::Identifier(_) => false,
             crate::ast::ConsoleArg::Literal(expr) => expr_uses_script_size(expr),
         }),
@@ -501,23 +503,23 @@ fn array_element_size_ref(type_ref: &TypeRef) -> Option<i64> {
 }
 
 fn contains_return(stmt: &Statement) -> bool {
-    match stmt {
-        Statement::Return { .. } => true,
-        Statement::If { then_branch, else_branch, .. } => {
+    match &stmt.kind {
+        StatementKind::Return { .. } => true,
+        StatementKind::If { then_branch, else_branch, .. } => {
             then_branch.iter().any(contains_return) || else_branch.as_ref().is_some_and(|branch| branch.iter().any(contains_return))
         }
-        Statement::For { body, .. } => body.iter().any(contains_return),
+        StatementKind::For { body, .. } => body.iter().any(contains_return),
         _ => false,
     }
 }
 
 fn contains_yield(stmt: &Statement) -> bool {
-    match stmt {
-        Statement::Yield { .. } => true,
-        Statement::If { then_branch, else_branch, .. } => {
+    match &stmt.kind {
+        StatementKind::Yield { .. } => true,
+        StatementKind::If { then_branch, else_branch, .. } => {
             then_branch.iter().any(contains_yield) || else_branch.as_ref().is_some_and(|branch| branch.iter().any(contains_yield))
         }
-        Statement::For { body, .. } => body.iter().any(contains_yield),
+        StatementKind::For { body, .. } => body.iter().any(contains_yield),
         _ => false,
     }
 }
@@ -979,7 +981,7 @@ fn compile_function(
 
     let has_return = function.body.iter().any(contains_return);
     if has_return {
-        if !matches!(function.body.last(), Some(Statement::Return { .. })) {
+        if !matches!(function.body.last(), Some(Statement { kind: StatementKind::Return { .. }, .. })) {
             return Err(CompilerError::Unsupported("return statement must be the last statement".to_string()));
         }
         if function.body[..function.body.len() - 1].iter().any(contains_return) {
@@ -996,17 +998,17 @@ fn compile_function(
     let body_len = function.body.len();
     for (index, stmt) in function.body.iter().enumerate() {
         let start = builder.script().len();
-        if matches!(stmt, Statement::Return { .. }) {
+        if matches!(stmt.kind, StatementKind::Return { .. }) {
             if index != body_len - 1 {
                 return Err(CompilerError::Unsupported("return statement must be the last statement".to_string()));
             }
-            let Statement::Return { exprs } = stmt else { unreachable!() };
+            let StatementKind::Return { exprs } = &stmt.kind else { unreachable!() };
             validate_return_types(exprs, &function.return_types, &types, constants)?;
             for expr in exprs {
                 let resolved = resolve_expr(expr.clone(), &env, &mut HashSet::new())?;
                 yields.push(resolved);
             }
-            recorder.record_statement_updates(None, start, builder.script().len(), Vec::new());
+            recorder.record_statement_updates(stmt, start, builder.script().len(), Vec::new());
             continue;
         }
         compile_statement(
@@ -1027,7 +1029,7 @@ fn compile_function(
             &mut recorder,
         )?;
         let end = builder.script().len();
-        recorder.record_statement_updates(None, start, end, Vec::new());
+        recorder.record_statement_updates(stmt, start, end, Vec::new());
     }
 
     let yield_count = yields.len();
@@ -1087,8 +1089,8 @@ fn compile_statement(
     script_size: Option<i64>,
     debug_recorder: &mut FunctionDebugRecorder,
 ) -> Result<(), CompilerError> {
-    match stmt {
-        Statement::VariableDefinition { type_ref, name, expr, .. } => {
+    match &stmt.kind {
+        StatementKind::VariableDefinition { type_ref, name, expr, .. } => {
             let type_name = type_name_from_ref(type_ref);
             let effective_type_name =
                 if is_array_type(&type_name) && array_size_with_constants(&type_name, contract_constants).is_none() {
@@ -1177,7 +1179,7 @@ fn compile_statement(
                 Ok(())
             }
         }
-        Statement::ArrayPush { name, expr } => {
+        StatementKind::ArrayPush { name, expr } => {
             let array_type = types.get(name).ok_or_else(|| CompilerError::UndefinedIdentifier(name.clone()))?;
             if !is_array_type(array_type) {
                 return Err(CompilerError::Unsupported("push() only supported on arrays".to_string()));
@@ -1226,7 +1228,7 @@ fn compile_statement(
             env.insert(name.clone(), updated);
             Ok(())
         }
-        Statement::Require { expr, .. } => {
+        StatementKind::Require { expr, .. } => {
             let mut stack_depth = 0i64;
             compile_expr(
                 expr,
@@ -1243,10 +1245,10 @@ fn compile_statement(
             builder.add_op(OpVerify)?;
             Ok(())
         }
-        Statement::TimeOp { tx_var, expr, .. } => {
+        StatementKind::TimeOp { tx_var, expr, .. } => {
             compile_time_op_statement(tx_var, expr, env, params, types, builder, options, script_size, contract_constants)
         }
-        Statement::If { condition, then_branch, else_branch } => compile_if_statement(
+        StatementKind::If { condition, then_branch, else_branch } => compile_if_statement(
             condition,
             then_branch,
             else_branch.as_deref(),
@@ -1265,7 +1267,7 @@ fn compile_statement(
             script_size,
             debug_recorder,
         ),
-        Statement::For { ident, start, end, body } => compile_for_statement(
+        StatementKind::For { ident, start, end, body } => compile_for_statement(
             ident,
             start,
             end,
@@ -1285,14 +1287,14 @@ fn compile_statement(
             script_size,
             debug_recorder,
         ),
-        Statement::Yield { expr } => {
+        StatementKind::Yield { expr } => {
             let mut visiting = HashSet::new();
             let resolved = resolve_expr(expr.clone(), env, &mut visiting)?;
             yields.push(resolved);
             Ok(())
         }
-        Statement::Return { .. } => Err(CompilerError::Unsupported("return statement must be the last statement".to_string())),
-        Statement::TupleAssignment { left_name, right_name, expr, .. } => match expr.clone() {
+        StatementKind::Return { .. } => Err(CompilerError::Unsupported("return statement must be the last statement".to_string())),
+        StatementKind::TupleAssignment { left_name, right_name, expr, .. } => match expr.clone() {
             Expr::Split { source, index, .. } => {
                 env.insert(left_name.clone(), Expr::Split { source: source.clone(), index: index.clone(), part: SplitPart::Left });
                 env.insert(right_name.clone(), Expr::Split { source, index, part: SplitPart::Right });
@@ -1300,7 +1302,7 @@ fn compile_statement(
             }
             _ => Err(CompilerError::Unsupported("tuple assignment only supports split()".to_string())),
         },
-        Statement::FunctionCall { name, args } => {
+        StatementKind::FunctionCall { name, args } => {
             if name == "validateOutputState" {
                 return compile_validate_output_state_statement(
                     args,
@@ -1350,7 +1352,7 @@ fn compile_statement(
             }
             Ok(())
         }
-        Statement::StateFunctionCallAssign { bindings, name, args } => {
+        StatementKind::StateFunctionCallAssign { bindings, name, args } => {
             if name == "readInputState" {
                 return compile_read_input_state_statement(
                     bindings,
@@ -1367,7 +1369,7 @@ fn compile_statement(
                 name
             )))
         }
-        Statement::FunctionCallAssign { bindings, name, args } => {
+        StatementKind::FunctionCallAssign { bindings, name, args } => {
             let function = functions.get(name).ok_or_else(|| CompilerError::Unsupported(format!("function '{}' not found", name)))?;
             if function.return_types.is_empty() {
                 return Err(CompilerError::Unsupported("function has no return types".to_string()));
@@ -1405,7 +1407,7 @@ fn compile_statement(
             }
             Ok(())
         }
-        Statement::Assign { name, expr } => {
+        StatementKind::Assign { name, expr } => {
             if let Some(type_name) = types.get(name) {
                 if is_array_type(type_name) {
                     match expr {
@@ -1430,7 +1432,7 @@ fn compile_statement(
             env.insert(name.clone(), resolved);
             Ok(())
         }
-        Statement::Console { .. } => Ok(()),
+        StatementKind::Console { .. } => Ok(()),
     }
 }
 
@@ -1786,7 +1788,7 @@ fn compile_inline_call(
 
     let has_return = function.body.iter().any(contains_return);
     if has_return {
-        if !matches!(function.body.last(), Some(Statement::Return { .. })) {
+        if !matches!(function.body.last(), Some(Statement { kind: StatementKind::Return { .. }, .. })) {
             return Err(CompilerError::Unsupported("return statement must be the last statement".to_string()));
         }
         if function.body[..function.body.len() - 1].iter().any(contains_return) {
@@ -1802,17 +1804,17 @@ fn compile_inline_call(
     let body_len = function.body.len();
     for (index, stmt) in function.body.iter().enumerate() {
         let start = builder.script().len();
-        if matches!(stmt, Statement::Return { .. }) {
+        if matches!(stmt.kind, StatementKind::Return { .. }) {
             if index != body_len - 1 {
                 return Err(CompilerError::Unsupported("return statement must be the last statement".to_string()));
             }
-            let Statement::Return { exprs } = stmt else { unreachable!() };
+            let StatementKind::Return { exprs } = &stmt.kind else { unreachable!() };
             validate_return_types(exprs, &function.return_types, &types, contract_constants)?;
             for expr in exprs {
                 let resolved = resolve_expr(expr.clone(), &env, &mut HashSet::new())?;
                 yields.push(resolved);
             }
-            debug_recorder.record_statement_updates(None, start, builder.script().len(), Vec::new());
+            debug_recorder.record_statement_updates(stmt, start, builder.script().len(), Vec::new());
             continue;
         }
         compile_statement(
@@ -1833,7 +1835,7 @@ fn compile_inline_call(
             debug_recorder,
         )?;
         let end = builder.script().len();
-        debug_recorder.record_statement_updates(None, start, end, Vec::new());
+        debug_recorder.record_statement_updates(stmt, start, end, Vec::new());
     }
 
     for (name, value) in env.iter() {
@@ -2024,7 +2026,7 @@ fn compile_block(
             debug_recorder,
         )?;
         let end = builder.script().len();
-        debug_recorder.record_statement_updates(None, start, end, Vec::new());
+        debug_recorder.record_statement_updates(stmt, start, end, Vec::new());
     }
     Ok(())
 }
@@ -2221,7 +2223,6 @@ pub fn compile_debug_expr(
     Ok(builder.drain())
 }
 
-#[allow(dead_code)]
 pub(super) fn resolve_expr_for_debug(
     expr: Expr,
     env: &HashMap<String, Expr>,

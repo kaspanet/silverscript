@@ -332,8 +332,8 @@ impl<'a> DebugSession<'a> {
     pub fn stacks_snapshot(&self) -> StackSnapshot {
         let stacks = self.engine.stacks();
         StackSnapshot {
-            dstack: stacks.dstack.iter().map(hex::encode).collect(),
-            astack: stacks.astack.iter().map(hex::encode).collect(),
+            dstack: stacks.dstack.iter().map(|item| encode_hex(item)).collect(),
+            astack: stacks.astack.iter().map(|item| encode_hex(item)).collect(),
         }
     }
 
@@ -546,10 +546,10 @@ impl<'a> DebugSession<'a> {
             (_, DebugValue::Bytes(bytes)) if element_type.is_some() => {
                 let element_type = element_type.expect("checked");
                 let Some(element_size) = array_element_size(element_type) else {
-                    return format!("0x{}", hex::encode(bytes));
+                    return format!("0x{}", encode_hex(bytes));
                 };
                 if element_size == 0 || bytes.len() % element_size != 0 {
-                    return format!("0x{}", hex::encode(bytes));
+                    return format!("0x{}", encode_hex(bytes));
                 }
 
                 let mut values: Vec<String> = Vec::new();
@@ -563,7 +563,7 @@ impl<'a> DebugSession<'a> {
                 }
                 format!("[{}]", values.join(", "))
             }
-            (_, DebugValue::Bytes(bytes)) => format!("0x{}", hex::encode(bytes)),
+            (_, DebugValue::Bytes(bytes)) => format!("0x{}", encode_hex(bytes)),
             (_, DebugValue::Int(number)) => number.to_string(),
             (_, DebugValue::Bool(value)) => value.to_string(),
             (_, DebugValue::String(value)) => value.clone(),
@@ -702,7 +702,7 @@ impl<'a> DebugSession<'a> {
     /// Returns the current main stack as hex-encoded strings.
     pub fn stack(&self) -> Vec<String> {
         let stacks = self.engine.stacks();
-        stacks.dstack.iter().map(hex::encode).collect()
+        stacks.dstack.iter().map(|item| encode_hex(item)).collect()
     }
 
     fn evaluate_update_with_shadow_vm(&self, function_name: &str, update: &DebugVariableUpdate) -> Result<DebugValue, String> {
@@ -883,6 +883,14 @@ fn mapping_matches_offset(mapping: &DebugMapping, offset: usize) -> bool {
     } else {
         offset >= mapping.bytecode_start && offset < mapping.bytecode_end
     }
+}
+
+fn encode_hex(bytes: &[u8]) -> String {
+    let mut out = vec![0u8; bytes.len() * 2];
+    if faster_hex::hex_encode(bytes, &mut out).is_err() {
+        return String::new();
+    }
+    String::from_utf8(out).unwrap_or_default()
 }
 
 #[cfg(test)]

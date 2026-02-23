@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use kaspa_txscript::script_builder::ScriptBuilder;
 
-use crate::ast::{Expr, FunctionAst, ParamAst};
+use crate::ast::{Expr, FunctionAst, ParamAst, Statement};
 use crate::debug::{
     DebugConstantMapping, DebugEvent, DebugEventKind, DebugFunctionRange, DebugInfo, DebugParamMapping, DebugRecorder,
     DebugVariableUpdate, SourceSpan,
@@ -105,9 +105,22 @@ impl FunctionDebugRecorder {
         }
     }
 
-    pub fn record_statement(&mut self, span: Option<SourceSpan>, bytecode_start: usize, bytecode_len: usize) -> Option<u32> {
+    fn record_statement_span(&mut self, span: Option<SourceSpan>, bytecode_start: usize, bytecode_len: usize) -> Option<u32> {
         let kind = if bytecode_len == 0 { DebugEventKind::Virtual {} } else { DebugEventKind::Statement {} };
         self.push_event(bytecode_start, bytecode_start + bytecode_len, span, kind)
+    }
+
+    pub fn record_statement(&mut self, stmt: &Statement, bytecode_start: usize, bytecode_len: usize) -> Option<u32> {
+        self.record_statement_span(stmt.span, bytecode_start, bytecode_len)
+    }
+
+    pub fn record_statement_with_span(
+        &mut self,
+        span: Option<SourceSpan>,
+        bytecode_start: usize,
+        bytecode_len: usize,
+    ) -> Option<u32> {
+        self.record_statement_span(span, bytecode_start, bytecode_len)
     }
 
     pub fn record_virtual_step(&mut self, span: Option<SourceSpan>, bytecode_offset: usize) -> Option<u32> {
@@ -116,12 +129,24 @@ impl FunctionDebugRecorder {
 
     pub fn record_statement_updates(
         &mut self,
+        stmt: &Statement,
+        bytecode_start: usize,
+        bytecode_end: usize,
+        variables: Vec<(String, String, Expr)>,
+    ) {
+        if let Some(sequence) = self.record_statement(stmt, bytecode_start, bytecode_end.saturating_sub(bytecode_start)) {
+            self.record_variable_updates(variables, bytecode_end, stmt.span, sequence);
+        }
+    }
+
+    pub fn record_statement_updates_with_span(
+        &mut self,
         span: Option<SourceSpan>,
         bytecode_start: usize,
         bytecode_end: usize,
         variables: Vec<(String, String, Expr)>,
     ) {
-        if let Some(sequence) = self.record_statement(span, bytecode_start, bytecode_end.saturating_sub(bytecode_start)) {
+        if let Some(sequence) = self.record_statement_with_span(span, bytecode_start, bytecode_end.saturating_sub(bytecode_start)) {
             self.record_variable_updates(variables, bytecode_end, span, sequence);
         }
     }

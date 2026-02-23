@@ -1,13 +1,13 @@
 use chrono::NaiveDateTime;
-use silverscript_lang::ast::{Expr, Statement, parse_contract_ast};
+use silverscript_lang::ast::{Expr, StatementKind, parse_contract_ast};
 
 fn extract_first_expr(source: &str) -> Expr {
     let ast = parse_contract_ast(source).expect("parse succeeds");
     let function = &ast.functions[0];
     let statement = &function.body[0];
-    match statement {
-        Statement::VariableDefinition { expr, .. } => expr.clone().expect("missing initializer"),
-        Statement::Require { expr, .. } => expr.clone(),
+    match &statement.kind {
+        StatementKind::VariableDefinition { expr, .. } => expr.clone().expect("missing initializer"),
+        StatementKind::Require { expr, .. } => expr.clone(),
         _ => panic!("unexpected statement"),
     }
 }

@@ -1,4 +1,5 @@
 use crate::ast::Expr;
+use pest::Span;
 use serde::{Deserialize, Serialize};
 
 pub mod session;
@@ -9,6 +10,14 @@ pub struct SourceSpan {
     pub col: u32,
     pub end_line: u32,
     pub end_col: u32,
+}
+
+impl<'a> From<Span<'a>> for SourceSpan {
+    fn from(span: Span<'a>) -> Self {
+        let (line, col) = span.start_pos().line_col();
+        let (end_line, end_col) = span.end_pos().line_col();
+        Self { line: line as u32, col: col as u32, end_line: end_line as u32, end_col: end_col as u32 }
+    }
 }
 
 pub mod labels {

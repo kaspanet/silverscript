@@ -1,17 +1,130 @@
 use std::fs;
 use std::io::{self, BufRead, Write};
 
+use clap::Parser;
 use kaspa_consensus_core::hashing::sighash::SigHashReusedValuesUnsync;
 use kaspa_txscript::caches::Cache;
 use kaspa_txscript::{EngineCtx, EngineFlags};
 
-use silverscript_lang::ast::parse_contract_ast;
+use silverscript_lang::ast::{Expr, parse_contract_ast};
 use silverscript_lang::compiler::{CompileOptions, compile_contract};
 use silverscript_lang::debug::session::{DebugEngine, DebugSession};
 
-mod common;
-
 const PROMPT: &str = "(sdb) ";
+
+#[derive(Debug, Parser)]
+#[command(name = "sil-debug", about = "SilverScript debugger")]
+struct CliArgs {
+    script_path: String,
+    #[arg(long = "no-selector")]
+    without_selector: bool,
+    #[arg(long = "function", short = 'f')]
+    function_name: Option<String>,
+    #[arg(long = "ctor-arg")]
+    raw_ctor_args: Vec<String>,
+    #[arg(long = "arg", short = 'a')]
+    raw_args: Vec<String>,
+}
+
+fn parse_int_arg(raw: &str) -> Result<i64, Box<dyn std::error::Error>> {
+    let cleaned = raw.replace('_', "");
+    if let Some(hex) = cleaned.strip_prefix("0x").or_else(|| cleaned.strip_prefix("0X")) {
+        return Ok(i64::from_str_radix(hex, 16)?);
+    }
+    Ok(cleaned.parse::<i64>()?)
+}
+
+fn parse_hex_bytes(raw: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let trimmed = raw.trim();
+    let hex_str = trimmed.strip_prefix("0x").or_else(|| trimmed.strip_prefix("0X")).unwrap_or(trimmed);
+    if hex_str.is_empty() {
+        return Ok(vec![]);
+    }
+    // Allow odd length by implicitly left-padding with 0.
+    let normalized = if hex_str.len() % 2 != 0 { format!("0{hex_str}") } else { hex_str.to_string() };
+    let mut out = vec![0u8; normalized.len() / 2];
+    faster_hex::hex_decode(normalized.as_bytes(), &mut out)?;
+    Ok(out)
+}
+
+fn bytes_expr(bytes: Vec<u8>) -> Expr {
+    Expr::Array(bytes.into_iter().map(Expr::Byte).collect())
+}
+
+fn parse_typed_arg(type_name: &str, raw: &str) -> Result<Expr, Box<dyn std::error::Error>> {
+    if let Some(element_type) = type_name.strip_suffix("[]") {
+        let trimmed = raw.trim();
+        if trimmed.starts_with('[') {
+            let values = serde_json::from_str::<Vec<serde_json::Value>>(trimmed)?;
+            let mut out = Vec::with_capacity(values.len());
+            for value in values {
+                let expr = match value {
+                    serde_json::Value::Number(n) => Expr::Int(n.as_i64().ok_or("invalid int in array")?),
+                    serde_json::Value::Bool(b) => Expr::Bool(b),
+                    serde_json::Value::String(s) => parse_typed_arg(element_type, &s)?,
+                    _ => return Err("unsupported array element (expected number/bool/string)".into()),
+                };
+                out.push(expr);
+            }
+            return Ok(Expr::Array(out));
+        }
+        if element_type == "byte" {
+            return Ok(bytes_expr(parse_hex_bytes(trimmed)?));
+        }
+        return Err(format!("unsupported array literal format for '{type_name}'").into());
+    }
+
+    match type_name {
+        "int" => Ok(Expr::Int(parse_int_arg(raw)?)),
+        "bool" => match raw {
+            "true" => Ok(Expr::Bool(true)),
+            "false" => Ok(Expr::Bool(false)),
+            _ => Err(format!("invalid bool '{raw}' (expected true/false)").into()),
+        },
+        "string" => Ok(Expr::String(raw.to_string())),
+        "byte" => {
+            let bytes = parse_hex_bytes(raw)?;
+            if bytes.len() == 1 { Ok(Expr::Byte(bytes[0])) } else { Err(format!("byte expects 1 byte, got {}", bytes.len()).into()) }
+        }
+        "bytes" => Ok(bytes_expr(parse_hex_bytes(raw)?)),
+        "pubkey" => {
+            let bytes = parse_hex_bytes(raw)?;
+            if bytes.len() != 32 {
+                return Err(format!("pubkey expects 32 bytes, got {}", bytes.len()).into());
+            }
+            Ok(bytes_expr(bytes))
+        }
+        "sig" => {
+            let bytes = parse_hex_bytes(raw)?;
+            if bytes.len() != 65 {
+                return Err(format!("sig expects 65 bytes, got {}", bytes.len()).into());
+            }
+            Ok(bytes_expr(bytes))
+        }
+        "datasig" => {
+            let bytes = parse_hex_bytes(raw)?;
+            if bytes.len() != 64 {
+                return Err(format!("datasig expects 64 bytes, got {}", bytes.len()).into());
+            }
+            Ok(bytes_expr(bytes))
+        }
+        other => {
+            let size = other
+                .strip_prefix("bytes")
+                .and_then(|v| v.parse::<usize>().ok())
+                .or_else(|| other.strip_prefix("byte[").and_then(|v| v.strip_suffix(']')).and_then(|v| v.parse::<usize>().ok()));
+            if let Some(size) = size {
+                let bytes = parse_hex_bytes(raw)?;
+                if bytes.len() != size {
+                    return Err(format!("{other} expects {size} bytes, got {}", bytes.len()).into());
+                }
+                Ok(bytes_expr(bytes))
+            } else {
+                Err(format!("unsupported arg type '{other}'").into())
+            }
+        }
+    }
+}
 
 fn show_stack(session: &DebugSession<'_>) {
     println!("Stack:");
@@ -172,9 +285,7 @@ fn run_repl(session: &mut DebugSession<'_>) -> Result<(), kaspa_txscript_errors:
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let Some(cli) = common::parse_cli_args_or_help("sil-debug")? else {
-        return Ok(());
-    };
+    let cli = CliArgs::parse();
     let script_path = cli.script_path;
     let without_selector = cli.without_selector;
     let function_name = cli.function_name;
@@ -195,7 +306,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut ctor_args = Vec::with_capacity(raw_ctor_args.len());
     for (param, raw) in parsed_contract.params.iter().zip(raw_ctor_args.iter()) {
-        ctor_args.push(common::parse_typed_arg(&param.type_ref.type_name(), raw)?);
+        ctor_args.push(parse_typed_arg(&param.type_ref.type_name(), raw)?);
     }
 
     let compile_opts = CompileOptions { record_debug_infos: true, ..Default::default() };
@@ -224,7 +335,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut typed_args = Vec::with_capacity(raw_args.len());
     for (input, raw) in entry.inputs.iter().zip(raw_args.iter()) {
-        typed_args.push(common::parse_typed_arg(&input.type_name, raw)?);
+        typed_args.push(parse_typed_arg(&input.type_name, raw)?);
     }
 
     // Always seed: even in --no-selector mode the function params must be pushed.
