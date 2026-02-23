@@ -32,7 +32,7 @@ Only policy functions are annotated.
 
 ### 1:N predicate
 
-```sil
+```js
 #[cov.one_to_many.predicate(max_outputs = max_outs)]
 function split(State prev_state, State[] new_states) {
     // require(...) rules
@@ -41,7 +41,7 @@ function split(State prev_state, State[] new_states) {
 
 ### N:M predicate
 
-```sil
+```js
 #[cov.n_to_m.predicate(max_inputs = max_ins, max_outputs = max_outs)]
 function transition_ok(State[] prev_states, State[] new_states) {
     // require(...) rules
@@ -50,7 +50,7 @@ function transition_ok(State[] prev_states, State[] new_states) {
 
 ### N:M transition
 
-```sil
+```js
 #[cov.n_to_m.transition(max_inputs = max_ins, max_outputs = max_outs)]
 function transition(State[] prev_states, int fee) : (State[] new_states) {
     // compute and return new_states
@@ -59,7 +59,7 @@ function transition(State[] prev_states, int fee) : (State[] new_states) {
 
 ### 1:1 transition
 
-```sil
+```js
 #[cov.one_to_one.transition]
 function roll(State prev_state, byte[32] block_hash) : (State new_state) {
     // compute and return next state
@@ -102,7 +102,7 @@ Given policy function `f`:
 
 ### Source (user writes this only)
 
-```sil
+```js
 pragma silverscript ^0.1.0;
 
 contract VaultNM(
@@ -143,7 +143,7 @@ contract VaultNM(
 
 ### Generated code (full expansion, conceptual)
 
-```sil
+```js
 pragma silverscript ^0.1.0;
 
 contract VaultNM(
@@ -242,7 +242,7 @@ State is `seqcommit`; call arg is `block_hash`.
 
 ### Source (user writes this only)
 
-```sil
+```js
 pragma silverscript ^0.1.0;
 
 contract SeqCommitMirror(byte[32] init_seqcommit) {
@@ -260,7 +260,7 @@ contract SeqCommitMirror(byte[32] init_seqcommit) {
 
 ### Generated code (full expansion, conceptual)
 
-```sil
+```js
 pragma silverscript ^0.1.0;
 
 contract SeqCommitMirror(byte[32] init_seqcommit) {
