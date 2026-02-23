@@ -2461,3 +2461,23 @@ fn compiles_sigscript_reused_inputs_and_fails_on_wrong_value() {
     let result = run_script_with_sigscript(compiled.script, sigscript);
     assert!(result.is_err());
 }
+
+#[test]
+fn compiles_state_transition_helpers() {
+    let source = r#"
+        pragma silverscript ^0.1.0;
+
+        contract Counter(int init_amount) {
+            int amount = init_amount;
+
+            entrypoint function main(int next_amount) {
+                {amount: int current_amount} = readInputState(this.activeInputIndex);
+                validateOutputState(0, {amount: next_amount});
+                require(current_amount >= next_amount);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[Expr::Int(100)], CompileOptions::default()).expect("compile succeeds");
+    assert!(!compiled.script.is_empty());
+}

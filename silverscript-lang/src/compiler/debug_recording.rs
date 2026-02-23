@@ -27,11 +27,11 @@ pub(super) fn record_synthetic_range(
 /// Records params, statements, and variable updates for a single function.
 #[derive(Debug, Default)]
 pub struct FunctionDebugRecorder {
-    pub function_name: String,
-    pub enabled: bool,
-    pub events: Vec<DebugEvent>,
-    pub variable_updates: Vec<DebugVariableUpdate>,
-    pub param_mappings: Vec<DebugParamMapping>,
+    function_name: String,
+    enabled: bool,
+    events: Vec<DebugEvent>,
+    variable_updates: Vec<DebugVariableUpdate>,
+    param_mappings: Vec<DebugParamMapping>,
     next_seq: u32,
     call_depth: u32,
     frame_id: u32,
@@ -54,6 +54,10 @@ impl FunctionDebugRecorder {
 
     pub fn call_depth(&self) -> u32 {
         self.call_depth
+    }
+
+    pub fn new_inline_child(&self, frame_id: u32) -> Self {
+        Self::inline(self.enabled, self.function_name.clone(), self.call_depth().saturating_add(1), frame_id)
     }
 
     fn next_sequence(&mut self) -> u32 {
@@ -109,6 +113,29 @@ impl FunctionDebugRecorder {
         self.push_event(bytecode_offset, bytecode_offset, span, DebugEventKind::Virtual {})
     }
 
+    pub fn record_statement_updates(
+        &mut self,
+        stmt: &Statement,
+        bytecode_start: usize,
+        bytecode_end: usize,
+        variables: Vec<(String, String, Expr)>,
+    ) {
+        if let Some(sequence) = self.record_statement(stmt, bytecode_start, bytecode_end.saturating_sub(bytecode_start)) {
+            self.record_variable_updates(variables, bytecode_end, stmt.span, sequence);
+        }
+    }
+
+    pub fn record_virtual_updates(
+        &mut self,
+        span: Option<SourceSpan>,
+        bytecode_offset: usize,
+        variables: Vec<(String, String, Expr)>,
+    ) {
+        if let Some(sequence) = self.record_virtual_step(span, bytecode_offset) {
+            self.record_variable_updates(variables, bytecode_offset, span, sequence);
+        }
+    }
+
     pub fn record_inline_param_updates(
         &mut self,
         function: &FunctionAst,
@@ -116,19 +143,20 @@ impl FunctionDebugRecorder {
         span: Option<SourceSpan>,
         bytecode_offset: usize,
     ) -> Result<(), CompilerError> {
-        if let Some(sequence) = self.record_virtual_step(span, bytecode_offset) {
-            let mut variables = Vec::new();
-            for param in &function.params {
-                self.variable_update(
-                    env,
-                    &mut variables,
-                    &param.name,
-                    &param.type_name,
-                    env.get(&param.name).cloned().unwrap_or(Expr::Identifier(param.name.clone())),
-                )?;
-            }
-            self.record_variable_updates(variables, bytecode_offset, span, sequence);
+        if !self.enabled {
+            return Ok(());
         }
+        let mut variables = Vec::with_capacity(function.params.len());
+        for param in &function.params {
+            self.variable_update(
+                env,
+                &mut variables,
+                &param.name,
+                &param.type_name,
+                env.get(&param.name).cloned().unwrap_or(Expr::Identifier(param.name.clone())),
+            )?;
+        }
+        self.record_virtual_updates(span, bytecode_offset, variables);
         Ok(())
     }
 
@@ -141,7 +169,7 @@ impl FunctionDebugRecorder {
     }
 
     pub fn merge_inline_events(&mut self, inline: &FunctionDebugRecorder) {
-        if !self.enabled {
+        if !self.enabled || inline.events.is_empty() {
             return;
         }
         let mut seq_map: HashMap<u32, u32> = HashMap::new();
@@ -222,39 +250,19 @@ impl DebugSink {
         if enabled { Self::On(DebugRecorder::default()) } else { Self::Off }
     }
 
-    pub fn record(&mut self, event: DebugEvent) {
-        if let Self::On(rec) = self {
-            rec.record(event);
-        }
-    }
-
-    pub fn record_variable_update(&mut self, update: DebugVariableUpdate) {
-        if let Self::On(rec) = self {
-            rec.record_variable_update(update);
-        }
-    }
-
-    pub fn record_param(&mut self, param: DebugParamMapping) {
-        if let Self::On(rec) = self {
-            rec.record_param(param);
-        }
-    }
-
-    pub fn record_function(&mut self, function: DebugFunctionRange) {
-        if let Self::On(rec) = self {
-            rec.record_function(function);
-        }
-    }
-
-    pub fn record_constant(&mut self, constant: DebugConstantMapping) {
-        if let Self::On(rec) = self {
-            rec.record_constant(constant);
+    fn recorder_mut(&mut self) -> Option<&mut DebugRecorder> {
+        match self {
+            Self::Off => None,
+            Self::On(rec) => Some(rec),
         }
     }
 
     pub fn record_constructor_constants(&mut self, params: &[ParamAst], values: &[Expr]) {
+        let Some(rec) = self.recorder_mut() else {
+            return;
+        };
         for (param, value) in params.iter().zip(values.iter()) {
-            self.record_constant(DebugConstantMapping {
+            rec.record_constant(DebugConstantMapping {
                 name: param.name.clone(),
                 type_name: param.type_name.clone(),
                 value: value.clone(),
@@ -266,26 +274,30 @@ impl DebugSink {
         if end <= start {
             return;
         }
-        if let Self::On(rec) = self {
-            let sequence = rec.next_sequence();
-            rec.record(DebugEvent {
-                bytecode_start: start,
-                bytecode_end: end,
-                span: None,
-                kind: DebugEventKind::Synthetic { label: label.to_string() },
-                sequence,
-                call_depth: 0,
-                frame_id: 0,
-            });
-        }
+        let Some(rec) = self.recorder_mut() else {
+            return;
+        };
+        let sequence = rec.next_sequence();
+        rec.record(DebugEvent {
+            bytecode_start: start,
+            bytecode_end: end,
+            span: None,
+            kind: DebugEventKind::Synthetic { label: label.to_string() },
+            sequence,
+            call_depth: 0,
+            frame_id: 0,
+        });
     }
 
     pub fn record_compiled_function(&mut self, name: &str, script_len: usize, debug: &FunctionDebugRecorder, offset: usize) {
-        let seq_base = if let Self::On(rec) = self { rec.reserve_sequence_block(debug.sequence_count()) } else { 0 };
-        emit_events_with_offset(&debug.events, offset, seq_base, self);
-        emit_variable_updates_with_offset(&debug.variable_updates, offset, seq_base, self);
-        self.record_function(DebugFunctionRange { name: name.to_string(), bytecode_start: offset, bytecode_end: offset + script_len });
-        record_param_mappings(&debug.param_mappings, self);
+        let Some(rec) = self.recorder_mut() else {
+            return;
+        };
+        let seq_base = rec.reserve_sequence_block(debug.sequence_count());
+        emit_events_with_offset(&debug.events, offset, seq_base, rec);
+        emit_variable_updates_with_offset(&debug.variable_updates, offset, seq_base, rec);
+        rec.record_function(DebugFunctionRange { name: name.to_string(), bytecode_start: offset, bytecode_end: offset + script_len });
+        record_param_mappings(&debug.param_mappings, rec);
     }
 
     pub fn into_debug_info(self, source: String) -> Option<DebugInfo> {
@@ -296,9 +308,9 @@ impl DebugSink {
     }
 }
 
-fn emit_events_with_offset(events: &[DebugEvent], offset: usize, seq_base: u32, sink: &mut DebugSink) {
+fn emit_events_with_offset(events: &[DebugEvent], offset: usize, seq_base: u32, recorder: &mut DebugRecorder) {
     for event in events {
-        sink.record(DebugEvent {
+        recorder.record(DebugEvent {
             bytecode_start: event.bytecode_start + offset,
             bytecode_end: event.bytecode_end + offset,
             span: event.span,
@@ -310,9 +322,9 @@ fn emit_events_with_offset(events: &[DebugEvent], offset: usize, seq_base: u32, 
     }
 }
 
-fn emit_variable_updates_with_offset(updates: &[DebugVariableUpdate], offset: usize, seq_base: u32, sink: &mut DebugSink) {
+fn emit_variable_updates_with_offset(updates: &[DebugVariableUpdate], offset: usize, seq_base: u32, recorder: &mut DebugRecorder) {
     for update in updates {
-        sink.record_variable_update(DebugVariableUpdate {
+        recorder.record_variable_update(DebugVariableUpdate {
             name: update.name.clone(),
             type_name: update.type_name.clone(),
             expr: update.expr.clone(),
@@ -325,8 +337,8 @@ fn emit_variable_updates_with_offset(updates: &[DebugVariableUpdate], offset: us
     }
 }
 
-fn record_param_mappings(params: &[DebugParamMapping], sink: &mut DebugSink) {
+fn record_param_mappings(params: &[DebugParamMapping], recorder: &mut DebugRecorder) {
     for param in params {
-        sink.record_param(param.clone());
+        recorder.record_param(param.clone());
     }
 }

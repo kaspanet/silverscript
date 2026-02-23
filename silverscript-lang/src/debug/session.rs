@@ -259,10 +259,9 @@ impl<'a> DebugSession<'a> {
                 return Ok(false);
             }
 
-            if mapping_matches_offset(&target, offset)
-                && self.engine.is_executing() {
-                    return Ok(true);
-                }
+            if mapping_matches_offset(&target, offset) && self.engine.is_executing() {
+                return Ok(true);
+            }
 
             if self.step_opcode()?.is_none() {
                 return Ok(false);
