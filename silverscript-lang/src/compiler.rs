@@ -9,8 +9,8 @@ use crate::ast::{
     ArrayDim, BinaryOp, ContractAst, ContractFieldAst, Expr, FunctionAst, IntrospectionKind, NullaryOp, SplitPart, StateBindingAst,
     Statement, StatementKind, TimeVar, TypeBase, TypeRef, UnaryOp, parse_contract_ast, parse_type_ref,
 };
-use crate::debug::{DebugInfo, SourceSpan};
 use crate::debug::labels::synthetic;
+use crate::debug::{DebugInfo, SourceSpan};
 use crate::parser::Rule;
 use chrono::NaiveDateTime;
 
@@ -1821,6 +1821,9 @@ fn compile_inline_call(
         let resolved = resolve_expr(arg.clone(), caller_env, &mut HashSet::new())?;
         let temp_name = format!("__arg_{name}_{index}");
         let param_type_name = type_name_from_ref(&param.type_ref);
+        // Inline calls bind each callee parameter to a synthetic identifier so
+        // callee expressions keep a stable name while still pointing at the
+        // caller-provided argument expression.
         env.insert(temp_name.clone(), resolved.clone());
         types.insert(temp_name.clone(), param_type_name.clone());
         env.insert(param.name.clone(), Expr::Identifier(temp_name.clone()));
@@ -1854,6 +1857,8 @@ fn compile_inline_call(
     let mut inline_recorder = debug_recorder.new_inline_child();
 
     let mut yields: Vec<Expr> = Vec::new();
+    // Use caller parameter stack indexes while compiling callee bytecode so
+    // identifier resolution can still pick values from the caller frame.
     let params = caller_params.clone();
     let body_len = function.body.len();
     for (index, stmt) in function.body.iter().enumerate() {
@@ -2203,71 +2208,101 @@ fn eval_const_int(expr: &Expr, constants: &HashMap<String, Expr>) -> Result<i64,
 }
 
 fn resolve_expr(expr: Expr, env: &HashMap<String, Expr>, visiting: &mut HashSet<String>) -> Result<Expr, CompilerError> {
+    resolve_expr_internal(expr, env, visiting, ResolveMode::Compile)
+}
+
+/// Controls identifier expansion semantics for shared expression resolution.
+/// Compile mode preserves synthetic inline arg placeholders (`__arg_*`) so
+/// generated scripts still pick arguments from the caller stack frame. Debug
+/// mode expands them into caller-visible expressions for shadow evaluation.
+#[derive(Clone, Copy)]
+enum ResolveMode {
+    Compile,
+    Debug,
+}
+
+impl ResolveMode {
+    fn preserve_inline_args(self) -> bool {
+        matches!(self, Self::Compile)
+    }
+}
+
+fn resolve_expr_internal(
+    expr: Expr,
+    env: &HashMap<String, Expr>,
+    visiting: &mut HashSet<String>,
+    mode: ResolveMode,
+) -> Result<Expr, CompilerError> {
     match expr {
         Expr::Identifier(name) => {
-            if name.starts_with("__arg_") {
+            if mode.preserve_inline_args() && name.starts_with("__arg_") {
                 return Ok(Expr::Identifier(name));
             }
             if let Some(value) = env.get(&name) {
                 if !visiting.insert(name.clone()) {
                     return Err(CompilerError::CyclicIdentifier(name));
                 }
-                let resolved = resolve_expr(value.clone(), env, visiting)?;
+                let resolved = resolve_expr_internal(value.clone(), env, visiting, mode)?;
                 visiting.remove(&name);
                 Ok(resolved)
             } else {
                 Ok(Expr::Identifier(name))
             }
         }
-        Expr::Unary { op, expr } => Ok(Expr::Unary { op, expr: Box::new(resolve_expr(*expr, env, visiting)?) }),
+        Expr::Unary { op, expr } => Ok(Expr::Unary { op, expr: Box::new(resolve_expr_internal(*expr, env, visiting, mode)?) }),
         Expr::Binary { op, left, right } => Ok(Expr::Binary {
             op,
-            left: Box::new(resolve_expr(*left, env, visiting)?),
-            right: Box::new(resolve_expr(*right, env, visiting)?),
+            left: Box::new(resolve_expr_internal(*left, env, visiting, mode)?),
+            right: Box::new(resolve_expr_internal(*right, env, visiting, mode)?),
         }),
         Expr::IfElse { condition, then_expr, else_expr } => Ok(Expr::IfElse {
-            condition: Box::new(resolve_expr(*condition, env, visiting)?),
-            then_expr: Box::new(resolve_expr(*then_expr, env, visiting)?),
-            else_expr: Box::new(resolve_expr(*else_expr, env, visiting)?),
+            condition: Box::new(resolve_expr_internal(*condition, env, visiting, mode)?),
+            then_expr: Box::new(resolve_expr_internal(*then_expr, env, visiting, mode)?),
+            else_expr: Box::new(resolve_expr_internal(*else_expr, env, visiting, mode)?),
         }),
         Expr::Array(values) => {
             let mut resolved = Vec::with_capacity(values.len());
             for value in values {
-                resolved.push(resolve_expr(value, env, visiting)?);
+                resolved.push(resolve_expr_internal(value, env, visiting, mode)?);
             }
             Ok(Expr::Array(resolved))
         }
         Expr::StateObject(fields) => {
             let mut resolved_fields = Vec::with_capacity(fields.len());
             for field in fields {
-                resolved_fields.push(crate::ast::StateFieldExpr { name: field.name, expr: resolve_expr(field.expr, env, visiting)? });
+                resolved_fields.push(crate::ast::StateFieldExpr {
+                    name: field.name,
+                    expr: resolve_expr_internal(field.expr, env, visiting, mode)?,
+                });
             }
             Ok(Expr::StateObject(resolved_fields))
         }
         Expr::Call { name, args } => {
             let mut resolved = Vec::with_capacity(args.len());
             for arg in args {
-                resolved.push(resolve_expr(arg, env, visiting)?);
+                resolved.push(resolve_expr_internal(arg, env, visiting, mode)?);
             }
             Ok(Expr::Call { name, args: resolved })
         }
         Expr::New { name, args } => {
             let mut resolved = Vec::with_capacity(args.len());
             for arg in args {
-                resolved.push(resolve_expr(arg, env, visiting)?);
+                resolved.push(resolve_expr_internal(arg, env, visiting, mode)?);
             }
             Ok(Expr::New { name, args: resolved })
         }
         Expr::Split { source, index, part } => Ok(Expr::Split {
-            source: Box::new(resolve_expr(*source, env, visiting)?),
-            index: Box::new(resolve_expr(*index, env, visiting)?),
+            source: Box::new(resolve_expr_internal(*source, env, visiting, mode)?),
+            index: Box::new(resolve_expr_internal(*index, env, visiting, mode)?),
             part,
         }),
         Expr::ArrayIndex { source, index } => Ok(Expr::ArrayIndex {
-            source: Box::new(resolve_expr(*source, env, visiting)?),
-            index: Box::new(resolve_expr(*index, env, visiting)?),
+            source: Box::new(resolve_expr_internal(*source, env, visiting, mode)?),
+            index: Box::new(resolve_expr_internal(*index, env, visiting, mode)?),
         }),
-        Expr::Introspection { kind, index } => Ok(Expr::Introspection { kind, index: Box::new(resolve_expr(*index, env, visiting)?) }),
+        Expr::Introspection { kind, index } => {
+            Ok(Expr::Introspection { kind, index: Box::new(resolve_expr_internal(*index, env, visiting, mode)?) })
+        }
         other => Ok(other),
     }
 }
@@ -2302,7 +2337,7 @@ pub(super) fn resolve_expr_for_debug(
     env: &HashMap<String, Expr>,
     visiting: &mut HashSet<String>,
 ) -> Result<Expr, CompilerError> {
-    resolve_expr(expr, env, visiting)
+    resolve_expr_internal(expr, env, visiting, ResolveMode::Debug)
 }
 
 fn replace_identifier(expr: &Expr, target: &str, replacement: &Expr) -> Expr {

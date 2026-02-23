@@ -26,13 +26,7 @@ where
     assert!(contract_path.exists(), "example contract not found: {}", contract_path.display());
 
     let source = fs::read_to_string(&contract_path)?;
-    with_session_for_source(
-        &source,
-        vec![Expr::Int(3), Expr::Int(10)],
-        "hello",
-        vec![Expr::Int(5), Expr::Int(5)],
-        &mut f,
-    )
+    with_session_for_source(&source, vec![Expr::Int(3), Expr::Int(10)], "hello", vec![Expr::Int(5), Expr::Int(5)], &mut f)
 }
 
 // Generic harness that compiles a contract and boots a debugger session for a selected function call.
@@ -300,6 +294,8 @@ contract InlineCalls() {
         session.step_over()?;
         let after_over = session.current_span().ok_or("missing span after step_over")?;
         assert_eq!(after_over.line, 11, "step_over should stay in caller and move past inline call");
+        let b = session.variable_by_name("b")?;
+        assert_eq!(session.format_value(&b.type_name, &b.value), "4", "inline return should resolve against caller params");
         Ok(())
     })?;
 

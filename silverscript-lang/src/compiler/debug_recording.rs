@@ -38,17 +38,10 @@ pub struct FunctionDebugRecorder {
     next_frame_id: u32,
 }
 
-#[allow(dead_code)]
 impl FunctionDebugRecorder {
     pub fn new(enabled: bool, function: &FunctionAst) -> Self {
-        let mut recorder = Self {
-            function_name: function.name.clone(),
-            enabled,
-            call_depth: 0,
-            frame_id: 0,
-            next_frame_id: 1,
-            ..Default::default()
-        };
+        let mut recorder =
+            Self { function_name: function.name.clone(), enabled, call_depth: 0, frame_id: 0, next_frame_id: 1, ..Default::default() };
         recorder.record_params(function);
         recorder
     }
@@ -72,13 +65,7 @@ impl FunctionDebugRecorder {
     pub fn new_inline_child(&mut self) -> Self {
         let frame_id = self.next_frame_id;
         self.next_frame_id = self.next_frame_id.saturating_add(1);
-        Self::inline(
-            self.enabled,
-            self.function_name.clone(),
-            self.call_depth().saturating_add(1),
-            frame_id,
-            self.next_frame_id,
-        )
+        Self::inline(self.enabled, self.function_name.clone(), self.call_depth().saturating_add(1), frame_id, self.next_frame_id)
     }
 
     fn next_sequence(&mut self) -> u32 {
@@ -134,19 +121,6 @@ impl FunctionDebugRecorder {
         self.record_statement_span(stmt.span, bytecode_start, bytecode_len)
     }
 
-    pub fn record_statement_with_span(
-        &mut self,
-        span: Option<SourceSpan>,
-        bytecode_start: usize,
-        bytecode_len: usize,
-    ) -> Option<u32> {
-        self.record_statement_span(span, bytecode_start, bytecode_len)
-    }
-
-    pub fn record_virtual_step(&mut self, span: Option<SourceSpan>, bytecode_offset: usize) -> Option<u32> {
-        self.push_event(bytecode_offset, bytecode_offset, span, DebugEventKind::Virtual {})
-    }
-
     pub fn record_statement_updates(
         &mut self,
         stmt: &Statement,
@@ -157,53 +131,6 @@ impl FunctionDebugRecorder {
         if let Some(sequence) = self.record_statement(stmt, bytecode_start, bytecode_end.saturating_sub(bytecode_start)) {
             self.record_variable_updates(variables, bytecode_end, stmt.span, sequence);
         }
-    }
-
-    pub fn record_statement_updates_with_span(
-        &mut self,
-        span: Option<SourceSpan>,
-        bytecode_start: usize,
-        bytecode_end: usize,
-        variables: Vec<(String, String, Expr)>,
-    ) {
-        if let Some(sequence) = self.record_statement_with_span(span, bytecode_start, bytecode_end.saturating_sub(bytecode_start)) {
-            self.record_variable_updates(variables, bytecode_end, span, sequence);
-        }
-    }
-
-    pub fn record_virtual_updates(
-        &mut self,
-        span: Option<SourceSpan>,
-        bytecode_offset: usize,
-        variables: Vec<(String, String, Expr)>,
-    ) {
-        if let Some(sequence) = self.record_virtual_step(span, bytecode_offset) {
-            self.record_variable_updates(variables, bytecode_offset, span, sequence);
-        }
-    }
-
-    pub fn record_inline_param_updates(
-        &mut self,
-        function: &FunctionAst,
-        env: &HashMap<String, Expr>,
-        span: Option<SourceSpan>,
-        bytecode_offset: usize,
-    ) -> Result<(), CompilerError> {
-        if !self.enabled {
-            return Ok(());
-        }
-        let mut variables = Vec::with_capacity(function.params.len());
-        for param in &function.params {
-            self.variable_update(
-                env,
-                &mut variables,
-                &param.name,
-                &param.type_ref.type_name(),
-                env.get(&param.name).cloned().unwrap_or(Expr::Identifier(param.name.clone())),
-            )?;
-        }
-        self.record_virtual_updates(span, bytecode_offset, variables);
-        Ok(())
     }
 
     pub fn record_inline_call_enter(&mut self, span: Option<SourceSpan>, bytecode_offset: usize, callee: &str) -> Option<u32> {
@@ -267,7 +194,8 @@ impl FunctionDebugRecorder {
     }
 
     /// Records a variable update by resolving its expression against the current environment.
-    /// This expands all local variable references inline, leaving only param identifiers.
+    /// This expands locals and synthetic inline placeholders (`__arg_*`) into
+    /// caller-visible expressions, leaving only real param identifiers.
     /// The resolved expression is what enables shadow VM evaluation at debug time.
     pub(super) fn variable_update(
         &self,
