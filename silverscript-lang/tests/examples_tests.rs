@@ -457,16 +457,7 @@ fn runs_everything_example_and_verifies() {
         sequence: 500,
         sig_op_count: 1,
     };
-    let checked_script = ScriptBuilder::new()
-        .add_ops(&compiled.script)
-        .unwrap()
-        .add_op(OpDrop)
-        .unwrap()
-        .add_op(OpDrop)
-        .unwrap()
-        .add_op(OpTrue)
-        .unwrap()
-        .drain();
+    let checked_script = compiled.script.clone();
     let output =
         TransactionOutput { value: 5_000, script_public_key: ScriptPublicKey::new(0, checked_script.clone().into()), covenant: None };
 

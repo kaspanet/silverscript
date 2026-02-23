@@ -1952,6 +1952,8 @@ fn compile_expr(
                 }
                 compile_expr(&args[0], env, params, types, builder, options, visiting, stack_depth, script_size)?;
                 builder.add_op(OpSize)?;
+                builder.add_op(OpSwap)?;
+                builder.add_op(OpDrop)?;
                 Ok(())
             }
             "int" => {
