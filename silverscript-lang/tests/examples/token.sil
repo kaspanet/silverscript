@@ -6,7 +6,7 @@ contract Token(int max_outs) {
         for(i,0,max_outs){
             if( i < num_outs ){
                 int out_amount = in_amount / num_outs;
-                bytes out_amount_bytes = OpNum2Bin(out_amount, 8);
+                byte[] out_amount_bytes = OpNum2Bin(out_amount, 8);
                 yield(out_amount_bytes + recipient_pk);
             }
         }

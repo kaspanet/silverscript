@@ -1,6 +1,6 @@
 pragma silverscript ^0.1.0;
 
-contract LastWill(bytes32 inheritor, bytes32 cold, bytes32 hot) {
+contract LastWill(byte[32] inheritor, byte[32] cold, byte[32] hot) {
     entrypoint function inherit(pubkey pk, sig s) {
         require(this.age >= 180);
         require(blake2b(pk) == inheritor);
@@ -22,7 +22,7 @@ contract LastWill(bytes32 inheritor, bytes32 cold, bytes32 hot) {
         require(tx.outputs[0].value == amount);
 
         // Check that the funds are sent back to the contract
-        bytes selfLock = tx.inputs[this.activeInputIndex].lockingBytecode;
-        require(tx.outputs[0].lockingBytecode == selfLock);
+        byte[] selfLock = tx.inputs[this.activeInputIndex].scriptPubKey;
+        require(tx.outputs[0].scriptPubKey == selfLock);
     }
 }

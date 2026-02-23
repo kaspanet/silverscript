@@ -1,8 +1,8 @@
 pragma silverscript ^0.1.0;
 
-contract SplitSize(bytes b) {
+contract SplitSize(byte[] b) {
     entrypoint function spend() {
-        bytes x = b.split(b.length / 2)[1];
+        byte[] x = b.split(b.length / 2)[1];
         require(x != b);
         require(b.split(4)[0] != x);
     }

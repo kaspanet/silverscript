@@ -1,7 +1,7 @@
 pragma silverscript ^0.1.0;
 
 contract BoundedBytes() {
-    entrypoint function spend(bytes4 b, int i) {
-        require(b == bytes4(i));
+    entrypoint function spend(byte[4] b, int i) {
+        require(b == byte[4](i));
     }
 }

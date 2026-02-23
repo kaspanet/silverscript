@@ -48,7 +48,7 @@ fn tutorial_rust_build_sigscript_multiple_entrypoints_example() {
 
     assert!(!compiled.without_selector, "multiple entrypoints should require a selector");
 
-    let sig = vec![5u8; 64];
+    let sig = vec![5u8; 65];
     let transfer_sigscript = compiled.build_sig_script("transfer", vec![sig.clone().into()]).expect("transfer sigscript should build");
     let reclaim_sigscript = compiled.build_sig_script("reclaim", vec![sig.into()]).expect("reclaim sigscript should build");
 

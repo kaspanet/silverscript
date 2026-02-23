@@ -1,8 +1,8 @@
 pragma silverscript ^0.1.0;
 
 contract Test() {
-    entrypoint function split(bytes32 b) {
-        bytes16 x, bytes16 y =  b.split(16);
+    entrypoint function split(byte[32] b) {
+        byte[16] x, byte[16] y =  b.split(16);
         require(x == y);
     }
 }

@@ -3,6 +3,6 @@ pragma silverscript ^0.1.0;
 contract Covenant(int requiredVersion) {
     entrypoint function spend() {
         require(tx.version == requiredVersion);
-        require(this.activeBytecode == 0x00);
+        require(this.activeScriptPubKey == 0x00);
     }
 }

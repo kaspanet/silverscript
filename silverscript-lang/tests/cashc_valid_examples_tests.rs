@@ -51,20 +51,33 @@ fn dummy_expr_for_type(type_name: &str) -> Expr {
     if type_name == "string" {
         return String::from("aa").into();
     }
-    if type_name == "bytes" {
-        return Vec::<u8>::new().into();
+    if type_name == "byte[]" {
+        return Vec::<u8>::new().into(); // Empty byte array
     }
     if type_name == "pubkey" {
-        return vec![0u8; 32].into();
+        return vec![0u8; 32].into(); // Converts to Expr::Array of Expr::Byte
     }
     if type_name == "sig" {
-        return vec![0u8; 64].into();
+        return vec![0u8; 65].into();
     }
     if type_name == "datasig" {
         return vec![0u8; 64].into();
     }
+    // Internal: Handle bytesN (used in internal representation, not parsed from source)
     if let Some(size) = type_name.strip_prefix("bytes").and_then(|v| v.parse::<usize>().ok()) {
         return vec![0u8; size].into();
+    }
+    // Support byte[N] syntax
+    if let Some(bracket_pos) = type_name.find('[') {
+        if type_name.ends_with(']') {
+            let base_type = &type_name[..bracket_pos];
+            let size_str = &type_name[bracket_pos + 1..type_name.len() - 1];
+            if base_type == "byte" {
+                if let Ok(size) = size_str.parse::<usize>() {
+                    return vec![0u8; size].into();
+                }
+            }
+        }
     }
     0i64.into()
 }
@@ -329,7 +342,7 @@ fn runs_cashc_valid_examples() {
                 assert!(result.is_ok(), "{example} failed: {}", result.unwrap_err());
             }
             "covenant.sil" => {
-                // Unsatisfiable: requires `this.activeBytecode == 0x00`.
+                // Unsatisfiable: requires `this.activeScriptPubKey == 0x00`.
                 let constructor_args = vec![1i64.into()];
                 let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
                 let selector = selector_for_compiled(&compiled, "spend");
@@ -517,12 +530,9 @@ fn runs_cashc_valid_examples() {
                 );
                 tx.tx.inputs[0].signature_script = sigscript;
                 let result = execute_tx(tx, utxo, reused);
-                if example == "log_intermediate_results.sil" {
-                    // Unsatisfiable in this runtime: the script leaves an extra stack item (CLEANSTACK).
-                    assert!(result.is_err(), "{example} should fail");
-                } else {
-                    assert!(result.is_ok(), "{example} failed: {}", result.unwrap_err());
-                }
+                // Note: log_intermediate_results.sil now passes with byte[N] syntax
+                // (previously failed with bytesN due to CLEANSTACK)
+                assert!(result.is_ok(), "{example} failed: {}", result.unwrap_err());
             }
             "multifunction.sil" => {
                 let recipient = random_keypair();

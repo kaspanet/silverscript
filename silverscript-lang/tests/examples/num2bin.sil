@@ -2,7 +2,7 @@ pragma silverscript ^0.1.0;
 
 contract Test() {
     entrypoint function hello() {
-        bytes2 byte_ = bytes2(10);
+        byte[2] byte_ = byte[2](10);
         require(int(byte_) == 10);
     }
 }
