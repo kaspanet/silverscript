@@ -203,6 +203,7 @@ impl<'a> DebugSession<'a> {
         let opcode = self.opcodes[self.pc].take().expect("opcode already executed");
         self.engine.execute_opcode(opcode)?;
         self.pc += 1;
+        self.sync_step_cursor_to_current_offset();
         Ok(Some(self.state()))
     }
 
@@ -289,12 +290,7 @@ impl<'a> DebugSession<'a> {
             }
             let offset = self.current_byte_offset();
             if self.engine.is_executing() {
-                let found = self
-                    .source_mappings
-                    .iter()
-                    .enumerate()
-                    .find(|(_, mapping)| self.is_steppable_mapping(mapping) && mapping_matches_offset(mapping, offset));
-                if let Some((index, _)) = found {
+                if let Some(index) = self.steppable_mapping_index_for_offset(offset) {
                     self.current_step_index = Some(index);
                     self.mark_mapping_executed(index);
                     return Ok(());
@@ -694,8 +690,27 @@ impl<'a> DebugSession<'a> {
         }
     }
 
+    fn sync_step_cursor_to_current_offset(&mut self) {
+        let offset = self.current_byte_offset();
+        if let Some(index) = self.steppable_mapping_index_for_offset(offset) {
+            // `si` executes raw opcodes; keep statement cursor in sync so later
+            // source-level steps (`next`/`step`/`finish`) start from the real
+            // current mapping instead of an old one.
+            self.current_step_index = Some(index);
+            self.mark_mapping_executed(index);
+        }
+    }
+
     fn is_steppable_mapping(&self, mapping: &DebugMapping) -> bool {
         matches!(&mapping.kind, MappingKind::Statement {} | MappingKind::Virtual {})
+    }
+
+    fn steppable_mapping_index_for_offset(&self, offset: usize) -> Option<usize> {
+        self.source_mappings
+            .iter()
+            .enumerate()
+            .find(|(_, mapping)| self.is_steppable_mapping(mapping) && mapping_matches_offset(mapping, offset))
+            .map(|(index, _)| index)
     }
 
     fn next_steppable_mapping_index(&self, from: Option<usize>, predicate: impl Fn(&DebugMapping) -> bool) -> Option<usize> {

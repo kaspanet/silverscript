@@ -974,7 +974,7 @@ fn compile_function(
         env.remove(&param.name);
     }
     let mut builder = ScriptBuilder::new();
-    let mut recorder = FunctionDebugRecorder::new(options.record_debug_infos, function);
+    let mut recorder = FunctionDebugRecorder::new(options.record_debug_infos, function, contract_fields);
     let mut yields: Vec<Expr> = Vec::new();
 
     if !options.allow_yield && function.body.iter().any(contains_yield) {

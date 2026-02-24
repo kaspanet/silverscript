@@ -204,6 +204,62 @@ contract ShadowMath(int fee) {
 }
 
 #[test]
+fn debug_session_offsets_param_indexes_when_contract_has_fields() -> Result<(), Box<dyn Error>> {
+    let source = r#"pragma silverscript ^0.1.0;
+
+contract FieldOffset(int c) {
+    int x = 7;
+
+    entrypoint function main(int a) {
+        require(a > 0);
+    }
+}
+"#;
+
+    with_session_for_source(source, vec![Expr::Int(2)], "main", vec![Expr::Int(5)], |session| {
+        session.run_to_first_executed_statement()?;
+
+        let a = session.variable_by_name("a")?;
+        assert_eq!(session.format_value(&a.type_name, &a.value), "5");
+
+        let x = session.variable_by_name("x")?;
+        assert_eq!(session.format_value(&x.type_name, &x.value), "7");
+        Ok(())
+    })
+}
+
+#[test]
+fn debug_session_resolves_updates_that_reference_contract_fields() -> Result<(), Box<dyn Error>> {
+    let source = r#"pragma silverscript ^0.1.0;
+
+contract FieldMath(int c) {
+    int x = 7;
+
+    entrypoint function main(int a) {
+        int z = a + x + c;
+        require(z > 0);
+    }
+}
+"#;
+
+    with_session_for_source(source, vec![Expr::Int(2)], "main", vec![Expr::Int(5)], |session| {
+        session.run_to_first_executed_statement()?;
+
+        for _ in 0..4 {
+            if let Ok(z) = session.variable_by_name("z") {
+                assert_eq!(session.format_value(&z.type_name, &z.value), "14");
+                return Ok(());
+            }
+            if session.step_over()?.is_none() {
+                break;
+            }
+        }
+
+        Err("expected z to become visible after assignment".into())
+    })
+}
+
+#[test]
 fn debug_session_exposes_virtual_steps() -> Result<(), Box<dyn Error>> {
     let source = r#"pragma silverscript ^0.1.0;
 
@@ -229,6 +285,34 @@ contract Virtuals() {
         let third = session.step_over()?.ok_or("missing third step")?.mapping.ok_or("missing third mapping")?;
         assert!(matches!(third.kind, MappingKind::Statement {}));
         assert_eq!(session.state().pc, first_pc, "first real statement should still be at same pc boundary");
+        Ok(())
+    })
+}
+
+#[test]
+fn debug_session_step_opcode_advances_statement_cursor() -> Result<(), Box<dyn Error>> {
+    let source = r#"pragma silverscript ^0.1.0;
+
+contract OpcodeCursor() {
+    entrypoint function main(int a) {
+        int x = a + 1;
+        x = x + 2;
+        require(x > 0);
+    }
+}
+"#;
+
+    with_session_for_source(source, vec![], "main", vec![Expr::Int(3)], |session| {
+        session.run_to_first_executed_statement()?;
+        let start = session.current_span().ok_or("missing start span")?;
+        assert_eq!(start.line, 5);
+
+        session.step_opcode()?.ok_or("expected si to execute one opcode")?;
+        let after_si = session.current_span().ok_or("missing span after si")?;
+        assert_ne!(after_si.line, start.line, "si should refresh statement cursor");
+
+        let x = session.variable_by_name("x")?;
+        assert_eq!(session.format_value(&x.type_name, &x.value), "1");
         Ok(())
     })
 }

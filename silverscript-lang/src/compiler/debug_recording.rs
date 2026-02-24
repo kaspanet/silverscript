@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use kaspa_txscript::script_builder::ScriptBuilder;
 
-use crate::ast::{Expr, FunctionAst, ParamAst, Statement};
+use crate::ast::{ContractFieldAst, Expr, FunctionAst, ParamAst, Statement};
 use crate::debug::{
     DebugConstantMapping, DebugEvent, DebugEventKind, DebugFunctionRange, DebugInfo, DebugParamMapping, DebugRecorder,
     DebugVariableUpdate, SourceSpan,
@@ -41,10 +41,10 @@ pub struct FunctionDebugRecorder {
 }
 
 impl FunctionDebugRecorder {
-    pub fn new(enabled: bool, function: &FunctionAst) -> Self {
+    pub fn new(enabled: bool, function: &FunctionAst, contract_fields: &[ContractFieldAst]) -> Self {
         let mut recorder =
             Self { function_name: function.name.clone(), enabled, call_depth: 0, frame_id: 0, next_frame_id: 1, ..Default::default() };
-        recorder.record_params(function);
+        recorder.record_stack_bindings(function, contract_fields);
         recorder
     }
 
@@ -98,16 +98,29 @@ impl FunctionDebugRecorder {
         Some(sequence)
     }
 
-    fn record_params(&mut self, function: &FunctionAst) {
+    fn record_stack_bindings(&mut self, function: &FunctionAst, contract_fields: &[ContractFieldAst]) {
         if !self.enabled {
             return;
         }
         let param_count = function.params.len();
+        let field_count = contract_fields.len();
+        // Runtime stack layout at function entry is:
+        //   top -> contract fields (reverse declaration order), then function args.
+        // Keep debug stack indexes aligned with that layout so shadow evaluation
+        // reads the same values as normal execution.
         for (index, param) in function.params.iter().enumerate() {
             self.param_mappings.push(DebugParamMapping {
                 name: param.name.clone(),
                 type_name: param.type_ref.type_name(),
-                stack_index: (param_count - 1 - index) as i64,
+                stack_index: (field_count + (param_count - 1 - index)) as i64,
+                function: function.name.clone(),
+            });
+        }
+        for (index, field) in contract_fields.iter().enumerate() {
+            self.param_mappings.push(DebugParamMapping {
+                name: field.name.clone(),
+                type_name: field.type_ref.type_name(),
+                stack_index: (field_count - 1 - index) as i64,
                 function: function.name.clone(),
             });
         }
