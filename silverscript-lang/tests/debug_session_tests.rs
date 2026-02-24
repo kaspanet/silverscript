@@ -495,7 +495,7 @@ contract Repeat() {
 
         let mut lines = vec![session.current_span().ok_or("missing initial span")?.line];
         let mut max_depth = session.call_stack().len();
-        while let Some(_) = session.step_into()? {
+        while (session.step_into()?).is_some() {
             lines.push(session.current_span().ok_or("missing span while stepping")?.line);
             max_depth = max_depth.max(session.call_stack().len());
         }
