@@ -173,6 +173,37 @@ contract Shadow(int x) {
 }
 
 #[test]
+fn debug_session_prefers_function_param_value_over_shadowed_constructor_constant() -> Result<(), Box<dyn Error>> {
+    let source = r#"pragma silverscript ^0.1.0;
+
+contract ShadowMath(int fee) {
+    entrypoint function main(int fee) {
+        int local = fee + 1;
+        local = local + fee;
+        require(local > 0);
+    }
+}
+"#;
+
+    with_session_for_source(source, vec![Expr::Int(2)], "main", vec![Expr::Int(3)], |session| {
+        session.run_to_first_executed_statement()?;
+
+        session.step_over()?;
+        let local_after_init = session.variable_by_name("local")?;
+        assert_eq!(session.format_value(&local_after_init.type_name, &local_after_init.value), "4");
+
+        session.step_over()?;
+        let local_after_update = session.variable_by_name("local")?;
+        assert_eq!(session.format_value(&local_after_update.type_name, &local_after_update.value), "7");
+
+        let fee = session.variable_by_name("fee")?;
+        assert!(!fee.is_constant);
+        assert_eq!(session.format_value(&fee.type_name, &fee.value), "3");
+        Ok(())
+    })
+}
+
+#[test]
 fn debug_session_exposes_virtual_steps() -> Result<(), Box<dyn Error>> {
     let source = r#"pragma silverscript ^0.1.0;
 
