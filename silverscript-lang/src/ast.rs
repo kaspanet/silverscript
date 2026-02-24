@@ -569,11 +569,11 @@ pub enum IntrospectionKind {
     InputValue,
     InputScriptPubKey,
     InputSigScript,
-    /// not supported yet
+    /// TODO: not supported yet
     InputOutpointTransactionHash,
-    /// not supported yet
+    /// TODO: not supported yet
     InputOutpointIndex,
-    /// not supported yet
+    /// TODO: not supported yet
     InputSequenceNumber,
     OutputValue,
     OutputScriptPubKey,
