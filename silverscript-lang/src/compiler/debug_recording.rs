@@ -8,7 +8,7 @@ use crate::debug::{
     DebugVariableUpdate, SourceSpan,
 };
 
-use super::{CompilerError, is_inline_synthetic_name, resolve_expr_for_debug};
+use super::{CompilerError, resolve_expr_for_debug};
 
 type ResolvedVariableUpdate = (String, String, Expr);
 
@@ -252,7 +252,7 @@ impl FunctionDebugRecorder {
         let mut updates = Vec::new();
         for name in names {
             // Inline synthetic args are plumbing, not user-facing variables.
-            if is_inline_synthetic_name(&name) {
+            if name.starts_with("__arg_") {
                 continue;
             }
             let Some(after_expr) = after_env.get(&name) else {
