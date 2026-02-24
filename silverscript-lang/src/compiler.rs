@@ -691,9 +691,10 @@ impl<'i> CompiledContract<'i> {
         let mut builder = ScriptBuilder::new();
         for (input, arg) in function.inputs.iter().zip(args) {
             if is_array_type(&input.type_name) {
-                match arg.kind {
+                let kind = arg.kind.clone();
+                match kind {
                     ExprKind::Array(values) => {
-                        if values.iter().all(|value| matches!(&value.kind, ExprKind::Byte(_))) {
+                        if is_byte_array(&arg) {
                             let bytes: Vec<u8> = values
                                 .iter()
                                 .filter_map(|value| if let ExprKind::Byte(byte) = &value.kind { Some(*byte) } else { None })
