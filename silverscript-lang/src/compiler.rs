@@ -277,6 +277,7 @@ fn expr_uses_script_size<'i>(expr: &Expr<'i>) -> bool {
             expr_uses_script_size(condition) || expr_uses_script_size(then_expr) || expr_uses_script_size(else_expr)
         }
         ExprKind::Array(values) => values.iter().any(expr_uses_script_size),
+        ExprKind::StateObject(fields) => fields.iter().any(|field| expr_uses_script_size(&field.expr)),
         ExprKind::Call { args, .. } => args.iter().any(expr_uses_script_size),
         ExprKind::New { args, .. } => args.iter().any(expr_uses_script_size),
         ExprKind::Split { source, index, .. } => expr_uses_script_size(source) || expr_uses_script_size(index),
@@ -294,7 +295,6 @@ fn expr_uses_script_size<'i>(expr: &Expr<'i>) -> bool {
         | ExprKind::DateLiteral(_)
         | ExprKind::NumberWithUnit { .. }
         | ExprKind::Nullary(_) => false,
-        ExprKind::StateObject(fields) => fields.iter().any(|field| expr_uses_script_size(&field.expr)),
     }
 }
 
@@ -732,11 +732,11 @@ fn push_sigscript_arg<'i>(builder: &mut ScriptBuilder, arg: Expr<'i>) -> Result<
         ExprKind::Bool(value) => {
             builder.add_i64(if value { 1 } else { 0 })?;
         }
-        ExprKind::Byte(value) => {
-            builder.add_data(&[value])?;
-        }
         ExprKind::String(value) => {
             builder.add_data(value.as_bytes())?;
+        }
+        ExprKind::Byte(value) => {
+            builder.add_data(&[value])?;
         }
         ExprKind::Array(values) if values.iter().all(|value| matches!(&value.kind, ExprKind::Byte(_))) => {
             let bytes: Vec<u8> =
@@ -1350,7 +1350,9 @@ fn compile_statement<'i>(
                 return Err(CompilerError::Unsupported("return values count must match function return types".to_string()));
             }
             for (binding, return_type) in bindings.iter().zip(function.return_types.iter()) {
-                if binding.type_ref != *return_type {
+                let binding_type_name = type_name_from_ref(&binding.type_ref);
+                let return_type_name = type_name_from_ref(return_type);
+                if binding_type_name != return_type_name {
                     return Err(CompilerError::Unsupported("function return types must match binding types".to_string()));
                 }
             }
@@ -2211,6 +2213,10 @@ fn resolve_expr<'i>(
     }
 }
 
+/// Replace `target` identifiers in `expr` with `replacement`.
+///
+/// Example: for `x = x + 1`, this rewrites the right side to
+/// `<previous x> + 1` before `resolve_expr` runs.
 fn replace_identifier<'i>(expr: &Expr<'i>, target: &str, replacement: &Expr<'i>) -> Expr<'i> {
     let span = expr.span;
     match &expr.kind {
@@ -2230,6 +2236,20 @@ fn replace_identifier<'i>(expr: &Expr<'i>, target: &str, replacement: &Expr<'i>)
         ExprKind::Array(values) => {
             Expr::new(ExprKind::Array(values.iter().map(|value| replace_identifier(value, target, replacement)).collect()), span)
         }
+        ExprKind::StateObject(fields) => Expr::new(
+            ExprKind::StateObject(
+                fields
+                    .iter()
+                    .map(|field| StateFieldExpr {
+                        name: field.name.clone(),
+                        expr: replace_identifier(&field.expr, target, replacement),
+                        span: field.span,
+                        name_span: field.name_span,
+                    })
+                    .collect(),
+            ),
+            span,
+        ),
         ExprKind::Call { name, args, name_span } => Expr::new(
             ExprKind::Call {
                 name: name.clone(),
@@ -2252,14 +2272,6 @@ fn replace_identifier<'i>(expr: &Expr<'i>, target: &str, replacement: &Expr<'i>)
                 index: Box::new(replace_identifier(index, target, replacement)),
                 part: *part,
                 span: *split_span,
-            },
-            span,
-        ),
-        ExprKind::UnarySuffix { source, kind, span: suffix_span } => Expr::new(
-            ExprKind::UnarySuffix {
-                source: Box::new(replace_identifier(source, target, replacement)),
-                kind: *kind,
-                span: *suffix_span,
             },
             span,
         ),
@@ -2295,12 +2307,19 @@ fn replace_identifier<'i>(expr: &Expr<'i>, target: &str, replacement: &Expr<'i>)
             },
             span,
         ),
+        ExprKind::UnarySuffix { source, kind, span: suffix_span } => Expr::new(
+            ExprKind::UnarySuffix {
+                source: Box::new(replace_identifier(source, target, replacement)),
+                kind: *kind,
+                span: *suffix_span,
+            },
+            span,
+        ),
         ExprKind::Int(_)
         | ExprKind::Bool(_)
         | ExprKind::Byte(_)
         | ExprKind::String(_)
         | ExprKind::DateLiteral(_)
-        | ExprKind::StateObject(_)
         | ExprKind::NumberWithUnit { .. }
         | ExprKind::Nullary(_) => expr.clone(),
     }
@@ -2341,6 +2360,22 @@ fn compile_expr<'i>(
             *stack_depth += 1;
             Ok(())
         }
+        ExprKind::Array(values) => {
+            if values.is_empty() {
+                builder.add_data(&[])?;
+                *stack_depth += 1;
+                return Ok(());
+            }
+            let inferred_type = infer_fixed_array_literal_type(values)
+                .ok_or_else(|| CompilerError::Unsupported("array literal type cannot be inferred".to_string()))?;
+            let encoded = encode_array_literal(values, &inferred_type)?;
+            builder.add_data(&encoded)?;
+            *stack_depth += 1;
+            Ok(())
+        }
+        ExprKind::StateObject(_) => {
+            Err(CompilerError::Unsupported("state object literals are only supported in validateOutputState".to_string()))
+        }
         ExprKind::String(value) => {
             builder.add_data(value.as_bytes())?;
             *stack_depth += 1;
@@ -2376,14 +2411,6 @@ fn compile_expr<'i>(
             visiting.remove(name);
             Err(CompilerError::UndefinedIdentifier(name.clone()))
         }
-        ExprKind::DateLiteral(value) => {
-            builder.add_i64(*value)?;
-            *stack_depth += 1;
-            Ok(())
-        }
-        ExprKind::NumberWithUnit { .. } => {
-            Err(CompilerError::Unsupported("number units must be normalized during parsing".to_string()))
-        }
         ExprKind::IfElse { condition, then_expr, else_expr } => {
             compile_expr(condition, env, params, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
             builder.add_op(OpIf)?;
@@ -2396,22 +2423,6 @@ fn compile_expr<'i>(
             builder.add_op(OpEndIf)?;
             *stack_depth = depth_before + 1;
             Ok(())
-        }
-        ExprKind::Array(values) => {
-            if values.is_empty() {
-                builder.add_data(&[])?;
-                *stack_depth += 1;
-                return Ok(());
-            }
-            let inferred_type = infer_fixed_array_literal_type(values)
-                .ok_or_else(|| CompilerError::Unsupported("array literal type cannot be inferred".to_string()))?;
-            let encoded = encode_array_literal(values, &inferred_type)?;
-            builder.add_data(&encoded)?;
-            *stack_depth += 1;
-            Ok(())
-        }
-        ExprKind::StateObject(_) => {
-            Err(CompilerError::Unsupported("state object literals are only supported in validateOutputState".to_string()))
         }
         ExprKind::Call { name, args, .. } => {
             compile_call_expr(name.as_str(), args, &scope, builder, options, visiting, stack_depth, script_size, contract_constants)
@@ -2627,23 +2638,6 @@ fn compile_expr<'i>(
             ),
             UnarySuffixKind::Reverse => Err(CompilerError::Unsupported("reverse() is not supported".to_string())),
         },
-        ExprKind::Slice { source, start, end, .. } => {
-            compile_expr(source, env, params, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
-            compile_expr(start, env, params, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
-            compile_expr(end, env, params, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
-
-            builder.add_op(Op2Dup)?;
-            *stack_depth += 2;
-            builder.add_op(OpSwap)?;
-            builder.add_op(OpSub)?;
-            *stack_depth -= 1;
-            builder.add_op(OpSwap)?;
-            builder.add_op(OpDrop)?;
-            *stack_depth -= 1;
-            builder.add_op(OpSubstr)?;
-            *stack_depth -= 2;
-            Ok(())
-        }
         ExprKind::ArrayIndex { source, index } => {
             let resolved_source = match source.as_ref() {
                 Expr { kind: ExprKind::Identifier(_), .. } => source.as_ref().clone(),
@@ -2693,6 +2687,23 @@ fn compile_expr<'i>(
             if element_type == "int" {
                 builder.add_op(OpBin2Num)?;
             }
+            Ok(())
+        }
+        ExprKind::Slice { source, start, end, .. } => {
+            compile_expr(source, env, params, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
+            compile_expr(start, env, params, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
+            compile_expr(end, env, params, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
+
+            builder.add_op(Op2Dup)?;
+            *stack_depth += 2;
+            builder.add_op(OpSwap)?;
+            builder.add_op(OpSub)?;
+            *stack_depth -= 1;
+            builder.add_op(OpSwap)?;
+            builder.add_op(OpDrop)?;
+            *stack_depth -= 1;
+            builder.add_op(OpSubstr)?;
+            *stack_depth -= 2;
             Ok(())
         }
         ExprKind::Nullary(op) => {
@@ -2768,6 +2779,14 @@ fn compile_expr<'i>(
                 }
             }
             Ok(())
+        }
+        ExprKind::DateLiteral(value) => {
+            builder.add_i64(*value)?;
+            *stack_depth += 1;
+            Ok(())
+        }
+        ExprKind::NumberWithUnit { .. } => {
+            Err(CompilerError::Unsupported("number units must be normalized during parsing".to_string()))
         }
     }
 }
