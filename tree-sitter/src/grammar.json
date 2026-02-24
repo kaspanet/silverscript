@@ -1552,6 +1552,10 @@
         {
           "type": "SYMBOL",
           "name": "slice_call"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "reverse_call"
         }
       ]
     },
@@ -1619,6 +1623,23 @@
         {
           "type": "SYMBOL",
           "name": "expression"
+        },
+        {
+          "type": "STRING",
+          "value": ")"
+        }
+      ]
+    },
+    "reverse_call": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "STRING",
+          "value": ".reverse"
+        },
+        {
+          "type": "STRING",
+          "value": "("
         },
         {
           "type": "STRING",

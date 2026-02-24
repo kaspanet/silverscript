@@ -146,14 +146,7 @@ export default grammar({
       seq("(", commaSep($.typed_binding), ")", "=", $.function_call, ";"),
 
     state_function_call_assignment: ($) =>
-      seq(
-        "{",
-        commaSep($.state_typed_binding),
-        "}",
-        "=",
-        $.function_call,
-        ";",
-      ),
+      seq("{", commaSep($.state_typed_binding), "}", "=", $.function_call, ";"),
 
     typed_binding: ($) => seq($.type_name, $.identifier),
 
@@ -277,7 +270,13 @@ export default grammar({
       prec.left(PREC.POSTFIX, seq($.primary, repeat($.postfix_op))),
 
     postfix_op: ($) =>
-      choice($.tuple_index, $.unary_suffix, $.split_call, $.slice_call),
+      choice(
+        $.tuple_index,
+        $.unary_suffix,
+        $.split_call,
+        $.slice_call,
+        $.reverse_call,
+      ),
 
     tuple_index: ($) => seq("[", $.expression, "]"),
 
@@ -286,6 +285,8 @@ export default grammar({
     split_call: ($) => seq(".split", "(", $.expression, ")"),
 
     slice_call: ($) => seq(".slice", "(", $.expression, ",", $.expression, ")"),
+
+    reverse_call: (_) => seq(".reverse", "(", ")"),
 
     primary: ($) =>
       choice(
@@ -344,8 +345,7 @@ export default grammar({
 
     output_field: ($) => seq(".", field("name", $.output_field_name)),
 
-    output_field_name: (_) =>
-      choice("value", "scriptPubKey"),
+    output_field_name: (_) => choice("value", "scriptPubKey"),
 
     input_field: ($) => seq(".", field("name", $.input_field_name)),
 

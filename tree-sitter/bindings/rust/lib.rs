@@ -5,6 +5,7 @@
 //!
 //! ```
 //! let code = r#"
+//! contract Demo() {}
 //! "#;
 //! let mut parser = tree_sitter::Parser::new();
 //! let language = tree_sitter_silverscript::LANGUAGE;
