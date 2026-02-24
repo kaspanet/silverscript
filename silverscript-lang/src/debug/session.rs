@@ -9,7 +9,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::ast::Expr;
 use crate::compiler::compile_debug_expr;
+use crate::debug::presentation::{build_source_context, format_value as format_debug_value};
 use crate::debug::{DebugFunctionRange, DebugInfo, DebugMapping, DebugParamMapping, DebugVariableUpdate, MappingKind, SourceSpan};
+
+pub use crate::debug::presentation::{SourceContext, SourceContextLine};
 
 pub type DebugTx<'a> = PopulatedTransaction<'a>;
 pub type DebugReused = SigHashReusedValuesUnsync;
@@ -23,7 +26,7 @@ pub enum DebugValue {
     Bytes(Vec<u8>),
     String(String),
     Array(Vec<DebugValue>),
-    /// Value could not be evaluated (e.g., from inline function return)
+    /// Value could not be evaluated (for example unresolved identifiers or shadow VM failures).
     Unknown(std::string::String),
 }
 
@@ -51,18 +54,6 @@ pub struct Variable {
     pub value: DebugValue,
     pub is_constant: bool,
     pub origin: VariableOrigin,
-}
-
-#[derive(Debug, Clone)]
-pub struct SourceContextLine {
-    pub line: u32,
-    pub text: String,
-    pub is_active: bool,
-}
-
-#[derive(Debug, Clone)]
-pub struct SourceContext {
-    pub lines: Vec<SourceContextLine>,
 }
 
 #[derive(Debug, Clone)]
@@ -389,19 +380,7 @@ impl<'a> DebugSession<'a> {
     /// Returns surrounding source lines with the current line highlighted.
     pub fn source_context(&self) -> Option<SourceContext> {
         let span = self.current_span()?;
-        let line = span.line.saturating_sub(1) as usize;
-        let radius = 6;
-        let start = line.saturating_sub(radius);
-        let end = (line + radius).min(self.source_lines.len().saturating_sub(1));
-
-        let mut lines = Vec::new();
-        for idx in start..=end {
-            let display_line = idx + 1;
-            let content = self.source_lines.get(idx).map(String::as_str).unwrap_or("");
-            lines.push(SourceContextLine { line: display_line as u32, text: content.to_string(), is_active: idx == line });
-        }
-
-        Some(SourceContext { lines })
+        Some(build_source_context(&self.source_lines, span, 6))
     }
 
     /// Adds a breakpoint at the given line number. Returns true if added.
@@ -462,54 +441,7 @@ impl<'a> DebugSession<'a> {
     // --- DebugValue formatting ---
     /// Formats a debug value for display based on its type.
     pub fn format_value(&self, type_name: &str, value: &DebugValue) -> String {
-        let element_type = type_name.strip_suffix("[]");
-        match (type_name, value) {
-            ("int", DebugValue::Int(number)) => number.to_string(),
-            ("bool", DebugValue::Bool(value)) => value.to_string(),
-            ("string", DebugValue::String(value)) => value.clone(),
-            (_, DebugValue::Unknown(reason)) => {
-                if reason.trim().is_empty() {
-                    "<unavailable>".to_string()
-                } else if reason.contains("failed to compile debug expression")
-                    || reason.contains("undefined identifier")
-                    || reason.contains("__arg_")
-                {
-                    "<unavailable: depends on inlined function call internals>".to_string()
-                } else if reason.contains("failed to execute shadow script") {
-                    "<unavailable: runtime evaluation failed>".to_string()
-                } else {
-                    format!("<unavailable: {}>", concise_reason(reason))
-                }
-            }
-            (_, DebugValue::Bytes(bytes)) if element_type.is_some() => {
-                let element_type = element_type.expect("checked");
-                let Some(element_size) = array_element_size(element_type) else {
-                    return format!("0x{}", encode_hex(bytes));
-                };
-                if element_size == 0 || bytes.len() % element_size != 0 {
-                    return format!("0x{}", encode_hex(bytes));
-                }
-
-                let mut values: Vec<String> = Vec::new();
-                for chunk in bytes.chunks(element_size) {
-                    let decoded = match element_type {
-                        "int" => DebugValue::Int(decode_i64(chunk).unwrap_or(0)),
-                        "bool" => DebugValue::Bool(decode_i64(chunk).unwrap_or(0) != 0),
-                        _ => DebugValue::Bytes(chunk.to_vec()),
-                    };
-                    values.push(self.format_value(element_type, &decoded));
-                }
-                format!("[{}]", values.join(", "))
-            }
-            (_, DebugValue::Bytes(bytes)) => format!("0x{}", encode_hex(bytes)),
-            (_, DebugValue::Int(number)) => number.to_string(),
-            (_, DebugValue::Bool(value)) => value.to_string(),
-            (_, DebugValue::String(value)) => value.clone(),
-            (_, DebugValue::Array(values)) => {
-                let value_type = element_type.unwrap_or(type_name);
-                format!("[{}]", values.iter().map(|v| self.format_value(value_type, v)).collect::<Vec<_>>().join(", "))
-            }
-        }
+        format_debug_value(type_name, value)
     }
 
     /// Returns the debug mapping for the current bytecode position.
@@ -840,16 +772,6 @@ impl<'a> DebugSession<'a> {
     }
 }
 
-/// Returns byte size for fixed-size array elements (e.g., bytes32 → 32), or None for variable-size.
-fn array_element_size(element_type: &str) -> Option<usize> {
-    match element_type {
-        "int" => Some(8),
-        "bool" => Some(1),
-        "byte" => Some(1),
-        other => other.strip_prefix("bytes").and_then(|v| v.parse::<usize>().ok()),
-    }
-}
-
 /// Decodes raw bytes into a typed debug value based on the type name.
 fn decode_value_by_type(type_name: &str, bytes: Vec<u8>) -> Result<DebugValue, String> {
     match type_name {
@@ -860,26 +782,6 @@ fn decode_value_by_type(type_name: &str, bytes: Vec<u8>) -> Result<DebugValue, S
             Err(_) => Ok(DebugValue::Bytes(bytes)),
         },
         _ => Ok(DebugValue::Bytes(bytes)),
-    }
-}
-
-/// Truncates error messages to 96 chars for display in debugger UI.
-fn concise_reason(reason: &str) -> String {
-    let trimmed = reason.trim();
-    if trimmed.is_empty() {
-        return "unknown".to_string();
-    }
-    let first_line = trimmed.lines().next().unwrap_or(trimmed);
-    const MAX_CHARS: usize = 96;
-    if first_line.chars().count() <= MAX_CHARS {
-        first_line.to_string()
-    } else {
-        let mut out = String::new();
-        for ch in first_line.chars().take(MAX_CHARS) {
-            out.push(ch);
-        }
-        out.push_str("...");
-        out
     }
 }
 

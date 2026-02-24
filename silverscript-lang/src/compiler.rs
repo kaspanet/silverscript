@@ -1687,6 +1687,8 @@ fn compile_validate_output_state_statement(
     Ok(())
 }
 
+type InlineScopeMaps = (HashMap<String, Expr>, HashMap<String, String>);
+
 fn build_inline_scope(
     callee_name: &str,
     function: &FunctionAst,
@@ -1694,7 +1696,7 @@ fn build_inline_scope(
     caller_env: &mut HashMap<String, Expr>,
     caller_types: &mut HashMap<String, String>,
     contract_constants: &HashMap<String, Expr>,
-) -> Result<(HashMap<String, Expr>, HashMap<String, String>), CompilerError> {
+) -> Result<InlineScopeMaps, CompilerError> {
     let mut types =
         function.params.iter().map(|param| (param.name.clone(), type_name_from_ref(&param.type_ref))).collect::<HashMap<_, _>>();
     let mut env: HashMap<String, Expr> = contract_constants.clone();
@@ -2036,6 +2038,64 @@ fn eval_const_int(expr: &Expr, constants: &HashMap<String, Expr>) -> Result<i64,
     }
 }
 
+fn rewrite_expr_children(
+    expr: Expr,
+    mut rewrite_child: impl FnMut(Expr) -> Result<Expr, CompilerError>,
+) -> Result<Expr, CompilerError> {
+    match expr {
+        Expr::Unary { op, expr } => Ok(Expr::Unary { op, expr: Box::new(rewrite_child(*expr)?) }),
+        Expr::Binary { op, left, right } => {
+            Ok(Expr::Binary { op, left: Box::new(rewrite_child(*left)?), right: Box::new(rewrite_child(*right)?) })
+        }
+        Expr::IfElse { condition, then_expr, else_expr } => Ok(Expr::IfElse {
+            condition: Box::new(rewrite_child(*condition)?),
+            then_expr: Box::new(rewrite_child(*then_expr)?),
+            else_expr: Box::new(rewrite_child(*else_expr)?),
+        }),
+        Expr::Array(values) => {
+            let mut rewritten = Vec::with_capacity(values.len());
+            for value in values {
+                rewritten.push(rewrite_child(value)?);
+            }
+            Ok(Expr::Array(rewritten))
+        }
+        Expr::StateObject(fields) => {
+            let mut rewritten_fields = Vec::with_capacity(fields.len());
+            for field in fields {
+                rewritten_fields.push(crate::ast::StateFieldExpr { name: field.name, expr: rewrite_child(field.expr)? });
+            }
+            Ok(Expr::StateObject(rewritten_fields))
+        }
+        Expr::Call { name, args } => {
+            let mut rewritten = Vec::with_capacity(args.len());
+            for arg in args {
+                rewritten.push(rewrite_child(arg)?);
+            }
+            Ok(Expr::Call { name, args: rewritten })
+        }
+        Expr::New { name, args } => {
+            let mut rewritten = Vec::with_capacity(args.len());
+            for arg in args {
+                rewritten.push(rewrite_child(arg)?);
+            }
+            Ok(Expr::New { name, args: rewritten })
+        }
+        Expr::Split { source, index, part } => {
+            Ok(Expr::Split { source: Box::new(rewrite_child(*source)?), index: Box::new(rewrite_child(*index)?), part })
+        }
+        Expr::Slice { source, start, end } => Ok(Expr::Slice {
+            source: Box::new(rewrite_child(*source)?),
+            start: Box::new(rewrite_child(*start)?),
+            end: Box::new(rewrite_child(*end)?),
+        }),
+        Expr::ArrayIndex { source, index } => {
+            Ok(Expr::ArrayIndex { source: Box::new(rewrite_child(*source)?), index: Box::new(rewrite_child(*index)?) })
+        }
+        Expr::Introspection { kind, index } => Ok(Expr::Introspection { kind, index: Box::new(rewrite_child(*index)?) }),
+        other => Ok(other),
+    }
+}
+
 fn resolve_expr(expr: Expr, env: &HashMap<String, Expr>, visiting: &mut HashSet<String>) -> Result<Expr, CompilerError> {
     match expr {
         Expr::Identifier(name) => {
@@ -2055,61 +2115,7 @@ fn resolve_expr(expr: Expr, env: &HashMap<String, Expr>, visiting: &mut HashSet<
                 Ok(Expr::Identifier(name))
             }
         }
-        Expr::Unary { op, expr } => Ok(Expr::Unary { op, expr: Box::new(resolve_expr(*expr, env, visiting)?) }),
-        Expr::Binary { op, left, right } => Ok(Expr::Binary {
-            op,
-            left: Box::new(resolve_expr(*left, env, visiting)?),
-            right: Box::new(resolve_expr(*right, env, visiting)?),
-        }),
-        Expr::IfElse { condition, then_expr, else_expr } => Ok(Expr::IfElse {
-            condition: Box::new(resolve_expr(*condition, env, visiting)?),
-            then_expr: Box::new(resolve_expr(*then_expr, env, visiting)?),
-            else_expr: Box::new(resolve_expr(*else_expr, env, visiting)?),
-        }),
-        Expr::Array(values) => {
-            let mut resolved = Vec::with_capacity(values.len());
-            for value in values {
-                resolved.push(resolve_expr(value, env, visiting)?);
-            }
-            Ok(Expr::Array(resolved))
-        }
-        Expr::StateObject(fields) => {
-            let mut resolved_fields = Vec::with_capacity(fields.len());
-            for field in fields {
-                resolved_fields.push(crate::ast::StateFieldExpr { name: field.name, expr: resolve_expr(field.expr, env, visiting)? });
-            }
-            Ok(Expr::StateObject(resolved_fields))
-        }
-        Expr::Call { name, args } => {
-            let mut resolved = Vec::with_capacity(args.len());
-            for arg in args {
-                resolved.push(resolve_expr(arg, env, visiting)?);
-            }
-            Ok(Expr::Call { name, args: resolved })
-        }
-        Expr::New { name, args } => {
-            let mut resolved = Vec::with_capacity(args.len());
-            for arg in args {
-                resolved.push(resolve_expr(arg, env, visiting)?);
-            }
-            Ok(Expr::New { name, args: resolved })
-        }
-        Expr::Split { source, index, part } => Ok(Expr::Split {
-            source: Box::new(resolve_expr(*source, env, visiting)?),
-            index: Box::new(resolve_expr(*index, env, visiting)?),
-            part,
-        }),
-        Expr::Slice { source, start, end } => Ok(Expr::Slice {
-            source: Box::new(resolve_expr(*source, env, visiting)?),
-            start: Box::new(resolve_expr(*start, env, visiting)?),
-            end: Box::new(resolve_expr(*end, env, visiting)?),
-        }),
-        Expr::ArrayIndex { source, index } => Ok(Expr::ArrayIndex {
-            source: Box::new(resolve_expr(*source, env, visiting)?),
-            index: Box::new(resolve_expr(*index, env, visiting)?),
-        }),
-        Expr::Introspection { kind, index } => Ok(Expr::Introspection { kind, index: Box::new(resolve_expr(*index, env, visiting)?) }),
-        other => Ok(other),
+        other => rewrite_expr_children(other, |child| resolve_expr(child, env, visiting)),
     }
 }
 
@@ -2158,64 +2164,7 @@ pub(super) fn expand_inline_args(
             visiting.remove(&name);
             Ok(expanded)
         }
-        Expr::Unary { op, expr } => Ok(Expr::Unary { op, expr: Box::new(expand_inline_args(*expr, env, visiting)?) }),
-        Expr::Binary { op, left, right } => Ok(Expr::Binary {
-            op,
-            left: Box::new(expand_inline_args(*left, env, visiting)?),
-            right: Box::new(expand_inline_args(*right, env, visiting)?),
-        }),
-        Expr::IfElse { condition, then_expr, else_expr } => Ok(Expr::IfElse {
-            condition: Box::new(expand_inline_args(*condition, env, visiting)?),
-            then_expr: Box::new(expand_inline_args(*then_expr, env, visiting)?),
-            else_expr: Box::new(expand_inline_args(*else_expr, env, visiting)?),
-        }),
-        Expr::Array(values) => {
-            let mut expanded = Vec::with_capacity(values.len());
-            for value in values {
-                expanded.push(expand_inline_args(value, env, visiting)?);
-            }
-            Ok(Expr::Array(expanded))
-        }
-        Expr::StateObject(fields) => {
-            let mut expanded_fields = Vec::with_capacity(fields.len());
-            for field in fields {
-                expanded_fields
-                    .push(crate::ast::StateFieldExpr { name: field.name, expr: expand_inline_args(field.expr, env, visiting)? });
-            }
-            Ok(Expr::StateObject(expanded_fields))
-        }
-        Expr::Call { name, args } => {
-            let mut expanded = Vec::with_capacity(args.len());
-            for arg in args {
-                expanded.push(expand_inline_args(arg, env, visiting)?);
-            }
-            Ok(Expr::Call { name, args: expanded })
-        }
-        Expr::New { name, args } => {
-            let mut expanded = Vec::with_capacity(args.len());
-            for arg in args {
-                expanded.push(expand_inline_args(arg, env, visiting)?);
-            }
-            Ok(Expr::New { name, args: expanded })
-        }
-        Expr::Split { source, index, part } => Ok(Expr::Split {
-            source: Box::new(expand_inline_args(*source, env, visiting)?),
-            index: Box::new(expand_inline_args(*index, env, visiting)?),
-            part,
-        }),
-        Expr::Slice { source, start, end } => Ok(Expr::Slice {
-            source: Box::new(expand_inline_args(*source, env, visiting)?),
-            start: Box::new(expand_inline_args(*start, env, visiting)?),
-            end: Box::new(expand_inline_args(*end, env, visiting)?),
-        }),
-        Expr::ArrayIndex { source, index } => Ok(Expr::ArrayIndex {
-            source: Box::new(expand_inline_args(*source, env, visiting)?),
-            index: Box::new(expand_inline_args(*index, env, visiting)?),
-        }),
-        Expr::Introspection { kind, index } => {
-            Ok(Expr::Introspection { kind, index: Box::new(expand_inline_args(*index, env, visiting)?) })
-        }
-        other => Ok(other),
+        other => rewrite_expr_children(other, |child| expand_inline_args(child, env, visiting)),
     }
 }
 

@@ -2,6 +2,7 @@ use crate::ast::Expr;
 use pest::Span;
 use serde::{Deserialize, Serialize};
 
+pub mod presentation;
 pub mod session;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
