@@ -59,6 +59,9 @@ impl FunctionDebugRecorder {
     fn new_inline_child(&mut self) -> Self {
         let frame_id = self.next_frame_id;
         self.next_frame_id = self.next_frame_id.saturating_add(1);
+        // Child starts allocating from the parent's current frontier.
+        // Parent frontier is reconciled back in `merge_inline_events` after the
+        // child returns, so sibling inline calls never reuse frame ids.
         Self {
             function_name: self.function_name.clone(),
             enabled: self.enabled,
@@ -161,6 +164,38 @@ impl FunctionDebugRecorder {
         Ok(())
     }
 
+    /// Emits explicit inline-callee param updates on the callee's next
+    /// statement sequence, so args are visible after stepping into the call
+    /// without adding an extra source step at the call-site.
+    pub fn record_inline_param_updates(
+        &mut self,
+        function: &FunctionAst,
+        env: &HashMap<String, Expr>,
+        span: Option<SourceSpan>,
+        bytecode_offset: usize,
+    ) -> Result<(), CompilerError> {
+        if !self.enabled {
+            return Ok(());
+        }
+        // Anchor inline param updates to the next callee statement sequence.
+        // We intentionally "peek" (do not consume) so these updates align with
+        // the first real callee statement event sequence.
+        // without creating an extra steppable mapping at the call-site span.
+        let sequence = self.next_seq;
+        let mut variables = Vec::new();
+        for param in &function.params {
+            self.variable_update(
+                env,
+                &mut variables,
+                &param.name,
+                &param.type_ref.type_name(),
+                env.get(&param.name).cloned().unwrap_or_else(|| Expr::Identifier(param.name.clone())),
+            )?;
+        }
+        self.record_variable_updates(variables, bytecode_offset, span, sequence);
+        Ok(())
+    }
+
     /// Starts an inline call recording session and returns a child recorder for
     /// callee body statements.
     pub fn start_inline_call_recording(&mut self, span: Option<SourceSpan>, bytecode_offset: usize, callee: &str) -> Self {
@@ -182,6 +217,8 @@ impl FunctionDebugRecorder {
 
     fn merge_inline_events(&mut self, inline: &FunctionDebugRecorder) {
         if !self.enabled || inline.events.is_empty() {
+            // Keep frame-id frontier monotonic even if the inline call recorded
+            // no events; this preserves uniqueness for later sibling calls.
             self.next_frame_id = self.next_frame_id.max(inline.next_frame_id);
             return;
         }
@@ -205,6 +242,8 @@ impl FunctionDebugRecorder {
                 self.variable_updates.push(update);
             }
         }
+        // Child may allocate nested frame ids; advance parent frontier so later
+        // sibling inline calls start after the whole child subtree.
         self.next_frame_id = self.next_frame_id.max(inline.next_frame_id);
     }
 

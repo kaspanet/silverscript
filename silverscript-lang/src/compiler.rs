@@ -1778,6 +1778,17 @@ fn compile_inline_call(
         function.params.iter().map(|param| (param.name.clone(), type_name_from_ref(&param.type_ref))).collect::<HashMap<_, _>>();
     let mut env: HashMap<String, Expr> = contract_constants.clone();
 
+    // Preserve caller synthetic inline bindings so nested inline calls can
+    // continue resolving chains like __arg_inner_0 -> __arg_outer_0.
+    for (name, value) in caller_env.iter() {
+        if name.starts_with("__arg_") {
+            env.entry(name.clone()).or_insert_with(|| value.clone());
+            if let Some(type_name) = caller_types.get(name) {
+                types.entry(name.clone()).or_insert_with(|| type_name.clone());
+            }
+        }
+    }
+
     for (index, (param, arg)) in function.params.iter().zip(args.iter()).enumerate() {
         let resolved = resolve_expr(arg.clone(), caller_env, &mut HashSet::new())?;
         let synthetic_name = format!("__arg_{name}_{index}");
@@ -1816,6 +1827,7 @@ fn compile_inline_call(
     let call_start = builder.script().len();
     // Record call boundary on caller frame and collect callee events in a child frame.
     let mut inline_recorder = debug_recorder.start_inline_call_recording(call_span, call_start, name);
+    inline_recorder.record_inline_param_updates(function, &env, call_span, call_start)?;
 
     let mut yields: Vec<Expr> = Vec::new();
     // Use caller parameter stack indexes while compiling callee bytecode so

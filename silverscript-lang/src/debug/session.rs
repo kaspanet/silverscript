@@ -88,9 +88,6 @@ pub struct DebugSession<'a> {
     debug_info: DebugInfo,
     source_mappings: Vec<DebugMapping>,
     current_step_index: Option<usize>,
-    // When sequence metadata exists, prefer sequence/frame semantics for step order
-    // and variable visibility (handles overlapping mapping ranges deterministically).
-    uses_sequence_order: bool,
     source_lines: Vec<String>,
     breakpoints: HashSet<u32>,
     // Sequence ids of steppable mappings that were already visited in this session.
@@ -152,8 +149,6 @@ impl<'a> DebugSession<'a> {
         let source_lines: Vec<String> = source.lines().map(String::from).collect();
         let (opcode_offsets, script_len) = build_opcode_offsets(&opcodes);
 
-        let uses_sequence_order = debug_info.mappings.iter().any(|mapping| mapping.sequence != 0)
-            || debug_info.variable_updates.iter().any(|update| update.sequence != 0);
         let mut source_mappings: Vec<DebugMapping> = debug_info
             .mappings
             .iter()
@@ -168,15 +163,16 @@ impl<'a> DebugSession<'a> {
             })
             .cloned()
             .collect();
-        // Sort by bytecode range first, then by event kind/depth. If sequence is
-        // available, use it as the final tie-breaker for overlapping events.
+        // Overlapping inline ranges can share the same bytecode offsets; keep
+        // compiler emission order via sequence before comparing range width.
         source_mappings.sort_by_key(|mapping| {
             (
                 mapping.bytecode_start,
-                mapping.bytecode_end,
+                mapping.sequence,
                 mapping_kind_order(&mapping.kind),
                 mapping.call_depth,
-                if uses_sequence_order { mapping.sequence } else { 0 },
+                mapping.bytecode_end,
+                mapping.frame_id,
             )
         });
 
@@ -190,7 +186,6 @@ impl<'a> DebugSession<'a> {
             debug_info,
             source_mappings,
             current_step_index: None,
-            uses_sequence_order,
             source_lines,
             breakpoints: HashSet::new(),
             executed_sequences: HashSet::new(),
@@ -430,7 +425,6 @@ impl<'a> DebugSession<'a> {
     }
 
     /// Returns a specific variable by name, or error if not in scope.
-    /// Retrieves a specific variable by name with its current value.
     pub fn variable_by_name(&self, name: &str) -> Result<Variable, String> {
         let (sequence, frame_id) = self.current_step_sequence_and_frame();
         let context = self.current_variable_context(sequence, frame_id)?;
@@ -500,19 +494,10 @@ impl<'a> DebugSession<'a> {
             .iter()
             .filter(|update| self.update_is_visible(update, function_name, offset, sequence, frame_id))
         {
-            if self.uses_sequence_order {
-                match latest.get(&update.name) {
-                    Some(existing) if existing.sequence > update.sequence => {}
-                    _ => {
-                        latest.insert(update.name.clone(), update);
-                    }
-                }
-            } else {
-                match latest.get(&update.name) {
-                    Some(existing) if existing.bytecode_offset > update.bytecode_offset => {}
-                    _ => {
-                        latest.insert(update.name.clone(), update);
-                    }
+            match latest.get(&update.name) {
+                Some(existing) if existing.sequence > update.sequence => {}
+                _ => {
+                    latest.insert(update.name.clone(), update);
                 }
             }
         }
@@ -559,6 +544,8 @@ impl<'a> DebugSession<'a> {
             );
         }
 
+        // Contract constants are contract-scoped, not frame-scoped, so they
+        // remain visible while stepping through inline callee frames.
         for constant in &self.debug_info.constants {
             if variables.contains_key(&constant.name) {
                 continue;
@@ -589,16 +576,12 @@ impl<'a> DebugSession<'a> {
         if update.function != function_name {
             return false;
         }
-        if self.uses_sequence_order {
-            // Sequence-aware mode: stay in the active inline frame and only
-            // consider updates from steps already executed in this session.
-            update.frame_id == frame_id
-                && self.executed_sequences.contains(&update.sequence)
-                && update.sequence < sequence
-                && update.bytecode_offset <= offset
-        } else {
-            update.bytecode_offset <= offset
-        }
+        // Stay in the active inline frame and only consider updates from
+        // steps already executed in this session.
+        update.frame_id == frame_id
+            && self.executed_sequences.contains(&update.sequence)
+            && update.sequence < sequence
+            && update.bytecode_offset <= offset
     }
 
     /// Returns the most specific mapping for `offset`.
@@ -637,6 +620,12 @@ impl<'a> DebugSession<'a> {
     fn sync_step_cursor_to_current_offset(&mut self) {
         let offset = self.current_byte_offset();
         if let Some(index) = self.steppable_mapping_index_for_offset(offset) {
+            if self.current_step_index.is_some_and(|current| index < current) {
+                // In sequence mode multiple steps may map to the same byte offset.
+                // Keep cursor monotonic and avoid snapping backward to an earlier
+                // mapping for that offset.
+                return;
+            }
             // `si` executes raw opcodes; keep statement cursor in sync so later
             // source-level steps (`next`/`step`/`finish`) start from the real
             // current mapping instead of an old one.
@@ -646,7 +635,10 @@ impl<'a> DebugSession<'a> {
     }
 
     fn is_steppable_mapping(&self, mapping: &DebugMapping) -> bool {
-        matches!(&mapping.kind, MappingKind::Statement {} | MappingKind::Virtual {})
+        // InlineCallEnter is steppable so `step_into` can land on a call
+        // boundary and build call-stack transitions. InlineCallExit is not
+        // steppable to avoid synthetic extra stops while unwinding.
+        matches!(&mapping.kind, MappingKind::Statement {} | MappingKind::Virtual {} | MappingKind::InlineCallEnter { .. })
     }
 
     fn steppable_mapping_index_for_offset(&self, offset: usize) -> Option<usize> {
@@ -923,7 +915,7 @@ mod tests {
         sig_builder.add_i64(5).unwrap();
         let sigscript = sig_builder.drain();
 
-        let session = make_session(
+        let mut session = make_session(
             vec![DebugParamMapping { name: "a".to_string(), type_name: "int".to_string(), stack_index: 0, function: "f".to_string() }],
             vec![DebugVariableUpdate {
                 name: "x".to_string(),
@@ -939,7 +931,10 @@ mod tests {
         )
         .unwrap();
 
-        let vars = session.list_variables().unwrap();
+        session.executed_sequences.insert(0);
+        // In sequence-only mode, query visibility at an explicit sequence that
+        // is after the update's sequence.
+        let vars = session.list_variables_at_sequence(1, 0).unwrap();
         let x = vars.into_iter().find(|var| var.name == "x").expect("x variable");
         assert!(matches!(x.value, DebugValue::Unknown(_)));
     }
