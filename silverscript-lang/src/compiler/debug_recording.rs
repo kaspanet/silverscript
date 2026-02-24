@@ -10,6 +10,8 @@ use crate::debug::{
 
 use super::{CompilerError, resolve_expr_for_debug};
 
+type ResolvedVariableUpdate = (String, String, Expr);
+
 pub(super) fn record_synthetic_range(
     builder: &mut ScriptBuilder,
     recorder: &mut DebugSink,
@@ -46,11 +48,7 @@ impl FunctionDebugRecorder {
         recorder
     }
 
-    pub fn inline(enabled: bool, function_name: String, call_depth: u32, frame_id: u32, next_frame_id: u32) -> Self {
-        Self { function_name, enabled, call_depth, frame_id, next_frame_id, ..Default::default() }
-    }
-
-    pub fn sequence_count(&self) -> u32 {
+    fn sequence_count(&self) -> u32 {
         self.next_seq
     }
 
@@ -58,14 +56,17 @@ impl FunctionDebugRecorder {
         self.enabled
     }
 
-    pub fn call_depth(&self) -> u32 {
-        self.call_depth
-    }
-
-    pub fn new_inline_child(&mut self) -> Self {
+    fn new_inline_child(&mut self) -> Self {
         let frame_id = self.next_frame_id;
         self.next_frame_id = self.next_frame_id.saturating_add(1);
-        Self::inline(self.enabled, self.function_name.clone(), self.call_depth().saturating_add(1), frame_id, self.next_frame_id)
+        Self {
+            function_name: self.function_name.clone(),
+            enabled: self.enabled,
+            call_depth: self.call_depth.saturating_add(1),
+            frame_id,
+            next_frame_id: self.next_frame_id,
+            ..Default::default()
+        }
     }
 
     fn next_sequence(&mut self) -> u32 {
@@ -117,31 +118,56 @@ impl FunctionDebugRecorder {
         self.push_event(bytecode_start, bytecode_start + bytecode_len, span, kind)
     }
 
-    pub fn record_statement(&mut self, stmt: &Statement, bytecode_start: usize, bytecode_len: usize) -> Option<u32> {
-        self.record_statement_span(stmt.span, bytecode_start, bytecode_len)
-    }
-
-    pub fn record_statement_updates(
+    fn record_statement_updates(
         &mut self,
         stmt: &Statement,
         bytecode_start: usize,
         bytecode_end: usize,
-        variables: Vec<(String, String, Expr)>,
+        variables: Vec<ResolvedVariableUpdate>,
     ) {
-        if let Some(sequence) = self.record_statement(stmt, bytecode_start, bytecode_end.saturating_sub(bytecode_start)) {
+        if let Some(sequence) = self.record_statement_span(stmt.span, bytecode_start, bytecode_end.saturating_sub(bytecode_start)) {
             self.record_variable_updates(variables, bytecode_end, stmt.span, sequence);
         }
     }
 
-    pub fn record_inline_call_enter(&mut self, span: Option<SourceSpan>, bytecode_offset: usize, callee: &str) -> Option<u32> {
-        self.push_event(bytecode_offset, bytecode_offset, span, DebugEventKind::InlineCallEnter { callee: callee.to_string() })
+    /// Records one source step for `stmt` and emits variable updates for names
+    /// whose expressions changed between `before_env` and `after_env`.
+    /// Stored expressions are resolved against `after_env` so debugger shadow
+    /// evaluation can compute values from the current state.
+    pub fn record_statement_with_env_diff(
+        &mut self,
+        stmt: &Statement,
+        bytecode_start: usize,
+        bytecode_end: usize,
+        before_env: Option<&HashMap<String, Expr>>,
+        after_env: &HashMap<String, Expr>,
+        types: &HashMap<String, String>,
+    ) -> Result<(), CompilerError> {
+        let updates = self.collect_variable_updates(before_env, after_env, types)?;
+        self.record_statement_updates(stmt, bytecode_start, bytecode_end, updates);
+        Ok(())
     }
 
-    pub fn record_inline_call_exit(&mut self, span: Option<SourceSpan>, bytecode_offset: usize, callee: &str) -> Option<u32> {
-        self.push_event(bytecode_offset, bytecode_offset, span, DebugEventKind::InlineCallExit { callee: callee.to_string() })
+    /// Starts an inline call recording session and returns a child recorder for
+    /// callee body statements.
+    pub fn start_inline_call_recording(&mut self, span: Option<SourceSpan>, bytecode_offset: usize, callee: &str) -> Self {
+        self.push_event(bytecode_offset, bytecode_offset, span, DebugEventKind::InlineCallEnter { callee: callee.to_string() });
+        self.new_inline_child()
     }
 
-    pub fn merge_inline_events(&mut self, inline: &FunctionDebugRecorder) {
+    /// Merges recorded callee events and emits the inline exit marker.
+    pub fn finish_inline_call_recording(
+        &mut self,
+        span: Option<SourceSpan>,
+        bytecode_offset: usize,
+        callee: &str,
+        inline: &FunctionDebugRecorder,
+    ) {
+        self.merge_inline_events(inline);
+        self.push_event(bytecode_offset, bytecode_offset, span, DebugEventKind::InlineCallExit { callee: callee.to_string() });
+    }
+
+    fn merge_inline_events(&mut self, inline: &FunctionDebugRecorder) {
         if !self.enabled || inline.events.is_empty() {
             self.next_frame_id = self.next_frame_id.max(inline.next_frame_id);
             return;
@@ -169,9 +195,9 @@ impl FunctionDebugRecorder {
         self.next_frame_id = self.next_frame_id.max(inline.next_frame_id);
     }
 
-    pub(super) fn record_variable_updates(
+    fn record_variable_updates(
         &mut self,
-        variables: Vec<(String, String, Expr)>,
+        variables: Vec<ResolvedVariableUpdate>,
         bytecode_offset: usize,
         span: Option<SourceSpan>,
         sequence: u32,
@@ -193,14 +219,51 @@ impl FunctionDebugRecorder {
         }
     }
 
+    fn collect_variable_updates(
+        &self,
+        before_env: Option<&HashMap<String, Expr>>,
+        after_env: &HashMap<String, Expr>,
+        types: &HashMap<String, String>,
+    ) -> Result<Vec<ResolvedVariableUpdate>, CompilerError> {
+        if !self.enabled {
+            return Ok(Vec::new());
+        }
+        let Some(before_env) = before_env else {
+            return Ok(Vec::new());
+        };
+
+        // Stable ordering keeps debug metadata deterministic across runs.
+        let mut names: Vec<String> = after_env.keys().cloned().collect();
+        names.sort_unstable();
+
+        let mut updates = Vec::new();
+        for name in names {
+            // Inline synthetic args are plumbing, not user-facing variables.
+            if is_inline_synthetic_name(&name) {
+                continue;
+            }
+            let Some(after_expr) = after_env.get(&name) else {
+                continue;
+            };
+            if before_env.get(&name).is_some_and(|before_expr| before_expr == after_expr) {
+                continue;
+            }
+            let Some(type_name) = types.get(&name) else {
+                continue;
+            };
+            self.variable_update(after_env, &mut updates, &name, type_name, after_expr.clone())?;
+        }
+        Ok(updates)
+    }
+
     /// Records a variable update by resolving its expression against the current environment.
     /// This expands locals and synthetic inline placeholders (`__arg_*`) into
     /// caller-visible expressions, leaving only real param identifiers.
     /// The resolved expression is what enables shadow VM evaluation at debug time.
-    pub(super) fn variable_update(
+    fn variable_update(
         &self,
         env: &HashMap<String, Expr>,
-        variables: &mut Vec<(String, String, Expr)>,
+        variables: &mut Vec<ResolvedVariableUpdate>,
         name: &str,
         type_name: &str,
         expr: Expr,
@@ -212,6 +275,10 @@ impl FunctionDebugRecorder {
         variables.push((name.to_string(), type_name.to_string(), resolved));
         Ok(())
     }
+}
+
+fn is_inline_synthetic_name(name: &str) -> bool {
+    name.starts_with("__arg_")
 }
 
 /// Global debug recording sink that can be enabled or disabled.

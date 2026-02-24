@@ -524,39 +524,6 @@ fn contains_yield(stmt: &Statement) -> bool {
     }
 }
 
-fn collect_debug_variable_updates(
-    before_env: &HashMap<String, Expr>,
-    after_env: &HashMap<String, Expr>,
-    types: &HashMap<String, String>,
-    recorder: &FunctionDebugRecorder,
-) -> Result<Vec<(String, String, Expr)>, CompilerError> {
-    if !recorder.is_enabled() {
-        return Ok(Vec::new());
-    }
-
-    let mut names: Vec<String> = after_env.keys().cloned().collect();
-    names.sort_unstable();
-
-    let mut updates = Vec::new();
-    for name in names {
-        if name.starts_with("__arg_") {
-            continue;
-        }
-        let Some(after_expr) = after_env.get(&name) else {
-            continue;
-        };
-        if before_env.get(&name).is_some_and(|before_expr| before_expr == after_expr) {
-            continue;
-        }
-        let Some(type_name) = types.get(&name) else {
-            continue;
-        };
-        recorder.variable_update(after_env, &mut updates, &name, type_name, after_expr.clone())?;
-    }
-
-    Ok(updates)
-}
-
 fn validate_return_types(
     exprs: &[Expr],
     return_types: &[TypeRef],
@@ -1037,6 +1004,7 @@ fn compile_function(
     let body_len = function.body.len();
     for (index, stmt) in function.body.iter().enumerate() {
         let start = builder.script().len();
+        // Snapshot only when debug is enabled; used to derive per-statement var updates.
         let env_before = recorder.is_enabled().then(|| env.clone());
         if matches!(stmt.kind, StatementKind::Return { .. }) {
             if index != body_len - 1 {
@@ -1048,12 +1016,7 @@ fn compile_function(
                 let resolved = resolve_expr(expr.clone(), &env, &mut HashSet::new())?;
                 yields.push(resolved);
             }
-            let updates = if let Some(before_env) = env_before.as_ref() {
-                collect_debug_variable_updates(before_env, &env, &types, &recorder)?
-            } else {
-                Vec::new()
-            };
-            recorder.record_statement_updates(stmt, start, builder.script().len(), updates);
+            recorder.record_statement_with_env_diff(stmt, start, builder.script().len(), env_before.as_ref(), &env, &types)?;
             continue;
         }
         compile_statement(
@@ -1074,12 +1037,7 @@ fn compile_function(
             &mut recorder,
         )?;
         let end = builder.script().len();
-        let updates = if let Some(before_env) = env_before.as_ref() {
-            collect_debug_variable_updates(before_env, &env, &types, &recorder)?
-        } else {
-            Vec::new()
-        };
-        recorder.record_statement_updates(stmt, start, end, updates);
+        recorder.record_statement_with_env_diff(stmt, start, end, env_before.as_ref(), &env, &types)?;
     }
 
     let yield_count = yields.len();
@@ -1859,8 +1817,8 @@ fn compile_inline_call(
     }
 
     let call_start = builder.script().len();
-    debug_recorder.record_inline_call_enter(call_span, call_start, name);
-    let mut inline_recorder = debug_recorder.new_inline_child();
+    // Record call boundary on caller frame and collect callee events in a child frame.
+    let mut inline_recorder = debug_recorder.start_inline_call_recording(call_span, call_start, name);
 
     let mut yields: Vec<Expr> = Vec::new();
     // Use caller parameter stack indexes while compiling callee bytecode so
@@ -1869,6 +1827,7 @@ fn compile_inline_call(
     let body_len = function.body.len();
     for (index, stmt) in function.body.iter().enumerate() {
         let start = builder.script().len();
+        // Snapshot only when debug is enabled; used to derive per-statement var updates.
         let env_before = inline_recorder.is_enabled().then(|| env.clone());
         if matches!(stmt.kind, StatementKind::Return { .. }) {
             if index != body_len - 1 {
@@ -1880,12 +1839,7 @@ fn compile_inline_call(
                 let resolved = resolve_expr(expr.clone(), &env, &mut HashSet::new())?;
                 yields.push(resolved);
             }
-            let updates = if let Some(before_env) = env_before.as_ref() {
-                collect_debug_variable_updates(before_env, &env, &types, &inline_recorder)?
-            } else {
-                Vec::new()
-            };
-            inline_recorder.record_statement_updates(stmt, start, builder.script().len(), updates);
+            inline_recorder.record_statement_with_env_diff(stmt, start, builder.script().len(), env_before.as_ref(), &env, &types)?;
             continue;
         }
         compile_statement(
@@ -1906,16 +1860,10 @@ fn compile_inline_call(
             &mut inline_recorder,
         )?;
         let end = builder.script().len();
-        let updates = if let Some(before_env) = env_before.as_ref() {
-            collect_debug_variable_updates(before_env, &env, &types, &inline_recorder)?
-        } else {
-            Vec::new()
-        };
-        inline_recorder.record_statement_updates(stmt, start, end, updates);
+        inline_recorder.record_statement_with_env_diff(stmt, start, end, env_before.as_ref(), &env, &types)?;
     }
 
-    debug_recorder.merge_inline_events(&inline_recorder);
-    debug_recorder.record_inline_call_exit(call_span, builder.script().len(), name);
+    debug_recorder.finish_inline_call_recording(call_span, builder.script().len(), name, &inline_recorder);
 
     for (name, value) in env.iter() {
         if name.starts_with("__arg_") {
@@ -2087,6 +2035,7 @@ fn compile_block(
 ) -> Result<(), CompilerError> {
     for stmt in statements {
         let start = builder.script().len();
+        // Snapshot only when debug is enabled; used to derive per-statement var updates.
         let env_before = debug_recorder.is_enabled().then(|| env.clone());
         compile_statement(
             stmt,
@@ -2106,12 +2055,7 @@ fn compile_block(
             debug_recorder,
         )?;
         let end = builder.script().len();
-        let updates = if let Some(before_env) = env_before.as_ref() {
-            collect_debug_variable_updates(before_env, env, types, debug_recorder)?
-        } else {
-            Vec::new()
-        };
-        debug_recorder.record_statement_updates(stmt, start, end, updates);
+        debug_recorder.record_statement_with_env_diff(stmt, start, end, env_before.as_ref(), env, types)?;
     }
     Ok(())
 }
