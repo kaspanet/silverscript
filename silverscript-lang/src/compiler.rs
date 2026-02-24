@@ -967,9 +967,9 @@ fn compile_function(
         }
     }
     let mut env: HashMap<String, Expr> = constants.clone();
-    // Function parameters shadow constructor constants with the same name.
-    // Keep constants in env for non-shadowed names, but drop colliding entries
-    // so identifier resolution inside this function picks stack params.
+    // `env` is checked before `params` during identifier compilation.
+    // Remove any constructor-constant names that collide with function params,
+    // otherwise the compiler would inline the constant and ignore the runtime arg.
     for param in &function.params {
         env.remove(&param.name);
     }

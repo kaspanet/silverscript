@@ -97,9 +97,12 @@ pub struct DebugSession<'a> {
     debug_info: DebugInfo,
     source_mappings: Vec<DebugMapping>,
     current_step_index: Option<usize>,
+    // When sequence metadata exists, prefer sequence/frame semantics for step order
+    // and variable visibility (handles overlapping mapping ranges deterministically).
     uses_sequence_order: bool,
     source_lines: Vec<String>,
     breakpoints: HashSet<u32>,
+    // Sequence ids of steppable mappings that were already visited in this session.
     executed_sequences: HashSet<u32>,
 }
 
@@ -167,6 +170,8 @@ impl<'a> DebugSession<'a> {
             })
             .cloned()
             .collect();
+        // Sort by bytecode range first, then by event kind/depth. If sequence is
+        // available, use it as the final tie-breaker for overlapping events.
         source_mappings.sort_by_key(|mapping| {
             (
                 mapping.bytecode_start,
@@ -227,6 +232,11 @@ impl<'a> DebugSession<'a> {
         self.step_over()
     }
 
+    /// Shared stepping loop for `step_into`, `step_over`, and `step_out`.
+    /// Picks the next steppable mapping whose call depth satisfies `predicate`,
+    /// executes opcodes until that mapping becomes active, and skips candidates
+    /// that are already behind the current byte offset (for example, non-taken
+    /// branch mappings).
     fn step_with_depth_predicate(
         &mut self,
         predicate: impl Fn(u32, u32) -> bool,
@@ -633,6 +643,8 @@ impl<'a> DebugSession<'a> {
                 return false;
             }
             if self.uses_sequence_order {
+                // Sequence-aware mode: stay in the active inline frame and only
+                // consider updates from steps already executed in this session.
                 update.frame_id == frame_id
                     && self.executed_sequences.contains(&update.sequence)
                     && update.sequence < sequence
@@ -660,7 +672,9 @@ impl<'a> DebugSession<'a> {
         latest
     }
 
-    /// Best mapping = smallest bytecode span containing `offset`.
+    /// Returns the most specific mapping for `offset`.
+    /// Multiple mappings may overlap; choosing the narrowest bytecode span makes
+    /// location lookups prefer inner statement/inline ranges over broader ranges.
     fn mapping_for_offset(&self, offset: usize) -> Option<&DebugMapping> {
         let mut best: Option<&DebugMapping> = None;
         let mut best_len = usize::MAX;
@@ -681,6 +695,7 @@ impl<'a> DebugSession<'a> {
     }
 
     fn current_step_sequence_and_frame(&self) -> (u32, u32) {
+        // Sequence/frame identify the statement context used for variable filtering.
         self.current_step_mapping().map(|mapping| (mapping.sequence, mapping.frame_id)).unwrap_or((0, 0))
     }
 
@@ -871,7 +886,9 @@ fn concise_reason(reason: &str) -> String {
     }
 }
 
-/// Decode a sign-magnitude little-endian integer
+/// Decodes a txscript script number (little-endian sign-magnitude, max 8 bytes).
+/// Mirrors txscript's internal numeric decode logic; kept local because txscript
+/// exposes this helper only as crate-private internals today.
 fn decode_i64(bytes: &[u8]) -> Result<i64, String> {
     if bytes.is_empty() {
         return Ok(0);

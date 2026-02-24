@@ -48,6 +48,8 @@ pub struct DebugEvent {
     pub bytecode_end: usize,
     pub span: Option<SourceSpan>,
     pub kind: DebugEventKind,
+    /// Monotonic event order assigned by the compiler recorder.
+    /// Used to preserve source step order when bytecode ranges overlap.
     #[serde(default)]
     pub sequence: u32,
     #[serde(default)]
@@ -90,12 +92,16 @@ impl DebugRecorder {
         self.constants.push(constant);
     }
 
+    /// Returns the next global sequence id for one emitted debug event.
     pub fn next_sequence(&mut self) -> u32 {
         let sequence = self.next_sequence;
         self.next_sequence = self.next_sequence.saturating_add(1);
         sequence
     }
 
+    /// Reserves a contiguous sequence block and returns its base id.
+    /// Callers use this when merging per-function debug data into contract-level
+    /// metadata so each function keeps local order while remaining globally ordered.
     pub fn reserve_sequence_block(&mut self, count: u32) -> u32 {
         let base = self.next_sequence;
         self.next_sequence = self.next_sequence.saturating_add(count);
@@ -153,6 +159,8 @@ pub struct DebugVariableUpdate {
     pub bytecode_offset: usize,
     pub span: Option<SourceSpan>,
     pub function: String,
+    /// Sequence of the statement/virtual mapping that produced this update.
+    /// The debugger uses this to show locals only after that step executes.
     #[serde(default)]
     pub sequence: u32,
     #[serde(default)]
@@ -193,6 +201,7 @@ pub struct DebugMapping {
     pub bytecode_end: usize,
     pub span: Option<SourceSpan>,
     pub kind: MappingKind,
+    /// Global event order used as a stable tiebreak for overlapping mappings.
     #[serde(default)]
     pub sequence: u32,
     #[serde(default)]
