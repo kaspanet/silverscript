@@ -17,7 +17,7 @@ struct Cli {
     #[arg(short = 'o', value_name = "dst.json")]
     out: Option<String>,
     /// Parse source and print the contract AST
-    #[arg(long = "ast-only ")]
+    #[arg(long = "ast-only")]
     ast_only: bool,
 }
 
