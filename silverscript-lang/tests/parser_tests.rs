@@ -65,6 +65,7 @@ fn parses_input_sigscript_and_rejects_output_sigscript() {
     let input_bad = r#"
         contract SigScriptCheck() {
             function verify(int idx) {
+                // sigScript doesn't exists on output introspection root, expected to fails
                 require(tx.outputs[idx].sigScript.length >= 0);
             }
         }
