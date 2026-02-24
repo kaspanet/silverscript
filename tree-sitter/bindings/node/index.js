@@ -3,21 +3,26 @@ import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
 
-const binding = typeof process.versions.bun === "string"
-  // Support `bun build --compile` by being statically analyzable enough to find the .node file at build-time
-  ? await import(`${root}/prebuilds/${process.platform}-${process.arch}/tree-sitter-silverscript.node`)
-  : (await import("node-gyp-build")).default(root);
+const binding =
+  typeof process.versions.bun === "string"
+    ? // Support `bun build --compile` by being statically analyzable enough to find the .node file at build-time
+      await import(
+        `${root}/prebuilds/${process.platform}-${process.arch}/tree-sitter-silverscript.node`
+      )
+    : (await import("node-gyp-build")).default(root);
 
 try {
-  const nodeTypes = await import(`${root}/src/node-types.json`, { with: { type: "json" } });
+  const nodeTypes = await import(`${root}/src/node-types.json`, {
+    with: { type: "json" },
+  });
   binding.nodeTypeInfo = nodeTypes.default;
-} catch { }
+} catch {}
 
 const queries = [
-  ["HIGHLIGHTS_QUERY", `${root}/queries\highlights.scm`],
-  ["INJECTIONS_QUERY", `${root}/queries\injections.scm`],
-  ["LOCALS_QUERY", `${root}/queries\locals.scm`],
-  ["TAGS_QUERY", `${root}/queries\tags.scm`],
+  ["HIGHLIGHTS_QUERY", `${root}/queries/highlights.scm`],
+  ["INJECTIONS_QUERY", `${root}/queries/injections.scm`],
+  ["LOCALS_QUERY", `${root}/queries/locals.scm`],
+  ["TAGS_QUERY", `${root}/queries/tags.scm`],
 ];
 
 for (const [prop, path] of queries) {
@@ -28,9 +33,9 @@ for (const [prop, path] of queries) {
       delete binding[prop];
       try {
         binding[prop] = readFileSync(path, "utf8");
-      } catch { }
+      } catch {}
       return binding[prop];
-    }
+    },
   });
 }
 
