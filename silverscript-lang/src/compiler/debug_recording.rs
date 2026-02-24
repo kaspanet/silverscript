@@ -8,7 +8,7 @@ use crate::debug::{
     DebugVariableUpdate, SourceSpan,
 };
 
-use super::{CompilerError, resolve_expr_for_debug};
+use super::{CompilerError, is_inline_synthetic_name, resolve_expr_for_debug};
 
 type ResolvedVariableUpdate = (String, String, Expr);
 
@@ -288,10 +288,6 @@ impl FunctionDebugRecorder {
         variables.push((name.to_string(), type_name.to_string(), resolved));
         Ok(())
     }
-}
-
-fn is_inline_synthetic_name(name: &str) -> bool {
-    name.starts_with("__arg_")
 }
 
 /// Global debug recording sink that can be enabled or disabled.

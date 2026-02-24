@@ -113,6 +113,13 @@ struct ShadowParamValue {
     value: Vec<u8>,
 }
 
+struct VariableContext<'a> {
+    function_name: &'a str,
+    offset: usize,
+    sequence: u32,
+    frame_id: u32,
+}
+
 impl<'a> DebugSession<'a> {
     // --- Session construction + stepping ---
 
@@ -437,55 +444,8 @@ impl<'a> DebugSession<'a> {
     }
 
     fn collect_variables(&self, sequence: u32, frame_id: u32) -> Result<Vec<Variable>, String> {
-        let function_name = self.current_function_name().ok_or_else(|| "No function context available".to_string())?;
-        let offset = self.current_byte_offset();
-        let var_updates = self.current_variable_updates(function_name, offset, sequence, frame_id);
-
-        let mut variables: Vec<Variable> = Vec::new();
-        let mut seen_names: HashSet<String> = HashSet::new();
-
-        for (name, update) in &var_updates {
-            let value = self.evaluate_update_with_shadow_vm(function_name, update).unwrap_or_else(DebugValue::Unknown);
-            variables.push(Variable {
-                name: name.clone(),
-                type_name: update.type_name.clone(),
-                value,
-                is_constant: false,
-                origin: VariableOrigin::Local,
-            });
-            seen_names.insert(name.clone());
-        }
-
-        for param in self.debug_info.params.iter().filter(|param| param.function == function_name) {
-            if seen_names.contains(&param.name) {
-                continue;
-            }
-            let value = self.read_param_value(param)?;
-            variables.push(Variable {
-                name: param.name.clone(),
-                type_name: param.type_name.clone(),
-                value,
-                is_constant: false,
-                origin: VariableOrigin::Param,
-            });
-            seen_names.insert(param.name.clone());
-        }
-
-        for constant in &self.debug_info.constants {
-            if seen_names.contains(&constant.name) {
-                continue;
-            }
-            let value = self.evaluate_constant(&constant.value);
-            variables.push(Variable {
-                name: constant.name.clone(),
-                type_name: constant.type_name.clone(),
-                value,
-                is_constant: true,
-                origin: VariableOrigin::Constant,
-            });
-            seen_names.insert(constant.name.clone());
-        }
-
+        let context = self.current_variable_context(sequence, frame_id)?;
+        let mut variables = self.collect_variables_map(&context)?.into_values().collect::<Vec<_>>();
         variables.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(variables)
     }
@@ -493,46 +453,10 @@ impl<'a> DebugSession<'a> {
     /// Returns a specific variable by name, or error if not in scope.
     /// Retrieves a specific variable by name with its current value.
     pub fn variable_by_name(&self, name: &str) -> Result<Variable, String> {
-        let function_name = self.current_function_name().ok_or_else(|| "No function context available".to_string())?;
-        let offset = self.current_byte_offset();
         let (sequence, frame_id) = self.current_step_sequence_and_frame();
-        let var_updates = self.current_variable_updates(function_name, offset, sequence, frame_id);
-
-        if let Some(update) = var_updates.get(name) {
-            let value = self.evaluate_update_with_shadow_vm(function_name, update).unwrap_or_else(DebugValue::Unknown);
-            return Ok(Variable {
-                name: name.to_string(),
-                type_name: update.type_name.clone(),
-                value,
-                is_constant: false,
-                origin: VariableOrigin::Local,
-            });
-        }
-
-        if let Some(param) = self.debug_info.params.iter().find(|param| param.function == function_name && param.name == name) {
-            let value = self.read_param_value(param)?;
-            return Ok(Variable {
-                name: name.to_string(),
-                type_name: param.type_name.clone(),
-                value,
-                is_constant: false,
-                origin: VariableOrigin::Param,
-            });
-        }
-
-        // Check constructor constants
-        if let Some(constant) = self.debug_info.constants.iter().find(|c| c.name == name) {
-            let value = self.evaluate_constant(&constant.value);
-            return Ok(Variable {
-                name: name.to_string(),
-                type_name: constant.type_name.clone(),
-                value,
-                is_constant: true,
-                origin: VariableOrigin::Constant,
-            });
-        }
-
-        Err(format!("unknown variable '{name}'"))
+        let context = self.current_variable_context(sequence, frame_id)?;
+        let variables = self.collect_variables_map(&context)?;
+        variables.get(name).cloned().ok_or_else(|| format!("unknown variable '{name}'"))
     }
 
     // --- DebugValue formatting ---
@@ -638,21 +562,12 @@ impl<'a> DebugSession<'a> {
         frame_id: u32,
     ) -> HashMap<String, &DebugVariableUpdate> {
         let mut latest: HashMap<String, &DebugVariableUpdate> = HashMap::new();
-        for update in self.debug_info.variable_updates.iter().filter(|update| {
-            if update.function != function_name {
-                return false;
-            }
-            if self.uses_sequence_order {
-                // Sequence-aware mode: stay in the active inline frame and only
-                // consider updates from steps already executed in this session.
-                update.frame_id == frame_id
-                    && self.executed_sequences.contains(&update.sequence)
-                    && update.sequence < sequence
-                    && update.bytecode_offset <= offset
-            } else {
-                update.bytecode_offset <= offset
-            }
-        }) {
+        for update in self
+            .debug_info
+            .variable_updates
+            .iter()
+            .filter(|update| self.update_is_visible(update, function_name, offset, sequence, frame_id))
+        {
             if self.uses_sequence_order {
                 match latest.get(&update.name) {
                     Some(existing) if existing.sequence > update.sequence => {}
@@ -670,6 +585,88 @@ impl<'a> DebugSession<'a> {
             }
         }
         latest
+    }
+
+    fn current_variable_context(&self, sequence: u32, frame_id: u32) -> Result<VariableContext<'_>, String> {
+        let function_name = self.current_function_name().ok_or_else(|| "No function context available".to_string())?;
+        Ok(VariableContext { function_name, offset: self.current_byte_offset(), sequence, frame_id })
+    }
+
+    fn collect_variables_map(&self, context: &VariableContext<'_>) -> Result<HashMap<String, Variable>, String> {
+        let mut variables: HashMap<String, Variable> = HashMap::new();
+        let var_updates = self.current_variable_updates(context.function_name, context.offset, context.sequence, context.frame_id);
+
+        for (name, update) in &var_updates {
+            let value = self.evaluate_update_with_shadow_vm(context.function_name, update).unwrap_or_else(DebugValue::Unknown);
+            variables.insert(
+                name.clone(),
+                Variable {
+                    name: name.clone(),
+                    type_name: update.type_name.clone(),
+                    value,
+                    is_constant: false,
+                    origin: VariableOrigin::Local,
+                },
+            );
+        }
+
+        for param in self.debug_info.params.iter().filter(|param| param.function == context.function_name) {
+            if variables.contains_key(&param.name) {
+                continue;
+            }
+            let value = self.read_param_value(param)?;
+            variables.insert(
+                param.name.clone(),
+                Variable {
+                    name: param.name.clone(),
+                    type_name: param.type_name.clone(),
+                    value,
+                    is_constant: false,
+                    origin: VariableOrigin::Param,
+                },
+            );
+        }
+
+        for constant in &self.debug_info.constants {
+            if variables.contains_key(&constant.name) {
+                continue;
+            }
+            variables.insert(
+                constant.name.clone(),
+                Variable {
+                    name: constant.name.clone(),
+                    type_name: constant.type_name.clone(),
+                    value: self.evaluate_constant(&constant.value),
+                    is_constant: true,
+                    origin: VariableOrigin::Constant,
+                },
+            );
+        }
+
+        Ok(variables)
+    }
+
+    fn update_is_visible(
+        &self,
+        update: &DebugVariableUpdate,
+        function_name: &str,
+        offset: usize,
+        sequence: u32,
+        frame_id: u32,
+    ) -> bool {
+        if update.function != function_name {
+            return false;
+        }
+        if self.uses_sequence_order {
+            // Sequence-aware mode: stay in the active inline frame and only
+            // consider updates from steps already executed in this session.
+            update.frame_id == frame_id
+                && self.executed_sequences.contains(&update.sequence)
+                && update.sequence < sequence
+                && update.bytecode_offset <= offset
+        } else {
+            update.bytecode_offset <= offset
+        }
     }
 
     /// Returns the most specific mapping for `offset`.

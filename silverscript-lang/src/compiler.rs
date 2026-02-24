@@ -1737,6 +1737,89 @@ fn compile_validate_output_state_statement(
     Ok(())
 }
 
+const INLINE_SYNTHETIC_ARG_PREFIX: &str = "__arg_";
+
+pub(super) fn is_inline_synthetic_name(name: &str) -> bool {
+    name.starts_with(INLINE_SYNTHETIC_ARG_PREFIX)
+}
+
+fn make_inline_synthetic_name(callee: &str, index: usize) -> String {
+    format!("{INLINE_SYNTHETIC_ARG_PREFIX}{callee}_{index}")
+}
+
+type InlineScope = (HashMap<String, Expr>, HashMap<String, String>);
+
+fn validate_inline_call_signature(
+    name: &str,
+    function: &FunctionAst,
+    args: &[Expr],
+    caller_types: &HashMap<String, String>,
+    contract_constants: &HashMap<String, Expr>,
+) -> Result<(), CompilerError> {
+    if function.params.len() != args.len() {
+        return Err(CompilerError::Unsupported(format!("function '{}' expects {} arguments", name, function.params.len())));
+    }
+    for (param, arg) in function.params.iter().zip(args.iter()) {
+        let param_type_name = type_name_from_ref(&param.type_ref);
+        if !expr_matches_type_with_env(arg, &param_type_name, caller_types, contract_constants) {
+            return Err(CompilerError::Unsupported(format!("function argument '{}' expects {}", param.name, param_type_name)));
+        }
+    }
+    for param in &function.params {
+        let param_type_name = type_name_from_ref(&param.type_ref);
+        if is_array_type(&param_type_name) && array_element_size(&param_type_name).is_none() {
+            return Err(CompilerError::Unsupported(format!("array element type must have known size: {}", param_type_name)));
+        }
+    }
+    Ok(())
+}
+
+fn build_inline_scope(
+    callee_name: &str,
+    function: &FunctionAst,
+    args: &[Expr],
+    caller_env: &mut HashMap<String, Expr>,
+    caller_types: &mut HashMap<String, String>,
+    contract_constants: &HashMap<String, Expr>,
+) -> Result<InlineScope, CompilerError> {
+    let mut types =
+        function.params.iter().map(|param| (param.name.clone(), type_name_from_ref(&param.type_ref))).collect::<HashMap<_, _>>();
+    let mut env: HashMap<String, Expr> = contract_constants.clone();
+
+    for (index, (param, arg)) in function.params.iter().zip(args.iter()).enumerate() {
+        let resolved = resolve_expr(arg.clone(), caller_env, &mut HashSet::new())?;
+        let synthetic_name = make_inline_synthetic_name(callee_name, index);
+        let param_type_name = type_name_from_ref(&param.type_ref);
+        // Inline calls bind each callee parameter to a synthetic identifier so
+        // callee expressions keep a stable name while still pointing at the
+        // caller-provided argument expression.
+        env.insert(synthetic_name.clone(), resolved.clone());
+        types.insert(synthetic_name.clone(), param_type_name.clone());
+        env.insert(param.name.clone(), Expr::Identifier(synthetic_name.clone()));
+        caller_env.insert(synthetic_name.clone(), resolved);
+        caller_types.insert(synthetic_name, param_type_name);
+    }
+
+    Ok((env, types))
+}
+
+fn sync_inline_synthetic_bindings_back_to_caller(
+    env: &HashMap<String, Expr>,
+    types: &HashMap<String, String>,
+    caller_env: &mut HashMap<String, Expr>,
+    caller_types: &mut HashMap<String, String>,
+) {
+    for (name, value) in env {
+        if !is_inline_synthetic_name(name) {
+            continue;
+        }
+        if let Some(type_name) = types.get(name) {
+            caller_types.entry(name.clone()).or_insert_with(|| type_name.clone());
+        }
+        caller_env.entry(name.clone()).or_insert_with(|| value.clone());
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn compile_inline_call(
     name: &str,
@@ -1761,39 +1844,8 @@ fn compile_inline_call(
         return Err(CompilerError::Unsupported("functions may only call earlier-defined functions".to_string()));
     }
 
-    if function.params.len() != args.len() {
-        return Err(CompilerError::Unsupported(format!("function '{}' expects {} arguments", name, function.params.len())));
-    }
-    for (param, arg) in function.params.iter().zip(args.iter()) {
-        let param_type_name = type_name_from_ref(&param.type_ref);
-        if !expr_matches_type_with_env(arg, &param_type_name, caller_types, contract_constants) {
-            return Err(CompilerError::Unsupported(format!("function argument '{}' expects {}", param.name, param_type_name)));
-        }
-    }
-
-    let mut types =
-        function.params.iter().map(|param| (param.name.clone(), type_name_from_ref(&param.type_ref))).collect::<HashMap<_, _>>();
-    for param in &function.params {
-        let param_type_name = type_name_from_ref(&param.type_ref);
-        if is_array_type(&param_type_name) && array_element_size(&param_type_name).is_none() {
-            return Err(CompilerError::Unsupported(format!("array element type must have known size: {}", param_type_name)));
-        }
-    }
-
-    let mut env: HashMap<String, Expr> = contract_constants.clone();
-    for (index, (param, arg)) in function.params.iter().zip(args.iter()).enumerate() {
-        let resolved = resolve_expr(arg.clone(), caller_env, &mut HashSet::new())?;
-        let temp_name = format!("__arg_{name}_{index}");
-        let param_type_name = type_name_from_ref(&param.type_ref);
-        // Inline calls bind each callee parameter to a synthetic identifier so
-        // callee expressions keep a stable name while still pointing at the
-        // caller-provided argument expression.
-        env.insert(temp_name.clone(), resolved.clone());
-        types.insert(temp_name.clone(), param_type_name.clone());
-        env.insert(param.name.clone(), Expr::Identifier(temp_name.clone()));
-        caller_env.insert(temp_name.clone(), resolved);
-        caller_types.insert(temp_name, param_type_name);
-    }
+    validate_inline_call_signature(name, function, args, caller_types, contract_constants)?;
+    let (mut env, mut types) = build_inline_scope(name, function, args, caller_env, caller_types, contract_constants)?;
 
     if !options.allow_yield && function.body.iter().any(contains_yield) {
         return Err(CompilerError::Unsupported("yield requires allow_yield=true".to_string()));
@@ -1865,14 +1917,7 @@ fn compile_inline_call(
 
     debug_recorder.finish_inline_call_recording(call_span, builder.script().len(), name, &inline_recorder);
 
-    for (name, value) in env.iter() {
-        if name.starts_with("__arg_") {
-            if let Some(type_name) = types.get(name) {
-                caller_types.entry(name.clone()).or_insert_with(|| type_name.clone());
-            }
-            caller_env.entry(name.clone()).or_insert_with(|| value.clone());
-        }
-    }
+    sync_inline_synthetic_bindings_back_to_caller(&env, &types, caller_env, caller_types);
 
     Ok(yields)
 }
@@ -2158,101 +2203,73 @@ fn eval_const_int(expr: &Expr, constants: &HashMap<String, Expr>) -> Result<i64,
 }
 
 fn resolve_expr(expr: Expr, env: &HashMap<String, Expr>, visiting: &mut HashSet<String>) -> Result<Expr, CompilerError> {
-    resolve_expr_internal(expr, env, visiting, ResolveMode::Compile)
-}
-
-/// Controls identifier expansion semantics for shared expression resolution.
-/// Compile mode preserves synthetic inline arg placeholders (`__arg_*`) so
-/// generated scripts still pick arguments from the caller stack frame. Debug
-/// mode expands them into caller-visible expressions for shadow evaluation.
-#[derive(Clone, Copy)]
-enum ResolveMode {
-    Compile,
-    Debug,
-}
-
-impl ResolveMode {
-    fn preserve_inline_args(self) -> bool {
-        matches!(self, Self::Compile)
-    }
-}
-
-fn resolve_expr_internal(
-    expr: Expr,
-    env: &HashMap<String, Expr>,
-    visiting: &mut HashSet<String>,
-    mode: ResolveMode,
-) -> Result<Expr, CompilerError> {
     match expr {
         Expr::Identifier(name) => {
-            if mode.preserve_inline_args() && name.starts_with("__arg_") {
+            // Keep synthetic inline args unresolved in compile mode so generated
+            // bytecode still reads them from caller stack bindings.
+            if is_inline_synthetic_name(&name) {
                 return Ok(Expr::Identifier(name));
             }
             if let Some(value) = env.get(&name) {
                 if !visiting.insert(name.clone()) {
                     return Err(CompilerError::CyclicIdentifier(name));
                 }
-                let resolved = resolve_expr_internal(value.clone(), env, visiting, mode)?;
+                let resolved = resolve_expr(value.clone(), env, visiting)?;
                 visiting.remove(&name);
                 Ok(resolved)
             } else {
                 Ok(Expr::Identifier(name))
             }
         }
-        Expr::Unary { op, expr } => Ok(Expr::Unary { op, expr: Box::new(resolve_expr_internal(*expr, env, visiting, mode)?) }),
+        Expr::Unary { op, expr } => Ok(Expr::Unary { op, expr: Box::new(resolve_expr(*expr, env, visiting)?) }),
         Expr::Binary { op, left, right } => Ok(Expr::Binary {
             op,
-            left: Box::new(resolve_expr_internal(*left, env, visiting, mode)?),
-            right: Box::new(resolve_expr_internal(*right, env, visiting, mode)?),
+            left: Box::new(resolve_expr(*left, env, visiting)?),
+            right: Box::new(resolve_expr(*right, env, visiting)?),
         }),
         Expr::IfElse { condition, then_expr, else_expr } => Ok(Expr::IfElse {
-            condition: Box::new(resolve_expr_internal(*condition, env, visiting, mode)?),
-            then_expr: Box::new(resolve_expr_internal(*then_expr, env, visiting, mode)?),
-            else_expr: Box::new(resolve_expr_internal(*else_expr, env, visiting, mode)?),
+            condition: Box::new(resolve_expr(*condition, env, visiting)?),
+            then_expr: Box::new(resolve_expr(*then_expr, env, visiting)?),
+            else_expr: Box::new(resolve_expr(*else_expr, env, visiting)?),
         }),
         Expr::Array(values) => {
             let mut resolved = Vec::with_capacity(values.len());
             for value in values {
-                resolved.push(resolve_expr_internal(value, env, visiting, mode)?);
+                resolved.push(resolve_expr(value, env, visiting)?);
             }
             Ok(Expr::Array(resolved))
         }
         Expr::StateObject(fields) => {
             let mut resolved_fields = Vec::with_capacity(fields.len());
             for field in fields {
-                resolved_fields.push(crate::ast::StateFieldExpr {
-                    name: field.name,
-                    expr: resolve_expr_internal(field.expr, env, visiting, mode)?,
-                });
+                resolved_fields.push(crate::ast::StateFieldExpr { name: field.name, expr: resolve_expr(field.expr, env, visiting)? });
             }
             Ok(Expr::StateObject(resolved_fields))
         }
         Expr::Call { name, args } => {
             let mut resolved = Vec::with_capacity(args.len());
             for arg in args {
-                resolved.push(resolve_expr_internal(arg, env, visiting, mode)?);
+                resolved.push(resolve_expr(arg, env, visiting)?);
             }
             Ok(Expr::Call { name, args: resolved })
         }
         Expr::New { name, args } => {
             let mut resolved = Vec::with_capacity(args.len());
             for arg in args {
-                resolved.push(resolve_expr_internal(arg, env, visiting, mode)?);
+                resolved.push(resolve_expr(arg, env, visiting)?);
             }
             Ok(Expr::New { name, args: resolved })
         }
         Expr::Split { source, index, part } => Ok(Expr::Split {
-            source: Box::new(resolve_expr_internal(*source, env, visiting, mode)?),
-            index: Box::new(resolve_expr_internal(*index, env, visiting, mode)?),
+            source: Box::new(resolve_expr(*source, env, visiting)?),
+            index: Box::new(resolve_expr(*index, env, visiting)?),
             part,
         }),
         Expr::ArrayIndex { source, index } => Ok(Expr::ArrayIndex {
-            source: Box::new(resolve_expr_internal(*source, env, visiting, mode)?),
-            index: Box::new(resolve_expr_internal(*index, env, visiting, mode)?),
+            source: Box::new(resolve_expr(*source, env, visiting)?),
+            index: Box::new(resolve_expr(*index, env, visiting)?),
         }),
-        Expr::Introspection { kind, index } => {
-            Ok(Expr::Introspection { kind, index: Box::new(resolve_expr_internal(*index, env, visiting, mode)?) })
-        }
+        Expr::Introspection { kind, index } => Ok(Expr::Introspection { kind, index: Box::new(resolve_expr(*index, env, visiting)?) }),
         other => Ok(other),
     }
 }
@@ -2287,7 +2304,86 @@ pub(super) fn resolve_expr_for_debug(
     env: &HashMap<String, Expr>,
     visiting: &mut HashSet<String>,
 ) -> Result<Expr, CompilerError> {
-    resolve_expr_internal(expr, env, visiting, ResolveMode::Debug)
+    let resolved = resolve_expr(expr, env, visiting)?;
+    expand_inline_arg_placeholders(resolved, env, &mut HashSet::new())
+}
+
+fn expand_inline_arg_placeholders(
+    expr: Expr,
+    env: &HashMap<String, Expr>,
+    visiting: &mut HashSet<String>,
+) -> Result<Expr, CompilerError> {
+    match expr {
+        Expr::Identifier(name) => {
+            if !is_inline_synthetic_name(&name) {
+                return Ok(Expr::Identifier(name));
+            }
+            let Some(value) = env.get(&name).cloned() else {
+                return Ok(Expr::Identifier(name));
+            };
+            if !visiting.insert(name.clone()) {
+                return Err(CompilerError::CyclicIdentifier(name));
+            }
+            let expanded = expand_inline_arg_placeholders(value, env, visiting)?;
+            visiting.remove(&name);
+            Ok(expanded)
+        }
+        Expr::Unary { op, expr } => Ok(Expr::Unary { op, expr: Box::new(expand_inline_arg_placeholders(*expr, env, visiting)?) }),
+        Expr::Binary { op, left, right } => Ok(Expr::Binary {
+            op,
+            left: Box::new(expand_inline_arg_placeholders(*left, env, visiting)?),
+            right: Box::new(expand_inline_arg_placeholders(*right, env, visiting)?),
+        }),
+        Expr::IfElse { condition, then_expr, else_expr } => Ok(Expr::IfElse {
+            condition: Box::new(expand_inline_arg_placeholders(*condition, env, visiting)?),
+            then_expr: Box::new(expand_inline_arg_placeholders(*then_expr, env, visiting)?),
+            else_expr: Box::new(expand_inline_arg_placeholders(*else_expr, env, visiting)?),
+        }),
+        Expr::Array(values) => {
+            let mut expanded = Vec::with_capacity(values.len());
+            for value in values {
+                expanded.push(expand_inline_arg_placeholders(value, env, visiting)?);
+            }
+            Ok(Expr::Array(expanded))
+        }
+        Expr::StateObject(fields) => {
+            let mut expanded_fields = Vec::with_capacity(fields.len());
+            for field in fields {
+                expanded_fields.push(crate::ast::StateFieldExpr {
+                    name: field.name,
+                    expr: expand_inline_arg_placeholders(field.expr, env, visiting)?,
+                });
+            }
+            Ok(Expr::StateObject(expanded_fields))
+        }
+        Expr::Call { name, args } => {
+            let mut expanded = Vec::with_capacity(args.len());
+            for arg in args {
+                expanded.push(expand_inline_arg_placeholders(arg, env, visiting)?);
+            }
+            Ok(Expr::Call { name, args: expanded })
+        }
+        Expr::New { name, args } => {
+            let mut expanded = Vec::with_capacity(args.len());
+            for arg in args {
+                expanded.push(expand_inline_arg_placeholders(arg, env, visiting)?);
+            }
+            Ok(Expr::New { name, args: expanded })
+        }
+        Expr::Split { source, index, part } => Ok(Expr::Split {
+            source: Box::new(expand_inline_arg_placeholders(*source, env, visiting)?),
+            index: Box::new(expand_inline_arg_placeholders(*index, env, visiting)?),
+            part,
+        }),
+        Expr::ArrayIndex { source, index } => Ok(Expr::ArrayIndex {
+            source: Box::new(expand_inline_arg_placeholders(*source, env, visiting)?),
+            index: Box::new(expand_inline_arg_placeholders(*index, env, visiting)?),
+        }),
+        Expr::Introspection { kind, index } => {
+            Ok(Expr::Introspection { kind, index: Box::new(expand_inline_arg_placeholders(*index, env, visiting)?) })
+        }
+        other => Ok(other),
+    }
 }
 
 fn replace_identifier(expr: &Expr, target: &str, replacement: &Expr) -> Expr {
