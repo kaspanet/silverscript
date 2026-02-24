@@ -1,9 +1,25 @@
-use std::env;
 use std::fs;
 use std::path::PathBuf;
 
+use clap::Parser;
 use silverscript_lang::ast::{Expr, parse_contract_ast};
 use silverscript_lang::compiler::{CompileOptions, compile_contract};
+
+#[derive(Debug, Parser)]
+#[command(name = "silverc", about = "Compile SilverScript contracts into JSON artifacts")]
+struct Cli {
+    /// Source SilverScript file (e.g. contract.sil)
+    src: String,
+    /// Path to JSON constructor arguments
+    #[arg(long = "constructor-args", value_name = "ctor.json")]
+    constructor_args: Option<String>,
+    /// Output file path for compiled artifact
+    #[arg(short = 'o', value_name = "dst.json")]
+    out: Option<String>,
+    /// Parse source and print the contract AST
+    #[arg(long = "ast-only ")]
+    ast_only: bool,
+}
 
 fn main() {
     if let Err(err) = run() {
@@ -13,70 +29,32 @@ fn main() {
 }
 
 fn run() -> Result<(), String> {
-    let args = env::args().skip(1).collect::<Vec<_>>();
-    if args.is_empty() {
-        return Err(
-            "usage: silverc <src.sil> [--constructor-args ctor.json] [-o dst.json] [--dump-ast] [--dump-ast-out ast.json]".to_string()
-        );
-    }
-
-    let mut src: Option<String> = None;
-    let mut ctor_args_path: Option<String> = None;
-    let mut out_path: Option<String> = None;
-    let mut dump_ast = false;
-    let mut dump_ast_out_path: Option<String> = None;
-
-    let mut i = 0;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--dump-ast" => {
-                dump_ast = true;
-                i += 1;
-            }
-            "--dump-ast-out" => {
-                let value = args.get(i + 1).ok_or_else(|| "--dump-ast-out requires a path".to_string())?;
-                dump_ast_out_path = Some(value.clone());
-                dump_ast = true;
-                i += 2;
-            }
-            "--constructor-args" => {
-                let value = args.get(i + 1).ok_or_else(|| "--constructor-args requires a path".to_string())?;
-                ctor_args_path = Some(value.clone());
-                i += 2;
-            }
-            "-o" => {
-                let value = args.get(i + 1).ok_or_else(|| "-o requires a path".to_string())?;
-                out_path = Some(value.clone());
-                i += 2;
-            }
-            value if value.starts_with('-') => {
-                return Err(format!("unknown option: {value}"));
-            }
-            value => {
-                if src.is_some() {
-                    return Err("only one source file is supported".to_string());
-                }
-                src = Some(value.to_string());
-                i += 1;
-            }
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(err) if err.use_stderr() => return Err(err.to_string()),
+        Err(err) => {
+            err.print().map_err(|print_err| format!("failed to print clap output: {print_err}"))?;
+            return Ok(());
         }
-    }
+    };
 
-    let src = src.ok_or_else(|| "missing source file".to_string())?;
+    let src = cli.src;
     let source = fs::read_to_string(&src).map_err(|err| format!("failed to read {src}: {err}"))?;
+    let ast_only = cli.ast_only;
 
-    if dump_ast {
+    if ast_only {
         let ast = parse_contract_ast(&source).map_err(|err| format!("parse error: {err}"))?;
         let rendered = ast.to_string();
-        if let Some(path) = dump_ast_out_path {
+
+        println!("{ast}");
+
+        if let Some(path) = cli.out {
             fs::write(&path, rendered).map_err(|err| format!("failed to write {path}: {err}"))?;
-        } else {
-            println!("{ast}");
         }
         return Ok(());
     }
 
-    let constructor_args = if let Some(path) = ctor_args_path {
+    let constructor_args = if let Some(path) = cli.constructor_args {
         let json = fs::read_to_string(&path).map_err(|err| format!("failed to read {path}: {err}"))?;
         serde_json::from_str::<Vec<Expr>>(&json).map_err(|err| format!("failed to parse constructor args {path}: {err}"))?
     } else {
@@ -86,7 +64,7 @@ fn run() -> Result<(), String> {
     let compiled =
         compile_contract(&source, &constructor_args, CompileOptions::default()).map_err(|err| format!("compile error: {err}"))?;
 
-    let output_path = match out_path {
+    let output_path = match cli.out {
         Some(path) => PathBuf::from(path),
         None => default_output_path(&src),
     };
