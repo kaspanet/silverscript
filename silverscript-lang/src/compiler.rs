@@ -1377,12 +1377,11 @@ fn compile_statement<'i>(
             Ok(())
         }
         Statement::Assign { name, expr, .. } => {
-            let name_value = name.as_str();
-            if let Some(type_name) = types.get(name_value) {
+            if let Some(type_name) = types.get(name) {
                 if is_array_type(type_name) {
                     match &expr.kind {
                         ExprKind::Identifier(other) => match types.get(other) {
-                            Some(other_type) if other_type == type_name => {
+                            Some(other_type) if is_type_assignable(other_type, type_name, contract_constants) => {
                                 env.insert(name.clone(), Expr::new(ExprKind::Identifier(other.clone()), span::Span::default()));
                                 return Ok(());
                             }
@@ -1399,8 +1398,7 @@ fn compile_statement<'i>(
                     }
                 }
             }
-            let updated =
-                if let Some(previous) = env.get(name_value) { replace_identifier(expr, name_value, previous) } else { expr.clone() };
+            let updated = if let Some(previous) = env.get(name) { replace_identifier(expr, name, previous) } else { expr.clone() };
             let resolved = resolve_expr(updated, env, &mut HashSet::new())?;
             env.insert(name.clone(), resolved);
             Ok(())
