@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::ast::{
-    ArrayDim, BinaryOp, ContractAst, ContractFieldAst, Expr, FunctionAst, IntrospectionKind, NullaryOp, SpannedStatement, SplitPart,
-    StateBindingAst, Statement, TimeVar, TypeBase, TypeRef, UnaryOp, parse_contract_ast, parse_type_ref,
+    ArrayDim, BinaryOp, ContractAst, ContractFieldAst, Expr, FunctionAst, IntrospectionKind, NullaryOp, SplitPart, StateBindingAst,
+    Statement, StatementKind, TimeVar, TypeBase, TypeRef, UnaryOp, parse_contract_ast, parse_type_ref,
 };
 use crate::debug::labels::synthetic;
 use crate::debug::{DebugInfo, SourceSpan};
@@ -286,28 +286,30 @@ fn compile_contract_fields(
     Ok((field_values, builder.drain()))
 }
 
-fn statement_uses_script_size(stmt: &SpannedStatement) -> bool {
+fn statement_uses_script_size(stmt: &Statement) -> bool {
     match &stmt.kind {
-        Statement::VariableDefinition { expr, .. } => expr.as_ref().is_some_and(expr_uses_script_size),
-        Statement::TupleAssignment { expr, .. } => expr_uses_script_size(expr),
-        Statement::ArrayPush { expr, .. } => expr_uses_script_size(expr),
-        Statement::FunctionCall { name, args } => name == "validateOutputState" || args.iter().any(expr_uses_script_size),
-        Statement::FunctionCallAssign { args, .. } => args.iter().any(expr_uses_script_size),
-        Statement::StateFunctionCallAssign { name, args, .. } => name == "readInputState" || args.iter().any(expr_uses_script_size),
-        Statement::Assign { expr, .. } => expr_uses_script_size(expr),
-        Statement::TimeOp { expr, .. } => expr_uses_script_size(expr),
-        Statement::Require { expr, .. } => expr_uses_script_size(expr),
-        Statement::If { condition, then_branch, else_branch } => {
+        StatementKind::VariableDefinition { expr, .. } => expr.as_ref().is_some_and(expr_uses_script_size),
+        StatementKind::TupleAssignment { expr, .. } => expr_uses_script_size(expr),
+        StatementKind::ArrayPush { expr, .. } => expr_uses_script_size(expr),
+        StatementKind::FunctionCall { name, args } => name == "validateOutputState" || args.iter().any(expr_uses_script_size),
+        StatementKind::FunctionCallAssign { args, .. } => args.iter().any(expr_uses_script_size),
+        StatementKind::StateFunctionCallAssign { name, args, .. } => {
+            name == "readInputState" || args.iter().any(expr_uses_script_size)
+        }
+        StatementKind::Assign { expr, .. } => expr_uses_script_size(expr),
+        StatementKind::TimeOp { expr, .. } => expr_uses_script_size(expr),
+        StatementKind::Require { expr, .. } => expr_uses_script_size(expr),
+        StatementKind::If { condition, then_branch, else_branch } => {
             expr_uses_script_size(condition)
                 || then_branch.iter().any(statement_uses_script_size)
                 || else_branch.as_ref().is_some_and(|branch| branch.iter().any(statement_uses_script_size))
         }
-        Statement::For { start, end, body, .. } => {
+        StatementKind::For { start, end, body, .. } => {
             expr_uses_script_size(start) || expr_uses_script_size(end) || body.iter().any(statement_uses_script_size)
         }
-        Statement::Yield { expr } => expr_uses_script_size(expr),
-        Statement::Return { exprs } => exprs.iter().any(expr_uses_script_size),
-        Statement::Console { args } => args.iter().any(|arg| match arg {
+        StatementKind::Yield { expr } => expr_uses_script_size(expr),
+        StatementKind::Return { exprs } => exprs.iter().any(expr_uses_script_size),
+        StatementKind::Console { args } => args.iter().any(|arg| match arg {
             crate::ast::ConsoleArg::Identifier(_) => false,
             crate::ast::ConsoleArg::Literal(expr) => expr_uses_script_size(expr),
         }),
@@ -500,24 +502,24 @@ fn array_element_size_ref(type_ref: &TypeRef) -> Option<i64> {
     array_element_type_ref(type_ref).and_then(|element| fixed_type_size_ref(&element))
 }
 
-fn contains_return(stmt: &SpannedStatement) -> bool {
+fn contains_return(stmt: &Statement) -> bool {
     match &stmt.kind {
-        Statement::Return { .. } => true,
-        Statement::If { then_branch, else_branch, .. } => {
+        StatementKind::Return { .. } => true,
+        StatementKind::If { then_branch, else_branch, .. } => {
             then_branch.iter().any(contains_return) || else_branch.as_ref().is_some_and(|branch| branch.iter().any(contains_return))
         }
-        Statement::For { body, .. } => body.iter().any(contains_return),
+        StatementKind::For { body, .. } => body.iter().any(contains_return),
         _ => false,
     }
 }
 
-fn contains_yield(stmt: &SpannedStatement) -> bool {
+fn contains_yield(stmt: &Statement) -> bool {
     match &stmt.kind {
-        Statement::Yield { .. } => true,
-        Statement::If { then_branch, else_branch, .. } => {
+        StatementKind::Yield { .. } => true,
+        StatementKind::If { then_branch, else_branch, .. } => {
             then_branch.iter().any(contains_yield) || else_branch.as_ref().is_some_and(|branch| branch.iter().any(contains_yield))
         }
-        Statement::For { body, .. } => body.iter().any(contains_yield),
+        StatementKind::For { body, .. } => body.iter().any(contains_yield),
         _ => false,
     }
 }
@@ -922,21 +924,6 @@ struct CompiledFunction {
     debug: FunctionDebugRecorder,
 }
 
-struct CompileCtx<'a> {
-    params: &'a HashMap<String, i64>,
-    builder: &'a mut ScriptBuilder,
-    options: CompileOptions,
-    contract_fields: &'a [ContractFieldAst],
-    contract_field_prefix_len: usize,
-    contract_constants: &'a HashMap<String, Expr>,
-    functions: &'a HashMap<String, FunctionAst>,
-    function_order: &'a HashMap<String, usize>,
-    function_index: usize,
-    yields: &'a mut Vec<Expr>,
-    script_size: Option<i64>,
-    debug_recorder: &'a mut FunctionDebugRecorder,
-}
-
 fn compile_function(
     function: &FunctionAst,
     function_index: usize,
@@ -1000,7 +987,7 @@ fn compile_function(
 
     let has_return = function.body.iter().any(contains_return);
     if has_return {
-        if !matches!(function.body.last(), Some(SpannedStatement { kind: Statement::Return { .. }, .. })) {
+        if !matches!(function.body.last(), Some(Statement { kind: StatementKind::Return { .. }, .. })) {
             return Err(CompilerError::Unsupported("return statement must be the last statement".to_string()));
         }
         if function.body[..function.body.len() - 1].iter().any(contains_return) {
@@ -1014,51 +1001,43 @@ fn compile_function(
         }
     }
 
-    {
-        let mut ctx = CompileCtx {
-            params: &params,
-            builder: &mut builder,
+    let body_len = function.body.len();
+    for (index, stmt) in function.body.iter().enumerate() {
+        let start = builder.script().len();
+        // Snapshot only when debug is enabled; used to derive per-statement var updates.
+        let env_before = recorder.is_enabled().then(|| env.clone());
+        if matches!(stmt.kind, StatementKind::Return { .. }) {
+            if index != body_len - 1 {
+                return Err(CompilerError::Unsupported("return statement must be the last statement".to_string()));
+            }
+            let StatementKind::Return { exprs } = &stmt.kind else { unreachable!() };
+            validate_return_types(exprs, &function.return_types, &types, constants)?;
+            for expr in exprs {
+                let resolved = resolve_expr(expr.clone(), &env, &mut HashSet::new())?;
+                yields.push(resolved);
+            }
+            recorder.record_statement_with_env_diff(stmt, start, builder.script().len(), env_before.as_ref(), &env, &types)?;
+            continue;
+        }
+        compile_statement(
+            stmt,
+            &mut env,
+            &params,
+            &mut types,
+            &mut builder,
             options,
             contract_fields,
             contract_field_prefix_len,
-            contract_constants: constants,
+            constants,
             functions,
             function_order,
             function_index,
-            yields: &mut yields,
+            &mut yields,
             script_size,
-            debug_recorder: &mut recorder,
-        };
-
-        let body_len = function.body.len();
-        for (index, stmt) in function.body.iter().enumerate() {
-            let start = ctx.builder.script().len();
-            // Snapshot only when debug is enabled; used to derive per-statement var updates.
-            let env_before = ctx.debug_recorder.is_enabled().then(|| env.clone());
-            if matches!(stmt.kind, Statement::Return { .. }) {
-                if index != body_len - 1 {
-                    return Err(CompilerError::Unsupported("return statement must be the last statement".to_string()));
-                }
-                let Statement::Return { exprs } = &stmt.kind else { unreachable!() };
-                validate_return_types(exprs, &function.return_types, &types, constants)?;
-                for expr in exprs {
-                    let resolved = resolve_expr(expr.clone(), &env, &mut HashSet::new())?;
-                    ctx.yields.push(resolved);
-                }
-                ctx.debug_recorder.record_statement_with_env_diff(
-                    stmt,
-                    start,
-                    ctx.builder.script().len(),
-                    env_before.as_ref(),
-                    &env,
-                    &types,
-                )?;
-                continue;
-            }
-            compile_statement(stmt, &mut env, &mut types, &mut ctx)?;
-            let end = ctx.builder.script().len();
-            ctx.debug_recorder.record_statement_with_env_diff(stmt, start, end, env_before.as_ref(), &env, &types)?;
-        }
+            &mut recorder,
+        )?;
+        let end = builder.script().len();
+        recorder.record_statement_with_env_diff(stmt, start, end, env_before.as_ref(), &env, &types)?;
     }
 
     let yield_count = yields.len();
@@ -1100,22 +1079,26 @@ fn compile_function(
     Ok(CompiledFunction { name: function.name.clone(), script: builder.drain(), debug: recorder })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn compile_statement(
-    stmt: &SpannedStatement,
+    stmt: &Statement,
     env: &mut HashMap<String, Expr>,
+    params: &HashMap<String, i64>,
     types: &mut HashMap<String, String>,
-    ctx: &mut CompileCtx<'_>,
+    builder: &mut ScriptBuilder,
+    options: CompileOptions,
+    contract_fields: &[ContractFieldAst],
+    contract_field_prefix_len: usize,
+    contract_constants: &HashMap<String, Expr>,
+    functions: &HashMap<String, FunctionAst>,
+    function_order: &HashMap<String, usize>,
+    function_index: usize,
+    yields: &mut Vec<Expr>,
+    script_size: Option<i64>,
+    debug_recorder: &mut FunctionDebugRecorder,
 ) -> Result<(), CompilerError> {
-    let params = ctx.params;
-    let options = ctx.options;
-    let contract_fields = ctx.contract_fields;
-    let contract_field_prefix_len = ctx.contract_field_prefix_len;
-    let contract_constants = ctx.contract_constants;
-    let functions = ctx.functions;
-    let script_size = ctx.script_size;
-
     match &stmt.kind {
-        Statement::VariableDefinition { type_ref, name, expr, .. } => {
+        StatementKind::VariableDefinition { type_ref, name, expr, .. } => {
             let type_name = type_name_from_ref(type_ref);
             let effective_type_name =
                 if is_array_type(&type_name) && array_size_with_constants(&type_name, contract_constants).is_none() {
@@ -1204,7 +1187,7 @@ fn compile_statement(
                 Ok(())
             }
         }
-        Statement::ArrayPush { name, expr } => {
+        StatementKind::ArrayPush { name, expr } => {
             let array_type = types.get(name).ok_or_else(|| CompilerError::UndefinedIdentifier(name.clone()))?;
             if !is_array_type(array_type) {
                 return Err(CompilerError::Unsupported("push() only supported on arrays".to_string()));
@@ -1253,36 +1236,73 @@ fn compile_statement(
             env.insert(name.clone(), updated);
             Ok(())
         }
-        Statement::Require { expr, .. } => {
+        StatementKind::Require { expr, .. } => {
             let mut stack_depth = 0i64;
             compile_expr(
                 expr,
                 env,
                 params,
                 types,
-                ctx.builder,
+                builder,
                 options,
                 &mut HashSet::new(),
                 &mut stack_depth,
                 script_size,
                 contract_constants,
             )?;
-            ctx.builder.add_op(OpVerify)?;
+            builder.add_op(OpVerify)?;
             Ok(())
         }
-        Statement::TimeOp { tx_var, expr, .. } => compile_time_op_statement(tx_var, expr, env, types, ctx),
-        Statement::If { condition, then_branch, else_branch } => {
-            compile_if_statement(condition, then_branch, else_branch.as_deref(), env, types, ctx)
+        StatementKind::TimeOp { tx_var, expr, .. } => {
+            compile_time_op_statement(tx_var, expr, env, params, types, builder, options, script_size, contract_constants)
         }
-        Statement::For { ident, start, end, body } => compile_for_statement(ident, start, end, body, env, types, ctx),
-        Statement::Yield { expr } => {
+        StatementKind::If { condition, then_branch, else_branch } => compile_if_statement(
+            condition,
+            then_branch,
+            else_branch.as_deref(),
+            env,
+            params,
+            types,
+            builder,
+            options,
+            contract_fields,
+            contract_field_prefix_len,
+            contract_constants,
+            functions,
+            function_order,
+            function_index,
+            yields,
+            script_size,
+            debug_recorder,
+        ),
+        StatementKind::For { ident, start, end, body } => compile_for_statement(
+            ident,
+            start,
+            end,
+            body,
+            env,
+            params,
+            types,
+            builder,
+            options,
+            contract_fields,
+            contract_field_prefix_len,
+            contract_constants,
+            functions,
+            function_order,
+            function_index,
+            yields,
+            script_size,
+            debug_recorder,
+        ),
+        StatementKind::Yield { expr } => {
             let mut visiting = HashSet::new();
             let resolved = resolve_expr(expr.clone(), env, &mut visiting)?;
-            ctx.yields.push(resolved);
+            yields.push(resolved);
             Ok(())
         }
-        Statement::Return { .. } => Err(CompilerError::Unsupported("return statement must be the last statement".to_string())),
-        Statement::TupleAssignment { left_name, right_name, expr, .. } => match expr.clone() {
+        StatementKind::Return { .. } => Err(CompilerError::Unsupported("return statement must be the last statement".to_string())),
+        StatementKind::TupleAssignment { left_name, right_name, expr, .. } => match expr.clone() {
             Expr::Split { source, index, .. } => {
                 env.insert(left_name.clone(), Expr::Split { source: source.clone(), index: index.clone(), part: SplitPart::Left });
                 env.insert(right_name.clone(), Expr::Split { source, index, part: SplitPart::Right });
@@ -1290,14 +1310,14 @@ fn compile_statement(
             }
             _ => Err(CompilerError::Unsupported("tuple assignment only supports split()".to_string())),
         },
-        Statement::FunctionCall { name, args } => {
+        StatementKind::FunctionCall { name, args } => {
             if name == "validateOutputState" {
                 return compile_validate_output_state_statement(
                     args,
                     env,
                     params,
                     types,
-                    ctx.builder,
+                    builder,
                     options,
                     contract_fields,
                     contract_field_prefix_len,
@@ -1305,7 +1325,22 @@ fn compile_statement(
                     contract_constants,
                 );
             }
-            let returns = compile_inline_call(name, args, stmt.span, types, env, ctx)?;
+            let returns = compile_inline_call(
+                name,
+                args,
+                stmt.span,
+                params,
+                types,
+                env,
+                builder,
+                options,
+                contract_constants,
+                functions,
+                function_order,
+                function_index,
+                script_size,
+                debug_recorder,
+            )?;
             if !returns.is_empty() {
                 let mut stack_depth = 0i64;
                 for expr in returns {
@@ -1314,20 +1349,20 @@ fn compile_statement(
                         env,
                         params,
                         types,
-                        ctx.builder,
+                        builder,
                         options,
                         &mut HashSet::new(),
                         &mut stack_depth,
                         script_size,
                         contract_constants,
                     )?;
-                    ctx.builder.add_op(OpDrop)?;
+                    builder.add_op(OpDrop)?;
                     stack_depth -= 1;
                 }
             }
             Ok(())
         }
-        Statement::StateFunctionCallAssign { bindings, name, args } => {
+        StatementKind::StateFunctionCallAssign { bindings, name, args } => {
             if name == "readInputState" {
                 return compile_read_input_state_statement(
                     bindings,
@@ -1344,7 +1379,7 @@ fn compile_statement(
                 name
             )))
         }
-        Statement::FunctionCallAssign { bindings, name, args } => {
+        StatementKind::FunctionCallAssign { bindings, name, args } => {
             let function = functions.get(name).ok_or_else(|| CompilerError::Unsupported(format!("function '{}' not found", name)))?;
             if function.return_types.is_empty() {
                 return Err(CompilerError::Unsupported("function has no return types".to_string()));
@@ -1359,7 +1394,22 @@ fn compile_statement(
                     return Err(CompilerError::Unsupported("function return types must match binding types".to_string()));
                 }
             }
-            let returns = compile_inline_call(name, args, stmt.span, types, env, ctx)?;
+            let returns = compile_inline_call(
+                name,
+                args,
+                stmt.span,
+                params,
+                types,
+                env,
+                builder,
+                options,
+                contract_constants,
+                functions,
+                function_order,
+                function_index,
+                script_size,
+                debug_recorder,
+            )?;
             if returns.len() != bindings.len() {
                 return Err(CompilerError::Unsupported("return values count must match function return types".to_string()));
             }
@@ -1369,7 +1419,7 @@ fn compile_statement(
             }
             Ok(())
         }
-        Statement::Assign { name, expr } => {
+        StatementKind::Assign { name, expr } => {
             if let Some(type_name) = types.get(name) {
                 if is_array_type(type_name) {
                     match expr {
@@ -1394,7 +1444,7 @@ fn compile_statement(
             env.insert(name.clone(), resolved);
             Ok(())
         }
-        Statement::Console { .. } => Ok(()),
+        StatementKind::Console { .. } => Ok(()),
     }
 }
 
@@ -1687,7 +1737,42 @@ fn compile_validate_output_state_statement(
     Ok(())
 }
 
-type InlineScopeMaps = (HashMap<String, Expr>, HashMap<String, String>);
+const INLINE_SYNTHETIC_ARG_PREFIX: &str = "__arg_";
+
+pub(super) fn is_inline_synthetic_name(name: &str) -> bool {
+    name.starts_with(INLINE_SYNTHETIC_ARG_PREFIX)
+}
+
+fn make_inline_synthetic_name(callee: &str, index: usize) -> String {
+    format!("{INLINE_SYNTHETIC_ARG_PREFIX}{callee}_{index}")
+}
+
+type InlineScope = (HashMap<String, Expr>, HashMap<String, String>);
+
+fn validate_inline_call_signature(
+    name: &str,
+    function: &FunctionAst,
+    args: &[Expr],
+    caller_types: &HashMap<String, String>,
+    contract_constants: &HashMap<String, Expr>,
+) -> Result<(), CompilerError> {
+    if function.params.len() != args.len() {
+        return Err(CompilerError::Unsupported(format!("function '{}' expects {} arguments", name, function.params.len())));
+    }
+    for (param, arg) in function.params.iter().zip(args.iter()) {
+        let param_type_name = type_name_from_ref(&param.type_ref);
+        if !expr_matches_type_with_env(arg, &param_type_name, caller_types, contract_constants) {
+            return Err(CompilerError::Unsupported(format!("function argument '{}' expects {}", param.name, param_type_name)));
+        }
+    }
+    for param in &function.params {
+        let param_type_name = type_name_from_ref(&param.type_ref);
+        if is_array_type(&param_type_name) && array_element_size(&param_type_name).is_none() {
+            return Err(CompilerError::Unsupported(format!("array element type must have known size: {}", param_type_name)));
+        }
+    }
+    Ok(())
+}
 
 fn build_inline_scope(
     callee_name: &str,
@@ -1696,14 +1781,14 @@ fn build_inline_scope(
     caller_env: &mut HashMap<String, Expr>,
     caller_types: &mut HashMap<String, String>,
     contract_constants: &HashMap<String, Expr>,
-) -> Result<InlineScopeMaps, CompilerError> {
+) -> Result<InlineScope, CompilerError> {
     let mut types =
         function.params.iter().map(|param| (param.name.clone(), type_name_from_ref(&param.type_ref))).collect::<HashMap<_, _>>();
     let mut env: HashMap<String, Expr> = contract_constants.clone();
 
     for (index, (param, arg)) in function.params.iter().zip(args.iter()).enumerate() {
         let resolved = resolve_expr(arg.clone(), caller_env, &mut HashSet::new())?;
-        let synthetic_name = format!("__arg_{callee_name}_{index}");
+        let synthetic_name = make_inline_synthetic_name(callee_name, index);
         let param_type_name = type_name_from_ref(&param.type_ref);
         // Inline calls bind each callee parameter to a synthetic identifier so
         // callee expressions keep a stable name while still pointing at the
@@ -1725,7 +1810,7 @@ fn sync_inline_synthetic_bindings_back_to_caller(
     caller_types: &mut HashMap<String, String>,
 ) {
     for (name, value) in env {
-        if !name.starts_with("__arg_") {
+        if !is_inline_synthetic_name(name) {
             continue;
         }
         if let Some(type_name) = types.get(name) {
@@ -1735,50 +1820,44 @@ fn sync_inline_synthetic_bindings_back_to_caller(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn compile_inline_call(
     name: &str,
     args: &[Expr],
     call_span: Option<SourceSpan>,
+    caller_params: &HashMap<String, i64>,
     caller_types: &mut HashMap<String, String>,
     caller_env: &mut HashMap<String, Expr>,
-    ctx: &mut CompileCtx<'_>,
+    builder: &mut ScriptBuilder,
+    options: CompileOptions,
+    contract_constants: &HashMap<String, Expr>,
+    functions: &HashMap<String, FunctionAst>,
+    function_order: &HashMap<String, usize>,
+    caller_index: usize,
+    script_size: Option<i64>,
+    debug_recorder: &mut FunctionDebugRecorder,
 ) -> Result<Vec<Expr>, CompilerError> {
-    let function = ctx.functions.get(name).ok_or_else(|| CompilerError::Unsupported(format!("function '{}' not found", name)))?;
+    let function = functions.get(name).ok_or_else(|| CompilerError::Unsupported(format!("function '{}' not found", name)))?;
     let callee_index =
-        ctx.function_order.get(name).copied().ok_or_else(|| CompilerError::Unsupported(format!("function '{}' not found", name)))?;
-    if callee_index >= ctx.function_index {
+        function_order.get(name).copied().ok_or_else(|| CompilerError::Unsupported(format!("function '{}' not found", name)))?;
+    if callee_index >= caller_index {
         return Err(CompilerError::Unsupported("functions may only call earlier-defined functions".to_string()));
     }
 
-    if function.params.len() != args.len() {
-        return Err(CompilerError::Unsupported(format!("function '{}' expects {} arguments", name, function.params.len())));
-    }
-    for (param, arg) in function.params.iter().zip(args.iter()) {
-        let param_type_name = type_name_from_ref(&param.type_ref);
-        if !expr_matches_type_with_env(arg, &param_type_name, caller_types, ctx.contract_constants) {
-            return Err(CompilerError::Unsupported(format!("function argument '{}' expects {}", param.name, param_type_name)));
-        }
-    }
-    for param in &function.params {
-        let param_type_name = type_name_from_ref(&param.type_ref);
-        if is_array_type(&param_type_name) && array_element_size(&param_type_name).is_none() {
-            return Err(CompilerError::Unsupported(format!("array element type must have known size: {}", param_type_name)));
-        }
-    }
+    validate_inline_call_signature(name, function, args, caller_types, contract_constants)?;
+    let (mut env, mut types) = build_inline_scope(name, function, args, caller_env, caller_types, contract_constants)?;
 
-    let (mut env, mut types) = build_inline_scope(name, function, args, caller_env, caller_types, ctx.contract_constants)?;
-
-    if !ctx.options.allow_yield && function.body.iter().any(contains_yield) {
+    if !options.allow_yield && function.body.iter().any(contains_yield) {
         return Err(CompilerError::Unsupported("yield requires allow_yield=true".to_string()));
     }
 
-    if function.entrypoint && !ctx.options.allow_entrypoint_return && function.body.iter().any(contains_return) {
+    if function.entrypoint && !options.allow_entrypoint_return && function.body.iter().any(contains_return) {
         return Err(CompilerError::Unsupported("entrypoint return requires allow_entrypoint_return=true".to_string()));
     }
 
     let has_return = function.body.iter().any(contains_return);
     if has_return {
-        if !matches!(function.body.last(), Some(SpannedStatement { kind: Statement::Return { .. }, .. })) {
+        if !matches!(function.body.last(), Some(Statement { kind: StatementKind::Return { .. }, .. })) {
             return Err(CompilerError::Unsupported("return statement must be the last statement".to_string()));
         }
         if function.body[..function.body.len() - 1].iter().any(contains_return) {
@@ -1789,104 +1868,140 @@ fn compile_inline_call(
         }
     }
 
-    let call_start = ctx.builder.script().len();
+    let call_start = builder.script().len();
     // Record call boundary on caller frame and collect callee events in a child frame.
-    let mut inline_recorder = ctx.debug_recorder.start_inline_call_recording(call_span, call_start, name);
+    let mut inline_recorder = debug_recorder.start_inline_call_recording(call_span, call_start, name);
 
     let mut yields: Vec<Expr> = Vec::new();
     // Use caller parameter stack indexes while compiling callee bytecode so
     // identifier resolution can still pick values from the caller frame.
-    let params = ctx.params.clone();
-    {
-        let mut inline_ctx = CompileCtx {
-            params: &params,
-            builder: &mut *ctx.builder,
-            options: ctx.options,
-            contract_fields: &[],
-            contract_field_prefix_len: 0,
-            contract_constants: ctx.contract_constants,
-            functions: ctx.functions,
-            function_order: ctx.function_order,
-            function_index: callee_index,
-            yields: &mut yields,
-            script_size: ctx.script_size,
-            debug_recorder: &mut inline_recorder,
-        };
-
-        let body_len = function.body.len();
-        for (index, stmt) in function.body.iter().enumerate() {
-            let start = inline_ctx.builder.script().len();
-            // Snapshot only when debug is enabled; used to derive per-statement var updates.
-            let env_before = inline_ctx.debug_recorder.is_enabled().then(|| env.clone());
-            if matches!(stmt.kind, Statement::Return { .. }) {
-                if index != body_len - 1 {
-                    return Err(CompilerError::Unsupported("return statement must be the last statement".to_string()));
-                }
-                let Statement::Return { exprs } = &stmt.kind else { unreachable!() };
-                validate_return_types(exprs, &function.return_types, &types, inline_ctx.contract_constants)?;
-                for expr in exprs {
-                    let resolved = resolve_expr(expr.clone(), &env, &mut HashSet::new())?;
-                    inline_ctx.yields.push(resolved);
-                }
-                inline_ctx.debug_recorder.record_statement_with_env_diff(
-                    stmt,
-                    start,
-                    inline_ctx.builder.script().len(),
-                    env_before.as_ref(),
-                    &env,
-                    &types,
-                )?;
-                continue;
+    let params = caller_params.clone();
+    let body_len = function.body.len();
+    for (index, stmt) in function.body.iter().enumerate() {
+        let start = builder.script().len();
+        // Snapshot only when debug is enabled; used to derive per-statement var updates.
+        let env_before = inline_recorder.is_enabled().then(|| env.clone());
+        if matches!(stmt.kind, StatementKind::Return { .. }) {
+            if index != body_len - 1 {
+                return Err(CompilerError::Unsupported("return statement must be the last statement".to_string()));
             }
-            compile_statement(stmt, &mut env, &mut types, &mut inline_ctx)?;
-            let end = inline_ctx.builder.script().len();
-            inline_ctx.debug_recorder.record_statement_with_env_diff(stmt, start, end, env_before.as_ref(), &env, &types)?;
+            let StatementKind::Return { exprs } = &stmt.kind else { unreachable!() };
+            validate_return_types(exprs, &function.return_types, &types, contract_constants)?;
+            for expr in exprs {
+                let resolved = resolve_expr(expr.clone(), &env, &mut HashSet::new())?;
+                yields.push(resolved);
+            }
+            inline_recorder.record_statement_with_env_diff(stmt, start, builder.script().len(), env_before.as_ref(), &env, &types)?;
+            continue;
         }
+        compile_statement(
+            stmt,
+            &mut env,
+            &params,
+            &mut types,
+            builder,
+            options,
+            &[],
+            0,
+            contract_constants,
+            functions,
+            function_order,
+            callee_index,
+            &mut yields,
+            script_size,
+            &mut inline_recorder,
+        )?;
+        let end = builder.script().len();
+        inline_recorder.record_statement_with_env_diff(stmt, start, end, env_before.as_ref(), &env, &types)?;
     }
 
-    ctx.debug_recorder.finish_inline_call_recording(call_span, ctx.builder.script().len(), name, &inline_recorder);
+    debug_recorder.finish_inline_call_recording(call_span, builder.script().len(), name, &inline_recorder);
 
     sync_inline_synthetic_bindings_back_to_caller(&env, &types, caller_env, caller_types);
 
     Ok(yields)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn compile_if_statement(
     condition: &Expr,
-    then_branch: &[SpannedStatement],
-    else_branch: Option<&[SpannedStatement]>,
+    then_branch: &[Statement],
+    else_branch: Option<&[Statement]>,
     env: &mut HashMap<String, Expr>,
+    params: &HashMap<String, i64>,
     types: &mut HashMap<String, String>,
-    ctx: &mut CompileCtx<'_>,
+    builder: &mut ScriptBuilder,
+    options: CompileOptions,
+    contract_fields: &[ContractFieldAst],
+    contract_field_prefix_len: usize,
+    contract_constants: &HashMap<String, Expr>,
+    functions: &HashMap<String, FunctionAst>,
+    function_order: &HashMap<String, usize>,
+    function_index: usize,
+    yields: &mut Vec<Expr>,
+    script_size: Option<i64>,
+    debug_recorder: &mut FunctionDebugRecorder,
 ) -> Result<(), CompilerError> {
     let mut stack_depth = 0i64;
     compile_expr(
         condition,
         env,
-        ctx.params,
+        params,
         types,
-        ctx.builder,
-        ctx.options,
+        builder,
+        options,
         &mut HashSet::new(),
         &mut stack_depth,
-        ctx.script_size,
-        ctx.contract_constants,
+        script_size,
+        contract_constants,
     )?;
-    ctx.builder.add_op(OpIf)?;
+    builder.add_op(OpIf)?;
 
     let original_env = env.clone();
     let mut then_env = original_env.clone();
     let mut then_types = types.clone();
-    compile_block(then_branch, &mut then_env, &mut then_types, ctx)?;
+    compile_block(
+        then_branch,
+        &mut then_env,
+        params,
+        &mut then_types,
+        builder,
+        options,
+        contract_fields,
+        contract_field_prefix_len,
+        contract_constants,
+        functions,
+        function_order,
+        function_index,
+        yields,
+        script_size,
+        debug_recorder,
+    )?;
 
     let mut else_env = original_env.clone();
     if let Some(else_branch) = else_branch {
-        ctx.builder.add_op(OpElse)?;
+        builder.add_op(OpElse)?;
         let mut else_types = types.clone();
-        compile_block(else_branch, &mut else_env, &mut else_types, ctx)?;
+        compile_block(
+            else_branch,
+            &mut else_env,
+            params,
+            &mut else_types,
+            builder,
+            options,
+            contract_fields,
+            contract_field_prefix_len,
+            contract_constants,
+            functions,
+            function_order,
+            function_index,
+            yields,
+            script_size,
+            debug_recorder,
+        )?;
     }
 
-    ctx.builder.add_op(OpEndIf)?;
+    builder.add_op(OpEndIf)?;
 
     let resolved_condition = resolve_expr(condition.clone(), &original_env, &mut HashSet::new())?;
     merge_env_after_if(env, &original_env, &then_env, &else_env, &resolved_condition);
@@ -1923,63 +2038,96 @@ fn compile_time_op_statement(
     tx_var: &TimeVar,
     expr: &Expr,
     env: &mut HashMap<String, Expr>,
+    params: &HashMap<String, i64>,
     types: &HashMap<String, String>,
-    ctx: &mut CompileCtx<'_>,
+    builder: &mut ScriptBuilder,
+    options: CompileOptions,
+    script_size: Option<i64>,
+    contract_constants: &HashMap<String, Expr>,
 ) -> Result<(), CompilerError> {
     let mut stack_depth = 0i64;
-    compile_expr(
-        expr,
-        env,
-        ctx.params,
-        types,
-        ctx.builder,
-        ctx.options,
-        &mut HashSet::new(),
-        &mut stack_depth,
-        ctx.script_size,
-        ctx.contract_constants,
-    )?;
+    compile_expr(expr, env, params, types, builder, options, &mut HashSet::new(), &mut stack_depth, script_size, contract_constants)?;
 
     match tx_var {
         TimeVar::ThisAge => {
-            ctx.builder.add_op(OpCheckSequenceVerify)?;
+            builder.add_op(OpCheckSequenceVerify)?;
         }
         TimeVar::TxTime => {
-            ctx.builder.add_op(OpCheckLockTimeVerify)?;
+            builder.add_op(OpCheckLockTimeVerify)?;
         }
     }
 
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn compile_block(
-    statements: &[SpannedStatement],
+    statements: &[Statement],
     env: &mut HashMap<String, Expr>,
+    params: &HashMap<String, i64>,
     types: &mut HashMap<String, String>,
-    ctx: &mut CompileCtx<'_>,
+    builder: &mut ScriptBuilder,
+    options: CompileOptions,
+    contract_fields: &[ContractFieldAst],
+    contract_field_prefix_len: usize,
+    contract_constants: &HashMap<String, Expr>,
+    functions: &HashMap<String, FunctionAst>,
+    function_order: &HashMap<String, usize>,
+    function_index: usize,
+    yields: &mut Vec<Expr>,
+    script_size: Option<i64>,
+    debug_recorder: &mut FunctionDebugRecorder,
 ) -> Result<(), CompilerError> {
     for stmt in statements {
-        let start = ctx.builder.script().len();
+        let start = builder.script().len();
         // Snapshot only when debug is enabled; used to derive per-statement var updates.
-        let env_before = ctx.debug_recorder.is_enabled().then(|| env.clone());
-        compile_statement(stmt, env, types, ctx)?;
-        let end = ctx.builder.script().len();
-        ctx.debug_recorder.record_statement_with_env_diff(stmt, start, end, env_before.as_ref(), env, types)?;
+        let env_before = debug_recorder.is_enabled().then(|| env.clone());
+        compile_statement(
+            stmt,
+            env,
+            params,
+            types,
+            builder,
+            options,
+            contract_fields,
+            contract_field_prefix_len,
+            contract_constants,
+            functions,
+            function_order,
+            function_index,
+            yields,
+            script_size,
+            debug_recorder,
+        )?;
+        let end = builder.script().len();
+        debug_recorder.record_statement_with_env_diff(stmt, start, end, env_before.as_ref(), env, types)?;
     }
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn compile_for_statement(
     ident: &str,
     start_expr: &Expr,
     end_expr: &Expr,
-    body: &[SpannedStatement],
+    body: &[Statement],
     env: &mut HashMap<String, Expr>,
+    params: &HashMap<String, i64>,
     types: &mut HashMap<String, String>,
-    ctx: &mut CompileCtx<'_>,
+    builder: &mut ScriptBuilder,
+    options: CompileOptions,
+    contract_fields: &[ContractFieldAst],
+    contract_field_prefix_len: usize,
+    contract_constants: &HashMap<String, Expr>,
+    functions: &HashMap<String, FunctionAst>,
+    function_order: &HashMap<String, usize>,
+    function_index: usize,
+    yields: &mut Vec<Expr>,
+    script_size: Option<i64>,
+    debug_recorder: &mut FunctionDebugRecorder,
 ) -> Result<(), CompilerError> {
-    let start = eval_const_int(start_expr, ctx.contract_constants)?;
-    let end = eval_const_int(end_expr, ctx.contract_constants)?;
+    let start = eval_const_int(start_expr, contract_constants)?;
+    let end = eval_const_int(end_expr, contract_constants)?;
     if end < start {
         return Err(CompilerError::Unsupported("for loop end must be >= start".to_string()));
     }
@@ -1988,7 +2136,23 @@ fn compile_for_statement(
     let previous = env.get(&name).cloned();
     for value in start..end {
         env.insert(name.clone(), Expr::Int(value));
-        compile_block(body, env, types, ctx)?;
+        compile_block(
+            body,
+            env,
+            params,
+            types,
+            builder,
+            options,
+            contract_fields,
+            contract_field_prefix_len,
+            contract_constants,
+            functions,
+            function_order,
+            function_index,
+            yields,
+            script_size,
+            debug_recorder,
+        )?;
     }
 
     match previous {
@@ -2038,70 +2202,12 @@ fn eval_const_int(expr: &Expr, constants: &HashMap<String, Expr>) -> Result<i64,
     }
 }
 
-fn rewrite_expr_children(
-    expr: Expr,
-    mut rewrite_child: impl FnMut(Expr) -> Result<Expr, CompilerError>,
-) -> Result<Expr, CompilerError> {
-    match expr {
-        Expr::Unary { op, expr } => Ok(Expr::Unary { op, expr: Box::new(rewrite_child(*expr)?) }),
-        Expr::Binary { op, left, right } => {
-            Ok(Expr::Binary { op, left: Box::new(rewrite_child(*left)?), right: Box::new(rewrite_child(*right)?) })
-        }
-        Expr::IfElse { condition, then_expr, else_expr } => Ok(Expr::IfElse {
-            condition: Box::new(rewrite_child(*condition)?),
-            then_expr: Box::new(rewrite_child(*then_expr)?),
-            else_expr: Box::new(rewrite_child(*else_expr)?),
-        }),
-        Expr::Array(values) => {
-            let mut rewritten = Vec::with_capacity(values.len());
-            for value in values {
-                rewritten.push(rewrite_child(value)?);
-            }
-            Ok(Expr::Array(rewritten))
-        }
-        Expr::StateObject(fields) => {
-            let mut rewritten_fields = Vec::with_capacity(fields.len());
-            for field in fields {
-                rewritten_fields.push(crate::ast::StateFieldExpr { name: field.name, expr: rewrite_child(field.expr)? });
-            }
-            Ok(Expr::StateObject(rewritten_fields))
-        }
-        Expr::Call { name, args } => {
-            let mut rewritten = Vec::with_capacity(args.len());
-            for arg in args {
-                rewritten.push(rewrite_child(arg)?);
-            }
-            Ok(Expr::Call { name, args: rewritten })
-        }
-        Expr::New { name, args } => {
-            let mut rewritten = Vec::with_capacity(args.len());
-            for arg in args {
-                rewritten.push(rewrite_child(arg)?);
-            }
-            Ok(Expr::New { name, args: rewritten })
-        }
-        Expr::Split { source, index, part } => {
-            Ok(Expr::Split { source: Box::new(rewrite_child(*source)?), index: Box::new(rewrite_child(*index)?), part })
-        }
-        Expr::Slice { source, start, end } => Ok(Expr::Slice {
-            source: Box::new(rewrite_child(*source)?),
-            start: Box::new(rewrite_child(*start)?),
-            end: Box::new(rewrite_child(*end)?),
-        }),
-        Expr::ArrayIndex { source, index } => {
-            Ok(Expr::ArrayIndex { source: Box::new(rewrite_child(*source)?), index: Box::new(rewrite_child(*index)?) })
-        }
-        Expr::Introspection { kind, index } => Ok(Expr::Introspection { kind, index: Box::new(rewrite_child(*index)?) }),
-        other => Ok(other),
-    }
-}
-
 fn resolve_expr(expr: Expr, env: &HashMap<String, Expr>, visiting: &mut HashSet<String>) -> Result<Expr, CompilerError> {
     match expr {
         Expr::Identifier(name) => {
-            // Preserve synthetic inline placeholders in compile mode so
-            // generated bytecode keeps reading caller stack arguments.
-            if name.starts_with("__arg_") {
+            // Keep synthetic inline args unresolved in compile mode so generated
+            // bytecode still reads them from caller stack bindings.
+            if is_inline_synthetic_name(&name) {
                 return Ok(Expr::Identifier(name));
             }
             if let Some(value) = env.get(&name) {
@@ -2115,7 +2221,56 @@ fn resolve_expr(expr: Expr, env: &HashMap<String, Expr>, visiting: &mut HashSet<
                 Ok(Expr::Identifier(name))
             }
         }
-        other => rewrite_expr_children(other, |child| resolve_expr(child, env, visiting)),
+        Expr::Unary { op, expr } => Ok(Expr::Unary { op, expr: Box::new(resolve_expr(*expr, env, visiting)?) }),
+        Expr::Binary { op, left, right } => Ok(Expr::Binary {
+            op,
+            left: Box::new(resolve_expr(*left, env, visiting)?),
+            right: Box::new(resolve_expr(*right, env, visiting)?),
+        }),
+        Expr::IfElse { condition, then_expr, else_expr } => Ok(Expr::IfElse {
+            condition: Box::new(resolve_expr(*condition, env, visiting)?),
+            then_expr: Box::new(resolve_expr(*then_expr, env, visiting)?),
+            else_expr: Box::new(resolve_expr(*else_expr, env, visiting)?),
+        }),
+        Expr::Array(values) => {
+            let mut resolved = Vec::with_capacity(values.len());
+            for value in values {
+                resolved.push(resolve_expr(value, env, visiting)?);
+            }
+            Ok(Expr::Array(resolved))
+        }
+        Expr::StateObject(fields) => {
+            let mut resolved_fields = Vec::with_capacity(fields.len());
+            for field in fields {
+                resolved_fields.push(crate::ast::StateFieldExpr { name: field.name, expr: resolve_expr(field.expr, env, visiting)? });
+            }
+            Ok(Expr::StateObject(resolved_fields))
+        }
+        Expr::Call { name, args } => {
+            let mut resolved = Vec::with_capacity(args.len());
+            for arg in args {
+                resolved.push(resolve_expr(arg, env, visiting)?);
+            }
+            Ok(Expr::Call { name, args: resolved })
+        }
+        Expr::New { name, args } => {
+            let mut resolved = Vec::with_capacity(args.len());
+            for arg in args {
+                resolved.push(resolve_expr(arg, env, visiting)?);
+            }
+            Ok(Expr::New { name, args: resolved })
+        }
+        Expr::Split { source, index, part } => Ok(Expr::Split {
+            source: Box::new(resolve_expr(*source, env, visiting)?),
+            index: Box::new(resolve_expr(*index, env, visiting)?),
+            part,
+        }),
+        Expr::ArrayIndex { source, index } => Ok(Expr::ArrayIndex {
+            source: Box::new(resolve_expr(*source, env, visiting)?),
+            index: Box::new(resolve_expr(*index, env, visiting)?),
+        }),
+        Expr::Introspection { kind, index } => Ok(Expr::Introspection { kind, index: Box::new(resolve_expr(*index, env, visiting)?) }),
+        other => Ok(other),
     }
 }
 
@@ -2144,14 +2299,23 @@ pub fn compile_debug_expr(
     Ok(builder.drain())
 }
 
-pub(super) fn expand_inline_args(
+pub(super) fn resolve_expr_for_debug(
+    expr: Expr,
+    env: &HashMap<String, Expr>,
+    visiting: &mut HashSet<String>,
+) -> Result<Expr, CompilerError> {
+    let resolved = resolve_expr(expr, env, visiting)?;
+    expand_inline_arg_placeholders(resolved, env, &mut HashSet::new())
+}
+
+fn expand_inline_arg_placeholders(
     expr: Expr,
     env: &HashMap<String, Expr>,
     visiting: &mut HashSet<String>,
 ) -> Result<Expr, CompilerError> {
     match expr {
         Expr::Identifier(name) => {
-            if !name.starts_with("__arg_") {
+            if !is_inline_synthetic_name(&name) {
                 return Ok(Expr::Identifier(name));
             }
             let Some(value) = env.get(&name).cloned() else {
@@ -2160,11 +2324,65 @@ pub(super) fn expand_inline_args(
             if !visiting.insert(name.clone()) {
                 return Err(CompilerError::CyclicIdentifier(name));
             }
-            let expanded = expand_inline_args(value, env, visiting)?;
+            let expanded = expand_inline_arg_placeholders(value, env, visiting)?;
             visiting.remove(&name);
             Ok(expanded)
         }
-        other => rewrite_expr_children(other, |child| expand_inline_args(child, env, visiting)),
+        Expr::Unary { op, expr } => Ok(Expr::Unary { op, expr: Box::new(expand_inline_arg_placeholders(*expr, env, visiting)?) }),
+        Expr::Binary { op, left, right } => Ok(Expr::Binary {
+            op,
+            left: Box::new(expand_inline_arg_placeholders(*left, env, visiting)?),
+            right: Box::new(expand_inline_arg_placeholders(*right, env, visiting)?),
+        }),
+        Expr::IfElse { condition, then_expr, else_expr } => Ok(Expr::IfElse {
+            condition: Box::new(expand_inline_arg_placeholders(*condition, env, visiting)?),
+            then_expr: Box::new(expand_inline_arg_placeholders(*then_expr, env, visiting)?),
+            else_expr: Box::new(expand_inline_arg_placeholders(*else_expr, env, visiting)?),
+        }),
+        Expr::Array(values) => {
+            let mut expanded = Vec::with_capacity(values.len());
+            for value in values {
+                expanded.push(expand_inline_arg_placeholders(value, env, visiting)?);
+            }
+            Ok(Expr::Array(expanded))
+        }
+        Expr::StateObject(fields) => {
+            let mut expanded_fields = Vec::with_capacity(fields.len());
+            for field in fields {
+                expanded_fields.push(crate::ast::StateFieldExpr {
+                    name: field.name,
+                    expr: expand_inline_arg_placeholders(field.expr, env, visiting)?,
+                });
+            }
+            Ok(Expr::StateObject(expanded_fields))
+        }
+        Expr::Call { name, args } => {
+            let mut expanded = Vec::with_capacity(args.len());
+            for arg in args {
+                expanded.push(expand_inline_arg_placeholders(arg, env, visiting)?);
+            }
+            Ok(Expr::Call { name, args: expanded })
+        }
+        Expr::New { name, args } => {
+            let mut expanded = Vec::with_capacity(args.len());
+            for arg in args {
+                expanded.push(expand_inline_arg_placeholders(arg, env, visiting)?);
+            }
+            Ok(Expr::New { name, args: expanded })
+        }
+        Expr::Split { source, index, part } => Ok(Expr::Split {
+            source: Box::new(expand_inline_arg_placeholders(*source, env, visiting)?),
+            index: Box::new(expand_inline_arg_placeholders(*index, env, visiting)?),
+            part,
+        }),
+        Expr::ArrayIndex { source, index } => Ok(Expr::ArrayIndex {
+            source: Box::new(expand_inline_arg_placeholders(*source, env, visiting)?),
+            index: Box::new(expand_inline_arg_placeholders(*index, env, visiting)?),
+        }),
+        Expr::Introspection { kind, index } => {
+            Ok(Expr::Introspection { kind, index: Box::new(expand_inline_arg_placeholders(*index, env, visiting)?) })
+        }
+        other => Ok(other),
     }
 }
 

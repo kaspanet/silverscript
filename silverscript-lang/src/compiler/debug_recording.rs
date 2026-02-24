@@ -2,13 +2,13 @@ use std::collections::{HashMap, HashSet};
 
 use kaspa_txscript::script_builder::ScriptBuilder;
 
-use crate::ast::{ContractFieldAst, Expr, FunctionAst, ParamAst, SpannedStatement};
+use crate::ast::{ContractFieldAst, Expr, FunctionAst, ParamAst, Statement};
 use crate::debug::{
     DebugConstantMapping, DebugEvent, DebugEventKind, DebugFunctionRange, DebugInfo, DebugParamMapping, DebugRecorder,
     DebugVariableUpdate, SourceSpan,
 };
 
-use super::{CompilerError, expand_inline_args, resolve_expr};
+use super::{CompilerError, is_inline_synthetic_name, resolve_expr_for_debug};
 
 type ResolvedVariableUpdate = (String, String, Expr);
 
@@ -133,7 +133,7 @@ impl FunctionDebugRecorder {
 
     fn record_statement_updates(
         &mut self,
-        stmt: &SpannedStatement,
+        stmt: &Statement,
         bytecode_start: usize,
         bytecode_end: usize,
         variables: Vec<ResolvedVariableUpdate>,
@@ -149,7 +149,7 @@ impl FunctionDebugRecorder {
     /// evaluation can compute values from the current state.
     pub fn record_statement_with_env_diff(
         &mut self,
-        stmt: &SpannedStatement,
+        stmt: &Statement,
         bytecode_start: usize,
         bytecode_end: usize,
         before_env: Option<&HashMap<String, Expr>>,
@@ -252,7 +252,7 @@ impl FunctionDebugRecorder {
         let mut updates = Vec::new();
         for name in names {
             // Inline synthetic args are plumbing, not user-facing variables.
-            if name.starts_with("__arg_") {
+            if is_inline_synthetic_name(&name) {
                 continue;
             }
             let Some(after_expr) = after_env.get(&name) else {
@@ -284,8 +284,7 @@ impl FunctionDebugRecorder {
         if !self.enabled {
             return Ok(());
         }
-        let resolved = resolve_expr(expr, env, &mut HashSet::new())?;
-        let resolved = expand_inline_args(resolved, env, &mut HashSet::new())?;
+        let resolved = resolve_expr_for_debug(expr, env, &mut HashSet::new())?;
         variables.push((name.to_string(), type_name.to_string(), resolved));
         Ok(())
     }
