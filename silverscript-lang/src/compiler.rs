@@ -35,7 +35,7 @@ pub struct CompiledContract<'i> {
     pub contract_name: String,
     pub script: Vec<u8>,
     pub ast: ContractAst<'i>,
-    pub function_entries: Vec<FunctionAbiEntry>,
+    pub abi: Vec<FunctionAbiEntry>,
     pub without_selector: bool,
 }
 
@@ -149,7 +149,7 @@ pub fn compile_contract_ast<'i>(
                 contract_name: contract.name.clone(),
                 script,
                 ast: contract.clone(),
-                function_entries: function_abi_entries,
+                abi: function_abi_entries,
                 without_selector,
             });
         }
@@ -160,7 +160,7 @@ pub fn compile_contract_ast<'i>(
                 contract_name: contract.name.clone(),
                 script,
                 ast: contract.clone(),
-                function_entries: function_abi_entries,
+                abi: function_abi_entries,
                 without_selector,
             });
         }
@@ -669,7 +669,7 @@ fn infer_fixed_array_type_from_initializer<'i>(
 impl<'i> CompiledContract<'i> {
     pub fn build_sig_script(&self, function_name: &str, args: Vec<Expr<'i>>) -> Result<Vec<u8>, CompilerError> {
         let function = self
-            .function_entries
+            .abi
             .iter()
             .find(|entry| entry.name == function_name)
             .ok_or_else(|| CompilerError::Unsupported(format!("function '{}' not found", function_name)))?;
