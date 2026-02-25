@@ -673,11 +673,7 @@ impl<'a, 'i> DebugSession<'a, 'i> {
         stacks.dstack.iter().map(|item| encode_hex(item)).collect()
     }
 
-    fn evaluate_update_with_shadow_vm(
-        &self,
-        function_name: &str,
-        update: &DebugVariableUpdate<'i>,
-    ) -> Result<DebugValue, String> {
+    fn evaluate_update_with_shadow_vm(&self, function_name: &str, update: &DebugVariableUpdate<'i>) -> Result<DebugValue, String> {
         self.evaluate_expr_with_shadow_vm(function_name, &update.type_name, &update.expr)
     }
 
@@ -687,12 +683,7 @@ impl<'a, 'i> DebugSession<'a, 'i> {
     /// that pushes current param values then executes the bytecode, run on fresh VM,
     /// read result from top of stack. This guarantees debugger sees same semantics as
     /// real execution without duplicating evaluation logic.
-    fn evaluate_expr_with_shadow_vm(
-        &self,
-        function_name: &str,
-        type_name: &str,
-        expr: &Expr<'i>,
-    ) -> Result<DebugValue, String> {
+    fn evaluate_expr_with_shadow_vm(&self, function_name: &str, type_name: &str, expr: &Expr<'i>) -> Result<DebugValue, String> {
         let params = self.shadow_param_values(function_name)?;
         let mut param_indexes = HashMap::new();
         let mut param_types = HashMap::new();
@@ -909,11 +900,14 @@ mod tests {
             .evaluate_expr_with_shadow_vm(
                 "f",
                 "int",
-                &Expr::new(ExprKind::Binary {
-                    op: BinaryOp::Add,
-                    left: Box::new(Expr::identifier("a")),
-                    right: Box::new(Expr::identifier("b")),
-                }, span::Span::default()),
+                &Expr::new(
+                    ExprKind::Binary {
+                        op: BinaryOp::Add,
+                        left: Box::new(Expr::identifier("a")),
+                        right: Box::new(Expr::identifier("b")),
+                    },
+                    span::Span::default(),
+                ),
             )
             .unwrap();
         assert!(matches!(value, DebugValue::Int(12)));

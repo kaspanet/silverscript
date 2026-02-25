@@ -379,13 +379,7 @@ impl<'i> DebugSink<'i> {
         });
     }
 
-    pub fn record_compiled_function(
-        &mut self,
-        name: &str,
-        script_len: usize,
-        debug: &FunctionDebugRecorder<'i>,
-        offset: usize,
-    ) {
+    pub fn record_compiled_function(&mut self, name: &str, script_len: usize, debug: &FunctionDebugRecorder<'i>, offset: usize) {
         let Some(rec) = self.recorder_mut() else {
             return;
         };

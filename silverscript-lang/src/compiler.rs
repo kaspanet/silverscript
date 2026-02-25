@@ -9,9 +9,9 @@ use crate::ast::{
     StateBindingAst, StateFieldExpr, Statement, TimeVar, TypeBase, TypeRef, UnaryOp, UnarySuffixKind, parse_contract_ast,
     parse_type_ref,
 };
-pub use crate::errors::{CompilerError, ErrorSpan};
 use crate::debug::labels::synthetic;
 use crate::debug::{DebugInfo, SourceSpan};
+pub use crate::errors::{CompilerError, ErrorSpan};
 use crate::span;
 
 mod debug_recording;
@@ -2369,10 +2369,9 @@ fn expand_inline_arg_placeholders<'i>(
             visiting.remove(&name);
             Ok(expanded)
         }
-        ExprKind::Unary { op, expr } => Ok(Expr::new(
-            ExprKind::Unary { op, expr: Box::new(expand_inline_arg_placeholders(*expr, env, visiting)?) },
-            span,
-        )),
+        ExprKind::Unary { op, expr } => {
+            Ok(Expr::new(ExprKind::Unary { op, expr: Box::new(expand_inline_arg_placeholders(*expr, env, visiting)?) }, span))
+        }
         ExprKind::Binary { op, left, right } => Ok(Expr::new(
             ExprKind::Binary {
                 op,
@@ -2439,11 +2438,7 @@ fn expand_inline_arg_placeholders<'i>(
             span,
         )),
         ExprKind::Introspection { kind, index, field_span } => Ok(Expr::new(
-            ExprKind::Introspection {
-                kind,
-                index: Box::new(expand_inline_arg_placeholders(*index, env, visiting)?),
-                field_span,
-            },
+            ExprKind::Introspection { kind, index: Box::new(expand_inline_arg_placeholders(*index, env, visiting)?), field_span },
             span,
         )),
         ExprKind::UnarySuffix { source, kind, span: suffix_span } => Ok(Expr::new(
