@@ -3432,7 +3432,7 @@ fn compile_call_expr<'i>(
             }
         }
         "length" => compile_length_expr(
-            &args,
+            args,
             scope.env,
             scope.params,
             scope.types,
