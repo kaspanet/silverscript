@@ -140,19 +140,14 @@ fn compile_contract_impl(
             }
         }
 
-        let script = if without_selector {
-            let mut builder = ScriptBuilder::new();
-            builder.add_ops(&field_prolog_script)?;
+        let entrypoint_script = if without_selector {
             let compiled = compiled_entrypoints
                 .first()
                 .ok_or_else(|| CompilerError::Unsupported("contract has no entrypoint functions".to_string()))?;
-            let start = builder.script().len();
-            builder.add_ops(&compiled.script)?;
-            recorder.record_compiled_function(&compiled.name, compiled.script.len(), &compiled.debug, start);
-            builder.drain()
+            recorder.record_compiled_function(&compiled.name, compiled.script.len(), &compiled.debug, field_prolog_script.len());
+            compiled.script.clone()
         } else {
             let mut builder = ScriptBuilder::new();
-            builder.add_ops(&field_prolog_script)?;
             let total = compiled_entrypoints.len();
             for (index, compiled) in compiled_entrypoints.iter().enumerate() {
                 record_synthetic_range(&mut builder, &mut recorder, synthetic::DISPATCHER_GUARD, |builder| {
@@ -163,7 +158,7 @@ fn compile_contract_impl(
                     builder.add_op(OpDrop)?;
                     Ok(())
                 })?;
-                let start = builder.script().len();
+                let start = field_prolog_script.len() + builder.script().len();
                 builder.add_ops(&compiled.script)?;
                 recorder.record_compiled_function(&compiled.name, compiled.script.len(), &compiled.debug, start);
                 record_synthetic_range(&mut builder, &mut recorder, synthetic::DISPATCHER_ELSE, |builder| {
@@ -186,6 +181,9 @@ fn compile_contract_impl(
 
             builder.drain()
         };
+
+        let mut script = field_prolog_script.clone();
+        script.extend(entrypoint_script);
 
         if !uses_script_size {
             let debug_info = recorder.into_debug_info(source.unwrap_or_default().to_string());
@@ -1769,13 +1767,16 @@ fn compile_inline_call(
         if !expr_matches_type_with_env(arg, &param_type_name, caller_types, contract_constants) {
             return Err(CompilerError::Unsupported(format!("function argument '{}' expects {}", param.name, param_type_name)));
         }
-        if is_array_type(&param_type_name) && array_element_size(&param_type_name).is_none() {
-            return Err(CompilerError::Unsupported(format!("array element type must have known size: {}", param_type_name)));
-        }
     }
 
     let mut types =
         function.params.iter().map(|param| (param.name.clone(), type_name_from_ref(&param.type_ref))).collect::<HashMap<_, _>>();
+    for param in &function.params {
+        let param_type_name = type_name_from_ref(&param.type_ref);
+        if is_array_type(&param_type_name) && array_element_size(&param_type_name).is_none() {
+            return Err(CompilerError::Unsupported(format!("array element type must have known size: {}", param_type_name)));
+        }
+    }
     let mut env: HashMap<String, Expr> = contract_constants.clone();
 
     // Preserve caller synthetic inline bindings so nested inline calls can
@@ -1791,16 +1792,16 @@ fn compile_inline_call(
 
     for (index, (param, arg)) in function.params.iter().zip(args.iter()).enumerate() {
         let resolved = resolve_expr(arg.clone(), caller_env, &mut HashSet::new())?;
-        let synthetic_name = format!("__arg_{name}_{index}");
+        let temp_name = format!("__arg_{name}_{index}");
         let param_type_name = type_name_from_ref(&param.type_ref);
         // Inline calls bind each callee parameter to a synthetic identifier so
         // callee expressions keep a stable name while still pointing at the
         // caller-provided argument expression.
-        env.insert(synthetic_name.clone(), resolved.clone());
-        types.insert(synthetic_name.clone(), param_type_name.clone());
-        env.insert(param.name.clone(), Expr::Identifier(synthetic_name.clone()));
-        caller_env.insert(synthetic_name.clone(), resolved);
-        caller_types.insert(synthetic_name, param_type_name);
+        env.insert(temp_name.clone(), resolved.clone());
+        types.insert(temp_name.clone(), param_type_name.clone());
+        env.insert(param.name.clone(), Expr::Identifier(temp_name.clone()));
+        caller_env.insert(temp_name.clone(), resolved);
+        caller_types.insert(temp_name, param_type_name);
     }
 
     if !options.allow_yield && function.body.iter().any(contains_yield) {
