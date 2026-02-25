@@ -2361,6 +2361,7 @@ fn compile_expr<'i>(
             Ok(())
         }
         ExprKind::Array(values) => {
+            // TODO: this particular handling should be done in encode_array_literal to unify the behavior
             if values.is_empty() {
                 builder.add_data(&[])?;
                 *stack_depth += 1;
