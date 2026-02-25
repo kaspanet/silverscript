@@ -7,7 +7,7 @@ use kaspa_txscript::script_builder::ScriptBuilder;
 use kaspa_txscript::{DynOpcodeImplementation, EngineCtx, EngineFlags, TxScriptEngine, parse_script};
 use serde::{Deserialize, Serialize};
 
-use crate::ast::Expr;
+use crate::ast::{Expr, ExprKind};
 use crate::compiler::compile_debug_expr;
 use crate::debug::presentation::{build_source_context, format_value as format_debug_value};
 use crate::debug::{DebugFunctionRange, DebugInfo, DebugMapping, DebugParamMapping, DebugVariableUpdate, MappingKind, SourceSpan};
@@ -78,14 +78,14 @@ pub struct OpcodeMeta {
     pub mapping: Option<DebugMapping>,
 }
 
-pub struct DebugSession<'a> {
+pub struct DebugSession<'a, 'i> {
     engine: DebugEngine<'a>,
     opcodes: Vec<Option<DebugOpcode<'a>>>,
     op_displays: Vec<String>,
     opcode_offsets: Vec<usize>,
     script_len: usize,
     pc: usize,
-    debug_info: DebugInfo,
+    debug_info: DebugInfo<'i>,
     source_mappings: Vec<DebugMapping>,
     current_step_index: Option<usize>,
     source_lines: Vec<String>,
@@ -108,7 +108,7 @@ struct VariableContext<'a> {
     frame_id: u32,
 }
 
-impl<'a> DebugSession<'a> {
+impl<'a, 'i> DebugSession<'a, 'i> {
     // --- Session construction + stepping ---
 
     /// Creates a debug session for lockscript-only execution.
@@ -116,7 +116,7 @@ impl<'a> DebugSession<'a> {
     pub fn lockscript_only(
         script: &[u8],
         source: &str,
-        debug_info: Option<DebugInfo>,
+        debug_info: Option<DebugInfo<'i>>,
         engine: DebugEngine<'a>,
     ) -> Result<Self, kaspa_txscript_errors::TxScriptError> {
         Self::from_scripts(script, source, debug_info, engine)
@@ -128,7 +128,7 @@ impl<'a> DebugSession<'a> {
         sigscript: &[u8],
         lockscript: &[u8],
         source: &str,
-        debug_info: Option<DebugInfo>,
+        debug_info: Option<DebugInfo<'i>>,
         mut engine: DebugEngine<'a>,
     ) -> Result<Self, kaspa_txscript_errors::TxScriptError> {
         seed_engine_with_sigscript(&mut engine, sigscript)?;
@@ -139,7 +139,7 @@ impl<'a> DebugSession<'a> {
     pub fn from_scripts(
         script: &[u8],
         source: &str,
-        debug_info: Option<DebugInfo>,
+        debug_info: Option<DebugInfo<'i>>,
         engine: DebugEngine<'a>,
     ) -> Result<Self, kaspa_txscript_errors::TxScriptError> {
         let debug_info = debug_info.unwrap_or_else(DebugInfo::empty);
@@ -364,7 +364,7 @@ impl<'a> DebugSession<'a> {
         self.op_displays.len()
     }
 
-    pub fn debug_info(&self) -> &DebugInfo {
+    pub fn debug_info(&self) -> &DebugInfo<'i> {
         &self.debug_info
     }
 
@@ -486,8 +486,8 @@ impl<'a> DebugSession<'a> {
         offset: usize,
         sequence: u32,
         frame_id: u32,
-    ) -> HashMap<String, &DebugVariableUpdate> {
-        let mut latest: HashMap<String, &DebugVariableUpdate> = HashMap::new();
+    ) -> HashMap<String, &DebugVariableUpdate<'i>> {
+        let mut latest: HashMap<String, &DebugVariableUpdate<'i>> = HashMap::new();
         for update in self
             .debug_info
             .variable_updates
@@ -567,7 +567,7 @@ impl<'a> DebugSession<'a> {
 
     fn update_is_visible(
         &self,
-        update: &DebugVariableUpdate,
+        update: &DebugVariableUpdate<'i>,
         function_name: &str,
         offset: usize,
         sequence: u32,
@@ -673,7 +673,11 @@ impl<'a> DebugSession<'a> {
         stacks.dstack.iter().map(|item| encode_hex(item)).collect()
     }
 
-    fn evaluate_update_with_shadow_vm(&self, function_name: &str, update: &DebugVariableUpdate) -> Result<DebugValue, String> {
+    fn evaluate_update_with_shadow_vm(
+        &self,
+        function_name: &str,
+        update: &DebugVariableUpdate<'i>,
+    ) -> Result<DebugValue, String> {
         self.evaluate_expr_with_shadow_vm(function_name, &update.type_name, &update.expr)
     }
 
@@ -683,7 +687,12 @@ impl<'a> DebugSession<'a> {
     /// that pushes current param values then executes the bytecode, run on fresh VM,
     /// read result from top of stack. This guarantees debugger sees same semantics as
     /// real execution without duplicating evaluation logic.
-    fn evaluate_expr_with_shadow_vm(&self, function_name: &str, type_name: &str, expr: &Expr) -> Result<DebugValue, String> {
+    fn evaluate_expr_with_shadow_vm(
+        &self,
+        function_name: &str,
+        type_name: &str,
+        expr: &Expr<'i>,
+    ) -> Result<DebugValue, String> {
         let params = self.shadow_param_values(function_name)?;
         let mut param_indexes = HashMap::new();
         let mut param_types = HashMap::new();
@@ -739,12 +748,12 @@ impl<'a> DebugSession<'a> {
         decode_value_by_type(&param.type_name, bytes)
     }
 
-    fn evaluate_constant(&self, expr: &Expr) -> DebugValue {
-        match expr {
-            Expr::Int(v) => DebugValue::Int(*v),
-            Expr::Bool(v) => DebugValue::Bool(*v),
-            Expr::Byte(v) => DebugValue::Bytes(vec![*v]),
-            Expr::String(v) => DebugValue::String(v.clone()),
+    fn evaluate_constant(&self, expr: &Expr<'i>) -> DebugValue {
+        match &expr.kind {
+            ExprKind::Int(v) => DebugValue::Int(*v),
+            ExprKind::Bool(v) => DebugValue::Bool(*v),
+            ExprKind::Byte(v) => DebugValue::Bytes(vec![*v]),
+            ExprKind::String(v) => DebugValue::String(v.clone()),
             _ => DebugValue::Unknown("complex expression".to_string()),
         }
     }
@@ -847,14 +856,15 @@ fn encode_hex(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
 
-    use crate::ast::{BinaryOp, Expr};
+    use crate::ast::{BinaryOp, Expr, ExprKind};
     use crate::debug::{DebugConstantMapping, DebugFunctionRange, DebugInfo, DebugParamMapping, DebugVariableUpdate};
+    use crate::span;
 
     fn make_session(
         params: Vec<DebugParamMapping>,
-        updates: Vec<DebugVariableUpdate>,
+        updates: Vec<DebugVariableUpdate<'static>>,
         sigscript: &[u8],
-    ) -> Result<DebugSession<'static>, kaspa_txscript_errors::TxScriptError> {
+    ) -> Result<DebugSession<'static, 'static>, kaspa_txscript_errors::TxScriptError> {
         let sig_cache = Box::leak(Box::new(Cache::new(10_000)));
         let reused_values: &'static SigHashReusedValuesUnsync = Box::leak(Box::new(SigHashReusedValuesUnsync::new()));
         let engine: DebugEngine<'static> =
@@ -865,7 +875,7 @@ mod tests {
             variable_updates: updates,
             params,
             functions: vec![DebugFunctionRange { name: "f".to_string(), bytecode_start: 0, bytecode_end: 1 }],
-            constants: vec![DebugConstantMapping { name: "K".to_string(), type_name: "int".to_string(), value: Expr::Int(7) }],
+            constants: vec![DebugConstantMapping { name: "K".to_string(), type_name: "int".to_string(), value: Expr::int(7) }],
         };
         DebugSession::full(sigscript, &[], "", Some(debug_info), engine)
     }
@@ -899,11 +909,11 @@ mod tests {
             .evaluate_expr_with_shadow_vm(
                 "f",
                 "int",
-                &Expr::Binary {
+                &Expr::new(ExprKind::Binary {
                     op: BinaryOp::Add,
-                    left: Box::new(Expr::Identifier("a".to_string())),
-                    right: Box::new(Expr::Identifier("b".to_string())),
-                },
+                    left: Box::new(Expr::identifier("a")),
+                    right: Box::new(Expr::identifier("b")),
+                }, span::Span::default()),
             )
             .unwrap();
         assert!(matches!(value, DebugValue::Int(12)));
@@ -920,7 +930,7 @@ mod tests {
             vec![DebugVariableUpdate {
                 name: "x".to_string(),
                 type_name: "int".to_string(),
-                expr: Expr::Identifier("missing".to_string()),
+                expr: Expr::identifier("missing"),
                 bytecode_offset: 0,
                 span: None,
                 function: "f".to_string(),

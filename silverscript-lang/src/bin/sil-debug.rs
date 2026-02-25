@@ -6,9 +6,10 @@ use kaspa_consensus_core::hashing::sighash::SigHashReusedValuesUnsync;
 use kaspa_txscript::caches::Cache;
 use kaspa_txscript::{EngineCtx, EngineFlags};
 
-use silverscript_lang::ast::{Expr, parse_contract_ast};
+use silverscript_lang::ast::{Expr, ExprKind, parse_contract_ast};
 use silverscript_lang::compiler::{CompileOptions, compile_contract};
 use silverscript_lang::debug::session::{DebugEngine, DebugSession};
+use silverscript_lang::span;
 
 const PROMPT: &str = "(sdb) ";
 
@@ -47,11 +48,11 @@ fn parse_hex_bytes(raw: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     Ok(out)
 }
 
-fn bytes_expr(bytes: Vec<u8>) -> Expr {
-    Expr::Array(bytes.into_iter().map(Expr::Byte).collect())
+fn bytes_expr(bytes: Vec<u8>) -> Expr<'static> {
+    Expr::new(ExprKind::Array(bytes.into_iter().map(Expr::byte).collect()), span::Span::default())
 }
 
-fn parse_typed_arg(type_name: &str, raw: &str) -> Result<Expr, Box<dyn std::error::Error>> {
+fn parse_typed_arg(type_name: &str, raw: &str) -> Result<Expr<'static>, Box<dyn std::error::Error>> {
     if let Some(element_type) = type_name.strip_suffix("[]") {
         let trimmed = raw.trim();
         if trimmed.starts_with('[') {
@@ -59,14 +60,14 @@ fn parse_typed_arg(type_name: &str, raw: &str) -> Result<Expr, Box<dyn std::erro
             let mut out = Vec::with_capacity(values.len());
             for value in values {
                 let expr = match value {
-                    serde_json::Value::Number(n) => Expr::Int(n.as_i64().ok_or("invalid int in array")?),
-                    serde_json::Value::Bool(b) => Expr::Bool(b),
+                    serde_json::Value::Number(n) => Expr::int(n.as_i64().ok_or("invalid int in array")?),
+                    serde_json::Value::Bool(b) => Expr::bool(b),
                     serde_json::Value::String(s) => parse_typed_arg(element_type, &s)?,
                     _ => return Err("unsupported array element (expected number/bool/string)".into()),
                 };
                 out.push(expr);
             }
-            return Ok(Expr::Array(out));
+            return Ok(Expr::new(ExprKind::Array(out), span::Span::default()));
         }
         if element_type == "byte" {
             return Ok(bytes_expr(parse_hex_bytes(trimmed)?));
@@ -75,16 +76,16 @@ fn parse_typed_arg(type_name: &str, raw: &str) -> Result<Expr, Box<dyn std::erro
     }
 
     match type_name {
-        "int" => Ok(Expr::Int(parse_int_arg(raw)?)),
+        "int" => Ok(Expr::int(parse_int_arg(raw)?)),
         "bool" => match raw {
-            "true" => Ok(Expr::Bool(true)),
-            "false" => Ok(Expr::Bool(false)),
+            "true" => Ok(Expr::bool(true)),
+            "false" => Ok(Expr::bool(false)),
             _ => Err(format!("invalid bool '{raw}' (expected true/false)").into()),
         },
-        "string" => Ok(Expr::String(raw.to_string())),
+        "string" => Ok(Expr::string(raw.to_string())),
         "byte" => {
             let bytes = parse_hex_bytes(raw)?;
-            if bytes.len() == 1 { Ok(Expr::Byte(bytes[0])) } else { Err(format!("byte expects 1 byte, got {}", bytes.len()).into()) }
+            if bytes.len() == 1 { Ok(Expr::byte(bytes[0])) } else { Err(format!("byte expects 1 byte, got {}", bytes.len()).into()) }
         }
         "bytes" => Ok(bytes_expr(parse_hex_bytes(raw)?)),
         "pubkey" => {
@@ -126,7 +127,7 @@ fn parse_typed_arg(type_name: &str, raw: &str) -> Result<Expr, Box<dyn std::erro
     }
 }
 
-fn show_stack(session: &DebugSession<'_>) {
+fn show_stack(session: &DebugSession<'_, '_>) {
     println!("Stack:");
     let stack = session.stack();
     for (i, item) in stack.iter().enumerate().rev() {
@@ -134,7 +135,7 @@ fn show_stack(session: &DebugSession<'_>) {
     }
 }
 
-fn show_source_context(session: &DebugSession<'_>) {
+fn show_source_context(session: &DebugSession<'_, '_>) {
     let Some(context) = session.source_context() else {
         println!("No source context available.");
         return;
@@ -146,7 +147,7 @@ fn show_source_context(session: &DebugSession<'_>) {
     }
 }
 
-fn show_vars(session: &DebugSession<'_>) {
+fn show_vars(session: &DebugSession<'_, '_>) {
     match session.list_variables() {
         Ok(variables) => {
             if variables.is_empty() {
@@ -168,12 +169,12 @@ fn show_vars(session: &DebugSession<'_>) {
     }
 }
 
-fn show_step_view(session: &DebugSession<'_>) {
+fn show_step_view(session: &DebugSession<'_, '_>) {
     show_source_context(session);
     show_vars(session);
 }
 
-fn run_repl(session: &mut DebugSession<'_>) -> Result<(), kaspa_txscript_errors::TxScriptError> {
+fn run_repl(session: &mut DebugSession<'_, '_>) -> Result<(), kaspa_txscript_errors::TxScriptError> {
     let stdin = io::stdin();
     loop {
         print!("{PROMPT}");

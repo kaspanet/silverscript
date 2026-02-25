@@ -20,25 +20,25 @@ fn example_contract_path() -> PathBuf {
 // Convenience harness for the canonical example contract used by baseline session tests.
 fn with_session<F>(mut f: F) -> Result<(), Box<dyn Error>>
 where
-    F: FnMut(&mut DebugSession<'_>) -> Result<(), Box<dyn Error>>,
+    F: FnMut(&mut DebugSession<'_, '_>) -> Result<(), Box<dyn Error>>,
 {
     let contract_path = example_contract_path();
     assert!(contract_path.exists(), "example contract not found: {}", contract_path.display());
 
     let source = fs::read_to_string(&contract_path)?;
-    with_session_for_source(&source, vec![Expr::Int(3), Expr::Int(10)], "hello", vec![Expr::Int(5), Expr::Int(5)], &mut f)
+    with_session_for_source(&source, vec![Expr::int(3), Expr::int(10)], "hello", vec![Expr::int(5), Expr::int(5)], &mut f)
 }
 
 // Generic harness that compiles a contract and boots a debugger session for a selected function call.
 fn with_session_for_source<F>(
     source: &str,
-    ctor_args: Vec<Expr>,
+    ctor_args: Vec<Expr<'static>>,
     function_name: &str,
-    function_args: Vec<Expr>,
+    function_args: Vec<Expr<'static>>,
     mut f: F,
 ) -> Result<(), Box<dyn Error>>
 where
-    F: FnMut(&mut DebugSession<'_>) -> Result<(), Box<dyn Error>>,
+    F: FnMut(&mut DebugSession<'_, '_>) -> Result<(), Box<dyn Error>>,
 {
     let parsed_contract = parse_contract_ast(source)?;
     assert_eq!(parsed_contract.params.len(), ctor_args.len());
@@ -132,7 +132,7 @@ contract BP() {
 }
 "#;
 
-    with_session_for_source(source, vec![], "main", vec![Expr::Int(1)], |session| {
+    with_session_for_source(source, vec![], "main", vec![Expr::int(1)], |session| {
         session.run_to_first_executed_statement()?;
         // Line 8 is inside a multiline `require(...)` span and should still be hit.
         assert!(session.add_breakpoint(8), "expected breakpoint line to be valid");
@@ -157,7 +157,7 @@ contract Shadow(int x) {
 }
 "#;
 
-    with_session_for_source(source, vec![Expr::Int(7)], "main", vec![Expr::Int(3)], |session| {
+    with_session_for_source(source, vec![Expr::int(7)], "main", vec![Expr::int(3)], |session| {
         session.run_to_first_executed_statement()?;
 
         // Function param `x` should shadow constructor constant `x` in visible debugger variables.
@@ -185,7 +185,7 @@ contract ShadowMath(int fee) {
 }
 "#;
 
-    with_session_for_source(source, vec![Expr::Int(2)], "main", vec![Expr::Int(3)], |session| {
+    with_session_for_source(source, vec![Expr::int(2)], "main", vec![Expr::int(3)], |session| {
         session.run_to_first_executed_statement()?;
 
         session.step_over()?;
@@ -216,7 +216,7 @@ contract FieldOffset(int c) {
 }
 "#;
 
-    with_session_for_source(source, vec![Expr::Int(2)], "main", vec![Expr::Int(5)], |session| {
+    with_session_for_source(source, vec![Expr::int(2)], "main", vec![Expr::int(5)], |session| {
         session.run_to_first_executed_statement()?;
 
         let a = session.variable_by_name("a")?;
@@ -242,7 +242,7 @@ contract FieldMath(int c) {
 }
 "#;
 
-    with_session_for_source(source, vec![Expr::Int(2)], "main", vec![Expr::Int(5)], |session| {
+    with_session_for_source(source, vec![Expr::int(2)], "main", vec![Expr::int(5)], |session| {
         session.run_to_first_executed_statement()?;
 
         for _ in 0..4 {
@@ -272,7 +272,7 @@ contract Virtuals() {
 }
 "#;
 
-    with_session_for_source(source, vec![], "main", vec![Expr::Int(3)], |session| {
+    with_session_for_source(source, vec![], "main", vec![Expr::int(3)], |session| {
         session.run_to_first_executed_statement()?;
         let first = session.current_location().ok_or("missing first location")?;
         assert!(matches!(first.kind, MappingKind::Virtual {}));
@@ -302,7 +302,7 @@ contract OpcodeCursor() {
 }
 "#;
 
-    with_session_for_source(source, vec![], "main", vec![Expr::Int(3)], |session| {
+    with_session_for_source(source, vec![], "main", vec![Expr::int(3)], |session| {
         session.run_to_first_executed_statement()?;
         let start = session.current_span().ok_or("missing start span")?;
         assert_eq!(start.line, 5);
@@ -330,7 +330,7 @@ contract VirtualBp() {
 }
 "#;
 
-    with_session_for_source(source, vec![], "main", vec![Expr::Int(3)], |session| {
+    with_session_for_source(source, vec![], "main", vec![Expr::int(3)], |session| {
         session.run_to_first_executed_statement()?;
         assert!(session.add_breakpoint(6), "line with virtual assignment should be a valid breakpoint");
         let hit = session.continue_to_breakpoint()?;
@@ -354,7 +354,7 @@ contract LocalVars() {
 }
 "#;
 
-    with_session_for_source(source, vec![], "main", vec![Expr::Int(3)], |session| {
+    with_session_for_source(source, vec![], "main", vec![Expr::int(3)], |session| {
         session.run_to_first_executed_statement()?;
         assert!(session.variable_by_name("x").is_err(), "x should not exist before its statement executes");
 
@@ -401,7 +401,7 @@ contract InlineCalls() {
 }
 "#;
 
-    with_session_for_source(source, vec![], "main", vec![Expr::Int(3)], |session| {
+    with_session_for_source(source, vec![], "main", vec![Expr::int(3)], |session| {
         session.run_to_first_executed_statement()?;
         let start = session.current_span().ok_or("missing start span")?;
         assert_eq!(start.line, 10);
@@ -420,7 +420,7 @@ contract InlineCalls() {
         Ok(())
     })?;
 
-    with_session_for_source(source, vec![], "main", vec![Expr::Int(3)], |session| {
+    with_session_for_source(source, vec![], "main", vec![Expr::int(3)], |session| {
         session.run_to_first_executed_statement()?;
         session.step_into()?;
         let mut in_callee = session.current_span().ok_or("missing span in callee")?;
@@ -464,7 +464,7 @@ contract Repeat() {
 }
 "#;
 
-    with_session_for_source(source, vec![], "main", vec![Expr::Int(0)], |session| {
+    with_session_for_source(source, vec![], "main", vec![Expr::int(0)], |session| {
         session.run_to_first_executed_statement()?;
         let start = session.current_span().ok_or("missing start span")?;
         assert_eq!(start.line, 10, "first source step should be caller line, not callee internals");
@@ -490,7 +490,7 @@ contract Repeat() {
 }
 "#;
 
-    with_session_for_source(source, vec![], "main", vec![Expr::Int(0)], |session| {
+    with_session_for_source(source, vec![], "main", vec![Expr::int(0)], |session| {
         session.run_to_first_executed_statement()?;
 
         let mut lines = vec![session.current_span().ok_or("missing initial span")?.line];
@@ -572,7 +572,7 @@ contract DebugPoC(int const) {
 }
 "#;
 
-    with_session_for_source(source, vec![Expr::Int(0)], "main", vec![Expr::Int(0), Expr::Int(0)], |session| {
+    with_session_for_source(source, vec![Expr::int(0)], "main", vec![Expr::int(0), Expr::int(0)], |session| {
         session.run_to_first_executed_statement()?;
 
         let initial = session.current_location().ok_or("missing initial location")?;
@@ -616,7 +616,7 @@ contract InlineParams() {
 }
 "#;
 
-    with_session_for_source(source, vec![], "main", vec![Expr::Int(4)], |session| {
+    with_session_for_source(source, vec![], "main", vec![Expr::int(4)], |session| {
         session.run_to_first_executed_statement()?;
 
         let mut saw_inline_param = false;
@@ -662,7 +662,7 @@ contract NestedArgs() {
 }
 "#;
 
-    with_session_for_source(source, vec![], "main", vec![Expr::Int(0)], |session| {
+    with_session_for_source(source, vec![], "main", vec![Expr::int(0)], |session| {
         session.run_to_first_executed_statement()?;
         let start = session.current_span().ok_or("missing start span")?;
         assert_eq!(start.line, 15);
