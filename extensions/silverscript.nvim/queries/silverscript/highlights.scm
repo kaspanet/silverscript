@@ -12,6 +12,14 @@
 
 (type_name) @type
 
+(instantiation
+  (identifier) @type.builtin
+  (#match? @type.builtin
+    "^(LockingBytecodeNullData|ScriptPubKeyP2PK|ScriptPubKeyP2SH|ScriptPubKeyP2SHFromRedeemScript)$"))
+
+(instantiation
+  (identifier) @type)
+
 (contract_definition
   name: (identifier) @type)
 
@@ -63,7 +71,19 @@
 
 (function_call
   (identifier) @function.builtin
-  (#match? @function.builtin "^(readInputState|validateOutputState|verifyOutputState|verifyOutputStates)$"))
+  (#match? @function.builtin
+    "^(readInputState|validateOutputState|verifyOutputState|verifyOutputStates|OpSha256|sha256|OpTxSubnetId|OpTxGas|OpTxPayloadLen|OpTxPayloadSubstr|OpOutpointTxId|OpOutpointIndex|OpTxInputScriptSigLen|OpTxInputScriptSigSubstr|OpTxInputSeq|OpTxInputIsCoinbase|OpTxInputSpkLen|OpTxInputSpkSubstr|OpTxOutputSpkLen|OpTxOutputSpkSubstr|OpAuthOutputCount|OpAuthOutputIdx|OpInputCovenantId|OpCovInputCount|OpCovInputIdx|OpCovOutCount|OpCovOutputIdx|OpNum2Bin|OpBin2Num|OpChainblockSeqCommit|checkDataSig|checkSig|checkMultiSig|blake2b)$"))
+
+(unary_suffix) @property
+
+(split_call
+  ".split" @function.method)
+
+(slice_call
+  ".slice" @function.method)
+
+(reverse_call
+  ".reverse" @function.method)
 
 (array_bound) @number
 
