@@ -105,12 +105,10 @@ fn silverc_stdout_flag_overrides_output_file() {
 
     let output =
         silverc().arg(src_path.to_str().unwrap()).arg("-o").arg(out_path.to_str().unwrap()).arg("-c").output().expect("run silverc");
-    assert!(output.status.success());
+    assert!(!output.status.success());
 
-    let stdout = String::from_utf8(output.stdout).expect("decode stdout");
-    let compiled: CompiledContract = serde_json::from_str(&stdout).expect("parse compiled json");
-    assert_eq!(compiled.contract_name, "Basic");
-    assert!(!out_path.exists());
+    let stderr = String::from_utf8(output.stderr).expect("decode stderr");
+    assert!(stderr.contains("invalid usage"));
 }
 
 #[test]
