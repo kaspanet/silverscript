@@ -1,8 +1,9 @@
 use std::collections::{HashMap, HashSet};
 
 use kaspa_consensus_core::hashing::sighash::SigHashReusedValuesUnsync;
-use kaspa_consensus_core::tx::PopulatedTransaction;
+use kaspa_consensus_core::tx::{PopulatedTransaction, TransactionInput, UtxoEntry};
 use kaspa_txscript::caches::Cache;
+use kaspa_txscript::covenants::CovenantsContext;
 use kaspa_txscript::script_builder::ScriptBuilder;
 use kaspa_txscript::{DynOpcodeImplementation, EngineCtx, EngineFlags, TxScriptEngine, parse_script};
 use serde::{Deserialize, Serialize};
@@ -18,6 +19,15 @@ pub type DebugTx<'a> = PopulatedTransaction<'a>;
 pub type DebugReused = SigHashReusedValuesUnsync;
 pub type DebugOpcode<'a> = DynOpcodeImplementation<DebugTx<'a>, DebugReused>;
 pub type DebugEngine<'a> = TxScriptEngine<'a, DebugTx<'a>, DebugReused>;
+
+#[derive(Clone, Copy)]
+pub struct ShadowTxContext<'a> {
+    pub tx: &'a DebugTx<'a>,
+    pub input: &'a TransactionInput,
+    pub input_index: usize,
+    pub utxo_entry: &'a UtxoEntry,
+    pub covenants_ctx: &'a CovenantsContext,
+}
 
 #[derive(Debug, Clone)]
 pub enum DebugValue {
@@ -80,6 +90,7 @@ pub struct OpcodeMeta {
 
 pub struct DebugSession<'a, 'i> {
     engine: DebugEngine<'a>,
+    shadow_tx_context: Option<ShadowTxContext<'a>>,
     opcodes: Vec<Option<DebugOpcode<'a>>>,
     op_displays: Vec<String>,
     opcode_offsets: Vec<usize>,
@@ -178,6 +189,7 @@ impl<'a, 'i> DebugSession<'a, 'i> {
 
         Ok(Self {
             engine,
+            shadow_tx_context: None,
             opcodes,
             op_displays,
             opcode_offsets,
@@ -203,6 +215,11 @@ impl<'a, 'i> DebugSession<'a, 'i> {
         self.pc += 1;
         self.sync_step_cursor_to_current_offset();
         Ok(Some(self.state()))
+    }
+
+    pub fn with_shadow_tx_context(mut self, shadow_tx_context: ShadowTxContext<'a>) -> Self {
+        self.shadow_tx_context = Some(shadow_tx_context);
+        self
     }
 
     /// Step into: advance to next source step regardless of call depth.
@@ -725,8 +742,19 @@ impl<'a, 'i> DebugSession<'a, 'i> {
     fn execute_shadow_script(&self, script: &[u8]) -> Result<Vec<u8>, String> {
         let sig_cache = Cache::new(0);
         let reused_values = SigHashReusedValuesUnsync::new();
-        let mut engine: DebugEngine<'_> =
-            TxScriptEngine::new(EngineCtx::new(&sig_cache).with_reused(&reused_values), EngineFlags { covenants_enabled: true });
+        let mut engine: DebugEngine<'_> = if let Some(shadow) = self.shadow_tx_context {
+            let ctx = EngineCtx::new(&sig_cache).with_reused(&reused_values).with_covenants_ctx(shadow.covenants_ctx);
+            TxScriptEngine::from_transaction_input(
+                shadow.tx,
+                shadow.input,
+                shadow.input_index,
+                shadow.utxo_entry,
+                ctx,
+                EngineFlags { covenants_enabled: true },
+            )
+        } else {
+            TxScriptEngine::new(EngineCtx::new(&sig_cache).with_reused(&reused_values), EngineFlags { covenants_enabled: true })
+        };
         for opcode in parse_script::<DebugTx<'_>, DebugReused>(script) {
             let opcode = opcode.map_err(|err| format!("failed to parse shadow script: {err}"))?;
             engine.execute_opcode(opcode).map_err(|err| format!("failed to execute shadow script: {err}"))?;

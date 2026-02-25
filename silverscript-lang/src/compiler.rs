@@ -1286,11 +1286,12 @@ fn compile_statement<'i>(
             script_size,
             debug_recorder,
         ),
-        Statement::For { ident, start, end, body, .. } => compile_for_statement(
+        Statement::For { ident, start, end, body, span, .. } => compile_for_statement(
             ident,
             start,
             end,
             body,
+            *span,
             env,
             params,
             types,
@@ -2112,6 +2113,7 @@ fn compile_for_statement<'i>(
     start_expr: &Expr<'i>,
     end_expr: &Expr<'i>,
     body: &[Statement<'i>],
+    for_span: span::Span<'i>,
     env: &mut HashMap<String, Expr<'i>>,
     params: &HashMap<String, i64>,
     types: &mut HashMap<String, String>,
@@ -2134,9 +2136,17 @@ fn compile_for_statement<'i>(
     }
 
     let name = ident.to_string();
+    let loop_span = SourceSpan::from(for_span);
     let previous = env.get(&name).cloned();
     for value in start..end {
         env.insert(name.clone(), Expr::int(value));
+        debug_recorder.record_virtual_binding(
+            name.clone(),
+            "int".to_string(),
+            Expr::int(value),
+            builder.script().len(),
+            Some(loop_span),
+        );
         compile_block(
             body,
             env,

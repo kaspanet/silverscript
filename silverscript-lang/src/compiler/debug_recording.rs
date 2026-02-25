@@ -196,6 +196,35 @@ impl<'i> FunctionDebugRecorder<'i> {
         Ok(())
     }
 
+    /// Emits a virtual debug step that binds a synthetic local variable.
+    /// Used by lowered constructs (for example unrolled loops) to keep
+    /// source-level locals visible even when no dedicated statement exists.
+    pub fn record_virtual_binding(
+        &mut self,
+        name: String,
+        type_name: String,
+        expr: Expr<'i>,
+        bytecode_offset: usize,
+        span: Option<SourceSpan>,
+    ) {
+        if !self.enabled {
+            return;
+        }
+        let Some(sequence) = self.push_event(bytecode_offset, bytecode_offset, span, DebugEventKind::Virtual {}) else {
+            return;
+        };
+        self.variable_updates.push(DebugVariableUpdate {
+            name,
+            type_name,
+            expr,
+            bytecode_offset,
+            span,
+            function: self.function_name.clone(),
+            sequence,
+            frame_id: self.frame_id,
+        });
+    }
+
     /// Starts an inline call recording session and returns a child recorder for
     /// callee body statements.
     pub fn start_inline_call_recording(&mut self, span: Option<SourceSpan>, bytecode_offset: usize, callee: &str) -> Self {

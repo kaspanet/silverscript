@@ -3,14 +3,21 @@ use std::error::Error;
 use std::fs;
 use std::path::PathBuf;
 
+use kaspa_consensus_core::Hash;
 use kaspa_consensus_core::hashing::sighash::SigHashReusedValuesUnsync;
+use kaspa_consensus_core::tx::{
+    PopulatedTransaction, ScriptPublicKey, Transaction, TransactionId, TransactionInput, TransactionOutpoint, TransactionOutput,
+    UtxoEntry, VerifiableTransaction,
+};
 use kaspa_txscript::caches::Cache;
+use kaspa_txscript::covenants::CovenantsContext;
+use kaspa_txscript::opcodes::codes::OpTrue;
 use kaspa_txscript::{EngineCtx, EngineFlags};
 
 use silverscript_lang::ast::{Expr, parse_contract_ast};
 use silverscript_lang::compiler::{CompileOptions, compile_contract};
 use silverscript_lang::debug::MappingKind;
-use silverscript_lang::debug::session::DebugSession;
+use silverscript_lang::debug::session::{DebugSession, ShadowTxContext};
 
 fn example_contract_path() -> PathBuf {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -676,4 +683,107 @@ contract NestedArgs() {
         assert_eq!(after_over.line, 16, "step_over should move past nested inline call in caller");
         Ok(())
     })
+}
+
+#[test]
+fn debug_session_exposes_loop_index_variable_i() -> Result<(), Box<dyn Error>> {
+    let source = r#"pragma silverscript ^0.1.0;
+
+contract LoopIndex() {
+    entrypoint function main() {
+        int sum = 0;
+        for(i,0,2){
+            if(i < 2){
+                sum = sum + i;
+            }
+        }
+        require(sum >= 0);
+    }
+}
+"#;
+
+    with_session_for_source(source, vec![], "main", vec![], |session| {
+        session.run_to_first_executed_statement()?;
+        let mut saw_loop_index = false;
+
+        for _ in 0..12 {
+            if let Ok(i) = session.variable_by_name("i") {
+                assert_eq!(session.format_value(&i.type_name, &i.value), "0");
+                saw_loop_index = true;
+                break;
+            }
+            if session.step_over()?.is_none() {
+                break;
+            }
+        }
+
+        assert!(saw_loop_index, "expected loop index 'i' to be visible while stepping loop body");
+        Ok(())
+    })
+}
+
+#[test]
+fn debug_session_shadow_eval_uses_tx_context_for_covenant_opcode_locals() -> Result<(), Box<dyn Error>> {
+    let source = r#"pragma silverscript ^0.1.0;
+
+contract CovLocal() {
+    entrypoint function main() {
+        byte[32] covid = OpInputCovenantId(this.activeInputIndex);
+        require(covid == covid);
+    }
+}
+"#;
+
+    let compile_opts = CompileOptions { record_debug_infos: true, ..Default::default() };
+    let compiled = compile_contract(source, &[], compile_opts)?;
+    let debug_info = compiled.debug_info.clone();
+    let sigscript = compiled.build_sig_script("main", vec![])?;
+
+    let input = TransactionInput {
+        previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([0x44u8; 32]), index: 0 },
+        signature_script: sigscript.clone(),
+        sequence: 0,
+        sig_op_count: 0,
+    };
+    let output = TransactionOutput { value: 1000, script_public_key: ScriptPublicKey::new(0, vec![OpTrue].into()), covenant: None };
+    let tx = Transaction::new(1, vec![input], vec![output], 0, Default::default(), 0, vec![]);
+
+    let covenant_id = Hash::from_bytes([0x11u8; 32]);
+    let utxo_entry =
+        UtxoEntry::new(1000, ScriptPublicKey::new(0, compiled.script.clone().into()), 0, tx.is_coinbase(), Some(covenant_id));
+    let populated_tx = PopulatedTransaction::new(&tx, vec![utxo_entry]);
+    let cov_ctx = CovenantsContext::from_tx(&populated_tx)?;
+
+    let sig_cache = Cache::new(10_000);
+    let reused_values = SigHashReusedValuesUnsync::new();
+    let ctx = EngineCtx::new(&sig_cache).with_reused(&reused_values).with_covenants_ctx(&cov_ctx);
+    let input_ref = &tx.inputs[0];
+    let utxo_ref = populated_tx.utxo(0).ok_or("missing utxo for input 0")?;
+    let engine = silverscript_lang::debug::session::DebugEngine::from_transaction_input(
+        &populated_tx,
+        input_ref,
+        0,
+        utxo_ref,
+        ctx,
+        EngineFlags { covenants_enabled: true },
+    );
+
+    let shadow_ctx =
+        ShadowTxContext { tx: &populated_tx, input: input_ref, input_index: 0, utxo_entry: utxo_ref, covenants_ctx: &cov_ctx };
+
+    let mut session = DebugSession::full(&sigscript, &compiled.script, source, debug_info, engine)?.with_shadow_tx_context(shadow_ctx);
+    session.run_to_first_executed_statement()?;
+
+    for _ in 0..4 {
+        if let Ok(covid) = session.variable_by_name("covid") {
+            let rendered = session.format_value(&covid.type_name, &covid.value);
+            assert_eq!(rendered, format!("0x{}", "11".repeat(32)));
+            return Ok(());
+        }
+        if session.step_over()?.is_none() {
+            break;
+        }
+    }
+
+    Err("expected covid local to be evaluated using tx context".into())
 }
