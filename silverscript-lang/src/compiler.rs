@@ -2626,7 +2626,7 @@ fn compile_expr<'i>(
         ),
         ExprKind::UnarySuffix { source, kind, .. } => match kind {
             UnarySuffixKind::Length => compile_length_expr(
-                std::slice::from_ref(source.as_ref()),
+                source,
                 env,
                 params,
                 types,
@@ -2911,7 +2911,7 @@ fn expr_is_bytes_inner<'i>(
 }
 
 fn compile_length_expr<'i>(
-    expr_slice: &[Expr<'i>],
+    expr: &Expr<'i>,
     env: &HashMap<String, Expr<'i>>,
     params: &HashMap<String, i64>,
     types: &HashMap<String, String>,
@@ -2922,12 +2922,6 @@ fn compile_length_expr<'i>(
     script_size: Option<i64>,
     contract_constants: &HashMap<String, Expr<'i>>,
 ) -> Result<(), CompilerError> {
-    if expr_slice.len() != 1 {
-        return Err(CompilerError::Unsupported("length() expects a single argument".to_string()));
-    }
-
-    let expr = &expr_slice[0];
-
     if let ExprKind::Identifier(name) = &expr.kind {
         if let Some(type_name) = types.get(name) {
             if let Some(size) = array_size_with_constants(type_name, contract_constants) {
@@ -3431,18 +3425,23 @@ fn compile_call_expr<'i>(
                 }
             }
         }
-        "length" => compile_length_expr(
-            args,
-            scope.env,
-            scope.params,
-            scope.types,
-            builder,
-            options,
-            visiting,
-            stack_depth,
-            script_size,
-            contract_constants,
-        ),
+        "length" => {
+            if args.len() != 1 {
+                return Err(CompilerError::Unsupported("length() expects a single argument".to_string()));
+            }
+            compile_length_expr(
+                &args[0],
+                scope.env,
+                scope.params,
+                scope.types,
+                builder,
+                options,
+                visiting,
+                stack_depth,
+                script_size,
+                contract_constants,
+            )
+        }
         "int" => {
             if args.len() != 1 {
                 return Err(CompilerError::Unsupported("int() expects a single argument".to_string()));
