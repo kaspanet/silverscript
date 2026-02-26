@@ -5,6 +5,7 @@ members = [
     "debugger/cli",
     "covenants/sdk",
 ]
+exclude = ["tree-sitter"]
 resolver = "2"
 
 [workspace.package]

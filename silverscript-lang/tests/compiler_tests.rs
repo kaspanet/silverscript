@@ -3541,3 +3541,33 @@ fn blake2b_int_and_byte_cast_forms_compile_to_identical_script() {
         "blake2b(x) and blake2b(byte[](x)) should currently compile to identical scripts"
     );
 }
+
+#[test]
+fn empty_array_statement_expr_evaluation_compiles_to_empty_array_data() {
+    let source = r#"
+        contract Test() {
+            entrypoint function main() {
+                require([] == []);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+
+    let expected = ScriptBuilder::new()
+        .add_data(&[])
+        .unwrap()
+        .add_data(&[])
+        .unwrap()
+        .add_op(OpEqual)
+        .unwrap()
+        .add_op(OpVerify)
+        .unwrap()
+        .add_op(OpTrue)
+        .unwrap()
+        .drain();
+
+    assert_eq!(compiled.script, expected);
+    assert_eq!(compiled.script[0], OpFalse);
+    assert_eq!(compiled.script[1], OpFalse);
+}

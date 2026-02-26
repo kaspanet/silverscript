@@ -1,3 +1,4 @@
+use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -11,10 +12,7 @@ use silverscript_lang::compiler::{CompileOptions, compile_contract};
     about = "Compile SilverScript contracts into JSON artifacts",
     long_about = "Compile a SilverScript source file into a compiled JSON artifact, or parse only and emit AST JSON.\n\
 \n\
-Destination precedence:\n\
-1) -c, --stdout   -> write JSON to stdout\n\
-2) -o <FILE>      -> write JSON to the specified file\n\
-3) compile default -> <source>.json",
+Default Destination: <source>.json (or <source>_ast.json with --ast-only)\n",
     after_help = "Examples:\n\
   silverc contract.sil\n\
   silverc contract.sil -o artifact.json\n\
@@ -56,6 +54,11 @@ fn run() -> Result<(), String> {
         }
     };
 
+    // both stdout and file output were requested, invalid usage
+    if cli.stdout && cli.out.is_some() {
+        return Err("invalid usage: both stdout and file output arguments were provided; pick only one".to_string());
+    }
+
     let source = fs::read_to_string(&cli.src).map_err(|err| format!("failed to read {}: {err}", cli.src.display()))?;
 
     if cli.ast_only {
@@ -96,7 +99,7 @@ fn resolve_output_target(cli: &Cli, src: &Path, ast_only: bool) -> OutputTarget 
     if let Some(path) = &cli.out {
         return OutputTarget::File(path.clone());
     }
-    if ast_only { OutputTarget::Stdout } else { OutputTarget::File(default_output_path(src)) }
+    OutputTarget::File(default_output_path(src, ast_only))
 }
 
 fn emit_output(content: &str, target: OutputTarget) -> Result<(), String> {
@@ -112,8 +115,13 @@ fn emit_output(content: &str, target: OutputTarget) -> Result<(), String> {
     }
 }
 
-fn default_output_path(src: &Path) -> PathBuf {
-    let mut output_path = src.to_path_buf();
-    output_path.set_extension("json");
-    output_path
+fn default_output_path(src: &Path, ast_only: bool) -> PathBuf {
+    if !ast_only {
+        return src.with_extension("json");
+    }
+
+    let stem = src.file_stem().or_else(|| src.file_name()).unwrap_or(OsStr::new("output"));
+    let mut file_name = stem.to_os_string();
+    file_name.push("_ast.json");
+    src.with_file_name(file_name)
 }

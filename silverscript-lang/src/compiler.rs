@@ -970,7 +970,7 @@ fn compile_function<'i>(
     }
     let mut builder = ScriptBuilder::new();
     let mut recorder = FunctionDebugRecorder::new(options.record_debug_infos, function, contract_fields);
-    let mut yields: Vec<Expr<'i>> = Vec::new();
+    let mut yields: Vec<Expr> = Vec::new();
 
     if !options.allow_yield && function.body.iter().any(contains_yield) {
         return Err(CompilerError::Unsupported("yield requires allow_yield=true".to_string()));
@@ -1819,19 +1819,13 @@ fn compile_inline_call<'i>(
     // continue resolving chains like __arg_inner_0 -> __arg_outer_0.
     for (name, value) in caller_env.iter() {
         if name.starts_with("__arg_") {
-            env.entry(name.clone()).or_insert_with(|| value.clone());
-            if let Some(type_name) = caller_types.get(name) {
-                types.entry(name.clone()).or_insert_with(|| type_name.clone());
-            }
+            env.insert(name.clone(), value.clone());
         }
     }
-
     for (index, (param, arg)) in function.params.iter().zip(args.iter()).enumerate() {
         let resolved = resolve_expr(arg.clone(), caller_env, &mut HashSet::new())?;
         let temp_name = format!("__arg_{name}_{index}");
         let param_type_name = type_name_from_ref(&param.type_ref);
-        // Bind each callee parameter to a synthetic identifier so callee
-        // expressions keep stable names while pointing to caller expressions.
         env.insert(temp_name.clone(), resolved.clone());
         types.insert(temp_name.clone(), param_type_name.clone());
         env.insert(param.name.clone(), Expr::new(ExprKind::Identifier(temp_name.clone()), span::Span::default()));
@@ -1865,8 +1859,6 @@ fn compile_inline_call<'i>(
     inline_recorder.record_inline_param_updates(function, &env, call_span, call_start)?;
 
     let mut yields: Vec<Expr<'i>> = Vec::new();
-    // Use caller parameter indexes while compiling callee bytecode so
-    // resolution can still pick values from the caller frame.
     let params = caller_params.clone();
     let body_len = function.body.len();
     for (index, stmt) in function.body.iter().enumerate() {
@@ -1906,10 +1898,10 @@ fn compile_inline_call<'i>(
         let end = builder.script().len();
         inline_recorder.record_statement_with_env_diff(stmt, start, end, env_before.as_ref(), &env, &types)?;
     }
+    let call_end = builder.script().len();
+    debug_recorder.finish_inline_call_recording(call_span, call_end, name, &inline_recorder);
 
-    debug_recorder.finish_inline_call_recording(call_span, builder.script().len(), name, &inline_recorder);
-
-    for (name, value) in &env {
+    for (name, value) in env.iter() {
         if name.starts_with("__arg_") {
             if let Some(type_name) = types.get(name) {
                 caller_types.entry(name.clone()).or_insert_with(|| type_name.clone());
@@ -2324,154 +2316,6 @@ fn resolve_expr<'i>(
     }
 }
 
-/// Compiles a pre-resolved expression for debugger shadow evaluation.
-pub fn compile_debug_expr<'i>(
-    expr: &Expr<'i>,
-    params: &HashMap<String, i64>,
-    types: &HashMap<String, String>,
-) -> Result<Vec<u8>, CompilerError> {
-    let env = HashMap::new();
-    let constants = HashMap::new();
-    let mut builder = ScriptBuilder::new();
-    let mut stack_depth = 0i64;
-    compile_expr(
-        expr,
-        &env,
-        params,
-        types,
-        &mut builder,
-        CompileOptions::default(),
-        &mut HashSet::new(),
-        &mut stack_depth,
-        None,
-        &constants,
-    )?;
-    Ok(builder.drain())
-}
-
-pub(super) fn resolve_expr_for_debug<'i>(
-    expr: Expr<'i>,
-    env: &HashMap<String, Expr<'i>>,
-    visiting: &mut HashSet<String>,
-) -> Result<Expr<'i>, CompilerError> {
-    let resolved = resolve_expr(expr, env, visiting)?;
-    expand_inline_arg_placeholders(resolved, env, &mut HashSet::new())
-}
-
-fn expand_inline_arg_placeholders<'i>(
-    expr: Expr<'i>,
-    env: &HashMap<String, Expr<'i>>,
-    visiting: &mut HashSet<String>,
-) -> Result<Expr<'i>, CompilerError> {
-    let Expr { kind, span } = expr;
-    match kind {
-        ExprKind::Identifier(name) => {
-            if !name.starts_with("__arg_") {
-                return Ok(Expr::new(ExprKind::Identifier(name), span));
-            }
-            let Some(value) = env.get(&name).cloned() else {
-                return Ok(Expr::new(ExprKind::Identifier(name), span));
-            };
-            if !visiting.insert(name.clone()) {
-                return Err(CompilerError::CyclicIdentifier(name));
-            }
-            let expanded = expand_inline_arg_placeholders(value, env, visiting)?;
-            visiting.remove(&name);
-            Ok(expanded)
-        }
-        ExprKind::Unary { op, expr } => {
-            Ok(Expr::new(ExprKind::Unary { op, expr: Box::new(expand_inline_arg_placeholders(*expr, env, visiting)?) }, span))
-        }
-        ExprKind::Binary { op, left, right } => Ok(Expr::new(
-            ExprKind::Binary {
-                op,
-                left: Box::new(expand_inline_arg_placeholders(*left, env, visiting)?),
-                right: Box::new(expand_inline_arg_placeholders(*right, env, visiting)?),
-            },
-            span,
-        )),
-        ExprKind::IfElse { condition, then_expr, else_expr } => Ok(Expr::new(
-            ExprKind::IfElse {
-                condition: Box::new(expand_inline_arg_placeholders(*condition, env, visiting)?),
-                then_expr: Box::new(expand_inline_arg_placeholders(*then_expr, env, visiting)?),
-                else_expr: Box::new(expand_inline_arg_placeholders(*else_expr, env, visiting)?),
-            },
-            span,
-        )),
-        ExprKind::Array(values) => {
-            let mut rewritten = Vec::with_capacity(values.len());
-            for value in values {
-                rewritten.push(expand_inline_arg_placeholders(value, env, visiting)?);
-            }
-            Ok(Expr::new(ExprKind::Array(rewritten), span))
-        }
-        ExprKind::StateObject(fields) => {
-            let mut rewritten = Vec::with_capacity(fields.len());
-            for field in fields {
-                rewritten.push(StateFieldExpr {
-                    name: field.name,
-                    expr: expand_inline_arg_placeholders(field.expr, env, visiting)?,
-                    span: field.span,
-                    name_span: field.name_span,
-                });
-            }
-            Ok(Expr::new(ExprKind::StateObject(rewritten), span))
-        }
-        ExprKind::Call { name, args, name_span } => {
-            let mut rewritten = Vec::with_capacity(args.len());
-            for arg in args {
-                rewritten.push(expand_inline_arg_placeholders(arg, env, visiting)?);
-            }
-            Ok(Expr::new(ExprKind::Call { name, args: rewritten, name_span }, span))
-        }
-        ExprKind::New { name, args, name_span } => {
-            let mut rewritten = Vec::with_capacity(args.len());
-            for arg in args {
-                rewritten.push(expand_inline_arg_placeholders(arg, env, visiting)?);
-            }
-            Ok(Expr::new(ExprKind::New { name, args: rewritten, name_span }, span))
-        }
-        ExprKind::Split { source, index, part, span: split_span } => Ok(Expr::new(
-            ExprKind::Split {
-                source: Box::new(expand_inline_arg_placeholders(*source, env, visiting)?),
-                index: Box::new(expand_inline_arg_placeholders(*index, env, visiting)?),
-                part,
-                span: split_span,
-            },
-            span,
-        )),
-        ExprKind::ArrayIndex { source, index } => Ok(Expr::new(
-            ExprKind::ArrayIndex {
-                source: Box::new(expand_inline_arg_placeholders(*source, env, visiting)?),
-                index: Box::new(expand_inline_arg_placeholders(*index, env, visiting)?),
-            },
-            span,
-        )),
-        ExprKind::Introspection { kind, index, field_span } => Ok(Expr::new(
-            ExprKind::Introspection { kind, index: Box::new(expand_inline_arg_placeholders(*index, env, visiting)?), field_span },
-            span,
-        )),
-        ExprKind::UnarySuffix { source, kind, span: suffix_span } => Ok(Expr::new(
-            ExprKind::UnarySuffix {
-                source: Box::new(expand_inline_arg_placeholders(*source, env, visiting)?),
-                kind,
-                span: suffix_span,
-            },
-            span,
-        )),
-        ExprKind::Slice { source, start, end, span: slice_span } => Ok(Expr::new(
-            ExprKind::Slice {
-                source: Box::new(expand_inline_arg_placeholders(*source, env, visiting)?),
-                start: Box::new(expand_inline_arg_placeholders(*start, env, visiting)?),
-                end: Box::new(expand_inline_arg_placeholders(*end, env, visiting)?),
-                span: slice_span,
-            },
-            span,
-        )),
-        other => Ok(Expr::new(other, span)),
-    }
-}
-
 /// Replace `target` identifiers in `expr` with `replacement`.
 ///
 /// Example: for `x = x + 1`, this rewrites the right side to
@@ -2620,6 +2464,7 @@ fn compile_expr<'i>(
             Ok(())
         }
         ExprKind::Array(values) => {
+            // TODO: this particular handling should be done in encode_array_literal to unify the behavior
             if values.is_empty() {
                 builder.add_data(&[])?;
                 *stack_depth += 1;
@@ -4011,6 +3856,154 @@ fn data_prefix(data_len: usize) -> Vec<u8> {
     builder.add_data(&dummy_data).unwrap();
     let script = builder.drain();
     script[..script.len() - data_len].to_vec()
+}
+
+/// Compiles a pre-resolved expression for debugger shadow evaluation.
+pub fn compile_debug_expr<'i>(
+    expr: &Expr<'i>,
+    params: &HashMap<String, i64>,
+    types: &HashMap<String, String>,
+) -> Result<Vec<u8>, CompilerError> {
+    let env = HashMap::new();
+    let constants = HashMap::new();
+    let mut builder = ScriptBuilder::new();
+    let mut stack_depth = 0i64;
+    compile_expr(
+        expr,
+        &env,
+        params,
+        types,
+        &mut builder,
+        CompileOptions::default(),
+        &mut HashSet::new(),
+        &mut stack_depth,
+        None,
+        &constants,
+    )?;
+    Ok(builder.drain())
+}
+
+pub(super) fn resolve_expr_for_debug<'i>(
+    expr: Expr<'i>,
+    env: &HashMap<String, Expr<'i>>,
+    visiting: &mut HashSet<String>,
+) -> Result<Expr<'i>, CompilerError> {
+    let resolved = resolve_expr(expr, env, visiting)?;
+    expand_inline_arg_placeholders(resolved, env, &mut HashSet::new())
+}
+
+fn expand_inline_arg_placeholders<'i>(
+    expr: Expr<'i>,
+    env: &HashMap<String, Expr<'i>>,
+    visiting: &mut HashSet<String>,
+) -> Result<Expr<'i>, CompilerError> {
+    let Expr { kind, span } = expr;
+    match kind {
+        ExprKind::Identifier(name) => {
+            if !name.starts_with("__arg_") {
+                return Ok(Expr::new(ExprKind::Identifier(name), span));
+            }
+            let Some(value) = env.get(&name).cloned() else {
+                return Ok(Expr::new(ExprKind::Identifier(name), span));
+            };
+            if !visiting.insert(name.clone()) {
+                return Err(CompilerError::CyclicIdentifier(name));
+            }
+            let expanded = expand_inline_arg_placeholders(value, env, visiting)?;
+            visiting.remove(&name);
+            Ok(expanded)
+        }
+        ExprKind::Unary { op, expr } => {
+            Ok(Expr::new(ExprKind::Unary { op, expr: Box::new(expand_inline_arg_placeholders(*expr, env, visiting)?) }, span))
+        }
+        ExprKind::Binary { op, left, right } => Ok(Expr::new(
+            ExprKind::Binary {
+                op,
+                left: Box::new(expand_inline_arg_placeholders(*left, env, visiting)?),
+                right: Box::new(expand_inline_arg_placeholders(*right, env, visiting)?),
+            },
+            span,
+        )),
+        ExprKind::IfElse { condition, then_expr, else_expr } => Ok(Expr::new(
+            ExprKind::IfElse {
+                condition: Box::new(expand_inline_arg_placeholders(*condition, env, visiting)?),
+                then_expr: Box::new(expand_inline_arg_placeholders(*then_expr, env, visiting)?),
+                else_expr: Box::new(expand_inline_arg_placeholders(*else_expr, env, visiting)?),
+            },
+            span,
+        )),
+        ExprKind::Array(values) => {
+            let mut rewritten = Vec::with_capacity(values.len());
+            for value in values {
+                rewritten.push(expand_inline_arg_placeholders(value, env, visiting)?);
+            }
+            Ok(Expr::new(ExprKind::Array(rewritten), span))
+        }
+        ExprKind::StateObject(fields) => {
+            let mut rewritten = Vec::with_capacity(fields.len());
+            for field in fields {
+                rewritten.push(StateFieldExpr {
+                    name: field.name,
+                    expr: expand_inline_arg_placeholders(field.expr, env, visiting)?,
+                    span: field.span,
+                    name_span: field.name_span,
+                });
+            }
+            Ok(Expr::new(ExprKind::StateObject(rewritten), span))
+        }
+        ExprKind::Call { name, args, name_span } => {
+            let mut rewritten = Vec::with_capacity(args.len());
+            for arg in args {
+                rewritten.push(expand_inline_arg_placeholders(arg, env, visiting)?);
+            }
+            Ok(Expr::new(ExprKind::Call { name, args: rewritten, name_span }, span))
+        }
+        ExprKind::New { name, args, name_span } => {
+            let mut rewritten = Vec::with_capacity(args.len());
+            for arg in args {
+                rewritten.push(expand_inline_arg_placeholders(arg, env, visiting)?);
+            }
+            Ok(Expr::new(ExprKind::New { name, args: rewritten, name_span }, span))
+        }
+        ExprKind::Split { source, index, part, span: split_span } => Ok(Expr::new(
+            ExprKind::Split {
+                source: Box::new(expand_inline_arg_placeholders(*source, env, visiting)?),
+                index: Box::new(expand_inline_arg_placeholders(*index, env, visiting)?),
+                part,
+                span: split_span,
+            },
+            span,
+        )),
+        ExprKind::ArrayIndex { source, index } => Ok(Expr::new(
+            ExprKind::ArrayIndex {
+                source: Box::new(expand_inline_arg_placeholders(*source, env, visiting)?),
+                index: Box::new(expand_inline_arg_placeholders(*index, env, visiting)?),
+            },
+            span,
+        )),
+        ExprKind::Introspection { kind, index, field_span } => Ok(Expr::new(
+            ExprKind::Introspection { kind, index: Box::new(expand_inline_arg_placeholders(*index, env, visiting)?), field_span },
+            span,
+        )),
+        ExprKind::UnarySuffix { source, kind, span: suffix_span } => Ok(Expr::new(
+            ExprKind::UnarySuffix {
+                source: Box::new(expand_inline_arg_placeholders(*source, env, visiting)?),
+                kind,
+                span: suffix_span,
+            },
+            span,
+        )),
+        ExprKind::Slice { source, start, end, span: slice_span } => Ok(Expr::new(
+            ExprKind::Slice {
+                source: Box::new(expand_inline_arg_placeholders(*source, env, visiting)?),
+                start: Box::new(expand_inline_arg_placeholders(*start, env, visiting)?),
+                end: Box::new(expand_inline_arg_placeholders(*end, env, visiting)?),
+                span: slice_span,
+            },
+            span,
+        )),
+        other => Ok(Expr::new(other, span)),
+    }
 }
 
 #[cfg(test)]

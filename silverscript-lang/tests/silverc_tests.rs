@@ -105,12 +105,10 @@ fn silverc_stdout_flag_overrides_output_file() {
 
     let output =
         silverc().arg(src_path.to_str().unwrap()).arg("-o").arg(out_path.to_str().unwrap()).arg("-c").output().expect("run silverc");
-    assert!(output.status.success());
+    assert!(!output.status.success());
 
-    let stdout = String::from_utf8(output.stdout).expect("decode stdout");
-    let compiled: CompiledContract = serde_json::from_str(&stdout).expect("parse compiled json");
-    assert_eq!(compiled.contract_name, "Basic");
-    assert!(!out_path.exists());
+    let stderr = String::from_utf8(output.stderr).expect("decode stderr");
+    assert!(stderr.contains("invalid usage"));
 }
 
 #[test]
@@ -142,18 +140,18 @@ fn silverc_accepts_constructor_args_and_output_flag() {
 }
 
 #[test]
-fn silverc_ast_only_defaults_to_stdout() {
-    let dir = temp_dir("ast_stdout");
+fn silverc_ast_only_defaults_to_file_with_suffix() {
+    let dir = temp_dir("ast");
     let src_path = dir.join("basic.sil");
+    let out_path = dir.join("basic_ast.json");
     write_basic_contract(&src_path);
 
     let output = silverc().arg(src_path.to_str().unwrap()).arg("--ast-only").output().expect("run silverc");
     assert!(output.status.success());
 
-    let stdout = String::from_utf8(output.stdout).expect("decode stdout");
-    let ast: ContractAst<'static> = serde_json::from_str(&stdout).expect("parse ast json");
+    let json = fs::read_to_string(&out_path).expect("read output");
+    let ast: ContractAst<'static> = serde_json::from_str(&json).expect("parse ast json");
     assert_eq!(ast.name, "Basic");
-    assert!(!dir.join("basic.json").exists());
 }
 
 #[test]
