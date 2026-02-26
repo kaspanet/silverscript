@@ -10,7 +10,7 @@ languages = ["languages/silverscript"]
 # useful for development
 # repository = "file:///D:/Dev/kaspa/silverscript"
 
-repository = "https://github.com/rusty-kaspa/silverscript"
+repository = "https://github.com/kaspanet/silverscript"
 # revision should be the commit hash containing the tree sitter grammar version you want to target
 rev = "b51ee1e196002621444bd42d23d23e7a64d909ab"
 path = "tree-sitter"
