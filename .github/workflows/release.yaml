@@ -1,0 +1,109 @@
+name: release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: ${{ matrix.os }}-${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            os: linux
+            arch: x86_64
+            target: x86_64-unknown-linux-gnu
+            target_dir: target/x86_64-unknown-linux-gnu/release
+            bin_ext: ""
+            archive: silverc-linux-x86_64.tar.gz
+            needs_linker: "false"
+          - runner: ubuntu-latest
+            os: linux
+            arch: arm64
+            target: aarch64-unknown-linux-gnu
+            target_dir: target/aarch64-unknown-linux-gnu/release
+            bin_ext: ""
+            archive: silverc-linux-arm64.tar.gz
+            needs_linker: "true"
+          - runner: macos-15-intel
+            os: darwin
+            arch: x86_64
+            target: x86_64-apple-darwin
+            target_dir: target/x86_64-apple-darwin/release
+            bin_ext: ""
+            archive: silverc-darwin-x86_64.tar.gz
+            needs_linker: "false"
+          - runner: macos-15
+            os: darwin
+            arch: arm64
+            target: aarch64-apple-darwin
+            target_dir: target/aarch64-apple-darwin/release
+            bin_ext: ""
+            archive: silverc-darwin-arm64.tar.gz
+            needs_linker: "false"
+          - runner: windows-latest
+            os: windows
+            arch: x86_64
+            target: x86_64-pc-windows-msvc
+            target_dir: target/x86_64-pc-windows-msvc/release
+            bin_ext: ".exe"
+            archive: silverc-windows-x86_64.zip
+            needs_linker: "false"
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+
+      - name: Install cross linker
+        if: matrix.needs_linker == 'true'
+        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Build silverc
+        shell: bash
+        run: |
+          set -e
+          if [ "${{ matrix.needs_linker }}" = "true" ]; then
+            export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
+          fi
+          cargo build --release -p silverscript-lang --bin silverc --target "${{ matrix.target }}"
+
+      - name: Package (unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -e
+          mkdir -p dist
+          cp "${{ matrix.target_dir }}/silverc${{ matrix.bin_ext }}" "dist/silverc${{ matrix.bin_ext }}"
+          tar -czf "dist/${{ matrix.archive }}" -C dist "silverc${{ matrix.bin_ext }}"
+
+      - name: Package (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item "${{ matrix.target_dir }}/silverc${{ matrix.bin_ext }}" "dist/silverc${{ matrix.bin_ext }}"
+          Push-Location dist
+          Compress-Archive -Path "silverc${{ matrix.bin_ext }}" -DestinationPath "../dist/${{ matrix.archive }}" -Force
+          Pop-Location
+
+      - name: Upload release asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/${{ matrix.archive }}
