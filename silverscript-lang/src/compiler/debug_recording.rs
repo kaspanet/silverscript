@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use kaspa_txscript::script_builder::ScriptBuilder;
 
 use crate::ast::{ContractFieldAst, Expr, FunctionAst, ParamAst, Statement};
-use crate::debug::{
+use crate::debug_info::{
     DebugConstantMapping, DebugEvent, DebugEventKind, DebugFunctionRange, DebugInfo, DebugParamMapping, DebugRecorder,
     DebugVariableUpdate, SourceSpan,
 };

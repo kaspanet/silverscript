@@ -4,15 +4,15 @@ use std::process::{Command, Stdio};
 
 fn example_contract_path() -> PathBuf {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    manifest_dir.join("tests/examples/if_statement.sil")
+    manifest_dir.join("tests/if_statement.sil")
 }
 
 #[test]
-fn sil_debug_repl_all_commands_smoke() {
+fn cli_debugger_repl_all_commands_smoke() {
     let contract_path = example_contract_path();
     assert!(contract_path.exists(), "example contract not found: {}", contract_path.display());
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_sil-debug"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_cli-debugger"))
         .arg(contract_path)
         .arg("--function")
         .arg("hello")
@@ -28,13 +28,13 @@ fn sil_debug_repl_all_commands_smoke() {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("failed to spawn sil-debug");
+        .expect("failed to spawn cli-debugger");
 
     let input = b"help\nl\nstack\nb 1\nb 7\nb\nn\nsi\nq\n";
     child.stdin.as_mut().expect("stdin available").write_all(input).expect("write stdin");
 
-    let output = child.wait_with_output().expect("wait for sil-debug");
-    assert!(output.status.success(), "sil-debug exited with status {:?}", output.status.code());
+    let output = child.wait_with_output().expect("wait for cli-debugger");
+    assert!(output.status.success(), "cli-debugger exited with status {:?}", output.status.code());
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);

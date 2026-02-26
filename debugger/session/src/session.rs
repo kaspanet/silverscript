@@ -8,12 +8,14 @@ use kaspa_txscript::script_builder::ScriptBuilder;
 use kaspa_txscript::{DynOpcodeImplementation, EngineCtx, EngineFlags, TxScriptEngine, parse_script};
 use serde::{Deserialize, Serialize};
 
-use crate::ast::{Expr, ExprKind};
-use crate::compiler::compile_debug_expr;
-use crate::debug::presentation::{build_source_context, format_value as format_debug_value};
-use crate::debug::{DebugFunctionRange, DebugInfo, DebugMapping, DebugParamMapping, DebugVariableUpdate, MappingKind, SourceSpan};
+use silverscript_lang::ast::{Expr, ExprKind};
+use silverscript_lang::compiler::compile_debug_expr;
+use silverscript_lang::debug_info::{
+    DebugFunctionRange, DebugInfo, DebugMapping, DebugParamMapping, DebugVariableUpdate, MappingKind, SourceSpan,
+};
 
-pub use crate::debug::presentation::{SourceContext, SourceContextLine};
+pub use crate::presentation::{SourceContext, SourceContextLine};
+use crate::presentation::{build_source_context, format_value as format_debug_value};
 
 pub type DebugTx<'a> = PopulatedTransaction<'a>;
 pub type DebugReused = SigHashReusedValuesUnsync;
@@ -875,9 +877,9 @@ fn encode_hex(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
 
-    use crate::ast::{BinaryOp, Expr, ExprKind};
-    use crate::debug::{DebugConstantMapping, DebugFunctionRange, DebugInfo, DebugParamMapping, DebugVariableUpdate};
-    use crate::span;
+    use silverscript_lang::ast::{BinaryOp, Expr, ExprKind};
+    use silverscript_lang::debug_info::{DebugConstantMapping, DebugFunctionRange, DebugInfo, DebugParamMapping, DebugVariableUpdate};
+    use silverscript_lang::span;
 
     fn make_session(
         params: Vec<DebugParamMapping>,

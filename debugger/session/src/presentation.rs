@@ -1,5 +1,6 @@
-use crate::debug::SourceSpan;
-use crate::debug::session::DebugValue;
+use silverscript_lang::debug_info::SourceSpan;
+
+use crate::session::DebugValue;
 
 #[derive(Debug, Clone)]
 pub struct SourceContextLine {

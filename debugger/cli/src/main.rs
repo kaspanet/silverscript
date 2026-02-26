@@ -6,15 +6,15 @@ use kaspa_consensus_core::hashing::sighash::SigHashReusedValuesUnsync;
 use kaspa_txscript::caches::Cache;
 use kaspa_txscript::{EngineCtx, EngineFlags};
 
+use debugger_session::session::{DebugEngine, DebugSession};
 use silverscript_lang::ast::{Expr, ExprKind, parse_contract_ast};
 use silverscript_lang::compiler::{CompileOptions, compile_contract};
-use silverscript_lang::debug::session::{DebugEngine, DebugSession};
 use silverscript_lang::span;
 
 const PROMPT: &str = "(sdb) ";
 
 #[derive(Debug, Parser)]
-#[command(name = "sil-debug", about = "SilverScript debugger")]
+#[command(name = "cli-debugger", about = "SilverScript debugger")]
 struct CliArgs {
     script_path: String,
     #[arg(long = "no-selector")]

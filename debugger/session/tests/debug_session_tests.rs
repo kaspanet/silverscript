@@ -14,10 +14,10 @@ use kaspa_txscript::covenants::CovenantsContext;
 use kaspa_txscript::opcodes::codes::OpTrue;
 use kaspa_txscript::{EngineCtx, EngineFlags};
 
+use debugger_session::session::{DebugSession, ShadowTxContext};
 use silverscript_lang::ast::{Expr, parse_contract_ast};
 use silverscript_lang::compiler::{CompileOptions, compile_contract};
-use silverscript_lang::debug::MappingKind;
-use silverscript_lang::debug::session::{DebugSession, ShadowTxContext};
+use silverscript_lang::debug_info::MappingKind;
 
 fn example_contract_path() -> PathBuf {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -60,7 +60,7 @@ where
     let ctx = EngineCtx::new(&sig_cache).with_reused(&reused_values);
 
     let flags = EngineFlags { covenants_enabled: true };
-    let engine = silverscript_lang::debug::session::DebugEngine::new(ctx, flags);
+    let engine = debugger_session::session::DebugEngine::new(ctx, flags);
 
     let entry = compiled
         .abi
@@ -759,7 +759,7 @@ contract CovLocal() {
     let ctx = EngineCtx::new(&sig_cache).with_reused(&reused_values).with_covenants_ctx(&cov_ctx);
     let input_ref = &tx.inputs[0];
     let utxo_ref = populated_tx.utxo(0).ok_or("missing utxo for input 0")?;
-    let engine = silverscript_lang::debug::session::DebugEngine::from_transaction_input(
+    let engine = debugger_session::session::DebugEngine::from_transaction_input(
         &populated_tx,
         input_ref,
         0,

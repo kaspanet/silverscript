@@ -494,6 +494,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a822ea5bc7590f9d40f1ba12c0dc3c2760f3482c6984db1573ad11031420831"
 
 [[package]]
+name = "cli-debugger"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "debugger-session",
+ "faster-hex 0.10.0",
+ "kaspa-consensus-core",
+ "kaspa-txscript",
+ "kaspa-txscript-errors",
+ "serde_json",
+ "silverscript-lang",
+]
+
+[[package]]
 name = "colorchoice"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -604,6 +618,20 @@ dependencies = [
  "dispatch2",
  "nix 0.30.1",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "debugger-session"
+version = "0.1.0"
+dependencies = [
+ "faster-hex 0.10.0",
+ "kaspa-addresses",
+ "kaspa-consensus-core",
+ "kaspa-txscript",
+ "kaspa-txscript-errors",
+ "serde",
+ "serde_json",
+ "silverscript-lang",
 ]
 
 [[package]]

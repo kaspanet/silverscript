@@ -9,8 +9,8 @@ use crate::ast::{
     StateBindingAst, StateFieldExpr, Statement, TimeVar, TypeBase, TypeRef, UnaryOp, UnarySuffixKind, parse_contract_ast,
     parse_type_ref,
 };
-use crate::debug::labels::synthetic;
-use crate::debug::{DebugInfo, SourceSpan};
+use crate::debug_info::labels::synthetic;
+use crate::debug_info::{DebugInfo, SourceSpan};
 pub use crate::errors::{CompilerError, ErrorSpan};
 use crate::span;
 
