@@ -3,14 +3,21 @@ use std::error::Error;
 use std::fs;
 use std::path::PathBuf;
 
+use kaspa_consensus_core::Hash;
 use kaspa_consensus_core::hashing::sighash::SigHashReusedValuesUnsync;
+use kaspa_consensus_core::tx::{
+    PopulatedTransaction, ScriptPublicKey, Transaction, TransactionId, TransactionInput, TransactionOutpoint, TransactionOutput,
+    UtxoEntry, VerifiableTransaction,
+};
 use kaspa_txscript::caches::Cache;
+use kaspa_txscript::covenants::CovenantsContext;
+use kaspa_txscript::opcodes::codes::OpTrue;
 use kaspa_txscript::{EngineCtx, EngineFlags};
 
+use debugger_session::session::{DebugSession, ShadowTxContext};
 use silverscript_lang::ast::{Expr, parse_contract_ast};
 use silverscript_lang::compiler::{CompileOptions, compile_contract};
-use silverscript_lang::debug::MappingKind;
-use silverscript_lang::debug::session::DebugSession;
+use silverscript_lang::debug_info::MappingKind;
 
 fn example_contract_path() -> PathBuf {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -20,25 +27,25 @@ fn example_contract_path() -> PathBuf {
 // Convenience harness for the canonical example contract used by baseline session tests.
 fn with_session<F>(mut f: F) -> Result<(), Box<dyn Error>>
 where
-    F: FnMut(&mut DebugSession<'_>) -> Result<(), Box<dyn Error>>,
+    F: FnMut(&mut DebugSession<'_, '_>) -> Result<(), Box<dyn Error>>,
 {
     let contract_path = example_contract_path();
     assert!(contract_path.exists(), "example contract not found: {}", contract_path.display());
 
     let source = fs::read_to_string(&contract_path)?;
-    with_session_for_source(&source, vec![Expr::Int(3), Expr::Int(10)], "hello", vec![Expr::Int(5), Expr::Int(5)], &mut f)
+    with_session_for_source(&source, vec![Expr::int(3), Expr::int(10)], "hello", vec![Expr::int(5), Expr::int(5)], &mut f)
 }
 
 // Generic harness that compiles a contract and boots a debugger session for a selected function call.
 fn with_session_for_source<F>(
     source: &str,
-    ctor_args: Vec<Expr>,
+    ctor_args: Vec<Expr<'static>>,
     function_name: &str,
-    function_args: Vec<Expr>,
+    function_args: Vec<Expr<'static>>,
     mut f: F,
 ) -> Result<(), Box<dyn Error>>
 where
-    F: FnMut(&mut DebugSession<'_>) -> Result<(), Box<dyn Error>>,
+    F: FnMut(&mut DebugSession<'_, '_>) -> Result<(), Box<dyn Error>>,
 {
     let parsed_contract = parse_contract_ast(source)?;
     assert_eq!(parsed_contract.params.len(), ctor_args.len());
@@ -53,7 +60,7 @@ where
     let ctx = EngineCtx::new(&sig_cache).with_reused(&reused_values);
 
     let flags = EngineFlags { covenants_enabled: true };
-    let engine = silverscript_lang::debug::session::DebugEngine::new(ctx, flags);
+    let engine = debugger_session::session::DebugEngine::new(ctx, flags);
 
     let entry = compiled
         .abi
@@ -132,7 +139,7 @@ contract BP() {
 }
 "#;
 
-    with_session_for_source(source, vec![], "main", vec![Expr::Int(1)], |session| {
+    with_session_for_source(source, vec![], "main", vec![Expr::int(1)], |session| {
         session.run_to_first_executed_statement()?;
         // Line 8 is inside a multiline `require(...)` span and should still be hit.
         assert!(session.add_breakpoint(8), "expected breakpoint line to be valid");
@@ -157,7 +164,7 @@ contract Shadow(int x) {
 }
 "#;
 
-    with_session_for_source(source, vec![Expr::Int(7)], "main", vec![Expr::Int(3)], |session| {
+    with_session_for_source(source, vec![Expr::int(7)], "main", vec![Expr::int(3)], |session| {
         session.run_to_first_executed_statement()?;
 
         // Function param `x` should shadow constructor constant `x` in visible debugger variables.
@@ -185,7 +192,7 @@ contract ShadowMath(int fee) {
 }
 "#;
 
-    with_session_for_source(source, vec![Expr::Int(2)], "main", vec![Expr::Int(3)], |session| {
+    with_session_for_source(source, vec![Expr::int(2)], "main", vec![Expr::int(3)], |session| {
         session.run_to_first_executed_statement()?;
 
         session.step_over()?;
@@ -216,7 +223,7 @@ contract FieldOffset(int c) {
 }
 "#;
 
-    with_session_for_source(source, vec![Expr::Int(2)], "main", vec![Expr::Int(5)], |session| {
+    with_session_for_source(source, vec![Expr::int(2)], "main", vec![Expr::int(5)], |session| {
         session.run_to_first_executed_statement()?;
 
         let a = session.variable_by_name("a")?;
@@ -242,7 +249,7 @@ contract FieldMath(int c) {
 }
 "#;
 
-    with_session_for_source(source, vec![Expr::Int(2)], "main", vec![Expr::Int(5)], |session| {
+    with_session_for_source(source, vec![Expr::int(2)], "main", vec![Expr::int(5)], |session| {
         session.run_to_first_executed_statement()?;
 
         for _ in 0..4 {
@@ -272,7 +279,7 @@ contract Virtuals() {
 }
 "#;
 
-    with_session_for_source(source, vec![], "main", vec![Expr::Int(3)], |session| {
+    with_session_for_source(source, vec![], "main", vec![Expr::int(3)], |session| {
         session.run_to_first_executed_statement()?;
         let first = session.current_location().ok_or("missing first location")?;
         assert!(matches!(first.kind, MappingKind::Virtual {}));
@@ -302,7 +309,7 @@ contract OpcodeCursor() {
 }
 "#;
 
-    with_session_for_source(source, vec![], "main", vec![Expr::Int(3)], |session| {
+    with_session_for_source(source, vec![], "main", vec![Expr::int(3)], |session| {
         session.run_to_first_executed_statement()?;
         let start = session.current_span().ok_or("missing start span")?;
         assert_eq!(start.line, 5);
@@ -330,7 +337,7 @@ contract VirtualBp() {
 }
 "#;
 
-    with_session_for_source(source, vec![], "main", vec![Expr::Int(3)], |session| {
+    with_session_for_source(source, vec![], "main", vec![Expr::int(3)], |session| {
         session.run_to_first_executed_statement()?;
         assert!(session.add_breakpoint(6), "line with virtual assignment should be a valid breakpoint");
         let hit = session.continue_to_breakpoint()?;
@@ -354,7 +361,7 @@ contract LocalVars() {
 }
 "#;
 
-    with_session_for_source(source, vec![], "main", vec![Expr::Int(3)], |session| {
+    with_session_for_source(source, vec![], "main", vec![Expr::int(3)], |session| {
         session.run_to_first_executed_statement()?;
         assert!(session.variable_by_name("x").is_err(), "x should not exist before its statement executes");
 
@@ -401,7 +408,7 @@ contract InlineCalls() {
 }
 "#;
 
-    with_session_for_source(source, vec![], "main", vec![Expr::Int(3)], |session| {
+    with_session_for_source(source, vec![], "main", vec![Expr::int(3)], |session| {
         session.run_to_first_executed_statement()?;
         let start = session.current_span().ok_or("missing start span")?;
         assert_eq!(start.line, 10);
@@ -420,7 +427,7 @@ contract InlineCalls() {
         Ok(())
     })?;
 
-    with_session_for_source(source, vec![], "main", vec![Expr::Int(3)], |session| {
+    with_session_for_source(source, vec![], "main", vec![Expr::int(3)], |session| {
         session.run_to_first_executed_statement()?;
         session.step_into()?;
         let mut in_callee = session.current_span().ok_or("missing span in callee")?;
@@ -464,7 +471,7 @@ contract Repeat() {
 }
 "#;
 
-    with_session_for_source(source, vec![], "main", vec![Expr::Int(0)], |session| {
+    with_session_for_source(source, vec![], "main", vec![Expr::int(0)], |session| {
         session.run_to_first_executed_statement()?;
         let start = session.current_span().ok_or("missing start span")?;
         assert_eq!(start.line, 10, "first source step should be caller line, not callee internals");
@@ -490,7 +497,7 @@ contract Repeat() {
 }
 "#;
 
-    with_session_for_source(source, vec![], "main", vec![Expr::Int(0)], |session| {
+    with_session_for_source(source, vec![], "main", vec![Expr::int(0)], |session| {
         session.run_to_first_executed_statement()?;
 
         let mut lines = vec![session.current_span().ok_or("missing initial span")?.line];
@@ -572,7 +579,7 @@ contract DebugPoC(int const) {
 }
 "#;
 
-    with_session_for_source(source, vec![Expr::Int(0)], "main", vec![Expr::Int(0), Expr::Int(0)], |session| {
+    with_session_for_source(source, vec![Expr::int(0)], "main", vec![Expr::int(0), Expr::int(0)], |session| {
         session.run_to_first_executed_statement()?;
 
         let initial = session.current_location().ok_or("missing initial location")?;
@@ -616,7 +623,7 @@ contract InlineParams() {
 }
 "#;
 
-    with_session_for_source(source, vec![], "main", vec![Expr::Int(4)], |session| {
+    with_session_for_source(source, vec![], "main", vec![Expr::int(4)], |session| {
         session.run_to_first_executed_statement()?;
 
         let mut saw_inline_param = false;
@@ -662,7 +669,7 @@ contract NestedArgs() {
 }
 "#;
 
-    with_session_for_source(source, vec![], "main", vec![Expr::Int(0)], |session| {
+    with_session_for_source(source, vec![], "main", vec![Expr::int(0)], |session| {
         session.run_to_first_executed_statement()?;
         let start = session.current_span().ok_or("missing start span")?;
         assert_eq!(start.line, 15);
@@ -676,4 +683,107 @@ contract NestedArgs() {
         assert_eq!(after_over.line, 16, "step_over should move past nested inline call in caller");
         Ok(())
     })
+}
+
+#[test]
+fn debug_session_exposes_loop_index_variable_i() -> Result<(), Box<dyn Error>> {
+    let source = r#"pragma silverscript ^0.1.0;
+
+contract LoopIndex() {
+    entrypoint function main() {
+        int sum = 0;
+        for(i,0,2){
+            if(i < 2){
+                sum = sum + i;
+            }
+        }
+        require(sum >= 0);
+    }
+}
+"#;
+
+    with_session_for_source(source, vec![], "main", vec![], |session| {
+        session.run_to_first_executed_statement()?;
+        let mut saw_loop_index = false;
+
+        for _ in 0..12 {
+            if let Ok(i) = session.variable_by_name("i") {
+                assert_eq!(session.format_value(&i.type_name, &i.value), "0");
+                saw_loop_index = true;
+                break;
+            }
+            if session.step_over()?.is_none() {
+                break;
+            }
+        }
+
+        assert!(saw_loop_index, "expected loop index 'i' to be visible while stepping loop body");
+        Ok(())
+    })
+}
+
+#[test]
+fn debug_session_shadow_eval_uses_tx_context_for_covenant_opcode_locals() -> Result<(), Box<dyn Error>> {
+    let source = r#"pragma silverscript ^0.1.0;
+
+contract CovLocal() {
+    entrypoint function main() {
+        byte[32] covid = OpInputCovenantId(this.activeInputIndex);
+        require(covid == covid);
+    }
+}
+"#;
+
+    let compile_opts = CompileOptions { record_debug_infos: true, ..Default::default() };
+    let compiled = compile_contract(source, &[], compile_opts)?;
+    let debug_info = compiled.debug_info.clone();
+    let sigscript = compiled.build_sig_script("main", vec![])?;
+
+    let input = TransactionInput {
+        previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([0x44u8; 32]), index: 0 },
+        signature_script: sigscript.clone(),
+        sequence: 0,
+        sig_op_count: 0,
+    };
+    let output = TransactionOutput { value: 1000, script_public_key: ScriptPublicKey::new(0, vec![OpTrue].into()), covenant: None };
+    let tx = Transaction::new(1, vec![input], vec![output], 0, Default::default(), 0, vec![]);
+
+    let covenant_id = Hash::from_bytes([0x11u8; 32]);
+    let utxo_entry =
+        UtxoEntry::new(1000, ScriptPublicKey::new(0, compiled.script.clone().into()), 0, tx.is_coinbase(), Some(covenant_id));
+    let populated_tx = PopulatedTransaction::new(&tx, vec![utxo_entry]);
+    let cov_ctx = CovenantsContext::from_tx(&populated_tx)?;
+
+    let sig_cache = Cache::new(10_000);
+    let reused_values = SigHashReusedValuesUnsync::new();
+    let ctx = EngineCtx::new(&sig_cache).with_reused(&reused_values).with_covenants_ctx(&cov_ctx);
+    let input_ref = &tx.inputs[0];
+    let utxo_ref = populated_tx.utxo(0).ok_or("missing utxo for input 0")?;
+    let engine = debugger_session::session::DebugEngine::from_transaction_input(
+        &populated_tx,
+        input_ref,
+        0,
+        utxo_ref,
+        ctx,
+        EngineFlags { covenants_enabled: true },
+    );
+
+    let shadow_ctx =
+        ShadowTxContext { tx: &populated_tx, input: input_ref, input_index: 0, utxo_entry: utxo_ref, covenants_ctx: &cov_ctx };
+
+    let mut session = DebugSession::full(&sigscript, &compiled.script, source, debug_info, engine)?.with_shadow_tx_context(shadow_ctx);
+    session.run_to_first_executed_statement()?;
+
+    for _ in 0..4 {
+        if let Ok(covid) = session.variable_by_name("covid") {
+            let rendered = session.format_value(&covid.type_name, &covid.value);
+            assert_eq!(rendered, format!("0x{}", "11".repeat(32)));
+            return Ok(());
+        }
+        if session.step_over()?.is_none() {
+            break;
+        }
+    }
+
+    Err("expected covid local to be evaluated using tx context".into())
 }

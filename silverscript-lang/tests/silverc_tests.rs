@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use kaspa_consensus_core::hashing::sighash::SigHashReusedValuesUnsync;
@@ -11,9 +11,38 @@ use kaspa_txscript::caches::Cache;
 use kaspa_txscript::script_builder::ScriptBuilder;
 use kaspa_txscript::{EngineCtx, EngineFlags, TxScriptEngine};
 use rand::RngCore;
-use silverscript_lang::ast::Expr;
+use silverscript_lang::ast::{ContractAst, Expr};
 use silverscript_lang::compiler::{CompiledContract, function_branch_index};
 
+const BASIC_CONTRACT_SOURCE: &str = r#"
+        contract Basic() {
+            entrypoint function main() {
+                require(true);
+            }
+        }
+    "#;
+
+const WITH_CTOR_SOURCE: &str = r#"
+        contract WithCtor(int a) {
+            entrypoint function main() {
+                require(a == 7);
+            }
+        }
+    "#;
+
+fn silverc() -> Command {
+    Command::new(env!("CARGO_BIN_EXE_silverc"))
+}
+
+fn write_basic_contract(path: &Path) {
+    fs::write(path, BASIC_CONTRACT_SOURCE).expect("write source");
+}
+
+fn write_with_ctor_contract(path: &Path) {
+    fs::write(path, WITH_CTOR_SOURCE).expect("write source");
+}
+
+// TODO: move to tempfile crate or manually delete as a test tear down
 fn temp_dir(name: &str) -> PathBuf {
     let mut rng = rand::thread_rng();
     let dir = std::env::temp_dir().join(format!("silverc_test_{name}_{}", rng.next_u64()));
@@ -56,16 +85,9 @@ fn run_script_with_selector(script: Vec<u8>, selector: Option<i64>) -> Result<()
 fn silverc_defaults_output_path_and_empty_ctor_args() {
     let dir = temp_dir("default");
     let src_path = dir.join("basic.sil");
-    let source = r#"
-        contract Basic() {
-            entrypoint function main() {
-                require(true);
-            }
-        }
-    "#;
-    fs::write(&src_path, source).expect("write source");
+    write_basic_contract(&src_path);
 
-    let status = Command::new(env!("CARGO_BIN_EXE_silverc")).arg(src_path.to_str().unwrap()).status().expect("run silverc");
+    let status = silverc().arg(src_path.to_str().unwrap()).status().expect("run silverc");
     assert!(status.success());
 
     let out_path = dir.join("basic.json");
@@ -75,23 +97,31 @@ fn silverc_defaults_output_path_and_empty_ctor_args() {
 }
 
 #[test]
+fn silverc_stdout_flag_overrides_output_file() {
+    let dir = temp_dir("compile_stdout");
+    let src_path = dir.join("basic.sil");
+    let out_path = dir.join("compiled.json");
+    write_basic_contract(&src_path);
+
+    let output =
+        silverc().arg(src_path.to_str().unwrap()).arg("-o").arg(out_path.to_str().unwrap()).arg("-c").output().expect("run silverc");
+    assert!(!output.status.success());
+
+    let stderr = String::from_utf8(output.stderr).expect("decode stderr");
+    assert!(stderr.contains("invalid usage"));
+}
+
+#[test]
 fn silverc_accepts_constructor_args_and_output_flag() {
     let dir = temp_dir("ctor");
     let src_path = dir.join("with_ctor.sil");
     let out_path = dir.join("out.json");
     let ctor_path = dir.join("ctor.json");
-    let source = r#"
-        contract WithCtor(int a) {
-            entrypoint function main() {
-                require(a == 7);
-            }
-        }
-    "#;
-    fs::write(&src_path, source).expect("write source");
-    let ctor_args = vec![Expr::Int(7)];
+    write_with_ctor_contract(&src_path);
+    let ctor_args = vec![Expr::int(7)];
     fs::write(&ctor_path, serde_json::to_string(&ctor_args).expect("serialize ctor args")).expect("write ctor args");
 
-    let status = Command::new(env!("CARGO_BIN_EXE_silverc"))
+    let status = silverc()
         .arg(src_path.to_str().unwrap())
         .arg("--constructor-args")
         .arg(ctor_path.to_str().unwrap())
@@ -107,4 +137,41 @@ fn silverc_accepts_constructor_args_and_output_flag() {
     let selector =
         if compiled.without_selector { None } else { Some(function_branch_index(&compiled.ast, "main").expect("selector resolved")) };
     assert!(run_script_with_selector(compiled.script, selector).is_ok());
+}
+
+#[test]
+fn silverc_ast_only_defaults_to_file_with_suffix() {
+    let dir = temp_dir("ast");
+    let src_path = dir.join("basic.sil");
+    let out_path = dir.join("basic_ast.json");
+    write_basic_contract(&src_path);
+
+    let output = silverc().arg(src_path.to_str().unwrap()).arg("--ast-only").output().expect("run silverc");
+    assert!(output.status.success());
+
+    let json = fs::read_to_string(&out_path).expect("read output");
+    let ast: ContractAst<'static> = serde_json::from_str(&json).expect("parse ast json");
+    assert_eq!(ast.name, "Basic");
+}
+
+#[test]
+fn silverc_ast_only_writes_file_with_output_flag() {
+    let dir = temp_dir("ast_file");
+    let src_path = dir.join("basic.sil");
+    let out_path = dir.join("basic.ast.json");
+    write_basic_contract(&src_path);
+
+    let output = silverc()
+        .arg(src_path.to_str().unwrap())
+        .arg("--ast-only")
+        .arg("-o")
+        .arg(out_path.to_str().unwrap())
+        .output()
+        .expect("run silverc");
+    assert!(output.status.success());
+    assert!(output.stdout.is_empty());
+
+    let ast_json = fs::read_to_string(&out_path).expect("read ast output");
+    let ast: ContractAst<'static> = serde_json::from_str(&ast_json).expect("parse ast json");
+    assert_eq!(ast.name, "Basic");
 }
