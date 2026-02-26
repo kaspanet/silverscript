@@ -1,5 +1,6 @@
 [workspace]
 members = ["silverscript-lang", "covenants/sdk"]
+exclude = ["tree-sitter"]
 resolver = "2"
 
 [workspace.package]

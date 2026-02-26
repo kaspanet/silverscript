@@ -1,9 +1,41 @@
-use std::env;
+use std::ffi::OsStr;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use silverscript_lang::ast::Expr;
+use clap::Parser;
+use silverscript_lang::ast::{Expr, parse_contract_ast};
 use silverscript_lang::compiler::{CompileOptions, compile_contract};
+
+#[derive(Debug, Parser)]
+#[command(
+    name = "silverc",
+    about = "Compile SilverScript contracts into JSON artifacts",
+    long_about = "Compile a SilverScript source file into a compiled JSON artifact, or parse only and emit AST JSON.\n\
+\n\
+Default Destination: <source>.json (or <source>_ast.json with --ast-only)\n",
+    after_help = "Examples:\n\
+  silverc contract.sil\n\
+  silverc contract.sil -o artifact.json\n\
+  silverc contract.sil -c",
+    next_line_help = true
+)]
+struct Cli {
+    /// Source SilverScript file (e.g. contract.sil)
+    #[arg(value_name = "SOURCE.sil")]
+    src: PathBuf,
+    /// Path to JSON constructor arguments
+    #[arg(visible_alias = "ctor", long = "constructor-args", value_name = "CTOR.json")]
+    constructor_args: Option<PathBuf>,
+    /// Output file path for JSON output
+    #[arg(short = 'o', long = "output", value_name = "FILE.json")]
+    out: Option<PathBuf>,
+    /// Write JSON output to stdout
+    #[arg(short = 'c', long = "stdout")]
+    stdout: bool,
+    /// Parse source and emit AST JSON without compiling
+    #[arg(long = "ast-only")]
+    ast_only: bool,
+}
 
 fn main() {
     if let Err(err) = run() {
@@ -13,47 +45,34 @@ fn main() {
 }
 
 fn run() -> Result<(), String> {
-    let args = env::args().skip(1).collect::<Vec<_>>();
-    if args.is_empty() {
-        return Err("usage: silverc <src.sil> [--constructor-args ctor.json] [-o dst.json]".to_string());
-    }
-
-    let mut src: Option<String> = None;
-    let mut ctor_args_path: Option<String> = None;
-    let mut out_path: Option<String> = None;
-
-    let mut i = 0;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--constructor-args" => {
-                let value = args.get(i + 1).ok_or_else(|| "--constructor-args requires a path".to_string())?;
-                ctor_args_path = Some(value.clone());
-                i += 2;
-            }
-            "-o" => {
-                let value = args.get(i + 1).ok_or_else(|| "-o requires a path".to_string())?;
-                out_path = Some(value.clone());
-                i += 2;
-            }
-            value if value.starts_with('-') => {
-                return Err(format!("unknown option: {value}"));
-            }
-            value => {
-                if src.is_some() {
-                    return Err("only one source file is supported".to_string());
-                }
-                src = Some(value.to_string());
-                i += 1;
-            }
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(err) if err.use_stderr() => return Err(err.to_string()),
+        Err(err) => {
+            err.print().map_err(|print_err| format!("failed to print clap output: {print_err}"))?;
+            return Ok(());
         }
+    };
+
+    // both stdout and file output were requested, invalid usage
+    if cli.stdout && cli.out.is_some() {
+        return Err("invalid usage: both stdout and file output arguments were provided; pick only one".to_string());
     }
 
-    let src = src.ok_or_else(|| "missing source file".to_string())?;
-    let source = fs::read_to_string(&src).map_err(|err| format!("failed to read {src}: {err}"))?;
+    let source = fs::read_to_string(&cli.src).map_err(|err| format!("failed to read {}: {err}", cli.src.display()))?;
 
-    let constructor_args = if let Some(path) = ctor_args_path {
-        let json = fs::read_to_string(&path).map_err(|err| format!("failed to read {path}: {err}"))?;
-        serde_json::from_str::<Vec<Expr>>(&json).map_err(|err| format!("failed to parse constructor args {path}: {err}"))?
+    if cli.ast_only {
+        let ast = parse_contract_ast(&source).map_err(|err| format!("parse error: {err}"))?;
+        let rendered = ast.to_string();
+        let target = resolve_output_target(&cli, &cli.src, true);
+        emit_output(&rendered, target)?;
+        return Ok(());
+    }
+
+    let constructor_args = if let Some(path) = &cli.constructor_args {
+        let json = fs::read_to_string(path).map_err(|err| format!("failed to read {}: {err}", path.display()))?;
+        serde_json::from_str::<Vec<Expr>>(&json)
+            .map_err(|err| format!("failed to parse constructor args {}: {err}", path.display()))?
     } else {
         Vec::new()
     };
@@ -61,21 +80,48 @@ fn run() -> Result<(), String> {
     let compiled =
         compile_contract(&source, &constructor_args, CompileOptions::default()).map_err(|err| format!("compile error: {err}"))?;
 
-    let output_path = match out_path {
-        Some(path) => PathBuf::from(path),
-        None => default_output_path(&src),
-    };
-
     let json = serde_json::to_string_pretty(&compiled).map_err(|err| format!("failed to serialize output: {err}"))?;
-    fs::write(&output_path, json).map_err(|err| format!("failed to write {}: {err}", output_path.display()))?;
+    let target = resolve_output_target(&cli, &cli.src, false);
+    emit_output(&json, target)?;
 
     Ok(())
 }
 
-fn default_output_path(src: &str) -> PathBuf {
-    if let Some(stripped) = src.strip_suffix(".sil") {
-        PathBuf::from(format!("{stripped}.json"))
-    } else {
-        PathBuf::from(format!("{src}.json"))
+enum OutputTarget {
+    Stdout,
+    File(PathBuf),
+}
+
+fn resolve_output_target(cli: &Cli, src: &Path, ast_only: bool) -> OutputTarget {
+    if cli.stdout {
+        return OutputTarget::Stdout;
     }
+    if let Some(path) = &cli.out {
+        return OutputTarget::File(path.clone());
+    }
+    OutputTarget::File(default_output_path(src, ast_only))
+}
+
+fn emit_output(content: &str, target: OutputTarget) -> Result<(), String> {
+    match target {
+        OutputTarget::Stdout => {
+            println!("{content}");
+            Ok(())
+        }
+        OutputTarget::File(path) => {
+            fs::write(&path, content).map_err(|err| format!("failed to write {}: {err}", path.display()))?;
+            Ok(())
+        }
+    }
+}
+
+fn default_output_path(src: &Path, ast_only: bool) -> PathBuf {
+    if !ast_only {
+        return src.with_extension("json");
+    }
+
+    let stem = src.file_stem().or_else(|| src.file_name()).unwrap_or(OsStr::new("output"));
+    let mut file_name = stem.to_os_string();
+    file_name.push("_ast.json");
+    src.with_file_name(file_name)
 }

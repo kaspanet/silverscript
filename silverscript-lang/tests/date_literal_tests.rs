@@ -1,7 +1,7 @@
 use chrono::NaiveDateTime;
-use silverscript_lang::ast::{Expr, Statement, parse_contract_ast};
+use silverscript_lang::ast::{Expr, ExprKind, Statement, parse_contract_ast};
 
-fn extract_first_expr(source: &str) -> Expr {
+fn extract_first_expr<'i>(source: &'i str) -> Expr<'i> {
     let ast = parse_contract_ast(source).expect("parse succeeds");
     let function = &ast.functions[0];
     let statement = &function.body[0];
@@ -23,8 +23,8 @@ fn parses_date_literal_basic_iso() {
         }
     "#;
     let expr = extract_first_expr(source);
-    let Expr::Int(parsed) = expr else {
-        panic!("expected int literal");
+    let Expr { kind: ExprKind::DateLiteral(parsed), .. } = expr else {
+        panic!("expected date literal");
     };
     let expected = NaiveDateTime::parse_from_str("2021-02-17T01:30:00", "%Y-%m-%dT%H:%M:%S").unwrap().and_utc().timestamp();
     assert_eq!(parsed, expected);

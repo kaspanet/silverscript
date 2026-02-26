@@ -41,7 +41,7 @@ fn parse_contract_param_types(source: &str) -> Vec<String> {
     result
 }
 
-fn dummy_expr_for_type(type_name: &str) -> Expr {
+fn dummy_expr_for_type(type_name: &str) -> Expr<'static> {
     if type_name == "int" {
         return 0i64.into();
     }
@@ -125,7 +125,7 @@ fn build_sigscript(args: &[ArgValue], selector: Option<i64>) -> Vec<u8> {
     builder.drain()
 }
 
-fn selector_for_compiled(compiled: &CompiledContract, function_name: &str) -> Option<i64> {
+fn selector_for_compiled(compiled: &CompiledContract<'_>, function_name: &str) -> Option<i64> {
     if compiled.without_selector {
         None
     } else {
