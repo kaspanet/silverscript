@@ -41,7 +41,13 @@ fn with_session<F>(mut f: F) -> Result<(), Box<dyn Error>>
 where
     F: FnMut(&mut DebugSession<'_, '_>) -> Result<(), Box<dyn Error>>,
 {
-    with_session_for_source(IF_STATEMENT_CONTRACT, vec![Expr::int(3), Expr::int(10)], "hello", vec![Expr::int(5), Expr::int(5)], &mut f)
+    with_session_for_source(
+        IF_STATEMENT_CONTRACT,
+        vec![Expr::int(3), Expr::int(10)],
+        "hello",
+        vec![Expr::int(5), Expr::int(5)],
+        &mut f,
+    )
 }
 
 // Generic harness that compiles a contract and boots a debugger session for a selected function call.

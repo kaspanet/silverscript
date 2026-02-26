@@ -4,7 +4,9 @@ use std::process::{Command, Stdio};
 #[test]
 fn cli_debugger_repl_all_commands_smoke() {
     let tmp = std::env::temp_dir().join("cli_test_if_statement.sil");
-    std::fs::write(&tmp, r#"pragma silverscript ^0.1.0;
+    std::fs::write(
+        &tmp,
+        r#"pragma silverscript ^0.1.0;
 
 contract IfStatement(int x, int y) {
     entrypoint function hello(int a, int b) {
@@ -21,7 +23,9 @@ contract IfStatement(int x, int y) {
         require(d == y);
     }
 }
-"#).expect("write temp contract");
+"#,
+    )
+    .expect("write temp contract");
     let contract_path = &tmp;
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_cli-debugger"))
