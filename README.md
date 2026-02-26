@@ -22,7 +22,7 @@ cargo test -p silverscript-lang
 The workspace includes a source-level debugger for stepping through scripts:
 
 ```bash
-cargo run -p silverscript-lang --bin sil-debug -- \
+cargo run -p cli-debugger -- \
   silverscript-lang/tests/examples/if_statement.sil \
   --function hello \
   --ctor-arg 3 --ctor-arg 10 \
@@ -31,7 +31,9 @@ cargo run -p silverscript-lang --bin sil-debug -- \
 
 ## Layout
 
-- `silverscript-lang/` – compiler, parser, debugger, and tests
+- `silverscript-lang/` – compiler, parser, and tests
+- `debugger/session/` – `DebugSession` runtime (stepping, variable inspection)
+- `debugger/cli/` – `sil-debug` CLI REPL
 - `silverscript-lang/tests/examples/` – example contracts (`.sil` files)
 
 ## Documentation

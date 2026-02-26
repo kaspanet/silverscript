@@ -1,16 +1,28 @@
 use std::io::Write;
-use std::path::PathBuf;
 use std::process::{Command, Stdio};
-
-fn example_contract_path() -> PathBuf {
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    manifest_dir.join("tests/if_statement.sil")
-}
 
 #[test]
 fn cli_debugger_repl_all_commands_smoke() {
-    let contract_path = example_contract_path();
-    assert!(contract_path.exists(), "example contract not found: {}", contract_path.display());
+    let tmp = std::env::temp_dir().join("cli_test_if_statement.sil");
+    std::fs::write(&tmp, r#"pragma silverscript ^0.1.0;
+
+contract IfStatement(int x, int y) {
+    entrypoint function hello(int a, int b) {
+        int d = a + b;
+        d = d - a;
+        if (d == x - 2) {
+            int c = d + b;
+            d = a + c;
+            require(c > d);
+        } else {
+            require(d == a);
+        }
+        d = d + a;
+        require(d == y);
+    }
+}
+"#).expect("write temp contract");
+    let contract_path = &tmp;
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_cli-debugger"))
         .arg(contract_path)

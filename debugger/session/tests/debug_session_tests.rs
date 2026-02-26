@@ -1,7 +1,5 @@
 use std::collections::HashSet;
 use std::error::Error;
-use std::fs;
-use std::path::PathBuf;
 
 use kaspa_consensus_core::Hash;
 use kaspa_consensus_core::hashing::sighash::SigHashReusedValuesUnsync;
@@ -19,21 +17,31 @@ use silverscript_lang::ast::{Expr, parse_contract_ast};
 use silverscript_lang::compiler::{CompileOptions, compile_contract};
 use silverscript_lang::debug_info::MappingKind;
 
-fn example_contract_path() -> PathBuf {
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    manifest_dir.join("tests/examples/if_statement.sil")
+const IF_STATEMENT_CONTRACT: &str = r#"pragma silverscript ^0.1.0;
+
+contract IfStatement(int x, int y) {
+    entrypoint function hello(int a, int b) {
+        int d = a + b;
+        d = d - a;
+        if (d == x - 2) {
+            int c = d + b;
+            d = a + c;
+            require(c > d);
+        } else {
+            require(d == a);
+        }
+        d = d + a;
+        require(d == y);
+    }
 }
+"#;
 
 // Convenience harness for the canonical example contract used by baseline session tests.
 fn with_session<F>(mut f: F) -> Result<(), Box<dyn Error>>
 where
     F: FnMut(&mut DebugSession<'_, '_>) -> Result<(), Box<dyn Error>>,
 {
-    let contract_path = example_contract_path();
-    assert!(contract_path.exists(), "example contract not found: {}", contract_path.display());
-
-    let source = fs::read_to_string(&contract_path)?;
-    with_session_for_source(&source, vec![Expr::int(3), Expr::int(10)], "hello", vec![Expr::int(5), Expr::int(5)], &mut f)
+    with_session_for_source(IF_STATEMENT_CONTRACT, vec![Expr::int(3), Expr::int(10)], "hello", vec![Expr::int(5), Expr::int(5)], &mut f)
 }
 
 // Generic harness that compiles a contract and boots a debugger session for a selected function call.
