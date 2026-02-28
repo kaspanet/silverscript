@@ -2,7 +2,6 @@ use std::collections::{HashMap, HashSet};
 
 use kaspa_txscript::opcodes::codes::*;
 use kaspa_txscript::script_builder::ScriptBuilder;
-use kaspa_txscript::serialize_i64;
 use serde::{Deserialize, Serialize};
 
 use crate::ast::{
@@ -247,9 +246,8 @@ fn compile_contract_fields<'i>(
             let ExprKind::Int(value) = &resolved.kind else {
                 return Err(CompilerError::Unsupported(format!("contract field '{}' expects compile-time int value", field.name)));
             };
-            let serialized = serialize_i64(*value, Some(8usize))
-                .map_err(|err| CompilerError::Unsupported(format!("failed to serialize int literal {}: {err}", value)))?;
-            builder.add_data(&serialized)?;
+            builder.add_data(&value.to_le_bytes())?;
+            builder.add_op(OpBin2Num)?;
         } else {
             compile_expr(
                 &resolved,
@@ -794,8 +792,7 @@ fn encode_fixed_size_value<'i>(value: &Expr<'i>, type_name: &str) -> Result<Vec<
                 ExprKind::Int(number) | ExprKind::DateLiteral(number) => *number,
                 _ => return Err(CompilerError::Unsupported("array literal element type mismatch".to_string())),
             };
-            serialize_i64(number, Some(8usize))
-                .map_err(|err| CompilerError::Unsupported(format!("failed to serialize int literal {}: {err}", number)))
+            Ok(number.to_le_bytes().to_vec())
         }
         "bool" => {
             let ExprKind::Bool(flag) = &value.kind else {
@@ -1478,9 +1475,7 @@ fn encoded_field_chunk_size<'i>(
     contract_constants: &HashMap<String, Expr<'i>>,
 ) -> Result<usize, CompilerError> {
     if field.type_ref.array_dims.is_empty() && field.type_ref.base == TypeBase::Int {
-        // Int fields are encoded as PUSHDATA8-prefixed script numbers:
-        // 1-byte push opcode (0x08) + 8-byte payload from serialize_i64(..., Some(8)).
-        return Ok(9);
+        return Ok(10);
     }
 
     if field.type_ref.base != TypeBase::Byte {
@@ -1665,6 +1660,10 @@ fn compile_validate_output_state_statement(
             builder.add_data(&[0x08])?;
             stack_depth += 1;
             builder.add_op(OpSwap)?;
+            builder.add_op(OpCat)?;
+            stack_depth -= 1;
+            builder.add_data(&[OpBin2Num])?;
+            stack_depth += 1;
             builder.add_op(OpCat)?;
             stack_depth -= 1;
             continue;
