@@ -1,6 +1,6 @@
 id = "silverscript"
 name = "SilverScript"
-version = "0.1.0"
+version = "0.1.1"
 schema_version = 1
 description = "SilverScript language support."
 
@@ -10,9 +10,9 @@ languages = ["languages/silverscript"]
 # useful for development
 # repository = "file:///D:/Dev/kaspa/silverscript"
 
-repository = "https://github.com/rusty-kaspa/silverscript"
-# @TODO(izio): bump after squash merge
-rev = "8064ce2fd8588e4fca4499dad0669b80ea5b4165"
+repository = "https://github.com/kaspanet/silverscript"
+# revision should be the commit hash containing the tree sitter grammar version you want to target
+rev = "b51ee1e196002621444bd42d23d23e7a64d909ab"
 path = "tree-sitter"
 
 [language_servers.silverscript-lsp]
