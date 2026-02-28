@@ -1562,8 +1562,6 @@ fn compiles_contract_fields_as_script_prolog() {
     let expected = ScriptBuilder::new()
         .add_data(&5i64.to_le_bytes())
         .unwrap()
-        .add_op(OpBin2Num)
-        .unwrap()
         .add_data(&[0x12, 0x34])
         .unwrap()
         .add_i64(1)
@@ -1622,10 +1620,8 @@ fn compiles_validate_output_state_to_expected_script() {
     let compiled = compile_contract(source, &[5.into(), vec![1u8, 2u8].into()], CompileOptions::default()).expect("compile succeeds");
 
     let expected = ScriptBuilder::new()
-        // <x> as fixed-size int field encoding: <PUSHDATA8><8-byte little-endian><OpBin2Num>
+        // <x> as fixed-size int field encoding: <PUSHDATA8><8-byte little-endian>
         .add_data(&5i64.to_le_bytes())
-        .unwrap()
-        .add_op(OpBin2Num)
         .unwrap()
         // <y>
         .add_data(&[1u8, 2u8])
@@ -1645,7 +1641,7 @@ fn compiles_validate_output_state_to_expected_script() {
         .add_op(OpAdd)
         .unwrap()
 
-        // ---- Convert x+1 to fixed-size int field chunk: <0x08><8-byte payload><OpBin2Num> ----
+        // ---- Convert x+1 to fixed-size int field chunk: <0x08><8-byte payload> ----
         // convert numeric value to 8-byte payload
         .add_i64(8)
         .unwrap()
@@ -1658,12 +1654,6 @@ fn compiles_validate_output_state_to_expected_script() {
         .unwrap()
         .add_op(OpCat)
         .unwrap()
-        // append OpBin2Num opcode byte
-        .add_data(&[OpBin2Num])
-        .unwrap()
-        .add_op(OpCat)
-        .unwrap()
-
         // ---- Build new_state.y pushdata chunk ----
         // raw y bytes
         .add_data(&[0x34, 0x12])
@@ -1697,8 +1687,8 @@ fn compiles_validate_output_state_to_expected_script() {
         // sigscript_len - script_size => bytes before current redeem
         .add_op(OpSub)
         .unwrap()
-        // add fixed current-state field prefix length: len(<x><y>) = 13
-        .add_i64(13)
+        // add fixed current-state field prefix length: len(<x><y>) = 12
+        .add_i64(12)
         .unwrap()
         // start offset of REST_OF_SCRIPT inside sigscript
         .add_op(OpAdd)
@@ -1831,9 +1821,6 @@ fn compiles_read_input_state_to_expected_script() {
         // push x payload (8-byte LE)
         .add_data(&5i64.to_le_bytes())
         .unwrap()
-        // decode x to numeric form
-        .add_op(OpBin2Num)
-        .unwrap()
         // push y payload bytes
         .add_data(&[1u8, 2u8])
         .unwrap()
@@ -1917,10 +1904,10 @@ fn compiles_read_input_state_to_expected_script() {
         // base = sig_len - script_size
         .add_op(OpSub)
         .unwrap()
-        // skip x encoded chunk (10 bytes) + y pushdata prefix (1 byte)
-        .add_i64(11)
+        // skip x encoded chunk (9 bytes) + y pushdata prefix (1 byte)
+        .add_i64(10)
         .unwrap()
-        // start_y = base + 11
+        // start_y = base + 10
         .add_op(OpAdd)
         .unwrap()
 
@@ -1937,9 +1924,9 @@ fn compiles_read_input_state_to_expected_script() {
         .add_op(OpSub)
         .unwrap()
         // skip x chunk + y prefix
-        .add_i64(11)
+        .add_i64(10)
         .unwrap()
-        // start_y = base + 11
+        // start_y = base + 10
         .add_op(OpAdd)
         .unwrap()
         // y payload length
