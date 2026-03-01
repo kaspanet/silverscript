@@ -17,7 +17,7 @@ Scope: syntax + semantics only. This is not claiming implementation is finalized
 1. Dev writes only a transition/predicate function and annotates it with a covenant macro.
 2. Entrypoint(s) are derived by the compiler from that function’s shape.
 3. For `N:M`, the compiler generates two entrypoints: leader + delegate.
-4. In predicate mode, the entrypoint args are `new_states` (no separate call-args channel).
+4. In predicate mode, the entrypoint args are `new_states` plus optional extra call args.
 5. State is treated as one implicit unnamed struct synthesized from all contract fields.
 
    * `1:1` uses `State prev_state` / `State new_state`
@@ -34,7 +34,7 @@ Only policy functions are annotated.
 
 ```js
 #[cov.one_to_many.predicate(max_outputs = max_outs)]
-function split(State prev_state, State[] new_states) {
+function split(State prev_state, State[] new_states, sig[] approvals) {
     // require(...) rules
 }
 ```
@@ -43,7 +43,7 @@ function split(State prev_state, State[] new_states) {
 
 ```js
 #[cov.n_to_m.predicate(max_inputs = max_ins, max_outputs = max_outs)]
-function transition_ok(State[] prev_states, State[] new_states) {
+function transition_ok(State[] prev_states, State[] new_states, sig leader_sig) {
     // require(...) rules
 }
 ```
@@ -72,17 +72,16 @@ function roll(State prev_state, byte[32] block_hash) : (State new_state) {
 
 Predicate mode is the default convenience mode.
 
-1. Generated entrypoint args are `new_states`.
-2. Wrapper reads `prev_states` from tx context and calls the policy predicate.
+1. Generated entrypoint args are `new_states` plus optional extra call args.
+2. Wrapper reads prior state from tx context (`prev_state` or `prev_states`) and calls the policy predicate with `(prev_state(s), new_states, call_args...)`.
 3. Wrapper validates each output with `validateOutputState(...)` against `new_states`.
-
-There is no extra call-args payload in this mode.
+4. `new_states` are structurally committed via output validation, but extra call args are not directly committed by tx structure.
 
 ### Transition mode
 
 Transition mode allows extra call args (`fee` above, etc.) and the policy computes `new_states`.
 
-Important: extra call args are not directly committed by tx structure. The compiler/runtime must define a commitment story (and enforce determinism) for those args. This is the main reason predicate mode is the safe default.
+Important: in both predicate and transition modes, any extra call args (beyond state values that are validated on outputs) are not directly committed by tx structure. The compiler/runtime must define a commitment story (and enforce determinism) for those args.
 
 ## Inferred entrypoints
 
@@ -117,7 +116,7 @@ contract VaultNM(
     int round = init_round;
 
     #[cov.n_to_m.predicate(max_inputs = max_ins, max_outputs = max_outs)]
-    function conserve_and_bump(State[] prev_states, State[] new_states) {
+    function conserve_and_bump(State[] prev_states, State[] new_states, sig leader_sig) {
         require(new_states.length > 0);
 
         int in_sum = 0;
@@ -157,7 +156,7 @@ contract VaultNM(
     byte[32] owner = init_owner;
     int round = init_round;
 
-    function conserve_and_bump(State[] prev_states, State[] new_states) {
+    function conserve_and_bump(State[] prev_states, State[] new_states, sig leader_sig) {
         require(new_states.length > 0);
 
         int in_sum = 0;
@@ -176,7 +175,7 @@ contract VaultNM(
     }
 
     // Generated for N:M leader path
-    entrypoint function conserve_and_bump_leader(State[] new_states) {
+    entrypoint function conserve_and_bump_leader(State[] new_states, sig leader_sig) {
         byte[32] cov_id = OpInputCovenantId(this.activeInputIndex);
 
         int in_count = OpCovInputCount(cov_id);
@@ -206,7 +205,7 @@ contract VaultNM(
             });
         }
 
-        conserve_and_bump(prev_states, new_states);
+        conserve_and_bump(prev_states, new_states, leader_sig);
 
         for(k, 0, out_count, max_outs) {
             int out_idx = OpCovOutputIdx(cov_id, k);
