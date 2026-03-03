@@ -1614,7 +1614,7 @@ dependencies = [
 [[package]]
 name = "kaspa-addresses"
 version = "1.1.0-rc.3"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset1#a666855272a56402a65731e91488d92d139b62c4"
+source = "git+https://github.com/kaspanet/rusty-kaspa?branch=tn12#c6819f3b3fe37f712acd88dafbb583297e2ef938"
 dependencies = [
  "borsh",
  "js-sys",
@@ -1629,7 +1629,7 @@ dependencies = [
 [[package]]
 name = "kaspa-consensus-core"
 version = "1.1.0-rc.3"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset1#a666855272a56402a65731e91488d92d139b62c4"
+source = "git+https://github.com/kaspanet/rusty-kaspa?branch=tn12#c6819f3b3fe37f712acd88dafbb583297e2ef938"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -1666,7 +1666,7 @@ dependencies = [
 [[package]]
 name = "kaspa-core"
 version = "1.1.0-rc.3"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset1#a666855272a56402a65731e91488d92d139b62c4"
+source = "git+https://github.com/kaspanet/rusty-kaspa?branch=tn12#c6819f3b3fe37f712acd88dafbb583297e2ef938"
 dependencies = [
  "anyhow",
  "cfg-if",
@@ -1697,7 +1697,7 @@ dependencies = [
 [[package]]
 name = "kaspa-hashes"
 version = "1.1.0-rc.3"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset1#a666855272a56402a65731e91488d92d139b62c4"
+source = "git+https://github.com/kaspanet/rusty-kaspa?branch=tn12#c6819f3b3fe37f712acd88dafbb583297e2ef938"
 dependencies = [
  "blake2b_simd",
  "blake3",
@@ -1717,7 +1717,7 @@ dependencies = [
 [[package]]
 name = "kaspa-math"
 version = "1.1.0-rc.3"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset1#a666855272a56402a65731e91488d92d139b62c4"
+source = "git+https://github.com/kaspanet/rusty-kaspa?branch=tn12#c6819f3b3fe37f712acd88dafbb583297e2ef938"
 dependencies = [
  "borsh",
  "faster-hex 0.9.0",
@@ -1737,7 +1737,7 @@ dependencies = [
 [[package]]
 name = "kaspa-merkle"
 version = "1.1.0-rc.3"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset1#a666855272a56402a65731e91488d92d139b62c4"
+source = "git+https://github.com/kaspanet/rusty-kaspa?branch=tn12#c6819f3b3fe37f712acd88dafbb583297e2ef938"
 dependencies = [
  "kaspa-hashes",
 ]
@@ -1745,7 +1745,7 @@ dependencies = [
 [[package]]
 name = "kaspa-muhash"
 version = "1.1.0-rc.3"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset1#a666855272a56402a65731e91488d92d139b62c4"
+source = "git+https://github.com/kaspanet/rusty-kaspa?branch=tn12#c6819f3b3fe37f712acd88dafbb583297e2ef938"
 dependencies = [
  "kaspa-hashes",
  "kaspa-math",
@@ -1756,7 +1756,7 @@ dependencies = [
 [[package]]
 name = "kaspa-txscript"
 version = "1.1.0-rc.3"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset1#a666855272a56402a65731e91488d92d139b62c4"
+source = "git+https://github.com/kaspanet/rusty-kaspa?branch=tn12#c6819f3b3fe37f712acd88dafbb583297e2ef938"
 dependencies = [
  "ark-bn254",
  "ark-ec",
@@ -1802,7 +1802,7 @@ dependencies = [
 [[package]]
 name = "kaspa-txscript-errors"
 version = "1.1.0-rc.3"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset1#a666855272a56402a65731e91488d92d139b62c4"
+source = "git+https://github.com/kaspanet/rusty-kaspa?branch=tn12#c6819f3b3fe37f712acd88dafbb583297e2ef938"
 dependencies = [
  "borsh",
  "kaspa-hashes",
@@ -1813,7 +1813,7 @@ dependencies = [
 [[package]]
 name = "kaspa-utils"
 version = "1.1.0-rc.3"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset1#a666855272a56402a65731e91488d92d139b62c4"
+source = "git+https://github.com/kaspanet/rusty-kaspa?branch=tn12#c6819f3b3fe37f712acd88dafbb583297e2ef938"
 dependencies = [
  "arc-swap",
  "async-channel 2.5.0",
@@ -1843,7 +1843,7 @@ dependencies = [
 [[package]]
 name = "kaspa-wasm-core"
 version = "1.1.0-rc.3"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset1#a666855272a56402a65731e91488d92d139b62c4"
+source = "git+https://github.com/kaspanet/rusty-kaspa?branch=tn12#c6819f3b3fe37f712acd88dafbb583297e2ef938"
 dependencies = [
  "faster-hex 0.9.0",
  "hexplay",

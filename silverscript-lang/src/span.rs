@@ -19,6 +19,12 @@ impl<'i> Span<'i> {
         let end = self.end().max(other.end());
         Span::new(input, start, end).unwrap_or(*self)
     }
+
+    pub(crate) fn line_col_range(&self) -> (usize, usize, usize, usize) {
+        let (line, col) = self.start_pos().line_col();
+        let (end_line, end_col) = self.end_pos().line_col();
+        (line, col, end_line, end_col)
+    }
 }
 
 impl<'i> Default for Span<'i> {
@@ -78,4 +84,17 @@ impl<'i> SpanUtils for Span<'i> {
 
 pub fn join<'i>(left: &Span<'i>, right: &Span<'i>) -> Span<'i> {
     left.join(right)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Span;
+
+    #[test]
+    fn line_col_range_reports_expected_bounds() {
+        let source = "a\nbc\ndef";
+        let span = Span::new(source, 2, 3).expect("span");
+        let (line, col, end_line, end_col) = span.line_col_range();
+        assert_eq!((line, col, end_line, end_col), (2, 1, 2, 2));
+    }
 }

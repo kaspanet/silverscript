@@ -10,14 +10,13 @@ use crate::ast::{
     StateBindingAst, StateFieldExpr, Statement, TimeVar, TypeBase, TypeRef, UnaryOp, UnarySuffixKind, parse_contract_ast,
     parse_type_ref,
 };
-use crate::debug_info::labels::synthetic;
 use crate::debug_info::{DebugInfo, SourceSpan};
 pub use crate::errors::{CompilerError, ErrorSpan};
 use crate::span;
 
 mod debug_recording;
 
-use debug_recording::{DebugSink, FunctionDebugRecorder, record_synthetic_range};
+use debug_recording::{ContractRecorder, FunctionRecorder};
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct CompileOptions {
@@ -110,7 +109,7 @@ fn compile_contract_impl<'i>(
         let (_contract_fields, field_prolog_script) = compile_contract_fields(&contract.fields, &constants, options, script_size)?;
 
         let mut compiled_entrypoints = Vec::new();
-        let mut recorder = DebugSink::new(options.record_debug_infos);
+        let mut recorder = ContractRecorder::new(options.record_debug_infos);
         recorder.record_constructor_constants(&contract.params, constructor_args);
         for (index, func) in contract.functions.iter().enumerate() {
             if func.entrypoint {
@@ -138,34 +137,25 @@ fn compile_contract_impl<'i>(
             let mut builder = ScriptBuilder::new();
             let total = compiled_entrypoints.len();
             for (index, compiled) in compiled_entrypoints.iter().enumerate() {
-                record_synthetic_range(&mut builder, &mut recorder, synthetic::DISPATCHER_GUARD, |builder| {
-                    builder.add_op(OpDup)?;
-                    builder.add_i64(index as i64)?;
-                    builder.add_op(OpNumEqual)?;
-                    builder.add_op(OpIf)?;
-                    builder.add_op(OpDrop)?;
-                    Ok(())
-                })?;
+                builder.add_op(OpDup)?;
+                builder.add_i64(index as i64)?;
+                builder.add_op(OpNumEqual)?;
+                builder.add_op(OpIf)?;
+                builder.add_op(OpDrop)?;
                 let start = field_prolog_script.len() + builder.script().len();
-                builder.add_ops(&compiled.script)?;
                 recorder.record_compiled_function(&compiled.name, compiled.script.len(), &compiled.debug, start);
-                record_synthetic_range(&mut builder, &mut recorder, synthetic::DISPATCHER_ELSE, |builder| {
-                    builder.add_op(OpElse)?;
-                    if index == total - 1 {
-                        builder.add_op(OpDrop)?;
-                        builder.add_op(OpFalse)?;
-                        builder.add_op(OpVerify)?;
-                    }
-                    Ok(())
-                })?;
+                builder.add_ops(&compiled.script)?;
+                builder.add_op(OpElse)?;
+                if index == total - 1 {
+                    builder.add_op(OpDrop)?;
+                    builder.add_op(OpFalse)?;
+                    builder.add_op(OpVerify)?;
+                }
             }
 
-            record_synthetic_range(&mut builder, &mut recorder, synthetic::DISPATCHER_ENDIFS, |builder| {
-                for _ in 0..total {
-                    builder.add_op(OpEndIf)?;
-                }
-                Ok(())
-            })?;
+            for _ in 0..total {
+                builder.add_op(OpEndIf)?;
+            }
 
             builder.drain()
         };
@@ -920,7 +910,7 @@ pub fn function_branch_index<'i>(contract: &ContractAst<'i>, function_name: &str
 struct CompiledFunction<'i> {
     name: String,
     script: Vec<u8>,
-    debug: FunctionDebugRecorder<'i>,
+    debug: FunctionRecorder<'i>,
 }
 
 fn compile_function<'i>(
@@ -972,7 +962,7 @@ fn compile_function<'i>(
         env.remove(&param.name);
     }
     let mut builder = ScriptBuilder::new();
-    let mut recorder = FunctionDebugRecorder::new(options.record_debug_infos, function, contract_fields);
+    let mut recorder = FunctionRecorder::new(options.record_debug_infos, function, contract_fields);
     let mut yields: Vec<Expr> = Vec::new();
 
     if !options.allow_yield && function.body.iter().any(contains_yield) {
@@ -1002,7 +992,7 @@ fn compile_function<'i>(
     let body_len = function.body.len();
     for (index, stmt) in function.body.iter().enumerate() {
         let start = builder.script().len();
-        let env_before = recorder.is_enabled().then(|| env.clone());
+        let env_before = recorder.capture_env_snapshot(&env);
         if let Statement::Return { exprs, .. } = stmt {
             if index != body_len - 1 {
                 return Err(CompilerError::Unsupported("return statement must be the last statement".to_string()));
@@ -1012,27 +1002,26 @@ fn compile_function<'i>(
                 let resolved = resolve_expr(expr.clone(), &env, &mut HashSet::new()).map_err(|err| err.with_span(&expr.span))?;
                 yields.push(resolved);
             }
-            recorder.record_statement_with_env_diff(stmt, start, builder.script().len(), env_before.as_ref(), &env, &types)?;
-            continue;
+        } else {
+            compile_statement(
+                stmt,
+                &mut env,
+                &params,
+                &mut types,
+                &mut builder,
+                options,
+                contract_fields,
+                contract_field_prefix_len,
+                constants,
+                functions,
+                function_order,
+                function_index,
+                &mut yields,
+                script_size,
+                &mut recorder,
+            )
+            .map_err(|err| err.with_span(&stmt.span()))?;
         }
-        compile_statement(
-            stmt,
-            &mut env,
-            &params,
-            &mut types,
-            &mut builder,
-            options,
-            contract_fields,
-            contract_field_prefix_len,
-            constants,
-            functions,
-            function_order,
-            function_index,
-            &mut yields,
-            script_size,
-            &mut recorder,
-        )
-        .map_err(|err| err.with_span(&stmt.span()))?;
         let end = builder.script().len();
         recorder.record_statement_with_env_diff(stmt, start, end, env_before.as_ref(), &env, &types)?;
     }
@@ -1092,7 +1081,7 @@ fn compile_statement<'i>(
     function_index: usize,
     yields: &mut Vec<Expr<'i>>,
     script_size: Option<i64>,
-    debug_recorder: &mut FunctionDebugRecorder<'i>,
+    debug_recorder: &mut FunctionRecorder<'i>,
 ) -> Result<(), CompilerError> {
     match stmt {
         Statement::VariableDefinition { type_ref, name, expr, .. } => {
@@ -1787,7 +1776,7 @@ fn compile_inline_call<'i>(
     function_order: &HashMap<String, usize>,
     caller_index: usize,
     script_size: Option<i64>,
-    debug_recorder: &mut FunctionDebugRecorder<'i>,
+    debug_recorder: &mut FunctionRecorder<'i>,
 ) -> Result<Vec<Expr<'i>>, CompilerError> {
     let function = functions.get(name).ok_or_else(|| CompilerError::Unsupported(format!("function '{}' not found", name)))?;
     let callee_index =
@@ -1864,7 +1853,7 @@ fn compile_inline_call<'i>(
     let body_len = function.body.len();
     for (index, stmt) in function.body.iter().enumerate() {
         let start = builder.script().len();
-        let env_before = inline_recorder.is_enabled().then(|| env.clone());
+        let env_before = inline_recorder.capture_env_snapshot(&env);
         if let Statement::Return { exprs, .. } = stmt {
             if index != body_len - 1 {
                 return Err(CompilerError::Unsupported("return statement must be the last statement".to_string()));
@@ -1875,27 +1864,26 @@ fn compile_inline_call<'i>(
                 let resolved = resolve_expr(expr.clone(), &env, &mut HashSet::new()).map_err(|err| err.with_span(&expr.span))?;
                 yields.push(resolved);
             }
-            inline_recorder.record_statement_with_env_diff(stmt, start, builder.script().len(), env_before.as_ref(), &env, &types)?;
-            continue;
+        } else {
+            compile_statement(
+                stmt,
+                &mut env,
+                &params,
+                &mut types,
+                builder,
+                options,
+                &[],
+                0,
+                contract_constants,
+                functions,
+                function_order,
+                callee_index,
+                &mut yields,
+                script_size,
+                &mut inline_recorder,
+            )
+            .map_err(|err| err.with_span(&stmt.span()))?;
         }
-        compile_statement(
-            stmt,
-            &mut env,
-            &params,
-            &mut types,
-            builder,
-            options,
-            &[],
-            0,
-            contract_constants,
-            functions,
-            function_order,
-            callee_index,
-            &mut yields,
-            script_size,
-            &mut inline_recorder,
-        )
-        .map_err(|err| err.with_span(&stmt.span()))?;
         let end = builder.script().len();
         inline_recorder.record_statement_with_env_diff(stmt, start, end, env_before.as_ref(), &env, &types)?;
     }
@@ -1932,7 +1920,7 @@ fn compile_if_statement<'i>(
     function_index: usize,
     yields: &mut Vec<Expr<'i>>,
     script_size: Option<i64>,
-    debug_recorder: &mut FunctionDebugRecorder<'i>,
+    debug_recorder: &mut FunctionRecorder<'i>,
 ) -> Result<(), CompilerError> {
     let mut stack_depth = 0i64;
     compile_expr(
@@ -2071,11 +2059,11 @@ fn compile_block<'i>(
     function_index: usize,
     yields: &mut Vec<Expr<'i>>,
     script_size: Option<i64>,
-    debug_recorder: &mut FunctionDebugRecorder<'i>,
+    debug_recorder: &mut FunctionRecorder<'i>,
 ) -> Result<(), CompilerError> {
     for stmt in statements {
         let start = builder.script().len();
-        let env_before = debug_recorder.is_enabled().then(|| env.clone());
+        let env_before = debug_recorder.capture_env_snapshot(env);
         compile_statement(
             stmt,
             env,
@@ -2120,7 +2108,7 @@ fn compile_for_statement<'i>(
     function_index: usize,
     yields: &mut Vec<Expr<'i>>,
     script_size: Option<i64>,
-    debug_recorder: &mut FunctionDebugRecorder<'i>,
+    debug_recorder: &mut FunctionRecorder<'i>,
 ) -> Result<(), CompilerError> {
     let start = eval_const_int(start_expr, contract_constants)?;
     let end = eval_const_int(end_expr, contract_constants)?;

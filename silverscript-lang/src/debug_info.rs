@@ -12,48 +12,9 @@ pub struct SourceSpan {
 
 impl<'a> From<span::Span<'a>> for SourceSpan {
     fn from(span: span::Span<'a>) -> Self {
-        let (line, col) = span.start_pos().line_col();
-        let (end_line, end_col) = span.end_pos().line_col();
+        let (line, col, end_line, end_col) = span.line_col_range();
         Self { line: line as u32, col: col as u32, end_line: end_line as u32, end_col: end_col as u32 }
     }
-}
-
-pub mod labels {
-    pub mod synthetic {
-        /// Checks which function was selected (DUP, PUSH index, NUMEQUAL, IF, DROP).
-        pub const DISPATCHER_GUARD: &str = "dispatcher.guard";
-        /// Function didn't match — try next, or fail if last.
-        pub const DISPATCHER_ELSE: &str = "dispatcher.else";
-        /// Closes all dispatcher if/else branches.
-        pub const DISPATCHER_ENDIFS: &str = "dispatcher.endifs";
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum DebugEventKind {
-    Statement {},
-    Virtual {},
-    InlineCallEnter { callee: String },
-    InlineCallExit { callee: String },
-    Synthetic { label: String },
-}
-
-/// Single debug mapping recorded during compilation.
-/// Maps a bytecode range to source location and event type (statement or synthetic).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DebugEvent {
-    pub bytecode_start: usize,
-    pub bytecode_end: usize,
-    pub span: Option<SourceSpan>,
-    pub kind: DebugEventKind,
-    /// Monotonic event order assigned by the compiler recorder.
-    /// Used to preserve source step order when bytecode ranges overlap.
-    #[serde(default)]
-    pub sequence: u32,
-    #[serde(default)]
-    pub call_depth: u32,
-    #[serde(default)]
-    pub frame_id: u32,
 }
 
 /// Accumulates debug metadata during compilation.
@@ -61,7 +22,7 @@ pub struct DebugEvent {
 /// Converted to `DebugInfo` after compilation completes.
 #[derive(Debug, Default)]
 pub struct DebugRecorder<'i> {
-    events: Vec<DebugEvent>,
+    events: Vec<DebugMapping>,
     variable_updates: Vec<DebugVariableUpdate<'i>>,
     params: Vec<DebugParamMapping>,
     functions: Vec<DebugFunctionRange>,
@@ -70,8 +31,8 @@ pub struct DebugRecorder<'i> {
 }
 
 impl<'i> DebugRecorder<'i> {
-    pub fn record(&mut self, event: DebugEvent) {
-        self.events.push(event);
+    pub fn record(&mut self, mapping: DebugMapping) {
+        self.events.push(mapping);
     }
 
     pub fn record_variable_update(&mut self, update: DebugVariableUpdate<'i>) {
@@ -106,14 +67,10 @@ impl<'i> DebugRecorder<'i> {
         base
     }
 
-    pub fn into_events(self) -> Vec<DebugEvent> {
-        self.events
-    }
-
     pub fn into_debug_info(self, source: String) -> DebugInfo<'i> {
         DebugInfo {
             source,
-            mappings: self.events.into_iter().map(DebugMapping::from).collect(),
+            mappings: self.events,
             variable_updates: self.variable_updates,
             params: self.params,
             functions: self.functions,
@@ -214,31 +171,21 @@ pub enum MappingKind {
     Virtual {},
     InlineCallEnter { callee: String },
     InlineCallExit { callee: String },
-    Synthetic { label: String },
 }
 
-impl From<DebugEventKind> for MappingKind {
-    fn from(kind: DebugEventKind) -> Self {
-        match kind {
-            DebugEventKind::Statement {} => MappingKind::Statement {},
-            DebugEventKind::Virtual {} => MappingKind::Virtual {},
-            DebugEventKind::InlineCallEnter { callee } => MappingKind::InlineCallEnter { callee },
-            DebugEventKind::InlineCallExit { callee } => MappingKind::InlineCallExit { callee },
-            DebugEventKind::Synthetic { label } => MappingKind::Synthetic { label },
-        }
-    }
-}
+#[cfg(test)]
+mod tests {
+    use super::SourceSpan;
+    use crate::span::Span;
 
-impl From<DebugEvent> for DebugMapping {
-    fn from(event: DebugEvent) -> Self {
-        DebugMapping {
-            bytecode_start: event.bytecode_start,
-            bytecode_end: event.bytecode_end,
-            span: event.span,
-            kind: event.kind.into(),
-            sequence: event.sequence,
-            call_depth: event.call_depth,
-            frame_id: event.frame_id,
-        }
+    #[test]
+    fn source_span_from_span_uses_line_col_range() {
+        let source = "alpha\nbeta\ngamma";
+        let span = Span::new(source, 6, 10).expect("span");
+        let source_span = SourceSpan::from(span);
+        assert_eq!(source_span.line, 2);
+        assert_eq!(source_span.col, 1);
+        assert_eq!(source_span.end_line, 2);
+        assert_eq!(source_span.end_col, 5);
     }
 }

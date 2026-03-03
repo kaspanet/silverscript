@@ -114,7 +114,7 @@ fn debug_session_steps_forward() -> Result<(), Box<dyn Error>> {
         session.run_to_first_executed_statement()?;
         let before = session.state().pc;
         let before_span = session.current_span();
-        session.step_statement()?;
+        session.step_over()?;
         let after = session.state().pc;
         let after_span = session.current_span();
         assert!(after > before || after_span != before_span, "expected statement step to make source progress");

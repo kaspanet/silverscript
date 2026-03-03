@@ -140,6 +140,38 @@ fn accepts_constructor_args_with_matching_types() {
 }
 
 #[test]
+fn compile_contract_omits_debug_info_when_recording_disabled() {
+    let source = r#"
+        contract DebugToggle() {
+            entrypoint function spend(int x) {
+                require(x == x);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    assert!(compiled.debug_info.is_none());
+}
+
+#[test]
+fn compile_contract_emits_debug_info_when_recording_enabled() {
+    let source = r#"
+        contract DebugToggle() {
+            entrypoint function spend(int x) {
+                require(x == x);
+            }
+        }
+    "#;
+
+    let options = CompileOptions { record_debug_infos: true, ..Default::default() };
+    let compiled = compile_contract(source, &[], options).expect("compile succeeds");
+    let debug_info = compiled.debug_info.expect("debug info should be present");
+    assert!(!debug_info.mappings.is_empty());
+    assert!(!debug_info.functions.is_empty());
+    assert!(debug_info.params.iter().any(|param| param.name == "x"));
+}
+
+#[test]
 fn rejects_constructor_args_with_wrong_scalar_types() {
     let source = r#"
         contract Types(int a, bool b, string c) {

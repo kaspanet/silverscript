@@ -6,7 +6,6 @@ use kaspa_txscript::caches::Cache;
 use kaspa_txscript::covenants::CovenantsContext;
 use kaspa_txscript::script_builder::ScriptBuilder;
 use kaspa_txscript::{DynOpcodeImplementation, EngineCtx, EngineFlags, TxScriptEngine, parse_script};
-use serde::{Deserialize, Serialize};
 
 use silverscript_lang::ast::{Expr, ExprKind};
 use silverscript_lang::compiler::compile_debug_expr;
@@ -16,6 +15,7 @@ use silverscript_lang::debug_info::{
 
 pub use crate::presentation::{SourceContext, SourceContextLine};
 use crate::presentation::{build_source_context, format_value as format_debug_value};
+use crate::util::{decode_i64, encode_hex};
 
 pub type DebugTx<'a> = PopulatedTransaction<'a>;
 pub type DebugReused = SigHashReusedValuesUnsync;
@@ -76,20 +76,6 @@ pub struct SessionState {
     pub stack: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StackSnapshot {
-    pub dstack: Vec<String>,
-    pub astack: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OpcodeMeta {
-    pub index: usize,
-    pub byte_offset: usize,
-    pub display: String,
-    pub mapping: Option<DebugMapping>,
-}
-
 pub struct DebugSession<'a, 'i> {
     engine: DebugEngine<'a>,
     shadow_tx_context: Option<ShadowTxContext<'a>>,
@@ -123,17 +109,6 @@ struct VariableContext<'a> {
 
 impl<'a, 'i> DebugSession<'a, 'i> {
     // --- Session construction + stepping ---
-
-    /// Creates a debug session for lockscript-only execution.
-    /// Use this when debugging pure contract logic without sigscript setup.
-    pub fn lockscript_only(
-        script: &[u8],
-        source: &str,
-        debug_info: Option<DebugInfo<'i>>,
-        engine: DebugEngine<'a>,
-    ) -> Result<Self, kaspa_txscript_errors::TxScriptError> {
-        Self::from_scripts(script, source, debug_info, engine)
-    }
 
     /// Creates a debug session simulating a full transaction spend.
     /// Executes sigscript first to seed the stack, then debugs lockscript execution.
@@ -237,11 +212,6 @@ impl<'a, 'i> DebugSession<'a, 'i> {
     /// Step out: advance to next source step at a shallower call depth.
     pub fn step_out(&mut self) -> Result<Option<SessionState>, kaspa_txscript_errors::TxScriptError> {
         self.step_with_depth_predicate(|candidate, current| candidate < current)
-    }
-
-    /// Backward-compatible statement stepping alias.
-    pub fn step_statement(&mut self) -> Result<Option<SessionState>, kaspa_txscript_errors::TxScriptError> {
-        self.step_over()
     }
 
     /// Shared stepping loop for `step_into`, `step_over`, and `step_out`.
@@ -352,35 +322,6 @@ impl<'a, 'i> DebugSession<'a, 'i> {
     /// Returns true if the script engine is still running.
     pub fn is_executing(&self) -> bool {
         self.engine.is_executing()
-    }
-
-    /// Returns the current data and alt stack contents.
-    pub fn stacks_snapshot(&self) -> StackSnapshot {
-        let stacks = self.engine.stacks();
-        StackSnapshot {
-            dstack: stacks.dstack.iter().map(|item| encode_hex(item)).collect(),
-            astack: stacks.astack.iter().map(|item| encode_hex(item)).collect(),
-        }
-    }
-
-    /// Returns metadata for all opcodes (executed/pending status, byte offset).
-    pub fn opcode_metas(&self) -> Vec<OpcodeMeta> {
-        (0..self.op_displays.len())
-            .map(|index| {
-                let byte_offset = self.opcode_offsets.get(index).copied().unwrap_or(self.script_len);
-                OpcodeMeta {
-                    index,
-                    byte_offset,
-                    display: self.op_displays.get(index).cloned().unwrap_or_default(),
-                    mapping: self.mapping_for_offset(byte_offset).cloned(),
-                }
-            })
-            .collect()
-    }
-
-    /// Returns the total number of opcodes in the script.
-    pub fn opcode_count(&self) -> usize {
-        self.op_displays.len()
     }
 
     pub fn debug_info(&self) -> &DebugInfo<'i> {
@@ -807,26 +748,6 @@ fn decode_value_by_type(type_name: &str, bytes: Vec<u8>) -> Result<DebugValue, S
     }
 }
 
-/// Decodes a txscript script number (little-endian sign-magnitude, max 8 bytes).
-/// Mirrors txscript's internal numeric decode logic; kept local because txscript
-/// exposes this helper only as crate-private internals today.
-fn decode_i64(bytes: &[u8]) -> Result<i64, String> {
-    if bytes.is_empty() {
-        return Ok(0);
-    }
-    if bytes.len() > 8 {
-        return Err("numeric value is longer than 8 bytes".to_string());
-    }
-    let msb = bytes[bytes.len() - 1];
-    let sign = 1 - 2 * ((msb >> 7) as i64);
-    let first_byte = (msb & 0x7f) as i64;
-    let mut value = first_byte;
-    for byte in bytes[..bytes.len() - 1].iter().rev() {
-        value = (value << 8) + (*byte as i64);
-    }
-    Ok(value * sign)
-}
-
 /// Executes sigscript to seed the stack before debugging lockscript.
 fn seed_engine_with_sigscript(engine: &mut DebugEngine<'_>, sigscript: &[u8]) -> Result<(), kaspa_txscript_errors::TxScriptError> {
     for opcode in parse_script::<DebugTx<'_>, DebugReused>(sigscript) {
@@ -853,7 +774,6 @@ fn mapping_kind_order(kind: &MappingKind) -> u8 {
         MappingKind::Virtual {} => 1,
         MappingKind::Statement {} => 2,
         MappingKind::InlineCallExit { .. } => 3,
-        MappingKind::Synthetic { .. } => 4,
     }
 }
 
@@ -863,14 +783,6 @@ fn mapping_matches_offset(mapping: &DebugMapping, offset: usize) -> bool {
     } else {
         offset >= mapping.bytecode_start && offset < mapping.bytecode_end
     }
-}
-
-fn encode_hex(bytes: &[u8]) -> String {
-    let mut out = vec![0u8; bytes.len() * 2];
-    if faster_hex::hex_encode(bytes, &mut out).is_err() {
-        return String::new();
-    }
-    String::from_utf8(out).unwrap_or_default()
 }
 
 #[cfg(test)]
