@@ -453,7 +453,11 @@ impl<'a, 'i> DebugSession<'a, 'i> {
         let var_updates = self.current_variable_updates(context);
 
         for (name, update) in &var_updates {
-            let value = self.evaluate_update_with_shadow_vm(context.function_name, update).unwrap_or_else(DebugValue::Unknown);
+            if is_inline_synthetic_name(name) {
+                continue;
+            }
+            let value =
+                self.evaluate_update_with_shadow_vm(context.function_name, update, &var_updates).unwrap_or_else(DebugValue::Unknown);
             variables.insert(
                 name.clone(),
                 Variable {
@@ -609,25 +613,34 @@ impl<'a, 'i> DebugSession<'a, 'i> {
         stacks.dstack.iter().map(|item| encode_hex(item)).collect()
     }
 
-    fn evaluate_update_with_shadow_vm(&self, function_name: &str, update: &DebugVariableUpdate<'i>) -> Result<DebugValue, String> {
-        self.evaluate_expr_with_shadow_vm(function_name, &update.type_name, &update.expr)
-    }
-
     /// Evaluates an expression using shadow VM execution.
     ///
     /// Strategy: compile the pre-resolved expression to bytecode, build a mini-script
     /// that pushes current param values then executes the bytecode, run on fresh VM,
     /// read result from top of stack. This guarantees debugger sees same semantics as
     /// real execution without duplicating evaluation logic.
-    fn evaluate_expr_with_shadow_vm(&self, function_name: &str, type_name: &str, expr: &Expr<'i>) -> Result<DebugValue, String> {
+    fn evaluate_update_with_shadow_vm(
+        &self,
+        function_name: &str,
+        update: &DebugVariableUpdate<'i>,
+        updates: &HashMap<String, &DebugVariableUpdate<'i>>,
+    ) -> Result<DebugValue, String> {
         let params = self.shadow_param_values(function_name)?;
+        let type_name = &update.type_name;
+        let expr = &update.expr;
         let mut param_indexes = HashMap::new();
         let mut param_types = HashMap::new();
         for param in &params {
             param_indexes.insert(param.name.clone(), param.stack_index);
             param_types.insert(param.name.clone(), param.type_name.clone());
         }
-        let bytecode = compile_debug_expr(expr, &param_indexes, &param_types)
+        let mut env: HashMap<String, Expr<'i>> = HashMap::new();
+        let mut eval_types = param_types;
+        for (name, update) in updates {
+            env.insert((*name).clone(), update.expr.clone());
+            eval_types.insert((*name).clone(), update.type_name.clone());
+        }
+        let bytecode = compile_debug_expr(expr, &env, &param_indexes, &eval_types)
             .map_err(|err| format!("failed to compile debug expression: {err}"))?;
         let script = self.build_shadow_script(&params, &bytecode)?;
         let bytes = self.execute_shadow_script(&script)?;
@@ -760,6 +773,10 @@ fn step_matches_offset(step: &DebugStep<'_>, offset: usize) -> bool {
     range_matches_offset(step.bytecode_start, step.bytecode_end, offset)
 }
 
+fn is_inline_synthetic_name(name: &str) -> bool {
+    name.starts_with("__arg_")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -814,20 +831,15 @@ mod tests {
         )
         .unwrap();
 
-        let value = session
-            .evaluate_expr_with_shadow_vm(
-                "f",
-                "int",
-                &Expr::new(
-                    ExprKind::Binary {
-                        op: BinaryOp::Add,
-                        left: Box::new(Expr::identifier("a")),
-                        right: Box::new(Expr::identifier("b")),
-                    },
-                    span::Span::default(),
-                ),
-            )
-            .unwrap();
+        let update = DebugVariableUpdate {
+            name: "x".to_string(),
+            type_name: "int".to_string(),
+            expr: Expr::new(
+                ExprKind::Binary { op: BinaryOp::Add, left: Box::new(Expr::identifier("a")), right: Box::new(Expr::identifier("b")) },
+                span::Span::default(),
+            ),
+        };
+        let value = session.evaluate_update_with_shadow_vm("f", &update, &HashMap::new()).unwrap();
         assert!(matches!(value, DebugValue::Int(12)));
     }
 
@@ -863,5 +875,102 @@ mod tests {
         let vars = session.list_variables_at_sequence(1, 0).unwrap();
         let x = vars.into_iter().find(|var| var.name == "x").expect("x variable");
         assert!(matches!(x.value, DebugValue::Unknown(_)));
+    }
+
+    #[test]
+    fn list_variables_hides_inline_synthetics_but_uses_them_for_shadow_eval() {
+        let mut sig_builder = ScriptBuilder::new();
+        sig_builder.add_i64(5).unwrap();
+        let sigscript = sig_builder.drain();
+
+        let mut session = make_session(
+            vec![DebugParamMapping { name: "a".to_string(), type_name: "int".to_string(), stack_index: 0, function: "f".to_string() }],
+            vec![DebugStep {
+                bytecode_start: 0,
+                bytecode_end: 0,
+                span: SourceSpan { line: 1, col: 1, end_line: 1, end_col: 1 },
+                kind: StepKind::Source {},
+                sequence: 0,
+                call_depth: 0,
+                frame_id: 0,
+                variable_updates: vec![
+                    DebugVariableUpdate { name: "__arg_f_0".to_string(), type_name: "int".to_string(), expr: Expr::identifier("a") },
+                    DebugVariableUpdate {
+                        name: "x".to_string(),
+                        type_name: "int".to_string(),
+                        expr: Expr::new(
+                            ExprKind::Binary {
+                                op: BinaryOp::Add,
+                                left: Box::new(Expr::identifier("__arg_f_0")),
+                                right: Box::new(Expr::int(1)),
+                            },
+                            span::Span::default(),
+                        ),
+                    },
+                ],
+            }],
+            &sigscript,
+        )
+        .unwrap();
+
+        session.executed_steps.insert(StepId { sequence: 0, frame_id: 0 });
+        let vars = session.list_variables_at_sequence(1, 0).unwrap();
+
+        assert!(!vars.iter().any(|var| var.name.starts_with("__arg_")));
+        let x = vars.into_iter().find(|var| var.name == "x").expect("x variable");
+        assert!(matches!(x.value, DebugValue::Int(6)));
+    }
+
+    #[test]
+    fn shadow_eval_resolves_nested_inline_synthetic_chain() {
+        let mut sig_builder = ScriptBuilder::new();
+        sig_builder.add_i64(5).unwrap();
+        let sigscript = sig_builder.drain();
+
+        let mut session = make_session(
+            vec![DebugParamMapping { name: "a".to_string(), type_name: "int".to_string(), stack_index: 0, function: "f".to_string() }],
+            vec![DebugStep {
+                bytecode_start: 0,
+                bytecode_end: 0,
+                span: SourceSpan { line: 1, col: 1, end_line: 1, end_col: 1 },
+                kind: StepKind::Source {},
+                sequence: 0,
+                call_depth: 0,
+                frame_id: 0,
+                variable_updates: vec![
+                    DebugVariableUpdate {
+                        name: "__arg_outer_0".to_string(),
+                        type_name: "int".to_string(),
+                        expr: Expr::identifier("a"),
+                    },
+                    DebugVariableUpdate {
+                        name: "__arg_inner_0".to_string(),
+                        type_name: "int".to_string(),
+                        expr: Expr::identifier("__arg_outer_0"),
+                    },
+                    DebugVariableUpdate {
+                        name: "x".to_string(),
+                        type_name: "int".to_string(),
+                        expr: Expr::new(
+                            ExprKind::Binary {
+                                op: BinaryOp::Add,
+                                left: Box::new(Expr::identifier("__arg_inner_0")),
+                                right: Box::new(Expr::int(1)),
+                            },
+                            span::Span::default(),
+                        ),
+                    },
+                ],
+            }],
+            &sigscript,
+        )
+        .unwrap();
+
+        session.executed_steps.insert(StepId { sequence: 0, frame_id: 0 });
+        let vars = session.list_variables_at_sequence(1, 0).unwrap();
+
+        assert!(!vars.iter().any(|var| var.name.starts_with("__arg_")));
+        let x = vars.into_iter().find(|var| var.name == "x").expect("x variable");
+        assert!(matches!(x.value, DebugValue::Int(6)));
     }
 }

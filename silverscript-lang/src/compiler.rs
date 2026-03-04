@@ -16,7 +16,7 @@ use crate::span;
 
 mod debug_recording;
 
-use debug_recording::{ContractRecorder, FunctionRecorder};
+use debug_recording::{ContractRecorder, EntrypointRecorder};
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct CompileOptions {
@@ -113,7 +113,7 @@ fn compile_contract_impl<'i>(
         recorder.record_constructor_constants(&contract.params, constructor_args);
         for (index, func) in contract.functions.iter().enumerate() {
             if func.entrypoint {
-                compiled_entrypoints.push(compile_function(
+                compiled_entrypoints.push(compile_entrypoint_function(
                     func,
                     index,
                     &contract.fields,
@@ -131,7 +131,7 @@ fn compile_contract_impl<'i>(
             let compiled = compiled_entrypoints
                 .first()
                 .ok_or_else(|| CompilerError::Unsupported("contract has no entrypoint functions".to_string()))?;
-            recorder.record_compiled_function(&compiled.name, compiled.script.len(), &compiled.debug, field_prolog_script.len());
+            recorder.record_compiled_entrypoint(&compiled.name, compiled.script.len(), &compiled.debug, field_prolog_script.len());
             compiled.script.clone()
         } else {
             let mut builder = ScriptBuilder::new();
@@ -143,7 +143,7 @@ fn compile_contract_impl<'i>(
                 builder.add_op(OpIf)?;
                 builder.add_op(OpDrop)?;
                 let start = field_prolog_script.len() + builder.script().len();
-                recorder.record_compiled_function(&compiled.name, compiled.script.len(), &compiled.debug, start);
+                recorder.record_compiled_entrypoint(&compiled.name, compiled.script.len(), &compiled.debug, start);
                 builder.add_ops(&compiled.script)?;
                 builder.add_op(OpElse)?;
                 if index == total - 1 {
@@ -906,13 +906,13 @@ pub fn function_branch_index<'i>(contract: &ContractAst<'i>, function_name: &str
 }
 
 #[derive(Debug)]
-struct CompiledFunction<'i> {
+struct CompiledEntryPoint<'i> {
     name: String,
     script: Vec<u8>,
-    debug: FunctionRecorder<'i>,
+    debug: EntrypointRecorder<'i>,
 }
 
-fn compile_function<'i>(
+fn compile_entrypoint_function<'i>(
     function: &FunctionAst<'i>,
     function_index: usize,
     contract_fields: &[ContractFieldAst<'i>],
@@ -922,7 +922,7 @@ fn compile_function<'i>(
     functions: &HashMap<String, FunctionAst<'i>>,
     function_order: &HashMap<String, usize>,
     script_size: Option<i64>,
-) -> Result<CompiledFunction<'i>, CompilerError> {
+) -> Result<CompiledEntryPoint<'i>, CompilerError> {
     let contract_field_count = contract_fields.len();
     let param_count = function.params.len();
     let mut params = function
@@ -961,7 +961,7 @@ fn compile_function<'i>(
         env.remove(&param.name);
     }
     let mut builder = ScriptBuilder::new();
-    let mut recorder = FunctionRecorder::new(options.record_debug_infos, function, contract_fields);
+    let mut recorder = EntrypointRecorder::new(options.record_debug_infos, function, contract_fields);
     let mut yields: Vec<Expr> = Vec::new();
 
     if !options.allow_yield && function.body.iter().any(contains_yield) {
@@ -1059,7 +1059,7 @@ fn compile_function<'i>(
             builder.add_op(OpDrop)?;
         }
     }
-    Ok(CompiledFunction { name: function.name.clone(), script: builder.drain(), debug: recorder })
+    Ok(CompiledEntryPoint { name: function.name.clone(), script: builder.drain(), debug: recorder })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1078,7 +1078,7 @@ fn compile_statement<'i>(
     function_index: usize,
     yields: &mut Vec<Expr<'i>>,
     script_size: Option<i64>,
-    recorder: &mut FunctionRecorder<'i>,
+    recorder: &mut EntrypointRecorder<'i>,
 ) -> Result<(), CompilerError> {
     match stmt {
         Statement::VariableDefinition { type_ref, name, expr, .. } => {
@@ -1773,7 +1773,7 @@ fn compile_inline_call<'i>(
     function_order: &HashMap<String, usize>,
     caller_index: usize,
     script_size: Option<i64>,
-    recorder: &mut FunctionRecorder<'i>,
+    recorder: &mut EntrypointRecorder<'i>,
 ) -> Result<Vec<Expr<'i>>, CompilerError> {
     let function = functions.get(name).ok_or_else(|| CompilerError::Unsupported(format!("function '{}' not found", name)))?;
     let callee_index =
@@ -1803,7 +1803,7 @@ fn compile_inline_call<'i>(
 
     let mut env: HashMap<String, Expr<'i>> = contract_constants.clone();
     // Preserve caller synthetic inline bindings so nested inline calls can
-    // continue resolving chains like __arg_inner_0 -> __arg_outer_0.
+    // resolve chains like __arg_inner_0 -> __arg_outer_0 during compilation.
     for (name, value) in caller_env.iter() {
         if name.starts_with("__arg_") {
             env.insert(name.clone(), value.clone());
@@ -1842,7 +1842,7 @@ fn compile_inline_call<'i>(
     }
 
     let call_start = builder.script().len();
-    recorder.begin_call(call_span, call_start, function, &env)?;
+    recorder.begin_inline_call(call_span, call_start, function, &env)?;
 
     let mut yields: Vec<Expr<'i>> = Vec::new();
     let params = caller_params.clone();
@@ -1882,7 +1882,7 @@ fn compile_inline_call<'i>(
         guard.finish(recorder, stmt, builder, &env, &types)?;
     }
     let call_end = builder.script().len();
-    recorder.finish_call(call_span, call_end, name);
+    recorder.finish_inline_call(call_span, call_end, name);
 
     for (name, value) in env.iter() {
         if name.starts_with("__arg_") {
@@ -1914,7 +1914,7 @@ fn compile_if_statement<'i>(
     function_index: usize,
     yields: &mut Vec<Expr<'i>>,
     script_size: Option<i64>,
-    recorder: &mut FunctionRecorder<'i>,
+    recorder: &mut EntrypointRecorder<'i>,
 ) -> Result<(), CompilerError> {
     let mut stack_depth = 0i64;
     compile_expr(
@@ -2053,7 +2053,7 @@ fn compile_block<'i>(
     function_index: usize,
     yields: &mut Vec<Expr<'i>>,
     script_size: Option<i64>,
-    recorder: &mut FunctionRecorder<'i>,
+    recorder: &mut EntrypointRecorder<'i>,
 ) -> Result<(), CompilerError> {
     for stmt in statements {
         let guard = recorder.begin_statement(builder, env);
@@ -2100,7 +2100,7 @@ fn compile_for_statement<'i>(
     function_index: usize,
     yields: &mut Vec<Expr<'i>>,
     script_size: Option<i64>,
-    recorder: &mut FunctionRecorder<'i>,
+    recorder: &mut EntrypointRecorder<'i>,
 ) -> Result<(), CompilerError> {
     let start = eval_const_int(start_expr, contract_constants)?;
     let end = eval_const_int(end_expr, contract_constants)?;
@@ -2186,116 +2186,103 @@ fn resolve_expr<'i>(
     env: &HashMap<String, Expr<'i>>,
     visiting: &mut HashSet<String>,
 ) -> Result<Expr<'i>, CompilerError> {
-    resolve_expr_with_inline_synthetics(expr, env, visiting, false)
-}
-
-/// Shared expression resolver used by both compile-time resolution and
-/// debugger placeholder expansion.
-///
-/// - `expand_inline_synthetics = false`: preserve `__arg_*` placeholders.
-/// - `expand_inline_synthetics = true`: resolve only `__arg_*` placeholders.
-fn resolve_expr_with_inline_synthetics<'i>(
-    expr: Expr<'i>,
-    env: &HashMap<String, Expr<'i>>,
-    visiting: &mut HashSet<String>,
-    expand_inline_synthetics: bool,
-) -> Result<Expr<'i>, CompilerError> {
     let Expr { kind, span } = expr;
     match kind {
         ExprKind::Identifier(name) => {
-            let is_inline_synthetic = name.starts_with("__arg_");
-            if !expand_inline_synthetics && is_inline_synthetic {
+            if name.starts_with("__arg_") {
                 return Ok(Expr::new(ExprKind::Identifier(name), span));
             }
-            if expand_inline_synthetics && !is_inline_synthetic {
-                return Ok(Expr::new(ExprKind::Identifier(name), span));
-            }
-            if let Some(value) = env.get(&name).cloned() {
+            if let Some(value) = env.get(&name) {
                 if !visiting.insert(name.clone()) {
                     return Err(CompilerError::CyclicIdentifier(name));
                 }
-                let resolved = resolve_expr_with_inline_synthetics(value, env, visiting, expand_inline_synthetics)?;
+                let resolved = resolve_expr(value.clone(), env, visiting)?;
                 visiting.remove(&name);
                 Ok(resolved)
             } else {
                 Ok(Expr::new(ExprKind::Identifier(name), span))
             }
         }
-        other => rewrite_expr_children(Expr::new(other, span), |child| {
-            resolve_expr_with_inline_synthetics(child, env, visiting, expand_inline_synthetics)
-        }),
-    }
-}
-
-fn rewrite_expr_children<'i>(
-    expr: Expr<'i>,
-    mut recurse: impl FnMut(Expr<'i>) -> Result<Expr<'i>, CompilerError>,
-) -> Result<Expr<'i>, CompilerError> {
-    let Expr { kind, span } = expr;
-    match kind {
-        ExprKind::Unary { op, expr } => Ok(Expr::new(ExprKind::Unary { op, expr: Box::new(recurse(*expr)?) }, span)),
-        ExprKind::Binary { op, left, right } => {
-            Ok(Expr::new(ExprKind::Binary { op, left: Box::new(recurse(*left)?), right: Box::new(recurse(*right)?) }, span))
+        ExprKind::Unary { op, expr } => {
+            Ok(Expr::new(ExprKind::Unary { op, expr: Box::new(resolve_expr(*expr, env, visiting)?) }, span))
         }
+        ExprKind::Binary { op, left, right } => Ok(Expr::new(
+            ExprKind::Binary {
+                op,
+                left: Box::new(resolve_expr(*left, env, visiting)?),
+                right: Box::new(resolve_expr(*right, env, visiting)?),
+            },
+            span,
+        )),
         ExprKind::IfElse { condition, then_expr, else_expr } => Ok(Expr::new(
             ExprKind::IfElse {
-                condition: Box::new(recurse(*condition)?),
-                then_expr: Box::new(recurse(*then_expr)?),
-                else_expr: Box::new(recurse(*else_expr)?),
+                condition: Box::new(resolve_expr(*condition, env, visiting)?),
+                then_expr: Box::new(resolve_expr(*then_expr, env, visiting)?),
+                else_expr: Box::new(resolve_expr(*else_expr, env, visiting)?),
             },
             span,
         )),
         ExprKind::Array(values) => {
-            let mut rewritten = Vec::with_capacity(values.len());
+            let mut resolved = Vec::with_capacity(values.len());
             for value in values {
-                rewritten.push(recurse(value)?);
+                resolved.push(resolve_expr(value, env, visiting)?);
             }
-            Ok(Expr::new(ExprKind::Array(rewritten), span))
+            Ok(Expr::new(ExprKind::Array(resolved), span))
         }
         ExprKind::StateObject(fields) => {
-            let mut rewritten = Vec::with_capacity(fields.len());
+            let mut resolved_fields = Vec::with_capacity(fields.len());
             for field in fields {
-                rewritten.push(StateFieldExpr {
+                resolved_fields.push(StateFieldExpr {
                     name: field.name,
-                    expr: recurse(field.expr)?,
+                    expr: resolve_expr(field.expr, env, visiting)?,
                     span: field.span,
                     name_span: field.name_span,
                 });
             }
-            Ok(Expr::new(ExprKind::StateObject(rewritten), span))
+            Ok(Expr::new(ExprKind::StateObject(resolved_fields), span))
         }
         ExprKind::Call { name, args, name_span } => {
-            let mut rewritten = Vec::with_capacity(args.len());
+            let mut resolved = Vec::with_capacity(args.len());
             for arg in args {
-                rewritten.push(recurse(arg)?);
+                resolved.push(resolve_expr(arg, env, visiting)?);
             }
-            Ok(Expr::new(ExprKind::Call { name, args: rewritten, name_span }, span))
+            Ok(Expr::new(ExprKind::Call { name, args: resolved, name_span }, span))
         }
         ExprKind::New { name, args, name_span } => {
-            let mut rewritten = Vec::with_capacity(args.len());
+            let mut resolved = Vec::with_capacity(args.len());
             for arg in args {
-                rewritten.push(recurse(arg)?);
+                resolved.push(resolve_expr(arg, env, visiting)?);
             }
-            Ok(Expr::new(ExprKind::New { name, args: rewritten, name_span }, span))
+            Ok(Expr::new(ExprKind::New { name, args: resolved, name_span }, span))
         }
         ExprKind::Split { source, index, part, span: split_span } => Ok(Expr::new(
-            ExprKind::Split { source: Box::new(recurse(*source)?), index: Box::new(recurse(*index)?), part, span: split_span },
+            ExprKind::Split {
+                source: Box::new(resolve_expr(*source, env, visiting)?),
+                index: Box::new(resolve_expr(*index, env, visiting)?),
+                part,
+                span: split_span,
+            },
             span,
         )),
-        ExprKind::ArrayIndex { source, index } => {
-            Ok(Expr::new(ExprKind::ArrayIndex { source: Box::new(recurse(*source)?), index: Box::new(recurse(*index)?) }, span))
-        }
+        ExprKind::ArrayIndex { source, index } => Ok(Expr::new(
+            ExprKind::ArrayIndex {
+                source: Box::new(resolve_expr(*source, env, visiting)?),
+                index: Box::new(resolve_expr(*index, env, visiting)?),
+            },
+            span,
+        )),
         ExprKind::Introspection { kind, index, field_span } => {
-            Ok(Expr::new(ExprKind::Introspection { kind, index: Box::new(recurse(*index)?), field_span }, span))
+            Ok(Expr::new(ExprKind::Introspection { kind, index: Box::new(resolve_expr(*index, env, visiting)?), field_span }, span))
         }
-        ExprKind::UnarySuffix { source, kind, span: suffix_span } => {
-            Ok(Expr::new(ExprKind::UnarySuffix { source: Box::new(recurse(*source)?), kind, span: suffix_span }, span))
-        }
+        ExprKind::UnarySuffix { source, kind, span: suffix_span } => Ok(Expr::new(
+            ExprKind::UnarySuffix { source: Box::new(resolve_expr(*source, env, visiting)?), kind, span: suffix_span },
+            span,
+        )),
         ExprKind::Slice { source, start, end, span: slice_span } => Ok(Expr::new(
             ExprKind::Slice {
-                source: Box::new(recurse(*source)?),
-                start: Box::new(recurse(*start)?),
-                end: Box::new(recurse(*end)?),
+                source: Box::new(resolve_expr(*source, env, visiting)?),
+                start: Box::new(resolve_expr(*start, env, visiting)?),
+                end: Box::new(resolve_expr(*end, env, visiting)?),
                 span: slice_span,
             },
             span,
@@ -3849,16 +3836,16 @@ fn data_prefix(data_len: usize) -> Vec<u8> {
 /// Compiles a pre-resolved expression for debugger shadow evaluation.
 pub fn compile_debug_expr<'i>(
     expr: &Expr<'i>,
+    env: &HashMap<String, Expr<'i>>,
     params: &HashMap<String, i64>,
     types: &HashMap<String, String>,
 ) -> Result<Vec<u8>, CompilerError> {
-    let env = HashMap::new();
     let constants = HashMap::new();
     let mut builder = ScriptBuilder::new();
     let mut stack_depth = 0i64;
     compile_expr(
         expr,
-        &env,
+        env,
         params,
         types,
         &mut builder,
@@ -3876,16 +3863,7 @@ pub(super) fn resolve_expr_for_debug<'i>(
     env: &HashMap<String, Expr<'i>>,
     visiting: &mut HashSet<String>,
 ) -> Result<Expr<'i>, CompilerError> {
-    let resolved = resolve_expr(expr, env, visiting)?;
-    expand_inline_arg_placeholders(resolved, env, &mut HashSet::new())
-}
-
-fn expand_inline_arg_placeholders<'i>(
-    expr: Expr<'i>,
-    env: &HashMap<String, Expr<'i>>,
-    visiting: &mut HashSet<String>,
-) -> Result<Expr<'i>, CompilerError> {
-    resolve_expr_with_inline_synthetics(expr, env, visiting, true)
+    resolve_expr(expr, env, visiting)
 }
 
 #[cfg(test)]

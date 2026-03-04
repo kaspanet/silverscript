@@ -12,37 +12,24 @@ use super::{CompilerError, resolve_expr_for_debug};
 /// Per-function debug recorder active during function compilation.
 /// Records params, statements, and variable updates for a single function.
 /// When disabled (`inner` is `None`), all methods are zero-cost no-ops.
-pub struct FunctionRecorder<'i> {
-    inner: Option<ActiveFunctionRecorder<'i>>,
+pub struct EntrypointRecorder<'i> {
+    inner: Option<ActiveEntrypointRecorder<'i>>,
 }
 
-impl fmt::Debug for FunctionRecorder<'_> {
+impl fmt::Debug for EntrypointRecorder<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("FunctionRecorder").finish_non_exhaustive()
+        f.debug_struct("EntrypointRecorder").finish_non_exhaustive()
     }
 }
 
-impl<'i> FunctionRecorder<'i> {
+impl<'i> EntrypointRecorder<'i> {
+    /// Creates a recorder for one function compile pass.
+    /// If disabled, all methods are no-ops.
     pub fn new(enabled: bool, function: &FunctionAst<'i>, contract_fields: &[ContractFieldAst<'i>]) -> Self {
-        if enabled { Self { inner: Some(ActiveFunctionRecorder::new(function, contract_fields)) } } else { Self { inner: None } }
+        if enabled { Self { inner: Some(ActiveEntrypointRecorder::new(function, contract_fields)) } } else { Self { inner: None } }
     }
 
-    pub fn record_statement_with_env_diff(
-        &mut self,
-        stmt: &Statement<'i>,
-        bytecode_start: usize,
-        bytecode_end: usize,
-        before_env: Option<&HashMap<String, Expr<'i>>>,
-        after_env: &HashMap<String, Expr<'i>>,
-        types: &HashMap<String, String>,
-    ) -> Result<(), CompilerError> {
-        if let Some(rec) = &mut self.inner {
-            let updates = rec.collect_variable_updates(before_env, after_env, types)?;
-            rec.record_statement_step(stmt, bytecode_start, bytecode_end, updates);
-        }
-        Ok(())
-    }
-
+    /// Records one explicit variable binding as its own zero-width Source step.
     pub fn record_binding(&mut self, name: String, type_name: String, expr: Expr<'i>, bytecode_offset: usize, span: SourceSpan) {
         if let Some(rec) = &mut self.inner {
             let step_index = rec.push_step(bytecode_offset, bytecode_offset, span, StepKind::Source {});
@@ -50,7 +37,9 @@ impl<'i> FunctionRecorder<'i> {
         }
     }
 
-    pub fn begin_call(
+    /// Records inline-call entry and opens a new debug frame.
+    /// Adds synthetic args first, then callee params.
+    pub fn begin_inline_call(
         &mut self,
         span: SourceSpan,
         bytecode_offset: usize,
@@ -71,6 +60,14 @@ impl<'i> FunctionRecorder<'i> {
                 );
 
                 let mut updates = Vec::new();
+                let mut synthetic_names: Vec<String> = env.keys().filter(|name| name.starts_with("__arg_")).cloned().collect();
+                // Sort so updates are emitted in a fixed order.
+                synthetic_names.sort_unstable();
+                for name in synthetic_names {
+                    if let Some(expr) = env.get(&name).cloned() {
+                        rec.resolve_variable_update(env, &mut updates, &name, "internal", expr)?;
+                    }
+                }
                 for param in &function.params {
                     rec.resolve_variable_update(
                         env,
@@ -88,37 +85,30 @@ impl<'i> FunctionRecorder<'i> {
         }
     }
 
-    pub fn finish_call(&mut self, span: SourceSpan, bytecode_offset: usize, callee: &str) {
+    /// Records inline-call exit and restores caller frame context.
+    pub fn finish_inline_call(&mut self, span: SourceSpan, bytecode_offset: usize, callee: &str) {
         if let Some(rec) = &mut self.inner {
             rec.pop_call_frame();
             rec.push_step(bytecode_offset, bytecode_offset, span, StepKind::InlineCallExit { callee: callee.to_string() });
         }
     }
 
+    /// Returns how many steps were recorded for this function.
     pub fn step_count(&self) -> u32 {
         self.inner.as_ref().map_or(0, |rec| rec.next_step_sequence)
     }
 
-    pub fn emit_steps_with_offset(&self, offset: usize, seq_base: u32, recorder: &mut DebugRecorder<'i>) {
-        if let Some(rec) = &self.inner {
-            for step in &rec.steps {
-                recorder.record_step(DebugStep {
-                    bytecode_start: step.bytecode_start + offset,
-                    bytecode_end: step.bytecode_end + offset,
-                    span: step.span,
-                    kind: step.kind.clone(),
-                    sequence: seq_base.saturating_add(step.sequence),
-                    call_depth: step.call_depth,
-                    frame_id: step.frame_id,
-                    variable_updates: step.variable_updates.clone(),
-                });
-            }
-            for param in &rec.params {
-                recorder.record_param(param.clone());
-            }
-        }
+    /// Returns recorded per-function steps.
+    pub fn steps(&self) -> &[DebugStep<'i>] {
+        self.inner.as_ref().map_or(&[], |rec| rec.steps.as_slice())
     }
 
+    /// Returns recorded per-function parameter mappings.
+    pub fn params(&self) -> &[DebugParamMapping] {
+        self.inner.as_ref().map_or(&[], |rec| rec.params.as_slice())
+    }
+
+    /// Starts statement recording by capturing current byte offset and env.
     pub fn begin_statement(&mut self, builder: &super::ScriptBuilder, env: &HashMap<String, Expr<'i>>) -> StatementGuard<'i> {
         StatementGuard { start: builder.script().len(), env_before: self.inner.as_ref().map(|_| env.clone()) }
     }
@@ -134,19 +124,22 @@ impl<'i> StatementGuard<'i> {
     /// and records the debug step on the given recorder.
     pub fn finish(
         self,
-        recorder: &mut FunctionRecorder<'i>,
+        recorder: &mut EntrypointRecorder<'i>,
         stmt: &Statement<'i>,
         builder: &super::ScriptBuilder,
         env: &HashMap<String, Expr<'i>>,
         types: &HashMap<String, String>,
     ) -> Result<(), CompilerError> {
         let end = builder.script().len();
-        recorder.record_statement_with_env_diff(stmt, self.start, end, self.env_before.as_ref(), env, types)
+        if let Some(active) = &mut recorder.inner {
+            active.record_statement(stmt, self.start, end, self.env_before.as_ref(), env, types)?;
+        }
+        Ok(())
     }
 }
 
 #[derive(Debug, Default)]
-struct ActiveFunctionRecorder<'i> {
+struct ActiveEntrypointRecorder<'i> {
     steps: Vec<DebugStep<'i>>,
     params: Vec<DebugParamMapping>,
     next_step_sequence: u32,
@@ -160,7 +153,7 @@ struct CallFrame {
     call_depth: u32,
 }
 
-impl<'i> ActiveFunctionRecorder<'i> {
+impl<'i> ActiveEntrypointRecorder<'i> {
     fn new(function: &FunctionAst<'i>, contract_fields: &[ContractFieldAst<'i>]) -> Self {
         let mut recorder = Self { call_stack: vec![CallFrame { frame_id: 0, call_depth: 0 }], next_frame_id: 1, ..Default::default() };
         recorder.record_param_bindings(function, contract_fields);
@@ -246,17 +239,21 @@ impl<'i> ActiveFunctionRecorder<'i> {
         }
     }
 
-    fn record_statement_step(
+    fn record_statement(
         &mut self,
         stmt: &Statement<'i>,
         bytecode_start: usize,
         bytecode_end: usize,
-        updates: Vec<DebugVariableUpdate<'i>>,
-    ) {
+        before_env: Option<&HashMap<String, Expr<'i>>>,
+        after_env: &HashMap<String, Expr<'i>>,
+        types: &HashMap<String, String>,
+    ) -> Result<(), CompilerError> {
+        let updates = self.collect_variable_updates(before_env, after_env, types)?;
         let span = SourceSpan::from(stmt.span());
         let bytecode_len = bytecode_end.saturating_sub(bytecode_start);
         let step_index = self.push_step(bytecode_start, bytecode_start + bytecode_len, span, StepKind::Source {});
         self.add_updates_to_step(step_index, updates);
+        Ok(())
     }
 
     fn add_updates_to_step(&mut self, step_index: usize, updates: Vec<DebugVariableUpdate<'i>>) {
@@ -277,13 +274,11 @@ impl<'i> ActiveFunctionRecorder<'i> {
         };
 
         let mut names: Vec<String> = after_env.keys().cloned().collect();
+        // Sort so updates are emitted in a fixed order.
         names.sort_unstable();
 
         let mut updates = Vec::new();
         for name in names {
-            if name.starts_with("__arg_") {
-                continue;
-            }
             let Some(after_expr) = after_env.get(&name) else {
                 continue;
             };
@@ -313,7 +308,7 @@ impl<'i> ActiveFunctionRecorder<'i> {
 }
 
 /// Contract-level debug recorder that merges per-function recordings.
-/// When disabled (`inner` is `None`), all methods are zero-cost no-ops.
+/// When disabled (`inner` is `None`), all methods are no-ops.
 pub struct ContractRecorder<'i> {
     inner: Option<ActiveContractRecorder<'i>>,
 }
@@ -325,10 +320,12 @@ impl fmt::Debug for ContractRecorder<'_> {
 }
 
 impl<'i> ContractRecorder<'i> {
+    /// Creates a contract-level recorder.
     pub fn new(enabled: bool) -> Self {
         if enabled { Self { inner: Some(ActiveContractRecorder::default()) } } else { Self { inner: None } }
     }
 
+    /// Records constructor constants for debugger visibility.
     pub fn record_constructor_constants(&mut self, params: &[ParamAst<'i>], values: &[Expr<'i>]) {
         if let Some(rec) = &mut self.inner {
             for (param, value) in params.iter().zip(values.iter()) {
@@ -341,10 +338,25 @@ impl<'i> ContractRecorder<'i> {
         }
     }
 
-    pub fn record_compiled_function(&mut self, name: &str, script_len: usize, debug: &FunctionRecorder<'i>, offset: usize) {
+    /// Merges one compiled entrypoint recording into contract-level debug info.
+    pub fn record_compiled_entrypoint(&mut self, name: &str, script_len: usize, debug: &EntrypointRecorder<'i>, offset: usize) {
         if let Some(rec) = &mut self.inner {
             let seq_base = rec.recorder.reserve_sequence_block(debug.step_count());
-            debug.emit_steps_with_offset(offset, seq_base, &mut rec.recorder);
+            for step in debug.steps() {
+                rec.recorder.record_step(DebugStep {
+                    bytecode_start: step.bytecode_start + offset,
+                    bytecode_end: step.bytecode_end + offset,
+                    span: step.span,
+                    kind: step.kind.clone(),
+                    sequence: seq_base.saturating_add(step.sequence),
+                    call_depth: step.call_depth,
+                    frame_id: step.frame_id,
+                    variable_updates: step.variable_updates.clone(),
+                });
+            }
+            for param in debug.params() {
+                rec.recorder.record_param(param.clone());
+            }
             rec.recorder.record_function(DebugFunctionRange {
                 name: name.to_string(),
                 bytecode_start: offset,
@@ -353,6 +365,7 @@ impl<'i> ContractRecorder<'i> {
         }
     }
 
+    /// Finalizes and returns `DebugInfo` when recording is enabled.
     pub fn into_debug_info(self, source: String) -> Option<DebugInfo<'i>> {
         self.inner.map(|rec| rec.recorder.into_debug_info(source))
     }
@@ -370,7 +383,7 @@ mod tests {
     use crate::ast::{Expr, parse_contract_ast};
     use crate::debug_info::StepKind;
 
-    use super::{ContractRecorder, FunctionRecorder, SourceSpan};
+    use super::{ContractRecorder, EntrypointRecorder, SourceSpan};
 
     #[test]
     fn noop_recorders_are_pure_noops() {
@@ -386,20 +399,22 @@ mod tests {
         let function = contract.functions.first().expect("function");
         let stmt = function.body.first().expect("statement");
 
-        let mut recorder = FunctionRecorder::new(false, function, &contract.fields);
+        let mut recorder = EntrypointRecorder::new(false, function, &contract.fields);
 
         let span = SourceSpan::from(stmt.span());
 
-        recorder.record_statement_with_env_diff(stmt, 0, 1, None, &HashMap::new(), &HashMap::new()).expect("noop statement recording");
+        let builder = super::super::ScriptBuilder::new();
+        let guard = recorder.begin_statement(&builder, &HashMap::new());
+        guard.finish(&mut recorder, stmt, &builder, &HashMap::new(), &HashMap::new()).expect("noop statement recording");
 
-        recorder.begin_call(span, 1, function, &HashMap::new()).expect("noop begin call recording");
-        recorder.finish_call(span, 2, "callee");
+        recorder.begin_inline_call(span, 1, function, &HashMap::new()).expect("noop begin call recording");
+        recorder.finish_inline_call(span, 2, "callee");
         recorder.record_binding("tmp".to_string(), "int".to_string(), Expr::int(1), 2, span);
         assert_eq!(recorder.step_count(), 0);
 
         let mut sink = ContractRecorder::new(false);
         sink.record_constructor_constants(&contract.params, &[]);
-        sink.record_compiled_function("spend", 1, &recorder, 0);
+        sink.record_compiled_entrypoint("spend", 1, &recorder, 0);
         assert!(sink.into_debug_info(String::new()).is_none());
     }
 
@@ -417,7 +432,7 @@ mod tests {
         let function = contract.functions.first().expect("function");
         let stmt = function.body.first().expect("statement");
 
-        let mut recorder = FunctionRecorder::new(true, function, &contract.fields);
+        let mut recorder = EntrypointRecorder::new(true, function, &contract.fields);
 
         let mut before = HashMap::new();
         before.insert("x".to_string(), Expr::identifier("x"));
@@ -429,19 +444,21 @@ mod tests {
         types.insert("x".to_string(), "int".to_string());
         types.insert("y".to_string(), "int".to_string());
 
-        recorder.record_statement_with_env_diff(stmt, 0, 1, Some(&before), &after, &types).expect("record_step first statement");
+        let builder = super::super::ScriptBuilder::new();
+        let guard = recorder.begin_statement(&builder, &before);
+        guard.finish(&mut recorder, stmt, &builder, &after, &types).expect("record_step first statement");
 
         let span = SourceSpan::from(stmt.span());
         let mut inline_env = HashMap::new();
         inline_env.insert("x".to_string(), Expr::int(3));
-        recorder.begin_call(span, 1, function, &inline_env).expect("begin call recording");
+        recorder.begin_inline_call(span, 1, function, &inline_env).expect("begin call recording");
         recorder.record_binding("tmp".to_string(), "int".to_string(), Expr::int(9), 1, span);
-        recorder.finish_call(span, 2, "callee");
+        recorder.finish_inline_call(span, 2, "callee");
 
         assert_eq!(recorder.step_count(), 4);
 
         let mut sink = ContractRecorder::new(true);
-        sink.record_compiled_function("spend", 2, &recorder, 0);
+        sink.record_compiled_entrypoint("spend", 2, &recorder, 0);
         let info = sink.into_debug_info(String::new()).expect("debug info available");
 
         let sequences = info.steps.iter().map(|step| step.sequence).collect::<Vec<_>>();

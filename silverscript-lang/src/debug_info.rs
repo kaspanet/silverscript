@@ -24,24 +24,28 @@ impl<'a> From<span::Span<'a>> for SourceSpan {
 pub struct DebugRecorder<'i> {
     steps: Vec<DebugStep<'i>>,
     params: Vec<DebugParamMapping>,
-    functions: Vec<DebugFunctionRange>,
+    entry_points: Vec<DebugFunctionRange>,
     constants: Vec<DebugConstantMapping<'i>>,
     next_sequence: u32,
 }
 
 impl<'i> DebugRecorder<'i> {
+    /// Appends one recorded step.
     pub fn record_step(&mut self, step: DebugStep<'i>) {
         self.steps.push(step);
     }
 
+    /// Appends one parameter stack mapping.
     pub fn record_param(&mut self, param: DebugParamMapping) {
         self.params.push(param);
     }
 
+    /// Appends one compiled function bytecode range.
     pub fn record_function(&mut self, function: DebugFunctionRange) {
-        self.functions.push(function);
+        self.entry_points.push(function);
     }
 
+    /// Appends one constructor constant mapping.
     pub fn record_constant(&mut self, constant: DebugConstantMapping<'i>) {
         self.constants.push(constant);
     }
@@ -62,8 +66,9 @@ impl<'i> DebugRecorder<'i> {
         base
     }
 
+    /// Builds the final serializable debug payload.
     pub fn into_debug_info(self, source: String) -> DebugInfo<'i> {
-        DebugInfo { source, steps: self.steps, params: self.params, functions: self.functions, constants: self.constants }
+        DebugInfo { source, steps: self.steps, params: self.params, functions: self.entry_points, constants: self.constants }
     }
 }
 
@@ -88,8 +93,8 @@ impl<'i> DebugInfo<'i> {
 pub struct DebugVariableUpdate<'i> {
     pub name: String,
     pub type_name: String,
-    /// Pre-resolved expression with all local variable references expanded inline.
-    /// Only function parameter Identifiers remain. Enables shadow VM evaluation.
+    /// Pre-resolved expression for debugger shadow evaluation.
+    /// Identifiers may include inline synthetic placeholders (`__arg_*`).
     pub expr: Expr<'i>,
 }
 
