@@ -328,6 +328,159 @@ fn rejects_external_call_without_entrypoint() {
 }
 
 #[test]
+fn lowers_auth_covenant_declaration_and_keeps_original_entrypoint_name() {
+    let source = r#"
+        contract Decls(int max_outs) {
+            #[covenant(binding = auth, from = 1, to = max_outs, mode = predicate)]
+            function spend(int amount) {
+                require(amount >= 0);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[Expr::int(3)], CompileOptions::default()).expect("compile succeeds");
+    assert!(compiled.without_selector);
+    assert_eq!(compiled.abi.len(), 1);
+    assert_eq!(compiled.abi[0].name, "spend");
+    assert!(compiled.ast.functions.iter().any(|f| f.name == "__covenant_policy_spend" && !f.entrypoint));
+    assert!(compiled.ast.functions.iter().any(|f| f.name == "spend" && f.entrypoint));
+    assert!(compiled.script.contains(&OpAuthOutputCount));
+}
+
+#[test]
+fn lowers_cov_covenant_to_leader_and_delegate_entrypoints() {
+    let source = r#"
+        contract Decls(int max_ins, int max_outs) {
+            #[covenant(binding = cov, from = max_ins, to = max_outs, mode = predicate)]
+            function transition_ok(int nonce) {
+                require(nonce >= 0);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[Expr::int(2), Expr::int(4)], CompileOptions::default()).expect("compile succeeds");
+    let abi_names: Vec<&str> = compiled.abi.iter().map(|entry| entry.name.as_str()).collect();
+    assert_eq!(abi_names, vec!["transition_ok_leader", "transition_ok_delegate"]);
+    assert!(compiled.ast.functions.iter().any(|f| f.name == "__covenant_policy_transition_ok" && !f.entrypoint));
+    assert!(compiled.script.contains(&OpCovInputCount));
+    assert!(compiled.script.contains(&OpCovOutCount));
+    assert!(compiled.script.contains(&OpCovInputIdx));
+}
+
+#[test]
+fn rejects_auth_covenant_with_from_not_equal_one() {
+    let source = r#"
+        contract Decls() {
+            #[covenant(binding = auth, from = 2, to = 4, mode = predicate)]
+            function split() {
+                require(true);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("auth binding must require from=1");
+    assert!(err.to_string().contains("binding=auth requires from = 1"));
+}
+
+#[test]
+fn rejects_cov_covenant_groups_multiple_for_now() {
+    let source = r#"
+        contract Decls() {
+            #[covenant(binding = cov, from = 2, to = 4, mode = predicate, groups = multiple)]
+            function step() {
+                require(true);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("cov groups=multiple should be rejected");
+    assert!(err.to_string().contains("binding=cov with groups=multiple is not supported yet"));
+}
+
+#[test]
+fn rejects_transition_mode_without_return_values() {
+    let source = r#"
+        contract Decls() {
+            #[covenant(binding = auth, from = 1, to = 1, mode = transition)]
+            function roll() {
+                require(true);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("transition policy must return values");
+    assert!(err.to_string().contains("transition mode policy functions must declare return values"));
+}
+
+#[test]
+fn rejects_predicate_mode_with_return_values() {
+    let source = r#"
+        contract Decls() {
+            #[covenant(binding = auth, from = 1, to = 1, mode = predicate)]
+            function check() : (int) {
+                return(1);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("predicate policy must not return values");
+    assert!(err.to_string().contains("predicate mode policy functions must not declare return values"));
+}
+
+#[test]
+fn auth_covenant_groups_single_injects_shared_count_check() {
+    let source = r#"
+        contract Decls() {
+            #[covenant(binding = auth, from = 1, to = 4, mode = predicate, groups = single)]
+            function spend() {
+                require(true);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    assert!(compiled.script.contains(&OpInputCovenantId));
+    assert!(compiled.script.contains(&OpCovOutCount));
+    assert!(compiled.script.contains(&OpAuthOutputCount));
+}
+
+#[test]
+fn rejects_bounded_for_loop_until_lowering_is_implemented() {
+    let source = r#"
+        contract Loops() {
+            entrypoint function main() {
+                for(i, 0, 3, 5) {
+                    require(i >= 0);
+                }
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("bounded for loops should be rejected for now");
+    assert!(err.to_string().contains("for(i, start, end, max) is not implemented yet"));
+}
+
+#[test]
+fn still_accepts_three_arg_for_loops() {
+    let source = r#"
+        contract Loops() {
+            entrypoint function main() {
+                int sum = 0;
+                for(i, 0, 3) {
+                    sum = sum + i;
+                }
+                require(sum == 3);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("three-arg for loop should still compile");
+    let selector = selector_for(&compiled, "main");
+    let result = run_script_with_selector(compiled.script, selector);
+    assert!(result.is_ok(), "three-arg for loop runtime failed: {}", result.unwrap_err());
+}
+
+#[test]
 fn rejects_entrypoint_return_by_default() {
     let source = r#"
         contract EntryReturn() {

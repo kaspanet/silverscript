@@ -10,7 +10,7 @@ contract CovenantId(int max_ins, int max_outs, int init_amount) {
         int in_count = OpCovInputCount(covid);
         require(in_count <= max_ins);
 
-        int out_count = OpCovOutputCount(covid);
+        int out_count = OpCovOutCount(covid);
         require(out_count <= max_outs);
 
         int in_sum = 0;

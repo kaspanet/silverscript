@@ -72,3 +72,79 @@ fn parses_input_sigscript_and_rejects_output_sigscript() {
     "#;
     assert!(parse_source_file(input_bad).is_err());
 }
+
+#[test]
+fn parses_function_attributes_and_bounded_for_syntax() {
+    let input = r#"
+        contract Decls(int max_outs) {
+            #[covenant(binding = auth, from = 1, to = max_outs, mode = predicate)]
+            function split() {
+                int dyn = tx.outputs.length;
+                for(i, 0, dyn, max_outs) {
+                    require(i >= 0);
+                }
+            }
+        }
+    "#;
+
+    let result = parse_source_file(input);
+    assert!(result.is_ok());
+}
+
+#[test]
+fn rejects_malformed_function_attributes() {
+    let bad_path_start = r#"
+        contract Decls() {
+            #[.covenant(binding = auth, from = 1, to = 1, mode = transition)]
+            function main() {
+                require(true);
+            }
+        }
+    "#;
+    assert!(parse_source_file(bad_path_start).is_err());
+
+    let bad_path_double_dot = r#"
+        contract Decls() {
+            #[covenant..transition(binding = auth, from = 1, to = 1, mode = transition)]
+            function main() {
+                require(true);
+            }
+        }
+    "#;
+    assert!(parse_source_file(bad_path_double_dot).is_err());
+
+    let bad_arg_missing_equals = r#"
+        contract Decls(int max_outs) {
+            #[covenant(binding, from = 1, to = max_outs, mode = predicate)]
+            function main() {
+                require(max_outs >= 0);
+            }
+        }
+    "#;
+    assert!(parse_source_file(bad_arg_missing_equals).is_err());
+}
+
+#[test]
+fn rejects_invalid_bounded_for_arities() {
+    let trailing_comma = r#"
+        contract Loops() {
+            function main() {
+                for(i, 0, 1,) {
+                    require(i >= 0);
+                }
+            }
+        }
+    "#;
+    assert!(parse_source_file(trailing_comma).is_err());
+
+    let too_few_args = r#"
+        contract Loops() {
+            function main() {
+                for(i, 0) {
+                    require(i >= 0);
+                }
+            }
+        }
+    "#;
+    assert!(parse_source_file(too_few_args).is_err());
+}

@@ -51,6 +51,8 @@ pub struct ContractFieldAst<'i> {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FunctionAst<'i> {
     pub name: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attributes: Vec<FunctionAttributeAst<'i>>,
     pub params: Vec<ParamAst<'i>>,
     pub entrypoint: bool,
     #[serde(default)]
@@ -64,6 +66,27 @@ pub struct FunctionAst<'i> {
     pub name_span: Span<'i>,
     #[serde(skip_deserializing)]
     pub body_span: Span<'i>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FunctionAttributeAst<'i> {
+    pub path: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub args: Vec<FunctionAttributeArgAst<'i>>,
+    #[serde(skip_deserializing)]
+    pub span: Span<'i>,
+    #[serde(skip_deserializing)]
+    pub path_spans: Vec<Span<'i>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FunctionAttributeArgAst<'i> {
+    pub name: String,
+    pub expr: Expr<'i>,
+    #[serde(skip_deserializing)]
+    pub span: Span<'i>,
+    #[serde(skip_deserializing)]
+    pub name_span: Span<'i>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -276,6 +299,8 @@ pub enum Statement<'i> {
         ident: String,
         start: Expr<'i>,
         end: Expr<'i>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max: Option<Expr<'i>>,
         body: Vec<Statement<'i>>,
         #[serde(skip_deserializing)]
         span: Span<'i>,
@@ -694,6 +719,15 @@ fn parse_contract_definition<'i>(pair: Pair<'i, Rule>) -> Result<ContractAst<'i>
 fn parse_function_definition<'i>(pair: Pair<'i, Rule>) -> Result<FunctionAst<'i>, CompilerError> {
     let span = Span::from(pair.as_span());
     let mut inner = pair.into_inner();
+    let mut attributes = Vec::new();
+
+    while let Some(next) = inner.peek() {
+        if next.as_rule() != Rule::function_attribute {
+            break;
+        }
+        let attr_pair = inner.next().expect("checked");
+        attributes.push(parse_function_attribute(attr_pair)?);
+    }
 
     let first = inner.next().ok_or_else(|| CompilerError::Unsupported("missing function name".to_string()))?;
     let (entrypoint, name_pair) = if first.as_rule() == Rule::entrypoint {
@@ -732,7 +766,71 @@ fn parse_function_definition<'i>(pair: Pair<'i, Rule>) -> Result<FunctionAst<'i>
     }
     let body_span = body_span.unwrap_or(span);
 
-    Ok(FunctionAst { name, entrypoint, params, return_types, return_type_spans, body, span, name_span, body_span })
+    Ok(FunctionAst { name, attributes, entrypoint, params, return_types, return_type_spans, body, span, name_span, body_span })
+}
+
+fn parse_function_attribute<'i>(pair: Pair<'i, Rule>) -> Result<FunctionAttributeAst<'i>, CompilerError> {
+    let span = Span::from(pair.as_span());
+    let mut inner = pair.into_inner();
+
+    let path_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing attribute path".to_string()))?;
+    let (path, path_spans) = parse_attribute_path(path_pair)?;
+
+    let mut args = Vec::new();
+    if let Some(args_pair) = inner.next() {
+        args = parse_attribute_args(args_pair)?;
+    }
+
+    Ok(FunctionAttributeAst { path, args, span, path_spans })
+}
+
+fn parse_attribute_path<'i>(pair: Pair<'i, Rule>) -> Result<(Vec<String>, Vec<Span<'i>>), CompilerError> {
+    if pair.as_rule() != Rule::attribute_path {
+        return Err(CompilerError::Unsupported("expected attribute path".to_string()));
+    }
+    let mut path = Vec::new();
+    let mut spans = Vec::new();
+    for inner in pair.into_inner() {
+        if inner.as_rule() != Rule::Identifier {
+            continue;
+        }
+        path.push(inner.as_str().to_string());
+        spans.push(Span::from(inner.as_span()));
+    }
+    if path.is_empty() {
+        return Err(CompilerError::Unsupported("attribute path must not be empty".to_string()));
+    }
+    Ok((path, spans))
+}
+
+fn parse_attribute_args<'i>(pair: Pair<'i, Rule>) -> Result<Vec<FunctionAttributeArgAst<'i>>, CompilerError> {
+    if pair.as_rule() != Rule::attribute_args {
+        return Err(CompilerError::Unsupported("expected attribute arguments".to_string()));
+    }
+    let mut out = Vec::new();
+    for inner in pair.into_inner() {
+        if inner.as_rule() != Rule::attribute_arg {
+            continue;
+        }
+        out.push(parse_attribute_arg(inner)?);
+    }
+    Ok(out)
+}
+
+fn parse_attribute_arg<'i>(pair: Pair<'i, Rule>) -> Result<FunctionAttributeArgAst<'i>, CompilerError> {
+    let span = Span::from(pair.as_span());
+    if pair.as_rule() != Rule::attribute_arg {
+        return Err(CompilerError::Unsupported("expected attribute argument".to_string()));
+    }
+    let mut inner = pair.into_inner();
+    let name_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing attribute argument name".to_string()))?;
+    let expr_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing attribute argument value".to_string()))?;
+
+    let name = name_pair.as_str().to_string();
+    let name_span = Span::from(name_pair.as_span());
+    let expr = parse_expression(expr_pair)?;
+
+    Ok(FunctionAttributeArgAst { name, expr, span, name_span })
 }
 
 fn parse_constant_definition<'i>(pair: Pair<'i, Rule>) -> Result<ConstantAst<'i>, CompilerError> {
@@ -962,15 +1060,23 @@ fn parse_statement<'i>(pair: Pair<'i, Rule>) -> Result<Statement<'i>, CompilerEr
                 inner.next().ok_or_else(|| CompilerError::Unsupported("missing for loop start".to_string()).with_span(&span))?;
             let end_pair =
                 inner.next().ok_or_else(|| CompilerError::Unsupported("missing for loop end".to_string()).with_span(&span))?;
-            let block_pair =
+            let maybe_max_or_block =
                 inner.next().ok_or_else(|| CompilerError::Unsupported("missing for loop body".to_string()).with_span(&span))?;
 
             let start_expr = parse_expression(start_pair).map_err(|err| err.with_span(&span))?;
             let end_expr = parse_expression(end_pair).map_err(|err| err.with_span(&span))?;
+            let (max_expr, block_pair) = if maybe_max_or_block.as_rule() == Rule::block {
+                (None, maybe_max_or_block)
+            } else {
+                let max_expr = parse_expression(maybe_max_or_block).map_err(|err| err.with_span(&span))?;
+                let block_pair =
+                    inner.next().ok_or_else(|| CompilerError::Unsupported("missing for loop body".to_string()).with_span(&span))?;
+                (Some(max_expr), block_pair)
+            };
             let (body, body_span) = parse_block(block_pair).map_err(|err| err.with_span(&span))?;
             let Identifier { name: ident, span: ident_span } = parse_identifier(ident).map_err(|err| err.with_span(&span))?;
 
-            Ok(Statement::For { ident, start: start_expr, end: end_expr, body, span, ident_span, body_span })
+            Ok(Statement::For { ident, start: start_expr, end: end_expr, max: max_expr, body, span, ident_span, body_span })
         }
         Rule::yield_statement => {
             let mut inner = pair.into_inner();

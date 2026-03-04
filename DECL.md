@@ -30,11 +30,33 @@ Scope: syntax + semantics only. This is not claiming implementation is finalized
 
 Only policy functions are annotated.
 
+Canonical form:
+
+```js
+#[covenant(binding = auth|cov, from = X, to = Y, mode = predicate|transition, groups = multiple|single)]
+```
+
+Rules:
+
+1. `binding = auth` means auth-context lowering (`OpAuth*`).
+2. `binding = cov` means shared covenant-context lowering (`OpCov*`).
+3. `groups` applies to both bindings.
+4. Defaults: `auth -> groups = multiple`, `cov -> groups = single`.
+5. `binding = auth` with `from > 1` is compile error.
+6. `binding = cov` with `groups = multiple` is compile error in v1.
+
 ### 1:N predicate
 
 ```js
-#[cov.one_to_many.predicate(max_outputs = max_outs)]
+#[covenant(binding = auth, from = 1, to = max_outs, mode = predicate, groups = multiple)]
 function split(State prev_state, State[] new_states, sig[] approvals) {
+    // require(...) rules
+}
+```
+
+```js
+#[covenant(binding = auth, from = 1, to = max_outs, mode = predicate, groups = single)]
+function split_single_group(State prev_state, State[] new_states, sig[] approvals) {
     // require(...) rules
 }
 ```
@@ -42,7 +64,7 @@ function split(State prev_state, State[] new_states, sig[] approvals) {
 ### N:M predicate
 
 ```js
-#[cov.n_to_m.predicate(max_inputs = max_ins, max_outputs = max_outs)]
+#[covenant(binding = cov, from = max_ins, to = max_outs, mode = predicate)]
 function transition_ok(State[] prev_states, State[] new_states, sig leader_sig) {
     // require(...) rules
 }
@@ -51,7 +73,7 @@ function transition_ok(State[] prev_states, State[] new_states, sig leader_sig) 
 ### N:M transition
 
 ```js
-#[cov.n_to_m.transition(max_inputs = max_ins, max_outputs = max_outs)]
+#[covenant(binding = cov, from = max_ins, to = max_outs, mode = transition)]
 function transition(State[] prev_states, int fee) : (State[] new_states) {
     // compute and return new_states
 }
@@ -60,7 +82,7 @@ function transition(State[] prev_states, int fee) : (State[] new_states) {
 ### 1:1 transition
 
 ```js
-#[cov.one_to_one.transition]
+#[covenant(binding = auth, from = 1, to = 1, mode = transition)]
 function roll(State prev_state, byte[32] block_hash) : (State new_state) {
     // compute and return next state
 }
@@ -82,6 +104,40 @@ Predicate mode is the default convenience mode.
 Transition mode allows extra call args (`fee` above, etc.) and the policy computes `new_states`.
 
 Important: in both predicate and transition modes, any extra call args (beyond state values that are validated on outputs) are not directly committed by tx structure. The compiler/runtime must define a commitment story (and enforce determinism) for those args.
+
+### `for(i, 0, dyn_len, const_max)` lowering (follow-up)
+
+The 4-arg `for` form is planned as a compiler primitive (not a macro/precompile transform). Covenant declaration lowering in this effort should keep using existing 3-arg `for` + inner `if`.
+
+Lowering semantics:
+
+```js
+for(i, 0, dyn_len, const_max) { BODY }
+```
+
+is equivalent to:
+
+```js
+require(dyn_len <= const_max);
+for(i, 0, const_max) {
+    if (i < dyn_len) { BODY }
+}
+```
+
+### `groups`
+
+`binding = auth, groups = multiple` (default): no global uniqueness check across the tx.
+
+`binding = auth, groups = single`: enforce that current covenant id has a single continuation auth group in this tx:
+
+```js
+byte[32] cov_id = OpInputCovenantId(this.activeInputIndex);
+require(OpCovOutCount(cov_id) == OpAuthOutputCount(this.activeInputIndex));
+```
+
+No explicit `cov_id != false` check is needed; `OpCovOutCount(cov_id)` fails if `cov_id` is not valid covenant-id data.
+
+`binding = cov`: `groups = single` only (v1). `groups = multiple` is rejected.
 
 ## Inferred entrypoints
 
@@ -115,7 +171,7 @@ contract VaultNM(
     byte[32] owner = init_owner;
     int round = init_round;
 
-    #[cov.n_to_m.predicate(max_inputs = max_ins, max_outputs = max_outs)]
+    #[covenant(binding = cov, from = max_ins, to = max_outs, mode = predicate)]
     function conserve_and_bump(State[] prev_states, State[] new_states, sig leader_sig) {
         require(new_states.length > 0);
 
@@ -179,11 +235,7 @@ contract VaultNM(
         byte[32] cov_id = OpInputCovenantId(this.activeInputIndex);
 
         int in_count = OpCovInputCount(cov_id);
-        require(in_count > 0);
-        require(in_count <= max_ins);
-
-        int out_count = OpCovOutputCount(cov_id);
-        require(out_count <= max_outs);
+        int out_count = OpCovOutCount(cov_id);
         require(out_count == new_states.length);
 
         // k=0 must execute leader path
@@ -220,17 +272,8 @@ contract VaultNM(
     // Generated for N:M delegate path
     entrypoint function conserve_and_bump_delegate() {
         byte[32] cov_id = OpInputCovenantId(this.activeInputIndex);
-
-        int in_count = OpCovInputCount(cov_id);
-        require(in_count > 0);
-        require(in_count <= max_ins);
-
-        int out_count = OpCovOutputCount(cov_id);
-        require(out_count <= max_outs);
-
         // delegate path must not be leader
         require(OpCovInputIdx(cov_id, 0) != this.activeInputIndex);
-
     }
 }
 ```
@@ -247,7 +290,7 @@ pragma silverscript ^0.1.0;
 contract SeqCommitMirror(byte[32] init_seqcommit) {
     byte[32] seqcommit = init_seqcommit;
 
-    #[cov.one_to_one.transition]
+    #[covenant(binding = auth, from = 1, to = 1, mode = transition)]
     function roll_seqcommit(State prev_state, byte[32] block_hash) : (State new_state) {
         byte[32] new_seqcommit = OpChainblockSeqCommit(block_hash);
         return {
@@ -296,4 +339,4 @@ contract SeqCommitMirror(byte[32] init_seqcommit) {
 2. Internally the compiler can lower `State`/`State[]` into any representation; this doc only fixes the user-facing API.
 3. Existing `readInputState`/`validateOutputState` remain the codegen backbone.
 4. v1 keeps one `N:M` transition group per tx.
-5. Loops in examples use proposed bounded-dynamic syntax `for(i, 0, dyn_len, const_max)`. Current lowering is equivalent to `for(i, 0, const_max) { if (i < dyn_len) { ... } }`.
+5. `for(i, 0, dyn_len, const_max)` is compiler-level syntax, lowered as specified above.

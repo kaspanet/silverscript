@@ -57,12 +57,6 @@ pub fn compile_contract_ast<'i>(
     if contract.functions.is_empty() {
         return Err(CompilerError::Unsupported("contract has no functions".to_string()));
     }
-
-    let entrypoint_functions: Vec<&FunctionAst<'i>> = contract.functions.iter().filter(|func| func.entrypoint).collect();
-    if entrypoint_functions.is_empty() {
-        return Err(CompilerError::Unsupported("contract has no entrypoint functions".to_string()));
-    }
-
     if contract.params.len() != constructor_args.len() {
         return Err(CompilerError::Unsupported("constructor argument count mismatch".to_string()));
     }
@@ -74,31 +68,39 @@ pub fn compile_contract_ast<'i>(
         }
     }
 
-    let without_selector = entrypoint_functions.len() == 1;
-
     let mut constants: HashMap<String, Expr<'i>> =
         contract.constants.iter().map(|constant| (constant.name.clone(), constant.expr.clone())).collect();
     for (param, value) in contract.params.iter().zip(constructor_args.iter()) {
         constants.insert(param.name.clone(), value.clone());
     }
 
-    let functions_map = contract.functions.iter().cloned().map(|func| (func.name.clone(), func)).collect::<HashMap<_, _>>();
+    let lowered_contract = lower_covenant_declarations(contract, &constants)?;
+
+    let entrypoint_functions: Vec<&FunctionAst<'i>> = lowered_contract.functions.iter().filter(|func| func.entrypoint).collect();
+    if entrypoint_functions.is_empty() {
+        return Err(CompilerError::Unsupported("contract has no entrypoint functions".to_string()));
+    }
+
+    let without_selector = entrypoint_functions.len() == 1;
+
+    let functions_map = lowered_contract.functions.iter().cloned().map(|func| (func.name.clone(), func)).collect::<HashMap<_, _>>();
     let function_order =
-        contract.functions.iter().enumerate().map(|(index, func)| (func.name.clone(), index)).collect::<HashMap<_, _>>();
-    let function_abi_entries = build_function_abi_entries(contract);
-    let uses_script_size = contract_uses_script_size(contract);
+        lowered_contract.functions.iter().enumerate().map(|(index, func)| (func.name.clone(), index)).collect::<HashMap<_, _>>();
+    let function_abi_entries = build_function_abi_entries(&lowered_contract);
+    let uses_script_size = contract_uses_script_size(&lowered_contract);
 
     let mut script_size = if uses_script_size { Some(100i64) } else { None };
     for _ in 0..32 {
-        let (_contract_fields, field_prolog_script) = compile_contract_fields(&contract.fields, &constants, options, script_size)?;
+        let (_contract_fields, field_prolog_script) =
+            compile_contract_fields(&lowered_contract.fields, &constants, options, script_size)?;
 
         let mut compiled_entrypoints = Vec::new();
-        for (index, func) in contract.functions.iter().enumerate() {
+        for (index, func) in lowered_contract.functions.iter().enumerate() {
             if func.entrypoint {
                 compiled_entrypoints.push(compile_function(
                     func,
                     index,
-                    &contract.fields,
+                    &lowered_contract.fields,
                     field_prolog_script.len(),
                     &constants,
                     options,
@@ -147,9 +149,9 @@ pub fn compile_contract_ast<'i>(
 
         if !uses_script_size {
             return Ok(CompiledContract {
-                contract_name: contract.name.clone(),
+                contract_name: lowered_contract.name.clone(),
                 script,
-                ast: contract.clone(),
+                ast: lowered_contract.clone(),
                 abi: function_abi_entries,
                 without_selector,
             });
@@ -158,9 +160,9 @@ pub fn compile_contract_ast<'i>(
         let actual_size = script.len() as i64;
         if Some(actual_size) == script_size {
             return Ok(CompiledContract {
-                contract_name: contract.name.clone(),
+                contract_name: lowered_contract.name.clone(),
                 script,
-                ast: contract.clone(),
+                ast: lowered_contract.clone(),
                 abi: function_abi_entries,
                 without_selector,
             });
@@ -169,6 +171,349 @@ pub fn compile_contract_ast<'i>(
     }
 
     Err(CompilerError::Unsupported("script size did not stabilize".to_string()))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CovenantBinding {
+    Auth,
+    Cov,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CovenantMode {
+    Predicate,
+    Transition,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CovenantGroups {
+    Single,
+    Multiple,
+}
+
+#[derive(Debug, Clone)]
+struct CovenantDeclaration<'i> {
+    binding: CovenantBinding,
+    groups: CovenantGroups,
+    from_expr: Expr<'i>,
+    to_expr: Expr<'i>,
+}
+
+fn lower_covenant_declarations<'i>(
+    contract: &ContractAst<'i>,
+    constants: &HashMap<String, Expr<'i>>,
+) -> Result<ContractAst<'i>, CompilerError> {
+    let mut lowered = Vec::new();
+
+    let mut used_names: HashSet<String> =
+        contract.functions.iter().filter(|function| function.attributes.is_empty()).map(|function| function.name.clone()).collect();
+
+    for function in &contract.functions {
+        if function.attributes.is_empty() {
+            lowered.push(function.clone());
+            continue;
+        }
+
+        let declaration = parse_covenant_declaration(function, constants)?;
+
+        let policy_name = format!("__covenant_policy_{}", function.name);
+        if used_names.contains(&policy_name) {
+            return Err(CompilerError::Unsupported(format!(
+                "generated policy function name '{}' conflicts with existing function",
+                policy_name
+            )));
+        }
+        used_names.insert(policy_name.clone());
+
+        let mut policy = function.clone();
+        policy.name = policy_name.clone();
+        policy.entrypoint = false;
+        policy.attributes.clear();
+        lowered.push(policy);
+
+        match declaration.binding {
+            CovenantBinding::Auth => {
+                let entrypoint_name = function.name.clone();
+                if used_names.contains(&entrypoint_name) {
+                    return Err(CompilerError::Unsupported(format!(
+                        "generated entrypoint '{}' conflicts with existing function",
+                        entrypoint_name
+                    )));
+                }
+                used_names.insert(entrypoint_name.clone());
+                lowered.push(build_auth_wrapper(function, &policy_name, declaration, entrypoint_name));
+            }
+            CovenantBinding::Cov => {
+                let leader_name = format!("{}_leader", function.name);
+                if used_names.contains(&leader_name) {
+                    return Err(CompilerError::Unsupported(format!(
+                        "generated entrypoint '{}' conflicts with existing function",
+                        leader_name
+                    )));
+                }
+                used_names.insert(leader_name.clone());
+                lowered.push(build_cov_wrapper(function, &policy_name, declaration.clone(), leader_name, true));
+
+                let delegate_name = format!("{}_delegate", function.name);
+                if used_names.contains(&delegate_name) {
+                    return Err(CompilerError::Unsupported(format!(
+                        "generated entrypoint '{}' conflicts with existing function",
+                        delegate_name
+                    )));
+                }
+                used_names.insert(delegate_name.clone());
+                lowered.push(build_cov_wrapper(function, &policy_name, declaration, delegate_name, false));
+            }
+        }
+    }
+
+    let mut lowered_contract = contract.clone();
+    lowered_contract.functions = lowered;
+    Ok(lowered_contract)
+}
+
+fn parse_covenant_declaration<'i>(
+    function: &FunctionAst<'i>,
+    constants: &HashMap<String, Expr<'i>>,
+) -> Result<CovenantDeclaration<'i>, CompilerError> {
+    if function.entrypoint {
+        return Err(CompilerError::Unsupported(
+            "#[covenant(...)] must be applied to a policy function, not an entrypoint".to_string(),
+        ));
+    }
+
+    if function.attributes.len() != 1 {
+        return Err(CompilerError::Unsupported("covenant declarations support exactly one #[covenant(...)] attribute".to_string()));
+    }
+
+    let attribute = &function.attributes[0];
+    if attribute.path != ["covenant"] {
+        return Err(CompilerError::Unsupported(format!(
+            "unsupported function attribute #[{}]; expected #[covenant(...)]",
+            attribute.path.join(".")
+        )));
+    }
+
+    let mut args_by_name: HashMap<&str, &Expr<'i>> = HashMap::new();
+    for arg in &attribute.args {
+        if args_by_name.insert(arg.name.as_str(), &arg.expr).is_some() {
+            return Err(CompilerError::Unsupported(format!("duplicate covenant attribute argument '{}'", arg.name)));
+        }
+    }
+
+    let allowed_keys: HashSet<&str> = ["binding", "from", "to", "mode", "groups"].into_iter().collect();
+    for arg in &attribute.args {
+        if !allowed_keys.contains(arg.name.as_str()) {
+            return Err(CompilerError::Unsupported(format!("unknown covenant attribute argument '{}'", arg.name)));
+        }
+    }
+
+    let binding_name = parse_attr_ident_arg("binding", args_by_name.get("binding").copied())?;
+    let mode_name = parse_attr_ident_arg("mode", args_by_name.get("mode").copied())?;
+
+    let binding = match binding_name.as_str() {
+        "auth" => CovenantBinding::Auth,
+        "cov" => CovenantBinding::Cov,
+        other => {
+            return Err(CompilerError::Unsupported(format!("covenant binding must be auth|cov, got '{}'", other)));
+        }
+    };
+
+    let mode = match mode_name.as_str() {
+        "predicate" => CovenantMode::Predicate,
+        "transition" => CovenantMode::Transition,
+        other => {
+            return Err(CompilerError::Unsupported(format!("covenant mode must be predicate|transition, got '{}'", other)));
+        }
+    };
+
+    let from_expr = args_by_name
+        .get("from")
+        .copied()
+        .ok_or_else(|| CompilerError::Unsupported("missing covenant attribute argument 'from'".to_string()))?
+        .clone();
+    let to_expr = args_by_name
+        .get("to")
+        .copied()
+        .ok_or_else(|| CompilerError::Unsupported("missing covenant attribute argument 'to'".to_string()))?
+        .clone();
+
+    let from_value = eval_const_int(&from_expr, constants)
+        .map_err(|_| CompilerError::Unsupported("covenant 'from' must be a compile-time integer".to_string()))?;
+    let to_value = eval_const_int(&to_expr, constants)
+        .map_err(|_| CompilerError::Unsupported("covenant 'to' must be a compile-time integer".to_string()))?;
+    if from_value < 1 {
+        return Err(CompilerError::Unsupported("covenant 'from' must be >= 1".to_string()));
+    }
+    if to_value < 1 {
+        return Err(CompilerError::Unsupported("covenant 'to' must be >= 1".to_string()));
+    }
+
+    let groups = match args_by_name.get("groups").copied() {
+        Some(expr) => {
+            let groups_name = parse_attr_ident_arg("groups", Some(expr))?;
+            match groups_name.as_str() {
+                "single" => CovenantGroups::Single,
+                "multiple" => CovenantGroups::Multiple,
+                other => {
+                    return Err(CompilerError::Unsupported(format!("covenant groups must be single|multiple, got '{}'", other)));
+                }
+            }
+        }
+        None => match binding {
+            CovenantBinding::Auth => CovenantGroups::Multiple,
+            CovenantBinding::Cov => CovenantGroups::Single,
+        },
+    };
+
+    if binding == CovenantBinding::Auth && from_value != 1 {
+        return Err(CompilerError::Unsupported("binding=auth requires from = 1".to_string()));
+    }
+    if binding == CovenantBinding::Cov && groups == CovenantGroups::Multiple {
+        return Err(CompilerError::Unsupported("binding=cov with groups=multiple is not supported yet".to_string()));
+    }
+
+    if mode == CovenantMode::Predicate && !function.return_types.is_empty() {
+        return Err(CompilerError::Unsupported("predicate mode policy functions must not declare return values".to_string()));
+    }
+    if mode == CovenantMode::Transition && function.return_types.is_empty() {
+        return Err(CompilerError::Unsupported("transition mode policy functions must declare return values".to_string()));
+    }
+
+    Ok(CovenantDeclaration { binding, groups, from_expr: from_expr.clone(), to_expr: to_expr.clone() })
+}
+
+fn parse_attr_ident_arg<'i>(name: &str, value: Option<&Expr<'i>>) -> Result<String, CompilerError> {
+    let value = value.ok_or_else(|| CompilerError::Unsupported(format!("missing covenant attribute argument '{}'", name)))?;
+    match &value.kind {
+        ExprKind::Identifier(identifier) => Ok(identifier.clone()),
+        _ => Err(CompilerError::Unsupported(format!("covenant attribute argument '{}' must be an identifier", name))),
+    }
+}
+
+fn build_auth_wrapper<'i>(
+    policy: &FunctionAst<'i>,
+    policy_name: &str,
+    declaration: CovenantDeclaration<'i>,
+    entrypoint_name: String,
+) -> FunctionAst<'i> {
+    let mut body = Vec::new();
+
+    let active_input = active_input_index_expr();
+    let out_count_name = "__cov_out_count";
+    body.push(var_def_statement(int_type_ref(), out_count_name, Expr::call("OpAuthOutputCount", vec![active_input.clone()])));
+    body.push(require_statement(binary_expr(BinaryOp::Le, identifier_expr(out_count_name), declaration.to_expr.clone())));
+
+    if declaration.groups == CovenantGroups::Single {
+        let cov_id_name = "__cov_id";
+        body.push(var_def_statement(bytes32_type_ref(), cov_id_name, Expr::call("OpInputCovenantId", vec![active_input.clone()])));
+        let cov_out_count_name = "__cov_shared_out_count";
+        body.push(var_def_statement(
+            int_type_ref(),
+            cov_out_count_name,
+            Expr::call("OpCovOutCount", vec![identifier_expr(cov_id_name)]),
+        ));
+        body.push(require_statement(binary_expr(BinaryOp::Eq, identifier_expr(cov_out_count_name), identifier_expr(out_count_name))));
+    }
+
+    let call_args = policy.params.iter().map(|param| identifier_expr(&param.name)).collect();
+    body.push(call_statement(policy_name, call_args));
+
+    generated_entrypoint(policy, entrypoint_name, policy.params.clone(), body)
+}
+
+fn build_cov_wrapper<'i>(
+    policy: &FunctionAst<'i>,
+    policy_name: &str,
+    declaration: CovenantDeclaration<'i>,
+    entrypoint_name: String,
+    leader: bool,
+) -> FunctionAst<'i> {
+    let mut body = Vec::new();
+
+    let active_input = active_input_index_expr();
+    let cov_id_name = "__cov_id";
+    body.push(var_def_statement(bytes32_type_ref(), cov_id_name, Expr::call("OpInputCovenantId", vec![active_input.clone()])));
+
+    let in_count_name = "__cov_in_count";
+    body.push(var_def_statement(int_type_ref(), in_count_name, Expr::call("OpCovInputCount", vec![identifier_expr(cov_id_name)])));
+    body.push(require_statement(binary_expr(BinaryOp::Le, identifier_expr(in_count_name), declaration.from_expr.clone())));
+
+    let out_count_name = "__cov_out_count";
+    body.push(var_def_statement(int_type_ref(), out_count_name, Expr::call("OpCovOutCount", vec![identifier_expr(cov_id_name)])));
+    body.push(require_statement(binary_expr(BinaryOp::Le, identifier_expr(out_count_name), declaration.to_expr.clone())));
+
+    let leader_idx_expr = Expr::call("OpCovInputIdx", vec![identifier_expr(cov_id_name), Expr::int(0)]);
+    body.push(require_statement(binary_expr(if leader { BinaryOp::Eq } else { BinaryOp::Ne }, leader_idx_expr, active_input)));
+
+    if leader {
+        let call_args = policy.params.iter().map(|param| identifier_expr(&param.name)).collect();
+        body.push(call_statement(policy_name, call_args));
+    }
+
+    let params = if leader { policy.params.clone() } else { Vec::new() };
+    generated_entrypoint(policy, entrypoint_name, params, body)
+}
+
+fn generated_entrypoint<'i>(
+    policy: &FunctionAst<'i>,
+    entrypoint_name: String,
+    params: Vec<crate::ast::ParamAst<'i>>,
+    body: Vec<Statement<'i>>,
+) -> FunctionAst<'i> {
+    FunctionAst {
+        name: entrypoint_name,
+        attributes: Vec::new(),
+        params,
+        entrypoint: true,
+        return_types: Vec::new(),
+        body,
+        return_type_spans: Vec::new(),
+        span: policy.span,
+        name_span: policy.name_span,
+        body_span: policy.body_span,
+    }
+}
+
+fn int_type_ref() -> TypeRef {
+    TypeRef { base: TypeBase::Int, array_dims: Vec::new() }
+}
+
+fn bytes32_type_ref() -> TypeRef {
+    TypeRef { base: TypeBase::Byte, array_dims: vec![ArrayDim::Fixed(32)] }
+}
+
+fn active_input_index_expr<'i>() -> Expr<'i> {
+    Expr::new(ExprKind::Nullary(NullaryOp::ActiveInputIndex), span::Span::default())
+}
+
+fn identifier_expr<'i>(name: &str) -> Expr<'i> {
+    Expr::new(ExprKind::Identifier(name.to_string()), span::Span::default())
+}
+
+fn binary_expr<'i>(op: BinaryOp, left: Expr<'i>, right: Expr<'i>) -> Expr<'i> {
+    Expr::new(ExprKind::Binary { op, left: Box::new(left), right: Box::new(right) }, span::Span::default())
+}
+
+fn var_def_statement<'i>(type_ref: TypeRef, name: &str, expr: Expr<'i>) -> Statement<'i> {
+    Statement::VariableDefinition {
+        type_ref,
+        modifiers: Vec::new(),
+        name: name.to_string(),
+        expr: Some(expr),
+        span: span::Span::default(),
+        type_span: span::Span::default(),
+        modifier_spans: Vec::new(),
+        name_span: span::Span::default(),
+    }
+}
+
+fn require_statement<'i>(expr: Expr<'i>) -> Statement<'i> {
+    Statement::Require { expr, message: None, span: span::Span::default(), message_span: None }
+}
+
+fn call_statement<'i>(name: &str, args: Vec<Expr<'i>>) -> Statement<'i> {
+    Statement::FunctionCall { name: name.to_string(), args, span: span::Span::default(), name_span: span::Span::default() }
 }
 
 fn contract_uses_script_size<'i>(contract: &ContractAst<'i>) -> bool {
@@ -257,8 +602,11 @@ fn statement_uses_script_size(stmt: &Statement<'_>) -> bool {
                 || then_branch.iter().any(statement_uses_script_size)
                 || else_branch.as_ref().is_some_and(|branch| branch.iter().any(statement_uses_script_size))
         }
-        Statement::For { start, end, body, .. } => {
-            expr_uses_script_size(start) || expr_uses_script_size(end) || body.iter().any(statement_uses_script_size)
+        Statement::For { start, end, max, body, .. } => {
+            expr_uses_script_size(start)
+                || expr_uses_script_size(end)
+                || max.as_ref().is_some_and(expr_uses_script_size)
+                || body.iter().any(statement_uses_script_size)
         }
         Statement::Yield { expr, .. } => expr_uses_script_size(expr),
         Statement::Return { exprs, .. } => exprs.iter().any(expr_uses_script_size),
@@ -1236,10 +1584,11 @@ fn compile_statement<'i>(
             yields,
             script_size,
         ),
-        Statement::For { ident, start, end, body, .. } => compile_for_statement(
+        Statement::For { ident, start, end, max, body, .. } => compile_for_statement(
             ident,
             start,
             end,
+            max.as_ref(),
             body,
             env,
             params,
@@ -1296,6 +1645,7 @@ fn compile_statement<'i>(
             let returns = compile_inline_call(
                 name,
                 args,
+                params,
                 types,
                 env,
                 builder,
@@ -1362,6 +1712,7 @@ fn compile_statement<'i>(
             let returns = compile_inline_call(
                 name,
                 args,
+                params,
                 types,
                 env,
                 builder,
@@ -1715,6 +2066,7 @@ fn compile_validate_output_state_statement(
 fn compile_inline_call<'i>(
     name: &str,
     args: &[Expr<'i>],
+    caller_params: &HashMap<String, i64>,
     caller_types: &mut HashMap<String, String>,
     caller_env: &mut HashMap<String, Expr<'i>>,
     builder: &mut ScriptBuilder,
@@ -1752,10 +2104,21 @@ fn compile_inline_call<'i>(
     }
 
     let mut env: HashMap<String, Expr<'i>> = contract_constants.clone();
+    let mut inline_params: HashMap<String, i64> = HashMap::new();
     for (index, (param, arg)) in function.params.iter().zip(args.iter()).enumerate() {
         let resolved = resolve_expr(arg.clone(), caller_env, &mut HashSet::new())?;
         let temp_name = format!("__arg_{name}_{index}");
         let param_type_name = type_name_from_ref(&param.type_ref);
+        if let ExprKind::Identifier(identifier) = &resolved.kind {
+            if let Some(caller_index) = caller_params.get(identifier) {
+                inline_params.insert(temp_name.clone(), *caller_index);
+                types.insert(temp_name.clone(), param_type_name.clone());
+                env.insert(param.name.clone(), Expr::new(ExprKind::Identifier(temp_name.clone()), span::Span::default()));
+                caller_types.insert(temp_name, param_type_name);
+                continue;
+            }
+        }
+
         env.insert(temp_name.clone(), resolved.clone());
         types.insert(temp_name.clone(), param_type_name.clone());
         env.insert(param.name.clone(), Expr::new(ExprKind::Identifier(temp_name.clone()), span::Span::default()));
@@ -1785,7 +2148,6 @@ fn compile_inline_call<'i>(
     }
 
     let mut yields: Vec<Expr<'i>> = Vec::new();
-    let params = HashMap::new();
     let body_len = function.body.len();
     for (index, stmt) in function.body.iter().enumerate() {
         if let Statement::Return { exprs, .. } = stmt {
@@ -1803,7 +2165,7 @@ fn compile_inline_call<'i>(
         compile_statement(
             stmt,
             &mut env,
-            &params,
+            &inline_params,
             &mut types,
             builder,
             options,
@@ -2013,6 +2375,7 @@ fn compile_for_statement<'i>(
     ident: &str,
     start_expr: &Expr<'i>,
     end_expr: &Expr<'i>,
+    max_expr: Option<&Expr<'i>>,
     body: &[Statement<'i>],
     env: &mut HashMap<String, Expr<'i>>,
     params: &HashMap<String, i64>,
@@ -2028,6 +2391,10 @@ fn compile_for_statement<'i>(
     yields: &mut Vec<Expr<'i>>,
     script_size: Option<i64>,
 ) -> Result<(), CompilerError> {
+    if max_expr.is_some() {
+        return Err(CompilerError::Unsupported("for(i, start, end, max) is not implemented yet".to_string()));
+    }
+
     let start = eval_const_int(start_expr, contract_constants)?;
     let end = eval_const_int(end_expr, contract_constants)?;
     if end < start {
