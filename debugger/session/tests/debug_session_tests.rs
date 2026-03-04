@@ -15,7 +15,7 @@ use kaspa_txscript::{EngineCtx, EngineFlags};
 use debugger_session::session::{DebugSession, ShadowTxContext};
 use silverscript_lang::ast::{Expr, parse_contract_ast};
 use silverscript_lang::compiler::{CompileOptions, compile_contract};
-use silverscript_lang::debug_info::MappingKind;
+use silverscript_lang::debug_info::StepKind;
 
 const IF_STATEMENT_CONTRACT: &str = r#"pragma silverscript ^0.1.0;
 
@@ -64,7 +64,7 @@ where
     let parsed_contract = parse_contract_ast(source)?;
     assert_eq!(parsed_contract.params.len(), ctor_args.len());
 
-    // Compile with debug metadata enabled so line mappings and variable updates are available.
+    // Compile with debug metadata enabled so line steps and variable updates are available.
     let compile_opts = CompileOptions { record_debug_infos: true, ..Default::default() };
     let compiled = compile_contract(source, &ctor_args, compile_opts)?;
     let debug_info = compiled.debug_info.clone();
@@ -295,16 +295,19 @@ contract Virtuals() {
 
     with_session_for_source(source, vec![], "main", vec![Expr::int(3)], |session| {
         session.run_to_first_executed_statement()?;
-        let first = session.current_location().ok_or("missing first location")?;
-        assert!(matches!(first.kind, MappingKind::Virtual {}));
+        let first = session.current_step().ok_or("missing first location")?;
+        assert!(matches!(first.kind, StepKind::Source {}));
+        assert_eq!(first.bytecode_start, first.bytecode_end, "first step should be zero-width");
         let first_pc = session.state().pc;
 
-        let second = session.step_over()?.ok_or("missing second step")?.mapping.ok_or("missing second mapping")?;
-        assert!(matches!(second.kind, MappingKind::Virtual {}));
+        let second = session.step_over()?.ok_or("missing second step")?.step.ok_or("missing second step payload")?;
+        assert!(matches!(second.kind, StepKind::Source {}));
+        assert_eq!(second.bytecode_start, second.bytecode_end, "second step should be zero-width");
         assert_eq!(session.state().pc, first_pc, "virtual step should not execute opcodes");
 
-        let third = session.step_over()?.ok_or("missing third step")?.mapping.ok_or("missing third mapping")?;
-        assert!(matches!(third.kind, MappingKind::Statement {}));
+        let third = session.step_over()?.ok_or("missing third step")?.step.ok_or("missing third step payload")?;
+        assert!(matches!(third.kind, StepKind::Source {}));
+        assert!(third.bytecode_end > third.bytecode_start, "third step should execute bytecode");
         assert_eq!(session.state().pc, first_pc, "first real statement should still be at same pc boundary");
         Ok(())
     })
@@ -596,12 +599,12 @@ contract DebugPoC(int const) {
     with_session_for_source(source, vec![Expr::int(0)], "main", vec![Expr::int(0), Expr::int(0)], |session| {
         session.run_to_first_executed_statement()?;
 
-        let initial = session.current_location().ok_or("missing initial location")?;
+        let initial = session.current_step().ok_or("missing initial location")?;
         let mut prev_sequence = initial.sequence;
         let mut lines = vec![session.current_span().ok_or("missing initial span")?.line];
 
         while session.step_into()?.is_some() {
-            let loc = session.current_location().ok_or("missing location after step_into")?;
+            let loc = session.current_step().ok_or("missing location after step_into")?;
             assert!(
                 loc.sequence >= prev_sequence,
                 "source sequence rewound from {} to {} (lines {:?})",

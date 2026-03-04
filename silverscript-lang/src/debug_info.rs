@@ -18,12 +18,11 @@ impl<'a> From<span::Span<'a>> for SourceSpan {
 }
 
 /// Accumulates debug metadata during compilation.
-/// Collects events, variable updates, param mappings, function ranges, and constants.
+/// Collects steps, variable updates, param mappings, function ranges, and constants.
 /// Converted to `DebugInfo` after compilation completes.
 #[derive(Debug, Default)]
 pub struct DebugRecorder<'i> {
-    events: Vec<DebugMapping>,
-    variable_updates: Vec<DebugVariableUpdate<'i>>,
+    steps: Vec<DebugStep<'i>>,
     params: Vec<DebugParamMapping>,
     functions: Vec<DebugFunctionRange>,
     constants: Vec<DebugConstantMapping<'i>>,
@@ -31,12 +30,8 @@ pub struct DebugRecorder<'i> {
 }
 
 impl<'i> DebugRecorder<'i> {
-    pub fn record(&mut self, mapping: DebugMapping) {
-        self.events.push(mapping);
-    }
-
-    pub fn record_variable_update(&mut self, update: DebugVariableUpdate<'i>) {
-        self.variable_updates.push(update);
+    pub fn record_step(&mut self, step: DebugStep<'i>) {
+        self.steps.push(step);
     }
 
     pub fn record_param(&mut self, param: DebugParamMapping) {
@@ -68,14 +63,7 @@ impl<'i> DebugRecorder<'i> {
     }
 
     pub fn into_debug_info(self, source: String) -> DebugInfo<'i> {
-        DebugInfo {
-            source,
-            mappings: self.events,
-            variable_updates: self.variable_updates,
-            params: self.params,
-            functions: self.functions,
-            constants: self.constants,
-        }
+        DebugInfo { source, steps: self.steps, params: self.params, functions: self.functions, constants: self.constants }
     }
 }
 
@@ -84,8 +72,7 @@ impl<'i> DebugRecorder<'i> {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DebugInfo<'i> {
     pub source: String,
-    pub mappings: Vec<DebugMapping>,
-    pub variable_updates: Vec<DebugVariableUpdate<'i>>,
+    pub steps: Vec<DebugStep<'i>>,
     pub params: Vec<DebugParamMapping>,
     pub functions: Vec<DebugFunctionRange>,
     pub constants: Vec<DebugConstantMapping<'i>>,
@@ -93,14 +80,7 @@ pub struct DebugInfo<'i> {
 
 impl<'i> DebugInfo<'i> {
     pub fn empty() -> Self {
-        Self {
-            source: String::new(),
-            mappings: Vec::new(),
-            variable_updates: Vec::new(),
-            params: Vec::new(),
-            functions: Vec::new(),
-            constants: Vec::new(),
-        }
+        Self { source: String::new(), steps: Vec::new(), params: Vec::new(), functions: Vec::new(), constants: Vec::new() }
     }
 }
 
@@ -111,15 +91,6 @@ pub struct DebugVariableUpdate<'i> {
     /// Pre-resolved expression with all local variable references expanded inline.
     /// Only function parameter Identifiers remain. Enables shadow VM evaluation.
     pub expr: Expr<'i>,
-    pub bytecode_offset: usize,
-    pub span: Option<SourceSpan>,
-    pub function: String,
-    /// Sequence of the statement/virtual mapping that produced this update.
-    /// The debugger uses this to show locals only after that step executes.
-    #[serde(default)]
-    pub sequence: u32,
-    #[serde(default)]
-    pub frame_id: u32,
 }
 
 /// Maps function parameter to its stack position.
@@ -151,31 +122,63 @@ pub struct DebugConstantMapping<'i> {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DebugMapping {
+pub struct DebugStep<'i> {
     pub bytecode_start: usize,
     pub bytecode_end: usize,
-    pub span: Option<SourceSpan>,
-    pub kind: MappingKind,
-    /// Global event order used as a stable tiebreak for overlapping mappings.
+    pub span: SourceSpan,
+    pub kind: StepKind,
+    /// Global step order used as a stable tiebreak for overlapping steps.
     #[serde(default)]
     pub sequence: u32,
     #[serde(default)]
     pub call_depth: u32,
     #[serde(default)]
     pub frame_id: u32,
+    #[serde(default)]
+    pub variable_updates: Vec<DebugVariableUpdate<'i>>,
+}
+
+impl<'i> DebugStep<'i> {
+    pub fn id(&self) -> StepId {
+        StepId { sequence: self.sequence, frame_id: self.frame_id }
+    }
+
+    pub fn is_zero_width(&self) -> bool {
+        self.bytecode_start == self.bytecode_end
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct StepId {
+    pub sequence: u32,
+    pub frame_id: u32,
+}
+
+impl StepId {
+    pub const ROOT: Self = Self { sequence: 0, frame_id: 0 };
+
+    pub fn new(sequence: u32, frame_id: u32) -> Self {
+        Self { sequence, frame_id }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum MappingKind {
-    Statement {},
-    Virtual {},
-    InlineCallEnter { callee: String },
-    InlineCallExit { callee: String },
+pub enum StepKind {
+    #[serde(alias = "Statement", alias = "Virtual")]
+    Source {},
+    InlineCallEnter {
+        callee: String,
+    },
+    InlineCallExit {
+        callee: String,
+    },
 }
 
 #[cfg(test)]
 mod tests {
-    use super::SourceSpan;
+    use serde_json::json;
+
+    use super::{DebugInfo, SourceSpan, StepKind};
     use crate::span::Span;
 
     #[test]
@@ -187,5 +190,98 @@ mod tests {
         assert_eq!(source_span.col, 1);
         assert_eq!(source_span.end_line, 2);
         assert_eq!(source_span.end_col, 5);
+    }
+
+    #[test]
+    fn debug_info_schema_requires_step_span() {
+        let value = json!({
+            "source": "",
+            "steps": [{
+                "bytecode_start": 0,
+                "bytecode_end": 1,
+                "kind": { "Source": {} },
+                "sequence": 0,
+                "call_depth": 0,
+                "frame_id": 0,
+                "variable_updates": []
+            }],
+            "variable_updates": [],
+            "params": [],
+            "functions": [],
+            "constants": []
+        });
+
+        let parsed: Result<DebugInfo<'static>, _> = serde_json::from_value(value);
+        assert!(parsed.is_err(), "step span should be required");
+    }
+
+    #[test]
+    fn debug_info_schema_nests_variable_updates_in_steps() {
+        let value = json!({
+            "source": "",
+            "steps": [{
+                "bytecode_start": 0,
+                "bytecode_end": 1,
+                "span": { "line": 1, "col": 1, "end_line": 1, "end_col": 1 },
+                "kind": { "Source": {} },
+                "sequence": 0,
+                "call_depth": 0,
+                "frame_id": 0,
+                "variable_updates": []
+            }],
+            "variable_updates": [],
+            "params": [],
+            "functions": [],
+            "constants": []
+        });
+
+        let parsed: DebugInfo<'static> = serde_json::from_value(value).expect("parse debug info");
+        let serialized = serde_json::to_value(parsed).expect("serialize debug info");
+
+        assert!(serialized.get("variable_updates").is_none(), "top-level variable_updates should not exist");
+        assert!(serialized["steps"][0].get("variable_updates").is_some(), "step should carry variable_updates");
+    }
+
+    #[test]
+    fn debug_info_schema_accepts_legacy_statement_and_virtual_kind_names() {
+        let statement_value = json!({
+            "source": "",
+            "steps": [{
+                "bytecode_start": 0,
+                "bytecode_end": 1,
+                "span": { "line": 1, "col": 1, "end_line": 1, "end_col": 1 },
+                "kind": { "Statement": {} },
+                "sequence": 0,
+                "call_depth": 0,
+                "frame_id": 0,
+                "variable_updates": []
+            }],
+            "params": [],
+            "functions": [],
+            "constants": []
+        });
+
+        let virtual_value = json!({
+            "source": "",
+            "steps": [{
+                "bytecode_start": 0,
+                "bytecode_end": 0,
+                "span": { "line": 1, "col": 1, "end_line": 1, "end_col": 1 },
+                "kind": { "Virtual": {} },
+                "sequence": 0,
+                "call_depth": 0,
+                "frame_id": 0,
+                "variable_updates": []
+            }],
+            "params": [],
+            "functions": [],
+            "constants": []
+        });
+
+        let statement: DebugInfo<'static> = serde_json::from_value(statement_value).expect("legacy statement parses");
+        let virtual_step: DebugInfo<'static> = serde_json::from_value(virtual_value).expect("legacy virtual parses");
+
+        assert!(matches!(statement.steps[0].kind, StepKind::Source {}));
+        assert!(matches!(virtual_step.steps[0].kind, StepKind::Source {}));
     }
 }

@@ -166,7 +166,7 @@ fn compile_contract_emits_debug_info_when_recording_enabled() {
     let options = CompileOptions { record_debug_infos: true, ..Default::default() };
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
     let debug_info = compiled.debug_info.expect("debug info should be present");
-    assert!(!debug_info.mappings.is_empty());
+    assert!(!debug_info.steps.is_empty());
     assert!(!debug_info.functions.is_empty());
     assert!(debug_info.params.iter().any(|param| param.name == "x"));
 }

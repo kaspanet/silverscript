@@ -10,7 +10,7 @@ use kaspa_txscript::{DynOpcodeImplementation, EngineCtx, EngineFlags, TxScriptEn
 use silverscript_lang::ast::{Expr, ExprKind};
 use silverscript_lang::compiler::compile_debug_expr;
 use silverscript_lang::debug_info::{
-    DebugFunctionRange, DebugInfo, DebugMapping, DebugParamMapping, DebugVariableUpdate, MappingKind, SourceSpan,
+    DebugFunctionRange, DebugInfo, DebugParamMapping, DebugStep, DebugVariableUpdate, SourceSpan, StepId, StepKind,
 };
 
 pub use crate::presentation::{SourceContext, SourceContextLine};
@@ -69,10 +69,10 @@ pub struct Variable {
 }
 
 #[derive(Debug, Clone)]
-pub struct SessionState {
+pub struct SessionState<'i> {
     pub pc: usize,
     pub opcode: Option<String>,
-    pub mapping: Option<DebugMapping>,
+    pub step: Option<DebugStep<'i>>,
     pub stack: Vec<String>,
 }
 
@@ -85,12 +85,12 @@ pub struct DebugSession<'a, 'i> {
     script_len: usize,
     pc: usize,
     debug_info: DebugInfo<'i>,
-    source_mappings: Vec<DebugMapping>,
+    step_order: Vec<usize>,
     current_step_index: Option<usize>,
     source_lines: Vec<String>,
     breakpoints: HashSet<u32>,
-    // Sequence ids of steppable mappings that were already visited in this session.
-    executed_sequences: HashSet<u32>,
+    // Source-level step ids that were already visited in this session.
+    executed_steps: HashSet<StepId>,
 }
 
 struct ShadowParamValue {
@@ -102,9 +102,10 @@ struct ShadowParamValue {
 
 struct VariableContext<'a> {
     function_name: &'a str,
+    function_start: usize,
+    function_end: usize,
     offset: usize,
-    sequence: u32,
-    frame_id: u32,
+    step_id: StepId,
 }
 
 impl<'a, 'i> DebugSession<'a, 'i> {
@@ -123,7 +124,7 @@ impl<'a, 'i> DebugSession<'a, 'i> {
         Self::from_scripts(lockscript, source, debug_info, engine)
     }
 
-    /// Internal constructor: parses script, prepares opcodes, extracts statement mappings.
+    /// Internal constructor: parses script, prepares opcodes, extracts statement steps.
     pub fn from_scripts(
         script: &[u8],
         source: &str,
@@ -137,31 +138,12 @@ impl<'a, 'i> DebugSession<'a, 'i> {
         let source_lines: Vec<String> = source.lines().map(String::from).collect();
         let (opcode_offsets, script_len) = build_opcode_offsets(&opcodes);
 
-        let mut source_mappings: Vec<DebugMapping> = debug_info
-            .mappings
-            .iter()
-            .filter(|mapping| {
-                matches!(
-                    &mapping.kind,
-                    MappingKind::Statement {}
-                        | MappingKind::Virtual {}
-                        | MappingKind::InlineCallEnter { .. }
-                        | MappingKind::InlineCallExit { .. }
-                )
-            })
-            .cloned()
-            .collect();
+        let mut step_order: Vec<usize> = (0..debug_info.steps.len()).collect();
         // Overlapping inline ranges can share the same bytecode offsets; keep
         // compiler emission order via sequence before comparing range width.
-        source_mappings.sort_by_key(|mapping| {
-            (
-                mapping.bytecode_start,
-                mapping.sequence,
-                mapping_kind_order(&mapping.kind),
-                mapping.call_depth,
-                mapping.bytecode_end,
-                mapping.frame_id,
-            )
+        step_order.sort_by_key(|&index| {
+            let step = &debug_info.steps[index];
+            (step.bytecode_start, step.sequence, step_kind_order(&step.kind), step.call_depth, step.bytecode_end, step.frame_id)
         });
 
         Ok(Self {
@@ -173,16 +155,16 @@ impl<'a, 'i> DebugSession<'a, 'i> {
             script_len,
             pc: 0,
             debug_info,
-            source_mappings,
+            step_order,
             current_step_index: None,
             source_lines,
             breakpoints: HashSet::new(),
-            executed_sequences: HashSet::new(),
+            executed_steps: HashSet::new(),
         })
     }
 
     /// Executes a single opcode and advances the program counter.
-    pub fn step_opcode(&mut self) -> Result<Option<SessionState>, kaspa_txscript_errors::TxScriptError> {
+    pub fn step_opcode(&mut self) -> Result<Option<SessionState<'i>>, kaspa_txscript_errors::TxScriptError> {
         if self.pc >= self.opcodes.len() {
             return Ok(None);
         }
@@ -200,47 +182,46 @@ impl<'a, 'i> DebugSession<'a, 'i> {
     }
 
     /// Step into: advance to next source step regardless of call depth.
-    pub fn step_into(&mut self) -> Result<Option<SessionState>, kaspa_txscript_errors::TxScriptError> {
+    pub fn step_into(&mut self) -> Result<Option<SessionState<'i>>, kaspa_txscript_errors::TxScriptError> {
         self.step_with_depth_predicate(|_, _| true)
     }
 
     /// Step over: advance to next source step at the same or shallower call depth.
-    pub fn step_over(&mut self) -> Result<Option<SessionState>, kaspa_txscript_errors::TxScriptError> {
+    pub fn step_over(&mut self) -> Result<Option<SessionState<'i>>, kaspa_txscript_errors::TxScriptError> {
         self.step_with_depth_predicate(|candidate, current| candidate <= current)
     }
 
     /// Step out: advance to next source step at a shallower call depth.
-    pub fn step_out(&mut self) -> Result<Option<SessionState>, kaspa_txscript_errors::TxScriptError> {
+    pub fn step_out(&mut self) -> Result<Option<SessionState<'i>>, kaspa_txscript_errors::TxScriptError> {
         self.step_with_depth_predicate(|candidate, current| candidate < current)
     }
 
     /// Shared stepping loop for `step_into`, `step_over`, and `step_out`.
-    /// Picks the next steppable mapping whose call depth satisfies `predicate`,
-    /// executes opcodes until that mapping becomes active, and skips candidates
+    /// Picks the next steppable step whose call depth satisfies `predicate`,
+    /// executes opcodes until that step becomes active, and skips candidates
     /// that are already behind the current byte offset (for example, non-taken
-    /// branch mappings).
+    /// branch steps).
     fn step_with_depth_predicate(
         &mut self,
         predicate: impl Fn(u32, u32) -> bool,
-    ) -> Result<Option<SessionState>, kaspa_txscript_errors::TxScriptError> {
-        if self.source_mappings.is_empty() {
+    ) -> Result<Option<SessionState<'i>>, kaspa_txscript_errors::TxScriptError> {
+        if self.step_order.is_empty() {
             return self.step_opcode();
         }
 
-        let current_depth = self.current_step_mapping().map(|mapping| mapping.call_depth).unwrap_or(0);
+        let current_depth = self.current_timeline_step().map(|step| step.call_depth).unwrap_or(0);
         let mut search_from = self.current_step_index;
 
         loop {
-            let Some(target_index) =
-                self.next_steppable_mapping_index(search_from, |mapping| predicate(mapping.call_depth, current_depth))
+            let Some(target_index) = self.next_steppable_step_index(search_from, |step| predicate(step.call_depth, current_depth))
             else {
                 while self.step_opcode()?.is_some() {}
                 return Ok(None);
             };
 
-            if self.advance_to_mapping(target_index)? {
+            if self.advance_to_step(target_index)? {
                 self.current_step_index = Some(target_index);
-                self.mark_mapping_executed(target_index);
+                self.mark_step_executed(target_index);
                 return Ok(Some(self.state()));
             }
 
@@ -248,18 +229,19 @@ impl<'a, 'i> DebugSession<'a, 'i> {
         }
     }
 
-    fn advance_to_mapping(&mut self, target_index: usize) -> Result<bool, kaspa_txscript_errors::TxScriptError> {
-        let Some(target) = self.source_mappings.get(target_index).cloned() else {
+    fn advance_to_step(&mut self, target_index: usize) -> Result<bool, kaspa_txscript_errors::TxScriptError> {
+        let Some(target) = self.step_at_order(target_index) else {
             return Ok(false);
         };
+        let (target_start, target_end) = (target.bytecode_start, target.bytecode_end);
         loop {
             let offset = self.current_byte_offset();
 
-            if offset > target.bytecode_start {
+            if offset > target_start {
                 return Ok(false);
             }
 
-            if mapping_matches_offset(&target, offset) && self.engine.is_executing() {
+            if range_matches_offset(target_start, target_end, offset) && self.engine.is_executing() {
                 return Ok(true);
             }
 
@@ -271,9 +253,9 @@ impl<'a, 'i> DebugSession<'a, 'i> {
 
     /// Advances execution to the first user statement, skipping dispatcher/synthetic bytecode.
     /// Call this after session creation to skip over contract setup code.
-    /// Skips opcodes until the first source-mapped statement is encountered.
+    /// Skips opcodes until the first source step is encountered.
     pub fn run_to_first_executed_statement(&mut self) -> Result<(), kaspa_txscript_errors::TxScriptError> {
-        if self.source_mappings.is_empty() {
+        if self.step_order.is_empty() {
             return Ok(());
         }
         loop {
@@ -282,9 +264,9 @@ impl<'a, 'i> DebugSession<'a, 'i> {
             }
             let offset = self.current_byte_offset();
             if self.engine.is_executing() {
-                if let Some(index) = self.steppable_mapping_index_for_offset(offset) {
+                if let Some(index) = self.steppable_step_index_for_offset(offset) {
                     self.current_step_index = Some(index);
-                    self.mark_mapping_executed(index);
+                    self.mark_step_executed(index);
                     return Ok(());
                 }
             }
@@ -295,7 +277,7 @@ impl<'a, 'i> DebugSession<'a, 'i> {
     }
 
     /// Continues execution until a breakpoint is hit or script completes.
-    pub fn continue_to_breakpoint(&mut self) -> Result<Option<SessionState>, kaspa_txscript_errors::TxScriptError> {
+    pub fn continue_to_breakpoint(&mut self) -> Result<Option<SessionState<'i>>, kaspa_txscript_errors::TxScriptError> {
         if self.breakpoints.is_empty() {
             while self.step_opcode()?.is_some() {}
             return Ok(None);
@@ -304,8 +286,8 @@ impl<'a, 'i> DebugSession<'a, 'i> {
             if self.step_into()?.is_none() {
                 return Ok(None);
             }
-            if let Some(mapping) = self.current_step_mapping() {
-                if self.mapping_hits_breakpoint(mapping) {
+            if let Some(step) = self.current_timeline_step() {
+                if self.step_hits_breakpoint(step) {
                     return Ok(Some(self.state()));
                 }
             }
@@ -313,10 +295,10 @@ impl<'a, 'i> DebugSession<'a, 'i> {
     }
 
     /// Returns the current execution state snapshot.
-    pub fn state(&self) -> SessionState {
+    pub fn state(&self) -> SessionState<'i> {
         let executed = self.pc.saturating_sub(1);
         let opcode = self.op_displays.get(executed).cloned();
-        SessionState { pc: self.pc, opcode, mapping: self.current_location(), stack: self.stack() }
+        SessionState { pc: self.pc, opcode, step: self.current_step(), stack: self.stack() }
     }
 
     /// Returns true if the script engine is still running.
@@ -328,10 +310,9 @@ impl<'a, 'i> DebugSession<'a, 'i> {
         &self.debug_info
     }
 
-    // --- Mapping + source context ---
+    // --- Step + source context ---
 
     /// Returns source lines around the current statement (radius = 6 lines).
-    /// Active line is marked via `is_active` field. Returns None if no source mapping exists.
     /// Returns surrounding source lines with the current line highlighted.
     pub fn source_context(&self) -> Option<SourceContext> {
         let span = self.current_span()?;
@@ -341,10 +322,10 @@ impl<'a, 'i> DebugSession<'a, 'i> {
     /// Adds a breakpoint at the given line number. Returns true if added.
     pub fn add_breakpoint(&mut self, line: u32) -> bool {
         let valid = self
-            .source_mappings
+            .step_order
             .iter()
-            .filter(|mapping| self.is_steppable_mapping(mapping))
-            .any(|mapping| mapping.span.is_some_and(|span| line >= span.line && line <= span.end_line));
+            .filter_map(|&index| self.debug_info.steps.get(index))
+            .any(|step| self.is_steppable_step(step) && line >= step.span.line && line <= step.span.end_line);
         if valid {
             self.breakpoints.insert(line);
         }
@@ -369,16 +350,15 @@ impl<'a, 'i> DebugSession<'a, 'i> {
     /// Includes params, local variables (up to current offset), and constructor constants.
     /// Values are computed via shadow VM evaluation.
     pub fn list_variables(&self) -> Result<Vec<Variable>, String> {
-        let (sequence, frame_id) = self.current_step_sequence_and_frame();
-        self.collect_variables(sequence, frame_id)
+        self.collect_variables(self.current_step_id())
     }
 
     pub fn list_variables_at_sequence(&self, sequence: u32, frame_id: u32) -> Result<Vec<Variable>, String> {
-        self.collect_variables(sequence, frame_id)
+        self.collect_variables(StepId::new(sequence, frame_id))
     }
 
-    fn collect_variables(&self, sequence: u32, frame_id: u32) -> Result<Vec<Variable>, String> {
-        let context = self.current_variable_context(sequence, frame_id)?;
+    fn collect_variables(&self, step_id: StepId) -> Result<Vec<Variable>, String> {
+        let context = self.current_variable_context(step_id)?;
         let mut variables = self.collect_variables_map(&context)?.into_values().collect::<Vec<_>>();
         variables.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(variables)
@@ -386,8 +366,7 @@ impl<'a, 'i> DebugSession<'a, 'i> {
 
     /// Returns a specific variable by name, or error if not in scope.
     pub fn variable_by_name(&self, name: &str) -> Result<Variable, String> {
-        let (sequence, frame_id) = self.current_step_sequence_and_frame();
-        let context = self.current_variable_context(sequence, frame_id)?;
+        let context = self.current_variable_context(self.current_step_id())?;
         let variables = self.collect_variables_map(&context)?;
         variables.get(name).cloned().ok_or_else(|| format!("unknown variable '{name}'"))
     }
@@ -398,9 +377,9 @@ impl<'a, 'i> DebugSession<'a, 'i> {
         format_debug_value(type_name, value)
     }
 
-    /// Returns the debug mapping for the current bytecode position.
-    pub fn current_location(&self) -> Option<DebugMapping> {
-        self.current_step_mapping().cloned().or_else(|| self.mapping_for_offset(self.current_byte_offset()).cloned())
+    /// Returns the debug step for the current bytecode position.
+    pub fn current_step(&self) -> Option<DebugStep<'i>> {
+        self.current_timeline_step().cloned().or_else(|| self.step_for_offset(self.current_byte_offset()).cloned())
     }
 
     /// Returns the current bytecode offset in the script.
@@ -410,7 +389,7 @@ impl<'a, 'i> DebugSession<'a, 'i> {
 
     /// Returns the source span (line/col range) at the current position.
     pub fn current_span(&self) -> Option<SourceSpan> {
-        self.current_location().and_then(|mapping| mapping.span)
+        self.current_step().map(|step| step.span)
     }
 
     pub fn call_stack(&self) -> Vec<String> {
@@ -418,10 +397,13 @@ impl<'a, 'i> DebugSession<'a, 'i> {
         let Some(current) = self.current_step_index else {
             return stack;
         };
-        for mapping in self.source_mappings.iter().take(current + 1) {
-            match &mapping.kind {
-                MappingKind::InlineCallEnter { callee } => stack.push(callee.clone()),
-                MappingKind::InlineCallExit { .. } => {
+        for order_index in 0..=current {
+            let Some(step) = self.step_at_order(order_index) else {
+                continue;
+            };
+            match &step.kind {
+                StepKind::InlineCallEnter { callee } => stack.push(callee.clone()),
+                StepKind::InlineCallExit { .. } => {
                     stack.pop();
                 }
                 _ => {}
@@ -440,38 +422,35 @@ impl<'a, 'i> DebugSession<'a, 'i> {
         self.debug_info.functions.iter().find(|function| offset >= function.bytecode_start && offset < function.bytecode_end)
     }
 
-    fn current_variable_updates(
-        &self,
-        function_name: &str,
-        offset: usize,
-        sequence: u32,
-        frame_id: u32,
-    ) -> HashMap<String, &DebugVariableUpdate<'i>> {
-        let mut latest: HashMap<String, &DebugVariableUpdate<'i>> = HashMap::new();
-        for update in self
-            .debug_info
-            .variable_updates
-            .iter()
-            .filter(|update| self.update_is_visible(update, function_name, offset, sequence, frame_id))
-        {
-            match latest.get(&update.name) {
-                Some(existing) if existing.sequence > update.sequence => {}
-                _ => {
-                    latest.insert(update.name.clone(), update);
+    fn current_variable_updates(&self, context: &VariableContext<'_>) -> HashMap<String, &DebugVariableUpdate<'i>> {
+        let mut latest_by_name: HashMap<String, (u32, &DebugVariableUpdate<'i>)> = HashMap::new();
+        for step in self.debug_info.steps.iter().filter(|step| self.step_updates_are_visible(step, context)) {
+            for update in &step.variable_updates {
+                match latest_by_name.get(&update.name) {
+                    Some((existing_sequence, _)) if *existing_sequence > step.sequence => {}
+                    _ => {
+                        latest_by_name.insert(update.name.clone(), (step.sequence, update));
+                    }
                 }
             }
         }
-        latest
+        latest_by_name.into_iter().map(|(name, (_, update))| (name, update)).collect()
     }
 
-    fn current_variable_context(&self, sequence: u32, frame_id: u32) -> Result<VariableContext<'_>, String> {
-        let function_name = self.current_function_name().ok_or_else(|| "No function context available".to_string())?;
-        Ok(VariableContext { function_name, offset: self.current_byte_offset(), sequence, frame_id })
+    fn current_variable_context(&self, step_id: StepId) -> Result<VariableContext<'_>, String> {
+        let function = self.current_function_range().ok_or_else(|| "No function context available".to_string())?;
+        Ok(VariableContext {
+            function_name: function.name.as_str(),
+            function_start: function.bytecode_start,
+            function_end: function.bytecode_end,
+            offset: self.current_byte_offset(),
+            step_id,
+        })
     }
 
     fn collect_variables_map(&self, context: &VariableContext<'_>) -> Result<HashMap<String, Variable>, String> {
         let mut variables: HashMap<String, Variable> = HashMap::new();
-        let var_updates = self.current_variable_updates(context.function_name, context.offset, context.sequence, context.frame_id);
+        let var_updates = self.current_variable_updates(context);
 
         for (name, update) in &var_updates {
             let value = self.evaluate_update_with_shadow_vm(context.function_name, update).unwrap_or_else(DebugValue::Unknown);
@@ -525,36 +504,30 @@ impl<'a, 'i> DebugSession<'a, 'i> {
         Ok(variables)
     }
 
-    fn update_is_visible(
-        &self,
-        update: &DebugVariableUpdate<'i>,
-        function_name: &str,
-        offset: usize,
-        sequence: u32,
-        frame_id: u32,
-    ) -> bool {
-        if update.function != function_name {
+    fn step_updates_are_visible(&self, step: &DebugStep<'i>, context: &VariableContext<'_>) -> bool {
+        if step.bytecode_start < context.function_start || step.bytecode_start >= context.function_end {
             return false;
         }
         // Stay in the active inline frame and only consider updates from
         // steps already executed in this session.
-        update.frame_id == frame_id
-            && self.executed_sequences.contains(&update.sequence)
-            && update.sequence < sequence
-            && update.bytecode_offset <= offset
+        let step_id = step.id();
+        step_id.frame_id == context.step_id.frame_id
+            && self.executed_steps.contains(&step_id)
+            && step_id.sequence < context.step_id.sequence
+            && step.bytecode_end <= context.offset
     }
 
-    /// Returns the most specific mapping for `offset`.
-    /// Multiple mappings may overlap; choosing the narrowest bytecode span makes
+    /// Returns the most specific step for `offset`.
+    /// Multiple steps may overlap; choosing the narrowest bytecode span makes
     /// location lookups prefer inner statement/inline ranges over broader ranges.
-    fn mapping_for_offset(&self, offset: usize) -> Option<&DebugMapping> {
-        let mut best: Option<&DebugMapping> = None;
+    fn step_for_offset(&self, offset: usize) -> Option<&DebugStep<'i>> {
+        let mut best: Option<&DebugStep<'i>> = None;
         let mut best_len = usize::MAX;
-        for mapping in &self.debug_info.mappings {
-            if mapping_matches_offset(mapping, offset) {
-                let len = mapping.bytecode_end.saturating_sub(mapping.bytecode_start);
+        for step in &self.debug_info.steps {
+            if step_matches_offset(step, offset) {
+                let len = step.bytecode_end.saturating_sub(step.bytecode_start);
                 if len < best_len {
-                    best = Some(mapping);
+                    best = Some(step);
                     best_len = len;
                 }
             }
@@ -562,69 +535,72 @@ impl<'a, 'i> DebugSession<'a, 'i> {
         best
     }
 
-    fn current_step_mapping(&self) -> Option<&DebugMapping> {
-        self.current_step_index.and_then(|index| self.source_mappings.get(index))
+    fn step_at_order(&self, order_index: usize) -> Option<&DebugStep<'i>> {
+        let step_index = *self.step_order.get(order_index)?;
+        self.debug_info.steps.get(step_index)
     }
 
-    fn current_step_sequence_and_frame(&self) -> (u32, u32) {
-        // Sequence/frame identify the statement context used for variable filtering.
-        self.current_step_mapping().map(|mapping| (mapping.sequence, mapping.frame_id)).unwrap_or((0, 0))
+    fn current_timeline_step(&self) -> Option<&DebugStep<'i>> {
+        self.current_step_index.and_then(|index| self.step_at_order(index))
     }
 
-    fn mark_mapping_executed(&mut self, mapping_index: usize) {
-        if let Some(mapping) = self.source_mappings.get(mapping_index) {
-            self.executed_sequences.insert(mapping.sequence);
+    fn current_step_id(&self) -> StepId {
+        self.current_timeline_step().map(DebugStep::id).unwrap_or(StepId::ROOT)
+    }
+
+    fn mark_step_executed(&mut self, step_index: usize) {
+        if let Some(step) = self.step_at_order(step_index) {
+            self.executed_steps.insert(step.id());
         }
     }
 
     fn sync_step_cursor_to_current_offset(&mut self) {
         let offset = self.current_byte_offset();
-        if let Some(index) = self.steppable_mapping_index_for_offset(offset) {
+        if let Some(index) = self.steppable_step_index_for_offset(offset) {
             if self.current_step_index.is_some_and(|current| index < current) {
-                // In sequence mode multiple steps may map to the same byte offset.
+                // In sequence mode multiple steps may resolve to the same byte offset.
                 // Keep cursor monotonic and avoid snapping backward to an earlier
-                // mapping for that offset.
+                // step for that offset.
                 return;
             }
             // `si` executes raw opcodes; keep statement cursor in sync so later
             // source-level steps (`next`/`step`/`finish`) start from the real
-            // current mapping instead of an old one.
+            // current step instead of an old one.
             self.current_step_index = Some(index);
-            self.mark_mapping_executed(index);
+            self.mark_step_executed(index);
         }
     }
 
-    fn is_steppable_mapping(&self, mapping: &DebugMapping) -> bool {
+    fn is_steppable_step(&self, step: &DebugStep<'i>) -> bool {
         // InlineCallEnter is steppable so `step_into` can land on a call
         // boundary and build call-stack transitions. InlineCallExit is not
         // steppable to avoid synthetic extra stops while unwinding.
-        matches!(&mapping.kind, MappingKind::Statement {} | MappingKind::Virtual {} | MappingKind::InlineCallEnter { .. })
+        matches!(&step.kind, StepKind::Source {} | StepKind::InlineCallEnter { .. })
     }
 
-    fn steppable_mapping_index_for_offset(&self, offset: usize) -> Option<usize> {
-        self.source_mappings
-            .iter()
-            .enumerate()
-            .find(|(_, mapping)| self.is_steppable_mapping(mapping) && mapping_matches_offset(mapping, offset))
-            .map(|(index, _)| index)
+    fn steppable_step_index_for_offset(&self, offset: usize) -> Option<usize> {
+        self.step_order.iter().enumerate().find_map(|(order_index, &step_index)| {
+            let step = self.debug_info.steps.get(step_index)?;
+            (self.is_steppable_step(step) && step_matches_offset(step, offset)).then_some(order_index)
+        })
     }
 
-    fn next_steppable_mapping_index(&self, from: Option<usize>, predicate: impl Fn(&DebugMapping) -> bool) -> Option<usize> {
+    fn next_steppable_step_index(&self, from: Option<usize>, predicate: impl Fn(&DebugStep<'i>) -> bool) -> Option<usize> {
         let start = from.map(|index| index.saturating_add(1)).unwrap_or(0);
-        for index in start..self.source_mappings.len() {
-            let mapping = self.source_mappings.get(index)?;
-            if !self.is_steppable_mapping(mapping) {
+        for index in start..self.step_order.len() {
+            let step = self.step_at_order(index)?;
+            if !self.is_steppable_step(step) {
                 continue;
             }
-            if predicate(mapping) {
+            if predicate(step) {
                 return Some(index);
             }
         }
         None
     }
 
-    fn mapping_hits_breakpoint(&self, mapping: &DebugMapping) -> bool {
-        mapping.span.map(|span| (span.line..=span.end_line).any(|line| self.breakpoints.contains(&line))).unwrap_or(false)
+    fn step_hits_breakpoint(&self, step: &DebugStep<'i>) -> bool {
+        (step.span.line..=step.span.end_line).any(|line| self.breakpoints.contains(&line))
     }
 
     /// Returns the current main stack as hex-encoded strings.
@@ -768,21 +744,20 @@ fn build_opcode_offsets(opcodes: &[Option<DebugOpcode<'_>>]) -> (Vec<usize>, usi
     (offsets, offset)
 }
 
-fn mapping_kind_order(kind: &MappingKind) -> u8 {
+fn step_kind_order(kind: &StepKind) -> u8 {
     match kind {
-        MappingKind::InlineCallEnter { .. } => 0,
-        MappingKind::Virtual {} => 1,
-        MappingKind::Statement {} => 2,
-        MappingKind::InlineCallExit { .. } => 3,
+        StepKind::InlineCallEnter { .. } => 0,
+        StepKind::Source {} => 1,
+        StepKind::InlineCallExit { .. } => 2,
     }
 }
 
-fn mapping_matches_offset(mapping: &DebugMapping, offset: usize) -> bool {
-    if mapping.bytecode_start == mapping.bytecode_end {
-        offset == mapping.bytecode_start
-    } else {
-        offset >= mapping.bytecode_start && offset < mapping.bytecode_end
-    }
+fn range_matches_offset(bytecode_start: usize, bytecode_end: usize, offset: usize) -> bool {
+    if bytecode_start == bytecode_end { offset == bytecode_start } else { offset >= bytecode_start && offset < bytecode_end }
+}
+
+fn step_matches_offset(step: &DebugStep<'_>, offset: usize) -> bool {
+    range_matches_offset(step.bytecode_start, step.bytecode_end, offset)
 }
 
 #[cfg(test)]
@@ -790,12 +765,14 @@ mod tests {
     use super::*;
 
     use silverscript_lang::ast::{BinaryOp, Expr, ExprKind};
-    use silverscript_lang::debug_info::{DebugConstantMapping, DebugFunctionRange, DebugInfo, DebugParamMapping, DebugVariableUpdate};
+    use silverscript_lang::debug_info::{
+        DebugConstantMapping, DebugFunctionRange, DebugInfo, DebugParamMapping, DebugStep, DebugVariableUpdate, SourceSpan, StepKind,
+    };
     use silverscript_lang::span;
 
     fn make_session(
         params: Vec<DebugParamMapping>,
-        updates: Vec<DebugVariableUpdate<'static>>,
+        steps: Vec<DebugStep<'static>>,
         sigscript: &[u8],
     ) -> Result<DebugSession<'static, 'static>, kaspa_txscript_errors::TxScriptError> {
         let sig_cache = Box::leak(Box::new(Cache::new(10_000)));
@@ -804,8 +781,7 @@ mod tests {
             TxScriptEngine::new(EngineCtx::new(sig_cache).with_reused(reused_values), EngineFlags { covenants_enabled: true });
         let debug_info = DebugInfo {
             source: String::new(),
-            mappings: vec![],
-            variable_updates: updates,
+            steps,
             params,
             functions: vec![DebugFunctionRange { name: "f".to_string(), bytecode_start: 0, bytecode_end: 1 }],
             constants: vec![DebugConstantMapping { name: "K".to_string(), type_name: "int".to_string(), value: Expr::int(7) }],
@@ -863,21 +839,25 @@ mod tests {
 
         let mut session = make_session(
             vec![DebugParamMapping { name: "a".to_string(), type_name: "int".to_string(), stack_index: 0, function: "f".to_string() }],
-            vec![DebugVariableUpdate {
-                name: "x".to_string(),
-                type_name: "int".to_string(),
-                expr: Expr::identifier("missing"),
-                bytecode_offset: 0,
-                span: None,
-                function: "f".to_string(),
+            vec![DebugStep {
+                bytecode_start: 0,
+                bytecode_end: 0,
+                span: SourceSpan { line: 1, col: 1, end_line: 1, end_col: 1 },
+                kind: StepKind::Source {},
                 sequence: 0,
+                call_depth: 0,
                 frame_id: 0,
+                variable_updates: vec![DebugVariableUpdate {
+                    name: "x".to_string(),
+                    type_name: "int".to_string(),
+                    expr: Expr::identifier("missing"),
+                }],
             }],
             &sigscript,
         )
         .unwrap();
 
-        session.executed_sequences.insert(0);
+        session.executed_steps.insert(StepId { sequence: 0, frame_id: 0 });
         // In sequence-only mode, query visibility at an explicit sequence that
         // is after the update's sequence.
         let vars = session.list_variables_at_sequence(1, 0).unwrap();
