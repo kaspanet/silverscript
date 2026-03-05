@@ -42,6 +42,13 @@ Minimal common form (defaults inferred):
 #[covenant(from = X, to = Y)]
 ```
 
+Sugar (aliases over `from/to`):
+
+```js
+#[covenant.singleton]     // == #[covenant(from = 1, to = 1)]
+#[covenant.fanout(to = Y)] // == #[covenant(from = 1, to = Y)]
+```
+
 Rules:
 
 1. `binding = auth` means auth-context lowering (`OpAuth*`).

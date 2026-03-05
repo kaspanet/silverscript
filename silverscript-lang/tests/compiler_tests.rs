@@ -408,6 +408,70 @@ fn infers_cov_binding_from_from_greater_than_one_when_binding_omitted() {
 }
 
 #[test]
+fn lowers_singleton_sugar_to_auth_one_to_one_defaults() {
+    let source = r#"
+        contract Decls() {
+            #[covenant.singleton]
+            function spend(int amount) {
+                require(amount >= 0);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    assert!(compiled.without_selector);
+    assert_eq!(compiled.abi[0].name, "spend");
+    assert!(compiled.script.contains(&OpAuthOutputCount));
+}
+
+#[test]
+fn lowers_fanout_sugar_to_auth_with_to_bound() {
+    let source = r#"
+        contract Decls(int max_outs) {
+            #[covenant.fanout(to = max_outs)]
+            function split(int amount) {
+                require(amount >= 0);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[Expr::int(3)], CompileOptions::default()).expect("compile succeeds");
+    assert!(compiled.without_selector);
+    assert_eq!(compiled.abi[0].name, "split");
+    assert!(compiled.script.contains(&OpAuthOutputCount));
+}
+
+#[test]
+fn rejects_fanout_sugar_without_to_argument() {
+    let source = r#"
+        contract Decls() {
+            #[covenant.fanout]
+            function split() {
+                require(true);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("fanout sugar requires to");
+    assert!(err.to_string().contains("missing covenant attribute argument 'to'"));
+}
+
+#[test]
+fn rejects_singleton_sugar_with_from_or_to_arguments() {
+    let source = r#"
+        contract Decls() {
+            #[covenant.singleton(to = 2)]
+            function split() {
+                require(true);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("singleton sugar should reject from/to");
+    assert!(err.to_string().contains("covenant.singleton is sugar and does not accept 'from' or 'to' arguments"));
+}
+
+#[test]
 fn rejects_auth_covenant_with_from_not_equal_one() {
     let source = r#"
         contract Decls() {

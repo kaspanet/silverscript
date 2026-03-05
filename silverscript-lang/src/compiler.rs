@@ -276,6 +276,13 @@ fn parse_covenant_declaration<'i>(
     function: &FunctionAst<'i>,
     constants: &HashMap<String, Expr<'i>>,
 ) -> Result<CovenantDeclaration<'i>, CompilerError> {
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum CovenantSyntax {
+        Canonical,
+        Singleton,
+        Fanout,
+    }
+
     if function.entrypoint {
         return Err(CompilerError::Unsupported(
             "#[covenant(...)] must be applied to a policy function, not an entrypoint".to_string(),
@@ -287,12 +294,17 @@ fn parse_covenant_declaration<'i>(
     }
 
     let attribute = &function.attributes[0];
-    if attribute.path != ["covenant"] {
-        return Err(CompilerError::Unsupported(format!(
-            "unsupported function attribute #[{}]; expected #[covenant(...)]",
-            attribute.path.join(".")
-        )));
-    }
+    let syntax = match attribute.path.as_slice() {
+        [head] if head == "covenant" => CovenantSyntax::Canonical,
+        [head, tail] if head == "covenant" && tail == "singleton" => CovenantSyntax::Singleton,
+        [head, tail] if head == "covenant" && tail == "fanout" => CovenantSyntax::Fanout,
+        _ => {
+            return Err(CompilerError::Unsupported(format!(
+                "unsupported function attribute #[{}]; expected #[covenant(...)], #[covenant.singleton], or #[covenant.fanout(...)]",
+                attribute.path.join(".")
+            )));
+        }
+    };
 
     let mut args_by_name: HashMap<&str, &Expr<'i>> = HashMap::new();
     for arg in &attribute.args {
@@ -308,16 +320,42 @@ fn parse_covenant_declaration<'i>(
         }
     }
 
-    let from_expr = args_by_name
-        .get("from")
-        .copied()
-        .ok_or_else(|| CompilerError::Unsupported("missing covenant attribute argument 'from'".to_string()))?
-        .clone();
-    let to_expr = args_by_name
-        .get("to")
-        .copied()
-        .ok_or_else(|| CompilerError::Unsupported("missing covenant attribute argument 'to'".to_string()))?
-        .clone();
+    let (from_expr, to_expr) = match syntax {
+        CovenantSyntax::Canonical => {
+            let from_expr = args_by_name
+                .get("from")
+                .copied()
+                .ok_or_else(|| CompilerError::Unsupported("missing covenant attribute argument 'from'".to_string()))?
+                .clone();
+            let to_expr = args_by_name
+                .get("to")
+                .copied()
+                .ok_or_else(|| CompilerError::Unsupported("missing covenant attribute argument 'to'".to_string()))?
+                .clone();
+            (from_expr, to_expr)
+        }
+        CovenantSyntax::Singleton => {
+            if args_by_name.contains_key("from") || args_by_name.contains_key("to") {
+                return Err(CompilerError::Unsupported(
+                    "covenant.singleton is sugar and does not accept 'from' or 'to' arguments".to_string(),
+                ));
+            }
+            (Expr::int(1), Expr::int(1))
+        }
+        CovenantSyntax::Fanout => {
+            if args_by_name.contains_key("from") {
+                return Err(CompilerError::Unsupported(
+                    "covenant.fanout is sugar and does not accept a 'from' argument (it is always 1)".to_string(),
+                ));
+            }
+            let to_expr = args_by_name
+                .get("to")
+                .copied()
+                .ok_or_else(|| CompilerError::Unsupported("missing covenant attribute argument 'to'".to_string()))?
+                .clone();
+            (Expr::int(1), to_expr)
+        }
+    };
 
     let from_value = eval_const_int(&from_expr, constants)
         .map_err(|_| CompilerError::Unsupported("covenant 'from' must be a compile-time integer".to_string()))?;
