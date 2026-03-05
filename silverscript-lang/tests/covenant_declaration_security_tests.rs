@@ -65,7 +65,7 @@ const COV_N_TO_M_SOURCE: &str = r#"
         int value = init_value;
 
         #[covenant(from = 2, to = 2)]
-        function rebalance() {
+        function rebalance(int[] prev_values, int[] new_values) {
             require(true);
         }
     }
@@ -271,6 +271,10 @@ fn covenant_sigscript(compiled: &CompiledContract<'_>, entrypoint: &str, args: V
     let mut sigscript = compiled.build_sig_script(entrypoint, args).expect("build sigscript");
     sigscript.extend_from_slice(&push_redeem_script(&compiled.script));
     sigscript
+}
+
+fn cov_decl_nm_leader_sigscript(compiled: &CompiledContract<'_>, next_values: Vec<i64>) -> Vec<u8> {
+    covenant_sigscript(compiled, "rebalance_leader", vec![next_values.into()])
 }
 
 fn redeem_only_sigscript(compiled: &CompiledContract<'_>) -> Vec<u8> {
@@ -555,8 +559,8 @@ fn many_to_many_rejects_wrong_entrypoint_role() {
     assert_verify_like_error(delegate_on_leader);
 
     let leader_on_delegate = {
-        let input0_sigscript = covenant_sigscript(&in0, "rebalance_leader", vec![]);
-        let input1_sigscript = covenant_sigscript(&in1, "rebalance_leader", vec![]);
+        let input0_sigscript = cov_decl_nm_leader_sigscript(&in0, vec![10, 10]);
+        let input1_sigscript = cov_decl_nm_leader_sigscript(&in1, vec![10, 10]);
         let (tx, entries) = build_nm_tx(input0_sigscript, input1_sigscript, outputs);
         execute_input_with_covenants(tx, entries, 1).expect_err("delegate input must reject leader entrypoint")
     };
@@ -574,7 +578,7 @@ fn many_to_many_happy_path_currently_fails_with_validate_output_state() {
 
     // Intended valid shape: two covenant inputs in the same id, two covenant outputs in the same id,
     // leader path on input 0 and delegate path on input 1.
-    let input0_sigscript = covenant_sigscript(&in0, "rebalance_leader", vec![]);
+    let input0_sigscript = cov_decl_nm_leader_sigscript(&in0, vec![10, 10]);
     let input1_sigscript = covenant_sigscript(&in1, "rebalance_delegate", vec![]);
     let outputs = vec![covenant_output(&out0, 0, COV_A), covenant_output(&out1, 1, COV_A)];
     let (tx, entries) = build_nm_tx(input0_sigscript, input1_sigscript, outputs);
@@ -613,7 +617,7 @@ fn run_nm_manual_happy_path(source: &'static str) -> (Result<(), TxScriptError>,
     let out0 = compile_state(source, 12);
     let out1 = compile_state(source, 5);
 
-    let input0_sigscript = covenant_sigscript(&in0, "rebalance_leader", vec![]);
+    let input0_sigscript = cov_decl_nm_leader_sigscript(&in0, vec![10, 10]);
     let input1_sigscript = covenant_sigscript(&in1, "rebalance_delegate", vec![]);
     let outputs = vec![covenant_output(&out0, 0, COV_A), covenant_output(&out1, 1, COV_A)];
     let (tx, entries) = build_nm_tx_for_source(source, input0_sigscript, input1_sigscript, outputs);
@@ -656,7 +660,7 @@ fn many_to_many_rejects_input_count_above_from_bound() {
     let out0 = compile_state(COV_N_TO_M_SOURCE, 10);
     let out1 = compile_state(COV_N_TO_M_SOURCE, 10);
 
-    let input0_sigscript = covenant_sigscript(&in0, "rebalance_leader", vec![]);
+    let input0_sigscript = cov_decl_nm_leader_sigscript(&in0, vec![10, 10]);
     let input1_sigscript = redeem_only_sigscript(&in1);
     let input2_sigscript = redeem_only_sigscript(&in2);
     let tx = Transaction::new(
@@ -681,7 +685,7 @@ fn many_to_many_rejects_output_count_above_to_bound() {
     let out0 = compile_state(COV_N_TO_M_SOURCE, 10);
     let out1 = compile_state(COV_N_TO_M_SOURCE, 10);
 
-    let input0_sigscript = covenant_sigscript(&in0, "rebalance_leader", vec![]);
+    let input0_sigscript = cov_decl_nm_leader_sigscript(&in0, vec![10, 11]);
     let input1_sigscript = covenant_sigscript(&in1, "rebalance_delegate", vec![]);
     let outputs = vec![covenant_output(&out0, 0, COV_A), covenant_output(&out1, 1, COV_A), plain_covenant_output(0, COV_A)];
     let (tx, entries) = build_nm_tx(input0_sigscript, input1_sigscript, outputs);
@@ -710,7 +714,7 @@ fn many_to_many_leader_rejects_cov_output_with_different_script() {
     let out0 = compile_state(COV_N_TO_M_SOURCE, 10);
     let out1_different = compile_state(COV_N_TO_M_SOURCE, 11);
 
-    let input0_sigscript = covenant_sigscript(&in0, "rebalance_leader", vec![]);
+    let input0_sigscript = cov_decl_nm_leader_sigscript(&in0, vec![10, 11]);
     let input1_sigscript = covenant_sigscript(&in1, "rebalance_delegate", vec![]);
     let outputs = vec![covenant_output(&out0, 0, COV_A), covenant_output(&out1_different, 1, COV_A)];
     let (tx, entries) = build_nm_tx(input0_sigscript, input1_sigscript, outputs);

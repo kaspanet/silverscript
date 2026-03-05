@@ -12,7 +12,8 @@ struct FunctionShape {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum StmtShape {
-    Var { type_name: String, name: String, expr: ExprShape },
+    Var { type_name: String, name: String, expr: Option<ExprShape> },
+    ArrayPush { name: String, expr: ExprShape },
     Require(ExprShape),
     Call { name: String, args: Vec<ExprShape> },
     CallAssign { bindings: Vec<(String, String)>, name: String, args: Vec<ExprShape> },
@@ -70,9 +71,13 @@ fn normalize_expr(expr: &Expr<'_>) -> ExprShape {
 
 fn normalize_stmt(stmt: &Statement<'_>) -> StmtShape {
     match stmt {
-        Statement::VariableDefinition { type_ref, name, expr, .. } => {
-            let init = expr.as_ref().expect("generated wrapper variable definitions should be initialized");
-            StmtShape::Var { type_name: type_ref.type_name(), name: canonicalize_generated_name(name), expr: normalize_expr(init) }
+        Statement::VariableDefinition { type_ref, name, expr, .. } => StmtShape::Var {
+            type_name: type_ref.type_name(),
+            name: canonicalize_generated_name(name),
+            expr: expr.as_ref().map(normalize_expr),
+        },
+        Statement::ArrayPush { name, expr, .. } => {
+            StmtShape::ArrayPush { name: canonicalize_generated_name(name), expr: normalize_expr(expr) }
         }
         Statement::Require { expr, .. } => StmtShape::Require(normalize_expr(expr)),
         Statement::FunctionCall { name, args, .. } => {
@@ -184,7 +189,7 @@ fn lowers_cov_to_leader_and_delegate_expected_wrapper_ast() {
             int value = 0;
 
             #[covenant(from = max_ins, to = max_outs, mode = verification)]
-            function transition_ok(int delta) {
+            function transition_ok(int[] prev_values, int[] new_values, int delta) {
                 require(delta >= 0);
             }
         }
@@ -194,11 +199,11 @@ fn lowers_cov_to_leader_and_delegate_expected_wrapper_ast() {
         contract Decls(int max_ins, int max_outs) {
             int value = 0;
 
-            function covenant_policy_transition_ok(int delta) {
+            function covenant_policy_transition_ok(int[] prev_values, int[] new_values, int delta) {
                 require(delta >= 0);
             }
 
-            entrypoint function transition_ok_leader(int delta) {
+            entrypoint function transition_ok_leader(int[] new_values, int delta) {
                 byte[32] cov_id = OpInputCovenantId(this.activeInputIndex);
 
                 require(OpCovInputIdx(cov_id, 0) == this.activeInputIndex);
@@ -207,21 +212,23 @@ fn lowers_cov_to_leader_and_delegate_expected_wrapper_ast() {
                 require(cov_in_count <= max_ins);
 
                 int cov_out_count = OpCovOutCount(cov_id);
+                int[] prev_values;
 
                 for(cov_in_k, 0, max_ins) {
                     if (cov_in_k < cov_in_count) {
                         int cov_in_idx = OpCovInputIdx(cov_id, cov_in_k);
                         { value: int cov_prev_value } = readInputState(cov_in_idx);
+                        prev_values.push(cov_prev_value);
                     }
                 }
 
-                covenant_policy_transition_ok(delta);
+                covenant_policy_transition_ok(prev_values, new_values, delta);
                 require(cov_out_count <= max_outs);
 
                 for(cov_k, 0, max_outs) {
                     if (cov_k < cov_out_count) {
                         int cov_out_idx = OpCovOutputIdx(cov_id, cov_k);
-                        validateOutputState(cov_out_idx, { value: value });
+                        validateOutputState(cov_out_idx, { value: new_values[cov_k] });
                     }
                 }
             }

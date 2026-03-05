@@ -225,6 +225,13 @@ enum OutputStateSource<'i> {
     },
 }
 
+#[derive(Debug, Clone)]
+struct CovVerificationShape<'i> {
+    prev_field_arrays: Vec<(String, String)>,
+    new_field_arrays: Vec<(String, String)>,
+    leader_params: Vec<crate::ast::ParamAst<'i>>,
+}
+
 fn lower_covenant_declarations<'i>(
     contract: &ContractAst<'i>,
     constants: &HashMap<String, Expr<'i>>,
@@ -599,6 +606,7 @@ fn build_cov_wrapper<'i>(
     contract_fields: &[ContractFieldAst<'i>],
 ) -> Result<FunctionAst<'i>, CompilerError> {
     let mut body = Vec::new();
+    let mut leader_params = policy.params.clone();
 
     let active_input = active_input_index_expr();
     let cov_id_name = "__cov_id";
@@ -615,66 +623,90 @@ fn build_cov_wrapper<'i>(
         let out_count_name = "__cov_out_count";
         body.push(var_def_statement(int_type_ref(), out_count_name, Expr::call("OpCovOutCount", vec![identifier_expr(cov_id_name)])));
 
-        append_cov_input_state_reads(&mut body, cov_id_name, in_count_name, declaration.from_expr.clone(), contract_fields);
-        let state_source = append_policy_call_and_capture_next_state(
-            &mut body,
-            policy,
-            policy_name,
-            declaration.mode,
-            declaration.singleton,
-            declaration.termination,
-            contract_fields,
-        )?;
-        if !contract_fields.is_empty() {
-            match state_source {
-                OutputStateSource::Single(next_state_expr) => {
-                    if declaration.mode == CovenantMode::Transition || declaration.singleton {
-                        body.push(require_statement(binary_expr(BinaryOp::Eq, identifier_expr(out_count_name), Expr::int(1))));
-                        let out_idx_name = "__cov_out_idx";
-                        body.push(var_def_statement(
-                            int_type_ref(),
-                            out_idx_name,
-                            Expr::call("OpCovOutputIdx", vec![identifier_expr(cov_id_name), Expr::int(0)]),
-                        ));
-                        body.push(call_statement("validateOutputState", vec![identifier_expr(out_idx_name), next_state_expr]));
-                    } else {
+        if declaration.mode == CovenantMode::Verification && !contract_fields.is_empty() {
+            let shape = parse_cov_verification_shape(policy, contract_fields)?;
+            leader_params = shape.leader_params.clone();
+
+            append_cov_input_state_reads_into_policy_prev_arrays(
+                &mut body,
+                cov_id_name,
+                in_count_name,
+                declaration.from_expr.clone(),
+                contract_fields,
+                &shape.prev_field_arrays,
+            );
+            body.push(call_statement(policy_name, policy.params.iter().map(|param| identifier_expr(&param.name)).collect()));
+            body.push(require_statement(binary_expr(BinaryOp::Le, identifier_expr(out_count_name), declaration.to_expr.clone())));
+            append_cov_output_array_state_checks(
+                &mut body,
+                cov_id_name,
+                out_count_name,
+                declaration.to_expr.clone(),
+                shape.new_field_arrays,
+                contract_fields,
+            );
+        } else {
+            append_cov_input_state_reads(&mut body, cov_id_name, in_count_name, declaration.from_expr.clone(), contract_fields);
+            let state_source = append_policy_call_and_capture_next_state(
+                &mut body,
+                policy,
+                policy_name,
+                declaration.mode,
+                declaration.singleton,
+                declaration.termination,
+                contract_fields,
+            )?;
+            if !contract_fields.is_empty() {
+                match state_source {
+                    OutputStateSource::Single(next_state_expr) => {
+                        if declaration.mode == CovenantMode::Transition || declaration.singleton {
+                            body.push(require_statement(binary_expr(BinaryOp::Eq, identifier_expr(out_count_name), Expr::int(1))));
+                            let out_idx_name = "__cov_out_idx";
+                            body.push(var_def_statement(
+                                int_type_ref(),
+                                out_idx_name,
+                                Expr::call("OpCovOutputIdx", vec![identifier_expr(cov_id_name), Expr::int(0)]),
+                            ));
+                            body.push(call_statement("validateOutputState", vec![identifier_expr(out_idx_name), next_state_expr]));
+                        } else {
+                            body.push(require_statement(binary_expr(
+                                BinaryOp::Le,
+                                identifier_expr(out_count_name),
+                                declaration.to_expr.clone(),
+                            )));
+                            append_cov_output_state_checks(
+                                &mut body,
+                                cov_id_name,
+                                out_count_name,
+                                declaration.to_expr.clone(),
+                                next_state_expr,
+                            );
+                        }
+                    }
+                    OutputStateSource::PerOutputArrays { field_arrays, length_expr } => {
                         body.push(require_statement(binary_expr(
                             BinaryOp::Le,
                             identifier_expr(out_count_name),
                             declaration.to_expr.clone(),
                         )));
-                        append_cov_output_state_checks(
+                        body.push(require_statement(binary_expr(BinaryOp::Eq, identifier_expr(out_count_name), length_expr.clone())));
+                        append_cov_output_array_state_checks(
                             &mut body,
                             cov_id_name,
                             out_count_name,
                             declaration.to_expr.clone(),
-                            next_state_expr,
+                            field_arrays,
+                            contract_fields,
                         );
                     }
                 }
-                OutputStateSource::PerOutputArrays { field_arrays, length_expr } => {
-                    body.push(require_statement(binary_expr(
-                        BinaryOp::Le,
-                        identifier_expr(out_count_name),
-                        declaration.to_expr.clone(),
-                    )));
-                    body.push(require_statement(binary_expr(BinaryOp::Eq, identifier_expr(out_count_name), length_expr.clone())));
-                    append_cov_output_array_state_checks(
-                        &mut body,
-                        cov_id_name,
-                        out_count_name,
-                        declaration.to_expr.clone(),
-                        field_arrays,
-                        contract_fields,
-                    );
-                }
+            } else {
+                body.push(require_statement(binary_expr(BinaryOp::Le, identifier_expr(out_count_name), declaration.to_expr.clone())));
             }
-        } else {
-            body.push(require_statement(binary_expr(BinaryOp::Le, identifier_expr(out_count_name), declaration.to_expr.clone())));
         }
     }
 
-    let params = if leader { policy.params.clone() } else { Vec::new() };
+    let params = if leader { leader_params } else { Vec::new() };
     Ok(generated_entrypoint(policy, entrypoint_name, params, body))
 }
 
@@ -731,6 +763,19 @@ fn var_def_statement<'i>(type_ref: TypeRef, name: &str, expr: Expr<'i>) -> State
     }
 }
 
+fn var_decl_statement<'i>(type_ref: TypeRef, name: &str) -> Statement<'i> {
+    Statement::VariableDefinition {
+        type_ref,
+        modifiers: Vec::new(),
+        name: name.to_string(),
+        expr: None,
+        span: span::Span::default(),
+        type_span: span::Span::default(),
+        modifier_spans: Vec::new(),
+        name_span: span::Span::default(),
+    }
+}
+
 fn require_statement<'i>(expr: Expr<'i>) -> Statement<'i> {
     Statement::Require { expr, message: None, span: span::Span::default(), message_span: None }
 }
@@ -747,6 +792,10 @@ fn function_call_assign_statement<'i>(bindings: Vec<crate::ast::ParamAst<'i>>, n
         span: span::Span::default(),
         name_span: span::Span::default(),
     }
+}
+
+fn array_push_statement<'i>(name: &str, expr: Expr<'i>) -> Statement<'i> {
+    Statement::ArrayPush { name: name.to_string(), expr, span: span::Span::default(), name_span: span::Span::default() }
 }
 
 fn typed_binding<'i>(type_ref: TypeRef, name: &str) -> crate::ast::ParamAst<'i> {
@@ -876,6 +925,58 @@ fn return_type_is_per_output_array(return_type: &TypeRef, field_type: &TypeRef) 
     return_type.base == field_type.base
         && return_type.array_dims.len() == field_type.array_dims.len() + 1
         && return_type.array_dims[..field_type.array_dims.len()] == field_type.array_dims[..]
+}
+
+fn dynamic_array_of(type_ref: &TypeRef) -> TypeRef {
+    let mut array_type = type_ref.clone();
+    array_type.array_dims.push(ArrayDim::Dynamic);
+    array_type
+}
+
+fn parse_cov_verification_shape<'i>(
+    policy: &FunctionAst<'i>,
+    contract_fields: &[ContractFieldAst<'i>],
+) -> Result<CovVerificationShape<'i>, CompilerError> {
+    let field_count = contract_fields.len();
+    let required = field_count * 2;
+    if policy.params.len() < required {
+        return Err(CompilerError::Unsupported(format!(
+            "mode=verification with binding=cov on function '{}' requires {} prev-state arrays + {} new-state arrays (one per contract field)",
+            policy.name, field_count, field_count
+        )));
+    }
+
+    let mut prev_field_arrays = Vec::with_capacity(field_count);
+    let mut new_field_arrays = Vec::with_capacity(field_count);
+    for (idx, field) in contract_fields.iter().enumerate() {
+        let expected = dynamic_array_of(&field.type_ref);
+
+        let prev_param = &policy.params[idx];
+        if prev_param.type_ref != expected {
+            return Err(CompilerError::Unsupported(format!(
+                "mode=verification with binding=cov on function '{}' expects prev-state param '{}' to be '{}', got '{}'",
+                policy.name,
+                prev_param.name,
+                type_name_from_ref(&expected),
+                type_name_from_ref(&prev_param.type_ref)
+            )));
+        }
+        prev_field_arrays.push((field.name.clone(), prev_param.name.clone()));
+
+        let new_param = &policy.params[field_count + idx];
+        if new_param.type_ref != expected {
+            return Err(CompilerError::Unsupported(format!(
+                "mode=verification with binding=cov on function '{}' expects new-state param '{}' to be '{}', got '{}'",
+                policy.name,
+                new_param.name,
+                type_name_from_ref(&expected),
+                type_name_from_ref(&new_param.type_ref)
+            )));
+        }
+        new_field_arrays.push((field.name.clone(), new_param.name.clone()));
+    }
+
+    Ok(CovVerificationShape { prev_field_arrays, new_field_arrays, leader_params: policy.params[field_count..].to_vec() })
 }
 
 fn append_policy_call_and_capture_next_state<'i>(
@@ -1011,6 +1112,46 @@ fn append_cov_input_state_reads<'i>(
         .map(|field| state_binding(&field.name, field.type_ref.clone(), &format!("__cov_prev_{}", field.name)))
         .collect();
     then_branch.push(state_call_assign_statement(bindings, "readInputState", vec![identifier_expr(in_idx_name)]));
+    body.push(for_statement(loop_var, Expr::int(0), from_expr, vec![if_statement(cond, then_branch)]));
+}
+
+fn append_cov_input_state_reads_into_policy_prev_arrays<'i>(
+    body: &mut Vec<Statement<'i>>,
+    cov_id_name: &str,
+    in_count_name: &str,
+    from_expr: Expr<'i>,
+    contract_fields: &[ContractFieldAst<'i>],
+    prev_field_arrays: &[(String, String)],
+) {
+    if contract_fields.is_empty() {
+        return;
+    }
+    let prev_by_field: HashMap<_, _> = prev_field_arrays.iter().cloned().collect();
+    for field in contract_fields {
+        let array_name =
+            prev_by_field.get(&field.name).unwrap_or_else(|| panic!("missing prev-state array param for field '{}'", field.name));
+        body.push(var_decl_statement(dynamic_array_of(&field.type_ref), array_name));
+    }
+
+    let loop_var = "__cov_in_k";
+    let in_idx_name = "__cov_in_idx";
+    let cond = binary_expr(BinaryOp::Lt, identifier_expr(loop_var), identifier_expr(in_count_name));
+    let mut then_branch = Vec::new();
+    then_branch.push(var_def_statement(
+        int_type_ref(),
+        in_idx_name,
+        Expr::call("OpCovInputIdx", vec![identifier_expr(cov_id_name), identifier_expr(loop_var)]),
+    ));
+    let bindings = contract_fields
+        .iter()
+        .map(|field| state_binding(&field.name, field.type_ref.clone(), &format!("__cov_prev_{}", field.name)))
+        .collect();
+    then_branch.push(state_call_assign_statement(bindings, "readInputState", vec![identifier_expr(in_idx_name)]));
+    for field in contract_fields {
+        let array_name =
+            prev_by_field.get(&field.name).unwrap_or_else(|| panic!("missing prev-state array param for field '{}'", field.name));
+        then_branch.push(array_push_statement(array_name, identifier_expr(&format!("__cov_prev_{}", field.name))));
+    }
     body.push(for_statement(loop_var, Expr::int(0), from_expr, vec![if_statement(cond, then_branch)]));
 }
 

@@ -408,6 +408,24 @@ fn infers_cov_binding_from_from_greater_than_one_when_binding_omitted() {
 }
 
 #[test]
+fn rejects_cov_verification_without_prev_new_field_arrays() {
+    let source = r#"
+        contract Decls() {
+            int value = 0;
+
+            #[covenant(from = 2, to = 2, mode = verification)]
+            function transition_ok(int nonce) {
+                require(nonce >= 0);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default())
+        .expect_err("cov verification with state fields should require prev/new field arrays");
+    assert!(err.to_string().contains("requires 1 prev-state arrays + 1 new-state arrays"));
+}
+
+#[test]
 fn lowers_singleton_sugar_to_auth_one_to_one_defaults() {
     let source = r#"
         contract Decls() {

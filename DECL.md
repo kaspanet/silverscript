@@ -83,7 +83,15 @@ function split_single_group(State prev_state, State[] new_states, sig[] approval
 
 ```js
 #[covenant(binding = cov, from = max_ins, to = max_outs, mode = verification)]
-function transition_ok(State[] prev_states, State[] new_states, sig leader_sig) {
+function transition_ok(
+    int[] prev_amount,
+    byte[32][] prev_owner,
+    int[] prev_round,
+    int[] new_amount,
+    byte[32][] new_owner,
+    int[] new_round,
+    sig leader_sig
+) {
     // require(...) rules
 }
 ```
@@ -116,6 +124,13 @@ Verification mode is the default convenience mode.
 2. Wrapper reads prior state from tx context (`prev_state` or `prev_states`) and calls the policy verification with `(prev_state(s), new_states, call_args...)`.
 3. Wrapper validates each output with `validateOutputState(...)` against `new_states`.
 4. `new_states` are structurally committed via output validation, but extra call args are not directly committed by tx structure.
+
+Current compiler shape for `binding = cov` + `mode = verification`:
+
+1. Policy params must start with one dynamic array per contract field for previous state values.
+2. Then one dynamic array per contract field for new state values.
+3. Remaining params are optional extra call args.
+4. Leader entrypoint exposes only `new_*` arrays + extra args; it reconstructs and passes `prev_*` arrays from `readInputState(...)`.
 
 ### Transition mode
 
