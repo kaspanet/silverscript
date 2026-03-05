@@ -14,17 +14,13 @@ Context: today these patterns are written manually with `OpAuth*`/`OpCov*` plus 
 
 Scope: syntax + semantics only. This is not claiming implementation is finalized.
 
-1. Dev writes only a transition/verification function and annotates it with a covenant macro.
-2. Entrypoint(s) are derived by the compiler from that function’s shape.
-3. For `N:M`, the compiler generates two entrypoints: leader + delegate.
-4. In verification mode, the entrypoint args are `new_states` plus optional extra call args.
-5. State is treated as one implicit unnamed struct synthesized from all contract fields.
-
+1. Dev writes only a transition/verification policy function and annotates it with a covenant macro.
+2. Entrypoint(s) are inferred by the compiler from that function’s shape.
+3. State is treated as one implicit unnamed struct synthesized from all contract fields:
    * `1:1` uses `State prev_state` / `State new_state`
    * `1:N` uses `State prev_state` / `State[] new_states`
    * `N:M` uses `State[] prev_states` / `State[] new_states`
-6. In `1:N`, the authorizing input is always the currently executing input (`this.activeInputIndex`).
-7. In `N:M`, the covenant id is taken from the currently executing input (`OpInputCovenantId(this.activeInputIndex)`).
+4. `1:N` auth always binds to `this.activeInputIndex`; `N:M` cov id is always `OpInputCovenantId(this.activeInputIndex)`.
 
 ## Macro surface
 
@@ -59,9 +55,7 @@ Rules:
 6. If `mode` is omitted: no returns -> `verification`, has returns -> `transition`.
 7. `binding = auth` with `from > 1` is compile error.
 8. `binding = cov` with `groups = multiple` is compile error in v1.
-9. `termination` is only relevant for singleton transition (`from = 1, to = 1, mode = transition`).
-10. If omitted in singleton transition, `termination` defaults to `disallowed`.
-11. Using `termination` outside singleton transition is a compile error.
+9. `termination` is valid only for singleton transition (`from = 1, to = 1, mode = transition`); there it defaults to `disallowed`, and using it elsewhere is a compile error.
 
 ### 1:N verification
 
@@ -123,7 +117,6 @@ Verification mode is the default convenience mode.
 1. Generated entrypoint args are `new_states` plus optional extra call args.
 2. Wrapper reads prior state from tx context (`prev_state` or `prev_states`) and calls the policy verification with `(prev_state(s), new_states, call_args...)`.
 3. Wrapper validates each output with `validateOutputState(...)` against `new_states`.
-4. `new_states` are structurally committed via output validation, but extra call args are not directly committed by tx structure.
 
 Current compiler shape for `binding = cov` + `mode = verification`:
 
@@ -136,7 +129,7 @@ Current compiler shape for `binding = cov` + `mode = verification`:
 
 Transition mode allows extra call args (`fee` above, etc.) and the policy computes `new_states`.
 
-Important: in both verification and transition modes, any extra call args (beyond state values that are validated on outputs) are not directly committed by tx structure. The compiler/runtime must define a commitment story (and enforce determinism) for those args.
+Security note (both modes): extra call args (beyond state values validated on outputs) are not directly committed by tx structure. Compiler/runtime must enforce a commitment story and determinism for them.
 
 Current compiler shape for `binding = cov` + `mode = transition`:
 
@@ -250,7 +243,7 @@ contract VaultNM(
 }
 ```
 
-### Generated code (full expansion, conceptual)
+### Generated code (conceptual; policy body unchanged)
 
 ```js
 pragma silverscript ^0.1.0;
@@ -266,27 +259,8 @@ contract VaultNM(
     byte[32] owner = init_owner;
     int round = init_round;
 
-    function conserve_and_bump(State[] prev_states, State[] new_states, sig leader_sig) {
-        require(new_states.length > 0);
-
-        int in_sum = 0;
-        for(i, 0, max_ins) {
-            if (i < prev_states.length) {
-                in_sum = in_sum + prev_states[i].amount;
-            }
-        }
-
-        int out_sum = 0;
-        for(i, 0, max_outs) {
-            if (i < new_states.length) {
-                out_sum = out_sum + new_states[i].amount;
-                require(new_states[i].owner == prev_states[0].owner);
-                require(new_states[i].round == prev_states[0].round + 1);
-            }
-        }
-
-        require(in_sum >= out_sum);
-    }
+    // same policy body as source:
+    // function conserve_and_bump(State[] prev_states, State[] new_states, sig leader_sig) { ... }
 
     // Generated for N:M leader path
     entrypoint function conserve_and_bump_leader(State[] new_states, sig leader_sig) {
@@ -362,7 +336,7 @@ contract SeqCommitMirror(byte[32] init_seqcommit) {
 }
 ```
 
-### Generated code (full expansion, conceptual)
+### Generated code (conceptual; policy body unchanged)
 
 ```js
 pragma silverscript ^0.1.0;
@@ -371,12 +345,8 @@ contract SeqCommitMirror(byte[32] init_seqcommit) {
     byte[32] seqcommit = init_seqcommit;
 
     // Compiler-lowered policy function (renamed to avoid entrypoint name collision)
-    function __roll_seqcommit_policy(State prev_state, byte[32] block_hash) : (State new_state) {
-        byte[32] new_seqcommit = OpChainblockSeqCommit(block_hash);
-        return {
-            seqcommit: new_seqcommit
-        };
-    }
+    // same body as source:
+    // function __roll_seqcommit_policy(State prev_state, byte[32] block_hash) : (State new_state) { ... }
 
     // Generated 1:1 covenant entrypoint
     entrypoint function roll_seqcommit(byte[32] block_hash) {
