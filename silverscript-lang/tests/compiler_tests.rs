@@ -3588,7 +3588,7 @@ fn function_param_shadows_constructor_constant_with_same_name() {
 #[test]
 fn nested_inline_calls_with_args_compile_and_execute() {
     // Nested inline calls must propagate synthetic __arg_ bindings so that
-    // inner calls can resolve arguments that flow through outer calls.
+    // deeply nested calls can resolve arguments that flow through outer calls.
     let source = r#"
         contract NestedArgs() {
             function inner(int x) {
@@ -3601,8 +3601,13 @@ fn nested_inline_calls_with_args_compile_and_execute() {
                 require(v >= 0);
             }
 
+            function top(int z) {
+                outer(z);
+                require(z >= 0);
+            }
+
             entrypoint function main(int a) {
-                outer(a);
+                top(a);
                 require(a >= 0);
             }
         }

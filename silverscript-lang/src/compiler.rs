@@ -14,7 +14,7 @@ pub use crate::errors::{CompilerError, ErrorSpan};
 use crate::span;
 
 /// Prefix used for synthetic argument bindings during inline function expansion.
-pub const SYNTHETIC_ARG_PREFIX: &str = "__arg_";
+pub const SYNTHETIC_ARG_PREFIX: &str = "__arg";
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct CompileOptions {
@@ -1770,7 +1770,7 @@ fn compile_inline_call<'i>(
     }
     for (index, (param, arg)) in function.params.iter().zip(args.iter()).enumerate() {
         let resolved = resolve_expr(arg.clone(), caller_env, &mut HashSet::new())?;
-        let temp_name = format!("{SYNTHETIC_ARG_PREFIX}{name}_{index}");
+        let temp_name = format!("{SYNTHETIC_ARG_PREFIX}_{name}_{index}");
         let param_type_name = type_name_from_ref(&param.type_ref);
         env.insert(temp_name.clone(), resolved.clone());
         types.insert(temp_name.clone(), param_type_name.clone());
