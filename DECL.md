@@ -118,12 +118,16 @@ Verification mode is the default convenience mode.
 2. Wrapper reads prior state from tx context (`prev_state` or `prev_states`) and calls the policy verification with `(prev_state(s), new_states, call_args...)`.
 3. Wrapper validates each output with `validateOutputState(...)` against `new_states`.
 
-Current compiler shape for `binding = cov` + `mode = verification`:
+Current compiler shape (`mode = verification`, both bindings):
 
-1. Policy params must start with one dynamic array per contract field for previous state values.
-2. Then one dynamic array per contract field for new state values.
+1. Policy params must start with one `prev_*` value per contract field:
+   `binding = auth` -> scalar field type.
+   `binding = cov` -> dynamic array of field type.
+2. Then one dynamic-array `new_*` value per contract field.
 3. Remaining params are optional extra call args.
-4. Leader entrypoint exposes only `new_*` arrays + extra args; it reconstructs and passes `prev_*` arrays from `readInputState(...)`.
+4. Generated entrypoint exposes only `new_*` + extra args (not `prev_*`).
+5. Wrapper reconstructs/injects `prev_*` from tx context:
+   `auth` from current input state, `cov` from covenant input set via `readInputState(...)`.
 
 ### Transition mode
 
@@ -131,12 +135,17 @@ Transition mode allows extra call args (`fee` above, etc.) and the policy comput
 
 Security note (both modes): extra call args (beyond state values validated on outputs) are not directly committed by tx structure. Compiler/runtime must enforce a commitment story and determinism for them.
 
-Current compiler shape for `binding = cov` + `mode = transition`:
+Current compiler shape (`mode = transition`, both bindings):
 
-1. Policy params must start with one dynamic array per contract field for previous state values (`prev_*`).
+1. Policy params must start with one `prev_*` value per contract field:
+   `binding = auth` -> scalar field type.
+   `binding = cov` -> dynamic array of field type.
 2. Remaining params are optional extra call args.
-3. Compiler enforces this shape; invalid `prev_*` prefix types are compile errors.
-4. In current lowering, transition leader entrypoint still receives these `prev_*` arrays explicitly (shape-enforced), while wrapper also performs covenant input/output structural checks.
+3. Compiler enforces this prefix exactly; invalid `prev_*` types are compile errors.
+4. Wrapper sources `prev_*` from tx context according to binding.
+5. Current ABI behavior:
+   `auth` entrypoint exposes only extra call args.
+   `cov` leader entrypoint still exposes the full policy param list (including `prev_*` arrays), while wrapper also enforces covenant structure checks.
 
 Cardinality in transition mode:
 

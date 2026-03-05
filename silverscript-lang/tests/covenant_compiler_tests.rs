@@ -119,6 +119,42 @@ fn rejects_cov_transition_without_prev_field_arrays() {
 }
 
 #[test]
+fn rejects_auth_verification_without_prev_new_state_shape() {
+    let source = r#"
+        contract Decls() {
+            int value = 0;
+
+            #[covenant(binding = auth, from = 1, to = 2, mode = verification)]
+            function split(int nonce) {
+                require(nonce >= 0);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default())
+        .expect_err("auth verification with state fields should require prev/new state params");
+    assert!(err.to_string().contains("mode=verification with binding=auth"));
+}
+
+#[test]
+fn rejects_auth_transition_without_prev_state_shape() {
+    let source = r#"
+        contract Decls() {
+            int value = 0;
+
+            #[covenant(binding = auth, from = 1, to = 2, mode = transition)]
+            function split(int[] nonce) : (int[]) {
+                return(nonce);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default())
+        .expect_err("auth transition with state fields should require prev-state params");
+    assert!(err.to_string().contains("mode=transition with binding=auth"));
+}
+
+#[test]
 fn lowers_singleton_sugar_to_auth_one_to_one_defaults() {
     let source = r#"
         contract Decls() {
@@ -251,7 +287,7 @@ fn rejects_singleton_transition_array_returns_without_termination_allowed() {
             int value = init_value;
 
             #[covenant.singleton(mode = transition)]
-            function roll(int[] next_values) : (int[]) {
+            function roll(int prev_value, int[] next_values) : (int[]) {
                 return(next_values);
             }
         }
@@ -269,7 +305,7 @@ fn allows_singleton_transition_array_returns_with_termination_allowed() {
             int value = init_value;
 
             #[covenant.singleton(mode = transition, termination = allowed)]
-            function roll(int[] next_values) : (int[]) {
+            function roll(int prev_value, int[] next_values) : (int[]) {
                 return(next_values);
             }
         }

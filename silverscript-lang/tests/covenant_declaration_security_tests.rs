@@ -21,7 +21,9 @@ const AUTH_SINGLETON_SOURCE: &str = r#"
         int value = init_value;
 
         #[covenant.singleton]
-        function step() {
+        function step(int prev_value, int[] new_values) {
+            require(prev_value >= 0);
+            require(new_values.length <= 1);
             require(OpAuthOutputIdx(this.activeInputIndex, 0) >= 0);
         }
     }
@@ -32,7 +34,9 @@ const AUTH_SINGLE_GROUP_SOURCE: &str = r#"
         int value = init_value;
 
         #[covenant(binding = auth, from = 1, to = 1, groups = single)]
-        function step() {
+        function step(int prev_value, int[] new_values) {
+            require(prev_value >= 0);
+            require(new_values.length <= 1);
             require(OpAuthOutputIdx(this.activeInputIndex, 0) >= 0);
         }
     }
@@ -43,8 +47,8 @@ const AUTH_SINGLETON_TRANSITION_SOURCE: &str = r#"
         int value = init_value;
 
         #[covenant.singleton(mode = transition)]
-        function bump(int delta) : (int) {
-            return(value + delta);
+        function bump(int prev_value, int delta) : (int) {
+            return(prev_value + delta);
         }
     }
 "#;
@@ -54,7 +58,7 @@ const AUTH_SINGLETON_TRANSITION_TERMINATION_ALLOWED_SOURCE: &str = r#"
         int value = init_value;
 
         #[covenant.singleton(mode = transition, termination = allowed)]
-        function bump_or_terminate(int[] next_values) : (int[]) {
+        function bump_or_terminate(int prev_value, int[] next_values) : (int[]) {
             return(next_values);
         }
     }
@@ -154,7 +158,7 @@ fn singleton_allows_exactly_one_authorized_output() {
     let active = compile_state(AUTH_SINGLETON_SOURCE, 10);
     let out = compile_state(AUTH_SINGLETON_SOURCE, 10);
 
-    let input0 = tx_input(0, covenant_sigscript(&active, "step", vec![]));
+    let input0 = tx_input(0, covenant_sigscript(&active, "step", vec![vec![10i64].into()]));
     let outputs = vec![covenant_output(&out, 0, COV_A)];
     let tx = Transaction::new(1, vec![input0], outputs, 0, Default::default(), 0, vec![]);
     let entries = vec![covenant_utxo(&active, COV_A)];
@@ -169,7 +173,7 @@ fn singleton_rejects_two_authorized_outputs_from_same_input() {
     let out0 = compile_state(AUTH_SINGLETON_SOURCE, 10);
     let out1 = compile_state(AUTH_SINGLETON_SOURCE, 10);
 
-    let input0 = tx_input(0, covenant_sigscript(&active, "step", vec![]));
+    let input0 = tx_input(0, covenant_sigscript(&active, "step", vec![vec![10i64].into()]));
     let outputs = vec![covenant_output(&out0, 0, COV_A), covenant_output(&out1, 0, COV_A)];
     let tx = Transaction::new(1, vec![input0], outputs, 0, Default::default(), 0, vec![]);
     let entries = vec![covenant_utxo(&active, COV_A)];
@@ -283,7 +287,7 @@ fn singleton_transition_termination_allowed_rejects_two_outputs() {
 fn singleton_missing_authorized_output_returns_invalid_auth_index_error() {
     let active = compile_state(AUTH_SINGLETON_SOURCE, 10);
 
-    let input0 = tx_input(0, covenant_sigscript(&active, "step", vec![]));
+    let input0 = tx_input(0, covenant_sigscript(&active, "step", vec![Vec::<i64>::new().into()]));
     let tx = Transaction::new(1, vec![input0], vec![], 0, Default::default(), 0, vec![]);
     let entries = vec![covenant_utxo(&active, COV_A)];
 
@@ -299,7 +303,7 @@ fn auth_groups_single_rejects_parallel_group_with_same_covenant_id() {
     let active = compile_state(AUTH_SINGLE_GROUP_SOURCE, 10);
     let out = compile_state(AUTH_SINGLE_GROUP_SOURCE, 10);
 
-    let input0 = tx_input(0, covenant_sigscript(&active, "step", vec![]));
+    let input0 = tx_input(0, covenant_sigscript(&active, "step", vec![vec![10i64].into()]));
     let input1 = tx_input(1, vec![]);
     let outputs = vec![covenant_output(&out, 0, COV_A), plain_covenant_output(1, COV_A)];
     let tx = Transaction::new(1, vec![input0, input1], outputs, 0, Default::default(), 0, vec![]);
@@ -315,7 +319,7 @@ fn auth_groups_single_allows_other_covenant_id() {
     let active = compile_state(AUTH_SINGLE_GROUP_SOURCE, 10);
     let out = compile_state(AUTH_SINGLE_GROUP_SOURCE, 10);
 
-    let input0 = tx_input(0, covenant_sigscript(&active, "step", vec![]));
+    let input0 = tx_input(0, covenant_sigscript(&active, "step", vec![vec![10i64].into()]));
     let input1 = tx_input(1, vec![]);
     let outputs = vec![covenant_output(&out, 0, COV_A), plain_covenant_output(1, COV_B)];
     let tx = Transaction::new(1, vec![input0, input1], outputs, 0, Default::default(), 0, vec![]);
@@ -450,7 +454,7 @@ fn singleton_rejects_authorized_output_with_different_script() {
     let active = compile_state(AUTH_SINGLETON_SOURCE, 10);
     let different = compile_state(AUTH_SINGLETON_SOURCE, 11);
 
-    let input0 = tx_input(0, covenant_sigscript(&active, "step", vec![]));
+    let input0 = tx_input(0, covenant_sigscript(&active, "step", vec![vec![10i64].into()]));
     let tx = Transaction::new(1, vec![input0], vec![covenant_output(&different, 0, COV_A)], 0, Default::default(), 0, vec![]);
     let entries = vec![covenant_utxo(&active, COV_A)];
 
