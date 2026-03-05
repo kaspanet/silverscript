@@ -17,11 +17,13 @@ impl<'a> From<span::Span<'a>> for SourceSpan {
     }
 }
 
+/// `DebugInfo` builder used by compiler-side recorders.
+///
 /// Accumulates debug metadata during compilation.
 /// Collects steps, variable updates, param mappings, function ranges, and constants.
 /// Converted to `DebugInfo` after compilation completes.
 #[derive(Debug, Default)]
-pub struct DebugRecorder<'i> {
+pub struct DebugInfoRecorder<'i> {
     steps: Vec<DebugStep<'i>>,
     params: Vec<DebugParamMapping>,
     entry_points: Vec<DebugFunctionRange>,
@@ -29,7 +31,7 @@ pub struct DebugRecorder<'i> {
     next_sequence: u32,
 }
 
-impl<'i> DebugRecorder<'i> {
+impl<'i> DebugInfoRecorder<'i> {
     /// Appends one recorded step.
     pub fn record_step(&mut self, step: DebugStep<'i>) {
         self.steps.push(step);
@@ -169,14 +171,9 @@ impl StepId {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum StepKind {
-    #[serde(alias = "Statement", alias = "Virtual")]
     Source {},
-    InlineCallEnter {
-        callee: String,
-    },
-    InlineCallExit {
-        callee: String,
-    },
+    InlineCallEnter { callee: String },
+    InlineCallExit { callee: String },
 }
 
 #[cfg(test)]
