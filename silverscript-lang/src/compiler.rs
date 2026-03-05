@@ -188,7 +188,7 @@ enum CovenantBinding {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CovenantMode {
-    Predicate,
+    Verification,
     Transition,
 }
 
@@ -394,16 +394,16 @@ fn parse_covenant_declaration<'i>(
         Some(expr) => {
             let mode_name = parse_attr_ident_arg("mode", Some(expr))?;
             match mode_name.as_str() {
-                "predicate" => CovenantMode::Predicate,
+                "verification" => CovenantMode::Verification,
                 "transition" => CovenantMode::Transition,
                 other => {
-                    return Err(CompilerError::Unsupported(format!("covenant mode must be predicate|transition, got '{}'", other)));
+                    return Err(CompilerError::Unsupported(format!("covenant mode must be verification|transition, got '{}'", other)));
                 }
             }
         }
         None => {
             if function.return_types.is_empty() {
-                CovenantMode::Predicate
+                CovenantMode::Verification
             } else {
                 CovenantMode::Transition
             }
@@ -440,8 +440,8 @@ fn parse_covenant_declaration<'i>(
         return Err(CompilerError::Unsupported("binding=cov with groups=multiple is not supported yet".to_string()));
     }
 
-    if mode == CovenantMode::Predicate && !function.return_types.is_empty() {
-        return Err(CompilerError::Unsupported("predicate mode policy functions must not declare return values".to_string()));
+    if mode == CovenantMode::Verification && !function.return_types.is_empty() {
+        return Err(CompilerError::Unsupported("verification mode policy functions must not declare return values".to_string()));
     }
     if mode == CovenantMode::Transition && function.return_types.is_empty() {
         return Err(CompilerError::Unsupported("transition mode policy functions must declare return values".to_string()));

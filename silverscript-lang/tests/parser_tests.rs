@@ -77,7 +77,7 @@ fn parses_input_sigscript_and_rejects_output_sigscript() {
 fn parses_function_attributes_and_bounded_for_syntax() {
     let input = r#"
         contract Decls(int max_outs) {
-            #[covenant(binding = auth, from = 1, to = max_outs, mode = predicate)]
+            #[covenant(binding = auth, from = 1, to = max_outs, mode = verification)]
             function split() {
                 int dyn = tx.outputs.length;
                 for(i, 0, dyn, max_outs) {
@@ -115,7 +115,7 @@ fn rejects_malformed_function_attributes() {
 
     let bad_arg_missing_equals = r#"
         contract Decls(int max_outs) {
-            #[covenant(binding, from = 1, to = max_outs, mode = predicate)]
+            #[covenant(binding, from = 1, to = max_outs, mode = verification)]
             function main() {
                 require(max_outs >= 0);
             }

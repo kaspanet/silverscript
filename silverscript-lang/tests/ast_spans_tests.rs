@@ -63,7 +63,7 @@ fn populates_slice_expression_spans() {
 fn parses_function_attributes_and_bounded_for_ast() {
     let source = r#"
         contract Decls(int max_outs) {
-            #[covenant(binding = cov, from = 2, to = max_outs, mode = predicate)]
+            #[covenant(binding = cov, from = 2, to = max_outs, mode = verification)]
             function policy() {
                 int dyn = tx.outputs.length;
                 for(i, 0, dyn, max_outs) {
@@ -102,7 +102,7 @@ fn parses_function_attributes_and_bounded_for_ast() {
 fn parses_multiple_and_noarg_function_attributes() {
     let source = r#"
         contract Attrs(int max_outs) {
-            #[covenant(binding = auth, from = 1, to = max_outs + 1, mode = predicate)]
+            #[covenant(binding = auth, from = 1, to = max_outs + 1, mode = verification)]
             #[experimental]
             function policy() {
                 require(true);

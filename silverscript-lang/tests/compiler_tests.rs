@@ -331,7 +331,7 @@ fn rejects_external_call_without_entrypoint() {
 fn lowers_auth_covenant_declaration_and_keeps_original_entrypoint_name() {
     let source = r#"
         contract Decls(int max_outs) {
-            #[covenant(binding = auth, from = 1, to = max_outs, mode = predicate)]
+            #[covenant(binding = auth, from = 1, to = max_outs, mode = verification)]
             function spend(int amount) {
                 require(amount >= 0);
             }
@@ -371,7 +371,7 @@ fn infers_auth_binding_from_from_equal_one_when_binding_omitted() {
 fn lowers_cov_covenant_to_leader_and_delegate_entrypoints() {
     let source = r#"
         contract Decls(int max_ins, int max_outs) {
-            #[covenant(binding = cov, from = max_ins, to = max_outs, mode = predicate)]
+            #[covenant(binding = cov, from = max_ins, to = max_outs, mode = verification)]
             function transition_ok(int nonce) {
                 require(nonce >= 0);
             }
@@ -475,7 +475,7 @@ fn rejects_singleton_sugar_with_from_or_to_arguments() {
 fn rejects_auth_covenant_with_from_not_equal_one() {
     let source = r#"
         contract Decls() {
-            #[covenant(binding = auth, from = 2, to = 4, mode = predicate)]
+            #[covenant(binding = auth, from = 2, to = 4, mode = verification)]
             function split() {
                 require(true);
             }
@@ -490,7 +490,7 @@ fn rejects_auth_covenant_with_from_not_equal_one() {
 fn rejects_cov_covenant_groups_multiple_for_now() {
     let source = r#"
         contract Decls() {
-            #[covenant(binding = cov, from = 2, to = 4, mode = predicate, groups = multiple)]
+            #[covenant(binding = cov, from = 2, to = 4, mode = verification, groups = multiple)]
             function step() {
                 require(true);
             }
@@ -502,7 +502,7 @@ fn rejects_cov_covenant_groups_multiple_for_now() {
 }
 
 #[test]
-fn infers_predicate_mode_when_mode_omitted_and_no_returns() {
+fn infers_verification_mode_when_mode_omitted_and_no_returns() {
     let source = r#"
         contract Decls() {
             #[covenant(from = 1, to = 2)]
@@ -547,25 +547,25 @@ fn rejects_transition_mode_without_return_values() {
 }
 
 #[test]
-fn rejects_predicate_mode_with_return_values() {
+fn rejects_verification_mode_with_return_values() {
     let source = r#"
         contract Decls() {
-            #[covenant(binding = auth, from = 1, to = 1, mode = predicate)]
+            #[covenant(binding = auth, from = 1, to = 1, mode = verification)]
             function check() : (int) {
                 return(1);
             }
         }
     "#;
 
-    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("predicate policy must not return values");
-    assert!(err.to_string().contains("predicate mode policy functions must not declare return values"));
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("verification policy must not return values");
+    assert!(err.to_string().contains("verification mode policy functions must not declare return values"));
 }
 
 #[test]
 fn auth_covenant_groups_single_injects_shared_count_check() {
     let source = r#"
         contract Decls() {
-            #[covenant(binding = auth, from = 1, to = 4, mode = predicate, groups = single)]
+            #[covenant(binding = auth, from = 1, to = 4, mode = verification, groups = single)]
             function spend() {
                 require(true);
             }

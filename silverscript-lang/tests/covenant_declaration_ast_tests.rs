@@ -166,7 +166,7 @@ fn lowers_cov_to_leader_and_delegate_expected_wrapper_ast() {
         contract Decls(int max_ins, int max_outs) {
             int value = 0;
 
-            #[covenant(from = max_ins, to = max_outs, mode = predicate)]
+            #[covenant(from = max_ins, to = max_outs, mode = verification)]
             function transition_ok(int delta) {
                 require(delta >= 0);
             }

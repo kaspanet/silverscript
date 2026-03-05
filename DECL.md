@@ -14,10 +14,10 @@ Context: today these patterns are written manually with `OpAuth*`/`OpCov*` plus 
 
 Scope: syntax + semantics only. This is not claiming implementation is finalized.
 
-1. Dev writes only a transition/predicate function and annotates it with a covenant macro.
+1. Dev writes only a transition/verification function and annotates it with a covenant macro.
 2. Entrypoint(s) are derived by the compiler from that function’s shape.
 3. For `N:M`, the compiler generates two entrypoints: leader + delegate.
-4. In predicate mode, the entrypoint args are `new_states` plus optional extra call args.
+4. In verification mode, the entrypoint args are `new_states` plus optional extra call args.
 5. State is treated as one implicit unnamed struct synthesized from all contract fields.
 
    * `1:1` uses `State prev_state` / `State new_state`
@@ -33,7 +33,7 @@ Only policy functions are annotated.
 Canonical form:
 
 ```js
-#[covenant(binding = auth|cov, from = X, to = Y, mode = predicate|transition, groups = multiple|single)]
+#[covenant(binding = auth|cov, from = X, to = Y, mode = verification|transition, groups = multiple|single)]
 ```
 
 Minimal common form (defaults inferred):
@@ -56,30 +56,30 @@ Rules:
 3. `groups` applies to both bindings.
 4. Defaults: `auth -> groups = multiple`, `cov -> groups = single`.
 5. If `binding` is omitted: `from == 1 -> auth`, otherwise `cov`.
-6. If `mode` is omitted: no returns -> `predicate`, has returns -> `transition`.
+6. If `mode` is omitted: no returns -> `verification`, has returns -> `transition`.
 7. `binding = auth` with `from > 1` is compile error.
 8. `binding = cov` with `groups = multiple` is compile error in v1.
 
-### 1:N predicate
+### 1:N verification
 
 ```js
-#[covenant(binding = auth, from = 1, to = max_outs, mode = predicate, groups = multiple)]
+#[covenant(binding = auth, from = 1, to = max_outs, mode = verification, groups = multiple)]
 function split(State prev_state, State[] new_states, sig[] approvals) {
     // require(...) rules
 }
 ```
 
 ```js
-#[covenant(binding = auth, from = 1, to = max_outs, mode = predicate, groups = single)]
+#[covenant(binding = auth, from = 1, to = max_outs, mode = verification, groups = single)]
 function split_single_group(State prev_state, State[] new_states, sig[] approvals) {
     // require(...) rules
 }
 ```
 
-### N:M predicate
+### N:M verification
 
 ```js
-#[covenant(binding = cov, from = max_ins, to = max_outs, mode = predicate)]
+#[covenant(binding = cov, from = max_ins, to = max_outs, mode = verification)]
 function transition_ok(State[] prev_states, State[] new_states, sig leader_sig) {
     // require(...) rules
 }
@@ -105,12 +105,12 @@ function roll(State prev_state, byte[32] block_hash) : (State new_state) {
 
 ## Semantics
 
-### Predicate mode
+### Verification mode
 
-Predicate mode is the default convenience mode.
+Verification mode is the default convenience mode.
 
 1. Generated entrypoint args are `new_states` plus optional extra call args.
-2. Wrapper reads prior state from tx context (`prev_state` or `prev_states`) and calls the policy predicate with `(prev_state(s), new_states, call_args...)`.
+2. Wrapper reads prior state from tx context (`prev_state` or `prev_states`) and calls the policy verification with `(prev_state(s), new_states, call_args...)`.
 3. Wrapper validates each output with `validateOutputState(...)` against `new_states`.
 4. `new_states` are structurally committed via output validation, but extra call args are not directly committed by tx structure.
 
@@ -118,7 +118,7 @@ Predicate mode is the default convenience mode.
 
 Transition mode allows extra call args (`fee` above, etc.) and the policy computes `new_states`.
 
-Important: in both predicate and transition modes, any extra call args (beyond state values that are validated on outputs) are not directly committed by tx structure. The compiler/runtime must define a commitment story (and enforce determinism) for those args.
+Important: in both verification and transition modes, any extra call args (beyond state values that are validated on outputs) are not directly committed by tx structure. The compiler/runtime must define a commitment story (and enforce determinism) for those args.
 
 ### `for(i, 0, dyn_len, const_max)` lowering (follow-up)
 
@@ -186,7 +186,7 @@ contract VaultNM(
     byte[32] owner = init_owner;
     int round = init_round;
 
-    #[covenant(binding = cov, from = max_ins, to = max_outs, mode = predicate)]
+    #[covenant(binding = cov, from = max_ins, to = max_outs, mode = verification)]
     function conserve_and_bump(State[] prev_states, State[] new_states, sig leader_sig) {
         require(new_states.length > 0);
 
