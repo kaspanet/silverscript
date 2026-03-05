@@ -519,15 +519,17 @@ fn infers_verification_mode_when_mode_omitted_and_no_returns() {
 #[test]
 fn infers_transition_mode_when_mode_omitted_and_has_returns() {
     let source = r#"
-        contract Decls() {
+        contract Decls(int init_value) {
+            int value = init_value;
+
             #[covenant(from = 1, to = 1)]
             function roll(int x) : (int) {
-                return(x + 1);
+                return(value + x);
             }
         }
     "#;
 
-    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let compiled = compile_contract(source, &[Expr::int(3)], CompileOptions::default()).expect("compile succeeds");
     assert!(compiled.ast.functions.iter().any(|f| f.name == "roll" && f.entrypoint));
 }
 

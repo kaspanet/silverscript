@@ -38,6 +38,17 @@ const AUTH_SINGLE_GROUP_SOURCE: &str = r#"
     }
 "#;
 
+const AUTH_SINGLETON_TRANSITION_SOURCE: &str = r#"
+    contract Decls(int init_value) {
+        int value = init_value;
+
+        #[covenant.singleton(mode = transition)]
+        function bump(int delta) : (int) {
+            return(value + delta);
+        }
+    }
+"#;
+
 const COV_N_TO_M_SOURCE: &str = r#"
     contract Pair(int init_value) {
         int value = init_value;
@@ -337,6 +348,49 @@ fn singleton_rejects_two_authorized_outputs_from_same_input() {
     let entries = vec![covenant_utxo(&active, COV_A)];
 
     let err = execute_input_with_covenants(tx, entries, 0).expect_err("singleton must reject two auth outputs from one input");
+    assert_verify_like_error(err);
+}
+
+#[test]
+fn singleton_transition_allows_correct_state_update() {
+    let active = compile_state(AUTH_SINGLETON_TRANSITION_SOURCE, 10);
+    let out = compile_state(AUTH_SINGLETON_TRANSITION_SOURCE, 13);
+
+    let input0 = tx_input(0, covenant_sigscript(&active, "bump", vec![Expr::int(3)]));
+    let outputs = vec![covenant_output(&out, 0, COV_A)];
+    let tx = Transaction::new(1, vec![input0], outputs, 0, Default::default(), 0, vec![]);
+    let entries = vec![covenant_utxo(&active, COV_A)];
+
+    let result = execute_input_with_covenants(tx, entries, 0);
+    assert!(result.is_ok(), "singleton transition should accept the correct new state: {}", result.unwrap_err());
+}
+
+#[test]
+fn singleton_transition_rejects_mismatched_output_state() {
+    let active = compile_state(AUTH_SINGLETON_TRANSITION_SOURCE, 10);
+    let wrong_out = compile_state(AUTH_SINGLETON_TRANSITION_SOURCE, 12);
+
+    let input0 = tx_input(0, covenant_sigscript(&active, "bump", vec![Expr::int(3)]));
+    let outputs = vec![covenant_output(&wrong_out, 0, COV_A)];
+    let tx = Transaction::new(1, vec![input0], outputs, 0, Default::default(), 0, vec![]);
+    let entries = vec![covenant_utxo(&active, COV_A)];
+
+    let err = execute_input_with_covenants(tx, entries, 0).expect_err("singleton transition must reject mismatched next state");
+    assert_verify_like_error(err);
+}
+
+#[test]
+fn singleton_transition_rejects_two_authorized_outputs() {
+    let active = compile_state(AUTH_SINGLETON_TRANSITION_SOURCE, 10);
+    let out0 = compile_state(AUTH_SINGLETON_TRANSITION_SOURCE, 13);
+    let out1 = compile_state(AUTH_SINGLETON_TRANSITION_SOURCE, 13);
+
+    let input0 = tx_input(0, covenant_sigscript(&active, "bump", vec![Expr::int(3)]));
+    let outputs = vec![covenant_output(&out0, 0, COV_A), covenant_output(&out1, 0, COV_A)];
+    let tx = Transaction::new(1, vec![input0], outputs, 0, Default::default(), 0, vec![]);
+    let entries = vec![covenant_utxo(&active, COV_A)];
+
+    let err = execute_input_with_covenants(tx, entries, 0).expect_err("singleton transition must reject two authorized outputs");
     assert_verify_like_error(err);
 }
 

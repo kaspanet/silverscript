@@ -15,6 +15,8 @@ enum StmtShape {
     Var { type_name: String, name: String, expr: ExprShape },
     Require(ExprShape),
     Call { name: String, args: Vec<ExprShape> },
+    CallAssign { bindings: Vec<(String, String)>, name: String, args: Vec<ExprShape> },
+    Return(Vec<ExprShape>),
     StateCallAssign { bindings: Vec<(String, String, String)>, name: String, args: Vec<ExprShape> },
     If { condition: ExprShape, then_branch: Vec<StmtShape> },
     For { ident: String, start: ExprShape, end: ExprShape, body: Vec<StmtShape> },
@@ -70,6 +72,15 @@ fn normalize_stmt(stmt: &Statement<'_>) -> StmtShape {
         Statement::FunctionCall { name, args, .. } => {
             StmtShape::Call { name: canonicalize_generated_name(name), args: args.iter().map(normalize_expr).collect() }
         }
+        Statement::FunctionCallAssign { bindings, name, args, .. } => StmtShape::CallAssign {
+            bindings: bindings
+                .iter()
+                .map(|binding| (binding.type_ref.type_name(), canonicalize_generated_name(&binding.name)))
+                .collect(),
+            name: canonicalize_generated_name(name),
+            args: args.iter().map(normalize_expr).collect(),
+        },
+        Statement::Return { exprs, .. } => StmtShape::Return(exprs.iter().map(normalize_expr).collect()),
         Statement::StateFunctionCallAssign { bindings, name, args, .. } => StmtShape::StateCallAssign {
             bindings: bindings
                 .iter()
@@ -218,4 +229,44 @@ fn lowers_cov_to_leader_and_delegate_expected_wrapper_ast() {
     "#;
 
     assert_lowers_to_expected_ast(source, expected_lowered, &[Expr::int(2), Expr::int(3)]);
+}
+
+#[test]
+fn lowers_singleton_transition_uses_returned_state_in_validation() {
+    let source = r#"
+        contract Decls(int init_value) {
+            int value = init_value;
+
+            #[covenant.singleton(mode = transition)]
+            function bump(int delta) : (int) {
+                return(value + delta);
+            }
+        }
+    "#;
+
+    let expected_lowered = r#"
+        contract Decls(int init_value) {
+            int value = init_value;
+
+            function covenant_policy_bump(int delta) : (int) {
+                return(value + delta);
+            }
+
+            entrypoint function bump(int delta) {
+                int cov_out_count = OpAuthOutputCount(this.activeInputIndex);
+                require(cov_out_count <= 1);
+
+                (int cov_new_value) = covenant_policy_bump(delta);
+
+                for(cov_k, 0, 1) {
+                    if (cov_k < cov_out_count) {
+                        int cov_out_idx = OpAuthOutputIdx(this.activeInputIndex, cov_k);
+                        validateOutputState(cov_out_idx, { value: cov_new_value });
+                    }
+                }
+            }
+        }
+    "#;
+
+    assert_lowers_to_expected_ast(source, expected_lowered, &[Expr::int(7)]);
 }
