@@ -180,17 +180,11 @@ fn lowers_auth_groups_single_to_expected_wrapper_ast() {
                             StmtShape::Var {
                                 type_name: "int".to_string(),
                                 name: "__cov_out_idx".to_string(),
-                                expr: call(
-                                    "OpAuthOutputIdx",
-                                    vec![ExprShape::Nullary(NullaryOp::ActiveInputIndex), id("__cov_k")],
-                                ),
+                                expr: call("OpAuthOutputIdx", vec![ExprShape::Nullary(NullaryOp::ActiveInputIndex), id("__cov_k")]),
                             },
                             StmtShape::Call {
                                 name: "validateOutputState".to_string(),
-                                args: vec![
-                                    id("__cov_out_idx"),
-                                    ExprShape::StateObject(vec![("value".to_string(), id("value"))]),
-                                ],
+                                args: vec![id("__cov_out_idx"), ExprShape::StateObject(vec![("value".to_string(), id("value"))])],
                             },
                         ],
                     }],
@@ -278,11 +272,7 @@ fn lowers_cov_to_leader_and_delegate_expected_wrapper_ast() {
                                 expr: call("OpCovInputIdx", vec![id("__cov_id"), id("__cov_in_k")]),
                             },
                             StmtShape::StateCallAssign {
-                                bindings: vec![(
-                                    "value".to_string(),
-                                    "int".to_string(),
-                                    "__cov_prev_value".to_string(),
-                                )],
+                                bindings: vec![("value".to_string(), "int".to_string(), "__cov_prev_value".to_string())],
                                 name: "readInputState".to_string(),
                                 args: vec![id("__cov_in_idx")],
                             },
@@ -305,10 +295,7 @@ fn lowers_cov_to_leader_and_delegate_expected_wrapper_ast() {
                             },
                             StmtShape::Call {
                                 name: "validateOutputState".to_string(),
-                                args: vec![
-                                    id("__cov_out_idx"),
-                                    ExprShape::StateObject(vec![("value".to_string(), id("value"))]),
-                                ],
+                                args: vec![id("__cov_out_idx"), ExprShape::StateObject(vec![("value".to_string(), id("value"))])],
                             },
                         ],
                     }],

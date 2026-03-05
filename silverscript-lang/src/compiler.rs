@@ -696,11 +696,7 @@ fn append_cov_input_state_reads<'i>(
         .iter()
         .map(|field| state_binding(&field.name, field.type_ref.clone(), &format!("__cov_prev_{}", field.name)))
         .collect();
-    then_branch.push(state_call_assign_statement(
-        bindings,
-        "readInputState",
-        vec![identifier_expr(in_idx_name)],
-    ));
+    then_branch.push(state_call_assign_statement(bindings, "readInputState", vec![identifier_expr(in_idx_name)]));
     body.push(for_statement(loop_var, Expr::int(0), from_expr, vec![if_statement(cond, then_branch)]));
 }
 
@@ -2020,9 +2016,7 @@ fn encoded_state_len<'i>(
     contract_fields: &[ContractFieldAst<'i>],
     contract_constants: &HashMap<String, Expr<'i>>,
 ) -> Result<usize, CompilerError> {
-    contract_fields
-        .iter()
-        .try_fold(0usize, |acc, field| Ok(acc + encoded_field_chunk_size(field, contract_constants)?))
+    contract_fields.iter().try_fold(0usize, |acc, field| Ok(acc + encoded_field_chunk_size(field, contract_constants)?))
 }
 
 fn read_input_state_binding_expr<'i>(
@@ -2124,8 +2118,14 @@ fn compile_read_input_state_statement<'i>(
             return Err(CompilerError::Unsupported(format!("readInputState binding '{}' expects {}", binding.name, field_type)));
         }
 
-        let binding_expr =
-            read_input_state_binding_expr(&input_idx, field, state_start_offset, field_chunk_offset, script_size_value, contract_constants)?;
+        let binding_expr = read_input_state_binding_expr(
+            &input_idx,
+            field,
+            state_start_offset,
+            field_chunk_offset,
+            script_size_value,
+            contract_constants,
+        )?;
         env.insert(binding.name.clone(), binding_expr);
         types.insert(binding.name.clone(), binding_type);
 
