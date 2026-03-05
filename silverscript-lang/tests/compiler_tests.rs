@@ -3590,3 +3590,57 @@ fn empty_array_statement_expr_evaluation_compiles_to_empty_array_data() {
     assert_eq!(compiled.script[0], OpFalse);
     assert_eq!(compiled.script[1], OpFalse);
 }
+
+#[test]
+fn function_param_shadows_constructor_constant_with_same_name() {
+    // When a constructor constant and a function parameter share the same name,
+    // the function parameter value must be used (not the constant).
+    let source = r#"
+        contract Shadow(int fee) {
+            entrypoint function main(int fee) {
+                int local = fee + 1;
+                require(local == 4);
+            }
+        }
+    "#;
+
+    // Constructor fee=2, param fee=3 => local = 3+1 = 4 => pass
+    let compiled = compile_contract(source, &[Expr::int(2)], CompileOptions::default()).expect("compile succeeds");
+    let sigscript = compiled.build_sig_script("main", vec![Expr::int(3)]).expect("sigscript builds");
+    let result = run_script_with_sigscript(compiled.script.clone(), sigscript);
+    assert!(result.is_ok(), "function param should shadow constructor constant: {}", result.unwrap_err());
+
+    // Constructor fee=2, param fee=2 => local = 2+1 = 3 != 4 => fail (proves it's not always the constant)
+    let sigscript_wrong = compiled.build_sig_script("main", vec![Expr::int(2)]).expect("sigscript builds");
+    let result_wrong = run_script_with_sigscript(compiled.script, sigscript_wrong);
+    assert!(result_wrong.is_err(), "require(3==4) should fail, proving the param value matters");
+}
+
+#[test]
+fn nested_inline_calls_with_args_compile_and_execute() {
+    // Nested inline calls must propagate synthetic __arg_ bindings so that
+    // inner calls can resolve arguments that flow through outer calls.
+    let source = r#"
+        contract NestedArgs() {
+            function inner(int x) {
+                int y = x + 1;
+                require(y > 0);
+            }
+
+            function outer(int v) {
+                inner(v);
+                require(v >= 0);
+            }
+
+            entrypoint function main(int a) {
+                outer(a);
+                require(a >= 0);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("nested inline calls should compile");
+    let sigscript = compiled.build_sig_script("main", vec![Expr::int(5)]).expect("sigscript builds");
+    let result = run_script_with_sigscript(compiled.script, sigscript);
+    assert!(result.is_ok(), "nested inline calls should execute correctly: {}", result.unwrap_err());
+}

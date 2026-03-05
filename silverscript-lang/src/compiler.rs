@@ -17,6 +17,8 @@ use crate::span;
 mod debug_recording;
 
 use debug_recording::{ContractRecorder, EntrypointRecorder};
+/// Prefix used for synthetic argument bindings during inline function expansion.
+pub const SYNTHETIC_ARG_PREFIX: &str = "__arg_";
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct CompileOptions {
@@ -955,8 +957,7 @@ fn compile_entrypoint_function<'i>(
         }
     }
     let mut env: HashMap<String, Expr<'i>> = constants.clone();
-    // `env` is checked before `params` during identifier compilation.
-    // Remove any constructor-constant names that collide with function params.
+    // Remove any constructor/constant names that collide with function param names (prioritizing function parameters on name collision).
     for param in &function.params {
         env.remove(&param.name);
     }
@@ -1802,16 +1803,15 @@ fn compile_inline_call<'i>(
     }
 
     let mut env: HashMap<String, Expr<'i>> = contract_constants.clone();
-    // Preserve caller synthetic inline bindings so nested inline calls can
-    // resolve chains like __arg_inner_0 -> __arg_outer_0 during compilation.
+    // Copy the caller's __arg_ (function param) bindings into the new inline call's env, allowing nested synthetic argument chain.
     for (name, value) in caller_env.iter() {
-        if name.starts_with("__arg_") {
+        if name.starts_with(SYNTHETIC_ARG_PREFIX) {
             env.insert(name.clone(), value.clone());
         }
     }
     for (index, (param, arg)) in function.params.iter().zip(args.iter()).enumerate() {
         let resolved = resolve_expr(arg.clone(), caller_env, &mut HashSet::new())?;
-        let temp_name = format!("__arg_{name}_{index}");
+        let temp_name = format!("{SYNTHETIC_ARG_PREFIX}{name}_{index}");
         let param_type_name = type_name_from_ref(&param.type_ref);
         env.insert(temp_name.clone(), resolved.clone());
         types.insert(temp_name.clone(), param_type_name.clone());
@@ -1885,7 +1885,7 @@ fn compile_inline_call<'i>(
     recorder.finish_inline_call(call_span, call_end, name);
 
     for (name, value) in env.iter() {
-        if name.starts_with("__arg_") {
+        if name.starts_with(SYNTHETIC_ARG_PREFIX) {
             if let Some(type_name) = types.get(name) {
                 caller_types.entry(name.clone()).or_insert_with(|| type_name.clone());
             }
@@ -2189,7 +2189,7 @@ fn resolve_expr<'i>(
     let Expr { kind, span } = expr;
     match kind {
         ExprKind::Identifier(name) => {
-            if name.starts_with("__arg_") {
+            if name.starts_with(SYNTHETIC_ARG_PREFIX) {
                 return Ok(Expr::new(ExprKind::Identifier(name), span));
             }
             if let Some(value) = env.get(&name) {
