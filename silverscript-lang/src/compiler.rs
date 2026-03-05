@@ -97,11 +97,15 @@ pub fn compile_contract_ast<'i>(
         let mut compiled_entrypoints = Vec::new();
         for (index, func) in lowered_contract.functions.iter().enumerate() {
             if func.entrypoint {
+                let mut contract_field_prefix_len = field_prolog_script.len();
+                if !without_selector && function_branch_index(&lowered_contract, &func.name)? == 0 {
+                    contract_field_prefix_len += selector_dispatch_branch0_prefix_len()?;
+                }
                 compiled_entrypoints.push(compile_function(
                     func,
                     index,
                     &lowered_contract.fields,
-                    field_prolog_script.len(),
+                    contract_field_prefix_len,
                     &constants,
                     options,
                     &functions_map,
@@ -244,7 +248,7 @@ fn lower_covenant_declarations<'i>(
                     )));
                 }
                 used_names.insert(entrypoint_name.clone());
-                lowered.push(build_auth_wrapper(function, &policy_name, declaration, entrypoint_name));
+                lowered.push(build_auth_wrapper(function, &policy_name, declaration, entrypoint_name, &contract.fields));
             }
             CovenantBinding::Cov => {
                 let leader_name = format!("{}_leader", function.name);
@@ -255,7 +259,7 @@ fn lower_covenant_declarations<'i>(
                     )));
                 }
                 used_names.insert(leader_name.clone());
-                lowered.push(build_cov_wrapper(function, &policy_name, declaration.clone(), leader_name, true));
+                lowered.push(build_cov_wrapper(function, &policy_name, declaration.clone(), leader_name, true, &contract.fields));
 
                 let delegate_name = format!("{}_delegate", function.name);
                 if used_names.contains(&delegate_name) {
@@ -265,7 +269,7 @@ fn lower_covenant_declarations<'i>(
                     )));
                 }
                 used_names.insert(delegate_name.clone());
-                lowered.push(build_cov_wrapper(function, &policy_name, declaration, delegate_name, false));
+                lowered.push(build_cov_wrapper(function, &policy_name, declaration, delegate_name, false, &contract.fields));
             }
         }
     }
@@ -459,6 +463,7 @@ fn build_auth_wrapper<'i>(
     policy_name: &str,
     declaration: CovenantDeclaration<'i>,
     entrypoint_name: String,
+    contract_fields: &[ContractFieldAst<'i>],
 ) -> FunctionAst<'i> {
     let mut body = Vec::new();
 
@@ -481,6 +486,7 @@ fn build_auth_wrapper<'i>(
 
     let call_args = policy.params.iter().map(|param| identifier_expr(&param.name)).collect();
     body.push(call_statement(policy_name, call_args));
+    append_auth_output_state_checks(&mut body, &active_input, out_count_name, declaration.to_expr.clone(), contract_fields);
 
     generated_entrypoint(policy, entrypoint_name, policy.params.clone(), body)
 }
@@ -491,6 +497,7 @@ fn build_cov_wrapper<'i>(
     declaration: CovenantDeclaration<'i>,
     entrypoint_name: String,
     leader: bool,
+    contract_fields: &[ContractFieldAst<'i>],
 ) -> FunctionAst<'i> {
     let mut body = Vec::new();
 
@@ -510,8 +517,10 @@ fn build_cov_wrapper<'i>(
     body.push(require_statement(binary_expr(if leader { BinaryOp::Eq } else { BinaryOp::Ne }, leader_idx_expr, active_input)));
 
     if leader {
+        append_cov_input_state_reads(&mut body, cov_id_name, in_count_name, declaration.from_expr.clone(), contract_fields);
         let call_args = policy.params.iter().map(|param| identifier_expr(&param.name)).collect();
         body.push(call_statement(policy_name, call_args));
+        append_cov_output_state_checks(&mut body, cov_id_name, out_count_name, declaration.to_expr.clone(), contract_fields);
     }
 
     let params = if leader { policy.params.clone() } else { Vec::new() };
@@ -577,6 +586,148 @@ fn require_statement<'i>(expr: Expr<'i>) -> Statement<'i> {
 
 fn call_statement<'i>(name: &str, args: Vec<Expr<'i>>) -> Statement<'i> {
     Statement::FunctionCall { name: name.to_string(), args, span: span::Span::default(), name_span: span::Span::default() }
+}
+
+fn if_statement<'i>(condition: Expr<'i>, then_branch: Vec<Statement<'i>>) -> Statement<'i> {
+    Statement::If {
+        condition,
+        then_branch,
+        else_branch: None,
+        span: span::Span::default(),
+        then_span: span::Span::default(),
+        else_span: None,
+    }
+}
+
+fn for_statement<'i>(ident: &str, start: Expr<'i>, end: Expr<'i>, body: Vec<Statement<'i>>) -> Statement<'i> {
+    Statement::For {
+        ident: ident.to_string(),
+        start,
+        end,
+        max: None,
+        body,
+        span: span::Span::default(),
+        ident_span: span::Span::default(),
+        body_span: span::Span::default(),
+    }
+}
+
+fn state_binding<'i>(field_name: &str, type_ref: TypeRef, name: &str) -> StateBindingAst<'i> {
+    StateBindingAst {
+        field_name: field_name.to_string(),
+        type_ref,
+        name: name.to_string(),
+        span: span::Span::default(),
+        field_span: span::Span::default(),
+        type_span: span::Span::default(),
+        name_span: span::Span::default(),
+    }
+}
+
+fn state_call_assign_statement<'i>(bindings: Vec<StateBindingAst<'i>>, name: &str, args: Vec<Expr<'i>>) -> Statement<'i> {
+    Statement::StateFunctionCallAssign {
+        bindings,
+        name: name.to_string(),
+        args,
+        span: span::Span::default(),
+        name_span: span::Span::default(),
+    }
+}
+
+fn state_object_expr_from_contract_fields<'i>(contract_fields: &[ContractFieldAst<'i>]) -> Expr<'i> {
+    let fields = contract_fields
+        .iter()
+        .map(|field| StateFieldExpr {
+            name: field.name.clone(),
+            expr: identifier_expr(&field.name),
+            span: span::Span::default(),
+            name_span: span::Span::default(),
+        })
+        .collect();
+    Expr::new(ExprKind::StateObject(fields), span::Span::default())
+}
+
+fn append_auth_output_state_checks<'i>(
+    body: &mut Vec<Statement<'i>>,
+    active_input: &Expr<'i>,
+    out_count_name: &str,
+    to_expr: Expr<'i>,
+    contract_fields: &[ContractFieldAst<'i>],
+) {
+    if contract_fields.is_empty() {
+        return;
+    }
+    let loop_var = "__cov_k";
+    let out_idx_name = "__cov_out_idx";
+    let cond = binary_expr(BinaryOp::Lt, identifier_expr(loop_var), identifier_expr(out_count_name));
+    let mut then_branch = Vec::new();
+    then_branch.push(var_def_statement(
+        int_type_ref(),
+        out_idx_name,
+        Expr::call("OpAuthOutputIdx", vec![active_input.clone(), identifier_expr(loop_var)]),
+    ));
+    then_branch.push(call_statement(
+        "validateOutputState",
+        vec![identifier_expr(out_idx_name), state_object_expr_from_contract_fields(contract_fields)],
+    ));
+    body.push(for_statement(loop_var, Expr::int(0), to_expr, vec![if_statement(cond, then_branch)]));
+}
+
+fn append_cov_input_state_reads<'i>(
+    body: &mut Vec<Statement<'i>>,
+    cov_id_name: &str,
+    in_count_name: &str,
+    from_expr: Expr<'i>,
+    contract_fields: &[ContractFieldAst<'i>],
+) {
+    if contract_fields.is_empty() {
+        return;
+    }
+    let loop_var = "__cov_in_k";
+    let in_idx_name = "__cov_in_idx";
+    let cond = binary_expr(BinaryOp::Lt, identifier_expr(loop_var), identifier_expr(in_count_name));
+    let mut then_branch = Vec::new();
+    then_branch.push(var_def_statement(
+        int_type_ref(),
+        in_idx_name,
+        Expr::call("OpCovInputIdx", vec![identifier_expr(cov_id_name), identifier_expr(loop_var)]),
+    ));
+    let bindings = contract_fields
+        .iter()
+        .map(|field| state_binding(&field.name, field.type_ref.clone(), &format!("__cov_prev_{}", field.name)))
+        .collect();
+    then_branch.push(state_call_assign_statement(
+        bindings,
+        "readInputState",
+        vec![identifier_expr(in_idx_name)],
+    ));
+    body.push(for_statement(loop_var, Expr::int(0), from_expr, vec![if_statement(cond, then_branch)]));
+}
+
+fn append_cov_output_state_checks<'i>(
+    body: &mut Vec<Statement<'i>>,
+    cov_id_name: &str,
+    out_count_name: &str,
+    to_expr: Expr<'i>,
+    contract_fields: &[ContractFieldAst<'i>],
+) {
+    if contract_fields.is_empty() {
+        return;
+    }
+    let loop_var = "__cov_k";
+    let out_idx_name = "__cov_out_idx";
+    let cond = binary_expr(BinaryOp::Lt, identifier_expr(loop_var), identifier_expr(out_count_name));
+    let mut then_branch = Vec::new();
+    then_branch.push(var_def_statement(
+        int_type_ref(),
+        out_idx_name,
+        Expr::call("OpCovOutputIdx", vec![identifier_expr(cov_id_name), identifier_expr(loop_var)]),
+    ));
+    then_branch.push(call_statement(
+        "validateOutputState",
+        vec![identifier_expr(out_idx_name), state_object_expr_from_contract_fields(contract_fields)],
+    ));
+    body.push(for_statement(loop_var, Expr::int(0), to_expr, vec![if_statement(cond, then_branch)]));
 }
 
 fn contract_uses_script_size<'i>(contract: &ContractAst<'i>) -> bool {
@@ -1295,6 +1446,16 @@ pub fn function_branch_index<'i>(contract: &ContractAst<'i>, function_name: &str
         .ok_or_else(|| CompilerError::Unsupported(format!("function '{function_name}' not found")))
 }
 
+fn selector_dispatch_branch0_prefix_len() -> Result<usize, CompilerError> {
+    let mut builder = ScriptBuilder::new();
+    builder.add_op(OpDup)?;
+    builder.add_i64(0)?;
+    builder.add_op(OpNumEqual)?;
+    builder.add_op(OpIf)?;
+    builder.add_op(OpDrop)?;
+    Ok(builder.drain().len())
+}
+
 fn compile_function<'i>(
     function: &FunctionAst<'i>,
     function_index: usize,
@@ -1748,6 +1909,7 @@ fn compile_statement<'i>(
                     env,
                     types,
                     contract_fields,
+                    contract_field_prefix_len,
                     script_size,
                     contract_constants,
                 );
@@ -1854,16 +2016,26 @@ fn encoded_field_chunk_size<'i>(
     Ok(data_prefix(payload_size).len() + payload_size)
 }
 
+fn encoded_state_len<'i>(
+    contract_fields: &[ContractFieldAst<'i>],
+    contract_constants: &HashMap<String, Expr<'i>>,
+) -> Result<usize, CompilerError> {
+    contract_fields
+        .iter()
+        .try_fold(0usize, |acc, field| Ok(acc + encoded_field_chunk_size(field, contract_constants)?))
+}
+
 fn read_input_state_binding_expr<'i>(
     input_idx: &Expr<'i>,
     field: &ContractFieldAst<'i>,
+    state_start_offset: usize,
     field_chunk_offset: usize,
     script_size_value: i64,
     contract_constants: &HashMap<String, Expr<'i>>,
 ) -> Result<Expr<'i>, CompilerError> {
     let (field_payload_offset, field_payload_len, decode_int) =
         if field.type_ref.array_dims.is_empty() && field.type_ref.base == TypeBase::Int {
-            (field_chunk_offset + 1, 8usize, true)
+            (state_start_offset + field_chunk_offset + 1, 8usize, true)
         } else if field.type_ref.base == TypeBase::Byte {
             let payload_len = if field.type_ref.array_dims.is_empty() {
                 1usize
@@ -1875,7 +2047,7 @@ fn read_input_state_binding_expr<'i>(
                     ))
                 })?
             };
-            (field_chunk_offset + data_prefix(payload_len).len(), payload_len, false)
+            (state_start_offset + field_chunk_offset + data_prefix(payload_len).len(), payload_len, false)
         } else {
             return Err(CompilerError::Unsupported(format!(
                 "readInputState does not support field type {}",
@@ -1910,6 +2082,7 @@ fn compile_read_input_state_statement<'i>(
     env: &mut HashMap<String, Expr<'i>>,
     types: &mut HashMap<String, String>,
     contract_fields: &[ContractFieldAst<'i>],
+    contract_field_prefix_len: usize,
     script_size: Option<i64>,
     contract_constants: &HashMap<String, Expr<'i>>,
 ) -> Result<(), CompilerError> {
@@ -1932,6 +2105,11 @@ fn compile_read_input_state_statement<'i>(
         return Err(CompilerError::Unsupported("readInputState bindings must include all contract fields exactly once".to_string()));
     }
 
+    let total_state_len = encoded_state_len(contract_fields, contract_constants)?;
+    let state_start_offset = contract_field_prefix_len
+        .checked_sub(total_state_len)
+        .ok_or_else(|| CompilerError::Unsupported("readInputState state offset underflow".to_string()))?;
+
     let input_idx = args[0].clone();
     let mut field_chunk_offset = 0usize;
 
@@ -1947,7 +2125,7 @@ fn compile_read_input_state_statement<'i>(
         }
 
         let binding_expr =
-            read_input_state_binding_expr(&input_idx, field, field_chunk_offset, script_size_value, contract_constants)?;
+            read_input_state_binding_expr(&input_idx, field, state_start_offset, field_chunk_offset, script_size_value, contract_constants)?;
         env.insert(binding.name.clone(), binding_expr);
         types.insert(binding.name.clone(), binding_type);
 
@@ -1991,6 +2169,11 @@ fn compile_validate_output_state_statement(
     if provided.len() != contract_fields.len() {
         return Err(CompilerError::Unsupported("new_state must include all contract fields exactly once".to_string()));
     }
+
+    let total_state_len = encoded_state_len(contract_fields, contract_constants)?;
+    let state_start_offset = contract_field_prefix_len
+        .checked_sub(total_state_len)
+        .ok_or_else(|| CompilerError::Unsupported("validateOutputState state offset underflow".to_string()))?;
 
     let mut stack_depth = 0i64;
     for field in contract_fields {
@@ -2060,8 +2243,40 @@ fn compile_validate_output_state_statement(
         stack_depth -= 1;
     }
 
+    for _ in 1..contract_fields.len() {
+        builder.add_op(OpCat)?;
+        stack_depth -= 1;
+    }
+
     let script_size_value =
         script_size.ok_or_else(|| CompilerError::Unsupported("validateOutputState requires this.scriptSize".to_string()))?;
+
+    // Build: prefix || encoded_new_state || suffix where fields sit at [state_start_offset, contract_field_prefix_len).
+    if state_start_offset > 0 {
+        builder.add_op(OpTxInputIndex)?;
+        stack_depth += 1;
+        builder.add_op(OpDup)?;
+        stack_depth += 1;
+        builder.add_op(OpTxInputScriptSigLen)?;
+        builder.add_op(OpDup)?;
+        stack_depth += 1;
+        builder.add_i64(script_size_value)?;
+        stack_depth += 1;
+        builder.add_op(OpSub)?;
+        stack_depth -= 1;
+        builder.add_i64(state_start_offset as i64)?;
+        stack_depth += 1;
+        builder.add_op(OpAdd)?;
+        stack_depth -= 1;
+        builder.add_op(OpSwap)?;
+        builder.add_op(OpTxInputScriptSigSubstr)?;
+        stack_depth -= 2;
+
+        // Prefix || encoded_new_state
+        builder.add_op(OpSwap)?;
+        builder.add_op(OpCat)?;
+        stack_depth -= 1;
+    }
 
     builder.add_op(OpTxInputIndex)?;
     stack_depth += 1;
@@ -2082,10 +2297,9 @@ fn compile_validate_output_state_statement(
     builder.add_op(OpTxInputScriptSigSubstr)?;
     stack_depth -= 2;
 
-    for _ in 0..contract_fields.len() {
-        builder.add_op(OpCat)?;
-        stack_depth -= 1;
-    }
+    // Prefix || encoded_new_state || suffix
+    builder.add_op(OpCat)?;
+    stack_depth -= 1;
 
     builder.add_op(OpBlake2b)?;
     builder.add_data(&[0x00, 0x00])?;

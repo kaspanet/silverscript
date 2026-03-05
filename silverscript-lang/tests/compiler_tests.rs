@@ -1986,6 +1986,9 @@ fn compiles_validate_output_state_to_expected_script() {
         // resulting chunk: <0x02><0x3412>
         .add_op(OpCat)
         .unwrap()
+        // combine x_chunk || y_chunk
+        .add_op(OpCat)
+        .unwrap()
 
         // ---- Extract REST_OF_SCRIPT from current input signature script ----
         // current input index
@@ -2020,10 +2023,7 @@ fn compiles_validate_output_state_to_expected_script() {
         .unwrap()
 
         // ---- new_redeem_script = <new x><new y><REST_OF_SCRIPT> ----
-        // concatenate y_chunk with rest
-        .add_op(OpCat)
-        .unwrap()
-        // prepend x_chunk
+        // append REST_OF_SCRIPT to merged new-state chunks
         .add_op(OpCat)
         .unwrap()
 

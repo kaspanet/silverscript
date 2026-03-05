@@ -15,6 +15,9 @@ enum StmtShape {
     Var { type_name: String, name: String, expr: ExprShape },
     Require(ExprShape),
     Call { name: String, args: Vec<ExprShape> },
+    StateCallAssign { bindings: Vec<(String, String, String)>, name: String, args: Vec<ExprShape> },
+    If { condition: ExprShape, then_branch: Vec<StmtShape> },
+    For { ident: String, start: ExprShape, end: ExprShape, body: Vec<StmtShape> },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -24,6 +27,7 @@ enum ExprShape {
     Identifier(String),
     Nullary(NullaryOp),
     Call { name: String, args: Vec<ExprShape> },
+    StateObject(Vec<(String, ExprShape)>),
     Binary { op: BinaryOp, left: Box<ExprShape>, right: Box<ExprShape> },
 }
 
@@ -34,6 +38,9 @@ fn normalize_expr(expr: &Expr<'_>) -> ExprShape {
         ExprKind::Identifier(name) => ExprShape::Identifier(name.clone()),
         ExprKind::Nullary(op) => ExprShape::Nullary(*op),
         ExprKind::Call { name, args, .. } => ExprShape::Call { name: name.clone(), args: args.iter().map(normalize_expr).collect() },
+        ExprKind::StateObject(fields) => {
+            ExprShape::StateObject(fields.iter().map(|field| (field.name.clone(), normalize_expr(&field.expr))).collect())
+        }
         ExprKind::Binary { op, left, right } => {
             ExprShape::Binary { op: *op, left: Box::new(normalize_expr(left)), right: Box::new(normalize_expr(right)) }
         }
@@ -50,6 +57,27 @@ fn normalize_stmt(stmt: &Statement<'_>) -> StmtShape {
         Statement::Require { expr, .. } => StmtShape::Require(normalize_expr(expr)),
         Statement::FunctionCall { name, args, .. } => {
             StmtShape::Call { name: name.clone(), args: args.iter().map(normalize_expr).collect() }
+        }
+        Statement::StateFunctionCallAssign { bindings, name, args, .. } => StmtShape::StateCallAssign {
+            bindings: bindings
+                .iter()
+                .map(|binding| (binding.field_name.clone(), binding.type_ref.type_name(), binding.name.clone()))
+                .collect(),
+            name: name.clone(),
+            args: args.iter().map(normalize_expr).collect(),
+        },
+        Statement::If { condition, then_branch, else_branch, .. } => {
+            assert!(else_branch.is_none(), "generated covenant wrappers should not emit else branches");
+            StmtShape::If { condition: normalize_expr(condition), then_branch: then_branch.iter().map(normalize_stmt).collect() }
+        }
+        Statement::For { ident, start, end, max, body, .. } => {
+            assert!(max.is_none(), "generated covenant wrappers should emit 3-arg for loops only");
+            StmtShape::For {
+                ident: ident.clone(),
+                start: normalize_expr(start),
+                end: normalize_expr(end),
+                body: body.iter().map(normalize_stmt).collect(),
+            }
         }
         other => panic!("unsupported statement in covenant AST test: {other:?}"),
     }
@@ -90,6 +118,8 @@ fn bin(op: BinaryOp, left: ExprShape, right: ExprShape) -> ExprShape {
 fn lowers_auth_groups_single_to_expected_wrapper_ast() {
     let source = r#"
         contract Decls(int max_outs) {
+            int value = 0;
+
             #[covenant(binding = auth, from = 1, to = max_outs, groups = single)]
             function split(int amount) {
                 require(amount >= 0);
@@ -139,6 +169,32 @@ fn lowers_auth_groups_single_to_expected_wrapper_ast() {
                 StmtShape::Require(bin(BinaryOp::Eq, id("__cov_shared_out_count"), id("__cov_out_count"))),
                 // __covenant_policy_split(amount)
                 StmtShape::Call { name: "__covenant_policy_split".to_string(), args: vec![id("amount")] },
+                // for (__cov_k = 0; __cov_k < max_outs; __cov_k++) { if (__cov_k < __cov_out_count) { ... } }
+                StmtShape::For {
+                    ident: "__cov_k".to_string(),
+                    start: int(0),
+                    end: id("max_outs"),
+                    body: vec![StmtShape::If {
+                        condition: bin(BinaryOp::Lt, id("__cov_k"), id("__cov_out_count")),
+                        then_branch: vec![
+                            StmtShape::Var {
+                                type_name: "int".to_string(),
+                                name: "__cov_out_idx".to_string(),
+                                expr: call(
+                                    "OpAuthOutputIdx",
+                                    vec![ExprShape::Nullary(NullaryOp::ActiveInputIndex), id("__cov_k")],
+                                ),
+                            },
+                            StmtShape::Call {
+                                name: "validateOutputState".to_string(),
+                                args: vec![
+                                    id("__cov_out_idx"),
+                                    ExprShape::StateObject(vec![("value".to_string(), id("value"))]),
+                                ],
+                            },
+                        ],
+                    }],
+                },
             ],
         },
     ];
@@ -150,6 +206,8 @@ fn lowers_auth_groups_single_to_expected_wrapper_ast() {
 fn lowers_cov_to_leader_and_delegate_expected_wrapper_ast() {
     let source = r#"
         contract Decls(int max_ins, int max_outs) {
+            int value = 0;
+
             #[covenant(from = max_ins, to = max_outs, mode = predicate)]
             function transition_ok(int delta) {
                 require(delta >= 0);
@@ -207,8 +265,54 @@ fn lowers_cov_to_leader_and_delegate_expected_wrapper_ast() {
                     call("OpCovInputIdx", vec![id("__cov_id"), int(0)]),
                     ExprShape::Nullary(NullaryOp::ActiveInputIndex),
                 )));
+                body.push(StmtShape::For {
+                    ident: "__cov_in_k".to_string(),
+                    start: int(0),
+                    end: id("max_ins"),
+                    body: vec![StmtShape::If {
+                        condition: bin(BinaryOp::Lt, id("__cov_in_k"), id("__cov_in_count")),
+                        then_branch: vec![
+                            StmtShape::Var {
+                                type_name: "int".to_string(),
+                                name: "__cov_in_idx".to_string(),
+                                expr: call("OpCovInputIdx", vec![id("__cov_id"), id("__cov_in_k")]),
+                            },
+                            StmtShape::StateCallAssign {
+                                bindings: vec![(
+                                    "value".to_string(),
+                                    "int".to_string(),
+                                    "__cov_prev_value".to_string(),
+                                )],
+                                name: "readInputState".to_string(),
+                                args: vec![id("__cov_in_idx")],
+                            },
+                        ],
+                    }],
+                });
                 // __covenant_policy_transition_ok(delta)
                 body.push(StmtShape::Call { name: "__covenant_policy_transition_ok".to_string(), args: vec![id("delta")] });
+                body.push(StmtShape::For {
+                    ident: "__cov_k".to_string(),
+                    start: int(0),
+                    end: id("max_outs"),
+                    body: vec![StmtShape::If {
+                        condition: bin(BinaryOp::Lt, id("__cov_k"), id("__cov_out_count")),
+                        then_branch: vec![
+                            StmtShape::Var {
+                                type_name: "int".to_string(),
+                                name: "__cov_out_idx".to_string(),
+                                expr: call("OpCovOutputIdx", vec![id("__cov_id"), id("__cov_k")]),
+                            },
+                            StmtShape::Call {
+                                name: "validateOutputState".to_string(),
+                                args: vec![
+                                    id("__cov_out_idx"),
+                                    ExprShape::StateObject(vec![("value".to_string(), id("value"))]),
+                                ],
+                            },
+                        ],
+                    }],
+                });
                 body
             },
         },
