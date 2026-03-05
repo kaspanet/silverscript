@@ -1834,6 +1834,87 @@ fn compile_validate_output_state_statement(
     Ok(())
 }
 
+#[derive(Debug)]
+struct InlineCallBindings<'i> {
+    env: HashMap<String, Expr<'i>>,
+    debug_env: HashMap<String, Expr<'i>>,
+    types: HashMap<String, String>,
+    compile_params: HashMap<String, i64>,
+    yield_rewrites: Vec<(String, String)>,
+}
+
+fn prepare_inline_call_bindings<'i>(
+    callee_name: &str,
+    function: &FunctionAst<'i>,
+    args: &[Expr<'i>],
+    caller_params: &HashMap<String, i64>,
+    caller_types: &mut HashMap<String, String>,
+    caller_env: &mut HashMap<String, Expr<'i>>,
+    contract_constants: &HashMap<String, Expr<'i>>,
+) -> Result<InlineCallBindings<'i>, CompilerError> {
+    let mut types =
+        function.params.iter().map(|param| (param.name.clone(), type_name_from_ref(&param.type_ref))).collect::<HashMap<_, _>>();
+    let mut env: HashMap<String, Expr<'i>> = contract_constants.clone();
+    // Preserve caller synthetic args for nested inline calls.
+    for (name, value) in caller_env.iter() {
+        if name.starts_with(SYNTHETIC_ARG_PREFIX) {
+            env.insert(name.clone(), value.clone());
+        }
+    }
+
+    let mut inline_params: HashMap<String, i64> = HashMap::new();
+    let mut yield_rewrites = Vec::new();
+    for (index, (param, arg)) in function.params.iter().zip(args.iter()).enumerate() {
+        let resolved = resolve_expr(arg.clone(), caller_env, &mut HashSet::new())?;
+        let temp_name = format!("{SYNTHETIC_ARG_PREFIX}_{callee_name}_{index}");
+        let param_type_name = type_name_from_ref(&param.type_ref);
+
+        if let ExprKind::Identifier(identifier) = &resolved.kind {
+            if let Some(caller_index) = caller_params.get(identifier) {
+                inline_params.insert(temp_name.clone(), *caller_index);
+                types.insert(temp_name.clone(), param_type_name.clone());
+                env.insert(param.name.clone(), Expr::new(ExprKind::Identifier(temp_name.clone()), span::Span::default()));
+                yield_rewrites.push((temp_name, identifier.clone()));
+                caller_types.entry(identifier.clone()).or_insert(param_type_name);
+                continue;
+            }
+        }
+
+        env.insert(temp_name.clone(), resolved.clone());
+        types.insert(temp_name.clone(), param_type_name.clone());
+        env.insert(param.name.clone(), Expr::new(ExprKind::Identifier(temp_name.clone()), span::Span::default()));
+        caller_env.insert(temp_name.clone(), resolved);
+        caller_types.insert(temp_name, param_type_name);
+    }
+
+    let mut debug_env = env.clone();
+    for (temp_name, caller_ident) in &yield_rewrites {
+        debug_env.insert(temp_name.clone(), Expr::new(ExprKind::Identifier(caller_ident.clone()), span::Span::default()));
+    }
+
+    let mut compile_params = caller_params.clone();
+    compile_params.extend(inline_params);
+
+    Ok(InlineCallBindings { env, debug_env, types, compile_params, yield_rewrites })
+}
+
+fn rewrite_inline_yields<'i>(yields: Vec<Expr<'i>>, rewrites: &[(String, String)]) -> Vec<Expr<'i>> {
+    if rewrites.is_empty() {
+        return yields;
+    }
+    yields
+        .into_iter()
+        .map(|expr| {
+            let mut current = expr;
+            for (temp_name, caller_ident) in rewrites {
+                let replacement = Expr::new(ExprKind::Identifier(caller_ident.clone()), span::Span::default());
+                current = replace_identifier(&current, temp_name, &replacement);
+            }
+            current
+        })
+        .collect()
+}
+
 #[allow(clippy::too_many_arguments)]
 fn compile_inline_call<'i>(
     name: &str,
@@ -1868,8 +1949,6 @@ fn compile_inline_call<'i>(
         }
     }
 
-    let mut types =
-        function.params.iter().map(|param| (param.name.clone(), type_name_from_ref(&param.type_ref))).collect::<HashMap<_, _>>();
     for param in &function.params {
         let param_type_name = type_name_from_ref(&param.type_ref);
         if is_array_type(&param_type_name) && array_element_size(&param_type_name).is_none() {
@@ -1877,36 +1956,8 @@ fn compile_inline_call<'i>(
         }
     }
 
-    let mut env: HashMap<String, Expr<'i>> = contract_constants.clone();
-    // Copy the caller's synthetic argument bindings so nested inline calls can resolve them.
-    for (name, value) in caller_env.iter() {
-        if name.starts_with(SYNTHETIC_ARG_PREFIX) {
-            env.insert(name.clone(), value.clone());
-        }
-    }
-    let mut inline_params: HashMap<String, i64> = HashMap::new();
-    let mut temp_to_caller_ident: HashMap<String, String> = HashMap::new();
-    for (index, (param, arg)) in function.params.iter().zip(args.iter()).enumerate() {
-        let resolved = resolve_expr(arg.clone(), caller_env, &mut HashSet::new())?;
-        let temp_name = format!("{SYNTHETIC_ARG_PREFIX}_{name}_{index}");
-        let param_type_name = type_name_from_ref(&param.type_ref);
-        if let ExprKind::Identifier(identifier) = &resolved.kind {
-            if let Some(caller_index) = caller_params.get(identifier) {
-                inline_params.insert(temp_name.clone(), *caller_index);
-                types.insert(temp_name.clone(), param_type_name.clone());
-                env.insert(param.name.clone(), Expr::new(ExprKind::Identifier(temp_name.clone()), span::Span::default()));
-                temp_to_caller_ident.insert(temp_name, identifier.clone());
-                caller_types.entry(identifier.clone()).or_insert_with(|| param_type_name.clone());
-                continue;
-            }
-        }
-
-        env.insert(temp_name.clone(), resolved.clone());
-        types.insert(temp_name.clone(), param_type_name.clone());
-        env.insert(param.name.clone(), Expr::new(ExprKind::Identifier(temp_name.clone()), span::Span::default()));
-        caller_env.insert(temp_name.clone(), resolved);
-        caller_types.insert(temp_name, param_type_name);
-    }
+    let mut bindings =
+        prepare_inline_call_bindings(name, function, args, caller_params, caller_types, caller_env, contract_constants)?;
 
     if !options.allow_yield && function.body.iter().any(contains_yield) {
         return Err(CompilerError::Unsupported("yield requires allow_yield=true".to_string()));
@@ -1930,28 +1981,29 @@ fn compile_inline_call<'i>(
     }
 
     let call_start = builder.script().len();
-    recorder.begin_inline_call(call_span, call_start, function, &env)?;
+    recorder.begin_inline_call(call_span, call_start, function, &bindings.debug_env)?;
 
     let mut yields: Vec<Expr<'i>> = Vec::new();
     let body_len = function.body.len();
     for (index, stmt) in function.body.iter().enumerate() {
-        recorder.begin_statement_at(builder.script().len(), &env);
+        recorder.begin_statement_at(builder.script().len(), &bindings.env);
         if let Statement::Return { exprs, .. } = stmt {
             if index != body_len - 1 {
                 return Err(CompilerError::Unsupported("return statement must be the last statement".to_string()));
             }
-            validate_return_types(exprs, &function.return_types, &types, contract_constants)
+            validate_return_types(exprs, &function.return_types, &bindings.types, contract_constants)
                 .map_err(|err| err.with_span(&stmt.span()))?;
             for expr in exprs {
-                let resolved = resolve_expr(expr.clone(), &env, &mut HashSet::new()).map_err(|err| err.with_span(&expr.span))?;
+                let resolved =
+                    resolve_expr(expr.clone(), &bindings.env, &mut HashSet::new()).map_err(|err| err.with_span(&expr.span))?;
                 yields.push(resolved);
             }
         } else {
             compile_statement(
                 stmt,
-                &mut env,
-                &inline_params,
-                &mut types,
+                &mut bindings.env,
+                &bindings.compile_params,
+                &mut bindings.types,
                 builder,
                 options,
                 &[],
@@ -1966,34 +2018,21 @@ fn compile_inline_call<'i>(
             )
             .map_err(|err| err.with_span(&stmt.span()))?;
         }
-        recorder.finish_statement_at(stmt, builder.script().len(), &env, &types)?;
+        recorder.finish_statement_at(stmt, builder.script().len(), &bindings.env, &bindings.types)?;
     }
     let call_end = builder.script().len();
     recorder.finish_inline_call(call_span, call_end, name);
 
-    for (name, value) in env.iter() {
+    for (name, value) in bindings.env.iter() {
         if name.starts_with(SYNTHETIC_ARG_PREFIX) {
-            if let Some(type_name) = types.get(name) {
+            if let Some(type_name) = bindings.types.get(name) {
                 caller_types.entry(name.clone()).or_insert_with(|| type_name.clone());
             }
             caller_env.entry(name.clone()).or_insert_with(|| value.clone());
         }
     }
 
-    if temp_to_caller_ident.is_empty() {
-        return Ok(yields);
-    }
-
-    let mut rewritten = Vec::with_capacity(yields.len());
-    for expr in yields {
-        let mut current = expr;
-        for (temp_name, caller_ident) in &temp_to_caller_ident {
-            let replacement = Expr::new(ExprKind::Identifier(caller_ident.clone()), span::Span::default());
-            current = replace_identifier(&current, temp_name, &replacement);
-        }
-        rewritten.push(current);
-    }
-    Ok(rewritten)
+    Ok(rewrite_inline_yields(yields, &bindings.yield_rewrites))
 }
 
 #[allow(clippy::too_many_arguments)]
