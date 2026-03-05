@@ -308,25 +308,6 @@ fn parse_covenant_declaration<'i>(
         }
     }
 
-    let binding_name = parse_attr_ident_arg("binding", args_by_name.get("binding").copied())?;
-    let mode_name = parse_attr_ident_arg("mode", args_by_name.get("mode").copied())?;
-
-    let binding = match binding_name.as_str() {
-        "auth" => CovenantBinding::Auth,
-        "cov" => CovenantBinding::Cov,
-        other => {
-            return Err(CompilerError::Unsupported(format!("covenant binding must be auth|cov, got '{}'", other)));
-        }
-    };
-
-    let mode = match mode_name.as_str() {
-        "predicate" => CovenantMode::Predicate,
-        "transition" => CovenantMode::Transition,
-        other => {
-            return Err(CompilerError::Unsupported(format!("covenant mode must be predicate|transition, got '{}'", other)));
-        }
-    };
-
     let from_expr = args_by_name
         .get("from")
         .copied()
@@ -349,6 +330,41 @@ fn parse_covenant_declaration<'i>(
         return Err(CompilerError::Unsupported("covenant 'to' must be >= 1".to_string()));
     }
 
+    let default_binding = if from_value == 1 { CovenantBinding::Auth } else { CovenantBinding::Cov };
+    let binding = match args_by_name.get("binding").copied() {
+        Some(expr) => {
+            let binding_name = parse_attr_ident_arg("binding", Some(expr))?;
+            match binding_name.as_str() {
+                "auth" => CovenantBinding::Auth,
+                "cov" => CovenantBinding::Cov,
+                other => {
+                    return Err(CompilerError::Unsupported(format!("covenant binding must be auth|cov, got '{}'", other)));
+                }
+            }
+        }
+        None => default_binding,
+    };
+
+    let mode = match args_by_name.get("mode").copied() {
+        Some(expr) => {
+            let mode_name = parse_attr_ident_arg("mode", Some(expr))?;
+            match mode_name.as_str() {
+                "predicate" => CovenantMode::Predicate,
+                "transition" => CovenantMode::Transition,
+                other => {
+                    return Err(CompilerError::Unsupported(format!("covenant mode must be predicate|transition, got '{}'", other)));
+                }
+            }
+        }
+        None => {
+            if function.return_types.is_empty() {
+                CovenantMode::Predicate
+            } else {
+                CovenantMode::Transition
+            }
+        }
+    };
+
     let groups = match args_by_name.get("groups").copied() {
         Some(expr) => {
             let groups_name = parse_attr_ident_arg("groups", Some(expr))?;
@@ -368,6 +384,12 @@ fn parse_covenant_declaration<'i>(
 
     if binding == CovenantBinding::Auth && from_value != 1 {
         return Err(CompilerError::Unsupported("binding=auth requires from = 1".to_string()));
+    }
+    if binding == CovenantBinding::Cov && from_value == 1 && args_by_name.contains_key("binding") {
+        eprintln!(
+            "warning: #[covenant(...)] on function '{}' uses binding=cov with from=1; binding=auth is usually a better default",
+            function.name
+        );
     }
     if binding == CovenantBinding::Cov && groups == CovenantGroups::Multiple {
         return Err(CompilerError::Unsupported("binding=cov with groups=multiple is not supported yet".to_string()));
@@ -2105,6 +2127,7 @@ fn compile_inline_call<'i>(
 
     let mut env: HashMap<String, Expr<'i>> = contract_constants.clone();
     let mut inline_params: HashMap<String, i64> = HashMap::new();
+    let mut temp_to_caller_ident: HashMap<String, String> = HashMap::new();
     for (index, (param, arg)) in function.params.iter().zip(args.iter()).enumerate() {
         let resolved = resolve_expr(arg.clone(), caller_env, &mut HashSet::new())?;
         let temp_name = format!("__arg_{name}_{index}");
@@ -2114,7 +2137,8 @@ fn compile_inline_call<'i>(
                 inline_params.insert(temp_name.clone(), *caller_index);
                 types.insert(temp_name.clone(), param_type_name.clone());
                 env.insert(param.name.clone(), Expr::new(ExprKind::Identifier(temp_name.clone()), span::Span::default()));
-                caller_types.insert(temp_name, param_type_name);
+                temp_to_caller_ident.insert(temp_name, identifier.clone());
+                caller_types.entry(identifier.clone()).or_insert_with(|| param_type_name.clone());
                 continue;
             }
         }
@@ -2190,7 +2214,20 @@ fn compile_inline_call<'i>(
         }
     }
 
-    Ok(yields)
+    if temp_to_caller_ident.is_empty() {
+        return Ok(yields);
+    }
+
+    let mut rewritten = Vec::with_capacity(yields.len());
+    for expr in yields {
+        let mut current = expr;
+        for (temp_name, caller_ident) in &temp_to_caller_ident {
+            let replacement = Expr::new(ExprKind::Identifier(caller_ident.clone()), span::Span::default());
+            current = replace_identifier(&current, temp_name, &replacement);
+        }
+        rewritten.push(current);
+    }
+    Ok(rewritten)
 }
 
 #[allow(clippy::too_many_arguments)]

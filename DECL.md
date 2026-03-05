@@ -36,14 +36,22 @@ Canonical form:
 #[covenant(binding = auth|cov, from = X, to = Y, mode = predicate|transition, groups = multiple|single)]
 ```
 
+Minimal common form (defaults inferred):
+
+```js
+#[covenant(from = X, to = Y)]
+```
+
 Rules:
 
 1. `binding = auth` means auth-context lowering (`OpAuth*`).
 2. `binding = cov` means shared covenant-context lowering (`OpCov*`).
 3. `groups` applies to both bindings.
 4. Defaults: `auth -> groups = multiple`, `cov -> groups = single`.
-5. `binding = auth` with `from > 1` is compile error.
-6. `binding = cov` with `groups = multiple` is compile error in v1.
+5. If `binding` is omitted: `from == 1 -> auth`, otherwise `cov`.
+6. If `mode` is omitted: no returns -> `predicate`, has returns -> `transition`.
+7. `binding = auth` with `from > 1` is compile error.
+8. `binding = cov` with `groups = multiple` is compile error in v1.
 
 ### 1:N predicate
 

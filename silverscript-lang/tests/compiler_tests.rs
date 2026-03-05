@@ -348,10 +348,50 @@ fn lowers_auth_covenant_declaration_and_keeps_original_entrypoint_name() {
 }
 
 #[test]
+fn infers_auth_binding_from_from_equal_one_when_binding_omitted() {
+    let source = r#"
+        contract Decls(int max_outs) {
+            #[covenant(from = 1, to = max_outs)]
+            function spend(int amount) {
+                require(amount >= 0);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[Expr::int(3)], CompileOptions::default()).expect("compile succeeds");
+    assert!(compiled.without_selector);
+    assert_eq!(compiled.abi.len(), 1);
+    assert_eq!(compiled.abi[0].name, "spend");
+    assert!(compiled.ast.functions.iter().any(|f| f.name == "__covenant_policy_spend" && !f.entrypoint));
+    assert!(compiled.ast.functions.iter().any(|f| f.name == "spend" && f.entrypoint));
+    assert!(compiled.script.contains(&OpAuthOutputCount));
+}
+
+#[test]
 fn lowers_cov_covenant_to_leader_and_delegate_entrypoints() {
     let source = r#"
         contract Decls(int max_ins, int max_outs) {
             #[covenant(binding = cov, from = max_ins, to = max_outs, mode = predicate)]
+            function transition_ok(int nonce) {
+                require(nonce >= 0);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[Expr::int(2), Expr::int(4)], CompileOptions::default()).expect("compile succeeds");
+    let abi_names: Vec<&str> = compiled.abi.iter().map(|entry| entry.name.as_str()).collect();
+    assert_eq!(abi_names, vec!["transition_ok_leader", "transition_ok_delegate"]);
+    assert!(compiled.ast.functions.iter().any(|f| f.name == "__covenant_policy_transition_ok" && !f.entrypoint));
+    assert!(compiled.script.contains(&OpCovInputCount));
+    assert!(compiled.script.contains(&OpCovOutCount));
+    assert!(compiled.script.contains(&OpCovInputIdx));
+}
+
+#[test]
+fn infers_cov_binding_from_from_greater_than_one_when_binding_omitted() {
+    let source = r#"
+        contract Decls(int max_ins, int max_outs) {
+            #[covenant(from = max_ins, to = max_outs)]
             function transition_ok(int nonce) {
                 require(nonce >= 0);
             }
@@ -395,6 +435,36 @@ fn rejects_cov_covenant_groups_multiple_for_now() {
 
     let err = compile_contract(source, &[], CompileOptions::default()).expect_err("cov groups=multiple should be rejected");
     assert!(err.to_string().contains("binding=cov with groups=multiple is not supported yet"));
+}
+
+#[test]
+fn infers_predicate_mode_when_mode_omitted_and_no_returns() {
+    let source = r#"
+        contract Decls() {
+            #[covenant(from = 1, to = 2)]
+            function check(int x) {
+                require(x >= 0);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    assert!(compiled.ast.functions.iter().any(|f| f.name == "check" && f.entrypoint));
+}
+
+#[test]
+fn infers_transition_mode_when_mode_omitted_and_has_returns() {
+    let source = r#"
+        contract Decls() {
+            #[covenant(from = 1, to = 1)]
+            function roll(int x) : (int) {
+                return(x + 1);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    assert!(compiled.ast.functions.iter().any(|f| f.name == "roll" && f.entrypoint));
 }
 
 #[test]
