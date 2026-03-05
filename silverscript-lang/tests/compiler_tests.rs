@@ -1892,6 +1892,37 @@ fn runs_contract_with_fields_prolog() {
 }
 
 #[test]
+fn runs_selector_dispatch_with_contract_fields() {
+    let source = r#"
+        contract C() {
+            int x = 5;
+            byte[2] y = 0x1234;
+
+            entrypoint function a() {
+                require(true);
+            }
+
+            entrypoint function b() {
+                require(x == 5);
+                require(y == 0x1234);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    assert!(!compiled.without_selector, "test requires selector dispatch");
+
+    let sigscript_a = compiled.build_sig_script("a", vec![]).expect("sigscript a builds");
+    let sigscript_b = compiled.build_sig_script("b", vec![]).expect("sigscript b builds");
+
+    let result_a = run_script_with_sigscript(compiled.script.clone(), sigscript_a);
+    assert!(result_a.is_ok(), "entrypoint a runtime failed: {}", result_a.unwrap_err());
+
+    let result_b = run_script_with_sigscript(compiled.script, sigscript_b);
+    assert!(result_b.is_ok(), "entrypoint b runtime failed: {}", result_b.unwrap_err());
+}
+
+#[test]
 fn compiles_validate_output_state_to_expected_script() {
     let source = r#"
         contract C(int init_x, byte[2] init_y) {
