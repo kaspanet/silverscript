@@ -33,7 +33,7 @@ Only policy functions are annotated.
 Canonical form:
 
 ```js
-#[covenant(binding = auth|cov, from = X, to = Y, mode = verification|transition, groups = multiple|single)]
+#[covenant(binding = auth|cov, from = X, to = Y, mode = verification|transition, groups = multiple|single, termination = disallowed|allowed)]
 ```
 
 Minimal common form (defaults inferred):
@@ -59,6 +59,9 @@ Rules:
 6. If `mode` is omitted: no returns -> `verification`, has returns -> `transition`.
 7. `binding = auth` with `from > 1` is compile error.
 8. `binding = cov` with `groups = multiple` is compile error in v1.
+9. `termination` is only relevant for singleton transition (`from = 1, to = 1, mode = transition`).
+10. If omitted in singleton transition, `termination` defaults to `disallowed`.
+11. Using `termination` outside singleton transition is a compile error.
 
 ### 1:N verification
 
@@ -119,6 +122,35 @@ Verification mode is the default convenience mode.
 Transition mode allows extra call args (`fee` above, etc.) and the policy computes `new_states`.
 
 Important: in both verification and transition modes, any extra call args (beyond state values that are validated on outputs) are not directly committed by tx structure. The compiler/runtime must define a commitment story (and enforce determinism) for those args.
+
+Cardinality in transition mode:
+
+1. Single-state return shape -> exact one continuation (`out_count == 1`) with direct `validateOutputState(...)` (no loop).
+2. Per-field array return shape -> exact cardinality by returned length (`out_count == returned_len`) and per-output validation in a loop.
+3. For singleton (`from=1,to=1`), per-field arrays are rejected by default.
+4. Singleton per-field arrays are allowed only with `termination = allowed`; this enables explicit zero-or-one continuation.
+
+### Singleton termination opt-in
+
+Default singleton transition is strict continuation:
+
+```js
+#[covenant.singleton(mode = transition)]
+function bump(int delta) : (int) {
+    return(value + delta);
+}
+```
+
+Termination-enabled singleton transition:
+
+```js
+#[covenant.singleton(mode = transition, termination = allowed)]
+function bump_or_terminate(int[] next_values) : (int[]) {
+    // [] => terminate
+    // [x] => continue with one successor
+    return(next_values);
+}
+```
 
 ### `for(i, 0, dyn_len, const_max)` lowering (follow-up)
 

@@ -49,6 +49,17 @@ const AUTH_SINGLETON_TRANSITION_SOURCE: &str = r#"
     }
 "#;
 
+const AUTH_SINGLETON_TRANSITION_TERMINATION_ALLOWED_SOURCE: &str = r#"
+    contract Decls(int init_value) {
+        int value = init_value;
+
+        #[covenant.singleton(mode = transition, termination = allowed)]
+        function bump_or_terminate(int[] next_values) : (int[]) {
+            return(next_values);
+        }
+    }
+"#;
+
 const COV_N_TO_M_SOURCE: &str = r#"
     contract Pair(int init_value) {
         int value = init_value;
@@ -391,6 +402,64 @@ fn singleton_transition_rejects_two_authorized_outputs() {
     let entries = vec![covenant_utxo(&active, COV_A)];
 
     let err = execute_input_with_covenants(tx, entries, 0).expect_err("singleton transition must reject two authorized outputs");
+    assert_verify_like_error(err);
+}
+
+#[test]
+fn singleton_transition_rejects_missing_authorized_output() {
+    let active = compile_state(AUTH_SINGLETON_TRANSITION_SOURCE, 10);
+
+    let input0 = tx_input(0, covenant_sigscript(&active, "bump", vec![Expr::int(3)]));
+    let tx = Transaction::new(1, vec![input0], vec![], 0, Default::default(), 0, vec![]);
+    let entries = vec![covenant_utxo(&active, COV_A)];
+
+    let err = execute_input_with_covenants(tx, entries, 0).expect_err("singleton transition must reject missing authorized output");
+    assert_verify_like_error(err);
+}
+
+#[test]
+fn singleton_transition_termination_allowed_accepts_zero_outputs() {
+    let active = compile_state(AUTH_SINGLETON_TRANSITION_TERMINATION_ALLOWED_SOURCE, 10);
+
+    let input0 = tx_input(0, covenant_sigscript(&active, "bump_or_terminate", vec![Vec::<i64>::new().into()]));
+    let tx = Transaction::new(1, vec![input0], vec![], 0, Default::default(), 0, vec![]);
+    let entries = vec![covenant_utxo(&active, COV_A)];
+
+    let result = execute_input_with_covenants(tx, entries, 0);
+    assert!(
+        result.is_ok(),
+        "singleton transition with termination=allowed should accept empty successor set: {}",
+        result.unwrap_err()
+    );
+}
+
+#[test]
+fn singleton_transition_termination_allowed_accepts_one_output() {
+    let active = compile_state(AUTH_SINGLETON_TRANSITION_TERMINATION_ALLOWED_SOURCE, 10);
+    let out = compile_state(AUTH_SINGLETON_TRANSITION_TERMINATION_ALLOWED_SOURCE, 13);
+
+    let input0 = tx_input(0, covenant_sigscript(&active, "bump_or_terminate", vec![vec![13i64].into()]));
+    let outputs = vec![covenant_output(&out, 0, COV_A)];
+    let tx = Transaction::new(1, vec![input0], outputs, 0, Default::default(), 0, vec![]);
+    let entries = vec![covenant_utxo(&active, COV_A)];
+
+    let result = execute_input_with_covenants(tx, entries, 0);
+    assert!(result.is_ok(), "singleton transition with one successor should succeed: {}", result.unwrap_err());
+}
+
+#[test]
+fn singleton_transition_termination_allowed_rejects_two_outputs() {
+    let active = compile_state(AUTH_SINGLETON_TRANSITION_TERMINATION_ALLOWED_SOURCE, 10);
+    let out0 = compile_state(AUTH_SINGLETON_TRANSITION_TERMINATION_ALLOWED_SOURCE, 13);
+    let out1 = compile_state(AUTH_SINGLETON_TRANSITION_TERMINATION_ALLOWED_SOURCE, 14);
+
+    let input0 = tx_input(0, covenant_sigscript(&active, "bump_or_terminate", vec![vec![13i64, 14i64].into()]));
+    let outputs = vec![covenant_output(&out0, 0, COV_A), covenant_output(&out1, 0, COV_A)];
+    let tx = Transaction::new(1, vec![input0], outputs, 0, Default::default(), 0, vec![]);
+    let entries = vec![covenant_utxo(&active, COV_A)];
+
+    let err = execute_input_with_covenants(tx, entries, 0)
+        .expect_err("singleton transition with termination=allowed must still reject >1 authorized outputs");
     assert_verify_like_error(err);
 }
 

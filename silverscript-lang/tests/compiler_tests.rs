@@ -534,6 +534,93 @@ fn infers_transition_mode_when_mode_omitted_and_has_returns() {
 }
 
 #[test]
+fn rejects_singleton_transition_array_returns_without_termination_allowed() {
+    let source = r#"
+        contract Decls(int init_value) {
+            int value = init_value;
+
+            #[covenant.singleton(mode = transition)]
+            function roll(int[] next_values) : (int[]) {
+                return(next_values);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[Expr::int(3)], CompileOptions::default())
+        .expect_err("singleton transition arrays should require termination=allowed");
+    assert!(err.to_string().contains("arrays are not allowed unless termination=allowed"));
+}
+
+#[test]
+fn allows_singleton_transition_array_returns_with_termination_allowed() {
+    let source = r#"
+        contract Decls(int init_value) {
+            int value = init_value;
+
+            #[covenant.singleton(mode = transition, termination = allowed)]
+            function roll(int[] next_values) : (int[]) {
+                return(next_values);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[Expr::int(3)], CompileOptions::default()).expect("compile succeeds");
+    assert!(compiled.ast.functions.iter().any(|f| f.name == "roll" && f.entrypoint));
+}
+
+#[test]
+fn rejects_termination_allowed_for_non_singleton() {
+    let source = r#"
+        contract Decls(int max_outs, int init_value) {
+            int value = init_value;
+
+            #[covenant(from = 1, to = max_outs, mode = transition, termination = allowed)]
+            function roll(int[] next_values) : (int[]) {
+                return(next_values);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[Expr::int(3), Expr::int(10)], CompileOptions::default())
+        .expect_err("termination=allowed should be singleton-only");
+    assert!(err.to_string().contains("termination is only supported for singleton covenants"));
+}
+
+#[test]
+fn rejects_termination_disallowed_for_non_singleton() {
+    let source = r#"
+        contract Decls(int max_outs, int init_value) {
+            int value = init_value;
+
+            #[covenant(from = 1, to = max_outs, mode = transition, termination = disallowed)]
+            function roll(int[] next_values) : (int[]) {
+                return(next_values);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[Expr::int(3), Expr::int(10)], CompileOptions::default())
+        .expect_err("termination arg should be singleton-only regardless of value");
+    assert!(err.to_string().contains("termination is only supported for singleton covenants"));
+}
+
+#[test]
+fn rejects_termination_in_verification_mode() {
+    let source = r#"
+        contract Decls() {
+            #[covenant.singleton(mode = verification, termination = allowed)]
+            function check() {
+                require(true);
+            }
+        }
+    "#;
+
+    let err =
+        compile_contract(source, &[], CompileOptions::default()).expect_err("termination should not be allowed in verification mode");
+    assert!(err.to_string().contains("termination is only supported in mode=transition"));
+}
+
+#[test]
 fn rejects_transition_mode_without_return_values() {
     let source = r#"
         contract Decls() {

@@ -1,4 +1,4 @@
-use silverscript_lang::ast::{BinaryOp, Expr, ExprKind, FunctionAst, NullaryOp, Statement};
+use silverscript_lang::ast::{BinaryOp, Expr, ExprKind, FunctionAst, NullaryOp, Statement, UnarySuffixKind};
 use silverscript_lang::compiler::{CompileOptions, compile_contract};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,6 +29,8 @@ enum ExprShape {
     Identifier(String),
     Nullary(NullaryOp),
     Call { name: String, args: Vec<ExprShape> },
+    ArrayIndex { source: Box<ExprShape>, index: Box<ExprShape> },
+    UnarySuffix { source: Box<ExprShape>, kind: UnarySuffixKind },
     StateObject(Vec<(String, ExprShape)>),
     Binary { op: BinaryOp, left: Box<ExprShape>, right: Box<ExprShape> },
 }
@@ -52,6 +54,10 @@ fn normalize_expr(expr: &Expr<'_>) -> ExprShape {
         ExprKind::Call { name, args, .. } => {
             ExprShape::Call { name: canonicalize_generated_name(name), args: args.iter().map(normalize_expr).collect() }
         }
+        ExprKind::ArrayIndex { source, index } => {
+            ExprShape::ArrayIndex { source: Box::new(normalize_expr(source)), index: Box::new(normalize_expr(index)) }
+        }
+        ExprKind::UnarySuffix { source, kind, .. } => ExprShape::UnarySuffix { source: Box::new(normalize_expr(source)), kind: *kind },
         ExprKind::StateObject(fields) => {
             ExprShape::StateObject(fields.iter().map(|field| (field.name.clone(), normalize_expr(&field.expr))).collect())
         }
@@ -150,13 +156,13 @@ fn lowers_auth_groups_single_to_expected_wrapper_ast() {
 
             entrypoint function split(int amount) {
                 int cov_out_count = OpAuthOutputCount(this.activeInputIndex);
-                require(cov_out_count <= max_outs);
 
                 byte[32] cov_id = OpInputCovenantId(this.activeInputIndex);
                 int cov_shared_out_count = OpCovOutCount(cov_id);
                 require(cov_shared_out_count == cov_out_count);
 
                 covenant_policy_split(amount);
+                require(cov_out_count <= max_outs);
 
                 for(cov_k, 0, max_outs) {
                     if (cov_k < cov_out_count) {
@@ -201,7 +207,6 @@ fn lowers_cov_to_leader_and_delegate_expected_wrapper_ast() {
                 require(cov_in_count <= max_ins);
 
                 int cov_out_count = OpCovOutCount(cov_id);
-                require(cov_out_count <= max_outs);
 
                 for(cov_in_k, 0, max_ins) {
                     if (cov_in_k < cov_in_count) {
@@ -211,6 +216,7 @@ fn lowers_cov_to_leader_and_delegate_expected_wrapper_ast() {
                 }
 
                 covenant_policy_transition_ok(delta);
+                require(cov_out_count <= max_outs);
 
                 for(cov_k, 0, max_outs) {
                     if (cov_k < cov_out_count) {
@@ -254,19 +260,97 @@ fn lowers_singleton_transition_uses_returned_state_in_validation() {
 
             entrypoint function bump(int delta) {
                 int cov_out_count = OpAuthOutputCount(this.activeInputIndex);
-                require(cov_out_count <= 1);
 
                 (int cov_new_value) = covenant_policy_bump(delta);
+                require(cov_out_count == 1);
 
-                for(cov_k, 0, 1) {
+                int cov_out_idx = OpAuthOutputIdx(this.activeInputIndex, 0);
+                validateOutputState(cov_out_idx, { value: cov_new_value });
+            }
+        }
+    "#;
+
+    assert_lowers_to_expected_ast(source, expected_lowered, &[Expr::int(7)]);
+}
+
+#[test]
+fn lowers_transition_array_return_to_exact_output_count_match() {
+    let source = r#"
+        contract Decls(int max_outs, int init_value) {
+            int value = init_value;
+
+            #[covenant(from = 1, to = max_outs, mode = transition)]
+            function fanout(int[] next_values) : (int[]) {
+                return(next_values);
+            }
+        }
+    "#;
+
+    let expected_lowered = r#"
+        contract Decls(int max_outs, int init_value) {
+            int value = init_value;
+
+            function covenant_policy_fanout(int[] next_values) : (int[]) {
+                return(next_values);
+            }
+
+            entrypoint function fanout(int[] next_values) {
+                int cov_out_count = OpAuthOutputCount(this.activeInputIndex);
+
+                (int[] cov_new_value) = covenant_policy_fanout(next_values);
+                require(cov_out_count <= max_outs);
+                require(cov_out_count == cov_new_value.length);
+
+                for(cov_k, 0, max_outs) {
                     if (cov_k < cov_out_count) {
                         int cov_out_idx = OpAuthOutputIdx(this.activeInputIndex, cov_k);
-                        validateOutputState(cov_out_idx, { value: cov_new_value });
+                        validateOutputState(cov_out_idx, { value: cov_new_value[cov_k] });
                     }
                 }
             }
         }
     "#;
 
-    assert_lowers_to_expected_ast(source, expected_lowered, &[Expr::int(7)]);
+    assert_lowers_to_expected_ast(source, expected_lowered, &[Expr::int(4), Expr::int(10)]);
+}
+
+#[test]
+fn lowers_singleton_transition_with_termination_allowed_to_array_cardinality_checks() {
+    let source = r#"
+        contract Decls(int init_value) {
+            int value = init_value;
+
+            #[covenant.singleton(mode = transition, termination = allowed)]
+            function bump_or_terminate(int[] next_values) : (int[]) {
+                return(next_values);
+            }
+        }
+    "#;
+
+    let expected_lowered = r#"
+        contract Decls(int init_value) {
+            int value = init_value;
+
+            function covenant_policy_bump_or_terminate(int[] next_values) : (int[]) {
+                return(next_values);
+            }
+
+            entrypoint function bump_or_terminate(int[] next_values) {
+                int cov_out_count = OpAuthOutputCount(this.activeInputIndex);
+
+                (int[] cov_new_value) = covenant_policy_bump_or_terminate(next_values);
+                require(cov_out_count <= 1);
+                require(cov_out_count == cov_new_value.length);
+
+                for(cov_k, 0, 1) {
+                    if (cov_k < cov_out_count) {
+                        int cov_out_idx = OpAuthOutputIdx(this.activeInputIndex, cov_k);
+                        validateOutputState(cov_out_idx, { value: cov_new_value[cov_k] });
+                    }
+                }
+            }
+        }
+    "#;
+
+    assert_lowers_to_expected_ast(source, expected_lowered, &[Expr::int(10)]);
 }
