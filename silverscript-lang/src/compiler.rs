@@ -1724,7 +1724,7 @@ fn compile_validate_output_state_statement(
 fn compile_inline_call<'i>(
     name: &str,
     args: &[Expr<'i>],
-    caller_params: &HashMap<String, i64>,
+    params: &HashMap<String, i64>,
     caller_types: &mut HashMap<String, String>,
     caller_env: &mut HashMap<String, Expr<'i>>,
     builder: &mut ScriptBuilder,
@@ -1801,7 +1801,6 @@ fn compile_inline_call<'i>(
     }
 
     let mut yields: Vec<Expr<'i>> = Vec::new();
-    let params = caller_params.clone();
     let body_len = function.body.len();
     for (index, stmt) in function.body.iter().enumerate() {
         if let Statement::Return { exprs, .. } = stmt {
@@ -1819,7 +1818,7 @@ fn compile_inline_call<'i>(
         compile_statement(
             stmt,
             &mut env,
-            &params,
+            params,
             &mut types,
             builder,
             options,
