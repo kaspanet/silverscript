@@ -1,6 +1,6 @@
 use silverscript_lang::debug_info::SourceSpan;
 
-use crate::session::DebugValue;
+use crate::session::{DebugValue, FailureReport};
 use crate::util::{decode_i64, encode_hex};
 
 #[derive(Debug, Clone)]
@@ -110,4 +110,68 @@ fn array_element_size(element_type: &str) -> Option<usize> {
         "byte" => Some(1),
         other => other.strip_prefix("bytes").and_then(|v| v.parse::<usize>().ok()),
     }
+}
+
+/// Renders a `FailureReport` in a Rust-style diagnostic format.
+pub fn format_failure_report(report: &FailureReport, format_var: &dyn Fn(&str, &DebugValue) -> String) -> String {
+    let source_lines: Vec<&str> = report.source_text.lines().collect();
+    let mut out = String::new();
+
+    let max_line = report.frames.iter().filter_map(|f| f.span.map(|s| s.line)).max().unwrap_or(1);
+    let w = format!("{max_line}").len().max(2);
+    let pad = " ".repeat(w);
+
+    out.push_str(&format!("error: {}\n", report.message));
+
+    for (frame_idx, frame) in report.frames.iter().enumerate() {
+        let Some(span) = frame.span else {
+            continue;
+        };
+
+        let line_idx = span.line.saturating_sub(1) as usize;
+
+        if frame_idx == 0 {
+            out.push_str(&format!("{pad} --> {}:{}\n", span.line, span.col));
+        } else {
+            out.push_str(&format!("{pad} ::: called from {}\n", frame.function_name));
+        }
+
+        out.push_str(&format!("{pad} |\n"));
+
+        if line_idx > 0 {
+            if let Some(prev) = source_lines.get(line_idx - 1) {
+                out.push_str(&format!("{:>w$} | {prev}\n", span.line - 1));
+            }
+        }
+
+        if let Some(line_text) = source_lines.get(line_idx) {
+            out.push_str(&format!("{:>w$} | {line_text}\n", span.line));
+
+            let start_col = span.col.saturating_sub(1) as usize;
+            let end_col = if span.end_line == span.line && span.end_col > span.col {
+                span.end_col.saturating_sub(1) as usize
+            } else {
+                line_text.len()
+            };
+            let underline_len = end_col.saturating_sub(start_col).max(1);
+            let marker_pad = " ".repeat(start_col);
+            let underline = "^".repeat(underline_len);
+            let label = if frame_idx == 0 { " verification failed here" } else { " in this call" };
+            out.push_str(&format!("{pad} | {marker_pad}{underline}{label}\n"));
+
+            if !frame.variables.is_empty() {
+                let vars_str = frame
+                    .variables
+                    .iter()
+                    .map(|var| format!("{} = {}", var.name, format_var(&var.type_name, &var.value)))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                out.push_str(&format!("{pad} |   {vars_str}\n"));
+            }
+        }
+
+        out.push_str(&format!("{pad} |\n"));
+    }
+
+    out
 }

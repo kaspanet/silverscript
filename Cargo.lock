@@ -767,11 +767,9 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "debugger-session",
- "faster-hex 0.10.0",
  "kaspa-consensus-core",
  "kaspa-txscript",
  "kaspa-txscript-errors",
- "serde_json",
  "silverscript-lang",
 ]
 

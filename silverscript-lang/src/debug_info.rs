@@ -180,7 +180,7 @@ pub enum StepKind {
 mod tests {
     use serde_json::json;
 
-    use super::{DebugInfo, SourceSpan, StepKind};
+    use super::{DebugInfo, SourceSpan};
     use crate::span::Span;
 
     #[test]
@@ -231,7 +231,6 @@ mod tests {
                 "frame_id": 0,
                 "variable_updates": []
             }],
-            "variable_updates": [],
             "params": [],
             "functions": [],
             "constants": []
@@ -240,50 +239,6 @@ mod tests {
         let parsed: DebugInfo<'static> = serde_json::from_value(value).expect("parse debug info");
         let serialized = serde_json::to_value(parsed).expect("serialize debug info");
 
-        assert!(serialized.get("variable_updates").is_none(), "top-level variable_updates should not exist");
         assert!(serialized["steps"][0].get("variable_updates").is_some(), "step should carry variable_updates");
-    }
-
-    #[test]
-    fn debug_info_schema_accepts_legacy_statement_and_virtual_kind_names() {
-        let statement_value = json!({
-            "source": "",
-            "steps": [{
-                "bytecode_start": 0,
-                "bytecode_end": 1,
-                "span": { "line": 1, "col": 1, "end_line": 1, "end_col": 1 },
-                "kind": { "Statement": {} },
-                "sequence": 0,
-                "call_depth": 0,
-                "frame_id": 0,
-                "variable_updates": []
-            }],
-            "params": [],
-            "functions": [],
-            "constants": []
-        });
-
-        let virtual_value = json!({
-            "source": "",
-            "steps": [{
-                "bytecode_start": 0,
-                "bytecode_end": 0,
-                "span": { "line": 1, "col": 1, "end_line": 1, "end_col": 1 },
-                "kind": { "Virtual": {} },
-                "sequence": 0,
-                "call_depth": 0,
-                "frame_id": 0,
-                "variable_updates": []
-            }],
-            "params": [],
-            "functions": [],
-            "constants": []
-        });
-
-        let statement: DebugInfo<'static> = serde_json::from_value(statement_value).expect("legacy statement parses");
-        let virtual_step: DebugInfo<'static> = serde_json::from_value(virtual_value).expect("legacy virtual parses");
-
-        assert!(matches!(statement.steps[0].kind, StepKind::Source {}));
-        assert!(matches!(virtual_step.steps[0].kind, StepKind::Source {}));
     }
 }

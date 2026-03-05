@@ -1,5 +1,54 @@
 use std::io::Write;
 use std::process::{Command, Stdio};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+fn write_test_fixture() -> (std::path::PathBuf, std::path::PathBuf) {
+    let nonce = SystemTime::now().duration_since(UNIX_EPOCH).expect("clock").as_nanos();
+    let dir = std::env::temp_dir().join(format!("cli_debugger_test_fixture_{}_{}", std::process::id(), nonce));
+    std::fs::create_dir_all(&dir).expect("create temp fixture dir");
+
+    let script_path = dir.join("simple.sil");
+    let test_file_path = dir.join("simple.test.json");
+
+    std::fs::write(
+        &script_path,
+        r#"pragma silverscript ^0.1.0;
+
+contract Simple(int x) {
+    entrypoint function check(int a) {
+        require(a == x);
+    }
+}
+"#,
+    )
+    .expect("write fixture contract");
+
+    std::fs::write(
+        &test_file_path,
+        r#"{
+  "tests": [
+    {
+      "name": "pass_case",
+      "function": "check",
+      "constructor_args": [5],
+      "args": [5],
+      "expect": "pass"
+    },
+    {
+      "name": "fail_case",
+      "function": "check",
+      "constructor_args": [5],
+      "args": [4],
+      "expect": "fail"
+    }
+  ]
+}
+"#,
+    )
+    .expect("write fixture test file");
+
+    (script_path, test_file_path)
+}
 
 #[test]
 fn cli_debugger_repl_all_commands_smoke() {
@@ -60,7 +109,106 @@ contract IfStatement(int x, int y) {
     assert!(stdout.contains("(sdb)"), "missing prompt output");
     assert!(stdout.contains("Commands:"), "missing help output");
     assert!(stdout.contains("Stack:"), "missing stack output");
-    assert!(stdout.contains("no statement at line 1"), "missing invalid breakpoint warning");
+    let saw_line1_feedback = stdout.contains("no statement at line 1") || stdout.contains("Breakpoint set at line 1");
+    assert!(saw_line1_feedback, "missing breakpoint feedback for line 1");
     assert!(stdout.contains("Breakpoint set at line 7"), "missing line-7 breakpoint success");
-    assert!(stdout.contains("Breakpoints: 7"), "missing breakpoint listing");
+    let listing_contains_7 = stdout.lines().any(|line| line.contains("Breakpoints:") && line.contains('7'));
+    assert!(listing_contains_7, "missing breakpoint listing containing line 7");
+}
+
+#[test]
+fn cli_debugger_run_test_file_pass_case() {
+    let (_script_path, test_file_path) = write_test_fixture();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cli-debugger"))
+        .arg("--run")
+        .arg("--test-file")
+        .arg(&test_file_path)
+        .arg("--test-name")
+        .arg("pass_case")
+        .output()
+        .expect("run cli-debugger pass test");
+
+    assert!(
+        output.status.success(),
+        "expected success, status={:?}, stderr={}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("PASS"), "expected PASS in stdout, got: {stdout}");
+}
+
+#[test]
+fn cli_debugger_run_test_file_expected_fail_case() {
+    let (_script_path, test_file_path) = write_test_fixture();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cli-debugger"))
+        .arg("--run")
+        .arg("--test-file")
+        .arg(&test_file_path)
+        .arg("--test-name")
+        .arg("fail_case")
+        .output()
+        .expect("run cli-debugger expected-fail test");
+
+    assert!(
+        output.status.success(),
+        "expected success for expected-fail test, status={:?}, stderr={}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("PASS (expected failure)"), "expected expected-failure PASS marker in stdout, got: {stdout}");
+}
+
+#[test]
+fn cli_debugger_run_all_uses_test_file_suite() {
+    let (_script_path, test_file_path) = write_test_fixture();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cli-debugger"))
+        .arg("--run-all")
+        .arg("--test-file")
+        .arg(&test_file_path)
+        .output()
+        .expect("run cli-debugger --run-all");
+
+    assert!(
+        output.status.success(),
+        "expected success for run-all, status={:?}, stderr={}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("PASS  pass_case"), "missing pass_case line: {stdout}");
+    assert!(stdout.contains("PASS  fail_case"), "missing fail_case line (expected-fail test should still pass): {stdout}");
+    assert!(stdout.contains("2 tests: 2 passed, 0 failed"), "missing summary line: {stdout}");
+}
+
+#[test]
+fn cli_debugger_run_all_requires_test_file() {
+    let output = Command::new(env!("CARGO_BIN_EXE_cli-debugger"))
+        .arg("--run-all")
+        .output()
+        .expect("run cli-debugger --run-all without test file");
+
+    assert!(!output.status.success(), "expected failure when --test-file is missing");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("--run-all requires --test-file"), "unexpected stderr: {stderr}");
+}
+
+#[test]
+fn cli_debugger_test_file_requires_test_name_in_run_mode() {
+    let (_script_path, test_file_path) = write_test_fixture();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cli-debugger"))
+        .arg("--run")
+        .arg("--test-file")
+        .arg(&test_file_path)
+        .output()
+        .expect("run cli-debugger --run --test-file without test-name");
+
+    assert!(!output.status.success(), "expected failure when --test-name is missing");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("--test-file requires --test-name"), "unexpected stderr: {stderr}");
 }

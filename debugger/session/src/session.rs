@@ -6,6 +6,7 @@ use kaspa_txscript::caches::Cache;
 use kaspa_txscript::covenants::CovenantsContext;
 use kaspa_txscript::script_builder::ScriptBuilder;
 use kaspa_txscript::{DynOpcodeImplementation, EngineCtx, EngineFlags, TxScriptEngine, parse_script};
+use serde::{Deserialize, Serialize};
 
 use silverscript_lang::ast::{Expr, ExprKind};
 use silverscript_lang::compiler::compile_debug_expr;
@@ -74,6 +75,48 @@ pub struct SessionState<'i> {
     pub opcode: Option<String>,
     pub step: Option<DebugStep<'i>>,
     pub stack: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CallStackEntry {
+    pub callee_name: String,
+    pub call_site_span: Option<SourceSpan>,
+    /// Sequence of the InlineCallEnter step (caller's context).
+    pub sequence: u32,
+    /// Frame ID of the InlineCallEnter step (caller's frame).
+    pub frame_id: u32,
+}
+
+#[derive(Debug, Clone)]
+pub struct FailureFrame {
+    pub function_name: String,
+    /// Source location: failure site for innermost frame, call-site for callers.
+    pub span: Option<SourceSpan>,
+    pub variables: Vec<Variable>,
+}
+
+#[derive(Debug, Clone)]
+pub struct FailureReport {
+    /// Human-readable description, e.g. "require() failed".
+    pub message: String,
+    /// Innermost frame first.
+    pub frames: Vec<FailureFrame>,
+    /// Full source text for rendering context lines.
+    pub source_text: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StackSnapshot {
+    pub dstack: Vec<String>,
+    pub astack: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpcodeMeta<'i> {
+    pub index: usize,
+    pub byte_offset: usize,
+    pub display: String,
+    pub step: Option<DebugStep<'i>>,
 }
 
 pub struct DebugSession<'a, 'i> {
@@ -332,6 +375,34 @@ impl<'a, 'i> DebugSession<'a, 'i> {
         valid
     }
 
+    /// Resolves a requested source line to a steppable line, preferring exact
+    /// hits then the next steppable line.
+    pub fn resolve_breakpoint_line(&self, line: u32) -> Option<u32> {
+        let mut next: Option<u32> = None;
+        for step in self.step_order.iter().filter_map(|&index| self.debug_info.steps.get(index)) {
+            if !self.is_steppable_step(step) {
+                continue;
+            }
+            if line >= step.span.line && line <= step.span.end_line {
+                return Some(line);
+            }
+            if step.span.line > line {
+                match next {
+                    Some(current) if current <= step.span.line => {}
+                    _ => next = Some(step.span.line),
+                }
+            }
+        }
+        next
+    }
+
+    /// Resolves and adds a breakpoint. Returns the actual line if set.
+    pub fn add_breakpoint_resolved(&mut self, line: u32) -> Option<u32> {
+        let resolved = self.resolve_breakpoint_line(line)?;
+        self.breakpoints.insert(resolved);
+        Some(resolved)
+    }
+
     /// Returns all currently set breakpoint line numbers.
     pub fn breakpoints(&self) -> Vec<u32> {
         let mut lines = self.breakpoints.iter().copied().collect::<Vec<_>>();
@@ -403,6 +474,32 @@ impl<'a, 'i> DebugSession<'a, 'i> {
             };
             match &step.kind {
                 StepKind::InlineCallEnter { callee } => stack.push(callee.clone()),
+                StepKind::InlineCallExit { .. } => {
+                    stack.pop();
+                }
+                _ => {}
+            }
+        }
+        stack
+    }
+
+    /// Returns the active inline call stack with source spans and frame identity.
+    pub fn call_stack_with_spans(&self) -> Vec<CallStackEntry> {
+        let mut stack = Vec::new();
+        let Some(current) = self.current_step_index else {
+            return stack;
+        };
+        for order_index in 0..=current {
+            let Some(step) = self.step_at_order(order_index) else {
+                continue;
+            };
+            match &step.kind {
+                StepKind::InlineCallEnter { callee } => stack.push(CallStackEntry {
+                    callee_name: callee.clone(),
+                    call_site_span: Some(step.span),
+                    sequence: step.sequence,
+                    frame_id: step.frame_id,
+                }),
                 StepKind::InlineCallExit { .. } => {
                     stack.pop();
                 }
@@ -611,6 +708,55 @@ impl<'a, 'i> DebugSession<'a, 'i> {
     pub fn stack(&self) -> Vec<String> {
         let stacks = self.engine.stacks();
         stacks.dstack.iter().map(|item| encode_hex(item)).collect()
+    }
+
+    /// Returns both main and alt stacks as hex strings.
+    pub fn stack_snapshot(&self) -> StackSnapshot {
+        let stacks = self.engine.stacks();
+        StackSnapshot {
+            dstack: stacks.dstack.iter().map(|item| encode_hex(item)).collect(),
+            astack: stacks.astack.iter().map(|item| encode_hex(item)).collect(),
+        }
+    }
+
+    /// Returns bytecode/opcode metadata aligned with source steps.
+    pub fn opcode_metas(&self) -> Vec<OpcodeMeta<'i>> {
+        self.op_displays
+            .iter()
+            .enumerate()
+            .map(|(index, display)| OpcodeMeta {
+                index,
+                byte_offset: self.opcode_offsets.get(index).copied().unwrap_or(self.script_len),
+                display: display.clone(),
+                step: self.step_for_offset(self.opcode_offsets.get(index).copied().unwrap_or(self.script_len)).cloned(),
+            })
+            .collect()
+    }
+
+    /// Builds a structured failure report suitable for CLI/DAP rendering.
+    pub fn build_failure_report(&self, error: &kaspa_txscript_errors::TxScriptError) -> FailureReport {
+        let failure_span = self.current_span();
+        let call_stack = self.call_stack_with_spans();
+        let innermost_function = self.current_function_name().unwrap_or("<unknown>").to_string();
+        let innermost_vars: Vec<Variable> = self.list_variables().unwrap_or_default().into_iter().filter(|v| !v.is_constant).collect();
+
+        let mut frames =
+            vec![FailureFrame { function_name: innermost_function.clone(), span: failure_span, variables: innermost_vars }];
+
+        let entry_name = self.current_function_name().unwrap_or("<entry>").to_string();
+        for idx in (0..call_stack.len()).rev() {
+            let entry = &call_stack[idx];
+            let caller_vars: Vec<Variable> = self
+                .list_variables_at_sequence(entry.sequence, entry.frame_id)
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|v| !v.is_constant)
+                .collect();
+            let caller_name = if idx == 0 { entry_name.clone() } else { call_stack[idx - 1].callee_name.clone() };
+            frames.push(FailureFrame { function_name: caller_name, span: entry.call_site_span, variables: caller_vars });
+        }
+
+        FailureReport { message: format!("{error}"), frames, source_text: self.source_lines.join("\n") }
     }
 
     /// Evaluates an expression using shadow VM execution.
