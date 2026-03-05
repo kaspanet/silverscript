@@ -111,13 +111,18 @@ pub fn compile_contract_ast<'i>(
             }
         }
 
-        let entrypoint_script = if without_selector {
-            compiled_entrypoints
+        let script = if without_selector {
+            let entrypoint_script = compiled_entrypoints
                 .first()
                 .ok_or_else(|| CompilerError::Unsupported("contract has no entrypoint functions".to_string()))?
                 .1
-                .clone()
+                .clone();
+            let mut script = field_prolog_script.clone();
+            script.extend(entrypoint_script);
+            script
         } else {
+            // Dispatch on selector first; each selected branch then executes
+            // the shared contract-field prolog before branch body.
             let mut builder = ScriptBuilder::new();
             let total = compiled_entrypoints.len();
             for (index, (_, script)) in compiled_entrypoints.iter().enumerate() {
@@ -126,6 +131,7 @@ pub fn compile_contract_ast<'i>(
                 builder.add_op(OpNumEqual)?;
                 builder.add_op(OpIf)?;
                 builder.add_op(OpDrop)?;
+                builder.add_ops(&field_prolog_script)?;
                 builder.add_ops(script)?;
                 if index == total - 1 {
                     builder.add_op(OpElse)?;
@@ -143,9 +149,6 @@ pub fn compile_contract_ast<'i>(
 
             builder.drain()
         };
-
-        let mut script = field_prolog_script.clone();
-        script.extend(entrypoint_script);
 
         if !uses_script_size {
             return Ok(CompiledContract {
