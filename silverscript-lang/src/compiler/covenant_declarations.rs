@@ -647,7 +647,6 @@ fn for_statement<'i>(ident: &str, start: Expr<'i>, end: Expr<'i>, body: Vec<Stat
         ident: ident.to_string(),
         start,
         end,
-        max: None,
         body,
         span: span::Span::default(),
         ident_span: span::Span::default(),

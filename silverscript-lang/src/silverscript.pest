@@ -57,7 +57,7 @@ require_statement = { "require" ~ "(" ~ expression ~ ("," ~ require_message)? ~ 
 
 if_statement = { "if" ~ "(" ~ expression ~ ")" ~ block ~ ("else" ~ block)? }
 
-for_statement = { "for" ~ "(" ~ Identifier ~ "," ~ expression ~ "," ~ expression ~ ("," ~ expression)? ~ ")" ~ block }
+for_statement = { "for" ~ "(" ~ Identifier ~ "," ~ expression ~ "," ~ expression ~ ")" ~ block }
 
 yield_statement = { "yield" ~ expression_list ~ ";" }
 

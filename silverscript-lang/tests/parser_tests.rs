@@ -74,7 +74,7 @@ fn parses_input_sigscript_and_rejects_output_sigscript() {
 }
 
 #[test]
-fn parses_function_attributes_and_bounded_for_syntax() {
+fn rejects_bounded_for_syntax() {
     let input = r#"
         contract Decls(int max_outs) {
             #[covenant(binding = auth, from = 1, to = max_outs, mode = verification)]
@@ -88,7 +88,7 @@ fn parses_function_attributes_and_bounded_for_syntax() {
     "#;
 
     let result = parse_source_file(input);
-    assert!(result.is_ok());
+    assert!(result.is_err());
 }
 
 #[test]
@@ -125,7 +125,7 @@ fn rejects_malformed_function_attributes() {
 }
 
 #[test]
-fn rejects_invalid_bounded_for_arities() {
+fn rejects_invalid_for_arities() {
     let trailing_comma = r#"
         contract Loops() {
             function main() {

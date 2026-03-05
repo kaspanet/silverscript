@@ -299,8 +299,6 @@ pub enum Statement<'i> {
         ident: String,
         start: Expr<'i>,
         end: Expr<'i>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        max: Option<Expr<'i>>,
         body: Vec<Statement<'i>>,
         #[serde(skip_deserializing)]
         span: Span<'i>,
@@ -1060,23 +1058,15 @@ fn parse_statement<'i>(pair: Pair<'i, Rule>) -> Result<Statement<'i>, CompilerEr
                 inner.next().ok_or_else(|| CompilerError::Unsupported("missing for loop start".to_string()).with_span(&span))?;
             let end_pair =
                 inner.next().ok_or_else(|| CompilerError::Unsupported("missing for loop end".to_string()).with_span(&span))?;
-            let maybe_max_or_block =
+            let block_pair =
                 inner.next().ok_or_else(|| CompilerError::Unsupported("missing for loop body".to_string()).with_span(&span))?;
 
             let start_expr = parse_expression(start_pair).map_err(|err| err.with_span(&span))?;
             let end_expr = parse_expression(end_pair).map_err(|err| err.with_span(&span))?;
-            let (max_expr, block_pair) = if maybe_max_or_block.as_rule() == Rule::block {
-                (None, maybe_max_or_block)
-            } else {
-                let max_expr = parse_expression(maybe_max_or_block).map_err(|err| err.with_span(&span))?;
-                let block_pair =
-                    inner.next().ok_or_else(|| CompilerError::Unsupported("missing for loop body".to_string()).with_span(&span))?;
-                (Some(max_expr), block_pair)
-            };
             let (body, body_span) = parse_block(block_pair).map_err(|err| err.with_span(&span))?;
             let Identifier { name: ident, span: ident_span } = parse_identifier(ident).map_err(|err| err.with_span(&span))?;
 
-            Ok(Statement::For { ident, start: start_expr, end: end_expr, max: max_expr, body, span, ident_span, body_span })
+            Ok(Statement::For { ident, start: start_expr, end: end_expr, body, span, ident_span, body_span })
         }
         Rule::yield_statement => {
             let mut inner = pair.into_inner();

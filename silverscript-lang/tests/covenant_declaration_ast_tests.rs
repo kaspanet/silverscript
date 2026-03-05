@@ -104,15 +104,12 @@ fn normalize_stmt(stmt: &Statement<'_>) -> StmtShape {
             assert!(else_branch.is_none(), "generated covenant wrappers should not emit else branches");
             StmtShape::If { condition: normalize_expr(condition), then_branch: then_branch.iter().map(normalize_stmt).collect() }
         }
-        Statement::For { ident, start, end, max, body, .. } => {
-            assert!(max.is_none(), "generated covenant wrappers should emit 3-arg for loops only");
-            StmtShape::For {
-                ident: canonicalize_generated_name(ident),
-                start: normalize_expr(start),
-                end: normalize_expr(end),
-                body: body.iter().map(normalize_stmt).collect(),
-            }
-        }
+        Statement::For { ident, start, end, body, .. } => StmtShape::For {
+            ident: canonicalize_generated_name(ident),
+            start: normalize_expr(start),
+            end: normalize_expr(end),
+            body: body.iter().map(normalize_stmt).collect(),
+        },
         other => panic!("unsupported statement in covenant AST test: {other:?}"),
     }
 }

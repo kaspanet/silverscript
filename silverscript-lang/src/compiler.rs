@@ -291,11 +291,8 @@ fn statement_uses_script_size(stmt: &Statement<'_>) -> bool {
                 || then_branch.iter().any(statement_uses_script_size)
                 || else_branch.as_ref().is_some_and(|branch| branch.iter().any(statement_uses_script_size))
         }
-        Statement::For { start, end, max, body, .. } => {
-            expr_uses_script_size(start)
-                || expr_uses_script_size(end)
-                || max.as_ref().is_some_and(expr_uses_script_size)
-                || body.iter().any(statement_uses_script_size)
+        Statement::For { start, end, body, .. } => {
+            expr_uses_script_size(start) || expr_uses_script_size(end) || body.iter().any(statement_uses_script_size)
         }
         Statement::Yield { expr, .. } => expr_uses_script_size(expr),
         Statement::Return { exprs, .. } => exprs.iter().any(expr_uses_script_size),
@@ -1297,11 +1294,10 @@ fn compile_statement<'i>(
             script_size,
             recorder,
         ),
-        Statement::For { ident, start, end, max, body, span, .. } => compile_for_statement(
+        Statement::For { ident, start, end, body, span, .. } => compile_for_statement(
             ident,
             start,
             end,
-            max.as_ref(),
             body,
             *span,
             env,
@@ -2189,7 +2185,6 @@ fn compile_for_statement<'i>(
     ident: &str,
     start_expr: &Expr<'i>,
     end_expr: &Expr<'i>,
-    max_expr: Option<&Expr<'i>>,
     body: &[Statement<'i>],
     for_span: span::Span<'i>,
     env: &mut HashMap<String, Expr<'i>>,
@@ -2207,10 +2202,6 @@ fn compile_for_statement<'i>(
     script_size: Option<i64>,
     recorder: &mut DebugRecorder<'i>,
 ) -> Result<(), CompilerError> {
-    if max_expr.is_some() {
-        return Err(CompilerError::Unsupported("for(i, start, end, max) is not implemented yet".to_string()));
-    }
-
     let start = eval_const_int(start_expr, contract_constants)?;
     let end = eval_const_int(end_expr, contract_constants)?;
     if end < start {

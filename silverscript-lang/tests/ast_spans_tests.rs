@@ -60,13 +60,13 @@ fn populates_slice_expression_spans() {
 }
 
 #[test]
-fn parses_function_attributes_and_bounded_for_ast() {
+fn parses_function_attributes_and_for_ast() {
     let source = r#"
         contract Decls(int max_outs) {
             #[covenant(binding = cov, from = 2, to = max_outs, mode = verification)]
             function policy() {
                 int dyn = tx.outputs.length;
-                for(i, 0, dyn, max_outs) {
+                for(i, 0, dyn) {
                     require(i >= 0);
                 }
             }
@@ -85,17 +85,6 @@ fn parses_function_attributes_and_bounded_for_ast() {
     assert_eq!(attribute.args[2].name, "to");
     assert_eq!(attribute.args[3].name, "mode");
     assert_span_text(source, attribute.path_spans[0].as_str(), "covenant");
-
-    let Statement::For { max, .. } = &function.body[1] else {
-        panic!("expected second statement to be a for loop");
-    };
-    let Some(max_expr) = max else {
-        panic!("expected bounded for max expression");
-    };
-    let ExprKind::Identifier(name) = &max_expr.kind else {
-        panic!("expected max bound to be an identifier");
-    };
-    assert_eq!(name, "max_outs");
 }
 
 #[test]

@@ -443,22 +443,6 @@ fn rejects_external_call_without_entrypoint() {
 }
 
 #[test]
-fn rejects_bounded_for_loop_until_lowering_is_implemented() {
-    let source = r#"
-        contract Loops() {
-            entrypoint function main() {
-                for(i, 0, 3, 5) {
-                    require(i >= 0);
-                }
-            }
-        }
-    "#;
-
-    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("bounded for loops should be rejected for now");
-    assert!(err.to_string().contains("for(i, start, end, max) is not implemented yet"));
-}
-
-#[test]
 fn still_accepts_three_arg_for_loops() {
     let source = r#"
         contract Loops() {
