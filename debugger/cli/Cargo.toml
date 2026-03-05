@@ -1,0 +1,20 @@
+[package]
+name = "cli-debugger"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "cli-debugger"
+path = "src/main.rs"
+
+[dependencies]
+debugger-session = { path = "../session" }
+silverscript-lang = { path = "../../silverscript-lang" }
+kaspa-consensus-core.workspace = true
+kaspa-txscript.workspace = true
+kaspa-txscript-errors.workspace = true
+clap = { version = "4.5.60", features = ["derive"] }

@@ -1,5 +1,5 @@
 [package]
-name = "silverscript-lang"
+name = "debugger-session"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,23 +8,16 @@ repository.workspace = true
 rust-version.workspace = true
 
 [lib]
-name = "silverscript_lang"
+name = "debugger_session"
 path = "src/lib.rs"
 
 [dependencies]
+silverscript-lang = { path = "../../silverscript-lang" }
 kaspa-consensus-core.workspace = true
 kaspa-txscript.workspace = true
 kaspa-txscript-errors.workspace = true
-blake2b_simd.workspace = true
-chrono = "0.4"
-pest = "2.7"
-pest_derive = "2.7"
-rand.workspace = true
-secp256k1.workspace = true
-thiserror.workspace = true
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-clap = { version = "4.5.60", features = ["derive"] }
 faster-hex = "0.10"
 
 [dev-dependencies]

@@ -140,6 +140,121 @@ fn accepts_constructor_args_with_matching_types() {
 }
 
 #[test]
+fn compile_contract_omits_debug_info_when_recording_disabled() {
+    let source = r#"
+        contract DebugToggle() {
+            entrypoint function spend(int x) {
+                require(x == x);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    assert!(compiled.debug_info.is_none());
+}
+
+#[test]
+fn compile_contract_emits_debug_info_when_recording_enabled() {
+    let source = r#"
+        contract DebugToggle() {
+            entrypoint function spend(int x) {
+                require(x == x);
+            }
+        }
+    "#;
+
+    let options = CompileOptions { record_debug_infos: true, ..Default::default() };
+    let compiled = compile_contract(source, &[], options).expect("compile succeeds");
+    let debug_info = compiled.debug_info.expect("debug info should be present");
+    assert!(!debug_info.steps.is_empty());
+    assert!(!debug_info.functions.is_empty());
+    assert!(debug_info.params.iter().any(|param| param.name == "x"));
+}
+
+#[test]
+fn debug_info_single_entrypoint_sequences_and_offsets_are_stable() {
+    let source = r#"
+        contract DebugSingle() {
+            entrypoint function spend(int x) {
+                int y = x;
+                require(y == x);
+            }
+        }
+    "#;
+
+    let options = CompileOptions { record_debug_infos: true, ..Default::default() };
+    let compiled = compile_contract(source, &[], options).expect("compile succeeds");
+    assert!(compiled.without_selector);
+
+    let debug_info = compiled.debug_info.expect("debug info should be present");
+    let function = debug_info.functions.iter().find(|function| function.name == "spend").expect("function range for spend");
+    assert_eq!(function.bytecode_start, 0, "single-entrypoint contract should not use selector prefix");
+    assert!(function.bytecode_end > function.bytecode_start);
+
+    let mut sequences = debug_info.steps.iter().map(|step| step.sequence).collect::<Vec<_>>();
+    sequences.sort_unstable();
+    assert_eq!(sequences, (0..debug_info.steps.len() as u32).collect::<Vec<_>>(), "step sequences should be contiguous");
+
+    let function_steps = debug_info
+        .steps
+        .iter()
+        .filter(|step| step.bytecode_start >= function.bytecode_start && step.bytecode_end <= function.bytecode_end)
+        .collect::<Vec<_>>();
+    assert!(!function_steps.is_empty(), "function should contain at least one debug step");
+    assert!(function_steps.iter().all(|step| step.bytecode_start <= step.bytecode_end), "step ranges should be valid");
+}
+
+#[test]
+fn debug_info_selector_entrypoints_have_global_sequences_and_offset_ranges() {
+    let source = r#"
+        contract DebugSelector() {
+            entrypoint function a(int x) {
+                int y = x;
+                require(y == x);
+            }
+
+            entrypoint function b(int x) {
+                int z = x;
+                require(z == x);
+            }
+        }
+    "#;
+
+    let options = CompileOptions { record_debug_infos: true, ..Default::default() };
+    let compiled = compile_contract(source, &[], options).expect("compile succeeds");
+    assert!(!compiled.without_selector);
+
+    let debug_info = compiled.debug_info.expect("debug info should be present");
+    let function_a = debug_info.functions.iter().find(|function| function.name == "a").expect("function range for a");
+    let function_b = debug_info.functions.iter().find(|function| function.name == "b").expect("function range for b");
+
+    assert!(function_a.bytecode_start > 0, "selector mode should prepend dispatcher ops");
+    assert!(function_a.bytecode_start < function_b.bytecode_start, "entrypoint ranges should follow compile order");
+    assert!(function_a.bytecode_end <= function_b.bytecode_start, "entrypoint ranges should not overlap");
+
+    let steps_for_a = debug_info
+        .steps
+        .iter()
+        .filter(|step| step.bytecode_start >= function_a.bytecode_start && step.bytecode_end <= function_a.bytecode_end)
+        .collect::<Vec<_>>();
+    let steps_for_b = debug_info
+        .steps
+        .iter()
+        .filter(|step| step.bytecode_start >= function_b.bytecode_start && step.bytecode_end <= function_b.bytecode_end)
+        .collect::<Vec<_>>();
+    assert!(!steps_for_a.is_empty(), "entrypoint a should contain debug steps");
+    assert!(!steps_for_b.is_empty(), "entrypoint b should contain debug steps");
+
+    let mut sequences = debug_info.steps.iter().map(|step| step.sequence).collect::<Vec<_>>();
+    sequences.sort_unstable();
+    assert_eq!(sequences, (0..debug_info.steps.len() as u32).collect::<Vec<_>>(), "global step sequences should be contiguous");
+
+    let max_a_sequence = steps_for_a.iter().map(|step| step.sequence).max().expect("a sequence max");
+    let min_b_sequence = steps_for_b.iter().map(|step| step.sequence).min().expect("b sequence min");
+    assert!(max_a_sequence < min_b_sequence, "later entrypoint should reserve a later sequence block");
+}
+
+#[test]
 fn rejects_constructor_args_with_wrong_scalar_types() {
     let source = r#"
         contract Types(int a, bool b, string c) {
@@ -1721,7 +1836,6 @@ fn compiles_validate_output_state_to_expected_script() {
         .unwrap()
         .add_op(OpCat)
         .unwrap()
-
         // ---- Build new_state.y pushdata chunk ----
         // raw y bytes
         .add_data(&[0x34, 0x12])
@@ -3625,4 +3739,63 @@ fn empty_array_statement_expr_evaluation_compiles_to_empty_array_data() {
     assert_eq!(compiled.script, expected);
     assert_eq!(compiled.script[0], OpFalse);
     assert_eq!(compiled.script[1], OpFalse);
+}
+
+#[test]
+fn function_param_shadows_constructor_constant_with_same_name() {
+    // When a constructor constant and a function parameter share the same name,
+    // the function parameter value must be used (not the constant).
+    let source = r#"
+        contract Shadow(int fee) {
+            entrypoint function main(int fee) {
+                int local = fee + 1;
+                require(local == 4);
+            }
+        }
+    "#;
+
+    // Constructor fee=2, param fee=3 => local = 3+1 = 4 => pass
+    let compiled = compile_contract(source, &[Expr::int(2)], CompileOptions::default()).expect("compile succeeds");
+    let sigscript = compiled.build_sig_script("main", vec![Expr::int(3)]).expect("sigscript builds");
+    let result = run_script_with_sigscript(compiled.script.clone(), sigscript);
+    assert!(result.is_ok(), "function param should shadow constructor constant: {}", result.unwrap_err());
+
+    // Constructor fee=2, param fee=2 => local = 2+1 = 3 != 4 => fail (proves it's not always the constant)
+    let sigscript_wrong = compiled.build_sig_script("main", vec![Expr::int(2)]).expect("sigscript builds");
+    let result_wrong = run_script_with_sigscript(compiled.script, sigscript_wrong);
+    assert!(result_wrong.is_err(), "require(3==4) should fail, proving the param value matters");
+}
+
+#[test]
+fn nested_inline_calls_with_args_compile_and_execute() {
+    // Nested inline calls must propagate synthetic __arg_ bindings so that
+    // deeply nested calls can resolve arguments that flow through outer calls.
+    let source = r#"
+        contract NestedArgs() {
+            function inner(int x) {
+                int y = x + 1;
+                require(y > 0);
+            }
+
+            function outer(int v) {
+                inner(v);
+                require(v >= 0);
+            }
+
+            function top(int z) {
+                outer(z);
+                require(z >= 0);
+            }
+
+            entrypoint function main(int a) {
+                top(a);
+                require(a >= 0);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("nested inline calls should compile");
+    let sigscript = compiled.build_sig_script("main", vec![Expr::int(5)]).expect("sigscript builds");
+    let result = run_script_with_sigscript(compiled.script, sigscript);
+    assert!(result.is_ok(), "nested inline calls should execute correctly: {}", result.unwrap_err());
 }

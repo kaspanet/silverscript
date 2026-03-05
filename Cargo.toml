@@ -1,5 +1,10 @@
 [workspace]
-members = ["silverscript-lang", "covenants/sdk"]
+members = [
+    "silverscript-lang",
+    "debugger/session",
+    "debugger/cli",
+    "covenants/sdk",
+]
 exclude = ["tree-sitter"]
 resolver = "2"
 
