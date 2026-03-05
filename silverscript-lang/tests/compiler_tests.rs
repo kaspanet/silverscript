@@ -140,6 +140,121 @@ fn accepts_constructor_args_with_matching_types() {
 }
 
 #[test]
+fn compile_contract_omits_debug_info_when_recording_disabled() {
+    let source = r#"
+        contract DebugToggle() {
+            entrypoint function spend(int x) {
+                require(x == x);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    assert!(compiled.debug_info.is_none());
+}
+
+#[test]
+fn compile_contract_emits_debug_info_when_recording_enabled() {
+    let source = r#"
+        contract DebugToggle() {
+            entrypoint function spend(int x) {
+                require(x == x);
+            }
+        }
+    "#;
+
+    let options = CompileOptions { record_debug_infos: true, ..Default::default() };
+    let compiled = compile_contract(source, &[], options).expect("compile succeeds");
+    let debug_info = compiled.debug_info.expect("debug info should be present");
+    assert!(!debug_info.steps.is_empty());
+    assert!(!debug_info.functions.is_empty());
+    assert!(debug_info.params.iter().any(|param| param.name == "x"));
+}
+
+#[test]
+fn debug_info_single_entrypoint_sequences_and_offsets_are_stable() {
+    let source = r#"
+        contract DebugSingle() {
+            entrypoint function spend(int x) {
+                int y = x;
+                require(y == x);
+            }
+        }
+    "#;
+
+    let options = CompileOptions { record_debug_infos: true, ..Default::default() };
+    let compiled = compile_contract(source, &[], options).expect("compile succeeds");
+    assert!(compiled.without_selector);
+
+    let debug_info = compiled.debug_info.expect("debug info should be present");
+    let function = debug_info.functions.iter().find(|function| function.name == "spend").expect("function range for spend");
+    assert_eq!(function.bytecode_start, 0, "single-entrypoint contract should not use selector prefix");
+    assert!(function.bytecode_end > function.bytecode_start);
+
+    let mut sequences = debug_info.steps.iter().map(|step| step.sequence).collect::<Vec<_>>();
+    sequences.sort_unstable();
+    assert_eq!(sequences, (0..debug_info.steps.len() as u32).collect::<Vec<_>>(), "step sequences should be contiguous");
+
+    let function_steps = debug_info
+        .steps
+        .iter()
+        .filter(|step| step.bytecode_start >= function.bytecode_start && step.bytecode_end <= function.bytecode_end)
+        .collect::<Vec<_>>();
+    assert!(!function_steps.is_empty(), "function should contain at least one debug step");
+    assert!(function_steps.iter().all(|step| step.bytecode_start <= step.bytecode_end), "step ranges should be valid");
+}
+
+#[test]
+fn debug_info_selector_entrypoints_have_global_sequences_and_offset_ranges() {
+    let source = r#"
+        contract DebugSelector() {
+            entrypoint function a(int x) {
+                int y = x;
+                require(y == x);
+            }
+
+            entrypoint function b(int x) {
+                int z = x;
+                require(z == x);
+            }
+        }
+    "#;
+
+    let options = CompileOptions { record_debug_infos: true, ..Default::default() };
+    let compiled = compile_contract(source, &[], options).expect("compile succeeds");
+    assert!(!compiled.without_selector);
+
+    let debug_info = compiled.debug_info.expect("debug info should be present");
+    let function_a = debug_info.functions.iter().find(|function| function.name == "a").expect("function range for a");
+    let function_b = debug_info.functions.iter().find(|function| function.name == "b").expect("function range for b");
+
+    assert!(function_a.bytecode_start > 0, "selector mode should prepend dispatcher ops");
+    assert!(function_a.bytecode_start < function_b.bytecode_start, "entrypoint ranges should follow compile order");
+    assert!(function_a.bytecode_end <= function_b.bytecode_start, "entrypoint ranges should not overlap");
+
+    let steps_for_a = debug_info
+        .steps
+        .iter()
+        .filter(|step| step.bytecode_start >= function_a.bytecode_start && step.bytecode_end <= function_a.bytecode_end)
+        .collect::<Vec<_>>();
+    let steps_for_b = debug_info
+        .steps
+        .iter()
+        .filter(|step| step.bytecode_start >= function_b.bytecode_start && step.bytecode_end <= function_b.bytecode_end)
+        .collect::<Vec<_>>();
+    assert!(!steps_for_a.is_empty(), "entrypoint a should contain debug steps");
+    assert!(!steps_for_b.is_empty(), "entrypoint b should contain debug steps");
+
+    let mut sequences = debug_info.steps.iter().map(|step| step.sequence).collect::<Vec<_>>();
+    sequences.sort_unstable();
+    assert_eq!(sequences, (0..debug_info.steps.len() as u32).collect::<Vec<_>>(), "global step sequences should be contiguous");
+
+    let max_a_sequence = steps_for_a.iter().map(|step| step.sequence).max().expect("a sequence max");
+    let min_b_sequence = steps_for_b.iter().map(|step| step.sequence).min().expect("b sequence min");
+    assert!(max_a_sequence < min_b_sequence, "later entrypoint should reserve a later sequence block");
+}
+
+#[test]
 fn rejects_constructor_args_with_wrong_scalar_types() {
     let source = r#"
         contract Types(int a, bool b, string c) {
@@ -1654,7 +1769,6 @@ fn compiles_validate_output_state_to_expected_script() {
         .unwrap()
         .add_op(OpCat)
         .unwrap()
-
         // ---- Build new_state.y pushdata chunk ----
         // raw y bytes
         .add_data(&[0x34, 0x12])

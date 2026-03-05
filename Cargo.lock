@@ -762,6 +762,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a822ea5bc7590f9d40f1ba12c0dc3c2760f3482c6984db1573ad11031420831"
 
 [[package]]
+name = "cli-debugger"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "debugger-session",
+ "kaspa-consensus-core",
+ "kaspa-txscript",
+ "kaspa-txscript-errors",
+ "silverscript-lang",
+]
+
+[[package]]
 name = "cobs"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -908,6 +920,20 @@ dependencies = [
  "dispatch2",
  "nix 0.31.1",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "debugger-session"
+version = "0.1.0"
+dependencies = [
+ "faster-hex 0.10.0",
+ "kaspa-addresses",
+ "kaspa-consensus-core",
+ "kaspa-txscript",
+ "kaspa-txscript-errors",
+ "serde",
+ "serde_json",
+ "silverscript-lang",
 ]
 
 [[package]]
@@ -1136,6 +1162,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "faster-hex"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7223ae2d2f179b803433d9c830478527e92b8117eab39460edae7f1614d9fb73"
+dependencies = [
+ "heapless",
+ "serde",
+]
+
+[[package]]
 name = "fastrand"
 version = "2.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1358,6 +1394,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "hash32"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "47d60b12902ba28e2730cd37e95b8c9223af2808df9e902d4df49588d1470606"
+dependencies = [
+ "byteorder",
+]
+
+[[package]]
 name = "hashbrown"
 version = "0.14.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1381,6 +1426,16 @@ name = "hashbrown"
 version = "0.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "841d1cc9bed7f9236f321df977030373f4a4163ae1a7dbfe1a51a2c1a51d9100"
+
+[[package]]
+name = "heapless"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0bfb9eb618601c89945a70e254898da93b13be0388091d42117462b265bb3fad"
+dependencies = [
+ "hash32",
+ "stable_deref_trait",
+]
 
 [[package]]
 name = "heck"
@@ -1557,6 +1612,7 @@ dependencies = [
 [[package]]
 name = "kaspa-addresses"
 version = "1.1.0-rc.3"
+source = "git+https://github.com/kaspanet/rusty-kaspa?branch=tn12#c6819f3b3fe37f712acd88dafbb583297e2ef938"
 dependencies = [
  "borsh",
  "js-sys",
@@ -1571,13 +1627,14 @@ dependencies = [
 [[package]]
 name = "kaspa-consensus-core"
 version = "1.1.0-rc.3"
+source = "git+https://github.com/kaspanet/rusty-kaspa?branch=tn12#c6819f3b3fe37f712acd88dafbb583297e2ef938"
 dependencies = [
  "arc-swap",
  "async-trait",
  "bitflags 2.11.0",
  "borsh",
  "cfg-if",
- "faster-hex",
+ "faster-hex 0.9.0",
  "futures-util",
  "getrandom 0.2.17",
  "itertools 0.13.0",
@@ -1607,6 +1664,7 @@ dependencies = [
 [[package]]
 name = "kaspa-core"
 version = "1.1.0-rc.3"
+source = "git+https://github.com/kaspanet/rusty-kaspa?branch=tn12#c6819f3b3fe37f712acd88dafbb583297e2ef938"
 dependencies = [
  "anyhow",
  "cfg-if",
@@ -1637,12 +1695,13 @@ dependencies = [
 [[package]]
 name = "kaspa-hashes"
 version = "1.1.0-rc.3"
+source = "git+https://github.com/kaspanet/rusty-kaspa?branch=tn12#c6819f3b3fe37f712acd88dafbb583297e2ef938"
 dependencies = [
  "blake2b_simd",
  "blake3",
  "borsh",
  "cc",
- "faster-hex",
+ "faster-hex 0.9.0",
  "js-sys",
  "kaspa-utils",
  "keccak",
@@ -1656,9 +1715,10 @@ dependencies = [
 [[package]]
 name = "kaspa-math"
 version = "1.1.0-rc.3"
+source = "git+https://github.com/kaspanet/rusty-kaspa?branch=tn12#c6819f3b3fe37f712acd88dafbb583297e2ef938"
 dependencies = [
  "borsh",
- "faster-hex",
+ "faster-hex 0.9.0",
  "js-sys",
  "kaspa-utils",
  "malachite-base",
@@ -1675,6 +1735,7 @@ dependencies = [
 [[package]]
 name = "kaspa-merkle"
 version = "1.1.0-rc.3"
+source = "git+https://github.com/kaspanet/rusty-kaspa?branch=tn12#c6819f3b3fe37f712acd88dafbb583297e2ef938"
 dependencies = [
  "kaspa-hashes",
 ]
@@ -1682,6 +1743,7 @@ dependencies = [
 [[package]]
 name = "kaspa-muhash"
 version = "1.1.0-rc.3"
+source = "git+https://github.com/kaspanet/rusty-kaspa?branch=tn12#c6819f3b3fe37f712acd88dafbb583297e2ef938"
 dependencies = [
  "kaspa-hashes",
  "kaspa-math",
@@ -1692,6 +1754,7 @@ dependencies = [
 [[package]]
 name = "kaspa-txscript"
 version = "1.1.0-rc.3"
+source = "git+https://github.com/kaspanet/rusty-kaspa?branch=tn12#c6819f3b3fe37f712acd88dafbb583297e2ef938"
 dependencies = [
  "ark-bn254",
  "ark-ec",
@@ -1704,7 +1767,7 @@ dependencies = [
  "bytemuck",
  "cc",
  "cfg-if",
- "faster-hex",
+ "faster-hex 0.9.0",
  "hexplay",
  "indexmap",
  "itertools 0.13.0",
@@ -1737,6 +1800,7 @@ dependencies = [
 [[package]]
 name = "kaspa-txscript-errors"
 version = "1.1.0-rc.3"
+source = "git+https://github.com/kaspanet/rusty-kaspa?branch=tn12#c6819f3b3fe37f712acd88dafbb583297e2ef938"
 dependencies = [
  "borsh",
  "kaspa-hashes",
@@ -1747,6 +1811,7 @@ dependencies = [
 [[package]]
 name = "kaspa-utils"
 version = "1.1.0-rc.3"
+source = "git+https://github.com/kaspanet/rusty-kaspa?branch=tn12#c6819f3b3fe37f712acd88dafbb583297e2ef938"
 dependencies = [
  "arc-swap",
  "async-channel 2.5.0",
@@ -1754,7 +1819,7 @@ dependencies = [
  "cfg-if",
  "duct",
  "event-listener 2.5.3",
- "faster-hex",
+ "faster-hex 0.9.0",
  "ipnet",
  "itertools 0.13.0",
  "log",
@@ -1776,8 +1841,9 @@ dependencies = [
 [[package]]
 name = "kaspa-wasm-core"
 version = "1.1.0-rc.3"
+source = "git+https://github.com/kaspanet/rusty-kaspa?branch=tn12#c6819f3b3fe37f712acd88dafbb583297e2ef938"
 dependencies = [
- "faster-hex",
+ "faster-hex 0.9.0",
  "hexplay",
  "js-sys",
  "wasm-bindgen",
@@ -2917,6 +2983,7 @@ dependencies = [
  "blake2b_simd",
  "chrono",
  "clap",
+ "faster-hex 0.10.0",
  "kaspa-addresses",
  "kaspa-consensus-core",
  "kaspa-txscript",
@@ -2966,6 +3033,12 @@ dependencies = [
  "quote",
  "syn 2.0.117",
 ]
+
+[[package]]
+name = "stable_deref_trait"
+version = "1.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
 name = "strsim"
@@ -3953,7 +4026,7 @@ dependencies = [
  "cfg-if",
  "chrono",
  "dirs",
- "faster-hex",
+ "faster-hex 0.9.0",
  "futures",
  "getrandom 0.2.17",
  "instant",
@@ -4048,7 +4121,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "799e5fbf266e0fffb5c24d6103735eb2b94bb31f93b664b91eaaf63b4f959804"
 dependencies = [
  "cfg-if",
- "faster-hex",
+ "faster-hex 0.9.0",
  "futures",
  "js-sys",
  "serde",
@@ -4078,18 +4151,18 @@ dependencies = [
 
 [[package]]
 name = "zerocopy"
-version = "0.8.40"
+version = "0.8.39"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a789c6e490b576db9f7e6b6d661bcc9799f7c0ac8352f56ea20193b2681532e5"
+checksum = "db6d35d663eadb6c932438e763b262fe1a70987f9ae936e60158176d710cae4a"
 dependencies = [
  "zerocopy-derive",
 ]
 
 [[package]]
 name = "zerocopy-derive"
-version = "0.8.40"
+version = "0.8.39"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f65c489a7071a749c849713807783f70672b28094011623e200cb86dcb835953"
+checksum = "4122cd3169e94605190e77839c9a40d40ed048d305bfdc146e7df40ab0f3e517"
 dependencies = [
  "proc-macro2",
  "quote",
