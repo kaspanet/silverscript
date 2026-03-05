@@ -13,6 +13,9 @@ use crate::ast::{
 pub use crate::errors::{CompilerError, ErrorSpan};
 use crate::span;
 
+/// Prefix used for synthetic argument bindings during inline function expansion.
+pub const SYNTHETIC_ARG_PREFIX: &str = "__arg_";
+
 #[derive(Debug, Clone, Copy, Default)]
 pub struct CompileOptions {
     pub allow_yield: bool,
@@ -927,6 +930,10 @@ fn compile_function<'i>(
         }
     }
     let mut env: HashMap<String, Expr<'i>> = constants.clone();
+    // Remove any constructor/constant names that collide with function param names (prioritizing function parameters on name collision).
+    for param in &function.params {
+        env.remove(&param.name);
+    }
     let mut builder = ScriptBuilder::new();
     let mut yields: Vec<Expr> = Vec::new();
 
@@ -1296,6 +1303,7 @@ fn compile_statement<'i>(
             let returns = compile_inline_call(
                 name,
                 args,
+                params,
                 types,
                 env,
                 builder,
@@ -1362,6 +1370,7 @@ fn compile_statement<'i>(
             let returns = compile_inline_call(
                 name,
                 args,
+                params,
                 types,
                 env,
                 builder,
@@ -1715,6 +1724,7 @@ fn compile_validate_output_state_statement(
 fn compile_inline_call<'i>(
     name: &str,
     args: &[Expr<'i>],
+    caller_params: &HashMap<String, i64>,
     caller_types: &mut HashMap<String, String>,
     caller_env: &mut HashMap<String, Expr<'i>>,
     builder: &mut ScriptBuilder,
@@ -1752,9 +1762,15 @@ fn compile_inline_call<'i>(
     }
 
     let mut env: HashMap<String, Expr<'i>> = contract_constants.clone();
+    // Copy the caller's __arg_ (function param) bindings into the new inline call's env, allowing nested synthetic argument chain.
+    for (name, value) in caller_env.iter() {
+        if name.starts_with(SYNTHETIC_ARG_PREFIX) {
+            env.insert(name.clone(), value.clone());
+        }
+    }
     for (index, (param, arg)) in function.params.iter().zip(args.iter()).enumerate() {
         let resolved = resolve_expr(arg.clone(), caller_env, &mut HashSet::new())?;
-        let temp_name = format!("__arg_{name}_{index}");
+        let temp_name = format!("{SYNTHETIC_ARG_PREFIX}{name}_{index}");
         let param_type_name = type_name_from_ref(&param.type_ref);
         env.insert(temp_name.clone(), resolved.clone());
         types.insert(temp_name.clone(), param_type_name.clone());
@@ -1785,7 +1801,7 @@ fn compile_inline_call<'i>(
     }
 
     let mut yields: Vec<Expr<'i>> = Vec::new();
-    let params = HashMap::new();
+    let params = caller_params.clone();
     let body_len = function.body.len();
     for (index, stmt) in function.body.iter().enumerate() {
         if let Statement::Return { exprs, .. } = stmt {
@@ -1820,7 +1836,7 @@ fn compile_inline_call<'i>(
     }
 
     for (name, value) in env.iter() {
-        if name.starts_with("__arg_") {
+        if name.starts_with(SYNTHETIC_ARG_PREFIX) {
             if let Some(type_name) = types.get(name) {
                 caller_types.entry(name.clone()).or_insert_with(|| type_name.clone());
             }
@@ -2112,7 +2128,7 @@ fn resolve_expr<'i>(
     let Expr { kind, span } = expr;
     match kind {
         ExprKind::Identifier(name) => {
-            if name.starts_with("__arg_") {
+            if name.starts_with(SYNTHETIC_ARG_PREFIX) {
                 return Ok(Expr::new(ExprKind::Identifier(name), span));
             }
             if let Some(value) = env.get(&name) {
