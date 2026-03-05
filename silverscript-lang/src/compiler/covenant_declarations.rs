@@ -427,7 +427,11 @@ fn build_auth_wrapper<'i>(
                     }
                 }
                 OutputStateSource::PerOutputArrays { field_arrays, length_expr } => {
-                    body.push(require_statement(binary_expr(BinaryOp::Le, identifier_expr(out_count_name), declaration.to_expr.clone())));
+                    body.push(require_statement(binary_expr(
+                        BinaryOp::Le,
+                        identifier_expr(out_count_name),
+                        declaration.to_expr.clone(),
+                    )));
                     body.push(require_statement(binary_expr(BinaryOp::Eq, identifier_expr(out_count_name), length_expr.clone())));
                     append_auth_output_array_state_checks(
                         &mut body,
@@ -503,8 +507,9 @@ fn build_cov_wrapper<'i>(
                 transition_shape = Some(shape);
             }
             append_cov_input_state_reads(&mut body, cov_id_name, in_count_name, declaration.from_expr.clone(), contract_fields);
-            let call_args =
-                transition_shape.map(|shape| shape.call_args).unwrap_or_else(|| policy.params.iter().map(|param| identifier_expr(&param.name)).collect());
+            let call_args = transition_shape
+                .map(|shape| shape.call_args)
+                .unwrap_or_else(|| policy.params.iter().map(|param| identifier_expr(&param.name)).collect());
             let state_source = append_policy_call_and_capture_next_state(
                 &mut body,
                 policy,
