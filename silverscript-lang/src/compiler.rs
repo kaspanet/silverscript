@@ -158,7 +158,7 @@ fn compile_contract_impl<'i>(
                 builder.add_op(OpIf)?;
                 builder.add_op(OpDrop)?;
                 builder.add_ops(&field_prolog_script)?;
-                let start = builder.script().len() + field_prolog_script.len();
+                let start = builder.script().len();
                 recorder.set_entrypoint_start(name, start);
                 builder.add_ops(script)?;
                 builder.add_op(OpElse)?;

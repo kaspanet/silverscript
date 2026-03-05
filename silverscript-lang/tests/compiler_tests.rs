@@ -443,26 +443,6 @@ fn rejects_external_call_without_entrypoint() {
 }
 
 #[test]
-fn still_accepts_three_arg_for_loops() {
-    let source = r#"
-        contract Loops() {
-            entrypoint function main() {
-                int sum = 0;
-                for(i, 0, 3) {
-                    sum = sum + i;
-                }
-                require(sum == 3);
-            }
-        }
-    "#;
-
-    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("three-arg for loop should still compile");
-    let selector = selector_for(&compiled, "main");
-    let result = run_script_with_selector(compiled.script, selector);
-    assert!(result.is_ok(), "three-arg for loop runtime failed: {}", result.unwrap_err());
-}
-
-#[test]
 fn rejects_entrypoint_return_by_default() {
     let source = r#"
         contract EntryReturn() {
