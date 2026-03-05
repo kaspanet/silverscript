@@ -1762,7 +1762,7 @@ fn compile_inline_call<'i>(
     name: &str,
     args: &[Expr<'i>],
     call_span: SourceSpan,
-    caller_params: &HashMap<String, i64>,
+    params: &HashMap<String, i64>,
     caller_types: &mut HashMap<String, String>,
     caller_env: &mut HashMap<String, Expr<'i>>,
     builder: &mut ScriptBuilder,
@@ -1843,7 +1843,6 @@ fn compile_inline_call<'i>(
     recorder.begin_inline_call(call_span, call_start, function, &env)?;
 
     let mut yields: Vec<Expr<'i>> = Vec::new();
-    let params = caller_params.clone();
     let body_len = function.body.len();
     for (index, stmt) in function.body.iter().enumerate() {
         recorder.begin_statement_at(builder.script().len(), &env);
@@ -1861,7 +1860,7 @@ fn compile_inline_call<'i>(
             compile_statement(
                 stmt,
                 &mut env,
-                &params,
+                params,
                 &mut types,
                 builder,
                 options,
