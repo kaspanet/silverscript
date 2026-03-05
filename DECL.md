@@ -138,6 +138,13 @@ Transition mode allows extra call args (`fee` above, etc.) and the policy comput
 
 Important: in both verification and transition modes, any extra call args (beyond state values that are validated on outputs) are not directly committed by tx structure. The compiler/runtime must define a commitment story (and enforce determinism) for those args.
 
+Current compiler shape for `binding = cov` + `mode = transition`:
+
+1. Policy params must start with one dynamic array per contract field for previous state values (`prev_*`).
+2. Remaining params are optional extra call args.
+3. Compiler enforces this shape; invalid `prev_*` prefix types are compile errors.
+4. In current lowering, transition leader entrypoint still receives these `prev_*` arrays explicitly (shape-enforced), while wrapper also performs covenant input/output structural checks.
+
 Cardinality in transition mode:
 
 1. Single-state return shape -> exact one continuation (`out_count == 1`) with direct `validateOutputState(...)` (no loop).

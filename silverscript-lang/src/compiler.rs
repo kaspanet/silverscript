@@ -646,6 +646,9 @@ fn build_cov_wrapper<'i>(
                 contract_fields,
             );
         } else {
+            if declaration.mode == CovenantMode::Transition && !contract_fields.is_empty() {
+                parse_cov_transition_shape(policy, contract_fields)?;
+            }
             append_cov_input_state_reads(&mut body, cov_id_name, in_count_name, declaration.from_expr.clone(), contract_fields);
             let state_source = append_policy_call_and_capture_next_state(
                 &mut body,
@@ -977,6 +980,32 @@ fn parse_cov_verification_shape<'i>(
     }
 
     Ok(CovVerificationShape { prev_field_arrays, new_field_arrays, leader_params: policy.params[field_count..].to_vec() })
+}
+
+fn parse_cov_transition_shape<'i>(policy: &FunctionAst<'i>, contract_fields: &[ContractFieldAst<'i>]) -> Result<(), CompilerError> {
+    let field_count = contract_fields.len();
+    if policy.params.len() < field_count {
+        return Err(CompilerError::Unsupported(format!(
+            "mode=transition with binding=cov on function '{}' requires {} prev-state arrays (one per contract field) before call args",
+            policy.name, field_count
+        )));
+    }
+
+    for (idx, field) in contract_fields.iter().enumerate() {
+        let expected = dynamic_array_of(&field.type_ref);
+        let prev_param = &policy.params[idx];
+        if prev_param.type_ref != expected {
+            return Err(CompilerError::Unsupported(format!(
+                "mode=transition with binding=cov on function '{}' expects prev-state param '{}' to be '{}', got '{}'",
+                policy.name,
+                prev_param.name,
+                type_name_from_ref(&expected),
+                type_name_from_ref(&prev_param.type_ref)
+            )));
+        }
+    }
+
+    Ok(())
 }
 
 fn append_policy_call_and_capture_next_state<'i>(

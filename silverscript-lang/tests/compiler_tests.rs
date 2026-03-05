@@ -426,6 +426,24 @@ fn rejects_cov_verification_without_prev_new_field_arrays() {
 }
 
 #[test]
+fn rejects_cov_transition_without_prev_field_arrays() {
+    let source = r#"
+        contract Decls() {
+            int value = 0;
+
+            #[covenant(from = 2, to = 2, mode = transition)]
+            function transition_ok(int nonce) : (int) {
+                return(value + nonce);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default())
+        .expect_err("cov transition with state fields should require prev-state field arrays");
+    assert!(err.to_string().contains("expects prev-state param"));
+}
+
+#[test]
 fn lowers_singleton_sugar_to_auth_one_to_one_defaults() {
     let source = r#"
         contract Decls() {
