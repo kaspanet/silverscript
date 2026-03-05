@@ -31,13 +31,25 @@ enum ExprShape {
     Binary { op: BinaryOp, left: Box<ExprShape>, right: Box<ExprShape> },
 }
 
+fn canonicalize_generated_name(name: &str) -> String {
+    if let Some(rest) = name.strip_prefix("__covenant_policy_") {
+        return format!("covenant_policy_{rest}");
+    }
+    if let Some(rest) = name.strip_prefix("__cov_") {
+        return format!("cov_{rest}");
+    }
+    name.to_string()
+}
+
 fn normalize_expr(expr: &Expr<'_>) -> ExprShape {
     match &expr.kind {
         ExprKind::Int(v) => ExprShape::Int(*v),
         ExprKind::Bool(v) => ExprShape::Bool(*v),
-        ExprKind::Identifier(name) => ExprShape::Identifier(name.clone()),
+        ExprKind::Identifier(name) => ExprShape::Identifier(canonicalize_generated_name(name)),
         ExprKind::Nullary(op) => ExprShape::Nullary(*op),
-        ExprKind::Call { name, args, .. } => ExprShape::Call { name: name.clone(), args: args.iter().map(normalize_expr).collect() },
+        ExprKind::Call { name, args, .. } => {
+            ExprShape::Call { name: canonicalize_generated_name(name), args: args.iter().map(normalize_expr).collect() }
+        }
         ExprKind::StateObject(fields) => {
             ExprShape::StateObject(fields.iter().map(|field| (field.name.clone(), normalize_expr(&field.expr))).collect())
         }
@@ -52,18 +64,18 @@ fn normalize_stmt(stmt: &Statement<'_>) -> StmtShape {
     match stmt {
         Statement::VariableDefinition { type_ref, name, expr, .. } => {
             let init = expr.as_ref().expect("generated wrapper variable definitions should be initialized");
-            StmtShape::Var { type_name: type_ref.type_name(), name: name.clone(), expr: normalize_expr(init) }
+            StmtShape::Var { type_name: type_ref.type_name(), name: canonicalize_generated_name(name), expr: normalize_expr(init) }
         }
         Statement::Require { expr, .. } => StmtShape::Require(normalize_expr(expr)),
         Statement::FunctionCall { name, args, .. } => {
-            StmtShape::Call { name: name.clone(), args: args.iter().map(normalize_expr).collect() }
+            StmtShape::Call { name: canonicalize_generated_name(name), args: args.iter().map(normalize_expr).collect() }
         }
         Statement::StateFunctionCallAssign { bindings, name, args, .. } => StmtShape::StateCallAssign {
             bindings: bindings
                 .iter()
-                .map(|binding| (binding.field_name.clone(), binding.type_ref.type_name(), binding.name.clone()))
+                .map(|binding| (binding.field_name.clone(), binding.type_ref.type_name(), canonicalize_generated_name(&binding.name)))
                 .collect(),
-            name: name.clone(),
+            name: canonicalize_generated_name(name),
             args: args.iter().map(normalize_expr).collect(),
         },
         Statement::If { condition, then_branch, else_branch, .. } => {
@@ -73,7 +85,7 @@ fn normalize_stmt(stmt: &Statement<'_>) -> StmtShape {
         Statement::For { ident, start, end, max, body, .. } => {
             assert!(max.is_none(), "generated covenant wrappers should emit 3-arg for loops only");
             StmtShape::For {
-                ident: ident.clone(),
+                ident: canonicalize_generated_name(ident),
                 start: normalize_expr(start),
                 end: normalize_expr(end),
                 body: body.iter().map(normalize_stmt).collect(),
@@ -85,9 +97,9 @@ fn normalize_stmt(stmt: &Statement<'_>) -> StmtShape {
 
 fn normalize_function(function: &FunctionAst<'_>) -> FunctionShape {
     FunctionShape {
-        name: function.name.clone(),
+        name: canonicalize_generated_name(&function.name),
         entrypoint: function.entrypoint,
-        params: function.params.iter().map(|p| (p.name.clone(), p.type_ref.type_name())).collect(),
+        params: function.params.iter().map(|p| (canonicalize_generated_name(&p.name), p.type_ref.type_name())).collect(),
         attributes: function.attributes.iter().map(|a| a.path.join(".")).collect(),
         body: function.body.iter().map(normalize_stmt).collect(),
     }
@@ -98,20 +110,10 @@ fn normalize_contract_functions(source: &str, constructor_args: &[Expr<'_>]) -> 
     compiled.ast.functions.iter().map(normalize_function).collect()
 }
 
-fn id(name: &str) -> ExprShape {
-    ExprShape::Identifier(name.to_string())
-}
-
-fn int(value: i64) -> ExprShape {
-    ExprShape::Int(value)
-}
-
-fn call(name: &str, args: Vec<ExprShape>) -> ExprShape {
-    ExprShape::Call { name: name.to_string(), args }
-}
-
-fn bin(op: BinaryOp, left: ExprShape, right: ExprShape) -> ExprShape {
-    ExprShape::Binary { op, left: Box::new(left), right: Box::new(right) }
+fn assert_lowers_to_expected_ast(source: &str, expected_lowered_source: &str, constructor_args: &[Expr<'_>]) {
+    let actual = normalize_contract_functions(source, constructor_args);
+    let expected = normalize_contract_functions(expected_lowered_source, constructor_args);
+    assert_eq!(actual, expected);
 }
 
 #[test]
@@ -127,73 +129,35 @@ fn lowers_auth_groups_single_to_expected_wrapper_ast() {
         }
     "#;
 
-    let actual = normalize_contract_functions(source, &[Expr::int(4)]);
+    let expected_lowered = r#"
+        contract Decls(int max_outs) {
+            int value = 0;
 
-    let expected = vec![
-        FunctionShape {
-            // Original user policy is kept as an internal function.
-            name: "__covenant_policy_split".to_string(),
-            entrypoint: false,
-            params: vec![("amount".to_string(), "int".to_string())],
-            attributes: vec![],
-            body: vec![StmtShape::Require(bin(BinaryOp::Ge, id("amount"), int(0)))],
-        },
-        FunctionShape {
-            // Generated auth entrypoint wrapper.
-            name: "split".to_string(),
-            entrypoint: true,
-            params: vec![("amount".to_string(), "int".to_string())],
-            attributes: vec![],
-            body: vec![
-                // __cov_out_count = OpAuthOutputCount(this.activeInputIndex)
-                StmtShape::Var {
-                    type_name: "int".to_string(),
-                    name: "__cov_out_count".to_string(),
-                    expr: call("OpAuthOutputCount", vec![ExprShape::Nullary(NullaryOp::ActiveInputIndex)]),
-                },
-                // require(__cov_out_count <= max_outs)
-                StmtShape::Require(bin(BinaryOp::Le, id("__cov_out_count"), id("max_outs"))),
-                // __cov_id = OpInputCovenantId(this.activeInputIndex)
-                StmtShape::Var {
-                    type_name: "byte[32]".to_string(),
-                    name: "__cov_id".to_string(),
-                    expr: call("OpInputCovenantId", vec![ExprShape::Nullary(NullaryOp::ActiveInputIndex)]),
-                },
-                // __cov_shared_out_count = OpCovOutCount(__cov_id)
-                StmtShape::Var {
-                    type_name: "int".to_string(),
-                    name: "__cov_shared_out_count".to_string(),
-                    expr: call("OpCovOutCount", vec![id("__cov_id")]),
-                },
-                // require(__cov_shared_out_count == __cov_out_count)
-                StmtShape::Require(bin(BinaryOp::Eq, id("__cov_shared_out_count"), id("__cov_out_count"))),
-                // __covenant_policy_split(amount)
-                StmtShape::Call { name: "__covenant_policy_split".to_string(), args: vec![id("amount")] },
-                // for (__cov_k = 0; __cov_k < max_outs; __cov_k++) { if (__cov_k < __cov_out_count) { ... } }
-                StmtShape::For {
-                    ident: "__cov_k".to_string(),
-                    start: int(0),
-                    end: id("max_outs"),
-                    body: vec![StmtShape::If {
-                        condition: bin(BinaryOp::Lt, id("__cov_k"), id("__cov_out_count")),
-                        then_branch: vec![
-                            StmtShape::Var {
-                                type_name: "int".to_string(),
-                                name: "__cov_out_idx".to_string(),
-                                expr: call("OpAuthOutputIdx", vec![ExprShape::Nullary(NullaryOp::ActiveInputIndex), id("__cov_k")]),
-                            },
-                            StmtShape::Call {
-                                name: "validateOutputState".to_string(),
-                                args: vec![id("__cov_out_idx"), ExprShape::StateObject(vec![("value".to_string(), id("value"))])],
-                            },
-                        ],
-                    }],
-                },
-            ],
-        },
-    ];
+            function covenant_policy_split(int amount) {
+                require(amount >= 0);
+            }
 
-    assert_eq!(actual, expected);
+            entrypoint function split(int amount) {
+                int cov_out_count = OpAuthOutputCount(this.activeInputIndex);
+                require(cov_out_count <= max_outs);
+
+                byte[32] cov_id = OpInputCovenantId(this.activeInputIndex);
+                int cov_shared_out_count = OpCovOutCount(cov_id);
+                require(cov_shared_out_count == cov_out_count);
+
+                covenant_policy_split(amount);
+
+                for(cov_k, 0, max_outs) {
+                    if (cov_k < cov_out_count) {
+                        int cov_out_idx = OpAuthOutputIdx(this.activeInputIndex, cov_k);
+                        validateOutputState(cov_out_idx, { value: value });
+                    }
+                }
+            }
+        }
+    "#;
+
+    assert_lowers_to_expected_ast(source, expected_lowered, &[Expr::int(4)]);
 }
 
 #[test]
@@ -209,118 +173,49 @@ fn lowers_cov_to_leader_and_delegate_expected_wrapper_ast() {
         }
     "#;
 
-    let actual = normalize_contract_functions(source, &[Expr::int(2), Expr::int(3)]);
+    let expected_lowered = r#"
+        contract Decls(int max_ins, int max_outs) {
+            int value = 0;
 
-    let common_prefix = vec![
-        // __cov_id = OpInputCovenantId(this.activeInputIndex)
-        StmtShape::Var {
-            type_name: "byte[32]".to_string(),
-            name: "__cov_id".to_string(),
-            expr: call("OpInputCovenantId", vec![ExprShape::Nullary(NullaryOp::ActiveInputIndex)]),
-        },
-        // __cov_in_count = OpCovInputCount(__cov_id)
-        StmtShape::Var {
-            type_name: "int".to_string(),
-            name: "__cov_in_count".to_string(),
-            expr: call("OpCovInputCount", vec![id("__cov_id")]),
-        },
-        // require(__cov_in_count <= max_ins)
-        StmtShape::Require(bin(BinaryOp::Le, id("__cov_in_count"), id("max_ins"))),
-        // __cov_out_count = OpCovOutCount(__cov_id)
-        StmtShape::Var {
-            type_name: "int".to_string(),
-            name: "__cov_out_count".to_string(),
-            expr: call("OpCovOutCount", vec![id("__cov_id")]),
-        },
-        // require(__cov_out_count <= max_outs)
-        StmtShape::Require(bin(BinaryOp::Le, id("__cov_out_count"), id("max_outs"))),
-    ];
+            function covenant_policy_transition_ok(int delta) {
+                require(delta >= 0);
+            }
 
-    let expected = vec![
-        FunctionShape {
-            // Original user policy is kept as an internal function.
-            name: "__covenant_policy_transition_ok".to_string(),
-            entrypoint: false,
-            params: vec![("delta".to_string(), "int".to_string())],
-            attributes: vec![],
-            body: vec![StmtShape::Require(bin(BinaryOp::Ge, id("delta"), int(0)))],
-        },
-        FunctionShape {
-            // Generated leader entrypoint.
-            name: "transition_ok_leader".to_string(),
-            entrypoint: true,
-            params: vec![("delta".to_string(), "int".to_string())],
-            attributes: vec![],
-            body: {
-                let mut body = common_prefix.clone();
-                // require(OpCovInputIdx(__cov_id, 0) == this.activeInputIndex)
-                body.push(StmtShape::Require(bin(
-                    BinaryOp::Eq,
-                    call("OpCovInputIdx", vec![id("__cov_id"), int(0)]),
-                    ExprShape::Nullary(NullaryOp::ActiveInputIndex),
-                )));
-                body.push(StmtShape::For {
-                    ident: "__cov_in_k".to_string(),
-                    start: int(0),
-                    end: id("max_ins"),
-                    body: vec![StmtShape::If {
-                        condition: bin(BinaryOp::Lt, id("__cov_in_k"), id("__cov_in_count")),
-                        then_branch: vec![
-                            StmtShape::Var {
-                                type_name: "int".to_string(),
-                                name: "__cov_in_idx".to_string(),
-                                expr: call("OpCovInputIdx", vec![id("__cov_id"), id("__cov_in_k")]),
-                            },
-                            StmtShape::StateCallAssign {
-                                bindings: vec![("value".to_string(), "int".to_string(), "__cov_prev_value".to_string())],
-                                name: "readInputState".to_string(),
-                                args: vec![id("__cov_in_idx")],
-                            },
-                        ],
-                    }],
-                });
-                // __covenant_policy_transition_ok(delta)
-                body.push(StmtShape::Call { name: "__covenant_policy_transition_ok".to_string(), args: vec![id("delta")] });
-                body.push(StmtShape::For {
-                    ident: "__cov_k".to_string(),
-                    start: int(0),
-                    end: id("max_outs"),
-                    body: vec![StmtShape::If {
-                        condition: bin(BinaryOp::Lt, id("__cov_k"), id("__cov_out_count")),
-                        then_branch: vec![
-                            StmtShape::Var {
-                                type_name: "int".to_string(),
-                                name: "__cov_out_idx".to_string(),
-                                expr: call("OpCovOutputIdx", vec![id("__cov_id"), id("__cov_k")]),
-                            },
-                            StmtShape::Call {
-                                name: "validateOutputState".to_string(),
-                                args: vec![id("__cov_out_idx"), ExprShape::StateObject(vec![("value".to_string(), id("value"))])],
-                            },
-                        ],
-                    }],
-                });
-                body
-            },
-        },
-        FunctionShape {
-            // Generated delegate entrypoint.
-            name: "transition_ok_delegate".to_string(),
-            entrypoint: true,
-            params: vec![],
-            attributes: vec![],
-            body: {
-                let mut body = common_prefix;
-                // require(OpCovInputIdx(__cov_id, 0) != this.activeInputIndex)
-                body.push(StmtShape::Require(bin(
-                    BinaryOp::Ne,
-                    call("OpCovInputIdx", vec![id("__cov_id"), int(0)]),
-                    ExprShape::Nullary(NullaryOp::ActiveInputIndex),
-                )));
-                body
-            },
-        },
-    ];
+            entrypoint function transition_ok_leader(int delta) {
+                byte[32] cov_id = OpInputCovenantId(this.activeInputIndex);
 
-    assert_eq!(actual, expected);
+                require(OpCovInputIdx(cov_id, 0) == this.activeInputIndex);
+
+                int cov_in_count = OpCovInputCount(cov_id);
+                require(cov_in_count <= max_ins);
+
+                int cov_out_count = OpCovOutCount(cov_id);
+                require(cov_out_count <= max_outs);
+
+                for(cov_in_k, 0, max_ins) {
+                    if (cov_in_k < cov_in_count) {
+                        int cov_in_idx = OpCovInputIdx(cov_id, cov_in_k);
+                        { value: int cov_prev_value } = readInputState(cov_in_idx);
+                    }
+                }
+
+                covenant_policy_transition_ok(delta);
+
+                for(cov_k, 0, max_outs) {
+                    if (cov_k < cov_out_count) {
+                        int cov_out_idx = OpCovOutputIdx(cov_id, cov_k);
+                        validateOutputState(cov_out_idx, { value: value });
+                    }
+                }
+            }
+
+            entrypoint function transition_ok_delegate() {
+                byte[32] cov_id = OpInputCovenantId(this.activeInputIndex);
+
+                require(OpCovInputIdx(cov_id, 0) != this.activeInputIndex);
+            }
+        }
+    "#;
+
+    assert_lowers_to_expected_ast(source, expected_lowered, &[Expr::int(2), Expr::int(3)]);
 }

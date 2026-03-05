@@ -505,18 +505,18 @@ fn build_cov_wrapper<'i>(
     let cov_id_name = "__cov_id";
     body.push(var_def_statement(bytes32_type_ref(), cov_id_name, Expr::call("OpInputCovenantId", vec![active_input.clone()])));
 
-    let in_count_name = "__cov_in_count";
-    body.push(var_def_statement(int_type_ref(), in_count_name, Expr::call("OpCovInputCount", vec![identifier_expr(cov_id_name)])));
-    body.push(require_statement(binary_expr(BinaryOp::Le, identifier_expr(in_count_name), declaration.from_expr.clone())));
-
-    let out_count_name = "__cov_out_count";
-    body.push(var_def_statement(int_type_ref(), out_count_name, Expr::call("OpCovOutCount", vec![identifier_expr(cov_id_name)])));
-    body.push(require_statement(binary_expr(BinaryOp::Le, identifier_expr(out_count_name), declaration.to_expr.clone())));
-
     let leader_idx_expr = Expr::call("OpCovInputIdx", vec![identifier_expr(cov_id_name), Expr::int(0)]);
     body.push(require_statement(binary_expr(if leader { BinaryOp::Eq } else { BinaryOp::Ne }, leader_idx_expr, active_input)));
 
     if leader {
+        let in_count_name = "__cov_in_count";
+        body.push(var_def_statement(int_type_ref(), in_count_name, Expr::call("OpCovInputCount", vec![identifier_expr(cov_id_name)])));
+        body.push(require_statement(binary_expr(BinaryOp::Le, identifier_expr(in_count_name), declaration.from_expr.clone())));
+
+        let out_count_name = "__cov_out_count";
+        body.push(var_def_statement(int_type_ref(), out_count_name, Expr::call("OpCovOutCount", vec![identifier_expr(cov_id_name)])));
+        body.push(require_statement(binary_expr(BinaryOp::Le, identifier_expr(out_count_name), declaration.to_expr.clone())));
+
         append_cov_input_state_reads(&mut body, cov_id_name, in_count_name, declaration.from_expr.clone(), contract_fields);
         let call_args = policy.params.iter().map(|param| identifier_expr(&param.name)).collect();
         body.push(call_statement(policy_name, call_args));
