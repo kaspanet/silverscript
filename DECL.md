@@ -269,7 +269,7 @@ contract VaultNM(
     int round = init_round;
 
     // same policy body as source:
-    // function conserve_and_bump(State[] prev_states, State[] new_states, sig leader_sig) { ... }
+    function conserve_and_bump(State[] prev_states, State[] new_states, sig leader_sig) { ... }
 
     // Generated for N:M leader path
     entrypoint function conserve_and_bump_leader(State[] new_states, sig leader_sig) {
@@ -355,7 +355,7 @@ contract SeqCommitMirror(byte[32] init_seqcommit) {
 
     // Compiler-lowered policy function (renamed to avoid entrypoint name collision)
     // same body as source:
-    // function __roll_seqcommit_policy(State prev_state, byte[32] block_hash) : (State new_state) { ... }
+    function __roll_seqcommit_policy(State prev_state, byte[32] block_hash) : (State new_state) { ... }
 
     // Generated 1:1 covenant entrypoint
     entrypoint function roll_seqcommit(byte[32] block_hash) {
