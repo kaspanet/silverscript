@@ -1032,13 +1032,14 @@ fn append_auth_output_state_checks<'i>(
     let loop_var = "__cov_k";
     let out_idx_name = "__cov_out_idx";
     let cond = binary_expr(BinaryOp::Lt, identifier_expr(loop_var), identifier_expr(out_count_name));
-    let mut then_branch = Vec::new();
-    then_branch.push(var_def_statement(
-        int_type_ref(),
-        out_idx_name,
-        Expr::call("OpAuthOutputIdx", vec![active_input.clone(), identifier_expr(loop_var)]),
-    ));
-    then_branch.push(call_statement("validateOutputState", vec![identifier_expr(out_idx_name), next_state_expr]));
+    let then_branch = vec![
+        var_def_statement(
+            int_type_ref(),
+            out_idx_name,
+            Expr::call("OpAuthOutputIdx", vec![active_input.clone(), identifier_expr(loop_var)]),
+        ),
+        call_statement("validateOutputState", vec![identifier_expr(out_idx_name), next_state_expr]),
+    ];
     body.push(for_statement(loop_var, Expr::int(0), to_expr, vec![if_statement(cond, then_branch)]));
 }
 
@@ -1119,13 +1120,14 @@ fn append_cov_output_state_checks<'i>(
     let loop_var = "__cov_k";
     let out_idx_name = "__cov_out_idx";
     let cond = binary_expr(BinaryOp::Lt, identifier_expr(loop_var), identifier_expr(out_count_name));
-    let mut then_branch = Vec::new();
-    then_branch.push(var_def_statement(
-        int_type_ref(),
-        out_idx_name,
-        Expr::call("OpCovOutputIdx", vec![identifier_expr(cov_id_name), identifier_expr(loop_var)]),
-    ));
-    then_branch.push(call_statement("validateOutputState", vec![identifier_expr(out_idx_name), next_state_expr]));
+    let then_branch = vec![
+        var_def_statement(
+            int_type_ref(),
+            out_idx_name,
+            Expr::call("OpCovOutputIdx", vec![identifier_expr(cov_id_name), identifier_expr(loop_var)]),
+        ),
+        call_statement("validateOutputState", vec![identifier_expr(out_idx_name), next_state_expr]),
+    ];
     body.push(for_statement(loop_var, Expr::int(0), to_expr, vec![if_statement(cond, then_branch)]));
 }
 
