@@ -1066,6 +1066,33 @@ fn allows_concat_of_byte_arrays_with_plus() {
 }
 
 #[test]
+fn allows_concat_of_byte_arrays_with_zero_byte_between_them() {
+    let source = r#"
+        contract Arrays() {
+            entrypoint function main() {
+                byte[] prefix = 0x0102;
+                byte middle = 0x00;
+                byte[] suffix = 0x0304;
+                byte[5] out = prefix + middle + suffix;
+
+                require(out.length == 5);
+                require(out == 0x0102000304);
+            }
+        }
+    "#;
+
+    let options = CompileOptions::default();
+    let compiled = compile_contract(source, &[], options).expect("compile succeeds");
+    let sigscript = ScriptBuilder::new().drain();
+    let result = run_script_with_sigscript(compiled.script, sigscript);
+    assert!(
+        result.is_ok(),
+        "byte[] + zero-byte + byte[] concatenation runtime failed: {}",
+        result.unwrap_err()
+    );
+}
+
+#[test]
 fn allows_concat_of_fixed_size_byte_array_elements_with_plus() {
     let source = r#"
         contract Arrays() {
