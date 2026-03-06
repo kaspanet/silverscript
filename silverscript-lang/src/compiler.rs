@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use kaspa_txscript::opcodes::codes::*;
-use kaspa_txscript::script_builder::ScriptBuilder;
+use kaspa_txscript::script_builder::{ScriptBuilder, ScriptBuilderError};
 use kaspa_txscript::serialize_i64;
 use serde::{Deserialize, Serialize};
 
@@ -25,6 +25,23 @@ pub struct CompileOptions {
     pub allow_yield: bool,
     pub allow_entrypoint_return: bool,
     pub record_debug_infos: bool,
+}
+
+trait ScriptBuilderExt {
+    fn add_data_preserving_single_zero(&mut self, data: &[u8]) -> Result<&mut Self, ScriptBuilderError>;
+}
+
+impl ScriptBuilderExt for ScriptBuilder {
+    fn add_data_preserving_single_zero(&mut self, data: &[u8]) -> Result<&mut Self, ScriptBuilderError> {
+        if data.len() == 1 && data[0] == 0 {
+            self.add_i64(0)?;
+            self.add_i64(1)?;
+            self.add_op(OpNum2Bin)?;
+            Ok(self)
+        } else {
+            self.add_data(data)
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -725,10 +742,10 @@ impl<'i> CompiledContract<'i> {
                                 .iter()
                                 .filter_map(|value| if let ExprKind::Byte(byte) = &value.kind { Some(*byte) } else { None })
                                 .collect();
-                            builder.add_data(&bytes)?;
+                            builder.add_data_preserving_single_zero(&bytes)?;
                         } else {
                             let bytes = encode_array_literal(&values, &input.type_name)?;
-                            builder.add_data(&bytes)?;
+                            builder.add_data_preserving_single_zero(&bytes)?;
                         }
                     }
                     _ => {
@@ -759,15 +776,15 @@ fn push_sigscript_arg<'i>(builder: &mut ScriptBuilder, arg: Expr<'i>) -> Result<
             builder.add_i64(if value { 1 } else { 0 })?;
         }
         ExprKind::String(value) => {
-            builder.add_data(value.as_bytes())?;
+            builder.add_data_preserving_single_zero(value.as_bytes())?;
         }
         ExprKind::Byte(value) => {
-            builder.add_data(&[value])?;
+            builder.add_data_preserving_single_zero(&[value])?;
         }
         ExprKind::Array(values) if values.iter().all(|value| matches!(&value.kind, ExprKind::Byte(_))) => {
             let bytes: Vec<u8> =
                 values.iter().filter_map(|value| if let ExprKind::Byte(byte) = &value.kind { Some(*byte) } else { None }).collect();
-            builder.add_data(&bytes)?;
+            builder.add_data_preserving_single_zero(&bytes)?;
         }
         ExprKind::DateLiteral(value) => {
             builder.add_i64(value)?;
@@ -2431,21 +2448,21 @@ fn compile_expr<'i>(
             Ok(())
         }
         ExprKind::Byte(byte) => {
-            builder.add_data(&[*byte])?;
+            builder.add_data_preserving_single_zero(&[*byte])?;
             *stack_depth += 1;
             Ok(())
         }
         ExprKind::Array(values) => {
             // TODO: this particular handling should be done in encode_array_literal to unify the behavior
             if values.is_empty() {
-                builder.add_data(&[])?;
+                builder.add_data_preserving_single_zero(&[])?;
                 *stack_depth += 1;
                 return Ok(());
             }
             let inferred_type = infer_fixed_array_literal_type(values)
                 .ok_or_else(|| CompilerError::Unsupported("array literal type cannot be inferred".to_string()))?;
             let encoded = encode_array_literal(values, &inferred_type)?;
-            builder.add_data(&encoded)?;
+            builder.add_data_preserving_single_zero(&encoded)?;
             *stack_depth += 1;
             Ok(())
         }
@@ -2453,7 +2470,7 @@ fn compile_expr<'i>(
             Err(CompilerError::Unsupported("state object literals are only supported in validateOutputState".to_string()))
         }
         ExprKind::String(value) => {
-            builder.add_data(value.as_bytes())?;
+            builder.add_data_preserving_single_zero(value.as_bytes())?;
             *stack_depth += 1;
             Ok(())
         }
@@ -2466,7 +2483,7 @@ fn compile_expr<'i>(
                     if let ExprKind::Array(values) = &expr.kind {
                         if is_array_type(type_name) {
                             let encoded = encode_array_literal(values, type_name)?;
-                            builder.add_data(&encoded)?;
+                            builder.add_data_preserving_single_zero(&encoded)?;
                             *stack_depth += 1;
                             visiting.remove(name);
                             return Ok(());
@@ -3410,14 +3427,14 @@ fn compile_call_expr<'i>(
             }
             match &args[0].kind {
                 ExprKind::String(value) => {
-                    builder.add_data(value.as_bytes())?;
+                    builder.add_data_preserving_single_zero(value.as_bytes())?;
                     *stack_depth += 1;
                     Ok(())
                 }
                 ExprKind::Identifier(name) => {
                     if let Some(expr) = scope.env.get(name) {
                         if let ExprKind::String(value) = &expr.kind {
-                            builder.add_data(value.as_bytes())?;
+                            builder.add_data_preserving_single_zero(value.as_bytes())?;
                             *stack_depth += 1;
                             return Ok(());
                         }
@@ -3779,10 +3796,10 @@ fn build_null_data_script<'i>(arg: &Expr<'i>) -> Result<Vec<u8>, CompilerError> 
                     .iter()
                     .filter_map(|value| if let ExprKind::Byte(byte) = &value.kind { Some(*byte) } else { None })
                     .collect();
-                builder.add_data(&bytes)?;
+                builder.add_data_preserving_single_zero(&bytes)?;
             }
             ExprKind::String(value) => {
-                builder.add_data(value.as_bytes())?;
+                builder.add_data_preserving_single_zero(value.as_bytes())?;
             }
             ExprKind::Call { name, args, .. } if name == "bytes" || name == "byte[]" => {
                 if args.len() != 1 {
@@ -3792,7 +3809,7 @@ fn build_null_data_script<'i>(arg: &Expr<'i>) -> Result<Vec<u8>, CompilerError> 
                 }
                 match &args[0].kind {
                     ExprKind::String(value) => {
-                        builder.add_data(value.as_bytes())?;
+                        builder.add_data_preserving_single_zero(value.as_bytes())?;
                     }
                     _ => {
                         return Err(CompilerError::Unsupported(

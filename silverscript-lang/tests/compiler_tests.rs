@@ -1085,11 +1085,42 @@ fn allows_concat_of_byte_arrays_with_zero_byte_between_them() {
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
     let sigscript = ScriptBuilder::new().drain();
     let result = run_script_with_sigscript(compiled.script, sigscript);
-    assert!(
-        result.is_ok(),
-        "byte[] + zero-byte + byte[] concatenation runtime failed: {}",
-        result.unwrap_err()
-    );
+    assert!(result.is_ok(), "byte[] + zero-byte + byte[] concatenation runtime failed: {}", result.unwrap_err());
+}
+
+#[test]
+fn allows_concat_with_single_zero_byte_in_byte_fixed_and_dynamic_forms() {
+    let source = r#"
+        contract Arrays() {
+            entrypoint function main() {
+                byte[] prefix = 0xaa;
+                byte[] suffix = 0xbb;
+
+                byte middle_byte = 0x00;
+                byte[1] middle_fixed = 0x00;
+                byte[] middle_dynamic = 0x00;
+
+                byte[3] from_byte = prefix + middle_byte + suffix;
+                byte[3] from_fixed = prefix + middle_fixed + suffix;
+                byte[3] from_dynamic = prefix + middle_dynamic + suffix;
+
+                require(middle_fixed.length == 1);
+                require(middle_dynamic.length == 1);
+                require(from_byte.length == 3);
+                require(from_fixed.length == 3);
+                require(from_dynamic.length == 3);
+                require(from_byte == 0xaa00bb);
+                require(from_fixed == 0xaa00bb);
+                require(from_dynamic == 0xaa00bb);
+            }
+        }
+    "#;
+
+    let options = CompileOptions::default();
+    let compiled = compile_contract(source, &[], options).expect("compile succeeds");
+    let sigscript = ScriptBuilder::new().drain();
+    let result = run_script_with_sigscript(compiled.script, sigscript);
+    assert!(result.is_ok(), "single-zero-byte concat in byte/byte[1]/byte[] forms failed: {}", result.unwrap_err());
 }
 
 #[test]
