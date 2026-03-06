@@ -2911,15 +2911,7 @@ fn compile_expr<'i>(
             compile_expr(source, env, params, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
             compile_expr(start, env, params, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
             compile_expr(end, env, params, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
-
-            builder.add_op(Op2Dup)?;
-            *stack_depth += 2;
-            builder.add_op(OpSwap)?;
-            builder.add_op(OpSub)?;
-            *stack_depth -= 1;
-            builder.add_op(OpSwap)?;
-            builder.add_op(OpDrop)?;
-            *stack_depth -= 1;
+            // OpSubstr expects bounds as (start, end).
             builder.add_op(OpSubstr)?;
             *stack_depth -= 2;
             Ok(())

@@ -977,6 +977,48 @@ fn runs_array_runtime_examples() {
 }
 
 #[test]
+fn runs_slice_with_explicit_end_bounds() {
+    let source = r#"
+        contract SliceLowering() {
+            entrypoint function main() {
+                byte[] data = 0x0102030405060708090a;
+                byte[] segment = data.slice(3, 8);
+                require(segment.length == 5);
+                require(segment == 0x0405060708);
+            }
+        }
+    "#;
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let sigscript = ScriptBuilder::new().drain();
+    let result = run_script_with_sigscript(compiled.script, sigscript);
+    assert!(result.is_ok(), "slice runtime should succeed: {}", result.unwrap_err());
+}
+
+#[test]
+fn runs_slice_reconstruction_and_compare_runtime_example() {
+    let source = r#"
+        contract SliceReconstruct() {
+            entrypoint function main() {
+                byte[] data = 0x0102030405060708090a;
+                byte[] left = data.slice(0, 4);
+                byte[] right = data.slice(4, 10);
+                byte[] rebuilt = left + right;
+
+                require(left == 0x01020304);
+                require(right == 0x05060708090a);
+                require(rebuilt.length == data.length);
+                require(rebuilt == data);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let sigscript = ScriptBuilder::new().drain();
+    let result = run_script_with_sigscript(compiled.script, sigscript);
+    assert!(result.is_ok(), "slice reconstruction runtime should succeed: {}", result.unwrap_err());
+}
+
+#[test]
 fn allows_concat_of_int_arrays_with_plus() {
     let source = r#"
         contract Arrays() {
