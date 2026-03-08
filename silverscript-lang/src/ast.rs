@@ -8,13 +8,15 @@ use crate::errors::CompilerError;
 use crate::parser::{Rule, parse_source_file, parse_type_name as parse_type_name_rule};
 pub use crate::span::{Span, SpanUtils};
 
+pub mod visit;
+
 #[derive(Debug, Clone)]
 struct Identifier<'i> {
     name: String,
     span: Span<'i>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContractAst<'i> {
     pub name: String,
     pub params: Vec<ParamAst<'i>>,
@@ -35,7 +37,7 @@ impl<'i> fmt::Display for ContractAst<'i> {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContractFieldAst<'i> {
     pub type_ref: TypeRef,
     pub name: String,
@@ -48,7 +50,7 @@ pub struct ContractFieldAst<'i> {
     pub name_span: Span<'i>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FunctionAst<'i> {
     pub name: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -68,7 +70,7 @@ pub struct FunctionAst<'i> {
     pub body_span: Span<'i>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FunctionAttributeAst<'i> {
     pub path: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -79,7 +81,7 @@ pub struct FunctionAttributeAst<'i> {
     pub path_spans: Vec<Span<'i>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FunctionAttributeArgAst<'i> {
     pub name: String,
     pub expr: Expr<'i>,
@@ -89,7 +91,7 @@ pub struct FunctionAttributeArgAst<'i> {
     pub name_span: Span<'i>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ParamAst<'i> {
     pub type_ref: TypeRef,
     pub name: String,
@@ -101,7 +103,7 @@ pub struct ParamAst<'i> {
     pub name_span: Span<'i>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StateBindingAst<'i> {
     pub field_name: String,
     pub type_ref: TypeRef,
@@ -188,7 +190,7 @@ impl TypeRef {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "data", rename_all = "snake_case")]
 pub enum Statement<'i> {
     VariableDefinition {
@@ -345,14 +347,14 @@ impl<'i> Statement<'i> {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "data", rename_all = "snake_case")]
 pub enum ConsoleArg<'i> {
     Identifier(String, #[serde(skip_deserializing)] Span<'i>),
     Literal(Expr<'i>),
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TimeVar {
     ThisAge,
@@ -602,7 +604,7 @@ pub enum IntrospectionKind {
     OutputScriptPubKey,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConstantAst<'i> {
     pub type_ref: TypeRef,
     pub name: String,

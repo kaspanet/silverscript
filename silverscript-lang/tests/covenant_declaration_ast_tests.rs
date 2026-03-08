@@ -1,41 +1,8 @@
-use silverscript_lang::ast::{BinaryOp, Expr, ExprKind, FunctionAst, NullaryOp, Statement, UnarySuffixKind};
+use silverscript_lang::ast::visit::{AstVisitorMut, NameKind, visit_contract_mut};
+use silverscript_lang::ast::{ContractAst, Expr, FunctionAst};
 use silverscript_lang::compiler::{CompileOptions, compile_contract};
+use silverscript_lang::span::Span;
 use std::collections::HashSet;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct FunctionShape {
-    name: String,
-    entrypoint: bool,
-    params: Vec<(String, String)>,
-    attributes: Vec<String>,
-    body: Vec<StmtShape>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum StmtShape {
-    Var { type_name: String, name: String, expr: Option<ExprShape> },
-    ArrayPush { name: String, expr: ExprShape },
-    Require(ExprShape),
-    Call { name: String, args: Vec<ExprShape> },
-    CallAssign { bindings: Vec<(String, String)>, name: String, args: Vec<ExprShape> },
-    Return(Vec<ExprShape>),
-    StateCallAssign { bindings: Vec<(String, String, String)>, name: String, args: Vec<ExprShape> },
-    If { condition: ExprShape, then_branch: Vec<StmtShape> },
-    For { ident: String, start: ExprShape, end: ExprShape, body: Vec<StmtShape> },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum ExprShape {
-    Int(i64),
-    Bool(bool),
-    Identifier(String),
-    Nullary(NullaryOp),
-    Call { name: String, args: Vec<ExprShape> },
-    ArrayIndex { source: Box<ExprShape>, index: Box<ExprShape> },
-    UnarySuffix { source: Box<ExprShape>, kind: UnarySuffixKind },
-    StateObject(Vec<(String, ExprShape)>),
-    Binary { op: BinaryOp, left: Box<ExprShape>, right: Box<ExprShape> },
-}
 
 fn canonicalize_generated_name(name: &str) -> String {
     if let Some(rest) = name.strip_prefix("__covenant_policy_") {
@@ -47,101 +14,41 @@ fn canonicalize_generated_name(name: &str) -> String {
     name.to_string()
 }
 
-fn normalize_expr(expr: &Expr<'_>) -> ExprShape {
-    match &expr.kind {
-        ExprKind::Int(v) => ExprShape::Int(*v),
-        ExprKind::Bool(v) => ExprShape::Bool(*v),
-        ExprKind::Identifier(name) => ExprShape::Identifier(canonicalize_generated_name(name)),
-        ExprKind::Nullary(op) => ExprShape::Nullary(*op),
-        ExprKind::Call { name, args, .. } => {
-            ExprShape::Call { name: canonicalize_generated_name(name), args: args.iter().map(normalize_expr).collect() }
-        }
-        ExprKind::ArrayIndex { source, index } => {
-            ExprShape::ArrayIndex { source: Box::new(normalize_expr(source)), index: Box::new(normalize_expr(index)) }
-        }
-        ExprKind::UnarySuffix { source, kind, .. } => ExprShape::UnarySuffix { source: Box::new(normalize_expr(source)), kind: *kind },
-        ExprKind::StateObject(fields) => {
-            ExprShape::StateObject(fields.iter().map(|field| (field.name.clone(), normalize_expr(&field.expr))).collect())
-        }
-        ExprKind::Binary { op, left, right } => {
-            ExprShape::Binary { op: *op, left: Box::new(normalize_expr(left)), right: Box::new(normalize_expr(right)) }
-        }
-        other => panic!("unsupported expr in covenant AST test: {other:?}"),
+struct GeneratedNameCanonicalizer;
+
+impl<'i> AstVisitorMut<'i> for GeneratedNameCanonicalizer {
+    fn visit_name(&mut self, name: &mut String, _kind: NameKind) {
+        *name = canonicalize_generated_name(name);
+    }
+
+    fn visit_span(&mut self, span: &mut Span<'i>) {
+        *span = Span::default();
     }
 }
 
-fn normalize_stmt(stmt: &Statement<'_>) -> StmtShape {
-    match stmt {
-        Statement::VariableDefinition { type_ref, name, expr, .. } => StmtShape::Var {
-            type_name: type_ref.type_name(),
-            name: canonicalize_generated_name(name),
-            expr: expr.as_ref().map(normalize_expr),
-        },
-        Statement::ArrayPush { name, expr, .. } => {
-            StmtShape::ArrayPush { name: canonicalize_generated_name(name), expr: normalize_expr(expr) }
-        }
-        Statement::Require { expr, .. } => StmtShape::Require(normalize_expr(expr)),
-        Statement::FunctionCall { name, args, .. } => {
-            StmtShape::Call { name: canonicalize_generated_name(name), args: args.iter().map(normalize_expr).collect() }
-        }
-        Statement::FunctionCallAssign { bindings, name, args, .. } => StmtShape::CallAssign {
-            bindings: bindings
-                .iter()
-                .map(|binding| (binding.type_ref.type_name(), canonicalize_generated_name(&binding.name)))
-                .collect(),
-            name: canonicalize_generated_name(name),
-            args: args.iter().map(normalize_expr).collect(),
-        },
-        Statement::Return { exprs, .. } => StmtShape::Return(exprs.iter().map(normalize_expr).collect()),
-        Statement::StateFunctionCallAssign { bindings, name, args, .. } => StmtShape::StateCallAssign {
-            bindings: bindings
-                .iter()
-                .map(|binding| (binding.field_name.clone(), binding.type_ref.type_name(), canonicalize_generated_name(&binding.name)))
-                .collect(),
-            name: canonicalize_generated_name(name),
-            args: args.iter().map(normalize_expr).collect(),
-        },
-        Statement::If { condition, then_branch, else_branch, .. } => {
-            assert!(else_branch.is_none(), "generated covenant wrappers should not emit else branches");
-            StmtShape::If { condition: normalize_expr(condition), then_branch: then_branch.iter().map(normalize_stmt).collect() }
-        }
-        Statement::For { ident, start, end, body, .. } => StmtShape::For {
-            ident: canonicalize_generated_name(ident),
-            start: normalize_expr(start),
-            end: normalize_expr(end),
-            body: body.iter().map(normalize_stmt).collect(),
-        },
-        other => panic!("unsupported statement in covenant AST test: {other:?}"),
-    }
+fn normalize_contract(contract: &mut ContractAst<'_>) {
+    visit_contract_mut(&mut GeneratedNameCanonicalizer, contract);
 }
 
-fn normalize_function(function: &FunctionAst<'_>) -> FunctionShape {
-    FunctionShape {
-        name: canonicalize_generated_name(&function.name),
-        entrypoint: function.entrypoint,
-        params: function.params.iter().map(|p| (canonicalize_generated_name(&p.name), p.type_ref.type_name())).collect(),
-        attributes: function.attributes.iter().map(|a| a.path.join(".")).collect(),
-        body: function.body.iter().map(normalize_stmt).collect(),
-    }
-}
-
-fn normalize_contract_functions(source: &str, constructor_args: &[Expr<'_>]) -> Vec<FunctionShape> {
+fn compile_and_normalize_contract<'i>(source: &'i str, constructor_args: &[Expr<'i>]) -> ContractAst<'i> {
     let compiled = compile_contract(source, constructor_args, CompileOptions::default()).expect("compile succeeds");
-    compiled.ast.functions.iter().map(normalize_function).collect()
+    let mut contract = compiled.ast;
+    normalize_contract(&mut contract);
+    contract
 }
 
-fn assert_lowers_to_expected_ast(source: &str, expected_lowered_source: &str, constructor_args: &[Expr<'_>]) {
-    let actual = normalize_contract_functions(source, constructor_args);
-    let expected = normalize_contract_functions(expected_lowered_source, constructor_args);
+fn assert_lowers_to_expected_ast<'i>(source: &'i str, expected_lowered_source: &'i str, constructor_args: &[Expr<'i>]) {
+    let actual = compile_and_normalize_contract(source, constructor_args);
+    let expected = compile_and_normalize_contract(expected_lowered_source, constructor_args);
     assert_eq!(actual, expected);
 }
 
-fn function_by_name<'a>(functions: &'a [FunctionShape], name: &str) -> &'a FunctionShape {
+fn function_by_name<'a, 'i>(functions: &'a [FunctionAst<'i>], name: &str) -> &'a FunctionAst<'i> {
     functions.iter().find(|function| function.name == name).unwrap_or_else(|| panic!("missing function '{}'", name))
 }
 
-fn assert_param_names(function: &FunctionShape, expected: &[&str]) {
-    let actual: Vec<&str> = function.params.iter().map(|(name, _)| name.as_str()).collect();
+fn assert_param_names(function: &FunctionAst<'_>, expected: &[&str]) {
+    let actual: Vec<&str> = function.params.iter().map(|param| param.name.as_str()).collect();
     assert_eq!(actual, expected, "unexpected params for '{}'", function.name);
 }
 
@@ -1076,7 +983,8 @@ fn covers_attribute_config_combinations_with_two_field_state() {
         }
     "#;
 
-    let functions = normalize_contract_functions(source, &[Expr::int(2), Expr::int(4), Expr::int(10), Expr::bytes(vec![7u8; 32])]);
+    let contract = compile_and_normalize_contract(source, &[Expr::int(2), Expr::int(4), Expr::int(10), Expr::bytes(vec![7u8; 32])]);
+    let functions = &contract.functions;
 
     let expected_entrypoints: HashSet<&str> = vec![
         "auth_verification_multi",
