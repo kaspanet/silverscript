@@ -875,6 +875,418 @@ fn lowers_fanout_sugar_verification_two_field_state_to_expected_wrapper_ast() {
 }
 
 #[test]
+fn lowers_many_covenant_declarations_in_one_contract_to_expected_wrapper_ast() {
+    let source = r#"
+        contract Matrix(int max_ins, int max_outs, int init_amount, byte[32] init_owner) {
+            int amount = init_amount;
+            byte[32] owner = init_owner;
+
+            #[covenant(binding = auth, from = 1, to = max_outs, mode = verification, groups = multiple)]
+            function auth_verification_multi(
+                State prev_state,
+                State[] new_states,
+                int nonce
+            ) {
+                require(nonce >= 0);
+            }
+
+            #[covenant(binding = auth, from = 1, to = max_outs, mode = verification, groups = single)]
+            function auth_verification_single(State prev_state, State[] new_states) {
+                require(new_states.length == new_states.length);
+            }
+
+            #[covenant(binding = auth, from = 1, to = max_outs, mode = transition)]
+            function auth_transition(State prev_state, int fee) : (State) {
+                return({ amount: prev_state.amount - fee, owner: prev_state.owner });
+            }
+
+            #[covenant(binding = cov, from = max_ins, to = max_outs, mode = verification)]
+            function cov_verification(
+                State[] prev_states,
+                State[] new_states,
+                int nonce
+            ) {
+                require(nonce >= 0);
+            }
+
+            #[covenant(binding = cov, from = max_ins, to = max_outs, mode = transition)]
+            function cov_transition(State[] prev_states, int fee) : (State[]) {
+                require(fee >= 0);
+                return(prev_states);
+            }
+
+            #[covenant(from = 1, to = max_outs)]
+            function inferred_auth(State prev_state, State[] new_states) {
+                require(new_states.length == new_states.length);
+            }
+
+            #[covenant(from = max_ins, to = max_outs)]
+            function inferred_cov(State[] prev_states, State[] new_states) {
+                require(new_states.length == new_states.length);
+            }
+
+            #[covenant(from = 1, to = 1)]
+            function inferred_transition(State prev_state, int delta) : (State) {
+                return({ amount: prev_state.amount + delta, owner: prev_state.owner });
+            }
+
+            #[covenant.singleton(mode = transition)]
+            function singleton_transition(State prev_state, int delta) : (State) {
+                return({ amount: prev_state.amount + delta, owner: prev_state.owner });
+            }
+
+            #[covenant.singleton(mode = transition, termination = allowed)]
+            function singleton_terminate(State prev_state, State[] next_states) : (State[]) {
+                require(prev_state.amount >= 0);
+                return(next_states);
+            }
+
+            #[covenant.fanout(to = max_outs, mode = verification)]
+            function fanout_verification(State prev_state, State[] new_states) {
+                require(new_states.length == new_states.length);
+            }
+        }
+    "#;
+
+    let expected_lowered = r#"
+        contract Matrix(int max_ins, int max_outs, int init_amount, byte[32] init_owner) {
+            int amount = init_amount;
+            byte[32] owner = init_owner;
+
+            function covenant_policy_auth_verification_multi(
+                int prev_amount,
+                byte[32] prev_owner,
+                int[] new_amount,
+                byte[32][] new_owner,
+                int nonce
+            ) {
+                require(nonce >= 0);
+            }
+
+            entrypoint function auth_verification_multi(int[] new_amount, byte[32][] new_owner, int nonce) {
+                int cov_out_count = OpAuthOutputCount(this.activeInputIndex);
+
+                covenant_policy_auth_verification_multi(amount, owner, new_amount, new_owner, nonce);
+                require(cov_out_count <= max_outs);
+
+                for(cov_k, 0, max_outs) {
+                    if (cov_k < cov_out_count) {
+                        int cov_out_idx = OpAuthOutputIdx(this.activeInputIndex, cov_k);
+                        validateOutputState(cov_out_idx, {
+                            amount: new_amount[cov_k],
+                            owner: new_owner[cov_k]
+                        });
+                    }
+                }
+            }
+
+            function covenant_policy_auth_verification_single(
+                int prev_amount,
+                byte[32] prev_owner,
+                int[] new_amount,
+                byte[32][] new_owner
+            ) {
+                require(new_amount.length == new_amount.length);
+            }
+
+            entrypoint function auth_verification_single(int[] new_amount, byte[32][] new_owner) {
+                int cov_out_count = OpAuthOutputCount(this.activeInputIndex);
+
+                byte[32] cov_id = OpInputCovenantId(this.activeInputIndex);
+                int cov_shared_out_count = OpCovOutCount(cov_id);
+                require(cov_shared_out_count == cov_out_count);
+
+                covenant_policy_auth_verification_single(amount, owner, new_amount, new_owner);
+                require(cov_out_count <= max_outs);
+
+                for(cov_k, 0, max_outs) {
+                    if (cov_k < cov_out_count) {
+                        int cov_out_idx = OpAuthOutputIdx(this.activeInputIndex, cov_k);
+                        validateOutputState(cov_out_idx, {
+                            amount: new_amount[cov_k],
+                            owner: new_owner[cov_k]
+                        });
+                    }
+                }
+            }
+
+            function covenant_policy_auth_transition(int prev_amount, byte[32] prev_owner, int fee) : (int, byte[32]) {
+                return(prev_amount - fee, prev_owner);
+            }
+
+            entrypoint function auth_transition(int fee) {
+                int cov_out_count = OpAuthOutputCount(this.activeInputIndex);
+
+                (int cov_new_amount, byte[32] cov_new_owner) = covenant_policy_auth_transition(amount, owner, fee);
+                require(cov_out_count == 1);
+
+                int cov_out_idx = OpAuthOutputIdx(this.activeInputIndex, 0);
+                validateOutputState(cov_out_idx, {
+                    amount: cov_new_amount,
+                    owner: cov_new_owner
+                });
+            }
+
+            function covenant_policy_cov_verification(
+                int[] prev_amount,
+                byte[32][] prev_owner,
+                int[] new_amount,
+                byte[32][] new_owner,
+                int nonce
+            ) {
+                require(nonce >= 0);
+            }
+
+            entrypoint function cov_verification_leader(int[] new_amount, byte[32][] new_owner, int nonce) {
+                byte[32] cov_id = OpInputCovenantId(this.activeInputIndex);
+
+                require(OpCovInputIdx(cov_id, 0) == this.activeInputIndex);
+
+                int cov_in_count = OpCovInputCount(cov_id);
+                require(cov_in_count <= max_ins);
+
+                int cov_out_count = OpCovOutCount(cov_id);
+                int[] prev_amount;
+                byte[32][] prev_owner;
+
+                for(cov_in_k, 0, max_ins) {
+                    if (cov_in_k < cov_in_count) {
+                        int cov_in_idx = OpCovInputIdx(cov_id, cov_in_k);
+                        {
+                            amount: int cov_prev_amount,
+                            owner: byte[32] cov_prev_owner
+                        } = readInputState(cov_in_idx);
+                        prev_amount.push(cov_prev_amount);
+                        prev_owner.push(cov_prev_owner);
+                    }
+                }
+
+                covenant_policy_cov_verification(prev_amount, prev_owner, new_amount, new_owner, nonce);
+                require(cov_out_count <= max_outs);
+
+                for(cov_k, 0, max_outs) {
+                    if (cov_k < cov_out_count) {
+                        int cov_out_idx = OpCovOutputIdx(cov_id, cov_k);
+                        validateOutputState(cov_out_idx, {
+                            amount: new_amount[cov_k],
+                            owner: new_owner[cov_k]
+                        });
+                    }
+                }
+            }
+
+            entrypoint function cov_verification_delegate() {
+                byte[32] cov_id = OpInputCovenantId(this.activeInputIndex);
+
+                require(OpCovInputIdx(cov_id, 0) != this.activeInputIndex);
+            }
+
+            function covenant_policy_cov_transition(int[] prev_amount, byte[32][] prev_owner, int fee) : (int[], byte[32][]) {
+                require(fee >= 0);
+                return(prev_amount, prev_owner);
+            }
+
+            entrypoint function cov_transition_leader(int[] prev_amount, byte[32][] prev_owner, int fee) {
+                byte[32] cov_id = OpInputCovenantId(this.activeInputIndex);
+
+                require(OpCovInputIdx(cov_id, 0) == this.activeInputIndex);
+
+                int cov_in_count = OpCovInputCount(cov_id);
+                require(cov_in_count <= max_ins);
+
+                int cov_out_count = OpCovOutCount(cov_id);
+
+                for(cov_in_k, 0, max_ins) {
+                    if (cov_in_k < cov_in_count) {
+                        int cov_in_idx = OpCovInputIdx(cov_id, cov_in_k);
+                        {
+                            amount: int cov_prev_amount,
+                            owner: byte[32] cov_prev_owner
+                        } = readInputState(cov_in_idx);
+                    }
+                }
+
+                (int[] cov_new_amount, byte[32][] cov_new_owner) = covenant_policy_cov_transition(prev_amount, prev_owner, fee);
+                require(cov_new_owner.length == cov_new_amount.length);
+                require(cov_out_count <= max_outs);
+                require(cov_out_count == cov_new_amount.length);
+
+                for(cov_k, 0, max_outs) {
+                    if (cov_k < cov_out_count) {
+                        int cov_out_idx = OpCovOutputIdx(cov_id, cov_k);
+                        validateOutputState(cov_out_idx, {
+                            amount: cov_new_amount[cov_k],
+                            owner: cov_new_owner[cov_k]
+                        });
+                    }
+                }
+            }
+
+            entrypoint function cov_transition_delegate() {
+                byte[32] cov_id = OpInputCovenantId(this.activeInputIndex);
+
+                require(OpCovInputIdx(cov_id, 0) != this.activeInputIndex);
+            }
+
+            function covenant_policy_inferred_auth(int prev_amount, byte[32] prev_owner, int[] new_amount, byte[32][] new_owner) {
+                require(new_amount.length == new_amount.length);
+            }
+
+            entrypoint function inferred_auth(int[] new_amount, byte[32][] new_owner) {
+                int cov_out_count = OpAuthOutputCount(this.activeInputIndex);
+
+                covenant_policy_inferred_auth(amount, owner, new_amount, new_owner);
+                require(cov_out_count <= max_outs);
+
+                for(cov_k, 0, max_outs) {
+                    if (cov_k < cov_out_count) {
+                        int cov_out_idx = OpAuthOutputIdx(this.activeInputIndex, cov_k);
+                        validateOutputState(cov_out_idx, {
+                            amount: new_amount[cov_k],
+                            owner: new_owner[cov_k]
+                        });
+                    }
+                }
+            }
+
+            function covenant_policy_inferred_cov(int[] prev_amount, byte[32][] prev_owner, int[] new_amount, byte[32][] new_owner) {
+                require(new_amount.length == new_amount.length);
+            }
+
+            entrypoint function inferred_cov_leader(int[] new_amount, byte[32][] new_owner) {
+                byte[32] cov_id = OpInputCovenantId(this.activeInputIndex);
+
+                require(OpCovInputIdx(cov_id, 0) == this.activeInputIndex);
+
+                int cov_in_count = OpCovInputCount(cov_id);
+                require(cov_in_count <= max_ins);
+
+                int cov_out_count = OpCovOutCount(cov_id);
+                int[] prev_amount;
+                byte[32][] prev_owner;
+
+                for(cov_in_k, 0, max_ins) {
+                    if (cov_in_k < cov_in_count) {
+                        int cov_in_idx = OpCovInputIdx(cov_id, cov_in_k);
+                        {
+                            amount: int cov_prev_amount,
+                            owner: byte[32] cov_prev_owner
+                        } = readInputState(cov_in_idx);
+                        prev_amount.push(cov_prev_amount);
+                        prev_owner.push(cov_prev_owner);
+                    }
+                }
+
+                covenant_policy_inferred_cov(prev_amount, prev_owner, new_amount, new_owner);
+                require(cov_out_count <= max_outs);
+
+                for(cov_k, 0, max_outs) {
+                    if (cov_k < cov_out_count) {
+                        int cov_out_idx = OpCovOutputIdx(cov_id, cov_k);
+                        validateOutputState(cov_out_idx, {
+                            amount: new_amount[cov_k],
+                            owner: new_owner[cov_k]
+                        });
+                    }
+                }
+            }
+
+            entrypoint function inferred_cov_delegate() {
+                byte[32] cov_id = OpInputCovenantId(this.activeInputIndex);
+
+                require(OpCovInputIdx(cov_id, 0) != this.activeInputIndex);
+            }
+
+            function covenant_policy_inferred_transition(int prev_amount, byte[32] prev_owner, int delta) : (int, byte[32]) {
+                return(prev_amount + delta, prev_owner);
+            }
+
+            entrypoint function inferred_transition(int delta) {
+                int cov_out_count = OpAuthOutputCount(this.activeInputIndex);
+
+                (int cov_new_amount, byte[32] cov_new_owner) = covenant_policy_inferred_transition(amount, owner, delta);
+                require(cov_out_count == 1);
+
+                int cov_out_idx = OpAuthOutputIdx(this.activeInputIndex, 0);
+                validateOutputState(cov_out_idx, {
+                    amount: cov_new_amount,
+                    owner: cov_new_owner
+                });
+            }
+
+            function covenant_policy_singleton_transition(int prev_amount, byte[32] prev_owner, int delta) : (int, byte[32]) {
+                return(prev_amount + delta, prev_owner);
+            }
+
+            entrypoint function singleton_transition(int delta) {
+                int cov_out_count = OpAuthOutputCount(this.activeInputIndex);
+
+                (int cov_new_amount, byte[32] cov_new_owner) = covenant_policy_singleton_transition(amount, owner, delta);
+                require(cov_out_count == 1);
+
+                int cov_out_idx = OpAuthOutputIdx(this.activeInputIndex, 0);
+                validateOutputState(cov_out_idx, {
+                    amount: cov_new_amount,
+                    owner: cov_new_owner
+                });
+            }
+
+            function covenant_policy_singleton_terminate(
+                int prev_amount,
+                byte[32] prev_owner,
+                int[] next_amount,
+                byte[32][] next_owner
+            ) : (int[], byte[32][]) {
+                require(prev_amount >= 0);
+                return(next_amount, next_owner);
+            }
+
+            entrypoint function singleton_terminate(int[] next_amount, byte[32][] next_owner) {
+                int cov_out_count = OpAuthOutputCount(this.activeInputIndex);
+
+                (int[] cov_new_amount, byte[32][] cov_new_owner) = covenant_policy_singleton_terminate(amount, owner, next_amount, next_owner);
+                require(cov_new_owner.length == cov_new_amount.length);
+                require(cov_out_count <= 1);
+                require(cov_out_count == cov_new_amount.length);
+
+                for(cov_k, 0, 1) {
+                    if (cov_k < cov_out_count) {
+                        int cov_out_idx = OpAuthOutputIdx(this.activeInputIndex, cov_k);
+                        validateOutputState(cov_out_idx, {
+                            amount: cov_new_amount[cov_k],
+                            owner: cov_new_owner[cov_k]
+                        });
+                    }
+                }
+            }
+
+            function covenant_policy_fanout_verification(int prev_amount, byte[32] prev_owner, int[] new_amount, byte[32][] new_owner) {
+                require(new_amount.length == new_amount.length);
+            }
+
+            entrypoint function fanout_verification(int[] new_amount, byte[32][] new_owner) {
+                int cov_out_count = OpAuthOutputCount(this.activeInputIndex);
+
+                covenant_policy_fanout_verification(amount, owner, new_amount, new_owner);
+                require(cov_out_count <= max_outs);
+
+                for(cov_k, 0, max_outs) {
+                    if (cov_k < cov_out_count) {
+                        int cov_out_idx = OpAuthOutputIdx(this.activeInputIndex, cov_k);
+                        validateOutputState(cov_out_idx, {
+                            amount: new_amount[cov_k],
+                            owner: new_owner[cov_k]
+                        });
+                    }
+                }
+            }
+        }
+    "#;
+
+    assert_lowers_to_expected_ast(source, expected_lowered, &[Expr::int(2), Expr::int(4), Expr::int(10), Expr::bytes(vec![7u8; 32])]);
+}
+
+#[test]
 fn covers_attribute_config_combinations_with_two_field_state() {
     let source = r#"
         contract Matrix(int max_ins, int max_outs, int init_amount, byte[32] init_owner) {
