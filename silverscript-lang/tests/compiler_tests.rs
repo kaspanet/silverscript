@@ -12,7 +12,9 @@ use kaspa_txscript::opcodes::codes::*;
 use kaspa_txscript::script_builder::ScriptBuilder;
 use kaspa_txscript::{EngineCtx, EngineFlags, SeqCommitAccessor, TxScriptEngine, pay_to_address_script, pay_to_script_hash_script};
 use silverscript_lang::ast::{Expr, parse_contract_ast};
-use silverscript_lang::compiler::{CompileOptions, CompiledContract, compile_contract, compile_contract_ast, function_branch_index};
+use silverscript_lang::compiler::{
+    CompileOptions, CompiledContract, compile_contract, compile_contract_ast, function_branch_index, struct_object,
+};
 
 fn run_script_with_selector(script: Vec<u8>, selector: Option<i64>) -> Result<(), kaspa_txscript_errors::TxScriptError> {
     let sigscript = selector_sigscript(selector);
@@ -497,6 +499,230 @@ fn build_sig_script_omits_selector_without_selector() {
 
     let expected = ScriptBuilder::new().add_i64(1).unwrap().add_data(&[2u8; 4]).unwrap().drain();
     assert_eq!(sigscript, expected);
+}
+
+#[test]
+fn compiles_struct_sugar_for_locals_calls_and_field_access() {
+    let source = r#"
+        contract C() {
+            struct S {
+                int a;
+                string b;
+            }
+
+            function f(S x) {
+                require(x.a == 0);
+                require(x.b.length == 5);
+            }
+
+            entrypoint function main() {
+                f({a: 0, b: "12345"});
+                S y = {a: 0, b: "22345"};
+                f(y);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let selector = selector_for(&compiled, "main");
+    let result = run_script_with_selector(compiled.script, selector);
+    assert!(result.is_ok(), "script should execute successfully: {result:?}");
+}
+
+#[test]
+fn build_sig_script_supports_struct_entrypoint_arguments() {
+    let source = r#"
+        contract C() {
+            struct S {
+                int a;
+                string b;
+            }
+
+            entrypoint function main(S x) {
+                require(x.a == 0);
+                require(x.b.length == 5);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let arg = struct_object(vec![("a", Expr::int(0)), ("b", Expr::string("12345"))]);
+    let sigscript = compiled.build_sig_script("main", vec![arg]).expect("sigscript builds");
+
+    let expected = ScriptBuilder::new().add_i64(0).unwrap().add_data(b"12345").unwrap().drain();
+    assert_eq!(sigscript, expected);
+}
+
+#[test]
+fn build_sig_script_supports_state_entrypoint_arguments() {
+    let source = r#"
+        contract C(int initX, byte[2] initY) {
+            int x = initX;
+            byte[2] y = initY;
+
+            entrypoint function main(State s) {
+                require(s.x == 9);
+                require(s.y == 0x3412);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[5.into(), vec![1u8, 2u8].into()], CompileOptions::default()).expect("compile succeeds");
+    let arg = struct_object(vec![("x", Expr::int(9)), ("y", Expr::bytes(vec![0x34, 0x12]))]);
+    let sigscript = compiled.build_sig_script("main", vec![arg]).expect("sigscript builds");
+
+    let expected = ScriptBuilder::new().add_i64(9).unwrap().add_data(&[0x34, 0x12]).unwrap().drain();
+    assert_eq!(sigscript, expected);
+}
+
+#[test]
+fn rejects_struct_literal_with_wrong_field_type_in_function_call() {
+    let source = r#"
+        contract C() {
+            struct S {
+                int a;
+                string b;
+            }
+
+            function f(S x) {
+                require(x.a == 0);
+            }
+
+            entrypoint function main() {
+                f({a: "hello", b: "world"});
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("compile should fail");
+    assert!(err.to_string().contains("function argument '__struct_x_a' expects int") || err.to_string().contains("expects int"));
+}
+
+#[test]
+fn rejects_struct_literal_with_wrong_field_type_in_variable_definition() {
+    let source = r#"
+        contract C() {
+            struct S {
+                int a;
+                string b;
+            }
+
+            entrypoint function main() {
+                S y = {a: "hello", b: "world"};
+                require(true);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("compile should fail");
+    assert!(err.to_string().contains("expects int"));
+}
+
+#[test]
+fn rejects_struct_literal_with_missing_fields() {
+    let source = r#"
+        contract C() {
+            struct S {
+                int a;
+                string b;
+            }
+
+            entrypoint function main() {
+                S y = {a: 0};
+                require(true);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("compile should fail");
+    assert!(err.to_string().contains("struct field 'b' must be initialized"));
+}
+
+#[test]
+fn build_sig_script_rejects_struct_argument_with_wrong_field_type() {
+    let source = r#"
+        contract C() {
+            struct S {
+                int a;
+                string b;
+            }
+
+            entrypoint function main(S x) {
+                require(x.a == 0);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let arg = struct_object(vec![("a", Expr::string("hello")), ("b", Expr::string("world"))]);
+    let result = compiled.build_sig_script("main", vec![arg]);
+    assert!(result.is_err());
+}
+
+#[test]
+fn compiles_struct_destructuring_and_runs() {
+    let source = r#"
+        contract C() {
+            struct S {
+                int a;
+                byte[5] b;
+            }
+
+            entrypoint function main() {
+                S s = {a: 7, b: 0x0102030405};
+                {a: int x, b: byte[5] y} = s;
+                require(x == 7);
+                require(y == 0x0102030405);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let selector = selector_for(&compiled, "main");
+    let result = run_script_with_selector(compiled.script, selector);
+    assert!(result.is_ok(), "struct destructuring runtime failed: {}", result.unwrap_err());
+}
+
+#[test]
+fn rejects_struct_destructuring_with_missing_field() {
+    let source = r#"
+        contract C() {
+            struct S {
+                int a;
+                byte[5] b;
+            }
+
+            entrypoint function main() {
+                S s = {a: 7, b: 0x0102030405};
+                {a: int x} = s;
+                require(x == 7);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("compile should fail");
+    assert!(err.to_string().contains("struct destructuring must bind all fields exactly once"));
+}
+
+#[test]
+fn rejects_struct_destructuring_with_wrong_field_type() {
+    let source = r#"
+        contract C() {
+            struct S {
+                int a;
+                byte[5] b;
+            }
+
+            entrypoint function main() {
+                S s = {a: 7, b: 0x0102030405};
+                {a: string x, b: byte[5] y} = s;
+                require(y == 0x0102030405);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("compile should fail");
+    assert!(err.to_string().contains("struct field 'a' expects int"));
 }
 
 #[test]
@@ -1957,6 +2183,84 @@ fn runs_validate_output_state() {
 }
 
 #[test]
+fn runs_validate_output_state_with_state_variable() {
+    let source = r#"
+        contract C(int initX, byte[2] initY) {
+            int x = initX;
+            byte[2] y = initY;
+
+            entrypoint function main() {
+                State next = {x: x + 1, y: 0x3412};
+                validateOutputState(0, next);
+            }
+        }
+    "#;
+
+    let input_compiled =
+        compile_contract(source, &[5.into(), vec![1u8, 2u8].into()], CompileOptions::default()).expect("compile succeeds");
+
+    let input = test_input(0, sigscript_push_script(&input_compiled.script));
+
+    let output_compiled =
+        compile_contract(source, &[6.into(), vec![0x34u8, 0x12u8].into()], CompileOptions::default()).expect("compile succeeds");
+    let input_spk = pay_to_script_hash_script(&input_compiled.script);
+    let output_spk = pay_to_script_hash_script(&output_compiled.script);
+    let output = TransactionOutput { value: 1000, script_public_key: output_spk, covenant: None };
+    let tx = Transaction::new(1, vec![input], vec![output.clone()], 0, Default::default(), 0, vec![]);
+    let utxo_entry = UtxoEntry::new(output.value, input_spk, 0, tx.is_coinbase(), None);
+
+    let result = execute_input(tx, vec![utxo_entry], 0);
+    assert!(result.is_ok(), "validateOutputState runtime failed: {}", result.unwrap_err());
+}
+
+#[test]
+fn compiles_state_variable_and_internal_function_argument() {
+    let source = r#"
+        contract C(int initX, byte[2] initY) {
+            int x = initX;
+            byte[2] y = initY;
+
+            function check(State s) {
+                require(s.x == 6);
+                require(s.y == 0x3412);
+            }
+
+            entrypoint function main() {
+                State next = {x: x + 1, y: 0x3412};
+                check(next);
+            }
+        }
+    "#;
+
+    compile_contract(source, &[5.into(), vec![1u8, 2u8].into()], CompileOptions::default()).expect("compile succeeds");
+}
+
+#[test]
+fn runs_state_variable_and_internal_function_argument() {
+    let source = r#"
+        contract C(int initX, byte[2] initY) {
+            int x = initX;
+            byte[2] y = initY;
+
+            function check(State s) {
+                require(s.x == 6);
+                require(s.y == 0x3412);
+            }
+
+            entrypoint function main() {
+                State next = {x: x + 1, y: 0x3412};
+                check(next);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[5.into(), vec![1u8, 2u8].into()], CompileOptions::default()).expect("compile succeeds");
+    let selector = selector_for(&compiled, "main");
+    let result = run_script_with_selector(compiled.script, selector);
+    assert!(result.is_ok(), "script should execute successfully: {result:?}");
+}
+
+#[test]
 fn compiles_read_input_state_to_expected_script() {
     let source = r#"
         contract C(int initX, byte[2] initY) {
@@ -2152,6 +2456,87 @@ fn runs_read_input_state() {
     let utxo1 = UtxoEntry::new(1000, ScriptPublicKey::new(0, vec![OpTrue].into()), 0, tx.is_coinbase(), None);
     let result = execute_input(tx, vec![utxo0, utxo1], 0);
     assert!(result.is_ok(), "readInputState runtime failed: {}", result.unwrap_err());
+}
+
+#[test]
+fn runs_read_input_state_into_state_variable() {
+    let source = r#"
+        contract C(int initX, byte[2] initY) {
+            int x = initX;
+            byte[2] y = initY;
+
+            entrypoint function main() {
+                State in1 = readInputState(1);
+                require(in1.x > 7);
+                require(in1.y == 0x3412);
+            }
+        }
+    "#;
+
+    let active_compiled =
+        compile_contract(source, &[5.into(), vec![1u8, 2u8].into()], CompileOptions::default()).expect("compile succeeds");
+    let input1_compiled =
+        compile_contract(source, &[8.into(), vec![0x34u8, 0x12u8].into()], CompileOptions::default()).expect("compile succeeds");
+
+    let input0 = test_input(0, vec![]);
+    let input1 = test_input(1, sigscript_push_script(&input1_compiled.script));
+
+    let output = TransactionOutput {
+        value: 1000,
+        script_public_key: ScriptPublicKey::new(0, active_compiled.script.clone().into()),
+        covenant: None,
+    };
+    let tx = Transaction::new(1, vec![input0.clone(), input1], vec![output.clone()], 0, Default::default(), 0, vec![]);
+    let utxo0 = UtxoEntry::new(output.value, output.script_public_key.clone(), 0, tx.is_coinbase(), None);
+    let utxo1 = UtxoEntry::new(1000, ScriptPublicKey::new(0, vec![OpTrue].into()), 0, tx.is_coinbase(), None);
+    let result = execute_input(tx, vec![utxo0, utxo1], 0);
+    assert!(result.is_ok(), "readInputState runtime failed: {}", result.unwrap_err());
+}
+
+#[test]
+fn rejects_validate_output_state_with_incorrect_state_variable_type() {
+    let source = r#"
+        contract C(int initX, byte[2] initY) {
+            struct OtherState {
+                int z;
+            }
+
+            int x = initX;
+            byte[2] y = initY;
+
+            entrypoint function main() {
+                OtherState next = {z: 7};
+                validateOutputState(0, next);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[5.into(), vec![1u8, 2u8].into()], CompileOptions::default())
+        .expect_err("wrong struct type should be rejected");
+    assert!(err.to_string().contains("State") || err.to_string().contains("struct"), "unexpected error: {err}");
+}
+
+#[test]
+fn rejects_read_input_state_with_incorrect_target_type() {
+    let source = r#"
+        contract C(int initX, byte[2] initY) {
+            struct OtherState {
+                int z;
+            }
+
+            int x = initX;
+            byte[2] y = initY;
+
+            entrypoint function main() {
+                OtherState in0 = readInputState(0);
+                require(in0.z > 0);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[5.into(), vec![1u8, 2u8].into()], CompileOptions::default())
+        .expect_err("readInputState assigned to wrong struct type should be rejected");
+    assert!(err.to_string().contains("State") || err.to_string().contains("struct"), "unexpected error: {err}");
 }
 
 #[test]

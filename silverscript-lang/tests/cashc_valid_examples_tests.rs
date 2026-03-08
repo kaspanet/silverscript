@@ -918,7 +918,6 @@ fn runs_cashc_valid_examples() {
                 assert!(result.is_ok(), "{example} failed: {}", result.unwrap_err());
             }
             "split_size.sil" => {
-                // Unsatisfiable in this runtime: `b.length / 2` leaves `b` on the stack, causing invalid substring ranges.
                 let constructor_args = vec![b"abcd".to_vec().into()];
                 let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
                 let selector = selector_for_compiled(&compiled, "spend");
@@ -932,7 +931,7 @@ fn runs_cashc_valid_examples() {
                 );
                 tx.tx.inputs[0].signature_script = sigscript;
                 let result = execute_tx(tx, utxo, reused);
-                assert!(result.is_err(), "{example} should fail");
+                assert!(result.is_ok(), "{example} failed: {}", result.unwrap_err());
             }
             "split_typed.sil" => {
                 let constructor_args = vec![b"abcde".to_vec().into()];
@@ -951,7 +950,6 @@ fn runs_cashc_valid_examples() {
                 assert!(result.is_ok(), "{example} failed: {}", result.unwrap_err());
             }
             "string_concatenation.sil" => {
-                // Unsatisfiable in this runtime: concatenation leaves an extra stack item (CLEANSTACK).
                 let constructor_args = vec![];
                 let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
                 let selector = selector_for_compiled(&compiled, "hello");
@@ -965,7 +963,7 @@ fn runs_cashc_valid_examples() {
                 );
                 tx.tx.inputs[0].signature_script = sigscript;
                 let result = execute_tx(tx, utxo, reused);
-                assert!(result.is_err(), "{example} should fail");
+                assert!(result.is_ok(), "{example} failed: {}", result.unwrap_err());
             }
             "string_with_escaped_characters.sil" => {
                 // Unsatisfiable in this runtime: escaped string literals hash differently.
