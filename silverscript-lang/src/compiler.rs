@@ -209,7 +209,7 @@ fn flattened_struct_name(base: &str, path: &[String]) -> String {
     out
 }
 
-fn flatten_struct_fields<'i>(
+fn flatten_struct_fields(
     type_ref: &TypeRef,
     structs: &StructRegistry,
     prefix: &mut Vec<String>,
@@ -1743,7 +1743,7 @@ fn push_typed_sigscript_arg<'i>(
                         .collect();
                     builder.add_data(&bytes)?;
                 } else {
-                    let bytes = encode_array_literal(&values, &type_name)?;
+                    let bytes = encode_array_literal(values, &type_name)?;
                     builder.add_data(&bytes)?;
                 }
                 Ok(())
