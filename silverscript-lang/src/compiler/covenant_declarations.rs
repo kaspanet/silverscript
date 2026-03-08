@@ -75,6 +75,7 @@ pub(super) fn lower_covenant_declarations<'i>(
         }
 
         let declaration = parse_covenant_declaration(function, constants)?;
+        let desugared_policy = desugar_covenant_policy_state_syntax(function, &declaration, &contract.fields)?;
 
         let policy_name = format!("__covenant_policy_{}", function.name);
         if used_names.contains(&policy_name) {
@@ -85,10 +86,11 @@ pub(super) fn lower_covenant_declarations<'i>(
         }
         used_names.insert(policy_name.clone());
 
-        let mut policy = function.clone();
+        let mut policy = desugared_policy;
         policy.name = policy_name.clone();
         policy.entrypoint = false;
         policy.attributes.clear();
+        let wrapper_policy = policy.clone();
         lowered.push(policy);
 
         match declaration.binding {
@@ -101,7 +103,7 @@ pub(super) fn lower_covenant_declarations<'i>(
                     )));
                 }
                 used_names.insert(entrypoint_name.clone());
-                lowered.push(build_auth_wrapper(function, &policy_name, declaration, entrypoint_name, &contract.fields)?);
+                lowered.push(build_auth_wrapper(&wrapper_policy, &policy_name, declaration, entrypoint_name, &contract.fields)?);
             }
             CovenantBinding::Cov => {
                 let leader_name = format!("{}_leader", function.name);
@@ -112,7 +114,14 @@ pub(super) fn lower_covenant_declarations<'i>(
                     )));
                 }
                 used_names.insert(leader_name.clone());
-                lowered.push(build_cov_wrapper(function, &policy_name, declaration.clone(), leader_name, true, &contract.fields)?);
+                lowered.push(build_cov_wrapper(
+                    &wrapper_policy,
+                    &policy_name,
+                    declaration.clone(),
+                    leader_name,
+                    true,
+                    &contract.fields,
+                )?);
 
                 let delegate_name = format!("{}_delegate", function.name);
                 if used_names.contains(&delegate_name) {
@@ -122,7 +131,7 @@ pub(super) fn lower_covenant_declarations<'i>(
                     )));
                 }
                 used_names.insert(delegate_name.clone());
-                lowered.push(build_cov_wrapper(function, &policy_name, declaration, delegate_name, false, &contract.fields)?);
+                lowered.push(build_cov_wrapper(&wrapper_policy, &policy_name, declaration, delegate_name, false, &contract.fields)?);
             }
         }
     }
@@ -794,6 +803,727 @@ fn dynamic_array_of(type_ref: &TypeRef) -> TypeRef {
     let mut array_type = type_ref.clone();
     array_type.array_dims.push(ArrayDim::Dynamic);
     array_type
+}
+
+#[derive(Debug, Clone, Default)]
+struct CovenantStateRewriteContext {
+    single_states: HashMap<String, Vec<(String, String)>>,
+    state_arrays: HashMap<String, Vec<(String, String)>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CovenantReturnDesugaring {
+    Existing,
+    SingleState,
+    StateArray,
+}
+
+fn is_state_type_ref(type_ref: &TypeRef) -> bool {
+    type_ref.array_dims.is_empty() && matches!(&type_ref.base, TypeBase::Custom(name) if name == "State")
+}
+
+fn is_state_array_type_ref(type_ref: &TypeRef) -> bool {
+    !type_ref.array_dims.is_empty() && matches!(&type_ref.base, TypeBase::Custom(name) if name == "State")
+}
+
+fn state_param_prefix(name: &str) -> String {
+    name.strip_suffix("_states").or_else(|| name.strip_suffix("_state")).map(ToOwned::to_owned).unwrap_or_else(|| name.to_string())
+}
+
+fn field_binding_name(base: &str, field_name: &str) -> String {
+    format!("{}_{}", state_param_prefix(base), field_name)
+}
+
+fn append_desugared_state_param<'i>(
+    params: &mut Vec<crate::ast::ParamAst<'i>>,
+    ctx: &mut CovenantStateRewriteContext,
+    param: &crate::ast::ParamAst<'i>,
+    contract_fields: &[ContractFieldAst<'i>],
+) {
+    if is_state_type_ref(&param.type_ref) {
+        let bindings =
+            contract_fields.iter().map(|field| (field.name.clone(), field_binding_name(&param.name, &field.name))).collect::<Vec<_>>();
+        ctx.single_states.insert(param.name.clone(), bindings.clone());
+        for field in contract_fields {
+            params.push(typed_binding(field.type_ref.clone(), &field_binding_name(&param.name, &field.name)));
+        }
+    } else if is_state_array_type_ref(&param.type_ref) {
+        let bindings =
+            contract_fields.iter().map(|field| (field.name.clone(), field_binding_name(&param.name, &field.name))).collect::<Vec<_>>();
+        ctx.state_arrays.insert(param.name.clone(), bindings.clone());
+        for field in contract_fields {
+            params.push(typed_binding(dynamic_array_of(&field.type_ref), &field_binding_name(&param.name, &field.name)));
+        }
+    } else {
+        params.push(param.clone());
+    }
+}
+
+fn append_desugared_state_params<'i>(
+    params: &mut Vec<crate::ast::ParamAst<'i>>,
+    ctx: &mut CovenantStateRewriteContext,
+    policy_params: &[crate::ast::ParamAst<'i>],
+    contract_fields: &[ContractFieldAst<'i>],
+) {
+    for param in policy_params {
+        append_desugared_state_param(params, ctx, param, contract_fields);
+    }
+}
+
+fn ordered_state_fields<'i>(expr: &Expr<'i>, contract_fields: &[ContractFieldAst<'i>]) -> Result<Vec<Expr<'i>>, CompilerError> {
+    let ExprKind::StateObject(entries) = &expr.kind else {
+        return Err(CompilerError::Unsupported("expected a State expression".to_string()));
+    };
+
+    let mut by_name = HashMap::new();
+    for entry in entries {
+        if by_name.insert(entry.name.as_str(), entry.expr.clone()).is_some() {
+            return Err(CompilerError::Unsupported(format!("duplicate state field '{}'", entry.name)));
+        }
+    }
+
+    let mut ordered = Vec::with_capacity(contract_fields.len());
+    for field in contract_fields {
+        let expr = by_name
+            .remove(field.name.as_str())
+            .ok_or_else(|| CompilerError::Unsupported(format!("missing state field '{}'", field.name)))?;
+        ordered.push(expr);
+    }
+    if let Some(extra) = by_name.keys().next() {
+        return Err(CompilerError::Unsupported(format!("unknown state field '{}'", extra)));
+    }
+    Ok(ordered)
+}
+
+fn rewrite_state_expr_to_object<'i>(
+    expr: &Expr<'i>,
+    ctx: &CovenantStateRewriteContext,
+    contract_fields: &[ContractFieldAst<'i>],
+) -> Result<Expr<'i>, CompilerError> {
+    match &expr.kind {
+        ExprKind::Identifier(name) => {
+            if let Some(bindings) = ctx.single_states.get(name) {
+                let by_field = bindings.iter().cloned().collect::<HashMap<_, _>>();
+                return Ok(state_object_expr_from_field_bindings(contract_fields, &by_field));
+            }
+        }
+        ExprKind::ArrayIndex { source, index } => {
+            if let ExprKind::Identifier(name) = &source.kind {
+                if let Some(bindings) = ctx.state_arrays.get(name) {
+                    return Ok(state_object_expr_from_field_arrays_at_index(
+                        contract_fields,
+                        bindings,
+                        rewrite_covenant_policy_expr(index, ctx, contract_fields)?,
+                    ));
+                }
+            }
+        }
+        _ => {}
+    }
+
+    rewrite_covenant_policy_expr(expr, ctx, contract_fields)
+}
+
+fn expand_state_expr<'i>(
+    expr: &Expr<'i>,
+    ctx: &CovenantStateRewriteContext,
+    contract_fields: &[ContractFieldAst<'i>],
+) -> Result<Vec<Expr<'i>>, CompilerError> {
+    match &expr.kind {
+        ExprKind::Identifier(name) => {
+            if let Some(bindings) = ctx.single_states.get(name) {
+                let by_field = bindings.iter().cloned().collect::<HashMap<_, _>>();
+                return Ok(contract_fields
+                    .iter()
+                    .map(|field| {
+                        let binding = by_field
+                            .get(&field.name)
+                            .cloned()
+                            .unwrap_or_else(|| panic!("missing state binding for field '{}'", field.name));
+                        identifier_expr(&binding)
+                    })
+                    .collect());
+            }
+        }
+        ExprKind::ArrayIndex { source, index } => {
+            if let ExprKind::Identifier(name) = &source.kind {
+                if let Some(bindings) = ctx.state_arrays.get(name) {
+                    let index_expr = rewrite_covenant_policy_expr(index, ctx, contract_fields)?;
+                    return Ok(contract_fields
+                        .iter()
+                        .map(|field| {
+                            let array_name = bindings
+                                .iter()
+                                .find(|(field_name, _)| field_name == &field.name)
+                                .map(|(_, binding_name)| binding_name.clone())
+                                .unwrap_or_else(|| panic!("missing state array binding for field '{}'", field.name));
+                            Expr::new(
+                                ExprKind::ArrayIndex {
+                                    source: Box::new(identifier_expr(&array_name)),
+                                    index: Box::new(index_expr.clone()),
+                                },
+                                expr.span,
+                            )
+                        })
+                        .collect());
+                }
+            }
+        }
+        _ => {}
+    }
+
+    let rewritten = rewrite_state_expr_to_object(expr, ctx, contract_fields)?;
+    ordered_state_fields(&rewritten, contract_fields)
+}
+
+fn expand_state_array_expr<'i>(
+    expr: &Expr<'i>,
+    ctx: &CovenantStateRewriteContext,
+    contract_fields: &[ContractFieldAst<'i>],
+) -> Result<Vec<Expr<'i>>, CompilerError> {
+    let ExprKind::Identifier(name) = &expr.kind else {
+        return Err(CompilerError::Unsupported("State[] covenant returns currently must be a named State[] value".to_string()));
+    };
+
+    let Some(bindings) = ctx.state_arrays.get(name) else {
+        return Err(CompilerError::Unsupported("State[] covenant returns currently must refer to a State[] parameter".to_string()));
+    };
+
+    Ok(contract_fields
+        .iter()
+        .map(|field| {
+            let array_name = bindings
+                .iter()
+                .find(|(field_name, _)| field_name == &field.name)
+                .map(|(_, binding_name)| binding_name.clone())
+                .unwrap_or_else(|| panic!("missing state array binding for field '{}'", field.name));
+            identifier_expr(&array_name)
+        })
+        .collect())
+}
+
+fn rewrite_covenant_policy_expr<'i>(
+    expr: &Expr<'i>,
+    ctx: &CovenantStateRewriteContext,
+    contract_fields: &[ContractFieldAst<'i>],
+) -> Result<Expr<'i>, CompilerError> {
+    match &expr.kind {
+        ExprKind::FieldAccess { source, field, field_span } => {
+            if let ExprKind::Identifier(name) = &source.kind {
+                if let Some(bindings) = ctx.single_states.get(name) {
+                    let binding_name = bindings
+                        .iter()
+                        .find(|(field_name, _)| field_name == field)
+                        .map(|(_, binding_name)| binding_name.clone())
+                        .ok_or_else(|| CompilerError::Unsupported(format!("State has no field '{}'", field)))?;
+                    return Ok(Expr::new(ExprKind::Identifier(binding_name), expr.span));
+                }
+            }
+
+            if let ExprKind::ArrayIndex { source: array_source, index } = &source.kind {
+                if let ExprKind::Identifier(name) = &array_source.kind {
+                    if let Some(bindings) = ctx.state_arrays.get(name) {
+                        let array_name = bindings
+                            .iter()
+                            .find(|(field_name, _)| field_name == field)
+                            .map(|(_, binding_name)| binding_name.clone())
+                            .ok_or_else(|| CompilerError::Unsupported(format!("State has no field '{}'", field)))?;
+                        return Ok(Expr::new(
+                            ExprKind::ArrayIndex {
+                                source: Box::new(identifier_expr(&array_name)),
+                                index: Box::new(rewrite_covenant_policy_expr(index, ctx, contract_fields)?),
+                            },
+                            expr.span,
+                        ));
+                    }
+                }
+            }
+
+            Ok(Expr::new(
+                ExprKind::FieldAccess {
+                    source: Box::new(rewrite_covenant_policy_expr(source, ctx, contract_fields)?),
+                    field: field.clone(),
+                    field_span: *field_span,
+                },
+                expr.span,
+            ))
+        }
+        ExprKind::ArrayIndex { source, index } => {
+            if let ExprKind::Identifier(name) = &source.kind {
+                if ctx.state_arrays.contains_key(name) {
+                    return Ok(state_object_expr_from_field_arrays_at_index(
+                        contract_fields,
+                        ctx.state_arrays.get(name).expect("state array bindings exist"),
+                        rewrite_covenant_policy_expr(index, ctx, contract_fields)?,
+                    ));
+                }
+            }
+
+            Ok(Expr::new(
+                ExprKind::ArrayIndex {
+                    source: Box::new(rewrite_covenant_policy_expr(source, ctx, contract_fields)?),
+                    index: Box::new(rewrite_covenant_policy_expr(index, ctx, contract_fields)?),
+                },
+                expr.span,
+            ))
+        }
+        ExprKind::Identifier(name) => {
+            if let Some(bindings) = ctx.single_states.get(name) {
+                let by_field = bindings.iter().cloned().collect::<HashMap<_, _>>();
+                return Ok(state_object_expr_from_field_bindings(contract_fields, &by_field));
+            }
+            Ok(expr.clone())
+        }
+        ExprKind::UnarySuffix { source, kind: UnarySuffixKind::Length, span } => {
+            if let ExprKind::Identifier(name) = &source.kind {
+                if let Some(bindings) = ctx.state_arrays.get(name) {
+                    let first_field_array = bindings
+                        .first()
+                        .map(|(_, binding_name)| binding_name.clone())
+                        .ok_or_else(|| CompilerError::Unsupported("State[] requires at least one contract field".to_string()))?;
+                    return Ok(length_expr(identifier_expr(&first_field_array)));
+                }
+            }
+            Ok(Expr::new(
+                ExprKind::UnarySuffix {
+                    source: Box::new(rewrite_covenant_policy_expr(source, ctx, contract_fields)?),
+                    kind: UnarySuffixKind::Length,
+                    span: *span,
+                },
+                expr.span,
+            ))
+        }
+        ExprKind::Unary { op, expr: inner } => Ok(Expr::new(
+            ExprKind::Unary { op: *op, expr: Box::new(rewrite_covenant_policy_expr(inner, ctx, contract_fields)?) },
+            expr.span,
+        )),
+        ExprKind::Binary { op, left, right } => Ok(Expr::new(
+            ExprKind::Binary {
+                op: *op,
+                left: Box::new(rewrite_covenant_policy_expr(left, ctx, contract_fields)?),
+                right: Box::new(rewrite_covenant_policy_expr(right, ctx, contract_fields)?),
+            },
+            expr.span,
+        )),
+        ExprKind::IfElse { condition, then_expr, else_expr } => Ok(Expr::new(
+            ExprKind::IfElse {
+                condition: Box::new(rewrite_covenant_policy_expr(condition, ctx, contract_fields)?),
+                then_expr: Box::new(rewrite_covenant_policy_expr(then_expr, ctx, contract_fields)?),
+                else_expr: Box::new(rewrite_covenant_policy_expr(else_expr, ctx, contract_fields)?),
+            },
+            expr.span,
+        )),
+        ExprKind::Array(values) => Ok(Expr::new(
+            ExprKind::Array(
+                values.iter().map(|value| rewrite_covenant_policy_expr(value, ctx, contract_fields)).collect::<Result<Vec<_>, _>>()?,
+            ),
+            expr.span,
+        )),
+        ExprKind::StateObject(fields) => Ok(Expr::new(
+            ExprKind::StateObject(
+                fields
+                    .iter()
+                    .map(|field| {
+                        Ok(StateFieldExpr {
+                            name: field.name.clone(),
+                            expr: rewrite_covenant_policy_expr(&field.expr, ctx, contract_fields)?,
+                            span: field.span,
+                            name_span: field.name_span,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, CompilerError>>()?,
+            ),
+            expr.span,
+        )),
+        ExprKind::Call { name, args, name_span } => Ok(Expr::new(
+            ExprKind::Call {
+                name: name.clone(),
+                args: args.iter().map(|arg| rewrite_covenant_policy_expr(arg, ctx, contract_fields)).collect::<Result<Vec<_>, _>>()?,
+                name_span: *name_span,
+            },
+            expr.span,
+        )),
+        ExprKind::New { name, args, name_span } => Ok(Expr::new(
+            ExprKind::New {
+                name: name.clone(),
+                args: args.iter().map(|arg| rewrite_covenant_policy_expr(arg, ctx, contract_fields)).collect::<Result<Vec<_>, _>>()?,
+                name_span: *name_span,
+            },
+            expr.span,
+        )),
+        ExprKind::Split { source, index, part, span } => Ok(Expr::new(
+            ExprKind::Split {
+                source: Box::new(rewrite_covenant_policy_expr(source, ctx, contract_fields)?),
+                index: Box::new(rewrite_covenant_policy_expr(index, ctx, contract_fields)?),
+                part: *part,
+                span: *span,
+            },
+            expr.span,
+        )),
+        ExprKind::Slice { source, start, end, span } => Ok(Expr::new(
+            ExprKind::Slice {
+                source: Box::new(rewrite_covenant_policy_expr(source, ctx, contract_fields)?),
+                start: Box::new(rewrite_covenant_policy_expr(start, ctx, contract_fields)?),
+                end: Box::new(rewrite_covenant_policy_expr(end, ctx, contract_fields)?),
+                span: *span,
+            },
+            expr.span,
+        )),
+        ExprKind::Introspection { kind, index, field_span } => Ok(Expr::new(
+            ExprKind::Introspection {
+                kind: *kind,
+                index: Box::new(rewrite_covenant_policy_expr(index, ctx, contract_fields)?),
+                field_span: *field_span,
+            },
+            expr.span,
+        )),
+        ExprKind::UnarySuffix { source, kind, span } => Ok(Expr::new(
+            ExprKind::UnarySuffix {
+                source: Box::new(rewrite_covenant_policy_expr(source, ctx, contract_fields)?),
+                kind: *kind,
+                span: *span,
+            },
+            expr.span,
+        )),
+        _ => Ok(expr.clone()),
+    }
+}
+
+fn rewrite_covenant_policy_statement<'i>(
+    stmt: &Statement<'i>,
+    ctx: &CovenantStateRewriteContext,
+    contract_fields: &[ContractFieldAst<'i>],
+    return_desugaring: CovenantReturnDesugaring,
+) -> Result<Statement<'i>, CompilerError> {
+    Ok(match stmt {
+        Statement::VariableDefinition { type_ref, modifiers, name, expr, span, type_span, modifier_spans, name_span } => {
+            Statement::VariableDefinition {
+                type_ref: type_ref.clone(),
+                modifiers: modifiers.clone(),
+                name: name.clone(),
+                expr: expr.as_ref().map(|expr| rewrite_covenant_policy_expr(expr, ctx, contract_fields)).transpose()?,
+                span: *span,
+                type_span: *type_span,
+                modifier_spans: modifier_spans.clone(),
+                name_span: *name_span,
+            }
+        }
+        Statement::TupleAssignment {
+            left_type_ref,
+            left_name,
+            right_type_ref,
+            right_name,
+            expr,
+            span,
+            left_type_span,
+            left_name_span,
+            right_type_span,
+            right_name_span,
+        } => Statement::TupleAssignment {
+            left_type_ref: left_type_ref.clone(),
+            left_name: left_name.clone(),
+            right_type_ref: right_type_ref.clone(),
+            right_name: right_name.clone(),
+            expr: rewrite_covenant_policy_expr(expr, ctx, contract_fields)?,
+            span: *span,
+            left_type_span: *left_type_span,
+            left_name_span: *left_name_span,
+            right_type_span: *right_type_span,
+            right_name_span: *right_name_span,
+        },
+        Statement::ArrayPush { name, expr, span, name_span } => Statement::ArrayPush {
+            name: name.clone(),
+            expr: rewrite_covenant_policy_expr(expr, ctx, contract_fields)?,
+            span: *span,
+            name_span: *name_span,
+        },
+        Statement::FunctionCall { name, args, span, name_span } => Statement::FunctionCall {
+            name: name.clone(),
+            args: args.iter().map(|arg| rewrite_covenant_policy_expr(arg, ctx, contract_fields)).collect::<Result<Vec<_>, _>>()?,
+            span: *span,
+            name_span: *name_span,
+        },
+        Statement::FunctionCallAssign { bindings, name, args, span, name_span } => Statement::FunctionCallAssign {
+            bindings: bindings.clone(),
+            name: name.clone(),
+            args: args.iter().map(|arg| rewrite_covenant_policy_expr(arg, ctx, contract_fields)).collect::<Result<Vec<_>, _>>()?,
+            span: *span,
+            name_span: *name_span,
+        },
+        Statement::StateFunctionCallAssign { bindings, name, args, span, name_span } => Statement::StateFunctionCallAssign {
+            bindings: bindings.clone(),
+            name: name.clone(),
+            args: args.iter().map(|arg| rewrite_covenant_policy_expr(arg, ctx, contract_fields)).collect::<Result<Vec<_>, _>>()?,
+            span: *span,
+            name_span: *name_span,
+        },
+        Statement::StructDestructure { bindings, expr, span } => Statement::StructDestructure {
+            bindings: bindings.clone(),
+            expr: rewrite_covenant_policy_expr(expr, ctx, contract_fields)?,
+            span: *span,
+        },
+        Statement::Assign { name, expr, span, name_span } => Statement::Assign {
+            name: name.clone(),
+            expr: rewrite_covenant_policy_expr(expr, ctx, contract_fields)?,
+            span: *span,
+            name_span: *name_span,
+        },
+        Statement::TimeOp { tx_var, expr, message, span, tx_var_span, message_span } => Statement::TimeOp {
+            tx_var: *tx_var,
+            expr: rewrite_covenant_policy_expr(expr, ctx, contract_fields)?,
+            message: message.clone(),
+            span: *span,
+            tx_var_span: *tx_var_span,
+            message_span: *message_span,
+        },
+        Statement::Require { expr, message, span, message_span } => Statement::Require {
+            expr: rewrite_covenant_policy_expr(expr, ctx, contract_fields)?,
+            message: message.clone(),
+            span: *span,
+            message_span: *message_span,
+        },
+        Statement::If { condition, then_branch, else_branch, span, then_span, else_span } => Statement::If {
+            condition: rewrite_covenant_policy_expr(condition, ctx, contract_fields)?,
+            then_branch: then_branch
+                .iter()
+                .map(|stmt| rewrite_covenant_policy_statement(stmt, ctx, contract_fields, return_desugaring))
+                .collect::<Result<Vec<_>, _>>()?,
+            else_branch: else_branch
+                .as_ref()
+                .map(|branch| {
+                    branch
+                        .iter()
+                        .map(|stmt| rewrite_covenant_policy_statement(stmt, ctx, contract_fields, return_desugaring))
+                        .collect::<Result<Vec<_>, CompilerError>>()
+                })
+                .transpose()?,
+            span: *span,
+            then_span: *then_span,
+            else_span: *else_span,
+        },
+        Statement::For { ident, start, end, body, span, ident_span, body_span } => Statement::For {
+            ident: ident.clone(),
+            start: rewrite_covenant_policy_expr(start, ctx, contract_fields)?,
+            end: rewrite_covenant_policy_expr(end, ctx, contract_fields)?,
+            body: body
+                .iter()
+                .map(|stmt| rewrite_covenant_policy_statement(stmt, ctx, contract_fields, return_desugaring))
+                .collect::<Result<Vec<_>, _>>()?,
+            span: *span,
+            ident_span: *ident_span,
+            body_span: *body_span,
+        },
+        Statement::Yield { expr, span } => {
+            Statement::Yield { expr: rewrite_covenant_policy_expr(expr, ctx, contract_fields)?, span: *span }
+        }
+        Statement::Return { exprs, span } => {
+            let rewritten_exprs = match return_desugaring {
+                CovenantReturnDesugaring::Existing => {
+                    exprs.iter().map(|expr| rewrite_covenant_policy_expr(expr, ctx, contract_fields)).collect::<Result<Vec<_>, _>>()?
+                }
+                CovenantReturnDesugaring::SingleState => {
+                    if exprs.len() != 1 {
+                        return Err(CompilerError::Unsupported(
+                            "State covenant returns must return exactly one State value".to_string(),
+                        ));
+                    }
+                    expand_state_expr(&exprs[0], ctx, contract_fields)?
+                }
+                CovenantReturnDesugaring::StateArray => {
+                    if exprs.len() != 1 {
+                        return Err(CompilerError::Unsupported(
+                            "State[] covenant returns must return exactly one State[] value".to_string(),
+                        ));
+                    }
+                    expand_state_array_expr(&exprs[0], ctx, contract_fields)?
+                }
+            };
+            Statement::Return { exprs: rewritten_exprs, span: *span }
+        }
+        Statement::Console { args, span } => Statement::Console {
+            args: args
+                .iter()
+                .map(|arg| match arg {
+                    crate::ast::ConsoleArg::Identifier(name, ident_span) => {
+                        Ok(crate::ast::ConsoleArg::Identifier(name.clone(), *ident_span))
+                    }
+                    crate::ast::ConsoleArg::Literal(expr) => {
+                        Ok(crate::ast::ConsoleArg::Literal(rewrite_covenant_policy_expr(expr, ctx, contract_fields)?))
+                    }
+                })
+                .collect::<Result<Vec<_>, CompilerError>>()?,
+            span: *span,
+        },
+    })
+}
+
+fn desugar_covenant_policy_state_syntax<'i>(
+    policy: &FunctionAst<'i>,
+    declaration: &CovenantDeclaration<'i>,
+    contract_fields: &[ContractFieldAst<'i>],
+) -> Result<FunctionAst<'i>, CompilerError> {
+    if contract_fields.is_empty() {
+        return Ok(policy.clone());
+    }
+
+    let mut ctx = CovenantStateRewriteContext::default();
+    let mut params = Vec::new();
+
+    match (declaration.binding, declaration.mode) {
+        (CovenantBinding::Auth, CovenantMode::Verification) => {
+            if policy.params.len() < 2
+                || !is_state_type_ref(&policy.params[0].type_ref)
+                || !is_state_array_type_ref(&policy.params[1].type_ref)
+            {
+                return Err(CompilerError::Unsupported(format!(
+                    "mode=verification with binding=auth on function '{}' expects parameters '(State prev_state, State[] new_states, ...)'",
+                    policy.name
+                )));
+            }
+
+            let prev_name = policy.params[0].name.clone();
+            let new_name = policy.params[1].name.clone();
+            let prev_bindings = contract_fields
+                .iter()
+                .map(|field| (field.name.clone(), field_binding_name(&prev_name, &field.name)))
+                .collect::<Vec<_>>();
+            let new_bindings = contract_fields
+                .iter()
+                .map(|field| (field.name.clone(), field_binding_name(&new_name, &field.name)))
+                .collect::<Vec<_>>();
+            ctx.single_states.insert(prev_name.clone(), prev_bindings.clone());
+            ctx.state_arrays.insert(new_name.clone(), new_bindings.clone());
+
+            for field in contract_fields {
+                params.push(typed_binding(field.type_ref.clone(), &field_binding_name(&prev_name, &field.name)));
+            }
+            for field in contract_fields {
+                params.push(typed_binding(dynamic_array_of(&field.type_ref), &field_binding_name(&new_name, &field.name)));
+            }
+            append_desugared_state_params(&mut params, &mut ctx, &policy.params[2..], contract_fields);
+        }
+        (CovenantBinding::Cov, CovenantMode::Verification) => {
+            if policy.params.len() < 2
+                || !is_state_array_type_ref(&policy.params[0].type_ref)
+                || !is_state_array_type_ref(&policy.params[1].type_ref)
+            {
+                return Err(CompilerError::Unsupported(format!(
+                    "mode=verification with binding=cov on function '{}' expects parameters '(State[] prev_states, State[] new_states, ...)'",
+                    policy.name
+                )));
+            }
+
+            let prev_name = policy.params[0].name.clone();
+            let new_name = policy.params[1].name.clone();
+            let prev_bindings = contract_fields
+                .iter()
+                .map(|field| (field.name.clone(), field_binding_name(&prev_name, &field.name)))
+                .collect::<Vec<_>>();
+            let new_bindings = contract_fields
+                .iter()
+                .map(|field| (field.name.clone(), field_binding_name(&new_name, &field.name)))
+                .collect::<Vec<_>>();
+            ctx.state_arrays.insert(prev_name.clone(), prev_bindings.clone());
+            ctx.state_arrays.insert(new_name.clone(), new_bindings.clone());
+
+            for field in contract_fields {
+                params.push(typed_binding(dynamic_array_of(&field.type_ref), &field_binding_name(&prev_name, &field.name)));
+            }
+            for field in contract_fields {
+                params.push(typed_binding(dynamic_array_of(&field.type_ref), &field_binding_name(&new_name, &field.name)));
+            }
+            append_desugared_state_params(&mut params, &mut ctx, &policy.params[2..], contract_fields);
+        }
+        (CovenantBinding::Auth, CovenantMode::Transition) => {
+            if policy.params.is_empty() || !is_state_type_ref(&policy.params[0].type_ref) {
+                return Err(CompilerError::Unsupported(format!(
+                    "mode=transition with binding=auth on function '{}' expects parameters '(State prev_state, ...)'",
+                    policy.name
+                )));
+            }
+
+            let prev_name = policy.params[0].name.clone();
+            let prev_bindings = contract_fields
+                .iter()
+                .map(|field| (field.name.clone(), field_binding_name(&prev_name, &field.name)))
+                .collect::<Vec<_>>();
+            ctx.single_states.insert(prev_name.clone(), prev_bindings.clone());
+
+            for field in contract_fields {
+                params.push(typed_binding(field.type_ref.clone(), &field_binding_name(&prev_name, &field.name)));
+            }
+            append_desugared_state_params(&mut params, &mut ctx, &policy.params[1..], contract_fields);
+        }
+        (CovenantBinding::Cov, CovenantMode::Transition) => {
+            if policy.params.is_empty() || !is_state_array_type_ref(&policy.params[0].type_ref) {
+                return Err(CompilerError::Unsupported(format!(
+                    "mode=transition with binding=cov on function '{}' expects parameters '(State[] prev_states, ...)'",
+                    policy.name
+                )));
+            }
+
+            let prev_name = policy.params[0].name.clone();
+            let prev_bindings = contract_fields
+                .iter()
+                .map(|field| (field.name.clone(), field_binding_name(&prev_name, &field.name)))
+                .collect::<Vec<_>>();
+            ctx.state_arrays.insert(prev_name.clone(), prev_bindings.clone());
+
+            for field in contract_fields {
+                params.push(typed_binding(dynamic_array_of(&field.type_ref), &field_binding_name(&prev_name, &field.name)));
+            }
+            append_desugared_state_params(&mut params, &mut ctx, &policy.params[1..], contract_fields);
+        }
+    }
+
+    let (return_types, return_desugaring) = match declaration.mode {
+        CovenantMode::Verification => (policy.return_types.clone(), CovenantReturnDesugaring::Existing),
+        CovenantMode::Transition => {
+            if policy.return_types.len() != 1 {
+                return Err(CompilerError::Unsupported(format!(
+                    "mode=transition on function '{}' with contract state expects exactly one return type: 'State' or 'State[]'",
+                    policy.name
+                )));
+            }
+
+            if is_state_type_ref(&policy.return_types[0]) {
+                (contract_fields.iter().map(|field| field.type_ref.clone()).collect(), CovenantReturnDesugaring::SingleState)
+            } else if is_state_array_type_ref(&policy.return_types[0]) {
+                (contract_fields.iter().map(|field| dynamic_array_of(&field.type_ref)).collect(), CovenantReturnDesugaring::StateArray)
+            } else {
+                return Err(CompilerError::Unsupported(format!(
+                    "mode=transition on function '{}' with contract state expects return type 'State' or 'State[]'",
+                    policy.name
+                )));
+            }
+        }
+    };
+
+    let return_type_spans = match return_desugaring {
+        CovenantReturnDesugaring::Existing => policy.return_type_spans.clone(),
+        CovenantReturnDesugaring::SingleState | CovenantReturnDesugaring::StateArray => {
+            if let Some(span) = policy.return_type_spans.first().copied() { vec![span; contract_fields.len()] } else { Vec::new() }
+        }
+    };
+
+    let body = policy
+        .body
+        .iter()
+        .map(|stmt| rewrite_covenant_policy_statement(stmt, &ctx, contract_fields, return_desugaring))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(FunctionAst {
+        name: policy.name.clone(),
+        attributes: policy.attributes.clone(),
+        params,
+        entrypoint: policy.entrypoint,
+        return_types,
+        body,
+        return_type_spans,
+        span: policy.span,
+        name_span: policy.name_span,
+        body_span: policy.body_span,
+    })
 }
 
 fn parse_verification_shape<'i>(

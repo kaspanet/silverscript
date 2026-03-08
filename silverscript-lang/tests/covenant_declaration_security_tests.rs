@@ -21,9 +21,9 @@ const AUTH_SINGLETON_SOURCE: &str = r#"
         int value = init_value;
 
         #[covenant.singleton]
-        function step(int prev_value, int[] new_values) {
-            require(prev_value >= 0);
-            require(new_values.length <= 1);
+        function step(State prev_state, State[] new_states) {
+            require(prev_state.value >= 0);
+            require(new_states.length <= 1);
             require(OpAuthOutputIdx(this.activeInputIndex, 0) >= 0);
         }
     }
@@ -34,9 +34,9 @@ const AUTH_SINGLE_GROUP_SOURCE: &str = r#"
         int value = init_value;
 
         #[covenant(binding = auth, from = 1, to = 1, groups = single)]
-        function step(int prev_value, int[] new_values) {
-            require(prev_value >= 0);
-            require(new_values.length <= 1);
+        function step(State prev_state, State[] new_states) {
+            require(prev_state.value >= 0);
+            require(new_states.length <= 1);
             require(OpAuthOutputIdx(this.activeInputIndex, 0) >= 0);
         }
     }
@@ -47,8 +47,8 @@ const AUTH_SINGLETON_TRANSITION_SOURCE: &str = r#"
         int value = init_value;
 
         #[covenant.singleton(mode = transition)]
-        function bump(int prev_value, int delta) : (int) {
-            return(prev_value + delta);
+        function bump(State prev_state, int delta) : (State) {
+            return({ value: prev_state.value + delta });
         }
     }
 "#;
@@ -58,8 +58,8 @@ const AUTH_SINGLETON_TRANSITION_TERMINATION_ALLOWED_SOURCE: &str = r#"
         int value = init_value;
 
         #[covenant.singleton(mode = transition, termination = allowed)]
-        function bump_or_terminate(int prev_value, int[] next_values) : (int[]) {
-            return(next_values);
+        function bump_or_terminate(State prev_state, State[] next_states) : (State[]) {
+            return(next_states);
         }
     }
 "#;
@@ -69,7 +69,7 @@ const COV_N_TO_M_SOURCE: &str = r#"
         int value = init_value;
 
         #[covenant(from = 2, to = 2)]
-        function rebalance(int[] prev_values, int[] new_values) {
+        function rebalance(State[] prev_states, State[] new_states) {
             require(true);
         }
     }

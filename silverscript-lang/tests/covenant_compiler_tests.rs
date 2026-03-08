@@ -97,7 +97,7 @@ fn rejects_cov_verification_without_prev_new_field_arrays() {
 
     let err = compile_contract(source, &[], CompileOptions::default())
         .expect_err("cov verification with state fields should require prev/new field arrays");
-    assert!(err.to_string().contains("requires 1 prev-state arrays + 1 new-state arrays"));
+    assert!(err.to_string().contains("expects parameters '(State[] prev_states, State[] new_states, ...)'"));
 }
 
 #[test]
@@ -115,7 +115,7 @@ fn rejects_cov_transition_without_prev_field_arrays() {
 
     let err = compile_contract(source, &[], CompileOptions::default())
         .expect_err("cov transition with state fields should require prev-state field arrays");
-    assert!(err.to_string().contains("expects prev-state param"));
+    assert!(err.to_string().contains("expects parameters '(State[] prev_states, ...)'"));
 }
 
 #[test]
@@ -152,6 +152,25 @@ fn rejects_auth_transition_without_prev_state_shape() {
     let err = compile_contract(source, &[], CompileOptions::default())
         .expect_err("auth transition with state fields should require prev-state params");
     assert!(err.to_string().contains("mode=transition with binding=auth"));
+}
+
+#[test]
+fn rejects_old_per_field_covenant_state_syntax() {
+    let source = r#"
+        contract Decls() {
+            int value = 0;
+
+            #[covenant(binding = auth, from = 1, to = 2, mode = verification)]
+            function split(int prev_value, int[] new_values) {
+                require(prev_value >= 0);
+                require(new_values.length >= 0);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default())
+        .expect_err("old per-field covenant syntax should be rejected for stateful contracts");
+    assert!(err.to_string().contains("expects parameters '(State prev_state, State[] new_states, ...)'"));
 }
 
 #[test]
@@ -270,8 +289,8 @@ fn infers_transition_mode_when_mode_omitted_and_has_returns() {
             int value = init_value;
 
             #[covenant(from = 1, to = 1)]
-            function roll(int x) : (int) {
-                return(value + x);
+            function roll(State prev_state, int x) : (State) {
+                return({ value: prev_state.value + x });
             }
         }
     "#;
@@ -287,8 +306,8 @@ fn rejects_singleton_transition_array_returns_without_termination_allowed() {
             int value = init_value;
 
             #[covenant.singleton(mode = transition)]
-            function roll(int prev_value, int[] next_values) : (int[]) {
-                return(next_values);
+            function roll(State prev_state, State[] next_states) : (State[]) {
+                return(next_states);
             }
         }
     "#;
@@ -305,8 +324,8 @@ fn allows_singleton_transition_array_returns_with_termination_allowed() {
             int value = init_value;
 
             #[covenant.singleton(mode = transition, termination = allowed)]
-            function roll(int prev_value, int[] next_values) : (int[]) {
-                return(next_values);
+            function roll(State prev_state, State[] next_states) : (State[]) {
+                return(next_states);
             }
         }
     "#;
@@ -322,8 +341,8 @@ fn rejects_termination_allowed_for_non_singleton() {
             int value = init_value;
 
             #[covenant(from = 1, to = max_outs, mode = transition, termination = allowed)]
-            function roll(int[] next_values) : (int[]) {
-                return(next_values);
+            function roll(State prev_state, State[] next_states) : (State[]) {
+                return(next_states);
             }
         }
     "#;
@@ -340,8 +359,8 @@ fn rejects_termination_disallowed_for_non_singleton() {
             int value = init_value;
 
             #[covenant(from = 1, to = max_outs, mode = transition, termination = disallowed)]
-            function roll(int[] next_values) : (int[]) {
-                return(next_values);
+            function roll(State prev_state, State[] next_states) : (State[]) {
+                return(next_states);
             }
         }
     "#;

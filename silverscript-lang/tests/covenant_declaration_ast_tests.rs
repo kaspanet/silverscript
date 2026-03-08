@@ -59,7 +59,7 @@ fn lowers_auth_groups_single_to_expected_wrapper_ast() {
             int value = 0;
 
             #[covenant(binding = auth, from = 1, to = max_outs, groups = single)]
-            function split(int prev_value, int[] new_values, int amount) {
+            function split(State prev_state, State[] new_states, int amount) {
                 require(amount >= 0);
             }
         }
@@ -69,24 +69,24 @@ fn lowers_auth_groups_single_to_expected_wrapper_ast() {
         contract Decls(int max_outs) {
             int value = 0;
 
-            function covenant_policy_split(int prev_value, int[] new_values, int amount) {
+            function covenant_policy_split(int prev_value, int[] new_value, int amount) {
                 require(amount >= 0);
             }
 
-            entrypoint function split(int[] new_values, int amount) {
+            entrypoint function split(int[] new_value, int amount) {
                 int cov_out_count = OpAuthOutputCount(this.activeInputIndex);
 
                 byte[32] cov_id = OpInputCovenantId(this.activeInputIndex);
                 int cov_shared_out_count = OpCovOutCount(cov_id);
                 require(cov_shared_out_count == cov_out_count);
 
-                covenant_policy_split(value, new_values, amount);
+                covenant_policy_split(value, new_value, amount);
                 require(cov_out_count <= max_outs);
 
                 for(cov_k, 0, max_outs) {
                     if (cov_k < cov_out_count) {
                         int cov_out_idx = OpAuthOutputIdx(this.activeInputIndex, cov_k);
-                        validateOutputState(cov_out_idx, { value: new_values[cov_k] });
+                        validateOutputState(cov_out_idx, { value: new_value[cov_k] });
                     }
                 }
             }
@@ -103,7 +103,7 @@ fn lowers_cov_to_leader_and_delegate_expected_wrapper_ast() {
             int value = 0;
 
             #[covenant(from = max_ins, to = max_outs, mode = verification)]
-            function transition_ok(int[] prev_values, int[] new_values, int delta) {
+            function transition_ok(State[] prev_states, State[] new_states, int delta) {
                 require(delta >= 0);
             }
         }
@@ -113,11 +113,11 @@ fn lowers_cov_to_leader_and_delegate_expected_wrapper_ast() {
         contract Decls(int max_ins, int max_outs) {
             int value = 0;
 
-            function covenant_policy_transition_ok(int[] prev_values, int[] new_values, int delta) {
+            function covenant_policy_transition_ok(int[] prev_value, int[] new_value, int delta) {
                 require(delta >= 0);
             }
 
-            entrypoint function transition_ok_leader(int[] new_values, int delta) {
+            entrypoint function transition_ok_leader(int[] new_value, int delta) {
                 byte[32] cov_id = OpInputCovenantId(this.activeInputIndex);
 
                 require(OpCovInputIdx(cov_id, 0) == this.activeInputIndex);
@@ -126,23 +126,23 @@ fn lowers_cov_to_leader_and_delegate_expected_wrapper_ast() {
                 require(cov_in_count <= max_ins);
 
                 int cov_out_count = OpCovOutCount(cov_id);
-                int[] prev_values;
+                int[] prev_value;
 
                 for(cov_in_k, 0, max_ins) {
                     if (cov_in_k < cov_in_count) {
                         int cov_in_idx = OpCovInputIdx(cov_id, cov_in_k);
                         { value: int cov_prev_value } = readInputState(cov_in_idx);
-                        prev_values.push(cov_prev_value);
+                        prev_value.push(cov_prev_value);
                     }
                 }
 
-                covenant_policy_transition_ok(prev_values, new_values, delta);
+                covenant_policy_transition_ok(prev_value, new_value, delta);
                 require(cov_out_count <= max_outs);
 
                 for(cov_k, 0, max_outs) {
                     if (cov_k < cov_out_count) {
                         int cov_out_idx = OpCovOutputIdx(cov_id, cov_k);
-                        validateOutputState(cov_out_idx, { value: new_values[cov_k] });
+                        validateOutputState(cov_out_idx, { value: new_value[cov_k] });
                     }
                 }
             }
@@ -165,8 +165,8 @@ fn lowers_singleton_transition_uses_returned_state_in_validation() {
             int value = init_value;
 
             #[covenant.singleton(mode = transition)]
-            function bump(int prev_value, int delta) : (int) {
-                return(prev_value + delta);
+            function bump(State prev_state, int delta) : (State) {
+                return({ value: prev_state.value + delta });
             }
         }
     "#;
@@ -201,8 +201,8 @@ fn lowers_transition_array_return_to_exact_output_count_match() {
             int value = init_value;
 
             #[covenant(from = 1, to = max_outs, mode = transition)]
-            function fanout(int prev_value, int[] next_values) : (int[]) {
-                return(next_values);
+            function fanout(State prev_state, State[] next_states) : (State[]) {
+                return(next_states);
             }
         }
     "#;
@@ -211,14 +211,14 @@ fn lowers_transition_array_return_to_exact_output_count_match() {
         contract Decls(int max_outs, int init_value) {
             int value = init_value;
 
-            function covenant_policy_fanout(int prev_value, int[] next_values) : (int[]) {
-                return(next_values);
+            function covenant_policy_fanout(int prev_value, int[] next_value) : (int[]) {
+                return(next_value);
             }
 
-            entrypoint function fanout(int[] next_values) {
+            entrypoint function fanout(int[] next_value) {
                 int cov_out_count = OpAuthOutputCount(this.activeInputIndex);
 
-                (int[] cov_new_value) = covenant_policy_fanout(value, next_values);
+                (int[] cov_new_value) = covenant_policy_fanout(value, next_value);
                 require(cov_out_count <= max_outs);
                 require(cov_out_count == cov_new_value.length);
 
@@ -242,8 +242,8 @@ fn lowers_singleton_transition_with_termination_allowed_to_array_cardinality_che
             int value = init_value;
 
             #[covenant.singleton(mode = transition, termination = allowed)]
-            function bump_or_terminate(int prev_value, int[] next_values) : (int[]) {
-                return(next_values);
+            function bump_or_terminate(State prev_state, State[] next_states) : (State[]) {
+                return(next_states);
             }
         }
     "#;
@@ -252,14 +252,14 @@ fn lowers_singleton_transition_with_termination_allowed_to_array_cardinality_che
         contract Decls(int init_value) {
             int value = init_value;
 
-            function covenant_policy_bump_or_terminate(int prev_value, int[] next_values) : (int[]) {
-                return(next_values);
+            function covenant_policy_bump_or_terminate(int prev_value, int[] next_value) : (int[]) {
+                return(next_value);
             }
 
-            entrypoint function bump_or_terminate(int[] next_values) {
+            entrypoint function bump_or_terminate(int[] next_value) {
                 int cov_out_count = OpAuthOutputCount(this.activeInputIndex);
 
-                (int[] cov_new_value) = covenant_policy_bump_or_terminate(value, next_values);
+                (int[] cov_new_value) = covenant_policy_bump_or_terminate(value, next_value);
                 require(cov_out_count <= 1);
                 require(cov_out_count == cov_new_value.length);
 
@@ -284,13 +284,7 @@ fn lowers_auth_verification_groups_multiple_two_field_state_to_expected_wrapper_
             byte[32] owner = init_owner;
 
             #[covenant(binding = auth, from = 1, to = max_outs, mode = verification, groups = multiple)]
-            function step(
-                int prev_amount,
-                byte[32] prev_owner,
-                int[] new_amount,
-                byte[32][] new_owner,
-                int nonce
-            ) {
+            function step(State prev_state, State[] new_states, int nonce) {
                 require(nonce >= 0);
             }
         }
@@ -341,13 +335,8 @@ fn lowers_auth_verification_groups_single_two_field_state_to_expected_wrapper_as
             byte[32] owner = init_owner;
 
             #[covenant(binding = auth, from = 1, to = max_outs, mode = verification, groups = single)]
-            function step(
-                int prev_amount,
-                byte[32] prev_owner,
-                int[] new_amount,
-                byte[32][] new_owner
-            ) {
-                require(new_amount.length == new_owner.length);
+            function step(State prev_state, State[] new_states) {
+                require(new_states.length == new_states.length);
             }
         }
     "#;
@@ -363,7 +352,7 @@ fn lowers_auth_verification_groups_single_two_field_state_to_expected_wrapper_as
                 int[] new_amount,
                 byte[32][] new_owner
             ) {
-                require(new_amount.length == new_owner.length);
+                require(new_amount.length == new_amount.length);
             }
 
             entrypoint function step(int[] new_amount, byte[32][] new_owner) {
@@ -400,8 +389,11 @@ fn lowers_auth_transition_two_field_state_to_expected_wrapper_ast() {
             byte[32] owner = init_owner;
 
             #[covenant(binding = auth, from = 1, to = max_outs, mode = transition)]
-            function step(int prev_amount, byte[32] prev_owner, int fee) : (int, byte[32]) {
-                return(prev_amount - fee, prev_owner);
+            function step(State prev_state, int fee) : (State) {
+                return({
+                    amount: prev_state.amount - fee,
+                    owner: prev_state.owner
+                });
             }
         }
     "#;
@@ -441,13 +433,7 @@ fn lowers_cov_verification_two_field_state_to_expected_wrapper_ast() {
             byte[32] owner = init_owner;
 
             #[covenant(binding = cov, from = max_ins, to = max_outs, mode = verification)]
-            function step(
-                int[] prev_amount,
-                byte[32][] prev_owner,
-                int[] new_amount,
-                byte[32][] new_owner,
-                int nonce
-            ) {
+            function step(State[] prev_states, State[] new_states, int nonce) {
                 require(nonce >= 0);
             }
         }
@@ -525,9 +511,9 @@ fn lowers_cov_transition_two_field_state_to_expected_wrapper_ast() {
             byte[32] owner = init_owner;
 
             #[covenant(binding = cov, from = max_ins, to = max_outs, mode = transition)]
-            function step(int[] prev_amount, byte[32][] prev_owner, int fee) : (int[], byte[32][]) {
+            function step(State[] prev_states, int fee) : (State[]) {
                 require(fee >= 0);
-                return(prev_amount, prev_owner);
+                return(prev_states);
             }
         }
     "#;
@@ -597,8 +583,8 @@ fn lowers_inferred_auth_verification_two_field_state_to_expected_wrapper_ast() {
             byte[32] owner = init_owner;
 
             #[covenant(from = 1, to = max_outs)]
-            function step(int prev_amount, byte[32] prev_owner, int[] new_amount, byte[32][] new_owner) {
-                require(new_amount.length == new_owner.length);
+            function step(State prev_state, State[] new_states) {
+                require(new_states.length == new_states.length);
             }
         }
     "#;
@@ -609,7 +595,7 @@ fn lowers_inferred_auth_verification_two_field_state_to_expected_wrapper_ast() {
             byte[32] owner = init_owner;
 
             function covenant_policy_step(int prev_amount, byte[32] prev_owner, int[] new_amount, byte[32][] new_owner) {
-                require(new_amount.length == new_owner.length);
+                require(new_amount.length == new_amount.length);
             }
 
             entrypoint function step(int[] new_amount, byte[32][] new_owner) {
@@ -642,8 +628,8 @@ fn lowers_inferred_cov_verification_two_field_state_to_expected_wrapper_ast() {
             byte[32] owner = init_owner;
 
             #[covenant(from = max_ins, to = max_outs)]
-            function step(int[] prev_amount, byte[32][] prev_owner, int[] new_amount, byte[32][] new_owner) {
-                require(new_amount.length == new_owner.length);
+            function step(State[] prev_states, State[] new_states) {
+                require(new_states.length == new_states.length);
             }
         }
     "#;
@@ -654,7 +640,7 @@ fn lowers_inferred_cov_verification_two_field_state_to_expected_wrapper_ast() {
             byte[32] owner = init_owner;
 
             function covenant_policy_step(int[] prev_amount, byte[32][] prev_owner, int[] new_amount, byte[32][] new_owner) {
-                require(new_amount.length == new_owner.length);
+                require(new_amount.length == new_amount.length);
             }
 
             entrypoint function step_leader(int[] new_amount, byte[32][] new_owner) {
@@ -714,8 +700,8 @@ fn lowers_inferred_singleton_transition_two_field_state_to_expected_wrapper_ast(
             byte[32] owner = init_owner;
 
             #[covenant(from = 1, to = 1)]
-            function step(int prev_amount, byte[32] prev_owner, int delta) : (int, byte[32]) {
-                return(prev_amount + delta, prev_owner);
+            function step(State prev_state, int delta) : (State) {
+                return({ amount: prev_state.amount + delta, owner: prev_state.owner });
             }
         }
     "#;
@@ -755,8 +741,8 @@ fn lowers_singleton_sugar_transition_two_field_state_to_expected_wrapper_ast() {
             byte[32] owner = init_owner;
 
             #[covenant.singleton(mode = transition)]
-            function step(int prev_amount, byte[32] prev_owner, int delta) : (int, byte[32]) {
-                return(prev_amount + delta, prev_owner);
+            function step(State prev_state, int delta) : (State) {
+                return({ amount: prev_state.amount + delta, owner: prev_state.owner });
             }
         }
     "#;
@@ -797,12 +783,10 @@ fn lowers_singleton_sugar_transition_termination_allowed_two_field_state_to_expe
 
             #[covenant.singleton(mode = transition, termination = allowed)]
             function step(
-                int prev_amount,
-                byte[32] prev_owner,
-                int[] next_amount,
-                byte[32][] next_owner
-            ) : (int[], byte[32][]) {
-                return(next_amount, next_owner);
+                State prev_state,
+                State[] next_states
+            ) : (State[]) {
+                return(next_states);
             }
         }
     "#;
@@ -853,8 +837,8 @@ fn lowers_fanout_sugar_verification_two_field_state_to_expected_wrapper_ast() {
             byte[32] owner = init_owner;
 
             #[covenant.fanout(to = max_outs, mode = verification)]
-            function step(int prev_amount, byte[32] prev_owner, int[] new_amount, byte[32][] new_owner) {
-                require(new_amount.length == new_owner.length);
+            function step(State prev_state, State[] new_states) {
+                require(new_states.length == new_states.length);
             }
         }
     "#;
@@ -865,7 +849,7 @@ fn lowers_fanout_sugar_verification_two_field_state_to_expected_wrapper_ast() {
             byte[32] owner = init_owner;
 
             function covenant_policy_step(int prev_amount, byte[32] prev_owner, int[] new_amount, byte[32][] new_owner) {
-                require(new_amount.length == new_owner.length);
+                require(new_amount.length == new_amount.length);
             }
 
             entrypoint function step(int[] new_amount, byte[32][] new_owner) {
@@ -899,86 +883,67 @@ fn covers_attribute_config_combinations_with_two_field_state() {
 
             #[covenant(binding = auth, from = 1, to = max_outs, mode = verification, groups = multiple)]
             function auth_verification_multi(
-                int prev_amount,
-                byte[32] prev_owner,
-                int[] new_amount,
-                byte[32][] new_owner,
+                State prev_state,
+                State[] new_states,
                 int nonce
             ) {
                 require(nonce >= 0);
             }
 
             #[covenant(binding = auth, from = 1, to = max_outs, mode = verification, groups = single)]
-            function auth_verification_single(
-                int prev_amount,
-                byte[32] prev_owner,
-                int[] new_amount,
-                byte[32][] new_owner
-            ) {
-                require(new_amount.length == new_owner.length);
+            function auth_verification_single(State prev_state, State[] new_states) {
+                require(new_states.length == new_states.length);
             }
 
             #[covenant(binding = auth, from = 1, to = max_outs, mode = transition)]
-            function auth_transition(int prev_amount, byte[32] prev_owner, int fee) : (int, byte[32]) {
-                return(prev_amount - fee, prev_owner);
+            function auth_transition(State prev_state, int fee) : (State) {
+                return({ amount: prev_state.amount - fee, owner: prev_state.owner });
             }
 
             #[covenant(binding = cov, from = max_ins, to = max_outs, mode = verification)]
             function cov_verification(
-                int[] prev_amount,
-                byte[32][] prev_owner,
-                int[] new_amount,
-                byte[32][] new_owner,
+                State[] prev_states,
+                State[] new_states,
                 int nonce
             ) {
                 require(nonce >= 0);
             }
 
             #[covenant(binding = cov, from = max_ins, to = max_outs, mode = transition)]
-            function cov_transition(int[] prev_amount, byte[32][] prev_owner, int fee) : (int[], byte[32][]) {
+            function cov_transition(State[] prev_states, int fee) : (State[]) {
                 require(fee >= 0);
-                return(prev_amount, prev_owner);
+                return(prev_states);
             }
 
             #[covenant(from = 1, to = max_outs)]
-            function inferred_auth(int prev_amount, byte[32] prev_owner, int[] new_amount, byte[32][] new_owner) {
-                require(new_amount.length == new_owner.length);
+            function inferred_auth(State prev_state, State[] new_states) {
+                require(new_states.length == new_states.length);
             }
 
             #[covenant(from = max_ins, to = max_outs)]
-            function inferred_cov(
-                int[] prev_amount,
-                byte[32][] prev_owner,
-                int[] new_amount,
-                byte[32][] new_owner
-            ) {
-                require(new_amount.length == new_owner.length);
+            function inferred_cov(State[] prev_states, State[] new_states) {
+                require(new_states.length == new_states.length);
             }
 
             #[covenant(from = 1, to = 1)]
-            function inferred_transition(int prev_amount, byte[32] prev_owner, int delta) : (int, byte[32]) {
-                return(prev_amount + delta, prev_owner);
+            function inferred_transition(State prev_state, int delta) : (State) {
+                return({ amount: prev_state.amount + delta, owner: prev_state.owner });
             }
 
             #[covenant.singleton(mode = transition)]
-            function singleton_transition(int prev_amount, byte[32] prev_owner, int delta) : (int, byte[32]) {
-                return(prev_amount + delta, prev_owner);
+            function singleton_transition(State prev_state, int delta) : (State) {
+                return({ amount: prev_state.amount + delta, owner: prev_state.owner });
             }
 
             #[covenant.singleton(mode = transition, termination = allowed)]
-            function singleton_terminate(
-                int prev_amount,
-                byte[32] prev_owner,
-                int[] next_amount,
-                byte[32][] next_owner
-            ) : (int[], byte[32][]) {
-                require(prev_amount >= 0);
-                return(next_amount, next_owner);
+            function singleton_terminate(State prev_state, State[] next_states) : (State[]) {
+                require(prev_state.amount >= 0);
+                return(next_states);
             }
 
             #[covenant.fanout(to = max_outs, mode = verification)]
-            function fanout_verification(int prev_amount, byte[32] prev_owner, int[] new_amount, byte[32][] new_owner) {
-                require(new_amount.length == new_owner.length);
+            function fanout_verification(State prev_state, State[] new_states) {
+                require(new_states.length == new_states.length);
             }
         }
     "#;
