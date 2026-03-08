@@ -1021,22 +1021,22 @@ fn covers_attribute_config_combinations_with_two_field_state() {
         "covenant_policy_singleton_terminate",
         "covenant_policy_fanout_verification",
     ] {
-        let policy = function_by_name(&functions, policy_name);
+        let policy = function_by_name(functions, policy_name);
         assert!(!policy.entrypoint, "policy '{}' must not be an entrypoint", policy_name);
     }
 
-    assert_param_names(function_by_name(&functions, "auth_verification_multi"), &["new_amount", "new_owner", "nonce"]);
-    assert_param_names(function_by_name(&functions, "auth_verification_single"), &["new_amount", "new_owner"]);
-    assert_param_names(function_by_name(&functions, "auth_transition"), &["fee"]);
-    assert_param_names(function_by_name(&functions, "cov_verification_leader"), &["new_amount", "new_owner", "nonce"]);
-    assert_param_names(function_by_name(&functions, "cov_verification_delegate"), &[]);
-    assert_param_names(function_by_name(&functions, "cov_transition_leader"), &["prev_amount", "prev_owner", "fee"]);
-    assert_param_names(function_by_name(&functions, "cov_transition_delegate"), &[]);
-    assert_param_names(function_by_name(&functions, "inferred_auth"), &["new_amount", "new_owner"]);
-    assert_param_names(function_by_name(&functions, "inferred_cov_leader"), &["new_amount", "new_owner"]);
-    assert_param_names(function_by_name(&functions, "inferred_cov_delegate"), &[]);
-    assert_param_names(function_by_name(&functions, "inferred_transition"), &["delta"]);
-    assert_param_names(function_by_name(&functions, "singleton_transition"), &["delta"]);
-    assert_param_names(function_by_name(&functions, "singleton_terminate"), &["next_amount", "next_owner"]);
-    assert_param_names(function_by_name(&functions, "fanout_verification"), &["new_amount", "new_owner"]);
+    assert_param_names(function_by_name(functions, "auth_verification_multi"), &["new_amount", "new_owner", "nonce"]);
+    assert_param_names(function_by_name(functions, "auth_verification_single"), &["new_amount", "new_owner"]);
+    assert_param_names(function_by_name(functions, "auth_transition"), &["fee"]);
+    assert_param_names(function_by_name(functions, "cov_verification_leader"), &["new_amount", "new_owner", "nonce"]);
+    assert_param_names(function_by_name(functions, "cov_verification_delegate"), &[]);
+    assert_param_names(function_by_name(functions, "cov_transition_leader"), &["prev_amount", "prev_owner", "fee"]);
+    assert_param_names(function_by_name(functions, "cov_transition_delegate"), &[]);
+    assert_param_names(function_by_name(functions, "inferred_auth"), &["new_amount", "new_owner"]);
+    assert_param_names(function_by_name(functions, "inferred_cov_leader"), &["new_amount", "new_owner"]);
+    assert_param_names(function_by_name(functions, "inferred_cov_delegate"), &[]);
+    assert_param_names(function_by_name(functions, "inferred_transition"), &["delta"]);
+    assert_param_names(function_by_name(functions, "singleton_transition"), &["delta"]);
+    assert_param_names(function_by_name(functions, "singleton_terminate"), &["next_amount", "next_owner"]);
+    assert_param_names(function_by_name(functions, "fanout_verification"), &["new_amount", "new_owner"]);
 }
