@@ -1,3 +1,4 @@
+use silverscript_lang::ast::parse_contract_ast;
 use silverscript_lang::parser::parse_source_file;
 
 #[test]
@@ -70,5 +71,50 @@ fn parses_input_sigscript_and_rejects_output_sigscript() {
             }
         }
     "#;
-    assert!(parse_source_file(input_bad).is_err());
+    assert!(parse_contract_ast(input_bad).is_err());
+}
+
+#[test]
+fn parses_structs_and_field_access() {
+    let input = r#"
+        contract Structs() {
+            struct S {
+                int a;
+                string b;
+            }
+
+            function f(S x) {
+                require(x.a == 0);
+                require(x.b.length == 5);
+            }
+
+            entrypoint function main() {
+                S y = {a: 0, b: "hello"};
+                f(y);
+            }
+        }
+    "#;
+
+    let result = parse_source_file(input);
+    assert!(result.is_ok());
+}
+
+#[test]
+fn parses_struct_destructuring() {
+    let input = r#"
+        contract Structs() {
+            struct S {
+                int a;
+                byte[5] b;
+            }
+
+            entrypoint function main() {
+                S s = {a: 1, b: 0x0102030405};
+                {a: int x, b: byte[5] y} = s;
+                require(x == 1);
+            }
+        }
+    "#;
+
+    assert!(parse_source_file(input).is_ok());
 }
