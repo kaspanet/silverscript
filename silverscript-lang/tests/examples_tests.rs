@@ -455,21 +455,11 @@ fn runs_everything_example_and_verifies() {
         sequence: 500,
         sig_op_count: 1,
     };
-    let checked_script = ScriptBuilder::new()
-        .add_ops(&compiled.script)
-        .unwrap()
-        .add_op(OpDrop)
-        .unwrap()
-        .add_op(OpDrop)
-        .unwrap()
-        .add_op(OpTrue)
-        .unwrap()
-        .drain();
     let output =
-        TransactionOutput { value: 5_000, script_public_key: ScriptPublicKey::new(0, checked_script.clone().into()), covenant: None };
+        TransactionOutput { value: 5_000, script_public_key: ScriptPublicKey::new(0, compiled.script.clone().into()), covenant: None };
 
     let tx = Transaction::new(1, vec![input.clone()], vec![output.clone()], 0, Default::default(), 0, vec![]);
-    let utxo_entry = UtxoEntry::new(output.value, ScriptPublicKey::new(0, checked_script.clone().into()), 0, tx.is_coinbase(), None);
+    let utxo_entry = UtxoEntry::new(output.value, ScriptPublicKey::new(0, compiled.script.clone().into()), 0, tx.is_coinbase(), None);
     let mut tx = MutableTransaction::with_entries(tx, vec![utxo_entry.clone()]);
 
     let reused_values = SigHashReusedValuesUnsync::new();

@@ -51,6 +51,25 @@ pub struct CompiledContract<'i> {
     pub debug_info: Option<DebugInfo<'i>>,
 }
 
+#[derive(Clone, Default)]
+struct LoweringScope {
+    vars: HashMap<String, TypeRef>,
+}
+
+#[derive(Clone)]
+struct StructFieldSpec {
+    name: String,
+    type_ref: TypeRef,
+}
+
+#[derive(Clone)]
+struct StructSpec {
+    fields: Vec<StructFieldSpec>,
+}
+
+type StructRegistry = HashMap<String, StructSpec>;
+type FunctionRegistry<'a, 'i> = HashMap<String, &'a FunctionAst<'i>>;
+
 pub fn compile_contract<'i>(
     source: &'i str,
     constructor_args: &[Expr<'i>],
@@ -66,6 +85,955 @@ pub fn compile_contract_ast<'i>(
     options: CompileOptions,
 ) -> Result<CompiledContract<'i>, CompilerError> {
     compile_contract_impl(contract, constructor_args, options, None)
+}
+
+pub fn struct_object<'i>(fields: Vec<(&str, Expr<'i>)>) -> Expr<'i> {
+    Expr::new(
+        ExprKind::StateObject(
+            fields
+                .into_iter()
+                .map(|(name, expr)| StateFieldExpr {
+                    name: name.to_string(),
+                    expr,
+                    span: Default::default(),
+                    name_span: Default::default(),
+                })
+                .collect(),
+        ),
+        Default::default(),
+    )
+}
+
+fn build_struct_registry<'i>(contract: &ContractAst<'i>) -> Result<StructRegistry, CompilerError> {
+    let mut registry = HashMap::new();
+    for item in &contract.structs {
+        if item.name == "State" {
+            return Err(CompilerError::Unsupported("'State' is a reserved struct name".to_string()));
+        }
+        let mut names = HashSet::new();
+        let fields = item
+            .fields
+            .iter()
+            .map(|field| {
+                if !names.insert(field.name.clone()) {
+                    return Err(CompilerError::Unsupported(format!("duplicate struct field '{}.{}'", item.name, field.name)));
+                }
+                Ok(StructFieldSpec { name: field.name.clone(), type_ref: field.type_ref.clone() })
+            })
+            .collect::<Result<Vec<_>, CompilerError>>()?;
+        if registry.insert(item.name.clone(), StructSpec { fields }).is_some() {
+            return Err(CompilerError::Unsupported(format!("duplicate struct name: {}", item.name)));
+        }
+    }
+
+    let mut state_field_names = HashSet::new();
+    let state_fields = contract
+        .fields
+        .iter()
+        .map(|field| {
+            if !state_field_names.insert(field.name.clone()) {
+                return Err(CompilerError::Unsupported(format!("duplicate contract field name: {}", field.name)));
+            }
+            Ok(StructFieldSpec { name: field.name.clone(), type_ref: field.type_ref.clone() })
+        })
+        .collect::<Result<Vec<_>, CompilerError>>()?;
+    registry.insert("State".to_string(), StructSpec { fields: state_fields });
+
+    Ok(registry)
+}
+
+fn struct_name_from_type_ref<'a>(type_ref: &'a TypeRef, structs: &'a StructRegistry) -> Option<&'a str> {
+    if !type_ref.array_dims.is_empty() {
+        return None;
+    }
+    match &type_ref.base {
+        TypeBase::Custom(name) if structs.contains_key(name) => Some(name.as_str()),
+        _ => None,
+    }
+}
+
+fn ensure_known_or_builtin_type(type_ref: &TypeRef, structs: &StructRegistry, context: &str) -> Result<(), CompilerError> {
+    if type_ref.array_dims.is_empty() {
+        match &type_ref.base {
+            TypeBase::Custom(name) if !structs.contains_key(name) => {
+                return Err(CompilerError::Unsupported(format!("unknown type '{}' in {context}", name)));
+            }
+            _ => {}
+        }
+    } else if let TypeBase::Custom(name) = &type_ref.base {
+        if structs.contains_key(name) {
+            return Err(CompilerError::Unsupported(format!("arrays of struct type '{}' are not supported", name)));
+        }
+        return Err(CompilerError::Unsupported(format!("unknown type '{}' in {context}", name)));
+    }
+    Ok(())
+}
+
+fn validate_struct_graph(structs: &StructRegistry) -> Result<(), CompilerError> {
+    fn visit(
+        name: &str,
+        structs: &StructRegistry,
+        visiting: &mut HashSet<String>,
+        visited: &mut HashSet<String>,
+    ) -> Result<(), CompilerError> {
+        if visited.contains(name) {
+            return Ok(());
+        }
+        if !visiting.insert(name.to_string()) {
+            return Err(CompilerError::Unsupported(format!("cyclic struct definition involving '{name}'")));
+        }
+        let item = structs.get(name).ok_or_else(|| CompilerError::Unsupported(format!("unknown struct '{name}'")))?;
+        for field in &item.fields {
+            ensure_known_or_builtin_type(&field.type_ref, structs, "struct field")?;
+            if let Some(child) = struct_name_from_type_ref(&field.type_ref, structs) {
+                visit(child, structs, visiting, visited)?;
+            }
+        }
+        visiting.remove(name);
+        visited.insert(name.to_string());
+        Ok(())
+    }
+
+    let mut visiting = HashSet::new();
+    let mut visited = HashSet::new();
+    for name in structs.keys() {
+        visit(name, structs, &mut visiting, &mut visited)?;
+    }
+    Ok(())
+}
+
+fn flattened_struct_name(base: &str, path: &[String]) -> String {
+    let mut out = format!("__struct_{base}");
+    for part in path {
+        out.push('_');
+        out.push_str(part);
+    }
+    out
+}
+
+fn flatten_struct_fields(
+    type_ref: &TypeRef,
+    structs: &StructRegistry,
+    prefix: &mut Vec<String>,
+    out: &mut Vec<(Vec<String>, TypeRef)>,
+) -> Result<(), CompilerError> {
+    if let Some(struct_name) = struct_name_from_type_ref(type_ref, structs) {
+        let item = structs.get(struct_name).ok_or_else(|| CompilerError::Unsupported(format!("unknown struct '{struct_name}'")))?;
+        for field in &item.fields {
+            prefix.push(field.name.clone());
+            flatten_struct_fields(&field.type_ref, structs, prefix, out)?;
+            prefix.pop();
+        }
+    } else {
+        out.push((prefix.clone(), type_ref.clone()));
+    }
+    Ok(())
+}
+
+fn resolve_struct_access<'i>(
+    expr: &Expr<'i>,
+    scope: &LoweringScope,
+    structs: &StructRegistry,
+) -> Result<(String, Vec<String>, TypeRef), CompilerError> {
+    match &expr.kind {
+        ExprKind::Identifier(name) => {
+            let type_ref = scope.vars.get(name).cloned().ok_or_else(|| CompilerError::UndefinedIdentifier(name.clone()))?;
+            Ok((name.clone(), Vec::new(), type_ref))
+        }
+        ExprKind::FieldAccess { source, field, .. } => {
+            let (base, mut path, current_type) = resolve_struct_access(source, scope, structs)?;
+            let struct_name = struct_name_from_type_ref(&current_type, structs)
+                .ok_or_else(|| CompilerError::Unsupported("field access requires a struct value".to_string()))?;
+            let item =
+                structs.get(struct_name).ok_or_else(|| CompilerError::Unsupported(format!("unknown struct '{struct_name}'")))?;
+            let field_type = item
+                .fields
+                .iter()
+                .find(|candidate| candidate.name == *field)
+                .map(|candidate| candidate.type_ref.clone())
+                .ok_or_else(|| CompilerError::Unsupported(format!("struct '{}' has no field '{}'", struct_name, field)))?;
+            path.push(field.clone());
+            Ok((base, path, field_type))
+        }
+        _ => Err(CompilerError::Unsupported("struct field access requires a struct variable".to_string())),
+    }
+}
+
+fn lower_expr<'i>(expr: &Expr<'i>, scope: &LoweringScope, structs: &StructRegistry) -> Result<Expr<'i>, CompilerError> {
+    let span = expr.span;
+    match &expr.kind {
+        ExprKind::FieldAccess { .. } => {
+            let (base, path, type_ref) = resolve_struct_access(expr, scope, structs)?;
+            if struct_name_from_type_ref(&type_ref, structs).is_some() {
+                return Err(CompilerError::Unsupported("struct value must be used in a struct-typed position".to_string()));
+            }
+            Ok(Expr::new(ExprKind::Identifier(flattened_struct_name(&base, &path)), span))
+        }
+        ExprKind::Unary { op, expr } => {
+            Ok(Expr::new(ExprKind::Unary { op: *op, expr: Box::new(lower_expr(expr, scope, structs)?) }, span))
+        }
+        ExprKind::Binary { op, left, right } => Ok(Expr::new(
+            ExprKind::Binary {
+                op: *op,
+                left: Box::new(lower_expr(left, scope, structs)?),
+                right: Box::new(lower_expr(right, scope, structs)?),
+            },
+            span,
+        )),
+        ExprKind::IfElse { condition, then_expr, else_expr } => Ok(Expr::new(
+            ExprKind::IfElse {
+                condition: Box::new(lower_expr(condition, scope, structs)?),
+                then_expr: Box::new(lower_expr(then_expr, scope, structs)?),
+                else_expr: Box::new(lower_expr(else_expr, scope, structs)?),
+            },
+            span,
+        )),
+        ExprKind::Array(values) => Ok(Expr::new(
+            ExprKind::Array(values.iter().map(|value| lower_expr(value, scope, structs)).collect::<Result<Vec<_>, _>>()?),
+            span,
+        )),
+        ExprKind::StateObject(_) => {
+            Err(CompilerError::Unsupported("struct literals are only supported in struct-typed positions".to_string()))
+        }
+        ExprKind::Call { name, args, name_span } => Ok(Expr::new(
+            ExprKind::Call {
+                name: name.clone(),
+                args: args.iter().map(|arg| lower_expr(arg, scope, structs)).collect::<Result<Vec<_>, _>>()?,
+                name_span: *name_span,
+            },
+            span,
+        )),
+        ExprKind::New { name, args, name_span } => Ok(Expr::new(
+            ExprKind::New {
+                name: name.clone(),
+                args: args.iter().map(|arg| lower_expr(arg, scope, structs)).collect::<Result<Vec<_>, _>>()?,
+                name_span: *name_span,
+            },
+            span,
+        )),
+        ExprKind::Split { source, index, part, span: split_span } => Ok(Expr::new(
+            ExprKind::Split {
+                source: Box::new(lower_expr(source, scope, structs)?),
+                index: Box::new(lower_expr(index, scope, structs)?),
+                part: *part,
+                span: *split_span,
+            },
+            span,
+        )),
+        ExprKind::Slice { source, start, end, span: slice_span } => Ok(Expr::new(
+            ExprKind::Slice {
+                source: Box::new(lower_expr(source, scope, structs)?),
+                start: Box::new(lower_expr(start, scope, structs)?),
+                end: Box::new(lower_expr(end, scope, structs)?),
+                span: *slice_span,
+            },
+            span,
+        )),
+        ExprKind::ArrayIndex { source, index } => Ok(Expr::new(
+            ExprKind::ArrayIndex {
+                source: Box::new(lower_expr(source, scope, structs)?),
+                index: Box::new(lower_expr(index, scope, structs)?),
+            },
+            span,
+        )),
+        ExprKind::Introspection { kind, index, field_span } => Ok(Expr::new(
+            ExprKind::Introspection { kind: *kind, index: Box::new(lower_expr(index, scope, structs)?), field_span: *field_span },
+            span,
+        )),
+        ExprKind::UnarySuffix { source, kind, span: suffix_span } => Ok(Expr::new(
+            ExprKind::UnarySuffix { source: Box::new(lower_expr(source, scope, structs)?), kind: *kind, span: *suffix_span },
+            span,
+        )),
+        _ => Ok(expr.clone()),
+    }
+}
+
+fn read_input_state_field_expr_symbolic<'i>(
+    input_idx: &Expr<'i>,
+    field: &ContractFieldAst<'i>,
+    field_chunk_offset: usize,
+    contract_constants: &HashMap<String, Expr<'i>>,
+) -> Result<Expr<'i>, CompilerError> {
+    let script_size_expr = Expr::new(ExprKind::Nullary(NullaryOp::ThisScriptSize), span::Span::default());
+    let (field_payload_offset, field_payload_len, decode_int) =
+        if field.type_ref.array_dims.is_empty() && field.type_ref.base == TypeBase::Int {
+            (field_chunk_offset + 1, 8usize, true)
+        } else if field.type_ref.base == TypeBase::Byte {
+            let payload_len = if field.type_ref.array_dims.is_empty() {
+                1usize
+            } else {
+                array_size_with_constants_ref(&field.type_ref, contract_constants).ok_or_else(|| {
+                    CompilerError::Unsupported(format!(
+                        "readInputState does not support field type {}",
+                        type_name_from_ref(&field.type_ref)
+                    ))
+                })?
+            };
+            (field_chunk_offset + data_prefix(payload_len).len(), payload_len, false)
+        } else {
+            return Err(CompilerError::Unsupported(format!(
+                "readInputState does not support field type {}",
+                type_name_from_ref(&field.type_ref)
+            )));
+        };
+
+    let sig_len = Expr::call("OpTxInputScriptSigLen", vec![input_idx.clone()]);
+    let start = Expr::new(
+        ExprKind::Binary {
+            op: BinaryOp::Add,
+            left: Box::new(Expr::new(
+                ExprKind::Binary { op: BinaryOp::Sub, left: Box::new(sig_len), right: Box::new(script_size_expr) },
+                span::Span::default(),
+            )),
+            right: Box::new(Expr::int(field_payload_offset as i64)),
+        },
+        span::Span::default(),
+    );
+    let end = Expr::new(
+        ExprKind::Binary { op: BinaryOp::Add, left: Box::new(start.clone()), right: Box::new(Expr::int(field_payload_len as i64)) },
+        span::Span::default(),
+    );
+    let substr = Expr::call("OpTxInputScriptSigSubstr", vec![input_idx.clone(), start, end]);
+
+    if decode_int { Ok(Expr::call("OpBin2Num", vec![substr])) } else { Ok(substr) }
+}
+
+fn lower_struct_value_to_state_object_expr<'i>(
+    expr: &Expr<'i>,
+    expected_type: &TypeRef,
+    scope: &LoweringScope,
+    structs: &StructRegistry,
+    contract_fields: &[ContractFieldAst<'i>],
+    contract_constants: &HashMap<String, Expr<'i>>,
+) -> Result<Expr<'i>, CompilerError> {
+    let lowered_values = lower_struct_value_expr(expr, expected_type, scope, structs, contract_fields, contract_constants)?;
+    let mut paths = Vec::new();
+    flatten_struct_fields(expected_type, structs, &mut Vec::new(), &mut paths)?;
+    let fields = paths
+        .into_iter()
+        .zip(lowered_values)
+        .map(|((path, _), value)| StateFieldExpr {
+            name: path.last().cloned().unwrap_or_default(),
+            expr: value,
+            span: expr.span,
+            name_span: span::Span::default(),
+        })
+        .collect();
+    Ok(Expr::new(ExprKind::StateObject(fields), expr.span))
+}
+
+fn lower_struct_value_expr<'i>(
+    expr: &Expr<'i>,
+    expected_type: &TypeRef,
+    scope: &LoweringScope,
+    structs: &StructRegistry,
+    contract_fields: &[ContractFieldAst<'i>],
+    contract_constants: &HashMap<String, Expr<'i>>,
+) -> Result<Vec<Expr<'i>>, CompilerError> {
+    let expected_struct_name = struct_name_from_type_ref(expected_type, structs)
+        .ok_or_else(|| CompilerError::Unsupported(format!("expected struct type '{}'", expected_type.type_name())))?;
+    match &expr.kind {
+        ExprKind::Call { name, args, .. } if name == "readInputState" => {
+            if expected_struct_name != "State" {
+                return Err(CompilerError::Unsupported("readInputState returns State".to_string()));
+            }
+            if args.len() != 1 {
+                return Err(CompilerError::Unsupported("readInputState(input_idx) expects 1 argument".to_string()));
+            }
+            if contract_fields.is_empty() {
+                return Err(CompilerError::Unsupported("readInputState requires contract fields".to_string()));
+            }
+            let mut field_chunk_offset = 0usize;
+            let mut lowered = Vec::with_capacity(contract_fields.len());
+            for field in contract_fields {
+                lowered.push(read_input_state_field_expr_symbolic(&args[0], field, field_chunk_offset, contract_constants)?);
+                field_chunk_offset += encoded_field_chunk_size(field, contract_constants)?;
+            }
+            Ok(lowered)
+        }
+        ExprKind::Identifier(_) | ExprKind::FieldAccess { .. } => {
+            let (base, path, actual_type) = resolve_struct_access(expr, scope, structs)?;
+            let actual_struct_name = struct_name_from_type_ref(&actual_type, structs)
+                .ok_or_else(|| CompilerError::Unsupported("expression is not a struct".to_string()))?;
+            if actual_struct_name != expected_struct_name {
+                return Err(CompilerError::Unsupported(format!(
+                    "struct expression expects {}, got {}",
+                    expected_type.type_name(),
+                    actual_type.type_name()
+                )));
+            }
+            let mut flattened = Vec::new();
+            let mut leaves = Vec::new();
+            let mut prefix = path.clone();
+            flatten_struct_fields(&actual_type, structs, &mut prefix, &mut leaves)?;
+            for (leaf_path, _) in leaves {
+                flattened.push(Expr::identifier(flattened_struct_name(&base, &leaf_path)));
+            }
+            Ok(flattened)
+        }
+        ExprKind::StateObject(entries) => {
+            let item = structs
+                .get(expected_struct_name)
+                .ok_or_else(|| CompilerError::Unsupported(format!("unknown struct '{expected_struct_name}'")))?;
+            let mut provided = HashMap::new();
+            for entry in entries {
+                if provided.insert(entry.name.clone(), &entry.expr).is_some() {
+                    return Err(CompilerError::Unsupported(format!("duplicate struct field '{}'", entry.name)));
+                }
+            }
+            let mut lowered = Vec::new();
+            for field in &item.fields {
+                let field_expr = provided
+                    .remove(&field.name)
+                    .ok_or_else(|| CompilerError::Unsupported(format!("struct field '{}' must be initialized", field.name)))?;
+                if struct_name_from_type_ref(&field.type_ref, structs).is_some() {
+                    lowered.extend(lower_struct_value_expr(
+                        field_expr,
+                        &field.type_ref,
+                        scope,
+                        structs,
+                        contract_fields,
+                        contract_constants,
+                    )?);
+                } else {
+                    lowered.push(lower_expr(field_expr, scope, structs)?);
+                }
+            }
+            if let Some(extra) = provided.keys().next() {
+                return Err(CompilerError::Unsupported(format!("unknown struct field '{}'", extra)));
+            }
+            Ok(lowered)
+        }
+        _ => Err(CompilerError::Unsupported(format!("expression expects struct {}", expected_type.type_name()))),
+    }
+}
+
+fn lower_function_call_args<'i>(
+    name: &str,
+    args: &[Expr<'i>],
+    scope: &LoweringScope,
+    structs: &StructRegistry,
+    functions: &FunctionRegistry<'_, 'i>,
+    contract_fields: &[ContractFieldAst<'i>],
+    contract_constants: &HashMap<String, Expr<'i>>,
+) -> Result<Vec<Expr<'i>>, CompilerError> {
+    let function = functions.get(name).ok_or_else(|| CompilerError::Unsupported(format!("function '{}' not found", name)))?;
+    if function.params.len() != args.len() {
+        return Err(CompilerError::Unsupported(format!("function '{}' expects {} arguments", name, function.params.len())));
+    }
+    let mut lowered = Vec::new();
+    for (param, arg) in function.params.iter().zip(args.iter()) {
+        if struct_name_from_type_ref(&param.type_ref, structs).is_some() {
+            lowered.extend(lower_struct_value_expr(arg, &param.type_ref, scope, structs, contract_fields, contract_constants)?);
+        } else {
+            lowered.push(lower_expr(arg, scope, structs)?);
+        }
+    }
+    Ok(lowered)
+}
+
+fn infer_struct_expr_type<'i>(
+    expr: &Expr<'i>,
+    scope: &LoweringScope,
+    structs: &StructRegistry,
+    contract_fields: &[ContractFieldAst<'i>],
+) -> Result<TypeRef, CompilerError> {
+    match &expr.kind {
+        ExprKind::Identifier(_) | ExprKind::FieldAccess { .. } => {
+            let (_, _, type_ref) = resolve_struct_access(expr, scope, structs)?;
+            Ok(type_ref)
+        }
+        ExprKind::Call { name, .. } if name == "readInputState" => {
+            if contract_fields.is_empty() {
+                return Err(CompilerError::Unsupported("readInputState requires contract fields".to_string()));
+            }
+            Ok(TypeRef { base: TypeBase::Custom("State".to_string()), array_dims: Vec::new() })
+        }
+        _ => Err(CompilerError::Unsupported("struct destructuring requires a struct value".to_string())),
+    }
+}
+
+fn lower_struct_destructure_statement<'i>(
+    bindings: &[StateBindingAst<'i>],
+    expr: &Expr<'i>,
+    span: crate::span::Span<'i>,
+    scope: &mut LoweringScope,
+    structs: &StructRegistry,
+    contract_fields: &[ContractFieldAst<'i>],
+    contract_constants: &HashMap<String, Expr<'i>>,
+) -> Result<Vec<Statement<'i>>, CompilerError> {
+    let expr_type = infer_struct_expr_type(expr, scope, structs, contract_fields)?;
+    let struct_name = struct_name_from_type_ref(&expr_type, structs)
+        .ok_or_else(|| CompilerError::Unsupported("struct destructuring requires a struct value".to_string()))?;
+    let struct_ast = structs.get(struct_name).ok_or_else(|| CompilerError::Unsupported(format!("unknown struct '{struct_name}'")))?;
+    let direct_field_values = if matches!(&expr.kind, ExprKind::Call { name, .. } if name == "readInputState") {
+        Some(
+            struct_ast
+                .fields
+                .iter()
+                .map(|field| field.name.clone())
+                .zip(lower_struct_value_expr(expr, &expr_type, scope, structs, contract_fields, contract_constants)?)
+                .collect::<HashMap<_, _>>(),
+        )
+    } else {
+        None
+    };
+
+    let mut binding_map = HashMap::new();
+    let mut binding_names = HashSet::new();
+    for binding in bindings {
+        ensure_known_or_builtin_type(&binding.type_ref, structs, "struct destructuring")?;
+        if binding_map.insert(binding.field_name.clone(), binding).is_some() {
+            return Err(CompilerError::Unsupported(format!("duplicate struct field '{}'", binding.field_name)));
+        }
+        if !binding_names.insert(binding.name.clone()) {
+            return Err(CompilerError::Unsupported(format!("duplicate binding name '{}'", binding.name)));
+        }
+    }
+
+    if bindings.len() != struct_ast.fields.len() {
+        return Err(CompilerError::Unsupported("struct destructuring must bind all fields exactly once".to_string()));
+    }
+
+    let mut lowered = Vec::new();
+    for field in &struct_ast.fields {
+        let binding = binding_map
+            .remove(&field.name)
+            .ok_or_else(|| CompilerError::Unsupported("struct destructuring must bind all fields exactly once".to_string()))?;
+        if binding.type_ref != field.type_ref {
+            return Err(CompilerError::Unsupported(format!(
+                "struct field '{}' expects {}",
+                field.name,
+                type_name_from_ref(&field.type_ref)
+            )));
+        }
+
+        if let Some(field_expr) = direct_field_values.as_ref().and_then(|fields| fields.get(&field.name)) {
+            if struct_name_from_type_ref(&binding.type_ref, structs).is_some() {
+                return Err(CompilerError::Unsupported("readInputState does not support nested struct fields".to_string()));
+            }
+            scope.vars.insert(binding.name.clone(), binding.type_ref.clone());
+            lowered.push(Statement::VariableDefinition {
+                type_ref: binding.type_ref.clone(),
+                modifiers: Vec::new(),
+                name: binding.name.clone(),
+                expr: Some(field_expr.clone()),
+                span: binding.span,
+                type_span: binding.type_span,
+                modifier_spans: Vec::new(),
+                name_span: binding.name_span,
+            });
+        } else {
+            let projected_expr = Expr::new(
+                ExprKind::FieldAccess { source: Box::new(expr.clone()), field: field.name.clone(), field_span: binding.field_span },
+                span,
+            );
+
+            if struct_name_from_type_ref(&binding.type_ref, structs).is_some() {
+                let lowered_values =
+                    lower_struct_value_expr(&projected_expr, &binding.type_ref, scope, structs, contract_fields, contract_constants)?;
+                let mut paths = Vec::new();
+                flatten_struct_fields(&binding.type_ref, structs, &mut Vec::new(), &mut paths)?;
+                scope.vars.insert(binding.name.clone(), binding.type_ref.clone());
+                lowered.extend(paths.into_iter().zip(lowered_values).map(|((path, field_type), field_expr)| {
+                    Statement::VariableDefinition {
+                        type_ref: field_type,
+                        modifiers: Vec::new(),
+                        name: flattened_struct_name(&binding.name, &path),
+                        expr: Some(field_expr),
+                        span: binding.span,
+                        type_span: binding.type_span,
+                        modifier_spans: Vec::new(),
+                        name_span: binding.name_span,
+                    }
+                }));
+            } else {
+                let lowered_expr = lower_expr(&projected_expr, scope, structs)?;
+                scope.vars.insert(binding.name.clone(), binding.type_ref.clone());
+                lowered.push(Statement::VariableDefinition {
+                    type_ref: binding.type_ref.clone(),
+                    modifiers: Vec::new(),
+                    name: binding.name.clone(),
+                    expr: Some(lowered_expr),
+                    span: binding.span,
+                    type_span: binding.type_span,
+                    modifier_spans: Vec::new(),
+                    name_span: binding.name_span,
+                });
+            }
+        }
+    }
+
+    if !binding_map.is_empty() {
+        return Err(CompilerError::Unsupported("struct destructuring must bind all fields exactly once".to_string()));
+    }
+
+    Ok(lowered)
+}
+
+fn lower_statement<'i>(
+    stmt: &Statement<'i>,
+    scope: &mut LoweringScope,
+    structs: &StructRegistry,
+    functions: &FunctionRegistry<'_, 'i>,
+    contract_fields: &[ContractFieldAst<'i>],
+    contract_constants: &HashMap<String, Expr<'i>>,
+) -> Result<Vec<Statement<'i>>, CompilerError> {
+    match stmt {
+        Statement::VariableDefinition { type_ref, modifiers, name, expr, span, type_span, modifier_spans, name_span } => {
+            ensure_known_or_builtin_type(type_ref, structs, "variable definition")?;
+            if struct_name_from_type_ref(type_ref, structs).is_some() {
+                let expr =
+                    expr.clone().ok_or_else(|| CompilerError::Unsupported("variable definition requires initializer".to_string()))?;
+                let lowered_values = lower_struct_value_expr(&expr, type_ref, scope, structs, contract_fields, contract_constants)?;
+                let mut paths = Vec::new();
+                flatten_struct_fields(type_ref, structs, &mut Vec::new(), &mut paths)?;
+                scope.vars.insert(name.clone(), type_ref.clone());
+                Ok(paths
+                    .into_iter()
+                    .zip(lowered_values)
+                    .map(|((path, field_type), field_expr)| Statement::VariableDefinition {
+                        type_ref: field_type,
+                        modifiers: modifiers.clone(),
+                        name: flattened_struct_name(name, &path),
+                        expr: Some(field_expr),
+                        span: *span,
+                        type_span: *type_span,
+                        modifier_spans: modifier_spans.clone(),
+                        name_span: *name_span,
+                    })
+                    .collect())
+            } else {
+                let lowered_expr = expr.as_ref().map(|expr| lower_expr(expr, scope, structs)).transpose()?;
+                scope.vars.insert(name.clone(), type_ref.clone());
+                Ok(vec![Statement::VariableDefinition {
+                    type_ref: type_ref.clone(),
+                    modifiers: modifiers.clone(),
+                    name: name.clone(),
+                    expr: lowered_expr,
+                    span: *span,
+                    type_span: *type_span,
+                    modifier_spans: modifier_spans.clone(),
+                    name_span: *name_span,
+                }])
+            }
+        }
+        Statement::FunctionCall { name, args, span, name_span } => {
+            let args = if name == "validateOutputState" {
+                args.iter()
+                    .enumerate()
+                    .map(|(index, arg)| {
+                        if index == 1 {
+                            match &arg.kind {
+                                ExprKind::StateObject(fields) => Ok(Expr::new(
+                                    ExprKind::StateObject(
+                                        fields
+                                            .iter()
+                                            .map(|field| {
+                                                Ok(StateFieldExpr {
+                                                    name: field.name.clone(),
+                                                    expr: lower_expr(&field.expr, scope, structs)?,
+                                                    span: field.span,
+                                                    name_span: field.name_span,
+                                                })
+                                            })
+                                            .collect::<Result<Vec<_>, CompilerError>>()?,
+                                    ),
+                                    arg.span,
+                                )),
+                                _ => {
+                                    let state_type = TypeRef { base: TypeBase::Custom("State".to_string()), array_dims: Vec::new() };
+                                    lower_struct_value_to_state_object_expr(
+                                        arg,
+                                        &state_type,
+                                        scope,
+                                        structs,
+                                        contract_fields,
+                                        contract_constants,
+                                    )
+                                }
+                            }
+                        } else {
+                            lower_expr(arg, scope, structs)
+                        }
+                    })
+                    .collect::<Result<Vec<_>, _>>()?
+            } else {
+                lower_function_call_args(name, args, scope, structs, functions, contract_fields, contract_constants)?
+            };
+            Ok(vec![Statement::FunctionCall { name: name.clone(), args, span: *span, name_span: *name_span }])
+        }
+        Statement::FunctionCallAssign { bindings, name, args, span, name_span } => {
+            for binding in bindings {
+                ensure_known_or_builtin_type(&binding.type_ref, structs, "function call assignment")?;
+                if struct_name_from_type_ref(&binding.type_ref, structs).is_some() {
+                    return Err(CompilerError::Unsupported(
+                        "struct bindings are not supported in function call assignment".to_string(),
+                    ));
+                }
+            }
+            let lowered_args = lower_function_call_args(name, args, scope, structs, functions, contract_fields, contract_constants)?;
+            for binding in bindings {
+                scope.vars.insert(binding.name.clone(), binding.type_ref.clone());
+            }
+            Ok(vec![Statement::FunctionCallAssign {
+                bindings: bindings.clone(),
+                name: name.clone(),
+                args: lowered_args,
+                span: *span,
+                name_span: *name_span,
+            }])
+        }
+        Statement::StateFunctionCallAssign { bindings, name, args, span, .. } => {
+            if name != "readInputState" {
+                return Err(CompilerError::Unsupported(format!("unsupported state function '{name}'")));
+            }
+            if args.len() != 1 {
+                return Err(CompilerError::Unsupported("readInputState(input_idx) expects 1 argument".to_string()));
+            }
+            let lowered_expr = Expr::call(name, vec![lower_expr(&args[0], scope, structs)?]);
+            lower_struct_destructure_statement(bindings, &lowered_expr, *span, scope, structs, contract_fields, contract_constants)
+        }
+        Statement::StructDestructure { bindings, expr, span } => {
+            lower_struct_destructure_statement(bindings, expr, *span, scope, structs, contract_fields, contract_constants)
+        }
+        Statement::Assign { name, expr, span, name_span } => {
+            let target_type = scope.vars.get(name).cloned();
+            if let Some(target_type) = target_type {
+                if struct_name_from_type_ref(&target_type, structs).is_some() {
+                    let lowered_values =
+                        lower_struct_value_expr(expr, &target_type, scope, structs, contract_fields, contract_constants)?;
+                    let mut paths = Vec::new();
+                    flatten_struct_fields(&target_type, structs, &mut Vec::new(), &mut paths)?;
+                    return Ok(paths
+                        .into_iter()
+                        .zip(lowered_values)
+                        .map(|((path, _), field_expr)| Statement::Assign {
+                            name: flattened_struct_name(name, &path),
+                            expr: field_expr,
+                            span: *span,
+                            name_span: *name_span,
+                        })
+                        .collect());
+                }
+            }
+            Ok(vec![Statement::Assign {
+                name: name.clone(),
+                expr: lower_expr(expr, scope, structs)?,
+                span: *span,
+                name_span: *name_span,
+            }])
+        }
+        Statement::ArrayPush { name, expr, span, name_span } => Ok(vec![Statement::ArrayPush {
+            name: name.clone(),
+            expr: lower_expr(expr, scope, structs)?,
+            span: *span,
+            name_span: *name_span,
+        }]),
+        Statement::TupleAssignment {
+            left_type_ref,
+            left_name,
+            right_type_ref,
+            right_name,
+            expr,
+            span,
+            left_type_span,
+            left_name_span,
+            right_type_span,
+            right_name_span,
+        } => {
+            ensure_known_or_builtin_type(left_type_ref, structs, "tuple assignment")?;
+            ensure_known_or_builtin_type(right_type_ref, structs, "tuple assignment")?;
+            if struct_name_from_type_ref(left_type_ref, structs).is_some()
+                || struct_name_from_type_ref(right_type_ref, structs).is_some()
+            {
+                return Err(CompilerError::Unsupported("tuple assignment does not support struct types".to_string()));
+            }
+            let lowered_expr = lower_expr(expr, scope, structs)?;
+            scope.vars.insert(left_name.clone(), left_type_ref.clone());
+            scope.vars.insert(right_name.clone(), right_type_ref.clone());
+            Ok(vec![Statement::TupleAssignment {
+                left_type_ref: left_type_ref.clone(),
+                left_name: left_name.clone(),
+                right_type_ref: right_type_ref.clone(),
+                right_name: right_name.clone(),
+                expr: lowered_expr,
+                span: *span,
+                left_type_span: *left_type_span,
+                left_name_span: *left_name_span,
+                right_type_span: *right_type_span,
+                right_name_span: *right_name_span,
+            }])
+        }
+        Statement::Require { expr, message, span, message_span } => Ok(vec![Statement::Require {
+            expr: lower_expr(expr, scope, structs)?,
+            message: message.clone(),
+            span: *span,
+            message_span: *message_span,
+        }]),
+        Statement::TimeOp { tx_var, expr, message, span, tx_var_span, message_span } => Ok(vec![Statement::TimeOp {
+            tx_var: *tx_var,
+            expr: lower_expr(expr, scope, structs)?,
+            message: message.clone(),
+            span: *span,
+            tx_var_span: *tx_var_span,
+            message_span: *message_span,
+        }]),
+        Statement::If { condition, then_branch, else_branch, span, then_span, else_span } => {
+            let mut then_scope = scope.clone();
+            let lowered_then = lower_block(then_branch, &mut then_scope, structs, functions, contract_fields, contract_constants)?;
+            let lowered_else = if let Some(else_branch) = else_branch {
+                let mut else_scope = scope.clone();
+                Some(lower_block(else_branch, &mut else_scope, structs, functions, contract_fields, contract_constants)?)
+            } else {
+                None
+            };
+            Ok(vec![Statement::If {
+                condition: lower_expr(condition, scope, structs)?,
+                then_branch: lowered_then,
+                else_branch: lowered_else,
+                span: *span,
+                then_span: *then_span,
+                else_span: *else_span,
+            }])
+        }
+        Statement::For { ident, start, end, body, span, ident_span, body_span } => {
+            let mut body_scope = scope.clone();
+            body_scope.vars.insert(ident.clone(), TypeRef { base: TypeBase::Int, array_dims: Vec::new() });
+            let lowered_body = lower_block(body, &mut body_scope, structs, functions, contract_fields, contract_constants)?;
+            Ok(vec![Statement::For {
+                ident: ident.clone(),
+                start: lower_expr(start, scope, structs)?,
+                end: lower_expr(end, scope, structs)?,
+                body: lowered_body,
+                span: *span,
+                ident_span: *ident_span,
+                body_span: *body_span,
+            }])
+        }
+        Statement::Yield { expr, span } => Ok(vec![Statement::Yield { expr: lower_expr(expr, scope, structs)?, span: *span }]),
+        Statement::Return { exprs, span } => Ok(vec![Statement::Return {
+            exprs: exprs.iter().map(|expr| lower_expr(expr, scope, structs)).collect::<Result<Vec<_>, _>>()?,
+            span: *span,
+        }]),
+        Statement::Console { args, span } => Ok(vec![Statement::Console {
+            args: args
+                .iter()
+                .map(|arg| match arg {
+                    crate::ast::ConsoleArg::Identifier(name, span) => Ok(crate::ast::ConsoleArg::Identifier(name.clone(), *span)),
+                    crate::ast::ConsoleArg::Literal(expr) => Ok(crate::ast::ConsoleArg::Literal(lower_expr(expr, scope, structs)?)),
+                })
+                .collect::<Result<Vec<_>, CompilerError>>()?,
+            span: *span,
+        }]),
+    }
+}
+
+fn lower_block<'i>(
+    statements: &[Statement<'i>],
+    scope: &mut LoweringScope,
+    structs: &StructRegistry,
+    functions: &FunctionRegistry<'_, 'i>,
+    contract_fields: &[ContractFieldAst<'i>],
+    contract_constants: &HashMap<String, Expr<'i>>,
+) -> Result<Vec<Statement<'i>>, CompilerError> {
+    let mut lowered = Vec::new();
+    for stmt in statements {
+        lowered.extend(lower_statement(stmt, scope, structs, functions, contract_fields, contract_constants)?);
+    }
+    Ok(lowered)
+}
+
+fn lower_params<'i>(
+    params: &[crate::ast::ParamAst<'i>],
+    scope: &mut LoweringScope,
+    structs: &StructRegistry,
+) -> Result<Vec<crate::ast::ParamAst<'i>>, CompilerError> {
+    let mut lowered = Vec::new();
+    for param in params {
+        ensure_known_or_builtin_type(&param.type_ref, structs, "function parameter")?;
+        scope.vars.insert(param.name.clone(), param.type_ref.clone());
+        if struct_name_from_type_ref(&param.type_ref, structs).is_some() {
+            let mut leaves = Vec::new();
+            flatten_struct_fields(&param.type_ref, structs, &mut Vec::new(), &mut leaves)?;
+            for (path, field_type) in leaves {
+                lowered.push(crate::ast::ParamAst {
+                    type_ref: field_type,
+                    name: flattened_struct_name(&param.name, &path),
+                    span: param.span,
+                    type_span: param.type_span,
+                    name_span: param.name_span,
+                });
+            }
+        } else {
+            lowered.push(param.clone());
+        }
+    }
+    Ok(lowered)
+}
+
+fn lower_structs_in_contract<'i>(
+    contract: &ContractAst<'i>,
+    contract_constants: &HashMap<String, Expr<'i>>,
+) -> Result<ContractAst<'i>, CompilerError> {
+    let structs = build_struct_registry(contract)?;
+    validate_struct_graph(&structs)?;
+
+    for param in &contract.params {
+        if struct_name_from_type_ref(&param.type_ref, &structs).is_some() {
+            return Err(CompilerError::Unsupported("struct contract parameters are not supported".to_string()));
+        }
+        ensure_known_or_builtin_type(&param.type_ref, &structs, "contract parameter")?;
+    }
+    for field in &contract.fields {
+        if struct_name_from_type_ref(&field.type_ref, &structs).is_some() {
+            return Err(CompilerError::Unsupported("struct contract fields are not supported".to_string()));
+        }
+        ensure_known_or_builtin_type(&field.type_ref, &structs, "contract field")?;
+    }
+    for constant in &contract.constants {
+        if struct_name_from_type_ref(&constant.type_ref, &structs).is_some() {
+            return Err(CompilerError::Unsupported("struct constants are not supported".to_string()));
+        }
+        ensure_known_or_builtin_type(&constant.type_ref, &structs, "constant")?;
+    }
+
+    let functions = contract.functions.iter().map(|function| (function.name.clone(), function)).collect::<FunctionRegistry<'_, 'i>>();
+    let mut lowered_functions = Vec::with_capacity(contract.functions.len());
+    for function in &contract.functions {
+        let mut scope = LoweringScope::default();
+        let lowered_params = lower_params(&function.params, &mut scope, &structs)?;
+        if function.return_types.iter().any(|type_ref| struct_name_from_type_ref(type_ref, &structs).is_some()) {
+            return Err(CompilerError::Unsupported("struct return types are not supported".to_string()));
+        }
+        for type_ref in &function.return_types {
+            ensure_known_or_builtin_type(type_ref, &structs, "function return type")?;
+        }
+        let lowered_body = lower_block(&function.body, &mut scope, &structs, &functions, &contract.fields, contract_constants)?;
+        lowered_functions.push(FunctionAst {
+            name: function.name.clone(),
+            params: lowered_params,
+            entrypoint: function.entrypoint,
+            attributes: function.attributes.clone(),
+            return_types: function.return_types.clone(),
+            body: lowered_body,
+            return_type_spans: function.return_type_spans.clone(),
+            span: function.span,
+            name_span: function.name_span,
+            body_span: function.body_span,
+        });
+    }
+
+    Ok(ContractAst {
+        name: contract.name.clone(),
+        params: contract.params.clone(),
+        structs: Vec::new(),
+        fields: contract.fields.clone(),
+        constants: contract.constants.clone(),
+        functions: lowered_functions,
+        span: contract.span,
+        name_span: contract.name_span,
+    })
 }
 
 fn compile_contract_impl<'i>(
@@ -94,7 +1062,10 @@ fn compile_contract_impl<'i>(
         constants.insert(param.name.clone(), value.clone());
     }
 
-    let lowered_contract = lower_covenant_declarations(contract, &constants)?;
+    // Preserve the covenant-lowered contract for ABI generation because
+    // struct lowering flattens struct-typed parameters into primitive fields.
+    let abi_contract = lower_covenant_declarations(contract, &constants)?;
+    let lowered_contract = lower_structs_in_contract(&abi_contract, &constants)?;
 
     let entrypoint_functions: Vec<&FunctionAst<'i>> = lowered_contract.functions.iter().filter(|func| func.entrypoint).collect();
     if entrypoint_functions.is_empty() {
@@ -106,7 +1077,7 @@ fn compile_contract_impl<'i>(
     let functions_map = lowered_contract.functions.iter().cloned().map(|func| (func.name.clone(), func)).collect::<HashMap<_, _>>();
     let function_order =
         lowered_contract.functions.iter().enumerate().map(|(index, func)| (func.name.clone(), index)).collect::<HashMap<_, _>>();
-    let function_abi_entries = build_function_abi_entries(&lowered_contract);
+    let function_abi_entries = build_function_abi_entries(&abi_contract);
     let uses_script_size = contract_uses_script_size(&lowered_contract);
 
     let mut script_size = if uses_script_size { Some(100i64) } else { None };
@@ -179,9 +1150,9 @@ fn compile_contract_impl<'i>(
         let debug_info = recorder.into_debug_info(source.unwrap_or_default().to_string());
         if !uses_script_size {
             return Ok(CompiledContract {
-                contract_name: lowered_contract.name.clone(),
+                contract_name: abi_contract.name.clone(),
                 script,
-                ast: lowered_contract.clone(),
+                ast: abi_contract.clone(),
                 abi: function_abi_entries,
                 without_selector,
                 debug_info,
@@ -191,9 +1162,9 @@ fn compile_contract_impl<'i>(
         let actual_size = script.len() as i64;
         if Some(actual_size) == script_size {
             return Ok(CompiledContract {
-                contract_name: lowered_contract.name.clone(),
+                contract_name: abi_contract.name.clone(),
                 script,
-                ast: lowered_contract.clone(),
+                ast: abi_contract.clone(),
                 abi: function_abi_entries,
                 without_selector,
                 debug_info,
@@ -283,6 +1254,7 @@ fn statement_uses_script_size(stmt: &Statement<'_>) -> bool {
         Statement::FunctionCall { name, args, .. } => name == "validateOutputState" || args.iter().any(expr_uses_script_size),
         Statement::FunctionCallAssign { args, .. } => args.iter().any(expr_uses_script_size),
         Statement::StateFunctionCallAssign { name, args, .. } => name == "readInputState" || args.iter().any(expr_uses_script_size),
+        Statement::StructDestructure { expr, .. } => expr_uses_script_size(expr),
         Statement::Assign { expr, .. } => expr_uses_script_size(expr),
         Statement::TimeOp { expr, .. } => expr_uses_script_size(expr),
         Statement::Require { expr, .. } => expr_uses_script_size(expr),
@@ -320,6 +1292,7 @@ fn expr_uses_script_size<'i>(expr: &Expr<'i>) -> bool {
         ExprKind::Slice { source, start, end, .. } => {
             expr_uses_script_size(source) || expr_uses_script_size(start) || expr_uses_script_size(end)
         }
+        ExprKind::FieldAccess { source, .. } => expr_uses_script_size(source),
         ExprKind::UnarySuffix { source, .. } => expr_uses_script_size(source),
         ExprKind::ArrayIndex { source, index } => expr_uses_script_size(source) || expr_uses_script_size(index),
         ExprKind::Introspection { index, .. } => expr_uses_script_size(index),
@@ -370,6 +1343,7 @@ fn expr_matches_type_ref<'i>(expr: &Expr<'i>, type_ref: &TypeRef) -> bool {
         TypeBase::Pubkey => byte_array_len(expr) == Some(32),
         TypeBase::Sig => byte_array_len(expr) == Some(65),
         TypeBase::Datasig => byte_array_len(expr) == Some(64),
+        TypeBase::Custom(_) => false,
     }
 }
 
@@ -483,6 +1457,7 @@ fn fixed_type_size_ref(type_ref: &TypeRef) -> Option<i64> {
         TypeBase::Sig => Some(65),
         TypeBase::Datasig => Some(64),
         TypeBase::String => None,
+        TypeBase::Custom(_) => None,
     }
 }
 
@@ -589,7 +1564,9 @@ fn expr_matches_return_type_ref<'i>(
         ExprKind::Identifier(name) => {
             types.get(name).and_then(|t| parse_type_ref(t).ok()).is_some_and(|t| is_type_assignable_ref(&t, type_ref, constants))
         }
-        ExprKind::Array(values) => is_array_type_ref(type_ref) && array_literal_matches_type_ref(values, type_ref),
+        ExprKind::Array(values) => {
+            (is_array_type_ref(type_ref) && array_literal_matches_type_ref(values, type_ref)) || expr_matches_type_ref(expr, type_ref)
+        }
         ExprKind::Int(_) | ExprKind::DateLiteral(_) | ExprKind::Bool(_) | ExprKind::Byte(_) | ExprKind::String(_) => {
             expr_matches_type_ref(expr, type_ref)
         }
@@ -704,6 +1681,7 @@ fn infer_fixed_array_type_from_initializer<'i>(
 
 impl<'i> CompiledContract<'i> {
     pub fn build_sig_script(&self, function_name: &str, args: Vec<Expr<'i>>) -> Result<Vec<u8>, CompilerError> {
+        let structs = build_struct_registry(&self.ast)?;
         let function = self
             .abi
             .iter()
@@ -718,45 +1696,73 @@ impl<'i> CompiledContract<'i> {
             )));
         }
 
-        for (input, arg) in function.inputs.iter().zip(args.iter()) {
-            if !expr_matches_type(arg, &input.type_name) {
-                return Err(CompilerError::Unsupported(format!("function argument '{}' expects {}", input.name, input.type_name)));
-            }
-        }
-
         let mut builder = ScriptBuilder::new();
         for (input, arg) in function.inputs.iter().zip(args) {
-            if is_array_type(&input.type_name) {
-                let kind = arg.kind.clone();
-                match kind {
-                    ExprKind::Array(values) => {
-                        if is_byte_array(&arg) {
-                            let bytes: Vec<u8> = values
-                                .iter()
-                                .filter_map(|value| if let ExprKind::Byte(byte) = &value.kind { Some(*byte) } else { None })
-                                .collect();
-                            builder.add_data(&bytes)?;
-                        } else {
-                            let bytes = encode_array_literal(&values, &input.type_name)?;
-                            builder.add_data(&bytes)?;
-                        }
-                    }
-                    _ => {
-                        return Err(CompilerError::Unsupported(format!(
-                            "function argument '{}' expects {}",
-                            input.name, input.type_name
-                        )));
-                    }
-                }
-            } else {
-                push_sigscript_arg(&mut builder, arg)?;
-            }
+            let type_ref = parse_type_ref(&input.type_name)?;
+            push_typed_sigscript_arg(&mut builder, arg, &type_ref, &structs)
+                .map_err(|_| CompilerError::Unsupported(format!("function argument '{}' expects {}", input.name, input.type_name)))?;
         }
         if !self.without_selector {
             let selector = function_branch_index(&self.ast, function_name)?;
             builder.add_i64(selector)?;
         }
         Ok(builder.drain())
+    }
+}
+
+fn push_typed_sigscript_arg<'i>(
+    builder: &mut ScriptBuilder,
+    arg: Expr<'i>,
+    type_ref: &TypeRef,
+    structs: &StructRegistry,
+) -> Result<(), CompilerError> {
+    if let Some(struct_name) = struct_name_from_type_ref(type_ref, structs) {
+        let item = structs.get(struct_name).ok_or_else(|| CompilerError::Unsupported(format!("unknown struct '{struct_name}'")))?;
+        let ExprKind::StateObject(fields) = arg.kind else {
+            return Err(CompilerError::Unsupported("signature script struct arguments must be object literals".to_string()));
+        };
+        let mut provided = HashMap::new();
+        for field in fields {
+            if provided.insert(field.name.clone(), field.expr).is_some() {
+                return Err(CompilerError::Unsupported(format!("duplicate struct field '{}'", field.name)));
+            }
+        }
+        for field in &item.fields {
+            let value = provided
+                .remove(&field.name)
+                .ok_or_else(|| CompilerError::Unsupported(format!("struct field '{}' must be initialized", field.name)))?;
+            push_typed_sigscript_arg(builder, value, &field.type_ref, structs)?;
+        }
+        if let Some(extra) = provided.keys().next() {
+            return Err(CompilerError::Unsupported(format!("unknown struct field '{}'", extra)));
+        }
+        return Ok(());
+    }
+
+    if !expr_matches_type_ref(&arg, type_ref) {
+        return Err(CompilerError::Unsupported("signature script arguments must match the declared type".to_string()));
+    }
+
+    let type_name = type_name_from_ref(type_ref);
+    if is_array_type(&type_name) {
+        match &arg.kind {
+            ExprKind::Array(values) => {
+                if is_byte_array(&arg) {
+                    let bytes: Vec<u8> = values
+                        .iter()
+                        .filter_map(|value| if let ExprKind::Byte(byte) = &value.kind { Some(*byte) } else { None })
+                        .collect();
+                    builder.add_data(&bytes)?;
+                } else {
+                    let bytes = encode_array_literal(values, &type_name)?;
+                    builder.add_data(&bytes)?;
+                }
+                Ok(())
+            }
+            _ => Err(CompilerError::Unsupported("signature script arguments must be literals".to_string())),
+        }
+    } else {
+        push_sigscript_arg(builder, arg)
     }
 }
 
@@ -1185,6 +2191,10 @@ fn compile_statement<'i>(
             } else {
                 let expr =
                     expr.clone().ok_or_else(|| CompilerError::Unsupported("variable definition requires initializer".to_string()))?;
+                let expected_type_ref = parse_type_ref(&effective_type_name)?;
+                if !expr_matches_return_type_ref(&expr, &expected_type_ref, types, contract_constants) {
+                    return Err(CompilerError::Unsupported(format!("variable '{}' expects {}", name, effective_type_name)));
+                }
                 env.insert(name.clone(), expr);
                 types.insert(name.clone(), effective_type_name.clone());
                 Ok(())
@@ -1408,6 +2418,9 @@ fn compile_statement<'i>(
                 name
             )))
         }
+        Statement::StructDestructure { .. } => {
+            Err(CompilerError::Unsupported("struct destructuring should be lowered before compilation".to_string()))
+        }
         Statement::FunctionCallAssign { bindings, name, args, .. } => {
             let function = functions.get(name).ok_or_else(|| CompilerError::Unsupported(format!("function '{}' not found", name)))?;
             if function.return_types.is_empty() {
@@ -1468,6 +2481,10 @@ fn compile_statement<'i>(
                             return Err(CompilerError::Unsupported("array assignment only supports array identifiers".to_string()));
                         }
                     }
+                }
+                let expected_type_ref = parse_type_ref(type_name)?;
+                if !expr_matches_return_type_ref(expr, &expected_type_ref, types, contract_constants) {
+                    return Err(CompilerError::Unsupported(format!("variable '{}' expects {}", name, type_name)));
                 }
             }
             let updated = if let Some(previous) = env.get(name) { replace_identifier(expr, name, previous) } else { expr.clone() };
@@ -2380,6 +3397,9 @@ fn resolve_expr<'i>(
             }
             Ok(Expr::new(ExprKind::StateObject(resolved_fields), span))
         }
+        ExprKind::FieldAccess { source, field, field_span } => {
+            Ok(Expr::new(ExprKind::FieldAccess { source: Box::new(resolve_expr(*source, env, visiting)?), field, field_span }, span))
+        }
         ExprKind::Call { name, args, name_span } => {
             let mut resolved = Vec::with_capacity(args.len());
             for arg in args {
@@ -2465,6 +3485,14 @@ fn replace_identifier<'i>(expr: &Expr<'i>, target: &str, replacement: &Expr<'i>)
                     })
                     .collect(),
             ),
+            span,
+        ),
+        ExprKind::FieldAccess { source, field, field_span } => Expr::new(
+            ExprKind::FieldAccess {
+                source: Box::new(replace_identifier(source, target, replacement)),
+                field: field.clone(),
+                field_span: *field_span,
+            },
             span,
         ),
         ExprKind::Call { name, args, name_span } => Expr::new(
@@ -2593,6 +3621,9 @@ fn compile_expr<'i>(
         }
         ExprKind::StateObject(_) => {
             Err(CompilerError::Unsupported("state object literals are only supported in validateOutputState".to_string()))
+        }
+        ExprKind::FieldAccess { .. } => {
+            Err(CompilerError::Unsupported("struct field access should be lowered before compilation".to_string()))
         }
         ExprKind::String(value) => {
             builder.add_data(value.as_bytes())?;
@@ -3158,6 +4189,8 @@ fn compile_length_expr<'i>(
     }
     compile_expr(expr, env, params, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
     builder.add_op(OpSize)?;
+    builder.add_op(OpSwap)?;
+    builder.add_op(OpDrop)?;
     Ok(())
 }
 

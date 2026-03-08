@@ -2,7 +2,7 @@ use std::fmt;
 
 use chrono::NaiveDateTime;
 use pest::iterators::Pair;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::errors::CompilerError;
 use crate::parser::{Rule, parse_source_file, parse_type_name as parse_type_name_rule};
@@ -21,11 +21,35 @@ pub struct ContractAst<'i> {
     pub name: String,
     pub params: Vec<ParamAst<'i>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub structs: Vec<StructAst<'i>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fields: Vec<ContractFieldAst<'i>>,
     pub constants: Vec<ConstantAst<'i>>,
     pub functions: Vec<FunctionAst<'i>>,
     #[serde(skip_deserializing)]
     pub span: Span<'i>,
+    #[serde(skip_deserializing)]
+    pub name_span: Span<'i>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StructAst<'i> {
+    pub name: String,
+    pub fields: Vec<StructFieldAst<'i>>,
+    #[serde(skip_deserializing)]
+    pub span: Span<'i>,
+    #[serde(skip_deserializing)]
+    pub name_span: Span<'i>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StructFieldAst<'i> {
+    pub type_ref: TypeRef,
+    pub name: String,
+    #[serde(skip_deserializing)]
+    pub span: Span<'i>,
+    #[serde(skip_deserializing)]
+    pub type_span: Span<'i>,
     #[serde(skip_deserializing)]
     pub name_span: Span<'i>,
 }
@@ -131,8 +155,7 @@ pub struct TypeRef {
     pub array_dims: Vec<ArrayDim>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TypeBase {
     Int,
     Bool,
@@ -141,10 +164,11 @@ pub enum TypeBase {
     Sig,
     Datasig,
     Byte,
+    Custom(String),
 }
 
 impl TypeBase {
-    pub fn as_str(&self) -> &'static str {
+    pub fn as_str(&self) -> &str {
         match self {
             TypeBase::Int => "int",
             TypeBase::Bool => "bool",
@@ -153,7 +177,36 @@ impl TypeBase {
             TypeBase::Sig => "sig",
             TypeBase::Datasig => "datasig",
             TypeBase::Byte => "byte",
+            TypeBase::Custom(name) => name,
         }
+    }
+}
+
+impl Serialize for TypeBase {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for TypeBase {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Ok(match value.as_str() {
+            "int" => TypeBase::Int,
+            "bool" => TypeBase::Bool,
+            "string" => TypeBase::String,
+            "pubkey" => TypeBase::Pubkey,
+            "sig" => TypeBase::Sig,
+            "datasig" => TypeBase::Datasig,
+            "byte" => TypeBase::Byte,
+            other => TypeBase::Custom(other.to_string()),
+        })
     }
 }
 
@@ -265,6 +318,12 @@ pub enum Statement<'i> {
         #[serde(skip_deserializing)]
         name_span: Span<'i>,
     },
+    StructDestructure {
+        bindings: Vec<StateBindingAst<'i>>,
+        expr: Expr<'i>,
+        #[serde(skip_deserializing)]
+        span: Span<'i>,
+    },
     Assign {
         name: String,
         expr: Expr<'i>,
@@ -341,6 +400,7 @@ impl<'i> Statement<'i> {
             | Statement::FunctionCall { span, .. }
             | Statement::FunctionCallAssign { span, .. }
             | Statement::StateFunctionCallAssign { span, .. }
+            | Statement::StructDestructure { span, .. }
             | Statement::Assign { span, .. }
             | Statement::Return { span, .. }
             | Statement::TimeOp { span, .. }
@@ -524,6 +584,12 @@ pub enum ExprKind<'i> {
         field_span: Span<'i>,
     },
     StateObject(Vec<StateFieldExpr<'i>>),
+    FieldAccess {
+        source: Box<Expr<'i>>,
+        field: String,
+        #[serde(skip_deserializing)]
+        field_span: Span<'i>,
+    },
     NumberWithUnit {
         value: i64,
         unit: String,
@@ -632,6 +698,7 @@ pub enum UnarySuffixKind {
 
 #[derive(Clone, Copy)]
 enum ContractItemRef<'a, 'i> {
+    Struct(&'a StructAst<'i>),
     Field(&'a ContractFieldAst<'i>),
     Constant(&'a ConstantAst<'i>),
     Function(&'a FunctionAst<'i>),
@@ -666,6 +733,7 @@ impl SourceFormatter {
 
     fn write_contract_item(&mut self, item: ContractItemRef<'_, '_>) {
         match item {
+            ContractItemRef::Struct(item) => self.write_struct(item),
             ContractItemRef::Field(field) => {
                 self.line(&format!("{} {} = {};", field.type_ref.type_name(), field.name, format_expr(&field.expr)));
             }
@@ -674,6 +742,16 @@ impl SourceFormatter {
             }
             ContractItemRef::Function(function) => self.write_function(function),
         }
+    }
+
+    fn write_struct(&mut self, item: &StructAst<'_>) {
+        self.line(&format!("struct {} {{", item.name));
+        self.indent += 1;
+        for field in &item.fields {
+            self.line(&format!("{} {};", field.type_ref.type_name(), field.name));
+        }
+        self.indent = self.indent.saturating_sub(1);
+        self.line("}");
     }
 
     fn write_function(&mut self, function: &FunctionAst<'_>) {
@@ -730,6 +808,9 @@ impl SourceFormatter {
             }
             Statement::StateFunctionCallAssign { bindings, name, args, .. } => {
                 self.line(&format!("{{{}}} = {}({});", format_state_bindings(bindings), name, format_expr_list(args)));
+            }
+            Statement::StructDestructure { bindings, expr, .. } => {
+                self.line(&format!("{{{}}} = {};", format_state_bindings(bindings), format_expr(expr)));
             }
             Statement::Assign { name, expr, .. } => {
                 self.line(&format!("{} = {};", name, format_expr(expr)));
@@ -797,11 +878,16 @@ impl SourceFormatter {
 }
 
 fn ordered_contract_items<'a, 'i>(contract: &'a ContractAst<'i>) -> Vec<ContractItemRef<'a, 'i>> {
-    let has_real_spans = contract.fields.iter().any(|field| !field.span.is_empty())
+    let has_real_spans = contract.structs.iter().any(|item| !item.span.is_empty())
+        || contract.fields.iter().any(|field| !field.span.is_empty())
         || contract.constants.iter().any(|constant| !constant.span.is_empty())
         || contract.functions.iter().any(|function| !function.span.is_empty());
 
-    let mut items = Vec::with_capacity(contract.fields.len() + contract.constants.len() + contract.functions.len());
+    let mut items =
+        Vec::with_capacity(contract.structs.len() + contract.fields.len() + contract.constants.len() + contract.functions.len());
+    for item in &contract.structs {
+        items.push((item.span.start(), ContractItemRef::Struct(item)));
+    }
     for field in &contract.fields {
         items.push((field.span.start(), ContractItemRef::Field(field)));
     }
@@ -893,6 +979,9 @@ fn format_expr_with_prec(expr: &Expr<'_>, parent_prec: u8, right_child: bool) ->
             format!("{}[{}]{}", introspection_root(*kind), format_expr(index), introspection_field(*kind))
         }
         ExprKind::StateObject(fields) => format_state_object(fields),
+        ExprKind::FieldAccess { source, field, .. } => {
+            format!("{}.{}", format_expr_with_prec(source, PREC_POSTFIX, false), field)
+        }
         ExprKind::NumberWithUnit { value, unit } => format!("{value}{unit}"),
         ExprKind::UnarySuffix { source, kind, .. } => {
             format!("{}{}", format_expr_with_prec(source, PREC_POSTFIX, false), unary_suffix_str(*kind))
@@ -959,6 +1048,7 @@ fn expr_precedence(kind: &ExprKind<'_>) -> u8 {
         | ExprKind::Split { .. }
         | ExprKind::Slice { .. }
         | ExprKind::ArrayIndex { .. }
+        | ExprKind::FieldAccess { .. }
         | ExprKind::UnarySuffix { .. }
         | ExprKind::Introspection { .. } => PREC_POSTFIX,
         _ => 12,
@@ -1070,7 +1160,7 @@ fn parse_type_name_pair(pair: Pair<'_, Rule>) -> Result<TypeRef, CompilerError> 
         "sig" => TypeBase::Sig,
         "datasig" => TypeBase::Datasig,
         "byte" => TypeBase::Byte,
-        other => return Err(CompilerError::Unsupported(format!("unknown base type: {other}"))),
+        other => TypeBase::Custom(other.to_string()),
     };
 
     let mut array_dims = Vec::new();
@@ -1120,6 +1210,7 @@ fn parse_contract_definition<'i>(pair: Pair<'i, Rule>) -> Result<ContractAst<'i>
     let Identifier { name, span: name_span } = parse_identifier(name_pair)?;
     let params = parse_typed_parameter_list(params_pair)?;
 
+    let mut structs = Vec::new();
     let mut functions = Vec::new();
     let mut fields = Vec::new();
     let mut constants = Vec::new();
@@ -1131,6 +1222,7 @@ fn parse_contract_definition<'i>(pair: Pair<'i, Rule>) -> Result<ContractAst<'i>
         let mut item_inner = item_pair.into_inner();
         if let Some(inner_item) = item_inner.next() {
             match inner_item.as_rule() {
+                Rule::struct_definition => structs.push(parse_struct_definition(inner_item)?),
                 Rule::function_definition => functions.push(parse_function_definition(inner_item)?),
                 Rule::contract_field_definition => fields.push(parse_contract_field_definition(inner_item)?),
                 Rule::constant_definition => constants.push(parse_constant_definition(inner_item)?),
@@ -1139,7 +1231,32 @@ fn parse_contract_definition<'i>(pair: Pair<'i, Rule>) -> Result<ContractAst<'i>
         }
     }
 
-    Ok(ContractAst { name, params, fields, constants, functions, span, name_span })
+    Ok(ContractAst { name, params, structs, fields, constants, functions, span, name_span })
+}
+
+fn parse_struct_definition<'i>(pair: Pair<'i, Rule>) -> Result<StructAst<'i>, CompilerError> {
+    let span = Span::from(pair.as_span());
+    let mut inner = pair.into_inner();
+    let name_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing struct name".to_string()))?;
+    let Identifier { name, span: name_span } = parse_identifier(name_pair)?;
+    let mut fields = Vec::new();
+    for field_pair in inner {
+        if field_pair.as_rule() == Rule::struct_field_definition {
+            fields.push(parse_struct_field_definition(field_pair)?);
+        }
+    }
+    Ok(StructAst { name, fields, span, name_span })
+}
+
+fn parse_struct_field_definition<'i>(pair: Pair<'i, Rule>) -> Result<StructFieldAst<'i>, CompilerError> {
+    let span = Span::from(pair.as_span());
+    let mut inner = pair.into_inner();
+    let type_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing struct field type".to_string()))?;
+    let type_span = Span::from(type_pair.as_span());
+    let type_ref = parse_type_name_pair(type_pair)?;
+    let name_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing struct field name".to_string()))?;
+    let Identifier { name, span: name_span } = parse_identifier(name_pair)?;
+    Ok(StructFieldAst { type_ref, name, span, type_span, name_span })
 }
 
 fn parse_function_definition<'i>(pair: Pair<'i, Rule>) -> Result<FunctionAst<'i>, CompilerError> {
@@ -1408,6 +1525,22 @@ fn parse_statement<'i>(pair: Pair<'i, Rule>) -> Result<Statement<'i>, CompilerEr
                 parse_function_call_parts(call_pair).map_err(|err| err.with_span(&span))?;
             Ok(Statement::StateFunctionCallAssign { bindings, name, args, span, name_span })
         }
+        Rule::struct_destructure_assignment => {
+            let mut inner = pair.into_inner();
+            let mut bindings = Vec::new();
+            while let Some(p) = inner.peek() {
+                if p.as_rule() != Rule::state_typed_binding {
+                    break;
+                }
+                let binding = inner.next().expect("checked");
+                bindings.push(parse_state_typed_binding(binding).map_err(|err| err.with_span(&span))?);
+            }
+            let expr_pair = inner
+                .next()
+                .ok_or_else(|| CompilerError::Unsupported("missing destructuring expression".to_string()).with_span(&span))?;
+            let expr = parse_expression(expr_pair).map_err(|err| err.with_span(&span))?;
+            Ok(Statement::StructDestructure { bindings, expr, span })
+        }
         Rule::call_statement => {
             let mut inner = pair.into_inner();
             let call_pair =
@@ -1629,7 +1762,8 @@ fn parse_expression<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError>
         Rule::instantiation => parse_instantiation(pair),
         Rule::cast => parse_cast(pair),
         Rule::state_object => parse_state_object(pair),
-        Rule::split_call
+        Rule::field_access
+        | Rule::split_call
         | Rule::slice_call
         | Rule::tuple_index
         | Rule::unary_suffix
@@ -1719,12 +1853,34 @@ fn parse_postfix<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {
                 let span = expr.span.join(&postfix_span);
                 expr = Expr::new(ExprKind::UnarySuffix { source: Box::new(expr), kind, span: postfix_span }, span);
             }
+            Rule::field_access => {
+                if matches!(&expr.kind, ExprKind::Introspection { .. }) || expr_root_identifier(&expr).as_deref() == Some("tx") {
+                    return Err(CompilerError::Unsupported("field access on transaction introspection is not supported".to_string()));
+                }
+                let field_pair =
+                    postfix.into_inner().next().ok_or_else(|| CompilerError::Unsupported("missing field access name".to_string()))?;
+                let Identifier { name: field, span: field_span } = parse_identifier(field_pair)?;
+                let span = expr.span.join(&postfix_span);
+                expr = Expr::new(ExprKind::FieldAccess { source: Box::new(expr), field, field_span }, span);
+            }
             _ => {
                 return Err(CompilerError::Unsupported("postfix operators are not supported".to_string()));
             }
         }
     }
     Ok(expr)
+}
+
+fn expr_root_identifier(expr: &Expr<'_>) -> Option<String> {
+    match &expr.kind {
+        ExprKind::Identifier(name) => Some(name.clone()),
+        ExprKind::FieldAccess { source, .. }
+        | ExprKind::ArrayIndex { source, .. }
+        | ExprKind::UnarySuffix { source, .. }
+        | ExprKind::Split { source, .. }
+        | ExprKind::Slice { source, .. } => expr_root_identifier(source),
+        _ => None,
+    }
 }
 
 fn parse_typed_parameter_list<'i>(pair: Pair<'i, Rule>) -> Result<Vec<ParamAst<'i>>, CompilerError> {

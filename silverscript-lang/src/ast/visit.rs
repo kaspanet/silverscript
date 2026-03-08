@@ -235,6 +235,13 @@ pub fn walk_statement_mut<'i, V: AstVisitorMut<'i> + ?Sized>(visitor: &mut V, st
                 visitor.visit_expr(arg);
             }
         }
+        Statement::StructDestructure { bindings, expr, span } => {
+            visitor.visit_span(span);
+            for binding in bindings {
+                visitor.visit_state_binding(binding);
+            }
+            visitor.visit_expr(expr);
+        }
         Statement::Assign { name, expr, span, name_span } => {
             visitor.visit_span(span);
             visitor.visit_span(name_span);
@@ -370,6 +377,11 @@ pub fn walk_expr_mut<'i, V: AstVisitorMut<'i> + ?Sized>(visitor: &mut V, expr: &
                 visitor.visit_span(&mut field.name_span);
                 visitor.visit_expr(&mut field.expr);
             }
+        }
+        ExprKind::FieldAccess { source, field, field_span } => {
+            visitor.visit_expr(source);
+            visitor.visit_name(field, NameKind::StateField);
+            visitor.visit_span(field_span);
         }
         ExprKind::Int(_)
         | ExprKind::Bool(_)

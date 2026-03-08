@@ -7,7 +7,9 @@ version_constraint = { version_operator? ~ VersionLiteral }
 version_operator = { "^" | "~" | ">=" | ">" | "<" | "<=" | "=" }
 
 contract_definition = { "contract" ~ Identifier ~ parameter_list ~ "{" ~ contract_item* ~ "}" }
-contract_item = { constant_definition | contract_field_definition | function_definition }
+contract_item = { struct_definition | constant_definition | contract_field_definition | function_definition }
+struct_definition = { "struct" ~ Identifier ~ "{" ~ struct_field_definition* ~ "}" }
+struct_field_definition = { type_name ~ Identifier ~ ";" }
 entrypoint = { "entrypoint" }
 function_definition = { function_attribute* ~ entrypoint? ~ "function" ~ Identifier ~ parameter_list ~ return_type_list? ~ "{" ~ statement* ~ "}" }
 function_attribute = { "#[" ~ attribute_path ~ attribute_args? ~ "]" }
@@ -29,6 +31,7 @@ statement = _{
     | tuple_assignment
     | push_statement
     | state_function_call_assignment
+    | struct_destructure_assignment
     | function_call_assignment
     | call_statement
     | return_statement
@@ -46,6 +49,7 @@ tuple_assignment = { type_name ~ Identifier ~ "," ~ type_name ~ Identifier ~ "="
 push_statement = { Identifier ~ ".push" ~ "(" ~ expression ~ ")" ~ ";" }
 function_call_assignment = { "(" ~ typed_binding ~ ("," ~ typed_binding)* ~ ","? ~ ")" ~ "=" ~ function_call ~ ";" }
 state_function_call_assignment = { "{" ~ state_typed_binding ~ ("," ~ state_typed_binding)* ~ ","? ~ "}" ~ "=" ~ function_call ~ ";" }
+struct_destructure_assignment = { "{" ~ state_typed_binding ~ ("," ~ state_typed_binding)* ~ ","? ~ "}" ~ "=" ~ expression ~ ";" }
 typed_binding = { type_name ~ Identifier }
 state_typed_binding = { Identifier ~ ":" ~ type_name ~ Identifier }
 call_statement = { function_call ~ ";" }
@@ -96,12 +100,13 @@ unary = { unary_op* ~ postfix }
 unary_op = { "!" | "-" }
 
 postfix = { primary ~ postfix_op* }
-postfix_op = _{ tuple_index | unary_suffix | split_call | slice_call }
+postfix_op = _{ tuple_index | unary_suffix | split_call | slice_call | field_access }
 
 tuple_index = { "[" ~ expression ~ "]" }
 unary_suffix = { "." ~ "length" }
 split_call = { ".split" ~ "(" ~ expression ~ ")" }
 slice_call = { ".slice" ~ "(" ~ expression ~ "," ~ expression ~ ")" }
+field_access = { "." ~ Identifier }
 
 primary = _{
     parenthesized
@@ -120,7 +125,8 @@ state_object = { "{" ~ (state_entry ~ ("," ~ state_entry)* ~ ","?)? ~ "}" }
 state_entry = { Identifier ~ ":" ~ expression }
 
 parenthesized = { "(" ~ expression ~ ")" }
-cast = { type_name ~ "(" ~ expression ~ ("," ~ expression)? ~ ","? ~ ")" }
+cast = { cast_type_name ~ "(" ~ expression ~ ("," ~ expression)? ~ ","? ~ ")" }
+cast_type_name = { builtin_type ~ array_suffix* }
 instantiation = { "new" ~ Identifier ~ expression_list }
 
 introspection = {
@@ -139,7 +145,8 @@ literal = { BooleanLiteral | HexLiteral | number_literal | StringLiteral | DateL
 number_literal = { NumberLiteral ~ NumberUnit? }
 
 type_name = { base_type ~ array_suffix* }
-base_type = { "int" | "bool" | "string" | "pubkey" | "sig" | "datasig" | "byte" }
+base_type = { builtin_type | Identifier }
+builtin_type = { "int" | "bool" | "string" | "pubkey" | "sig" | "datasig" | "byte" }
 array_suffix = { "[" ~ array_size? ~ "]" }
 array_size = { Identifier | (ASCII_NONZERO_DIGIT ~ ASCII_DIGIT*) }
 
@@ -179,7 +186,7 @@ Identifier = @{ !keyword_boundary ~ ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "_")* }
 keyword_boundary = { keyword ~ !(ASCII_ALPHANUMERIC | "_") }
 
 keyword = {
-    "pragma" | "silverscript" | "contract" | "entrypoint" | "function" | "if" | "else" | "require" | "for" | "yield" | "return"
+    "pragma" | "silverscript" | "contract" | "struct" | "entrypoint" | "function" | "if" | "else" | "require" | "for" | "yield" | "return"
     | "console.log" | "new" | "true" | "false" | "constant" | "date"
     | "int" | "bool" | "string" | "pubkey" | "sig" | "datasig" | "byte"
     | "this.age" | "tx.time" | "this.activeInputIndex" | "this.activeScriptPubKey" | "this.scriptSizeDataPrefix" | "this.scriptSize"
