@@ -37,6 +37,12 @@ impl<'i> fmt::Display for ContractAst<'i> {
     }
 }
 
+pub fn format_contract_ast(contract: &ContractAst<'_>) -> String {
+    let mut formatter = SourceFormatter::default();
+    formatter.write_contract(contract);
+    formatter.finish()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContractFieldAst<'i> {
     pub type_ref: TypeRef,
@@ -622,6 +628,426 @@ pub struct ConstantAst<'i> {
 pub enum UnarySuffixKind {
     Reverse,
     Length,
+}
+
+#[derive(Clone, Copy)]
+enum ContractItemRef<'a, 'i> {
+    Field(&'a ContractFieldAst<'i>),
+    Constant(&'a ConstantAst<'i>),
+    Function(&'a FunctionAst<'i>),
+}
+
+#[derive(Default)]
+struct SourceFormatter {
+    out: String,
+    indent: usize,
+}
+
+impl SourceFormatter {
+    fn finish(self) -> String {
+        self.out
+    }
+
+    fn write_contract(&mut self, contract: &ContractAst<'_>) {
+        self.line(&format!("contract {}({}) {{", contract.name, format_params(&contract.params)));
+        self.indent += 1;
+
+        let items = ordered_contract_items(contract);
+        for (index, item) in items.into_iter().enumerate() {
+            if index > 0 {
+                self.out.push('\n');
+            }
+            self.write_contract_item(item);
+        }
+
+        self.indent = self.indent.saturating_sub(1);
+        self.line("}");
+    }
+
+    fn write_contract_item(&mut self, item: ContractItemRef<'_, '_>) {
+        match item {
+            ContractItemRef::Field(field) => {
+                self.line(&format!("{} {} = {};", field.type_ref.type_name(), field.name, format_expr(&field.expr)));
+            }
+            ContractItemRef::Constant(constant) => {
+                self.line(&format!("{} constant {} = {};", constant.type_ref.type_name(), constant.name, format_expr(&constant.expr)));
+            }
+            ContractItemRef::Function(function) => self.write_function(function),
+        }
+    }
+
+    fn write_function(&mut self, function: &FunctionAst<'_>) {
+        let mut signature = String::new();
+        if function.entrypoint {
+            signature.push_str("entrypoint ");
+        }
+        signature.push_str("function ");
+        signature.push_str(&function.name);
+        signature.push('(');
+        signature.push_str(&format_params(&function.params));
+        signature.push(')');
+        if !function.return_types.is_empty() {
+            signature.push_str(": (");
+            signature.push_str(&function.return_types.iter().map(TypeRef::type_name).collect::<Vec<_>>().join(", "));
+            signature.push(')');
+        }
+        signature.push_str(" {");
+
+        self.line(&signature);
+        self.indent += 1;
+        for statement in &function.body {
+            self.write_statement(statement);
+        }
+        self.indent = self.indent.saturating_sub(1);
+        self.line("}");
+    }
+
+    fn write_statement(&mut self, statement: &Statement<'_>) {
+        match statement {
+            Statement::VariableDefinition { type_ref, modifiers, name, expr, .. } => {
+                let modifiers = if modifiers.is_empty() { String::new() } else { format!(" {}", modifiers.join(" ")) };
+                let expr = expr.as_ref().map(|expr| format!(" = {}", format_expr(expr))).unwrap_or_default();
+                self.line(&format!("{}{} {}{};", type_ref.type_name(), modifiers, name, expr));
+            }
+            Statement::TupleAssignment { left_type_ref, left_name, right_type_ref, right_name, expr, .. } => {
+                self.line(&format!(
+                    "{} {}, {} {} = {};",
+                    left_type_ref.type_name(),
+                    left_name,
+                    right_type_ref.type_name(),
+                    right_name,
+                    format_expr(expr)
+                ));
+            }
+            Statement::ArrayPush { name, expr, .. } => {
+                self.line(&format!("{}.push({});", name, format_expr(expr)));
+            }
+            Statement::FunctionCall { name, args, .. } => {
+                self.line(&format!("{}({});", name, format_expr_list(args)));
+            }
+            Statement::FunctionCallAssign { bindings, name, args, .. } => {
+                self.line(&format!("({}) = {}({});", format_params(bindings), name, format_expr_list(args)));
+            }
+            Statement::StateFunctionCallAssign { bindings, name, args, .. } => {
+                self.line(&format!("{{{}}} = {}({});", format_state_bindings(bindings), name, format_expr_list(args)));
+            }
+            Statement::Assign { name, expr, .. } => {
+                self.line(&format!("{} = {};", name, format_expr(expr)));
+            }
+            Statement::TimeOp { tx_var, expr, message, .. } => {
+                let message = message.as_ref().map(|message| format!(", {}", format_string_literal(message))).unwrap_or_default();
+                self.line(&format!("require({} >= {}{});", format_time_var(*tx_var), format_expr(expr), message));
+            }
+            Statement::Require { expr, message, .. } => {
+                let message = message.as_ref().map(|message| format!(", {}", format_string_literal(message))).unwrap_or_default();
+                self.line(&format!("require({}{});", format_expr(expr), message));
+            }
+            Statement::If { condition, then_branch, else_branch, .. } => {
+                self.line(&format!("if ({}) {{", format_expr(condition)));
+                self.indent += 1;
+                for statement in then_branch {
+                    self.write_statement(statement);
+                }
+                self.indent = self.indent.saturating_sub(1);
+
+                if let Some(else_branch) = else_branch {
+                    self.indented_raw("} else {\n");
+                    self.indent += 1;
+                    for statement in else_branch {
+                        self.write_statement(statement);
+                    }
+                    self.indent = self.indent.saturating_sub(1);
+                    self.line("}");
+                } else {
+                    self.line("}");
+                }
+            }
+            Statement::For { ident, start, end, body, .. } => {
+                self.line(&format!("for ({}, {}, {}) {{", ident, format_expr(start), format_expr(end)));
+                self.indent += 1;
+                for statement in body {
+                    self.write_statement(statement);
+                }
+                self.indent = self.indent.saturating_sub(1);
+                self.line("}");
+            }
+            Statement::Yield { expr, .. } => {
+                self.line(&format!("yield({});", format_expr(expr)));
+            }
+            Statement::Return { exprs, .. } => {
+                self.line(&format!("return({});", format_expr_list(exprs)));
+            }
+            Statement::Console { args, .. } => {
+                self.line(&format!("console.log({});", format_console_args(args)));
+            }
+        }
+    }
+
+    fn line(&mut self, content: &str) {
+        self.indented_raw(content);
+        self.out.push('\n');
+    }
+
+    fn indented_raw(&mut self, content: &str) {
+        for _ in 0..self.indent {
+            self.out.push_str("    ");
+        }
+        self.out.push_str(content);
+    }
+}
+
+fn ordered_contract_items<'a, 'i>(contract: &'a ContractAst<'i>) -> Vec<ContractItemRef<'a, 'i>> {
+    let has_real_spans = contract.fields.iter().any(|field| !field.span.is_empty())
+        || contract.constants.iter().any(|constant| !constant.span.is_empty())
+        || contract.functions.iter().any(|function| !function.span.is_empty());
+
+    let mut items = Vec::with_capacity(contract.fields.len() + contract.constants.len() + contract.functions.len());
+    for field in &contract.fields {
+        items.push((field.span.start(), ContractItemRef::Field(field)));
+    }
+    for constant in &contract.constants {
+        items.push((constant.span.start(), ContractItemRef::Constant(constant)));
+    }
+    for function in &contract.functions {
+        items.push((function.span.start(), ContractItemRef::Function(function)));
+    }
+
+    if has_real_spans {
+        items.sort_by_key(|(start, _)| *start);
+    }
+
+    items.into_iter().map(|(_, item)| item).collect()
+}
+
+fn format_params(params: &[ParamAst<'_>]) -> String {
+    params.iter().map(|param| format!("{} {}", param.type_ref.type_name(), param.name)).collect::<Vec<_>>().join(", ")
+}
+
+fn format_state_bindings(bindings: &[StateBindingAst<'_>]) -> String {
+    bindings
+        .iter()
+        .map(|binding| format!("{}: {} {}", binding.field_name, binding.type_ref.type_name(), binding.name))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn format_console_args(args: &[ConsoleArg<'_>]) -> String {
+    args.iter()
+        .map(|arg| match arg {
+            ConsoleArg::Identifier(name, _) => name.clone(),
+            ConsoleArg::Literal(expr) => format_expr(expr),
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn format_expr_list(exprs: &[Expr<'_>]) -> String {
+    exprs.iter().map(format_expr).collect::<Vec<_>>().join(", ")
+}
+
+fn format_expr(expr: &Expr<'_>) -> String {
+    format_expr_with_prec(expr, 0, false)
+}
+
+fn format_expr_with_prec(expr: &Expr<'_>, parent_prec: u8, right_child: bool) -> String {
+    let prec = expr_precedence(&expr.kind);
+    let rendered = match &expr.kind {
+        ExprKind::Int(value) => value.to_string(),
+        ExprKind::Bool(value) => value.to_string(),
+        ExprKind::Byte(value) => format!("0x{value:02x}"),
+        ExprKind::String(value) => format_string_literal(value),
+        ExprKind::DateLiteral(value) => value.to_string(),
+        ExprKind::Identifier(value) => value.clone(),
+        ExprKind::Array(items) => format_array(items),
+        ExprKind::Call { name, args, .. } => format!("{}({})", name, format_expr_list(args)),
+        ExprKind::New { name, args, .. } => format!("new {}({})", name, format_expr_list(args)),
+        ExprKind::Split { source, index, part, .. } => {
+            format!(
+                "{}.split({})[{}]",
+                format_expr_with_prec(source, PREC_POSTFIX, false),
+                format_expr(index),
+                match part {
+                    SplitPart::Left => 0,
+                    SplitPart::Right => 1,
+                }
+            )
+        }
+        ExprKind::Slice { source, start, end, .. } => {
+            format!("{}.slice({}, {})", format_expr_with_prec(source, PREC_POSTFIX, false), format_expr(start), format_expr(end))
+        }
+        ExprKind::ArrayIndex { source, index } => {
+            format!("{}[{}]", format_expr_with_prec(source, PREC_POSTFIX, false), format_expr(index))
+        }
+        ExprKind::Unary { op, expr } => format!("{}{}", unary_op_str(*op), format_expr_with_prec(expr, PREC_UNARY, false)),
+        ExprKind::Binary { op, left, right } => format!(
+            "{} {} {}",
+            format_expr_with_prec(left, binary_precedence(*op), false),
+            binary_op_str(*op),
+            format_expr_with_prec(right, binary_precedence(*op), true)
+        ),
+        ExprKind::IfElse { condition, then_expr, else_expr } => {
+            format!("ifElse({}, {}, {})", format_expr(condition), format_expr(then_expr), format_expr(else_expr))
+        }
+        ExprKind::Nullary(op) => nullary_op_str(*op).to_string(),
+        ExprKind::Introspection { kind, index, .. } => {
+            format!("{}[{}]{}", introspection_root(*kind), format_expr(index), introspection_field(*kind))
+        }
+        ExprKind::StateObject(fields) => format_state_object(fields),
+        ExprKind::NumberWithUnit { value, unit } => format!("{value}{unit}"),
+        ExprKind::UnarySuffix { source, kind, .. } => {
+            format!("{}{}", format_expr_with_prec(source, PREC_POSTFIX, false), unary_suffix_str(*kind))
+        }
+    };
+
+    if prec < parent_prec || (right_child && prec == parent_prec) { format!("({rendered})") } else { rendered }
+}
+
+fn format_array(items: &[Expr<'_>]) -> String {
+    if let Some(bytes) = try_format_byte_array(items) {
+        let mut hex = String::from("0x");
+        for byte in bytes {
+            hex.push_str(&format!("{byte:02x}"));
+        }
+        return hex;
+    }
+
+    format!("[{}]", format_expr_list(items))
+}
+
+fn try_format_byte_array(items: &[Expr<'_>]) -> Option<Vec<u8>> {
+    items
+        .iter()
+        .map(|item| match item.kind {
+            ExprKind::Byte(byte) => Some(byte),
+            _ => None,
+        })
+        .collect()
+}
+
+fn format_state_object(fields: &[StateFieldExpr<'_>]) -> String {
+    let fields = fields.iter().map(|field| format!("{}: {}", field.name, format_expr(&field.expr))).collect::<Vec<_>>().join(", ");
+    format!("{{{fields}}}")
+}
+
+fn format_string_literal(value: &str) -> String {
+    if !value.contains('"') {
+        return format!("\"{value}\"");
+    }
+    if !value.contains('\'') {
+        return format!("'{value}'");
+    }
+    format!("\"{}\"", value.replace('"', "\\\""))
+}
+
+fn format_time_var(var: TimeVar) -> &'static str {
+    match var {
+        TimeVar::ThisAge => "this.age",
+        TimeVar::TxTime => "tx.time",
+    }
+}
+
+const PREC_POSTFIX: u8 = 11;
+const PREC_UNARY: u8 = 10;
+
+fn expr_precedence(kind: &ExprKind<'_>) -> u8 {
+    match kind {
+        ExprKind::IfElse { .. } => 1,
+        ExprKind::Binary { op, .. } => binary_precedence(*op),
+        ExprKind::Unary { .. } => PREC_UNARY,
+        ExprKind::Call { .. }
+        | ExprKind::New { .. }
+        | ExprKind::Split { .. }
+        | ExprKind::Slice { .. }
+        | ExprKind::ArrayIndex { .. }
+        | ExprKind::UnarySuffix { .. }
+        | ExprKind::Introspection { .. } => PREC_POSTFIX,
+        _ => 12,
+    }
+}
+
+fn binary_precedence(op: BinaryOp) -> u8 {
+    match op {
+        BinaryOp::Or => 2,
+        BinaryOp::And => 3,
+        BinaryOp::BitOr => 4,
+        BinaryOp::BitXor => 5,
+        BinaryOp::BitAnd => 6,
+        BinaryOp::Eq | BinaryOp::Ne => 7,
+        BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge => 8,
+        BinaryOp::Add | BinaryOp::Sub => 9,
+        BinaryOp::Mul | BinaryOp::Div | BinaryOp::Mod => 10,
+    }
+}
+
+fn unary_op_str(op: UnaryOp) -> &'static str {
+    match op {
+        UnaryOp::Not => "!",
+        UnaryOp::Neg => "-",
+    }
+}
+
+fn binary_op_str(op: BinaryOp) -> &'static str {
+    match op {
+        BinaryOp::Or => "||",
+        BinaryOp::And => "&&",
+        BinaryOp::BitOr => "|",
+        BinaryOp::BitXor => "^",
+        BinaryOp::BitAnd => "&",
+        BinaryOp::Eq => "==",
+        BinaryOp::Ne => "!=",
+        BinaryOp::Lt => "<",
+        BinaryOp::Le => "<=",
+        BinaryOp::Gt => ">",
+        BinaryOp::Ge => ">=",
+        BinaryOp::Add => "+",
+        BinaryOp::Sub => "-",
+        BinaryOp::Mul => "*",
+        BinaryOp::Div => "/",
+        BinaryOp::Mod => "%",
+    }
+}
+
+fn nullary_op_str(op: NullaryOp) -> &'static str {
+    match op {
+        NullaryOp::ActiveInputIndex => "this.activeInputIndex",
+        NullaryOp::ActiveScriptPubKey => "this.activeScriptPubKey",
+        NullaryOp::ThisScriptSize => "this.scriptSize",
+        NullaryOp::ThisScriptSizeDataPrefix => "this.scriptSizeDataPrefix",
+        NullaryOp::TxInputsLength => "tx.inputs.length",
+        NullaryOp::TxOutputsLength => "tx.outputs.length",
+        NullaryOp::TxVersion => "tx.version",
+        NullaryOp::TxLockTime => "tx.locktime",
+    }
+}
+
+fn introspection_root(kind: IntrospectionKind) -> &'static str {
+    match kind {
+        IntrospectionKind::InputValue
+        | IntrospectionKind::InputScriptPubKey
+        | IntrospectionKind::InputSigScript
+        | IntrospectionKind::InputOutpointTransactionHash
+        | IntrospectionKind::InputOutpointIndex
+        | IntrospectionKind::InputSequenceNumber => "tx.inputs",
+        IntrospectionKind::OutputValue | IntrospectionKind::OutputScriptPubKey => "tx.outputs",
+    }
+}
+
+fn introspection_field(kind: IntrospectionKind) -> &'static str {
+    match kind {
+        IntrospectionKind::InputValue | IntrospectionKind::OutputValue => ".value",
+        IntrospectionKind::InputScriptPubKey | IntrospectionKind::OutputScriptPubKey => ".scriptPubKey",
+        IntrospectionKind::InputSigScript => ".sigScript",
+        IntrospectionKind::InputOutpointTransactionHash => ".outpointTransactionHash",
+        IntrospectionKind::InputOutpointIndex => ".outpointIndex",
+        IntrospectionKind::InputSequenceNumber => ".sequenceNumber",
+    }
+}
+
+fn unary_suffix_str(kind: UnarySuffixKind) -> &'static str {
+    match kind {
+        UnarySuffixKind::Reverse => ".reverse()",
+        UnarySuffixKind::Length => ".length",
+    }
 }
 
 pub fn parse_type_ref(type_name: &str) -> Result<TypeRef, CompilerError> {
