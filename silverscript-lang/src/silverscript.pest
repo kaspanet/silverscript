@@ -11,7 +11,11 @@ contract_item = { struct_definition | constant_definition | contract_field_defin
 struct_definition = { "struct" ~ Identifier ~ "{" ~ struct_field_definition* ~ "}" }
 struct_field_definition = { type_name ~ Identifier ~ ";" }
 entrypoint = { "entrypoint" }
-function_definition = { entrypoint? ~ "function" ~ Identifier ~ parameter_list ~ return_type_list? ~ "{" ~ statement* ~ "}" }
+function_definition = { function_attribute* ~ entrypoint? ~ "function" ~ Identifier ~ parameter_list ~ return_type_list? ~ "{" ~ statement* ~ "}" }
+function_attribute = { "#[" ~ attribute_path ~ attribute_args? ~ "]" }
+attribute_path = { Identifier ~ ("." ~ Identifier)* }
+attribute_args = { "(" ~ (attribute_arg ~ ("," ~ attribute_arg)* ~ ","?)? ~ ")" }
+attribute_arg = { Identifier ~ "=" ~ expression }
 
 constant_definition = { type_name ~ "constant" ~ Identifier ~ "=" ~ expression ~ ";" }
 contract_field_definition = { type_name ~ Identifier ~ "=" ~ expression ~ ";" }

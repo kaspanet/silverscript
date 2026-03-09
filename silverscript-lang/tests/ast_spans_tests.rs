@@ -58,3 +58,58 @@ fn populates_slice_expression_spans() {
     assert_span_text(source, start.span.as_str(), "1");
     assert_span_text(source, end.span.as_str(), "3");
 }
+
+#[test]
+fn parses_function_attributes_and_for_ast() {
+    let source = r#"
+        contract Decls(int max_outs) {
+            #[covenant(binding = cov, from = 2, to = max_outs, mode = verification)]
+            function policy() {
+                int dyn = tx.outputs.length;
+                for(i, 0, dyn) {
+                    require(i >= 0);
+                }
+            }
+        }
+    "#;
+
+    let contract = parse_contract_ast(source).expect("contract should parse");
+    let function = &contract.functions[0];
+    assert_eq!(function.attributes.len(), 1);
+
+    let attribute = &function.attributes[0];
+    assert_eq!(attribute.path, vec!["covenant"]);
+    assert_eq!(attribute.args.len(), 4);
+    assert_eq!(attribute.args[0].name, "binding");
+    assert_eq!(attribute.args[1].name, "from");
+    assert_eq!(attribute.args[2].name, "to");
+    assert_eq!(attribute.args[3].name, "mode");
+    assert_span_text(source, attribute.path_spans[0].as_str(), "covenant");
+}
+
+#[test]
+fn parses_multiple_and_noarg_function_attributes() {
+    let source = r#"
+        contract Attrs(int max_outs) {
+            #[covenant(binding = auth, from = 1, to = max_outs + 1, mode = verification)]
+            #[experimental]
+            function policy() {
+                require(true);
+            }
+        }
+    "#;
+
+    let contract = parse_contract_ast(source).expect("contract should parse");
+    let function = &contract.functions[0];
+    assert_eq!(function.attributes.len(), 2);
+
+    let first = &function.attributes[0];
+    assert_eq!(first.path, vec!["covenant"]);
+    assert_eq!(first.args.len(), 4);
+    assert_eq!(first.args[2].name, "to");
+    assert_span_text(source, first.args[2].expr.span.as_str(), "max_outs + 1");
+
+    let second = &function.attributes[1];
+    assert_eq!(second.path, vec!["experimental"]);
+    assert!(second.args.is_empty());
+}

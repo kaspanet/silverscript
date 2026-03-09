@@ -8,13 +8,15 @@ use crate::errors::CompilerError;
 use crate::parser::{Rule, parse_source_file, parse_type_name as parse_type_name_rule};
 pub use crate::span::{Span, SpanUtils};
 
+pub mod visit;
+
 #[derive(Debug, Clone)]
 struct Identifier<'i> {
     name: String,
     span: Span<'i>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContractAst<'i> {
     pub name: String,
     pub params: Vec<ParamAst<'i>>,
@@ -30,7 +32,7 @@ pub struct ContractAst<'i> {
     pub name_span: Span<'i>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StructAst<'i> {
     pub name: String,
     pub fields: Vec<StructFieldAst<'i>>,
@@ -40,7 +42,7 @@ pub struct StructAst<'i> {
     pub name_span: Span<'i>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StructFieldAst<'i> {
     pub type_ref: TypeRef,
     pub name: String,
@@ -65,7 +67,7 @@ pub fn format_contract_ast(contract: &ContractAst<'_>) -> String {
     formatter.finish()
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContractFieldAst<'i> {
     pub type_ref: TypeRef,
     pub name: String,
@@ -78,9 +80,11 @@ pub struct ContractFieldAst<'i> {
     pub name_span: Span<'i>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FunctionAst<'i> {
     pub name: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attributes: Vec<FunctionAttributeAst<'i>>,
     pub params: Vec<ParamAst<'i>>,
     pub entrypoint: bool,
     #[serde(default)]
@@ -96,7 +100,28 @@ pub struct FunctionAst<'i> {
     pub body_span: Span<'i>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FunctionAttributeAst<'i> {
+    pub path: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub args: Vec<FunctionAttributeArgAst<'i>>,
+    #[serde(skip_deserializing)]
+    pub span: Span<'i>,
+    #[serde(skip_deserializing)]
+    pub path_spans: Vec<Span<'i>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FunctionAttributeArgAst<'i> {
+    pub name: String,
+    pub expr: Expr<'i>,
+    #[serde(skip_deserializing)]
+    pub span: Span<'i>,
+    #[serde(skip_deserializing)]
+    pub name_span: Span<'i>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ParamAst<'i> {
     pub type_ref: TypeRef,
     pub name: String,
@@ -108,7 +133,7 @@ pub struct ParamAst<'i> {
     pub name_span: Span<'i>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StateBindingAst<'i> {
     pub field_name: String,
     pub type_ref: TypeRef,
@@ -224,7 +249,7 @@ impl TypeRef {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "data", rename_all = "snake_case")]
 pub enum Statement<'i> {
     VariableDefinition {
@@ -388,14 +413,14 @@ impl<'i> Statement<'i> {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "data", rename_all = "snake_case")]
 pub enum ConsoleArg<'i> {
     Identifier(String, #[serde(skip_deserializing)] Span<'i>),
     Literal(Expr<'i>),
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TimeVar {
     ThisAge,
@@ -651,7 +676,7 @@ pub enum IntrospectionKind {
     OutputScriptPubKey,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConstantAst<'i> {
     pub type_ref: TypeRef,
     pub name: String,
@@ -1214,6 +1239,9 @@ fn parse_struct_definition<'i>(pair: Pair<'i, Rule>) -> Result<StructAst<'i>, Co
     let mut inner = pair.into_inner();
     let name_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing struct name".to_string()))?;
     let Identifier { name, span: name_span } = parse_identifier(name_pair)?;
+    if name == "State" {
+        return Err(CompilerError::Unsupported("'State' is a reserved struct name".to_string()).with_span(&span));
+    }
     let mut fields = Vec::new();
     for field_pair in inner {
         if field_pair.as_rule() == Rule::struct_field_definition {
@@ -1237,6 +1265,15 @@ fn parse_struct_field_definition<'i>(pair: Pair<'i, Rule>) -> Result<StructField
 fn parse_function_definition<'i>(pair: Pair<'i, Rule>) -> Result<FunctionAst<'i>, CompilerError> {
     let span = Span::from(pair.as_span());
     let mut inner = pair.into_inner();
+    let mut attributes = Vec::new();
+
+    while let Some(next) = inner.peek() {
+        if next.as_rule() != Rule::function_attribute {
+            break;
+        }
+        let attr_pair = inner.next().expect("checked");
+        attributes.push(parse_function_attribute(attr_pair)?);
+    }
 
     let first = inner.next().ok_or_else(|| CompilerError::Unsupported("missing function name".to_string()))?;
     let (entrypoint, name_pair) = if first.as_rule() == Rule::entrypoint {
@@ -1275,7 +1312,71 @@ fn parse_function_definition<'i>(pair: Pair<'i, Rule>) -> Result<FunctionAst<'i>
     }
     let body_span = body_span.unwrap_or(span);
 
-    Ok(FunctionAst { name, entrypoint, params, return_types, return_type_spans, body, span, name_span, body_span })
+    Ok(FunctionAst { name, attributes, entrypoint, params, return_types, return_type_spans, body, span, name_span, body_span })
+}
+
+fn parse_function_attribute<'i>(pair: Pair<'i, Rule>) -> Result<FunctionAttributeAst<'i>, CompilerError> {
+    let span = Span::from(pair.as_span());
+    let mut inner = pair.into_inner();
+
+    let path_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing attribute path".to_string()))?;
+    let (path, path_spans) = parse_attribute_path(path_pair)?;
+
+    let mut args = Vec::new();
+    if let Some(args_pair) = inner.next() {
+        args = parse_attribute_args(args_pair)?;
+    }
+
+    Ok(FunctionAttributeAst { path, args, span, path_spans })
+}
+
+fn parse_attribute_path<'i>(pair: Pair<'i, Rule>) -> Result<(Vec<String>, Vec<Span<'i>>), CompilerError> {
+    if pair.as_rule() != Rule::attribute_path {
+        return Err(CompilerError::Unsupported("expected attribute path".to_string()));
+    }
+    let mut path = Vec::new();
+    let mut spans = Vec::new();
+    for inner in pair.into_inner() {
+        if inner.as_rule() != Rule::Identifier {
+            continue;
+        }
+        path.push(inner.as_str().to_string());
+        spans.push(Span::from(inner.as_span()));
+    }
+    if path.is_empty() {
+        return Err(CompilerError::Unsupported("attribute path must not be empty".to_string()));
+    }
+    Ok((path, spans))
+}
+
+fn parse_attribute_args<'i>(pair: Pair<'i, Rule>) -> Result<Vec<FunctionAttributeArgAst<'i>>, CompilerError> {
+    if pair.as_rule() != Rule::attribute_args {
+        return Err(CompilerError::Unsupported("expected attribute arguments".to_string()));
+    }
+    let mut out = Vec::new();
+    for inner in pair.into_inner() {
+        if inner.as_rule() != Rule::attribute_arg {
+            continue;
+        }
+        out.push(parse_attribute_arg(inner)?);
+    }
+    Ok(out)
+}
+
+fn parse_attribute_arg<'i>(pair: Pair<'i, Rule>) -> Result<FunctionAttributeArgAst<'i>, CompilerError> {
+    let span = Span::from(pair.as_span());
+    if pair.as_rule() != Rule::attribute_arg {
+        return Err(CompilerError::Unsupported("expected attribute argument".to_string()));
+    }
+    let mut inner = pair.into_inner();
+    let name_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing attribute argument name".to_string()))?;
+    let expr_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing attribute argument value".to_string()))?;
+
+    let name = name_pair.as_str().to_string();
+    let name_span = Span::from(name_pair.as_span());
+    let expr = parse_expression(expr_pair)?;
+
+    Ok(FunctionAttributeArgAst { name, expr, span, name_span })
 }
 
 fn parse_constant_definition<'i>(pair: Pair<'i, Rule>) -> Result<ConstantAst<'i>, CompilerError> {
