@@ -306,9 +306,7 @@ fn lower_expr<'i>(expr: &Expr<'i>, scope: &LoweringScope, structs: &StructRegist
                     if struct_name_from_type_ref(&field_type, structs).is_some()
                         || struct_array_name_from_type_ref(&field_type, structs).is_some()
                     {
-                        return Err(CompilerError::Unsupported(
-                            "nested struct array field access is not supported".to_string(),
-                        ));
+                        return Err(CompilerError::Unsupported("nested struct array field access is not supported".to_string()));
                     }
                     path.push(field.clone());
                     return Ok(Expr::new(
@@ -1674,10 +1672,7 @@ impl<'i> CompiledContract<'i> {
             return self.build_sig_script(&entrypoint, args);
         }
 
-        Err(CompilerError::Unsupported(format!(
-            "covenant declaration '{}' not found",
-            function_name
-        )))
+        Err(CompilerError::Unsupported(format!("covenant declaration '{}' not found", function_name)))
     }
 }
 
