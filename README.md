@@ -46,4 +46,4 @@ See [CREDITS.md](CREDITS.md) for acknowledgements and credits.
 
 ## Notes
 
-- Kaspa dependencies are pulled from https://github.com/kaspanet/rusty-kaspa (branch `covpp-reset1`).
+- Kaspa dependencies are pulled from https://github.com/kaspanet/rusty-kaspa.
