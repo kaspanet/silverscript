@@ -1682,17 +1682,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "kaspa-covenant-sdk"
-version = "0.1.0"
-dependencies = [
- "kaspa-consensus-core",
- "kaspa-hashes",
- "kaspa-txscript",
- "kaspa-txscript-errors",
- "thiserror 1.0.69",
-]
-
-[[package]]
 name = "kaspa-hashes"
 version = "1.1.0-rc.3"
 source = "git+https://github.com/kaspanet/rusty-kaspa?branch=tn12#c6819f3b3fe37f712acd88dafbb583297e2ef938"

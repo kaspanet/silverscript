@@ -3,7 +3,6 @@ members = [
     "silverscript-lang",
     "debugger/session",
     "debugger/cli",
-    "covenants/sdk",
 ]
 exclude = ["tree-sitter"]
 resolver = "2"
