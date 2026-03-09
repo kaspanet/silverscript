@@ -1,18 +1,12 @@
-```
-Title: Covenant Declarations
-Status: Draft
-Created: 2026-02-23
-```
-
 # Covenant Declarations
 
 ## Summary
 
-This document describes a minimal declaration API for covenant patterns, where users declare policy functions and the compiler generates covenant entrypoints/wrappers.
+This document specifies the covenant declaration API, where users declare policy functions and the compiler generates the corresponding covenant entrypoints and wrappers.
 
-Context: today these patterns are written manually with `OpAuth*`/`OpCov*` plus `readInputState`/`validateOutputState`. The goal here is to standardize the pattern and remove user boilerplate.
+Without declarations, these patterns are written manually with `OpAuth*`/`OpCov*` plus `readInputState`/`validateOutputState`. The declaration layer standardizes that pattern, removes user boilerplate, and acts as a security guard so users do not need to be experts in covenant opcodes to write secure covenants.
 
-Scope: syntax + semantics only. This is not claiming implementation is finalized.
+Scope: syntax and lowering semantics.
 
 1. Dev writes only a transition/verification policy function and annotates it with a covenant macro.
 2. Entrypoint(s) are inferred by the compiler from that function’s shape.
@@ -32,7 +26,7 @@ Canonical form:
 #[covenant(binding = auth|cov, from = X, to = Y, mode = verification|transition, groups = multiple|single, termination = disallowed|allowed)]
 ```
 
-Minimal common form (defaults inferred):
+Common form (with inferred defaults):
 
 ```js
 #[covenant(from = X, to = Y)]
@@ -54,8 +48,9 @@ Rules:
 5. If `binding` is omitted: `from == 1 -> auth`, otherwise `cov`.
 6. If `mode` is omitted: no returns -> `verification`, has returns -> `transition`.
 7. `binding = auth` with `from > 1` is compile error.
-8. `binding = cov` with `groups = multiple` is compile error in v1.
-9. `termination` is valid only for singleton transition (`from = 1, to = 1, mode = transition`); there it defaults to `disallowed`, and using it elsewhere is a compile error.
+8. `binding = cov` with `from = 1` is allowed but emits a compiler warning recommending `binding = auth`.
+9. `binding = cov` with `groups = multiple` is a compile error.
+10. `termination` is valid only for singleton transition (`from = 1, to = 1, mode = transition`); there it defaults to `disallowed`, and using it elsewhere is a compile error.
 
 ### 1:N verification
 
@@ -120,7 +115,7 @@ Verification mode is the default convenience mode.
 2. Wrapper reads prior state from tx context (`prev_state` or `prev_states`) and calls the policy verification with `(prev_state(s), new_states, call_args...)`.
 3. Wrapper validates each output with `validateOutputState(...)` against `new_states`.
 
-Current compiler shape (`mode = verification`, both bindings):
+Verification mode shape (`mode = verification`, both bindings):
 
 1. Policy params must begin with prior-state parameters:
     `binding = auth` -> `State prev_state`
@@ -137,7 +132,7 @@ Transition mode allows extra call args (`fee` above, etc.) and the policy comput
 
 Security note (both modes): extra call args (beyond state values validated on outputs) are not directly committed by tx structure. Compiler/runtime must enforce a commitment story and determinism for them.
 
-Current compiler shape (`mode = transition`, both bindings):
+Transition mode shape (`mode = transition`, both bindings):
 
 1. Policy params must begin with prior-state parameters:
     `binding = auth` -> `State prev_state`
@@ -145,7 +140,7 @@ Current compiler shape (`mode = transition`, both bindings):
 2. Remaining params are optional extra call args.
 3. Compiler enforces this prefix exactly; invalid prior-state parameter types are compile errors.
 4. Wrapper sources prior state from tx context according to binding.
-5. Current ABI behavior:
+5. Generated ABI behavior:
     `auth` entrypoint exposes only extra call args.
     `cov` leader entrypoint exposes `new_states` or extra call args according to mode, while wrapper also enforces covenant structure checks.
 
@@ -191,7 +186,7 @@ require(OpCovOutCount(cov_id) == OpAuthOutputCount(this.activeInputIndex));
 
 No explicit `cov_id != false` check is needed; `OpCovOutCount(cov_id)` fails if `cov_id` is not valid covenant-id data.
 
-`binding = cov`: `groups = single` only (v1). `groups = multiple` is rejected.
+`binding = cov`: `groups = single` only. `groups = multiple` is rejected.
 
 ## Inferred entrypoints
 
@@ -254,7 +249,7 @@ contract VaultNM(
 }
 ```
 
-### Generated code (conceptual; policy body unchanged)
+### Generated code (illustrative; policy body unchanged)
 
 ```js
 pragma silverscript ^0.1.0;
@@ -348,7 +343,7 @@ contract SeqCommitMirror(byte[32] init_seqcommit) {
 }
 ```
 
-### Generated code (conceptual; policy body unchanged)
+### Generated code (illustrative; policy body unchanged)
 
 ```js
 pragma silverscript ^0.1.0;
@@ -382,4 +377,4 @@ contract SeqCommitMirror(byte[32] init_seqcommit) {
 1. `State` is an implicit compiler type synthesized from contract fields.
 2. Internally the compiler can lower `State`/`State[]` into any representation; this doc only fixes the user-facing API.
 3. Existing `readInputState`/`validateOutputState` remain the codegen backbone.
-4. v1 keeps one `N:M` transition group per tx.
+4. `N:M` lowering keeps one transition group per transaction.

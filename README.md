@@ -38,7 +38,7 @@ cargo run -p cli-debugger -- \
 
 ## Documentation
 
-See [TUTORIAL.md](TUTORIAL.md) for a full language and usage tutorial.
+See [TUTORIAL.md](docs/TUTORIAL.md) for a full language and usage tutorial, and [DECL.md](docs/DECL.md) for the covenant declaration spec.
 
 ## Credits
 
