@@ -49,6 +49,8 @@ enum OutputStateSource<'i> {
 struct VerificationShape<'i> {
     prev_field_values: Vec<(String, String)>,
     new_field_arrays: Vec<(String, String)>,
+    new_state_length_expr: Expr<'i>,
+    new_state_length_guards: Vec<Statement<'i>>,
     entrypoint_params: Vec<crate::ast::ParamAst<'i>>,
     call_args: Vec<Expr<'i>>,
 }
@@ -384,6 +386,8 @@ fn build_auth_wrapper<'i>(
     if declaration.mode == CovenantMode::Verification && !contract_fields.is_empty() {
         let shape = parse_verification_shape(policy, contract_fields, CovenantBinding::Auth)?;
         entrypoint_params = shape.entrypoint_params.clone();
+        body.extend(shape.new_state_length_guards.clone());
+        body.push(require_statement(binary_expr(BinaryOp::Eq, identifier_expr(out_count_name), shape.new_state_length_expr.clone())));
         body.push(call_statement(policy_name, shape.call_args));
         body.push(require_statement(binary_expr(BinaryOp::Le, identifier_expr(out_count_name), declaration.to_expr.clone())));
         append_auth_output_array_state_checks(
@@ -501,6 +505,12 @@ fn build_cov_wrapper<'i>(
                 contract_fields,
                 &shape.prev_field_values,
             );
+            body.extend(shape.new_state_length_guards.clone());
+            body.push(require_statement(binary_expr(
+                BinaryOp::Eq,
+                identifier_expr(out_count_name),
+                shape.new_state_length_expr.clone(),
+            )));
             body.push(call_statement(policy_name, shape.call_args));
             body.push(require_statement(binary_expr(BinaryOp::Le, identifier_expr(out_count_name), declaration.to_expr.clone())));
             append_cov_output_array_state_checks(
@@ -1590,6 +1600,20 @@ fn parse_verification_shape<'i>(
         new_field_arrays.push((field.name.clone(), new_param.name.clone()));
     }
 
+    let first_new_array_name = new_field_arrays
+        .first()
+        .map(|(_, name)| name.clone())
+        .unwrap_or_else(|| panic!("missing new-state array param for verification shape"));
+    let new_state_length_expr = length_expr(identifier_expr(&first_new_array_name));
+    let mut new_state_length_guards = Vec::new();
+    for (_, array_name) in new_field_arrays.iter().skip(1) {
+        new_state_length_guards.push(require_statement(binary_expr(
+            BinaryOp::Eq,
+            length_expr(identifier_expr(array_name)),
+            new_state_length_expr.clone(),
+        )));
+    }
+
     let entrypoint_params = policy.params[field_count..].to_vec();
     let call_args = match binding {
         CovenantBinding::Auth => {
@@ -1605,7 +1629,14 @@ fn parse_verification_shape<'i>(
         CovenantBinding::Cov => policy.params.iter().map(|param| identifier_expr(&param.name)).collect(),
     };
 
-    Ok(VerificationShape { prev_field_values, new_field_arrays, entrypoint_params, call_args })
+    Ok(VerificationShape {
+        prev_field_values,
+        new_field_arrays,
+        new_state_length_expr,
+        new_state_length_guards,
+        entrypoint_params,
+        call_args,
+    })
 }
 
 fn parse_transition_shape<'i>(

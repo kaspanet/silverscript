@@ -88,8 +88,23 @@ const AUTH_SINGLETON_ARRAY_RUNTIME_SOURCE: &str = r#"
     }
 "#;
 
+const AUTH_VERIFICATION_CARDINALITY_SOURCE: &str = r#"
+    contract Counter(int max_outs, int init_value) {
+        int value = init_value;
+
+        #[covenant(from = 1, to = max_outs)]
+        function step(State prev_state, State[] new_states) {
+            require(prev_state.value >= 0);
+        }
+    }
+"#;
+
 fn compile_state(source: &'static str, value: i64) -> CompiledContract<'static> {
     compile_contract(source, &[Expr::int(value)], CompileOptions::default()).expect("compile succeeds")
+}
+
+fn compile_contract_state(source: &'static str, constructor_args: &[Expr<'static>]) -> CompiledContract<'static> {
+    compile_contract(source, constructor_args, CompileOptions::default()).expect("compile succeeds")
 }
 
 fn function_param_type_names(compiled: &CompiledContract<'_>, function_name: &str) -> Vec<String> {
@@ -529,13 +544,13 @@ fn runtime_accepts_state_array_entrypoint_argument_for_generated_wrapper() {
 }
 
 #[test]
-fn runtime_passes_state_array_into_generated_policy_function() {
+fn compiled_ast_exposes_codegen_shape_for_generated_policy_function() {
     let active = compile_state(AUTH_SINGLETON_ARRAY_RUNTIME_SOURCE, 10);
     let out = compile_state(AUTH_SINGLETON_ARRAY_RUNTIME_SOURCE, 11);
 
     let wrapper_name = generated_auth_entrypoint_name("step");
     let wrapper_param_types = function_param_type_names(&active, &wrapper_name);
-    assert_eq!(wrapper_param_types, vec!["State[]".to_string()]);
+    assert_eq!(wrapper_param_types, vec!["int[]".to_string()]);
 
     let policy = active
         .ast
@@ -545,7 +560,7 @@ fn runtime_passes_state_array_into_generated_policy_function() {
         .expect("generated covenant policy exists");
     assert!(!policy.entrypoint, "generated covenant policy must remain non-entrypoint");
     let policy_param_types: Vec<String> = policy.params.iter().map(|param| param.type_ref.type_name()).collect();
-    assert_eq!(policy_param_types, vec!["State".to_string(), "State[]".to_string()]);
+    assert_eq!(policy_param_types, vec!["int".to_string(), "int[]".to_string()]);
 
     let input0 = tx_input(0, covenant_decl_sigscript(&active, "step", vec![state_array_arg(vec![12])], false));
     let outputs = vec![covenant_output(&out, 0, COV_A)];
@@ -554,5 +569,36 @@ fn runtime_passes_state_array_into_generated_policy_function() {
 
     let err = execute_input_with_covenants(tx, entries, 0)
         .expect_err("generated policy should reject when the State[] argument content is wrong");
+    assert_verify_like_error(err);
+}
+
+#[test]
+fn verification_wrapper_rejects_surplus_new_states_from_sigscript() {
+    let active = compile_contract_state(AUTH_VERIFICATION_CARDINALITY_SOURCE, &[Expr::int(2), Expr::int(10)]);
+    let out = compile_contract_state(AUTH_VERIFICATION_CARDINALITY_SOURCE, &[Expr::int(2), Expr::int(10)]);
+
+    let input0 = tx_input(0, covenant_decl_sigscript(&active, "step", vec![state_array_arg(vec![10, 10])], false));
+    let outputs = vec![covenant_output(&out, 0, COV_A)];
+    let tx = Transaction::new(1, vec![input0], outputs, 0, Default::default(), 0, vec![]);
+    let entries = vec![covenant_utxo(&active, COV_A)];
+
+    let err = execute_input_with_covenants(tx, entries, 0)
+        .expect_err("verification wrapper must reject surplus new_states entries from sigscript");
+    assert_verify_like_error(err);
+}
+
+#[test]
+fn verification_wrapper_rejects_missing_new_states_for_existing_outputs() {
+    let active = compile_contract_state(AUTH_VERIFICATION_CARDINALITY_SOURCE, &[Expr::int(2), Expr::int(10)]);
+    let out0 = compile_contract_state(AUTH_VERIFICATION_CARDINALITY_SOURCE, &[Expr::int(2), Expr::int(10)]);
+    let out1 = compile_contract_state(AUTH_VERIFICATION_CARDINALITY_SOURCE, &[Expr::int(2), Expr::int(10)]);
+
+    let input0 = tx_input(0, covenant_decl_sigscript(&active, "step", vec![state_array_arg(vec![10])], false));
+    let outputs = vec![covenant_output(&out0, 0, COV_A), covenant_output(&out1, 0, COV_A)];
+    let tx = Transaction::new(1, vec![input0], outputs, 0, Default::default(), 0, vec![]);
+    let entries = vec![covenant_utxo(&active, COV_A)];
+
+    let err = execute_input_with_covenants(tx, entries, 0)
+        .expect_err("verification wrapper must reject missing new_states entries for existing outputs");
     assert_verify_like_error(err);
 }

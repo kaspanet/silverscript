@@ -775,12 +775,21 @@ fn compile_contract_impl<'i>(
         constants.insert(param.name.clone(), value.clone());
     }
 
-    // Preserve struct-typed covenant policy signatures in the user-facing AST and ABI.
-    // This must be `true` because callers should still see `State` / `State[]` rather than flattened field lists.
+    // Preserve covenant `State` / `State[]` signatures for ABI entry generation only.
+    // This synthetic contract must not be used for code generation or surfaced as `CompiledContract.ast`.
     let abi_contract = lower_covenant_declarations(contract, &constants, true)?;
-    // Desugar covenant policy signatures for code generation before struct lowering.
-    // This must be `false` because the backend and wrapper generation operate on flattened per-field parameters and returns.
+    // Lower covenant declarations into the backend-facing form used for compilation.
+    // This contract carries the flattened per-field signatures used by generated wrappers and policy functions.
     let codegen_contract = lower_covenant_declarations(contract, &constants, false)?;
+    // TODO(covenants): remove `abi_contract`.
+    // Followup:
+    // - derive ABI entries from the original user contract plus covenant declaration metadata,
+    //   so callers still see `State` / `State[]` without fabricating a synthetic lowered contract;
+    // - keep `codegen_contract` as the only lowered AST representation;
+    // - remove `preserve_policy_structs: bool` from `lower_covenant_declarations`;
+    // - make debugger presentation covenant-aware by mapping generated wrappers back to policy source,
+    //   hiding `__cov_*` temporaries, reconstructing `prev_state` / `prev_states` / `new_states`,
+    //   and accepting `State` / `State[]` JSON arguments directly.
     let structs = build_struct_registry(&codegen_contract)?;
     validate_struct_graph(&structs)?;
     validate_contract_struct_usage(&codegen_contract, &structs)?;
@@ -869,9 +878,9 @@ fn compile_contract_impl<'i>(
         let debug_info = recorder.into_debug_info(source.unwrap_or_default().to_string());
         if !uses_script_size {
             return Ok(CompiledContract {
-                contract_name: abi_contract.name.clone(),
+                contract_name: contract.name.clone(),
                 script,
-                ast: abi_contract.clone(),
+                ast: codegen_contract.clone(),
                 abi: function_abi_entries,
                 without_selector,
                 debug_info,
@@ -881,9 +890,9 @@ fn compile_contract_impl<'i>(
         let actual_size = script.len() as i64;
         if Some(actual_size) == script_size {
             return Ok(CompiledContract {
-                contract_name: abi_contract.name.clone(),
+                contract_name: contract.name.clone(),
                 script,
-                ast: abi_contract.clone(),
+                ast: codegen_contract.clone(),
                 abi: function_abi_entries,
                 without_selector,
                 debug_info,
