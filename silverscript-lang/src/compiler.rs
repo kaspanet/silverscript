@@ -5402,13 +5402,14 @@ pub(super) fn resolve_expr_for_debug<'i>(
 
 #[cfg(test)]
 mod tests {
+    use kaspa_txscript::opcodes::codes::OpData1;
+
     use super::{Op0, OpPushData1, OpPushData2, data_prefix};
 
     #[test]
     fn data_prefix_encodes_small_pushes() {
         assert_eq!(data_prefix(0), vec![Op0]);
-        // For a single 0x00 byte, ScriptBuilder uses Op0, so the prefix is empty.
-        assert_eq!(data_prefix(1), Vec::<u8>::new());
+        assert_eq!(data_prefix(1), vec![OpData1]);
         assert_eq!(data_prefix(2), vec![2u8]);
         assert_eq!(data_prefix(75), vec![75u8]);
     }

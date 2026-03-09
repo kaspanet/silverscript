@@ -544,7 +544,7 @@ dependencies = [
  "cc",
  "cfg-if",
  "constant_time_eq",
- "cpufeatures",
+ "cpufeatures 0.2.17",
 ]
 
 [[package]]
@@ -709,6 +709,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
 
 [[package]]
+name = "chacha20"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6f8d983286843e49675a4b7a2d174efe136dc93a18d69130dd18198a6c167601"
+dependencies = [
+ "cfg-if",
+ "cpufeatures 0.3.0",
+ "rand_core 0.10.0",
+]
+
+[[package]]
 name = "chrono"
 version = "0.4.44"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -863,6 +874,15 @@ name = "cpufeatures"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "59ed5838eebb26a2bb2e58f6d5b5316989ae9d08bab10e0e6d103e656d1b0280"
+dependencies = [
+ "libc",
+]
+
+[[package]]
+name = "cpufeatures"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8b2a41393f66f16b0823bb79094d54ac5fbd34ab292ddafb9a0456ac9f87d201"
 dependencies = [
  "libc",
 ]
@@ -1364,19 +1384,20 @@ checksum = "899def5c37c4fd7b2664648c28120ecec138e4d395b459e5ca34f9cce2dd77fd"
 dependencies = [
  "cfg-if",
  "libc",
- "r-efi",
+ "r-efi 5.3.0",
  "wasip2",
 ]
 
 [[package]]
 name = "getrandom"
-version = "0.4.1"
+version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "139ef39800118c7683f2fd3c98c1b23c09ae076556b435f8e9064ae108aaeeec"
+checksum = "0de51e6874e94e7bf76d726fc5d13ba782deca734ff60d5bb2fb2607c7406555"
 dependencies = [
  "cfg-if",
  "libc",
- "r-efi",
+ "r-efi 6.0.0",
+ "rand_core 0.10.0",
  "wasip2",
  "wasip3",
 ]
@@ -1565,9 +1586,9 @@ dependencies = [
 
 [[package]]
 name = "ipnet"
-version = "2.11.0"
+version = "2.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "469fb0b9cefa57e3ef31275ee7cacb78f2fdca44e4765491884a2b119d4eb130"
+checksum = "d98f6fed1fde3f8c21bc40a1abb88dd75e67924f9cffc3ef95607bad8017f8e2"
 
 [[package]]
 name = "is_terminal_polyfill"
@@ -1611,8 +1632,8 @@ dependencies = [
 
 [[package]]
 name = "kaspa-addresses"
-version = "1.1.0-rc.3"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=tn12#c6819f3b3fe37f712acd88dafbb583297e2ef938"
+version = "1.1.0"
+source = "git+https://github.com/kaspanet/rusty-kaspa?branch=tn12#84ef5d2797fbc0bf8ccb4e0652659d978e8bd6ae"
 dependencies = [
  "borsh",
  "js-sys",
@@ -1626,8 +1647,8 @@ dependencies = [
 
 [[package]]
 name = "kaspa-consensus-core"
-version = "1.1.0-rc.3"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=tn12#c6819f3b3fe37f712acd88dafbb583297e2ef938"
+version = "1.1.0"
+source = "git+https://github.com/kaspanet/rusty-kaspa?branch=tn12#84ef5d2797fbc0bf8ccb4e0652659d978e8bd6ae"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -1663,8 +1684,8 @@ dependencies = [
 
 [[package]]
 name = "kaspa-core"
-version = "1.1.0-rc.3"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=tn12#c6819f3b3fe37f712acd88dafbb583297e2ef938"
+version = "1.1.0"
+source = "git+https://github.com/kaspanet/rusty-kaspa?branch=tn12#84ef5d2797fbc0bf8ccb4e0652659d978e8bd6ae"
 dependencies = [
  "anyhow",
  "cfg-if",
@@ -1683,8 +1704,8 @@ dependencies = [
 
 [[package]]
 name = "kaspa-hashes"
-version = "1.1.0-rc.3"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=tn12#c6819f3b3fe37f712acd88dafbb583297e2ef938"
+version = "1.1.0"
+source = "git+https://github.com/kaspanet/rusty-kaspa?branch=tn12#84ef5d2797fbc0bf8ccb4e0652659d978e8bd6ae"
 dependencies = [
  "blake2b_simd",
  "blake3",
@@ -1703,8 +1724,8 @@ dependencies = [
 
 [[package]]
 name = "kaspa-math"
-version = "1.1.0-rc.3"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=tn12#c6819f3b3fe37f712acd88dafbb583297e2ef938"
+version = "1.1.0"
+source = "git+https://github.com/kaspanet/rusty-kaspa?branch=tn12#84ef5d2797fbc0bf8ccb4e0652659d978e8bd6ae"
 dependencies = [
  "borsh",
  "faster-hex 0.9.0",
@@ -1723,16 +1744,16 @@ dependencies = [
 
 [[package]]
 name = "kaspa-merkle"
-version = "1.1.0-rc.3"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=tn12#c6819f3b3fe37f712acd88dafbb583297e2ef938"
+version = "1.1.0"
+source = "git+https://github.com/kaspanet/rusty-kaspa?branch=tn12#84ef5d2797fbc0bf8ccb4e0652659d978e8bd6ae"
 dependencies = [
  "kaspa-hashes",
 ]
 
 [[package]]
 name = "kaspa-muhash"
-version = "1.1.0-rc.3"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=tn12#c6819f3b3fe37f712acd88dafbb583297e2ef938"
+version = "1.1.0"
+source = "git+https://github.com/kaspanet/rusty-kaspa?branch=tn12#84ef5d2797fbc0bf8ccb4e0652659d978e8bd6ae"
 dependencies = [
  "kaspa-hashes",
  "kaspa-math",
@@ -1742,8 +1763,8 @@ dependencies = [
 
 [[package]]
 name = "kaspa-txscript"
-version = "1.1.0-rc.3"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=tn12#c6819f3b3fe37f712acd88dafbb583297e2ef938"
+version = "1.1.0"
+source = "git+https://github.com/kaspanet/rusty-kaspa?branch=tn12#84ef5d2797fbc0bf8ccb4e0652659d978e8bd6ae"
 dependencies = [
  "ark-bn254",
  "ark-ec",
@@ -1788,8 +1809,8 @@ dependencies = [
 
 [[package]]
 name = "kaspa-txscript-errors"
-version = "1.1.0-rc.3"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=tn12#c6819f3b3fe37f712acd88dafbb583297e2ef938"
+version = "1.1.0"
+source = "git+https://github.com/kaspanet/rusty-kaspa?branch=tn12#84ef5d2797fbc0bf8ccb4e0652659d978e8bd6ae"
 dependencies = [
  "borsh",
  "kaspa-hashes",
@@ -1799,8 +1820,8 @@ dependencies = [
 
 [[package]]
 name = "kaspa-utils"
-version = "1.1.0-rc.3"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=tn12#c6819f3b3fe37f712acd88dafbb583297e2ef938"
+version = "1.1.0"
+source = "git+https://github.com/kaspanet/rusty-kaspa?branch=tn12#84ef5d2797fbc0bf8ccb4e0652659d978e8bd6ae"
 dependencies = [
  "arc-swap",
  "async-channel 2.5.0",
@@ -1823,14 +1844,14 @@ dependencies = [
  "sysinfo",
  "thiserror 1.0.69",
  "triggered",
- "uuid 1.21.0",
+ "uuid 1.22.0",
  "wasm-bindgen",
 ]
 
 [[package]]
 name = "kaspa-wasm-core"
-version = "1.1.0-rc.3"
-source = "git+https://github.com/kaspanet/rusty-kaspa?branch=tn12#c6819f3b3fe37f712acd88dafbb583297e2ef938"
+version = "1.1.0"
+source = "git+https://github.com/kaspanet/rusty-kaspa?branch=tn12#84ef5d2797fbc0bf8ccb4e0652659d978e8bd6ae"
 dependencies = [
  "faster-hex 0.9.0",
  "hexplay",
@@ -1845,7 +1866,7 @@ version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cb26cec98cce3a3d96cbb7bced3c4b16e3d13f27ec56dbd62cbc8f39cfb9d653"
 dependencies = [
- "cpufeatures",
+ "cpufeatures 0.2.17",
 ]
 
 [[package]]
@@ -1874,9 +1895,9 @@ checksum = "09edd9e8b54e49e587e4f6295a7d29c3ea94d469cb40ab8ca70b288248a81db2"
 
 [[package]]
 name = "libc"
-version = "0.2.182"
+version = "0.2.183"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6800badb6cb2082ffd7b6a67e6125bb39f18782f793520caee8cb8846be06112"
+checksum = "b5b646652bf6661599e1da8901b3b9522896f01e736bad5f723fe7a3a27f899d"
 
 [[package]]
 name = "libm"
@@ -2418,9 +2439,9 @@ dependencies = [
 
 [[package]]
 name = "proc-macro-crate"
-version = "3.4.0"
+version = "3.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "219cb19e96be00ab2e37d6e299658a0cfa83e52429179969b0f0121b4ac46983"
+checksum = "e67ba7e9b2b56446f1d419b1d807906278ffa1a658a8a5d8a39dcb1f5a78614f"
 dependencies = [
  "toml_edit",
 ]
@@ -2473,9 +2494,9 @@ dependencies = [
 
 [[package]]
 name = "quote"
-version = "1.0.44"
+version = "1.0.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "21b2ebcf727b7760c461f091f9f0f539b77b8e87f2fd88131e7f1b433b3cece4"
+checksum = "41f2619966050689382d2b44f664f4bc593e129785a36d6ee376ddf37259b924"
 dependencies = [
  "proc-macro2",
 ]
@@ -2485,6 +2506,12 @@ name = "r-efi"
 version = "5.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "69cdb34c158ceb288df11e18b4bd39de994f6657d83847bdffdbd7f346754b0f"
+
+[[package]]
+name = "r-efi"
+version = "6.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 
 [[package]]
 name = "rand"
@@ -2505,6 +2532,17 @@ checksum = "6db2770f06117d490610c7488547d543617b21bfa07796d7a12f6f1bd53850d1"
 dependencies = [
  "rand_chacha 0.9.0",
  "rand_core 0.9.5",
+]
+
+[[package]]
+name = "rand"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bc266eb313df6c5c09c1c7b1fbe2510961e5bcd3add930c1e31f7ed9da0feff8"
+dependencies = [
+ "chacha20",
+ "getrandom 0.4.2",
+ "rand_core 0.10.0",
 ]
 
 [[package]]
@@ -2544,6 +2582,12 @@ checksum = "76afc826de14238e6e8c374ddcc1fa19e374fd8dd986b0d2af0d02377261d83c"
 dependencies = [
  "getrandom 0.3.4",
 ]
+
+[[package]]
+name = "rand_core"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0c8d0fd677905edcbeedbf2edb6494d676f0e98d54d5cf9bda0b061cb8fb8aba"
 
 [[package]]
 name = "rand_xorshift"
@@ -2912,7 +2956,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a7507d819769d01a365ab707794a4084392c824f54a7a6a7862f8c3d0892b283"
 dependencies = [
  "cfg-if",
- "cpufeatures",
+ "cpufeatures 0.2.17",
  "digest",
 ]
 
@@ -3185,9 +3229,9 @@ checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 
 [[package]]
 name = "tokio"
-version = "1.49.0"
+version = "1.50.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "72a2903cd7736441aac9df9d7688bd0ce48edccaadf181c3b90be801e81d3d86"
+checksum = "27ad5e34374e03cfffefc301becb44e9dc3c17584f414349ebe29ed26661822d"
 dependencies = [
  "bytes",
  "pin-project-lite",
@@ -3196,9 +3240,9 @@ dependencies = [
 
 [[package]]
 name = "tokio-macros"
-version = "2.6.0"
+version = "2.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "af407857209536a95c8e56f8231ef2c2e2aff839b22e07a1ffcbc617e9db9fa5"
+checksum = "5c55a2eff8b69ce66c84f85e1da1c233edc36ceb85a2058d11b0d6a3c7e7569c"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3207,18 +3251,18 @@ dependencies = [
 
 [[package]]
 name = "toml_datetime"
-version = "0.7.5+spec-1.1.0"
+version = "1.0.0+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "92e1cfed4a3038bc5a127e35a2d360f145e1f4b971b551a2ba5fd7aedf7e1347"
+checksum = "32c2555c699578a4f59f0cc68e5116c8d7cabbd45e1409b989d4be085b53f13e"
 dependencies = [
  "serde_core",
 ]
 
 [[package]]
 name = "toml_edit"
-version = "0.23.10+spec-1.0.0"
+version = "0.25.4+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "84c8b9f757e028cee9fa244aea147aab2a9ec09d5325a9b01e0a49730c2b5269"
+checksum = "7193cbd0ce53dc966037f54351dbbcf0d5a642c7f0038c382ef9e677ce8c13f2"
 dependencies = [
  "indexmap",
  "toml_datetime",
@@ -3366,13 +3410,13 @@ dependencies = [
 
 [[package]]
 name = "uuid"
-version = "1.21.0"
+version = "1.22.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b672338555252d43fd2240c714dc444b8c6fb0a5c5335e65a07bba7742735ddb"
+checksum = "a68d3c8f01c0cfa54a75291d83601161799e4a89a39e0929f4b0354d88757a37"
 dependencies = [
- "getrandom 0.4.1",
+ "getrandom 0.4.2",
  "js-sys",
- "rand 0.9.2",
+ "rand 0.10.0",
  "serde_core",
  "wasm-bindgen",
 ]
@@ -3906,9 +3950,9 @@ checksum = "d6bbff5f0aada427a1e5a6da5f1f98158182f26556f345ac9e04d36d0ebed650"
 
 [[package]]
 name = "winnow"
-version = "0.7.14"
+version = "0.7.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5a5364e9d77fcdeeaa6062ced926ee3381faa2ee02d3eb83a5c27a8825540829"
+checksum = "df79d97927682d2fd8adb29682d1140b343be4ac0f08fd68b7765d9c059d3945"
 dependencies = [
  "memchr",
 ]
@@ -4139,18 +4183,18 @@ dependencies = [
 
 [[package]]
 name = "zerocopy"
-version = "0.8.39"
+version = "0.8.42"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "db6d35d663eadb6c932438e763b262fe1a70987f9ae936e60158176d710cae4a"
+checksum = "f2578b716f8a7a858b7f02d5bd870c14bf4ddbbcf3a4c05414ba6503640505e3"
 dependencies = [
  "zerocopy-derive",
 ]
 
 [[package]]
 name = "zerocopy-derive"
-version = "0.8.39"
+version = "0.8.42"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4122cd3169e94605190e77839c9a40d40ed048d305bfdc146e7df40ab0f3e517"
+checksum = "7e6cc098ea4d3bd6246687de65af3f920c430e236bee1e3bf2e441463f08a02f"
 dependencies = [
  "proc-macro2",
  "quote",
