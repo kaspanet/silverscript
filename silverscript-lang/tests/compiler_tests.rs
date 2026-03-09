@@ -13,7 +13,8 @@ use kaspa_txscript::script_builder::ScriptBuilder;
 use kaspa_txscript::{EngineCtx, EngineFlags, SeqCommitAccessor, TxScriptEngine, pay_to_address_script, pay_to_script_hash_script};
 use silverscript_lang::ast::{Expr, parse_contract_ast};
 use silverscript_lang::compiler::{
-    CompileOptions, CompiledContract, compile_contract, compile_contract_ast, function_branch_index, struct_object,
+    CompileOptions, CompiledContract, CovenantDeclCallOptions, FunctionAbiEntry, FunctionInputAbi, compile_contract,
+    compile_contract_ast, function_branch_index, struct_object,
 };
 
 fn run_script_with_selector(script: Vec<u8>, selector: Option<i64>) -> Result<(), kaspa_txscript_errors::TxScriptError> {
@@ -139,6 +140,32 @@ fn accepts_constructor_args_with_matching_types() {
         Expr::bytes(vec![6u8; 64]),
     ];
     compile_contract(source, &args, CompileOptions::default()).expect("compile succeeds");
+}
+
+#[test]
+fn supports_struct_contract_params_fields_and_constants() {
+    let source = r#"
+        contract TopLevelStructs(Pair init_pair) {
+            struct Pair {
+                int amount;
+                byte[2] code;
+            }
+
+            Pair constant DEFAULT_PAIR = {amount: 7, code: 0x1234};
+            Pair from_param = init_pair;
+            Pair from_constant = DEFAULT_PAIR;
+
+            entrypoint function main() {
+                require(true);
+            }
+        }
+    "#;
+
+    let args = vec![struct_object(vec![("amount", Expr::int(11)), ("code", Expr::bytes(vec![0xab, 0xcd]))])];
+    let compiled = compile_contract(source, &args, CompileOptions::default()).expect("compile succeeds");
+    let selector = selector_for(&compiled, "main");
+    let result = run_script_with_selector(compiled.script, selector);
+    assert!(result.is_ok(), "top-level struct param/field/constant contract should run: {result:?}");
 }
 
 #[test]
@@ -389,6 +416,74 @@ fn build_sig_script_rejects_wrong_argument_type() {
 }
 
 #[test]
+fn build_sig_script_for_covenant_decl_routes_to_hidden_auth_entrypoint() {
+    let source = r#"
+        contract Counter(int init_value) {
+            int value = init_value;
+
+            #[covenant.singleton]
+            function step(State prev_state, State[] new_states) {
+                require(new_states.length <= 1);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[Expr::int(7)], CompileOptions::default()).expect("compile succeeds");
+    let args = vec![vec![struct_object(vec![("value", Expr::int(8))])].into()];
+
+    let actual = compiled
+        .build_sig_script_for_covenant_decl("step", args.clone(), CovenantDeclCallOptions { is_leader: false })
+        .expect("covenant sigscript builds");
+    let expected = compiled.build_sig_script("__step", args).expect("hidden entrypoint sigscript builds");
+
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn build_sig_script_for_covenant_decl_routes_to_hidden_cov_entrypoints() {
+    let source = r#"
+        contract Pair(int init_value) {
+            int value = init_value;
+
+            #[covenant(from = 2, to = 2)]
+            function rebalance(State[] prev_states, State[] new_states) {
+                require(new_states.length == 1);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[Expr::int(7)], CompileOptions::default()).expect("compile succeeds");
+    let leader_args = vec![vec![struct_object(vec![("value", Expr::int(8))])].into()];
+
+    let leader = compiled
+        .build_sig_script_for_covenant_decl("rebalance", leader_args.clone(), CovenantDeclCallOptions { is_leader: true })
+        .expect("leader sigscript builds");
+    let expected_leader = compiled.build_sig_script("__rebalance_leader", leader_args).expect("hidden leader sigscript builds");
+    assert_eq!(leader, expected_leader);
+
+    let delegate = compiled
+        .build_sig_script_for_covenant_decl("rebalance", vec![], CovenantDeclCallOptions { is_leader: false })
+        .expect("delegate sigscript builds");
+    let expected_delegate = compiled.build_sig_script("__rebalance_delegate", vec![]).expect("hidden delegate sigscript builds");
+    assert_eq!(delegate, expected_delegate);
+}
+
+#[test]
+fn build_sig_script_for_covenant_decl_rejects_unknown_declaration() {
+    let source = r#"
+        contract C() {
+            entrypoint function spend() {
+                require(true);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let result = compiled.build_sig_script_for_covenant_decl("missing", vec![], CovenantDeclCallOptions { is_leader: false });
+    assert!(result.is_err());
+}
+
+#[test]
 fn rejects_double_underscore_variable_names() {
     let source = r#"
         contract Bad() {
@@ -407,6 +502,57 @@ fn rejects_double_underscore_variable_names() {
             }
         }
     "#;
+    assert!(parse_contract_ast(source).is_err());
+}
+
+#[test]
+fn rejects_double_underscore_function_names() {
+    let source = r#"
+        contract Bad() {
+            function __hidden() {
+                require(true);
+            }
+
+            entrypoint function main() {
+                require(true);
+            }
+        }
+    "#;
+
+    assert!(parse_contract_ast(source).is_err());
+}
+
+#[test]
+fn rejects_double_underscore_struct_names() {
+    let source = r#"
+        contract Bad() {
+            struct __Hidden {
+                int value;
+            }
+
+            entrypoint function main() {
+                require(true);
+            }
+        }
+    "#;
+
+    assert!(parse_contract_ast(source).is_err());
+}
+
+#[test]
+fn rejects_struct_named_state() {
+    let source = r#"
+        contract Bad() {
+            struct State {
+                int value;
+            }
+
+            entrypoint function main() {
+                require(true);
+            }
+        }
+    "#;
+
     assert!(parse_contract_ast(source).is_err());
 }
 
@@ -530,6 +676,37 @@ fn compiles_struct_sugar_for_locals_calls_and_field_access() {
 }
 
 #[test]
+fn compiles_struct_return_types_in_inline_calls() {
+    let source = r#"
+        contract C() {
+            struct S {
+                int a;
+                string b;
+            }
+
+            function make(int a) : (S) {
+                return({a: a, b: "12345"});
+            }
+
+            function check(S x) {
+                require(x.a == 0);
+                require(x.b.length == 5);
+            }
+
+            entrypoint function main() {
+                (S out) = make(0);
+                check(out);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let selector = selector_for(&compiled, "main");
+    let result = run_script_with_selector(compiled.script, selector);
+    assert!(result.is_ok(), "struct-return inline call should execute successfully: {result:?}");
+}
+
+#[test]
 fn build_sig_script_supports_struct_entrypoint_arguments() {
     let source = r#"
         contract C() {
@@ -575,6 +752,944 @@ fn build_sig_script_supports_state_entrypoint_arguments() {
     assert_eq!(sigscript, expected);
 }
 
+fn struct_array_arg<'i>(values: Vec<(i64, Vec<u8>)>) -> Expr<'i> {
+    values.into_iter().map(|(a, b)| struct_object(vec![("a", Expr::int(a)), ("b", Expr::bytes(b))])).collect::<Vec<_>>().into()
+}
+
+fn state_array_arg<'i>(values: Vec<i64>) -> Expr<'i> {
+    values.into_iter().map(|value| struct_object(vec![("value", Expr::int(value))])).collect::<Vec<_>>().into()
+}
+
+fn matrix_state_array_arg<'i>(values: Vec<(i64, Vec<u8>)>) -> Expr<'i> {
+    values
+        .into_iter()
+        .map(|(amount, owner)| struct_object(vec![("amount", Expr::int(amount)), ("owner", Expr::bytes(owner))]))
+        .collect::<Vec<_>>()
+        .into()
+}
+
+fn replace_compiled_interface<'i>(
+    compiled: &mut CompiledContract<'i>,
+    source: &'i str,
+    entrypoint_name: &str,
+    inputs: &[(&str, &str)],
+) {
+    compiled.ast = parse_contract_ast(source).expect("interface parses");
+    compiled.abi = vec![FunctionAbiEntry {
+        name: entrypoint_name.to_string(),
+        inputs: inputs
+            .iter()
+            .map(|(name, type_name)| FunctionInputAbi { name: (*name).to_string(), type_name: (*type_name).to_string() })
+            .collect(),
+    }];
+}
+
+#[test]
+fn build_sig_script_for_covenant_decl_supports_all_covenant_ast_examples() {
+    struct Case {
+        source: &'static str,
+        constructor_args: Vec<Expr<'static>>,
+        function_name: &'static str,
+        args: Vec<Expr<'static>>,
+        options: CovenantDeclCallOptions,
+        generated_covenant_entrypoint_name: &'static str,
+    }
+
+    let owner = vec![7u8; 32];
+    let next_owner = vec![9u8; 32];
+    let matrix_singleton_transition_source = r#"
+        contract Matrix(int init_amount, byte[32] init_owner) {
+            int amount = init_amount;
+            byte[32] owner = init_owner;
+
+            #[covenant.singleton(mode = transition)]
+            function step(State prev_state, int delta) : (State) {
+                return({ amount: prev_state.amount + delta, owner: prev_state.owner });
+            }
+        }
+    "#;
+    let matrix_singleton_terminate_source = r#"
+        contract Matrix(int init_amount, byte[32] init_owner) {
+            int amount = init_amount;
+            byte[32] owner = init_owner;
+
+            #[covenant.singleton(mode = transition, termination = allowed)]
+            function step(State prev_state, State[] next_states) : (State[]) {
+                return(next_states);
+            }
+        }
+    "#;
+    let matrix_fanout_verification_source = r#"
+        contract Matrix(int max_outs, int init_amount, byte[32] init_owner) {
+            int amount = init_amount;
+            byte[32] owner = init_owner;
+
+            #[covenant.fanout(to = max_outs, mode = verification)]
+            function step(State prev_state, State[] new_states) {
+                require(new_states.length == new_states.length);
+            }
+        }
+    "#;
+    let matrix_all_source = r#"
+        contract Matrix(int max_ins, int max_outs, int init_amount, byte[32] init_owner) {
+            int amount = init_amount;
+            byte[32] owner = init_owner;
+
+            #[covenant(binding = auth, from = 1, to = max_outs, mode = verification, groups = multiple)]
+            function auth_verification_multi(State prev_state, State[] new_states, int nonce) {
+                require(nonce >= 0);
+            }
+
+            #[covenant(binding = auth, from = 1, to = max_outs, mode = verification, groups = single)]
+            function auth_verification_single(State prev_state, State[] new_states) {
+                require(new_states.length == new_states.length);
+            }
+
+            #[covenant(binding = auth, from = 1, to = max_outs, mode = transition)]
+            function auth_transition(State prev_state, int fee) : (State) {
+                return({ amount: prev_state.amount - fee, owner: prev_state.owner });
+            }
+
+            #[covenant(binding = cov, from = max_ins, to = max_outs, mode = verification)]
+            function cov_verification(State[] prev_states, State[] new_states, int nonce) {
+                require(nonce >= 0);
+            }
+
+            #[covenant(binding = cov, from = max_ins, to = max_outs, mode = transition)]
+            function cov_transition(State[] prev_states, int fee) : (State[]) {
+                require(fee >= 0);
+                return(prev_states);
+            }
+
+            #[covenant(from = 1, to = max_outs)]
+            function inferred_auth(State prev_state, State[] new_states) {
+                require(new_states.length == new_states.length);
+            }
+
+            #[covenant(from = max_ins, to = max_outs)]
+            function inferred_cov(State[] prev_states, State[] new_states) {
+                require(new_states.length == new_states.length);
+            }
+
+            #[covenant(from = 1, to = 1)]
+            function inferred_transition(State prev_state, int delta) : (State) {
+                return({ amount: prev_state.amount + delta, owner: prev_state.owner });
+            }
+
+            #[covenant.singleton(mode = transition)]
+            function singleton_transition(State prev_state, int delta) : (State) {
+                return({ amount: prev_state.amount + delta, owner: prev_state.owner });
+            }
+
+            #[covenant.singleton(mode = transition, termination = allowed)]
+            function singleton_terminate(State prev_state, State[] next_states) : (State[]) {
+                require(prev_state.amount >= 0);
+                return(next_states);
+            }
+
+            #[covenant.fanout(to = max_outs, mode = verification)]
+            function fanout_verification(State prev_state, State[] new_states) {
+                require(new_states.length == new_states.length);
+            }
+        }
+    "#;
+
+    let cases = vec![
+        Case {
+            source: r#"
+                contract Decls(int max_outs) {
+                    int value = 0;
+
+                    #[covenant(binding = auth, from = 1, to = max_outs, groups = single)]
+                    function split(State prev_state, State[] new_states, int amount) {
+                        require(amount >= 0);
+                    }
+                }
+            "#,
+            constructor_args: vec![Expr::int(4)],
+            function_name: "split",
+            args: vec![state_array_arg(vec![11]), Expr::int(3)],
+            options: CovenantDeclCallOptions { is_leader: false },
+            generated_covenant_entrypoint_name: "__split",
+        },
+        Case {
+            source: r#"
+                contract Decls(int max_ins, int max_outs) {
+                    int value = 0;
+
+                    #[covenant(from = max_ins, to = max_outs, mode = verification)]
+                    function transition_ok(State[] prev_states, State[] new_states, int delta) {
+                        require(delta >= 0);
+                    }
+                }
+            "#,
+            constructor_args: vec![Expr::int(2), Expr::int(3)],
+            function_name: "transition_ok",
+            args: vec![state_array_arg(vec![10, 11]), Expr::int(1)],
+            options: CovenantDeclCallOptions { is_leader: true },
+            generated_covenant_entrypoint_name: "__transition_ok_leader",
+        },
+        Case {
+            source: r#"
+                contract Decls(int max_ins, int max_outs) {
+                    int value = 0;
+
+                    #[covenant(from = max_ins, to = max_outs, mode = verification)]
+                    function transition_ok(State[] prev_states, State[] new_states, int delta) {
+                        require(delta >= 0);
+                    }
+                }
+            "#,
+            constructor_args: vec![Expr::int(2), Expr::int(3)],
+            function_name: "transition_ok",
+            args: vec![],
+            options: CovenantDeclCallOptions { is_leader: false },
+            generated_covenant_entrypoint_name: "__transition_ok_delegate",
+        },
+        Case {
+            source: r#"
+                contract Decls(int init_value) {
+                    int value = init_value;
+
+                    #[covenant.singleton(mode = transition)]
+                    function bump(State prev_state, int delta) : (State) {
+                        return({ value: prev_state.value + delta });
+                    }
+                }
+            "#,
+            constructor_args: vec![Expr::int(7)],
+            function_name: "bump",
+            args: vec![Expr::int(2)],
+            options: CovenantDeclCallOptions { is_leader: false },
+            generated_covenant_entrypoint_name: "__bump",
+        },
+        Case {
+            source: r#"
+                contract Decls(int max_outs, int init_value) {
+                    int value = init_value;
+
+                    #[covenant(from = 1, to = max_outs, mode = transition)]
+                    function fanout(State prev_state, State[] next_states) : (State[]) {
+                        return(next_states);
+                    }
+                }
+            "#,
+            constructor_args: vec![Expr::int(4), Expr::int(10)],
+            function_name: "fanout",
+            args: vec![state_array_arg(vec![11, 12])],
+            options: CovenantDeclCallOptions { is_leader: false },
+            generated_covenant_entrypoint_name: "__fanout",
+        },
+        Case {
+            source: r#"
+                contract Decls(int init_value) {
+                    int value = init_value;
+
+                    #[covenant.singleton(mode = transition, termination = allowed)]
+                    function bump_or_terminate(State prev_state, State[] next_states) : (State[]) {
+                        return(next_states);
+                    }
+                }
+            "#,
+            constructor_args: vec![Expr::int(10)],
+            function_name: "bump_or_terminate",
+            args: vec![state_array_arg(vec![13])],
+            options: CovenantDeclCallOptions { is_leader: false },
+            generated_covenant_entrypoint_name: "__bump_or_terminate",
+        },
+        Case {
+            source: r#"
+                contract Matrix(int max_outs, int init_amount, byte[32] init_owner) {
+                    int amount = init_amount;
+                    byte[32] owner = init_owner;
+
+                    #[covenant(binding = auth, from = 1, to = max_outs, mode = verification, groups = multiple)]
+                    function step(State prev_state, State[] new_states, int nonce) {
+                        require(nonce >= 0);
+                    }
+                }
+            "#,
+            constructor_args: vec![Expr::int(4), Expr::int(10), Expr::bytes(owner.clone())],
+            function_name: "step",
+            args: vec![matrix_state_array_arg(vec![(11, next_owner.clone())]), Expr::int(0)],
+            options: CovenantDeclCallOptions { is_leader: false },
+            generated_covenant_entrypoint_name: "__step",
+        },
+        Case {
+            source: r#"
+                contract Matrix(int max_outs, int init_amount, byte[32] init_owner) {
+                    int amount = init_amount;
+                    byte[32] owner = init_owner;
+
+                    #[covenant(binding = auth, from = 1, to = max_outs, mode = verification, groups = single)]
+                    function step(State prev_state, State[] new_states) {
+                        require(new_states.length == new_states.length);
+                    }
+                }
+            "#,
+            constructor_args: vec![Expr::int(4), Expr::int(10), Expr::bytes(owner.clone())],
+            function_name: "step",
+            args: vec![matrix_state_array_arg(vec![(11, next_owner.clone())])],
+            options: CovenantDeclCallOptions { is_leader: false },
+            generated_covenant_entrypoint_name: "__step",
+        },
+        Case {
+            source: r#"
+                contract Matrix(int max_outs, int init_amount, byte[32] init_owner) {
+                    int amount = init_amount;
+                    byte[32] owner = init_owner;
+
+                    #[covenant(binding = auth, from = 1, to = max_outs, mode = transition)]
+                    function step(State prev_state, int fee) : (State) {
+                        return({ amount: prev_state.amount - fee, owner: prev_state.owner });
+                    }
+                }
+            "#,
+            constructor_args: vec![Expr::int(4), Expr::int(10), Expr::bytes(owner.clone())],
+            function_name: "step",
+            args: vec![Expr::int(1)],
+            options: CovenantDeclCallOptions { is_leader: false },
+            generated_covenant_entrypoint_name: "__step",
+        },
+        Case {
+            source: r#"
+                contract Matrix(int max_ins, int max_outs, int init_amount, byte[32] init_owner) {
+                    int amount = init_amount;
+                    byte[32] owner = init_owner;
+
+                    #[covenant(binding = cov, from = max_ins, to = max_outs, mode = verification)]
+                    function step(State[] prev_states, State[] new_states, int nonce) {
+                        require(nonce >= 0);
+                    }
+                }
+            "#,
+            constructor_args: vec![Expr::int(2), Expr::int(4), Expr::int(10), Expr::bytes(owner.clone())],
+            function_name: "step",
+            args: vec![matrix_state_array_arg(vec![(11, next_owner.clone())]), Expr::int(0)],
+            options: CovenantDeclCallOptions { is_leader: true },
+            generated_covenant_entrypoint_name: "__step_leader",
+        },
+        Case {
+            source: r#"
+                contract Matrix(int max_ins, int max_outs, int init_amount, byte[32] init_owner) {
+                    int amount = init_amount;
+                    byte[32] owner = init_owner;
+
+                    #[covenant(binding = cov, from = max_ins, to = max_outs, mode = verification)]
+                    function step(State[] prev_states, State[] new_states, int nonce) {
+                        require(nonce >= 0);
+                    }
+                }
+            "#,
+            constructor_args: vec![Expr::int(2), Expr::int(4), Expr::int(10), Expr::bytes(owner.clone())],
+            function_name: "step",
+            args: vec![],
+            options: CovenantDeclCallOptions { is_leader: false },
+            generated_covenant_entrypoint_name: "__step_delegate",
+        },
+        Case {
+            source: r#"
+                contract Matrix(int max_ins, int max_outs, int init_amount, byte[32] init_owner) {
+                    int amount = init_amount;
+                    byte[32] owner = init_owner;
+
+                    #[covenant(binding = cov, from = max_ins, to = max_outs, mode = transition)]
+                    function step(State[] prev_states, int fee) : (State[]) {
+                        require(fee >= 0);
+                        return(prev_states);
+                    }
+                }
+            "#,
+            constructor_args: vec![Expr::int(2), Expr::int(4), Expr::int(10), Expr::bytes(owner.clone())],
+            function_name: "step",
+            args: vec![matrix_state_array_arg(vec![(10, owner.clone())]), Expr::int(1)],
+            options: CovenantDeclCallOptions { is_leader: true },
+            generated_covenant_entrypoint_name: "__step_leader",
+        },
+        Case {
+            source: r#"
+                contract Matrix(int max_ins, int max_outs, int init_amount, byte[32] init_owner) {
+                    int amount = init_amount;
+                    byte[32] owner = init_owner;
+
+                    #[covenant(binding = cov, from = max_ins, to = max_outs, mode = transition)]
+                    function step(State[] prev_states, int fee) : (State[]) {
+                        require(fee >= 0);
+                        return(prev_states);
+                    }
+                }
+            "#,
+            constructor_args: vec![Expr::int(2), Expr::int(4), Expr::int(10), Expr::bytes(owner.clone())],
+            function_name: "step",
+            args: vec![],
+            options: CovenantDeclCallOptions { is_leader: false },
+            generated_covenant_entrypoint_name: "__step_delegate",
+        },
+        Case {
+            source: r#"
+                contract Matrix(int max_outs, int init_amount, byte[32] init_owner) {
+                    int amount = init_amount;
+                    byte[32] owner = init_owner;
+
+                    #[covenant(from = 1, to = max_outs)]
+                    function step(State prev_state, State[] new_states) {
+                        require(new_states.length == new_states.length);
+                    }
+                }
+            "#,
+            constructor_args: vec![Expr::int(4), Expr::int(10), Expr::bytes(owner.clone())],
+            function_name: "step",
+            args: vec![matrix_state_array_arg(vec![(11, next_owner.clone())])],
+            options: CovenantDeclCallOptions { is_leader: false },
+            generated_covenant_entrypoint_name: "__step",
+        },
+        Case {
+            source: r#"
+                contract Matrix(int max_ins, int max_outs, int init_amount, byte[32] init_owner) {
+                    int amount = init_amount;
+                    byte[32] owner = init_owner;
+
+                    #[covenant(from = max_ins, to = max_outs)]
+                    function step(State[] prev_states, State[] new_states) {
+                        require(new_states.length == new_states.length);
+                    }
+                }
+            "#,
+            constructor_args: vec![Expr::int(2), Expr::int(4), Expr::int(10), Expr::bytes(owner.clone())],
+            function_name: "step",
+            args: vec![matrix_state_array_arg(vec![(11, next_owner.clone())])],
+            options: CovenantDeclCallOptions { is_leader: true },
+            generated_covenant_entrypoint_name: "__step_leader",
+        },
+        Case {
+            source: r#"
+                contract Matrix(int max_ins, int max_outs, int init_amount, byte[32] init_owner) {
+                    int amount = init_amount;
+                    byte[32] owner = init_owner;
+
+                    #[covenant(from = max_ins, to = max_outs)]
+                    function step(State[] prev_states, State[] new_states) {
+                        require(new_states.length == new_states.length);
+                    }
+                }
+            "#,
+            constructor_args: vec![Expr::int(2), Expr::int(4), Expr::int(10), Expr::bytes(owner.clone())],
+            function_name: "step",
+            args: vec![],
+            options: CovenantDeclCallOptions { is_leader: false },
+            generated_covenant_entrypoint_name: "__step_delegate",
+        },
+        Case {
+            source: r#"
+                contract Matrix(int init_amount, byte[32] init_owner) {
+                    int amount = init_amount;
+                    byte[32] owner = init_owner;
+
+                    #[covenant(from = 1, to = 1)]
+                    function step(State prev_state, int delta) : (State) {
+                        return({ amount: prev_state.amount + delta, owner: prev_state.owner });
+                    }
+                }
+            "#,
+            constructor_args: vec![Expr::int(10), Expr::bytes(owner.clone())],
+            function_name: "step",
+            args: vec![Expr::int(1)],
+            options: CovenantDeclCallOptions { is_leader: false },
+            generated_covenant_entrypoint_name: "__step",
+        },
+        Case {
+            source: matrix_singleton_transition_source,
+            constructor_args: vec![Expr::int(10), Expr::bytes(owner.clone())],
+            function_name: "step",
+            args: vec![Expr::int(1)],
+            options: CovenantDeclCallOptions { is_leader: false },
+            generated_covenant_entrypoint_name: "__step",
+        },
+        Case {
+            source: matrix_singleton_terminate_source,
+            constructor_args: vec![Expr::int(10), Expr::bytes(owner.clone())],
+            function_name: "step",
+            args: vec![matrix_state_array_arg(vec![(11, next_owner.clone())])],
+            options: CovenantDeclCallOptions { is_leader: false },
+            generated_covenant_entrypoint_name: "__step",
+        },
+        Case {
+            source: matrix_fanout_verification_source,
+            constructor_args: vec![Expr::int(4), Expr::int(10), Expr::bytes(owner.clone())],
+            function_name: "step",
+            args: vec![matrix_state_array_arg(vec![(11, next_owner.clone())])],
+            options: CovenantDeclCallOptions { is_leader: false },
+            generated_covenant_entrypoint_name: "__step",
+        },
+        Case {
+            source: matrix_all_source,
+            constructor_args: vec![Expr::int(2), Expr::int(4), Expr::int(10), Expr::bytes(owner.clone())],
+            function_name: "auth_verification_multi",
+            args: vec![matrix_state_array_arg(vec![(11, next_owner.clone())]), Expr::int(0)],
+            options: CovenantDeclCallOptions { is_leader: false },
+            generated_covenant_entrypoint_name: "__auth_verification_multi",
+        },
+        Case {
+            source: matrix_all_source,
+            constructor_args: vec![Expr::int(2), Expr::int(4), Expr::int(10), Expr::bytes(owner.clone())],
+            function_name: "auth_verification_single",
+            args: vec![matrix_state_array_arg(vec![(11, next_owner.clone())])],
+            options: CovenantDeclCallOptions { is_leader: false },
+            generated_covenant_entrypoint_name: "__auth_verification_single",
+        },
+        Case {
+            source: matrix_all_source,
+            constructor_args: vec![Expr::int(2), Expr::int(4), Expr::int(10), Expr::bytes(owner.clone())],
+            function_name: "auth_transition",
+            args: vec![Expr::int(1)],
+            options: CovenantDeclCallOptions { is_leader: false },
+            generated_covenant_entrypoint_name: "__auth_transition",
+        },
+        Case {
+            source: matrix_all_source,
+            constructor_args: vec![Expr::int(2), Expr::int(4), Expr::int(10), Expr::bytes(owner.clone())],
+            function_name: "cov_verification",
+            args: vec![matrix_state_array_arg(vec![(11, next_owner.clone())]), Expr::int(0)],
+            options: CovenantDeclCallOptions { is_leader: true },
+            generated_covenant_entrypoint_name: "__cov_verification_leader",
+        },
+        Case {
+            source: matrix_all_source,
+            constructor_args: vec![Expr::int(2), Expr::int(4), Expr::int(10), Expr::bytes(owner.clone())],
+            function_name: "cov_verification",
+            args: vec![],
+            options: CovenantDeclCallOptions { is_leader: false },
+            generated_covenant_entrypoint_name: "__cov_verification_delegate",
+        },
+        Case {
+            source: matrix_all_source,
+            constructor_args: vec![Expr::int(2), Expr::int(4), Expr::int(10), Expr::bytes(owner.clone())],
+            function_name: "cov_transition",
+            args: vec![matrix_state_array_arg(vec![(10, owner.clone())]), Expr::int(1)],
+            options: CovenantDeclCallOptions { is_leader: true },
+            generated_covenant_entrypoint_name: "__cov_transition_leader",
+        },
+        Case {
+            source: matrix_all_source,
+            constructor_args: vec![Expr::int(2), Expr::int(4), Expr::int(10), Expr::bytes(owner.clone())],
+            function_name: "cov_transition",
+            args: vec![],
+            options: CovenantDeclCallOptions { is_leader: false },
+            generated_covenant_entrypoint_name: "__cov_transition_delegate",
+        },
+        Case {
+            source: matrix_all_source,
+            constructor_args: vec![Expr::int(2), Expr::int(4), Expr::int(10), Expr::bytes(owner.clone())],
+            function_name: "inferred_auth",
+            args: vec![matrix_state_array_arg(vec![(11, next_owner.clone())])],
+            options: CovenantDeclCallOptions { is_leader: false },
+            generated_covenant_entrypoint_name: "__inferred_auth",
+        },
+        Case {
+            source: matrix_all_source,
+            constructor_args: vec![Expr::int(2), Expr::int(4), Expr::int(10), Expr::bytes(owner.clone())],
+            function_name: "inferred_cov",
+            args: vec![matrix_state_array_arg(vec![(11, next_owner.clone())])],
+            options: CovenantDeclCallOptions { is_leader: true },
+            generated_covenant_entrypoint_name: "__inferred_cov_leader",
+        },
+        Case {
+            source: matrix_all_source,
+            constructor_args: vec![Expr::int(2), Expr::int(4), Expr::int(10), Expr::bytes(owner.clone())],
+            function_name: "inferred_cov",
+            args: vec![],
+            options: CovenantDeclCallOptions { is_leader: false },
+            generated_covenant_entrypoint_name: "__inferred_cov_delegate",
+        },
+        Case {
+            source: matrix_all_source,
+            constructor_args: vec![Expr::int(2), Expr::int(4), Expr::int(10), Expr::bytes(owner.clone())],
+            function_name: "inferred_transition",
+            args: vec![Expr::int(1)],
+            options: CovenantDeclCallOptions { is_leader: false },
+            generated_covenant_entrypoint_name: "__inferred_transition",
+        },
+        Case {
+            source: matrix_all_source,
+            constructor_args: vec![Expr::int(2), Expr::int(4), Expr::int(10), Expr::bytes(owner.clone())],
+            function_name: "singleton_transition",
+            args: vec![Expr::int(1)],
+            options: CovenantDeclCallOptions { is_leader: false },
+            generated_covenant_entrypoint_name: "__singleton_transition",
+        },
+        Case {
+            source: matrix_all_source,
+            constructor_args: vec![Expr::int(2), Expr::int(4), Expr::int(10), Expr::bytes(owner.clone())],
+            function_name: "singleton_terminate",
+            args: vec![matrix_state_array_arg(vec![(11, next_owner.clone())])],
+            options: CovenantDeclCallOptions { is_leader: false },
+            generated_covenant_entrypoint_name: "__singleton_terminate",
+        },
+        Case {
+            source: matrix_all_source,
+            constructor_args: vec![Expr::int(2), Expr::int(4), Expr::int(10), Expr::bytes(owner.clone())],
+            function_name: "fanout_verification",
+            args: vec![matrix_state_array_arg(vec![(11, next_owner.clone())])],
+            options: CovenantDeclCallOptions { is_leader: false },
+            generated_covenant_entrypoint_name: "__fanout_verification",
+        },
+    ];
+
+    for case in cases {
+        let compiled = compile_contract(case.source, &case.constructor_args, CompileOptions::default()).expect("compile succeeds");
+        let sigscript = compiled
+            .build_sig_script_for_covenant_decl(case.function_name, case.args.clone(), case.options)
+            .expect("covenant declaration sigscript builds");
+        let expected = compiled
+            .build_sig_script(case.generated_covenant_entrypoint_name, case.args)
+            .expect("generated entrypoint sigscript builds");
+        assert_eq!(sigscript, expected, "covenant declaration sigscript should match generated entrypoint for {}", case.function_name);
+    }
+}
+
+#[test]
+fn runtime_rejects_regular_struct_array_entrypoint_arguments_without_struct_signature() {
+    let source = r#"
+        contract C() {
+            struct S {
+                int a;
+                byte[2] b;
+            }
+
+            entrypoint function main(int[] items_a, byte[2][] items_b) {
+                require(items_a.length == 2);
+                require(items_b.length == 2);
+                require(items_a[0] == 7);
+                require(items_a[1] == 9);
+                require(items_b[0] == 0x0102);
+                require(items_b[1] == 0x0304);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let main_param_types: Vec<String> = compiled
+        .ast
+        .functions
+        .iter()
+        .find(|function| function.name == "main")
+        .expect("main exists")
+        .params
+        .iter()
+        .map(|param| param.type_ref.type_name())
+        .collect();
+    assert_eq!(main_param_types, vec!["int[]".to_string(), "byte[2][]".to_string()]);
+
+    let err = compiled
+        .build_sig_script("main", vec![struct_array_arg(vec![(7, vec![0x01, 0x02]), (9, vec![0x03, 0x04])])])
+        .expect_err("struct[] arguments should be rejected when the entrypoint signature is not struct-typed");
+    assert!(err.to_string().contains("expects 2 arguments"), "unexpected error: {err}");
+}
+
+#[test]
+fn runtime_supports_regular_struct_array_entrypoint_arguments_with_struct_signature() {
+    let source = r#"
+        contract C() {
+            struct S {
+                int a;
+                byte[2] b;
+            }
+
+            entrypoint function main(int[] items_a, byte[2][] items_b) {
+                require(items_a.length == 2);
+                require(items_b.length == 2);
+                require(items_a[0] == 7);
+                require(items_a[1] == 9);
+                require(items_b[0] == 0x0102);
+                require(items_b[1] == 0x0304);
+            }
+        }
+    "#;
+
+    let struct_signature_source = r#"
+        contract C() {
+            struct S {
+                int a;
+                byte[2] b;
+            }
+
+            entrypoint function main(S[] x) {
+                require(x.length == 2);
+                require(x[0].a == 7);
+                require(x[1].a == 9);
+                require(x[0].b == 0x0102);
+                require(x[1].b == 0x0304);
+            }
+        }
+    "#;
+
+    let mut compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    replace_compiled_interface(&mut compiled, struct_signature_source, "main", &[("x", "S[]")]);
+
+    let main_param_types: Vec<String> = compiled
+        .ast
+        .functions
+        .iter()
+        .find(|function| function.name == "main")
+        .expect("main exists")
+        .params
+        .iter()
+        .map(|param| param.type_ref.type_name())
+        .collect();
+    assert_eq!(main_param_types, vec!["S[]".to_string()]);
+
+    let sigscript = compiled
+        .build_sig_script("main", vec![struct_array_arg(vec![(7, vec![0x01, 0x02]), (9, vec![0x03, 0x04])])])
+        .expect("sigscript builds");
+    let result = run_script_with_sigscript(compiled.script, sigscript);
+
+    assert!(result.is_ok(), "regular struct[] entrypoint arg should execute successfully: {result:?}");
+}
+
+#[test]
+fn runtime_supports_direct_struct_array_entrypoint_signature() {
+    let source = r#"
+        contract C() {
+            struct S {
+                int a;
+                byte[2] b;
+            }
+
+            entrypoint function f(S[] x) {
+                require(x.length == 2);
+                require(x[0].a == 7);
+                require(x[1].a == 9);
+                require(x[0].b == 0x0102);
+                require(x[1].b == 0x0304);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let f_param_types: Vec<String> = compiled
+        .ast
+        .functions
+        .iter()
+        .find(|function| function.name == "f")
+        .expect("f exists")
+        .params
+        .iter()
+        .map(|param| param.type_ref.type_name())
+        .collect();
+    assert_eq!(f_param_types, vec!["S[]".to_string()]);
+
+    let sigscript = compiled
+        .build_sig_script("f", vec![struct_array_arg(vec![(7, vec![0x01, 0x02]), (9, vec![0x03, 0x04])])])
+        .expect("sigscript builds");
+    let result = run_script_with_sigscript(compiled.script, sigscript);
+
+    assert!(result.is_ok(), "direct struct[] entrypoint signature should execute successfully: {result:?}");
+}
+
+#[test]
+fn runtime_rejects_regular_struct_array_non_entrypoint_arguments_without_struct_signature() {
+    let source = r#"
+        contract C() {
+            struct S {
+                int a;
+                byte[2] b;
+            }
+
+            function verify(int[] items_a, byte[2][] items_b) {
+                require(items_a.length == 2);
+                require(items_b.length == 2);
+                require(items_a[0] == 7);
+                require(items_a[1] == 9);
+                require(items_b[0] == 0x0102);
+                require(items_b[1] == 0x0304);
+            }
+
+            entrypoint function main(int[] items_a, byte[2][] items_b) {
+                verify(items_a, items_b);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let main_param_types: Vec<String> = compiled
+        .ast
+        .functions
+        .iter()
+        .find(|function| function.name == "main")
+        .expect("main exists")
+        .params
+        .iter()
+        .map(|param| param.type_ref.type_name())
+        .collect();
+    assert_eq!(main_param_types, vec!["int[]".to_string(), "byte[2][]".to_string()]);
+
+    let verify_param_types: Vec<String> = compiled
+        .ast
+        .functions
+        .iter()
+        .find(|function| function.name == "verify")
+        .expect("verify exists")
+        .params
+        .iter()
+        .map(|param| param.type_ref.type_name())
+        .collect();
+    assert_eq!(verify_param_types, vec!["int[]".to_string(), "byte[2][]".to_string()]);
+
+    let err = compiled
+        .build_sig_script("main", vec![struct_array_arg(vec![(7, vec![0x01, 0x02]), (9, vec![0x03, 0x04])])])
+        .expect_err("struct[] arguments should be rejected when entrypoint and internal function signatures are not struct-typed");
+    assert!(err.to_string().contains("expects 2 arguments"), "unexpected error: {err}");
+}
+
+#[test]
+fn runtime_supports_regular_struct_array_non_entrypoint_arguments_with_struct_signature() {
+    let source = r#"
+        contract C() {
+            struct S {
+                int a;
+                byte[2] b;
+            }
+
+            function verify(int[] items_a, byte[2][] items_b) {
+                require(items_a.length == 2);
+                require(items_b.length == 2);
+                require(items_a[0] == 7);
+                require(items_a[1] == 9);
+                require(items_b[0] == 0x0102);
+                require(items_b[1] == 0x0304);
+            }
+
+            entrypoint function main(int[] items_a, byte[2][] items_b) {
+                verify(items_a, items_b);
+            }
+        }
+    "#;
+
+    let struct_signature_source = r#"
+        contract C() {
+            struct S {
+                int a;
+                byte[2] b;
+            }
+
+            function verify(S[] x) {
+                require(x.length == 2);
+                require(x[0].a == 7);
+                require(x[1].a == 9);
+                require(x[0].b == 0x0102);
+                require(x[1].b == 0x0304);
+            }
+
+            entrypoint function main(S[] x) {
+                verify(x);
+            }
+        }
+    "#;
+
+    let mut compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    replace_compiled_interface(&mut compiled, struct_signature_source, "main", &[("x", "S[]")]);
+
+    let main_param_types: Vec<String> = compiled
+        .ast
+        .functions
+        .iter()
+        .find(|function| function.name == "main")
+        .expect("main exists")
+        .params
+        .iter()
+        .map(|param| param.type_ref.type_name())
+        .collect();
+    assert_eq!(main_param_types, vec!["S[]".to_string()]);
+
+    let verify_param_types: Vec<String> = compiled
+        .ast
+        .functions
+        .iter()
+        .find(|function| function.name == "verify")
+        .expect("verify exists")
+        .params
+        .iter()
+        .map(|param| param.type_ref.type_name())
+        .collect();
+    assert_eq!(verify_param_types, vec!["S[]".to_string()]);
+
+    let sigscript = compiled
+        .build_sig_script("main", vec![struct_array_arg(vec![(7, vec![0x01, 0x02]), (9, vec![0x03, 0x04])])])
+        .expect("sigscript builds");
+    let result = run_script_with_sigscript(compiled.script, sigscript);
+
+    assert!(result.is_ok(), "regular struct[] arg should flow through non-entrypoint calls at runtime: {result:?}");
+}
+
+#[test]
+fn rejects_wrong_argument_type_for_direct_struct_array_non_entrypoint_signature() {
+    let source = r#"
+        contract C() {
+            struct S {
+                int a;
+                byte[2] b;
+            }
+
+            function verify(S[] x) {
+                require(x.length == 2);
+            }
+
+            entrypoint function main() {
+                int[] xs = [7, 9];
+                verify(xs);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default())
+        .expect_err("wrong non-entrypoint struct[] argument type should be rejected");
+    assert!(err.to_string().contains("expects S[]") || err.to_string().contains("expects struct S"), "unexpected error: {err}");
+}
+
+#[test]
+fn runtime_supports_direct_struct_array_non_entrypoint_signature() {
+    let source = r#"
+        contract C() {
+            struct S {
+                int a;
+                byte[2] b;
+            }
+
+            function verify(S[] x) {
+                require(x.length == 2);
+                require(x[0].a == 7);
+                require(x[1].a == 9);
+                require(x[0].b == 0x0102);
+                require(x[1].b == 0x0304);
+            }
+
+            entrypoint function main(S[] x) {
+                verify(x);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let verify_param_types: Vec<String> = compiled
+        .ast
+        .functions
+        .iter()
+        .find(|function| function.name == "verify")
+        .expect("verify exists")
+        .params
+        .iter()
+        .map(|param| param.type_ref.type_name())
+        .collect();
+    assert_eq!(verify_param_types, vec!["S[]".to_string()]);
+
+    let sigscript = compiled
+        .build_sig_script("main", vec![struct_array_arg(vec![(7, vec![0x01, 0x02]), (9, vec![0x03, 0x04])])])
+        .expect("sigscript builds");
+    let result = run_script_with_sigscript(compiled.script, sigscript);
+
+    assert!(result.is_ok(), "direct struct[] non-entrypoint signature should execute successfully: {result:?}");
+}
+
 #[test]
 fn rejects_struct_literal_with_wrong_field_type_in_function_call() {
     let source = r#"
@@ -595,7 +1710,11 @@ fn rejects_struct_literal_with_wrong_field_type_in_function_call() {
     "#;
 
     let err = compile_contract(source, &[], CompileOptions::default()).expect_err("compile should fail");
-    assert!(err.to_string().contains("function argument '__struct_x_a' expects int") || err.to_string().contains("expects int"));
+    assert!(
+        err.to_string().contains("function argument '__struct_x_a' expects int")
+            || err.to_string().contains("expects int")
+            || err.to_string().contains("expects S")
+    );
 }
 
 #[test]

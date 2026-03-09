@@ -62,11 +62,9 @@ struct TransitionShape<'i> {
 pub(super) fn lower_covenant_declarations<'i>(
     contract: &ContractAst<'i>,
     constants: &HashMap<String, Expr<'i>>,
+    preserve_policy_structs: bool,
 ) -> Result<ContractAst<'i>, CompilerError> {
     let mut lowered = Vec::new();
-
-    let mut used_names: HashSet<String> =
-        contract.functions.iter().filter(|function| function.attributes.is_empty()).map(|function| function.name.clone()).collect();
 
     for function in &contract.functions {
         if function.attributes.is_empty() {
@@ -77,61 +75,45 @@ pub(super) fn lower_covenant_declarations<'i>(
         let declaration = parse_covenant_declaration(function, constants)?;
         let desugared_policy = desugar_covenant_policy_state_syntax(function, &declaration, &contract.fields)?;
 
-        let policy_name = format!("__covenant_policy_{}", function.name);
-        if used_names.contains(&policy_name) {
-            return Err(CompilerError::Unsupported(format!(
-                "generated policy function name '{}' conflicts with existing function",
-                policy_name
-            )));
-        }
-        used_names.insert(policy_name.clone());
+        let policy_name = generated_covenant_policy_name(&function.name);
 
-        let mut policy = desugared_policy;
+        let mut wrapper_policy = desugared_policy;
+        wrapper_policy.name = policy_name.clone();
+        wrapper_policy.entrypoint = false;
+        wrapper_policy.attributes.clear();
+
+        let mut policy = if preserve_policy_structs { function.clone() } else { wrapper_policy.clone() };
         policy.name = policy_name.clone();
         policy.entrypoint = false;
         policy.attributes.clear();
-        let wrapper_policy = policy.clone();
         lowered.push(policy);
 
         match declaration.binding {
             CovenantBinding::Auth => {
-                let entrypoint_name = function.name.clone();
-                if used_names.contains(&entrypoint_name) {
-                    return Err(CompilerError::Unsupported(format!(
-                        "generated entrypoint '{}' conflicts with existing function",
-                        entrypoint_name
-                    )));
+                let entrypoint_name = generated_covenant_entrypoint_name(&function.name);
+                let mut wrapper =
+                    build_auth_wrapper(&wrapper_policy, &policy_name, declaration.clone(), entrypoint_name, &contract.fields)?;
+                if preserve_policy_structs {
+                    wrapper.params = preserved_entrypoint_params(function, declaration, true, &contract.fields);
                 }
-                used_names.insert(entrypoint_name.clone());
-                lowered.push(build_auth_wrapper(&wrapper_policy, &policy_name, declaration, entrypoint_name, &contract.fields)?);
+                lowered.push(wrapper);
             }
             CovenantBinding::Cov => {
-                let leader_name = format!("{}_leader", function.name);
-                if used_names.contains(&leader_name) {
-                    return Err(CompilerError::Unsupported(format!(
-                        "generated entrypoint '{}' conflicts with existing function",
-                        leader_name
-                    )));
+                let leader_name = generated_covenant_leader_entrypoint_name(&function.name);
+                let mut leader_wrapper =
+                    build_cov_wrapper(&wrapper_policy, &policy_name, declaration.clone(), leader_name, true, &contract.fields)?;
+                if preserve_policy_structs {
+                    leader_wrapper.params = preserved_entrypoint_params(function, declaration.clone(), true, &contract.fields);
                 }
-                used_names.insert(leader_name.clone());
-                lowered.push(build_cov_wrapper(
-                    &wrapper_policy,
-                    &policy_name,
-                    declaration.clone(),
-                    leader_name,
-                    true,
-                    &contract.fields,
-                )?);
+                lowered.push(leader_wrapper);
 
-                let delegate_name = format!("{}_delegate", function.name);
-                if used_names.contains(&delegate_name) {
-                    return Err(CompilerError::Unsupported(format!(
-                        "generated entrypoint '{}' conflicts with existing function",
-                        delegate_name
-                    )));
+                let delegate_name = generated_covenant_delegate_entrypoint_name(&function.name);
+                let mut delegate_wrapper =
+                    build_cov_wrapper(&wrapper_policy, &policy_name, declaration.clone(), delegate_name, false, &contract.fields)?;
+                if preserve_policy_structs {
+                    delegate_wrapper.params = preserved_entrypoint_params(function, declaration, false, &contract.fields);
                 }
-                used_names.insert(delegate_name.clone());
-                lowered.push(build_cov_wrapper(&wrapper_policy, &policy_name, declaration, delegate_name, false, &contract.fields)?);
+                lowered.push(delegate_wrapper);
             }
         }
     }
@@ -349,6 +331,27 @@ fn parse_attr_ident_arg<'i>(name: &str, value: Option<&Expr<'i>>) -> Result<Stri
     match &value.kind {
         ExprKind::Identifier(identifier) => Ok(identifier.clone()),
         _ => Err(CompilerError::Unsupported(format!("covenant attribute argument '{}' must be an identifier", name))),
+    }
+}
+
+fn preserved_entrypoint_params<'i>(
+    function: &FunctionAst<'i>,
+    declaration: CovenantDeclaration<'i>,
+    leader: bool,
+    contract_fields: &[ContractFieldAst<'i>],
+) -> Vec<crate::ast::ParamAst<'i>> {
+    if contract_fields.is_empty() {
+        return match (declaration.binding, leader) {
+            (CovenantBinding::Cov, false) => Vec::new(),
+            _ => function.params.clone(),
+        };
+    }
+
+    match (declaration.binding, declaration.mode, leader) {
+        (CovenantBinding::Auth, _, _) => function.params.iter().skip(1).cloned().collect(),
+        (CovenantBinding::Cov, CovenantMode::Verification, true) => function.params.iter().skip(1).cloned().collect(),
+        (CovenantBinding::Cov, CovenantMode::Transition, true) => function.params.clone(),
+        (CovenantBinding::Cov, _, false) => Vec::new(),
     }
 }
 
