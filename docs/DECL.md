@@ -4,11 +4,11 @@ Status: Draft
 Created: 2026-02-23
 ```
 
-# Covenant Declarations (Proposal)
+# Covenant Declarations
 
-## Proposal summary
+## Summary
 
-This document proposes a minimal declaration API for covenant patterns, where users declare policy functions and the compiler generates covenant entrypoints/wrappers.
+This document describes a minimal declaration API for covenant patterns, where users declare policy functions and the compiler generates covenant entrypoints/wrappers.
 
 Context: today these patterns are written manually with `OpAuth*`/`OpCov*` plus `readInputState`/`validateOutputState`. The goal here is to standardize the pattern and remove user boilerplate.
 
@@ -16,7 +16,7 @@ Scope: syntax + semantics only. This is not claiming implementation is finalized
 
 1. Dev writes only a transition/verification policy function and annotates it with a covenant macro.
 2. Entrypoint(s) are inferred by the compiler from that function’s shape.
-3. State is treated as one implicit unnamed struct synthesized from all contract fields:
+3. State is treated as one implicit `State` struct synthesized from all contract fields:
    * `1:1` uses `State prev_state` / `State new_state`
    * `1:N` uses `State prev_state` / `State[] new_states`
    * `N:M` uses `State[] prev_states` / `State[] new_states`
@@ -76,17 +76,19 @@ function split_single_group(State prev_state, State[] new_states, sig[] approval
 ### N:M verification
 
 ```js
-#[covenant(binding = cov, from = max_ins, to = max_outs, mode = verification)]
-function transition_ok(
-    int[] prev_amount,
-    byte[32][] prev_owner,
-    int[] prev_round,
-    int[] new_amount,
-    byte[32][] new_owner,
-    int[] new_round,
-    sig leader_sig
-) {
-    // require(...) rules
+contract C(int max_ins, int max_outs) {
+    int amount;
+    byte[32] owner;
+    int round;
+
+    #[covenant(binding = cov, from = max_ins, to = max_outs, mode = verification)]
+    function transition_ok(
+        State[] prev_states,
+        State[] new_states,
+        sig leader_sig
+    ) {
+        // require(...) rules
+    }
 }
 ```
 
@@ -120,14 +122,14 @@ Verification mode is the default convenience mode.
 
 Current compiler shape (`mode = verification`, both bindings):
 
-1. Policy params must start with one `prev_*` value per contract field:
-   `binding = auth` -> scalar field type.
-   `binding = cov` -> dynamic array of field type.
-2. Then one dynamic-array `new_*` value per contract field.
+1. Policy params must begin with prior-state parameters:
+    `binding = auth` -> `State prev_state`
+    `binding = cov` -> `State[] prev_states`
+2. Then comes `State[] new_states`.
 3. Remaining params are optional extra call args.
-4. Generated entrypoint exposes only `new_*` + extra args (not `prev_*`).
-5. Wrapper reconstructs/injects `prev_*` from tx context:
-   `auth` from current input state, `cov` from covenant input set via `readInputState(...)`.
+4. Generated entrypoint exposes only `new_states` + extra args (not prior-state params).
+5. Wrapper reconstructs/injects prior state from tx context:
+    `auth` from current input state, `cov` from covenant input set via `readInputState(...)`.
 
 ### Transition mode
 
@@ -137,22 +139,22 @@ Security note (both modes): extra call args (beyond state values validated on ou
 
 Current compiler shape (`mode = transition`, both bindings):
 
-1. Policy params must start with one `prev_*` value per contract field:
-   `binding = auth` -> scalar field type.
-   `binding = cov` -> dynamic array of field type.
+1. Policy params must begin with prior-state parameters:
+    `binding = auth` -> `State prev_state`
+    `binding = cov` -> `State[] prev_states`
 2. Remaining params are optional extra call args.
-3. Compiler enforces this prefix exactly; invalid `prev_*` types are compile errors.
-4. Wrapper sources `prev_*` from tx context according to binding.
+3. Compiler enforces this prefix exactly; invalid prior-state parameter types are compile errors.
+4. Wrapper sources prior state from tx context according to binding.
 5. Current ABI behavior:
-   `auth` entrypoint exposes only extra call args.
-   `cov` leader entrypoint still exposes the full policy param list (including `prev_*` arrays), while wrapper also enforces covenant structure checks.
+    `auth` entrypoint exposes only extra call args.
+    `cov` leader entrypoint exposes `new_states` or extra call args according to mode, while wrapper also enforces covenant structure checks.
 
 Cardinality in transition mode:
 
 1. Single-state return shape -> exact one continuation (`out_count == 1`) with direct `validateOutputState(...)` (no loop).
-2. Per-field array return shape -> exact cardinality by returned length (`out_count == returned_len`) and per-output validation in a loop.
-3. For singleton (`from=1,to=1`), per-field arrays are rejected by default.
-4. Singleton per-field arrays are allowed only with `termination = allowed`; this enables explicit zero-or-one continuation.
+2. `State[]` return shape -> exact cardinality by returned length (`out_count == returned_len`) and per-output validation in a loop.
+3. For singleton (`from=1,to=1`), `State[]` returns are rejected by default.
+4. Singleton `State[]` returns are allowed only with `termination = allowed`; this enables explicit zero-or-one continuation.
 
 ### Singleton termination opt-in
 
@@ -160,8 +162,8 @@ Default singleton transition is strict continuation:
 
 ```js
 #[covenant.singleton(mode = transition)]
-function bump(int delta) : (int) {
-    return(value + delta);
+function bump(State prev_state, int delta) : (State) {
+    return({ value: prev_state.value + delta });
 }
 ```
 
@@ -169,10 +171,10 @@ Termination-enabled singleton transition:
 
 ```js
 #[covenant.singleton(mode = transition, termination = allowed)]
-function bump_or_terminate(int[] next_values) : (int[]) {
+function bump_or_terminate(State prev_state, State[] next_states) : (State[]) {
     // [] => terminate
     // [x] => continue with one successor
-    return(next_values);
+    return(next_states);
 }
 ```
 
@@ -197,13 +199,13 @@ Given policy function `f`:
 
 1. `1:N` generates one entrypoint:
 
-   * `f`
+    * `__f`
 2. `N:M` generates two entrypoints:
 
-   * `f_leader`
-   * `f_delegate`
+    * `__leader_f`
+    * `__delegate_f`
 
-`f_delegate` does not call policy. It enforces delegation-path invariants only.
+`__delegate_f` does not call policy. It enforces delegation-path invariants only.
 
 ## Complex example
 
@@ -268,11 +270,12 @@ contract VaultNM(
     byte[32] owner = init_owner;
     int round = init_round;
 
-    // same policy body as source:
-    function conserve_and_bump(State[] prev_states, State[] new_states, sig leader_sig) { ... }
+    // Compiler-lowered policy function (renamed to avoid collision with generated entrypoints)
+    // same body as source:
+    function __covenant_policy_conserve_and_bump(State[] prev_states, State[] new_states, sig leader_sig) { ... }
 
     // Generated for N:M leader path
-    entrypoint function conserve_and_bump_leader(State[] new_states, sig leader_sig) {
+    entrypoint function __leader_conserve_and_bump(State[] new_states, sig leader_sig) {
         byte[32] cov_id = OpInputCovenantId(this.activeInputIndex);
 
         int in_count = OpCovInputCount(cov_id);
@@ -300,7 +303,7 @@ contract VaultNM(
             }
         }
 
-        conserve_and_bump(prev_states, new_states, leader_sig);
+        __covenant_policy_conserve_and_bump(prev_states, new_states, leader_sig);
 
         for(k, 0, max_outs) {
             if (k < out_count) {
@@ -315,7 +318,7 @@ contract VaultNM(
     }
 
     // Generated for N:M delegate path
-    entrypoint function conserve_and_bump_delegate() {
+    entrypoint function __delegate_conserve_and_bump() {
         byte[32] cov_id = OpInputCovenantId(this.activeInputIndex);
         // delegate path must not be leader
         require(OpCovInputIdx(cov_id, 0) != this.activeInputIndex);
@@ -355,15 +358,15 @@ contract SeqCommitMirror(byte[32] init_seqcommit) {
 
     // Compiler-lowered policy function (renamed to avoid entrypoint name collision)
     // same body as source:
-    function __roll_seqcommit_policy(State prev_state, byte[32] block_hash) : (State new_state) { ... }
+    function __covenant_policy_roll_seqcommit(State prev_state, byte[32] block_hash) : (State new_state) { ... }
 
     // Generated 1:1 covenant entrypoint
-    entrypoint function roll_seqcommit(byte[32] block_hash) {
+    entrypoint function __roll_seqcommit(byte[32] block_hash) {
         State prev_state = {
             seqcommit: seqcommit
         };
 
-        (State new_state) = __roll_seqcommit_policy(prev_state, block_hash);
+        (State new_state) = __covenant_policy_roll_seqcommit(prev_state, block_hash);
 
         require(OpAuthOutputCount(this.activeInputIndex) == 1);
         int out_idx = OpAuthOutputIdx(this.activeInputIndex, 0);

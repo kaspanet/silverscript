@@ -2,9 +2,9 @@ use silverscript_lang::ast::parse_contract_ast;
 
 #[test]
 fn tutorial_contract_examples_parse() {
-    let markdown = include_str!("../../TUTORIAL.md");
+    let markdown = include_str!("../../docs/TUTORIAL.md");
     let blocks = extract_code_blocks(markdown, "javascript");
-    assert!(!blocks.is_empty(), "no contract examples found in TUTORIAL.md");
+    assert!(!blocks.is_empty(), "no contract examples found in docs/TUTORIAL.md");
 
     for (index, snippet) in blocks {
         let source = wrap_snippet(&snippet);

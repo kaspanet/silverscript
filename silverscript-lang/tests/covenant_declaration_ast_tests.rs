@@ -126,7 +126,7 @@ fn lowers_cov_to_leader_and_delegate_expected_wrapper_ast() {
                 require(delta >= 0);
             }
 
-            entrypoint function transition_ok_leader(State[] new_states, int delta) {
+            entrypoint function leader_transition_ok(State[] new_states, int delta) {
                 byte[32] cov_id = OpInputCovenantId(this.activeInputIndex);
 
                 require(OpCovInputIdx(cov_id, 0) == this.activeInputIndex);
@@ -156,7 +156,7 @@ fn lowers_cov_to_leader_and_delegate_expected_wrapper_ast() {
                 }
             }
 
-            entrypoint function transition_ok_delegate() {
+            entrypoint function delegate_transition_ok() {
                 byte[32] cov_id = OpInputCovenantId(this.activeInputIndex);
 
                 require(OpCovInputIdx(cov_id, 0) != this.activeInputIndex);
@@ -446,7 +446,7 @@ fn lowers_cov_verification_two_field_state_to_expected_wrapper_ast() {
                 require(nonce >= 0);
             }
 
-            entrypoint function step_leader(State[] new_states, int nonce) {
+            entrypoint function leader_step(State[] new_states, int nonce) {
                 byte[32] cov_id = OpInputCovenantId(this.activeInputIndex);
 
                 require(OpCovInputIdx(cov_id, 0) == this.activeInputIndex);
@@ -484,7 +484,7 @@ fn lowers_cov_verification_two_field_state_to_expected_wrapper_ast() {
                 }
             }
 
-            entrypoint function step_delegate() {
+            entrypoint function delegate_step() {
                 byte[32] cov_id = OpInputCovenantId(this.activeInputIndex);
 
                 require(OpCovInputIdx(cov_id, 0) != this.activeInputIndex);
@@ -520,7 +520,7 @@ fn lowers_cov_transition_two_field_state_to_expected_wrapper_ast() {
                 return(prev_states);
             }
 
-            entrypoint function step_leader(State[] prev_states, int fee) {
+            entrypoint function leader_step(State[] prev_states, int fee) {
                 byte[32] cov_id = OpInputCovenantId(this.activeInputIndex);
 
                 require(OpCovInputIdx(cov_id, 0) == this.activeInputIndex);
@@ -556,7 +556,7 @@ fn lowers_cov_transition_two_field_state_to_expected_wrapper_ast() {
                 }
             }
 
-            entrypoint function step_delegate() {
+            entrypoint function delegate_step() {
                 byte[32] cov_id = OpInputCovenantId(this.activeInputIndex);
 
                 require(OpCovInputIdx(cov_id, 0) != this.activeInputIndex);
@@ -635,7 +635,7 @@ fn lowers_inferred_cov_verification_two_field_state_to_expected_wrapper_ast() {
                 require(new_states.length == new_states.length);
             }
 
-            entrypoint function step_leader(State[] new_states) {
+            entrypoint function leader_step(State[] new_states) {
                 byte[32] cov_id = OpInputCovenantId(this.activeInputIndex);
 
                 require(OpCovInputIdx(cov_id, 0) == this.activeInputIndex);
@@ -673,7 +673,7 @@ fn lowers_inferred_cov_verification_two_field_state_to_expected_wrapper_ast() {
                 }
             }
 
-            entrypoint function step_delegate() {
+            entrypoint function delegate_step() {
                 byte[32] cov_id = OpInputCovenantId(this.activeInputIndex);
 
                 require(OpCovInputIdx(cov_id, 0) != this.activeInputIndex);
@@ -1018,7 +1018,7 @@ fn lowers_many_covenant_declarations_in_one_contract_to_expected_wrapper_ast() {
                 require(nonce >= 0);
             }
 
-            entrypoint function cov_verification_leader(State[] new_states, int nonce) {
+            entrypoint function leader_cov_verification(State[] new_states, int nonce) {
                 byte[32] cov_id = OpInputCovenantId(this.activeInputIndex);
 
                 require(OpCovInputIdx(cov_id, 0) == this.activeInputIndex);
@@ -1056,7 +1056,7 @@ fn lowers_many_covenant_declarations_in_one_contract_to_expected_wrapper_ast() {
                 }
             }
 
-            entrypoint function cov_verification_delegate() {
+            entrypoint function delegate_cov_verification() {
                 byte[32] cov_id = OpInputCovenantId(this.activeInputIndex);
 
                 require(OpCovInputIdx(cov_id, 0) != this.activeInputIndex);
@@ -1067,7 +1067,7 @@ fn lowers_many_covenant_declarations_in_one_contract_to_expected_wrapper_ast() {
                 return(prev_states);
             }
 
-            entrypoint function cov_transition_leader(State[] prev_states, int fee) {
+            entrypoint function leader_cov_transition(State[] prev_states, int fee) {
                 byte[32] cov_id = OpInputCovenantId(this.activeInputIndex);
 
                 require(OpCovInputIdx(cov_id, 0) == this.activeInputIndex);
@@ -1103,7 +1103,7 @@ fn lowers_many_covenant_declarations_in_one_contract_to_expected_wrapper_ast() {
                 }
             }
 
-            entrypoint function cov_transition_delegate() {
+            entrypoint function delegate_cov_transition() {
                 byte[32] cov_id = OpInputCovenantId(this.activeInputIndex);
 
                 require(OpCovInputIdx(cov_id, 0) != this.activeInputIndex);
@@ -1134,7 +1134,7 @@ fn lowers_many_covenant_declarations_in_one_contract_to_expected_wrapper_ast() {
                 require(new_states.length == new_states.length);
             }
 
-            entrypoint function inferred_cov_leader(State[] new_states) {
+            entrypoint function leader_inferred_cov(State[] new_states) {
                 byte[32] cov_id = OpInputCovenantId(this.activeInputIndex);
 
                 require(OpCovInputIdx(cov_id, 0) == this.activeInputIndex);
@@ -1172,7 +1172,7 @@ fn lowers_many_covenant_declarations_in_one_contract_to_expected_wrapper_ast() {
                 }
             }
 
-            entrypoint function inferred_cov_delegate() {
+            entrypoint function delegate_inferred_cov() {
                 byte[32] cov_id = OpInputCovenantId(this.activeInputIndex);
 
                 require(OpCovInputIdx(cov_id, 0) != this.activeInputIndex);
@@ -1343,13 +1343,13 @@ fn covers_attribute_config_combinations_with_two_field_state() {
         "auth_verification_multi",
         "auth_verification_single",
         "auth_transition",
-        "cov_verification_leader",
-        "cov_verification_delegate",
-        "cov_transition_leader",
-        "cov_transition_delegate",
+        "leader_cov_verification",
+        "delegate_cov_verification",
+        "leader_cov_transition",
+        "delegate_cov_transition",
         "inferred_auth",
-        "inferred_cov_leader",
-        "inferred_cov_delegate",
+        "leader_inferred_cov",
+        "delegate_inferred_cov",
         "inferred_transition",
         "singleton_transition",
         "singleton_terminate",
@@ -1381,13 +1381,13 @@ fn covers_attribute_config_combinations_with_two_field_state() {
     assert_param_names(function_by_name(functions, "auth_verification_multi"), &["new_states", "nonce"]);
     assert_param_names(function_by_name(functions, "auth_verification_single"), &["new_states"]);
     assert_param_names(function_by_name(functions, "auth_transition"), &["fee"]);
-    assert_param_names(function_by_name(functions, "cov_verification_leader"), &["new_states", "nonce"]);
-    assert_param_names(function_by_name(functions, "cov_verification_delegate"), &[]);
-    assert_param_names(function_by_name(functions, "cov_transition_leader"), &["prev_states", "fee"]);
-    assert_param_names(function_by_name(functions, "cov_transition_delegate"), &[]);
+    assert_param_names(function_by_name(functions, "leader_cov_verification"), &["new_states", "nonce"]);
+    assert_param_names(function_by_name(functions, "delegate_cov_verification"), &[]);
+    assert_param_names(function_by_name(functions, "leader_cov_transition"), &["prev_states", "fee"]);
+    assert_param_names(function_by_name(functions, "delegate_cov_transition"), &[]);
     assert_param_names(function_by_name(functions, "inferred_auth"), &["new_states"]);
-    assert_param_names(function_by_name(functions, "inferred_cov_leader"), &["new_states"]);
-    assert_param_names(function_by_name(functions, "inferred_cov_delegate"), &[]);
+    assert_param_names(function_by_name(functions, "leader_inferred_cov"), &["new_states"]);
+    assert_param_names(function_by_name(functions, "delegate_inferred_cov"), &[]);
     assert_param_names(function_by_name(functions, "inferred_transition"), &["delta"]);
     assert_param_names(function_by_name(functions, "singleton_transition"), &["delta"]);
     assert_param_names(function_by_name(functions, "singleton_terminate"), &["next_states"]);

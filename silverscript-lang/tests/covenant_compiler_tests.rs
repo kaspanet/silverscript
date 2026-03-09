@@ -55,7 +55,7 @@ fn lowers_cov_covenant_to_leader_and_delegate_entrypoints() {
 
     let compiled = compile_contract(source, &[Expr::int(2), Expr::int(4)], CompileOptions::default()).expect("compile succeeds");
     let abi_names: Vec<&str> = compiled.abi.iter().map(|entry| entry.name.as_str()).collect();
-    assert_eq!(abi_names, vec!["__transition_ok_leader", "__transition_ok_delegate"]);
+    assert_eq!(abi_names, vec!["__leader_transition_ok", "__delegate_transition_ok"]);
     assert!(compiled.ast.functions.iter().any(|f| f.name == "__covenant_policy_transition_ok" && !f.entrypoint));
     assert!(compiled.script.contains(&OpCovInputCount));
     assert!(compiled.script.contains(&OpCovOutCount));
@@ -75,7 +75,7 @@ fn infers_cov_binding_from_from_greater_than_one_when_binding_omitted() {
 
     let compiled = compile_contract(source, &[Expr::int(2), Expr::int(4)], CompileOptions::default()).expect("compile succeeds");
     let abi_names: Vec<&str> = compiled.abi.iter().map(|entry| entry.name.as_str()).collect();
-    assert_eq!(abi_names, vec!["__transition_ok_leader", "__transition_ok_delegate"]);
+    assert_eq!(abi_names, vec!["__leader_transition_ok", "__delegate_transition_ok"]);
     assert!(compiled.ast.functions.iter().any(|f| f.name == "__covenant_policy_transition_ok" && !f.entrypoint));
     assert!(compiled.script.contains(&OpCovInputCount));
     assert!(compiled.script.contains(&OpCovOutCount));

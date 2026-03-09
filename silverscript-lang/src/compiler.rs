@@ -37,11 +37,11 @@ fn generated_covenant_entrypoint_name(function_name: &str) -> String {
 }
 
 fn generated_covenant_leader_entrypoint_name(function_name: &str) -> String {
-    format!("__{function_name}_leader")
+    format!("__leader_{function_name}")
 }
 
 fn generated_covenant_delegate_entrypoint_name(function_name: &str) -> String {
-    format!("__{function_name}_delegate")
+    format!("__delegate_{function_name}")
 }
 
 #[derive(Debug, Clone, Copy, Default)]

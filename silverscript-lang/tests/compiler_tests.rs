@@ -458,13 +458,13 @@ fn build_sig_script_for_covenant_decl_routes_to_hidden_cov_entrypoints() {
     let leader = compiled
         .build_sig_script_for_covenant_decl("rebalance", leader_args.clone(), CovenantDeclCallOptions { is_leader: true })
         .expect("leader sigscript builds");
-    let expected_leader = compiled.build_sig_script("__rebalance_leader", leader_args).expect("hidden leader sigscript builds");
+    let expected_leader = compiled.build_sig_script("__leader_rebalance", leader_args).expect("hidden leader sigscript builds");
     assert_eq!(leader, expected_leader);
 
     let delegate = compiled
         .build_sig_script_for_covenant_decl("rebalance", vec![], CovenantDeclCallOptions { is_leader: false })
         .expect("delegate sigscript builds");
-    let expected_delegate = compiled.build_sig_script("__rebalance_delegate", vec![]).expect("hidden delegate sigscript builds");
+    let expected_delegate = compiled.build_sig_script("__delegate_rebalance", vec![]).expect("hidden delegate sigscript builds");
     assert_eq!(delegate, expected_delegate);
 }
 
@@ -927,7 +927,7 @@ fn build_sig_script_for_covenant_decl_supports_all_covenant_ast_examples() {
             function_name: "transition_ok",
             args: vec![state_array_arg(vec![10, 11]), Expr::int(1)],
             options: CovenantDeclCallOptions { is_leader: true },
-            generated_covenant_entrypoint_name: "__transition_ok_leader",
+            generated_covenant_entrypoint_name: "__leader_transition_ok",
         },
         Case {
             source: r#"
@@ -944,7 +944,7 @@ fn build_sig_script_for_covenant_decl_supports_all_covenant_ast_examples() {
             function_name: "transition_ok",
             args: vec![],
             options: CovenantDeclCallOptions { is_leader: false },
-            generated_covenant_entrypoint_name: "__transition_ok_delegate",
+            generated_covenant_entrypoint_name: "__delegate_transition_ok",
         },
         Case {
             source: r#"
@@ -1067,7 +1067,7 @@ fn build_sig_script_for_covenant_decl_supports_all_covenant_ast_examples() {
             function_name: "step",
             args: vec![matrix_state_array_arg(vec![(11, next_owner.clone())]), Expr::int(0)],
             options: CovenantDeclCallOptions { is_leader: true },
-            generated_covenant_entrypoint_name: "__step_leader",
+            generated_covenant_entrypoint_name: "__leader_step",
         },
         Case {
             source: r#"
@@ -1085,7 +1085,7 @@ fn build_sig_script_for_covenant_decl_supports_all_covenant_ast_examples() {
             function_name: "step",
             args: vec![],
             options: CovenantDeclCallOptions { is_leader: false },
-            generated_covenant_entrypoint_name: "__step_delegate",
+            generated_covenant_entrypoint_name: "__delegate_step",
         },
         Case {
             source: r#"
@@ -1104,7 +1104,7 @@ fn build_sig_script_for_covenant_decl_supports_all_covenant_ast_examples() {
             function_name: "step",
             args: vec![matrix_state_array_arg(vec![(10, owner.clone())]), Expr::int(1)],
             options: CovenantDeclCallOptions { is_leader: true },
-            generated_covenant_entrypoint_name: "__step_leader",
+            generated_covenant_entrypoint_name: "__leader_step",
         },
         Case {
             source: r#"
@@ -1123,7 +1123,7 @@ fn build_sig_script_for_covenant_decl_supports_all_covenant_ast_examples() {
             function_name: "step",
             args: vec![],
             options: CovenantDeclCallOptions { is_leader: false },
-            generated_covenant_entrypoint_name: "__step_delegate",
+            generated_covenant_entrypoint_name: "__delegate_step",
         },
         Case {
             source: r#"
@@ -1159,7 +1159,7 @@ fn build_sig_script_for_covenant_decl_supports_all_covenant_ast_examples() {
             function_name: "step",
             args: vec![matrix_state_array_arg(vec![(11, next_owner.clone())])],
             options: CovenantDeclCallOptions { is_leader: true },
-            generated_covenant_entrypoint_name: "__step_leader",
+            generated_covenant_entrypoint_name: "__leader_step",
         },
         Case {
             source: r#"
@@ -1177,7 +1177,7 @@ fn build_sig_script_for_covenant_decl_supports_all_covenant_ast_examples() {
             function_name: "step",
             args: vec![],
             options: CovenantDeclCallOptions { is_leader: false },
-            generated_covenant_entrypoint_name: "__step_delegate",
+            generated_covenant_entrypoint_name: "__delegate_step",
         },
         Case {
             source: r#"
@@ -1251,7 +1251,7 @@ fn build_sig_script_for_covenant_decl_supports_all_covenant_ast_examples() {
             function_name: "cov_verification",
             args: vec![matrix_state_array_arg(vec![(11, next_owner.clone())]), Expr::int(0)],
             options: CovenantDeclCallOptions { is_leader: true },
-            generated_covenant_entrypoint_name: "__cov_verification_leader",
+            generated_covenant_entrypoint_name: "__leader_cov_verification",
         },
         Case {
             source: matrix_all_source,
@@ -1259,7 +1259,7 @@ fn build_sig_script_for_covenant_decl_supports_all_covenant_ast_examples() {
             function_name: "cov_verification",
             args: vec![],
             options: CovenantDeclCallOptions { is_leader: false },
-            generated_covenant_entrypoint_name: "__cov_verification_delegate",
+            generated_covenant_entrypoint_name: "__delegate_cov_verification",
         },
         Case {
             source: matrix_all_source,
@@ -1267,7 +1267,7 @@ fn build_sig_script_for_covenant_decl_supports_all_covenant_ast_examples() {
             function_name: "cov_transition",
             args: vec![matrix_state_array_arg(vec![(10, owner.clone())]), Expr::int(1)],
             options: CovenantDeclCallOptions { is_leader: true },
-            generated_covenant_entrypoint_name: "__cov_transition_leader",
+            generated_covenant_entrypoint_name: "__leader_cov_transition",
         },
         Case {
             source: matrix_all_source,
@@ -1275,7 +1275,7 @@ fn build_sig_script_for_covenant_decl_supports_all_covenant_ast_examples() {
             function_name: "cov_transition",
             args: vec![],
             options: CovenantDeclCallOptions { is_leader: false },
-            generated_covenant_entrypoint_name: "__cov_transition_delegate",
+            generated_covenant_entrypoint_name: "__delegate_cov_transition",
         },
         Case {
             source: matrix_all_source,
@@ -1291,7 +1291,7 @@ fn build_sig_script_for_covenant_decl_supports_all_covenant_ast_examples() {
             function_name: "inferred_cov",
             args: vec![matrix_state_array_arg(vec![(11, next_owner.clone())])],
             options: CovenantDeclCallOptions { is_leader: true },
-            generated_covenant_entrypoint_name: "__inferred_cov_leader",
+            generated_covenant_entrypoint_name: "__leader_inferred_cov",
         },
         Case {
             source: matrix_all_source,
@@ -1299,7 +1299,7 @@ fn build_sig_script_for_covenant_decl_supports_all_covenant_ast_examples() {
             function_name: "inferred_cov",
             args: vec![],
             options: CovenantDeclCallOptions { is_leader: false },
-            generated_covenant_entrypoint_name: "__inferred_cov_delegate",
+            generated_covenant_entrypoint_name: "__delegate_inferred_cov",
         },
         Case {
             source: matrix_all_source,
