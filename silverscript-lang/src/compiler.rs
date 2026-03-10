@@ -836,15 +836,12 @@ fn compile_contract_impl<'i>(
         let (_contract_fields, field_prolog_script) =
             compile_contract_fields(&lowered_contract.fields, &constants, options, script_size, &structs)?;
 
-        let mut compiled_entrypoints = Vec::new();
         let mut recorder = DebugRecorder::new(options.record_debug_infos);
         recorder.record_constructor_constants(&contract.params, constructor_args);
+        let contract_field_prefix_len = if without_selector { field_prolog_script.len() } else { 1 + field_prolog_script.len() };
+        let mut compiled_entrypoints = Vec::new();
         for (index, func) in lowered_contract.functions.iter().enumerate() {
             if func.entrypoint {
-                let mut contract_field_prefix_len = field_prolog_script.len();
-                if !without_selector && function_branch_index(&lowered_contract, &func.name)? == 0 {
-                    contract_field_prefix_len += selector_dispatch_branch0_prefix_len()?;
-                }
                 compiled_entrypoints.push(compile_entrypoint_function(
                     func,
                     index,
@@ -867,25 +864,27 @@ fn compile_contract_impl<'i>(
                 .ok_or_else(|| CompilerError::Unsupported("contract has no entrypoint functions".to_string()))?;
             recorder.set_entrypoint_start(name, field_prolog_script.len());
             let mut script = field_prolog_script.clone();
-            script.extend(entrypoint_script);
+            script.extend(entrypoint_script.clone());
             script
         } else {
-            // Dispatch on selector first; each selected branch then executes
-            // the shared contract-field prolog before branch body.
+            // Preserve the selector while encoding contract state once so
+            // reflection helpers can rewrite a single contiguous state segment.
             let mut builder = ScriptBuilder::new();
+            builder.add_op(OpToAltStack)?;
+            builder.add_ops(&field_prolog_script)?;
+            builder.add_op(OpFromAltStack)?;
             let total = compiled_entrypoints.len();
-            for (index, (name, script)) in compiled_entrypoints.iter().enumerate() {
+            for (entrypoint_index, (name, script)) in compiled_entrypoints.iter().enumerate() {
                 builder.add_op(OpDup)?;
-                builder.add_i64(index as i64)?;
+                builder.add_i64(entrypoint_index as i64)?;
                 builder.add_op(OpNumEqual)?;
                 builder.add_op(OpIf)?;
                 builder.add_op(OpDrop)?;
-                builder.add_ops(&field_prolog_script)?;
                 let start = builder.script().len();
-                recorder.set_entrypoint_start(name, start);
+                recorder.set_entrypoint_start(&name, start);
                 builder.add_ops(script)?;
                 builder.add_op(OpElse)?;
-                if index == total - 1 {
+                if entrypoint_index == total - 1 {
                     builder.add_op(OpDrop)?;
                     builder.add_op(OpFalse)?;
                     builder.add_op(OpVerify)?;
@@ -2024,16 +2023,6 @@ pub fn function_branch_index<'i>(contract: &ContractAst<'i>, function_name: &str
         .ok_or_else(|| CompilerError::Unsupported(format!("function '{function_name}' not found")))
 }
 
-fn selector_dispatch_branch0_prefix_len() -> Result<usize, CompilerError> {
-    let mut builder = ScriptBuilder::new();
-    builder.add_op(OpDup)?;
-    builder.add_i64(0)?;
-    builder.add_op(OpNumEqual)?;
-    builder.add_op(OpIf)?;
-    builder.add_op(OpDrop)?;
-    Ok(builder.drain().len())
-}
-
 #[allow(clippy::too_many_arguments)]
 fn compile_entrypoint_function<'i>(
     function: &FunctionAst<'i>,
@@ -3102,17 +3091,16 @@ fn compile_validate_output_state_statement(
         builder.add_op(OpDup)?;
         stack_depth += 1;
         builder.add_op(OpTxInputScriptSigLen)?;
-        builder.add_op(OpDup)?;
-        stack_depth += 1;
         builder.add_i64(script_size_value)?;
         stack_depth += 1;
         builder.add_op(OpSub)?;
         stack_depth -= 1;
+        builder.add_op(OpDup)?;
+        stack_depth += 1;
         builder.add_i64(state_start_offset as i64)?;
         stack_depth += 1;
         builder.add_op(OpAdd)?;
         stack_depth -= 1;
-        builder.add_op(OpSwap)?;
         builder.add_op(OpTxInputScriptSigSubstr)?;
         stack_depth -= 2;
 
