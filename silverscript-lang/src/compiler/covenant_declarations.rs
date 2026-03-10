@@ -1129,15 +1129,10 @@ fn append_cov_input_state_reads_into_state_array<'i>(
     let loop_var = "__cov_in_k";
     let cond = binary_expr(BinaryOp::Lt, identifier_expr(loop_var), identifier_expr(in_count_name));
     body.push(var_decl_statement(state_array_type_ref(), prev_states_name));
-    let then_branch = vec![
-        array_push_statement(
-            prev_states_name,
-            Expr::call(
-                "readInputState",
-                vec![Expr::call("OpCovInputIdx", vec![identifier_expr(cov_id_name), identifier_expr(loop_var)])],
-            ),
-        ),
-    ];
+    let then_branch = vec![array_push_statement(
+        prev_states_name,
+        Expr::call("readInputState", vec![Expr::call("OpCovInputIdx", vec![identifier_expr(cov_id_name), identifier_expr(loop_var)])]),
+    )];
     body.push(for_statement(loop_var, Expr::int(0), from_expr, vec![if_statement(cond, then_branch)]));
 }
 

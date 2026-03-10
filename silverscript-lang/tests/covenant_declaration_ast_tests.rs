@@ -140,9 +140,7 @@ fn lowers_cov_to_leader_and_delegate_expected_wrapper_ast() {
 
                 for(cov_in_k, 0, max_ins) {
                     if (cov_in_k < cov_in_count) {
-                        int cov_in_idx = OpCovInputIdx(cov_id, cov_in_k);
-                        State cov_prev_state = readInputState(cov_in_idx);
-                        prev_states.push(cov_prev_state);
+                        prev_states.push(readInputState(OpCovInputIdx(cov_id, cov_in_k)));
                     }
                 }
 
@@ -457,9 +455,7 @@ fn lowers_cov_verification_two_field_state_to_expected_wrapper_ast() {
 
                 for(cov_in_k, 0, max_ins) {
                     if (cov_in_k < cov_in_count) {
-                        int cov_in_idx = OpCovInputIdx(cov_id, cov_in_k);
-                        State cov_prev_state = readInputState(cov_in_idx);
-                        prev_states.push(cov_prev_state);
+                        prev_states.push(readInputState(OpCovInputIdx(cov_id, cov_in_k)));
                     }
                 }
 
@@ -690,9 +686,7 @@ fn lowers_inferred_cov_verification_two_field_state_to_expected_wrapper_ast() {
 
                 for(cov_in_k, 0, max_ins) {
                     if (cov_in_k < cov_in_count) {
-                        int cov_in_idx = OpCovInputIdx(cov_id, cov_in_k);
-                        State cov_prev_state = readInputState(cov_in_idx);
-                        prev_states.push(cov_prev_state);
+                        prev_states.push(readInputState(OpCovInputIdx(cov_id, cov_in_k)));
                     }
                 }
 
@@ -1050,9 +1044,7 @@ fn lowers_many_covenant_declarations_in_one_contract_to_expected_wrapper_ast() {
 
                 for(cov_in_k, 0, max_ins) {
                     if (cov_in_k < cov_in_count) {
-                        int cov_in_idx = OpCovInputIdx(cov_id, cov_in_k);
-                        State cov_prev_state = readInputState(cov_in_idx);
-                        prev_states.push(cov_prev_state);
+                        prev_states.push(readInputState(OpCovInputIdx(cov_id, cov_in_k)));
                     }
                 }
 
@@ -1147,9 +1139,7 @@ fn lowers_many_covenant_declarations_in_one_contract_to_expected_wrapper_ast() {
 
                 for(cov_in_k, 0, max_ins) {
                     if (cov_in_k < cov_in_count) {
-                        int cov_in_idx = OpCovInputIdx(cov_id, cov_in_k);
-                        State cov_prev_state = readInputState(cov_in_idx);
-                        prev_states.push(cov_prev_state);
+                        prev_states.push(readInputState(OpCovInputIdx(cov_id, cov_in_k)));
                     }
                 }
 

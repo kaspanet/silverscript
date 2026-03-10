@@ -551,6 +551,22 @@ fn many_to_many_transition_leader_rejects_spoofed_prev_states() {
 }
 
 #[test]
+fn many_to_many_transition_happy_path_succeeds() {
+    let in0 = compile_state(COV_N_TO_M_TRANSITION_SOURCE, 10);
+    let in1 = compile_state(COV_N_TO_M_TRANSITION_SOURCE, 7);
+    let out0 = compile_state(COV_N_TO_M_TRANSITION_SOURCE, 10);
+    let out1 = compile_state(COV_N_TO_M_TRANSITION_SOURCE, 7);
+
+    let input0_sigscript = covenant_decl_sigscript(&in0, "carry_forward", vec![], true);
+    let input1_sigscript = covenant_decl_sigscript(&in1, "carry_forward", vec![], false);
+    let outputs = vec![covenant_output(&out0, 0, COV_A), covenant_output(&out1, 1, COV_A)];
+    let (tx, entries) = build_nm_tx_for_source(COV_N_TO_M_TRANSITION_SOURCE, input0_sigscript, input1_sigscript, outputs);
+
+    execute_input_with_covenants(tx.clone(), entries.clone(), 0).expect("leader transition should accept honest prev_states");
+    execute_input_with_covenants(tx, entries, 1).expect("delegate transition should accept valid many-to-many transition");
+}
+
+#[test]
 fn runtime_accepts_state_array_entrypoint_argument_for_generated_wrapper() {
     let active = compile_state(AUTH_SINGLETON_ARRAY_RUNTIME_SOURCE, 10);
     let out = compile_state(AUTH_SINGLETON_ARRAY_RUNTIME_SOURCE, 11);
