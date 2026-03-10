@@ -128,6 +128,7 @@ pub struct DebugSession<'a, 'i> {
     script_len: usize,
     pc: usize,
     debug_info: DebugInfo<'i>,
+    step_index_by_id: HashMap<StepId, usize>,
     step_order: Vec<usize>,
     current_step_index: Option<usize>,
     source_lines: Vec<String>,
@@ -181,6 +182,7 @@ impl<'a, 'i> DebugSession<'a, 'i> {
         let source_lines: Vec<String> = source.lines().map(String::from).collect();
         let (opcode_offsets, script_len) = build_opcode_offsets(&opcodes);
 
+        let step_index_by_id = debug_info.steps.iter().enumerate().map(|(index, step)| (step.id(), index)).collect();
         let mut step_order: Vec<usize> = (0..debug_info.steps.len()).collect();
         // Overlapping inline ranges can share the same bytecode offsets; keep
         // compiler emission order via sequence before comparing range width.
@@ -198,6 +200,7 @@ impl<'a, 'i> DebugSession<'a, 'i> {
             script_len,
             pc: 0,
             debug_info,
+            step_index_by_id,
             step_order,
             current_step_index: None,
             source_lines,
@@ -515,8 +518,25 @@ impl<'a, 'i> DebugSession<'a, 'i> {
     }
 
     fn current_function_range(&self) -> Option<&DebugFunctionRange> {
-        let offset = self.current_byte_offset();
+        self.function_range_for_offset(self.current_byte_offset())
+    }
+
+    fn function_range_for_offset(&self, offset: usize) -> Option<&DebugFunctionRange> {
         self.debug_info.functions.iter().find(|function| offset >= function.bytecode_start && offset < function.bytecode_end)
+    }
+
+    fn step_by_id(&self, step_id: StepId) -> Option<&DebugStep<'i>> {
+        self.step_index_by_id.get(&step_id).map(|index| &self.debug_info.steps[*index])
+    }
+
+    fn variable_anchor_step(&self, step_id: StepId) -> Option<&DebugStep<'i>> {
+        self.step_by_id(step_id).or_else(|| {
+            self.debug_info
+                .steps
+                .iter()
+                .filter(|step| step.frame_id == step_id.frame_id && step.sequence < step_id.sequence)
+                .max_by_key(|step| step.sequence)
+        })
     }
 
     fn current_variable_updates(&self, context: &VariableContext<'_>) -> HashMap<String, &DebugVariableUpdate<'i>> {
@@ -535,12 +555,23 @@ impl<'a, 'i> DebugSession<'a, 'i> {
     }
 
     fn current_variable_context(&self, step_id: StepId) -> Result<VariableContext<'_>, String> {
-        let function = self.current_function_range().ok_or_else(|| "No function context available".to_string())?;
+        let offset = if step_id == self.current_step_id() {
+            self.current_byte_offset()
+        } else {
+            self.variable_anchor_step(step_id)
+                .map(|step| step.bytecode_end)
+                .ok_or_else(|| format!("No debug step for sequence {} frame {}", step_id.sequence, step_id.frame_id))?
+        };
+        let function = self
+            .variable_anchor_step(step_id)
+            .and_then(|step| self.function_range_for_offset(step.bytecode_start))
+            .or_else(|| self.function_range_for_offset(offset))
+            .ok_or_else(|| "No function context available".to_string())?;
         Ok(VariableContext {
             function_name: function.name.as_str(),
             function_start: function.bytecode_start,
             function_end: function.bytecode_end,
-            offset: self.current_byte_offset(),
+            offset,
             step_id,
         })
     }

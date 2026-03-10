@@ -1,3 +1,4 @@
+use serde_json::Value;
 use silverscript_lang::ast::{ContractAst, Expr, ExprKind};
 use silverscript_lang::span;
 
@@ -127,4 +128,18 @@ pub fn parse_call_args(input_types: &[String], raw_args: &[String]) -> Result<Ve
         typed_args.push(parse_typed_arg(input_type, raw)?);
     }
     Ok(typed_args)
+}
+
+pub fn values_to_args(values: &[Value]) -> Result<Vec<String>, String> {
+    values.iter().map(value_to_arg).collect()
+}
+
+fn value_to_arg(value: &Value) -> Result<String, String> {
+    match value {
+        Value::String(raw) => Ok(raw.clone()),
+        Value::Number(raw) => Ok(raw.to_string()),
+        Value::Bool(raw) => Ok(raw.to_string()),
+        Value::Null => Ok("null".to_string()),
+        Value::Array(_) | Value::Object(_) => serde_json::to_string(value).map_err(|err| format!("invalid arg value: {err}")),
+    }
 }

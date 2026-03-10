@@ -3,7 +3,9 @@
 out/**
 node_modules/**
 src/**
-.gitignore
+scripts/**
+**/.gitignore
+**/.gitkeep
 .yarnrc
 esbuild.js
 vsc-extension-quickstart.md
@@ -14,6 +16,9 @@ vsc-extension-quickstart.md
 **/.vscode-test.*
 
 # keep these
-!assets/**
+!assets/tree-sitter-silverscript.wasm
 !queries/**
-!node_modules/web-tree-sitter/**
+!node_modules/web-tree-sitter/package.json
+!node_modules/web-tree-sitter/LICENSE
+!node_modules/web-tree-sitter/web-tree-sitter.cjs
+!node_modules/web-tree-sitter/web-tree-sitter.wasm
