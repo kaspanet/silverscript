@@ -3225,7 +3225,7 @@ fn compile_inline_call<'i>(
     }
 
     let call_start = builder.script().len();
-    recorder.begin_inline_call(call_span, call_start, function, &bindings.debug_env)?;
+    recorder.begin_inline_call(call_span, call_start, function, &bindings.debug_env, &bindings.types)?;
 
     let mut yields: Vec<Expr<'i>> = Vec::new();
     let body_len = function.body.len();
@@ -5386,9 +5386,10 @@ pub fn compile_debug_expr<'i>(
 pub(super) fn resolve_expr_for_debug<'i>(
     expr: Expr<'i>,
     env: &HashMap<String, Expr<'i>>,
+    types: &HashMap<String, String>,
     visiting: &mut HashSet<String>,
 ) -> Result<Expr<'i>, CompilerError> {
-    resolve_expr(expr, env, visiting)
+    resolve_expr_for_runtime(expr, env, types, visiting)
 }
 
 #[cfg(test)]

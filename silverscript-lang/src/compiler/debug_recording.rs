@@ -72,8 +72,9 @@ impl<'i> DebugRecorder<'i> {
         bytecode_offset: usize,
         function: &FunctionAst<'i>,
         env: &HashMap<String, Expr<'i>>,
+        types: &HashMap<String, String>,
     ) -> Result<(), CompilerError> {
-        self.inner.begin_inline_call(span, bytecode_offset, function, env)
+        self.inner.begin_inline_call(span, bytecode_offset, function, env, types)
     }
 
     /// Records an inline call exit step and closes the active nested call frame.
@@ -118,6 +119,7 @@ trait DebugRecorderImpl<'i>: fmt::Debug {
         bytecode_offset: usize,
         function: &FunctionAst<'i>,
         env: &HashMap<String, Expr<'i>>,
+        types: &HashMap<String, String>,
     ) -> Result<(), CompilerError>;
     fn finish_inline_call(&mut self, span: SourceSpan, bytecode_offset: usize, callee: &str);
     fn record_variable_binding(&mut self, name: String, type_name: String, expr: Expr<'i>, bytecode_offset: usize, span: SourceSpan);
@@ -150,6 +152,7 @@ impl<'i> DebugRecorderImpl<'i> for NoopDebugRecorder {
         _bytecode_offset: usize,
         _function: &FunctionAst<'i>,
         _env: &HashMap<String, Expr<'i>>,
+        _types: &HashMap<String, String>,
     ) -> Result<(), CompilerError> {
         Ok(())
     }
@@ -255,6 +258,7 @@ impl<'i> DebugRecorderImpl<'i> for ActiveDebugRecorder<'i> {
         bytecode_offset: usize,
         function: &FunctionAst<'i>,
         env: &HashMap<String, Expr<'i>>,
+        types: &HashMap<String, String>,
     ) -> Result<(), CompilerError> {
         let Some(entrypoint) = self.active_entrypoint_mut() else {
             return Ok(());
@@ -276,13 +280,14 @@ impl<'i> DebugRecorderImpl<'i> for ActiveDebugRecorder<'i> {
         synthetic_names.sort_unstable();
         for name in synthetic_names {
             if let Some(expr) = env.get(&name).cloned() {
-                resolve_variable_update(env, &mut updates, &name, "internal", expr)?;
+                resolve_variable_update(env, types, &mut updates, &name, "internal", expr)?;
             }
         }
 
         for param in &function.params {
             resolve_variable_update(
                 env,
+                types,
                 &mut updates,
                 &param.name,
                 &param.type_ref.type_name(),
@@ -486,19 +491,20 @@ fn collect_variable_updates<'i>(
         let Some(type_name) = types.get(&name) else {
             continue;
         };
-        resolve_variable_update(after_env, &mut updates, &name, type_name, after_expr.clone())?;
+        resolve_variable_update(after_env, types, &mut updates, &name, type_name, after_expr.clone())?;
     }
     Ok(updates)
 }
 
 fn resolve_variable_update<'i>(
     env: &HashMap<String, Expr<'i>>,
+    types: &HashMap<String, String>,
     updates: &mut Vec<DebugVariableUpdate<'i>>,
     name: &str,
     type_name: &str,
     expr: Expr<'i>,
 ) -> Result<(), CompilerError> {
-    let resolved = resolve_expr_for_debug(expr, env, &mut HashSet::new())?;
+    let resolved = resolve_expr_for_debug(expr, env, types, &mut HashSet::new())?;
     updates.push(DebugVariableUpdate { name: name.to_string(), type_name: type_name.to_string(), expr: resolved });
     Ok(())
 }
@@ -535,7 +541,7 @@ mod tests {
         recorder.begin_statement_at(0, &HashMap::new());
         recorder.finish_statement_at(stmt, 0, &HashMap::new(), &HashMap::new()).expect("noop statement recording");
 
-        recorder.begin_inline_call(span, 1, function, &HashMap::new()).expect("noop begin call recording");
+        recorder.begin_inline_call(span, 1, function, &HashMap::new(), &HashMap::new()).expect("noop begin call recording");
         recorder.finish_inline_call(span, 2, "callee");
         recorder.record_variable_binding("tmp".to_string(), "int".to_string(), Expr::int(1), 2, span);
         recorder.finish_entrypoint(1);
@@ -576,7 +582,7 @@ mod tests {
         let span = SourceSpan::from(stmt.span());
         let mut inline_env = HashMap::new();
         inline_env.insert("x".to_string(), Expr::int(3));
-        recorder.begin_inline_call(span, 1, function, &inline_env).expect("begin call recording");
+        recorder.begin_inline_call(span, 1, function, &inline_env, &types).expect("begin call recording");
         recorder.record_variable_binding("tmp".to_string(), "int".to_string(), Expr::int(9), 1, span);
         recorder.finish_inline_call(span, 2, "callee");
 

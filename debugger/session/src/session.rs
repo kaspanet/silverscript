@@ -928,6 +928,7 @@ mod tests {
     use super::*;
 
     use silverscript_lang::ast::{BinaryOp, Expr, ExprKind};
+    use silverscript_lang::compiler::{CompileOptions, compile_contract};
     use silverscript_lang::debug_info::{
         DebugConstantMapping, DebugFunctionRange, DebugInfo, DebugParamMapping, DebugStep, DebugVariableUpdate, SourceSpan, StepKind,
     };
@@ -987,6 +988,46 @@ mod tests {
         };
         let value = session.evaluate_update_with_shadow_vm("f", &update, &HashMap::new()).unwrap();
         assert!(matches!(value, DebugValue::Int(12)));
+    }
+
+    #[test]
+    fn shadow_vm_evaluates_array_param_index_expression() {
+        let source = r#"
+            contract Demo() {
+                entrypoint function main(int[] payouts) {
+                    require(payouts.length >= 2);
+                }
+            }
+        "#;
+        let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+        let sigscript = compiled.build_sig_script("main", vec![vec![1500i64, 1400i64, 2100i64].into()]).expect("sigscript builds");
+
+        let session = make_session(
+            vec![DebugParamMapping {
+                name: "payouts".to_string(),
+                type_name: "int[]".to_string(),
+                stack_index: 0,
+                function: "f".to_string(),
+            }],
+            vec![],
+            &sigscript,
+        )
+        .unwrap();
+
+        let mut updates = HashMap::new();
+        let j_update = DebugVariableUpdate { name: "j".to_string(), type_name: "int".to_string(), expr: Expr::int(1) };
+        updates.insert("j".to_string(), &j_update);
+
+        let update = DebugVariableUpdate {
+            name: "item".to_string(),
+            type_name: "int".to_string(),
+            expr: Expr::new(
+                ExprKind::ArrayIndex { source: Box::new(Expr::identifier("payouts")), index: Box::new(Expr::identifier("j")) },
+                span::Span::default(),
+            ),
+        };
+        let value = session.evaluate_update_with_shadow_vm("f", &update, &updates).unwrap();
+        assert!(matches!(value, DebugValue::Int(1400)));
     }
 
     #[test]

@@ -5309,3 +5309,32 @@ fn nested_inline_calls_with_args_compile_and_execute() {
     let result = run_script_with_sigscript(compiled.script, sigscript);
     assert!(result.is_ok(), "nested inline calls should execute correctly: {}", result.unwrap_err());
 }
+
+#[test]
+fn debug_recording_preserves_array_params_in_inline_updates() {
+    let source = r#"
+        contract DebugArrayArgs() {
+            int constant MAX_RECIPIENTS = 5;
+
+            function sumArray(int[] arr) : (int) {
+                int total = 0;
+                for (i, 0, MAX_RECIPIENTS) {
+                    if (i < arr.length) {
+                        total = total + arr[i];
+                    }
+                }
+                return(total);
+            }
+
+            entrypoint function main(int[] payouts) {
+                require(payouts.length <= MAX_RECIPIENTS);
+                (int total) = sumArray(payouts);
+                require(total >= 0);
+            }
+        }
+    "#;
+
+    let options = CompileOptions { record_debug_infos: true, ..Default::default() };
+    let compiled = compile_contract(source, &[], options).expect("debug compile succeeds");
+    assert!(compiled.debug_info.is_some(), "debug info should be recorded");
+}
