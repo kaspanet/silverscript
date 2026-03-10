@@ -1,0 +1,42 @@
+contract Matrix(int init_amount, byte[32] init_owner) {
+    int amount = init_amount;
+    byte[32] owner = init_owner;
+
+    #[covenant.singleton(mode = transition, termination = allowed)]
+    function step(
+        State prev_state,
+        State[] next_states
+    ) : (State[]) {
+        return(next_states);
+    }
+}
+
+// --- lowered ---
+
+contract Matrix(int init_amount, byte[32] init_owner) {
+    int amount = init_amount;
+    byte[32] owner = init_owner;
+
+    function covenant_policy_step(
+        State prev_state,
+        State[] next_states
+    ) : (State[]) {
+        return(next_states);
+    }
+
+    entrypoint function step(State[] next_states) {
+        int cov_out_count = OpAuthOutputCount(this.activeInputIndex);
+
+        State prev_state = { amount: amount, owner: owner };
+        (State[] cov_new_states) = covenant_policy_step(prev_state, next_states);
+        require(cov_out_count <= 1);
+        require(cov_out_count == cov_new_states.length);
+
+        for(cov_k, 0, 1) {
+            if (cov_k < cov_out_count) {
+                int cov_out_idx = OpAuthOutputIdx(this.activeInputIndex, cov_k);
+                validateOutputState(cov_out_idx, cov_new_states[cov_k]);
+            }
+        }
+    }
+}

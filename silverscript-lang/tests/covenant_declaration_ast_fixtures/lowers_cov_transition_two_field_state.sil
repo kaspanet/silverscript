@@ -1,0 +1,57 @@
+contract Matrix(int max_ins, int max_outs, int init_amount, byte[32] init_owner) {
+    int amount = init_amount;
+    byte[32] owner = init_owner;
+
+    #[covenant(binding = cov, from = max_ins, to = max_outs, mode = transition)]
+    function step(State[] prev_states, int fee) : (State[]) {
+        require(fee >= 0);
+        return(prev_states);
+    }
+}
+
+// --- lowered ---
+
+contract Matrix(int max_ins, int max_outs, int init_amount, byte[32] init_owner) {
+    int amount = init_amount;
+    byte[32] owner = init_owner;
+
+    function covenant_policy_step(State[] prev_states, int fee) : (State[]) {
+        require(fee >= 0);
+        return(prev_states);
+    }
+
+    entrypoint function leader_step(int fee) {
+        byte[32] cov_id = OpInputCovenantId(this.activeInputIndex);
+
+        require(OpCovInputIdx(cov_id, 0) == this.activeInputIndex);
+
+        int cov_in_count = OpCovInputCount(cov_id);
+        require(cov_in_count <= max_ins);
+
+        int cov_out_count = OpCovOutputCount(cov_id);
+
+        State[] prev_states;
+        for(cov_in_k, 0, max_ins) {
+            if (cov_in_k < cov_in_count) {
+                prev_states.push(readInputState(OpCovInputIdx(cov_id, cov_in_k)));
+            }
+        }
+
+        (State[] cov_new_states) = covenant_policy_step(prev_states, fee);
+        require(cov_out_count <= max_outs);
+        require(cov_out_count == cov_new_states.length);
+
+        for(cov_k, 0, max_outs) {
+            if (cov_k < cov_out_count) {
+                int cov_out_idx = OpCovOutputIdx(cov_id, cov_k);
+                validateOutputState(cov_out_idx, cov_new_states[cov_k]);
+            }
+        }
+    }
+
+    entrypoint function delegate_step() {
+        byte[32] cov_id = OpInputCovenantId(this.activeInputIndex);
+
+        require(OpCovInputIdx(cov_id, 0) != this.activeInputIndex);
+    }
+}

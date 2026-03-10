@@ -1,0 +1,38 @@
+contract Decls(int max_outs) {
+    int value = 0;
+
+    #[covenant(binding = auth, from = 1, to = max_outs, groups = single)]
+    function split(State prev_state, State[] new_states, int amount) {
+        require(amount >= 0);
+    }
+}
+
+// --- lowered ---
+
+contract Decls(int max_outs) {
+    int value = 0;
+
+    function covenant_policy_split(State prev_state, State[] new_states, int amount) {
+        require(amount >= 0);
+    }
+
+    entrypoint function split(State[] new_states, int amount) {
+        int cov_out_count = OpAuthOutputCount(this.activeInputIndex);
+
+        byte[32] cov_id = OpInputCovenantId(this.activeInputIndex);
+        int cov_shared_out_count = OpCovOutputCount(cov_id);
+        require(cov_shared_out_count == cov_out_count);
+
+        State prev_state = { value: value };
+        covenant_policy_split(prev_state, new_states, amount);
+        require(cov_out_count <= max_outs);
+        require(cov_out_count == new_states.length);
+
+        for(cov_k, 0, max_outs) {
+            if (cov_k < cov_out_count) {
+                int cov_out_idx = OpAuthOutputIdx(this.activeInputIndex, cov_k);
+                validateOutputState(cov_out_idx, new_states[cov_k]);
+            }
+        }
+    }
+}

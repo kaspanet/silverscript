@@ -1,0 +1,34 @@
+contract Matrix(int max_outs, int init_amount, byte[32] init_owner) {
+    int amount = init_amount;
+    byte[32] owner = init_owner;
+
+    #[covenant(binding = auth, from = 1, to = max_outs, mode = transition)]
+    function step(State prev_state, int fee) : (State) {
+        return({
+            amount: prev_state.amount - fee,
+            owner: prev_state.owner
+        });
+    }
+}
+
+// --- lowered ---
+
+contract Matrix(int max_outs, int init_amount, byte[32] init_owner) {
+    int amount = init_amount;
+    byte[32] owner = init_owner;
+
+    function covenant_policy_step(State prev_state, int fee) : (State) {
+        return({ amount: prev_state.amount - fee, owner: prev_state.owner });
+    }
+
+    entrypoint function step(int fee) {
+        int cov_out_count = OpAuthOutputCount(this.activeInputIndex);
+
+        State prev_state = { amount: amount, owner: owner };
+        (State cov_new_state) = covenant_policy_step(prev_state, fee);
+        require(cov_out_count == 1);
+
+        int cov_out_idx = OpAuthOutputIdx(this.activeInputIndex, 0);
+        validateOutputState(cov_out_idx, cov_new_state);
+    }
+}

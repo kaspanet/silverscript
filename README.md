@@ -38,7 +38,7 @@ cargo run -p cli-debugger -- \
 
 ## Documentation
 
-See [TUTORIAL.md](TUTORIAL.md) for a full language and usage tutorial.
+See [TUTORIAL.md](docs/TUTORIAL.md) for a full language and usage tutorial, and [DECL.md](docs/DECL.md) for the covenant declaration spec.
 
 ## Credits
 
@@ -46,4 +46,4 @@ See [CREDITS.md](CREDITS.md) for acknowledgements and credits.
 
 ## Notes
 
-- Kaspa dependencies are pulled from https://github.com/kaspanet/rusty-kaspa (branch `covpp-reset1`).
+- Kaspa dependencies are pulled from https://github.com/kaspanet/rusty-kaspa.

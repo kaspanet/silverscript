@@ -72,7 +72,7 @@
 (function_call
   (identifier) @function.builtin
   (#match? @function.builtin
-    "^(readInputState|validateOutputState|verifyOutputState|verifyOutputStates|OpSha256|sha256|OpTxSubnetId|OpTxGas|OpTxPayloadLen|OpTxPayloadSubstr|OpOutpointTxId|OpOutpointIndex|OpTxInputScriptSigLen|OpTxInputScriptSigSubstr|OpTxInputSeq|OpTxInputIsCoinbase|OpTxInputSpkLen|OpTxInputSpkSubstr|OpTxOutputSpkLen|OpTxOutputSpkSubstr|OpAuthOutputCount|OpAuthOutputIdx|OpInputCovenantId|OpCovInputCount|OpCovInputIdx|OpCovOutCount|OpCovOutputIdx|OpNum2Bin|OpBin2Num|OpChainblockSeqCommit|checkDataSig|checkSig|checkMultiSig|blake2b)$"))
+    "^(readInputState|validateOutputState|verifyOutputState|verifyOutputStates|OpSha256|sha256|OpTxSubnetId|OpTxGas|OpTxPayloadLen|OpTxPayloadSubstr|OpOutpointTxId|OpOutpointIndex|OpTxInputScriptSigLen|OpTxInputScriptSigSubstr|OpTxInputSeq|OpTxInputIsCoinbase|OpTxInputSpkLen|OpTxInputSpkSubstr|OpTxOutputSpkLen|OpTxOutputSpkSubstr|OpAuthOutputCount|OpAuthOutputIdx|OpInputCovenantId|OpCovInputCount|OpCovInputIdx|OpCovOutputCount|OpCovOutputIdx|OpNum2Bin|OpBin2Num|OpChainblockSeqCommit|checkDataSig|checkSig|checkMultiSig|blake2b)$"))
 
 (unary_suffix) @property
 

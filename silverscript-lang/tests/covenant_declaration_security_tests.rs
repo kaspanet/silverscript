@@ -75,6 +75,28 @@ const COV_N_TO_M_SOURCE: &str = r#"
     }
 "#;
 
+const COV_N_TO_M_TRANSITION_SOURCE: &str = r#"
+    contract Pair(int init_value) {
+        int value = init_value;
+
+        #[covenant(from = 2, to = 2, mode = transition)]
+        function carry_forward(State[] prev_states) : (State[]) {
+            return(prev_states);
+        }
+    }
+"#;
+
+const COV_N_TO_M_DIFFERENT_SCRIPT_SOURCE: &str = r#"
+    contract Pair(int init_value) {
+        int value = init_value;
+
+        #[covenant(from = 2, to = 2)]
+        function rebalance(State[] prev_states, State[] new_states) {
+            require(new_states.length == 2);
+        }
+    }
+"#;
+
 const AUTH_SINGLETON_ARRAY_RUNTIME_SOURCE: &str = r#"
     contract Counter(int init_value) {
         int value = init_value;
@@ -84,6 +106,17 @@ const AUTH_SINGLETON_ARRAY_RUNTIME_SOURCE: &str = r#"
             require(new_states.length == 1);
             require(new_states[0].value == prev_state.value + 1);
             require(OpAuthOutputIdx(this.activeInputIndex, 0) >= 0);
+        }
+    }
+"#;
+
+const AUTH_VERIFICATION_CARDINALITY_SOURCE: &str = r#"
+    contract Counter(int init_value) {
+        int value = init_value;
+
+        #[covenant(binding = auth, from = 1, to = 2)]
+        function step(State prev_state, State[] new_states) {
+            require(prev_state.value >= 0);
         }
     }
 "#;
@@ -420,7 +453,7 @@ fn many_to_many_rejects_wrong_entrypoint_role() {
 }
 
 #[test]
-fn many_to_many_happy_path_currently_fails_with_validate_output_state() {
+fn many_to_many_happy_path_succeeds() {
     let in0 = compile_state(COV_N_TO_M_SOURCE, 10);
     let in1 = compile_state(COV_N_TO_M_SOURCE, 7);
     let out0 = compile_state(COV_N_TO_M_SOURCE, 10);
@@ -435,12 +468,8 @@ fn many_to_many_happy_path_currently_fails_with_validate_output_state() {
     let outputs = vec![covenant_output(&out0, 0, COV_A), covenant_output(&out1, 1, COV_A)];
     let (tx, entries) = build_nm_tx(input0_sigscript, input1_sigscript, outputs);
 
-    let leader_err = execute_input_with_covenants(tx.clone(), entries.clone(), 0)
-        .expect_err("leader path is expected to fail until validateOutputState fully supports selector-dispatched scripts");
-    assert_verify_like_error(leader_err);
-
-    let delegate_result = execute_input_with_covenants(tx, entries, 1);
-    assert!(delegate_result.is_ok(), "delegate path unexpectedly failed: {}", delegate_result.unwrap_err());
+    execute_input_with_covenants(tx.clone(), entries.clone(), 0).expect("leader path should accept valid many-to-many transition");
+    execute_input_with_covenants(tx, entries, 1).expect("delegate path should accept valid many-to-many transition");
 }
 
 #[test]
@@ -503,7 +532,7 @@ fn many_to_many_leader_rejects_cov_output_with_different_script() {
     let in0 = compile_state(COV_N_TO_M_SOURCE, 10);
     let in1 = compile_state(COV_N_TO_M_SOURCE, 7);
     let out0 = compile_state(COV_N_TO_M_SOURCE, 10);
-    let out1_different = compile_state(COV_N_TO_M_SOURCE, 11);
+    let out1_different = compile_state(COV_N_TO_M_DIFFERENT_SCRIPT_SOURCE, 11);
 
     let input0_sigscript = cov_decl_nm_leader_sigscript(&in0, vec![10, 11]);
     let input1_sigscript = covenant_decl_sigscript(&in1, "rebalance", vec![], false);
@@ -512,6 +541,40 @@ fn many_to_many_leader_rejects_cov_output_with_different_script() {
 
     let err = execute_input_with_covenants(tx, entries, 0).expect_err("leader wrapper should reject cov output with different script");
     assert_verify_like_error(err);
+}
+
+#[test]
+fn many_to_many_transition_leader_rejects_spoofed_prev_states() {
+    let in0 = compile_state(COV_N_TO_M_TRANSITION_SOURCE, 10);
+    let honest = in0
+        .build_sig_script_for_covenant_decl("carry_forward", vec![], CovenantDeclCallOptions { is_leader: true })
+        .expect("leader transition call should succeed without caller-supplied prev_states");
+    assert!(!honest.is_empty(), "leader transition sigscript should not be empty");
+
+    let err = in0
+        .build_sig_script_for_covenant_decl(
+            "carry_forward",
+            vec![state_array_arg(vec![42, 43])],
+            CovenantDeclCallOptions { is_leader: true },
+        )
+        .expect_err("spoofed prev_states should no longer be accepted through the leader ABI");
+    assert!(matches!(err, silverscript_lang::compiler::CompilerError::Unsupported(_)), "unexpected error: {err:?}");
+}
+
+#[test]
+fn many_to_many_transition_happy_path_succeeds() {
+    let in0 = compile_state(COV_N_TO_M_TRANSITION_SOURCE, 10);
+    let in1 = compile_state(COV_N_TO_M_TRANSITION_SOURCE, 7);
+    let out0 = compile_state(COV_N_TO_M_TRANSITION_SOURCE, 10);
+    let out1 = compile_state(COV_N_TO_M_TRANSITION_SOURCE, 7);
+
+    let input0_sigscript = covenant_decl_sigscript(&in0, "carry_forward", vec![], true);
+    let input1_sigscript = covenant_decl_sigscript(&in1, "carry_forward", vec![], false);
+    let outputs = vec![covenant_output(&out0, 0, COV_A), covenant_output(&out1, 1, COV_A)];
+    let (tx, entries) = build_nm_tx_for_source(COV_N_TO_M_TRANSITION_SOURCE, input0_sigscript, input1_sigscript, outputs);
+
+    execute_input_with_covenants(tx.clone(), entries.clone(), 0).expect("leader transition should accept honest prev_states");
+    execute_input_with_covenants(tx, entries, 1).expect("delegate transition should accept valid many-to-many transition");
 }
 
 #[test]
@@ -554,5 +617,69 @@ fn runtime_passes_state_array_into_generated_policy_function() {
 
     let err = execute_input_with_covenants(tx, entries, 0)
         .expect_err("generated policy should reject when the State[] argument content is wrong");
+    assert_verify_like_error(err);
+}
+
+#[test]
+fn auth_verification_rejects_underprovided_new_states() {
+    let active = compile_state(AUTH_VERIFICATION_CARDINALITY_SOURCE, 10);
+    let out = compile_state(AUTH_VERIFICATION_CARDINALITY_SOURCE, 10);
+
+    let input0 = tx_input(0, covenant_decl_sigscript(&active, "step", vec![state_array_arg(vec![])], false));
+    let outputs = vec![covenant_output(&out, 0, COV_A)];
+    let tx = Transaction::new(1, vec![input0], outputs, 0, Default::default(), 0, vec![]);
+    let entries = vec![covenant_utxo(&active, COV_A)];
+
+    let err = execute_input_with_covenants(tx, entries, 0)
+        .expect_err("auth verification wrapper must reject when new_states under-provides outputs");
+    assert_verify_like_error(err);
+}
+
+#[test]
+fn auth_verification_rejects_overprovided_new_states() {
+    let active = compile_state(AUTH_VERIFICATION_CARDINALITY_SOURCE, 10);
+    let out = compile_state(AUTH_VERIFICATION_CARDINALITY_SOURCE, 10);
+
+    let input0 = tx_input(0, covenant_decl_sigscript(&active, "step", vec![state_array_arg(vec![10, 11])], false));
+    let outputs = vec![covenant_output(&out, 0, COV_A)];
+    let tx = Transaction::new(1, vec![input0], outputs, 0, Default::default(), 0, vec![]);
+    let entries = vec![covenant_utxo(&active, COV_A)];
+
+    let err = execute_input_with_covenants(tx, entries, 0)
+        .expect_err("auth verification wrapper must reject when new_states over-provides outputs");
+    assert_verify_like_error(err);
+}
+
+#[test]
+fn many_to_many_verification_rejects_underprovided_new_states() {
+    let in0 = compile_state(COV_N_TO_M_SOURCE, 10);
+    let in1 = compile_state(COV_N_TO_M_SOURCE, 7);
+    let out0 = compile_state(COV_N_TO_M_SOURCE, 10);
+    let out1 = compile_state(COV_N_TO_M_SOURCE, 10);
+
+    let input0_sigscript = cov_decl_nm_leader_sigscript(&in0, vec![10]);
+    let input1_sigscript = covenant_decl_sigscript(&in1, "rebalance", vec![], false);
+    let outputs = vec![covenant_output(&out0, 0, COV_A), covenant_output(&out1, 1, COV_A)];
+    let (tx, entries) = build_nm_tx(input0_sigscript, input1_sigscript, outputs);
+
+    let err = execute_input_with_covenants(tx, entries, 0)
+        .expect_err("cov verification wrapper must reject when new_states under-provides outputs");
+    assert_verify_like_error(err);
+}
+
+#[test]
+fn many_to_many_verification_rejects_overprovided_new_states() {
+    let in0 = compile_state(COV_N_TO_M_SOURCE, 10);
+    let in1 = compile_state(COV_N_TO_M_SOURCE, 7);
+    let out0 = compile_state(COV_N_TO_M_SOURCE, 10);
+    let out1 = compile_state(COV_N_TO_M_SOURCE, 10);
+
+    let input0_sigscript = cov_decl_nm_leader_sigscript(&in0, vec![10, 10, 10]);
+    let input1_sigscript = covenant_decl_sigscript(&in1, "rebalance", vec![], false);
+    let outputs = vec![covenant_output(&out0, 0, COV_A), covenant_output(&out1, 1, COV_A)];
+    let (tx, entries) = build_nm_tx(input0_sigscript, input1_sigscript, outputs);
+
+    let err = execute_input_with_covenants(tx, entries, 0)
+        .expect_err("cov verification wrapper must reject when new_states over-provides outputs");
     assert_verify_like_error(err);
 }
