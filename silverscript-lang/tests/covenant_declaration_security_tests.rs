@@ -75,6 +75,17 @@ const COV_N_TO_M_SOURCE: &str = r#"
     }
 "#;
 
+const COV_N_TO_M_DIFFERENT_SCRIPT_SOURCE: &str = r#"
+    contract Pair(int init_value) {
+        int value = init_value;
+
+        #[covenant(from = 2, to = 2)]
+        function rebalance(State[] prev_states, State[] new_states) {
+            require(new_states.length == 2);
+        }
+    }
+"#;
+
 const AUTH_SINGLETON_ARRAY_RUNTIME_SOURCE: &str = r#"
     contract Counter(int init_value) {
         int value = init_value;
@@ -499,7 +510,7 @@ fn many_to_many_leader_rejects_cov_output_with_different_script() {
     let in0 = compile_state(COV_N_TO_M_SOURCE, 10);
     let in1 = compile_state(COV_N_TO_M_SOURCE, 7);
     let out0 = compile_state(COV_N_TO_M_SOURCE, 10);
-    let out1_different = compile_state(COV_N_TO_M_SOURCE, 11);
+    let out1_different = compile_state(COV_N_TO_M_DIFFERENT_SCRIPT_SOURCE, 11);
 
     let input0_sigscript = cov_decl_nm_leader_sigscript(&in0, vec![10, 11]);
     let input1_sigscript = covenant_decl_sigscript(&in1, "rebalance", vec![], false);

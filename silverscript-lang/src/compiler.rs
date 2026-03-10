@@ -881,7 +881,7 @@ fn compile_contract_impl<'i>(
                 builder.add_op(OpIf)?;
                 builder.add_op(OpDrop)?;
                 let start = builder.script().len();
-                recorder.set_entrypoint_start(&name, start);
+                recorder.set_entrypoint_start(name, start);
                 builder.add_ops(script)?;
                 builder.add_op(OpElse)?;
                 if entrypoint_index == total - 1 {
