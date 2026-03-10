@@ -110,6 +110,17 @@ const AUTH_SINGLETON_ARRAY_RUNTIME_SOURCE: &str = r#"
     }
 "#;
 
+const AUTH_VERIFICATION_CARDINALITY_SOURCE: &str = r#"
+    contract Counter(int init_value) {
+        int value = init_value;
+
+        #[covenant(binding = auth, from = 1, to = 2)]
+        function step(State prev_state, State[] new_states) {
+            require(prev_state.value >= 0);
+        }
+    }
+"#;
+
 fn compile_state(source: &'static str, value: i64) -> CompiledContract<'static> {
     compile_contract(source, &[Expr::int(value)], CompileOptions::default()).expect("compile succeeds")
 }
@@ -606,5 +617,69 @@ fn runtime_passes_state_array_into_generated_policy_function() {
 
     let err = execute_input_with_covenants(tx, entries, 0)
         .expect_err("generated policy should reject when the State[] argument content is wrong");
+    assert_verify_like_error(err);
+}
+
+#[test]
+fn auth_verification_rejects_underprovided_new_states() {
+    let active = compile_state(AUTH_VERIFICATION_CARDINALITY_SOURCE, 10);
+    let out = compile_state(AUTH_VERIFICATION_CARDINALITY_SOURCE, 10);
+
+    let input0 = tx_input(0, covenant_decl_sigscript(&active, "step", vec![state_array_arg(vec![])], false));
+    let outputs = vec![covenant_output(&out, 0, COV_A)];
+    let tx = Transaction::new(1, vec![input0], outputs, 0, Default::default(), 0, vec![]);
+    let entries = vec![covenant_utxo(&active, COV_A)];
+
+    let err = execute_input_with_covenants(tx, entries, 0)
+        .expect_err("auth verification wrapper must reject when new_states under-provides outputs");
+    assert_verify_like_error(err);
+}
+
+#[test]
+fn auth_verification_rejects_overprovided_new_states() {
+    let active = compile_state(AUTH_VERIFICATION_CARDINALITY_SOURCE, 10);
+    let out = compile_state(AUTH_VERIFICATION_CARDINALITY_SOURCE, 10);
+
+    let input0 = tx_input(0, covenant_decl_sigscript(&active, "step", vec![state_array_arg(vec![10, 11])], false));
+    let outputs = vec![covenant_output(&out, 0, COV_A)];
+    let tx = Transaction::new(1, vec![input0], outputs, 0, Default::default(), 0, vec![]);
+    let entries = vec![covenant_utxo(&active, COV_A)];
+
+    let err = execute_input_with_covenants(tx, entries, 0)
+        .expect_err("auth verification wrapper must reject when new_states over-provides outputs");
+    assert_verify_like_error(err);
+}
+
+#[test]
+fn many_to_many_verification_rejects_underprovided_new_states() {
+    let in0 = compile_state(COV_N_TO_M_SOURCE, 10);
+    let in1 = compile_state(COV_N_TO_M_SOURCE, 7);
+    let out0 = compile_state(COV_N_TO_M_SOURCE, 10);
+    let out1 = compile_state(COV_N_TO_M_SOURCE, 10);
+
+    let input0_sigscript = cov_decl_nm_leader_sigscript(&in0, vec![10]);
+    let input1_sigscript = covenant_decl_sigscript(&in1, "rebalance", vec![], false);
+    let outputs = vec![covenant_output(&out0, 0, COV_A), covenant_output(&out1, 1, COV_A)];
+    let (tx, entries) = build_nm_tx(input0_sigscript, input1_sigscript, outputs);
+
+    let err = execute_input_with_covenants(tx, entries, 0)
+        .expect_err("cov verification wrapper must reject when new_states under-provides outputs");
+    assert_verify_like_error(err);
+}
+
+#[test]
+fn many_to_many_verification_rejects_overprovided_new_states() {
+    let in0 = compile_state(COV_N_TO_M_SOURCE, 10);
+    let in1 = compile_state(COV_N_TO_M_SOURCE, 7);
+    let out0 = compile_state(COV_N_TO_M_SOURCE, 10);
+    let out1 = compile_state(COV_N_TO_M_SOURCE, 10);
+
+    let input0_sigscript = cov_decl_nm_leader_sigscript(&in0, vec![10, 10, 10]);
+    let input1_sigscript = covenant_decl_sigscript(&in1, "rebalance", vec![], false);
+    let outputs = vec![covenant_output(&out0, 0, COV_A), covenant_output(&out1, 1, COV_A)];
+    let (tx, entries) = build_nm_tx(input0_sigscript, input1_sigscript, outputs);
+
+    let err = execute_input_with_covenants(tx, entries, 0)
+        .expect_err("cov verification wrapper must reject when new_states over-provides outputs");
     assert_verify_like_error(err);
 }

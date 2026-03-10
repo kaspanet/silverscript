@@ -92,6 +92,7 @@ fn lowers_auth_groups_single_to_expected_wrapper_ast() {
                 State prev_state = { value: value };
                 covenant_policy_split(prev_state, new_states, amount);
                 require(cov_out_count <= max_outs);
+                require(cov_out_count == new_states.length);
 
                 for(cov_k, 0, max_outs) {
                     if (cov_k < cov_out_count) {
@@ -146,6 +147,7 @@ fn lowers_cov_to_leader_and_delegate_expected_wrapper_ast() {
 
                 covenant_policy_transition_ok(prev_states, new_states, delta);
                 require(cov_out_count <= max_outs);
+                require(cov_out_count == new_states.length);
 
                 for(cov_k, 0, max_outs) {
                     if (cov_k < cov_out_count) {
@@ -316,6 +318,7 @@ fn lowers_auth_verification_groups_multiple_two_field_state_to_expected_wrapper_
                 State prev_state = { amount: amount, owner: owner };
                 covenant_policy_step(prev_state, new_states, nonce);
                 require(cov_out_count <= max_outs);
+                require(cov_out_count == new_states.length);
 
                 for(cov_k, 0, max_outs) {
                     if (cov_k < cov_out_count) {
@@ -363,6 +366,7 @@ fn lowers_auth_verification_groups_single_two_field_state_to_expected_wrapper_as
                 State prev_state = { amount: amount, owner: owner };
                 covenant_policy_step(prev_state, new_states);
                 require(cov_out_count <= max_outs);
+                require(cov_out_count == new_states.length);
 
                 for(cov_k, 0, max_outs) {
                     if (cov_k < cov_out_count) {
@@ -461,6 +465,7 @@ fn lowers_cov_verification_two_field_state_to_expected_wrapper_ast() {
 
                 covenant_policy_step(prev_states, new_states, nonce);
                 require(cov_out_count <= max_outs);
+                require(cov_out_count == new_states.length);
 
                 for(cov_k, 0, max_outs) {
                     if (cov_k < cov_out_count) {
@@ -636,6 +641,7 @@ fn lowers_inferred_auth_verification_two_field_state_to_expected_wrapper_ast() {
                 State prev_state = { amount: amount, owner: owner };
                 covenant_policy_step(prev_state, new_states);
                 require(cov_out_count <= max_outs);
+                require(cov_out_count == new_states.length);
 
                 for(cov_k, 0, max_outs) {
                     if (cov_k < cov_out_count) {
@@ -692,6 +698,7 @@ fn lowers_inferred_cov_verification_two_field_state_to_expected_wrapper_ast() {
 
                 covenant_policy_step(prev_states, new_states);
                 require(cov_out_count <= max_outs);
+                require(cov_out_count == new_states.length);
 
                 for(cov_k, 0, max_outs) {
                     if (cov_k < cov_out_count) {
@@ -869,6 +876,7 @@ fn lowers_fanout_sugar_verification_two_field_state_to_expected_wrapper_ast() {
                 State prev_state = { amount: amount, owner: owner };
                 covenant_policy_step(prev_state, new_states);
                 require(cov_out_count <= max_outs);
+                require(cov_out_count == new_states.length);
 
                 for(cov_k, 0, max_outs) {
                     if (cov_k < cov_out_count) {
@@ -976,6 +984,7 @@ fn lowers_many_covenant_declarations_in_one_contract_to_expected_wrapper_ast() {
                 State prev_state = { amount: amount, owner: owner };
                 covenant_policy_auth_verification_multi(prev_state, new_states, nonce);
                 require(cov_out_count <= max_outs);
+                require(cov_out_count == new_states.length);
 
                 for(cov_k, 0, max_outs) {
                     if (cov_k < cov_out_count) {
@@ -999,6 +1008,7 @@ fn lowers_many_covenant_declarations_in_one_contract_to_expected_wrapper_ast() {
                 State prev_state = { amount: amount, owner: owner };
                 covenant_policy_auth_verification_single(prev_state, new_states);
                 require(cov_out_count <= max_outs);
+                require(cov_out_count == new_states.length);
 
                 for(cov_k, 0, max_outs) {
                     if (cov_k < cov_out_count) {
@@ -1050,6 +1060,7 @@ fn lowers_many_covenant_declarations_in_one_contract_to_expected_wrapper_ast() {
 
                 covenant_policy_cov_verification(prev_states, new_states, nonce);
                 require(cov_out_count <= max_outs);
+                require(cov_out_count == new_states.length);
 
                 for(cov_k, 0, max_outs) {
                     if (cov_k < cov_out_count) {
@@ -1113,6 +1124,7 @@ fn lowers_many_covenant_declarations_in_one_contract_to_expected_wrapper_ast() {
                 State prev_state = { amount: amount, owner: owner };
                 covenant_policy_inferred_auth(prev_state, new_states);
                 require(cov_out_count <= max_outs);
+                require(cov_out_count == new_states.length);
 
                 for(cov_k, 0, max_outs) {
                     if (cov_k < cov_out_count) {
@@ -1145,6 +1157,7 @@ fn lowers_many_covenant_declarations_in_one_contract_to_expected_wrapper_ast() {
 
                 covenant_policy_inferred_cov(prev_states, new_states);
                 require(cov_out_count <= max_outs);
+                require(cov_out_count == new_states.length);
 
                 for(cov_k, 0, max_outs) {
                     if (cov_k < cov_out_count) {
@@ -1221,6 +1234,7 @@ fn lowers_many_covenant_declarations_in_one_contract_to_expected_wrapper_ast() {
                 State prev_state = { amount: amount, owner: owner };
                 covenant_policy_fanout_verification(prev_state, new_states);
                 require(cov_out_count <= max_outs);
+                require(cov_out_count == new_states.length);
 
                 for(cov_k, 0, max_outs) {
                     if (cov_k < cov_out_count) {

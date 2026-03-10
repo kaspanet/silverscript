@@ -113,7 +113,8 @@ Verification mode is the default convenience mode.
 
 1. Generated entrypoint args are `new_states` plus optional extra call args.
 2. Wrapper reads prior state from tx context (`prev_state` or `prev_states`) and calls the policy verification with `(prev_state(s), new_states, call_args...)`.
-3. Wrapper validates each output with `validateOutputState(...)` against `new_states`.
+3. Wrapper enforces exact cardinality: `out_count == new_states.length`.
+4. Wrapper validates each output with `validateOutputState(...)` against `new_states`.
 
 Verification mode shape (`mode = verification`, both bindings):
 

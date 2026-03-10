@@ -444,6 +444,11 @@ fn build_auth_wrapper<'i>(
                 ));
                 body.push(call_statement(policy_name, policy.params.iter().map(|param| identifier_expr(&param.name)).collect()));
                 body.push(require_statement(binary_expr(BinaryOp::Le, identifier_expr(out_count_name), declaration.to_expr.clone())));
+                body.push(require_statement(binary_expr(
+                    BinaryOp::Eq,
+                    identifier_expr(out_count_name),
+                    length_expr(identifier_expr(new_states_name)),
+                )));
                 append_auth_output_state_array_checks_from_state_array(
                     &mut body,
                     &active_input,
@@ -614,6 +619,11 @@ fn build_cov_wrapper<'i>(
                         BinaryOp::Le,
                         identifier_expr(out_count_name),
                         declaration.to_expr.clone(),
+                    )));
+                    body.push(require_statement(binary_expr(
+                        BinaryOp::Eq,
+                        identifier_expr(out_count_name),
+                        length_expr(identifier_expr(new_states_name)),
                     )));
                     append_cov_output_state_array_checks_from_state_array(
                         &mut body,
