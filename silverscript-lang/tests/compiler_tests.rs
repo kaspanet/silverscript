@@ -10,7 +10,10 @@ use kaspa_txscript::caches::Cache;
 use kaspa_txscript::covenants::CovenantsContext;
 use kaspa_txscript::opcodes::codes::*;
 use kaspa_txscript::script_builder::ScriptBuilder;
-use kaspa_txscript::{EngineCtx, EngineFlags, SeqCommitAccessor, TxScriptEngine, pay_to_address_script, pay_to_script_hash_script};
+use kaspa_txscript::{
+    EngineCtx, EngineFlags, SeqCommitAccessor, TxScriptEngine, pay_to_address_script, pay_to_script_hash_script,
+    pay_to_script_hash_signature_script,
+};
 use silverscript_lang::ast::{Expr, parse_contract_ast};
 use silverscript_lang::compiler::{
     CompileOptions, CompiledContract, CovenantDeclCallOptions, FunctionAbiEntry, FunctionInputAbi, compile_contract,
@@ -3454,8 +3457,8 @@ fn validate_output_state_accepts_state_value_from_array_index() {
     "#;
 
     let input_compiled = compile_contract(source, &[5.into()], CompileOptions::default()).expect("compile succeeds");
-    let mut sigscript = input_compiled.build_sig_script("main", vec![state_array_arg_x(vec![6])]).expect("sigscript builds");
-    sigscript.extend_from_slice(&sigscript_push_script(&input_compiled.script));
+    let sigscript = input_compiled.build_sig_script("main", vec![state_array_arg_x(vec![6])]).expect("sigscript builds");
+    let sigscript = pay_to_script_hash_signature_script(input_compiled.script.clone(), sigscript).unwrap();
     let output_compiled = compile_contract(source, &[6.into()], CompileOptions::default()).expect("compile succeeds");
     let input = test_input(0, sigscript);
     let input_spk = pay_to_script_hash_script(&input_compiled.script);
@@ -3487,8 +3490,8 @@ fn validate_output_state_accepts_state_value_from_inline_returned_array() {
     "#;
 
     let input_compiled = compile_contract(source, &[5.into()], CompileOptions::default()).expect("compile succeeds");
-    let mut sigscript = input_compiled.build_sig_script("main", vec![state_array_arg_x(vec![6])]).expect("sigscript builds");
-    sigscript.extend_from_slice(&sigscript_push_script(&input_compiled.script));
+    let sigscript = input_compiled.build_sig_script("main", vec![state_array_arg_x(vec![6])]).expect("sigscript builds");
+    let sigscript = pay_to_script_hash_signature_script(input_compiled.script.clone(), sigscript).unwrap();
     let output_compiled = compile_contract(source, &[6.into()], CompileOptions::default()).expect("compile succeeds");
     let input = test_input(0, sigscript);
     let input_spk = pay_to_script_hash_script(&input_compiled.script);
@@ -3519,8 +3522,8 @@ fn read_input_state_accepts_self_state_under_selector_dispatch() {
     "#;
 
     let input_compiled = compile_contract(source, &[5.into()], CompileOptions::default()).expect("compile succeeds");
-    let mut sigscript = input_compiled.build_sig_script("main", vec![]).expect("sigscript builds");
-    sigscript.extend_from_slice(&sigscript_push_script(&input_compiled.script));
+    let sigscript = input_compiled.build_sig_script("main", vec![]).expect("sigscript builds");
+    let sigscript = pay_to_script_hash_signature_script(input_compiled.script.clone(), sigscript).unwrap();
     let output_compiled = compile_contract(source, &[5.into()], CompileOptions::default()).expect("compile succeeds");
     let input = test_input(0, sigscript);
     let input_spk = pay_to_script_hash_script(&input_compiled.script);
@@ -3557,8 +3560,8 @@ fn read_input_state_accepts_three_field_state_under_selector_dispatch() {
     let input_compiled =
         compile_contract(source, &[5.into(), vec![0x34u8, 0x12u8].into(), vec![1u8; 32].into()], CompileOptions::default())
             .expect("compile succeeds");
-    let mut sigscript = input_compiled.build_sig_script("main", vec![]).expect("sigscript builds");
-    sigscript.extend_from_slice(&sigscript_push_script(&input_compiled.script));
+    let sigscript = input_compiled.build_sig_script("main", vec![]).expect("sigscript builds");
+    let sigscript = pay_to_script_hash_signature_script(input_compiled.script.clone(), sigscript).unwrap();
     let output_compiled =
         compile_contract(source, &[5.into(), vec![0x34u8, 0x12u8].into(), vec![1u8; 32].into()], CompileOptions::default())
             .expect("compile succeeds");
@@ -3590,9 +3593,8 @@ fn validate_output_state_accepts_state_under_selector_dispatch() {
     "#;
 
     let input_compiled = compile_contract(source, &[5.into()], CompileOptions::default()).expect("compile succeeds");
-    let mut sigscript =
-        input_compiled.build_sig_script("main", vec![struct_object(vec![("x", Expr::int(6))])]).expect("sigscript builds");
-    sigscript.extend_from_slice(&sigscript_push_script(&input_compiled.script));
+    let sigscript = input_compiled.build_sig_script("main", vec![struct_object(vec![("x", Expr::int(6))])]).expect("sigscript builds");
+    let sigscript = pay_to_script_hash_signature_script(input_compiled.script.clone(), sigscript).unwrap();
     let output_compiled = compile_contract(source, &[6.into()], CompileOptions::default()).expect("compile succeeds");
     let input = test_input(0, sigscript);
     let input_spk = pay_to_script_hash_script(&input_compiled.script);
@@ -3626,7 +3628,7 @@ fn validate_output_state_accepts_three_field_state_under_selector_dispatch() {
     let input_compiled =
         compile_contract(source, &[5.into(), vec![0x34u8, 0x12u8].into(), vec![1u8; 32].into()], CompileOptions::default())
             .expect("compile succeeds");
-    let mut sigscript = input_compiled
+    let sigscript = input_compiled
         .build_sig_script(
             "main",
             vec![struct_object(vec![
@@ -3636,7 +3638,7 @@ fn validate_output_state_accepts_three_field_state_under_selector_dispatch() {
             ])],
         )
         .expect("sigscript builds");
-    sigscript.extend_from_slice(&sigscript_push_script(&input_compiled.script));
+    let sigscript = pay_to_script_hash_signature_script(input_compiled.script.clone(), sigscript).unwrap();
     let output_compiled =
         compile_contract(source, &[6.into(), vec![0xabu8, 0xcdu8].into(), vec![2u8; 32].into()], CompileOptions::default())
             .expect("compile succeeds");
