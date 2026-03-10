@@ -24,7 +24,7 @@ contract Pair(int max_ins, int max_outs, int init_value) {
         int cov_in_count = OpCovInputCount(cov_id);
         require(cov_in_count <= max_ins);
 
-        int cov_out_count = OpCovOutCount(cov_id);
+        int cov_out_count = OpCovOutputCount(cov_id);
 
         State[] prev_states;
         for(cov_in_k, 0, max_ins) {

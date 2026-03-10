@@ -182,10 +182,10 @@ function bump_or_terminate(State prev_state, State[] next_states) : (State[]) {
 
 ```js
 byte[32] cov_id = OpInputCovenantId(this.activeInputIndex);
-require(OpCovOutCount(cov_id) == OpAuthOutputCount(this.activeInputIndex));
+require(OpCovOutputCount(cov_id) == OpAuthOutputCount(this.activeInputIndex));
 ```
 
-No explicit `cov_id != false` check is needed; `OpCovOutCount(cov_id)` fails if `cov_id` is not valid covenant-id data.
+No explicit `cov_id != false` check is needed; `OpCovOutputCount(cov_id)` fails if `cov_id` is not valid covenant-id data.
 
 `binding = cov`: `groups = single` only. `groups = multiple` is rejected.
 
@@ -275,7 +275,7 @@ contract VaultNM(
         byte[32] cov_id = OpInputCovenantId(this.activeInputIndex);
 
         int in_count = OpCovInputCount(cov_id);
-        int out_count = OpCovOutCount(cov_id);
+        int out_count = OpCovOutputCount(cov_id);
         require(out_count == new_states.length);
 
         // k=0 must execute leader path
