@@ -3502,6 +3502,38 @@ fn validate_output_state_accepts_state_value_from_inline_returned_array() {
 }
 
 #[test]
+fn read_input_state_accepts_self_state_under_selector_dispatch() {
+    let source = r#"
+        contract C(int initX) {
+            int x = initX;
+
+            entrypoint function noop() {
+                require(true);
+            }
+
+            entrypoint function main() {
+                State s = readInputState(this.activeInputIndex);
+                require(s.x == 5);
+            }
+        }
+    "#;
+
+    let input_compiled = compile_contract(source, &[5.into()], CompileOptions::default()).expect("compile succeeds");
+    let mut sigscript = input_compiled.build_sig_script("main", vec![]).expect("sigscript builds");
+    sigscript.extend_from_slice(&sigscript_push_script(&input_compiled.script));
+    let output_compiled = compile_contract(source, &[5.into()], CompileOptions::default()).expect("compile succeeds");
+    let input = test_input(0, sigscript);
+    let input_spk = pay_to_script_hash_script(&input_compiled.script);
+    let output_spk = pay_to_script_hash_script(&output_compiled.script);
+    let output = TransactionOutput { value: 1000, script_public_key: output_spk, covenant: None };
+    let tx = Transaction::new(1, vec![input], vec![output.clone()], 0, Default::default(), 0, vec![]);
+    let utxo_entry = UtxoEntry::new(output.value, input_spk, 0, tx.is_coinbase(), None);
+
+    let result = execute_input(tx, vec![utxo_entry], 0);
+    assert!(result.is_ok(), "readInputState should read the current state under selector dispatch: {result:?}");
+}
+
+#[test]
 fn validate_output_state_accepts_state_under_selector_dispatch() {
     let source = r#"
         contract C(int initX) {

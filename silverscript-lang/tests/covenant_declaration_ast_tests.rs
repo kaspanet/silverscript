@@ -551,6 +551,67 @@ fn lowers_cov_transition_two_field_state_to_expected_wrapper_ast() {
 }
 
 #[test]
+fn lowers_cov_transition_single_field_state_to_expected_wrapper_ast() {
+    let source = r#"
+        contract Pair(int max_ins, int max_outs, int init_value) {
+            int value = init_value;
+
+            #[covenant(binding = cov, from = max_ins, to = max_outs, mode = transition)]
+            function carry_forward(State[] prev_states) : (State[]) {
+                return(prev_states);
+            }
+        }
+    "#;
+
+    let expected_lowered = r#"
+        contract Pair(int max_ins, int max_outs, int init_value) {
+            int value = init_value;
+
+            function covenant_policy_carry_forward(State[] prev_states) : (State[]) {
+                return(prev_states);
+            }
+
+            entrypoint function leader_carry_forward() {
+                byte[32] cov_id = OpInputCovenantId(this.activeInputIndex);
+
+                require(OpCovInputIdx(cov_id, 0) == this.activeInputIndex);
+
+                int cov_in_count = OpCovInputCount(cov_id);
+                require(cov_in_count <= max_ins);
+
+                int cov_out_count = OpCovOutCount(cov_id);
+
+                State[] prev_states;
+                for(cov_in_k, 0, max_ins) {
+                    if (cov_in_k < cov_in_count) {
+                        prev_states.push(readInputState(OpCovInputIdx(cov_id, cov_in_k)));
+                    }
+                }
+
+                (State[] cov_new_states) = covenant_policy_carry_forward(prev_states);
+                require(cov_out_count <= max_outs);
+                require(cov_out_count == cov_new_states.length);
+
+                for(cov_k, 0, max_outs) {
+                    if (cov_k < cov_out_count) {
+                        int cov_out_idx = OpCovOutputIdx(cov_id, cov_k);
+                        validateOutputState(cov_out_idx, cov_new_states[cov_k]);
+                    }
+                }
+            }
+
+            entrypoint function delegate_carry_forward() {
+                byte[32] cov_id = OpInputCovenantId(this.activeInputIndex);
+
+                require(OpCovInputIdx(cov_id, 0) != this.activeInputIndex);
+            }
+        }
+    "#;
+
+    assert_lowers_to_expected_ast(source, expected_lowered, &[Expr::int(2), Expr::int(2), Expr::int(10)]);
+}
+
+#[test]
 fn lowers_inferred_auth_verification_two_field_state_to_expected_wrapper_ast() {
     let source = r#"
         contract Matrix(int max_outs, int init_amount, byte[32] init_owner) {
