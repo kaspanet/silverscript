@@ -760,6 +760,10 @@ fn state_array_arg<'i>(values: Vec<i64>) -> Expr<'i> {
     values.into_iter().map(|value| struct_object(vec![("value", Expr::int(value))])).collect::<Vec<_>>().into()
 }
 
+fn state_array_arg_x<'i>(values: Vec<i64>) -> Expr<'i> {
+    values.into_iter().map(|value| struct_object(vec![("x", Expr::int(value))])).collect::<Vec<_>>().into()
+}
+
 fn matrix_state_array_arg<'i>(values: Vec<(i64, Vec<u8>)>) -> Expr<'i> {
     values
         .into_iter()
@@ -3434,6 +3438,99 @@ fn runs_validate_output_state_with_state_variable() {
 
     let result = execute_input(tx, vec![utxo_entry], 0);
     assert!(result.is_ok(), "validateOutputState runtime failed: {}", result.unwrap_err());
+}
+
+#[test]
+fn validate_output_state_accepts_state_value_from_array_index() {
+    let source = r#"
+        contract C(int initX) {
+            int x = initX;
+
+            entrypoint function main(State[] xs) {
+                State next = xs[0];
+                validateOutputState(0, next);
+            }
+        }
+    "#;
+
+    let input_compiled = compile_contract(source, &[5.into()], CompileOptions::default()).expect("compile succeeds");
+    let mut sigscript = input_compiled.build_sig_script("main", vec![state_array_arg_x(vec![6])]).expect("sigscript builds");
+    sigscript.extend_from_slice(&sigscript_push_script(&input_compiled.script));
+    let output_compiled = compile_contract(source, &[6.into()], CompileOptions::default()).expect("compile succeeds");
+    let input = test_input(0, sigscript);
+    let input_spk = pay_to_script_hash_script(&input_compiled.script);
+    let output_spk = pay_to_script_hash_script(&output_compiled.script);
+    let output = TransactionOutput { value: 1000, script_public_key: output_spk, covenant: None };
+    let tx = Transaction::new(1, vec![input], vec![output.clone()], 0, Default::default(), 0, vec![]);
+    let utxo_entry = UtxoEntry::new(output.value, input_spk, 0, tx.is_coinbase(), None);
+
+    let result = execute_input(tx, vec![utxo_entry], 0);
+    assert!(result.is_ok(), "state value sourced from array index should validate output state: {result:?}");
+}
+
+#[test]
+fn validate_output_state_accepts_state_value_from_inline_returned_array() {
+    let source = r#"
+        contract C(int initX) {
+            int x = initX;
+
+            function id(State[] xs) : (State[]) {
+                return(xs);
+            }
+
+            entrypoint function main(State[] xs) {
+                (State[] ys) = id(xs);
+                State next = ys[0];
+                validateOutputState(0, next);
+            }
+        }
+    "#;
+
+    let input_compiled = compile_contract(source, &[5.into()], CompileOptions::default()).expect("compile succeeds");
+    let mut sigscript = input_compiled.build_sig_script("main", vec![state_array_arg_x(vec![6])]).expect("sigscript builds");
+    sigscript.extend_from_slice(&sigscript_push_script(&input_compiled.script));
+    let output_compiled = compile_contract(source, &[6.into()], CompileOptions::default()).expect("compile succeeds");
+    let input = test_input(0, sigscript);
+    let input_spk = pay_to_script_hash_script(&input_compiled.script);
+    let output_spk = pay_to_script_hash_script(&output_compiled.script);
+    let output = TransactionOutput { value: 1000, script_public_key: output_spk, covenant: None };
+    let tx = Transaction::new(1, vec![input], vec![output.clone()], 0, Default::default(), 0, vec![]);
+    let utxo_entry = UtxoEntry::new(output.value, input_spk, 0, tx.is_coinbase(), None);
+
+    let result = execute_input(tx, vec![utxo_entry], 0);
+    assert!(result.is_ok(), "state value sourced from inline returned State[] should validate output state: {result:?}");
+}
+
+#[test]
+fn validate_output_state_accepts_state_under_selector_dispatch() {
+    let source = r#"
+        contract C(int initX) {
+            int x = initX;
+
+            entrypoint function noop() {
+                require(true);
+            }
+
+            entrypoint function main(State next) {
+                validateOutputState(0, next);
+            }
+        }
+    "#;
+
+    let input_compiled = compile_contract(source, &[5.into()], CompileOptions::default()).expect("compile succeeds");
+    let mut sigscript =
+        input_compiled.build_sig_script("main", vec![struct_object(vec![("x", Expr::int(6))])]).expect("sigscript builds");
+    sigscript.extend_from_slice(&sigscript_push_script(&input_compiled.script));
+    let output_compiled = compile_contract(source, &[6.into()], CompileOptions::default()).expect("compile succeeds");
+    let input = test_input(0, sigscript);
+    let input_spk = pay_to_script_hash_script(&input_compiled.script);
+    let output_spk = pay_to_script_hash_script(&output_compiled.script);
+    let output = TransactionOutput { value: 1000, script_public_key: output_spk, covenant: None };
+    let tx = Transaction::new(1, vec![input], vec![output.clone()], 0, Default::default(), 0, vec![]);
+    let utxo_entry = UtxoEntry::new(output.value, input_spk, 0, tx.is_coinbase(), None);
+
+    let result = execute_input(tx, vec![utxo_entry], 0);
+    assert!(result.is_ok(), "state value should validate output state under selector dispatch: {result:?}");
 }
 
 #[test]

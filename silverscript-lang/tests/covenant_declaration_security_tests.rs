@@ -420,7 +420,7 @@ fn many_to_many_rejects_wrong_entrypoint_role() {
 }
 
 #[test]
-fn many_to_many_happy_path_currently_fails_with_validate_output_state() {
+fn many_to_many_happy_path_succeeds() {
     let in0 = compile_state(COV_N_TO_M_SOURCE, 10);
     let in1 = compile_state(COV_N_TO_M_SOURCE, 7);
     let out0 = compile_state(COV_N_TO_M_SOURCE, 10);
@@ -435,12 +435,8 @@ fn many_to_many_happy_path_currently_fails_with_validate_output_state() {
     let outputs = vec![covenant_output(&out0, 0, COV_A), covenant_output(&out1, 1, COV_A)];
     let (tx, entries) = build_nm_tx(input0_sigscript, input1_sigscript, outputs);
 
-    let leader_err = execute_input_with_covenants(tx.clone(), entries.clone(), 0)
-        .expect_err("leader path is expected to fail until validateOutputState fully supports selector-dispatched scripts");
-    assert_verify_like_error(leader_err);
-
-    let delegate_result = execute_input_with_covenants(tx, entries, 1);
-    assert!(delegate_result.is_ok(), "delegate path unexpectedly failed: {}", delegate_result.unwrap_err());
+    execute_input_with_covenants(tx.clone(), entries.clone(), 0).expect("leader path should accept valid many-to-many transition");
+    execute_input_with_covenants(tx, entries, 1).expect("delegate path should accept valid many-to-many transition");
 }
 
 #[test]
