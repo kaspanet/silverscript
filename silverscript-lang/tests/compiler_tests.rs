@@ -1718,6 +1718,30 @@ fn rejects_struct_literal_with_wrong_field_type_in_function_call() {
 }
 
 #[test]
+fn rejects_non_struct_argument_for_struct_parameter() {
+    let source = r#"
+        contract C() {
+            struct S {
+                int x;
+            }
+
+            function f(S s) {
+                require(s.x > 0);
+            }
+
+            entrypoint function main() {
+                int x = 5;
+                f(x);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default())
+        .expect_err("non-struct argument for struct parameter should be rejected");
+    assert!(err.to_string().contains("expects S") || err.to_string().contains("expects struct S"), "unexpected error: {err}");
+}
+
+#[test]
 fn rejects_struct_literal_with_wrong_field_type_in_variable_definition() {
     let source = r#"
         contract C() {
