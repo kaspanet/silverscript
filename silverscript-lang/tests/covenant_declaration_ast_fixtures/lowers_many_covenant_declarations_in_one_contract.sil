@@ -106,7 +106,7 @@ contract Matrix(int max_ins, int max_outs, int init_amount, byte[32] init_owner)
         int cov_out_count = OpAuthOutputCount(this.activeInputIndex);
 
         byte[32] cov_id = OpInputCovenantId(this.activeInputIndex);
-        int cov_shared_out_count = OpCovOutCount(cov_id);
+        int cov_shared_out_count = OpCovOutputCount(cov_id);
         require(cov_shared_out_count == cov_out_count);
 
         State prev_state = { amount: amount, owner: owner };
@@ -153,7 +153,7 @@ contract Matrix(int max_ins, int max_outs, int init_amount, byte[32] init_owner)
         int cov_in_count = OpCovInputCount(cov_id);
         require(cov_in_count <= max_ins);
 
-        int cov_out_count = OpCovOutCount(cov_id);
+        int cov_out_count = OpCovOutputCount(cov_id);
         State[] prev_states;
 
         for(cov_in_k, 0, max_ins) {
@@ -193,7 +193,7 @@ contract Matrix(int max_ins, int max_outs, int init_amount, byte[32] init_owner)
         int cov_in_count = OpCovInputCount(cov_id);
         require(cov_in_count <= max_ins);
 
-        int cov_out_count = OpCovOutCount(cov_id);
+        int cov_out_count = OpCovOutputCount(cov_id);
         State[] prev_states;
         for(cov_in_k, 0, max_ins) {
             if (cov_in_k < cov_in_count) {
@@ -250,7 +250,7 @@ contract Matrix(int max_ins, int max_outs, int init_amount, byte[32] init_owner)
         int cov_in_count = OpCovInputCount(cov_id);
         require(cov_in_count <= max_ins);
 
-        int cov_out_count = OpCovOutCount(cov_id);
+        int cov_out_count = OpCovOutputCount(cov_id);
         State[] prev_states;
 
         for(cov_in_k, 0, max_ins) {

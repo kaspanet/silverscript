@@ -426,7 +426,7 @@ fn build_auth_wrapper<'i>(
         body.push(var_def_statement(
             int_type_ref(),
             cov_out_count_name,
-            Expr::call("OpCovOutCount", vec![identifier_expr(cov_id_name)]),
+            Expr::call("OpCovOutputCount", vec![identifier_expr(cov_id_name)]),
         ));
         body.push(require_statement(binary_expr(BinaryOp::Eq, identifier_expr(cov_out_count_name), identifier_expr(out_count_name))));
     }
@@ -599,7 +599,11 @@ fn build_cov_wrapper<'i>(
         body.push(require_statement(binary_expr(BinaryOp::Le, identifier_expr(in_count_name), declaration.from_expr.clone())));
 
         let out_count_name = "__cov_out_count";
-        body.push(var_def_statement(int_type_ref(), out_count_name, Expr::call("OpCovOutCount", vec![identifier_expr(cov_id_name)])));
+        body.push(var_def_statement(
+            int_type_ref(),
+            out_count_name,
+            Expr::call("OpCovOutputCount", vec![identifier_expr(cov_id_name)]),
+        ));
 
         if !contract_fields.is_empty() {
             match declaration.mode {

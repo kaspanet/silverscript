@@ -1,4 +1,4 @@
-use kaspa_txscript::opcodes::codes::{OpAuthOutputCount, OpCovInputCount, OpCovInputIdx, OpCovOutCount, OpInputCovenantId};
+use kaspa_txscript::opcodes::codes::{OpAuthOutputCount, OpCovInputCount, OpCovInputIdx, OpCovOutputCount, OpInputCovenantId};
 use silverscript_lang::ast::Expr;
 use silverscript_lang::compiler::{CompileOptions, compile_contract};
 
@@ -58,7 +58,7 @@ fn lowers_cov_covenant_to_leader_and_delegate_entrypoints() {
     assert_eq!(abi_names, vec!["__leader_transition_ok", "__delegate_transition_ok"]);
     assert!(compiled.ast.functions.iter().any(|f| f.name == "__covenant_policy_transition_ok" && !f.entrypoint));
     assert!(compiled.script.contains(&OpCovInputCount));
-    assert!(compiled.script.contains(&OpCovOutCount));
+    assert!(compiled.script.contains(&OpCovOutputCount));
     assert!(compiled.script.contains(&OpCovInputIdx));
 }
 
@@ -78,7 +78,7 @@ fn infers_cov_binding_from_from_greater_than_one_when_binding_omitted() {
     assert_eq!(abi_names, vec!["__leader_transition_ok", "__delegate_transition_ok"]);
     assert!(compiled.ast.functions.iter().any(|f| f.name == "__covenant_policy_transition_ok" && !f.entrypoint));
     assert!(compiled.script.contains(&OpCovInputCount));
-    assert!(compiled.script.contains(&OpCovOutCount));
+    assert!(compiled.script.contains(&OpCovOutputCount));
     assert!(compiled.script.contains(&OpCovInputIdx));
 }
 
@@ -429,6 +429,6 @@ fn auth_covenant_groups_single_injects_shared_count_check() {
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
     assert!(compiled.script.contains(&OpInputCovenantId));
-    assert!(compiled.script.contains(&OpCovOutCount));
+    assert!(compiled.script.contains(&OpCovOutputCount));
     assert!(compiled.script.contains(&OpAuthOutputCount));
 }

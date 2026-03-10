@@ -4582,14 +4582,14 @@ fn compiles_opcode_builtins() {
             r#"
                 contract Test() {
                     entrypoint function main() {
-                        require(OpCovOutCount(bytes("c1")) >= 0);
+                        require(OpCovOutputCount(bytes("c1")) >= 0);
                     }
                 }
             "#,
             ScriptBuilder::new()
                 .add_data(b"c1")
                 .unwrap()
-                .add_op(OpCovOutCount)
+                .add_op(OpCovOutputCount)
                 .unwrap()
                 .add_i64(0)
                 .unwrap()
@@ -4891,7 +4891,7 @@ fn executes_opcode_builtins_covenants() {
                 require(OpInputCovenantId(0) == bytes("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"));
                 require(OpCovInputCount(bytes("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")) == 2);
                 require(OpCovInputIdx(bytes("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"), 1) == 2);
-                require(OpCovOutCount(bytes("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")) == 2);
+                require(OpCovOutputCount(bytes("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")) == 2);
                 require(OpCovOutputIdx(bytes("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"), 1) == 2);
             }
         }
