@@ -1691,6 +1691,55 @@ fn runtime_supports_direct_struct_array_non_entrypoint_signature() {
 }
 
 #[test]
+fn debug_info_inline_call_with_plain_array_param_compiles() {
+    let source = r#"
+        contract C() {
+            function verify(int[] x) {
+                require(x.length == 2);
+                require(x[0] == 7);
+                require(x[1] == 9);
+            }
+
+            entrypoint function main(int[] x) {
+                verify(x);
+            }
+        }
+    "#;
+
+    let options = CompileOptions { record_debug_infos: true, ..Default::default() };
+    let result = compile_contract(source, &[], options);
+    assert!(result.is_ok(), "plain array inline call should compile with debug info: {result:?}");
+}
+
+#[test]
+fn debug_info_inline_call_with_struct_array_param_should_compile() {
+    let source = r#"
+        contract C() {
+            struct S {
+                int a;
+                byte[2] b;
+            }
+
+            function verify(S[] x) {
+                require(x.length == 2);
+                require(x[0].a == 7);
+                require(x[1].a == 9);
+                require(x[0].b == 0x0102);
+                require(x[1].b == 0x0304);
+            }
+
+            entrypoint function main(S[] x) {
+                verify(x);
+            }
+        }
+    "#;
+
+    let options = CompileOptions { record_debug_infos: true, ..Default::default() };
+    let result = compile_contract(source, &[], options);
+    assert!(result.is_ok(), "struct[] inline call should compile with debug info: {result:?}");
+}
+
+#[test]
 fn rejects_struct_literal_with_wrong_field_type_in_function_call() {
     let source = r#"
         contract C() {
