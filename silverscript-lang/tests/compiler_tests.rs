@@ -3534,6 +3534,46 @@ fn read_input_state_accepts_self_state_under_selector_dispatch() {
 }
 
 #[test]
+fn read_input_state_accepts_three_field_state_under_selector_dispatch() {
+    let source = r#"
+        contract C(int initAmount, byte[2] initCode, byte[32] initOwner) {
+            int amount = initAmount;
+            byte[2] code = initCode;
+            byte[32] owner = initOwner;
+
+            entrypoint function noop() {
+                require(true);
+            }
+
+            entrypoint function main() {
+                State s = readInputState(this.activeInputIndex);
+                require(s.amount == 5);
+                require(s.code == 0x3412);
+                require(s.owner == 0x0101010101010101010101010101010101010101010101010101010101010101);
+            }
+        }
+    "#;
+
+    let input_compiled =
+        compile_contract(source, &[5.into(), vec![0x34u8, 0x12u8].into(), vec![1u8; 32].into()], CompileOptions::default())
+            .expect("compile succeeds");
+    let mut sigscript = input_compiled.build_sig_script("main", vec![]).expect("sigscript builds");
+    sigscript.extend_from_slice(&sigscript_push_script(&input_compiled.script));
+    let output_compiled =
+        compile_contract(source, &[5.into(), vec![0x34u8, 0x12u8].into(), vec![1u8; 32].into()], CompileOptions::default())
+            .expect("compile succeeds");
+    let input = test_input(0, sigscript);
+    let input_spk = pay_to_script_hash_script(&input_compiled.script);
+    let output_spk = pay_to_script_hash_script(&output_compiled.script);
+    let output = TransactionOutput { value: 1000, script_public_key: output_spk, covenant: None };
+    let tx = Transaction::new(1, vec![input], vec![output.clone()], 0, Default::default(), 0, vec![]);
+    let utxo_entry = UtxoEntry::new(output.value, input_spk, 0, tx.is_coinbase(), None);
+
+    let result = execute_input(tx, vec![utxo_entry], 0);
+    assert!(result.is_ok(), "readInputState should read mixed-width state under selector dispatch: {result:?}");
+}
+
+#[test]
 fn validate_output_state_accepts_state_under_selector_dispatch() {
     let source = r#"
         contract C(int initX) {
@@ -3563,6 +3603,52 @@ fn validate_output_state_accepts_state_under_selector_dispatch() {
 
     let result = execute_input(tx, vec![utxo_entry], 0);
     assert!(result.is_ok(), "state value should validate output state under selector dispatch: {result:?}");
+}
+
+#[test]
+fn validate_output_state_accepts_three_field_state_under_selector_dispatch() {
+    let source = r#"
+        contract C(int initAmount, byte[2] initCode, byte[32] initOwner) {
+            int amount = initAmount;
+            byte[2] code = initCode;
+            byte[32] owner = initOwner;
+
+            entrypoint function noop() {
+                require(true);
+            }
+
+            entrypoint function main(State next) {
+                validateOutputState(0, next);
+            }
+        }
+    "#;
+
+    let input_compiled =
+        compile_contract(source, &[5.into(), vec![0x34u8, 0x12u8].into(), vec![1u8; 32].into()], CompileOptions::default())
+            .expect("compile succeeds");
+    let mut sigscript = input_compiled
+        .build_sig_script(
+            "main",
+            vec![struct_object(vec![
+                ("amount", Expr::int(6)),
+                ("code", Expr::bytes(vec![0xabu8, 0xcdu8])),
+                ("owner", Expr::bytes(vec![2u8; 32])),
+            ])],
+        )
+        .expect("sigscript builds");
+    sigscript.extend_from_slice(&sigscript_push_script(&input_compiled.script));
+    let output_compiled =
+        compile_contract(source, &[6.into(), vec![0xabu8, 0xcdu8].into(), vec![2u8; 32].into()], CompileOptions::default())
+            .expect("compile succeeds");
+    let input = test_input(0, sigscript);
+    let input_spk = pay_to_script_hash_script(&input_compiled.script);
+    let output_spk = pay_to_script_hash_script(&output_compiled.script);
+    let output = TransactionOutput { value: 1000, script_public_key: output_spk, covenant: None };
+    let tx = Transaction::new(1, vec![input], vec![output.clone()], 0, Default::default(), 0, vec![]);
+    let utxo_entry = UtxoEntry::new(output.value, input_spk, 0, tx.is_coinbase(), None);
+
+    let result = execute_input(tx, vec![utxo_entry], 0);
+    assert!(result.is_ok(), "mixed-width state should validate output state under selector dispatch: {result:?}");
 }
 
 #[test]
