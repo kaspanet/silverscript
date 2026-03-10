@@ -38,9 +38,19 @@ type WebviewState = {
 type WebviewMessage =
   | { kind: "keyMaterial"; keyMaterial: GeneratedKeyMaterial }
   | { kind: "error"; message: string };
+type PanelControlMessage = {
+  kind: "triggerLaunch";
+  launchKind: "run" | "debug";
+};
 
 let panel: vscode.WebviewPanel | undefined;
 let activeScriptUri: vscode.Uri | undefined;
+let launchInProgress = false;
+
+function activeSilverScriptSession(): vscode.DebugSession | undefined {
+  const session = vscode.debug.activeDebugSession;
+  return session?.type === "silverscript" ? session : undefined;
+}
 
 function resolveActiveScriptUri(uri?: vscode.Uri): vscode.Uri | undefined {
   if (uri) {
@@ -201,34 +211,72 @@ async function openPanel(
           return;
         }
 
-        const existingParams =
-          (await readDebugParams(activeScriptUri.fsPath)) ?? {};
-        const nextParams: DebugParamsFile = {
-          ...existingParams,
-          function: msg.function,
-          constructorArgs: msg.constructorArgs,
-          args: msg.args,
-        };
-        await writeDebugParams(activeScriptUri.fsPath, nextParams);
+        if (launchInProgress) {
+          void vscode.window.showWarningMessage(
+            "A SilverScript run/debug launch is already in progress.",
+          );
+          return;
+        }
 
-        const folder =
-          vscode.workspace.getWorkspaceFolder(activeScriptUri) ??
-          vscode.workspace.workspaceFolders?.[0];
-        const config: vscode.DebugConfiguration = {
-          type: "silverscript",
-          request: "launch",
-          name: `SilverScript: ${msg.function}`,
-          scriptPath: activeScriptUri.fsPath,
-          function: msg.function,
-          constructorArgs: msg.constructorArgs,
-          args: msg.args,
-          noDebug: msg.kind === "run",
-          stopOnEntry: msg.kind === "debug",
-        };
+        const existingSession = activeSilverScriptSession();
+        if (existingSession) {
+          await vscode.commands.executeCommand(
+            "workbench.action.debug.continue",
+          );
+          return;
+        }
 
-        await vscode.debug.startDebugging(folder, config, {
-          noDebug: msg.kind === "run",
-        });
+        try {
+          launchInProgress = true;
+          const existingParams =
+            (await readDebugParams(activeScriptUri.fsPath)) ?? {};
+          const nextParams: DebugParamsFile = {
+            ...existingParams,
+            function: msg.function,
+            constructorArgs: msg.constructorArgs,
+            args: msg.args,
+          };
+          await writeDebugParams(activeScriptUri.fsPath, nextParams);
+
+          const folder =
+            vscode.workspace.getWorkspaceFolder(activeScriptUri) ??
+            vscode.workspace.workspaceFolders?.[0];
+          const config: vscode.DebugConfiguration = {
+            type: "silverscript",
+            request: "launch",
+            name: `SilverScript: ${msg.function}`,
+            scriptPath: activeScriptUri.fsPath,
+            function: msg.function,
+            constructorArgs: msg.constructorArgs,
+            args: msg.args,
+            noDebug: msg.kind === "run",
+            stopOnEntry: msg.kind === "debug",
+          };
+
+          if (msg.kind === "run") {
+            const output = await runDebuggerAdapterCommand(
+              context,
+              ["--run-config-json", JSON.stringify(config)],
+              out,
+            );
+            out.show(true);
+            void vscode.window.showInformationMessage(
+              output || "Execution completed successfully.",
+            );
+            return;
+          }
+
+          await vscode.debug.startDebugging(folder, config, {
+            noDebug: false,
+          });
+        } catch (error) {
+          out.show(true);
+          void vscode.window.showErrorMessage(
+            `SilverScript ${msg.kind} failed: ${(error as Error).message}`,
+          );
+        } finally {
+          launchInProgress = false;
+        }
       },
       undefined,
       [],
@@ -237,6 +285,7 @@ async function openPanel(
     panel.onDidDispose(() => {
       panel = undefined;
       activeScriptUri = undefined;
+      launchInProgress = false;
     });
   } else {
     panel.reveal(vscode.ViewColumn.Beside);
@@ -252,6 +301,29 @@ async function openPanel(
     argsByFunction: entrypointValues,
     keys: [],
   });
+}
+
+async function triggerPanelLaunch(kind: "run" | "debug"): Promise<void> {
+  if (!panel) {
+    return;
+  }
+  await panel.webview.postMessage({
+    kind: "triggerLaunch",
+    launchKind: kind,
+  } satisfies PanelControlMessage);
+}
+
+async function handlePanelF5(
+  context: vscode.ExtensionContext,
+  out: vscode.OutputChannel,
+  uri?: vscode.Uri,
+  initialFunction?: string,
+): Promise<void> {
+  if (panel && activeScriptUri) {
+    await triggerPanelLaunch("debug");
+    return;
+  }
+  await openPanel(context, out, uri, initialFunction);
 }
 
 function escHtml(value: string): string {
@@ -877,6 +949,10 @@ function buildHtml(
       if (!message || typeof message !== "object") {
         return;
       }
+      if (message.kind === "triggerLaunch" && (message.launchKind === "run" || message.launchKind === "debug")) {
+        send(message.launchKind);
+        return;
+      }
       if (message.kind === "keyMaterial") {
         const key = message.keyMaterial;
         state.keys.push(key);
@@ -914,6 +990,13 @@ export function registerSilverScriptQuickLaunchPanel(
       "silverscript.debug.configureLaunch",
       (uri?: vscode.Uri, initialFunction?: string) =>
         openPanel(context, out, uri, initialFunction),
+    ),
+  );
+  context.subscriptions.push(
+    vscode.commands.registerCommand(
+      "silverscript.debug.f5",
+      (uri?: vscode.Uri, initialFunction?: string) =>
+        handlePanelF5(context, out, uri, initialFunction),
     ),
   );
 }

@@ -4,7 +4,6 @@ members = [
     "debugger/session",
     "debugger/cli",
     "debugger/dap",
-    "covenants/sdk",
 ]
 exclude = ["tree-sitter"]
 resolver = "2"

@@ -62,9 +62,9 @@
     ],
     "keybindings": [
       {
-        "command": "silverscript.debug.configureLaunch",
+        "command": "silverscript.debug.f5",
         "key": "f5",
-        "when": "editorLangId == silverscript && !inDebugMode"
+        "when": "!inDebugMode && (editorLangId == silverscript || webviewId == 'silverscriptRunner')"
       }
     ],
     "debuggers": [

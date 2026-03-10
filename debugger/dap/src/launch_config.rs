@@ -53,6 +53,10 @@ struct ParamsFileConfig {
 impl LaunchConfig {
     pub fn from_launch_args(args: &LaunchRequestArguments) -> Result<Self, String> {
         let value = args.additional_data.clone().unwrap_or(Value::Null);
+        Self::from_value(value)
+    }
+
+    pub fn from_value(value: Value) -> Result<Self, String> {
         let config: Self = serde_json::from_value(value).map_err(|err| format!("invalid launch config: {err}"))?;
 
         if config.script_path.is_none() {
