@@ -1,0 +1,350 @@
+contract Matrix(int max_ins, int max_outs, int init_amount, byte[32] init_owner) {
+    int amount = init_amount;
+    byte[32] owner = init_owner;
+
+    #[covenant(binding = auth, from = 1, to = max_outs, mode = verification, groups = multiple)]
+    function auth_verification_multi(
+        State prev_state,
+        State[] new_states,
+        int nonce
+    ) {
+        require(nonce >= 0);
+    }
+
+    #[covenant(binding = auth, from = 1, to = max_outs, mode = verification, groups = single)]
+    function auth_verification_single(State prev_state, State[] new_states) {
+        require(new_states.length == new_states.length);
+    }
+
+    #[covenant(binding = auth, from = 1, to = max_outs, mode = transition)]
+    function auth_transition(State prev_state, int fee) : (State) {
+        return({ amount: prev_state.amount - fee, owner: prev_state.owner });
+    }
+
+    #[covenant(binding = cov, from = max_ins, to = max_outs, mode = verification)]
+    function cov_verification(
+        State[] prev_states,
+        State[] new_states,
+        int nonce
+    ) {
+        require(nonce >= 0);
+    }
+
+    #[covenant(binding = cov, from = max_ins, to = max_outs, mode = transition)]
+    function cov_transition(State[] prev_states, int fee) : (State[]) {
+        require(fee >= 0);
+        return(prev_states);
+    }
+
+    #[covenant(from = 1, to = max_outs)]
+    function inferred_auth(State prev_state, State[] new_states) {
+        require(new_states.length == new_states.length);
+    }
+
+    #[covenant(from = max_ins, to = max_outs)]
+    function inferred_cov(State[] prev_states, State[] new_states) {
+        require(new_states.length == new_states.length);
+    }
+
+    #[covenant(from = 1, to = 1)]
+    function inferred_transition(State prev_state, int delta) : (State) {
+        return({ amount: prev_state.amount + delta, owner: prev_state.owner });
+    }
+
+    #[covenant.singleton(mode = transition)]
+    function singleton_transition(State prev_state, int delta) : (State) {
+        return({ amount: prev_state.amount + delta, owner: prev_state.owner });
+    }
+
+    #[covenant.singleton(mode = transition, termination = allowed)]
+    function singleton_terminate(State prev_state, State[] next_states) : (State[]) {
+        require(prev_state.amount >= 0);
+        return(next_states);
+    }
+
+    #[covenant.fanout(to = max_outs, mode = verification)]
+    function fanout_verification(State prev_state, State[] new_states) {
+        require(new_states.length == new_states.length);
+    }
+}
+
+// --- lowered ---
+
+contract Matrix(int max_ins, int max_outs, int init_amount, byte[32] init_owner) {
+    int amount = init_amount;
+    byte[32] owner = init_owner;
+
+    function covenant_policy_auth_verification_multi(
+        State prev_state,
+        State[] new_states,
+        int nonce
+    ) {
+        require(nonce >= 0);
+    }
+
+    entrypoint function auth_verification_multi(State[] new_states, int nonce) {
+        int cov_out_count = OpAuthOutputCount(this.activeInputIndex);
+
+        State prev_state = { amount: amount, owner: owner };
+        covenant_policy_auth_verification_multi(prev_state, new_states, nonce);
+        require(cov_out_count <= max_outs);
+        require(cov_out_count == new_states.length);
+
+        for(cov_k, 0, max_outs) {
+            if (cov_k < cov_out_count) {
+                int cov_out_idx = OpAuthOutputIdx(this.activeInputIndex, cov_k);
+                validateOutputState(cov_out_idx, new_states[cov_k]);
+            }
+        }
+    }
+
+    function covenant_policy_auth_verification_single(State prev_state, State[] new_states) {
+        require(new_states.length == new_states.length);
+    }
+
+    entrypoint function auth_verification_single(State[] new_states) {
+        int cov_out_count = OpAuthOutputCount(this.activeInputIndex);
+
+        byte[32] cov_id = OpInputCovenantId(this.activeInputIndex);
+        int cov_shared_out_count = OpCovOutCount(cov_id);
+        require(cov_shared_out_count == cov_out_count);
+
+        State prev_state = { amount: amount, owner: owner };
+        covenant_policy_auth_verification_single(prev_state, new_states);
+        require(cov_out_count <= max_outs);
+        require(cov_out_count == new_states.length);
+
+        for(cov_k, 0, max_outs) {
+            if (cov_k < cov_out_count) {
+                int cov_out_idx = OpAuthOutputIdx(this.activeInputIndex, cov_k);
+                validateOutputState(cov_out_idx, new_states[cov_k]);
+            }
+        }
+    }
+
+    function covenant_policy_auth_transition(State prev_state, int fee) : (State) {
+        return({ amount: prev_state.amount - fee, owner: prev_state.owner });
+    }
+
+    entrypoint function auth_transition(int fee) {
+        int cov_out_count = OpAuthOutputCount(this.activeInputIndex);
+
+        State prev_state = { amount: amount, owner: owner };
+        (State cov_new_state) = covenant_policy_auth_transition(prev_state, fee);
+        require(cov_out_count == 1);
+
+        int cov_out_idx = OpAuthOutputIdx(this.activeInputIndex, 0);
+        validateOutputState(cov_out_idx, cov_new_state);
+    }
+
+    function covenant_policy_cov_verification(
+        State[] prev_states,
+        State[] new_states,
+        int nonce
+    ) {
+        require(nonce >= 0);
+    }
+
+    entrypoint function leader_cov_verification(State[] new_states, int nonce) {
+        byte[32] cov_id = OpInputCovenantId(this.activeInputIndex);
+
+        require(OpCovInputIdx(cov_id, 0) == this.activeInputIndex);
+
+        int cov_in_count = OpCovInputCount(cov_id);
+        require(cov_in_count <= max_ins);
+
+        int cov_out_count = OpCovOutCount(cov_id);
+        State[] prev_states;
+
+        for(cov_in_k, 0, max_ins) {
+            if (cov_in_k < cov_in_count) {
+                prev_states.push(readInputState(OpCovInputIdx(cov_id, cov_in_k)));
+            }
+        }
+
+        covenant_policy_cov_verification(prev_states, new_states, nonce);
+        require(cov_out_count <= max_outs);
+        require(cov_out_count == new_states.length);
+
+        for(cov_k, 0, max_outs) {
+            if (cov_k < cov_out_count) {
+                int cov_out_idx = OpCovOutputIdx(cov_id, cov_k);
+                validateOutputState(cov_out_idx, new_states[cov_k]);
+            }
+        }
+    }
+
+    entrypoint function delegate_cov_verification() {
+        byte[32] cov_id = OpInputCovenantId(this.activeInputIndex);
+
+        require(OpCovInputIdx(cov_id, 0) != this.activeInputIndex);
+    }
+
+    function covenant_policy_cov_transition(State[] prev_states, int fee) : (State[]) {
+        require(fee >= 0);
+        return(prev_states);
+    }
+
+    entrypoint function leader_cov_transition(int fee) {
+        byte[32] cov_id = OpInputCovenantId(this.activeInputIndex);
+
+        require(OpCovInputIdx(cov_id, 0) == this.activeInputIndex);
+
+        int cov_in_count = OpCovInputCount(cov_id);
+        require(cov_in_count <= max_ins);
+
+        int cov_out_count = OpCovOutCount(cov_id);
+        State[] prev_states;
+        for(cov_in_k, 0, max_ins) {
+            if (cov_in_k < cov_in_count) {
+                prev_states.push(readInputState(OpCovInputIdx(cov_id, cov_in_k)));
+            }
+        }
+        (State[] cov_new_states) = covenant_policy_cov_transition(prev_states, fee);
+        require(cov_out_count <= max_outs);
+        require(cov_out_count == cov_new_states.length);
+
+        for(cov_k, 0, max_outs) {
+            if (cov_k < cov_out_count) {
+                int cov_out_idx = OpCovOutputIdx(cov_id, cov_k);
+                validateOutputState(cov_out_idx, cov_new_states[cov_k]);
+            }
+        }
+    }
+
+    entrypoint function delegate_cov_transition() {
+        byte[32] cov_id = OpInputCovenantId(this.activeInputIndex);
+
+        require(OpCovInputIdx(cov_id, 0) != this.activeInputIndex);
+    }
+
+    function covenant_policy_inferred_auth(State prev_state, State[] new_states) {
+        require(new_states.length == new_states.length);
+    }
+
+    entrypoint function inferred_auth(State[] new_states) {
+        int cov_out_count = OpAuthOutputCount(this.activeInputIndex);
+
+        State prev_state = { amount: amount, owner: owner };
+        covenant_policy_inferred_auth(prev_state, new_states);
+        require(cov_out_count <= max_outs);
+        require(cov_out_count == new_states.length);
+
+        for(cov_k, 0, max_outs) {
+            if (cov_k < cov_out_count) {
+                int cov_out_idx = OpAuthOutputIdx(this.activeInputIndex, cov_k);
+                validateOutputState(cov_out_idx, new_states[cov_k]);
+            }
+        }
+    }
+
+    function covenant_policy_inferred_cov(State[] prev_states, State[] new_states) {
+        require(new_states.length == new_states.length);
+    }
+
+    entrypoint function leader_inferred_cov(State[] new_states) {
+        byte[32] cov_id = OpInputCovenantId(this.activeInputIndex);
+
+        require(OpCovInputIdx(cov_id, 0) == this.activeInputIndex);
+
+        int cov_in_count = OpCovInputCount(cov_id);
+        require(cov_in_count <= max_ins);
+
+        int cov_out_count = OpCovOutCount(cov_id);
+        State[] prev_states;
+
+        for(cov_in_k, 0, max_ins) {
+            if (cov_in_k < cov_in_count) {
+                prev_states.push(readInputState(OpCovInputIdx(cov_id, cov_in_k)));
+            }
+        }
+
+        covenant_policy_inferred_cov(prev_states, new_states);
+        require(cov_out_count <= max_outs);
+        require(cov_out_count == new_states.length);
+
+        for(cov_k, 0, max_outs) {
+            if (cov_k < cov_out_count) {
+                int cov_out_idx = OpCovOutputIdx(cov_id, cov_k);
+                validateOutputState(cov_out_idx, new_states[cov_k]);
+            }
+        }
+    }
+
+    entrypoint function delegate_inferred_cov() {
+        byte[32] cov_id = OpInputCovenantId(this.activeInputIndex);
+
+        require(OpCovInputIdx(cov_id, 0) != this.activeInputIndex);
+    }
+
+    function covenant_policy_inferred_transition(State prev_state, int delta) : (State) {
+        return({ amount: prev_state.amount + delta, owner: prev_state.owner });
+    }
+
+    entrypoint function inferred_transition(int delta) {
+        int cov_out_count = OpAuthOutputCount(this.activeInputIndex);
+
+        State prev_state = { amount: amount, owner: owner };
+        (State cov_new_state) = covenant_policy_inferred_transition(prev_state, delta);
+        require(cov_out_count == 1);
+
+        int cov_out_idx = OpAuthOutputIdx(this.activeInputIndex, 0);
+        validateOutputState(cov_out_idx, cov_new_state);
+    }
+
+    function covenant_policy_singleton_transition(State prev_state, int delta) : (State) {
+        return({ amount: prev_state.amount + delta, owner: prev_state.owner });
+    }
+
+    entrypoint function singleton_transition(int delta) {
+        int cov_out_count = OpAuthOutputCount(this.activeInputIndex);
+
+        State prev_state = { amount: amount, owner: owner };
+        (State cov_new_state) = covenant_policy_singleton_transition(prev_state, delta);
+        require(cov_out_count == 1);
+
+        int cov_out_idx = OpAuthOutputIdx(this.activeInputIndex, 0);
+        validateOutputState(cov_out_idx, cov_new_state);
+    }
+
+    function covenant_policy_singleton_terminate(State prev_state, State[] next_states) : (State[]) {
+        require(prev_state.amount >= 0);
+        return(next_states);
+    }
+
+    entrypoint function singleton_terminate(State[] next_states) {
+        int cov_out_count = OpAuthOutputCount(this.activeInputIndex);
+
+        State prev_state = { amount: amount, owner: owner };
+        (State[] cov_new_states) = covenant_policy_singleton_terminate(prev_state, next_states);
+        require(cov_out_count <= 1);
+        require(cov_out_count == cov_new_states.length);
+
+        for(cov_k, 0, 1) {
+            if (cov_k < cov_out_count) {
+                int cov_out_idx = OpAuthOutputIdx(this.activeInputIndex, cov_k);
+                validateOutputState(cov_out_idx, cov_new_states[cov_k]);
+            }
+        }
+    }
+
+    function covenant_policy_fanout_verification(State prev_state, State[] new_states) {
+        require(new_states.length == new_states.length);
+    }
+
+    entrypoint function fanout_verification(State[] new_states) {
+        int cov_out_count = OpAuthOutputCount(this.activeInputIndex);
+
+        State prev_state = { amount: amount, owner: owner };
+        covenant_policy_fanout_verification(prev_state, new_states);
+        require(cov_out_count <= max_outs);
+        require(cov_out_count == new_states.length);
+
+        for(cov_k, 0, max_outs) {
+            if (cov_k < cov_out_count) {
+                int cov_out_idx = OpAuthOutputIdx(this.activeInputIndex, cov_k);
+                validateOutputState(cov_out_idx, new_states[cov_k]);
+            }
+        }
+    }
+}

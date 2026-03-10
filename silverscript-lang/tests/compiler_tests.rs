@@ -10,7 +10,10 @@ use kaspa_txscript::caches::Cache;
 use kaspa_txscript::covenants::CovenantsContext;
 use kaspa_txscript::opcodes::codes::*;
 use kaspa_txscript::script_builder::ScriptBuilder;
-use kaspa_txscript::{EngineCtx, EngineFlags, SeqCommitAccessor, TxScriptEngine, pay_to_address_script, pay_to_script_hash_script};
+use kaspa_txscript::{
+    EngineCtx, EngineFlags, SeqCommitAccessor, TxScriptEngine, pay_to_address_script, pay_to_script_hash_script,
+    pay_to_script_hash_signature_script,
+};
 use silverscript_lang::ast::{Expr, parse_contract_ast};
 use silverscript_lang::compiler::{
     CompileOptions, CompiledContract, CovenantDeclCallOptions, FunctionAbiEntry, FunctionInputAbi, compile_contract,
@@ -760,6 +763,10 @@ fn state_array_arg<'i>(values: Vec<i64>) -> Expr<'i> {
     values.into_iter().map(|value| struct_object(vec![("value", Expr::int(value))])).collect::<Vec<_>>().into()
 }
 
+fn state_array_arg_x<'i>(values: Vec<i64>) -> Expr<'i> {
+    values.into_iter().map(|value| struct_object(vec![("x", Expr::int(value))])).collect::<Vec<_>>().into()
+}
+
 fn matrix_state_array_arg<'i>(values: Vec<(i64, Vec<u8>)>) -> Expr<'i> {
     values
         .into_iter()
@@ -1102,7 +1109,7 @@ fn build_sig_script_for_covenant_decl_supports_all_covenant_ast_examples() {
             "#,
             constructor_args: vec![Expr::int(2), Expr::int(4), Expr::int(10), Expr::bytes(owner.clone())],
             function_name: "step",
-            args: vec![matrix_state_array_arg(vec![(10, owner.clone())]), Expr::int(1)],
+            args: vec![Expr::int(1)],
             options: CovenantDeclCallOptions { is_leader: true },
             generated_covenant_entrypoint_name: "__leader_step",
         },
@@ -1265,7 +1272,7 @@ fn build_sig_script_for_covenant_decl_supports_all_covenant_ast_examples() {
             source: matrix_all_source,
             constructor_args: vec![Expr::int(2), Expr::int(4), Expr::int(10), Expr::bytes(owner.clone())],
             function_name: "cov_transition",
-            args: vec![matrix_state_array_arg(vec![(10, owner.clone())]), Expr::int(1)],
+            args: vec![Expr::int(1)],
             options: CovenantDeclCallOptions { is_leader: true },
             generated_covenant_entrypoint_name: "__leader_cov_transition",
         },
@@ -1691,6 +1698,55 @@ fn runtime_supports_direct_struct_array_non_entrypoint_signature() {
 }
 
 #[test]
+fn debug_info_inline_call_with_plain_array_param_compiles() {
+    let source = r#"
+        contract C() {
+            function verify(int[] x) {
+                require(x.length == 2);
+                require(x[0] == 7);
+                require(x[1] == 9);
+            }
+
+            entrypoint function main(int[] x) {
+                verify(x);
+            }
+        }
+    "#;
+
+    let options = CompileOptions { record_debug_infos: true, ..Default::default() };
+    let result = compile_contract(source, &[], options);
+    assert!(result.is_ok(), "plain array inline call should compile with debug info: {result:?}");
+}
+
+#[test]
+fn debug_info_inline_call_with_struct_array_param_should_compile() {
+    let source = r#"
+        contract C() {
+            struct S {
+                int a;
+                byte[2] b;
+            }
+
+            function verify(S[] x) {
+                require(x.length == 2);
+                require(x[0].a == 7);
+                require(x[1].a == 9);
+                require(x[0].b == 0x0102);
+                require(x[1].b == 0x0304);
+            }
+
+            entrypoint function main(S[] x) {
+                verify(x);
+            }
+        }
+    "#;
+
+    let options = CompileOptions { record_debug_infos: true, ..Default::default() };
+    let result = compile_contract(source, &[], options);
+    assert!(result.is_ok(), "struct[] inline call should compile with debug info: {result:?}");
+}
+
+#[test]
 fn rejects_struct_literal_with_wrong_field_type_in_function_call() {
     let source = r#"
         contract C() {
@@ -1715,6 +1771,30 @@ fn rejects_struct_literal_with_wrong_field_type_in_function_call() {
             || err.to_string().contains("expects int")
             || err.to_string().contains("expects S")
     );
+}
+
+#[test]
+fn rejects_non_struct_argument_for_struct_parameter() {
+    let source = r#"
+        contract C() {
+            struct S {
+                int x;
+            }
+
+            function f(S s) {
+                require(s.x > 0);
+            }
+
+            entrypoint function main() {
+                int x = 5;
+                f(x);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default())
+        .expect_err("non-struct argument for struct parameter should be rejected");
+    assert!(err.to_string().contains("expects S") || err.to_string().contains("expects struct S"), "unexpected error: {err}");
 }
 
 #[test]
@@ -3361,6 +3441,216 @@ fn runs_validate_output_state_with_state_variable() {
 
     let result = execute_input(tx, vec![utxo_entry], 0);
     assert!(result.is_ok(), "validateOutputState runtime failed: {}", result.unwrap_err());
+}
+
+#[test]
+fn validate_output_state_accepts_state_value_from_array_index() {
+    let source = r#"
+        contract C(int initX) {
+            int x = initX;
+
+            entrypoint function main(State[] xs) {
+                State next = xs[0];
+                validateOutputState(0, next);
+            }
+        }
+    "#;
+
+    let input_compiled = compile_contract(source, &[5.into()], CompileOptions::default()).expect("compile succeeds");
+    let sigscript = input_compiled.build_sig_script("main", vec![state_array_arg_x(vec![6])]).expect("sigscript builds");
+    let sigscript = pay_to_script_hash_signature_script(input_compiled.script.clone(), sigscript).unwrap();
+    let output_compiled = compile_contract(source, &[6.into()], CompileOptions::default()).expect("compile succeeds");
+    let input = test_input(0, sigscript);
+    let input_spk = pay_to_script_hash_script(&input_compiled.script);
+    let output_spk = pay_to_script_hash_script(&output_compiled.script);
+    let output = TransactionOutput { value: 1000, script_public_key: output_spk, covenant: None };
+    let tx = Transaction::new(1, vec![input], vec![output.clone()], 0, Default::default(), 0, vec![]);
+    let utxo_entry = UtxoEntry::new(output.value, input_spk, 0, tx.is_coinbase(), None);
+
+    let result = execute_input(tx, vec![utxo_entry], 0);
+    assert!(result.is_ok(), "state value sourced from array index should validate output state: {result:?}");
+}
+
+#[test]
+fn validate_output_state_accepts_state_value_from_inline_returned_array() {
+    let source = r#"
+        contract C(int initX) {
+            int x = initX;
+
+            function id(State[] xs) : (State[]) {
+                return(xs);
+            }
+
+            entrypoint function main(State[] xs) {
+                (State[] ys) = id(xs);
+                State next = ys[0];
+                validateOutputState(0, next);
+            }
+        }
+    "#;
+
+    let input_compiled = compile_contract(source, &[5.into()], CompileOptions::default()).expect("compile succeeds");
+    let sigscript = input_compiled.build_sig_script("main", vec![state_array_arg_x(vec![6])]).expect("sigscript builds");
+    let sigscript = pay_to_script_hash_signature_script(input_compiled.script.clone(), sigscript).unwrap();
+    let output_compiled = compile_contract(source, &[6.into()], CompileOptions::default()).expect("compile succeeds");
+    let input = test_input(0, sigscript);
+    let input_spk = pay_to_script_hash_script(&input_compiled.script);
+    let output_spk = pay_to_script_hash_script(&output_compiled.script);
+    let output = TransactionOutput { value: 1000, script_public_key: output_spk, covenant: None };
+    let tx = Transaction::new(1, vec![input], vec![output.clone()], 0, Default::default(), 0, vec![]);
+    let utxo_entry = UtxoEntry::new(output.value, input_spk, 0, tx.is_coinbase(), None);
+
+    let result = execute_input(tx, vec![utxo_entry], 0);
+    assert!(result.is_ok(), "state value sourced from inline returned State[] should validate output state: {result:?}");
+}
+
+#[test]
+fn read_input_state_accepts_self_state_under_selector_dispatch() {
+    let source = r#"
+        contract C(int initX) {
+            int x = initX;
+
+            entrypoint function noop() {
+                require(true);
+            }
+
+            entrypoint function main() {
+                State s = readInputState(this.activeInputIndex);
+                require(s.x == 5);
+            }
+        }
+    "#;
+
+    let input_compiled = compile_contract(source, &[5.into()], CompileOptions::default()).expect("compile succeeds");
+    let sigscript = input_compiled.build_sig_script("main", vec![]).expect("sigscript builds");
+    let sigscript = pay_to_script_hash_signature_script(input_compiled.script.clone(), sigscript).unwrap();
+    let output_compiled = compile_contract(source, &[5.into()], CompileOptions::default()).expect("compile succeeds");
+    let input = test_input(0, sigscript);
+    let input_spk = pay_to_script_hash_script(&input_compiled.script);
+    let output_spk = pay_to_script_hash_script(&output_compiled.script);
+    let output = TransactionOutput { value: 1000, script_public_key: output_spk, covenant: None };
+    let tx = Transaction::new(1, vec![input], vec![output.clone()], 0, Default::default(), 0, vec![]);
+    let utxo_entry = UtxoEntry::new(output.value, input_spk, 0, tx.is_coinbase(), None);
+
+    let result = execute_input(tx, vec![utxo_entry], 0);
+    assert!(result.is_ok(), "readInputState should read the current state under selector dispatch: {result:?}");
+}
+
+#[test]
+fn read_input_state_accepts_three_field_state_under_selector_dispatch() {
+    let source = r#"
+        contract C(int initAmount, byte[2] initCode, byte[32] initOwner) {
+            int amount = initAmount;
+            byte[2] code = initCode;
+            byte[32] owner = initOwner;
+
+            entrypoint function noop() {
+                require(true);
+            }
+
+            entrypoint function main() {
+                State s = readInputState(this.activeInputIndex);
+                require(s.amount == 5);
+                require(s.code == 0x3412);
+                require(s.owner == 0x0101010101010101010101010101010101010101010101010101010101010101);
+            }
+        }
+    "#;
+
+    let input_compiled =
+        compile_contract(source, &[5.into(), vec![0x34u8, 0x12u8].into(), vec![1u8; 32].into()], CompileOptions::default())
+            .expect("compile succeeds");
+    let sigscript = input_compiled.build_sig_script("main", vec![]).expect("sigscript builds");
+    let sigscript = pay_to_script_hash_signature_script(input_compiled.script.clone(), sigscript).unwrap();
+    let output_compiled =
+        compile_contract(source, &[5.into(), vec![0x34u8, 0x12u8].into(), vec![1u8; 32].into()], CompileOptions::default())
+            .expect("compile succeeds");
+    let input = test_input(0, sigscript);
+    let input_spk = pay_to_script_hash_script(&input_compiled.script);
+    let output_spk = pay_to_script_hash_script(&output_compiled.script);
+    let output = TransactionOutput { value: 1000, script_public_key: output_spk, covenant: None };
+    let tx = Transaction::new(1, vec![input], vec![output.clone()], 0, Default::default(), 0, vec![]);
+    let utxo_entry = UtxoEntry::new(output.value, input_spk, 0, tx.is_coinbase(), None);
+
+    let result = execute_input(tx, vec![utxo_entry], 0);
+    assert!(result.is_ok(), "readInputState should read mixed-width state under selector dispatch: {result:?}");
+}
+
+#[test]
+fn validate_output_state_accepts_state_under_selector_dispatch() {
+    let source = r#"
+        contract C(int initX) {
+            int x = initX;
+
+            entrypoint function noop() {
+                require(true);
+            }
+
+            entrypoint function main(State next) {
+                validateOutputState(0, next);
+            }
+        }
+    "#;
+
+    let input_compiled = compile_contract(source, &[5.into()], CompileOptions::default()).expect("compile succeeds");
+    let sigscript = input_compiled.build_sig_script("main", vec![struct_object(vec![("x", Expr::int(6))])]).expect("sigscript builds");
+    let sigscript = pay_to_script_hash_signature_script(input_compiled.script.clone(), sigscript).unwrap();
+    let output_compiled = compile_contract(source, &[6.into()], CompileOptions::default()).expect("compile succeeds");
+    let input = test_input(0, sigscript);
+    let input_spk = pay_to_script_hash_script(&input_compiled.script);
+    let output_spk = pay_to_script_hash_script(&output_compiled.script);
+    let output = TransactionOutput { value: 1000, script_public_key: output_spk, covenant: None };
+    let tx = Transaction::new(1, vec![input], vec![output.clone()], 0, Default::default(), 0, vec![]);
+    let utxo_entry = UtxoEntry::new(output.value, input_spk, 0, tx.is_coinbase(), None);
+
+    let result = execute_input(tx, vec![utxo_entry], 0);
+    assert!(result.is_ok(), "state value should validate output state under selector dispatch: {result:?}");
+}
+
+#[test]
+fn validate_output_state_accepts_three_field_state_under_selector_dispatch() {
+    let source = r#"
+        contract C(int initAmount, byte[2] initCode, byte[32] initOwner) {
+            int amount = initAmount;
+            byte[2] code = initCode;
+            byte[32] owner = initOwner;
+
+            entrypoint function noop() {
+                require(true);
+            }
+
+            entrypoint function main(State next) {
+                validateOutputState(0, next);
+            }
+        }
+    "#;
+
+    let input_compiled =
+        compile_contract(source, &[5.into(), vec![0x34u8, 0x12u8].into(), vec![1u8; 32].into()], CompileOptions::default())
+            .expect("compile succeeds");
+    let sigscript = input_compiled
+        .build_sig_script(
+            "main",
+            vec![struct_object(vec![
+                ("amount", Expr::int(6)),
+                ("code", Expr::bytes(vec![0xabu8, 0xcdu8])),
+                ("owner", Expr::bytes(vec![2u8; 32])),
+            ])],
+        )
+        .expect("sigscript builds");
+    let sigscript = pay_to_script_hash_signature_script(input_compiled.script.clone(), sigscript).unwrap();
+    let output_compiled =
+        compile_contract(source, &[6.into(), vec![0xabu8, 0xcdu8].into(), vec![2u8; 32].into()], CompileOptions::default())
+            .expect("compile succeeds");
+    let input = test_input(0, sigscript);
+    let input_spk = pay_to_script_hash_script(&input_compiled.script);
+    let output_spk = pay_to_script_hash_script(&output_compiled.script);
+    let output = TransactionOutput { value: 1000, script_public_key: output_spk, covenant: None };
+    let tx = Transaction::new(1, vec![input], vec![output.clone()], 0, Default::default(), 0, vec![]);
+    let utxo_entry = UtxoEntry::new(output.value, input_spk, 0, tx.is_coinbase(), None);
+
+    let result = execute_input(tx, vec![utxo_entry], 0);
+    assert!(result.is_ok(), "mixed-width state should validate output state under selector dispatch: {result:?}");
 }
 
 #[test]
