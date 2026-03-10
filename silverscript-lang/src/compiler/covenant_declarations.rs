@@ -400,7 +400,7 @@ fn preserved_entrypoint_params<'i>(
     match (declaration.binding, declaration.mode, leader) {
         (CovenantBinding::Auth, _, _) => function.params.iter().skip(1).cloned().collect(),
         (CovenantBinding::Cov, CovenantMode::Verification, true) => function.params.iter().skip(1).cloned().collect(),
-        (CovenantBinding::Cov, CovenantMode::Transition, true) => function.params.clone(),
+        (CovenantBinding::Cov, CovenantMode::Transition, true) => function.params.iter().skip(1).cloned().collect(),
         (CovenantBinding::Cov, _, false) => Vec::new(),
     }
 }
@@ -624,7 +624,15 @@ fn build_cov_wrapper<'i>(
                     );
                 }
                 CovenantMode::Transition => {
-                    leader_params = policy.params.clone();
+                    leader_params = policy.params.iter().skip(1).cloned().collect();
+                    let prev_states_name = &policy.params[0].name;
+                    append_cov_input_state_reads_into_state_array(
+                        &mut body,
+                        cov_id_name,
+                        in_count_name,
+                        declaration.from_expr.clone(),
+                        prev_states_name,
+                    );
                     let call_args = policy.params.iter().map(|param| identifier_expr(&param.name)).collect();
                     if is_state_type_ref(&policy.return_types[0]) {
                         let next_state_name = "__cov_new_state";
@@ -1119,18 +1127,16 @@ fn append_cov_input_state_reads_into_state_array<'i>(
     prev_states_name: &str,
 ) {
     let loop_var = "__cov_in_k";
-    let in_idx_name = "__cov_in_idx";
-    let prev_state_name = "__cov_prev_state";
     let cond = binary_expr(BinaryOp::Lt, identifier_expr(loop_var), identifier_expr(in_count_name));
     body.push(var_decl_statement(state_array_type_ref(), prev_states_name));
     let then_branch = vec![
-        var_def_statement(
-            int_type_ref(),
-            in_idx_name,
-            Expr::call("OpCovInputIdx", vec![identifier_expr(cov_id_name), identifier_expr(loop_var)]),
+        array_push_statement(
+            prev_states_name,
+            Expr::call(
+                "readInputState",
+                vec![Expr::call("OpCovInputIdx", vec![identifier_expr(cov_id_name), identifier_expr(loop_var)])],
+            ),
         ),
-        var_def_statement(state_type_ref(), prev_state_name, Expr::call("readInputState", vec![identifier_expr(in_idx_name)])),
-        array_push_statement(prev_states_name, identifier_expr(prev_state_name)),
     ];
     body.push(for_statement(loop_var, Expr::int(0), from_expr, vec![if_statement(cond, then_branch)]));
 }

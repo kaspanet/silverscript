@@ -155,10 +155,6 @@ fn redeem_only_sigscript(compiled: &CompiledContract<'_>) -> Vec<u8> {
     push_redeem_script(&compiled.script)
 }
 
-fn cov_decl_nm_transition_leader_sigscript(compiled: &CompiledContract<'_>, prev_values: Vec<i64>) -> Vec<u8> {
-    covenant_decl_sigscript(compiled, "carry_forward", vec![state_array_arg(prev_values)], true)
-}
-
 fn tx_input(index: u32, signature_script: Vec<u8>) -> TransactionInput {
     TransactionInput {
         previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([index as u8 + 1; 32]), index },
@@ -539,29 +535,19 @@ fn many_to_many_leader_rejects_cov_output_with_different_script() {
 #[test]
 fn many_to_many_transition_leader_rejects_spoofed_prev_states() {
     let in0 = compile_state(COV_N_TO_M_TRANSITION_SOURCE, 10);
-    let in1 = compile_state(COV_N_TO_M_TRANSITION_SOURCE, 7);
-    let honest_out0 = compile_state(COV_N_TO_M_TRANSITION_SOURCE, 10);
-    let honest_out1 = compile_state(COV_N_TO_M_TRANSITION_SOURCE, 7);
+    let honest = in0
+        .build_sig_script_for_covenant_decl("carry_forward", vec![], CovenantDeclCallOptions { is_leader: true })
+        .expect("leader transition call should succeed without caller-supplied prev_states");
+    assert!(!honest.is_empty(), "leader transition sigscript should not be empty");
 
-    let honest_input0_sigscript = cov_decl_nm_transition_leader_sigscript(&in0, vec![10, 7]);
-    let honest_input1_sigscript = covenant_decl_sigscript(&in1, "carry_forward", vec![], false);
-    let honest_outputs = vec![covenant_output(&honest_out0, 0, COV_A), covenant_output(&honest_out1, 1, COV_A)];
-    let (honest_tx, honest_entries) =
-        build_nm_tx_for_source(COV_N_TO_M_TRANSITION_SOURCE, honest_input0_sigscript, honest_input1_sigscript, honest_outputs);
-
-    execute_input_with_covenants(honest_tx, honest_entries, 0)
-        .expect("honest prev_states transition should succeed before spoofing check");
-
-    let spoofed_out0 = compile_state(COV_N_TO_M_TRANSITION_SOURCE, 42);
-    let spoofed_out1 = compile_state(COV_N_TO_M_TRANSITION_SOURCE, 43);
-    let spoofed_input0_sigscript = cov_decl_nm_transition_leader_sigscript(&in0, vec![42, 43]);
-    let spoofed_input1_sigscript = covenant_decl_sigscript(&in1, "carry_forward", vec![], false);
-    let spoofed_outputs = vec![covenant_output(&spoofed_out0, 0, COV_A), covenant_output(&spoofed_out1, 1, COV_A)];
-    let (spoofed_tx, spoofed_entries) =
-        build_nm_tx_for_source(COV_N_TO_M_TRANSITION_SOURCE, spoofed_input0_sigscript, spoofed_input1_sigscript, spoofed_outputs);
-
-    let err = execute_input_with_covenants(spoofed_tx, spoofed_entries, 0).expect_err("spoofed prev_states transition should reject");
-    assert_verify_like_error(err);
+    let err = in0
+        .build_sig_script_for_covenant_decl(
+            "carry_forward",
+            vec![state_array_arg(vec![42, 43])],
+            CovenantDeclCallOptions { is_leader: true },
+        )
+        .expect_err("spoofed prev_states should no longer be accepted through the leader ABI");
+    assert!(matches!(err, silverscript_lang::compiler::CompilerError::Unsupported(_)), "unexpected error: {err:?}");
 }
 
 #[test]

@@ -2380,26 +2380,27 @@ fn compile_statement<'i>(
                 for ((path, leaf_type), leaf_expr) in
                     flatten_type_ref_leaves(&element_type, structs)?.into_iter().zip(leaf_values.into_iter())
                 {
+                    let resolved_leaf_expr = resolve_expr(leaf_expr, env, &mut HashSet::new())?;
                     let leaf_name = flattened_struct_name(name, &path);
                     let leaf_type_name = type_name_from_ref(&leaf_type);
                     let element_expr = if leaf_type_name == "int" {
                         Expr::new(
-                            ExprKind::Call { name: "byte[8]".to_string(), args: vec![leaf_expr], name_span: span::Span::default() },
+                            ExprKind::Call { name: "byte[8]".to_string(), args: vec![resolved_leaf_expr], name_span: span::Span::default() },
                             span::Span::default(),
                         )
                     } else if leaf_type_name == "byte" {
                         Expr::new(
-                            ExprKind::Call { name: "byte[1]".to_string(), args: vec![leaf_expr], name_span: span::Span::default() },
+                            ExprKind::Call { name: "byte[1]".to_string(), args: vec![resolved_leaf_expr], name_span: span::Span::default() },
                             span::Span::default(),
                         )
                     } else if leaf_type_name.contains('[') && leaf_type_name.starts_with("byte") {
-                        if expr_is_bytes(&leaf_expr, env, types) {
-                            leaf_expr
+                        if expr_is_bytes(&resolved_leaf_expr, env, types) {
+                            resolved_leaf_expr
                         } else {
                             Expr::new(
                                 ExprKind::Call {
                                     name: leaf_type_name.clone(),
-                                    args: vec![leaf_expr],
+                                    args: vec![resolved_leaf_expr],
                                     name_span: span::Span::default(),
                                 },
                                 span::Span::default(),

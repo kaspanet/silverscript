@@ -510,7 +510,7 @@ fn lowers_cov_transition_two_field_state_to_expected_wrapper_ast() {
                 return(prev_states);
             }
 
-            entrypoint function leader_step(State[] prev_states, int fee) {
+            entrypoint function leader_step(int fee) {
                 byte[32] cov_id = OpInputCovenantId(this.activeInputIndex);
 
                 require(OpCovInputIdx(cov_id, 0) == this.activeInputIndex);
@@ -519,6 +519,13 @@ fn lowers_cov_transition_two_field_state_to_expected_wrapper_ast() {
                 require(cov_in_count <= max_ins);
 
                 int cov_out_count = OpCovOutCount(cov_id);
+
+                State[] prev_states;
+                for(cov_in_k, 0, max_ins) {
+                    if (cov_in_k < cov_in_count) {
+                        prev_states.push(readInputState(OpCovInputIdx(cov_id, cov_in_k)));
+                    }
+                }
 
                 (State[] cov_new_states) = covenant_policy_step(prev_states, fee);
                 require(cov_out_count <= max_outs);
@@ -1010,7 +1017,7 @@ fn lowers_many_covenant_declarations_in_one_contract_to_expected_wrapper_ast() {
                 return(prev_states);
             }
 
-            entrypoint function leader_cov_transition(State[] prev_states, int fee) {
+            entrypoint function leader_cov_transition(int fee) {
                 byte[32] cov_id = OpInputCovenantId(this.activeInputIndex);
 
                 require(OpCovInputIdx(cov_id, 0) == this.activeInputIndex);
@@ -1019,6 +1026,12 @@ fn lowers_many_covenant_declarations_in_one_contract_to_expected_wrapper_ast() {
                 require(cov_in_count <= max_ins);
 
                 int cov_out_count = OpCovOutCount(cov_id);
+                State[] prev_states;
+                for(cov_in_k, 0, max_ins) {
+                    if (cov_in_k < cov_in_count) {
+                        prev_states.push(readInputState(OpCovInputIdx(cov_id, cov_in_k)));
+                    }
+                }
                 (State[] cov_new_states) = covenant_policy_cov_transition(prev_states, fee);
                 require(cov_out_count <= max_outs);
                 require(cov_out_count == cov_new_states.length);
@@ -1292,7 +1305,7 @@ fn covers_attribute_config_combinations_with_two_field_state() {
     assert_param_names(function_by_name(functions, "auth_transition"), &["fee"]);
     assert_param_names(function_by_name(functions, "leader_cov_verification"), &["new_states", "nonce"]);
     assert_param_names(function_by_name(functions, "delegate_cov_verification"), &[]);
-    assert_param_names(function_by_name(functions, "leader_cov_transition"), &["prev_states", "fee"]);
+    assert_param_names(function_by_name(functions, "leader_cov_transition"), &["fee"]);
     assert_param_names(function_by_name(functions, "delegate_cov_transition"), &[]);
     assert_param_names(function_by_name(functions, "inferred_auth"), &["new_states"]);
     assert_param_names(function_by_name(functions, "leader_inferred_cov"), &["new_states"]);
