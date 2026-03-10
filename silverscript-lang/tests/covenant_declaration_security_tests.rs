@@ -75,6 +75,17 @@ const COV_N_TO_M_SOURCE: &str = r#"
     }
 "#;
 
+const COV_N_TO_M_TRANSITION_SOURCE: &str = r#"
+    contract Pair(int init_value) {
+        int value = init_value;
+
+        #[covenant(from = 2, to = 2, mode = transition)]
+        function carry_forward(State[] prev_states) : (State[]) {
+            return(prev_states);
+        }
+    }
+"#;
+
 const COV_N_TO_M_DIFFERENT_SCRIPT_SOURCE: &str = r#"
     contract Pair(int init_value) {
         int value = init_value;
@@ -142,6 +153,10 @@ fn cov_decl_nm_leader_sigscript(compiled: &CompiledContract<'_>, next_values: Ve
 
 fn redeem_only_sigscript(compiled: &CompiledContract<'_>) -> Vec<u8> {
     push_redeem_script(&compiled.script)
+}
+
+fn cov_decl_nm_transition_leader_sigscript(compiled: &CompiledContract<'_>, prev_values: Vec<i64>) -> Vec<u8> {
+    covenant_decl_sigscript(compiled, "carry_forward", vec![state_array_arg(prev_values)], true)
 }
 
 fn tx_input(index: u32, signature_script: Vec<u8>) -> TransactionInput {
@@ -518,6 +533,34 @@ fn many_to_many_leader_rejects_cov_output_with_different_script() {
     let (tx, entries) = build_nm_tx(input0_sigscript, input1_sigscript, outputs);
 
     let err = execute_input_with_covenants(tx, entries, 0).expect_err("leader wrapper should reject cov output with different script");
+    assert_verify_like_error(err);
+}
+
+#[test]
+fn many_to_many_transition_leader_rejects_spoofed_prev_states() {
+    let in0 = compile_state(COV_N_TO_M_TRANSITION_SOURCE, 10);
+    let in1 = compile_state(COV_N_TO_M_TRANSITION_SOURCE, 7);
+    let honest_out0 = compile_state(COV_N_TO_M_TRANSITION_SOURCE, 10);
+    let honest_out1 = compile_state(COV_N_TO_M_TRANSITION_SOURCE, 7);
+
+    let honest_input0_sigscript = cov_decl_nm_transition_leader_sigscript(&in0, vec![10, 7]);
+    let honest_input1_sigscript = covenant_decl_sigscript(&in1, "carry_forward", vec![], false);
+    let honest_outputs = vec![covenant_output(&honest_out0, 0, COV_A), covenant_output(&honest_out1, 1, COV_A)];
+    let (honest_tx, honest_entries) =
+        build_nm_tx_for_source(COV_N_TO_M_TRANSITION_SOURCE, honest_input0_sigscript, honest_input1_sigscript, honest_outputs);
+
+    execute_input_with_covenants(honest_tx, honest_entries, 0)
+        .expect("honest prev_states transition should succeed before spoofing check");
+
+    let spoofed_out0 = compile_state(COV_N_TO_M_TRANSITION_SOURCE, 42);
+    let spoofed_out1 = compile_state(COV_N_TO_M_TRANSITION_SOURCE, 43);
+    let spoofed_input0_sigscript = cov_decl_nm_transition_leader_sigscript(&in0, vec![42, 43]);
+    let spoofed_input1_sigscript = covenant_decl_sigscript(&in1, "carry_forward", vec![], false);
+    let spoofed_outputs = vec![covenant_output(&spoofed_out0, 0, COV_A), covenant_output(&spoofed_out1, 1, COV_A)];
+    let (spoofed_tx, spoofed_entries) =
+        build_nm_tx_for_source(COV_N_TO_M_TRANSITION_SOURCE, spoofed_input0_sigscript, spoofed_input1_sigscript, spoofed_outputs);
+
+    let err = execute_input_with_covenants(spoofed_tx, spoofed_entries, 0).expect_err("spoofed prev_states transition should reject");
     assert_verify_like_error(err);
 }
 
