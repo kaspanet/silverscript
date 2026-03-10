@@ -3255,8 +3255,7 @@ fn prepare_inline_call_bindings<'i>(
                 (lowered.clone(), lowered)
             };
             yield_rewrites.push((param.name.clone(), rewrite_expr));
-            if !matches!(&lowered.kind, ExprKind::Identifier(identifier) if identifier == &param.name && caller_params.contains_key(identifier))
-            {
+            if !matches!(&lowered.kind, ExprKind::Identifier(identifier) if identifier == &param.name) {
                 env.insert(param.name.clone(), lowered);
             }
         }
