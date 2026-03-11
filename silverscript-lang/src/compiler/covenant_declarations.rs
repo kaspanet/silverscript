@@ -870,7 +870,13 @@ fn typed_binding<'i>(type_ref: TypeRef, name: &str) -> crate::ast::ParamAst<'i> 
     }
 }
 
-fn for_statement<'i>(ident: &str, start: Expr<'i>, end: Expr<'i>, max_iterations: Expr<'i>, body: Vec<Statement<'i>>) -> Statement<'i> {
+fn for_statement<'i>(
+    ident: &str,
+    start: Expr<'i>,
+    end: Expr<'i>,
+    max_iterations: Expr<'i>,
+    body: Vec<Statement<'i>>,
+) -> Statement<'i> {
     Statement::For {
         ident: ident.to_string(),
         start,

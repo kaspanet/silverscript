@@ -3823,9 +3823,7 @@ fn compile_for_statement<'i>(
     let max_iterations = eval_const_int(max_iterations_expr, contract_constants)
         .map_err(|_| CompilerError::Unsupported("for loop max iterations must be a compile-time integer".to_string()))?;
     if max_iterations < 0 {
-        return Err(CompilerError::Unsupported(
-            "for loop max iterations must be a non-negative compile-time integer".to_string(),
-        ));
+        return Err(CompilerError::Unsupported("for loop max iterations must be a non-negative compile-time integer".to_string()));
     }
 
     let start = lower_runtime_expr(start_expr, types, structs)?;
@@ -3837,55 +3835,56 @@ fn compile_for_statement<'i>(
     let previous_type = types.get(&name).cloned();
     types.insert(name.clone(), "int".to_string());
 
-    let result = if let (Ok(start), Ok(end)) = (eval_const_int(start_expr, contract_constants), eval_const_int(end_expr, contract_constants)) {
-        compile_constant_for_statement(
-            &name,
-            start,
-            end,
-            max_iterations as usize,
-            body,
-            loop_span,
-            env,
-            params,
-            types,
-            builder,
-            options,
-            contract_fields,
-            contract_field_prefix_len,
-            contract_constants,
-            structs,
-            functions,
-            function_order,
-            function_index,
-            yields,
-            script_size,
-            recorder,
-        )
-    } else {
-        compile_runtime_for_statement(
-            &name,
-            start,
-            end,
-            max_iterations as usize,
-            body,
-            loop_span,
-            env,
-            params,
-            types,
-            builder,
-            options,
-            contract_fields,
-            contract_field_prefix_len,
-            contract_constants,
-            structs,
-            functions,
-            function_order,
-            function_index,
-            yields,
-            script_size,
-            recorder,
-        )
-    };
+    let result =
+        if let (Ok(start), Ok(end)) = (eval_const_int(start_expr, contract_constants), eval_const_int(end_expr, contract_constants)) {
+            compile_constant_for_statement(
+                &name,
+                start,
+                end,
+                max_iterations as usize,
+                body,
+                loop_span,
+                env,
+                params,
+                types,
+                builder,
+                options,
+                contract_fields,
+                contract_field_prefix_len,
+                contract_constants,
+                structs,
+                functions,
+                function_order,
+                function_index,
+                yields,
+                script_size,
+                recorder,
+            )
+        } else {
+            compile_runtime_for_statement(
+                &name,
+                start,
+                end,
+                max_iterations as usize,
+                body,
+                loop_span,
+                env,
+                params,
+                types,
+                builder,
+                options,
+                contract_fields,
+                contract_field_prefix_len,
+                contract_constants,
+                structs,
+                functions,
+                function_order,
+                function_index,
+                yields,
+                script_size,
+                recorder,
+            )
+        };
 
     match previous {
         Some(expr) => {
@@ -3995,11 +3994,7 @@ fn compile_runtime_for_statement<'i>(
         recorder.record_variable_binding(ident.to_string(), "int".to_string(), loop_value, builder.script().len(), loop_span);
 
         let condition = Expr::new(
-            ExprKind::Binary {
-                op: BinaryOp::Lt,
-                left: Box::new(Expr::identifier(ident)),
-                right: Box::new(end.clone()),
-            },
+            ExprKind::Binary { op: BinaryOp::Lt, left: Box::new(Expr::identifier(ident)), right: Box::new(end.clone()) },
             span::Span::default(),
         );
         compile_if_statement(

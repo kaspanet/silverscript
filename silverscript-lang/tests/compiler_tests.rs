@@ -2807,21 +2807,15 @@ fn runs_runtime_bounded_for_loop_example() {
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
 
-    let sigscript = compiled
-        .build_sig_script("main", vec![2.into(), 4.into(), 2.into(), 3.into()])
-        .expect("sigscript builds");
+    let sigscript = compiled.build_sig_script("main", vec![2.into(), 4.into(), 2.into(), 3.into()]).expect("sigscript builds");
     let result = run_script_with_sigscript(compiled.script.clone(), sigscript);
     assert!(result.is_ok(), "runtime-bounded for-loop should honor end-exclusive bounds: {}", result.unwrap_err());
 
-    let sigscript = compiled
-        .build_sig_script("main", vec![5.into(), 20.into(), 3.into(), 7.into()])
-        .expect("sigscript builds");
+    let sigscript = compiled.build_sig_script("main", vec![5.into(), 20.into(), 3.into(), 7.into()]).expect("sigscript builds");
     let result = run_script_with_sigscript(compiled.script.clone(), sigscript);
     assert!(result.is_ok(), "runtime-bounded for-loop should stop after max iterations: {}", result.unwrap_err());
 
-    let sigscript = compiled
-        .build_sig_script("main", vec![4.into(), 2.into(), 0.into(), (-1).into()])
-        .expect("sigscript builds");
+    let sigscript = compiled.build_sig_script("main", vec![4.into(), 2.into(), 0.into(), (-1).into()]).expect("sigscript builds");
     let result = run_script_with_sigscript(compiled.script, sigscript);
     assert!(result.is_ok(), "runtime-bounded for-loop should skip iterations when start >= end: {}", result.unwrap_err());
 }
