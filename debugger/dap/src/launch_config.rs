@@ -70,7 +70,7 @@ impl LaunchConfig {
         let script_path = self.resolve_script_path(workspace_root)?;
         let params_file = self.resolve_params_file(workspace_root, &script_path)?;
 
-        let function = self.function.or_else(|| params_file.function);
+        let function = self.function.or(params_file.function);
         let constructor_args = self.constructor_args.or(params_file.constructor_args);
         let args = self.args.or(params_file.args);
         let tx = self.tx.or(params_file.tx).map(resolve_tx_scenario).transpose()?;
