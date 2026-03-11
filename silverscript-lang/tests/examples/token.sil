@@ -3,12 +3,10 @@ pragma silverscript ^0.1.0;
 contract Token(int max_outs) {
     entrypoint function split(pubkey owner_pk, sig s, int in_amount, int num_outs, pubkey recipient_pk) {
         require(checkSig(s, owner_pk));
-        for(i,0,max_outs){
-            if( i < num_outs ){
-                int out_amount = in_amount / num_outs;
-                byte[] out_amount_bytes = OpNum2Bin(out_amount, 8);
-                yield(out_amount_bytes + recipient_pk);
-            }
+        for(i,0,num_outs,max_outs){
+            int out_amount = in_amount / num_outs;
+            byte[] out_amount_bytes = OpNum2Bin(out_amount, 8);
+            yield(out_amount_bytes + recipient_pk);
         }
     }
 }

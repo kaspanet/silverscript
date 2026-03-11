@@ -2702,7 +2702,7 @@ fn runs_array_for_loop_example() {
                 x.push(1);
                 x.push(2);
                 x.push(3);
-                for (i, 0, 3) {
+                for (i, 0, 3, 3) {
                     require(x[i] == i + 1);
                 }
             }
@@ -2723,10 +2723,8 @@ fn runs_array_for_loop_with_length_guard() {
 
             entrypoint function main(int[] x) {
                 require(x.length <= MAX_ARRAY_SIZE);
-                for (i, 1, MAX_ARRAY_SIZE) {
-                    if (i < x.length) {
-                        require(x[i] == x[i-1]+1);
-                    }
+                for (i, 1, x.length, MAX_ARRAY_SIZE - 1) {
+                    require(x[i] == x[i-1]+1);
                 }
             }
         }
@@ -2748,10 +2746,8 @@ fn runs_array_loop_and_function_calls_example() {
             function sumArray(int[] arr) : (int) {
                 require(arr.length <= MAX_ARRAY_SIZE);
                 int sum = 0;
-                for (i, 0, MAX_ARRAY_SIZE) {
-                    if (i < arr.length) {
-                       sum = sum + arr[i];
-                    }
+                for (i, 0, arr.length, MAX_ARRAY_SIZE) {
+                    sum = sum + arr[i];
                 }
                 return(sum);
             }
@@ -2771,6 +2767,63 @@ fn runs_array_loop_and_function_calls_example() {
     let selector = selector_for(&compiled, "main");
     let result = run_script_with_selector(compiled.script, selector);
     assert!(result.is_ok(), "array/loop/function-call example failed: {}", result.unwrap_err());
+}
+
+#[test]
+fn rejects_non_constant_for_loop_max_iterations() {
+    let source = r#"
+        contract Loops() {
+            entrypoint function main(int start, int end, int max_iterations) {
+                for (i, start, end, max_iterations) {
+                    require(i >= 0);
+                }
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("compile should fail");
+    assert!(err.to_string().contains("for loop max iterations must be a compile-time integer"));
+}
+
+#[test]
+fn runs_runtime_bounded_for_loop_example() {
+    let source = r#"
+        contract RuntimeLoop() {
+            entrypoint function main(int start, int end, int expected_count, int expected_last) {
+                int count = 0;
+                int last = -1;
+
+                for (i, start, end, 3) {
+                    require(i < 10);
+                    count = count + 1;
+                    last = i;
+                }
+
+                require(count == expected_count);
+                require(last == expected_last);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+
+    let sigscript = compiled
+        .build_sig_script("main", vec![2.into(), 4.into(), 2.into(), 3.into()])
+        .expect("sigscript builds");
+    let result = run_script_with_sigscript(compiled.script.clone(), sigscript);
+    assert!(result.is_ok(), "runtime-bounded for-loop should honor end-exclusive bounds: {}", result.unwrap_err());
+
+    let sigscript = compiled
+        .build_sig_script("main", vec![5.into(), 20.into(), 3.into(), 7.into()])
+        .expect("sigscript builds");
+    let result = run_script_with_sigscript(compiled.script.clone(), sigscript);
+    assert!(result.is_ok(), "runtime-bounded for-loop should stop after max iterations: {}", result.unwrap_err());
+
+    let sigscript = compiled
+        .build_sig_script("main", vec![4.into(), 2.into(), 0.into(), (-1).into()])
+        .expect("sigscript builds");
+    let result = run_script_with_sigscript(compiled.script, sigscript);
+    assert!(result.is_ok(), "runtime-bounded for-loop should skip iterations when start >= end: {}", result.unwrap_err());
 }
 
 #[test]
@@ -5099,10 +5152,8 @@ fn compiles_script_size_and_runs_sum_array() {
             function sumArray(int[] arr) : (int) {
                 require(arr.length <= MAX_ARRAY_SIZE);
                 int sum = 0;
-                for (i, 0, MAX_ARRAY_SIZE) {
-                    if (i < arr.length) {
-                       sum = sum + arr[i];
-                    }
+                for (i, 0, arr.length, MAX_ARRAY_SIZE) {
+                    sum = sum + arr[i];
                 }
                 return(sum);
             }
@@ -5160,7 +5211,7 @@ fn compiles_script_size_data_prefix_medium_script() {
         contract PrefixMedium() {
             entrypoint function main(byte[] expected_data_prefix) {
                 require(expected_data_prefix == this.scriptSizeDataPrefix);
-                for (i, 0, 100) {
+                for (i, 0, 100, 100) {
                     require(true);
                 }
             }
@@ -5181,7 +5232,7 @@ fn compiles_script_size_data_prefix_large_script() {
         contract PrefixLarge() {
             entrypoint function main(byte[] expected_data_prefix) {
                 require(expected_data_prefix == this.scriptSizeDataPrefix);
-                for (i, 0, 300) {
+                for (i, 0, 300, 300) {
                     require(true);
                 }
             }

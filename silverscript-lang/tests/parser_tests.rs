@@ -120,7 +120,7 @@ fn parses_struct_destructuring() {
 }
 
 #[test]
-fn rejects_bounded_for_syntax() {
+fn parses_runtime_bounded_for_syntax() {
     let input = r#"
         contract Decls(int max_outs) {
             #[covenant(binding = auth, from = 1, to = max_outs, mode = verification)]
@@ -134,7 +134,7 @@ fn rejects_bounded_for_syntax() {
     "#;
 
     let result = parse_source_file(input);
-    assert!(result.is_err());
+    assert!(result.is_ok());
 }
 
 #[test]
@@ -175,13 +175,24 @@ fn rejects_invalid_for_arities() {
     let trailing_comma = r#"
         contract Loops() {
             function main() {
-                for(i, 0, 1,) {
+                for(i, 0, 1, 2,) {
                     require(i >= 0);
                 }
             }
         }
     "#;
     assert!(parse_source_file(trailing_comma).is_err());
+
+    let old_three_arg_syntax = r#"
+        contract Loops() {
+            function main() {
+                for(i, 0, 1) {
+                    require(i >= 0);
+                }
+            }
+        }
+    "#;
+    assert!(parse_source_file(old_three_arg_syntax).is_err());
 
     let too_few_args = r#"
         contract Loops() {

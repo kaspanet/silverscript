@@ -76,7 +76,7 @@ contract Advanced(int limit, pubkey owner) {
         values.push(current);
         byte[] tail = this.activeScriptPubKey.slice(1, this.activeScriptPubKey.length);
         validateOutputState(0, {balance: current});
-        for (i, 0, limit) {
+        for (i, 0, limit, limit) {
             console.log("loop", i);
         }
         balance = current;

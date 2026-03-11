@@ -283,13 +283,14 @@ pub fn walk_statement_mut<'i, V: AstVisitorMut<'i> + ?Sized>(visitor: &mut V, st
                 }
             }
         }
-        Statement::For { ident, start, end, body, span, ident_span, body_span } => {
+        Statement::For { ident, start, end, max_iterations, body, span, ident_span, body_span } => {
             visitor.visit_span(span);
             visitor.visit_span(ident_span);
             visitor.visit_span(body_span);
             visitor.visit_name(ident, NameKind::LoopBinding);
             visitor.visit_expr(start);
             visitor.visit_expr(end);
+            visitor.visit_expr(max_iterations);
             for statement in body {
                 visitor.visit_statement(statement);
             }

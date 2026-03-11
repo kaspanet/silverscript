@@ -226,23 +226,19 @@ contract VaultNM(
         require(new_states.length > 0);
 
         int in_sum = 0;
-        for(i, 0, max_ins) {
-            if (i < prev_states.length) {
-                in_sum = in_sum + prev_states[i].amount;
-            }
+        for(i, 0, prev_states.length, max_ins) {
+            in_sum = in_sum + prev_states[i].amount;
         }
 
         int out_sum = 0;
-        for(i, 0, max_outs) {
-            if (i < new_states.length) {
-                out_sum = out_sum + new_states[i].amount;
+        for(i, 0, new_states.length, max_outs) {
+            out_sum = out_sum + new_states[i].amount;
 
-                // all outputs keep same owner as leader input
-                require(new_states[i].owner == prev_states[0].owner);
+            // all outputs keep same owner as leader input
+            require(new_states[i].owner == prev_states[0].owner);
 
-                // round must advance exactly by 1
-                require(new_states[i].round == prev_states[0].round + 1);
-            }
+            // round must advance exactly by 1
+            require(new_states[i].round == prev_states[0].round + 1);
         }
 
         require(in_sum >= out_sum);
@@ -282,34 +278,30 @@ contract VaultNM(
         require(OpCovInputIdx(cov_id, 0) == this.activeInputIndex);
 
         State[] prev_states = [];
-        for(k, 0, max_ins) {
-            if (k < in_count) {
-                int in_idx = OpCovInputIdx(cov_id, k);
-                {
-                    amount: int p_amount,
-                    owner: byte[32] p_owner,
-                    round: int p_round
-                } = readInputState(in_idx);
+        for(k, 0, in_count, max_ins) {
+            int in_idx = OpCovInputIdx(cov_id, k);
+            {
+                amount: int p_amount,
+                owner: byte[32] p_owner,
+                round: int p_round
+            } = readInputState(in_idx);
 
-                prev_states.push({
-                    amount: p_amount,
-                    owner: p_owner,
-                    round: p_round
-                });
-            }
+            prev_states.push({
+                amount: p_amount,
+                owner: p_owner,
+                round: p_round
+            });
         }
 
         __covenant_policy_conserve_and_bump(prev_states, new_states, leader_sig);
 
-        for(k, 0, max_outs) {
-            if (k < out_count) {
-                int out_idx = OpCovOutputIdx(cov_id, k);
-                validateOutputState(out_idx, {
-                    amount: new_states[k].amount,
-                    owner: new_states[k].owner,
-                    round: new_states[k].round
-                });
-            }
+        for(k, 0, out_count, max_outs) {
+            int out_idx = OpCovOutputIdx(cov_id, k);
+            validateOutputState(out_idx, {
+                amount: new_states[k].amount,
+                owner: new_states[k].owner,
+                round: new_states[k].round
+            });
         }
     }
 

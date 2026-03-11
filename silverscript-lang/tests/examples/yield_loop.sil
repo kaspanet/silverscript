@@ -1,9 +1,10 @@
 contract YieldLoop() {
     int constant START = 0;
     int constant END = 4;
+    int constant MAX_ITERATIONS = 4;
 
     entrypoint function main() {
-        for(i, START, END) {
+        for(i, START, END, MAX_ITERATIONS) {
             yield(i + 1);
         }
     }

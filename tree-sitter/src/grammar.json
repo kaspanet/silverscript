@@ -1055,6 +1055,14 @@
         },
         {
           "type": "STRING",
+          "value": ","
+        },
+        {
+          "type": "SYMBOL",
+          "name": "expression"
+        },
+        {
+          "type": "STRING",
           "value": ")"
         },
         {
