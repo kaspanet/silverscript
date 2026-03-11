@@ -2422,7 +2422,6 @@ fn compile_entrypoint_function<'i>(
                 function_order,
                 function_index,
                 script_size,
-                true,
                 recorder,
             )
             .map_err(|err| err.with_span(&stmt.span()))?;
@@ -2513,7 +2512,6 @@ fn compile_statement<'i>(
     function_order: &HashMap<String, usize>,
     function_index: usize,
     script_size: Option<i64>,
-    scope_stack_locals: bool,
     recorder: &mut DebugRecorder<'i>,
 ) -> Result<Vec<String>, CompilerError> {
     match stmt {
@@ -2533,23 +2531,20 @@ fn compile_statement<'i>(
                     contract_field_prefix_len,
                     false,
                 )?;
-                if scope_stack_locals {
-                    return push_struct_leaf_stack_bindings(
-                        name,
-                        type_ref,
-                        env,
-                        assigned_names,
-                        identifier_uses,
-                        types,
-                        params,
-                        builder,
-                        options,
-                        structs,
-                        script_size,
-                        contract_constants,
-                    );
-                }
-                return Ok(Vec::new());
+                return push_struct_leaf_stack_bindings(
+                    name,
+                    type_ref,
+                    env,
+                    assigned_names,
+                    identifier_uses,
+                    types,
+                    params,
+                    builder,
+                    options,
+                    structs,
+                    script_size,
+                    contract_constants,
+                );
             }
             if struct_array_name_from_type_ref(type_ref, structs).is_some() {
                 if let Some(expr) = expr.as_ref() {
@@ -2672,11 +2667,11 @@ fn compile_statement<'i>(
                     return Err(CompilerError::Unsupported(format!("variable '{}' expects {}", name, effective_type_name)));
                 }
                 types.insert(name.clone(), effective_type_name.clone());
+                let existing_is_predeclared_default = is_predeclared_scalar_default(name, &effective_type_name, env);
 
-                if scope_stack_locals
-                    && !assigned_names.contains(name)
+                if !assigned_names.contains(name)
                     && identifier_uses.get(name).copied().unwrap_or(0) >= 2
-                    && !env.contains_key(name)
+                    && (!env.contains_key(name) || existing_is_predeclared_default)
                     && !params.contains_key(name)
                     && matches!(effective_type_name.as_str(), "int" | "bool" | "byte")
                 {
@@ -3036,7 +3031,6 @@ fn compile_statement<'i>(
                     function_order,
                     function_index,
                     script_size,
-                    scope_stack_locals,
                     recorder,
                 )?;
             }
@@ -3096,7 +3090,7 @@ fn compile_statement<'i>(
                         contract_field_prefix_len,
                         false,
                     )?;
-                    if scope_stack_locals && struct_name_from_type_ref(&binding.type_ref, structs).is_some() {
+                    if struct_name_from_type_ref(&binding.type_ref, structs).is_some() {
                         added_stack_locals.extend(push_struct_leaf_stack_bindings(
                             &binding.name,
                             &binding.type_ref,
@@ -3116,11 +3110,11 @@ fn compile_statement<'i>(
                     let lowered = lower_runtime_expr(&expr, types, structs)?;
                     let binding_type_name = type_name_from_ref(&binding.type_ref);
                     types.insert(binding.name.clone(), binding_type_name.clone());
+                    let existing_is_predeclared_default = is_predeclared_scalar_default(&binding.name, &binding_type_name, env);
                     if bindings.len() == 1
-                        && scope_stack_locals
                         && !assigned_names.contains(&binding.name)
                         && identifier_uses.get(&binding.name).copied().unwrap_or(0) >= 2
-                        && !env.contains_key(&binding.name)
+                        && (!env.contains_key(&binding.name) || existing_is_predeclared_default)
                         && !params.contains_key(&binding.name)
                         && matches!(binding_type_name.as_str(), "int" | "bool" | "byte")
                     {
@@ -3807,7 +3801,6 @@ fn compile_inline_call<'i>(
                 function_order,
                 callee_index,
                 script_size,
-                true,
                 recorder,
             )
             .map_err(|err| err.with_span(&stmt.span()))?;
@@ -3865,6 +3858,7 @@ fn compile_if_statement<'i>(
     let original_env = env.clone();
     let mut then_env = original_env.clone();
     let mut then_types = types.clone();
+    predeclare_if_branch_locals(then_branch, &mut then_env, &mut then_types, structs)?;
     compile_block(
         then_branch,
         &mut then_env,
@@ -3883,7 +3877,6 @@ fn compile_if_statement<'i>(
         function_index,
         script_size,
         true,
-        false,
         recorder,
     )?;
 
@@ -3891,6 +3884,7 @@ fn compile_if_statement<'i>(
     if let Some(else_branch) = else_branch {
         builder.add_op(OpElse)?;
         let mut else_types = types.clone();
+        predeclare_if_branch_locals(else_branch, &mut else_env, &mut else_types, structs)?;
         compile_block(
             else_branch,
             &mut else_env,
@@ -3909,7 +3903,6 @@ fn compile_if_statement<'i>(
             function_index,
             script_size,
             true,
-            false,
             recorder,
         )?;
     }
@@ -3948,6 +3941,71 @@ fn merge_env_after_if<'i>(
             );
         }
     }
+}
+
+fn default_scalar_expr(type_name: &str) -> Option<Expr<'static>> {
+    match type_name {
+        "int" => Some(Expr::int(0)),
+        "bool" => Some(Expr::new(ExprKind::Bool(false), span::Span::default())),
+        "byte" => Some(Expr::new(ExprKind::Byte(0), span::Span::default())),
+        _ => None,
+    }
+}
+
+fn is_predeclared_scalar_default<'i>(name: &str, type_name: &str, env: &HashMap<String, Expr<'i>>) -> bool {
+    match (type_name, env.get(name).map(|expr| &expr.kind)) {
+        ("int", Some(ExprKind::Int(0))) => true,
+        ("bool", Some(ExprKind::Bool(false))) => true,
+        ("byte", Some(ExprKind::Byte(0))) => true,
+        _ => false,
+    }
+}
+
+fn predeclare_if_branch_locals<'i>(
+    statements: &[Statement<'i>],
+    env: &mut HashMap<String, Expr<'i>>,
+    types: &mut HashMap<String, String>,
+    structs: &StructRegistry,
+) -> Result<(), CompilerError> {
+    for stmt in statements {
+        match stmt {
+            Statement::VariableDefinition { type_ref, name, .. } => {
+                if types.contains_key(name) {
+                    continue;
+                }
+                let type_name = type_name_from_ref(type_ref);
+                let Some(default_expr) = default_scalar_expr(&type_name) else {
+                    continue;
+                };
+                if struct_name_from_type_ref(type_ref, structs).is_none()
+                    && struct_array_name_from_type_ref(type_ref, structs).is_none()
+                {
+                    types.insert(name.clone(), type_name);
+                    env.insert(name.clone(), default_expr);
+                }
+            }
+            Statement::FunctionCallAssign { bindings, .. } => {
+                for binding in bindings {
+                    if types.contains_key(&binding.name) {
+                        continue;
+                    }
+                    let type_name = type_name_from_ref(&binding.type_ref);
+                    let Some(default_expr) = default_scalar_expr(&type_name) else {
+                        continue;
+                    };
+                    if struct_name_from_type_ref(&binding.type_ref, structs).is_none()
+                        && struct_array_name_from_type_ref(&binding.type_ref, structs).is_none()
+                    {
+                        types.insert(binding.name.clone(), type_name);
+                        env.insert(binding.name.clone(), default_expr);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Ok(())
 }
 
 fn compile_time_op_statement<'i>(
@@ -3995,7 +4053,6 @@ fn compile_block<'i>(
     function_index: usize,
     script_size: Option<i64>,
     scoped_stack_locals: bool,
-    scope_stack_locals: bool,
     recorder: &mut DebugRecorder<'i>,
 ) -> Result<(), CompilerError> {
     let mut added_stack_locals = Vec::new();
@@ -4019,7 +4076,6 @@ fn compile_block<'i>(
                 function_order,
                 function_index,
                 script_size,
-                scope_stack_locals,
                 recorder,
             )
             .map_err(|err| err.with_span(&stmt.span()))?,
@@ -4205,7 +4261,6 @@ fn compile_constant_for_statement<'i>(
             function_index,
             script_size,
             true,
-            false,
             recorder,
         )?;
     }

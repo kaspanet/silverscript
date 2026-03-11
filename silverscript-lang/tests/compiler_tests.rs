@@ -5229,12 +5229,8 @@ fn return_reused_local_is_stored_once_and_reused() {
         }
     "#;
 
-    let compiled = compile_contract(
-        source,
-        &[],
-        CompileOptions { allow_entrypoint_return: true, ..CompileOptions::default() },
-    )
-    .expect("compile succeeds");
+    let compiled = compile_contract(source, &[], CompileOptions { allow_entrypoint_return: true, ..CompileOptions::default() })
+        .expect("compile succeeds");
 
     let expected = ScriptBuilder::new()
         .add_i64(2)
@@ -6058,4 +6054,203 @@ fn struct_return_field_is_stored_once_and_reused() {
     let sigscript_err = compiled.build_sig_script("main", vec![Expr::int(10)]).expect("sigscript builds");
     let result_err = run_script_with_sigscript(compiled.script, sigscript_err);
     assert!(result_err.is_err(), "stored struct fields should still enforce the require conditions");
+}
+
+#[test]
+fn compile_time_if_branch_stores_local_var_once_and_reuses_it() {
+    let source = r#"
+        contract IfRepeat() {
+
+            entrypoint function main(int x) {
+                if (1 < 2) {
+                    int a = x + 1;
+                    require(a < 10);
+                    require(a > 1);
+                } else {
+                    require(false);
+                }
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+
+    let expected = ScriptBuilder::new()
+        .add_i64(1)
+        .unwrap()
+        .add_i64(2)
+        .unwrap()
+        .add_op(OpLessThan)
+        .unwrap()
+        .add_op(OpIf)
+        .unwrap()
+        .add_i64(0)
+        .unwrap()
+        .add_op(OpPick)
+        .unwrap()
+        .add_i64(1)
+        .unwrap()
+        .add_op(OpAdd)
+        .unwrap()
+        .add_i64(0)
+        .unwrap()
+        .add_op(OpPick)
+        .unwrap()
+        .add_i64(10)
+        .unwrap()
+        .add_op(OpLessThan)
+        .unwrap()
+        .add_op(OpVerify)
+        .unwrap()
+        .add_i64(0)
+        .unwrap()
+        .add_op(OpPick)
+        .unwrap()
+        .add_i64(1)
+        .unwrap()
+        .add_op(OpGreaterThan)
+        .unwrap()
+        .add_op(OpVerify)
+        .unwrap()
+        .add_op(OpDrop)
+        .unwrap()
+        .add_op(OpElse)
+        .unwrap()
+        .add_op(OpFalse)
+        .unwrap()
+        .add_op(OpVerify)
+        .unwrap()
+        .add_op(OpEndIf)
+        .unwrap()
+        .add_op(OpDrop)
+        .unwrap()
+        .add_op(OpTrue)
+        .unwrap()
+        .drain();
+
+    assert_eq!(compiled.script, expected);
+}
+
+#[test]
+fn compile_time_if_branch_stores_struct_fields_once_and_reuses_them() {
+    let source = r#"
+        contract IfStructRepeat() {
+            struct S {
+                int a;
+                int b;
+            }
+
+            entrypoint function main(int x) {
+                if (1 < 2) {
+                    S s = { a: x + 1, b: x * x };
+                    require(s.a < 10);
+                    require(s.b < 20);
+                    require(s.a > 1);
+                    require(s.b > 2);
+                } else {
+                    require(false);
+                }
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+
+    assert_eq!(
+        compiled.script.iter().copied().filter(|op| *op == OpAdd).count(),
+        1,
+        "s.a should be computed once and reused across both require statements"
+    );
+    assert_eq!(
+        compiled.script.iter().copied().filter(|op| *op == OpMul).count(),
+        1,
+        "s.b should be computed once and reused across both require statements"
+    );
+
+    let expected = ScriptBuilder::new()
+        .add_i64(1)
+        .unwrap()
+        .add_i64(2)
+        .unwrap()
+        .add_op(OpLessThan)
+        .unwrap()
+        .add_op(OpIf)
+        .unwrap()
+        .add_i64(0)
+        .unwrap()
+        .add_op(OpPick)
+        .unwrap()
+        .add_i64(1)
+        .unwrap()
+        .add_op(OpAdd)
+        .unwrap()
+        .add_i64(1)
+        .unwrap()
+        .add_op(OpPick)
+        .unwrap()
+        .add_i64(2)
+        .unwrap()
+        .add_op(OpPick)
+        .unwrap()
+        .add_op(OpMul)
+        .unwrap()
+        .add_i64(1)
+        .unwrap()
+        .add_op(OpPick)
+        .unwrap()
+        .add_i64(10)
+        .unwrap()
+        .add_op(OpLessThan)
+        .unwrap()
+        .add_op(OpVerify)
+        .unwrap()
+        .add_i64(0)
+        .unwrap()
+        .add_op(OpPick)
+        .unwrap()
+        .add_i64(20)
+        .unwrap()
+        .add_op(OpLessThan)
+        .unwrap()
+        .add_op(OpVerify)
+        .unwrap()
+        .add_i64(1)
+        .unwrap()
+        .add_op(OpPick)
+        .unwrap()
+        .add_i64(1)
+        .unwrap()
+        .add_op(OpGreaterThan)
+        .unwrap()
+        .add_op(OpVerify)
+        .unwrap()
+        .add_i64(0)
+        .unwrap()
+        .add_op(OpPick)
+        .unwrap()
+        .add_i64(2)
+        .unwrap()
+        .add_op(OpGreaterThan)
+        .unwrap()
+        .add_op(OpVerify)
+        .unwrap()
+        .add_op(OpDrop)
+        .unwrap()
+        .add_op(OpDrop)
+        .unwrap()
+        .add_op(OpElse)
+        .unwrap()
+        .add_op(OpFalse)
+        .unwrap()
+        .add_op(OpVerify)
+        .unwrap()
+        .add_op(OpEndIf)
+        .unwrap()
+        .add_op(OpDrop)
+        .unwrap()
+        .add_op(OpTrue)
+        .unwrap()
+        .drain();
+
+    assert_eq!(compiled.script, expected);
 }
