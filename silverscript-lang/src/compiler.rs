@@ -433,27 +433,8 @@ fn read_input_state_field_expr_symbolic<'i>(
 ) -> Result<Expr<'i>, CompilerError> {
     let state_start_offset = state_start_offset(contract_field_prefix_len, contract_fields, contract_constants)?;
     let script_size_expr = Expr::new(ExprKind::Nullary(NullaryOp::ThisScriptSize), span::Span::default());
-    let (field_payload_offset, field_payload_len, decode_int) =
-        if field.type_ref.array_dims.is_empty() && field.type_ref.base == TypeBase::Int {
-            (state_start_offset + field_chunk_offset + 1, 8usize, true)
-        } else if field.type_ref.base == TypeBase::Byte {
-            let payload_len = if field.type_ref.array_dims.is_empty() {
-                1usize
-            } else {
-                array_size_with_constants_ref(&field.type_ref, contract_constants).ok_or_else(|| {
-                    CompilerError::Unsupported(format!(
-                        "readInputState does not support field type {}",
-                        type_name_from_ref(&field.type_ref)
-                    ))
-                })?
-            };
-            (state_start_offset + field_chunk_offset + data_prefix(payload_len).len(), payload_len, false)
-        } else {
-            return Err(CompilerError::Unsupported(format!(
-                "readInputState does not support field type {}",
-                type_name_from_ref(&field.type_ref)
-            )));
-        };
+    let (field_payload_len, decode_numeric) = fixed_state_field_payload_len(field, contract_constants)?;
+    let field_payload_offset = state_start_offset + field_chunk_offset + data_prefix(field_payload_len).len();
 
     let sig_len = Expr::call("OpTxInputScriptSigLen", vec![input_idx.clone()]);
     let start = Expr::new(
@@ -473,7 +454,7 @@ fn read_input_state_field_expr_symbolic<'i>(
     );
     let substr = Expr::call("OpTxInputScriptSigSubstr", vec![input_idx.clone(), start, end]);
 
-    if decode_int { Ok(Expr::call("OpBin2Num", vec![substr])) } else { Ok(substr) }
+    if decode_numeric { Ok(Expr::call("OpBin2Num", vec![substr])) } else { Ok(substr) }
 }
 
 fn lower_struct_value_to_state_object_expr<'i>(
@@ -1097,13 +1078,9 @@ fn compile_contract_fields<'i>(
         if struct_name_from_type_ref(&field.type_ref, structs).is_some() {
             let encoded = encode_struct_value(&resolved, &field.type_ref, structs)?;
             builder.add_data(&encoded)?;
-        } else if field.type_ref.array_dims.is_empty() && field.type_ref.base == TypeBase::Int {
-            let ExprKind::Int(value) = &resolved.kind else {
-                return Err(CompilerError::Unsupported(format!("contract field '{}' expects compile-time int value", field.name)));
-            };
-            let serialized = serialize_i64(*value, Some(8usize))
-                .map_err(|err| CompilerError::Unsupported(format!("failed to serialize int literal {}: {err}", value)))?;
-            builder.add_data(&serialized)?;
+        } else if fixed_type_size_with_constants_ref(&field.type_ref, &env).is_some() {
+            let encoded = encode_fixed_size_value(&resolved, &type_name)?;
+            builder.add_data(&encoded)?;
         } else {
             compile_expr(
                 &resolved,
@@ -1567,6 +1544,28 @@ fn fixed_type_size_ref(type_ref: &TypeRef) -> Option<i64> {
     }
 }
 
+fn fixed_type_size_with_constants_ref<'i>(type_ref: &TypeRef, constants: &HashMap<String, Expr<'i>>) -> Option<usize> {
+    if type_ref.array_dims.is_empty() {
+        return fixed_type_size_ref(type_ref).map(|size| size as usize);
+    }
+
+    let element_type = array_element_type_ref(type_ref)?;
+    let array_len = array_size_with_constants_ref(type_ref, constants)?;
+    let element_size = fixed_type_size_with_constants_ref(&element_type, constants)?;
+    Some(array_len * element_size)
+}
+
+fn fixed_state_field_payload_len<'i>(
+    field: &ContractFieldAst<'i>,
+    contract_constants: &HashMap<String, Expr<'i>>,
+) -> Result<(usize, bool), CompilerError> {
+    let payload_len = fixed_type_size_with_constants_ref(&field.type_ref, contract_constants).ok_or_else(|| {
+        CompilerError::Unsupported(format!("readInputState does not support field type {}", type_name_from_ref(&field.type_ref)))
+    })?;
+    let decode_numeric = field.type_ref.array_dims.is_empty() && matches!(field.type_ref.base, TypeBase::Int | TypeBase::Bool);
+    Ok((payload_len, decode_numeric))
+}
+
 fn array_element_size_ref(type_ref: &TypeRef) -> Option<i64> {
     array_element_type_ref(type_ref).and_then(|element| fixed_type_size_ref(&element))
 }
@@ -2008,6 +2007,22 @@ fn encode_fixed_size_value<'i>(value: &Expr<'i>, type_name: &str) -> Result<Vec<
                 return Err(CompilerError::Unsupported("array literal element type mismatch".to_string()));
             };
             if len != 32 {
+                return Err(CompilerError::Unsupported("array literal element type mismatch".to_string()));
+            }
+            let ExprKind::Array(bytes_exprs) = &value.kind else {
+                return Err(CompilerError::Unsupported("array literal element type mismatch".to_string()));
+            };
+            Ok(bytes_exprs
+                .iter()
+                .filter_map(|value| if let ExprKind::Byte(byte) = &value.kind { Some(*byte) } else { None })
+                .collect())
+        }
+        "sig" | "datasig" => {
+            let expected_len = if type_name == "sig" { 65 } else { 64 };
+            let Some(len) = byte_array_len(value) else {
+                return Err(CompilerError::Unsupported("array literal element type mismatch".to_string()));
+            };
+            if len != expected_len {
                 return Err(CompilerError::Unsupported("array literal element type mismatch".to_string()));
             }
             let ExprKind::Array(bytes_exprs) = &value.kind else {
@@ -2522,7 +2537,7 @@ fn compile_statement<'i>(
                             },
                             span::Span::default(),
                         )
-                    } else if leaf_type_name == "byte" {
+                    } else if matches!(leaf_type_name.as_str(), "bool" | "byte") {
                         Expr::new(
                             ExprKind::Call {
                                 name: "byte[1]".to_string(),
@@ -2531,7 +2546,7 @@ fn compile_statement<'i>(
                             },
                             span::Span::default(),
                         )
-                    } else if leaf_type_name.contains('[') && leaf_type_name.starts_with("byte") {
+                    } else if is_bytes_type(&leaf_type_name) {
                         if expr_is_bytes(&resolved_leaf_expr, env, types) {
                             resolved_leaf_expr
                         } else {
@@ -2567,44 +2582,19 @@ fn compile_statement<'i>(
                     ExprKind::Call { name: "byte[8]".to_string(), args: vec![expr.clone()], name_span: span::Span::default() },
                     span::Span::default(),
                 )
-            } else if element_type == "byte" {
+            } else if matches!(element_type.as_str(), "bool" | "byte") {
                 Expr::new(
                     ExprKind::Call { name: "byte[1]".to_string(), args: vec![expr.clone()], name_span: span::Span::default() },
                     span::Span::default(),
                 )
-            } else if element_type.contains('[') && element_type.starts_with("byte") {
-                // Handle byte[N] type
+            } else if is_bytes_type(&element_type) {
                 if expr_is_bytes(expr, env, types) {
                     expr.clone()
                 } else {
-                    // Try byte[N] syntax
-                    if let Some(bracket_pos) = element_type.find('[') {
-                        if element_type.ends_with(']') {
-                            let base_type = &element_type[..bracket_pos];
-                            let size_str = &element_type[bracket_pos + 1..element_type.len() - 1];
-                            if base_type == "byte" {
-                                if let Ok(_size) = size_str.parse::<usize>() {
-                                    // Cast expression to byte[N]
-                                    Expr::new(
-                                        ExprKind::Call {
-                                            name: element_type.to_string(),
-                                            args: vec![expr.clone()],
-                                            name_span: span::Span::default(),
-                                        },
-                                        span::Span::default(),
-                                    )
-                                } else {
-                                    return Err(CompilerError::Unsupported("invalid array size".to_string()));
-                                }
-                            } else {
-                                return Err(CompilerError::Unsupported("array element type not supported".to_string()));
-                            }
-                        } else {
-                            return Err(CompilerError::Unsupported("array element type not supported".to_string()));
-                        }
-                    } else {
-                        return Err(CompilerError::Unsupported("array element type not supported".to_string()));
-                    }
+                    Expr::new(
+                        ExprKind::Call { name: element_type.to_string(), args: vec![expr.clone()], name_span: span::Span::default() },
+                        span::Span::default(),
+                    )
                 }
             } else {
                 return Err(CompilerError::Unsupported("array element type not supported".to_string()));
@@ -2974,27 +2964,7 @@ fn encoded_field_chunk_size<'i>(
     field: &ContractFieldAst<'i>,
     contract_constants: &HashMap<String, Expr<'i>>,
 ) -> Result<usize, CompilerError> {
-    if field.type_ref.array_dims.is_empty() && field.type_ref.base == TypeBase::Int {
-        // Int fields are encoded as PUSHDATA8-prefixed script numbers:
-        // 1-byte push opcode (0x08) + 8-byte payload from serialize_i64(..., Some(8)).
-        return Ok(9);
-    }
-
-    if field.type_ref.base != TypeBase::Byte {
-        return Err(CompilerError::Unsupported(format!(
-            "readInputState does not support field type {}",
-            type_name_from_ref(&field.type_ref)
-        )));
-    }
-
-    let payload_size = if field.type_ref.array_dims.is_empty() {
-        1usize
-    } else {
-        array_size_with_constants_ref(&field.type_ref, contract_constants).ok_or_else(|| {
-            CompilerError::Unsupported(format!("readInputState does not support field type {}", type_name_from_ref(&field.type_ref)))
-        })?
-    };
-
+    let (payload_size, _) = fixed_state_field_payload_len(field, contract_constants)?;
     Ok(data_prefix(payload_size).len() + payload_size)
 }
 
@@ -3024,27 +2994,8 @@ fn read_input_state_binding_expr<'i>(
     script_size_value: i64,
     contract_constants: &HashMap<String, Expr<'i>>,
 ) -> Result<Expr<'i>, CompilerError> {
-    let (field_payload_offset, field_payload_len, decode_int) =
-        if field.type_ref.array_dims.is_empty() && field.type_ref.base == TypeBase::Int {
-            (state_start_offset + field_chunk_offset + 1, 8usize, true)
-        } else if field.type_ref.base == TypeBase::Byte {
-            let payload_len = if field.type_ref.array_dims.is_empty() {
-                1usize
-            } else {
-                array_size_with_constants_ref(&field.type_ref, contract_constants).ok_or_else(|| {
-                    CompilerError::Unsupported(format!(
-                        "readInputState does not support field type {}",
-                        type_name_from_ref(&field.type_ref)
-                    ))
-                })?
-            };
-            (state_start_offset + field_chunk_offset + data_prefix(payload_len).len(), payload_len, false)
-        } else {
-            return Err(CompilerError::Unsupported(format!(
-                "readInputState does not support field type {}",
-                type_name_from_ref(&field.type_ref)
-            )));
-        };
+    let (field_payload_len, decode_numeric) = fixed_state_field_payload_len(field, contract_constants)?;
+    let field_payload_offset = state_start_offset + field_chunk_offset + data_prefix(field_payload_len).len();
 
     let sig_len = Expr::call("OpTxInputScriptSigLen", vec![input_idx.clone()]);
     let start = Expr::new(
@@ -3064,7 +3015,7 @@ fn read_input_state_binding_expr<'i>(
     );
     let substr = Expr::call("OpTxInputScriptSigSubstr", vec![input_idx.clone(), start, end]);
 
-    if decode_int { Ok(Expr::call("OpBin2Num", vec![substr])) } else { Ok(substr) }
+    if decode_numeric { Ok(Expr::call("OpBin2Num", vec![substr])) } else { Ok(substr) }
 }
 
 fn compile_read_input_state_statement<'i>(
@@ -3178,7 +3129,14 @@ fn compile_validate_output_state_statement(
             return Err(CompilerError::Unsupported(format!("missing state field '{}'", field.name)));
         };
 
-        if field.type_ref.array_dims.is_empty() && field.type_ref.base == TypeBase::Int {
+        let (field_size, encode_numeric) = fixed_state_field_payload_len(field, contract_constants).map_err(|_| {
+            CompilerError::Unsupported(format!(
+                "validateOutputState does not support field type {}",
+                type_name_from_ref(&field.type_ref)
+            ))
+        })?;
+
+        if encode_numeric {
             compile_expr(
                 new_value,
                 env,
@@ -3191,47 +3149,24 @@ fn compile_validate_output_state_statement(
                 script_size,
                 contract_constants,
             )?;
-            builder.add_i64(8)?;
+            builder.add_i64(field_size as i64)?;
             stack_depth += 1;
             builder.add_op(OpNum2Bin)?;
             stack_depth -= 1;
-            builder.add_data(&[0x08])?;
-            stack_depth += 1;
-            builder.add_op(OpSwap)?;
-            builder.add_op(OpCat)?;
-            stack_depth -= 1;
-            continue;
-        }
-
-        let field_size = if field.type_ref.base == TypeBase::Byte {
-            if field.type_ref.array_dims.is_empty() {
-                Some(1usize)
-            } else {
-                array_size_with_constants_ref(&field.type_ref, contract_constants)
-            }
         } else {
-            None
-        };
-
-        let Some(field_size) = field_size else {
-            return Err(CompilerError::Unsupported(format!(
-                "validateOutputState does not support field type {}",
-                type_name_from_ref(&field.type_ref)
-            )));
-        };
-
-        compile_expr(
-            new_value,
-            env,
-            params,
-            types,
-            builder,
-            options,
-            &mut HashSet::new(),
-            &mut stack_depth,
-            script_size,
-            contract_constants,
-        )?;
+            compile_expr(
+                new_value,
+                env,
+                params,
+                types,
+                builder,
+                options,
+                &mut HashSet::new(),
+                &mut stack_depth,
+                script_size,
+                contract_constants,
+            )?;
+        }
         let prefix = data_prefix(field_size);
         builder.add_data(&prefix)?;
         stack_depth += 1;
@@ -5830,7 +5765,7 @@ fn compile_concat_operand<'i>(
 }
 
 fn is_bytes_type(type_name: &str) -> bool {
-    if type_name == "bytes" || type_name == "byte" || matches!(type_name, "pubkey" | "sig" | "string") {
+    if type_name == "bytes" || type_name == "byte" || matches!(type_name, "pubkey" | "sig" | "datasig" | "string") {
         return true;
     }
     // Check for byte[N] arrays
