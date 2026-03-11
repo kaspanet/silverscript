@@ -1144,8 +1144,11 @@ fn statement_uses_script_size(stmt: &Statement<'_>) -> bool {
                 || then_branch.iter().any(statement_uses_script_size)
                 || else_branch.as_ref().is_some_and(|branch| branch.iter().any(statement_uses_script_size))
         }
-        Statement::For { start, end, body, .. } => {
-            expr_uses_script_size(start) || expr_uses_script_size(end) || body.iter().any(statement_uses_script_size)
+        Statement::For { start, end, max_iterations, body, .. } => {
+            expr_uses_script_size(start)
+                || expr_uses_script_size(end)
+                || expr_uses_script_size(max_iterations)
+                || body.iter().any(statement_uses_script_size)
         }
         Statement::Yield { expr, .. } => expr_uses_script_size(expr),
         Statement::Return { exprs, .. } => exprs.iter().any(expr_uses_script_size),
@@ -2657,10 +2660,11 @@ fn compile_statement<'i>(
             script_size,
             recorder,
         ),
-        Statement::For { ident, start, end, body, span, .. } => compile_for_statement(
+        Statement::For { ident, start, end, max_iterations, body, span, .. } => compile_for_statement(
             ident,
             start,
             end,
+            max_iterations,
             body,
             *span,
             env,
@@ -3338,6 +3342,7 @@ struct InlineCallBindings<'i> {
     types: HashMap<String, String>,
     compile_params: HashMap<String, i64>,
     yield_rewrites: Vec<(String, Expr<'i>)>,
+    preserved_return_idents: HashSet<String>,
 }
 
 fn prepare_inline_call_bindings<'i>(
@@ -3356,11 +3361,13 @@ fn prepare_inline_call_bindings<'i>(
     let mut env: HashMap<String, Expr<'i>> = contract_constants.clone();
     env.extend(caller_env.clone());
     let mut yield_rewrites = Vec::new();
+    let mut preserved_return_idents = HashSet::new();
     let caller_scope = lowering_scope_from_types(caller_types)?;
     for (param, arg) in function.params.iter().zip(args.iter()) {
         let resolved = resolve_expr(arg.clone(), caller_env, &mut HashSet::new())?;
         let param_type_name = type_name_from_ref(&param.type_ref);
 
+        preserved_return_idents.insert(param.name.clone());
         types.insert(param.name.clone(), param_type_name.clone());
         if struct_name_from_type_ref(&param.type_ref, structs).is_some() {
             yield_rewrites.push((param.name.clone(), resolved.clone()));
@@ -3422,7 +3429,7 @@ fn prepare_inline_call_bindings<'i>(
 
     let _ = callee_name;
 
-    Ok(InlineCallBindings { env, debug_env, types, compile_params, yield_rewrites })
+    Ok(InlineCallBindings { env, debug_env, types, compile_params, yield_rewrites, preserved_return_idents })
 }
 
 fn rewrite_inline_yields<'i>(yields: Vec<Expr<'i>>, rewrites: &[(String, Expr<'i>)]) -> Vec<Expr<'i>> {
@@ -3569,8 +3576,9 @@ fn compile_inline_call<'i>(
             )
             .map_err(|err| err.with_span(&stmt.span()))?;
             for expr in exprs {
-                let resolved = resolve_expr_for_runtime(expr.clone(), &bindings.env, &bindings.types, &mut HashSet::new())
-                    .map_err(|err| err.with_span(&expr.span))?;
+                let resolved =
+                    resolve_inline_return_expr(expr.clone(), &bindings.env, &bindings.preserved_return_idents, &mut HashSet::new())
+                        .map_err(|err| err.with_span(&expr.span))?;
                 yields.push(resolved);
             }
         } else {
@@ -3797,6 +3805,7 @@ fn compile_for_statement<'i>(
     ident: &str,
     start_expr: &Expr<'i>,
     end_expr: &Expr<'i>,
+    max_iterations_expr: &Expr<'i>,
     body: &[Statement<'i>],
     for_span: span::Span<'i>,
     env: &mut HashMap<String, Expr<'i>>,
@@ -3815,18 +3824,125 @@ fn compile_for_statement<'i>(
     script_size: Option<i64>,
     recorder: &mut DebugRecorder<'i>,
 ) -> Result<(), CompilerError> {
-    let start = eval_const_int(start_expr, contract_constants)?;
-    let end = eval_const_int(end_expr, contract_constants)?;
-    if end < start {
-        return Err(CompilerError::Unsupported("for loop end must be >= start".to_string()));
+    let max_iterations = eval_const_int(max_iterations_expr, contract_constants)
+        .map_err(|_| CompilerError::Unsupported("for loop max iterations must be a compile-time integer".to_string()))?;
+    if max_iterations < 0 {
+        return Err(CompilerError::Unsupported("for loop max iterations must be a non-negative compile-time integer".to_string()));
     }
+
+    let start = lower_runtime_expr(start_expr, types, structs)?;
+    let end = lower_runtime_expr(end_expr, types, structs)?;
 
     let name = ident.to_string();
     let loop_span = SourceSpan::from(for_span);
     let previous = env.get(&name).cloned();
-    for value in start..end {
-        env.insert(name.clone(), Expr::int(value));
-        recorder.record_variable_binding(name.clone(), "int".to_string(), Expr::int(value), builder.script().len(), loop_span);
+    let previous_type = types.get(&name).cloned();
+    types.insert(name.clone(), "int".to_string());
+
+    let result =
+        if let (Ok(start), Ok(end)) = (eval_const_int(start_expr, contract_constants), eval_const_int(end_expr, contract_constants)) {
+            compile_constant_for_statement(
+                &name,
+                start,
+                end,
+                max_iterations as usize,
+                body,
+                loop_span,
+                env,
+                params,
+                types,
+                builder,
+                options,
+                contract_fields,
+                contract_field_prefix_len,
+                contract_constants,
+                structs,
+                functions,
+                function_order,
+                function_index,
+                yields,
+                script_size,
+                recorder,
+            )
+        } else {
+            compile_runtime_for_statement(
+                &name,
+                start,
+                end,
+                max_iterations as usize,
+                body,
+                loop_span,
+                env,
+                params,
+                types,
+                builder,
+                options,
+                contract_fields,
+                contract_field_prefix_len,
+                contract_constants,
+                structs,
+                functions,
+                function_order,
+                function_index,
+                yields,
+                script_size,
+                recorder,
+            )
+        };
+
+    match previous {
+        Some(expr) => {
+            env.insert(name, expr);
+        }
+        None => {
+            env.remove(ident);
+        }
+    }
+
+    match previous_type {
+        Some(type_name) => {
+            types.insert(ident.to_string(), type_name);
+        }
+        None => {
+            types.remove(ident);
+        }
+    }
+
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compile_constant_for_statement<'i>(
+    ident: &str,
+    start: i64,
+    end: i64,
+    max_iterations: usize,
+    body: &[Statement<'i>],
+    loop_span: SourceSpan,
+    env: &mut HashMap<String, Expr<'i>>,
+    params: &HashMap<String, i64>,
+    types: &mut HashMap<String, String>,
+    builder: &mut ScriptBuilder,
+    options: CompileOptions,
+    contract_fields: &[ContractFieldAst<'i>],
+    contract_field_prefix_len: usize,
+    contract_constants: &HashMap<String, Expr<'i>>,
+    structs: &StructRegistry,
+    functions: &HashMap<String, FunctionAst<'i>>,
+    function_order: &HashMap<String, usize>,
+    function_index: usize,
+    yields: &mut Vec<Expr<'i>>,
+    script_size: Option<i64>,
+    recorder: &mut DebugRecorder<'i>,
+) -> Result<(), CompilerError> {
+    for iteration in 0..max_iterations {
+        let value = start + iteration as i64;
+        if value >= end {
+            break;
+        }
+
+        env.insert(ident.to_string(), Expr::int(value));
+        recorder.record_variable_binding(ident.to_string(), "int".to_string(), Expr::int(value), builder.script().len(), loop_span);
         compile_block(
             body,
             env,
@@ -3847,13 +3963,78 @@ fn compile_for_statement<'i>(
         )?;
     }
 
-    match previous {
-        Some(expr) => {
-            env.insert(name, expr);
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compile_runtime_for_statement<'i>(
+    ident: &str,
+    start: Expr<'i>,
+    end: Expr<'i>,
+    max_iterations: usize,
+    body: &[Statement<'i>],
+    loop_span: SourceSpan,
+    env: &mut HashMap<String, Expr<'i>>,
+    params: &HashMap<String, i64>,
+    types: &mut HashMap<String, String>,
+    builder: &mut ScriptBuilder,
+    options: CompileOptions,
+    contract_fields: &[ContractFieldAst<'i>],
+    contract_field_prefix_len: usize,
+    contract_constants: &HashMap<String, Expr<'i>>,
+    structs: &StructRegistry,
+    functions: &HashMap<String, FunctionAst<'i>>,
+    function_order: &HashMap<String, usize>,
+    function_index: usize,
+    yields: &mut Vec<Expr<'i>>,
+    script_size: Option<i64>,
+    recorder: &mut DebugRecorder<'i>,
+) -> Result<(), CompilerError> {
+    let mut current = resolve_expr_for_runtime(start, env, types, &mut HashSet::new())?;
+    let mut current_const = eval_const_int(&current, contract_constants).ok();
+    for _ in 0..max_iterations {
+        let loop_value = current_const.map_or_else(|| current.clone(), Expr::int);
+        env.insert(ident.to_string(), loop_value.clone());
+        recorder.record_variable_binding(ident.to_string(), "int".to_string(), loop_value, builder.script().len(), loop_span);
+
+        let condition = Expr::new(
+            ExprKind::Binary { op: BinaryOp::Lt, left: Box::new(Expr::identifier(ident)), right: Box::new(end.clone()) },
+            span::Span::default(),
+        );
+        compile_if_statement(
+            &condition,
+            body,
+            None,
+            env,
+            params,
+            types,
+            builder,
+            options,
+            contract_fields,
+            contract_field_prefix_len,
+            contract_constants,
+            structs,
+            functions,
+            function_order,
+            function_index,
+            yields,
+            script_size,
+            recorder,
+        )?;
+
+        if let Some(value) = env.get(ident).and_then(|expr| eval_const_int(expr, contract_constants).ok()) {
+            let next_value = value + 1;
+            current_const = Some(next_value);
+            current = Expr::int(next_value);
+            continue;
         }
-        None => {
-            env.remove(&name);
-        }
+
+        let next = Expr::new(
+            ExprKind::Binary { op: BinaryOp::Add, left: Box::new(Expr::identifier(ident)), right: Box::new(Expr::int(1)) },
+            span::Span::default(),
+        );
+        current_const = None;
+        current = resolve_expr_for_runtime(next, env, types, &mut HashSet::new())?;
     }
 
     Ok(())
@@ -4014,48 +4195,74 @@ fn resolve_expr_for_runtime<'i>(
     types: &HashMap<String, String>,
     visiting: &mut HashSet<String>,
 ) -> Result<Expr<'i>, CompilerError> {
+    let preserve_identifier =
+        |name: &str| name.starts_with(SYNTHETIC_ARG_PREFIX) || types.get(name).is_some_and(|type_name| is_array_type(type_name));
+    resolve_expr_with_policy(expr, env, visiting, &preserve_identifier)
+}
+
+fn resolve_inline_return_expr<'i>(
+    expr: Expr<'i>,
+    env: &HashMap<String, Expr<'i>>,
+    preserved_idents: &HashSet<String>,
+    visiting: &mut HashSet<String>,
+) -> Result<Expr<'i>, CompilerError> {
+    let preserve_identifier = |name: &str| name.starts_with(SYNTHETIC_ARG_PREFIX) || preserved_idents.contains(name);
+    resolve_expr_with_policy(expr, env, visiting, &preserve_identifier)
+}
+
+fn resolve_expr_with_policy<'i, F>(
+    expr: Expr<'i>,
+    env: &HashMap<String, Expr<'i>>,
+    visiting: &mut HashSet<String>,
+    preserve_identifier: &F,
+) -> Result<Expr<'i>, CompilerError>
+where
+    F: Fn(&str) -> bool,
+{
     let Expr { kind, span } = expr;
     match kind {
         ExprKind::Identifier(name) => {
-            if name.starts_with(SYNTHETIC_ARG_PREFIX) || types.get(&name).is_some_and(|type_name| is_array_type(type_name)) {
+            if preserve_identifier(&name) {
                 return Ok(Expr::new(ExprKind::Identifier(name), span));
             }
             if let Some(value) = env.get(&name) {
                 if !visiting.insert(name.clone()) {
                     return Err(CompilerError::CyclicIdentifier(name));
                 }
-                let resolved = resolve_expr_for_runtime(value.clone(), env, types, visiting)?;
+                let resolved = resolve_expr_with_policy(value.clone(), env, visiting, preserve_identifier)?;
                 visiting.remove(&name);
                 Ok(resolved)
             } else {
                 Ok(Expr::new(ExprKind::Identifier(name), span))
             }
         }
-        ExprKind::Unary { op, expr } => {
-            Ok(Expr::new(ExprKind::Unary { op, expr: Box::new(resolve_expr_for_runtime(*expr, env, types, visiting)?) }, span))
-        }
+        ExprKind::Unary { op, expr } => Ok(Expr::new(
+            ExprKind::Unary { op, expr: Box::new(resolve_expr_with_policy(*expr, env, visiting, preserve_identifier)?) },
+            span,
+        )),
         ExprKind::Binary { op, left, right } => Ok(Expr::new(
             ExprKind::Binary {
                 op,
-                left: Box::new(resolve_expr_for_runtime(*left, env, types, visiting)?),
-                right: Box::new(resolve_expr_for_runtime(*right, env, types, visiting)?),
+                left: Box::new(resolve_expr_with_policy(*left, env, visiting, preserve_identifier)?),
+                right: Box::new(resolve_expr_with_policy(*right, env, visiting, preserve_identifier)?),
             },
             span,
         )),
         ExprKind::IfElse { condition, then_expr, else_expr } => Ok(Expr::new(
             ExprKind::IfElse {
-                condition: Box::new(resolve_expr_for_runtime(*condition, env, types, visiting)?),
-                then_expr: Box::new(resolve_expr_for_runtime(*then_expr, env, types, visiting)?),
-                else_expr: Box::new(resolve_expr_for_runtime(*else_expr, env, types, visiting)?),
+                condition: Box::new(resolve_expr_with_policy(*condition, env, visiting, preserve_identifier)?),
+                then_expr: Box::new(resolve_expr_with_policy(*then_expr, env, visiting, preserve_identifier)?),
+                else_expr: Box::new(resolve_expr_with_policy(*else_expr, env, visiting, preserve_identifier)?),
             },
             span,
         )),
         ExprKind::Array(values) => Ok(Expr::new(
             ExprKind::Array(
-                values
-                    .into_iter()
-                    .map(|value| resolve_expr_for_runtime(value, env, types, visiting))
-                    .collect::<Result<Vec<_>, _>>()?,
+                values.into_iter().map(|value| resolve_expr_with_policy(value, env, visiting, preserve_identifier)).collect::<Result<
+                    Vec<_>,
+                    _,
+                >>(
+                )?,
             ),
             span,
         )),
@@ -4066,7 +4273,7 @@ fn resolve_expr_for_runtime<'i>(
                     .map(|field| {
                         Ok(StateFieldExpr {
                             name: field.name,
-                            expr: resolve_expr_for_runtime(field.expr, env, types, visiting)?,
+                            expr: resolve_expr_with_policy(field.expr, env, visiting, preserve_identifier)?,
                             span: field.span,
                             name_span: field.name_span,
                         })
@@ -4076,16 +4283,21 @@ fn resolve_expr_for_runtime<'i>(
             span,
         )),
         ExprKind::FieldAccess { source, field, field_span } => Ok(Expr::new(
-            ExprKind::FieldAccess { source: Box::new(resolve_expr_for_runtime(*source, env, types, visiting)?), field, field_span },
+            ExprKind::FieldAccess {
+                source: Box::new(resolve_expr_with_policy(*source, env, visiting, preserve_identifier)?),
+                field,
+                field_span,
+            },
             span,
         )),
         ExprKind::Call { name, args, name_span } => Ok(Expr::new(
             ExprKind::Call {
                 name,
-                args: args
-                    .into_iter()
-                    .map(|arg| resolve_expr_for_runtime(arg, env, types, visiting))
-                    .collect::<Result<Vec<_>, _>>()?,
+                args: args.into_iter().map(|arg| resolve_expr_with_policy(arg, env, visiting, preserve_identifier)).collect::<Result<
+                    Vec<_>,
+                    _,
+                >>(
+                )?,
                 name_span,
             },
             span,
@@ -4093,18 +4305,19 @@ fn resolve_expr_for_runtime<'i>(
         ExprKind::New { name, args, name_span } => Ok(Expr::new(
             ExprKind::New {
                 name,
-                args: args
-                    .into_iter()
-                    .map(|arg| resolve_expr_for_runtime(arg, env, types, visiting))
-                    .collect::<Result<Vec<_>, _>>()?,
+                args: args.into_iter().map(|arg| resolve_expr_with_policy(arg, env, visiting, preserve_identifier)).collect::<Result<
+                    Vec<_>,
+                    _,
+                >>(
+                )?,
                 name_span,
             },
             span,
         )),
         ExprKind::Split { source, index, part, span: split_span } => Ok(Expr::new(
             ExprKind::Split {
-                source: Box::new(resolve_expr_for_runtime(*source, env, types, visiting)?),
-                index: Box::new(resolve_expr_for_runtime(*index, env, types, visiting)?),
+                source: Box::new(resolve_expr_with_policy(*source, env, visiting, preserve_identifier)?),
+                index: Box::new(resolve_expr_with_policy(*index, env, visiting, preserve_identifier)?),
                 part,
                 span: split_span,
             },
@@ -4112,18 +4325,22 @@ fn resolve_expr_for_runtime<'i>(
         )),
         ExprKind::ArrayIndex { source, index } => Ok(Expr::new(
             ExprKind::ArrayIndex {
-                source: Box::new(resolve_expr_for_runtime(*source, env, types, visiting)?),
-                index: Box::new(resolve_expr_for_runtime(*index, env, types, visiting)?),
+                source: Box::new(resolve_expr_with_policy(*source, env, visiting, preserve_identifier)?),
+                index: Box::new(resolve_expr_with_policy(*index, env, visiting, preserve_identifier)?),
             },
             span,
         )),
         ExprKind::Introspection { kind, index, field_span } => Ok(Expr::new(
-            ExprKind::Introspection { kind, index: Box::new(resolve_expr_for_runtime(*index, env, types, visiting)?), field_span },
+            ExprKind::Introspection {
+                kind,
+                index: Box::new(resolve_expr_with_policy(*index, env, visiting, preserve_identifier)?),
+                field_span,
+            },
             span,
         )),
         ExprKind::UnarySuffix { source, kind, span: suffix_span } => Ok(Expr::new(
             ExprKind::UnarySuffix {
-                source: Box::new(resolve_expr_for_runtime(*source, env, types, visiting)?),
+                source: Box::new(resolve_expr_with_policy(*source, env, visiting, preserve_identifier)?),
                 kind,
                 span: suffix_span,
             },
@@ -4131,9 +4348,9 @@ fn resolve_expr_for_runtime<'i>(
         )),
         ExprKind::Slice { source, start, end, span: slice_span } => Ok(Expr::new(
             ExprKind::Slice {
-                source: Box::new(resolve_expr_for_runtime(*source, env, types, visiting)?),
-                start: Box::new(resolve_expr_for_runtime(*start, env, types, visiting)?),
-                end: Box::new(resolve_expr_for_runtime(*end, env, types, visiting)?),
+                source: Box::new(resolve_expr_with_policy(*source, env, visiting, preserve_identifier)?),
+                start: Box::new(resolve_expr_with_policy(*start, env, visiting, preserve_identifier)?),
+                end: Box::new(resolve_expr_with_policy(*end, env, visiting, preserve_identifier)?),
                 span: slice_span,
             },
             span,

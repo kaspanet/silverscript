@@ -205,6 +205,8 @@ export default grammar({
         $.expression,
         ",",
         $.expression,
+        ",",
+        $.expression,
         ")",
         $.block,
       ),

@@ -66,7 +66,7 @@ fn parses_function_attributes_and_for_ast() {
             #[covenant(binding = cov, from = 2, to = max_outs, mode = verification)]
             function policy() {
                 int dyn = tx.outputs.length;
-                for(i, 0, dyn) {
+                for(i, 0, dyn, max_outs) {
                     require(i >= 0);
                 }
             }

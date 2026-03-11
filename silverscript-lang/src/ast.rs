@@ -366,6 +366,7 @@ pub enum Statement<'i> {
         ident: String,
         start: Expr<'i>,
         end: Expr<'i>,
+        max_iterations: Expr<'i>,
         body: Vec<Statement<'i>>,
         #[serde(skip_deserializing)]
         span: Span<'i>,
@@ -843,8 +844,14 @@ impl SourceFormatter {
                     self.line("}");
                 }
             }
-            Statement::For { ident, start, end, body, .. } => {
-                self.line(&format!("for ({}, {}, {}) {{", ident, format_expr(start), format_expr(end)));
+            Statement::For { ident, start, end, max_iterations, body, .. } => {
+                self.line(&format!(
+                    "for ({}, {}, {}, {}) {{",
+                    ident,
+                    format_expr(start),
+                    format_expr(end),
+                    format_expr(max_iterations)
+                ));
                 self.indent += 1;
                 for statement in body {
                     self.write_statement(statement);
@@ -1622,15 +1629,28 @@ fn parse_statement<'i>(pair: Pair<'i, Rule>) -> Result<Statement<'i>, CompilerEr
                 inner.next().ok_or_else(|| CompilerError::Unsupported("missing for loop start".to_string()).with_span(&span))?;
             let end_pair =
                 inner.next().ok_or_else(|| CompilerError::Unsupported("missing for loop end".to_string()).with_span(&span))?;
+            let max_iterations_pair = inner
+                .next()
+                .ok_or_else(|| CompilerError::Unsupported("missing for loop max iterations".to_string()).with_span(&span))?;
             let block_pair =
                 inner.next().ok_or_else(|| CompilerError::Unsupported("missing for loop body".to_string()).with_span(&span))?;
 
             let start_expr = parse_expression(start_pair).map_err(|err| err.with_span(&span))?;
             let end_expr = parse_expression(end_pair).map_err(|err| err.with_span(&span))?;
+            let max_iterations_expr = parse_expression(max_iterations_pair).map_err(|err| err.with_span(&span))?;
             let (body, body_span) = parse_block(block_pair).map_err(|err| err.with_span(&span))?;
             let Identifier { name: ident, span: ident_span } = parse_identifier(ident).map_err(|err| err.with_span(&span))?;
 
-            Ok(Statement::For { ident, start: start_expr, end: end_expr, body, span, ident_span, body_span })
+            Ok(Statement::For {
+                ident,
+                start: start_expr,
+                end: end_expr,
+                max_iterations: max_iterations_expr,
+                body,
+                span,
+                ident_span,
+                body_span,
+            })
         }
         Rule::yield_statement => {
             let mut inner = pair.into_inner();

@@ -24,11 +24,9 @@ contract Decls(int init_value) {
         require(cov_out_count <= 1);
         require(cov_out_count == cov_new_states.length);
 
-        for(cov_k, 0, 1) {
-            if (cov_k < cov_out_count) {
-                int cov_out_idx = OpAuthOutputIdx(this.activeInputIndex, cov_k);
-                validateOutputState(cov_out_idx, cov_new_states[cov_k]);
-            }
+        for(cov_k, 0, cov_out_count, 1) {
+            int cov_out_idx = OpAuthOutputIdx(this.activeInputIndex, cov_k);
+            validateOutputState(cov_out_idx, cov_new_states[cov_k]);
         }
     }
 }
