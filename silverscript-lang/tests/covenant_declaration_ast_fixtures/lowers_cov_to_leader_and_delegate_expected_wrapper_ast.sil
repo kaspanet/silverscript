@@ -27,21 +27,17 @@ contract Decls(int max_ins, int max_outs) {
         int cov_out_count = OpCovOutputCount(cov_id);
         State[] prev_states;
 
-        for(cov_in_k, 0, max_ins) {
-            if (cov_in_k < cov_in_count) {
-                prev_states.push(readInputState(OpCovInputIdx(cov_id, cov_in_k)));
-            }
+        for(cov_in_k, 0, cov_in_count, max_ins) {
+            prev_states.push(readInputState(OpCovInputIdx(cov_id, cov_in_k)));
         }
 
         covenant_policy_transition_ok(prev_states, new_states, delta);
         require(cov_out_count <= max_outs);
         require(cov_out_count == new_states.length);
 
-        for(cov_k, 0, max_outs) {
-            if (cov_k < cov_out_count) {
-                int cov_out_idx = OpCovOutputIdx(cov_id, cov_k);
-                validateOutputState(cov_out_idx, new_states[cov_k]);
-            }
+        for(cov_k, 0, cov_out_count, max_outs) {
+            int cov_out_idx = OpCovOutputIdx(cov_id, cov_k);
+            validateOutputState(cov_out_idx, new_states[cov_k]);
         }
     }
 
