@@ -1592,6 +1592,53 @@ fn contains_yield(stmt: &Statement<'_>) -> bool {
     }
 }
 
+fn collect_assigned_names<'i>(statements: &[Statement<'i>]) -> HashSet<String> {
+    let mut assigned = HashSet::new();
+    collect_assigned_names_into(statements, &mut assigned);
+    assigned
+}
+
+fn collect_assigned_names_into<'i>(statements: &[Statement<'i>], assigned: &mut HashSet<String>) {
+    for stmt in statements {
+        match stmt {
+            Statement::Assign { name, .. } | Statement::ArrayPush { name, .. } => {
+                assigned.insert(name.clone());
+            }
+            Statement::If { then_branch, else_branch, .. } => {
+                collect_assigned_names_into(then_branch, assigned);
+                if let Some(else_branch) = else_branch {
+                    collect_assigned_names_into(else_branch, assigned);
+                }
+            }
+            Statement::For { ident, body, .. } => {
+                assigned.insert(ident.clone());
+                collect_assigned_names_into(body, assigned);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn push_stack_binding(bindings: &mut HashMap<String, i64>, name: &str) {
+    for depth in bindings.values_mut() {
+        *depth += 1;
+    }
+    bindings.insert(name.to_string(), 0);
+}
+
+fn pop_stack_bindings(bindings: &mut HashMap<String, i64>, names: &[String]) {
+    if names.is_empty() {
+        return;
+    }
+
+    for name in names {
+        bindings.remove(name);
+    }
+    for depth in bindings.values_mut() {
+        *depth -= names.len() as i64;
+    }
+}
+
 fn validate_return_types<'i>(
     exprs: &[Expr<'i>],
     return_types: &[TypeRef],
@@ -1651,21 +1698,6 @@ fn is_array_type_assignable_ref<'i>(actual: &TypeRef, expected: &TypeRef, consta
 
 fn is_type_assignable_ref<'i>(actual: &TypeRef, expected: &TypeRef, constants: &HashMap<String, Expr<'i>>) -> bool {
     actual == expected || is_array_type_assignable_ref(actual, expected, constants)
-}
-
-fn expr_matches_type_with_env_ref<'i>(
-    expr: &Expr<'i>,
-    type_ref: &TypeRef,
-    types: &HashMap<String, String>,
-    constants: &HashMap<String, Expr<'i>>,
-) -> bool {
-    match &expr.kind {
-        ExprKind::Identifier(name) => {
-            types.get(name).and_then(|t| parse_type_ref(t).ok()).is_some_and(|t| is_type_assignable_ref(&t, type_ref, constants))
-        }
-        ExprKind::Array(values) => is_array_type_ref(type_ref) && array_literal_matches_type_ref(values, type_ref),
-        _ => expr_matches_type_ref(expr, type_ref),
-    }
 }
 
 fn expr_matches_return_type_ref<'i>(
@@ -1768,15 +1800,6 @@ fn is_type_assignable<'i>(actual: &str, expected: &str, constants: &HashMap<Stri
         return false;
     };
     is_type_assignable_ref(&actual_type, &expected_type, constants)
-}
-
-fn expr_matches_type_with_env<'i>(
-    expr: &Expr<'i>,
-    type_name: &str,
-    types: &HashMap<String, String>,
-    constants: &HashMap<String, Expr<'i>>,
-) -> bool {
-    parse_type_ref(type_name).is_ok_and(|type_ref| expr_matches_type_with_env_ref(expr, &type_ref, types, constants))
 }
 
 fn infer_fixed_array_type_from_initializer<'i>(
@@ -2164,6 +2187,7 @@ fn compile_entrypoint_function<'i>(
         .enumerate()
         .map(|(index, name)| (name.clone(), (contract_field_count + (param_count - 1 - index)) as i64))
         .collect::<HashMap<_, _>>();
+    let initial_stack_binding_count = params.len() + contract_field_count;
 
     for (index, field) in contract_fields.iter().enumerate() {
         params.insert(field.name.clone(), (contract_field_count - 1 - index) as i64);
@@ -2204,6 +2228,7 @@ fn compile_entrypoint_function<'i>(
     }
     let mut builder = ScriptBuilder::new();
     let mut yields: Vec<Expr> = Vec::new();
+    let assigned_names = collect_assigned_names(&function.body);
 
     if !options.allow_yield && function.body.iter().any(contains_yield) {
         return Err(CompilerError::Unsupported("yield requires allow_yield=true".to_string()));
@@ -2214,6 +2239,7 @@ fn compile_entrypoint_function<'i>(
     }
 
     let has_return = function.body.iter().any(contains_return);
+    let allow_stack_locals = !has_return && !function.body.iter().any(contains_yield);
     if has_return {
         if !matches!(function.body.last(), Some(Statement::Return { .. })) {
             return Err(CompilerError::Unsupported("return statement must be the last statement".to_string()));
@@ -2256,8 +2282,9 @@ fn compile_entrypoint_function<'i>(
             compile_statement(
                 stmt,
                 &mut env,
-                &params,
+                &assigned_names,
                 &mut types,
+                &mut params,
                 &mut builder,
                 options,
                 contract_fields,
@@ -2269,6 +2296,7 @@ fn compile_entrypoint_function<'i>(
                 function_index,
                 &mut yields,
                 script_size,
+                allow_stack_locals,
                 recorder,
             )
             .map_err(|err| err.with_span(&stmt.span()))?;
@@ -2303,6 +2331,9 @@ fn compile_entrypoint_function<'i>(
 
     let yield_count = flattened_yields.len();
     if yield_count == 0 {
+        for _ in 0..params.len().saturating_sub(initial_stack_binding_count) {
+            builder.add_op(OpDrop)?;
+        }
         for _ in 0..param_count {
             builder.add_op(OpDrop)?;
         }
@@ -2326,6 +2357,9 @@ fn compile_entrypoint_function<'i>(
                 constants,
             )?;
         }
+        for _ in 0..params.len().saturating_sub(initial_stack_binding_count) {
+            builder.add_op(OpDrop)?;
+        }
         for _ in 0..param_count {
             builder.add_i64(yield_count as i64)?;
             builder.add_op(OpRoll)?;
@@ -2346,8 +2380,9 @@ fn compile_entrypoint_function<'i>(
 fn compile_statement<'i>(
     stmt: &Statement<'i>,
     env: &mut HashMap<String, Expr<'i>>,
-    params: &HashMap<String, i64>,
+    assigned_names: &HashSet<String>,
     types: &mut HashMap<String, String>,
+    params: &mut HashMap<String, i64>,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
     contract_fields: &[ContractFieldAst<'i>],
@@ -2359,8 +2394,9 @@ fn compile_statement<'i>(
     function_index: usize,
     yields: &mut Vec<Expr<'i>>,
     script_size: Option<i64>,
+    allow_stack_locals: bool,
     recorder: &mut DebugRecorder<'i>,
-) -> Result<(), CompilerError> {
+) -> Result<Option<String>, CompilerError> {
     match stmt {
         Statement::VariableDefinition { type_ref, name, expr, .. } => {
             if struct_name_from_type_ref(type_ref, structs).is_some() {
@@ -2377,7 +2413,8 @@ fn compile_statement<'i>(
                     contract_constants,
                     contract_field_prefix_len,
                     false,
-                );
+                )
+                .map(|_| None);
             }
             if struct_array_name_from_type_ref(type_ref, structs).is_some() {
                 if let Some(expr) = expr.as_ref() {
@@ -2392,7 +2429,8 @@ fn compile_statement<'i>(
                         contract_constants,
                         contract_field_prefix_len,
                         false,
-                    );
+                    )
+                    .map(|_| None);
                 }
 
                 types.insert(name.clone(), type_name_from_ref(type_ref));
@@ -2401,7 +2439,7 @@ fn compile_statement<'i>(
                     types.insert(leaf_name.clone(), type_name_from_ref(&leaf_type));
                     env.insert(leaf_name, Expr::new(ExprKind::Array(Vec::new()), span::Span::default()));
                 }
-                return Ok(());
+                return Ok(None);
             }
 
             let type_name = type_name_from_ref(type_ref);
@@ -2456,7 +2494,7 @@ fn compile_statement<'i>(
                 };
                 env.insert(name.clone(), initial);
                 types.insert(name.clone(), effective_type_name.clone());
-                Ok(())
+                Ok(None)
             } else if is_fixed_size_array {
                 // Fixed-size arrays like byte[N] can be initialized from expressions
                 let expr =
@@ -2489,7 +2527,7 @@ fn compile_statement<'i>(
                     if matches!(&expr.kind, ExprKind::Array(_)) { resolve_expr(expr, env, &mut HashSet::new())? } else { expr };
                 env.insert(name.clone(), stored_expr);
                 types.insert(name.clone(), effective_type_name.clone());
-                Ok(())
+                Ok(None)
             } else {
                 let expr =
                     expr.clone().ok_or_else(|| CompilerError::Unsupported("variable definition requires initializer".to_string()))?;
@@ -2498,9 +2536,33 @@ fn compile_statement<'i>(
                 if !expr_matches_return_type_ref(&expr, &expected_type_ref, types, contract_constants) {
                     return Err(CompilerError::Unsupported(format!("variable '{}' expects {}", name, effective_type_name)));
                 }
-                env.insert(name.clone(), expr);
                 types.insert(name.clone(), effective_type_name.clone());
-                Ok(())
+
+                if allow_stack_locals
+                    && !assigned_names.contains(name)
+                    && !env.contains_key(name)
+                    && !params.contains_key(name)
+                    && matches!(effective_type_name.as_str(), "int" | "bool" | "byte")
+                {
+                    let mut stack_depth = 0i64;
+                    compile_expr(
+                        &expr,
+                        env,
+                        params,
+                        types,
+                        builder,
+                        options,
+                        &mut HashSet::new(),
+                        &mut stack_depth,
+                        script_size,
+                        contract_constants,
+                    )?;
+                    push_stack_binding(params, name);
+                    Ok(Some(name.clone()))
+                } else {
+                    env.insert(name.clone(), expr);
+                    Ok(None)
+                }
             }
         }
         Statement::ArrayPush { name, expr, .. } => {
@@ -2571,7 +2633,7 @@ fn compile_statement<'i>(
                     );
                     env.insert(leaf_name, updated);
                 }
-                return Ok(());
+                return Ok(None);
             }
             let element_type = array_element_type(array_type)
                 .ok_or_else(|| CompilerError::Unsupported("array element type must have known size".to_string()))?;
@@ -2606,7 +2668,7 @@ fn compile_statement<'i>(
                 span::Span::default(),
             );
             env.insert(name.clone(), updated);
-            Ok(())
+            Ok(None)
         }
         Statement::Require { expr, .. } => {
             let expr = lower_runtime_expr(expr, types, structs)?;
@@ -2624,19 +2686,21 @@ fn compile_statement<'i>(
                 contract_constants,
             )?;
             builder.add_op(OpVerify)?;
-            Ok(())
+            Ok(None)
         }
         Statement::TimeOp { tx_var, expr, .. } => {
             let expr = lower_runtime_expr(expr, types, structs)?;
             compile_time_op_statement(tx_var, &expr, env, params, types, builder, options, script_size, contract_constants)
+                .map(|_| None)
         }
         Statement::If { condition, then_branch, else_branch, .. } => compile_if_statement(
             condition,
             then_branch,
             else_branch.as_deref(),
             env,
-            params,
+            assigned_names,
             types,
+            params,
             builder,
             options,
             contract_fields,
@@ -2648,8 +2712,10 @@ fn compile_statement<'i>(
             function_index,
             yields,
             script_size,
+            allow_stack_locals,
             recorder,
-        ),
+        )
+        .map(|_| None),
         Statement::For { ident, start, end, max_iterations, body, span, .. } => compile_for_statement(
             ident,
             start,
@@ -2658,8 +2724,9 @@ fn compile_statement<'i>(
             body,
             *span,
             env,
-            params,
+            assigned_names,
             types,
+            params,
             builder,
             options,
             contract_fields,
@@ -2671,13 +2738,15 @@ fn compile_statement<'i>(
             function_index,
             yields,
             script_size,
+            allow_stack_locals,
             recorder,
-        ),
+        )
+        .map(|_| None),
         Statement::Yield { expr, .. } => {
             let mut visiting = HashSet::new();
             let resolved = resolve_expr(expr.clone(), env, &mut visiting)?;
             yields.push(resolved);
-            Ok(())
+            Ok(None)
         }
         Statement::Return { .. } => Err(CompilerError::Unsupported("return statement must be the last statement".to_string())),
         Statement::TupleAssignment { left_name, right_name, expr, .. } => match &expr.kind {
@@ -2692,7 +2761,7 @@ fn compile_statement<'i>(
                 );
                 env.insert(left_name.clone(), left_expr);
                 env.insert(right_name.clone(), right_expr);
-                Ok(())
+                Ok(None)
             }
             _ => Err(CompilerError::Unsupported("tuple assignment only supports split()".to_string())),
         },
@@ -2731,7 +2800,8 @@ fn compile_statement<'i>(
                     contract_field_prefix_len,
                     script_size,
                     contract_constants,
-                );
+                )
+                .map(|_| None);
             }
             let function = functions.get(name).ok_or_else(|| CompilerError::Unsupported(format!("function '{}' not found", name)))?;
             let returns = compile_inline_call(
@@ -2781,7 +2851,7 @@ fn compile_statement<'i>(
                     stack_depth -= 1;
                 }
             }
-            Ok(())
+            Ok(None)
         }
         Statement::StateFunctionCallAssign { bindings, name, args, .. } => {
             if name == "readInputState" {
@@ -2794,7 +2864,8 @@ fn compile_statement<'i>(
                     contract_field_prefix_len,
                     script_size,
                     contract_constants,
-                );
+                )
+                .map(|_| None);
             }
             Err(CompilerError::Unsupported(format!(
                 "state destructuring assignment is only supported for readInputState(), got '{}()'",
@@ -2822,8 +2893,9 @@ fn compile_statement<'i>(
                 compile_statement(
                     &lowered_stmt,
                     env,
-                    params,
+                    assigned_names,
                     types,
+                    params,
                     builder,
                     options,
                     contract_fields,
@@ -2835,10 +2907,11 @@ fn compile_statement<'i>(
                     function_index,
                     yields,
                     script_size,
+                    allow_stack_locals,
                     recorder,
                 )?;
             }
-            Ok(())
+            Ok(None)
         }
         Statement::FunctionCallAssign { bindings, name, args, .. } => {
             let function = functions.get(name).ok_or_else(|| CompilerError::Unsupported(format!("function '{}' not found", name)))?;
@@ -2877,6 +2950,7 @@ fn compile_statement<'i>(
             if returns.len() != bindings.len() {
                 return Err(CompilerError::Unsupported("return values count must match function return types".to_string()));
             }
+            let mut added_stack_local = None;
             for (binding, expr) in bindings.iter().zip(returns.into_iter()) {
                 if struct_name_from_type_ref(&binding.type_ref, structs).is_some()
                     || struct_array_name_from_type_ref(&binding.type_ref, structs).is_some()
@@ -2895,11 +2969,36 @@ fn compile_statement<'i>(
                     )?;
                 } else {
                     let lowered = lower_runtime_expr(&expr, types, structs)?;
-                    env.insert(binding.name.clone(), lowered);
-                    types.insert(binding.name.clone(), type_name_from_ref(&binding.type_ref));
+                    let binding_type_name = type_name_from_ref(&binding.type_ref);
+                    types.insert(binding.name.clone(), binding_type_name.clone());
+                    if bindings.len() == 1
+                        && allow_stack_locals
+                        && !assigned_names.contains(&binding.name)
+                        && !env.contains_key(&binding.name)
+                        && !params.contains_key(&binding.name)
+                        && matches!(binding_type_name.as_str(), "int" | "bool" | "byte")
+                    {
+                        let mut stack_depth = 0i64;
+                        compile_expr(
+                            &lowered,
+                            env,
+                            params,
+                            types,
+                            builder,
+                            options,
+                            &mut HashSet::new(),
+                            &mut stack_depth,
+                            script_size,
+                            contract_constants,
+                        )?;
+                        push_stack_binding(params, &binding.name);
+                        added_stack_local = Some(binding.name.clone());
+                    } else {
+                        env.insert(binding.name.clone(), lowered);
+                    }
                 }
             }
-            Ok(())
+            Ok(added_stack_local)
         }
         Statement::Assign { name, expr, .. } => {
             if let Some(type_name) = types.get(name) {
@@ -2918,14 +3017,15 @@ fn compile_statement<'i>(
                         contract_constants,
                         contract_field_prefix_len,
                         true,
-                    );
+                    )
+                    .map(|_| None);
                 }
                 if is_array_type(type_name) {
                     match &expr.kind {
                         ExprKind::Identifier(other) => match types.get(other) {
                             Some(other_type) if is_type_assignable(other_type, type_name, contract_constants) => {
                                 env.insert(name.clone(), Expr::new(ExprKind::Identifier(other.clone()), span::Span::default()));
-                                return Ok(());
+                                return Ok(None);
                             }
                             Some(_) => {
                                 return Err(CompilerError::Unsupported(
@@ -2947,16 +3047,16 @@ fn compile_statement<'i>(
                     if let Some(previous) = env.get(name) { replace_identifier(&lowered_expr, name, previous) } else { lowered_expr };
                 let resolved = resolve_expr_for_runtime(updated, env, types, &mut HashSet::new())?;
                 env.insert(name.clone(), resolved);
-                return Ok(());
+                return Ok(None);
             }
             let lowered_expr = lower_runtime_expr(expr, types, structs)?;
             let updated =
                 if let Some(previous) = env.get(name) { replace_identifier(&lowered_expr, name, previous) } else { lowered_expr };
             let resolved = resolve_expr_for_runtime(updated, env, types, &mut HashSet::new())?;
             env.insert(name.clone(), resolved);
-            Ok(())
+            Ok(None)
         }
-        Statement::Console { .. } => Ok(()),
+        Statement::Console { .. } => Ok(None),
     }
 }
 
@@ -3437,7 +3537,8 @@ fn compile_inline_call<'i>(
                     _ => expr_matches_declared_type_ref(arg, &param.type_ref, structs),
                 }
             } else {
-                expr_matches_type_with_env(arg, &param_type_name, caller_types, contract_constants)
+                let lowered = lower_runtime_expr(arg, caller_types, structs)?;
+                expr_matches_return_type_ref(&lowered, &param.type_ref, caller_types, contract_constants)
             };
             if !matches {
                 return Err(CompilerError::Unsupported(format!("function argument '{}' expects {}", param.name, param_type_name)));
@@ -3477,6 +3578,8 @@ fn compile_inline_call<'i>(
     }
 
     let has_return = function.body.iter().any(contains_return);
+    let assigned_names = collect_assigned_names(&function.body);
+    let allow_stack_locals = !has_return && !function.body.iter().any(contains_yield);
     if has_return {
         if !matches!(function.body.last(), Some(Statement::Return { .. })) {
             return Err(CompilerError::Unsupported("return statement must be the last statement".to_string()));
@@ -3493,6 +3596,37 @@ fn compile_inline_call<'i>(
     recorder.begin_inline_call(call_span, call_start, function, &bindings.debug_env)?;
 
     let mut yields: Vec<Expr<'i>> = Vec::new();
+    let initial_stack_binding_count = bindings.compile_params.len();
+    if allow_stack_locals {
+        for param in &function.params {
+            let param_type_name = type_name_from_ref(&param.type_ref);
+            if !matches!(param_type_name.as_str(), "int" | "bool" | "byte")
+                || assigned_names.contains(&param.name)
+                || bindings.compile_params.contains_key(&param.name)
+            {
+                continue;
+            }
+
+            let Some(bound_expr) = bindings.env.remove(&param.name) else {
+                continue;
+            };
+
+            let mut stack_depth = 0i64;
+            compile_expr(
+                &bound_expr,
+                &bindings.env,
+                &bindings.compile_params,
+                &bindings.types,
+                builder,
+                options,
+                &mut HashSet::new(),
+                &mut stack_depth,
+                script_size,
+                contract_constants,
+            )?;
+            push_stack_binding(&mut bindings.compile_params, &param.name);
+        }
+    }
     let body_len = function.body.len();
     for (index, stmt) in function.body.iter().enumerate() {
         recorder.begin_statement_at(builder.script().len(), &bindings.env);
@@ -3520,8 +3654,9 @@ fn compile_inline_call<'i>(
             compile_statement(
                 stmt,
                 &mut bindings.env,
-                &bindings.compile_params,
+                &assigned_names,
                 &mut bindings.types,
+                &mut bindings.compile_params,
                 builder,
                 options,
                 contract_fields,
@@ -3533,11 +3668,16 @@ fn compile_inline_call<'i>(
                 callee_index,
                 &mut yields,
                 script_size,
+                allow_stack_locals,
                 recorder,
             )
             .map_err(|err| err.with_span(&stmt.span()))?;
         }
         recorder.finish_statement_at(stmt, builder.script().len(), &bindings.env, &bindings.types)?;
+    }
+
+    for _ in 0..bindings.compile_params.len().saturating_sub(initial_stack_binding_count) {
+        builder.add_op(OpDrop)?;
     }
     let call_end = builder.script().len();
     recorder.finish_inline_call(call_span, call_end, name);
@@ -3551,8 +3691,9 @@ fn compile_if_statement<'i>(
     then_branch: &[Statement<'i>],
     else_branch: Option<&[Statement<'i>]>,
     env: &mut HashMap<String, Expr<'i>>,
-    params: &HashMap<String, i64>,
+    assigned_names: &HashSet<String>,
     types: &mut HashMap<String, String>,
+    params: &mut HashMap<String, i64>,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
     contract_fields: &[ContractFieldAst<'i>],
@@ -3564,6 +3705,7 @@ fn compile_if_statement<'i>(
     function_index: usize,
     yields: &mut Vec<Expr<'i>>,
     script_size: Option<i64>,
+    allow_stack_locals: bool,
     recorder: &mut DebugRecorder<'i>,
 ) -> Result<(), CompilerError> {
     let condition = lower_runtime_expr(condition, types, structs)?;
@@ -3588,8 +3730,9 @@ fn compile_if_statement<'i>(
     compile_block(
         then_branch,
         &mut then_env,
-        params,
+        assigned_names,
         &mut then_types,
+        params,
         builder,
         options,
         contract_fields,
@@ -3601,6 +3744,8 @@ fn compile_if_statement<'i>(
         function_index,
         yields,
         script_size,
+        true,
+        allow_stack_locals,
         recorder,
     )?;
 
@@ -3611,8 +3756,9 @@ fn compile_if_statement<'i>(
         compile_block(
             else_branch,
             &mut else_env,
-            params,
+            assigned_names,
             &mut else_types,
+            params,
             builder,
             options,
             contract_fields,
@@ -3624,6 +3770,8 @@ fn compile_if_statement<'i>(
             function_index,
             yields,
             script_size,
+            true,
+            allow_stack_locals,
             recorder,
         )?;
     }
@@ -3694,8 +3842,9 @@ fn compile_time_op_statement<'i>(
 fn compile_block<'i>(
     statements: &[Statement<'i>],
     env: &mut HashMap<String, Expr<'i>>,
-    params: &HashMap<String, i64>,
+    assigned_names: &HashSet<String>,
     types: &mut HashMap<String, String>,
+    params: &mut HashMap<String, i64>,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
     contract_fields: &[ContractFieldAst<'i>],
@@ -3707,15 +3856,19 @@ fn compile_block<'i>(
     function_index: usize,
     yields: &mut Vec<Expr<'i>>,
     script_size: Option<i64>,
+    scoped_stack_locals: bool,
+    allow_stack_locals: bool,
     recorder: &mut DebugRecorder<'i>,
 ) -> Result<(), CompilerError> {
+    let mut added_stack_locals = Vec::new();
     for stmt in statements {
         recorder.begin_statement_at(builder.script().len(), env);
-        compile_statement(
+        if let Some(name) = compile_statement(
             stmt,
             env,
-            params,
+            assigned_names,
             types,
+            params,
             builder,
             options,
             contract_fields,
@@ -3727,11 +3880,26 @@ fn compile_block<'i>(
             function_index,
             yields,
             script_size,
+            allow_stack_locals,
             recorder,
         )
-        .map_err(|err| err.with_span(&stmt.span()))?;
+        .map_err(|err| err.with_span(&stmt.span()))?
+        {
+            added_stack_locals.push(name);
+        }
         recorder.finish_statement_at(stmt, builder.script().len(), env, types)?;
     }
+
+    if scoped_stack_locals && !added_stack_locals.is_empty() {
+        for _ in 0..added_stack_locals.len() {
+            builder.add_op(OpDrop)?;
+        }
+        for name in &added_stack_locals {
+            types.remove(name);
+        }
+        pop_stack_bindings(params, &added_stack_locals);
+    }
+
     Ok(())
 }
 
@@ -3744,8 +3912,9 @@ fn compile_for_statement<'i>(
     body: &[Statement<'i>],
     for_span: span::Span<'i>,
     env: &mut HashMap<String, Expr<'i>>,
-    params: &HashMap<String, i64>,
+    assigned_names: &HashSet<String>,
     types: &mut HashMap<String, String>,
+    params: &mut HashMap<String, i64>,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
     contract_fields: &[ContractFieldAst<'i>],
@@ -3757,6 +3926,7 @@ fn compile_for_statement<'i>(
     function_index: usize,
     yields: &mut Vec<Expr<'i>>,
     script_size: Option<i64>,
+    allow_stack_locals: bool,
     recorder: &mut DebugRecorder<'i>,
 ) -> Result<(), CompilerError> {
     let max_iterations = eval_const_int(max_iterations_expr, contract_constants)
@@ -3784,8 +3954,9 @@ fn compile_for_statement<'i>(
                 body,
                 loop_span,
                 env,
-                params,
+                assigned_names,
                 types,
+                params,
                 builder,
                 options,
                 contract_fields,
@@ -3797,6 +3968,7 @@ fn compile_for_statement<'i>(
                 function_index,
                 yields,
                 script_size,
+                allow_stack_locals,
                 recorder,
             )
         } else {
@@ -3808,8 +3980,9 @@ fn compile_for_statement<'i>(
                 body,
                 loop_span,
                 env,
-                params,
+                assigned_names,
                 types,
+                params,
                 builder,
                 options,
                 contract_fields,
@@ -3821,6 +3994,7 @@ fn compile_for_statement<'i>(
                 function_index,
                 yields,
                 script_size,
+                allow_stack_locals,
                 recorder,
             )
         };
@@ -3855,8 +4029,9 @@ fn compile_constant_for_statement<'i>(
     body: &[Statement<'i>],
     loop_span: SourceSpan,
     env: &mut HashMap<String, Expr<'i>>,
-    params: &HashMap<String, i64>,
+    assigned_names: &HashSet<String>,
     types: &mut HashMap<String, String>,
+    params: &mut HashMap<String, i64>,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
     contract_fields: &[ContractFieldAst<'i>],
@@ -3868,6 +4043,7 @@ fn compile_constant_for_statement<'i>(
     function_index: usize,
     yields: &mut Vec<Expr<'i>>,
     script_size: Option<i64>,
+    allow_stack_locals: bool,
     recorder: &mut DebugRecorder<'i>,
 ) -> Result<(), CompilerError> {
     for iteration in 0..max_iterations {
@@ -3881,8 +4057,9 @@ fn compile_constant_for_statement<'i>(
         compile_block(
             body,
             env,
-            params,
+            assigned_names,
             types,
+            params,
             builder,
             options,
             contract_fields,
@@ -3894,6 +4071,8 @@ fn compile_constant_for_statement<'i>(
             function_index,
             yields,
             script_size,
+            true,
+            allow_stack_locals,
             recorder,
         )?;
     }
@@ -3910,8 +4089,9 @@ fn compile_runtime_for_statement<'i>(
     body: &[Statement<'i>],
     loop_span: SourceSpan,
     env: &mut HashMap<String, Expr<'i>>,
-    params: &HashMap<String, i64>,
+    assigned_names: &HashSet<String>,
     types: &mut HashMap<String, String>,
+    params: &mut HashMap<String, i64>,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
     contract_fields: &[ContractFieldAst<'i>],
@@ -3923,6 +4103,7 @@ fn compile_runtime_for_statement<'i>(
     function_index: usize,
     yields: &mut Vec<Expr<'i>>,
     script_size: Option<i64>,
+    allow_stack_locals: bool,
     recorder: &mut DebugRecorder<'i>,
 ) -> Result<(), CompilerError> {
     let mut current = resolve_expr_for_runtime(start, env, types, &mut HashSet::new())?;
@@ -3941,8 +4122,9 @@ fn compile_runtime_for_statement<'i>(
             body,
             None,
             env,
-            params,
+            assigned_names,
             types,
+            params,
             builder,
             options,
             contract_fields,
@@ -3954,6 +4136,7 @@ fn compile_runtime_for_statement<'i>(
             function_index,
             yields,
             script_size,
+            allow_stack_locals,
             recorder,
         )?;
 

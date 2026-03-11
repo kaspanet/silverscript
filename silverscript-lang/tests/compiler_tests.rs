@@ -5199,27 +5199,35 @@ fn compiles_reused_variables_and_verifies() {
         .unwrap()
         .add_op(OpAdd)
         .unwrap()
-        .add_i64(2)
+        .add_i64(0)
         .unwrap()
-        .add_i64(3)
+        .add_op(OpPick)
         .unwrap()
-        .add_op(OpAdd)
+        .add_i64(1)
+        .unwrap()
+        .add_op(OpPick)
         .unwrap()
         .add_op(OpMul)
         .unwrap()
-        .add_i64(2)
+        .add_i64(1)
         .unwrap()
-        .add_i64(3)
-        .unwrap()
-        .add_op(OpAdd)
+        .add_op(OpPick)
         .unwrap()
         .add_op(OpAdd)
+        .unwrap()
+        .add_i64(0)
+        .unwrap()
+        .add_op(OpPick)
         .unwrap()
         .add_i64(30)
         .unwrap()
         .add_op(OpNumEqual)
         .unwrap()
         .add_op(OpVerify)
+        .unwrap()
+        .add_op(OpDrop)
+        .unwrap()
+        .add_op(OpDrop)
         .unwrap()
         .add_op(OpTrue)
         .unwrap()
@@ -5760,4 +5768,215 @@ fn nested_inline_calls_with_args_compile_and_execute() {
     let sigscript = compiled.build_sig_script("main", vec![Expr::int(5)]).expect("sigscript builds");
     let result = run_script_with_sigscript(compiled.script, sigscript);
     assert!(result.is_ok(), "nested inline calls should execute correctly: {}", result.unwrap_err());
+}
+
+#[test]
+fn inline_local_binding_is_stored_once_and_reused() {
+    let source = r#"
+        contract InlineRepeat() {
+            function helper(int x) {
+                int y = x + 1;
+                require(y > 1);
+                require(y < 10);
+            }
+
+            entrypoint function main(int x) {
+                helper(x);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("inline helper should compile");
+
+    assert_eq!(
+        compiled.script.iter().copied().filter(|op| *op == OpAdd).count(),
+        1,
+        "x + 1 should be computed once and stored for both require statements"
+    );
+
+    let sigscript_ok = compiled.build_sig_script("main", vec![Expr::int(5)]).expect("sigscript builds");
+    let result_ok = run_script_with_sigscript(compiled.script.clone(), sigscript_ok);
+    assert!(result_ok.is_ok(), "stored inline local should execute successfully: {}", result_ok.unwrap_err());
+
+    let sigscript_err = compiled.build_sig_script("main", vec![Expr::int(10)]).expect("sigscript builds");
+    let result_err = run_script_with_sigscript(compiled.script, sigscript_err);
+    assert!(result_err.is_err(), "stored inline local should still enforce the second require");
+}
+
+#[test]
+fn inline_function_argument_expression_is_stored_once_and_reused() {
+    let source = r#"
+        contract InlineArgRepeat() {
+            function f(int y) {
+                require(y > 1);
+                require(y < 10);
+            }
+
+            entrypoint function main(int x) {
+                f(x + 1);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("inline call should compile");
+
+    assert_eq!(
+        compiled.script.iter().copied().filter(|op| *op == OpAdd).count(),
+        1,
+        "x + 1 should be computed once and reused for both require statements in the inline callee"
+    );
+
+    let sigscript_ok = compiled.build_sig_script("main", vec![Expr::int(5)]).expect("sigscript builds");
+    let result_ok = run_script_with_sigscript(compiled.script.clone(), sigscript_ok);
+    assert!(result_ok.is_ok(), "stored inline argument should execute successfully: {}", result_ok.unwrap_err());
+
+    let sigscript_err = compiled.build_sig_script("main", vec![Expr::int(10)]).expect("sigscript builds");
+    let result_err = run_script_with_sigscript(compiled.script, sigscript_err);
+    assert!(result_err.is_err(), "stored inline argument should still enforce the second require");
+}
+
+#[test]
+fn local_bool_expression_is_stored_once_and_reused() {
+    let source = r#"
+        contract BoolRepeat() {
+            entrypoint function main(int x) {
+                bool y = x + 1 > 1;
+                require(y);
+                require(y == true);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("bool local should compile");
+
+    assert_eq!(
+        compiled.script.iter().copied().filter(|op| *op == OpAdd).count(),
+        1,
+        "x + 1 should be computed once for the stored bool expression"
+    );
+
+    let sigscript_ok = compiled.build_sig_script("main", vec![Expr::int(5)]).expect("sigscript builds");
+    let result_ok = run_script_with_sigscript(compiled.script.clone(), sigscript_ok);
+    assert!(result_ok.is_ok(), "stored bool local should execute successfully: {}", result_ok.unwrap_err());
+
+    let sigscript_err = compiled.build_sig_script("main", vec![Expr::int(0)]).expect("sigscript builds");
+    let result_err = run_script_with_sigscript(compiled.script, sigscript_err);
+    assert!(result_err.is_err(), "stored bool local should still enforce the false branch");
+}
+
+#[test]
+fn local_nested_expression_is_stored_once_and_reused() {
+    let source = r#"
+        contract NestedRepeat() {
+            entrypoint function main(int x) {
+                int y = (x + 1) * (x + 2);
+                require(y > 10);
+                require(y < 100);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("nested local should compile");
+
+    assert_eq!(
+        compiled.script.iter().copied().filter(|op| *op == OpAdd).count(),
+        2,
+        "the nested local expression should compute each addition once before storing the result"
+    );
+    assert_eq!(
+        compiled.script.iter().copied().filter(|op| *op == OpMul).count(),
+        1,
+        "the nested local expression should multiply once before storing the result"
+    );
+
+    let sigscript_ok = compiled.build_sig_script("main", vec![Expr::int(5)]).expect("sigscript builds");
+    let result_ok = run_script_with_sigscript(compiled.script.clone(), sigscript_ok);
+    assert!(result_ok.is_ok(), "stored nested local should execute successfully: {}", result_ok.unwrap_err());
+
+    let sigscript_err = compiled.build_sig_script("main", vec![Expr::int(10)]).expect("sigscript builds");
+    let result_err = run_script_with_sigscript(compiled.script, sigscript_err);
+    assert!(result_err.is_err(), "stored nested local should still enforce the second require");
+}
+
+#[test]
+fn inline_nested_argument_expression_is_stored_once_and_reused() {
+    let source = r#"
+        contract InlineCallRepeat() {
+            function f(int y) {
+                require(y > 10);
+                require(y < 100);
+            }
+
+            entrypoint function main(int x) {
+                f((x + 1) * (x + 2));
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("inline nested arg should compile");
+
+    assert_eq!(
+        compiled.script.iter().copied().filter(|op| *op == OpAdd).count(),
+        2,
+        "the inline nested argument should compute each addition once and reuse the stored result"
+    );
+    assert_eq!(
+        compiled.script.iter().copied().filter(|op| *op == OpMul).count(),
+        1,
+        "the inline nested argument should multiply once and reuse the stored result"
+    );
+
+    let sigscript_ok = compiled.build_sig_script("main", vec![Expr::int(5)]).expect("sigscript builds");
+    let result_ok = run_script_with_sigscript(compiled.script.clone(), sigscript_ok);
+    assert!(result_ok.is_ok(), "stored inline nested argument should execute successfully: {}", result_ok.unwrap_err());
+
+    let sigscript_err = compiled.build_sig_script("main", vec![Expr::int(10)]).expect("sigscript builds");
+    let result_err = run_script_with_sigscript(compiled.script, sigscript_err);
+    assert!(result_err.is_err(), "stored inline nested argument should still enforce the second require");
+}
+
+#[test]
+fn function_call_assignment_result_is_stored_once_and_reused() {
+    let source = r#"
+        contract CallAssignRepeat() {
+            function g(int x) : (int) {
+                require(x > 0);
+                return(x - 17);
+            }
+
+            function f(int x) : (int) {
+                require(x > 17);
+                (int base) = g(x);
+                int shifted = base + 2;
+                return(shifted * 2);
+            }
+
+            entrypoint function main(int x) {
+                (int y) = f(x);
+                require(y > 1);
+                require(y < 10);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("function-call assignment should compile");
+
+    assert_eq!(
+        compiled.script.iter().copied().filter(|op| *op == OpSub).count(),
+        1,
+        "the nested g(x) return calculation should be computed once and the assigned local reused"
+    );
+    assert_eq!(
+        compiled.script.iter().copied().filter(|op| *op == OpMul).count(),
+        1,
+        "the extra arithmetic in f(x) should be computed once and the assigned local reused"
+    );
+
+    let sigscript_ok = compiled.build_sig_script("main", vec![Expr::int(19)]).expect("sigscript builds");
+    let result_ok = run_script_with_sigscript(compiled.script.clone(), sigscript_ok);
+    assert!(result_ok.is_ok(), "stored function-call assignment result should execute successfully: {}", result_ok.unwrap_err());
+
+    let sigscript_err = compiled.build_sig_script("main", vec![Expr::int(29)]).expect("sigscript builds");
+    let result_err = run_script_with_sigscript(compiled.script, sigscript_err);
+    assert!(result_err.is_err(), "stored function-call assignment result should still enforce the second require");
 }
