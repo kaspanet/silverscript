@@ -183,7 +183,14 @@ fn state_array_arg(values: Vec<i64>) -> Expr<'static> {
 fn dog20_state_array_arg<'i>(values: Vec<(Vec<u8>, i64)>) -> Expr<'i> {
     values
         .into_iter()
-        .map(|(owner, amount)| struct_object(vec![("owner", Expr::bytes(owner)), ("amount", Expr::int(amount))]))
+        .map(|(owner_identifier, amount)| {
+            struct_object(vec![
+                ("ownerIdentifier", Expr::bytes(owner_identifier)),
+                ("identifierType", Expr::byte(0)),
+                ("amount", Expr::int(amount)),
+                ("isMinter", Expr::bool(false)),
+            ])
+        })
         .collect::<Vec<_>>()
         .into()
 }
@@ -193,8 +200,12 @@ fn sig_array_arg<'i>(values: Vec<Vec<u8>>) -> Expr<'i> {
 }
 
 fn compile_dog20_state<'a>(source: &'a str, owner: Vec<u8>, amount: i64) -> CompiledContract<'a> {
-    compile_contract(source, &[Expr::bytes(owner), Expr::int(amount), Expr::int(2), Expr::int(2)], CompileOptions::default())
-        .expect("compile succeeds")
+    compile_contract(
+        source,
+        &[Expr::bytes(owner), Expr::int(amount), Expr::byte(0), Expr::bool(false), Expr::int(2), Expr::int(2)],
+        CompileOptions::default(),
+    )
+    .expect("compile succeeds")
 }
 
 fn sign_tx_input(tx: Transaction, entries: Vec<UtxoEntry>, input_idx: usize, keypair: &Keypair) -> Vec<u8> {
@@ -760,6 +771,7 @@ fn dog20_can_split_then_merge_tokens_with_two_way_fanout() {
     let merged_owner_bytes = merged_owner.x_only_public_key().0.serialize().to_vec();
 
     let genesis = compile_dog20_state(&source, genesis_owner_bytes.clone(), 1_000);
+    panic!("{}", genesis.script.len());
     let handoff = compile_dog20_state(&source, handoff_owner_bytes.clone(), 1_000);
     let split_a = compile_dog20_state(&source, split_owner_a_bytes.clone(), 400);
     let split_b = compile_dog20_state(&source, split_owner_b_bytes.clone(), 600);
