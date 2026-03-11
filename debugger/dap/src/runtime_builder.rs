@@ -17,11 +17,12 @@ use kaspa_txscript::caches::Cache;
 use kaspa_txscript::covenants::CovenantsContext;
 use kaspa_txscript::script_builder::ScriptBuilder;
 use kaspa_txscript::{EngineCtx, EngineFlags, SigCacheKey, pay_to_script_hash_script};
-use secp256k1::{Keypair, Message, Secp256k1, SecretKey};
+use secp256k1::{Keypair, Message, Secp256k1, SecretKey, rand::thread_rng};
+use serde_json::Value;
 use silverscript_lang::ast::{ContractAst, parse_contract_ast};
 use silverscript_lang::compiler::{CompileOptions, compile_contract};
 
-use crate::launch_config::{ResolvedLaunchConfig, resolve_arg_input};
+use crate::launch_config::{ArgInput, ResolvedLaunchConfig, resolve_arg_input};
 
 pub struct BuiltLaunch {
     pub runtime: OwnedRuntime,
@@ -31,7 +32,9 @@ pub struct BuiltLaunch {
     pub no_debug: bool,
 }
 
-pub fn build_launch(config: ResolvedLaunchConfig) -> Result<BuiltLaunch, String> {
+pub fn build_launch(mut config: ResolvedLaunchConfig) -> Result<BuiltLaunch, String> {
+    resolve_launch_identities(&mut config)?;
+
     let source_owned = fs::read_to_string(&config.script_path)
         .map_err(|err| format!("failed to read source '{}': {err}", config.script_path.display()))?;
     let source_box = source_owned.into_boxed_str();
@@ -224,6 +227,182 @@ fn resolve_auto_sign_args(
     }
 
     Ok(resolved)
+}
+
+#[derive(Debug, Clone)]
+struct IdentityMaterial {
+    pubkey: String,
+    secret: String,
+    pkh: String,
+}
+
+#[derive(Default)]
+struct IdentityResolver {
+    cache: HashMap<u32, IdentityMaterial>,
+}
+
+impl IdentityResolver {
+    fn resolve_string(&mut self, raw: &str) -> Result<String, String> {
+        let Some((index, field)) = parse_identity_token(raw)? else {
+            return Ok(raw.to_string());
+        };
+        let identity = self.cache.entry(index).or_insert_with(generate_identity_material);
+        Ok(match field {
+            IdentityField::Pubkey => identity.pubkey.clone(),
+            IdentityField::Secret => identity.secret.clone(),
+            IdentityField::Pkh => identity.pkh.clone(),
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum IdentityField {
+    Pubkey,
+    Secret,
+    Pkh,
+}
+
+fn resolve_launch_identities(config: &mut ResolvedLaunchConfig) -> Result<(), String> {
+    let mut resolver = IdentityResolver::default();
+
+    if let Some(input) = config.constructor_args.as_mut() {
+        resolve_arg_input_identities(input, &mut resolver)?;
+    }
+    if let Some(input) = config.args.as_mut() {
+        resolve_arg_input_identities(input, &mut resolver)?;
+    }
+    if let Some(tx) = config.tx.as_mut() {
+        resolve_tx_identities(tx, &mut resolver)?;
+    }
+
+    Ok(())
+}
+
+fn resolve_arg_input_identities(input: &mut ArgInput, resolver: &mut IdentityResolver) -> Result<(), String> {
+    match input {
+        ArgInput::Values(values) => {
+            for value in values {
+                resolve_json_value_identities(value, resolver)?;
+            }
+        }
+        ArgInput::Named(named) => {
+            for value in named.values_mut() {
+                resolve_json_value_identities(value, resolver)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn resolve_json_value_identities(value: &mut Value, resolver: &mut IdentityResolver) -> Result<(), String> {
+    match value {
+        Value::String(raw) => {
+            *raw = resolver.resolve_string(raw)?;
+        }
+        Value::Array(items) => {
+            for item in items {
+                resolve_json_value_identities(item, resolver)?;
+            }
+        }
+        Value::Object(entries) => {
+            for entry in entries.values_mut() {
+                resolve_json_value_identities(entry, resolver)?;
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) => {}
+    }
+    Ok(())
+}
+
+fn resolve_tx_identities(tx: &mut TestTxScenarioResolved, resolver: &mut IdentityResolver) -> Result<(), String> {
+    for input in &mut tx.inputs {
+        resolve_optional_string(&mut input.prev_txid, resolver)?;
+        resolve_optional_string(&mut input.covenant_id, resolver)?;
+        resolve_optional_strings(&mut input.constructor_args, resolver)?;
+        resolve_optional_string(&mut input.signature_script_hex, resolver)?;
+        resolve_optional_string(&mut input.utxo_script_hex, resolver)?;
+    }
+
+    for output in &mut tx.outputs {
+        resolve_optional_string(&mut output.covenant_id, resolver)?;
+        resolve_optional_strings(&mut output.constructor_args, resolver)?;
+        resolve_optional_string(&mut output.script_hex, resolver)?;
+        resolve_optional_string(&mut output.p2pk_pubkey, resolver)?;
+    }
+
+    Ok(())
+}
+
+fn resolve_optional_string(raw: &mut Option<String>, resolver: &mut IdentityResolver) -> Result<(), String> {
+    if let Some(value) = raw.as_mut() {
+        *value = resolver.resolve_string(value)?;
+    }
+    Ok(())
+}
+
+fn resolve_optional_strings(values: &mut Option<Vec<String>>, resolver: &mut IdentityResolver) -> Result<(), String> {
+    if let Some(entries) = values.as_mut() {
+        for value in entries {
+            *value = resolver.resolve_string(value)?;
+        }
+    }
+    Ok(())
+}
+
+fn parse_identity_token(raw: &str) -> Result<Option<(u32, IdentityField)>, String> {
+    let trimmed = raw.trim();
+    if !trimmed.starts_with("keypair") && !trimmed.starts_with("identity") {
+        return Ok(None);
+    }
+
+    let Some((head, suffix)) = trimmed.split_once('.') else {
+        return Err(format!("invalid identity token '{raw}'; expected keypair<N>.pubkey, keypair<N>.secret, or keypair<N>.pkh"));
+    };
+
+    let index_raw = if let Some(value) = head.strip_prefix("keypair") {
+        value
+    } else if let Some(value) = head.strip_prefix("identity") {
+        value
+    } else {
+        return Err(format!("invalid identity token '{raw}'; expected keypair<N>.pubkey, keypair<N>.secret, or keypair<N>.pkh"));
+    };
+
+    if index_raw.is_empty() {
+        return Err(format!("invalid identity token '{raw}'; expected keypair<N>.pubkey, keypair<N>.secret, or keypair<N>.pkh"));
+    }
+
+    let index = index_raw
+        .parse::<u32>()
+        .map_err(|_| format!("invalid identity token '{raw}'; expected keypair<N>.pubkey, keypair<N>.secret, or keypair<N>.pkh"))?;
+    if index == 0 {
+        return Err(format!("invalid identity token '{raw}'; keypair index must be >= 1"));
+    }
+
+    let field = match suffix {
+        "pubkey" => IdentityField::Pubkey,
+        "secret" => IdentityField::Secret,
+        "pkh" => IdentityField::Pkh,
+        _ => {
+            return Err(format!("invalid identity token '{raw}'; expected keypair<N>.pubkey, keypair<N>.secret, or keypair<N>.pkh"));
+        }
+    };
+
+    Ok(Some((index, field)))
+}
+
+fn generate_identity_material() -> IdentityMaterial {
+    let secp = Secp256k1::new();
+    let keypair = Keypair::new(&secp, &mut thread_rng());
+    let (xonly, _parity) = keypair.x_only_public_key();
+    let secret_bytes = keypair.secret_key().secret_bytes();
+    let pubkey_bytes = xonly.serialize();
+    let pkh = blake2b_simd::Params::new().hash_length(32).hash(&pubkey_bytes);
+
+    IdentityMaterial {
+        pubkey: format!("0x{}", encode_hex(&pubkey_bytes)),
+        secret: format!("0x{}", encode_hex(&secret_bytes)),
+        pkh: format!("0x{}", encode_hex(pkh.as_bytes())),
+    }
 }
 
 struct BuiltTxContext {

@@ -44,12 +44,11 @@ This extension provides a lean DAP-based contract debugger.
 #### Launch Flow
 
 - Run `SilverScript: Run / Debug Contract` on an open `.sil` file, or press `F5`.
-- The extension opens a small runner panel with constructor args, entrypoint args, and `Run` / `Debug` buttons.
-- The panel also includes a key helper that can generate a keypair and insert `secret_key`, `pubkey`, or `pkh` into the currently focused field.
-- The panel persists the latest values into an adjacent `*.debug.json` file so the next run opens with the same inputs.
+- The extension opens a lightweight runner panel for the current `.sil` file.
+- The panel owns the current run/debug session state for constructor args and function args.
+- Use `Load Saved` to pull an existing `silverscript` launch config for the current file into the panel.
+- Use `Save Scenario` to write the current panel state back to `launch.json`.
 - The debugger launches through the bundled Rust DAP adapter when available, with repo checkouts falling back to a local workspace build.
-
-Use `SilverScript: Open Debug Params` if you still want to edit the sidecar file directly.
 
 If you need a custom adapter build, set `silverscript.debugAdapterPath` to an absolute path and the extension will use that binary instead.
 
@@ -64,32 +63,42 @@ Launch configurations can provide:
   "name": "SilverScript: Debug Contract",
   "scriptPath": "${file}",
   "function": "main",
-  "constructorArgs": ["3", "10"],
-  "args": ["5", "5"],
+  "constructorArgs": {
+    "x": "3",
+    "y": "10"
+  },
+  "args": {
+    "a": "5",
+    "b": "5"
+  },
   "stopOnEntry": true
 }
 ```
 
-If `function`, `constructorArgs`, or `args` are omitted, the debugger also looks for an adjacent `*.debug.json` file next to the `.sil` file:
+The panel does not live-edit `launch.json`. It edits the current session state and can load/save named launch configs when you want persistence. Advanced fields such as `tx` stay in `launch.json` and are preserved when a saved scenario is loaded and updated through the panel.
+
+For contracts that need identity-like values, launch args can use symbolic tokens instead of concrete key material:
 
 ```json
 {
-  "function": "main",
-  "constructorArgs": {
-    "x": 3,
-    "y": 10
-  },
+  "function": "spend",
   "args": {
-    "a": 5,
-    "b": 5
+    "pk": "keypair1.pubkey",
+    "s": "keypair1.secret"
   }
 }
 ```
 
-The sidecar file also accepts arrays when needed, but keyed objects are easier to read and edit because names stay attached to values.
+Supported identity tokens are:
 
-Launch configuration values override the sidecar file.
+- `keypair<N>.pubkey`
+- `keypair<N>.secret`
+- `keypair<N>.pkh`
+
+They are resolved lazily by the Rust runtime and stay consistent within a single launch/run only.
+
+The panel includes an `Identities` helper that fills these tokens directly into `pubkey`, `sig`, and `pkh`-style fields.
 
 #### Transaction Context
 
-The debugger now runs against a small synthetic transaction context by default so `sig` arguments can be auto-signed from a 32-byte secret key. Advanced users can override that runtime context by adding a `tx` object to `launch.json` or `*.debug.json`; this is intentionally kept out of the panel UI.
+The debugger runs against a small synthetic transaction context by default so `sig` arguments can be auto-signed from a 32-byte secret key. Advanced users can override that runtime context by adding a `tx` object to `launch.json`; this is intentionally kept out of the panel UI.

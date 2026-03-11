@@ -83,6 +83,16 @@ contract CheckSig(pubkey pk) {
 }
 "#;
 
+const P2PKH_SCRIPT: &str = r#"pragma silverscript ^0.1.0;
+
+contract P2PKH(byte[32] pkh) {
+    entrypoint function spend(pubkey pk, sig s) {
+        require(blake2b(pk) == pkh);
+        require(checkSig(s, pk));
+    }
+}
+"#;
+
 struct TempScript {
     path: PathBuf,
 }
@@ -99,21 +109,11 @@ impl TempScript {
     fn path_str(&self) -> String {
         self.path.to_string_lossy().to_string()
     }
-
-    fn debug_params_path(&self) -> PathBuf {
-        let stem = self.path.file_stem().and_then(|value| value.to_str()).unwrap_or("script");
-        self.path.with_file_name(format!("{stem}.debug.json"))
-    }
-
-    fn write_debug_params(&self, contents: &str) {
-        fs::write(self.debug_params_path(), contents).expect("failed to write debug params");
-    }
 }
 
 impl Drop for TempScript {
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.path);
-        let _ = fs::remove_file(self.debug_params_path());
     }
 }
 
@@ -245,15 +245,6 @@ fn launch_auto_signs_sig_argument_from_secret_key() {
     let script = TempScript::new(CHECKSIG_SCRIPT);
     let script_path = script.path_str();
 
-    let keygen = std::process::Command::new(harness::resolve_debugger_dap_binary())
-        .arg("--keygen")
-        .output()
-        .expect("failed to run debugger-dap --keygen");
-    assert!(keygen.status.success(), "keygen failed: {}", String::from_utf8_lossy(&keygen.stderr));
-    let key_material: serde_json::Value = serde_json::from_slice(&keygen.stdout).expect("keygen should emit valid json");
-    let pubkey = key_material.get("pubkey").and_then(|v| v.as_str()).expect("missing pubkey");
-    let secret_key = key_material.get("secret_key").and_then(|v| v.as_str()).expect("missing secret_key");
-
     let mut client = TestClient::spawn();
     client.send_request(
         "initialize",
@@ -275,8 +266,8 @@ fn launch_auto_signs_sig_argument_from_secret_key() {
         json!({
             "scriptPath": script_path,
             "function": "main",
-            "constructorArgs": [pubkey],
-            "args": [secret_key],
+            "constructorArgs": ["keypair1.pubkey"],
+            "args": ["keypair1.secret"],
             "stopOnEntry": true
         }),
     );
@@ -310,6 +301,72 @@ fn launch_auto_signs_sig_argument_from_secret_key() {
     }
 
     assert!(terminated, "expected debug session to terminate successfully after auto-sign");
+
+    client.send_request("disconnect", json!({}));
+    client.expect_response_success("disconnect");
+}
+
+#[test]
+fn launch_resolves_symbolic_pkh_tokens() {
+    let script = TempScript::new(P2PKH_SCRIPT);
+    let script_path = script.path_str();
+
+    let mut client = TestClient::spawn();
+    client.send_request(
+        "initialize",
+        json!({
+            "adapterID": "silverscript",
+            "pathFormat": "path",
+            "linesStartAt1": true,
+            "columnsStartAt1": true,
+            "supportsVariableType": true,
+            "supportsVariablePaging": false,
+            "supportsRunInTerminalRequest": false
+        }),
+    );
+    client.expect_response_success("initialize");
+    client.expect_event("initialized");
+
+    client.send_request(
+        "launch",
+        json!({
+            "scriptPath": script_path,
+            "function": "spend",
+            "constructorArgs": ["keypair1.pkh"],
+            "args": ["keypair1.pubkey", "keypair1.secret"],
+            "stopOnEntry": true
+        }),
+    );
+    client.expect_response_success("launch");
+    client.send_request("setBreakpoints", json!({"source": {"path": script_path}, "breakpoints": []}));
+    client.expect_response_success("setBreakpoints");
+    client.send_request("setExceptionBreakpoints", json!({"filters": []}));
+    client.expect_response_success("setExceptionBreakpoints");
+    client.send_request("configurationDone", serde_json::Value::Null);
+    client.expect_response_success("configurationDone");
+    let entry_stop = client.expect_event("stopped");
+    let entry_reason = entry_stop.get("body").and_then(|v| v.get("reason")).and_then(|v| v.as_str()).unwrap_or_default();
+    assert_eq!(entry_reason, "entry");
+
+    client.send_request("continue", json!({"threadId": 1}));
+    client.expect_response_success("continue");
+
+    let mut terminated = false;
+    for _ in 0..8 {
+        let msg = client.read_message();
+        if msg.get("type") != Some(&serde_json::Value::String("event".to_string())) {
+            continue;
+        }
+        if msg.get("event").and_then(|v| v.as_str()) == Some("terminated") {
+            terminated = true;
+            break;
+        }
+        if msg.get("event").and_then(|v| v.as_str()) == Some("stopped") {
+            panic!("expected successful termination, got stop event: {msg:#}");
+        }
+    }
+
+    assert!(terminated, "expected debug session to terminate successfully after resolving keypair<N>.pkh");
 
     client.send_request("disconnect", json!({}));
     client.expect_response_success("disconnect");
@@ -413,120 +470,90 @@ fn continue_hits_breakpoint_in_second_entrypoint() {
 }
 
 #[test]
-fn adjacent_debug_params_file_supplies_function_and_args() {
-    let script = TempScript::new(MULTIFUNCTION_IF_STATEMENTS_SCRIPT);
-    script.write_debug_params(
-        r#"{
-  "function": "timeout",
-  "constructorArgs": ["100", "9"],
-  "args": ["9"]
-}
-"#,
+fn run_config_json_resolves_symbolic_identities() {
+    let script = TempScript::new(P2PKH_SCRIPT);
+    let config = json!({
+        "scriptPath": script.path_str(),
+        "function": "spend",
+        "constructorArgs": ["keypair1.pkh"],
+        "args": ["keypair1.pubkey", "keypair1.secret"]
+    });
+
+    let output = std::process::Command::new(harness::resolve_debugger_dap_binary())
+        .arg("--run-config-json")
+        .arg(config.to_string())
+        .output()
+        .expect("failed to run debugger-dap --run-config-json");
+
+    assert!(
+        output.status.success(),
+        "run-config-json failed: stdout={}, stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
     );
-    let script_path = script.path_str();
-
-    let mut client = TestClient::spawn();
-
-    client.send_request(
-        "initialize",
-        json!({
-            "adapterID": "silverscript",
-            "pathFormat": "path",
-            "linesStartAt1": true,
-            "columnsStartAt1": true,
-            "supportsVariableType": true,
-            "supportsVariablePaging": false,
-            "supportsRunInTerminalRequest": false
-        }),
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("Execution completed successfully."),
+        "unexpected stdout: {}",
+        String::from_utf8_lossy(&output.stdout)
     );
-    client.expect_response_success("initialize");
-    client.expect_event("initialized");
-
-    client.send_request(
-        "launch",
-        json!({
-            "scriptPath": script_path,
-            "stopOnEntry": true
-        }),
-    );
-    client.expect_response_success("launch");
-
-    client.send_request(
-        "setBreakpoints",
-        json!({
-            "source": {"path": script_path},
-            "breakpoints": [{"line": 26}]
-        }),
-    );
-    let set_bp = client.expect_response_success("setBreakpoints");
-    let breakpoints = set_bp.get("body").and_then(|v| v.get("breakpoints")).and_then(|v| v.as_array()).cloned().unwrap_or_default();
-    assert_eq!(breakpoints.len(), 1, "expected one breakpoint response: {set_bp:#}");
-    let verified = breakpoints.first().and_then(|v| v.get("verified")).and_then(|v| v.as_bool()).unwrap_or(false);
-    assert!(verified, "breakpoint should be verified: {set_bp:#}");
-
-    client.send_request("setExceptionBreakpoints", json!({"filters": []}));
-    client.expect_response_success("setExceptionBreakpoints");
-
-    client.send_request("configurationDone", serde_json::Value::Null);
-    client.expect_response_success("configurationDone");
-    let entry_stop = client.expect_event("stopped");
-    let entry_reason = entry_stop.get("body").and_then(|v| v.get("reason")).and_then(|v| v.as_str()).unwrap_or_default();
-    assert_eq!(entry_reason, "entry");
-
-    client.send_request("continue", json!({"threadId": 1}));
-    client.expect_response_success("continue");
-
-    let mut stopped_line: Option<i64> = None;
-    for _ in 0..16 {
-        let msg = client.read_message();
-        if msg.get("type") != Some(&serde_json::Value::String("event".to_string())) {
-            continue;
-        }
-
-        let event = msg.get("event").and_then(|v| v.as_str()).unwrap_or_default();
-        if event == "terminated" {
-            break;
-        }
-        if event == "stopped" {
-            let reason = msg.get("body").and_then(|v| v.get("reason")).and_then(|v| v.as_str()).unwrap_or_default();
-            assert_eq!(reason, "breakpoint", "expected breakpoint stop event: {msg:#}");
-
-            client.send_request("stackTrace", json!({"threadId": 1}));
-            let stack = client.expect_response_success("stackTrace");
-            stopped_line = stack
-                .get("body")
-                .and_then(|v| v.get("stackFrames"))
-                .and_then(|v| v.as_array())
-                .and_then(|frames| frames.first())
-                .and_then(|frame| frame.get("line"))
-                .and_then(|v| v.as_i64());
-            break;
-        }
-    }
-
-    let stopped_line = stopped_line.expect("expected sidecar-selected breakpoint stop");
-    assert!((18..=27).contains(&stopped_line), "expected breakpoint inside timeout entrypoint, got line {stopped_line}",);
-
-    client.send_request("disconnect", json!({}));
-    client.expect_response_success("disconnect");
 }
 
 #[test]
-fn adjacent_named_debug_params_file_supplies_function_and_args() {
-    let script = TempScript::new(MULTIFUNCTION_IF_STATEMENTS_SCRIPT);
-    script.write_debug_params(
-        r#"{
-  "function": "timeout",
-  "constructorArgs": {
-    "x": 100,
-    "y": 9
-  },
-  "args": {
-    "b": 9
-  }
-}
-"#,
+fn run_config_json_accepts_identity_tokens() {
+    let script = TempScript::new(P2PKH_SCRIPT);
+    let config = json!({
+        "scriptPath": script.path_str(),
+        "function": "spend",
+        "constructorArgs": ["identity1.pkh"],
+        "args": ["identity1.pubkey", "identity1.secret"]
+    });
+
+    let output = std::process::Command::new(harness::resolve_debugger_dap_binary())
+        .arg("--run-config-json")
+        .arg(config.to_string())
+        .output()
+        .expect("failed to run debugger-dap --run-config-json");
+
+    assert!(
+        output.status.success(),
+        "identity token run-config-json failed: stdout={}, stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
     );
+}
+
+#[test]
+fn run_config_json_rejects_invalid_identity_tokens() {
+    let script = TempScript::new(CHECKSIG_SCRIPT);
+    let config = json!({
+        "scriptPath": script.path_str(),
+        "function": "main",
+        "constructorArgs": ["keypair1.pubkey"],
+        "args": ["keypair1.invalid"]
+    });
+
+    let output = std::process::Command::new(harness::resolve_debugger_dap_binary())
+        .arg("--run-config-json")
+        .arg(config.to_string())
+        .output()
+        .expect("failed to run debugger-dap --run-config-json");
+
+    assert!(
+        !output.status.success(),
+        "expected invalid identity token failure: stdout={}, stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("invalid identity token"),
+        "unexpected stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn named_launch_arguments_select_breakpoint() {
+    let script = TempScript::new(MULTIFUNCTION_IF_STATEMENTS_SCRIPT);
     let script_path = script.path_str();
 
     let mut client = TestClient::spawn();
@@ -550,6 +577,14 @@ fn adjacent_named_debug_params_file_supplies_function_and_args() {
         "launch",
         json!({
             "scriptPath": script_path,
+            "function": "timeout",
+            "constructorArgs": {
+                "x": 100,
+                "y": 9
+            },
+            "args": {
+                "b": 9
+            },
             "stopOnEntry": true
         }),
     );
@@ -595,7 +630,7 @@ fn adjacent_named_debug_params_file_supplies_function_and_args() {
         }
     }
 
-    let stopped_line = stopped_line.expect("expected named sidecar-selected breakpoint stop");
+    let stopped_line = stopped_line.expect("expected named launch-config breakpoint stop");
     assert!((18..=27).contains(&stopped_line), "expected breakpoint inside timeout entrypoint, got line {stopped_line}",);
 
     client.send_request("disconnect", json!({}));

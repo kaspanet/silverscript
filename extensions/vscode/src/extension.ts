@@ -3,6 +3,7 @@ import * as path from "path";
 import * as fs from "fs/promises";
 import { Language, Parser, Query } from "web-tree-sitter";
 import type { QueryCapture } from "web-tree-sitter";
+import { registerSilverScriptCodeLens } from "./codeLens";
 import { registerSilverScriptDebugger } from "./debug";
 import { registerSilverScriptQuickLaunchPanel } from "./quickLaunchPanel";
 
@@ -396,6 +397,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   registerSilverScriptDebugger(context, debugOutputChannel);
   registerSilverScriptQuickLaunchPanel(context, debugOutputChannel);
+  registerSilverScriptCodeLens(context);
 
   // TODO: add LSP (LanguageClient + LanguageServer)
 

@@ -2,7 +2,6 @@ use std::io::{BufReader, BufWriter};
 
 use dap::prelude::Server;
 use debugger_session::format_failure_report;
-use secp256k1::{Keypair, Secp256k1, rand::thread_rng};
 use serde_json::Value;
 
 mod adapter;
@@ -17,17 +16,10 @@ use runtime_builder::build_launch;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args().skip(1);
     if let Some(arg) = args.next() {
-        if arg == "--keygen" {
-            return keygen();
-        }
         if arg == "--run-config-json" {
             let raw = args.next().ok_or("--run-config-json requires a JSON argument")?;
             return run_config_json(&raw);
         }
-    }
-
-    if std::env::args().any(|a| a == "--keygen") {
-        return keygen();
     }
 
     let input = BufReader::new(std::io::stdin());
@@ -79,23 +71,4 @@ fn run_config_json(raw: &str) -> Result<(), Box<dyn std::error::Error>> {
             std::process::exit(1);
         }
     }
-}
-
-fn keygen() -> Result<(), Box<dyn std::error::Error>> {
-    let secp = Secp256k1::new();
-    let kp = Keypair::new(&secp, &mut thread_rng());
-    let (xonly, _parity) = kp.x_only_public_key();
-    let secret_bytes = kp.secret_key().secret_bytes();
-    let pubkey_bytes = xonly.serialize();
-    let pkh = blake2b_simd::Params::new().hash_length(32).hash(&pubkey_bytes);
-
-    let hex = |bytes: &[u8]| -> String { format!("0x{}", bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()) };
-    let payload = serde_json::json!({
-        "pubkey": hex(&pubkey_bytes),
-        "secret_key": hex(&secret_bytes),
-        "pkh": hex(pkh.as_bytes()),
-    });
-
-    println!("{}", serde_json::to_string(&payload)?);
-    Ok(())
 }

@@ -7,6 +7,13 @@ import * as vscode from "vscode";
 const autoBuildAttempted = new Set<string>();
 const ADAPTER_BASENAME =
   process.platform === "win32" ? "debugger-dap.exe" : "debugger-dap";
+const SUCCESS_MESSAGE = "Execution completed successfully.";
+
+export function debuggerTraceEnabled(): boolean {
+  return vscode.workspace
+    .getConfiguration("silverscript")
+    .get<boolean>("debuggerTrace", false);
+}
 
 function findWorkspaceRoot(): string | undefined {
   const activeUri = vscode.window.activeTextEditor?.document.uri;
@@ -38,6 +45,45 @@ function workspaceBinaryCandidates(root: string): string[] {
   return ["release", "debug"].map((profile) =>
     path.join(root, "target", profile, ADAPTER_BASENAME),
   );
+}
+
+function newestMtimeInPath(targetPath: string): number {
+  if (!fs.existsSync(targetPath)) {
+    return 0;
+  }
+
+  const stat = fs.statSync(targetPath);
+  if (!stat.isDirectory()) {
+    return stat.mtimeMs;
+  }
+
+  let newest = stat.mtimeMs;
+  for (const entry of fs.readdirSync(targetPath)) {
+    newest = Math.max(
+      newest,
+      newestMtimeInPath(path.join(targetPath, entry)),
+    );
+  }
+  return newest;
+}
+
+function newestDebuggerSourceMtime(root: string): number {
+  return Math.max(
+    newestMtimeInPath(path.join(root, "Cargo.toml")),
+    newestMtimeInPath(path.join(root, "debugger", "dap", "Cargo.toml")),
+    newestMtimeInPath(path.join(root, "debugger", "dap", "src")),
+  );
+}
+
+function workspaceBinaryNeedsBuild(
+  root: string,
+  binaryPath: string | undefined,
+): boolean {
+  if (!binaryPath || !fs.existsSync(binaryPath)) {
+    return true;
+  }
+
+  return fs.statSync(binaryPath).mtimeMs < newestDebuggerSourceMtime(root);
 }
 
 function bundledBinaryCandidates(
@@ -164,6 +210,7 @@ export async function ensureDebuggerAdapterBinary(
   out?: vscode.OutputChannel,
 ): Promise<{ root: string; bin: string; source: string }> {
   const root = resolveRepoRoot(ctx);
+  const hasWorkspaceLayout = hasDebuggerWorkspaceLayout(root);
 
   const configuredCandidates = configuredAdapterCandidates(ctx);
   if (configuredCandidates.length > 0) {
@@ -180,30 +227,23 @@ export async function ensureDebuggerAdapterBinary(
     };
   }
 
-  const bundled = findExistingFile(bundledBinaryCandidates(ctx));
-  if (bundled) {
-    return {
-      root: path.dirname(bundled),
-      bin: bundled,
-      source: "bundled",
-    };
-  }
+  const allowAutoBuild = vscode.workspace
+    .getConfiguration("silverscript")
+    .get<boolean>("autoBuildDebuggerAdapter", true);
 
-  const hasWorkspaceLayout = hasDebuggerWorkspaceLayout(root);
   const existingWorkspaceBinary = hasWorkspaceLayout
     ? findExistingFile(workspaceBinaryCandidates(root))
     : undefined;
-  if (existingWorkspaceBinary) {
+  if (
+    existingWorkspaceBinary &&
+    !workspaceBinaryNeedsBuild(root, existingWorkspaceBinary)
+  ) {
     return {
       root,
       bin: existingWorkspaceBinary,
       source: "workspace",
     };
   }
-
-  const allowAutoBuild = vscode.workspace
-    .getConfiguration("silverscript")
-    .get<boolean>("autoBuildDebuggerAdapter", true);
 
   if (
     hasWorkspaceLayout &&
@@ -222,7 +262,7 @@ export async function ensureDebuggerAdapterBinary(
         message: `${cmd} ${args.join(" ")}`,
       });
       out?.appendLine(
-        `[debug] adapter missing, running: ${cmd} ${args.join(" ")} (cwd=${root})`,
+        `[debug] adapter missing or stale, running: ${cmd} ${args.join(" ")} (cwd=${root})`,
       );
       return spawnCommand(cmd, args, root);
     });
@@ -245,6 +285,15 @@ export async function ensureDebuggerAdapterBinary(
       root,
       bin: builtWorkspaceBinary,
       source: autoBuildAttempted.has(root) ? "workspace-built" : "workspace",
+    };
+  }
+
+  const bundled = findExistingFile(bundledBinaryCandidates(ctx));
+  if (bundled) {
+    return {
+      root: path.dirname(bundled),
+      bin: bundled,
+      source: "bundled",
     };
   }
 
@@ -278,17 +327,26 @@ export async function runDebuggerAdapterCommand(
     ctx,
     out,
   );
-  out?.appendLine(`[debug] running ${bin} ${args.join(" ")} [${source}]`);
+  const traceEnabled = debuggerTraceEnabled();
+  if (traceEnabled) {
+    out?.appendLine(`[debug] running ${bin} ${args.join(" ")} [${source}]`);
+  }
 
   const result = await spawnCommand(bin, args, root);
-  if (result.stdout) {
-    out?.appendLine(result.stdout);
-  }
   if (result.stderr) {
     out?.appendLine(result.stderr);
+  }
+  const stdout = (result.stdout ?? "").trim();
+  if (
+    result.stdout &&
+    (result.status !== 0 ||
+      traceEnabled ||
+      stdout !== SUCCESS_MESSAGE)
+  ) {
+    out?.appendLine(result.stdout);
   }
   if (result.status !== 0) {
     throw new Error(summarizeCommandFailure(bin, args, result));
   }
-  return (result.stdout ?? "").trim();
+  return stdout;
 }

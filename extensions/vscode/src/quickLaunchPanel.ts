@@ -1,55 +1,104 @@
 import * as fs from "fs";
+import * as path from "path";
 import * as vscode from "vscode";
 import {
   defaultForType,
   type DebugArgInput,
-  type DebugParamsFile,
+  type DebugArgObject,
   parseContractModel,
-  readDebugParams,
-  writeDebugParams,
   type ContractModel,
   type ContractParam,
-  type DebugArgObject,
 } from "./contractModel";
 import { runDebuggerAdapterCommand } from "./debugAdapter";
+import {
+  countSilverScriptSavedScenarios,
+  createSilverScriptLaunchConfig,
+  defaultLaunchScriptPathValue,
+  listMatchingSilverScriptLaunchConfigs,
+  type RawLaunchConfiguration,
+  type SilverScriptLaunchConfigRecord,
+  updateSilverScriptLaunchConfig,
+} from "./launchConfigs";
 
-type LaunchPanelMessage = {
-  kind: "run" | "debug";
+type LaunchKind = "run" | "debug";
+type IdentityLabels = Record<string, string>;
+
+type PanelFormState = {
   function: string;
-  constructorArgs: DebugArgObject;
-  args: DebugArgObject;
+  constructorArgs: Record<string, string>;
+  argsByFunction: Record<string, Record<string, string>>;
+  keyAliases: string[];
+  identityLabels: IdentityLabels;
 };
-type KeygenPanelMessage = { kind: "generateKeyMaterial" };
-type PanelMessage = LaunchPanelMessage | KeygenPanelMessage;
 
-type GeneratedKeyMaterial = {
-  pubkey: string;
-  secret_key: string;
-  pkh: string;
+type PanelHostState = {
+  scriptUri: vscode.Uri;
+  model: ContractModel;
+  form: PanelFormState;
+  baseConfig: RawLaunchConfiguration;
+  record?: SilverScriptLaunchConfigRecord;
+  loadedConfigName: string | null;
+};
+
+type PanelMessage =
+  | { kind: "run"; form: PanelFormState }
+  | { kind: "debug"; form: PanelFormState }
+  | { kind: "loadSaved"; form: PanelFormState }
+  | { kind: "saveSaved"; form: PanelFormState };
+
+type PanelControlMessage = {
+  kind: "triggerLaunch";
+  launchKind: LaunchKind;
 };
 
 type WebviewState = {
   function: string;
   constructorArgs: Record<string, string>;
   argsByFunction: Record<string, Record<string, string>>;
-  keys: GeneratedKeyMaterial[];
+  keyAliases: string[];
+  identityLabels: IdentityLabels;
+  loadedConfigName: string | null;
+  savedCountsByFunction: Record<string, number>;
+  savedTotalCount: number;
 };
 
-type WebviewMessage =
-  | { kind: "keyMaterial"; keyMaterial: GeneratedKeyMaterial }
-  | { kind: "error"; message: string };
-type PanelControlMessage = {
-  kind: "triggerLaunch";
-  launchKind: "run" | "debug";
-};
+const RUN_SUCCESS_MESSAGE = "Execution completed successfully.";
 
 let panel: vscode.WebviewPanel | undefined;
-let activeScriptUri: vscode.Uri | undefined;
+let activeState: PanelHostState | undefined;
 let launchInProgress = false;
+let restoringPrimaryEditor = false;
+const panelStateEmitter = new vscode.EventEmitter<void>();
+const IDENTITY_ALIAS_RE =
+  /^(?:keypair|identity)([1-9]\d*)(?:\.(pubkey|secret|pkh))?$/;
+
+function emitPanelStateChanged(): void {
+  panelStateEmitter.fire();
+}
+
+export const onDidChangeSilverScriptPanelState =
+  panelStateEmitter.event;
+
+function isDebugArgInput(value: unknown): value is DebugArgInput {
+  return (
+    Array.isArray(value) ||
+    (value !== null && typeof value === "object")
+  );
+}
 
 function activeSilverScriptSession(): vscode.DebugSession | undefined {
   const session = vscode.debug.activeDebugSession;
   return session?.type === "silverscript" ? session : undefined;
+}
+
+export function hasOpenSilverScriptPanelForUri(
+  uri?: vscode.Uri,
+): boolean {
+  if (!panel || !activeState || !uri) {
+    return false;
+  }
+
+  return activeState.scriptUri.fsPath === uri.fsPath;
 }
 
 function resolveActiveScriptUri(uri?: vscode.Uri): vscode.Uri | undefined {
@@ -99,15 +148,23 @@ function stringifyLaunchArg(value: unknown): string {
   if (typeof value === "string") {
     return value;
   }
-  if (Array.isArray(value) || (value !== null && typeof value === "object")) {
+  if (
+    Array.isArray(value) ||
+    (value !== null && typeof value === "object")
+  ) {
     return JSON.stringify(value);
   }
   return String(value);
 }
 
-function defaultsForParams(params: ContractParam[]): Record<string, string> {
+function defaultsForParams(
+  params: ContractParam[],
+): Record<string, string> {
   return Object.fromEntries(
-    params.map((param) => [param.name, stringifyLaunchArg(defaultForType(param.type))]),
+    params.map((param) => [
+      param.name,
+      stringifyLaunchArg(defaultForType(param.type)),
+    ]),
   );
 }
 
@@ -134,6 +191,644 @@ function valuesForParams(
   return defaults;
 }
 
+function defaultLaunchName(
+  model: ContractModel,
+  scriptPath: string,
+): string {
+  return model.name && model.name !== "Unknown"
+    ? `SilverScript: ${model.name}`
+    : `SilverScript: ${path.basename(scriptPath)}`;
+}
+
+function normalizeKeyAliases(
+  aliases: readonly string[],
+  constructorArgs: Record<string, string>,
+  argsByFunction: Record<string, Record<string, string>>,
+): string[] {
+  const found = new Map<number, string>();
+
+  const consider = (raw: string | undefined) => {
+    if (!raw) {
+      return;
+    }
+    const match = IDENTITY_ALIAS_RE.exec(raw.trim());
+    if (!match) {
+      return;
+    }
+    const index = Number(match[1]);
+    if (!found.has(index)) {
+      found.set(index, `keypair${index}`);
+    }
+  };
+
+  aliases.forEach(consider);
+  Object.values(constructorArgs).forEach((value) => consider(value));
+  Object.values(argsByFunction).forEach((args) => {
+    Object.values(args).forEach((value) => consider(value));
+  });
+
+  const normalized = [...found.entries()]
+    .sort((left, right) => left[0] - right[0])
+    .map(([, alias]) => alias);
+  return normalized;
+}
+
+function normalizeIdentityLabels(
+  aliases: readonly string[],
+  labels: IdentityLabels,
+): IdentityLabels {
+  const normalized: IdentityLabels = {};
+  for (const alias of aliases) {
+    const label = labels[alias]?.trim();
+    if (label && label !== alias) {
+      normalized[alias] = label;
+    }
+  }
+  return normalized;
+}
+
+async function focusPrimaryEditor(
+  scriptUri: vscode.Uri,
+): Promise<void> {
+  if (restoringPrimaryEditor) {
+    return;
+  }
+
+  restoringPrimaryEditor = true;
+  try {
+    const document = await vscode.workspace.openTextDocument(scriptUri);
+    await vscode.window.showTextDocument(document, {
+      viewColumn: vscode.ViewColumn.One,
+      preview: false,
+      preserveFocus: false,
+    });
+  } finally {
+    restoringPrimaryEditor = false;
+  }
+}
+
+async function keepSilverScriptEditorOnPrimary(
+  editor: vscode.TextEditor | undefined,
+): Promise<void> {
+  if (
+    restoringPrimaryEditor ||
+    !panel ||
+    !editor ||
+    editor.document.languageId !== "silverscript" ||
+    editor.viewColumn === vscode.ViewColumn.One ||
+    panel.viewColumn === undefined ||
+    editor.viewColumn !== panel.viewColumn
+  ) {
+    return;
+  }
+
+  await focusPrimaryEditor(editor.document.uri);
+  if (panel) {
+    panel.reveal(vscode.ViewColumn.Beside, true);
+  }
+}
+
+async function followActiveSilverScript(
+  editor: vscode.TextEditor | undefined,
+): Promise<void> {
+  if (
+    !panel ||
+    !editor ||
+    editor.document.languageId !== "silverscript" ||
+    !activeState ||
+    activeState.scriptUri.fsPath === editor.document.uri.fsPath
+  ) {
+    return;
+  }
+
+  activeState = await buildInitialState(editor.document.uri);
+  emitPanelStateChanged();
+  await renderActiveState();
+}
+
+async function handleActiveEditorChange(
+  editor: vscode.TextEditor | undefined,
+): Promise<void> {
+  await keepSilverScriptEditorOnPrimary(editor);
+  await followActiveSilverScript(editor);
+}
+
+function defaultPanelFormState(
+  model: ContractModel,
+  initialFunction?: string,
+): PanelFormState {
+  const selectedFunction =
+    initialFunction &&
+    model.entrypoints.some((entry) => entry.name === initialFunction)
+      ? initialFunction
+      : model.entrypoints[0]?.name ?? "";
+
+  const argsByFunction: Record<string, Record<string, string>> = {};
+  for (const entrypoint of model.entrypoints) {
+    argsByFunction[entrypoint.name] = defaultsForParams(
+      entrypoint.params,
+    );
+  }
+
+  return {
+    function: selectedFunction,
+    constructorArgs: defaultsForParams(model.constructorParams),
+    argsByFunction,
+    keyAliases: normalizeKeyAliases(
+      [],
+      defaultsForParams(model.constructorParams),
+      argsByFunction,
+    ),
+    identityLabels: {},
+  };
+}
+
+function formFromLaunchConfig(
+  model: ContractModel,
+  config: RawLaunchConfiguration,
+  initialFunction: string | undefined,
+  keyAliases: string[],
+  identityLabels: IdentityLabels,
+): PanelFormState {
+  const configuredFunction =
+    typeof config.function === "string" ? config.function : undefined;
+  const selectedFunction =
+    initialFunction &&
+    model.entrypoints.some((entry) => entry.name === initialFunction)
+      ? initialFunction
+      : configuredFunction &&
+          model.entrypoints.some(
+            (entry) => entry.name === configuredFunction,
+          )
+        ? configuredFunction
+        : model.entrypoints[0]?.name ?? "";
+
+  const constructorArgs = isDebugArgInput(config.constructorArgs)
+    ? config.constructorArgs
+    : undefined;
+  const configuredArgs =
+    configuredFunction === selectedFunction &&
+    isDebugArgInput(config.args)
+      ? config.args
+      : undefined;
+
+  const argsByFunction: Record<string, Record<string, string>> = {};
+  for (const entrypoint of model.entrypoints) {
+    argsByFunction[entrypoint.name] = valuesForParams(
+      entrypoint.params,
+      entrypoint.name === selectedFunction ? configuredArgs : undefined,
+    );
+  }
+
+  const constructorValues = valuesForParams(
+    model.constructorParams,
+    constructorArgs,
+  );
+  const normalizedAliases = normalizeKeyAliases(
+    keyAliases,
+    constructorValues,
+    argsByFunction,
+  );
+  const form = {
+    function: selectedFunction,
+    constructorArgs: constructorValues,
+    argsByFunction,
+    keyAliases: normalizedAliases,
+    identityLabels: normalizeIdentityLabels(
+      normalizedAliases,
+      identityLabels,
+    ),
+  };
+  return form;
+}
+
+function currentArgs(
+  form: PanelFormState,
+): DebugArgObject {
+  return { ...(form.argsByFunction[form.function] ?? {}) };
+}
+
+function applyMessageState(
+  state: PanelHostState,
+  form: PanelFormState,
+): void {
+  const normalizedAliases = normalizeKeyAliases(
+    form.keyAliases,
+    form.constructorArgs,
+    form.argsByFunction,
+  );
+  state.form = {
+    function: form.function,
+    constructorArgs: { ...form.constructorArgs },
+    argsByFunction: Object.fromEntries(
+      Object.entries(form.argsByFunction).map(
+        ([entrypoint, args]) => [entrypoint, { ...args }],
+      ),
+    ),
+    keyAliases: normalizedAliases,
+    identityLabels: normalizeIdentityLabels(
+      normalizedAliases,
+      form.identityLabels,
+    ),
+  };
+}
+
+function matchingLaunchConfigs(
+  scriptUri: vscode.Uri,
+): SilverScriptLaunchConfigRecord[] {
+  return listMatchingSilverScriptLaunchConfigs(scriptUri);
+}
+
+async function readModel(
+  scriptUri: vscode.Uri,
+): Promise<ContractModel> {
+  const source = await fs.promises.readFile(scriptUri.fsPath, "utf8");
+  return parseContractModel(source);
+}
+
+async function buildInitialState(
+  scriptUri: vscode.Uri,
+  initialFunction?: string,
+  keyAliases: string[] = [],
+  identityLabels: IdentityLabels = {},
+): Promise<PanelHostState> {
+  const model = await readModel(scriptUri);
+  const record = matchingLaunchConfigs(scriptUri)[0];
+
+  if (record) {
+    return {
+      scriptUri,
+      model,
+      form: formFromLaunchConfig(
+        model,
+        record.config,
+        initialFunction,
+        keyAliases,
+        identityLabels,
+      ),
+      baseConfig: { ...record.config },
+      record,
+      loadedConfigName:
+        typeof record.config.name === "string"
+          ? record.config.name
+          : null,
+    };
+  }
+
+  return {
+    scriptUri,
+    model,
+    form: defaultPanelFormState(model, initialFunction),
+    baseConfig: {
+      type: "silverscript",
+      request: "launch",
+      name: defaultLaunchName(model, scriptUri.fsPath),
+      stopOnEntry: true,
+    },
+    loadedConfigName: null,
+  };
+}
+
+function launchConfigForPanel(
+  state: PanelHostState,
+  noDebug: boolean,
+): RawLaunchConfiguration {
+  return {
+    ...state.baseConfig,
+    type: "silverscript",
+    request: "launch",
+    name:
+      typeof state.baseConfig.name === "string" &&
+      state.baseConfig.name.trim()
+        ? state.baseConfig.name
+        : defaultLaunchName(state.model, state.scriptUri.fsPath),
+    scriptPath: state.scriptUri.fsPath,
+    function: state.form.function,
+    constructorArgs: { ...state.form.constructorArgs },
+    args: currentArgs(state.form),
+    noDebug,
+    stopOnEntry: !noDebug,
+  };
+}
+
+function savedLaunchConfigForPanel(
+  state: PanelHostState,
+  name: string,
+): RawLaunchConfiguration {
+  const folder = vscode.workspace.getWorkspaceFolder(state.scriptUri);
+  if (!folder) {
+    throw new Error(
+      "SilverScript launch configs require the script to be inside a workspace folder.",
+    );
+  }
+
+  const config: RawLaunchConfiguration = {
+    ...state.baseConfig,
+    type: "silverscript",
+    request: "launch",
+    name,
+    scriptPath: defaultLaunchScriptPathValue(state.scriptUri, folder),
+    function: state.form.function,
+    constructorArgs: { ...state.form.constructorArgs },
+    args: currentArgs(state.form),
+  };
+  delete config.paramsFile;
+  delete config.noDebug;
+  return config;
+}
+
+async function loadSavedScenario(
+  keyAliases: string[],
+  identityLabels: IdentityLabels,
+  functionName?: string,
+  suppressEmptyMessage = false,
+): Promise<void> {
+  if (!activeState) {
+    return;
+  }
+
+  const records = matchingLaunchConfigs(activeState.scriptUri).filter(
+    (record) => {
+      if (!functionName) {
+        return true;
+      }
+      return record.config.function === functionName;
+    },
+  );
+  if (records.length === 0) {
+    if (!suppressEmptyMessage) {
+      void vscode.window.showInformationMessage(
+        functionName
+          ? `No saved SilverScript launch configs were found for '${functionName}'.`
+          : "No saved SilverScript launch configs were found for this file.",
+      );
+    }
+    return;
+  }
+
+  const picked = await vscode.window.showQuickPick(
+    functionName
+      ? records.map((record) => ({
+          label:
+            typeof record.config.name === "string"
+              ? record.config.name
+              : path.basename(record.resolvedScriptPath),
+          description: record.scriptPathValue,
+          record,
+        }))
+      : (() => {
+          const groups = new Map<string, SilverScriptLaunchConfigRecord[]>();
+          for (const record of records) {
+            const group =
+              typeof record.config.function === "string" &&
+              record.config.function.trim()
+                ? record.config.function.trim()
+                : "Other";
+            const existing = groups.get(group) ?? [];
+            existing.push(record);
+            groups.set(group, existing);
+          }
+
+          const orderedGroups: string[] = [];
+          for (const entrypoint of activeState.model.entrypoints) {
+            if (groups.has(entrypoint.name)) {
+              orderedGroups.push(entrypoint.name);
+            }
+          }
+          for (const group of [...groups.keys()].sort()) {
+            if (!orderedGroups.includes(group)) {
+              orderedGroups.push(group);
+            }
+          }
+
+          return orderedGroups.flatMap((group) => {
+            const groupRecords = groups.get(group) ?? [];
+            return [
+              {
+                kind: vscode.QuickPickItemKind.Separator,
+                label: group,
+              },
+              ...groupRecords.map((record) => ({
+                label:
+                  typeof record.config.name === "string"
+                    ? record.config.name
+                    : path.basename(record.resolvedScriptPath),
+                description: record.scriptPathValue,
+                record,
+              })),
+            ];
+          });
+        })(),
+    {
+      title: functionName
+        ? `Load Saved Scenario for '${functionName}'`
+        : "Load SilverScript Launch Config",
+      placeHolder: functionName
+        ? `Select a saved launch config for '${functionName}'`
+        : "Select a saved launch config for this contract, grouped by entrypoint",
+    },
+  );
+
+  if (!picked || !("record" in picked) || !picked.record) {
+    return;
+  }
+
+  const model = await readModel(activeState.scriptUri);
+  activeState = {
+    scriptUri: activeState.scriptUri,
+    model,
+    form: formFromLaunchConfig(
+      model,
+      picked.record.config,
+      undefined,
+      keyAliases,
+      identityLabels,
+    ),
+    baseConfig: { ...picked.record.config },
+    record: picked.record,
+    loadedConfigName:
+      typeof picked.record.config.name === "string"
+        ? picked.record.config.name
+        : null,
+  };
+  await renderActiveState();
+}
+
+function selectEntrypoint(
+  state: PanelHostState,
+  initialFunction?: string,
+): void {
+  if (!initialFunction) {
+    return;
+  }
+
+  const entrypoint = state.model.entrypoints.find(
+    (item) => item.name === initialFunction,
+  );
+  if (!entrypoint) {
+    return;
+  }
+
+  state.form.function = initialFunction;
+  if (!state.form.argsByFunction[initialFunction]) {
+    state.form.argsByFunction[initialFunction] = defaultsForParams(
+      entrypoint.params,
+    );
+  }
+}
+
+async function saveScenario(): Promise<void> {
+  if (!activeState) {
+    return;
+  }
+
+  const folder = vscode.workspace.getWorkspaceFolder(activeState.scriptUri);
+  if (!folder) {
+    void vscode.window.showErrorMessage(
+      "SilverScript launch configs require the script to be inside a workspace folder.",
+    );
+    return;
+  }
+
+  if (activeState.record) {
+    const name =
+      typeof activeState.baseConfig.name === "string" &&
+      activeState.baseConfig.name.trim()
+        ? activeState.baseConfig.name
+        : defaultLaunchName(
+            activeState.model,
+            activeState.scriptUri.fsPath,
+          );
+    const config = savedLaunchConfigForPanel(activeState, name);
+    const updated = await updateSilverScriptLaunchConfig(
+      activeState.record,
+      config,
+    );
+    activeState.baseConfig = config;
+    activeState.record = updated;
+    activeState.loadedConfigName = name;
+    await renderActiveState();
+    void vscode.window.showInformationMessage(
+      `Updated '${name}' in launch.json.`,
+    );
+    return;
+  }
+
+  const name = await vscode.window.showInputBox({
+    title: "Save SilverScript Launch Config",
+    prompt: "Name for this saved debugger scenario",
+    value: defaultLaunchName(
+      activeState.model,
+      activeState.scriptUri.fsPath,
+    ),
+    ignoreFocusOut: true,
+    validateInput: (value) =>
+      value.trim() ? null : "Name is required.",
+  });
+
+  if (!name) {
+    return;
+  }
+
+  const config = savedLaunchConfigForPanel(activeState, name.trim());
+  const record = await createSilverScriptLaunchConfig(folder, config);
+  activeState.baseConfig = config;
+  activeState.record = record;
+  activeState.loadedConfigName = name.trim();
+  await renderActiveState();
+  void vscode.window.showInformationMessage(
+    `Saved '${name.trim()}' to launch.json.`,
+  );
+}
+
+async function launchFromPanel(
+  context: vscode.ExtensionContext,
+  out: vscode.OutputChannel,
+  kind: LaunchKind,
+): Promise<void> {
+  if (!activeState) {
+    return;
+  }
+
+  if (launchInProgress) {
+    void vscode.window.showWarningMessage(
+      "A SilverScript run/debug launch is already in progress.",
+    );
+    return;
+  }
+
+  const existingSession = activeSilverScriptSession();
+  if (existingSession) {
+    await vscode.commands.executeCommand(
+      "workbench.action.debug.continue",
+    );
+    return;
+  }
+
+  try {
+    launchInProgress = true;
+    const config = launchConfigForPanel(activeState, kind === "run");
+    const folder =
+      vscode.workspace.getWorkspaceFolder(activeState.scriptUri) ??
+      vscode.workspace.workspaceFolders?.[0];
+
+    if (kind === "run") {
+      const output = await runDebuggerAdapterCommand(
+        context,
+        ["--run-config-json", JSON.stringify(config)],
+        out,
+      );
+      if (output && output !== RUN_SUCCESS_MESSAGE) {
+        out.show(true);
+      }
+      void vscode.window.showInformationMessage(
+        RUN_SUCCESS_MESSAGE,
+      );
+      return;
+    }
+
+    await vscode.debug.startDebugging(folder, config, {
+      noDebug: false,
+    });
+  } catch (error) {
+    out.show(true);
+    void vscode.window.showErrorMessage(
+      `SilverScript ${kind} failed: ${(error as Error).message}`,
+    );
+  } finally {
+    launchInProgress = false;
+  }
+}
+
+async function renderActiveState(): Promise<void> {
+  if (!panel || !activeState) {
+    return;
+  }
+
+  const savedCounts = countSilverScriptSavedScenarios(
+    activeState.scriptUri,
+  );
+  panel.title = activeState.model.name;
+  panel.webview.html = buildHtml(
+    activeState.model,
+    activeState.scriptUri.fsPath,
+    {
+      function: activeState.form.function,
+      constructorArgs: { ...activeState.form.constructorArgs },
+      argsByFunction: Object.fromEntries(
+        Object.entries(activeState.form.argsByFunction).map(
+          ([entrypoint, args]) => [entrypoint, { ...args }],
+        ),
+      ),
+      keyAliases: [...activeState.form.keyAliases],
+      identityLabels: { ...activeState.form.identityLabels },
+      loadedConfigName: activeState.loadedConfigName,
+      savedCountsByFunction: savedCounts.byFunction,
+      savedTotalCount: savedCounts.total,
+    },
+  );
+}
+
 async function openPanel(
   context: vscode.ExtensionContext,
   out: vscode.OutputChannel,
@@ -150,32 +845,25 @@ async function openPanel(
     return;
   }
 
-  const source = await fs.promises.readFile(scriptUri.fsPath, "utf8");
-  const model = parseContractModel(source);
-  const debugParams = await readDebugParams(scriptUri.fsPath);
-  const selectedFunction =
-    initialFunction && model.entrypoints.some((entry) => entry.name === initialFunction)
-      ? initialFunction
-      : debugParams?.function && model.entrypoints.some((entry) => entry.name === debugParams.function)
-        ? debugParams.function
-        : model.entrypoints[0]?.name ?? "";
-
-  const entrypointValues: Record<string, Record<string, string>> = {};
-  for (const entrypoint of model.entrypoints) {
-    const argsInput =
-      entrypoint.name === selectedFunction ? debugParams?.args : undefined;
-    entrypointValues[entrypoint.name] = valuesForParams(
-      entrypoint.params,
-      argsInput,
-    );
+  if (
+    panel &&
+    activeState &&
+    activeState.scriptUri.fsPath === scriptUri.fsPath
+  ) {
+    selectEntrypoint(activeState, initialFunction);
+    await renderActiveState();
+    panel.reveal(vscode.ViewColumn.Beside, true);
+    await focusPrimaryEditor(scriptUri);
+    return;
   }
 
-  activeScriptUri = scriptUri;
+  activeState = await buildInitialState(scriptUri, initialFunction);
+  emitPanelStateChanged();
 
   if (!panel) {
     panel = vscode.window.createWebviewPanel(
       "silverscriptRunner",
-      model.name,
+      activeState.model.name,
       vscode.ViewColumn.Beside,
       {
         enableScripts: true,
@@ -185,97 +873,31 @@ async function openPanel(
     );
 
     panel.webview.onDidReceiveMessage(
-      async (msg: PanelMessage) => {
-        if (!activeScriptUri) {
+      async (message: PanelMessage) => {
+        if (!activeState) {
           return;
         }
 
-        if (msg.kind === "generateKeyMaterial") {
-          try {
-            const raw = await runDebuggerAdapterCommand(
-              context,
-              ["--keygen"],
-              out,
-            );
-            const keyMaterial = JSON.parse(raw) as GeneratedKeyMaterial;
-            await panel?.webview.postMessage({
-              kind: "keyMaterial",
-              keyMaterial,
-            } satisfies WebviewMessage);
-          } catch (error) {
-            await panel?.webview.postMessage({
-              kind: "error",
-              message: `Failed to generate key material: ${(error as Error).message}`,
-            } satisfies WebviewMessage);
-          }
-          return;
-        }
+        applyMessageState(activeState, message.form);
 
-        if (launchInProgress) {
-          void vscode.window.showWarningMessage(
-            "A SilverScript run/debug launch is already in progress.",
-          );
-          return;
-        }
-
-        const existingSession = activeSilverScriptSession();
-        if (existingSession) {
-          await vscode.commands.executeCommand(
-            "workbench.action.debug.continue",
-          );
-          return;
-        }
-
-        try {
-          launchInProgress = true;
-          const existingParams =
-            (await readDebugParams(activeScriptUri.fsPath)) ?? {};
-          const nextParams: DebugParamsFile = {
-            ...existingParams,
-            function: msg.function,
-            constructorArgs: msg.constructorArgs,
-            args: msg.args,
-          };
-          await writeDebugParams(activeScriptUri.fsPath, nextParams);
-
-          const folder =
-            vscode.workspace.getWorkspaceFolder(activeScriptUri) ??
-            vscode.workspace.workspaceFolders?.[0];
-          const config: vscode.DebugConfiguration = {
-            type: "silverscript",
-            request: "launch",
-            name: `SilverScript: ${msg.function}`,
-            scriptPath: activeScriptUri.fsPath,
-            function: msg.function,
-            constructorArgs: msg.constructorArgs,
-            args: msg.args,
-            noDebug: msg.kind === "run",
-            stopOnEntry: msg.kind === "debug",
-          };
-
-          if (msg.kind === "run") {
-            const output = await runDebuggerAdapterCommand(
-              context,
-              ["--run-config-json", JSON.stringify(config)],
-              out,
-            );
-            out.show(true);
-            void vscode.window.showInformationMessage(
-              output || "Execution completed successfully.",
+        switch (message.kind) {
+          case "loadSaved":
+            await loadSavedScenario(
+              message.form.keyAliases,
+              message.form.identityLabels,
             );
             return;
-          }
-
-          await vscode.debug.startDebugging(folder, config, {
-            noDebug: false,
-          });
-        } catch (error) {
-          out.show(true);
-          void vscode.window.showErrorMessage(
-            `SilverScript ${msg.kind} failed: ${(error as Error).message}`,
-          );
-        } finally {
-          launchInProgress = false;
+          case "saveSaved":
+            await saveScenario();
+            return;
+          case "run":
+            await launchFromPanel(context, out, "run");
+            return;
+          case "debug":
+            await launchFromPanel(context, out, "debug");
+            return;
+          default:
+            return;
         }
       },
       undefined,
@@ -284,32 +906,62 @@ async function openPanel(
 
     panel.onDidDispose(() => {
       panel = undefined;
-      activeScriptUri = undefined;
+      activeState = undefined;
       launchInProgress = false;
+      emitPanelStateChanged();
     });
   } else {
-    panel.reveal(vscode.ViewColumn.Beside);
+    panel.reveal(vscode.ViewColumn.Beside, true);
   }
 
-  panel.title = model.name;
-  panel.webview.html = buildHtml(model, scriptUri.fsPath, {
-    function: selectedFunction,
-    constructorArgs: valuesForParams(
-      model.constructorParams,
-      debugParams?.constructorArgs,
-    ),
-    argsByFunction: entrypointValues,
-    keys: [],
-  });
+  await renderActiveState();
+  await focusPrimaryEditor(scriptUri);
 }
 
-async function triggerPanelLaunch(kind: "run" | "debug"): Promise<void> {
+async function showSavedScenarios(
+  context: vscode.ExtensionContext,
+  out: vscode.OutputChannel,
+  uri?: vscode.Uri,
+  initialFunction?: string,
+  showPicker = true,
+): Promise<void> {
+  await openPanel(context, out, uri, initialFunction);
+  if (!showPicker || !activeState) {
+    return;
+  }
+
+  await loadSavedScenario(
+    activeState.form.keyAliases,
+    activeState.form.identityLabels,
+    initialFunction,
+    true,
+  );
+}
+
+async function handlePrimaryCodeLensAction(
+  context: vscode.ExtensionContext,
+  out: vscode.OutputChannel,
+  uri?: vscode.Uri,
+): Promise<void> {
+  const scriptUri = resolveActiveScriptUri(uri);
+  if (scriptUri && hasOpenSilverScriptPanelForUri(scriptUri)) {
+    await triggerPanelLaunch("run");
+    return;
+  }
+
+  await openPanel(context, out, uri);
+}
+
+async function triggerPanelLaunch(
+  launchKind: LaunchKind,
+): Promise<void> {
   if (!panel) {
     return;
   }
+
   await panel.webview.postMessage({
     kind: "triggerLaunch",
-    launchKind: kind,
+    launchKind,
   } satisfies PanelControlMessage);
 }
 
@@ -319,10 +971,16 @@ async function handlePanelF5(
   uri?: vscode.Uri,
   initialFunction?: string,
 ): Promise<void> {
-  if (panel && activeScriptUri) {
+  const scriptUri = resolveActiveScriptUri(uri);
+  if (
+    panel &&
+    activeState &&
+    (!scriptUri || activeState.scriptUri.fsPath === scriptUri.fsPath)
+  ) {
     await triggerPanelLaunch("debug");
     return;
   }
+
   await openPanel(context, out, uri, initialFunction);
 }
 
@@ -359,9 +1017,14 @@ function buildHtml(
     --input-bg: var(--vscode-input-background);
     --input-fg: var(--vscode-input-foreground);
     --input-border: var(--vscode-input-border, transparent);
+    --panel-bg: rgba(127, 127, 127, 0.03);
+    --panel-hover: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.1));
     --btn: var(--vscode-button-background);
     --btn-fg: var(--vscode-button-foreground);
     --btn-hover: var(--vscode-button-hoverBackground);
+    --btn-secondary-bg: transparent;
+    --btn-secondary-fg: var(--fg);
+    --btn-secondary-hover: var(--panel-hover);
     --focus: var(--vscode-focusBorder);
     --muted: rgba(127, 127, 127, 0.75);
     --sep: var(--vscode-widget-border, rgba(128, 128, 128, 0.25));
@@ -371,26 +1034,39 @@ function buildHtml(
   * { box-sizing: border-box; }
   body {
     margin: 0;
-    padding: 18px;
+    padding: 16px;
     color: var(--fg);
     background: var(--bg);
     font: 13px/1.45 var(--vscode-font-family, system-ui, sans-serif);
   }
+  .header-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin: 0 0 14px;
+  }
   h1 {
-    margin: 0 0 4px;
+    flex: 1;
+    min-width: 0;
+    margin: 0;
     font-size: 16px;
     font-weight: 600;
-  }
-  .path {
-    margin: 0 0 18px;
-    color: var(--muted);
-    font-size: 11px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+  .topbar {
+    display: flex;
+    align-items: center;
+    flex: none;
+  }
+  .topbar-actions {
+    display: flex;
+    gap: 6px;
+  }
   section {
-    margin-bottom: 18px;
+    margin-bottom: 14px;
   }
   h2 {
     margin: 0 0 8px;
@@ -422,7 +1098,8 @@ function buildHtml(
   }
   input, select {
     width: 100%;
-    padding: 7px 8px;
+    min-height: 34px;
+    padding: 6px 10px;
     border-radius: 4px;
     border: 1px solid var(--input-border);
     background: var(--input-bg);
@@ -440,14 +1117,15 @@ function buildHtml(
   }
   .actions {
     display: flex;
-    gap: 10px;
-    margin-top: 24px;
+    gap: 8px;
+    margin-top: 16px;
   }
   button {
     flex: 1;
-    padding: 10px 0;
+    min-height: 36px;
+    padding: 8px 0;
     border: 0;
-    border-radius: 5px;
+    border-radius: 4px;
     background: var(--btn);
     color: var(--btn-fg);
     font-size: 13px;
@@ -457,11 +1135,34 @@ function buildHtml(
   button:hover {
     background: var(--btn-hover);
   }
+  .secondary-button {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: auto;
+    min-width: 0;
+    min-height: 32px;
+    padding: 0 12px;
+    border: 1px solid var(--sep);
+    border-radius: 4px;
+    background: var(--btn-secondary-bg);
+    color: var(--btn-secondary-fg);
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 1;
+  }
+  .secondary-button:hover {
+    background: var(--btn-secondary-hover);
+  }
+  .compact-button {
+    flex: none;
+  }
   .field-row {
     position: relative;
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 4px;
   }
   .field-row input {
     flex: 1;
@@ -469,82 +1170,21 @@ function buildHtml(
   .field-row input.crypto-input {
     cursor: pointer;
   }
-  .field-row button {
-    flex: none;
-    width: 58px;
-    padding: 7px 0;
-    background: transparent;
-    border: 1px solid var(--sep);
-    color: var(--fg);
-    font-size: 12px;
-    font-weight: 600;
+  .field-row .field-action {
+    min-width: 64px;
+    padding: 0 10px;
   }
-  .field-row button:hover {
-    background: rgba(128, 128, 128, 0.12);
-  }
-  .key-wallet {
-    margin-top: 16px;
-    border-top: 1px solid var(--sep);
-    padding-top: 14px;
-  }
-  .key-wallet summary {
-    cursor: pointer;
-    font-size: 12px;
-    font-weight: 700;
-    color: var(--muted);
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-  }
-  .key-wallet-actions {
+  .section-head {
     display: flex;
-    gap: 8px;
     align-items: center;
-    margin-top: 10px;
-  }
-  .key-wallet-actions button {
-    flex: none;
-    width: auto;
-    min-width: 160px;
-    padding: 8px 14px;
-  }
-  .key-help {
-    color: var(--muted);
-    font-size: 11px;
-  }
-  .key-list {
-    display: grid;
+    justify-content: space-between;
     gap: 8px;
-    margin-top: 10px;
+    margin-bottom: 8px;
   }
-  .key-row {
-    display: grid;
-    grid-template-columns: 76px 1fr auto;
-    gap: 8px;
-    align-items: center;
-    padding: 8px 10px;
-    border: 1px solid var(--sep);
-    border-radius: 6px;
-    background: rgba(128, 128, 128, 0.05);
-    font: 12px var(--vscode-editor-font-family, monospace);
+  .section-head h2 {
+    margin: 0;
   }
-  .key-name {
-    font-weight: 700;
-  }
-  .key-value {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .key-row button {
-    flex: none;
-    width: 64px;
-    padding: 6px 0;
-    background: transparent;
-    border: 1px solid var(--sep);
-    color: var(--fg);
-    font-size: 11px;
-  }
-  .key-dropdown {
+  .identity-dropdown {
     position: absolute;
     z-index: 100;
     top: calc(100% + 4px);
@@ -556,21 +1196,29 @@ function buildHtml(
     background: var(--input-bg);
     box-shadow: 0 6px 18px rgba(0, 0, 0, 0.28);
   }
-  .key-choice {
+  .identity-choice {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    justify-content: space-between;
     margin: 0 4px;
     padding: 7px 10px;
     border-radius: 4px;
     cursor: pointer;
   }
-  .key-choice:hover {
+  .identity-choice:hover {
     background: var(--btn);
     color: var(--btn-fg);
   }
-  .key-choice-name {
+  .identity-choice-name {
     display: block;
     font-weight: 700;
   }
-  .key-choice-value {
+  .identity-choice-main {
+    flex: 1;
+    min-width: 0;
+  }
+  .identity-choice-value {
     display: block;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -578,24 +1226,38 @@ function buildHtml(
     font-size: 11px;
     opacity: 0.72;
   }
-  .key-divider {
+  .identity-choice-delete {
+    flex: none;
+    min-width: 18px;
+    min-height: 18px;
+    padding: 0;
+    border: 0;
+    border-radius: 3px;
+    background: transparent;
+    color: var(--muted);
+    font-size: 14px;
+    line-height: 1;
+  }
+  .identity-choice-delete:hover {
+    background: var(--panel-hover);
+    color: var(--vscode-errorForeground, var(--fg));
+  }
+  .identity-divider {
     margin: 4px 0;
     border-top: 1px solid var(--sep);
-  }
-  .status {
-    min-height: 16px;
-    margin-top: 10px;
-    color: var(--muted);
-    font-size: 11px;
-  }
-  .status.error {
-    color: var(--vscode-errorForeground);
   }
 </style>
 </head>
 <body>
-  <h1>${escHtml(model.name)}</h1>
-  <div class="path">${escHtml(scriptPath)}</div>
+  <div class="header-row">
+    <h1>${escHtml(model.name)}</h1>
+    <div class="topbar">
+      <div class="topbar-actions">
+        <button id="load-button" class="secondary-button compact-button" type="button">Load</button>
+        <button id="save-button" class="secondary-button compact-button" type="button">Save</button>
+      </div>
+    </div>
+  </div>
 
   <section>
     <h2>Constructor</h2>
@@ -617,16 +1279,6 @@ function buildHtml(
     <button id="debug-button">Debug</button>
   </div>
 
-  <details class="key-wallet" id="key-wallet">
-    <summary>Keys</summary>
-    <div class="key-wallet-actions">
-      <button id="keygen-button" type="button">Generate Key Pair</button>
-      <span class="key-help">Click a crypto field to fill it directly from a generated key.</span>
-    </div>
-    <div id="key-list" class="key-list"></div>
-    <div id="wallet-status" class="status"></div>
-  </details>
-
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
     const model = ${modelJson};
@@ -635,13 +1287,26 @@ function buildHtml(
     const ctorFields = document.getElementById("constructor-fields");
     const argFields = document.getElementById("arg-fields");
     const functionSelect = document.getElementById("function-select");
-    const keyList = document.getElementById("key-list");
-    const walletStatus = document.getElementById("wallet-status");
-    const keyWallet = document.getElementById("key-wallet");
-    let pendingFill = null;
+    const loadButton = document.getElementById("load-button");
+    state.identityLabels = state.identityLabels && typeof state.identityLabels === "object"
+      ? state.identityLabels
+      : {};
+    state.savedCountsByFunction =
+      state.savedCountsByFunction && typeof state.savedCountsByFunction === "object"
+        ? state.savedCountsByFunction
+        : {};
+    state.savedTotalCount = Number(state.savedTotalCount) || 0;
 
     function fieldValue(defaultValue) {
       return typeof defaultValue === "string" ? defaultValue : String(defaultValue ?? "");
+    }
+
+    function escapeHtml(value) {
+      return String(value ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/"/g, "&quot;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
     }
 
     function normalizedType(typeName) {
@@ -655,7 +1320,7 @@ function buildHtml(
         return "pubkey";
       }
       if (typeName === "sig") {
-        return "secret_key";
+        return "secret";
       }
       if ((typeName === "bytes32" || typeName === "byte[32]" || typeName === "bytes") && name.includes("pkh")) {
         return "pkh";
@@ -663,16 +1328,81 @@ function buildHtml(
       return null;
     }
 
-    function isDefaultCryptoValue(slot, value) {
-      const normalized = String(value ?? "").trim().toLowerCase();
-      if (!normalized) {
-        return true;
+    function tokenFor(alias, slot) {
+      return alias + "." + slot;
+    }
+
+    function canonicalIdentityToken(raw) {
+      const trimmed = String(raw ?? "").trim();
+      const match = /^(?:keypair|identity)([1-9][0-9]*)(?:[.](pubkey|secret|pkh))?$/.exec(trimmed);
+      if (!match) {
+        return null;
       }
-      const body = normalized.startsWith("0x") ? normalized.slice(2) : normalized;
-      if (!body) {
-        return true;
+      const [, index, slot] = match;
+      return slot ? "keypair" + index + "." + slot : "keypair" + index;
+    }
+
+    function displayLabelFor(alias) {
+      const label = state.identityLabels[alias];
+      return typeof label === "string" && label.trim()
+        ? label.trim()
+        : alias;
+    }
+
+    function syncAliasesFromFields() {
+      state.constructorArgs = collectFields(ctorFields, "constructor");
+      syncCurrentArgState();
+
+      const found = new Map();
+      const consider = (raw) => {
+        const canonical = canonicalIdentityToken(raw);
+        if (!canonical) {
+          return;
+        }
+        const index = Number(canonical.slice("keypair".length).split(".")[0]);
+        if (!found.has(index)) {
+          found.set(index, "keypair" + index);
+        }
+      };
+
+      state.keyAliases.forEach(consider);
+      Object.values(state.constructorArgs).forEach(consider);
+      Object.values(state.argsByFunction).forEach((args) => {
+        Object.values(args).forEach(consider);
+      });
+
+      state.keyAliases = [...found.entries()]
+        .sort((left, right) => left[0] - right[0])
+        .map(([, alias]) => alias);
+      state.identityLabels = Object.fromEntries(
+        state.keyAliases
+          .map((alias) => [alias, state.identityLabels[alias]])
+          .filter(([alias, label]) => typeof label === "string" && label.trim() && label.trim() !== alias)
+          .map(([alias, label]) => [alias, label.trim()]),
+      );
+    }
+
+    function nextAlias() {
+      syncAliasesFromFields();
+      let max = 0;
+      state.keyAliases.forEach((alias) => {
+        const match = /^keypair([0-9]+)$/.exec(String(alias).trim());
+        if (match) {
+          max = Math.max(max, Number(match[1]));
+        }
+      });
+      return "keypair" + (max + 1);
+    }
+
+    function addAlias(fillInput, fillSlot) {
+      syncAliasesFromFields();
+      const alias = nextAlias();
+      state.keyAliases.push(alias);
+      syncAliasesFromFields();
+      if (fillInput && fillSlot) {
+        fillFieldWithToken(fillInput, fillSlot, alias);
       }
-      return /^0+$/.test(body);
+      return alias;
     }
 
     function renderFields(container, params, values, group) {
@@ -698,7 +1428,9 @@ function buildHtml(
             '<input data-group="' + group + '" data-name="' + param.name + '" value="' + escapedValue + '" placeholder="' + param.type + '"' +
               (helper ? ' class="crypto-input" data-helper-slot="' + helper + '"' : '') +
             ' />' +
-            (helper ? '<button type="button" class="key-button" data-helper-slot="' + helper + '" data-field-name="' + param.name + '">Fill</button>' : '') +
+            (helper
+              ? '<button type="button" class="secondary-button field-action key-button" data-helper-slot="' + helper + '" data-field-name="' + param.name + '">Pick</button>'
+              : '') +
           '</div>';
       }).join("");
     }
@@ -717,7 +1449,7 @@ function buildHtml(
     function collectFields(container, group) {
       const out = {};
       container.querySelectorAll('input[data-group="' + group + '"]').forEach((input) => {
-        out[input.dataset.name] = input.value;
+        out[input.dataset.name] = canonicalIdentityToken(input.value) ?? input.value;
       });
       return out;
     }
@@ -728,6 +1460,18 @@ function buildHtml(
         return;
       }
       state.argsByFunction[entrypoint.name] = collectFields(argFields, "args");
+    }
+
+    function currentForm() {
+      syncAliasesFromFields();
+      state.function = functionSelect.value;
+      return {
+        function: state.function,
+        constructorArgs: state.constructorArgs,
+        argsByFunction: state.argsByFunction,
+        keyAliases: state.keyAliases,
+        identityLabels: state.identityLabels,
+      };
     }
 
     function renderFunctionOptions() {
@@ -754,60 +1498,75 @@ function buildHtml(
       );
     }
 
-    function setStatus(message, isError) {
-      walletStatus.textContent = message ?? "";
-      walletStatus.className = isError ? "status error" : "status";
-    }
+    function renderLoadButton() {
+      const functionName = String(functionSelect.value || state.function || "");
+      const currentCount = Number(state.savedCountsByFunction[functionName] ?? 0);
+      loadButton.textContent = currentCount > 0 ? 'Load (' + currentCount + ')' : 'Load';
 
-    function keyName(index) {
-      return "key_" + (index + 1);
-    }
-
-    function renderKeyList() {
-      if (!state.keys.length) {
-        keyList.innerHTML = "";
+      if (state.savedTotalCount === 0) {
+        loadButton.title = "No saved scenarios for this contract yet.";
         return;
       }
 
-      keyList.innerHTML = state.keys.map((key, index) => (
-        '<div class="key-row">' +
-          '<span class="key-name">' + keyName(index) + '</span>' +
-          '<span class="key-value" title="' + key.pubkey + '">' + key.pubkey + '</span>' +
-          '<button type="button" data-key-index="' + index + '">Copy</button>' +
-        '</div>'
-      )).join("");
-    }
-
-    function fillFieldFromKey(input, slot, key) {
-      const value = key[slot];
-      if (!value) {
+      if (functionName && currentCount !== state.savedTotalCount) {
+        loadButton.title =
+          currentCount > 0
+            ? currentCount + ' saved for ' + functionName + ', ' + state.savedTotalCount + ' total for this contract.'
+            : 'No saved scenarios for ' + functionName + '. ' + state.savedTotalCount + ' saved for this contract.';
         return;
       }
-      input.value = value;
+
+      loadButton.title = state.savedTotalCount + ' saved for this contract.';
+    }
+
+    function renderAllFields() {
+      renderFields(
+        ctorFields,
+        model.constructorParams,
+        state.constructorArgs,
+        "constructor",
+      );
+      renderArgs();
+    }
+
+    function fillFieldWithToken(input, slot, alias) {
+      input.value = tokenFor(alias, slot);
       input.dispatchEvent(new Event("input", { bubbles: true }));
       input.focus();
-      setStatus('Filled ' + (input.dataset.name || 'field') + ' from ' + slot + '.', false);
-    }
-
-    function autoFillEmptyCryptoFields(key) {
-      document.querySelectorAll("input.crypto-input").forEach((input) => {
-        const slot = input.dataset.helperSlot;
-        if (!slot || !key[slot]) {
-          return;
-        }
-        if (!isDefaultCryptoValue(slot, input.value)) {
-          return;
-        }
-        input.value = key[slot];
-        input.dispatchEvent(new Event("input", { bubbles: true }));
-      });
     }
 
     function closeDropdowns() {
-      document.querySelectorAll(".key-dropdown").forEach((node) => node.remove());
+      document.querySelectorAll(".identity-dropdown").forEach((node) => node.remove());
+    }
+
+    function clearAliasTokens(alias) {
+      const tokens = new Set(["pubkey", "secret", "pkh"].map((slot) => tokenFor(alias, slot)));
+      const clearValues = (values) => Object.fromEntries(
+        Object.entries(values).map(([name, raw]) => {
+          const canonical = canonicalIdentityToken(raw);
+          return [name, canonical && tokens.has(canonical) ? "" : raw];
+        }),
+      );
+
+      state.constructorArgs = clearValues(state.constructorArgs);
+      state.argsByFunction = Object.fromEntries(
+        Object.entries(state.argsByFunction).map(([name, values]) => [
+          name,
+          clearValues(values),
+        ]),
+      );
+    }
+
+    function deleteAlias(alias) {
+      state.keyAliases = state.keyAliases.filter((entry) => entry !== alias);
+      delete state.identityLabels[alias];
+      clearAliasTokens(alias);
+      renderAllFields();
+      closeDropdowns();
     }
 
     function showDropdown(input, slot) {
+      syncAliasesFromFields();
       const fieldRow = input.closest(".field-row");
       if (!fieldRow) {
         return;
@@ -815,67 +1574,65 @@ function buildHtml(
       closeDropdowns();
 
       const dropdown = document.createElement("div");
-      dropdown.className = "key-dropdown";
+      dropdown.className = "identity-dropdown";
 
-      state.keys.forEach((key, index) => {
+      state.keyAliases.forEach((alias) => {
         const item = document.createElement("div");
-        item.className = "key-choice";
+        item.className = "identity-choice";
+        const main = document.createElement("div");
+        main.className = "identity-choice-main";
         const name = document.createElement("span");
-        name.className = "key-choice-name";
-        name.textContent = keyName(index);
+        name.className = "identity-choice-name";
+        name.textContent = displayLabelFor(alias);
         const value = document.createElement("span");
-        value.className = "key-choice-value";
-        value.textContent = key[slot];
-        item.append(name, value);
+        value.className = "identity-choice-value";
+        value.textContent = tokenFor(alias, slot);
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "identity-choice-delete";
+        remove.textContent = "X";
+        remove.title = "Delete " + displayLabelFor(alias);
+        remove.addEventListener("click", (event) => {
+          event.stopPropagation();
+          deleteAlias(alias);
+        });
+        main.append(name, value);
+        item.append(main, remove);
         item.addEventListener("click", () => {
-          fillFieldFromKey(input, slot, key);
+          fillFieldWithToken(input, slot, alias);
           closeDropdowns();
         });
         dropdown.appendChild(item);
       });
 
-      if (state.keys.length) {
+      if (state.keyAliases.length) {
         const divider = document.createElement("div");
-        divider.className = "key-divider";
+        divider.className = "identity-divider";
         dropdown.appendChild(divider);
       }
 
-      const generate = document.createElement("div");
-      generate.className = "key-choice";
-      const generateName = document.createElement("span");
-      generateName.className = "key-choice-name";
-      generateName.textContent = "Generate new";
-      const generateValue = document.createElement("span");
-      generateValue.className = "key-choice-value";
-      generateValue.textContent = slot + " for this field";
-      generate.append(generateName, generateValue);
-      generate.addEventListener("click", () => {
-        pendingFill = { name: input.dataset.name, slot: slot };
-        setStatus("Generating key material...", false);
-        vscode.postMessage({ kind: "generateKeyMaterial" });
+      const add = document.createElement("div");
+      add.className = "identity-choice";
+      const addName = document.createElement("span");
+      addName.className = "identity-choice-name";
+      addName.textContent = "Add " + nextAlias();
+      const addValue = document.createElement("span");
+      addValue.className = "identity-choice-value";
+      addValue.textContent = tokenFor(nextAlias(), slot);
+      add.append(addName, addValue);
+      add.addEventListener("click", () => {
+        addAlias(input, slot);
         closeDropdowns();
       });
-      dropdown.appendChild(generate);
+      dropdown.appendChild(add);
 
       fieldRow.appendChild(dropdown);
     }
 
-    function findField(group, name) {
-      return document.querySelector('input[data-group="' + group + '"][data-name="' + name + '"]');
-    }
-
-    function findPendingField(name) {
-      return findField("constructor", name) || findField("args", name);
-    }
-
     function send(kind) {
-      state.constructorArgs = collectFields(ctorFields, "constructor");
-      syncCurrentArgState();
       vscode.postMessage({
         kind,
-        function: functionSelect.value,
-        constructorArgs: state.constructorArgs,
-        args: state.argsByFunction[functionSelect.value] ?? {},
+        form: currentForm(),
       });
     }
 
@@ -883,21 +1640,23 @@ function buildHtml(
       syncCurrentArgState();
       state.function = functionSelect.value;
       renderArgs();
+      renderLoadButton();
       closeDropdowns();
     });
 
     renderFunctionOptions();
-    renderFields(
-      ctorFields,
-      model.constructorParams,
-      state.constructorArgs,
-      "constructor",
-    );
-    renderArgs();
-    renderKeyList();
+    renderAllFields();
+    renderLoadButton();
 
     document.addEventListener("click", (event) => {
-      const button = event.target.closest(".key-button");
+      const target = event.target instanceof Element
+        ? event.target
+        : event.target?.parentElement ?? null;
+      if (!target) {
+        return;
+      }
+
+      const button = target.closest(".key-button");
       if (button) {
         const row = button.closest(".field-row");
         const input = row?.querySelector("input.crypto-input");
@@ -909,38 +1668,20 @@ function buildHtml(
         return;
       }
 
-      const input = event.target.closest("input.crypto-input");
+      const input = target.closest("input.crypto-input");
       if (input && input.dataset.helperSlot) {
         event.stopPropagation();
         showDropdown(input, input.dataset.helperSlot);
         return;
       }
 
-      const copyButton = event.target.closest("[data-key-index]");
-      if (copyButton) {
-        const keyIndex = Number(copyButton.dataset.keyIndex);
-        const key = state.keys[keyIndex];
-        if (!key || !navigator.clipboard || !navigator.clipboard.writeText) {
-          setStatus("Clipboard API unavailable.", true);
-          return;
-        }
-        navigator.clipboard.writeText(key.secret_key).then(
-          () => setStatus("Copied secret_key.", false),
-          (error) => setStatus("Copy failed: " + error, true),
-        );
-        return;
-      }
-
-      if (!event.target.closest(".key-dropdown")) {
+      if (!target.closest(".identity-dropdown")) {
         closeDropdowns();
       }
     });
 
-    document.getElementById("keygen-button").addEventListener("click", () => {
-      pendingFill = null;
-      setStatus("Generating key material...", false);
-      vscode.postMessage({ kind: "generateKeyMaterial" });
-    });
+    document.getElementById("load-button").addEventListener("click", () => send("loadSaved"));
+    document.getElementById("save-button").addEventListener("click", () => send("saveSaved"));
     document.getElementById("run-button").addEventListener("click", () => send("run"));
     document.getElementById("debug-button").addEventListener("click", () => send("debug"));
 
@@ -951,29 +1692,6 @@ function buildHtml(
       }
       if (message.kind === "triggerLaunch" && (message.launchKind === "run" || message.launchKind === "debug")) {
         send(message.launchKind);
-        return;
-      }
-      if (message.kind === "keyMaterial") {
-        const key = message.keyMaterial;
-        state.keys.push(key);
-        renderKeyList();
-        keyWallet.open = true;
-
-        if (pendingFill) {
-          const input = findPendingField(pendingFill.name);
-          if (input) {
-            fillFieldFromKey(input, pendingFill.slot, key);
-          }
-          pendingFill = null;
-        } else {
-          autoFillEmptyCryptoFields(key);
-          setStatus("Generated key material and filled empty crypto fields.", false);
-        }
-        return;
-      }
-      if (message.kind === "error") {
-        pendingFill = null;
-        setStatus(message.message ?? "Request failed.", true);
       }
     });
   </script>
@@ -998,5 +1716,34 @@ export function registerSilverScriptQuickLaunchPanel(
       (uri?: vscode.Uri, initialFunction?: string) =>
         handlePanelF5(context, out, uri, initialFunction),
     ),
+  );
+  context.subscriptions.push(
+    vscode.commands.registerCommand(
+      "silverscript.debug.primaryCodeLensAction",
+      (uri?: vscode.Uri) =>
+        handlePrimaryCodeLensAction(context, out, uri),
+    ),
+  );
+  context.subscriptions.push(
+    vscode.commands.registerCommand(
+      "silverscript.debug.showSavedScenarios",
+      (
+        uri?: vscode.Uri,
+        initialFunction?: string,
+        showPicker?: boolean,
+      ) =>
+        showSavedScenarios(
+          context,
+          out,
+          uri,
+          initialFunction,
+          showPicker ?? true,
+        ),
+    ),
+  );
+  context.subscriptions.push(
+    vscode.window.onDidChangeActiveTextEditor((editor) => {
+      void handleActiveEditorChange(editor);
+    }),
   );
 }

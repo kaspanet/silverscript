@@ -1,6 +1,3 @@
-import * as fs from "fs/promises";
-import * as path from "path";
-
 export type ContractParam = { name: string; type: string };
 export type Entrypoint = { name: string; params: ContractParam[] };
 export type ContractModel = {
@@ -37,18 +34,6 @@ export type DebugTxScenario = {
   inputs: DebugTxInput[];
   outputs: DebugTxOutput[];
 };
-
-export type DebugParamsFile = {
-  function?: string;
-  constructorArgs?: DebugArgInput;
-  args?: DebugArgInput;
-  tx?: DebugTxScenario;
-};
-
-export function inferDebugParamsPath(scriptPath: string): string {
-  const base = path.basename(scriptPath, path.extname(scriptPath));
-  return path.join(path.dirname(scriptPath), `${base}.debug.json`);
-}
 
 function stripComments(source: string): string {
   return source
@@ -144,58 +129,4 @@ function isDebugArgObject(value: unknown): value is DebugArgObject {
     typeof value === "object" &&
     !Array.isArray(value)
   );
-}
-
-export async function readDebugParams(
-  scriptPath: string,
-  explicitPath?: string,
-): Promise<DebugParamsFile | undefined> {
-  const paramsPath = explicitPath ?? inferDebugParamsPath(scriptPath);
-  try {
-    const parsed = JSON.parse(
-      await fs.readFile(paramsPath, "utf8"),
-    ) as Record<string, unknown>;
-    return {
-      function:
-        typeof parsed.function === "string"
-          ? parsed.function
-          : undefined,
-      constructorArgs:
-        Array.isArray(parsed.constructorArgs) ||
-        isDebugArgObject(parsed.constructorArgs)
-          ? (parsed.constructorArgs as DebugArgInput)
-          : Array.isArray(parsed.constructor_args) ||
-              isDebugArgObject(parsed.constructor_args)
-            ? (parsed.constructor_args as DebugArgInput)
-            : undefined,
-      args:
-        Array.isArray(parsed.args) || isDebugArgObject(parsed.args)
-          ? (parsed.args as DebugArgInput)
-          : undefined,
-      tx:
-        parsed.tx && typeof parsed.tx === "object"
-          ? (parsed.tx as DebugTxScenario)
-          : undefined,
-    };
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code === "ENOENT") {
-      return undefined;
-    }
-    throw error;
-  }
-}
-
-export async function writeDebugParams(
-  scriptPath: string,
-  params: DebugParamsFile,
-  explicitPath?: string,
-): Promise<string> {
-  const paramsPath = explicitPath ?? inferDebugParamsPath(scriptPath);
-  await fs.writeFile(
-    paramsPath,
-    JSON.stringify(params, null, 2) + "\n",
-    "utf8",
-  );
-  return paramsPath;
 }

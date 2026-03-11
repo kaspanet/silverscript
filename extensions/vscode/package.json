@@ -53,11 +53,6 @@
         "command": "silverscript.debug.configureLaunch",
         "category": "SilverScript",
         "title": "SilverScript: Run / Debug Contract"
-      },
-      {
-        "command": "silverscript.debug.openParamsFile",
-        "category": "SilverScript",
-        "title": "SilverScript: Open Debug Params"
       }
     ],
     "keybindings": [
@@ -85,10 +80,6 @@
               "scriptPath": {
                 "type": "string",
                 "description": "Path to SilverScript source file"
-              },
-              "paramsFile": {
-                "type": "string",
-                "description": "Optional path to a sidecar params file (*.debug.json)"
               },
               "function": {
                 "type": "string",
@@ -195,6 +186,11 @@
           "type": "boolean",
           "default": true,
           "description": "When running from a SilverScript repo checkout, build the Rust debug adapter automatically if no compatible binary is available."
+        },
+        "silverscript.debuggerTrace": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable verbose SilverScript debugger adapter lifecycle logging in the output channel."
         }
       }
     }
