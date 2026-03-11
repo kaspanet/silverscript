@@ -5219,6 +5219,58 @@ fn compiles_reused_variables_and_verifies() {
 }
 
 #[test]
+fn return_reused_local_is_stored_once_and_reused() {
+    let source = r#"
+        contract Test() {
+            entrypoint function main() : (int) {
+                int a = 2 + 3;
+                return(a * a + a);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(
+        source,
+        &[],
+        CompileOptions { allow_entrypoint_return: true, ..CompileOptions::default() },
+    )
+    .expect("compile succeeds");
+
+    let expected = ScriptBuilder::new()
+        .add_i64(2)
+        .unwrap()
+        .add_i64(3)
+        .unwrap()
+        .add_op(OpAdd)
+        .unwrap()
+        .add_i64(0)
+        .unwrap()
+        .add_op(OpPick)
+        .unwrap()
+        .add_i64(1)
+        .unwrap()
+        .add_op(OpPick)
+        .unwrap()
+        .add_op(OpMul)
+        .unwrap()
+        .add_i64(1)
+        .unwrap()
+        .add_op(OpPick)
+        .unwrap()
+        .add_op(OpAdd)
+        .unwrap()
+        .add_i64(1)
+        .unwrap()
+        .add_op(OpRoll)
+        .unwrap()
+        .add_op(OpDrop)
+        .unwrap()
+        .drain();
+
+    assert_eq!(compiled.script, expected);
+}
+
+#[test]
 fn compiles_sigscript_inputs_and_verifies() {
     let source = r#"
         contract Test() {
@@ -5958,4 +6010,52 @@ fn function_call_assignment_result_is_stored_once_and_reused() {
     let sigscript_err = compiled.build_sig_script("main", vec![Expr::int(29)]).expect("sigscript builds");
     let result_err = run_script_with_sigscript(compiled.script, sigscript_err);
     assert!(result_err.is_err(), "stored function-call assignment result should still enforce the second require");
+}
+
+#[test]
+fn struct_return_field_is_stored_once_and_reused() {
+    let source = r#"
+        contract StructFieldRepeat() {
+            struct S {
+                int a;
+                int b;
+            }
+
+            function f(int x) : (S) {
+                return({
+                    a: x + 1,
+                    b: x * x,
+                });
+            }
+
+            entrypoint function main(int x) {
+                (S s) = f(x);
+                require(s.a < 10);
+                require(s.b < 20);
+                require(s.a > 1);
+                require(s.b > 2);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("struct-return local should compile");
+
+    assert_eq!(
+        compiled.script.iter().copied().filter(|op| *op == OpAdd).count(),
+        1,
+        "s.a should be computed once and reused across both require statements"
+    );
+    assert_eq!(
+        compiled.script.iter().copied().filter(|op| *op == OpMul).count(),
+        1,
+        "s.b should be computed once and reused across both require statements"
+    );
+
+    let sigscript_ok = compiled.build_sig_script("main", vec![Expr::int(3)]).expect("sigscript builds");
+    let result_ok = run_script_with_sigscript(compiled.script.clone(), sigscript_ok);
+    assert!(result_ok.is_ok(), "stored struct fields should execute successfully: {}", result_ok.unwrap_err());
+
+    let sigscript_err = compiled.build_sig_script("main", vec![Expr::int(10)]).expect("sigscript builds");
+    let result_err = run_script_with_sigscript(compiled.script, sigscript_err);
+    assert!(result_err.is_err(), "stored struct fields should still enforce the require conditions");
 }
