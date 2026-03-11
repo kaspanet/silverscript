@@ -755,6 +755,29 @@ fn build_sig_script_supports_state_entrypoint_arguments() {
     assert_eq!(sigscript, expected);
 }
 
+#[test]
+fn build_sig_script_supports_sig_array_arguments() {
+    let source = r#"
+        contract C() {
+            entrypoint function main(sig[] sigs) {
+                require(sigs.length == 2);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let sig_a = vec![0x11u8; 65];
+    let sig_b = vec![0x22u8; 65];
+    let sigscript = compiled
+        .build_sig_script("main", vec![vec![Expr::bytes(sig_a.clone()), Expr::bytes(sig_b.clone())].into()])
+        .expect("sigscript builds");
+
+    let mut encoded = sig_a;
+    encoded.extend(sig_b);
+    let expected = ScriptBuilder::new().add_data(&encoded).unwrap().drain();
+    assert_eq!(sigscript, expected);
+}
+
 fn struct_array_arg<'i>(values: Vec<(i64, Vec<u8>)>) -> Expr<'i> {
     values.into_iter().map(|(a, b)| struct_object(vec![("a", Expr::int(a)), ("b", Expr::bytes(b))])).collect::<Vec<_>>().into()
 }
@@ -3624,6 +3647,42 @@ fn read_input_state_accepts_three_field_state_under_selector_dispatch() {
 }
 
 #[test]
+fn read_input_state_accepts_pubkey_and_bool_fields_under_selector_dispatch() {
+    let source = r#"
+        contract C(bool initFlag, pubkey initOwner) {
+            bool flag = initFlag;
+            pubkey owner = initOwner;
+
+            entrypoint function noop() {
+                require(true);
+            }
+
+            entrypoint function main() {
+                State s = readInputState(this.activeInputIndex);
+                require(s.flag);
+                require(s.owner == 0x0202020202020202020202020202020202020202020202020202020202020202);
+            }
+        }
+    "#;
+
+    let input_compiled =
+        compile_contract(source, &[true.into(), vec![2u8; 32].into()], CompileOptions::default()).expect("compile succeeds");
+    let sigscript = input_compiled.build_sig_script("main", vec![]).expect("sigscript builds");
+    let sigscript = pay_to_script_hash_signature_script(input_compiled.script.clone(), sigscript).unwrap();
+    let output_compiled =
+        compile_contract(source, &[true.into(), vec![2u8; 32].into()], CompileOptions::default()).expect("compile succeeds");
+    let input = test_input(0, sigscript);
+    let input_spk = pay_to_script_hash_script(&input_compiled.script);
+    let output_spk = pay_to_script_hash_script(&output_compiled.script);
+    let output = TransactionOutput { value: 1000, script_public_key: output_spk, covenant: None };
+    let tx = Transaction::new(1, vec![input], vec![output.clone()], 0, Default::default(), 0, vec![]);
+    let utxo_entry = UtxoEntry::new(output.value, input_spk, 0, tx.is_coinbase(), None);
+
+    let result = execute_input(tx, vec![utxo_entry], 0);
+    assert!(result.is_ok(), "readInputState should read pubkey and bool state under selector dispatch: {result:?}");
+}
+
+#[test]
 fn validate_output_state_accepts_state_under_selector_dispatch() {
     let source = r#"
         contract C(int initX) {
@@ -3698,6 +3757,39 @@ fn validate_output_state_accepts_three_field_state_under_selector_dispatch() {
 
     let result = execute_input(tx, vec![utxo_entry], 0);
     assert!(result.is_ok(), "mixed-width state should validate output state under selector dispatch: {result:?}");
+}
+
+#[test]
+fn validate_output_state_accepts_pubkey_field_under_selector_dispatch() {
+    let source = r#"
+        contract C(pubkey initOwner) {
+            pubkey owner = initOwner;
+
+            entrypoint function noop() {
+                require(true);
+            }
+
+            entrypoint function main(State next) {
+                validateOutputState(0, next);
+            }
+        }
+    "#;
+
+    let input_compiled = compile_contract(source, &[vec![1u8; 32].into()], CompileOptions::default()).expect("compile succeeds");
+    let sigscript = input_compiled
+        .build_sig_script("main", vec![struct_object(vec![("owner", Expr::bytes(vec![2u8; 32]))])])
+        .expect("sigscript builds");
+    let sigscript = pay_to_script_hash_signature_script(input_compiled.script.clone(), sigscript).unwrap();
+    let output_compiled = compile_contract(source, &[vec![2u8; 32].into()], CompileOptions::default()).expect("compile succeeds");
+    let input = test_input(0, sigscript);
+    let input_spk = pay_to_script_hash_script(&input_compiled.script);
+    let output_spk = pay_to_script_hash_script(&output_compiled.script);
+    let output = TransactionOutput { value: 1000, script_public_key: output_spk, covenant: None };
+    let tx = Transaction::new(1, vec![input], vec![output.clone()], 0, Default::default(), 0, vec![]);
+    let utxo_entry = UtxoEntry::new(output.value, input_spk, 0, tx.is_coinbase(), None);
+
+    let result = execute_input(tx, vec![utxo_entry], 0);
+    assert!(result.is_ok(), "pubkey state should validate output state under selector dispatch: {result:?}");
 }
 
 #[test]
