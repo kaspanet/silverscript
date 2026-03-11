@@ -81,7 +81,7 @@ contract Advanced(int limit, pubkey owner) {
         }
         balance = current;
         require(this.age >= 10, "age");
-        yield(tail.split(1)[1]);
+        return(tail.split(1)[1]);
     }
 }
 "#;
@@ -94,7 +94,7 @@ contract Advanced(int limit, pubkey owner) {
     assert_eq!(reformatted, formatted);
     assert!(formatted.contains("{balance: int current} = readState();"));
     assert!(formatted.contains("byte[] tail = this.activeScriptPubKey.slice(1, this.activeScriptPubKey.length);"));
-    assert!(formatted.contains("yield(tail.split(1)[1]);"));
+    assert!(formatted.contains("return(tail.split(1)[1]);"));
 }
 
 #[test]
@@ -123,19 +123,19 @@ fn compiled_formatted_contract_preserves_exact_ast_for_basic_contract() {
 }
 
 #[test]
-fn compiled_formatted_contract_preserves_exact_ast_with_state_and_yield() {
+fn compiled_formatted_contract_preserves_exact_ast_with_state_and_return() {
     let source = r#"contract ExactState() {
     int amount = 7;
 
-    entrypoint function main() {
+    entrypoint function main(): (byte[]) {
         {amount: int current} = readInputState(this.activeInputIndex);
         byte[] tail = this.activeScriptPubKey.slice(1, this.activeScriptPubKey.length);
         validateOutputState(0, {amount: current});
         require(this.age >= 10, "age");
-        yield(tail.split(1)[1]);
+        return(tail.split(1)[1]);
     }
 }
 "#;
 
-    assert_compiled_formatted_contract_preserves_ast(source, CompileOptions { allow_yield: true, ..CompileOptions::default() });
+    assert_compiled_formatted_contract_preserves_ast(source, CompileOptions { allow_entrypoint_return: true, ..CompileOptions::default() });
 }

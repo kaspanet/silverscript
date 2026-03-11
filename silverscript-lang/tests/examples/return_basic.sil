@@ -1,10 +1,9 @@
-contract YieldBasic() {
-    entrypoint function main(int b) {
+contract ReturnBasic() {
+    entrypoint function main(int b) : (int, int) {
         int a = 5;
         int x = a + 7;
-        yield(x);
         int c = b * b;
         require(c == 64);
-        yield(b);
+        return(x, b);
     }
 }

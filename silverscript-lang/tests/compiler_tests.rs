@@ -560,21 +560,6 @@ fn rejects_struct_named_state() {
 }
 
 #[test]
-fn rejects_yield_without_allow_option() {
-    let source = r#"
-        contract YieldDefaultDisallowed() {
-            entrypoint function main() {
-                int x = 1;
-                yield(x + 1);
-            }
-        }
-    "#;
-
-    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("yield should be disallowed by default");
-    assert!(err.to_string().contains("yield requires allow_yield=true"));
-}
-
-#[test]
 fn rejects_external_call_without_entrypoint() {
     let source = r#"
         contract Entry() {
@@ -5215,17 +5200,11 @@ fn compiles_reused_variables_and_verifies() {
         .unwrap()
         .add_op(OpAdd)
         .unwrap()
-        .add_i64(0)
-        .unwrap()
-        .add_op(OpPick)
-        .unwrap()
         .add_i64(30)
         .unwrap()
         .add_op(OpNumEqual)
         .unwrap()
         .add_op(OpVerify)
-        .unwrap()
-        .add_op(OpDrop)
         .unwrap()
         .add_op(OpDrop)
         .unwrap()

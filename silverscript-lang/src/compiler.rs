@@ -46,7 +46,6 @@ fn generated_covenant_delegate_entrypoint_name(function_name: &str) -> String {
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct CompileOptions {
-    pub allow_yield: bool,
     pub allow_entrypoint_return: bool,
     pub record_debug_infos: bool,
 }
@@ -1127,7 +1126,6 @@ fn statement_uses_script_size(stmt: &Statement<'_>) -> bool {
                 || expr_uses_script_size(max_iterations)
                 || body.iter().any(statement_uses_script_size)
         }
-        Statement::Yield { expr, .. } => expr_uses_script_size(expr),
         Statement::Return { exprs, .. } => exprs.iter().any(expr_uses_script_size),
         Statement::Console { args, .. } => args.iter().any(|arg| match arg {
             crate::ast::ConsoleArg::Identifier(_, _) => false,
@@ -1390,31 +1388,6 @@ fn lower_struct_array_value_expr<'i>(
     }
 }
 
-fn flatten_runtime_value_expr<'i>(
-    expr: &Expr<'i>,
-    types: &HashMap<String, String>,
-    structs: &StructRegistry,
-    contract_fields: &[ContractFieldAst<'i>],
-    contract_constants: &HashMap<String, Expr<'i>>,
-    contract_field_prefix_len: usize,
-) -> Result<Vec<Expr<'i>>, CompilerError> {
-    let scope = lowering_scope_from_types(types)?;
-    if let Ok(type_ref) = infer_struct_expr_type(expr, &scope, structs, contract_fields) {
-        if struct_name_from_type_ref(&type_ref, structs).is_some() {
-            return lower_struct_value_expr(
-                expr,
-                &type_ref,
-                &scope,
-                structs,
-                contract_fields,
-                contract_constants,
-                contract_field_prefix_len,
-            );
-        }
-    }
-    Ok(vec![lower_expr(expr, &scope, structs)?])
-}
-
 fn flatten_runtime_return_exprs<'i>(
     exprs: &[Expr<'i>],
     return_types: &[TypeRef],
@@ -1581,21 +1554,126 @@ fn contains_return(stmt: &Statement<'_>) -> bool {
     }
 }
 
-fn contains_yield(stmt: &Statement<'_>) -> bool {
-    match stmt {
-        Statement::Yield { .. } => true,
-        Statement::If { then_branch, else_branch, .. } => {
-            then_branch.iter().any(contains_yield) || else_branch.as_ref().is_some_and(|branch| branch.iter().any(contains_yield))
-        }
-        Statement::For { body, .. } => body.iter().any(contains_yield),
-        _ => false,
-    }
-}
-
 fn collect_assigned_names<'i>(statements: &[Statement<'i>]) -> HashSet<String> {
     let mut assigned = HashSet::new();
     collect_assigned_names_into(statements, &mut assigned);
     assigned
+}
+
+fn collect_identifier_uses<'i>(statements: &[Statement<'i>]) -> HashMap<String, usize> {
+    let mut uses = HashMap::new();
+    for stmt in statements {
+        collect_statement_identifier_uses(stmt, &mut uses);
+    }
+    uses
+}
+
+fn bump_identifier_use(uses: &mut HashMap<String, usize>, name: &str) {
+    *uses.entry(name.to_string()).or_insert(0) += 1;
+}
+
+fn collect_statement_identifier_uses<'i>(stmt: &Statement<'i>, uses: &mut HashMap<String, usize>) {
+    match stmt {
+        Statement::VariableDefinition { expr, .. } => {
+            if let Some(expr) = expr {
+                collect_expr_identifier_uses(expr, uses);
+            }
+        }
+        Statement::TupleAssignment { expr, .. }
+        | Statement::Assign { expr, .. }
+        | Statement::TimeOp { expr, .. }
+        | Statement::Require { expr, .. }
+        | Statement::StructDestructure { expr, .. } => collect_expr_identifier_uses(expr, uses),
+        Statement::ArrayPush { expr, .. } => collect_expr_identifier_uses(expr, uses),
+        Statement::FunctionCall { args, .. }
+        | Statement::FunctionCallAssign { args, .. }
+        | Statement::StateFunctionCallAssign { args, .. } => {
+            for arg in args {
+                collect_expr_identifier_uses(arg, uses);
+            }
+        }
+        Statement::If { condition, then_branch, else_branch, .. } => {
+            collect_expr_identifier_uses(condition, uses);
+            for stmt in then_branch {
+                collect_statement_identifier_uses(stmt, uses);
+            }
+            if let Some(else_branch) = else_branch {
+                for stmt in else_branch {
+                    collect_statement_identifier_uses(stmt, uses);
+                }
+            }
+        }
+        Statement::For { start, end, max_iterations, body, .. } => {
+            collect_expr_identifier_uses(start, uses);
+            collect_expr_identifier_uses(end, uses);
+            collect_expr_identifier_uses(max_iterations, uses);
+            for stmt in body {
+                collect_statement_identifier_uses(stmt, uses);
+            }
+        }
+        Statement::Return { exprs, .. } => {
+            for expr in exprs {
+                collect_expr_identifier_uses(expr, uses);
+            }
+        }
+        Statement::Console { args, .. } => {
+            for arg in args {
+                match arg {
+                    crate::ast::ConsoleArg::Identifier(name, ..) => bump_identifier_use(uses, name),
+                    crate::ast::ConsoleArg::Literal(expr) => collect_expr_identifier_uses(expr, uses),
+                }
+            }
+        }
+    }
+}
+
+fn collect_expr_identifier_uses<'i>(expr: &Expr<'i>, uses: &mut HashMap<String, usize>) {
+    match &expr.kind {
+        ExprKind::Identifier(name) => bump_identifier_use(uses, name),
+        ExprKind::Unary { expr, .. } => collect_expr_identifier_uses(expr, uses),
+        ExprKind::Binary { left, right, .. } => {
+            collect_expr_identifier_uses(left, uses);
+            collect_expr_identifier_uses(right, uses);
+        }
+        ExprKind::IfElse { condition, then_expr, else_expr } => {
+            collect_expr_identifier_uses(condition, uses);
+            collect_expr_identifier_uses(then_expr, uses);
+            collect_expr_identifier_uses(else_expr, uses);
+        }
+        ExprKind::Array(values) => {
+            for value in values {
+                collect_expr_identifier_uses(value, uses);
+            }
+        }
+        ExprKind::StateObject(fields) => {
+            for field in fields {
+                collect_expr_identifier_uses(&field.expr, uses);
+            }
+        }
+        ExprKind::Call { args, .. } | ExprKind::New { args, .. } => {
+            for arg in args {
+                collect_expr_identifier_uses(arg, uses);
+            }
+        }
+        ExprKind::Split { source, index, .. } | ExprKind::ArrayIndex { source, index } => {
+            collect_expr_identifier_uses(source, uses);
+            collect_expr_identifier_uses(index, uses);
+        }
+        ExprKind::Slice { source, start, end, .. } => {
+            collect_expr_identifier_uses(source, uses);
+            collect_expr_identifier_uses(start, uses);
+            collect_expr_identifier_uses(end, uses);
+        }
+        ExprKind::Introspection { index, .. } => collect_expr_identifier_uses(index, uses),
+        ExprKind::UnarySuffix { source, .. } | ExprKind::FieldAccess { source, .. } => collect_expr_identifier_uses(source, uses),
+        ExprKind::Int(_)
+        | ExprKind::DateLiteral(_)
+        | ExprKind::Bool(_)
+        | ExprKind::Byte(_)
+        | ExprKind::String(_)
+        | ExprKind::Nullary(_)
+        | ExprKind::NumberWithUnit { .. } => {}
+    }
 }
 
 fn collect_assigned_names_into<'i>(statements: &[Statement<'i>], assigned: &mut HashSet<String>) {
@@ -2227,28 +2305,22 @@ fn compile_entrypoint_function<'i>(
         }
     }
     let mut builder = ScriptBuilder::new();
-    let mut yields: Vec<Expr> = Vec::new();
+    let mut return_exprs: Vec<Expr> = Vec::new();
     let assigned_names = collect_assigned_names(&function.body);
-
-    if !options.allow_yield && function.body.iter().any(contains_yield) {
-        return Err(CompilerError::Unsupported("yield requires allow_yield=true".to_string()));
-    }
+    let identifier_uses = collect_identifier_uses(&function.body);
 
     if function.entrypoint && !options.allow_entrypoint_return && function.body.iter().any(contains_return) {
         return Err(CompilerError::Unsupported("entrypoint return requires allow_entrypoint_return=true".to_string()));
     }
 
     let has_return = function.body.iter().any(contains_return);
-    let allow_stack_locals = !has_return && !function.body.iter().any(contains_yield);
+    let allow_stack_locals = !has_return;
     if has_return {
         if !matches!(function.body.last(), Some(Statement::Return { .. })) {
             return Err(CompilerError::Unsupported("return statement must be the last statement".to_string()));
         }
         if function.body[..function.body.len() - 1].iter().any(contains_return) {
             return Err(CompilerError::Unsupported("return statement must be the last statement".to_string()));
-        }
-        if function.body.iter().any(contains_yield) {
-            return Err(CompilerError::Unsupported("return cannot be combined with yield".to_string()));
         }
         if function.return_types.is_empty() {
             return Err(CompilerError::Unsupported("return requires function return types".to_string()));
@@ -2276,13 +2348,14 @@ fn compile_entrypoint_function<'i>(
             for expr in exprs {
                 let resolved = resolve_expr_for_runtime(expr.clone(), &env, &types, &mut HashSet::new())
                     .map_err(|err| err.with_span(&expr.span))?;
-                yields.push(resolved);
+                return_exprs.push(resolved);
             }
         } else {
             compile_statement(
                 stmt,
                 &mut env,
                 &assigned_names,
+                &identifier_uses,
                 &mut types,
                 &mut params,
                 &mut builder,
@@ -2294,7 +2367,6 @@ fn compile_entrypoint_function<'i>(
                 functions,
                 function_order,
                 function_index,
-                &mut yields,
                 script_size,
                 allow_stack_locals,
                 recorder,
@@ -2304,9 +2376,9 @@ fn compile_entrypoint_function<'i>(
         recorder.finish_statement_at(stmt, builder.script().len(), &env, &types)?;
     }
 
-    let flattened_yields = if has_return {
+    let flattened_returns = if has_return {
         flatten_runtime_return_exprs(
-            &yields,
+            &return_exprs,
             &function.return_types,
             &types,
             structs,
@@ -2315,22 +2387,11 @@ fn compile_entrypoint_function<'i>(
             contract_field_prefix_len,
         )?
     } else {
-        let mut flattened = Vec::new();
-        for expr in &yields {
-            flattened.extend(flatten_runtime_value_expr(
-                expr,
-                &types,
-                structs,
-                contract_fields,
-                constants,
-                contract_field_prefix_len,
-            )?);
-        }
-        flattened
+        Vec::new()
     };
 
-    let yield_count = flattened_yields.len();
-    if yield_count == 0 {
+    let return_count = flattened_returns.len();
+    if return_count == 0 {
         for _ in 0..params.len().saturating_sub(initial_stack_binding_count) {
             builder.add_op(OpDrop)?;
         }
@@ -2343,7 +2404,7 @@ fn compile_entrypoint_function<'i>(
         builder.add_op(OpTrue)?;
     } else {
         let mut stack_depth = 0i64;
-        for expr in &flattened_yields {
+        for expr in &flattened_returns {
             compile_expr(
                 expr,
                 &env,
@@ -2361,12 +2422,12 @@ fn compile_entrypoint_function<'i>(
             builder.add_op(OpDrop)?;
         }
         for _ in 0..param_count {
-            builder.add_i64(yield_count as i64)?;
+            builder.add_i64(return_count as i64)?;
             builder.add_op(OpRoll)?;
             builder.add_op(OpDrop)?;
         }
         for _ in 0..contract_field_count {
-            builder.add_i64(yield_count as i64)?;
+            builder.add_i64(return_count as i64)?;
             builder.add_op(OpRoll)?;
             builder.add_op(OpDrop)?;
         }
@@ -2381,6 +2442,7 @@ fn compile_statement<'i>(
     stmt: &Statement<'i>,
     env: &mut HashMap<String, Expr<'i>>,
     assigned_names: &HashSet<String>,
+    identifier_uses: &HashMap<String, usize>,
     types: &mut HashMap<String, String>,
     params: &mut HashMap<String, i64>,
     builder: &mut ScriptBuilder,
@@ -2392,7 +2454,6 @@ fn compile_statement<'i>(
     functions: &HashMap<String, FunctionAst<'i>>,
     function_order: &HashMap<String, usize>,
     function_index: usize,
-    yields: &mut Vec<Expr<'i>>,
     script_size: Option<i64>,
     allow_stack_locals: bool,
     recorder: &mut DebugRecorder<'i>,
@@ -2540,6 +2601,7 @@ fn compile_statement<'i>(
 
                 if allow_stack_locals
                     && !assigned_names.contains(name)
+                    && identifier_uses.get(name).copied().unwrap_or(0) >= 2
                     && !env.contains_key(name)
                     && !params.contains_key(name)
                     && matches!(effective_type_name.as_str(), "int" | "bool" | "byte")
@@ -2557,6 +2619,7 @@ fn compile_statement<'i>(
                         script_size,
                         contract_constants,
                     )?;
+                    env.insert(name.clone(), expr);
                     push_stack_binding(params, name);
                     Ok(Some(name.clone()))
                 } else {
@@ -2699,6 +2762,7 @@ fn compile_statement<'i>(
             else_branch.as_deref(),
             env,
             assigned_names,
+            identifier_uses,
             types,
             params,
             builder,
@@ -2710,7 +2774,6 @@ fn compile_statement<'i>(
             functions,
             function_order,
             function_index,
-            yields,
             script_size,
             allow_stack_locals,
             recorder,
@@ -2725,6 +2788,7 @@ fn compile_statement<'i>(
             *span,
             env,
             assigned_names,
+            identifier_uses,
             types,
             params,
             builder,
@@ -2736,18 +2800,11 @@ fn compile_statement<'i>(
             functions,
             function_order,
             function_index,
-            yields,
             script_size,
             allow_stack_locals,
             recorder,
         )
         .map(|_| None),
-        Statement::Yield { expr, .. } => {
-            let mut visiting = HashSet::new();
-            let resolved = resolve_expr(expr.clone(), env, &mut visiting)?;
-            yields.push(resolved);
-            Ok(None)
-        }
         Statement::Return { .. } => Err(CompilerError::Unsupported("return statement must be the last statement".to_string())),
         Statement::TupleAssignment { left_name, right_name, expr, .. } => match &expr.kind {
             ExprKind::Split { source, index, span: split_span, .. } => {
@@ -2894,6 +2951,7 @@ fn compile_statement<'i>(
                     &lowered_stmt,
                     env,
                     assigned_names,
+                    identifier_uses,
                     types,
                     params,
                     builder,
@@ -2905,7 +2963,6 @@ fn compile_statement<'i>(
                     functions,
                     function_order,
                     function_index,
-                    yields,
                     script_size,
                     allow_stack_locals,
                     recorder,
@@ -2974,6 +3031,7 @@ fn compile_statement<'i>(
                     if bindings.len() == 1
                         && allow_stack_locals
                         && !assigned_names.contains(&binding.name)
+                        && identifier_uses.get(&binding.name).copied().unwrap_or(0) >= 2
                         && !env.contains_key(&binding.name)
                         && !params.contains_key(&binding.name)
                         && matches!(binding_type_name.as_str(), "int" | "bool" | "byte")
@@ -2991,6 +3049,7 @@ fn compile_statement<'i>(
                             script_size,
                             contract_constants,
                         )?;
+                        env.insert(binding.name.clone(), lowered);
                         push_stack_binding(params, &binding.name);
                         added_stack_local = Some(binding.name.clone());
                     } else {
@@ -3376,7 +3435,7 @@ struct InlineCallBindings<'i> {
     debug_env: HashMap<String, Expr<'i>>,
     types: HashMap<String, String>,
     compile_params: HashMap<String, i64>,
-    yield_rewrites: Vec<(String, Expr<'i>)>,
+    return_rewrites: Vec<(String, Expr<'i>)>,
     preserved_return_idents: HashSet<String>,
 }
 
@@ -3395,7 +3454,7 @@ fn prepare_inline_call_bindings<'i>(
     let mut types = caller_types.clone();
     let mut env: HashMap<String, Expr<'i>> = contract_constants.clone();
     env.extend(caller_env.clone());
-    let mut yield_rewrites = Vec::new();
+    let mut return_rewrites = Vec::new();
     let mut preserved_return_idents = HashSet::new();
     let caller_scope = lowering_scope_from_types(caller_types)?;
     for (param, arg) in function.params.iter().zip(args.iter()) {
@@ -3405,7 +3464,7 @@ fn prepare_inline_call_bindings<'i>(
         preserved_return_idents.insert(param.name.clone());
         types.insert(param.name.clone(), param_type_name.clone());
         if struct_name_from_type_ref(&param.type_ref, structs).is_some() {
-            yield_rewrites.push((param.name.clone(), resolved.clone()));
+            return_rewrites.push((param.name.clone(), resolved.clone()));
             if !matches!(&resolved.kind, ExprKind::Identifier(identifier) if identifier == &param.name) {
                 env.insert(param.name.clone(), resolved.clone());
             }
@@ -3452,7 +3511,7 @@ fn prepare_inline_call_bindings<'i>(
                 let lowered = lower_runtime_expr(&resolved, caller_types, structs)?;
                 (lowered.clone(), lowered)
             };
-            yield_rewrites.push((param.name.clone(), rewrite_expr));
+            return_rewrites.push((param.name.clone(), rewrite_expr));
             if !matches!(&lowered.kind, ExprKind::Identifier(identifier) if identifier == &param.name) {
                 env.insert(param.name.clone(), lowered);
             }
@@ -3464,14 +3523,14 @@ fn prepare_inline_call_bindings<'i>(
 
     let _ = callee_name;
 
-    Ok(InlineCallBindings { env, debug_env, types, compile_params, yield_rewrites, preserved_return_idents })
+    Ok(InlineCallBindings { env, debug_env, types, compile_params, return_rewrites, preserved_return_idents })
 }
 
-fn rewrite_inline_yields<'i>(yields: Vec<Expr<'i>>, rewrites: &[(String, Expr<'i>)]) -> Vec<Expr<'i>> {
+fn rewrite_inline_returns<'i>(returns: Vec<Expr<'i>>, rewrites: &[(String, Expr<'i>)]) -> Vec<Expr<'i>> {
     if rewrites.is_empty() {
-        return yields;
+        return returns;
     }
-    yields
+    returns
         .into_iter()
         .map(|expr| {
             let mut current = expr;
@@ -3569,17 +3628,14 @@ fn compile_inline_call<'i>(
         contract_field_prefix_len,
     )?;
 
-    if !options.allow_yield && function.body.iter().any(contains_yield) {
-        return Err(CompilerError::Unsupported("yield requires allow_yield=true".to_string()));
-    }
-
     if function.entrypoint && !options.allow_entrypoint_return && function.body.iter().any(contains_return) {
         return Err(CompilerError::Unsupported("entrypoint return requires allow_entrypoint_return=true".to_string()));
     }
 
     let has_return = function.body.iter().any(contains_return);
     let assigned_names = collect_assigned_names(&function.body);
-    let allow_stack_locals = !has_return && !function.body.iter().any(contains_yield);
+    let identifier_uses = collect_identifier_uses(&function.body);
+    let allow_stack_locals = !has_return;
     if has_return {
         if !matches!(function.body.last(), Some(Statement::Return { .. })) {
             return Err(CompilerError::Unsupported("return statement must be the last statement".to_string()));
@@ -3587,27 +3643,25 @@ fn compile_inline_call<'i>(
         if function.body[..function.body.len() - 1].iter().any(contains_return) {
             return Err(CompilerError::Unsupported("return statement must be the last statement".to_string()));
         }
-        if function.body.iter().any(contains_yield) {
-            return Err(CompilerError::Unsupported("return cannot be combined with yield".to_string()));
-        }
     }
 
     let call_start = builder.script().len();
     recorder.begin_inline_call(call_span, call_start, function, &bindings.debug_env)?;
 
-    let mut yields: Vec<Expr<'i>> = Vec::new();
+    let mut returns: Vec<Expr<'i>> = Vec::new();
     let initial_stack_binding_count = bindings.compile_params.len();
     if allow_stack_locals {
         for param in &function.params {
             let param_type_name = type_name_from_ref(&param.type_ref);
             if !matches!(param_type_name.as_str(), "int" | "bool" | "byte")
+                || identifier_uses.get(&param.name).copied().unwrap_or(0) < 2
                 || assigned_names.contains(&param.name)
                 || bindings.compile_params.contains_key(&param.name)
             {
                 continue;
             }
 
-            let Some(bound_expr) = bindings.env.remove(&param.name) else {
+            let Some(bound_expr) = bindings.env.get(&param.name).cloned() else {
                 continue;
             };
 
@@ -3648,13 +3702,14 @@ fn compile_inline_call<'i>(
                 let resolved =
                     resolve_inline_return_expr(expr.clone(), &bindings.env, &bindings.preserved_return_idents, &mut HashSet::new())
                         .map_err(|err| err.with_span(&expr.span))?;
-                yields.push(resolved);
+                returns.push(resolved);
             }
         } else {
             compile_statement(
                 stmt,
                 &mut bindings.env,
                 &assigned_names,
+                &identifier_uses,
                 &mut bindings.types,
                 &mut bindings.compile_params,
                 builder,
@@ -3666,7 +3721,6 @@ fn compile_inline_call<'i>(
                 functions,
                 function_order,
                 callee_index,
-                &mut yields,
                 script_size,
                 allow_stack_locals,
                 recorder,
@@ -3682,7 +3736,7 @@ fn compile_inline_call<'i>(
     let call_end = builder.script().len();
     recorder.finish_inline_call(call_span, call_end, name);
 
-    Ok(rewrite_inline_yields(yields, &bindings.yield_rewrites))
+    Ok(rewrite_inline_returns(returns, &bindings.return_rewrites))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3692,6 +3746,7 @@ fn compile_if_statement<'i>(
     else_branch: Option<&[Statement<'i>]>,
     env: &mut HashMap<String, Expr<'i>>,
     assigned_names: &HashSet<String>,
+    identifier_uses: &HashMap<String, usize>,
     types: &mut HashMap<String, String>,
     params: &mut HashMap<String, i64>,
     builder: &mut ScriptBuilder,
@@ -3703,9 +3758,8 @@ fn compile_if_statement<'i>(
     functions: &HashMap<String, FunctionAst<'i>>,
     function_order: &HashMap<String, usize>,
     function_index: usize,
-    yields: &mut Vec<Expr<'i>>,
     script_size: Option<i64>,
-    allow_stack_locals: bool,
+    _allow_stack_locals: bool,
     recorder: &mut DebugRecorder<'i>,
 ) -> Result<(), CompilerError> {
     let condition = lower_runtime_expr(condition, types, structs)?;
@@ -3731,6 +3785,7 @@ fn compile_if_statement<'i>(
         then_branch,
         &mut then_env,
         assigned_names,
+        identifier_uses,
         &mut then_types,
         params,
         builder,
@@ -3742,10 +3797,9 @@ fn compile_if_statement<'i>(
         functions,
         function_order,
         function_index,
-        yields,
         script_size,
         true,
-        allow_stack_locals,
+        false,
         recorder,
     )?;
 
@@ -3757,6 +3811,7 @@ fn compile_if_statement<'i>(
             else_branch,
             &mut else_env,
             assigned_names,
+            identifier_uses,
             &mut else_types,
             params,
             builder,
@@ -3768,10 +3823,9 @@ fn compile_if_statement<'i>(
             functions,
             function_order,
             function_index,
-            yields,
             script_size,
             true,
-            allow_stack_locals,
+            false,
             recorder,
         )?;
     }
@@ -3843,6 +3897,7 @@ fn compile_block<'i>(
     statements: &[Statement<'i>],
     env: &mut HashMap<String, Expr<'i>>,
     assigned_names: &HashSet<String>,
+    identifier_uses: &HashMap<String, usize>,
     types: &mut HashMap<String, String>,
     params: &mut HashMap<String, i64>,
     builder: &mut ScriptBuilder,
@@ -3854,7 +3909,6 @@ fn compile_block<'i>(
     functions: &HashMap<String, FunctionAst<'i>>,
     function_order: &HashMap<String, usize>,
     function_index: usize,
-    yields: &mut Vec<Expr<'i>>,
     script_size: Option<i64>,
     scoped_stack_locals: bool,
     allow_stack_locals: bool,
@@ -3867,6 +3921,7 @@ fn compile_block<'i>(
             stmt,
             env,
             assigned_names,
+            identifier_uses,
             types,
             params,
             builder,
@@ -3878,7 +3933,6 @@ fn compile_block<'i>(
             functions,
             function_order,
             function_index,
-            yields,
             script_size,
             allow_stack_locals,
             recorder,
@@ -3913,6 +3967,7 @@ fn compile_for_statement<'i>(
     for_span: span::Span<'i>,
     env: &mut HashMap<String, Expr<'i>>,
     assigned_names: &HashSet<String>,
+    identifier_uses: &HashMap<String, usize>,
     types: &mut HashMap<String, String>,
     params: &mut HashMap<String, i64>,
     builder: &mut ScriptBuilder,
@@ -3924,7 +3979,6 @@ fn compile_for_statement<'i>(
     functions: &HashMap<String, FunctionAst<'i>>,
     function_order: &HashMap<String, usize>,
     function_index: usize,
-    yields: &mut Vec<Expr<'i>>,
     script_size: Option<i64>,
     allow_stack_locals: bool,
     recorder: &mut DebugRecorder<'i>,
@@ -3955,6 +4009,7 @@ fn compile_for_statement<'i>(
                 loop_span,
                 env,
                 assigned_names,
+                identifier_uses,
                 types,
                 params,
                 builder,
@@ -3966,7 +4021,6 @@ fn compile_for_statement<'i>(
                 functions,
                 function_order,
                 function_index,
-                yields,
                 script_size,
                 allow_stack_locals,
                 recorder,
@@ -3981,6 +4035,7 @@ fn compile_for_statement<'i>(
                 loop_span,
                 env,
                 assigned_names,
+                identifier_uses,
                 types,
                 params,
                 builder,
@@ -3992,7 +4047,6 @@ fn compile_for_statement<'i>(
                 functions,
                 function_order,
                 function_index,
-                yields,
                 script_size,
                 allow_stack_locals,
                 recorder,
@@ -4030,6 +4084,7 @@ fn compile_constant_for_statement<'i>(
     loop_span: SourceSpan,
     env: &mut HashMap<String, Expr<'i>>,
     assigned_names: &HashSet<String>,
+    identifier_uses: &HashMap<String, usize>,
     types: &mut HashMap<String, String>,
     params: &mut HashMap<String, i64>,
     builder: &mut ScriptBuilder,
@@ -4041,9 +4096,8 @@ fn compile_constant_for_statement<'i>(
     functions: &HashMap<String, FunctionAst<'i>>,
     function_order: &HashMap<String, usize>,
     function_index: usize,
-    yields: &mut Vec<Expr<'i>>,
     script_size: Option<i64>,
-    allow_stack_locals: bool,
+    _allow_stack_locals: bool,
     recorder: &mut DebugRecorder<'i>,
 ) -> Result<(), CompilerError> {
     for iteration in 0..max_iterations {
@@ -4058,6 +4112,7 @@ fn compile_constant_for_statement<'i>(
             body,
             env,
             assigned_names,
+            identifier_uses,
             types,
             params,
             builder,
@@ -4069,10 +4124,9 @@ fn compile_constant_for_statement<'i>(
             functions,
             function_order,
             function_index,
-            yields,
             script_size,
             true,
-            allow_stack_locals,
+            false,
             recorder,
         )?;
     }
@@ -4090,6 +4144,7 @@ fn compile_runtime_for_statement<'i>(
     loop_span: SourceSpan,
     env: &mut HashMap<String, Expr<'i>>,
     assigned_names: &HashSet<String>,
+    identifier_uses: &HashMap<String, usize>,
     types: &mut HashMap<String, String>,
     params: &mut HashMap<String, i64>,
     builder: &mut ScriptBuilder,
@@ -4101,9 +4156,8 @@ fn compile_runtime_for_statement<'i>(
     functions: &HashMap<String, FunctionAst<'i>>,
     function_order: &HashMap<String, usize>,
     function_index: usize,
-    yields: &mut Vec<Expr<'i>>,
     script_size: Option<i64>,
-    allow_stack_locals: bool,
+    _allow_stack_locals: bool,
     recorder: &mut DebugRecorder<'i>,
 ) -> Result<(), CompilerError> {
     let mut current = resolve_expr_for_runtime(start, env, types, &mut HashSet::new())?;
@@ -4123,6 +4177,7 @@ fn compile_runtime_for_statement<'i>(
             None,
             env,
             assigned_names,
+            identifier_uses,
             types,
             params,
             builder,
@@ -4134,9 +4189,8 @@ fn compile_runtime_for_statement<'i>(
             functions,
             function_order,
             function_index,
-            yields,
             script_size,
-            allow_stack_locals,
+            false,
             recorder,
         )?;
 
@@ -4661,6 +4715,13 @@ fn compile_expr<'i>(
             if !visiting.insert(name.clone()) {
                 return Err(CompilerError::CyclicIdentifier(name.clone()));
             }
+            if let Some(index) = params.get(name) {
+                builder.add_i64(*index + *stack_depth)?;
+                *stack_depth += 1;
+                builder.add_op(OpPick)?;
+                visiting.remove(name);
+                return Ok(());
+            }
             if let Some(expr) = env.get(name) {
                 if let Some(type_name) = types.get(name) {
                     if let ExprKind::Array(values) = &expr.kind {
@@ -4674,13 +4735,6 @@ fn compile_expr<'i>(
                     }
                 }
                 compile_expr(expr, env, params, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
-                visiting.remove(name);
-                return Ok(());
-            }
-            if let Some(index) = params.get(name) {
-                builder.add_i64(*index + *stack_depth)?;
-                *stack_depth += 1;
-                builder.add_op(OpPick)?;
                 visiting.remove(name);
                 return Ok(());
             }

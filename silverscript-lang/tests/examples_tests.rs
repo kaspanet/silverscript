@@ -304,10 +304,10 @@ fn compiles_for_loop_ctor_example_with_constructor_bounds() {
 }
 
 #[test]
-fn compiles_yield_basic_example_and_verifies() {
-    let source = load_example_source("yield_basic.sil");
+fn compiles_return_basic_example_file_and_verifies() {
+    let source = load_example_source("return_basic.sil");
 
-    let options = CompileOptions { allow_yield: true, ..CompileOptions::default() };
+    let options = CompileOptions { allow_entrypoint_return: true, ..CompileOptions::default() };
     let compiled = compile_contract(&source, &[], options).expect("compile succeeds");
     let script = script_with_return_checks(compiled.script.clone(), &[12, 8]);
     let recipient0 = [9u8; 32];
@@ -318,25 +318,25 @@ fn compiles_yield_basic_example_and_verifies() {
     // Test main(b=8) returns [12, 8] on stack.
     let sigscript = compiled.build_sig_script("main", vec![8.into()]).expect("sigscript builds");
     let result = run_contract_with_tx(script, output0_script, output1_script, 2000, 500, 500, sigscript, 0);
-    assert!(result.is_ok(), "yield basic failed: {}", result.unwrap_err());
+    assert!(result.is_ok(), "return basic failed: {}", result.unwrap_err());
 }
 
 #[test]
-fn compiles_yield_loop_example_and_verifies() {
-    let source = load_example_source("yield_loop.sil");
+fn compiles_return_loop_example_file_and_verifies() {
+    let source = load_example_source("return_loop.sil");
 
-    let options = CompileOptions { allow_yield: true, ..CompileOptions::default() };
+    let options = CompileOptions { allow_entrypoint_return: true, ..CompileOptions::default() };
     let compiled = compile_contract(&source, &[], options).expect("compile succeeds");
-    let script = script_with_return_checks(compiled.script.clone(), &[1, 2, 3, 4]);
+    let script = script_with_return_checks(compiled.script.clone(), &[10]);
     let recipient0 = [11u8; 32];
     let recipient1 = [12u8; 32];
     let output0_script = build_p2pk_script(&recipient0);
     let output1_script = build_p2pk_script(&recipient1);
 
-    // Test main() returns loop values [1,2,3,4] on stack.
+    // Test main() returns the loop total on stack.
     let sigscript = compiled.build_sig_script("main", vec![]).expect("sigscript builds");
     let result = run_contract_with_tx(script, output0_script, output1_script, 2000, 500, 500, sigscript, 0);
-    assert!(result.is_ok(), "yield loop failed: {}", result.unwrap_err());
+    assert!(result.is_ok(), "return loop failed: {}", result.unwrap_err());
 }
 
 #[test]
@@ -360,79 +360,6 @@ fn compiles_return_basic_example_and_verifies() {
     let sigscript = compiled.build_sig_script("main", vec![1.into(), 3.into()]).expect("sigscript builds");
     let result = run_contract_with_tx(script, output0_script, output1_script, 2000, 500, 500, sigscript, 0);
     assert!(result.is_ok(), "return basic failed: {}", result.unwrap_err());
-}
-
-#[test]
-fn runs_token_example_and_verifies() {
-    let source = load_example_source("token.sil");
-
-    let owner = random_keypair();
-    let recipient = random_keypair();
-    let owner_pk = owner.x_only_public_key().0.serialize();
-    let recipient_pk = recipient.x_only_public_key().0.serialize();
-
-    let constructor_args = [(4).into()];
-    let options = CompileOptions { allow_yield: true, ..CompileOptions::default() };
-    let compiled = compile_contract(&source, &constructor_args, options).expect("compile succeeds");
-
-    let in_amount = 4_000i64;
-    let num_outs = 4i64;
-    let out_amount = in_amount / num_outs;
-    let mut expected_element = out_amount.to_le_bytes().to_vec();
-    expected_element.extend_from_slice(&recipient_pk);
-    let expected = [expected_element.clone(), expected_element.clone(), expected_element.clone(), expected_element];
-
-    let mut checked_script = ScriptBuilder::new();
-    checked_script.add_ops(&compiled.script).unwrap();
-    for element in expected.iter().rev() {
-        checked_script.add_data(element).unwrap();
-        checked_script.add_op(OpEqualVerify).unwrap();
-    }
-    checked_script.add_op(OpTrue).unwrap();
-    let checked_script = checked_script.drain();
-
-    let input = TransactionInput {
-        previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([22u8; 32]), index: 0 },
-        signature_script: vec![],
-        sequence: 0,
-        sig_op_count: 1,
-    };
-    let output =
-        TransactionOutput { value: 8_000, script_public_key: ScriptPublicKey::new(0, checked_script.clone().into()), covenant: None };
-
-    let tx = Transaction::new(1, vec![input.clone()], vec![output.clone()], 0, Default::default(), 0, vec![]);
-    let utxo_entry = UtxoEntry::new(output.value, ScriptPublicKey::new(0, checked_script.clone().into()), 0, tx.is_coinbase(), None);
-    let mut tx = MutableTransaction::with_entries(tx, vec![utxo_entry.clone()]);
-
-    let reused_values = SigHashReusedValuesUnsync::new();
-    let sig_hash = calc_schnorr_signature_hash(&tx.as_verifiable(), 0, SIG_HASH_ALL, &reused_values);
-    let msg = secp256k1::Message::from_digest_slice(sig_hash.as_bytes().as_slice()).unwrap();
-    let sig = owner.sign_schnorr(msg);
-    let mut signature = Vec::new();
-    signature.extend_from_slice(sig.as_ref().as_slice());
-    signature.push(SIG_HASH_ALL.to_u8());
-
-    let sigscript = compiled
-        .build_sig_script(
-            "split",
-            vec![owner_pk.to_vec().into(), signature.clone().into(), in_amount.into(), num_outs.into(), recipient_pk.to_vec().into()],
-        )
-        .expect("sigscript builds");
-    tx.tx.inputs[0].signature_script = sigscript;
-
-    let tx = tx.as_verifiable();
-    let sig_cache = Cache::new(10_000);
-    let mut vm = TxScriptEngine::from_transaction_input(
-        &tx,
-        &tx.inputs()[0],
-        0,
-        &utxo_entry,
-        EngineCtx::new(&sig_cache).with_reused(&reused_values),
-        EngineFlags { covenants_enabled: true },
-    );
-
-    let result = vm.execute();
-    assert!(result.is_ok(), "token example failed: {}", result.unwrap_err());
 }
 
 fn build_p2pk_script(pubkey: &[u8]) -> Vec<u8> {

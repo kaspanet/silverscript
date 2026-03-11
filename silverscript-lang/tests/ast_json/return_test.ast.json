@@ -1,11 +1,14 @@
 {
-  "name": "YieldTest",
+  "name": "ReturnTest",
   "params": [],
   "constants": [],
   "functions": [
     {
       "name": "main",
       "entrypoint": true,
+      "return_types": [
+        { "base": "int" }
+      ],
       "params": [],
       "body": [
         {
@@ -18,16 +21,18 @@
           }
         },
         {
-          "kind": "yield",
+          "kind": "return",
           "data": {
-            "expr": {
-              "kind": "binary",
-              "data": {
-                "op": "add",
-                "left": { "kind": "identifier", "data": "x" },
-                "right": { "kind": "int", "data": 2 }
+            "exprs": [
+              {
+                "kind": "binary",
+                "data": {
+                  "op": "add",
+                  "left": { "kind": "identifier", "data": "x" },
+                  "right": { "kind": "int", "data": 2 }
+                }
               }
-            }
+            ]
           }
         }
       ]
