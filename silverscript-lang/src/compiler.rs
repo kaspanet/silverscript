@@ -1560,10 +1560,7 @@ fn fixed_state_field_payload_len<'i>(
     contract_constants: &HashMap<String, Expr<'i>>,
 ) -> Result<(usize, bool), CompilerError> {
     let payload_len = fixed_type_size_with_constants_ref(&field.type_ref, contract_constants).ok_or_else(|| {
-        CompilerError::Unsupported(format!(
-            "readInputState does not support field type {}",
-            type_name_from_ref(&field.type_ref)
-        ))
+        CompilerError::Unsupported(format!("readInputState does not support field type {}", type_name_from_ref(&field.type_ref)))
     })?;
     let decode_numeric = field.type_ref.array_dims.is_empty() && matches!(field.type_ref.base, TypeBase::Int | TypeBase::Bool);
     Ok((payload_len, decode_numeric))
@@ -2540,16 +2537,7 @@ fn compile_statement<'i>(
                             },
                             span::Span::default(),
                         )
-                    } else if leaf_type_name == "bool" {
-                        Expr::new(
-                            ExprKind::Call {
-                                name: "byte[1]".to_string(),
-                                args: vec![resolved_leaf_expr],
-                                name_span: span::Span::default(),
-                            },
-                            span::Span::default(),
-                        )
-                    } else if leaf_type_name == "byte" {
+                    } else if matches!(leaf_type_name.as_str(), "bool" | "byte") {
                         Expr::new(
                             ExprKind::Call {
                                 name: "byte[1]".to_string(),
@@ -2594,12 +2582,7 @@ fn compile_statement<'i>(
                     ExprKind::Call { name: "byte[8]".to_string(), args: vec![expr.clone()], name_span: span::Span::default() },
                     span::Span::default(),
                 )
-            } else if element_type == "bool" {
-                Expr::new(
-                    ExprKind::Call { name: "byte[1]".to_string(), args: vec![expr.clone()], name_span: span::Span::default() },
-                    span::Span::default(),
-                )
-            } else if element_type == "byte" {
+            } else if matches!(element_type.as_str(), "bool" | "byte") {
                 Expr::new(
                     ExprKind::Call { name: "byte[1]".to_string(), args: vec![expr.clone()], name_span: span::Span::default() },
                     span::Span::default(),
@@ -2609,11 +2592,7 @@ fn compile_statement<'i>(
                     expr.clone()
                 } else {
                     Expr::new(
-                        ExprKind::Call {
-                            name: element_type.to_string(),
-                            args: vec![expr.clone()],
-                            name_span: span::Span::default(),
-                        },
+                        ExprKind::Call { name: element_type.to_string(), args: vec![expr.clone()], name_span: span::Span::default() },
                         span::Span::default(),
                     )
                 }

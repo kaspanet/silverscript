@@ -3665,12 +3665,12 @@ fn read_input_state_accepts_pubkey_and_bool_fields_under_selector_dispatch() {
         }
     "#;
 
-    let input_compiled = compile_contract(source, &[true.into(), vec![2u8; 32].into()], CompileOptions::default())
-        .expect("compile succeeds");
+    let input_compiled =
+        compile_contract(source, &[true.into(), vec![2u8; 32].into()], CompileOptions::default()).expect("compile succeeds");
     let sigscript = input_compiled.build_sig_script("main", vec![]).expect("sigscript builds");
     let sigscript = pay_to_script_hash_signature_script(input_compiled.script.clone(), sigscript).unwrap();
-    let output_compiled = compile_contract(source, &[true.into(), vec![2u8; 32].into()], CompileOptions::default())
-        .expect("compile succeeds");
+    let output_compiled =
+        compile_contract(source, &[true.into(), vec![2u8; 32].into()], CompileOptions::default()).expect("compile succeeds");
     let input = test_input(0, sigscript);
     let input_spk = pay_to_script_hash_script(&input_compiled.script);
     let output_spk = pay_to_script_hash_script(&output_compiled.script);
