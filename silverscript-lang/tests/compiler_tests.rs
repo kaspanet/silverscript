@@ -3850,6 +3850,26 @@ fn plain_state_return_accepts_local_fixed_byte_field_from_local_identifier() {
 }
 
 #[test]
+fn byte_hex_literal_error_recommends_scalar_cast() {
+    let source = r#"
+        contract C() {
+            entrypoint function main() {
+                byte local = 0x07;
+                require(local == local);
+            }
+        }
+    "#;
+
+    let err =
+        compile_contract(source, &[], CompileOptions::default()).expect_err("scalar byte hex literal should require an explicit cast");
+
+    assert_eq!(
+        err.to_string(),
+        "unsupported feature: variable 'local' expects byte; hex literals are byte arrays; use byte(0x07) to cast a one-byte hex literal to byte"
+    );
+}
+
+#[test]
 fn compiles_read_input_state_to_expected_script() {
     let source = r#"
         contract C(int initX, byte[2] initY) {

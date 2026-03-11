@@ -1854,6 +1854,18 @@ fn expr_matches_return_type_ref<'i>(
     }
 }
 
+fn expr_matches_return_type_ref_hint<'i>(expr: &Expr<'i>, type_ref: &TypeRef) -> Option<String> {
+    match (&expr.kind, &type_ref.base, type_ref.array_dims.is_empty()) {
+        (ExprKind::Array(values), TypeBase::Byte, true) if values.len() == 1 => match values[0].kind {
+            ExprKind::Byte(byte) => {
+                Some(format!("hex literals are byte arrays; use byte({byte:#04x}) to cast a one-byte hex literal to byte"))
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 fn infer_fixed_array_type_from_initializer_ref<'i>(
     declared_type: &TypeRef,
     initializer: Option<&Expr<'i>>,
@@ -2665,7 +2677,14 @@ fn compile_statement<'i>(
                 let expr = lower_runtime_expr(&expr, types, structs)?;
                 let expected_type_ref = parse_type_ref(&effective_type_name)?;
                 if !expr_matches_return_type_ref(&expr, &expected_type_ref, types, contract_constants) {
-                    return Err(CompilerError::Unsupported(format!("variable '{}' expects {}", name, effective_type_name)));
+                    return Err(CompilerError::Unsupported(format!(
+                        "variable '{}' expects {}{}",
+                        name,
+                        effective_type_name,
+                        expr_matches_return_type_ref_hint(&expr, &expected_type_ref)
+                            .map(|hint| format!("; {hint}"))
+                            .unwrap_or_default()
+                    )));
                 }
                 types.insert(name.clone(), effective_type_name.clone());
                 let existing_is_predeclared_default = is_predeclared_scalar_default(name, &effective_type_name, env);
@@ -3183,7 +3202,14 @@ fn compile_statement<'i>(
                 }
                 let lowered_expr = lower_runtime_expr(expr, types, structs)?;
                 if !expr_matches_return_type_ref(&lowered_expr, &expected_type_ref, types, contract_constants) {
-                    return Err(CompilerError::Unsupported(format!("variable '{}' expects {}", name, type_name)));
+                    return Err(CompilerError::Unsupported(format!(
+                        "variable '{}' expects {}{}",
+                        name,
+                        type_name,
+                        expr_matches_return_type_ref_hint(&lowered_expr, &expected_type_ref)
+                            .map(|hint| format!("; {hint}"))
+                            .unwrap_or_default()
+                    )));
                 }
                 let updated =
                     if let Some(previous) = env.get(name) { replace_identifier(&lowered_expr, name, previous) } else { lowered_expr };
