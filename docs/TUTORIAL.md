@@ -462,23 +462,22 @@ require(this.age >= 86400);  // 1 day in seconds
 
 ### For Loops
 
-For loops iterate over a range of integers. The bounds must be compile-time constants:
+For loops iterate over a runtime range of integers, but the unroll bound must be known at compile time:
 
 ```javascript
 contract ForLoop() {
-    int constant START = 0;
-    int constant END = 4;
+    int constant MAX_ITERATIONS = 4;
     int constant MIN_OUT = 1000;
 
-    entrypoint function check() {
-        for(i, START, END) {
+    entrypoint function check(int start, int end) {
+        for(i, start, end, MAX_ITERATIONS) {
             require(tx.outputs[i].value >= MIN_OUT + i);
         }
     }
 }
 ```
 
-The loop variable `i` takes values from `START` to `END - 1` (exclusive end).
+The loop variable `i` takes values from `start` to `end - 1` (exclusive end), but the compiler emits exactly `MAX_ITERATIONS` guarded iterations.
 
 ---
 

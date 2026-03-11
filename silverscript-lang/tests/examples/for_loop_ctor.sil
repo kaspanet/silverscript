@@ -2,7 +2,7 @@ contract ForLoop(int start, int end) {
     int constant MIN_OUT = 1000;
 
     entrypoint function check() {
-        for(i, start, end) {
+        for(i, start, end, end - start) {
             require(tx.outputs[i].value >= MIN_OUT + i);
         }
     }

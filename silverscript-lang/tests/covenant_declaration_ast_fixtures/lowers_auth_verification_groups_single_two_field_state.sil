@@ -30,11 +30,9 @@ contract Matrix(int max_outs, int init_amount, byte[32] init_owner) {
         require(cov_out_count <= max_outs);
         require(cov_out_count == new_states.length);
 
-        for(cov_k, 0, max_outs) {
-            if (cov_k < cov_out_count) {
-                int cov_out_idx = OpAuthOutputIdx(this.activeInputIndex, cov_k);
-                validateOutputState(cov_out_idx, new_states[cov_k]);
-            }
+        for(cov_k, 0, cov_out_count, max_outs) {
+            int cov_out_idx = OpAuthOutputIdx(this.activeInputIndex, cov_k);
+            validateOutputState(cov_out_idx, new_states[cov_k]);
         }
     }
 }

@@ -90,11 +90,9 @@ contract Matrix(int max_ins, int max_outs, int init_amount, byte[32] init_owner)
         require(cov_out_count <= max_outs);
         require(cov_out_count == new_states.length);
 
-        for(cov_k, 0, max_outs) {
-            if (cov_k < cov_out_count) {
-                int cov_out_idx = OpAuthOutputIdx(this.activeInputIndex, cov_k);
-                validateOutputState(cov_out_idx, new_states[cov_k]);
-            }
+        for(cov_k, 0, cov_out_count, max_outs) {
+            int cov_out_idx = OpAuthOutputIdx(this.activeInputIndex, cov_k);
+            validateOutputState(cov_out_idx, new_states[cov_k]);
         }
     }
 
@@ -114,11 +112,9 @@ contract Matrix(int max_ins, int max_outs, int init_amount, byte[32] init_owner)
         require(cov_out_count <= max_outs);
         require(cov_out_count == new_states.length);
 
-        for(cov_k, 0, max_outs) {
-            if (cov_k < cov_out_count) {
-                int cov_out_idx = OpAuthOutputIdx(this.activeInputIndex, cov_k);
-                validateOutputState(cov_out_idx, new_states[cov_k]);
-            }
+        for(cov_k, 0, cov_out_count, max_outs) {
+            int cov_out_idx = OpAuthOutputIdx(this.activeInputIndex, cov_k);
+            validateOutputState(cov_out_idx, new_states[cov_k]);
         }
     }
 
@@ -156,21 +152,17 @@ contract Matrix(int max_ins, int max_outs, int init_amount, byte[32] init_owner)
         int cov_out_count = OpCovOutputCount(cov_id);
         State[] prev_states;
 
-        for(cov_in_k, 0, max_ins) {
-            if (cov_in_k < cov_in_count) {
-                prev_states.push(readInputState(OpCovInputIdx(cov_id, cov_in_k)));
-            }
+        for(cov_in_k, 0, cov_in_count, max_ins) {
+            prev_states.push(readInputState(OpCovInputIdx(cov_id, cov_in_k)));
         }
 
         covenant_policy_cov_verification(prev_states, new_states, nonce);
         require(cov_out_count <= max_outs);
         require(cov_out_count == new_states.length);
 
-        for(cov_k, 0, max_outs) {
-            if (cov_k < cov_out_count) {
-                int cov_out_idx = OpCovOutputIdx(cov_id, cov_k);
-                validateOutputState(cov_out_idx, new_states[cov_k]);
-            }
+        for(cov_k, 0, cov_out_count, max_outs) {
+            int cov_out_idx = OpCovOutputIdx(cov_id, cov_k);
+            validateOutputState(cov_out_idx, new_states[cov_k]);
         }
     }
 
@@ -195,20 +187,16 @@ contract Matrix(int max_ins, int max_outs, int init_amount, byte[32] init_owner)
 
         int cov_out_count = OpCovOutputCount(cov_id);
         State[] prev_states;
-        for(cov_in_k, 0, max_ins) {
-            if (cov_in_k < cov_in_count) {
-                prev_states.push(readInputState(OpCovInputIdx(cov_id, cov_in_k)));
-            }
+        for(cov_in_k, 0, cov_in_count, max_ins) {
+            prev_states.push(readInputState(OpCovInputIdx(cov_id, cov_in_k)));
         }
         (State[] cov_new_states) = covenant_policy_cov_transition(prev_states, fee);
         require(cov_out_count <= max_outs);
         require(cov_out_count == cov_new_states.length);
 
-        for(cov_k, 0, max_outs) {
-            if (cov_k < cov_out_count) {
-                int cov_out_idx = OpCovOutputIdx(cov_id, cov_k);
-                validateOutputState(cov_out_idx, cov_new_states[cov_k]);
-            }
+        for(cov_k, 0, cov_out_count, max_outs) {
+            int cov_out_idx = OpCovOutputIdx(cov_id, cov_k);
+            validateOutputState(cov_out_idx, cov_new_states[cov_k]);
         }
     }
 
@@ -230,11 +218,9 @@ contract Matrix(int max_ins, int max_outs, int init_amount, byte[32] init_owner)
         require(cov_out_count <= max_outs);
         require(cov_out_count == new_states.length);
 
-        for(cov_k, 0, max_outs) {
-            if (cov_k < cov_out_count) {
-                int cov_out_idx = OpAuthOutputIdx(this.activeInputIndex, cov_k);
-                validateOutputState(cov_out_idx, new_states[cov_k]);
-            }
+        for(cov_k, 0, cov_out_count, max_outs) {
+            int cov_out_idx = OpAuthOutputIdx(this.activeInputIndex, cov_k);
+            validateOutputState(cov_out_idx, new_states[cov_k]);
         }
     }
 
@@ -253,21 +239,17 @@ contract Matrix(int max_ins, int max_outs, int init_amount, byte[32] init_owner)
         int cov_out_count = OpCovOutputCount(cov_id);
         State[] prev_states;
 
-        for(cov_in_k, 0, max_ins) {
-            if (cov_in_k < cov_in_count) {
-                prev_states.push(readInputState(OpCovInputIdx(cov_id, cov_in_k)));
-            }
+        for(cov_in_k, 0, cov_in_count, max_ins) {
+            prev_states.push(readInputState(OpCovInputIdx(cov_id, cov_in_k)));
         }
 
         covenant_policy_inferred_cov(prev_states, new_states);
         require(cov_out_count <= max_outs);
         require(cov_out_count == new_states.length);
 
-        for(cov_k, 0, max_outs) {
-            if (cov_k < cov_out_count) {
-                int cov_out_idx = OpCovOutputIdx(cov_id, cov_k);
-                validateOutputState(cov_out_idx, new_states[cov_k]);
-            }
+        for(cov_k, 0, cov_out_count, max_outs) {
+            int cov_out_idx = OpCovOutputIdx(cov_id, cov_k);
+            validateOutputState(cov_out_idx, new_states[cov_k]);
         }
     }
 
@@ -320,11 +302,9 @@ contract Matrix(int max_ins, int max_outs, int init_amount, byte[32] init_owner)
         require(cov_out_count <= 1);
         require(cov_out_count == cov_new_states.length);
 
-        for(cov_k, 0, 1) {
-            if (cov_k < cov_out_count) {
-                int cov_out_idx = OpAuthOutputIdx(this.activeInputIndex, cov_k);
-                validateOutputState(cov_out_idx, cov_new_states[cov_k]);
-            }
+        for(cov_k, 0, cov_out_count, 1) {
+            int cov_out_idx = OpAuthOutputIdx(this.activeInputIndex, cov_k);
+            validateOutputState(cov_out_idx, cov_new_states[cov_k]);
         }
     }
 
@@ -340,11 +320,9 @@ contract Matrix(int max_ins, int max_outs, int init_amount, byte[32] init_owner)
         require(cov_out_count <= max_outs);
         require(cov_out_count == new_states.length);
 
-        for(cov_k, 0, max_outs) {
-            if (cov_k < cov_out_count) {
-                int cov_out_idx = OpAuthOutputIdx(this.activeInputIndex, cov_k);
-                validateOutputState(cov_out_idx, new_states[cov_k]);
-            }
+        for(cov_k, 0, cov_out_count, max_outs) {
+            int cov_out_idx = OpAuthOutputIdx(this.activeInputIndex, cov_k);
+            validateOutputState(cov_out_idx, new_states[cov_k]);
         }
     }
 }

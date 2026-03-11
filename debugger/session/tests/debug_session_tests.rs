@@ -709,10 +709,8 @@ fn debug_session_exposes_loop_index_variable_i() -> Result<(), Box<dyn Error>> {
 contract LoopIndex() {
     entrypoint function main() {
         int sum = 0;
-        for(i,0,2){
-            if(i < 2){
-                sum = sum + i;
-            }
+        for(i,0,2,2){
+            sum = sum + i;
         }
         require(sum >= 0);
     }

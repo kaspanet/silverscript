@@ -1144,8 +1144,11 @@ fn statement_uses_script_size(stmt: &Statement<'_>) -> bool {
                 || then_branch.iter().any(statement_uses_script_size)
                 || else_branch.as_ref().is_some_and(|branch| branch.iter().any(statement_uses_script_size))
         }
-        Statement::For { start, end, body, .. } => {
-            expr_uses_script_size(start) || expr_uses_script_size(end) || body.iter().any(statement_uses_script_size)
+        Statement::For { start, end, max_iterations, body, .. } => {
+            expr_uses_script_size(start)
+                || expr_uses_script_size(end)
+                || expr_uses_script_size(max_iterations)
+                || body.iter().any(statement_uses_script_size)
         }
         Statement::Yield { expr, .. } => expr_uses_script_size(expr),
         Statement::Return { exprs, .. } => exprs.iter().any(expr_uses_script_size),
@@ -2657,10 +2660,11 @@ fn compile_statement<'i>(
             script_size,
             recorder,
         ),
-        Statement::For { ident, start, end, body, span, .. } => compile_for_statement(
+        Statement::For { ident, start, end, max_iterations, body, span, .. } => compile_for_statement(
             ident,
             start,
             end,
+            max_iterations,
             body,
             *span,
             env,
@@ -3797,6 +3801,7 @@ fn compile_for_statement<'i>(
     ident: &str,
     start_expr: &Expr<'i>,
     end_expr: &Expr<'i>,
+    max_iterations_expr: &Expr<'i>,
     body: &[Statement<'i>],
     for_span: span::Span<'i>,
     env: &mut HashMap<String, Expr<'i>>,
@@ -3815,18 +3820,125 @@ fn compile_for_statement<'i>(
     script_size: Option<i64>,
     recorder: &mut DebugRecorder<'i>,
 ) -> Result<(), CompilerError> {
-    let start = eval_const_int(start_expr, contract_constants)?;
-    let end = eval_const_int(end_expr, contract_constants)?;
-    if end < start {
-        return Err(CompilerError::Unsupported("for loop end must be >= start".to_string()));
+    let max_iterations = eval_const_int(max_iterations_expr, contract_constants)
+        .map_err(|_| CompilerError::Unsupported("for loop max iterations must be a compile-time integer".to_string()))?;
+    if max_iterations < 0 {
+        return Err(CompilerError::Unsupported("for loop max iterations must be a non-negative compile-time integer".to_string()));
     }
+
+    let start = lower_runtime_expr(start_expr, types, structs)?;
+    let end = lower_runtime_expr(end_expr, types, structs)?;
 
     let name = ident.to_string();
     let loop_span = SourceSpan::from(for_span);
     let previous = env.get(&name).cloned();
-    for value in start..end {
-        env.insert(name.clone(), Expr::int(value));
-        recorder.record_variable_binding(name.clone(), "int".to_string(), Expr::int(value), builder.script().len(), loop_span);
+    let previous_type = types.get(&name).cloned();
+    types.insert(name.clone(), "int".to_string());
+
+    let result =
+        if let (Ok(start), Ok(end)) = (eval_const_int(start_expr, contract_constants), eval_const_int(end_expr, contract_constants)) {
+            compile_constant_for_statement(
+                &name,
+                start,
+                end,
+                max_iterations as usize,
+                body,
+                loop_span,
+                env,
+                params,
+                types,
+                builder,
+                options,
+                contract_fields,
+                contract_field_prefix_len,
+                contract_constants,
+                structs,
+                functions,
+                function_order,
+                function_index,
+                yields,
+                script_size,
+                recorder,
+            )
+        } else {
+            compile_runtime_for_statement(
+                &name,
+                start,
+                end,
+                max_iterations as usize,
+                body,
+                loop_span,
+                env,
+                params,
+                types,
+                builder,
+                options,
+                contract_fields,
+                contract_field_prefix_len,
+                contract_constants,
+                structs,
+                functions,
+                function_order,
+                function_index,
+                yields,
+                script_size,
+                recorder,
+            )
+        };
+
+    match previous {
+        Some(expr) => {
+            env.insert(name, expr);
+        }
+        None => {
+            env.remove(ident);
+        }
+    }
+
+    match previous_type {
+        Some(type_name) => {
+            types.insert(ident.to_string(), type_name);
+        }
+        None => {
+            types.remove(ident);
+        }
+    }
+
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compile_constant_for_statement<'i>(
+    ident: &str,
+    start: i64,
+    end: i64,
+    max_iterations: usize,
+    body: &[Statement<'i>],
+    loop_span: SourceSpan,
+    env: &mut HashMap<String, Expr<'i>>,
+    params: &HashMap<String, i64>,
+    types: &mut HashMap<String, String>,
+    builder: &mut ScriptBuilder,
+    options: CompileOptions,
+    contract_fields: &[ContractFieldAst<'i>],
+    contract_field_prefix_len: usize,
+    contract_constants: &HashMap<String, Expr<'i>>,
+    structs: &StructRegistry,
+    functions: &HashMap<String, FunctionAst<'i>>,
+    function_order: &HashMap<String, usize>,
+    function_index: usize,
+    yields: &mut Vec<Expr<'i>>,
+    script_size: Option<i64>,
+    recorder: &mut DebugRecorder<'i>,
+) -> Result<(), CompilerError> {
+    for iteration in 0..max_iterations {
+        let value = start + iteration as i64;
+        if value >= end {
+            break;
+        }
+
+        env.insert(ident.to_string(), Expr::int(value));
+        recorder.record_variable_binding(ident.to_string(), "int".to_string(), Expr::int(value), builder.script().len(), loop_span);
         compile_block(
             body,
             env,
@@ -3847,13 +3959,78 @@ fn compile_for_statement<'i>(
         )?;
     }
 
-    match previous {
-        Some(expr) => {
-            env.insert(name, expr);
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compile_runtime_for_statement<'i>(
+    ident: &str,
+    start: Expr<'i>,
+    end: Expr<'i>,
+    max_iterations: usize,
+    body: &[Statement<'i>],
+    loop_span: SourceSpan,
+    env: &mut HashMap<String, Expr<'i>>,
+    params: &HashMap<String, i64>,
+    types: &mut HashMap<String, String>,
+    builder: &mut ScriptBuilder,
+    options: CompileOptions,
+    contract_fields: &[ContractFieldAst<'i>],
+    contract_field_prefix_len: usize,
+    contract_constants: &HashMap<String, Expr<'i>>,
+    structs: &StructRegistry,
+    functions: &HashMap<String, FunctionAst<'i>>,
+    function_order: &HashMap<String, usize>,
+    function_index: usize,
+    yields: &mut Vec<Expr<'i>>,
+    script_size: Option<i64>,
+    recorder: &mut DebugRecorder<'i>,
+) -> Result<(), CompilerError> {
+    let mut current = resolve_expr_for_runtime(start, env, types, &mut HashSet::new())?;
+    let mut current_const = eval_const_int(&current, contract_constants).ok();
+    for _ in 0..max_iterations {
+        let loop_value = current_const.map_or_else(|| current.clone(), Expr::int);
+        env.insert(ident.to_string(), loop_value.clone());
+        recorder.record_variable_binding(ident.to_string(), "int".to_string(), loop_value, builder.script().len(), loop_span);
+
+        let condition = Expr::new(
+            ExprKind::Binary { op: BinaryOp::Lt, left: Box::new(Expr::identifier(ident)), right: Box::new(end.clone()) },
+            span::Span::default(),
+        );
+        compile_if_statement(
+            &condition,
+            body,
+            None,
+            env,
+            params,
+            types,
+            builder,
+            options,
+            contract_fields,
+            contract_field_prefix_len,
+            contract_constants,
+            structs,
+            functions,
+            function_order,
+            function_index,
+            yields,
+            script_size,
+            recorder,
+        )?;
+
+        if let Some(value) = env.get(ident).and_then(|expr| eval_const_int(expr, contract_constants).ok()) {
+            let next_value = value + 1;
+            current_const = Some(next_value);
+            current = Expr::int(next_value);
+            continue;
         }
-        None => {
-            env.remove(&name);
-        }
+
+        let next = Expr::new(
+            ExprKind::Binary { op: BinaryOp::Add, left: Box::new(Expr::identifier(ident)), right: Box::new(Expr::int(1)) },
+            span::Span::default(),
+        );
+        current_const = None;
+        current = resolve_expr_for_runtime(next, env, types, &mut HashSet::new())?;
     }
 
     Ok(())
