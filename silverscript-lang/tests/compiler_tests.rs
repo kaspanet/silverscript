@@ -3748,6 +3748,31 @@ fn runs_state_variable_and_internal_function_argument() {
 }
 
 #[test]
+fn plain_state_return_accepts_local_fixed_byte_field_from_local_identifier() {
+    let source = r#"
+        contract C(byte[2] initData) {
+            byte[2] data = initData;
+
+            function step(State prev_state) : (State) {
+                byte[2] next_data = prev_state.data;
+                return({
+                    data: next_data
+                });
+            }
+
+            entrypoint function main() {
+                State prev = {data: data};
+                (State next) = step(prev);
+                require(next.data == data);
+            }
+        }
+    "#;
+
+    compile_contract(source, &[vec![0u8, 0u8].into()], CompileOptions::default())
+        .expect("plain State return with local fixed-byte identifier should compile");
+}
+
+#[test]
 fn compiles_read_input_state_to_expected_script() {
     let source = r#"
         contract C(int initX, byte[2] initY) {
