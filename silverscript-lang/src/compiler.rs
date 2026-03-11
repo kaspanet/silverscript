@@ -5359,7 +5359,7 @@ fn compile_call_expr<'i>(
             script_size,
             contract_constants,
         ),
-        "OpCovOutCount" => compile_opcode_call(
+        "OpCovOutputCount" => compile_opcode_call(
             name,
             args,
             1,
@@ -5368,7 +5368,7 @@ fn compile_call_expr<'i>(
             options,
             visiting,
             stack_depth,
-            OpCovOutCount,
+            OpCovOutputCount,
             script_size,
             contract_constants,
         ),
