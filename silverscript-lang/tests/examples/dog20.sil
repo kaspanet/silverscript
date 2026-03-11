@@ -1,0 +1,30 @@
+contract Dog20(pubkey genesis_pk, int genesis_amount, int max_ins, int max_outs) {
+    pubkey owner = genesis_pk;
+    int amount = genesis_amount;
+
+    function checkSigs(State[] prev_states, sig[] sigs) {
+        for(i, 0, prev_states.length, max_ins) {
+            require(checkSig(sigs[i], prev_states[i].owner));
+        }
+    }
+
+    function checkAmounts(State[] prev_states, State[] new_states) {
+        int total_in = 0;
+        for(i, 0, prev_states.length, max_ins) {
+            total_in = total_in + prev_states[i].amount;
+        }
+
+        int total_out = 0;
+        for(i, 0, new_states.length, max_outs) {
+            total_out = total_out + new_states[i].amount;
+        }
+
+        require(total_in == total_out);
+    }
+
+    #[covenant(binding = cov, from = max_ins, to = max_outs)]
+    function transfer(State[] prev_states, State[] new_states, sig[] sigs) {
+        checkSigs(prev_states, sigs);
+        checkAmounts(prev_states, new_states);
+    }
+}
