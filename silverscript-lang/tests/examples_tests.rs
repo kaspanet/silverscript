@@ -1518,3 +1518,16 @@ fn compiles_sibling_introspection_example_and_verifies() {
     let result = vm.execute();
     assert!(result.is_ok(), "sibling introspection example failed: {}", result.unwrap_err());
 }
+
+#[test]
+fn compiles_many_assignments_example_under_500_bytes() {
+    let source = load_example_source("many_assignments.sil");
+
+    let compiled = compile_contract(&source, &[], CompileOptions::default()).expect("long example should compile");
+
+    // This example chains many assignments like `a_n = a_(n-1) * a_(n-1)`.
+    // We check the final bytecode stays small to prove the compiler is not
+    // re-expanding earlier expressions exponentially. Instead, each interim
+    // variable should be stored on the stack once and reused by later steps.
+    assert!(compiled.script.len() < 500, "long.sil should compile to less than 500 bytes, got {}", compiled.script.len());
+}
