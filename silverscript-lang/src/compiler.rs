@@ -3590,8 +3590,21 @@ fn prepare_inline_call_bindings<'i>(
                     }
                 }
             } else {
-                let lowered = lower_runtime_expr(&resolved, caller_types, structs)?;
-                (lowered.clone(), lowered)
+                match arg {
+                    Expr { kind: ExprKind::Identifier(identifier), .. }
+                        if caller_params.contains_key(identifier)
+                            && caller_types
+                                .get(identifier)
+                                .is_some_and(|other_type| is_type_assignable(other_type, &param_type_name, contract_constants)) =>
+                    {
+                        let ident = Expr::new(ExprKind::Identifier(identifier.clone()), span::Span::default());
+                        (ident.clone(), ident)
+                    }
+                    _ => {
+                        let lowered = lower_runtime_expr(&resolved, caller_types, structs)?;
+                        (lowered.clone(), lowered)
+                    }
+                }
             };
             return_rewrites.push((param.name.clone(), rewrite_expr));
             if !matches!(&lowered.kind, ExprKind::Identifier(identifier) if identifier == &param.name) {

@@ -5867,6 +5867,264 @@ fn inline_function_argument_expression_is_stored_once_and_reused() {
 }
 
 #[test]
+fn inline_argument_alias_does_not_store_param_in_addition_to_reused_local() {
+    let source = r#"
+        contract InlineAliasReuse() {
+            function f(int z) {
+                require(z > 1);
+            }
+
+            function g(int z) {
+                require(z < 10);
+            }
+
+            entrypoint function main(int x) {
+                int y = x * x;
+                f(y);
+                g(y);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("inline alias reuse should compile");
+    let selector = selector_for(&compiled, "main");
+
+    let body = ScriptBuilder::new()
+        // Copy `x` twice and compute `x * x`, leaving the new local `y` on stack.
+        .add_i64(0)
+        .unwrap()
+        .add_op(OpPick)
+        .unwrap()
+        .add_i64(1)
+        .unwrap()
+        .add_op(OpPick)
+        .unwrap()
+        .add_op(OpMul)
+        .unwrap()
+        // Inline `f(y)`: there is no explicit store for callee param `z`.
+        // We just read the already-stored `y` slot, proving `z` is only an alias.
+        .add_i64(0)
+        .unwrap()
+        .add_op(OpPick)
+        .unwrap()
+        .add_i64(1)
+        .unwrap()
+        .add_op(OpGreaterThan)
+        .unwrap()
+        .add_op(OpVerify)
+        .unwrap()
+        // Inline `g(y)`: same again, read `y` directly instead of storing `z`.
+        .add_i64(0)
+        .unwrap()
+        .add_op(OpPick)
+        .unwrap()
+        .add_i64(10)
+        .unwrap()
+        .add_op(OpLessThan)
+        .unwrap()
+        .add_op(OpVerify)
+        .unwrap()
+        // Drop the reused local `y`, then drop the original entrypoint param `x`.
+        .add_i64(0)
+        .unwrap()
+        .add_op(OpRoll)
+        .unwrap()
+        .add_op(OpDrop)
+        .unwrap()
+        .add_op(OpDrop)
+        .unwrap()
+        .add_op(OpTrue)
+        .unwrap()
+        .drain();
+
+    let expected = wrap_with_dispatch(body, selector);
+
+    assert_eq!(compiled.script, expected);
+    assert_eq!(compiled.script.iter().copied().filter(|op| *op == OpPick).count(), 4);
+    assert_eq!(compiled.script.iter().copied().filter(|op| *op == OpMul).count(), 1);
+
+    let sigscript_ok = compiled.build_sig_script("main", vec![Expr::int(2)]).expect("sigscript builds");
+    let result_ok = run_script_with_sigscript(compiled.script.clone(), sigscript_ok);
+    assert!(result_ok.is_ok(), "reused local should satisfy both inline requires: {}", result_ok.unwrap_err());
+
+    let sigscript_err = compiled.build_sig_script("main", vec![Expr::int(4)]).expect("sigscript builds");
+    let result_err = run_script_with_sigscript(compiled.script, sigscript_err);
+    assert!(result_err.is_err(), "reused local should still fail the second inline require");
+}
+
+#[test]
+fn inline_argument_alias_reuses_entrypoint_param_without_extra_stack_storage() {
+    let source = r#"
+        contract InlineParamAliasReuse() {
+            function f(int z) {
+                require(z > 1);
+            }
+
+            function g(int z) {
+                require(z < 10);
+            }
+
+            entrypoint function main(int y) {
+                f(y);
+                g(y);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("inline param alias reuse should compile");
+    let selector = selector_for(&compiled, "main");
+
+    let body = ScriptBuilder::new()
+        // Inline `f(y)`: `y` is already the entrypoint param on stack, so `z`
+        // is only an alias and we simply read that slot.
+        .add_i64(0)
+        .unwrap()
+        .add_op(OpPick)
+        .unwrap()
+        .add_i64(1)
+        .unwrap()
+        .add_op(OpGreaterThan)
+        .unwrap()
+        .add_op(OpVerify)
+        .unwrap()
+        // Inline `g(y)`: same aliasing behavior, still no explicit store for `z`.
+        .add_i64(0)
+        .unwrap()
+        .add_op(OpPick)
+        .unwrap()
+        .add_i64(10)
+        .unwrap()
+        .add_op(OpLessThan)
+        .unwrap()
+        .add_op(OpVerify)
+        .unwrap()
+        // Only the original entrypoint param `y` remains to clean up.
+        .add_op(OpDrop)
+        .unwrap()
+        .add_op(OpTrue)
+        .unwrap()
+        .drain();
+
+    let expected = wrap_with_dispatch(body, selector);
+
+    assert_eq!(compiled.script, expected);
+    assert_eq!(compiled.script.iter().copied().filter(|op| *op == OpPick).count(), 2);
+    assert_eq!(compiled.script.iter().copied().filter(|op| *op == OpDrop).count(), 1);
+
+    let sigscript_ok = compiled.build_sig_script("main", vec![Expr::int(2)]).expect("sigscript builds");
+    let result_ok = run_script_with_sigscript(compiled.script.clone(), sigscript_ok);
+    assert!(result_ok.is_ok(), "entrypoint param alias should satisfy both inline requires: {}", result_ok.unwrap_err());
+
+    let sigscript_err = compiled.build_sig_script("main", vec![Expr::int(10)]).expect("sigscript builds");
+    let result_err = run_script_with_sigscript(compiled.script, sigscript_err);
+    assert!(result_err.is_err(), "entrypoint param alias should still fail the second inline require");
+}
+
+#[test]
+fn local_alias_reuses_existing_stack_slot_without_explicit_store() {
+    let source = r#"
+        contract LocalAliasReuse() {
+            entrypoint function main(int x) {
+                int y = x * x;
+                require(y > 1);
+                int z = y;
+                require(z > 1);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("local alias reuse should compile");
+    let selector = selector_for(&compiled, "main");
+
+    let body = ScriptBuilder::new()
+        // Copy `x` twice and compute `x * x`, leaving the reused local `y` on stack.
+        .add_i64(0)
+        .unwrap()
+        .add_op(OpPick)
+        .unwrap()
+        .add_i64(1)
+        .unwrap()
+        .add_op(OpPick)
+        .unwrap()
+        .add_op(OpMul)
+        .unwrap()
+        // First `require(y > 1)` reads the stored `y` value.
+        .add_i64(0)
+        .unwrap()
+        .add_op(OpPick)
+        .unwrap()
+        .add_i64(1)
+        .unwrap()
+        .add_op(OpGreaterThan)
+        .unwrap()
+        .add_op(OpVerify)
+        .unwrap()
+        // `int z = y` does not emit any explicit store. The next require still
+        // reads the same stack slot directly, showing `z` aliases `y`.
+        .add_i64(0)
+        .unwrap()
+        .add_op(OpPick)
+        .unwrap()
+        .add_i64(1)
+        .unwrap()
+        .add_op(OpGreaterThan)
+        .unwrap()
+        .add_op(OpVerify)
+        .unwrap()
+        // Drop the reused local `y`, then the original entrypoint param `x`.
+        .add_i64(0)
+        .unwrap()
+        .add_op(OpRoll)
+        .unwrap()
+        .add_op(OpDrop)
+        .unwrap()
+        .add_op(OpDrop)
+        .unwrap()
+        .add_op(OpTrue)
+        .unwrap()
+        .drain();
+
+    let expected = wrap_with_dispatch(body, selector);
+
+    assert_eq!(compiled.script, expected);
+    assert_eq!(compiled.script.iter().copied().filter(|op| *op == OpMul).count(), 1);
+    assert_eq!(compiled.script.iter().copied().filter(|op| *op == OpPick).count(), 4);
+
+    let sigscript_ok = compiled.build_sig_script("main", vec![Expr::int(2)]).expect("sigscript builds");
+    let result_ok = run_script_with_sigscript(compiled.script.clone(), sigscript_ok);
+    assert!(result_ok.is_ok(), "local alias should execute successfully: {}", result_ok.unwrap_err());
+
+    let sigscript_err = compiled.build_sig_script("main", vec![Expr::int(1)]).expect("sigscript builds");
+    let result_err = run_script_with_sigscript(compiled.script, sigscript_err);
+    assert!(result_err.is_err(), "local alias should still enforce the requires");
+}
+
+#[test]
+fn local_alias_reassignment_from_alias_passes_for_x_5() {
+    let source = r#"
+        contract LocalAliasReassign() {
+            entrypoint function main(int x) {
+                int y = x * x;
+                require(y > 1);
+                int z = y;
+                z = z + 1;
+                require(z > y);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("local alias reassignment should compile");
+
+    let sigscript_ok = compiled.build_sig_script("main", vec![Expr::int(5)]).expect("sigscript builds");
+    let result_ok = run_script_with_sigscript(compiled.script.clone(), sigscript_ok);
+    assert!(result_ok.is_ok(), "x=5 should pass after z is incremented past y: {}", result_ok.unwrap_err());
+
+    let sigscript_err = compiled.build_sig_script("main", vec![Expr::int(1)]).expect("sigscript builds");
+    let result_err = run_script_with_sigscript(compiled.script, sigscript_err);
+    assert!(result_err.is_err(), "x=1 should still fail the initial require(y > 1)");
+}
+
+#[test]
 fn local_bool_expression_is_stored_once_and_reused() {
     let source = r#"
         contract BoolRepeat() {
