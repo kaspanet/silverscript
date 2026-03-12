@@ -3,7 +3,7 @@ import { countSilverScriptSavedScenarios } from "./launchConfigs";
 import {
   hasOpenSilverScriptPanelForUri,
   onDidChangeSilverScriptPanelState,
-} from "./quickLaunchPanel";
+} from "./quickLaunch/panel";
 
 const CONTRACT_RE = /^\s*contract\s+([A-Za-z_]\w*)\s*\(/;
 const ENTRYPOINT_RE =

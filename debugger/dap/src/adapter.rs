@@ -125,19 +125,6 @@ impl DapAdapter {
                 }
                 .unwrap_or_default();
 
-                if !runtime.stop_on_entry {
-                    runtime.breakpoints_by_source.insert(source_key, HashSet::new());
-                    let breakpoints = requested_lines
-                        .into_iter()
-                        .map(|line| Breakpoint { verified: false, line: Some(line), ..Default::default() })
-                        .collect();
-                    return Ok(AdapterResult {
-                        response: req.success(ResponseBody::SetBreakpoints(SetBreakpointsResponse { breakpoints })),
-                        events: vec![],
-                        should_exit: false,
-                    });
-                }
-
                 let runtime_source_key = canonical_source_key(&runtime.source_path);
                 if source_key != runtime_source_key {
                     // This adapter session executes one script file. Keep breakpoints
@@ -193,7 +180,18 @@ impl DapAdapter {
                     .run_to_first_executed_statement()
                     .map_err(|err| format!("failed to start session: {err}"))?;
 
-                let events = if runtime.stop_on_entry {
+                let events = if runtime.no_debug {
+                    match runtime.runtime.session_mut().run_to_completion() {
+                        Ok(()) => vec![self.output_stdout("Execution completed successfully."), Event::Terminated(None)],
+                        Err(err) => {
+                            let report = runtime.runtime.session().build_failure_report(&err);
+                            let formatted = format_failure_report(&report, &|type_name, value| {
+                                runtime.runtime.session().format_value(type_name, value)
+                            });
+                            vec![self.output_stderr(formatted), Event::Terminated(None)]
+                        }
+                    }
+                } else if runtime.stop_on_entry {
                     vec![self.make_stopped_event(StoppedEventReason::Entry, None)]
                 } else {
                     match runtime.runtime.session_mut().continue_to_breakpoint() {

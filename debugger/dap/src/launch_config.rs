@@ -5,7 +5,7 @@ use dap::requests::LaunchRequestArguments;
 use debugger_session::args::values_to_args;
 use debugger_session::test_runner::{TestTxScenario, TestTxScenarioResolved, resolve_tx_scenario};
 use serde::Deserialize;
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -39,8 +39,17 @@ pub enum ArgInput {
 
 impl LaunchConfig {
     pub fn from_launch_args(args: &LaunchRequestArguments) -> Result<Self, String> {
-        let value = args.additional_data.clone().unwrap_or(Value::Null);
-        Self::from_value(value)
+        let mut launch_data = match args.additional_data.clone() {
+            Some(Value::Object(map)) => map,
+            Some(Value::Null) | None => Map::new(),
+            Some(_) => return Err("invalid launch config: expected launch arguments to deserialize into an object".to_string()),
+        };
+
+        if let Some(no_debug) = args.no_debug {
+            launch_data.insert("noDebug".to_string(), Value::Bool(no_debug));
+        }
+
+        Self::from_value(Value::Object(launch_data))
     }
 
     pub fn from_value(value: Value) -> Result<Self, String> {

@@ -206,7 +206,7 @@ class SilverScriptConfigProvider
     }
 
     config.noDebug ??= false;
-    config.stopOnEntry ??= true;
+    config.stopOnEntry ??= !config.noDebug;
     return config;
   }
 }

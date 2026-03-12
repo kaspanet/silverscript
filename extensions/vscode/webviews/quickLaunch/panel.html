@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta
+  http-equiv="Content-Security-Policy"
+  content="default-src 'none'; style-src {{CSP_SOURCE}}; script-src {{CSP_SOURCE}};"
+/>
+<link rel="stylesheet" href="{{STYLE_URI}}" />
+</head>
+<body>
+  <div class="header-row">
+    <h1>{{TITLE}}</h1>
+    <div class="topbar">
+      <div class="topbar-actions">
+        <button id="load-button" class="secondary-button compact-button" type="button">Load</button>
+        <button id="save-button" class="secondary-button compact-button" type="button">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <section>
+    <h2>Constructor</h2>
+    <div id="constructor-fields"></div>
+  </section>
+
+  <section>
+    <h2>Entrypoint</h2>
+    <select id="function-select"></select>
+  </section>
+
+  <section>
+    <h2>Function Args</h2>
+    <div id="arg-fields"></div>
+  </section>
+
+  <div class="actions">
+    <button id="run-button">Run</button>
+    <button id="debug-button">Debug</button>
+  </div>
+
+  <script id="quick-launch-model" type="application/json">{{MODEL_JSON}}</script>
+  <script id="quick-launch-state" type="application/json">{{STATE_JSON}}</script>
+  <script src="{{SCRIPT_URI}}"></script>
+</body>
+</html>

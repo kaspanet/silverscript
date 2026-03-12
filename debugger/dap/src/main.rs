@@ -59,8 +59,8 @@ fn run_config_json(raw: &str) -> Result<(), Box<dyn std::error::Error>> {
     let session = built.runtime.session_mut();
 
     session.run_to_first_executed_statement()?;
-    match session.continue_to_breakpoint() {
-        Ok(Some(_)) | Ok(None) => {
+    match session.run_to_completion() {
+        Ok(()) => {
             println!("Execution completed successfully.");
             Ok(())
         }

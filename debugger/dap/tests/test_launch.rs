@@ -638,6 +638,149 @@ fn named_launch_arguments_select_breakpoint() {
 }
 
 #[test]
+fn launch_without_stop_on_entry_still_stops_on_breakpoint() {
+    let script = TempScript::new(SIMPLE_SCRIPT);
+    let script_path = script.path_str();
+
+    let mut client = TestClient::spawn();
+
+    client.send_request(
+        "initialize",
+        json!({
+            "adapterID": "silverscript",
+            "pathFormat": "path",
+            "linesStartAt1": true,
+            "columnsStartAt1": true,
+            "supportsVariableType": true,
+            "supportsVariablePaging": false,
+            "supportsRunInTerminalRequest": false
+        }),
+    );
+    client.expect_response_success("initialize");
+    client.expect_event("initialized");
+
+    client.send_request(
+        "launch",
+        json!({
+            "scriptPath": script_path,
+            "stopOnEntry": false
+        }),
+    );
+    client.expect_response_success("launch");
+
+    client.send_request(
+        "setBreakpoints",
+        json!({
+            "source": {"path": script_path},
+            "breakpoints": [{"line": 6}]
+        }),
+    );
+    let set_bp = client.expect_response_success("setBreakpoints");
+    let breakpoint = set_bp
+        .get("body")
+        .and_then(|v| v.get("breakpoints"))
+        .and_then(|v| v.as_array())
+        .and_then(|items| items.first())
+        .cloned()
+        .expect("expected breakpoint response");
+    assert_eq!(breakpoint.get("verified").and_then(|v| v.as_bool()), Some(true), "expected verified breakpoint: {set_bp:#}");
+
+    client.send_request("setExceptionBreakpoints", json!({"filters": []}));
+    client.expect_response_success("setExceptionBreakpoints");
+
+    client.send_request("configurationDone", serde_json::Value::Null);
+    client.expect_response_success("configurationDone");
+
+    let stopped = client.expect_event("stopped");
+    let reason = stopped.get("body").and_then(|v| v.get("reason")).and_then(|v| v.as_str()).unwrap_or_default();
+    assert_eq!(reason, "breakpoint");
+
+    client.send_request("stackTrace", json!({"threadId": 1}));
+    let stack = client.expect_response_success("stackTrace");
+    let line = stack
+        .get("body")
+        .and_then(|v| v.get("stackFrames"))
+        .and_then(|v| v.as_array())
+        .and_then(|frames| frames.first())
+        .and_then(|frame| frame.get("line"))
+        .and_then(|v| v.as_i64())
+        .expect("expected stopped stack frame");
+    assert_eq!(line, 6);
+
+    client.send_request("disconnect", json!({}));
+    client.expect_response_success("disconnect");
+}
+
+#[test]
+fn no_debug_launch_ignores_breakpoints_and_does_not_stop_on_entry() {
+    let script = TempScript::new(SIMPLE_SCRIPT);
+    let script_path = script.path_str();
+
+    let mut client = TestClient::spawn();
+
+    client.send_request(
+        "initialize",
+        json!({
+            "adapterID": "silverscript",
+            "pathFormat": "path",
+            "linesStartAt1": true,
+            "columnsStartAt1": true,
+            "supportsVariableType": true,
+            "supportsVariablePaging": false,
+            "supportsRunInTerminalRequest": false
+        }),
+    );
+    client.expect_response_success("initialize");
+    client.expect_event("initialized");
+
+    client.send_request(
+        "launch",
+        json!({
+            "scriptPath": script_path,
+            "noDebug": true,
+            "stopOnEntry": true
+        }),
+    );
+    client.expect_response_success("launch");
+
+    client.send_request(
+        "setBreakpoints",
+        json!({
+            "source": {"path": script_path},
+            "breakpoints": [{"line": 6}]
+        }),
+    );
+    client.expect_response_success("setBreakpoints");
+
+    client.send_request("setExceptionBreakpoints", json!({"filters": []}));
+    client.expect_response_success("setExceptionBreakpoints");
+
+    client.send_request("configurationDone", serde_json::Value::Null);
+    client.expect_response_success("configurationDone");
+
+    let mut terminated = false;
+    for _ in 0..8 {
+        let msg = client.read_message();
+        if msg.get("type") != Some(&serde_json::Value::String("event".to_string())) {
+            continue;
+        }
+        match msg.get("event").and_then(|v| v.as_str()) {
+            Some("terminated") => {
+                terminated = true;
+                break;
+            }
+            Some("stopped") => panic!("expected no-debug launch to terminate, got stop event: {msg:#}"),
+            _ => {}
+        }
+    }
+
+    assert!(terminated, "expected no-debug launch to terminate without stop events");
+
+    client.send_request("disconnect", json!({}));
+    client.expect_response_success("disconnect");
+}
+
+#[test]
 fn scopes_expose_variables_and_stacks() {
     let script = TempScript::new(
         r#"pragma silverscript ^0.1.0;

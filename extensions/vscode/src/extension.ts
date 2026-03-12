@@ -5,7 +5,7 @@ import { Language, Parser, Query } from "web-tree-sitter";
 import type { QueryCapture } from "web-tree-sitter";
 import { registerSilverScriptCodeLens } from "./codeLens";
 import { registerSilverScriptDebugger } from "./debug";
-import { registerSilverScriptQuickLaunchPanel } from "./quickLaunchPanel";
+import { registerSilverScriptQuickLaunchPanel } from "./quickLaunch/panel";
 
 const TOKEN_TYPES = [
   "comment",

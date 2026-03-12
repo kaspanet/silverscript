@@ -325,7 +325,7 @@ impl<'a, 'i> DebugSession<'a, 'i> {
     /// Continues execution until a breakpoint is hit or script completes.
     pub fn continue_to_breakpoint(&mut self) -> Result<Option<SessionState<'i>>, kaspa_txscript_errors::TxScriptError> {
         if self.breakpoints.is_empty() {
-            while self.step_opcode()?.is_some() {}
+            self.run_to_completion()?;
             return Ok(None);
         }
         loop {
@@ -338,6 +338,11 @@ impl<'a, 'i> DebugSession<'a, 'i> {
                 }
             }
         }
+    }
+
+    pub fn run_to_completion(&mut self) -> Result<(), kaspa_txscript_errors::TxScriptError> {
+        while self.step_opcode()?.is_some() {}
+        Ok(())
     }
 
     /// Returns the current execution state snapshot.
