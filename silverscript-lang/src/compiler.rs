@@ -849,6 +849,7 @@ fn compile_contract_impl<'i>(
     let uses_script_size = contract_uses_script_size(&lowered_contract, &structs, &constants);
 
     let mut script_size = if uses_script_size { Some(100i64) } else { None };
+
     for _ in 0..32 {
         let (_contract_fields, field_prolog_script) =
             compile_contract_fields(&lowered_contract.fields, &constants, options, script_size, &structs)?;
@@ -1054,7 +1055,7 @@ fn compile_contract_fields<'i>(
     let mut field_values = HashMap::new();
     let mut field_types = HashMap::new();
     let mut builder = ScriptBuilder::new();
-    let params = HashMap::new();
+    let stack_bindings = HashMap::new();
 
     for field in fields {
         if env.contains_key(&field.name) {
@@ -1084,7 +1085,7 @@ fn compile_contract_fields<'i>(
             compile_expr(
                 &resolved,
                 &env,
-                &params,
+                &stack_bindings,
                 &field_types,
                 &mut builder,
                 options,
@@ -1466,7 +1467,7 @@ fn push_struct_leaf_stack_bindings<'i>(
     assigned_names: &HashSet<String>,
     identifier_uses: &HashMap<String, usize>,
     types: &HashMap<String, String>,
-    params: &mut HashMap<String, i64>,
+    stack_bindings: &mut HashMap<String, i64>,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
     structs: &StructRegistry,
@@ -1485,7 +1486,7 @@ fn push_struct_leaf_stack_bindings<'i>(
         }
 
         let leaf_name = flattened_struct_name(name, &path);
-        if params.contains_key(&leaf_name) {
+        if stack_bindings.contains_key(&leaf_name) {
             continue;
         }
 
@@ -1497,7 +1498,7 @@ fn push_struct_leaf_stack_bindings<'i>(
         compile_expr(
             &bound_expr,
             env,
-            params,
+            stack_bindings,
             types,
             builder,
             options,
@@ -1506,7 +1507,7 @@ fn push_struct_leaf_stack_bindings<'i>(
             script_size,
             contract_constants,
         )?;
-        push_stack_binding(params, &leaf_name);
+        push_stack_binding(stack_bindings, &leaf_name);
         added.push(leaf_name);
     }
 
@@ -2315,15 +2316,15 @@ fn compile_entrypoint_function<'i>(
     }
 
     let param_count = flattened_param_names.len();
-    let mut params = flattened_param_names
+    let mut stack_bindings = flattened_param_names
         .iter()
         .enumerate()
         .map(|(index, name)| (name.clone(), (contract_field_count + (param_count - 1 - index)) as i64))
         .collect::<HashMap<_, _>>();
-    let initial_stack_binding_count = params.len() + contract_field_count;
+    let initial_stack_binding_count = stack_bindings.len() + contract_field_count;
 
     for (index, field) in contract_fields.iter().enumerate() {
-        params.insert(field.name.clone(), (contract_field_count - 1 - index) as i64);
+        stack_bindings.insert(field.name.clone(), (contract_field_count - 1 - index) as i64);
     }
 
     for field in contract_fields {
@@ -2400,7 +2401,7 @@ fn compile_entrypoint_function<'i>(
                 constants,
             )?;
             for expr in exprs {
-                let resolved = resolve_return_expr_for_runtime(expr.clone(), &env, &params, &types, &mut HashSet::new())
+                let resolved = resolve_return_expr_for_runtime(expr.clone(), &env, &stack_bindings, &types, &mut HashSet::new())
                     .map_err(|err| err.with_span(&expr.span))?;
                 return_exprs.push(resolved);
             }
@@ -2411,7 +2412,7 @@ fn compile_entrypoint_function<'i>(
                 &assigned_names,
                 &identifier_uses,
                 &mut types,
-                &mut params,
+                &mut stack_bindings,
                 &mut builder,
                 options,
                 contract_fields,
@@ -2445,7 +2446,7 @@ fn compile_entrypoint_function<'i>(
 
     let return_count = flattened_returns.len();
     if return_count == 0 {
-        for _ in 0..params.len().saturating_sub(initial_stack_binding_count) {
+        for _ in 0..stack_bindings.len().saturating_sub(initial_stack_binding_count) {
             builder.add_i64(return_count as i64)?;
             builder.add_op(OpRoll)?;
             builder.add_op(OpDrop)?;
@@ -2463,7 +2464,7 @@ fn compile_entrypoint_function<'i>(
             compile_expr(
                 expr,
                 &env,
-                &params,
+                &stack_bindings,
                 &types,
                 &mut builder,
                 options,
@@ -2473,7 +2474,7 @@ fn compile_entrypoint_function<'i>(
                 constants,
             )?;
         }
-        for _ in 0..params.len().saturating_sub(initial_stack_binding_count) {
+        for _ in 0..stack_bindings.len().saturating_sub(initial_stack_binding_count) {
             builder.add_i64(return_count as i64)?;
             builder.add_op(OpRoll)?;
             builder.add_op(OpDrop)?;
@@ -2501,7 +2502,7 @@ fn compile_statement<'i>(
     assigned_names: &HashSet<String>,
     identifier_uses: &HashMap<String, usize>,
     types: &mut HashMap<String, String>,
-    params: &mut HashMap<String, i64>,
+    stack_bindings: &mut HashMap<String, i64>,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
     contract_fields: &[ContractFieldAst<'i>],
@@ -2538,7 +2539,7 @@ fn compile_statement<'i>(
                     assigned_names,
                     identifier_uses,
                     types,
-                    params,
+                    stack_bindings,
                     builder,
                     options,
                     structs,
@@ -2672,14 +2673,14 @@ fn compile_statement<'i>(
                 if !assigned_names.contains(name)
                     && identifier_uses.get(name).copied().unwrap_or(0) >= 2
                     && (!env.contains_key(name) || existing_is_predeclared_default)
-                    && !params.contains_key(name)
+                    && !stack_bindings.contains_key(name)
                     && matches!(effective_type_name.as_str(), "int" | "bool" | "byte")
                 {
                     let mut stack_depth = 0i64;
                     compile_expr(
                         &expr,
                         env,
-                        params,
+                        stack_bindings,
                         types,
                         builder,
                         options,
@@ -2689,7 +2690,7 @@ fn compile_statement<'i>(
                         contract_constants,
                     )?;
                     env.insert(name.clone(), expr);
-                    push_stack_binding(params, name);
+                    push_stack_binding(stack_bindings, name);
                     Ok(vec![name.clone()])
                 } else {
                     env.insert(name.clone(), expr);
@@ -2808,7 +2809,7 @@ fn compile_statement<'i>(
             compile_expr(
                 &expr,
                 env,
-                params,
+                stack_bindings,
                 types,
                 builder,
                 options,
@@ -2822,7 +2823,7 @@ fn compile_statement<'i>(
         }
         Statement::TimeOp { tx_var, expr, .. } => {
             let expr = lower_runtime_expr(expr, types, structs)?;
-            compile_time_op_statement(tx_var, &expr, env, params, types, builder, options, script_size, contract_constants)
+            compile_time_op_statement(tx_var, &expr, env, stack_bindings, types, builder, options, script_size, contract_constants)
                 .map(|_| Vec::new())
         }
         Statement::If { condition, then_branch, else_branch, .. } => compile_if_statement(
@@ -2833,7 +2834,7 @@ fn compile_statement<'i>(
             assigned_names,
             identifier_uses,
             types,
-            params,
+            stack_bindings,
             builder,
             options,
             contract_fields,
@@ -2858,7 +2859,7 @@ fn compile_statement<'i>(
             assigned_names,
             identifier_uses,
             types,
-            params,
+            stack_bindings,
             builder,
             options,
             contract_fields,
@@ -2916,7 +2917,7 @@ fn compile_statement<'i>(
                 return compile_validate_output_state_statement(
                     &lowered_args,
                     env,
-                    params,
+                    stack_bindings,
                     types,
                     builder,
                     options,
@@ -2932,7 +2933,7 @@ fn compile_statement<'i>(
                 name,
                 args,
                 SourceSpan::from(stmt.span()),
-                params,
+                stack_bindings,
                 types,
                 env,
                 builder,
@@ -2962,7 +2963,7 @@ fn compile_statement<'i>(
                     compile_expr(
                         &expr,
                         env,
-                        params,
+                        stack_bindings,
                         types,
                         builder,
                         options,
@@ -3020,7 +3021,7 @@ fn compile_statement<'i>(
                     assigned_names,
                     identifier_uses,
                     types,
-                    params,
+                    stack_bindings,
                     builder,
                     options,
                     contract_fields,
@@ -3055,7 +3056,7 @@ fn compile_statement<'i>(
                 name,
                 args,
                 SourceSpan::from(stmt.span()),
-                params,
+                stack_bindings,
                 types,
                 env,
                 builder,
@@ -3098,7 +3099,7 @@ fn compile_statement<'i>(
                             assigned_names,
                             identifier_uses,
                             types,
-                            params,
+                            stack_bindings,
                             builder,
                             options,
                             structs,
@@ -3115,14 +3116,14 @@ fn compile_statement<'i>(
                         && !assigned_names.contains(&binding.name)
                         && identifier_uses.get(&binding.name).copied().unwrap_or(0) >= 2
                         && (!env.contains_key(&binding.name) || existing_is_predeclared_default)
-                        && !params.contains_key(&binding.name)
+                        && !stack_bindings.contains_key(&binding.name)
                         && matches!(binding_type_name.as_str(), "int" | "bool" | "byte")
                     {
                         let mut stack_depth = 0i64;
                         compile_expr(
                             &lowered,
                             env,
-                            params,
+                            stack_bindings,
                             types,
                             builder,
                             options,
@@ -3132,7 +3133,7 @@ fn compile_statement<'i>(
                             contract_constants,
                         )?;
                         env.insert(binding.name.clone(), lowered);
-                        push_stack_binding(params, &binding.name);
+                        push_stack_binding(stack_bindings, &binding.name);
                         added_stack_locals.push(binding.name.clone());
                     } else {
                         env.insert(binding.name.clone(), lowered);
@@ -3328,7 +3329,7 @@ fn compile_read_input_state_statement<'i>(
 fn compile_validate_output_state_statement(
     args: &[Expr<'_>],
     env: &HashMap<String, Expr<'_>>,
-    params: &HashMap<String, i64>,
+    stack_bindings: &HashMap<String, i64>,
     types: &HashMap<String, String>,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
@@ -3381,7 +3382,7 @@ fn compile_validate_output_state_statement(
             compile_expr(
                 new_value,
                 env,
-                params,
+                stack_bindings,
                 types,
                 builder,
                 options,
@@ -3398,7 +3399,7 @@ fn compile_validate_output_state_statement(
             compile_expr(
                 new_value,
                 env,
-                params,
+                stack_bindings,
                 types,
                 builder,
                 options,
@@ -3495,7 +3496,7 @@ fn compile_validate_output_state_statement(
     compile_expr(
         output_idx,
         env,
-        params,
+        stack_bindings,
         types,
         builder,
         options,
@@ -3516,16 +3517,15 @@ struct InlineCallBindings<'i> {
     env: HashMap<String, Expr<'i>>,
     debug_env: HashMap<String, Expr<'i>>,
     types: HashMap<String, String>,
-    compile_params: HashMap<String, i64>,
+    stack_bindings: HashMap<String, i64>,
     return_rewrites: Vec<(String, Expr<'i>)>,
     preserved_return_idents: HashSet<String>,
 }
 
 fn prepare_inline_call_bindings<'i>(
-    callee_name: &str,
     function: &FunctionAst<'i>,
     args: &[Expr<'i>],
-    caller_params: &HashMap<String, i64>,
+    caller_stack_bindings: &HashMap<String, i64>,
     caller_types: &HashMap<String, String>,
     caller_env: &HashMap<String, Expr<'i>>,
     contract_constants: &HashMap<String, Expr<'i>>,
@@ -3592,7 +3592,7 @@ fn prepare_inline_call_bindings<'i>(
             } else {
                 match arg {
                     Expr { kind: ExprKind::Identifier(identifier), .. }
-                        if caller_params.contains_key(identifier)
+                        if caller_stack_bindings.contains_key(identifier)
                             && caller_types
                                 .get(identifier)
                                 .is_some_and(|other_type| is_type_assignable(other_type, &param_type_name, contract_constants)) =>
@@ -3614,11 +3614,9 @@ fn prepare_inline_call_bindings<'i>(
     }
 
     let debug_env = env.clone();
-    let compile_params = caller_params.clone();
+    let stack_bindings = caller_stack_bindings.clone();
 
-    let _ = callee_name;
-
-    Ok(InlineCallBindings { env, debug_env, types, compile_params, return_rewrites, preserved_return_idents })
+    Ok(InlineCallBindings { env, debug_env, types, stack_bindings, return_rewrites, preserved_return_idents })
 }
 
 fn rewrite_inline_returns<'i>(returns: Vec<Expr<'i>>, rewrites: &[(String, Expr<'i>)]) -> Vec<Expr<'i>> {
@@ -3642,7 +3640,7 @@ fn compile_inline_call<'i>(
     name: &str,
     args: &[Expr<'i>],
     call_span: SourceSpan,
-    caller_params: &HashMap<String, i64>,
+    caller_stack_bindings: &HashMap<String, i64>,
     caller_types: &mut HashMap<String, String>,
     caller_env: &mut HashMap<String, Expr<'i>>,
     builder: &mut ScriptBuilder,
@@ -3711,10 +3709,9 @@ fn compile_inline_call<'i>(
     }
 
     let mut bindings = prepare_inline_call_bindings(
-        name,
         function,
         args,
-        caller_params,
+        caller_stack_bindings,
         caller_types,
         caller_env,
         contract_constants,
@@ -3743,13 +3740,13 @@ fn compile_inline_call<'i>(
     recorder.begin_inline_call(call_span, call_start, function, &bindings.debug_env)?;
 
     let mut returns: Vec<Expr<'i>> = Vec::new();
-    let initial_stack_binding_count = bindings.compile_params.len();
+    let initial_stack_binding_count = bindings.stack_bindings.len();
     for param in &function.params {
         let param_type_name = type_name_from_ref(&param.type_ref);
         if !matches!(param_type_name.as_str(), "int" | "bool" | "byte")
             || identifier_uses.get(&param.name).copied().unwrap_or(0) < 2
             || assigned_names.contains(&param.name)
-            || bindings.compile_params.contains_key(&param.name)
+            || bindings.stack_bindings.contains_key(&param.name)
         {
             continue;
         }
@@ -3762,7 +3759,7 @@ fn compile_inline_call<'i>(
         compile_expr(
             &bound_expr,
             &bindings.env,
-            &bindings.compile_params,
+            &bindings.stack_bindings,
             &bindings.types,
             builder,
             options,
@@ -3771,7 +3768,7 @@ fn compile_inline_call<'i>(
             script_size,
             contract_constants,
         )?;
-        push_stack_binding(&mut bindings.compile_params, &param.name);
+        push_stack_binding(&mut bindings.stack_bindings, &param.name);
     }
     let body_len = function.body.len();
     for (index, stmt) in function.body.iter().enumerate() {
@@ -3803,7 +3800,7 @@ fn compile_inline_call<'i>(
                 &assigned_names,
                 &identifier_uses,
                 &mut bindings.types,
-                &mut bindings.compile_params,
+                &mut bindings.stack_bindings,
                 builder,
                 options,
                 contract_fields,
@@ -3821,7 +3818,7 @@ fn compile_inline_call<'i>(
         recorder.finish_statement_at(stmt, builder.script().len(), &bindings.env, &bindings.types)?;
     }
 
-    for _ in 0..bindings.compile_params.len().saturating_sub(initial_stack_binding_count) {
+    for _ in 0..bindings.stack_bindings.len().saturating_sub(initial_stack_binding_count) {
         builder.add_op(OpDrop)?;
     }
     let call_end = builder.script().len();
@@ -3839,7 +3836,7 @@ fn compile_if_statement<'i>(
     assigned_names: &HashSet<String>,
     identifier_uses: &HashMap<String, usize>,
     types: &mut HashMap<String, String>,
-    params: &mut HashMap<String, i64>,
+    stack_bindings: &mut HashMap<String, i64>,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
     contract_fields: &[ContractFieldAst<'i>],
@@ -3857,7 +3854,7 @@ fn compile_if_statement<'i>(
     compile_expr(
         &condition,
         env,
-        params,
+        stack_bindings,
         types,
         builder,
         options,
@@ -3878,7 +3875,7 @@ fn compile_if_statement<'i>(
         assigned_names,
         identifier_uses,
         &mut then_types,
-        params,
+        stack_bindings,
         builder,
         options,
         contract_fields,
@@ -3904,7 +3901,7 @@ fn compile_if_statement<'i>(
             assigned_names,
             identifier_uses,
             &mut else_types,
-            params,
+            stack_bindings,
             builder,
             options,
             contract_fields,
@@ -4023,7 +4020,7 @@ fn compile_time_op_statement<'i>(
     tx_var: &TimeVar,
     expr: &Expr<'i>,
     env: &mut HashMap<String, Expr<'i>>,
-    params: &HashMap<String, i64>,
+    stack_bindings: &HashMap<String, i64>,
     types: &HashMap<String, String>,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
@@ -4031,7 +4028,18 @@ fn compile_time_op_statement<'i>(
     contract_constants: &HashMap<String, Expr<'i>>,
 ) -> Result<(), CompilerError> {
     let mut stack_depth = 0i64;
-    compile_expr(expr, env, params, types, builder, options, &mut HashSet::new(), &mut stack_depth, script_size, contract_constants)?;
+    compile_expr(
+        expr,
+        env,
+        stack_bindings,
+        types,
+        builder,
+        options,
+        &mut HashSet::new(),
+        &mut stack_depth,
+        script_size,
+        contract_constants,
+    )?;
 
     match tx_var {
         TimeVar::ThisAge => {
@@ -4052,7 +4060,7 @@ fn compile_block<'i>(
     assigned_names: &HashSet<String>,
     identifier_uses: &HashMap<String, usize>,
     types: &mut HashMap<String, String>,
-    params: &mut HashMap<String, i64>,
+    stack_bindings: &mut HashMap<String, i64>,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
     contract_fields: &[ContractFieldAst<'i>],
@@ -4076,7 +4084,7 @@ fn compile_block<'i>(
                 assigned_names,
                 identifier_uses,
                 types,
-                params,
+                stack_bindings,
                 builder,
                 options,
                 contract_fields,
@@ -4101,7 +4109,7 @@ fn compile_block<'i>(
         for name in &added_stack_locals {
             types.remove(name);
         }
-        pop_stack_bindings(params, &added_stack_locals);
+        pop_stack_bindings(stack_bindings, &added_stack_locals);
     }
 
     Ok(())
@@ -4119,7 +4127,7 @@ fn compile_for_statement<'i>(
     assigned_names: &HashSet<String>,
     identifier_uses: &HashMap<String, usize>,
     types: &mut HashMap<String, String>,
-    params: &mut HashMap<String, i64>,
+    stack_bindings: &mut HashMap<String, i64>,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
     contract_fields: &[ContractFieldAst<'i>],
@@ -4160,7 +4168,7 @@ fn compile_for_statement<'i>(
                 assigned_names,
                 identifier_uses,
                 types,
-                params,
+                stack_bindings,
                 builder,
                 options,
                 contract_fields,
@@ -4185,7 +4193,7 @@ fn compile_for_statement<'i>(
                 assigned_names,
                 identifier_uses,
                 types,
-                params,
+                stack_bindings,
                 builder,
                 options,
                 contract_fields,
@@ -4233,7 +4241,7 @@ fn compile_constant_for_statement<'i>(
     assigned_names: &HashSet<String>,
     identifier_uses: &HashMap<String, usize>,
     types: &mut HashMap<String, String>,
-    params: &mut HashMap<String, i64>,
+    stack_bindings: &mut HashMap<String, i64>,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
     contract_fields: &[ContractFieldAst<'i>],
@@ -4260,7 +4268,7 @@ fn compile_constant_for_statement<'i>(
             assigned_names,
             identifier_uses,
             types,
-            params,
+            stack_bindings,
             builder,
             options,
             contract_fields,
@@ -4291,7 +4299,7 @@ fn compile_runtime_for_statement<'i>(
     assigned_names: &HashSet<String>,
     identifier_uses: &HashMap<String, usize>,
     types: &mut HashMap<String, String>,
-    params: &mut HashMap<String, i64>,
+    stack_bindings: &mut HashMap<String, i64>,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
     contract_fields: &[ContractFieldAst<'i>],
@@ -4323,7 +4331,7 @@ fn compile_runtime_for_statement<'i>(
             assigned_names,
             identifier_uses,
             types,
-            params,
+            stack_bindings,
             builder,
             options,
             contract_fields,
@@ -4518,13 +4526,13 @@ fn resolve_expr_for_runtime<'i>(
 fn resolve_return_expr_for_runtime<'i>(
     expr: Expr<'i>,
     env: &HashMap<String, Expr<'i>>,
-    params: &HashMap<String, i64>,
+    stack_bindings: &HashMap<String, i64>,
     types: &HashMap<String, String>,
     visiting: &mut HashSet<String>,
 ) -> Result<Expr<'i>, CompilerError> {
     let preserve_identifier = |name: &str| {
         name.starts_with(SYNTHETIC_ARG_PREFIX)
-            || params.contains_key(name)
+            || stack_bindings.contains_key(name)
             || types.get(name).is_some_and(|type_name| is_array_type(type_name))
     };
     resolve_expr_with_policy(expr, env, visiting, &preserve_identifier)
@@ -4811,14 +4819,14 @@ fn replace_identifier<'i>(expr: &Expr<'i>, target: &str, replacement: &Expr<'i>)
 
 struct CompilationScope<'a, 'i> {
     env: &'a HashMap<String, Expr<'i>>,
-    params: &'a HashMap<String, i64>,
+    stack_bindings: &'a HashMap<String, i64>,
     types: &'a HashMap<String, String>,
 }
 
 fn compile_expr<'i>(
     expr: &Expr<'i>,
     env: &HashMap<String, Expr<'i>>,
-    params: &HashMap<String, i64>,
+    stack_bindings: &HashMap<String, i64>,
     types: &HashMap<String, String>,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
@@ -4827,7 +4835,7 @@ fn compile_expr<'i>(
     script_size: Option<i64>,
     contract_constants: &HashMap<String, Expr<'i>>,
 ) -> Result<(), CompilerError> {
-    let scope = CompilationScope { env, params, types };
+    let scope = CompilationScope { env, stack_bindings, types };
     match &expr.kind {
         ExprKind::Int(value) => {
             builder.add_i64(*value)?;
@@ -4845,7 +4853,6 @@ fn compile_expr<'i>(
             Ok(())
         }
         ExprKind::Array(values) => {
-            // TODO: this particular handling should be done in encode_array_literal to unify the behavior
             if values.is_empty() {
                 builder.add_data(&[])?;
                 *stack_depth += 1;
@@ -4873,16 +4880,16 @@ fn compile_expr<'i>(
             if !visiting.insert(name.clone()) {
                 return Err(CompilerError::CyclicIdentifier(name.clone()));
             }
-            if let Some(index) = params.get(name) {
+            if let Some(index) = stack_bindings.get(name) {
                 builder.add_i64(*index + *stack_depth)?;
                 *stack_depth += 1;
                 builder.add_op(OpPick)?;
                 visiting.remove(name);
                 return Ok(());
             }
-            if let Some(expr) = env.get(name) {
+            if let Some(resolved_expr) = env.get(name) {
                 if let Some(type_name) = types.get(name) {
-                    if let ExprKind::Array(values) = &expr.kind {
+                    if let ExprKind::Array(values) = &resolved_expr.kind {
                         if is_array_type(type_name) {
                             let encoded = encode_array_literal(values, type_name)?;
                             builder.add_data(&encoded)?;
@@ -4892,7 +4899,18 @@ fn compile_expr<'i>(
                         }
                     }
                 }
-                compile_expr(expr, env, params, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
+                compile_expr(
+                    resolved_expr,
+                    env,
+                    stack_bindings,
+                    types,
+                    builder,
+                    options,
+                    visiting,
+                    stack_depth,
+                    script_size,
+                    contract_constants,
+                )?;
                 visiting.remove(name);
                 return Ok(());
             }
@@ -4900,14 +4918,47 @@ fn compile_expr<'i>(
             Err(CompilerError::UndefinedIdentifier(name.clone()))
         }
         ExprKind::IfElse { condition, then_expr, else_expr } => {
-            compile_expr(condition, env, params, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
+            compile_expr(
+                condition,
+                env,
+                stack_bindings,
+                types,
+                builder,
+                options,
+                visiting,
+                stack_depth,
+                script_size,
+                contract_constants,
+            )?;
             builder.add_op(OpIf)?;
             *stack_depth -= 1;
             let depth_before = *stack_depth;
-            compile_expr(then_expr, env, params, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
+            compile_expr(
+                then_expr,
+                env,
+                stack_bindings,
+                types,
+                builder,
+                options,
+                visiting,
+                stack_depth,
+                script_size,
+                contract_constants,
+            )?;
             builder.add_op(OpElse)?;
             *stack_depth = depth_before;
-            compile_expr(else_expr, env, params, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
+            compile_expr(
+                else_expr,
+                env,
+                stack_bindings,
+                types,
+                builder,
+                options,
+                visiting,
+                stack_depth,
+                script_size,
+                contract_constants,
+            )?;
             builder.add_op(OpEndIf)?;
             *stack_depth = depth_before + 1;
             Ok(())
@@ -4929,7 +4980,18 @@ fn compile_expr<'i>(
                 if args.len() != 1 {
                     return Err(CompilerError::Unsupported("ScriptPubKeyP2PK expects a single pubkey argument".to_string()));
                 }
-                compile_expr(&args[0], env, params, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
+                compile_expr(
+                    &args[0],
+                    env,
+                    stack_bindings,
+                    types,
+                    builder,
+                    options,
+                    visiting,
+                    stack_depth,
+                    script_size,
+                    contract_constants,
+                )?;
                 builder.add_data(&[0x00, 0x00, OpData32])?;
                 *stack_depth += 1;
                 builder.add_op(OpSwap)?;
@@ -4945,7 +5007,18 @@ fn compile_expr<'i>(
                 if args.len() != 1 {
                     return Err(CompilerError::Unsupported("ScriptPubKeyP2SH expects a single bytes32 argument".to_string()));
                 }
-                compile_expr(&args[0], env, params, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
+                compile_expr(
+                    &args[0],
+                    env,
+                    stack_bindings,
+                    types,
+                    builder,
+                    options,
+                    visiting,
+                    stack_depth,
+                    script_size,
+                    contract_constants,
+                )?;
                 builder.add_data(&[0x00, 0x00])?;
                 *stack_depth += 1;
                 builder.add_data(&[OpBlake2b])?;
@@ -4971,7 +5044,18 @@ fn compile_expr<'i>(
                         "ScriptPubKeyP2SHFromRedeemScript expects a single redeem_script argument".to_string(),
                     ));
                 }
-                compile_expr(&args[0], env, params, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
+                compile_expr(
+                    &args[0],
+                    env,
+                    stack_bindings,
+                    types,
+                    builder,
+                    options,
+                    visiting,
+                    stack_depth,
+                    script_size,
+                    contract_constants,
+                )?;
                 builder.add_op(OpBlake2b)?;
                 builder.add_data(&[0x00, 0x00])?;
                 *stack_depth += 1;
@@ -4995,7 +5079,7 @@ fn compile_expr<'i>(
             name => Err(CompilerError::Unsupported(format!("unknown constructor: {name}"))),
         },
         ExprKind::Unary { op, expr } => {
-            compile_expr(expr, env, params, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
+            compile_expr(expr, env, stack_bindings, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
             match op {
                 UnaryOp::Not => builder.add_op(OpNot)?,
                 UnaryOp::Neg => builder.add_op(OpNegate)?,
@@ -5010,7 +5094,7 @@ fn compile_expr<'i>(
                 compile_concat_operand(
                     left,
                     env,
-                    params,
+                    stack_bindings,
                     types,
                     builder,
                     options,
@@ -5022,7 +5106,7 @@ fn compile_expr<'i>(
                 compile_concat_operand(
                     right,
                     env,
-                    params,
+                    stack_bindings,
                     types,
                     builder,
                     options,
@@ -5032,8 +5116,30 @@ fn compile_expr<'i>(
                     contract_constants,
                 )?;
             } else {
-                compile_expr(left, env, params, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
-                compile_expr(right, env, params, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
+                compile_expr(
+                    left,
+                    env,
+                    stack_bindings,
+                    types,
+                    builder,
+                    options,
+                    visiting,
+                    stack_depth,
+                    script_size,
+                    contract_constants,
+                )?;
+                compile_expr(
+                    right,
+                    env,
+                    stack_bindings,
+                    types,
+                    builder,
+                    options,
+                    visiting,
+                    stack_depth,
+                    script_size,
+                    contract_constants,
+                )?;
             }
             match op {
                 BinaryOp::Or => {
@@ -5102,7 +5208,7 @@ fn compile_expr<'i>(
             index,
             *part,
             env,
-            params,
+            stack_bindings,
             types,
             builder,
             options,
@@ -5115,7 +5221,7 @@ fn compile_expr<'i>(
             UnarySuffixKind::Length => compile_length_expr(
                 source,
                 env,
-                params,
+                stack_bindings,
                 types,
                 builder,
                 options,
@@ -5150,7 +5256,7 @@ fn compile_expr<'i>(
             compile_expr(
                 &resolved_source,
                 env,
-                params,
+                stack_bindings,
                 types,
                 builder,
                 options,
@@ -5159,7 +5265,7 @@ fn compile_expr<'i>(
                 script_size,
                 contract_constants,
             )?;
-            compile_expr(index, env, params, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
+            compile_expr(index, env, stack_bindings, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
             builder.add_i64(element_size)?;
             *stack_depth += 1;
             builder.add_op(OpMul)?;
@@ -5178,10 +5284,20 @@ fn compile_expr<'i>(
             Ok(())
         }
         ExprKind::Slice { source, start, end, .. } => {
-            compile_expr(source, env, params, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
-            compile_expr(start, env, params, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
-            compile_expr(end, env, params, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
-            // OpSubstr expects bounds as (start, end).
+            compile_expr(
+                source,
+                env,
+                stack_bindings,
+                types,
+                builder,
+                options,
+                visiting,
+                stack_depth,
+                script_size,
+                contract_constants,
+            )?;
+            compile_expr(start, env, stack_bindings, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
+            compile_expr(end, env, stack_bindings, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
             builder.add_op(OpSubstr)?;
             *stack_depth -= 2;
             Ok(())
@@ -5227,7 +5343,7 @@ fn compile_expr<'i>(
             Ok(())
         }
         ExprKind::Introspection { kind, index, .. } => {
-            compile_expr(index, env, params, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
+            compile_expr(index, env, stack_bindings, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
             match kind {
                 IntrospectionKind::InputValue => {
                     builder.add_op(OpTxInputAmount)?;
@@ -5277,7 +5393,7 @@ fn compile_split_part<'i>(
     index: &Expr<'i>,
     part: SplitPart,
     env: &HashMap<String, Expr<'i>>,
-    params: &HashMap<String, i64>,
+    stack_bindings: &HashMap<String, i64>,
     types: &HashMap<String, String>,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
@@ -5286,10 +5402,10 @@ fn compile_split_part<'i>(
     script_size: Option<i64>,
     contract_constants: &HashMap<String, Expr<'i>>,
 ) -> Result<(), CompilerError> {
-    compile_expr(source, env, params, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
+    compile_expr(source, env, stack_bindings, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
     match part {
         SplitPart::Left => {
-            compile_expr(index, env, params, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
+            compile_expr(index, env, stack_bindings, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
             builder.add_i64(0)?;
             *stack_depth += 1;
             builder.add_op(OpSwap)?;
@@ -5300,7 +5416,7 @@ fn compile_split_part<'i>(
         SplitPart::Right => {
             builder.add_op(OpSize)?;
             *stack_depth += 1;
-            compile_expr(index, env, params, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
+            compile_expr(index, env, stack_bindings, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
             builder.add_op(OpSwap)?;
             builder.add_op(OpSubstr)?;
             *stack_depth -= 2;
@@ -5392,7 +5508,7 @@ fn expr_is_bytes_inner<'i>(
 fn compile_length_expr<'i>(
     expr: &Expr<'i>,
     env: &HashMap<String, Expr<'i>>,
-    params: &HashMap<String, i64>,
+    stack_bindings: &HashMap<String, i64>,
     types: &HashMap<String, String>,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
@@ -5409,7 +5525,18 @@ fn compile_length_expr<'i>(
                 return Ok(());
             }
             if let Some(element_size) = array_element_size(type_name) {
-                compile_expr(expr, env, params, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
+                compile_expr(
+                    expr,
+                    env,
+                    stack_bindings,
+                    types,
+                    builder,
+                    options,
+                    visiting,
+                    stack_depth,
+                    script_size,
+                    contract_constants,
+                )?;
                 builder.add_op(OpSize)?;
                 builder.add_op(OpSwap)?;
                 builder.add_op(OpDrop)?;
@@ -5426,7 +5553,7 @@ fn compile_length_expr<'i>(
         *stack_depth += 1;
         return Ok(());
     }
-    compile_expr(expr, env, params, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
+    compile_expr(expr, env, stack_bindings, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
     builder.add_op(OpSize)?;
     builder.add_op(OpSwap)?;
     builder.add_op(OpDrop)?;
@@ -5465,7 +5592,7 @@ fn compile_call_expr<'i>(
             compile_expr(
                 &args[0],
                 scope.env,
-                scope.params,
+                scope.stack_bindings,
                 scope.types,
                 builder,
                 options,
@@ -5797,7 +5924,7 @@ fn compile_call_expr<'i>(
                 compile_expr(
                     &args[0],
                     scope.env,
-                    scope.params,
+                    scope.stack_bindings,
                     scope.types,
                     builder,
                     options,
@@ -5809,7 +5936,7 @@ fn compile_call_expr<'i>(
                 compile_expr(
                     &args[1],
                     scope.env,
-                    scope.params,
+                    scope.stack_bindings,
                     scope.types,
                     builder,
                     options,
@@ -5840,7 +5967,7 @@ fn compile_call_expr<'i>(
                         compile_expr(
                             &args[0],
                             scope.env,
-                            scope.params,
+                            scope.stack_bindings,
                             scope.types,
                             builder,
                             options,
@@ -5854,7 +5981,7 @@ fn compile_call_expr<'i>(
                     compile_expr(
                         &args[0],
                         scope.env,
-                        scope.params,
+                        scope.stack_bindings,
                         scope.types,
                         builder,
                         options,
@@ -5874,7 +6001,7 @@ fn compile_call_expr<'i>(
                         compile_expr(
                             &args[0],
                             scope.env,
-                            scope.params,
+                            scope.stack_bindings,
                             scope.types,
                             builder,
                             options,
@@ -5888,7 +6015,7 @@ fn compile_call_expr<'i>(
                         compile_expr(
                             &args[0],
                             scope.env,
-                            scope.params,
+                            scope.stack_bindings,
                             scope.types,
                             builder,
                             options,
@@ -5913,7 +6040,7 @@ fn compile_call_expr<'i>(
             compile_length_expr(
                 &args[0],
                 scope.env,
-                scope.params,
+                scope.stack_bindings,
                 scope.types,
                 builder,
                 options,
@@ -5930,7 +6057,7 @@ fn compile_call_expr<'i>(
             compile_expr(
                 &args[0],
                 scope.env,
-                scope.params,
+                scope.stack_bindings,
                 scope.types,
                 builder,
                 options,
@@ -5948,7 +6075,7 @@ fn compile_call_expr<'i>(
             compile_expr(
                 &args[0],
                 scope.env,
-                scope.params,
+                scope.stack_bindings,
                 scope.types,
                 builder,
                 options,
@@ -5969,7 +6096,7 @@ fn compile_call_expr<'i>(
                 compile_expr(
                     &args[0],
                     scope.env,
-                    scope.params,
+                    scope.stack_bindings,
                     scope.types,
                     builder,
                     options,
@@ -5983,7 +6110,7 @@ fn compile_call_expr<'i>(
                     compile_expr(
                         &args[1],
                         scope.env,
-                        scope.params,
+                        scope.stack_bindings,
                         scope.types,
                         builder,
                         options,
@@ -6006,7 +6133,7 @@ fn compile_call_expr<'i>(
                 compile_expr(
                     &args[0],
                     scope.env,
-                    scope.params,
+                    scope.stack_bindings,
                     scope.types,
                     builder,
                     options,
@@ -6029,7 +6156,7 @@ fn compile_call_expr<'i>(
             compile_expr(
                 &args[0],
                 scope.env,
-                scope.params,
+                scope.stack_bindings,
                 scope.types,
                 builder,
                 options,
@@ -6048,7 +6175,7 @@ fn compile_call_expr<'i>(
             compile_expr(
                 &args[0],
                 scope.env,
-                scope.params,
+                scope.stack_bindings,
                 scope.types,
                 builder,
                 options,
@@ -6060,7 +6187,7 @@ fn compile_call_expr<'i>(
             compile_expr(
                 &args[1],
                 scope.env,
-                scope.params,
+                scope.stack_bindings,
                 scope.types,
                 builder,
                 options,
@@ -6079,7 +6206,7 @@ fn compile_call_expr<'i>(
                 compile_expr(
                     arg,
                     scope.env,
-                    scope.params,
+                    scope.stack_bindings,
                     scope.types,
                     builder,
                     options,
@@ -6122,7 +6249,7 @@ fn compile_opcode_call<'i>(
         compile_expr(
             arg,
             scope.env,
-            scope.params,
+            scope.stack_bindings,
             scope.types,
             builder,
             options,
@@ -6140,7 +6267,7 @@ fn compile_opcode_call<'i>(
 fn compile_concat_operand<'i>(
     expr: &Expr<'i>,
     env: &HashMap<String, Expr<'i>>,
-    params: &HashMap<String, i64>,
+    stack_bindings: &HashMap<String, i64>,
     types: &HashMap<String, String>,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
@@ -6149,7 +6276,7 @@ fn compile_concat_operand<'i>(
     script_size: Option<i64>,
     contract_constants: &HashMap<String, Expr<'i>>,
 ) -> Result<(), CompilerError> {
-    compile_expr(expr, env, params, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
+    compile_expr(expr, env, stack_bindings, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
     if !expr_is_bytes(expr, env, types) {
         builder.add_i64(1)?;
         *stack_depth += 1;
@@ -6240,7 +6367,7 @@ fn data_prefix(data_len: usize) -> Vec<u8> {
 pub fn compile_debug_expr<'i>(
     expr: &Expr<'i>,
     env: &HashMap<String, Expr<'i>>,
-    params: &HashMap<String, i64>,
+    stack_bindings: &HashMap<String, i64>,
     types: &HashMap<String, String>,
 ) -> Result<Vec<u8>, CompilerError> {
     let constants = HashMap::new();
@@ -6249,7 +6376,7 @@ pub fn compile_debug_expr<'i>(
     compile_expr(
         expr,
         env,
-        params,
+        stack_bindings,
         types,
         &mut builder,
         CompileOptions::default(),
