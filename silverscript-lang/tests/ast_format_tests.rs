@@ -137,5 +137,8 @@ fn compiled_formatted_contract_preserves_exact_ast_with_state_and_return() {
 }
 "#;
 
-    assert_compiled_formatted_contract_preserves_ast(source, CompileOptions { allow_entrypoint_return: true, ..CompileOptions::default() });
+    assert_compiled_formatted_contract_preserves_ast(
+        source,
+        CompileOptions { allow_entrypoint_return: true, ..CompileOptions::default() },
+    );
 }

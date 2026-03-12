@@ -3966,12 +3966,10 @@ fn default_scalar_expr(type_name: &str) -> Option<Expr<'static>> {
 }
 
 fn is_predeclared_scalar_default<'i>(name: &str, type_name: &str, env: &HashMap<String, Expr<'i>>) -> bool {
-    match (type_name, env.get(name).map(|expr| &expr.kind)) {
-        ("int", Some(ExprKind::Int(0))) => true,
-        ("bool", Some(ExprKind::Bool(false))) => true,
-        ("byte", Some(ExprKind::Byte(0))) => true,
-        _ => false,
-    }
+    matches!(
+        (type_name, env.get(name).map(|expr| &expr.kind)),
+        ("int", Some(ExprKind::Int(0))) | ("bool", Some(ExprKind::Bool(false))) | ("byte", Some(ExprKind::Byte(0)))
+    )
 }
 
 fn predeclare_if_branch_locals<'i>(
