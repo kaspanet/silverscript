@@ -114,7 +114,6 @@ export default grammar({
         $.require_statement,
         $.if_statement,
         $.for_statement,
-        $.yield_statement,
         $.console_statement,
       ),
 
@@ -210,8 +209,6 @@ export default grammar({
         ")",
         $.block,
       ),
-
-    yield_statement: ($) => seq("yield", $.expression_list, ";"),
 
     console_statement: ($) => seq("console.log", $.console_parameter_list, ";"),
 

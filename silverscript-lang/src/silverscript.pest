@@ -40,7 +40,6 @@ statement = _{
     | require_statement
     | if_statement
     | for_statement
-    | yield_statement
     | console_statement
 }
 
@@ -62,8 +61,6 @@ require_statement = { "require" ~ "(" ~ expression ~ ("," ~ require_message)? ~ 
 if_statement = { "if" ~ "(" ~ expression ~ ")" ~ block ~ ("else" ~ block)? }
 
 for_statement = { "for" ~ "(" ~ Identifier ~ "," ~ expression ~ "," ~ expression ~ "," ~ expression ~ ")" ~ block }
-
-yield_statement = { "yield" ~ expression_list ~ ";" }
 
 console_statement = { "console.log" ~ console_parameter_list ~ ";" }
 require_message = { StringLiteral }
@@ -186,7 +183,7 @@ Identifier = @{ !keyword_boundary ~ ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "_")* }
 keyword_boundary = { keyword ~ !(ASCII_ALPHANUMERIC | "_") }
 
 keyword = {
-    "pragma" | "silverscript" | "contract" | "struct" | "entrypoint" | "function" | "if" | "else" | "require" | "for" | "yield" | "return"
+    "pragma" | "silverscript" | "contract" | "struct" | "entrypoint" | "function" | "if" | "else" | "require" | "for" | "return"
     | "console.log" | "new" | "true" | "false" | "constant" | "date"
     | "int" | "bool" | "string" | "pubkey" | "sig" | "datasig" | "byte"
     | "this.age" | "tx.time" | "this.activeInputIndex" | "this.activeScriptPubKey" | "this.scriptSizeDataPrefix" | "this.scriptSize"

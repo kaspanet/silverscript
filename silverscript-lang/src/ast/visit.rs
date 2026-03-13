@@ -263,10 +263,6 @@ pub fn walk_statement_mut<'i, V: AstVisitorMut<'i> + ?Sized>(visitor: &mut V, st
             }
             visitor.visit_expr(expr);
         }
-        Statement::Yield { expr, span } => {
-            visitor.visit_span(span);
-            visitor.visit_expr(expr);
-        }
         Statement::If { condition, then_branch, else_branch, span, then_span, else_span } => {
             visitor.visit_span(span);
             visitor.visit_span(then_span);

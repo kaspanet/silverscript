@@ -375,11 +375,6 @@ pub enum Statement<'i> {
         #[serde(skip_deserializing)]
         body_span: Span<'i>,
     },
-    Yield {
-        expr: Expr<'i>,
-        #[serde(skip_deserializing)]
-        span: Span<'i>,
-    },
     Return {
         exprs: Vec<Expr<'i>>,
         #[serde(skip_deserializing)]
@@ -408,7 +403,6 @@ impl<'i> Statement<'i> {
             | Statement::Require { span, .. }
             | Statement::If { span, .. }
             | Statement::For { span, .. }
-            | Statement::Yield { span, .. }
             | Statement::Console { span, .. } => *span,
         }
     }
@@ -858,9 +852,6 @@ impl SourceFormatter {
                 }
                 self.indent = self.indent.saturating_sub(1);
                 self.line("}");
-            }
-            Statement::Yield { expr, .. } => {
-                self.line(&format!("yield({});", format_expr(expr)));
             }
             Statement::Return { exprs, .. } => {
                 self.line(&format!("return({});", format_expr_list(exprs)));
@@ -1651,16 +1642,6 @@ fn parse_statement<'i>(pair: Pair<'i, Rule>) -> Result<Statement<'i>, CompilerEr
                 ident_span,
                 body_span,
             })
-        }
-        Rule::yield_statement => {
-            let mut inner = pair.into_inner();
-            let list_pair =
-                inner.next().ok_or_else(|| CompilerError::Unsupported("missing yield arguments".to_string()).with_span(&span))?;
-            let args = parse_expression_list(list_pair).map_err(|err| err.with_span(&span))?;
-            if args.len() != 1 {
-                return Err(CompilerError::Unsupported("yield() expects a single argument".to_string()).with_span(&span));
-            }
-            Ok(Statement::Yield { expr: args[0].clone(), span })
         }
         Rule::console_statement => {
             let mut inner = pair.into_inner();
