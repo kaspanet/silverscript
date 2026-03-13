@@ -1,0 +1,15 @@
+contract ManyAssignments(){
+    entrypoint function main(int x){
+        int a_1 = x*x;
+        int a_2 = a_1*a_1;
+        int a_3 = a_2*a_2;
+        int a_4 = a_3*a_3;
+        int a_5 = a_4*a_4;
+        int a_6 = a_5*a_5;
+        int a_7 = a_6*a_6;
+        int a_8 = a_7*a_7;
+        int a_9 = a_8*a_8;
+        int a_10 = a_9*a_9;
+        require(a_10 > 1);
+    }
+}

@@ -283,12 +283,12 @@ impl<'a, 'i> DebugSession<'a, 'i> {
         loop {
             let offset = self.current_byte_offset();
 
-            if offset > target_start {
-                return Ok(false);
-            }
-
             if range_matches_offset(target_start, target_end, offset) && self.engine.is_executing() {
                 return Ok(true);
+            }
+
+            if offset > target_start {
+                return Ok(false);
             }
 
             if self.step_opcode()?.is_none() {
@@ -310,7 +310,7 @@ impl<'a, 'i> DebugSession<'a, 'i> {
             }
             let offset = self.current_byte_offset();
             if self.engine.is_executing() {
-                if let Some(index) = self.steppable_step_index_for_offset(offset) {
+                if let Some(index) = self.steppable_step_index_for_offset(offset, None) {
                     self.current_step_index = Some(index);
                     self.mark_step_executed(index);
                     return Ok(());
@@ -693,11 +693,18 @@ impl<'a, 'i> DebugSession<'a, 'i> {
 
     fn sync_step_cursor_to_current_offset(&mut self) {
         let offset = self.current_byte_offset();
-        if let Some(index) = self.steppable_step_index_for_offset(offset) {
+        let min_sequence = self.current_timeline_step().map(|step| step.sequence);
+        if let Some(index) = self.steppable_step_index_for_offset(offset, min_sequence) {
             if self.current_step_index.is_some_and(|current| index < current) {
                 // In sequence mode multiple steps may resolve to the same byte offset.
                 // Keep cursor monotonic and avoid snapping backward to an earlier
                 // step for that offset.
+                return;
+            }
+            if self
+                .current_timeline_step()
+                .is_some_and(|current| self.step_at_order(index).is_some_and(|candidate| candidate.sequence < current.sequence))
+            {
                 return;
             }
             // `si` executes raw opcodes; keep statement cursor in sync so later
@@ -715,18 +722,70 @@ impl<'a, 'i> DebugSession<'a, 'i> {
         matches!(&step.kind, StepKind::Source {} | StepKind::InlineCallEnter { .. })
     }
 
-    fn steppable_step_index_for_offset(&self, offset: usize) -> Option<usize> {
+    fn steppable_step_index_for_offset(&self, offset: usize, min_sequence: Option<u32>) -> Option<usize> {
+        if let Some(index) = self.current_step_index {
+            if let Some(step) = self.step_at_order(index) {
+                if !self.is_post_inline_call_source(step) {
+                    if let Some(boundary_index) = self.find_steppable_step_index(|candidate| {
+                        candidate.bytecode_start == offset
+                            && step.bytecode_end == offset
+                            && min_sequence.is_none_or(|min_sequence| candidate.sequence >= min_sequence)
+                    }) {
+                        return Some(boundary_index);
+                    }
+                }
+            }
+        }
+
+        self.find_steppable_step_index(|step| {
+            step_matches_offset(step, offset) && min_sequence.is_none_or(|min_sequence| step.sequence >= min_sequence)
+        })
+    }
+
+    fn find_steppable_step_index(&self, predicate: impl Fn(&DebugStep<'i>) -> bool) -> Option<usize> {
         self.step_order.iter().enumerate().find_map(|(order_index, &step_index)| {
             let step = self.debug_info.steps.get(step_index)?;
-            (self.is_steppable_step(step) && step_matches_offset(step, offset)).then_some(order_index)
+            (self.is_steppable_step(step) && predicate(step)).then_some(order_index)
         })
     }
 
     fn next_steppable_step_index(&self, from: Option<usize>, predicate: impl Fn(&DebugStep<'i>) -> bool) -> Option<usize> {
         let start = from.map(|index| index.saturating_add(1)).unwrap_or(0);
+        let min_sequence = from.and_then(|index| self.step_at_order(index).map(|step| step.sequence));
+        if let Some(index) = from {
+            if let Some(step) = self.step_at_order(index) {
+                if step.call_depth > 0 {
+                    if let Some(index) = self.find_post_inline_source_after(step, min_sequence, true, &predicate) {
+                        return Some(index);
+                    }
+                }
+
+                if !self.is_post_inline_call_source(step) {
+                    for index in start..self.step_order.len() {
+                        let step = self.step_at_order(index)?;
+                        if !self.is_steppable_step(step) {
+                            continue;
+                        }
+                        if min_sequence.is_some_and(|min_sequence| step.sequence < min_sequence) {
+                            continue;
+                        }
+                        if step.bytecode_start == self.step_at_order(from?)?.bytecode_end && predicate(step) {
+                            return Some(index);
+                        }
+                    }
+                }
+
+                if let Some(index) = self.find_post_inline_source_after(step, min_sequence, false, &predicate) {
+                    return Some(index);
+                }
+            }
+        }
         for index in start..self.step_order.len() {
             let step = self.step_at_order(index)?;
             if !self.is_steppable_step(step) {
+                continue;
+            }
+            if min_sequence.is_some_and(|min_sequence| step.sequence < min_sequence) {
                 continue;
             }
             if predicate(step) {
@@ -734,6 +793,51 @@ impl<'a, 'i> DebugSession<'a, 'i> {
             }
         }
         None
+    }
+
+    fn is_post_inline_call_source(&self, step: &DebugStep<'i>) -> bool {
+        matches!(step.kind, StepKind::Source {})
+            && self.debug_info.steps.iter().any(|previous| {
+                previous.sequence.saturating_add(1) == step.sequence && matches!(previous.kind, StepKind::InlineCallExit { .. })
+            })
+    }
+
+    fn find_post_inline_source_after(
+        &self,
+        current: &DebugStep<'i>,
+        min_sequence: Option<u32>,
+        require_same_end: bool,
+        predicate: &impl Fn(&DebugStep<'i>) -> bool,
+    ) -> Option<usize> {
+        let mut best_post_inline: Option<(usize, usize)> = None;
+        for index in 0..self.step_order.len() {
+            let candidate = self.step_at_order(index)?;
+            if !self.is_steppable_step(candidate) || !self.is_post_inline_call_source(candidate) {
+                continue;
+            }
+            if candidate.sequence <= current.sequence {
+                continue;
+            }
+            if min_sequence.is_some_and(|min_sequence| candidate.sequence < min_sequence) {
+                continue;
+            }
+            if !predicate(candidate) {
+                continue;
+            }
+            if candidate.bytecode_start > current.bytecode_start || candidate.bytecode_end < current.bytecode_end {
+                continue;
+            }
+            if require_same_end && candidate.bytecode_end != current.bytecode_end {
+                continue;
+            }
+
+            let candidate_len = candidate.bytecode_end.saturating_sub(candidate.bytecode_start);
+            match best_post_inline {
+                Some((_, best_len)) if best_len <= candidate_len => {}
+                _ => best_post_inline = Some((index, candidate_len)),
+            }
+        }
+        best_post_inline.map(|(index, _)| index)
     }
 
     fn step_hits_breakpoint(&self, step: &DebugStep<'i>) -> bool {

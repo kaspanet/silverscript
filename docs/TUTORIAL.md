@@ -519,6 +519,13 @@ byte[] empty = 0x;
 byte[] pubkeyBytes = 0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef;
 ```
 
+Hex literals are always parsed as byte sequences. That means `0x00` is not a scalar `byte`; use an explicit cast when you want one:
+
+```javascript
+byte bad = 0x00;        // compiler error: use byte(0x00) to cast a one-byte hex literal to byte
+byte good = byte(0x00); // compiles
+```
+
 ### Number Units
 
 SilverScript supports convenient number units for values and time:
@@ -719,6 +726,9 @@ byte[] fromString = byte[]("hello");
 // Cast to specific byte size
 byte[32] hash = byte[32](data);
 byte[65] signatureBytes = byte[65](sigBytes);
+
+// Cast a one-byte hex literal to scalar byte
+byte b = byte(0x00);
 
 // Cast to pubkey or sig
 pubkey pk = pubkey(keyBytes);

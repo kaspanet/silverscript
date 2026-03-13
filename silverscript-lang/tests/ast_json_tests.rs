@@ -27,16 +27,16 @@ fn compiles_from_ast_json_require() {
 }
 
 #[test]
-fn compiles_from_ast_json_yield() {
-    let ast = load_ast("yield_test.ast.json");
-    let options = CompileOptions { allow_yield: true, ..CompileOptions::default() };
+fn compiles_from_ast_json_return() {
+    let ast = load_ast("return_test.ast.json");
+    let options = CompileOptions { allow_entrypoint_return: true, ..CompileOptions::default() };
     let compiled_from_ast = compile_contract_ast(&ast, &[], options).expect("compile from AST succeeds");
 
     let source = r#"
-        contract YieldTest() {
-            entrypoint function main() {
+        contract ReturnTest() {
+            entrypoint function main() : (int) {
                 int x = 5;
-                yield(x + 2);
+                return(x + 2);
             }
         }
     "#;

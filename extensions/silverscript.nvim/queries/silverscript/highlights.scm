@@ -100,7 +100,6 @@
   "new"
   "require"
   "return"
-  "yield"
   "console.log"
 ] @keyword
 
