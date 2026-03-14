@@ -1,0 +1,5 @@
+contract Basic() {
+    entrypoint function main() {
+        require(true);
+    }
+}
