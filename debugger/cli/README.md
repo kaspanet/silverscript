@@ -19,7 +19,7 @@ cli-debugger ./counter.sil -f check --ctor-arg 10 --arg 7
 
 Launch a session to explore how your contract behaves line-by-line.
 
-```solidity
+```javascript
 // counter.sil
 contract Counter(int threshold) {
     entrypoint function check(int value) {
