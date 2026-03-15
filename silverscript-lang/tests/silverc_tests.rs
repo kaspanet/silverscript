@@ -11,35 +11,23 @@ use kaspa_txscript::caches::Cache;
 use kaspa_txscript::script_builder::ScriptBuilder;
 use kaspa_txscript::{EngineCtx, EngineFlags, TxScriptEngine};
 use rand::RngCore;
-use silverscript_lang::ast::{ContractAst, Expr};
+use silverscript_lang::ast::ContractAst;
 use silverscript_lang::compiler::{CompiledContract, function_branch_index};
 
-const BASIC_CONTRACT_SOURCE: &str = r#"
-        contract Basic() {
-            entrypoint function main() {
-                require(true);
-            }
-        }
-    "#;
-
-const WITH_CTOR_SOURCE: &str = r#"
-        contract WithCtor(int a) {
-            entrypoint function main() {
-                require(a == 7);
-            }
-        }
-    "#;
+fn contract_fixture(name: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join("silverc-test-files").join(name)
+}
 
 fn silverc() -> Command {
     Command::new(env!("CARGO_BIN_EXE_silverc"))
 }
 
 fn write_basic_contract(path: &Path) {
-    fs::write(path, BASIC_CONTRACT_SOURCE).expect("write source");
+    fs::copy(contract_fixture("basic.sil"), path).expect("copy source");
 }
 
 fn write_with_ctor_contract(path: &Path) {
-    fs::write(path, WITH_CTOR_SOURCE).expect("write source");
+    fs::copy(contract_fixture("with_ctor.sil"), path).expect("copy source");
 }
 
 // TODO: move to tempfile crate or manually delete as a test tear down
@@ -118,8 +106,7 @@ fn silverc_accepts_constructor_args_and_output_flag() {
     let out_path = dir.join("out.json");
     let ctor_path = dir.join("ctor.json");
     write_with_ctor_contract(&src_path);
-    let ctor_args = vec![Expr::int(7)];
-    fs::write(&ctor_path, serde_json::to_string(&ctor_args).expect("serialize ctor args")).expect("write ctor args");
+    fs::copy(contract_fixture("with_ctor_args.json"), &ctor_path).expect("copy ctor args");
 
     let status = silverc()
         .arg(src_path.to_str().unwrap())
