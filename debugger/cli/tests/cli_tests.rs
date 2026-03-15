@@ -3,12 +3,16 @@ use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn write_test_fixture() -> (std::path::PathBuf, std::path::PathBuf) {
+    write_named_test_fixture("simple.sil", "simple.test.json")
+}
+
+fn write_named_test_fixture(script_name: &str, test_file_name: &str) -> (std::path::PathBuf, std::path::PathBuf) {
     let nonce = SystemTime::now().duration_since(UNIX_EPOCH).expect("clock").as_nanos();
     let dir = std::env::temp_dir().join(format!("cli_debugger_test_fixture_{}_{}", std::process::id(), nonce));
     std::fs::create_dir_all(&dir).expect("create temp fixture dir");
 
-    let script_path = dir.join("simple.sil");
-    let test_file_path = dir.join("simple.test.json");
+    let script_path = dir.join(script_name);
+    let test_file_path = dir.join(test_file_name);
 
     std::fs::write(
         &script_path,
@@ -186,15 +190,104 @@ fn cli_debugger_run_all_uses_test_file_suite() {
 }
 
 #[test]
+fn cli_debugger_run_all_infers_test_file_from_script_path() {
+    let (script_path, _test_file_path) = write_test_fixture();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cli-debugger"))
+        .arg(&script_path)
+        .arg("--run-all")
+        .output()
+        .expect("run cli-debugger --run-all with inferred sidecar");
+
+    assert!(
+        output.status.success(),
+        "expected success for inferred run-all, status={:?}, stderr={}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("PASS  pass_case"), "missing pass_case line: {stdout}");
+    assert!(stdout.contains("PASS  fail_case"), "missing fail_case line: {stdout}");
+    assert!(stdout.contains("2 tests: 2 passed, 0 failed"), "missing summary line: {stdout}");
+}
+
+#[test]
+fn cli_debugger_run_all_uses_script_override_for_mismatched_sidecar_name() {
+    let (script_path, test_file_path) = write_named_test_fixture("actual_contract.sil", "suite.test.json");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cli-debugger"))
+        .arg(&script_path)
+        .arg("--run-all")
+        .arg("--test-file")
+        .arg(&test_file_path)
+        .output()
+        .expect("run cli-debugger --run-all with script override");
+
+    assert!(
+        output.status.success(),
+        "expected success for run-all with script override, status={:?}, stderr={}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("PASS  pass_case"), "missing pass_case line: {stdout}");
+    assert!(stdout.contains("PASS  fail_case"), "missing fail_case line: {stdout}");
+    assert!(stdout.contains("2 tests: 2 passed, 0 failed"), "missing summary line: {stdout}");
+}
+
+#[test]
+fn cli_debugger_run_test_name_infers_test_file_from_script_path() {
+    let (script_path, _test_file_path) = write_test_fixture();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cli-debugger"))
+        .arg(&script_path)
+        .arg("--run")
+        .arg("--test-name")
+        .arg("pass_case")
+        .output()
+        .expect("run cli-debugger with inferred sidecar");
+
+    assert!(
+        output.status.success(),
+        "expected success for inferred run test, status={:?}, stderr={}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("PASS"), "expected PASS in stdout, got: {stdout}");
+}
+
+#[test]
+fn cli_debugger_run_test_name_requires_matching_sidecar_or_explicit_test_file() {
+    let (script_path, _test_file_path) = write_named_test_fixture("actual_contract.sil", "suite.test.json");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cli-debugger"))
+        .arg(&script_path)
+        .arg("--run")
+        .arg("--test-name")
+        .arg("pass_case")
+        .output()
+        .expect("run cli-debugger without matching inferred script");
+
+    assert!(!output.status.success(), "expected failure when inferred sidecar script is missing");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("failed to canonicalize test file")
+            && stderr.contains("actual_contract.test.json"),
+        "unexpected stderr: {stderr}"
+    );
+}
+
+#[test]
 fn cli_debugger_run_all_requires_test_file() {
     let output = Command::new(env!("CARGO_BIN_EXE_cli-debugger"))
         .arg("--run-all")
         .output()
         .expect("run cli-debugger --run-all without test file");
 
-    assert!(!output.status.success(), "expected failure when --test-file is missing");
+    assert!(!output.status.success(), "expected failure when both script path and --test-file are missing");
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("--run-all requires --test-file"), "unexpected stderr: {stderr}");
+    assert!(stderr.contains("--run-all requires SCRIPT_PATH or --test-file"), "unexpected stderr: {stderr}");
 }
 
 #[test]
@@ -211,4 +304,18 @@ fn cli_debugger_test_file_requires_test_name_in_run_mode() {
     assert!(!output.status.success(), "expected failure when --test-name is missing");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("--test-file requires --test-name"), "unexpected stderr: {stderr}");
+}
+
+#[test]
+fn cli_debugger_test_name_requires_script_path_or_test_file() {
+    let output = Command::new(env!("CARGO_BIN_EXE_cli-debugger"))
+        .arg("--run")
+        .arg("--test-name")
+        .arg("pass_case")
+        .output()
+        .expect("run cli-debugger --run --test-name without script path or test file");
+
+    assert!(!output.status.success(), "expected failure when neither script path nor test file is provided");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("--test-name requires --test-file or SCRIPT_PATH"), "unexpected stderr: {stderr}");
 }

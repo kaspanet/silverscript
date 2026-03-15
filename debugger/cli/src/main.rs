@@ -6,9 +6,10 @@ use std::path::{Path, PathBuf};
 use clap::Parser;
 use debugger_session::args::{parse_call_args, parse_ctor_args, parse_hex_bytes};
 use debugger_session::format_failure_report;
-use debugger_session::session::{DebugEngine, DebugSession, ShadowTxContext};
+use debugger_session::session::{DebugEngine, DebugSession, ShadowTxContext, Variable};
 use debugger_session::test_runner::{
-    TestExpectation, TestTxInputScenarioResolved, TestTxOutputScenarioResolved, TestTxScenarioResolved, resolve_contract_test,
+    TestExpectation, TestTxInputScenarioResolved, TestTxOutputScenarioResolved, TestTxScenarioResolved, discover_sidecar_path,
+    resolve_contract_test,
 };
 use kaspa_consensus_core::Hash;
 use kaspa_consensus_core::hashing::sighash::SigHashReusedValuesUnsync;
@@ -39,8 +40,6 @@ struct CliArgs {
     /// Run all tests in a test file
     #[arg(long = "run-all")]
     run_all: bool,
-    #[arg(long = "no-selector")]
-    without_selector: bool,
     #[arg(long = "function", short = 'f')]
     function_name: Option<String>,
     #[arg(long = "ctor-arg")]
@@ -64,24 +63,22 @@ fn compile_script_for_ctor_args(
     Ok(compiled.script)
 }
 
-fn parse_hash32(raw: &str) -> Result<Hash, Box<dyn std::error::Error>> {
+fn parse_hex_32(raw: &str, name: &str) -> Result<[u8; 32], Box<dyn std::error::Error>> {
     let bytes = parse_hex_bytes(raw)?;
     if bytes.len() != 32 {
-        return Err(format!("hash expects 32 bytes, got {}", bytes.len()).into());
+        return Err(format!("{name} expects 32 bytes, got {}", bytes.len()).into());
     }
     let mut array = [0u8; 32];
     array.copy_from_slice(&bytes);
-    Ok(Hash::from_bytes(array))
+    Ok(array)
+}
+
+fn parse_hash32(raw: &str) -> Result<Hash, Box<dyn std::error::Error>> {
+    Ok(Hash::from_bytes(parse_hex_32(raw, "hash")?))
 }
 
 fn parse_txid32(raw: &str) -> Result<TransactionId, Box<dyn std::error::Error>> {
-    let bytes = parse_hex_bytes(raw)?;
-    if bytes.len() != 32 {
-        return Err(format!("txid expects 32 bytes, got {}", bytes.len()).into());
-    }
-    let mut array = [0u8; 32];
-    array.copy_from_slice(&bytes);
-    Ok(TransactionId::from_bytes(array))
+    Ok(TransactionId::from_bytes(parse_hex_32(raw, "txid")?))
 }
 
 fn build_p2pk_script(pubkey: &[u8]) -> Vec<u8> {
@@ -124,6 +121,17 @@ fn show_source_context(session: &DebugSession<'_, '_>) {
     }
 }
 
+fn print_variable(session: &DebugSession<'_, '_>, var: &Variable) {
+    let constant_suffix = if var.is_constant { " (const)" } else { "" };
+    println!(
+        "{}{} ({}) = {}",
+        var.name,
+        constant_suffix,
+        var.type_name,
+        session.format_value(&var.type_name, &var.value)
+    );
+}
+
 fn show_vars(session: &DebugSession<'_, '_>) {
     match session.list_variables() {
         Ok(variables) => {
@@ -131,14 +139,7 @@ fn show_vars(session: &DebugSession<'_, '_>) {
                 println!("No variables in scope.");
             } else {
                 for var in variables {
-                    let constant_suffix = if var.is_constant { " (const)" } else { "" };
-                    println!(
-                        "{}{} ({}) = {}",
-                        var.name,
-                        constant_suffix,
-                        var.type_name,
-                        session.format_value(&var.type_name, &var.value)
-                    );
+                    print_variable(session, &var);
                 }
             }
         }
@@ -257,16 +258,7 @@ fn run_repl(session: &mut DebugSession<'_, '_>) -> Result<(), Box<dyn std::error
             "print" | "p" => {
                 if let Some(name) = parts.next() {
                     match session.variable_by_name(name) {
-                        Ok(var) => {
-                            let constant_suffix = if var.is_constant { " (const)" } else { "" };
-                            println!(
-                                "{}{} ({}) = {}",
-                                var.name,
-                                constant_suffix,
-                                var.type_name,
-                                session.format_value(&var.type_name, &var.value)
-                            );
-                        }
+                        Ok(var) => print_variable(session, &var),
                         Err(err) => println!("ERROR: {err}"),
                     }
                 } else {
@@ -288,7 +280,7 @@ fn run_repl(session: &mut DebugSession<'_, '_>) -> Result<(), Box<dyn std::error
     Ok(())
 }
 
-fn run_all_tests(test_file: &str) -> Result<(), Box<dyn std::error::Error>> {
+fn run_all_tests(test_file: &str, script_path: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
     use debugger_session::test_runner::read_contract_test_file;
     let test_file_path = Path::new(test_file);
     let parsed = read_contract_test_file(test_file_path)?;
@@ -297,8 +289,12 @@ fn run_all_tests(test_file: &str) -> Result<(), Box<dyn std::error::Error>> {
     let mut passed = 0;
     let mut failed = 0;
     for name in &test_names {
+        let mut args = vec!["--run", "--test-file", test_file, "--test-name", name];
+        if let Some(path) = script_path {
+            args.push(path);
+        }
         let result = std::process::Command::new(std::env::current_exe()?)
-            .args(["--run", "--test-file", test_file, "--test-name", name])
+            .args(&args)
             .output()?;
         let stderr = String::from_utf8_lossy(&result.stderr);
         if result.status.success() {
@@ -318,20 +314,48 @@ fn run_all_tests(test_file: &str) -> Result<(), Box<dyn std::error::Error>> {
     if failed > 0 { Err("some tests failed".into()) } else { Ok(()) }
 }
 
+fn resolve_test_file_path(
+    test_file: Option<&str>,
+    script_path: Option<&str>,
+    mode: &str,
+) -> Result<Option<PathBuf>, Box<dyn std::error::Error>> {
+    match (test_file, script_path) {
+        (Some(path), _) => Ok(Some(PathBuf::from(path))),
+        (None, Some(path)) if mode == "run-all" || mode == "run-test" => {
+            Ok(Some(discover_sidecar_path(Path::new(path)).map_err(|e| -> Box<dyn std::error::Error> { e.into() })?))
+        }
+        (None, _) => Ok(None),
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = CliArgs::parse();
 
+    if !cli.run_all && cli.test_file.is_some() && cli.test_name.is_none() {
+        return Err("--test-file requires --test-name".into());
+    }
+    if !cli.run_all && cli.test_name.is_some() && cli.test_file.is_none() && cli.script_path.is_none() {
+        return Err("--test-name requires --test-file or SCRIPT_PATH".into());
+    }
+
     if cli.run_all {
-        let test_file = cli.test_file.as_deref().ok_or("--run-all requires --test-file")?;
-        return run_all_tests(test_file);
+        let test_file = resolve_test_file_path(cli.test_file.as_deref(), cli.script_path.as_deref(), "run-all")?
+            .ok_or("--run-all requires SCRIPT_PATH or --test-file")?;
+        let test_file = test_file.to_string_lossy().into_owned();
+        return run_all_tests(&test_file, cli.script_path.as_deref());
     }
 
     // Resolve source, ctor args, function, call args, and tx from test file or CLI flags
-    let (script_path, raw_ctor_args, selected_name, raw_args, tx_scenario, expect) = if let Some(test_file) = cli.test_file.as_deref()
+    let inferred_test_file = if cli.test_file.is_some() || cli.test_name.is_some() {
+        resolve_test_file_path(cli.test_file.as_deref(), cli.script_path.as_deref(), "run-test")?
+    } else {
+        None
+    };
+    let (script_path, raw_ctor_args, selected_name, raw_args, tx_scenario, expect) = if let Some(test_file) = inferred_test_file.as_deref()
     {
-        let test_name = cli.test_name.as_deref().ok_or("--test-file requires --test-name")?;
+        let test_name = cli.test_name.as_deref().ok_or("--test-name requires --test-file or SCRIPT_PATH")?;
         let script_override = cli.script_path.as_deref().map(Path::new);
-        let resolved = resolve_contract_test(Path::new(test_file), test_name, script_override)
+        let resolved = resolve_contract_test(test_file, test_name, script_override)
             .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
         let ctor = if !cli.raw_ctor_args.is_empty() { cli.raw_ctor_args.clone() } else { resolved.test.constructor_args };
         let fname = cli.function_name.clone().unwrap_or(resolved.test.function);
@@ -347,13 +371,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let source = fs::read_to_string(&script_path)?;
     let parsed_contract = parse_contract_ast(&source)?;
-
-    if cli.without_selector {
-        let entrypoint_count = parsed_contract.functions.iter().filter(|func| func.entrypoint).count();
-        if entrypoint_count != 1 {
-            return Err("--no-selector requires exactly one entrypoint function".into());
-        }
-    }
 
     let ctor_args = parse_ctor_args(&parsed_contract, &raw_ctor_args)?;
     let compile_opts = CompileOptions { record_debug_infos: true, ..Default::default() };
