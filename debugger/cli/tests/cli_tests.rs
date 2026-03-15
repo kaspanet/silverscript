@@ -272,8 +272,7 @@ fn cli_debugger_run_test_name_requires_matching_sidecar_or_explicit_test_file() 
     assert!(!output.status.success(), "expected failure when inferred sidecar script is missing");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("failed to canonicalize test file")
-            && stderr.contains("actual_contract.test.json"),
+        stderr.contains("failed to canonicalize test file") && stderr.contains("actual_contract.test.json"),
         "unexpected stderr: {stderr}"
     );
 }
