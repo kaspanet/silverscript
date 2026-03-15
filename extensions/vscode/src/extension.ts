@@ -3,6 +3,9 @@ import * as path from "path";
 import * as fs from "fs/promises";
 import { Language, Parser, Query } from "web-tree-sitter";
 import type { QueryCapture } from "web-tree-sitter";
+import { registerSilverScriptCodeLens } from "./codeLens";
+import { registerSilverScriptDebugger } from "./debug";
+import { registerSilverScriptQuickLaunchPanel } from "./quickLaunch/panel";
 
 const TOKEN_TYPES = [
   "comment",
@@ -26,7 +29,7 @@ const legend = new vscode.SemanticTokensLegend(
   [...TOKEN_MODIFIERS],
 );
 
-const LOG_DEBUG = true;
+let logDebugEnabled = false;
 let outputChannel: vscode.OutputChannel | null = null;
 
 function logInfo(message: string) {
@@ -37,7 +40,7 @@ function logInfo(message: string) {
 }
 
 function logDebug(message: string) {
-  if (!LOG_DEBUG) {
+  if (!logDebugEnabled) {
     return;
   }
   logInfo(message);
@@ -366,9 +369,35 @@ class SilverScriptSemanticTokensProvider
 }
 
 export function activate(context: vscode.ExtensionContext) {
+  logDebugEnabled =
+    context.extensionMode !== vscode.ExtensionMode.Production;
+
   outputChannel = vscode.window.createOutputChannel("SilverScript");
+  const debugOutputChannel = vscode.window.createOutputChannel(
+    "SilverScript Debugger",
+  );
   context.subscriptions.push(outputChannel);
+  context.subscriptions.push(debugOutputChannel);
   logInfo("SilverScript extension activated.");
+  logInfo(
+    `mode=${vscode.ExtensionMode[context.extensionMode]} id=${context.extension.id} path=${context.extensionPath}`,
+  );
+
+  const semanticEnabled = vscode.workspace
+    .getConfiguration("silverscript")
+    .get<boolean>("enableSemanticTokens", true);
+  logInfo(`enableSemanticTokens=${semanticEnabled}`);
+
+  const activeDoc = vscode.window.activeTextEditor?.document;
+  if (activeDoc) {
+    logInfo(
+      `activeDoc=${activeDoc.uri.fsPath} languageId=${activeDoc.languageId}`,
+    );
+  }
+
+  registerSilverScriptDebugger(context, debugOutputChannel);
+  registerSilverScriptQuickLaunchPanel(context, debugOutputChannel);
+  registerSilverScriptCodeLens(context);
 
   // TODO: add LSP (LanguageClient + LanguageServer)
 

@@ -943,6 +943,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "dap"
+version = "0.4.1-alpha1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "35c7fc89d334ab745ba679f94c7314c9b17ecdcd923c111df6206e9fd7729fa9"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "debugger-dap"
+version = "0.1.0"
+dependencies = [
+ "blake2b_simd",
+ "dap",
+ "debugger-session",
+ "kaspa-consensus-core",
+ "kaspa-txscript",
+ "kaspa-txscript-errors",
+ "rand 0.8.5",
+ "secp256k1",
+ "serde",
+ "serde_json",
+ "silverscript-lang",
+]
+
+[[package]]
 name = "debugger-session"
 version = "0.1.0"
 dependencies = [
