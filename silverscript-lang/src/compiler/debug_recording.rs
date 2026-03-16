@@ -518,7 +518,7 @@ impl<'i> StagedEntrypointDebug<'i> {
         structs: &super::StructRegistry,
     ) -> Result<(), CompilerError> {
         let field_count = contract_fields.len();
-        let mut param_leaf_specs: Vec<Option<Vec<(Vec<String>, String)>>> = Vec::with_capacity(function.params.len());
+        let mut param_leaf_specs = Vec::with_capacity(function.params.len());
         let mut flattened_param_names = Vec::new();
 
         for param in &function.params {
@@ -550,7 +550,11 @@ impl<'i> StagedEntrypointDebug<'i> {
             let binding = if let Some(leaf_specs) = leaf_specs {
                 let mut leaf_bindings = Vec::with_capacity(leaf_specs.len());
                 for (field_path, leaf_type_name) in leaf_specs {
-                    leaf_bindings.push(DebugParamLeafBinding { field_path, type_name: leaf_type_name, stack_index: next_stack_index() });
+                    leaf_bindings.push(DebugParamLeafBinding {
+                        field_path,
+                        type_name: leaf_type_name,
+                        stack_index: next_stack_index(),
+                    });
                 }
                 DebugParamBinding::StructuredValue { leaf_bindings }
             } else {

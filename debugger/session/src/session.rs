@@ -601,7 +601,8 @@ impl<'a, 'i> DebugSession<'a, 'i> {
     fn scope_state(&self, step_id: StepId) -> Result<ScopeState<'i>, String> {
         let scope = self.visible_scope(step_id)?;
         let mut bindings = HashMap::new();
-        let function_params: Vec<_> = self.debug_info.params.iter().filter(|param| param.function == scope.context.function_name).collect();
+        let function_params: Vec<_> =
+            self.debug_info.params.iter().filter(|param| param.function == scope.context.function_name).collect();
         let mut contract_field_names = HashSet::new();
         let mut expected_stack_index = 0_i64;
 
@@ -616,11 +617,8 @@ impl<'a, 'i> DebugSession<'a, 'i> {
         }
 
         for param in function_params {
-            let origin = if contract_field_names.contains(&param.name) {
-                VariableOrigin::ContractField
-            } else {
-                VariableOrigin::Param
-            };
+            let origin =
+                if contract_field_names.contains(&param.name) { VariableOrigin::ContractField } else { VariableOrigin::Param };
             match &param.binding {
                 DebugParamBinding::SingleValue { stack_index } => {
                     bindings.entry(param.name.clone()).or_insert_with(|| ScopeBinding {

@@ -165,6 +165,30 @@ pub fn parse_typed_arg(type_name: &str, raw: &str) -> Result<Expr<'static>, Stri
     }
 }
 
+pub fn parse_ctor_args(parsed_contract: &ContractAst<'_>, raw_ctor_args: &[String]) -> Result<Vec<Expr<'static>>, String> {
+    if parsed_contract.params.len() != raw_ctor_args.len() {
+        return Err(format!("constructor expects {} arguments, got {}", parsed_contract.params.len(), raw_ctor_args.len()));
+    }
+
+    let mut out = Vec::with_capacity(raw_ctor_args.len());
+    for (param, raw) in parsed_contract.params.iter().zip(raw_ctor_args.iter()) {
+        out.push(parse_typed_arg(&param.type_ref.type_name(), raw)?);
+    }
+    Ok(out)
+}
+
+pub fn parse_call_args(input_types: &[String], raw_args: &[String]) -> Result<Vec<Expr<'static>>, String> {
+    if input_types.len() != raw_args.len() {
+        return Err(format!("function expects {} arguments, got {}", input_types.len(), raw_args.len()));
+    }
+
+    let mut typed_args = Vec::with_capacity(raw_args.len());
+    for (input_type, raw) in input_types.iter().zip(raw_args.iter()) {
+        typed_args.push(parse_typed_arg(input_type, raw)?);
+    }
+    Ok(typed_args)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{parse_ctor_args, parse_typed_arg};
@@ -232,28 +256,4 @@ mod tests {
         assert_eq!(args.len(), 1);
         assert!(matches!(args[0].kind, ExprKind::StateObject(_)));
     }
-}
-
-pub fn parse_ctor_args(parsed_contract: &ContractAst<'_>, raw_ctor_args: &[String]) -> Result<Vec<Expr<'static>>, String> {
-    if parsed_contract.params.len() != raw_ctor_args.len() {
-        return Err(format!("constructor expects {} arguments, got {}", parsed_contract.params.len(), raw_ctor_args.len()));
-    }
-
-    let mut out = Vec::with_capacity(raw_ctor_args.len());
-    for (param, raw) in parsed_contract.params.iter().zip(raw_ctor_args.iter()) {
-        out.push(parse_typed_arg(&param.type_ref.type_name(), raw)?);
-    }
-    Ok(out)
-}
-
-pub fn parse_call_args(input_types: &[String], raw_args: &[String]) -> Result<Vec<Expr<'static>>, String> {
-    if input_types.len() != raw_args.len() {
-        return Err(format!("function expects {} arguments, got {}", input_types.len(), raw_args.len()));
-    }
-
-    let mut typed_args = Vec::with_capacity(raw_args.len());
-    for (input_type, raw) in input_types.iter().zip(raw_args.iter()) {
-        typed_args.push(parse_typed_arg(input_type, raw)?);
-    }
-    Ok(typed_args)
 }
