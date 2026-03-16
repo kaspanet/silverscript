@@ -1,3 +1,4 @@
+use blake2b_simd::Params as Blake2bParams;
 use kaspa_addresses::{Address, Prefix, Version};
 use kaspa_consensus_core::Hash;
 use kaspa_consensus_core::hashing::sighash::SigHashReusedValuesUnsync;
@@ -3548,6 +3549,87 @@ fn runs_validate_output_state_with_state_variable() {
 }
 
 #[test]
+fn runs_validate_output_state_with_template() {
+    let mux_hash = vec![0x11u8; 32];
+
+    let target_source = r#"
+        contract A(byte[32] initMuxHash, byte[32] initAHash, int initX, byte[2] initY) {
+            byte[32] muxHash = initMuxHash;
+            byte[32] aHash = initAHash;
+            int x = initX;
+            byte[2] y = initY;
+
+            entrypoint function noop() {
+                require(true);
+            }
+        }
+    "#;
+
+    let target_a0 = compile_contract(
+        target_source,
+        &[vec![0x11u8; 32].into(), vec![0x33u8; 32].into(), Expr::int(0x1111_1111_1111_1111), vec![0x55u8, 0x66u8].into()],
+        CompileOptions::default(),
+    )
+    .expect("compile target succeeds");
+    let layout = target_a0.state_layout;
+    let a_prefix = target_a0.script[..layout.start].to_vec();
+    let a_suffix = target_a0.script[layout.start + layout.len..].to_vec();
+    let a_template_hash =
+        Blake2bParams::new().hash_length(32).to_state().update(&a_prefix).update(&a_suffix).finalize().as_bytes().to_vec();
+
+    let target_output_compiled = compile_contract(
+        target_source,
+        &[mux_hash.into(), a_template_hash.clone().into(), 6.into(), vec![0x34u8, 0x12u8].into()],
+        CompileOptions::default(),
+    )
+    .expect("compile target output succeeds");
+    let a_prefix_hex = a_prefix.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+    let a_suffix_hex = a_suffix.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+    let a_template_hash_hex = a_template_hash.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+
+    let mux_source = format!(
+        r#"
+        contract M(byte[32] initMuxHash, byte[32] initAHash, int initX, byte[2] initY) {{
+            byte[32] muxHash = initMuxHash;
+            byte[32] aHash = initAHash;
+            int x = initX;
+            byte[2] y = initY;
+
+            entrypoint function routeToA() {{
+                validateOutputStateWithTemplate(
+                    0,
+                    {{muxHash: muxHash, aHash: aHash, x: x + 1, y: 0x3412}},
+                    0x{a_prefix_hex},
+                    0x{a_suffix_hex},
+                    0x{a_template_hash_hex}
+                );
+            }}
+        }}
+    "#
+    );
+
+    let mux_input_compiled = compile_contract(
+        &mux_source,
+        &[vec![0x11u8; 32].into(), a_template_hash.clone().into(), 5.into(), vec![0x10u8, 0x20u8].into()],
+        CompileOptions::default(),
+    )
+    .expect("compile mux succeeds");
+
+    let sigscript = mux_input_compiled.build_sig_script("routeToA", vec![]).expect("sigscript builds");
+    let sigscript = pay_to_script_hash_signature_script(mux_input_compiled.script.clone(), sigscript).unwrap();
+    let input = test_input(0, sigscript);
+
+    let input_spk = pay_to_script_hash_script(&mux_input_compiled.script);
+    let output_spk = pay_to_script_hash_script(&target_output_compiled.script);
+    let output = TransactionOutput { value: 1000, script_public_key: output_spk, covenant: None };
+    let tx = Transaction::new(1, vec![input], vec![output.clone()], 0, Default::default(), 0, vec![]);
+    let utxo_entry = UtxoEntry::new(output.value, input_spk, 0, tx.is_coinbase(), None);
+
+    let result = execute_input(tx, vec![utxo_entry], 0);
+    assert!(result.is_ok(), "validateOutputStateWithTemplate runtime failed: {}", result.unwrap_err());
+}
+
+#[test]
 fn validate_output_state_accepts_state_value_from_array_index() {
     let source = r#"
         contract C(int initX) {
@@ -3791,6 +3873,46 @@ fn validate_output_state_accepts_three_field_state_under_selector_dispatch() {
 
     let result = execute_input(tx, vec![utxo_entry], 0);
     assert!(result.is_ok(), "mixed-width state should validate output state under selector dispatch: {result:?}");
+}
+
+#[test]
+fn debug_validate_output_state_accepts_current_byte32_fields() {
+    let source = r#"
+        contract C(byte[32] initMuxHash, byte[32] initAHash, int initX, byte[2] initY) {
+            byte[32] muxHash = initMuxHash;
+            byte[32] aHash = initAHash;
+            int x = initX;
+            byte[2] y = initY;
+
+            entrypoint function main() {
+                validateOutputState(0, {muxHash: muxHash, aHash: aHash, x: x + 1, y: 0x3412});
+            }
+        }
+    "#;
+
+    let input_compiled = compile_contract(
+        source,
+        &[vec![0x11u8; 32].into(), vec![0x22u8; 32].into(), 5.into(), vec![0x10u8, 0x20u8].into()],
+        CompileOptions::default(),
+    )
+    .expect("compile succeeds");
+
+    let output_compiled = compile_contract(
+        source,
+        &[vec![0x11u8; 32].into(), vec![0x22u8; 32].into(), 6.into(), vec![0x34u8, 0x12u8].into()],
+        CompileOptions::default(),
+    )
+    .expect("compile succeeds");
+
+    let input = test_input(0, sigscript_push_script(&input_compiled.script));
+    let input_spk = pay_to_script_hash_script(&input_compiled.script);
+    let output_spk = pay_to_script_hash_script(&output_compiled.script);
+    let output = TransactionOutput { value: 1000, script_public_key: output_spk, covenant: None };
+    let tx = Transaction::new(1, vec![input], vec![output.clone()], 0, Default::default(), 0, vec![]);
+    let utxo_entry = UtxoEntry::new(output.value, input_spk, 0, tx.is_coinbase(), None);
+
+    let result = execute_input(tx, vec![utxo_entry], 0);
+    assert!(result.is_ok(), "validateOutputState should accept current byte[32] fields: {result:?}");
 }
 
 #[test]
