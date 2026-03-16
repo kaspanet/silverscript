@@ -8,10 +8,10 @@ use kaspa_txscript::script_builder::ScriptBuilder;
 use kaspa_txscript::{DynOpcodeImplementation, EngineCtx, EngineFlags, TxScriptEngine, parse_script};
 use serde::{Deserialize, Serialize};
 
-use silverscript_lang::ast::{Expr, ExprKind};
+use silverscript_lang::ast::{Expr, ExprKind, parse_expression_ast};
 use silverscript_lang::compiler::compile_debug_expr;
 use silverscript_lang::debug_info::{
-    DebugFunctionRange, DebugInfo, DebugParamMapping, DebugStep, DebugVariableUpdate, SourceSpan, StepId, StepKind,
+    DebugFunctionRange, DebugInfo, DebugNamedValue, DebugStep, DebugVariableUpdate, RuntimeBinding, SourceSpan, StepId, StepKind,
 };
 
 pub use crate::presentation::{SourceContext, SourceContextLine};
@@ -39,6 +39,7 @@ pub enum DebugValue {
     Bytes(Vec<u8>),
     String(String),
     Array(Vec<DebugValue>),
+    Object(Vec<(String, DebugValue)>),
     /// Value could not be evaluated (for example unresolved identifiers or shadow VM failures).
     Unknown(std::string::String),
 }
@@ -47,6 +48,7 @@ pub enum DebugValue {
 pub enum VariableOrigin {
     Local,
     Param,
+    ConstructorArg,
     Constant,
 }
 
@@ -55,6 +57,7 @@ impl VariableOrigin {
         match self {
             Self::Local => "local",
             Self::Param => "arg",
+            Self::ConstructorArg => "ctor",
             Self::Constant => "const",
         }
     }
@@ -105,6 +108,12 @@ pub struct FailureReport {
     pub source_text: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct EvaluatedExpression {
+    pub type_name: String,
+    pub value: DebugValue,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StackSnapshot {
     pub dstack: Vec<String>,
@@ -136,9 +145,8 @@ pub struct DebugSession<'a, 'i> {
     executed_steps: HashSet<StepId>,
 }
 
-struct ShadowParamValue {
+struct ShadowBindingValue {
     name: String,
-    type_name: String,
     stack_index: i64,
     value: Vec<u8>,
 }
@@ -147,9 +155,34 @@ struct VariableContext<'a> {
     function_name: &'a str,
     function_start: usize,
     function_end: usize,
-    offset: usize,
     step_id: StepId,
 }
+
+struct VisibleScope<'a, 'i> {
+    context: VariableContext<'a>,
+    updates: HashMap<String, &'a DebugVariableUpdate<'i>>,
+}
+
+#[derive(Clone)]
+enum ScopeValueSource<'i> {
+    RuntimeSlot { from_top: i64 },
+    Expr(Expr<'i>),
+}
+
+struct ScopeBinding<'i> {
+    type_name: String,
+    source: ScopeValueSource<'i>,
+    origin: VariableOrigin,
+    is_constant: bool,
+    hidden: bool,
+}
+
+type ScopeState<'i> = HashMap<String, ScopeBinding<'i>>;
+type ShadowBindings = Vec<ShadowBindingValue>;
+type EvalEnv<'i> = HashMap<String, Expr<'i>>;
+type StackBindings = HashMap<String, i64>;
+type EvalTypes = HashMap<String, String>;
+type ShadowResolution<'i> = (ShadowBindings, EvalEnv<'i>, StackBindings, EvalTypes);
 
 impl<'a, 'i> DebugSession<'a, 'i> {
     // --- Session construction + stepping ---
@@ -418,10 +451,9 @@ impl<'a, 'i> DebugSession<'a, 'i> {
     // --- Variable inspection ---
 
     /// Returns all variables in scope at current execution point.
-    /// Includes params, local variables (up to current offset), and constructor constants.
-    /// Values are computed via shadow VM evaluation.
+    /// Includes locals, params, constructor args, and contract constants.
     pub fn list_variables(&self) -> Result<Vec<Variable>, String> {
-        self.collect_variables(self.current_step_id())
+        self.collect_variables(self.active_scope_step_id())
     }
 
     pub fn list_variables_at_sequence(&self, sequence: u32, frame_id: u32) -> Result<Vec<Variable>, String> {
@@ -429,17 +461,29 @@ impl<'a, 'i> DebugSession<'a, 'i> {
     }
 
     fn collect_variables(&self, step_id: StepId) -> Result<Vec<Variable>, String> {
-        let context = self.current_variable_context(step_id)?;
-        let mut variables = self.collect_variables_map(&context)?.into_values().collect::<Vec<_>>();
+        let scope_state = self.scope_state(step_id)?;
+        let mut variables = self.collect_variables_map(&scope_state)?.into_values().collect::<Vec<_>>();
         variables.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(variables)
     }
 
     /// Returns a specific variable by name, or error if not in scope.
     pub fn variable_by_name(&self, name: &str) -> Result<Variable, String> {
-        let context = self.current_variable_context(self.current_step_id())?;
-        let variables = self.collect_variables_map(&context)?;
+        let scope_state = self.scope_state(self.active_scope_step_id())?;
+        let variables = self.collect_variables_map(&scope_state)?;
         variables.get(name).cloned().ok_or_else(|| format!("unknown variable '{name}'"))
+    }
+
+    pub fn evaluate_expression(&self, expr_src: &str) -> Result<EvaluatedExpression, String> {
+        let scope_state = self.scope_state(self.active_scope_step_id())?;
+        let expr = parse_expression_ast(expr_src).map_err(|err| format!("parse error: {err}"))?;
+        let (shadow_bindings, env, stack_bindings, eval_types) = self.scope_state_eval_context(&scope_state)?;
+        let (bytecode, type_name) = compile_debug_expr(&expr, &env, &stack_bindings, &eval_types)
+            .map_err(|err| format!("failed to compile debug expression: {err}"))?;
+        let script = self.build_shadow_script(&shadow_bindings, &bytecode)?;
+        let bytes = self.execute_shadow_script(&script)?;
+        let value = decode_value_by_type(&type_name, bytes)?;
+        Ok(EvaluatedExpression { type_name, value })
     }
 
     // --- DebugValue formatting ---
@@ -540,64 +584,77 @@ impl<'a, 'i> DebugSession<'a, 'i> {
             function_name: function.name.as_str(),
             function_start: function.bytecode_start,
             function_end: function.bytecode_end,
-            offset: self.current_byte_offset(),
             step_id,
         })
     }
 
-    fn collect_variables_map(&self, context: &VariableContext<'_>) -> Result<HashMap<String, Variable>, String> {
-        let mut variables: HashMap<String, Variable> = HashMap::new();
-        let var_updates = self.current_variable_updates(context);
+    fn visible_scope(&self, step_id: StepId) -> Result<VisibleScope<'_, 'i>, String> {
+        let context = self.current_variable_context(step_id)?;
+        let updates = self.current_variable_updates(&context);
+        Ok(VisibleScope { context, updates })
+    }
 
-        for (name, update) in &var_updates {
-            if is_inline_synthetic_name(name) {
+    fn scope_state(&self, step_id: StepId) -> Result<ScopeState<'i>, String> {
+        let scope = self.visible_scope(step_id)?;
+        Ok(self.scope_state_from_visible(&scope))
+    }
+
+    fn scope_state_from_visible(&self, scope: &VisibleScope<'_, 'i>) -> ScopeState<'i> {
+        let mut bindings = HashMap::new();
+
+        for param in self.debug_info.params.iter().filter(|param| param.function == scope.context.function_name) {
+            bindings.entry(param.name.clone()).or_insert_with(|| ScopeBinding {
+                type_name: param.type_name.clone(),
+                source: ScopeValueSource::RuntimeSlot { from_top: param.stack_index },
+                origin: VariableOrigin::Param,
+                is_constant: false,
+                hidden: false,
+            });
+        }
+
+        record_debug_named_values(&mut bindings, &self.debug_info.constructor_args, VariableOrigin::ConstructorArg, false);
+        record_debug_named_values(&mut bindings, &self.debug_info.constants, VariableOrigin::Constant, true);
+
+        for (name, update) in &scope.updates {
+            let source = match update.runtime_binding.as_ref() {
+                Some(RuntimeBinding::DataStackSlot { from_top }) => ScopeValueSource::RuntimeSlot { from_top: *from_top },
+                None => ScopeValueSource::Expr(update.expr.clone()),
+            };
+            bindings
+                .entry(name.clone())
+                .and_modify(|binding| {
+                    binding.type_name = update.type_name.clone();
+                    binding.source = source.clone();
+                    binding.hidden = is_inline_synthetic_name(name);
+                })
+                .or_insert_with(|| ScopeBinding {
+                    type_name: update.type_name.clone(),
+                    source,
+                    origin: VariableOrigin::Local,
+                    is_constant: false,
+                    hidden: is_inline_synthetic_name(name),
+                });
+        }
+
+        bindings
+    }
+
+    fn collect_variables_map(&self, scope_state: &ScopeState<'i>) -> Result<HashMap<String, Variable>, String> {
+        let mut variables: HashMap<String, Variable> = HashMap::new();
+
+        for (name, binding) in scope_state {
+            if binding.hidden {
                 continue;
             }
-            let value =
-                self.evaluate_update_with_shadow_vm(context.function_name, update, &var_updates).unwrap_or_else(DebugValue::Unknown);
+            let value = self.resolve_scope_binding(scope_state, binding).unwrap_or_else(DebugValue::Unknown);
             variables.insert(
                 name.clone(),
                 Variable {
                     name: name.clone(),
-                    type_name: update.type_name.clone(),
+                    type_name: binding.type_name.clone(),
                     value,
-                    is_constant: false,
-                    origin: VariableOrigin::Local,
-                },
-            );
-        }
-
-        for param in self.debug_info.params.iter().filter(|param| param.function == context.function_name) {
-            if variables.contains_key(&param.name) {
-                continue;
-            }
-            let value = self.read_param_value(param)?;
-            variables.insert(
-                param.name.clone(),
-                Variable {
-                    name: param.name.clone(),
-                    type_name: param.type_name.clone(),
-                    value,
-                    is_constant: false,
-                    origin: VariableOrigin::Param,
-                },
-            );
-        }
-
-        // Contract constants are contract-scoped, not frame-scoped, so they
-        // remain visible while stepping through inline callee frames.
-        for constant in &self.debug_info.constants {
-            if variables.contains_key(&constant.name) {
-                continue;
-            }
-            variables.insert(
-                constant.name.clone(),
-                Variable {
-                    name: constant.name.clone(),
-                    type_name: constant.type_name.clone(),
-                    value: self.evaluate_constant(&constant.value),
-                    is_constant: true,
-                    origin: VariableOrigin::Constant,
+                    is_constant: binding.is_constant,
+                    origin: binding.origin,
                 },
             );
         }
@@ -610,12 +667,11 @@ impl<'a, 'i> DebugSession<'a, 'i> {
             return false;
         }
         // Stay in the active inline frame and only consider updates from
-        // steps already executed in this session.
+        // source steps that completed before the currently highlighted step.
         let step_id = step.id();
         step_id.frame_id == context.step_id.frame_id
             && self.executed_steps.contains(&step_id)
             && step_id.sequence < context.step_id.sequence
-            && step.bytecode_end <= context.offset
     }
 
     /// Returns the most specific step for `offset`.
@@ -647,6 +703,24 @@ impl<'a, 'i> DebugSession<'a, 'i> {
 
     fn current_step_id(&self) -> StepId {
         self.current_timeline_step().map(DebugStep::id).unwrap_or(StepId::ROOT)
+    }
+
+    fn active_scope_step_id(&self) -> StepId {
+        let Some(current_index) = self.current_step_index else {
+            return self.current_step_id();
+        };
+        let Some(current_step) = self.current_timeline_step() else {
+            return self.current_step_id();
+        };
+        if !matches!(current_step.kind, StepKind::InlineCallEnter { .. }) {
+            return current_step.id();
+        }
+        for index in (0..current_index).rev() {
+            if let Some(step) = self.step_at_order(index) {
+                return StepId::new(current_step.sequence, step.frame_id);
+            }
+        }
+        current_step.id()
     }
 
     fn mark_step_executed(&mut self, step_index: usize) {
@@ -863,59 +937,56 @@ impl<'a, 'i> DebugSession<'a, 'i> {
         FailureReport { message: format!("{error}"), frames, source_text: self.source_lines.join("\n") }
     }
 
-    /// Evaluates an expression using shadow VM execution.
-    ///
-    /// Strategy: compile the pre-resolved expression to bytecode, build a mini-script
-    /// that pushes current param values then executes the bytecode, run on fresh VM,
-    /// read result from top of stack. This guarantees debugger sees same semantics as
-    /// real execution without duplicating evaluation logic.
-    fn evaluate_update_with_shadow_vm(
-        &self,
-        function_name: &str,
-        update: &DebugVariableUpdate<'i>,
-        updates: &HashMap<String, &DebugVariableUpdate<'i>>,
-    ) -> Result<DebugValue, String> {
-        let params = self.shadow_param_values(function_name)?;
-        let type_name = &update.type_name;
-        let expr = &update.expr;
-        let mut param_indexes = HashMap::new();
-        let mut param_types = HashMap::new();
-        for param in &params {
-            param_indexes.insert(param.name.clone(), param.stack_index);
-            param_types.insert(param.name.clone(), param.type_name.clone());
+    fn resolve_scope_binding(&self, scope_state: &ScopeState<'i>, binding: &ScopeBinding<'i>) -> Result<DebugValue, String> {
+        let mut visiting = HashSet::new();
+        if let Some(value) = try_resolve_binding_value(scope_state, binding, &mut visiting) {
+            return Ok(value);
         }
-        let mut env: HashMap<String, Expr<'i>> = HashMap::new();
-        let mut eval_types = param_types;
-        for (name, update) in updates {
-            env.insert((*name).clone(), update.expr.clone());
-            eval_types.insert((*name).clone(), update.type_name.clone());
+        match &binding.source {
+            ScopeValueSource::RuntimeSlot { from_top } => self.read_stack_value(*from_top, &binding.type_name),
+            ScopeValueSource::Expr(expr) => self.evaluate_scope_expr_as(scope_state, expr, &binding.type_name),
         }
-        let bytecode = compile_debug_expr(expr, &env, &param_indexes, &eval_types)
+    }
+
+    fn evaluate_scope_expr_as(&self, scope_state: &ScopeState<'i>, expr: &Expr<'i>, type_name: &str) -> Result<DebugValue, String> {
+        let (shadow_bindings, env, stack_bindings, eval_types) = self.scope_state_eval_context(scope_state)?;
+        let (bytecode, _) = compile_debug_expr(expr, &env, &stack_bindings, &eval_types)
             .map_err(|err| format!("failed to compile debug expression: {err}"))?;
-        let script = self.build_shadow_script(&params, &bytecode)?;
+        let script = self.build_shadow_script(&shadow_bindings, &bytecode)?;
         let bytes = self.execute_shadow_script(&script)?;
         decode_value_by_type(type_name, bytes)
     }
 
-    fn shadow_param_values(&self, function_name: &str) -> Result<Vec<ShadowParamValue>, String> {
-        let mut params = Vec::new();
-        for param in self.debug_info.params.iter().filter(|param| param.function == function_name) {
-            params.push(ShadowParamValue {
-                name: param.name.clone(),
-                type_name: param.type_name.clone(),
-                stack_index: param.stack_index,
-                value: self.read_stack_at_index(param.stack_index)?,
-            });
+    fn scope_state_eval_context(&self, scope_state: &ScopeState<'i>) -> Result<ShadowResolution<'i>, String> {
+        let mut shadow_by_name = HashMap::new();
+        let mut env = HashMap::new();
+        let mut eval_types = HashMap::new();
+
+        for (name, binding) in scope_state {
+            eval_types.insert(name.clone(), binding.type_name.clone());
+            match &binding.source {
+                ScopeValueSource::RuntimeSlot { from_top } => {
+                    shadow_by_name.insert(
+                        name.clone(),
+                        ShadowBindingValue { name: name.clone(), stack_index: *from_top, value: self.read_stack_at_index(*from_top)? },
+                    );
+                }
+                ScopeValueSource::Expr(expr) => {
+                    env.insert(name.clone(), expr.clone());
+                }
+            }
         }
-        // Push higher stack indexes first so index 0 remains the top parameter.
-        params.sort_by(|left, right| right.stack_index.cmp(&left.stack_index));
-        Ok(params)
+
+        let mut shadow_bindings = shadow_by_name.into_values().collect::<Vec<_>>();
+        shadow_bindings.sort_by(|left, right| right.stack_index.cmp(&left.stack_index));
+        let stack_bindings = shadow_bindings.iter().map(|binding| (binding.name.clone(), binding.stack_index)).collect();
+        Ok((shadow_bindings, env, stack_bindings, eval_types))
     }
 
-    fn build_shadow_script(&self, params: &[ShadowParamValue], expr_bytecode: &[u8]) -> Result<Vec<u8>, String> {
+    fn build_shadow_script(&self, bindings: &[ShadowBindingValue], expr_bytecode: &[u8]) -> Result<Vec<u8>, String> {
         let mut builder = ScriptBuilder::new();
-        for param in params {
-            builder.add_data(&param.value).map_err(|err| err.to_string())?;
+        for binding in bindings {
+            builder.add_data(&binding.value).map_err(|err| err.to_string())?;
         }
         builder.add_ops(expr_bytecode).map_err(|err| err.to_string())?;
         Ok(builder.drain())
@@ -944,21 +1015,6 @@ impl<'a, 'i> DebugSession<'a, 'i> {
         engine.stacks().dstack.last().cloned().ok_or_else(|| "shadow VM produced an empty stack".to_string())
     }
 
-    fn read_param_value(&self, param: &DebugParamMapping) -> Result<DebugValue, String> {
-        let bytes = self.read_stack_at_index(param.stack_index)?;
-        decode_value_by_type(&param.type_name, bytes)
-    }
-
-    fn evaluate_constant(&self, expr: &Expr<'i>) -> DebugValue {
-        match &expr.kind {
-            ExprKind::Int(v) => DebugValue::Int(*v),
-            ExprKind::Bool(v) => DebugValue::Bool(*v),
-            ExprKind::Byte(v) => DebugValue::Bytes(vec![*v]),
-            ExprKind::String(v) => DebugValue::String(v.clone()),
-            _ => DebugValue::Unknown("complex expression".to_string()),
-        }
-    }
-
     fn read_stack_at_index(&self, index: i64) -> Result<Vec<u8>, String> {
         if index < 0 {
             return Err("negative stack index".to_string());
@@ -972,6 +1028,11 @@ impl<'a, 'i> DebugSession<'a, 'i> {
         let stack_index = stack.len() - 1 - idx;
         Ok(stack.get(stack_index).cloned().unwrap_or_default())
     }
+
+    fn read_stack_value(&self, index: i64, type_name: &str) -> Result<DebugValue, String> {
+        let bytes = self.read_stack_at_index(index)?;
+        decode_value_by_type(type_name, bytes)
+    }
 }
 
 /// Decodes raw bytes into a typed debug value based on the type name.
@@ -984,6 +1045,68 @@ fn decode_value_by_type(type_name: &str, bytes: Vec<u8>) -> Result<DebugValue, S
             Err(_) => Ok(DebugValue::Bytes(bytes)),
         },
         _ => Ok(DebugValue::Bytes(bytes)),
+    }
+}
+
+fn try_resolve_binding_value<'i>(
+    scope_state: &ScopeState<'i>,
+    binding: &ScopeBinding<'i>,
+    visiting: &mut HashSet<String>,
+) -> Option<DebugValue> {
+    match &binding.source {
+        ScopeValueSource::RuntimeSlot { .. } => None,
+        ScopeValueSource::Expr(expr) => try_resolve_expr_value(scope_state, expr, visiting),
+    }
+}
+
+fn try_resolve_expr_value<'i>(scope_state: &ScopeState<'i>, expr: &Expr<'i>, visiting: &mut HashSet<String>) -> Option<DebugValue> {
+    match &expr.kind {
+        ExprKind::Int(value) => Some(DebugValue::Int(*value)),
+        ExprKind::Bool(value) => Some(DebugValue::Bool(*value)),
+        ExprKind::Byte(value) => Some(DebugValue::Bytes(vec![*value])),
+        ExprKind::String(value) => Some(DebugValue::String(value.clone())),
+        ExprKind::Array(values) => {
+            if values.iter().all(|value| matches!(value.kind, ExprKind::Byte(_))) {
+                let bytes = values
+                    .iter()
+                    .map(|value| match value.kind {
+                        ExprKind::Byte(byte) => byte,
+                        _ => unreachable!("checked"),
+                    })
+                    .collect();
+                Some(DebugValue::Bytes(bytes))
+            } else {
+                let mut items = Vec::with_capacity(values.len());
+                for value in values {
+                    let item = try_resolve_expr_value(scope_state, value, visiting)?;
+                    items.push(item);
+                }
+                Some(DebugValue::Array(items))
+            }
+        }
+        ExprKind::StateObject(fields) => {
+            let mut values = Vec::with_capacity(fields.len());
+            for field in fields {
+                let value = try_resolve_expr_value(scope_state, &field.expr, visiting)?;
+                values.push((field.name.clone(), value));
+            }
+            Some(DebugValue::Object(values))
+        }
+        ExprKind::Identifier(name) => {
+            if !visiting.insert(name.clone()) {
+                return None;
+            }
+            let resolved = scope_state.get(name).and_then(|binding| try_resolve_binding_value(scope_state, binding, visiting));
+            visiting.remove(name);
+            resolved
+        }
+        ExprKind::FieldAccess { source, field, .. } => {
+            let Some(DebugValue::Object(fields)) = try_resolve_expr_value(scope_state, source, visiting) else {
+                return None;
+            };
+            fields.into_iter().find_map(|(name, value)| (name == *field).then_some(value))
+        }
+        _ => None,
     }
 }
 
@@ -1027,13 +1150,30 @@ fn is_inline_synthetic_name(name: &str) -> bool {
     name.starts_with("__arg_")
 }
 
+fn record_debug_named_values<'i>(
+    bindings: &mut ScopeState<'i>,
+    values: &[DebugNamedValue<'i>],
+    origin: VariableOrigin,
+    is_constant: bool,
+) {
+    for value in values {
+        bindings.entry(value.name.clone()).or_insert_with(|| ScopeBinding {
+            type_name: value.type_name.clone(),
+            source: ScopeValueSource::Expr(value.value.clone()),
+            origin,
+            is_constant,
+            hidden: false,
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    use silverscript_lang::ast::{BinaryOp, Expr, ExprKind};
+    use silverscript_lang::ast::{BinaryOp, Expr, ExprKind, StateFieldExpr};
     use silverscript_lang::debug_info::{
-        DebugConstantMapping, DebugFunctionRange, DebugInfo, DebugParamMapping, DebugStep, DebugVariableUpdate, SourceSpan, StepKind,
+        DebugFunctionRange, DebugInfo, DebugNamedValue, DebugParamMapping, DebugStep, DebugVariableUpdate, SourceSpan, StepKind,
     };
     use silverscript_lang::span;
 
@@ -1051,7 +1191,8 @@ mod tests {
             steps,
             params,
             functions: vec![DebugFunctionRange { name: "f".to_string(), bytecode_start: 0, bytecode_end: 1 }],
-            constants: vec![DebugConstantMapping { name: "K".to_string(), type_name: "int".to_string(), value: Expr::int(7) }],
+            constructor_args: vec![],
+            constants: vec![DebugNamedValue { name: "K".to_string(), type_name: "int".to_string(), value: Expr::int(7) }],
         };
         DebugSession::full(sigscript, &[], "", Some(debug_info), engine)
     }
@@ -1084,12 +1225,14 @@ mod tests {
         let update = DebugVariableUpdate {
             name: "x".to_string(),
             type_name: "int".to_string(),
+            runtime_binding: None,
             expr: Expr::new(
                 ExprKind::Binary { op: BinaryOp::Add, left: Box::new(Expr::identifier("a")), right: Box::new(Expr::identifier("b")) },
                 span::Span::default(),
             ),
         };
-        let value = session.evaluate_update_with_shadow_vm("f", &update, &HashMap::new()).unwrap();
+        let scope_state = session.scope_state(StepId::ROOT).unwrap();
+        let value = session.evaluate_scope_expr_as(&scope_state, &update.expr, &update.type_name).unwrap();
         assert!(matches!(value, DebugValue::Int(12)));
     }
 
@@ -1112,6 +1255,7 @@ mod tests {
                 variable_updates: vec![DebugVariableUpdate {
                     name: "x".to_string(),
                     type_name: "int".to_string(),
+                    runtime_binding: None,
                     expr: Expr::identifier("missing"),
                 }],
             }],
@@ -1144,10 +1288,16 @@ mod tests {
                 call_depth: 0,
                 frame_id: 0,
                 variable_updates: vec![
-                    DebugVariableUpdate { name: "__arg_f_0".to_string(), type_name: "int".to_string(), expr: Expr::identifier("a") },
+                    DebugVariableUpdate {
+                        name: "__arg_f_0".to_string(),
+                        type_name: "int".to_string(),
+                        runtime_binding: None,
+                        expr: Expr::identifier("a"),
+                    },
                     DebugVariableUpdate {
                         name: "x".to_string(),
                         type_name: "int".to_string(),
+                        runtime_binding: None,
                         expr: Expr::new(
                             ExprKind::Binary {
                                 op: BinaryOp::Add,
@@ -1172,6 +1322,54 @@ mod tests {
     }
 
     #[test]
+    fn list_variables_renders_struct_constant_from_recorded_value() {
+        let sig_cache = Box::leak(Box::new(Cache::new(10_000)));
+        let reused_values: &'static SigHashReusedValuesUnsync = Box::leak(Box::new(SigHashReusedValuesUnsync::new()));
+        let engine: DebugEngine<'static> =
+            TxScriptEngine::new(EngineCtx::new(sig_cache).with_reused(reused_values), EngineFlags { covenants_enabled: true });
+        let debug_info = DebugInfo {
+            source: String::new(),
+            steps: vec![],
+            params: vec![],
+            functions: vec![DebugFunctionRange { name: "f".to_string(), bytecode_start: 0, bytecode_end: 1 }],
+            constructor_args: vec![],
+            constants: vec![DebugNamedValue {
+                name: "DEFAULT_PAIR".to_string(),
+                type_name: "Pair".to_string(),
+                value: Expr::new(
+                    ExprKind::StateObject(vec![
+                        StateFieldExpr {
+                            name: "amount".to_string(),
+                            expr: Expr::int(7),
+                            span: span::Span::default(),
+                            name_span: span::Span::default(),
+                        },
+                        StateFieldExpr {
+                            name: "code".to_string(),
+                            expr: Expr::new(ExprKind::Array(vec![Expr::byte(0x12), Expr::byte(0x34)]), span::Span::default()),
+                            span: span::Span::default(),
+                            name_span: span::Span::default(),
+                        },
+                    ]),
+                    span::Span::default(),
+                ),
+            }],
+        };
+        let session = DebugSession::full(&[], &[], "", Some(debug_info), engine).unwrap();
+        let scope_state = session.scope_state(StepId::ROOT).unwrap();
+        let vars = session.collect_variables_map(&scope_state).unwrap();
+        let pair = vars.get("DEFAULT_PAIR").expect("DEFAULT_PAIR variable");
+        match &pair.value {
+            DebugValue::Object(fields) => {
+                assert_eq!(fields.len(), 2);
+                assert!(matches!(fields[0], (ref name, DebugValue::Int(7)) if name == "amount"));
+                assert!(matches!(fields[1], (ref name, DebugValue::Bytes(ref bytes)) if name == "code" && bytes == &vec![0x12, 0x34]));
+            }
+            other => panic!("expected object debug value, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn shadow_eval_resolves_nested_inline_synthetic_chain() {
         let mut sig_builder = ScriptBuilder::new();
         sig_builder.add_i64(5).unwrap();
@@ -1191,16 +1389,19 @@ mod tests {
                     DebugVariableUpdate {
                         name: "__arg_outer_0".to_string(),
                         type_name: "int".to_string(),
+                        runtime_binding: None,
                         expr: Expr::identifier("a"),
                     },
                     DebugVariableUpdate {
                         name: "__arg_inner_0".to_string(),
                         type_name: "int".to_string(),
+                        runtime_binding: None,
                         expr: Expr::identifier("__arg_outer_0"),
                     },
                     DebugVariableUpdate {
                         name: "x".to_string(),
                         type_name: "int".to_string(),
+                        runtime_binding: None,
                         expr: Expr::new(
                             ExprKind::Binary {
                                 op: BinaryOp::Add,
@@ -1222,5 +1423,114 @@ mod tests {
         assert!(!vars.iter().any(|var| var.name.starts_with("__arg_")));
         let x = vars.into_iter().find(|var| var.name == "x").expect("x variable");
         assert!(matches!(x.value, DebugValue::Int(6)));
+    }
+
+    #[test]
+    fn runtime_binding_reads_live_stack_slot_before_shadow_fallback() {
+        let mut sig_builder = ScriptBuilder::new();
+        sig_builder.add_i64(5).unwrap();
+        let sigscript = sig_builder.drain();
+
+        let mut session = make_session(
+            vec![],
+            vec![
+                DebugStep {
+                    bytecode_start: 0,
+                    bytecode_end: 0,
+                    span: SourceSpan { line: 1, col: 1, end_line: 1, end_col: 1 },
+                    kind: StepKind::Source {},
+                    sequence: 0,
+                    call_depth: 0,
+                    frame_id: 0,
+                    variable_updates: vec![DebugVariableUpdate {
+                        name: "x".to_string(),
+                        type_name: "int".to_string(),
+                        runtime_binding: Some(RuntimeBinding::DataStackSlot { from_top: 0 }),
+                        expr: Expr::identifier("missing"),
+                    }],
+                },
+                DebugStep {
+                    bytecode_start: 0,
+                    bytecode_end: 0,
+                    span: SourceSpan { line: 1, col: 1, end_line: 1, end_col: 1 },
+                    kind: StepKind::Source {},
+                    sequence: 1,
+                    call_depth: 0,
+                    frame_id: 0,
+                    variable_updates: vec![],
+                },
+            ],
+            &sigscript,
+        )
+        .unwrap();
+
+        session.executed_steps.insert(StepId { sequence: 0, frame_id: 0 });
+        session.executed_steps.insert(StepId { sequence: 1, frame_id: 0 });
+        session.current_step_index = Some(1);
+
+        let x = session.variable_by_name("x").unwrap();
+        assert_eq!(session.format_value(&x.type_name, &x.value), "5");
+    }
+
+    #[test]
+    fn evaluate_expression_supports_literals_bindings_and_errors() {
+        let mut sig_builder = ScriptBuilder::new();
+        sig_builder.add_i64(5).unwrap();
+        let sigscript = sig_builder.drain();
+
+        let mut session = make_session(
+            vec![],
+            vec![
+                DebugStep {
+                    bytecode_start: 0,
+                    bytecode_end: 0,
+                    span: SourceSpan { line: 1, col: 1, end_line: 1, end_col: 1 },
+                    kind: StepKind::Source {},
+                    sequence: 0,
+                    call_depth: 0,
+                    frame_id: 0,
+                    variable_updates: vec![DebugVariableUpdate {
+                        name: "x".to_string(),
+                        type_name: "int".to_string(),
+                        runtime_binding: Some(RuntimeBinding::DataStackSlot { from_top: 0 }),
+                        expr: Expr::identifier("missing"),
+                    }],
+                },
+                DebugStep {
+                    bytecode_start: 0,
+                    bytecode_end: 0,
+                    span: SourceSpan { line: 1, col: 1, end_line: 1, end_col: 1 },
+                    kind: StepKind::Source {},
+                    sequence: 1,
+                    call_depth: 0,
+                    frame_id: 0,
+                    variable_updates: vec![],
+                },
+            ],
+            &sigscript,
+        )
+        .unwrap();
+
+        session.executed_steps.insert(StepId { sequence: 0, frame_id: 0 });
+        session.executed_steps.insert(StepId { sequence: 1, frame_id: 0 });
+        session.current_step_index = Some(1);
+
+        let literal = session.evaluate_expression("1 + 2").unwrap();
+        assert_eq!(literal.type_name, "int");
+        assert!(matches!(literal.value, DebugValue::Int(3)));
+
+        let scoped = session.evaluate_expression("x + 1").unwrap();
+        assert_eq!(scoped.type_name, "int");
+        assert!(matches!(scoped.value, DebugValue::Int(6)));
+
+        let constant = session.evaluate_expression("K + 1").unwrap();
+        assert_eq!(constant.type_name, "int");
+        assert!(matches!(constant.value, DebugValue::Int(8)));
+
+        let parse_err = session.evaluate_expression("1 +").unwrap_err();
+        assert!(parse_err.contains("parse error"));
+
+        let unknown_err = session.evaluate_expression("missing + 1").unwrap_err();
+        assert!(unknown_err.contains("undefined identifier: missing"));
     }
 }

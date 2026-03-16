@@ -5,7 +5,7 @@ use pest::iterators::Pair;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::errors::CompilerError;
-use crate::parser::{Rule, parse_source_file, parse_type_name as parse_type_name_rule};
+use crate::parser::{Rule, parse_expression as parse_expression_rule, parse_source_file, parse_type_name as parse_type_name_rule};
 pub use crate::span::{Span, SpanUtils};
 
 pub mod visit;
@@ -1196,6 +1196,16 @@ pub fn parse_contract_ast<'i>(source: &'i str) -> Result<ContractAst<'i>, Compil
     }
 
     contract.ok_or_else(|| CompilerError::Unsupported("no contract definition".to_string()))
+}
+
+pub fn parse_expression_ast<'i>(source: &'i str) -> Result<Expr<'i>, CompilerError> {
+    let mut pairs = parse_expression_rule(source)?;
+    let expr_pair = pairs.next().ok_or_else(|| CompilerError::Unsupported("empty expression".to_string()))?;
+    let span = expr_pair.as_span();
+    if !source[..span.start()].trim().is_empty() || !source[span.end()..].trim().is_empty() {
+        return Err(CompilerError::Unsupported("unexpected trailing tokens in expression".to_string()));
+    }
+    parse_expression(expr_pair)
 }
 
 fn parse_contract_definition<'i>(pair: Pair<'i, Rule>) -> Result<ContractAst<'i>, CompilerError> {

@@ -61,6 +61,11 @@ pub fn format_value(type_name: &str, value: &DebugValue) -> String {
         (_, DebugValue::Int(number)) => number.to_string(),
         (_, DebugValue::Bool(value)) => value.to_string(),
         (_, DebugValue::String(value)) => value.clone(),
+        (_, DebugValue::Object(fields)) => {
+            let fields =
+                fields.iter().map(|(name, value)| format!("{name}: {}", format_value("", value))).collect::<Vec<_>>().join(", ");
+            format!("{{{fields}}}")
+        }
         (_, DebugValue::Array(values)) => {
             let value_type = element_type.unwrap_or(type_name);
             format!("[{}]", values.iter().map(|v| format_value(value_type, v)).collect::<Vec<_>>().join(", "))
