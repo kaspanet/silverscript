@@ -406,14 +406,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         selected_name
     };
-    let entry = compiled
-        .abi
-        .iter()
-        .find(|entry| entry.name == selected_name)
-        .ok_or_else(|| format!("function '{selected_name}' not found"))?;
 
-    let input_types = entry.inputs.iter().map(|input| input.type_name.clone()).collect::<Vec<_>>();
-    let typed_args = parse_call_args(&input_types, &raw_args)?;
+    let typed_args = parse_call_args(&compiled.ast, &selected_name, &raw_args)?;
     let sigscript = compiled.build_sig_script(&selected_name, typed_args)?;
 
     let tx = tx_scenario.unwrap_or_else(|| TestTxScenarioResolved {

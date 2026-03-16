@@ -1289,7 +1289,7 @@ fn step_matches_offset(step: &DebugStep<'_>, offset: usize) -> bool {
 }
 
 fn is_inline_synthetic_name(name: &str) -> bool {
-    name.starts_with("__arg_")
+    name.starts_with("__arg_") || name.starts_with("__struct_")
 }
 
 fn record_debug_named_values<'i>(

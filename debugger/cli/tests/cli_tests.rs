@@ -25,6 +25,10 @@ fn write_fixture_files(
     (script_path, test_file_path)
 }
 
+fn shared_example_path(name: &str) -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples").join(name)
+}
+
 fn write_named_test_fixture(script_name: &str, test_file_name: &str) -> (std::path::PathBuf, std::path::PathBuf) {
     write_fixture_files(
         script_name,
@@ -344,6 +348,71 @@ fn cli_debugger_accepts_struct_constructor_arg_and_renders_source_level_value() 
 
     assert!(stderr.is_empty(), "unexpected stderr: {stderr}");
     assert!(stdout.contains("seed (Pair) = {amount: 7, code: 0x1234}"), "missing rendered constructor struct value: {stdout}");
+}
+
+#[test]
+fn cli_debugger_accepts_state_arg_with_byte_one_field_and_renders_source_level_value() {
+    let script_path = shared_example_path("debug_state.sil");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_cli-debugger"))
+        .arg(&script_path)
+        .arg("--function")
+        .arg("inspect_state")
+        .arg("--ctor-arg")
+        .arg("4")
+        .arg("--arg")
+        .arg(r#"{"amount":5,"active":true,"tag":"0xaa"}"#)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn cli-debugger");
+
+    let input = b"vars\np next_state\nq\n";
+    child.stdin.as_mut().expect("stdin available").write_all(input).expect("write stdin");
+
+    let output = child.wait_with_output().expect("wait for cli-debugger");
+    assert!(output.status.success(), "cli-debugger exited with status {:?}", output.status.code());
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(stderr.is_empty(), "unexpected stderr: {stderr}");
+    assert!(stdout.contains("next_state (State) = {amount: 5, active: true, tag: 0xaa}"), "missing rendered State value: {stdout}");
+}
+
+#[test]
+fn cli_debugger_accepts_state_array_arg_with_byte_one_field_and_renders_source_level_value() {
+    let script_path = shared_example_path("debug_state.sil");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_cli-debugger"))
+        .arg(&script_path)
+        .arg("--function")
+        .arg("inspect_state_array")
+        .arg("--ctor-arg")
+        .arg("4")
+        .arg("--arg")
+        .arg(r#"[{"amount":5,"active":true,"tag":"0xaa"},{"amount":7,"active":true,"tag":"0xaa"}]"#)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn cli-debugger");
+
+    let input = b"vars\np next_states\nq\n";
+    child.stdin.as_mut().expect("stdin available").write_all(input).expect("write stdin");
+
+    let output = child.wait_with_output().expect("wait for cli-debugger");
+    assert!(output.status.success(), "cli-debugger exited with status {:?}", output.status.code());
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(stderr.is_empty(), "unexpected stderr: {stderr}");
+    assert!(
+        stdout.contains("next_states (State[]) = [{amount: 5, active: true, tag: 0xaa}, {amount: 7, active: true, tag: 0xaa}]"),
+        "missing rendered State[] value: {stdout}"
+    );
 }
 
 #[test]
