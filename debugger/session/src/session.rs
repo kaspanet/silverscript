@@ -1054,11 +1054,7 @@ fn try_resolve_binding_value<'i>(
     }
 }
 
-fn try_resolve_expr_value<'i>(
-    scope_state: &ScopeState<'i>,
-    expr: &Expr<'i>,
-    visiting: &mut HashSet<String>,
-) -> Option<DebugValue> {
+fn try_resolve_expr_value<'i>(scope_state: &ScopeState<'i>, expr: &Expr<'i>, visiting: &mut HashSet<String>) -> Option<DebugValue> {
     match &expr.kind {
         ExprKind::Int(value) => Some(DebugValue::Int(*value)),
         ExprKind::Bool(value) => Some(DebugValue::Bool(*value)),
@@ -1077,9 +1073,7 @@ fn try_resolve_expr_value<'i>(
             } else {
                 let mut items = Vec::with_capacity(values.len());
                 for value in values {
-                    let Some(item) = try_resolve_expr_value(scope_state, value, visiting) else {
-                        return None;
-                    };
+                    let item = try_resolve_expr_value(scope_state, value, visiting)?;
                     items.push(item);
                 }
                 Some(DebugValue::Array(items))
@@ -1088,9 +1082,7 @@ fn try_resolve_expr_value<'i>(
         ExprKind::StateObject(fields) => {
             let mut values = Vec::with_capacity(fields.len());
             for field in fields {
-                let Some(value) = try_resolve_expr_value(scope_state, &field.expr, visiting) else {
-                    return None;
-                };
+                let value = try_resolve_expr_value(scope_state, &field.expr, visiting)?;
                 values.push((field.name.clone(), value));
             }
             Some(DebugValue::Object(values))
@@ -1341,7 +1333,12 @@ mod tests {
                 type_name: "Pair".to_string(),
                 value: Expr::new(
                     ExprKind::StateObject(vec![
-                        StateFieldExpr { name: "amount".to_string(), expr: Expr::int(7), span: span::Span::default(), name_span: span::Span::default() },
+                        StateFieldExpr {
+                            name: "amount".to_string(),
+                            expr: Expr::int(7),
+                            span: span::Span::default(),
+                            name_span: span::Span::default(),
+                        },
                         StateFieldExpr {
                             name: "code".to_string(),
                             expr: Expr::new(ExprKind::Array(vec![Expr::byte(0x12), Expr::byte(0x34)]), span::Span::default()),

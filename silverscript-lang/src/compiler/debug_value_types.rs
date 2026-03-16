@@ -194,7 +194,11 @@ mod tests {
     #[test]
     fn infers_known_builtin_and_unknown_call_value_types() {
         let covenant_id = Expr::new(
-            ExprKind::Call { name: "OpInputCovenantId".to_string(), args: vec![Expr::identifier("idx")], span: span::Span::default() },
+            ExprKind::Call {
+                name: "OpInputCovenantId".to_string(),
+                args: vec![Expr::identifier("idx")],
+                name_span: span::Span::default(),
+            },
             span::Span::default(),
         );
         let mut types = HashMap::new();
@@ -202,7 +206,7 @@ mod tests {
         assert_eq!(infer(covenant_id, HashMap::new(), types), "byte[32]");
 
         let unknown = Expr::new(
-            ExprKind::Call { name: "someUserFn".to_string(), args: vec![Expr::int(1)], span: span::Span::default() },
+            ExprKind::Call { name: "someUserFn".to_string(), args: vec![Expr::int(1)], name_span: span::Span::default() },
             span::Span::default(),
         );
         assert_eq!(infer(unknown, HashMap::new(), HashMap::new()), "byte[]");
@@ -217,7 +221,7 @@ mod tests {
             ExprKind::Introspection {
                 kind: IntrospectionKind::OutputValue,
                 index: Box::new(Expr::int(0)),
-                span: span::Span::default(),
+                field_span: span::Span::default(),
             },
             span::Span::default(),
         );
