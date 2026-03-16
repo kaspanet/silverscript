@@ -516,27 +516,30 @@ struct CallFrame {
 
 fn collect_variable_updates<'i>(
     before_env: &HashMap<String, Expr<'i>>,
-    _before_stack_bindings: &HashMap<String, i64>,
+    before_stack_bindings: &HashMap<String, i64>,
     after_env: &HashMap<String, Expr<'i>>,
     types: &HashMap<String, String>,
     after_stack_bindings: &HashMap<String, i64>,
 ) -> Result<Vec<DebugVariableUpdate<'i>>, CompilerError> {
-    let mut names: Vec<String> = after_env.keys().cloned().collect();
+    let mut names: Vec<String> =
+        after_env.keys().chain(after_stack_bindings.keys()).cloned().collect::<HashSet<_>>().into_iter().collect();
     names.sort_unstable();
 
     let mut updates = Vec::new();
     for name in names {
-        let Some(after_expr) = after_env.get(&name) else {
-            continue;
-        };
-        if before_env.get(&name).is_some_and(|before_expr| before_expr == after_expr) {
-            continue;
-        }
         let Some(type_name) = types.get(&name) else {
             continue;
         };
-        let runtime_binding = runtime_binding_for_stack_name(&name, after_stack_bindings);
-        resolve_variable_update(after_env, &mut updates, &name, type_name, after_expr.clone(), runtime_binding)?;
+
+        let after_expr = after_env.get(&name).cloned().unwrap_or_else(|| Expr::identifier(name.clone()));
+        let expr_changed = before_env.get(&name) != Some(&after_expr);
+        let before_runtime_binding = runtime_binding_for_stack_name(&name, before_stack_bindings);
+        let after_runtime_binding = runtime_binding_for_stack_name(&name, after_stack_bindings);
+        if !expr_changed && before_runtime_binding == after_runtime_binding {
+            continue;
+        }
+
+        resolve_variable_update(after_env, &mut updates, &name, type_name, after_expr, after_runtime_binding)?;
     }
     Ok(updates)
 }
@@ -570,9 +573,9 @@ mod tests {
     use std::collections::HashMap;
 
     use crate::ast::{Expr, parse_contract_ast};
-    use crate::debug_info::StepKind;
+    use crate::debug_info::{RuntimeBinding, StepKind};
 
-    use super::{DebugRecorder, SourceSpan};
+    use super::{DebugRecorder, SourceSpan, collect_variable_updates};
 
     #[test]
     fn noop_recorders_are_pure_noops() {
@@ -673,5 +676,22 @@ mod tests {
         assert_eq!(tmp_update.name, "tmp");
 
         assert!(info.params.iter().any(|param| param.name == "x"));
+    }
+
+    #[test]
+    fn collect_variable_updates_records_runtime_slot_changes_without_env_expr() {
+        let before_env = HashMap::new();
+        let after_env = HashMap::new();
+        let before_stack_bindings = HashMap::from([("amount".to_string(), 1)]);
+        let after_stack_bindings = HashMap::from([("amount".to_string(), 2)]);
+        let types = HashMap::from([("amount".to_string(), "int".to_string())]);
+
+        let updates = collect_variable_updates(&before_env, &before_stack_bindings, &after_env, &types, &after_stack_bindings)
+            .expect("collect updates");
+
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].name, "amount");
+        assert_eq!(updates[0].expr, Expr::identifier("amount"));
+        assert_eq!(updates[0].runtime_binding, Some(RuntimeBinding::DataStackSlot { from_top: 2 }));
     }
 }

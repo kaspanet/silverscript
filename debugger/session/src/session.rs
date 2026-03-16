@@ -163,6 +163,7 @@ struct VisibleScope<'a, 'i> {
     updates: HashMap<String, &'a DebugVariableUpdate<'i>>,
 }
 
+#[derive(Clone)]
 enum ScopeValueSource<'i> {
     RuntimeSlot { from_top: i64 },
     Expr(Expr<'i>),
@@ -601,23 +602,6 @@ impl<'a, 'i> DebugSession<'a, 'i> {
     fn scope_state_from_visible(&self, scope: &VisibleScope<'_, 'i>) -> ScopeState<'i> {
         let mut bindings = HashMap::new();
 
-        for (name, update) in &scope.updates {
-            let source = match update.runtime_binding.as_ref() {
-                Some(RuntimeBinding::DataStackSlot { from_top }) => ScopeValueSource::RuntimeSlot { from_top: *from_top },
-                None => ScopeValueSource::Expr(update.expr.clone()),
-            };
-            bindings.insert(
-                name.clone(),
-                ScopeBinding {
-                    type_name: update.type_name.clone(),
-                    source,
-                    origin: VariableOrigin::Local,
-                    is_constant: false,
-                    hidden: is_inline_synthetic_name(name),
-                },
-            );
-        }
-
         for param in self.debug_info.params.iter().filter(|param| param.function == scope.context.function_name) {
             bindings.entry(param.name.clone()).or_insert_with(|| ScopeBinding {
                 type_name: param.type_name.clone(),
@@ -630,6 +614,27 @@ impl<'a, 'i> DebugSession<'a, 'i> {
 
         record_debug_named_values(&mut bindings, &self.debug_info.constructor_args, VariableOrigin::ConstructorArg, false);
         record_debug_named_values(&mut bindings, &self.debug_info.constants, VariableOrigin::Constant, true);
+
+        for (name, update) in &scope.updates {
+            let source = match update.runtime_binding.as_ref() {
+                Some(RuntimeBinding::DataStackSlot { from_top }) => ScopeValueSource::RuntimeSlot { from_top: *from_top },
+                None => ScopeValueSource::Expr(update.expr.clone()),
+            };
+            bindings
+                .entry(name.clone())
+                .and_modify(|binding| {
+                    binding.type_name = update.type_name.clone();
+                    binding.source = source.clone();
+                    binding.hidden = is_inline_synthetic_name(name);
+                })
+                .or_insert_with(|| ScopeBinding {
+                    type_name: update.type_name.clone(),
+                    source,
+                    origin: VariableOrigin::Local,
+                    is_constant: false,
+                    hidden: is_inline_synthetic_name(name),
+                });
+        }
 
         bindings
     }

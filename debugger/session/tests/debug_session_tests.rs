@@ -784,6 +784,72 @@ contract StepVisibility(int init_amount) {
 }
 
 #[test]
+fn debug_session_keeps_shifted_runtime_bindings_correct_after_inline_call() -> Result<(), Box<dyn Error>> {
+    let source = r#"pragma silverscript ^0.1.0;
+
+contract ShiftedBindings() {
+    int amount = 11;
+    byte[32] owner = 0x1111111111111111111111111111111111111111111111111111111111111111;
+
+    function add_bonus(int x) : (int) {
+        int y = x + 2;
+        require(y > x);
+        return(y);
+    }
+
+    entrypoint function inspect(int delta, int[] values) {
+        int base = amount + values[0];
+        (int after) = add_bonus(base + delta);
+        require(after >= amount);
+        require(owner == owner);
+    }
+}
+"#;
+
+    with_session_for_source(
+        source,
+        vec![],
+        "inspect",
+        vec![Expr::int(3), Expr::new(ExprKind::Array(vec![Expr::int(4), Expr::int(5)]), Default::default())],
+        |session| {
+            session.run_to_first_executed_statement()?;
+
+            session.step_over()?;
+            let call_line = session.current_span().ok_or("missing inline-call span")?.line;
+
+            for _ in 0..6 {
+                if session.current_span().is_some_and(|span| span.line > call_line) {
+                    break;
+                }
+                if session.step_over()?.is_none() {
+                    break;
+                }
+            }
+
+            let current_line = session.current_span().ok_or("missing post-call span")?.line;
+            assert!(current_line > call_line, "expected to step past inline call");
+
+            let amount = session.variable_by_name("amount")?;
+            assert_eq!(session.format_value(&amount.type_name, &amount.value), "11");
+
+            let delta = session.variable_by_name("delta")?;
+            assert_eq!(session.format_value(&delta.type_name, &delta.value), "3");
+
+            let values = session.variable_by_name("values")?;
+            assert_eq!(session.format_value(&values.type_name, &values.value), "[4, 5]");
+
+            let base = session.variable_by_name("base")?;
+            assert_eq!(session.format_value(&base.type_name, &base.value), "15");
+
+            let after = session.variable_by_name("after")?;
+            assert_eq!(session.format_value(&after.type_name, &after.value), "20");
+
+            Ok(())
+        },
+    )
+}
+
+#[test]
 fn debug_session_nested_inline_calls_with_args_compile_and_step() -> Result<(), Box<dyn Error>> {
     let source = r#"pragma silverscript ^0.1.0;
 
