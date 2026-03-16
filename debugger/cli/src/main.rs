@@ -130,7 +130,8 @@ fn show_vars(session: &DebugSession<'_, '_>) {
                 print_variable_section(session, "Contract Constants", &variables, |origin| {
                     matches!(origin, VariableOrigin::ConstructorArg | VariableOrigin::Constant)
                 });
-                print_variable_section(session, "Entrypoint Parameters", &variables, |origin| origin == VariableOrigin::Param);
+                print_variable_section(session, "Contract State", &variables, |origin| origin == VariableOrigin::ContractField);
+                print_variable_section(session, "Call Arguments", &variables, |origin| origin == VariableOrigin::Param);
                 print_variable_section(session, "Locals", &variables, |origin| origin == VariableOrigin::Local);
             }
         }

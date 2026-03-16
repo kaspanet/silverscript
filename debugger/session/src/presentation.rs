@@ -1,7 +1,7 @@
 use silverscript_lang::debug_info::SourceSpan;
 
 use crate::session::{DebugValue, FailureReport};
-use crate::util::{decode_i64, encode_hex};
+use crate::util::{decode_i64, encode_hex, fixed_array_element_size};
 
 #[derive(Debug, Clone)]
 pub struct SourceContextLine {
@@ -39,7 +39,7 @@ pub fn format_value(type_name: &str, value: &DebugValue) -> String {
         (_, DebugValue::Unknown(reason)) => unavailable_reason(reason),
         (_, DebugValue::Bytes(bytes)) if element_type.is_some() => {
             let element_type = element_type.expect("checked");
-            let Some(element_size) = array_element_size(element_type) else {
+            let Some(element_size) = fixed_array_element_size(element_type) else {
                 return format!("0x{}", encode_hex(bytes));
             };
             if element_size == 0 || bytes.len() % element_size != 0 {
@@ -105,15 +105,6 @@ fn concise_reason(reason: &str) -> String {
         }
         out.push_str("...");
         out
-    }
-}
-
-fn array_element_size(element_type: &str) -> Option<usize> {
-    match element_type {
-        "int" => Some(8),
-        "bool" => Some(1),
-        "byte" => Some(1),
-        other => other.strip_prefix("bytes").and_then(|v| v.parse::<usize>().ok()),
     }
 }
 

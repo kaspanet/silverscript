@@ -14,7 +14,7 @@ use kaspa_txscript::{EngineCtx, EngineFlags};
 
 use debugger_session::session::{DebugSession, DebugValue, ShadowTxContext};
 use silverscript_lang::ast::{Expr, ExprKind, parse_contract_ast};
-use silverscript_lang::compiler::{CompileOptions, compile_contract};
+use silverscript_lang::compiler::{CompileOptions, compile_contract, struct_object};
 use silverscript_lang::debug_info::StepKind;
 
 const IF_STATEMENT_CONTRACT: &str = r#"pragma silverscript ^0.1.0;
@@ -844,6 +844,121 @@ contract ShiftedBindings() {
             let after = session.variable_by_name("after")?;
             assert_eq!(session.format_value(&after.type_name, &after.value), "20");
 
+            Ok(())
+        },
+    )
+}
+
+#[test]
+fn debug_session_classifies_contract_fields_separately_from_entrypoint_params() -> Result<(), Box<dyn Error>> {
+    let source = r#"pragma silverscript ^0.1.0;
+
+contract ScopeKinds() {
+    int amount = 1;
+    byte[32] owner = 0x1111111111111111111111111111111111111111111111111111111111111111;
+    byte[2] tag = 0xabcd;
+
+    entrypoint function inspect(State next) {
+        require(next.amount > amount);
+    }
+}
+"#;
+
+    with_session_for_source(
+        source,
+        vec![],
+        "inspect",
+        vec![struct_object(vec![
+            ("amount", Expr::int(7)),
+            ("owner", Expr::bytes(vec![0x22u8; 32])),
+            ("tag", Expr::bytes(vec![0xbe, 0xef])),
+        ])],
+        |session| {
+            session.run_to_first_executed_statement()?;
+
+            let amount = session.variable_by_name("amount")?;
+            assert_eq!(amount.origin.label(), "state");
+
+            let owner = session.variable_by_name("owner")?;
+            assert_eq!(owner.origin.label(), "state");
+
+            let tag = session.variable_by_name("tag")?;
+            assert_eq!(tag.origin.label(), "state");
+
+            let next = session.variable_by_name("next")?;
+            assert_eq!(next.origin.label(), "arg");
+            Ok(())
+        },
+    )
+}
+
+#[test]
+fn debug_session_formats_live_state_param_as_object_and_keeps_lowered_locals_resolvable() -> Result<(), Box<dyn Error>> {
+    let source = r#"pragma silverscript ^0.1.0;
+
+contract StructuredStateParam() {
+    int amount = 1;
+    byte[32] owner = 0x1111111111111111111111111111111111111111111111111111111111111111;
+
+    entrypoint function inspect(State next) {
+        int bumped = next.amount + 1;
+        require(bumped > amount);
+    }
+}
+"#;
+
+    with_session_for_source(
+        source,
+        vec![],
+        "inspect",
+        vec![struct_object(vec![("amount", Expr::int(7)), ("owner", Expr::bytes(vec![0x22u8; 32]))])],
+        |session| {
+            session.run_to_first_executed_statement()?;
+
+            let next = session.variable_by_name("next")?;
+            assert_eq!(session.format_value(&next.type_name, &next.value), format!("{{amount: 7, owner: 0x{}}}", "22".repeat(32)));
+
+            session.step_over()?;
+            let bumped = session.variable_by_name("bumped")?;
+            assert_eq!(session.format_value(&bumped.type_name, &bumped.value), "8");
+            Ok(())
+        },
+    )
+}
+
+#[test]
+fn debug_session_formats_live_state_array_param_as_object_array() -> Result<(), Box<dyn Error>> {
+    let source = r#"pragma silverscript ^0.1.0;
+
+contract StructuredStateArrayParam() {
+    int amount = 1;
+    byte[32] owner = 0x1111111111111111111111111111111111111111111111111111111111111111;
+
+    entrypoint function inspect(State[] next_states) {
+        require(next_states.length == 2);
+    }
+}
+"#;
+
+    with_session_for_source(
+        source,
+        vec![],
+        "inspect",
+        vec![Expr::new(
+            ExprKind::Array(vec![
+                struct_object(vec![("amount", Expr::int(7)), ("owner", Expr::bytes(vec![0x22u8; 32]))]),
+                struct_object(vec![("amount", Expr::int(9)), ("owner", Expr::bytes(vec![0x33u8; 32]))]),
+            ]),
+            Default::default(),
+        )],
+        |session| {
+            session.run_to_first_executed_statement()?;
+
+            let next_states = session.variable_by_name("next_states")?;
+            assert_eq!(
+                session.format_value(&next_states.type_name, &next_states.value),
+                format!("[{{amount: 7, owner: 0x{}}}, {{amount: 9, owner: 0x{}}}]", "22".repeat(32), "33".repeat(32))
+            );
             Ok(())
         },
     )

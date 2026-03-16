@@ -130,13 +130,27 @@ pub enum RuntimeBinding {
     DataStackSlot { from_top: i64 },
 }
 
-/// Maps function parameter to its stack position.
-/// Stack index is measured from stack top (0 = topmost param).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DebugParamLeafBinding {
+    #[serde(default)]
+    pub field_path: Vec<String>,
+    pub type_name: String,
+    pub stack_index: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum DebugParamBinding {
+    SingleValue { stack_index: i64 },
+    StructuredValue { leaf_bindings: Vec<DebugParamLeafBinding> },
+}
+
+/// Maps one source parameter to either a single runtime slot or a lowered set of leaf slots.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DebugParamMapping {
     pub name: String,
     pub type_name: String,
-    pub stack_index: i64,
+    pub binding: DebugParamBinding,
     pub function: String,
 }
 

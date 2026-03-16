@@ -3,8 +3,8 @@ use std::fmt;
 
 use crate::ast::{ConstantAst, ContractFieldAst, Expr, FunctionAst, ParamAst, Statement};
 use crate::debug_info::{
-    DebugFunctionRange, DebugInfo, DebugInfoRecorder, DebugNamedValue, DebugParamMapping, DebugStep, DebugVariableUpdate,
-    RuntimeBinding, SourceSpan, StepKind,
+    DebugFunctionRange, DebugInfo, DebugInfoRecorder, DebugNamedValue, DebugParamBinding, DebugParamLeafBinding, DebugParamMapping,
+    DebugStep, DebugVariableUpdate, RuntimeBinding, SourceSpan, StepKind,
 };
 
 use super::{CompilerError, resolve_expr_for_debug};
@@ -35,8 +35,14 @@ impl<'i> DebugRecorder<'i> {
     }
 
     /// Starts staging debug metadata for one entrypoint compilation.
-    pub fn begin_entrypoint(&mut self, name: &str, function: &FunctionAst<'i>, contract_fields: &[ContractFieldAst<'i>]) {
-        self.inner.begin_entrypoint(name, function, contract_fields);
+    pub fn begin_entrypoint(
+        &mut self,
+        name: &str,
+        function: &FunctionAst<'i>,
+        contract_fields: &[ContractFieldAst<'i>],
+        structs: &super::StructRegistry,
+    ) -> Result<(), CompilerError> {
+        self.inner.begin_entrypoint(name, function, contract_fields, structs)
     }
 
     /// Finishes the active entrypoint stage and stores its local script length.
@@ -109,7 +115,13 @@ impl<'i> DebugRecorder<'i> {
 
 trait DebugRecorderImpl<'i>: fmt::Debug {
     fn record_contract_scope(&mut self, params: &[ParamAst<'i>], values: &[Expr<'i>], constants: &[ConstantAst<'i>]);
-    fn begin_entrypoint(&mut self, name: &str, function: &FunctionAst<'i>, contract_fields: &[ContractFieldAst<'i>]);
+    fn begin_entrypoint(
+        &mut self,
+        name: &str,
+        function: &FunctionAst<'i>,
+        contract_fields: &[ContractFieldAst<'i>],
+        structs: &super::StructRegistry,
+    ) -> Result<(), CompilerError>;
     fn finish_entrypoint(&mut self, script_len: usize);
     fn set_entrypoint_start(&mut self, name: &str, bytecode_start: usize);
     fn begin_statement_at(&mut self, bytecode_offset: usize, env: &HashMap<String, Expr<'i>>, stack_bindings: &HashMap<String, i64>);
@@ -147,7 +159,15 @@ struct NoopDebugRecorder;
 
 impl<'i> DebugRecorderImpl<'i> for NoopDebugRecorder {
     fn record_contract_scope(&mut self, _params: &[ParamAst<'i>], _values: &[Expr<'i>], _constants: &[ConstantAst<'i>]) {}
-    fn begin_entrypoint(&mut self, _name: &str, _function: &FunctionAst<'i>, _contract_fields: &[ContractFieldAst<'i>]) {}
+    fn begin_entrypoint(
+        &mut self,
+        _name: &str,
+        _function: &FunctionAst<'i>,
+        _contract_fields: &[ContractFieldAst<'i>],
+        _structs: &super::StructRegistry,
+    ) -> Result<(), CompilerError> {
+        Ok(())
+    }
     fn finish_entrypoint(&mut self, _script_len: usize) {}
     fn set_entrypoint_start(&mut self, _name: &str, _bytecode_start: usize) {}
     fn begin_statement_at(
@@ -229,10 +249,17 @@ impl<'i> DebugRecorderImpl<'i> for ActiveDebugRecorder<'i> {
         }
     }
 
-    fn begin_entrypoint(&mut self, name: &str, function: &FunctionAst<'i>, contract_fields: &[ContractFieldAst<'i>]) {
+    fn begin_entrypoint(
+        &mut self,
+        name: &str,
+        function: &FunctionAst<'i>,
+        contract_fields: &[ContractFieldAst<'i>],
+        structs: &super::StructRegistry,
+    ) -> Result<(), CompilerError> {
         debug_assert!(self.active_entrypoint.is_none(), "begin_entrypoint called while another entrypoint is active");
-        self.entrypoints.push(StagedEntrypointDebug::new(name.to_string(), function, contract_fields));
+        self.entrypoints.push(StagedEntrypointDebug::new(name.to_string(), function, contract_fields, structs)?);
         self.active_entrypoint = Some(self.entrypoints.len().saturating_sub(1));
+        Ok(())
     }
 
     fn finish_entrypoint(&mut self, script_len: usize) {
@@ -405,7 +432,12 @@ struct StagedEntrypointDebug<'i> {
 }
 
 impl<'i> StagedEntrypointDebug<'i> {
-    fn new(name: String, function: &FunctionAst<'i>, contract_fields: &[ContractFieldAst<'i>]) -> Self {
+    fn new(
+        name: String,
+        function: &FunctionAst<'i>,
+        contract_fields: &[ContractFieldAst<'i>],
+        structs: &super::StructRegistry,
+    ) -> Result<Self, CompilerError> {
         let mut entrypoint = Self {
             name,
             script_len: 0,
@@ -417,8 +449,8 @@ impl<'i> StagedEntrypointDebug<'i> {
             next_frame_id: 1,
             statement_stack: Vec::new(),
         };
-        entrypoint.record_param_bindings(function, contract_fields);
-        entrypoint
+        entrypoint.record_param_bindings(function, contract_fields, structs)?;
+        Ok(entrypoint)
     }
 
     fn allocate_frame_id(&mut self) -> u32 {
@@ -479,14 +511,55 @@ impl<'i> StagedEntrypointDebug<'i> {
         self.steps.len().saturating_sub(1)
     }
 
-    fn record_param_bindings(&mut self, function: &FunctionAst<'i>, contract_fields: &[ContractFieldAst<'i>]) {
-        let param_count = function.params.len();
+    fn record_param_bindings(
+        &mut self,
+        function: &FunctionAst<'i>,
+        contract_fields: &[ContractFieldAst<'i>],
+        structs: &super::StructRegistry,
+    ) -> Result<(), CompilerError> {
         let field_count = contract_fields.len();
-        for (index, param) in function.params.iter().enumerate() {
+        let mut param_leaf_specs: Vec<Option<Vec<(Vec<String>, String)>>> = Vec::with_capacity(function.params.len());
+        let mut flattened_param_names = Vec::new();
+
+        for param in &function.params {
+            if super::struct_name_from_type_ref(&param.type_ref, structs).is_some()
+                || super::struct_array_name_from_type_ref(&param.type_ref, structs).is_some()
+            {
+                let leaf_specs = super::flatten_type_ref_leaves(&param.type_ref, structs)?
+                    .into_iter()
+                    .map(|(path, leaf_type)| (path, super::type_name_from_ref(&leaf_type)))
+                    .collect::<Vec<_>>();
+                for (path, _) in &leaf_specs {
+                    flattened_param_names.push(super::flattened_struct_name(&param.name, path));
+                }
+                param_leaf_specs.push(Some(leaf_specs));
+            } else {
+                flattened_param_names.push(param.name.clone());
+                param_leaf_specs.push(None);
+            }
+        }
+
+        let param_count = flattened_param_names.len();
+        let mut flat_index = 0usize;
+        let mut next_stack_index = || {
+            let stack_index = (field_count + (param_count - 1 - flat_index)) as i64;
+            flat_index = flat_index.saturating_add(1);
+            stack_index
+        };
+        for (param, leaf_specs) in function.params.iter().zip(param_leaf_specs.into_iter()) {
+            let binding = if let Some(leaf_specs) = leaf_specs {
+                let mut leaf_bindings = Vec::with_capacity(leaf_specs.len());
+                for (field_path, leaf_type_name) in leaf_specs {
+                    leaf_bindings.push(DebugParamLeafBinding { field_path, type_name: leaf_type_name, stack_index: next_stack_index() });
+                }
+                DebugParamBinding::StructuredValue { leaf_bindings }
+            } else {
+                DebugParamBinding::SingleValue { stack_index: next_stack_index() }
+            };
             self.params.push(DebugParamMapping {
                 name: param.name.clone(),
                 type_name: param.type_ref.type_name(),
-                stack_index: (field_count + (param_count - 1 - index)) as i64,
+                binding,
                 function: function.name.clone(),
             });
         }
@@ -494,10 +567,11 @@ impl<'i> StagedEntrypointDebug<'i> {
             self.params.push(DebugParamMapping {
                 name: field.name.clone(),
                 type_name: field.type_ref.type_name(),
-                stack_index: (field_count - 1 - index) as i64,
+                binding: DebugParamBinding::SingleValue { stack_index: (field_count - 1 - index) as i64 },
                 function: function.name.clone(),
             });
         }
+        Ok(())
     }
 }
 
@@ -590,10 +664,11 @@ mod tests {
         let contract = parse_contract_ast(source).expect("parse contract");
         let function = contract.functions.first().expect("function");
         let stmt = function.body.first().expect("statement");
+        let structs = super::super::build_struct_registry(&contract).expect("build struct registry");
 
         let mut recorder = DebugRecorder::new(false);
         recorder.record_contract_scope(&contract.params, &[], &contract.constants);
-        recorder.begin_entrypoint("spend", function, &contract.fields);
+        recorder.begin_entrypoint("spend", function, &contract.fields, &structs).expect("noop begin entrypoint");
 
         let span = SourceSpan::from(stmt.span());
 
@@ -621,9 +696,10 @@ mod tests {
         let contract = parse_contract_ast(source).expect("parse contract");
         let function = contract.functions.first().expect("function");
         let stmt = function.body.first().expect("statement");
+        let structs = super::super::build_struct_registry(&contract).expect("build struct registry");
 
         let mut recorder = DebugRecorder::new(true);
-        recorder.begin_entrypoint("spend", function, &contract.fields);
+        recorder.begin_entrypoint("spend", function, &contract.fields, &structs).expect("begin entrypoint");
 
         let mut before = HashMap::new();
         before.insert("x".to_string(), Expr::identifier("x"));

@@ -25,3 +25,14 @@ pub fn encode_hex(bytes: &[u8]) -> String {
     }
     String::from_utf8(out).unwrap_or_default()
 }
+
+pub fn fixed_array_element_size(type_name: &str) -> Option<usize> {
+    match type_name {
+        "int" => Some(8),
+        "bool" => Some(1),
+        "byte" => Some(1),
+        other => other.strip_prefix("bytes").and_then(|value| value.parse::<usize>().ok()).or_else(|| {
+            other.strip_prefix("byte[").and_then(|value| value.strip_suffix(']')).and_then(|value| value.parse::<usize>().ok())
+        }),
+    }
+}

@@ -13,6 +13,13 @@ cli-debugger <path> -f <function> [--ctor-arg <val>]... [--arg <val>]...
 cli-debugger ./counter.sil -f check --ctor-arg 10 --arg 7
 ```
 
+Structured `State` and struct-like args use JSON:
+
+```bash
+cli-debugger ./vault.sil -f inspect --arg '{"amount":7,"tag":"0xbeef"}'
+cli-debugger ./vault.sil -f inspect_many --arg '[{"amount":7},{"amount":9}]'
+```
+
 ---
 
 ## Interactive Debugging
@@ -46,7 +53,7 @@ Stepping through 42 bytes of script
 (sdb) vars
 Contract Constants:
   threshold (int) = 10
-Entrypoint Parameters:
+Call Arguments:
   value (int) = 7
 Locals:
   doubled (int) = 14
@@ -92,6 +99,27 @@ Run `.test.json` suites non-interactively to verify logic in bulk. If you pass a
 ```
 
 The debugger will report `PASS` if the script result matches your `expect` field (either `pass` or `fail`).
+
+Structured args use the same JSON object and object-array form inside `.test.json`:
+
+```json
+{
+  "tests": [
+    {
+      "name": "inspect_state",
+      "function": "inspect",
+      "args": [{ "amount": 7, "tag": "0xbeef" }],
+      "expect": "pass"
+    },
+    {
+      "name": "inspect_many_states",
+      "function": "inspect_many",
+      "args": [[{ "amount": 7 }, { "amount": 9 }]],
+      "expect": "pass"
+    }
+  ]
+}
+```
 
 ### Commands
 

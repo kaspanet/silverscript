@@ -229,7 +229,7 @@ fn validate_struct_graph(structs: &StructRegistry) -> Result<(), CompilerError> 
     Ok(())
 }
 
-fn flattened_struct_name(base: &str, path: &[String]) -> String {
+pub fn flattened_struct_name(base: &str, path: &[String]) -> String {
     let mut out = format!("__struct_{base}");
     for part in path {
         out.push('_');
@@ -2396,7 +2396,7 @@ fn compile_entrypoint_function<'i>(
         }
     }
 
-    recorder.begin_entrypoint(&function.name, function, contract_fields);
+    recorder.begin_entrypoint(&function.name, function, contract_fields, structs)?;
 
     let body_len = function.body.len();
     for (index, stmt) in function.body.iter().enumerate() {
