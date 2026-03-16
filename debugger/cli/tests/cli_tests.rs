@@ -121,6 +121,42 @@ contract IfStatement(int x, int y) {
 }
 
 #[test]
+fn cli_debugger_eval_command_reports_results_and_errors() {
+    let (script_path, _test_file_path) = write_test_fixture();
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_cli-debugger"))
+        .arg(&script_path)
+        .arg("--function")
+        .arg("check")
+        .arg("--ctor-arg")
+        .arg("5")
+        .arg("--arg")
+        .arg("5")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn cli-debugger");
+
+    let input = b"eval 1 + 2\ne a + 1\ne missing + 1\nq\n";
+    child.stdin.as_mut().expect("stdin available").write_all(input).expect("write stdin");
+
+    let output = child.wait_with_output().expect("wait for cli-debugger");
+    assert!(output.status.success(), "cli-debugger exited with status {:?}", output.status.code());
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(stderr.is_empty(), "unexpected stderr: {stderr}");
+    assert!(stdout.contains("1 + 2 = (int) 3"), "missing literal eval output: {stdout}");
+    assert!(stdout.contains("a + 1 = (int) 6"), "missing scoped eval output: {stdout}");
+    assert!(
+        stdout.contains("ERROR: failed to compile debug expression: undefined identifier: missing"),
+        "missing eval error output: {stdout}"
+    );
+}
+
+#[test]
 fn cli_debugger_run_test_file_pass_case() {
     let (_script_path, test_file_path) = write_test_fixture();
 

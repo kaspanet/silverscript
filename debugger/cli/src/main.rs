@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use clap::Parser;
 use debugger_session::args::{parse_call_args, parse_ctor_args, parse_hex_bytes};
 use debugger_session::format_failure_report;
-use debugger_session::session::{DebugEngine, DebugSession, ShadowTxContext, Variable};
+use debugger_session::session::{DebugEngine, DebugSession, ShadowTxContext, Variable, VariableOrigin};
 use debugger_session::test_runner::{
     TestExpectation, TestTxInputScenarioResolved, TestTxOutputScenarioResolved, TestTxScenarioResolved, discover_sidecar_path,
     resolve_contract_test,
@@ -121,23 +121,36 @@ fn show_source_context(session: &DebugSession<'_, '_>) {
     }
 }
 
-fn print_variable(session: &DebugSession<'_, '_>, var: &Variable) {
-    let constant_suffix = if var.is_constant { " (const)" } else { "" };
-    println!("{}{} ({}) = {}", var.name, constant_suffix, var.type_name, session.format_value(&var.type_name, &var.value));
-}
-
 fn show_vars(session: &DebugSession<'_, '_>) {
     match session.list_variables() {
         Ok(variables) => {
             if variables.is_empty() {
                 println!("No variables in scope.");
             } else {
-                for var in variables {
-                    print_variable(session, &var);
-                }
+                print_variable_section(session, "Contract Constants", &variables, |origin| {
+                    matches!(origin, VariableOrigin::ConstructorArg | VariableOrigin::Constant)
+                });
+                print_variable_section(session, "Entrypoint Parameters", &variables, |origin| origin == VariableOrigin::Param);
+                print_variable_section(session, "Locals", &variables, |origin| origin == VariableOrigin::Local);
             }
         }
         Err(err) => println!("ERROR: {err}"),
+    }
+}
+
+fn print_variable_section(
+    session: &DebugSession<'_, '_>,
+    title: &str,
+    variables: &[Variable],
+    matches_origin: impl Fn(VariableOrigin) -> bool,
+) {
+    let section_vars: Vec<_> = variables.iter().filter(|var| matches_origin(var.origin)).collect();
+    if section_vars.is_empty() {
+        return;
+    }
+    println!("{title}:");
+    for var in section_vars {
+        println!("  {} ({}) = {}", var.name, var.type_name, session.format_value(&var.type_name, &var.value));
     }
 }
 
@@ -180,8 +193,10 @@ fn run_repl(session: &mut DebugSession<'_, '_>) -> Result<(), Box<dyn std::error
             continue;
         }
 
-        let mut parts = cmd.split_whitespace();
-        match parts.next().unwrap_or("") {
+        let mut parts = cmd.splitn(2, char::is_whitespace);
+        let command = parts.next().unwrap_or("");
+        let rest = parts.next().unwrap_or("").trim();
+        match command {
             "step" | "s" => match session.step_into() {
                 Ok(Some(_)) => show_step_view(session),
                 Ok(None) => {
@@ -227,8 +242,8 @@ fn run_repl(session: &mut DebugSession<'_, '_>) -> Result<(), Box<dyn std::error
                 }
             },
             "b" | "break" => {
-                if let Some(arg) = parts.next() {
-                    match arg.parse::<u32>() {
+                if !rest.is_empty() {
+                    match rest.parse::<u32>() {
                         Ok(line) => {
                             if session.add_breakpoint(line) {
                                 println!("Breakpoint set at line {line}");
@@ -249,10 +264,24 @@ fn run_repl(session: &mut DebugSession<'_, '_>) -> Result<(), Box<dyn std::error
             }
             "l" | "list" => show_source_context(session),
             "vars" => show_vars(session),
+            "eval" | "e" => {
+                if rest.is_empty() {
+                    println!("Usage: eval <expr>");
+                } else {
+                    match session.evaluate_expression(rest) {
+                        Ok(result) => {
+                            println!("{rest} = ({}) {}", result.type_name, session.format_value(&result.type_name, &result.value));
+                        }
+                        Err(err) => println!("ERROR: {err}"),
+                    }
+                }
+            }
             "print" | "p" => {
-                if let Some(name) = parts.next() {
+                if let Some(name) = rest.split_whitespace().next().filter(|_| !rest.is_empty()) {
                     match session.variable_by_name(name) {
-                        Ok(var) => print_variable(session, &var),
+                        Ok(var) => {
+                            println!("{} ({}) = {}", var.name, var.type_name, session.format_value(&var.type_name, &var.value));
+                        }
                         Err(err) => println!("ERROR: {err}"),
                     }
                 } else {
@@ -263,11 +292,11 @@ fn run_repl(session: &mut DebugSession<'_, '_>) -> Result<(), Box<dyn std::error
             "q" | "quit" => break,
             "help" | "h" | "?" => {
                 println!(
-                    "Commands: next/over (n), step/into (s), step opcode (si), finish/out, continue (c), break (b <line>), list (l), vars, print <name>, stack, quit (q)"
+                    "Commands: next/over (n), step/into (s), step opcode (si), finish/out, continue (c), break (b <line>), list (l), vars, eval <expr> (e), print <name>, stack, quit (q)"
                 )
             }
             _ => println!(
-                "Commands: next/over (n), step/into (s), step opcode (si), finish/out, continue (c), break (b <line>), list (l), vars, print <name>, stack, quit (q)"
+                "Commands: next/over (n), step/into (s), step opcode (si), finish/out, continue (c), break (b <line>), list (l), vars, eval <expr> (e), print <name>, stack, quit (q)"
             ),
         }
     }

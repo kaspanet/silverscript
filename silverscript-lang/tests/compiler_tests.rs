@@ -19,6 +19,7 @@ use silverscript_lang::compiler::{
     CompileOptions, CompiledContract, CovenantDeclCallOptions, FunctionAbiEntry, FunctionInputAbi, compile_contract,
     compile_contract_ast, function_branch_index, struct_object,
 };
+use silverscript_lang::debug_info::RuntimeBinding;
 
 fn run_script_with_selector(script: Vec<u8>, selector: Option<i64>) -> Result<(), kaspa_txscript_errors::TxScriptError> {
     let sigscript = selector_sigscript(selector);
@@ -201,6 +202,54 @@ fn compile_contract_emits_debug_info_when_recording_enabled() {
     assert!(!debug_info.steps.is_empty());
     assert!(!debug_info.functions.is_empty());
     assert!(debug_info.params.iter().any(|param| param.name == "x"));
+}
+
+#[test]
+fn debug_info_records_runtime_binding_for_stable_scalar_local() {
+    let source = r#"
+        contract DebugBinding() {
+            entrypoint function spend(int x) {
+                int y = x + 1;
+                require(y > 0);
+                require(y < 10);
+            }
+        }
+    "#;
+
+    let options = CompileOptions { record_debug_infos: true, ..Default::default() };
+    let compiled = compile_contract(source, &[], options).expect("compile succeeds");
+    let debug_info = compiled.debug_info.expect("debug info should be present");
+
+    let y_update = debug_info
+        .steps
+        .iter()
+        .flat_map(|step| step.variable_updates.iter())
+        .find(|update| update.name == "y")
+        .expect("y update should be recorded");
+
+    assert!(matches!(y_update.runtime_binding, Some(RuntimeBinding::DataStackSlot { .. })));
+}
+
+#[test]
+fn debug_info_distinguishes_ctor_args_from_contract_constants() {
+    let source = r#"
+        contract DebugConstants(int seed) {
+            int constant BONUS = 2;
+
+            entrypoint function spend() {
+                require(seed + BONUS >= 0);
+            }
+        }
+    "#;
+
+    let options = CompileOptions { record_debug_infos: true, ..Default::default() };
+    let compiled = compile_contract(source, &[Expr::int(7)], options).expect("compile succeeds");
+    let debug_info = compiled.debug_info.expect("debug info should be present");
+
+    let _seed = debug_info.constructor_args.iter().find(|binding| binding.name == "seed").expect("seed binding should be recorded");
+
+    let bonus = debug_info.constants.iter().find(|binding| binding.name == "BONUS").expect("BONUS binding should be recorded");
+    assert_eq!(bonus.type_name, "int");
 }
 
 #[test]

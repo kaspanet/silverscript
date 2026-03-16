@@ -44,9 +44,14 @@ Stepping through 42 bytes of script
 (sdb) n
 →    6 |         require(doubled > threshold);
 (sdb) vars
-value (int) = 7
-doubled (int) = 14
-threshold (const) (int) = 10
+Contract Constants:
+  threshold (int) = 10
+Entrypoint Parameters:
+  value (int) = 7
+Locals:
+  doubled (int) = 14
+(sdb) eval doubled + 1
+doubled + 1 = (int) 15
 (sdb) c
 Done.
 ```
@@ -60,6 +65,7 @@ Done.
 | `c` | **Continue**: Run until the next breakpoint or completion |
 | `b <line>` | **Break**: Set a breakpoint (e.g., `b 10`) |
 | `vars` | **Variables**: List all variables and constants in scope |
+| `eval <expr>` | **Evaluate**: Run an expression in the current debugger scope |
 | `p <name>` | **Print**: Show the value of a specific variable |
 | `stack` | **Stack**: Inspect the raw Kaspa VM execution stack |
 | `l` | **List**: Show the source code around your current position |

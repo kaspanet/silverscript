@@ -10,15 +10,17 @@ use crate::ast::{
     StateBindingAst, StateFieldExpr, Statement, TimeVar, TypeBase, TypeRef, UnaryOp, UnarySuffixKind, parse_contract_ast,
     parse_type_ref,
 };
-use crate::debug_info::{DebugInfo, SourceSpan};
+use crate::debug_info::{DebugInfo, RuntimeBinding, SourceSpan};
 pub use crate::errors::{CompilerError, ErrorSpan};
 use crate::span;
 mod covenant_declarations;
 use covenant_declarations::lower_covenant_declarations;
 
 mod debug_recording;
+mod debug_value_types;
 
 use debug_recording::DebugRecorder;
+use debug_value_types::infer_debug_expr_value_type;
 /// Prefix used for synthetic argument bindings during inline function expansion.
 pub const SYNTHETIC_ARG_PREFIX: &str = "__arg";
 const COVENANT_POLICY_PREFIX: &str = "__covenant_policy";
@@ -855,7 +857,7 @@ fn compile_contract_impl<'i>(
             compile_contract_fields(&lowered_contract.fields, &constants, options, script_size, &structs)?;
 
         let mut recorder = DebugRecorder::new(options.record_debug_infos);
-        recorder.record_constructor_constants(&contract.params, constructor_args);
+        recorder.record_contract_scope(&contract.params, constructor_args, &contract.constants);
         let contract_field_prefix_len = if without_selector { field_prolog_script.len() } else { 1 + field_prolog_script.len() };
         let mut compiled_entrypoints = Vec::new();
         for (index, func) in lowered_contract.functions.iter().enumerate() {
@@ -2398,7 +2400,7 @@ fn compile_entrypoint_function<'i>(
 
     let body_len = function.body.len();
     for (index, stmt) in function.body.iter().enumerate() {
-        recorder.begin_statement_at(builder.script().len(), &env);
+        recorder.begin_statement_at(builder.script().len(), &env, &stack_bindings);
         if let Statement::Return { exprs, .. } = stmt {
             if index != body_len - 1 {
                 return Err(CompilerError::Unsupported("return statement must be the last statement".to_string()));
@@ -2439,7 +2441,7 @@ fn compile_entrypoint_function<'i>(
             )
             .map_err(|err| err.with_span(&stmt.span()))?;
         }
-        recorder.finish_statement_at(stmt, builder.script().len(), &env, &types)?;
+        recorder.finish_statement_at(stmt, builder.script().len(), &env, &types, &stack_bindings)?;
     }
 
     let flattened_returns = if has_return {
@@ -3763,7 +3765,7 @@ fn compile_inline_call<'i>(
     }
 
     let call_start = builder.script().len();
-    recorder.begin_inline_call(call_span, call_start, function, &bindings.debug_env)?;
+    recorder.begin_inline_call(call_span, call_start, function, &bindings.debug_env, &bindings.stack_bindings)?;
 
     let mut returns: Vec<Expr<'i>> = Vec::new();
     let initial_stack_binding_count = bindings.stack_bindings.len();
@@ -3798,7 +3800,7 @@ fn compile_inline_call<'i>(
     }
     let body_len = function.body.len();
     for (index, stmt) in function.body.iter().enumerate() {
-        recorder.begin_statement_at(builder.script().len(), &bindings.env);
+        recorder.begin_statement_at(builder.script().len(), &bindings.env, &bindings.stack_bindings);
         if let Statement::Return { exprs, .. } = stmt {
             if index != body_len - 1 {
                 return Err(CompilerError::Unsupported("return statement must be the last statement".to_string()));
@@ -3841,7 +3843,7 @@ fn compile_inline_call<'i>(
             )
             .map_err(|err| err.with_span(&stmt.span()))?;
         }
-        recorder.finish_statement_at(stmt, builder.script().len(), &bindings.env, &bindings.types)?;
+        recorder.finish_statement_at(stmt, builder.script().len(), &bindings.env, &bindings.types, &bindings.stack_bindings)?;
     }
 
     for _ in 0..bindings.stack_bindings.len().saturating_sub(initial_stack_binding_count) {
@@ -4102,7 +4104,7 @@ fn compile_block<'i>(
 ) -> Result<(), CompilerError> {
     let mut added_stack_locals = Vec::new();
     for stmt in statements {
-        recorder.begin_statement_at(builder.script().len(), env);
+        recorder.begin_statement_at(builder.script().len(), env, stack_bindings);
         added_stack_locals.extend(
             compile_statement(
                 stmt,
@@ -4125,7 +4127,7 @@ fn compile_block<'i>(
             )
             .map_err(|err| err.with_span(&stmt.span()))?,
         );
-        recorder.finish_statement_at(stmt, builder.script().len(), env, types)?;
+        recorder.finish_statement_at(stmt, builder.script().len(), env, types, stack_bindings)?;
     }
 
     if scoped_stack_locals && !added_stack_locals.is_empty() {
@@ -4287,7 +4289,14 @@ fn compile_constant_for_statement<'i>(
         }
 
         env.insert(ident.to_string(), Expr::int(value));
-        recorder.record_variable_binding(ident.to_string(), "int".to_string(), Expr::int(value), builder.script().len(), loop_span);
+        recorder.record_variable_binding(
+            ident.to_string(),
+            "int".to_string(),
+            Expr::int(value),
+            stack_bindings.get(ident).copied().map(|from_top| RuntimeBinding::DataStackSlot { from_top }),
+            builder.script().len(),
+            loop_span,
+        );
         compile_block(
             body,
             env,
@@ -4343,7 +4352,14 @@ fn compile_runtime_for_statement<'i>(
     for _ in 0..max_iterations {
         let loop_value = current_const.map_or_else(|| current.clone(), Expr::int);
         env.insert(ident.to_string(), loop_value.clone());
-        recorder.record_variable_binding(ident.to_string(), "int".to_string(), loop_value, builder.script().len(), loop_span);
+        recorder.record_variable_binding(
+            ident.to_string(),
+            "int".to_string(),
+            loop_value,
+            stack_bindings.get(ident).copied().map(|from_top| RuntimeBinding::DataStackSlot { from_top }),
+            builder.script().len(),
+            loop_span,
+        );
 
         let condition = Expr::new(
             ExprKind::Binary { op: BinaryOp::Lt, left: Box::new(Expr::identifier(ident)), right: Box::new(end.clone()) },
@@ -6395,10 +6411,11 @@ pub fn compile_debug_expr<'i>(
     env: &HashMap<String, Expr<'i>>,
     stack_bindings: &HashMap<String, i64>,
     types: &HashMap<String, String>,
-) -> Result<Vec<u8>, CompilerError> {
+) -> Result<(Vec<u8>, String), CompilerError> {
     let constants = HashMap::new();
     let mut builder = ScriptBuilder::new();
     let mut stack_depth = 0i64;
+    let type_name = infer_debug_expr_value_type(expr, env, types, &mut HashSet::new())?;
     compile_expr(
         expr,
         env,
@@ -6411,7 +6428,7 @@ pub fn compile_debug_expr<'i>(
         None,
         &constants,
     )?;
-    Ok(builder.drain())
+    Ok((builder.drain(), type_name))
 }
 
 pub(super) fn resolve_expr_for_debug<'i>(

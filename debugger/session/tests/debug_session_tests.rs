@@ -12,8 +12,8 @@ use kaspa_txscript::covenants::CovenantsContext;
 use kaspa_txscript::opcodes::codes::OpTrue;
 use kaspa_txscript::{EngineCtx, EngineFlags};
 
-use debugger_session::session::{DebugSession, ShadowTxContext};
-use silverscript_lang::ast::{Expr, parse_contract_ast};
+use debugger_session::session::{DebugSession, DebugValue, ShadowTxContext};
+use silverscript_lang::ast::{Expr, ExprKind, parse_contract_ast};
 use silverscript_lang::compiler::{CompileOptions, compile_contract};
 use silverscript_lang::debug_info::StepKind;
 
@@ -665,6 +665,125 @@ contract InlineParams() {
 }
 
 #[test]
+fn debug_session_eval_inside_inline_callee_uses_visible_bindings() -> Result<(), Box<dyn Error>> {
+    let source = r#"pragma silverscript ^0.1.0;
+
+contract InlineEval() {
+    function add1(int x) : (int) {
+        int y = x + 1;
+        require(y > 0);
+        return(y);
+    }
+
+    entrypoint function main(int a) {
+        (int r) = add1(a);
+        require(r > 0);
+    }
+}
+"#;
+
+    with_session_for_source(source, vec![], "main", vec![Expr::int(4)], |session| {
+        session.run_to_first_executed_statement()?;
+        assert!(session.add_breakpoint(6), "expected inline callee line to accept a breakpoint");
+
+        let hit = session.continue_to_breakpoint()?;
+        assert!(hit.is_some(), "expected to stop inside inline callee");
+        assert!(session.call_stack().iter().any(|name| name == "add1"), "expected add1 to be active at breakpoint");
+
+        let span = session.current_span().ok_or("expected source span at inline callee breakpoint")?;
+        assert!((span.line..=span.end_line).contains(&6), "expected breakpoint span to cover callee require line");
+
+        let x = session.variable_by_name("x")?;
+        let y = session.variable_by_name("y")?;
+        let (x_value, y_value) = match (&x.value, &y.value) {
+            (DebugValue::Int(x_value), DebugValue::Int(y_value)) => (*x_value, *y_value),
+            _ => return Err("expected inline callee bindings x and y to be ints".into()),
+        };
+
+        let evaluated = session.evaluate_expression("((y * 2) + (x - 1)) - (y - x)")?;
+        assert_eq!(evaluated.type_name, "int");
+        assert_eq!(
+            session.format_value(&evaluated.type_name, &evaluated.value),
+            ((y_value * 2) + (x_value - 1) - (y_value - x_value)).to_string()
+        );
+        Ok(())
+    })
+}
+
+#[test]
+fn debug_session_exposes_ctor_args_and_contract_constants_distinctly() -> Result<(), Box<dyn Error>> {
+    let source = r#"pragma silverscript ^0.1.0;
+
+contract ScopeKinds(int init_amount) {
+    int constant BONUS = 2;
+
+    entrypoint function main(int delta) {
+        int total = init_amount + delta + BONUS;
+        require(total > 0);
+    }
+}
+"#;
+
+    with_session_for_source(source, vec![Expr::int(7)], "main", vec![Expr::int(3)], |session| {
+        session.run_to_first_executed_statement()?;
+
+        let vars = session.list_variables()?;
+        let init_amount = vars.iter().find(|var| var.name == "init_amount").ok_or("missing ctor arg")?;
+        assert_eq!(init_amount.origin.label(), "ctor");
+        assert!(!init_amount.is_constant);
+
+        let bonus = vars.iter().find(|var| var.name == "BONUS").ok_or("missing contract constant")?;
+        assert_eq!(bonus.origin.label(), "const");
+        assert!(bonus.is_constant);
+
+        let evaluated = session.evaluate_expression("init_amount + BONUS + delta")?;
+        assert_eq!(evaluated.type_name, "int");
+        assert_eq!(session.format_value(&evaluated.type_name, &evaluated.value), "12");
+        Ok(())
+    })
+}
+
+#[test]
+fn debug_session_exposes_previous_statement_local_immediately_after_step() -> Result<(), Box<dyn Error>> {
+    let source = r#"pragma silverscript ^0.1.0;
+
+contract StepVisibility(int init_amount) {
+    int constant BONUS = 2;
+
+    function add_bonus(int x) : (int) {
+        int y = x + BONUS;
+        require(y > x);
+        return(y);
+    }
+
+    entrypoint function inspect(int delta, int[] values) {
+        int base = init_amount + values[0];
+        (int after) = add_bonus(base + delta);
+        require(after > base);
+    }
+}
+"#;
+
+    with_session_for_source(
+        source,
+        vec![Expr::int(7)],
+        "inspect",
+        vec![Expr::int(3), Expr::new(ExprKind::Array(vec![Expr::int(4)]), Default::default())],
+        |session| {
+            session.run_to_first_executed_statement()?;
+            session.current_span().ok_or("missing starting span")?;
+
+            session.step_over()?;
+            session.current_span().ok_or("missing span after step")?;
+
+            let base = session.variable_by_name("base")?;
+            assert_eq!(session.format_value(&base.type_name, &base.value), "11");
+            Ok(())
+        },
+    )
+}
+
+#[test]
 fn debug_session_nested_inline_calls_with_args_compile_and_step() -> Result<(), Box<dyn Error>> {
     let source = r#"pragma silverscript ^0.1.0;
 
@@ -801,4 +920,61 @@ contract CovLocal() {
     }
 
     Err("expected covid local to be evaluated using tx context".into())
+}
+
+#[test]
+fn debug_session_eval_uses_tx_context_for_covenant_expression() -> Result<(), Box<dyn Error>> {
+    let source = r#"pragma silverscript ^0.1.0;
+
+contract CovEval() {
+    entrypoint function main() {
+        require(true);
+    }
+}
+"#;
+
+    let compile_opts = CompileOptions { record_debug_infos: true, ..Default::default() };
+    let compiled = compile_contract(source, &[], compile_opts)?;
+    let debug_info = compiled.debug_info.clone();
+    let sigscript = compiled.build_sig_script("main", vec![])?;
+
+    let input = TransactionInput {
+        previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([0x44u8; 32]), index: 0 },
+        signature_script: sigscript.clone(),
+        sequence: 0,
+        sig_op_count: 0,
+    };
+    let output = TransactionOutput { value: 1000, script_public_key: ScriptPublicKey::new(0, vec![OpTrue].into()), covenant: None };
+    let tx = Transaction::new(1, vec![input], vec![output], 0, Default::default(), 0, vec![]);
+
+    let covenant_id = Hash::from_bytes([0x22u8; 32]);
+    let utxo_entry =
+        UtxoEntry::new(1000, ScriptPublicKey::new(0, compiled.script.clone().into()), 0, tx.is_coinbase(), Some(covenant_id));
+    let populated_tx = PopulatedTransaction::new(&tx, vec![utxo_entry]);
+    let cov_ctx = CovenantsContext::from_tx(&populated_tx)?;
+
+    let sig_cache = Cache::new(10_000);
+    let reused_values = SigHashReusedValuesUnsync::new();
+    let ctx = EngineCtx::new(&sig_cache).with_reused(&reused_values).with_covenants_ctx(&cov_ctx);
+    let input_ref = &tx.inputs[0];
+    let utxo_ref = populated_tx.utxo(0).ok_or("missing utxo for input 0")?;
+    let engine = debugger_session::session::DebugEngine::from_transaction_input(
+        &populated_tx,
+        input_ref,
+        0,
+        utxo_ref,
+        ctx,
+        EngineFlags { covenants_enabled: true },
+    );
+
+    let shadow_ctx =
+        ShadowTxContext { tx: &populated_tx, input: input_ref, input_index: 0, utxo_entry: utxo_ref, covenants_ctx: &cov_ctx };
+
+    let mut session = DebugSession::full(&sigscript, &compiled.script, source, debug_info, engine)?.with_shadow_tx_context(shadow_ctx);
+    session.run_to_first_executed_statement()?;
+
+    let evaluated = session.evaluate_expression("OpInputCovenantId(this.activeInputIndex)")?;
+    assert_eq!(evaluated.type_name, "byte[32]");
+    assert_eq!(session.format_value(&evaluated.type_name, &evaluated.value), format!("0x{}", "22".repeat(32)));
+    Ok(())
 }

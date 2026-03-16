@@ -27,7 +27,8 @@ pub struct DebugInfoRecorder<'i> {
     steps: Vec<DebugStep<'i>>,
     params: Vec<DebugParamMapping>,
     entry_points: Vec<DebugFunctionRange>,
-    constants: Vec<DebugConstantMapping<'i>>,
+    constructor_args: Vec<DebugNamedValue<'i>>,
+    constants: Vec<DebugNamedValue<'i>>,
     next_sequence: u32,
 }
 
@@ -47,9 +48,12 @@ impl<'i> DebugInfoRecorder<'i> {
         self.entry_points.push(function);
     }
 
-    /// Appends one constructor constant mapping.
-    pub fn record_constant(&mut self, constant: DebugConstantMapping<'i>) {
-        self.constants.push(constant);
+    pub fn record_constructor_arg(&mut self, binding: DebugNamedValue<'i>) {
+        self.constructor_args.push(binding);
+    }
+
+    pub fn record_constant(&mut self, binding: DebugNamedValue<'i>) {
+        self.constants.push(binding);
     }
 
     /// Returns the next global sequence id for one emitted debug event.
@@ -70,7 +74,14 @@ impl<'i> DebugInfoRecorder<'i> {
 
     /// Builds the final serializable debug payload.
     pub fn into_debug_info(self, source: String) -> DebugInfo<'i> {
-        DebugInfo { source, steps: self.steps, params: self.params, functions: self.entry_points, constants: self.constants }
+        DebugInfo {
+            source,
+            steps: self.steps,
+            params: self.params,
+            functions: self.entry_points,
+            constructor_args: self.constructor_args,
+            constants: self.constants,
+        }
     }
 }
 
@@ -80,14 +91,26 @@ impl<'i> DebugInfoRecorder<'i> {
 pub struct DebugInfo<'i> {
     pub source: String,
     pub steps: Vec<DebugStep<'i>>,
+    #[serde(default)]
     pub params: Vec<DebugParamMapping>,
+    #[serde(default)]
     pub functions: Vec<DebugFunctionRange>,
-    pub constants: Vec<DebugConstantMapping<'i>>,
+    #[serde(default)]
+    pub constructor_args: Vec<DebugNamedValue<'i>>,
+    #[serde(default)]
+    pub constants: Vec<DebugNamedValue<'i>>,
 }
 
 impl<'i> DebugInfo<'i> {
     pub fn empty() -> Self {
-        Self { source: String::new(), steps: Vec::new(), params: Vec::new(), functions: Vec::new(), constants: Vec::new() }
+        Self {
+            source: String::new(),
+            steps: Vec::new(),
+            params: Vec::new(),
+            functions: Vec::new(),
+            constructor_args: Vec::new(),
+            constants: Vec::new(),
+        }
     }
 }
 
@@ -95,9 +118,16 @@ impl<'i> DebugInfo<'i> {
 pub struct DebugVariableUpdate<'i> {
     pub name: String,
     pub type_name: String,
+    #[serde(default)]
+    pub runtime_binding: Option<RuntimeBinding>,
     /// Pre-resolved expression for debugger shadow evaluation.
     /// Identifiers may include inline synthetic placeholders (`__arg_*`).
     pub expr: Expr<'i>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum RuntimeBinding {
+    DataStackSlot { from_top: i64 },
 }
 
 /// Maps function parameter to its stack position.
@@ -119,10 +149,8 @@ pub struct DebugFunctionRange {
     pub bytecode_end: usize,
 }
 
-/// Constructor constant (contract instantiation parameter).
-/// Recorded for display in debugger variable list.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DebugConstantMapping<'i> {
+pub struct DebugNamedValue<'i> {
     pub name: String,
     pub type_name: String,
     pub value: Expr<'i>,
