@@ -65,8 +65,7 @@ for_statement = { "for" ~ "(" ~ Identifier ~ "," ~ expression ~ "," ~ expression
 console_statement = { "console.log" ~ console_parameter_list ~ ";" }
 require_message = { StringLiteral }
 
-console_parameter = { Identifier | literal }
-console_parameter_list = { "(" ~ (console_parameter ~ ("," ~ console_parameter)* ~ ","?)? ~ ")" }
+console_parameter_list = { "(" ~ (expression ~ ("," ~ expression)* ~ ","?)? ~ ")" }
 
 function_call = { Identifier ~ expression_list }
 expression_list = { "(" ~ (expression ~ ("," ~ expression)* ~ ","?)? ~ ")" }
