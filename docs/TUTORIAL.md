@@ -932,6 +932,10 @@ byte[35] outputScriptPubKey = new ScriptPubKeyP2SHFromRedeemScript(redeemScript)
 
 Validates that `tx.outputs[outputIndex].scriptPubKey` is a P2SH paying to the **same contract code** with **updated state fields**.
 
+**`validateOutputStateWithTemplate(int outputIndex, object newState, byte[] templatePrefix, byte[] templateSuffix, byte[32] expectedTemplateHash)`**
+
+Validates that `tx.outputs[outputIndex].scriptPubKey` is a P2SH paying to a **different script template** with the **same state layout** and the provided next state.
+
 Small example:
 
 ```javascript
@@ -955,7 +959,7 @@ What this checks:
 - Computes the P2SH scriptPubKey for that new redeem script.
 - Verifies output `0` has exactly that scriptPubKey.
 
-In practice, this enforces that the transaction creates the next valid contract state rather than an arbitrary output script.
+In practice, `validateOutputState(...)` enforces continuation into the same contract, while `validateOutputStateWithTemplate(...)` enforces continuation into a different script template that shares the same serialized state layout.
 
 ### Covenant Examples
 

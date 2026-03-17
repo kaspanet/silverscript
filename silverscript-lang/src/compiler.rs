@@ -5134,9 +5134,9 @@ fn compile_expr<'i>(
             *stack_depth += 1;
             Ok(())
         }
-        ExprKind::StateObject(_) => {
-            Err(CompilerError::Unsupported("state object literals are only supported in validateOutputState".to_string()))
-        }
+        ExprKind::StateObject(_) => Err(CompilerError::Unsupported(
+            "state object literals are only supported in validateOutputState-style builtins".to_string(),
+        )),
         ExprKind::FieldAccess { .. } => {
             Err(CompilerError::Unsupported("struct field access should be lowered before compilation".to_string()))
         }
