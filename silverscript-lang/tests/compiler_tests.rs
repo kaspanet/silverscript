@@ -3548,6 +3548,64 @@ fn runs_validate_output_state_with_state_variable() {
     assert!(result.is_ok(), "validateOutputState runtime failed: {}", result.unwrap_err());
 }
 
+fn compiled_template_parts_and_hash(compiled: &CompiledContract) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+    let layout = compiled.state_layout;
+    let prefix = compiled.script[..layout.start].to_vec();
+    let suffix = compiled.script[layout.start + layout.len..].to_vec();
+    let template_hash = Blake2bParams::new().hash_length(32).to_state().update(&prefix).update(&suffix).finalize().as_bytes().to_vec();
+    (prefix, suffix, template_hash)
+}
+
+fn run_validate_output_state_with_template_case(
+    template_prefix: Vec<u8>,
+    template_suffix: Vec<u8>,
+    expected_template_hash: Vec<u8>,
+    output_compiled: &CompiledContract,
+) -> Result<(), kaspa_txscript_errors::TxScriptError> {
+    let mux_source = format!(
+        r#"
+        contract M(byte[32] initMuxHash, byte[32] initAHash, int initX, byte[2] initY) {{
+            byte[32] muxHash = initMuxHash;
+            byte[32] aHash = initAHash;
+            int x = initX;
+            byte[2] y = initY;
+
+            entrypoint function routeToA() {{
+                validateOutputStateWithTemplate(
+                    0,
+                    {{muxHash: muxHash, aHash: aHash, x: x + 1, y: 0x3412}},
+                    0x{},
+                    0x{},
+                    0x{}
+                );
+            }}
+        }}
+    "#,
+        template_prefix.iter().map(|byte| format!("{byte:02x}")).collect::<String>(),
+        template_suffix.iter().map(|byte| format!("{byte:02x}")).collect::<String>(),
+        expected_template_hash.iter().map(|byte| format!("{byte:02x}")).collect::<String>(),
+    );
+
+    let mux_input_compiled = compile_contract(
+        &mux_source,
+        &[vec![0x11u8; 32].into(), expected_template_hash.into(), 5.into(), vec![0x10u8, 0x20u8].into()],
+        CompileOptions::default(),
+    )
+    .expect("compile mux succeeds");
+
+    let sigscript = mux_input_compiled.build_sig_script("routeToA", vec![]).expect("sigscript builds");
+    let sigscript = pay_to_script_hash_signature_script(mux_input_compiled.script.clone(), sigscript).unwrap();
+    let input = test_input(0, sigscript);
+
+    let input_spk = pay_to_script_hash_script(&mux_input_compiled.script);
+    let output_spk = pay_to_script_hash_script(&output_compiled.script);
+    let output = TransactionOutput { value: 1000, script_public_key: output_spk, covenant: None };
+    let tx = Transaction::new(1, vec![input], vec![output.clone()], 0, Default::default(), 0, vec![]);
+    let utxo_entry = UtxoEntry::new(output.value, input_spk, 0, tx.is_coinbase(), None);
+
+    execute_input(tx, vec![utxo_entry], 0)
+}
+
 #[test]
 fn runs_validate_output_state_with_template() {
     let mux_hash = vec![0x11u8; 32];
@@ -3571,11 +3629,7 @@ fn runs_validate_output_state_with_template() {
         CompileOptions::default(),
     )
     .expect("compile target succeeds");
-    let layout = target_a0.state_layout;
-    let a_prefix = target_a0.script[..layout.start].to_vec();
-    let a_suffix = target_a0.script[layout.start + layout.len..].to_vec();
-    let a_template_hash =
-        Blake2bParams::new().hash_length(32).to_state().update(&a_prefix).update(&a_suffix).finalize().as_bytes().to_vec();
+    let (a_prefix, a_suffix, a_template_hash) = compiled_template_parts_and_hash(&target_a0);
 
     let target_output_compiled = compile_contract(
         target_source,
@@ -3627,6 +3681,141 @@ fn runs_validate_output_state_with_template() {
 
     let result = execute_input(tx, vec![utxo_entry], 0);
     assert!(result.is_ok(), "validateOutputStateWithTemplate runtime failed: {}", result.unwrap_err());
+}
+
+#[test]
+fn validate_output_state_with_template_rejects_wrong_template_hash() {
+    let target_source = r#"
+        contract A(byte[32] initMuxHash, byte[32] initAHash, int initX, byte[2] initY) {
+            byte[32] muxHash = initMuxHash;
+            byte[32] aHash = initAHash;
+            int x = initX;
+            byte[2] y = initY;
+
+            entrypoint function noop() {
+                require(true);
+            }
+        }
+    "#;
+
+    let target = compile_contract(
+        target_source,
+        &[vec![0x11u8; 32].into(), vec![0x33u8; 32].into(), Expr::int(0x1111_1111_1111_1111), vec![0x55u8, 0x66u8].into()],
+        CompileOptions::default(),
+    )
+    .expect("compile target succeeds");
+    let (prefix, suffix, correct_template_hash) = compiled_template_parts_and_hash(&target);
+    let mut wrong_template_hash = correct_template_hash.clone();
+    wrong_template_hash[0] ^= 0x01;
+
+    let target_output = compile_contract(
+        target_source,
+        &[vec![0x11u8; 32].into(), correct_template_hash.into(), 6.into(), vec![0x34u8, 0x12u8].into()],
+        CompileOptions::default(),
+    )
+    .expect("compile target output succeeds");
+
+    let result = run_validate_output_state_with_template_case(prefix, suffix, wrong_template_hash, &target_output);
+    assert!(result.is_err(), "wrong template hash should fail at runtime");
+}
+
+#[test]
+fn validate_output_state_with_template_rejects_wrong_template_parts() {
+    let target_source = r#"
+        contract A(byte[32] initMuxHash, byte[32] initAHash, int initX, byte[2] initY) {
+            byte[32] muxHash = initMuxHash;
+            byte[32] aHash = initAHash;
+            int x = initX;
+            byte[2] y = initY;
+
+            entrypoint function noop() {
+                require(true);
+            }
+        }
+    "#;
+
+    let target = compile_contract(
+        target_source,
+        &[vec![0x11u8; 32].into(), vec![0x33u8; 32].into(), Expr::int(0x1111_1111_1111_1111), vec![0x55u8, 0x66u8].into()],
+        CompileOptions::default(),
+    )
+    .expect("compile target succeeds");
+    let (mut prefix, suffix, template_hash) = compiled_template_parts_and_hash(&target);
+    prefix.push(0x00);
+
+    let target_output = compile_contract(
+        target_source,
+        &[vec![0x11u8; 32].into(), template_hash.clone().into(), 6.into(), vec![0x34u8, 0x12u8].into()],
+        CompileOptions::default(),
+    )
+    .expect("compile target output succeeds");
+
+    let result = run_validate_output_state_with_template_case(prefix, suffix, template_hash, &target_output);
+    assert!(result.is_err(), "wrong template parts should fail at runtime");
+}
+
+#[test]
+fn validate_output_state_with_template_rejects_wrong_output_script() {
+    let target_source = r#"
+        contract A(byte[32] initMuxHash, byte[32] initAHash, int initX, byte[2] initY) {
+            byte[32] muxHash = initMuxHash;
+            byte[32] aHash = initAHash;
+            int x = initX;
+            byte[2] y = initY;
+
+            entrypoint function noop() {
+                require(true);
+            }
+        }
+    "#;
+
+    let target = compile_contract(
+        target_source,
+        &[vec![0x11u8; 32].into(), vec![0x33u8; 32].into(), Expr::int(0x1111_1111_1111_1111), vec![0x55u8, 0x66u8].into()],
+        CompileOptions::default(),
+    )
+    .expect("compile target succeeds");
+    let (prefix, suffix, template_hash) = compiled_template_parts_and_hash(&target);
+
+    let wrong_output = compile_contract(
+        target_source,
+        &[vec![0x11u8; 32].into(), template_hash.clone().into(), 7.into(), vec![0x34u8, 0x12u8].into()],
+        CompileOptions::default(),
+    )
+    .expect("compile wrong target output succeeds");
+
+    let result = run_validate_output_state_with_template_case(prefix, suffix, template_hash, &wrong_output);
+    assert!(result.is_err(), "wrong output script should fail at runtime");
+}
+
+#[test]
+fn validate_output_state_with_template_rejects_different_target_state_layout() {
+    let target_source = r#"
+        contract D(byte[32] initMuxHash, byte[32] initAHash, int initX) {
+            byte[32] muxHash = initMuxHash;
+            byte[32] aHash = initAHash;
+            int x = initX;
+
+            entrypoint function noop() {
+                require(true);
+            }
+        }
+    "#;
+
+    let target = compile_contract(
+        target_source,
+        &[vec![0x11u8; 32].into(), vec![0x33u8; 32].into(), Expr::int(0x1111_1111_1111_1111)],
+        CompileOptions::default(),
+    )
+    .expect("compile different-layout target succeeds");
+    let (prefix, suffix, template_hash) = compiled_template_parts_and_hash(&target);
+
+    let wrong_layout_output =
+        compile_contract(target_source, &[vec![0x11u8; 32].into(), template_hash.clone().into(), 6.into()], CompileOptions::default())
+            .expect("compile different-layout output succeeds");
+
+    let result = run_validate_output_state_with_template_case(prefix, suffix, template_hash, &wrong_layout_output);
+    assert!(result.is_err(), "different target state layout should fail at runtime");
 }
 
 #[test]
