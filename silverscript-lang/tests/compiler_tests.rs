@@ -3819,6 +3819,46 @@ fn validate_output_state_with_template_rejects_different_target_state_layout() {
 }
 
 #[test]
+fn conditional_counter_in_unrolled_loop_does_not_explode() {
+    const SOURCE: &str = r#"
+pragma silverscript ^0.1.0;
+
+contract Sweep(int BOUND, byte[64] init_board) {
+    byte[64] board = init_board;
+
+    entrypoint function main() {
+        int zero_count = 0;
+        // Keep this loop small so regressions fail fast (the previous exponential blow-up
+        // already manifested at single-digit iteration counts).
+        for (i, 0, BOUND, BOUND) {
+            if (OpBin2Num(board[i]) == 0) {
+                zero_count = zero_count + 1;
+            }
+        }
+        require(zero_count >= 0);
+    }
+}
+"#;
+
+    let bounds = [4i64, 8i64, 12i64];
+    let mut lens = Vec::new();
+    for b in bounds {
+        let args = [Expr::int(b), Expr::bytes(vec![0u8; 64])];
+        let compiled = compile_contract(SOURCE, &args, CompileOptions::default()).expect("compile succeeds");
+        lens.push(compiled.script.len());
+    }
+
+    // Monotonic growth, and no doubling behavior in this range.
+    assert!(lens[0] < lens[1] && lens[1] < lens[2], "expected monotonic growth, got {lens:?}");
+    let d1 = lens[1] - lens[0];
+    let d2 = lens[2] - lens[1];
+    assert!(d2 <= d1 * 2, "unexpected superlinear growth: lens={lens:?} d1={d1} d2={d2}");
+
+    // Absolute cap: the old exponential behavior already blew past this by bound=8..12.
+    assert!(lens[2] < 5_000, "unexpected script size: lens={lens:?}");
+}
+
+#[test]
 fn validate_output_state_accepts_state_value_from_array_index() {
     let source = r#"
         contract C(int initX) {
