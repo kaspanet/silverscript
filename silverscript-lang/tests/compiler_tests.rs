@@ -4909,6 +4909,29 @@ fn compiles_opcode_builtins() {
             r#"
                 contract Test() {
                     entrypoint function main() {
+                        require(OpTxInputDaaScore(0) == 0);
+                    }
+                }
+            "#,
+            ScriptBuilder::new()
+                .add_i64(0)
+                .unwrap()
+                .add_op(OpTxInputDaaScore)
+                .unwrap()
+                .add_i64(0)
+                .unwrap()
+                .add_op(OpNumEqual)
+                .unwrap()
+                .add_op(OpVerify)
+                .unwrap()
+                .add_op(OpTrue)
+                .unwrap()
+                .drain(),
+        ),
+        (
+            r#"
+                contract Test() {
+                    entrypoint function main() {
                         require(OpTxInputIsCoinbase(0) == 0);
                     }
                 }
@@ -5374,6 +5397,16 @@ fn executes_opcode_builtins_basic() {
                 contract Test() {
                     entrypoint function main() {
                         require(OpTxInputSeq(0) == bytes("sequence"));
+                    }
+                }
+            "#,
+        ),
+        (
+            "input_daa_score",
+            r#"
+                contract Test() {
+                    entrypoint function main() {
+                        require(OpTxInputDaaScore(0) == 0);
                     }
                 }
             "#,
