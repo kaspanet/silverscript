@@ -50,12 +50,9 @@ fn builtin_call_value_type(name: &str) -> &'static str {
         | "ScriptPubKeyP2PK"
         | "ScriptPubKeyP2SH"
         | "ScriptPubKeyP2SHFromRedeemScript" => "byte[]",
-        "OpTxInputDaaScore"
-        | "OpAuthOutputCount"
-        | "OpCovInputCount"
-        | "OpCovInputIdx"
-        | "OpCovOutputCount"
-        | "OpCovOutputIdx" => "int",
+        "OpTxInputDaaScore" | "OpAuthOutputCount" | "OpCovInputCount" | "OpCovInputIdx" | "OpCovOutputCount" | "OpCovOutputIdx" => {
+            "int"
+        }
         "OpInputCovenantId" => "byte[32]",
         _ => "byte[]",
     }
