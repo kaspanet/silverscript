@@ -1,0 +1,301 @@
+pragma silverscript ^0.1.0;
+
+contract ChessMux(
+    byte[32] init_mux_template,
+    byte[288] init_route_templates,
+    byte[32] init_white_player,
+    byte[32] init_black_player,
+    byte[64] init_board,
+    int init_turn,
+    int init_status,
+    int init_move_timeout,
+    byte[4] init_castle_rights,
+    int init_en_passant_idx,
+    int init_pending_src_idx,
+    int init_pending_dst_idx,
+    int init_pending_promo,
+    int init_recent_castle,
+    int init_draw_state
+) {
+    // Naming convention: `*_template` fields carry template selectors (hash-
+    // sized values), not state-object identities.
+    //
+    // Shared chess state layout, reused verbatim by mux and every worker:
+    // - status: 0 live, 1 white win, 2 black win, 3 draw
+    // - castle_rights[0..3]: white K, white Q, black K, black Q
+    // - en_passant_idx: -1 when absent
+    // - pending_*: the move committed by mux for the selected worker
+    // - recent_castle: 0 none, 1 wK, 2 wQ, 3 bK, 4 bQ
+    // - draw_state: 3 normal, 1 draw claimed, 2 counterplay step, 4 white offered draw, 5 black offered draw
+    byte[32] mux_template = init_mux_template;
+    byte[288] route_templates = init_route_templates;
+    byte[32] white_player = init_white_player;
+    byte[32] black_player = init_black_player;
+    byte[64] board = init_board;
+    int turn = init_turn;
+    int status = init_status;
+    int move_timeout = init_move_timeout;
+    byte[4] castle_rights = init_castle_rights;
+    int en_passant_idx = init_en_passant_idx;
+    int pending_src_idx = init_pending_src_idx;
+    int pending_dst_idx = init_pending_dst_idx;
+    int pending_promo = init_pending_promo;
+    int recent_castle = init_recent_castle;
+    int draw_state = init_draw_state;
+
+    struct SettleState {
+        byte[32] player_template;
+        byte[32] white_player;
+        byte[32] black_player;
+        int status;
+    }
+
+    entrypoint function route(
+        int selector,
+        int from_x,
+        int from_y,
+        int to_x,
+        int to_y,
+        int promo_piece,
+        int termination_action,
+        sig s,
+        pubkey pk,
+        byte[32] player_id,
+        byte[] target_prefix,
+        byte[] target_suffix
+    ) {
+        // Only idle mux states may start a new move. Workers return here after
+        // they have validated and applied exactly one committed move.
+        require(status == 0 /*LIVE*/);
+
+        // The side-to-move commitment is `blake2b(owner || player_id)`, where
+        // `owner = blake2b(pk)`. Downstream workers rely on the committed
+        // pending move and do not repeat signature checks.
+        byte[32] owner = blake2b(pk);
+        byte[32] player_ref = blake2b(owner + player_id);
+        if (turn == 0 /*WHITE*/) {
+            require(player_ref == white_player);
+        } else {
+            require(player_ref == black_player);
+        }
+        require(checkSig(s, pk));
+
+        // route_templates layout:
+        // 0  -> pawn
+        // 1  -> knight
+        // 2  -> vert
+        // 3  -> horiz
+        // 4  -> diag
+        // 5  -> king
+        // 6  -> castle
+        // 7  -> castle challenge prep
+        // 8  -> blake2b(settle_template || player_template)
+        // The first 8 items are direct worker templates; the last item is a
+        // commitment to two templates packed together.
+        require(selector >= 0 /*PAWN*/ && selector <= 8 /*MUX*/);
+
+        // termination_action intent:
+        // 0 -> clear
+        // 1 -> offer draw with an ordinary move
+        // 2 -> claim draw in mux
+        // 3 -> surrender in mux
+        // 4 -> accept draw in mux
+        require(termination_action >= 0 /*CLEAR*/ && termination_action <= 4 /*ACCEPT*/);
+
+        int next_status = status;
+        int next_turn = turn;
+        int next_en_passant_idx = en_passant_idx;
+        int next_pending_src_idx = -1;
+        int next_pending_dst_idx = -1;
+        int next_pending_promo = 0 /*CLEAR*/;
+        int next_recent_castle = 0 /*CLEAR*/;
+        int next_draw_state = draw_state;
+
+        if (selector == 8 /*MUX*/) {
+            require(from_x == -1 && from_y == -1 && to_x == -1 && to_y == -1 && promo_piece == 0 /*CLEAR*/);
+
+            next_en_passant_idx = -1;
+            next_recent_castle = 0 /*CLEAR*/;
+
+            if (termination_action == 2 /*CLAIM*/) {
+                // Draw negotiation starts from the ordinary idle mux state. The
+                // next ply belongs to the opponent, who now tries to find a
+                // saving move for the claimant side.
+                require(draw_state == 3 /*NORMAL*/);
+                require(recent_castle == 0 /*CLEAR*/);
+
+                next_turn = 1 - turn;
+                next_draw_state = 1 /*CLAIMED*/;
+            } else if (termination_action == 3 /*SURRENDER*/) {
+                // Surrender is a mux-to-mux terminal transition. The side to move
+                // concedes immediately and the game returns to mux with terminal status.
+                next_status = 2 /*BWIN*/ - turn;
+                next_draw_state = 3 /*NORMAL*/;
+            } else {
+                // Draw agreement is accepted asynchronously on the opponent's
+                // turn after being attached to the previous move.
+                require(termination_action == 4 /*ACCEPT*/);
+                require(draw_state + turn == 5 /*BOFFER*/);
+                next_status = 3 /*DRAW*/;
+                next_draw_state = 3 /*NORMAL*/;
+            }
+        } else {
+            // The mux only commits moves whose endpoints are on the 8x8 board.
+            require(from_x >= 0 && from_x < 8 && from_y >= 0 && from_y < 8);
+            require(to_x >= 0 && to_x < 8 && to_y >= 0 && to_y < 8);
+
+            // Only pawn routes may carry a promotion choice.
+            // Piece encoding:
+            // white: 1 pawn,  2 knight,  3 bishop,  4 rook,  5 queen,  6 king
+            // black: 9 pawn, 10 knight, 11 bishop, 12 rook, 13 queen, 14 king
+            // black code = white code + 8
+            //
+            // Pawn promotion choices therefore use:
+            // 2 knight, 3 bishop, 4 rook, 5 queen
+            require(promo_piece == 0 || (selector == 0 /*PAWN*/ && promo_piece >= 2 && promo_piece <= 5));
+
+            // Worker routes only accept "no side action" or "offer draw".
+            require(termination_action == 0 /*CLEAR*/ || termination_action == 1 /*OFFER*/);
+
+            // Draw-claim mode may reuse only the ordinary move workers.
+            require(draw_state >= 3 /*NORMAL*/ || selector <= 5 /*KING*/);
+
+            // A draw offer may ride only on a normal-play move, not on castle
+            // challenge prep and not inside draw-claim mode.
+            require(termination_action == 0 /*CLEAR*/ || (selector <= 6 /*CASTLE*/ && draw_state >= 3 /*NORMAL*/));
+
+            // Any ordinary reply clears a pending draw offer; an attached offer
+            // below immediately replaces it with the current mover's offer.
+            if (draw_state > 3 /*NORMAL*/) {
+                next_draw_state = 3 /*NORMAL*/;
+            }
+
+            // Draw offers are recorded on the mux state returned from the move.
+            if (termination_action == 1 /*OFFER*/) {
+                next_draw_state = 4 /*WOFFER*/ + turn;
+            }
+            
+            // Ordinary replies clear recent_castle; only prep preserves it and
+            // enters the explicit castle-challenge path.
+            if (selector == 7 /*PREP*/) {
+                require(recent_castle != 0 /*CLEAR*/);
+                next_recent_castle = recent_castle;
+            }
+            
+            next_pending_src_idx = from_y * 8 + from_x;
+            next_pending_dst_idx = to_y * 8 + to_x;
+            next_pending_promo = promo_piece;
+        }
+
+        State next_state = {
+            mux_template: mux_template,
+            route_templates: route_templates,
+            white_player: white_player,
+            black_player: black_player,
+            board: board,
+            turn: next_turn,
+            status: next_status,
+            move_timeout: move_timeout,
+            castle_rights: castle_rights,
+            en_passant_idx: next_en_passant_idx,
+            pending_src_idx: next_pending_src_idx,
+            pending_dst_idx: next_pending_dst_idx,
+            pending_promo: next_pending_promo,
+            recent_castle: next_recent_castle,
+            draw_state: next_draw_state
+        };
+        // Mux must produce exactly one authorized output with the selected template.
+        require(OpAuthOutputCount(this.activeInputIndex) == 1);
+        int output_idx = OpAuthOutputIdx(this.activeInputIndex, 0);
+        require(tx.outputs[output_idx].value == tx.inputs[this.activeInputIndex].value);
+        
+        byte[] move_route_templates = route_templates.slice(0, 256);
+        byte[] all_route_templates = move_route_templates + mux_template;
+        int hash_start = selector * 32;
+        int hash_end = hash_start + 32;
+        byte[32] target_template = byte[32](all_route_templates.slice(hash_start, hash_end));
+        validateOutputStateWithTemplate(
+            output_idx,
+            next_state,
+            target_prefix,
+            target_suffix,
+            target_template
+        );
+    }
+
+    entrypoint function timeout(
+        sig s,
+        pubkey pk,
+        byte[32] player_id,
+        byte[32] player_template,
+        byte[] settle_prefix,
+        byte[] settle_suffix
+    ) {
+        // Timeout only applies while the game is still live.
+        require(status == 0 /*LIVE*/);
+
+        // The side waiting on a response is `turn`, so the timeout claimant is
+        // always the opposite signer, authenticated by the same
+        // `blake2b(owner || player_id)` commitment used in `route`.
+        byte[32] owner = blake2b(pk);
+        byte[32] player_ref = blake2b(owner + player_id);
+        if (turn == 0 /*WHITE*/) {
+            require(player_ref == black_player);
+        } else {
+            require(player_ref == white_player);
+        }
+        require(checkSig(s, pk));
+
+        // Timeout uses the input's relative age directly. Consensus sequence-lock
+        // validation enforces that the spent mux UTXO is old enough.
+        require(this.age >= move_timeout);
+
+        // Ordinary timeout loses for the side that owed the next signed route.
+        // Draw-state 1 is the one exception: silence accepts the draw claim.
+        int next_status = 1 /*WWIN*/;
+        if (turn == 0 /*WHITE*/) {
+            next_status = 2 /*BWIN*/;
+        }
+        if (draw_state == 1 /*CLAIMED*/) {
+            next_status = 3 /*DRAW*/;
+        }
+
+        byte[32] settle_template = blake2b(settle_prefix + settle_suffix);
+        require(blake2b(settle_template + player_template) == byte[32](route_templates.slice(256, 288)));
+
+        SettleState next_state = {
+            player_template: player_template,
+            white_player: white_player,
+            black_player: black_player,
+            status: next_status
+        };
+        require(OpAuthOutputCount(this.activeInputIndex) == 1);
+        int output_idx = OpAuthOutputIdx(this.activeInputIndex, 0);
+        require(tx.outputs[output_idx].value == tx.inputs[this.activeInputIndex].value);
+        validateOutputStateWithTemplate(output_idx, next_state, settle_prefix, settle_suffix, settle_template);
+    }
+
+    entrypoint function settle(byte[32] player_template, byte[] settle_prefix, byte[] settle_suffix) {
+        require(status != 0 /*LIVE*/);
+        byte[32] settle_template = blake2b(settle_prefix + settle_suffix);
+        require(blake2b(settle_template + player_template) == byte[32](route_templates.slice(256, 288)));
+
+        SettleState next_state = {
+            player_template: player_template,
+            white_player: white_player,
+            black_player: black_player,
+            status: status,
+        };
+        require(OpAuthOutputCount(this.activeInputIndex) == 1);
+        int output_idx = OpAuthOutputIdx(this.activeInputIndex, 0);
+        require(tx.outputs[output_idx].value == tx.inputs[this.activeInputIndex].value);
+        validateOutputStateWithTemplate(
+            output_idx,
+            next_state,
+            settle_prefix,
+            settle_suffix,
+            settle_template
+        );
+    }
+
+}

@@ -5,7 +5,7 @@ use pest::iterators::Pair;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::errors::CompilerError;
-use crate::parser::{Rule, parse_source_file, parse_type_name as parse_type_name_rule};
+use crate::parser::{Rule, parse_expression as parse_expression_rule, parse_source_file, parse_type_name as parse_type_name_rule};
 pub use crate::span::{Span, SpanUtils};
 
 pub mod visit;
@@ -18,6 +18,8 @@ struct Identifier<'i> {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContractAst<'i> {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pragma: Option<PragmaDirectiveAst<'i>>,
     pub name: String,
     pub params: Vec<ParamAst<'i>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -30,6 +32,18 @@ pub struct ContractAst<'i> {
     pub span: Span<'i>,
     #[serde(skip_deserializing)]
     pub name_span: Span<'i>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PragmaDirectiveAst<'i> {
+    pub name: String,
+    pub value: String,
+    #[serde(skip_deserializing)]
+    pub span: Span<'i>,
+    #[serde(skip_deserializing)]
+    pub name_span: Span<'i>,
+    #[serde(skip_deserializing)]
+    pub value_span: Span<'i>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -214,6 +228,7 @@ impl<'de> Deserialize<'de> for TypeBase {
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum ArrayDim {
     Dynamic,
+    Inferred,
     Fixed(usize),
     Constant(String),
 }
@@ -224,6 +239,7 @@ impl TypeRef {
         for dim in &self.array_dims {
             match dim {
                 ArrayDim::Dynamic => out.push_str("[]"),
+                ArrayDim::Inferred => out.push_str("[_]"),
                 ArrayDim::Fixed(size) => out.push_str(&format!("[{size}]")),
                 ArrayDim::Constant(name) => out.push_str(&format!("[{name}]")),
             }
@@ -284,14 +300,6 @@ pub enum Statement<'i> {
         #[serde(skip_deserializing)]
         right_name_span: Span<'i>,
     },
-    ArrayPush {
-        name: String,
-        expr: Expr<'i>,
-        #[serde(skip_deserializing)]
-        span: Span<'i>,
-        #[serde(skip_deserializing)]
-        name_span: Span<'i>,
-    },
     FunctionCall {
         name: String,
         args: Vec<Expr<'i>>,
@@ -351,6 +359,11 @@ pub enum Statement<'i> {
         #[serde(skip_deserializing)]
         message_span: Option<Span<'i>>,
     },
+    Block {
+        body: Vec<Statement<'i>>,
+        #[serde(skip_deserializing)]
+        span: Span<'i>,
+    },
     If {
         condition: Expr<'i>,
         then_branch: Vec<Statement<'i>>,
@@ -381,7 +394,7 @@ pub enum Statement<'i> {
         span: Span<'i>,
     },
     Console {
-        args: Vec<ConsoleArg<'i>>,
+        args: Vec<Expr<'i>>,
         #[serde(skip_deserializing)]
         span: Span<'i>,
     },
@@ -392,7 +405,6 @@ impl<'i> Statement<'i> {
         match self {
             Statement::VariableDefinition { span, .. }
             | Statement::TupleAssignment { span, .. }
-            | Statement::ArrayPush { span, .. }
             | Statement::FunctionCall { span, .. }
             | Statement::FunctionCallAssign { span, .. }
             | Statement::StateFunctionCallAssign { span, .. }
@@ -401,18 +413,12 @@ impl<'i> Statement<'i> {
             | Statement::Return { span, .. }
             | Statement::TimeOp { span, .. }
             | Statement::Require { span, .. }
+            | Statement::Block { span, .. }
             | Statement::If { span, .. }
             | Statement::For { span, .. }
             | Statement::Console { span, .. } => *span,
         }
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", content = "data", rename_all = "snake_case")]
-pub enum ConsoleArg<'i> {
-    Identifier(String, #[serde(skip_deserializing)] Span<'i>),
-    Literal(Expr<'i>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -550,6 +556,12 @@ pub enum ExprKind<'i> {
         source: Box<Expr<'i>>,
         start: Box<Expr<'i>>,
         end: Box<Expr<'i>>,
+        #[serde(skip_deserializing)]
+        span: Span<'i>,
+    },
+    Append {
+        source: Box<Expr<'i>>,
+        args: Vec<Expr<'i>>,
         #[serde(skip_deserializing)]
         span: Span<'i>,
     },
@@ -711,6 +723,11 @@ impl SourceFormatter {
     }
 
     fn write_contract(&mut self, contract: &ContractAst<'_>) {
+        if let Some(pragma) = &contract.pragma {
+            self.line(&format!("pragma {} {};", pragma.name, pragma.value));
+            self.out.push('\n');
+        }
+
         self.line(&format!("contract {}({}) {{", contract.name, format_params(&contract.params)));
         self.indent += 1;
 
@@ -792,9 +809,6 @@ impl SourceFormatter {
                     format_expr(expr)
                 ));
             }
-            Statement::ArrayPush { name, expr, .. } => {
-                self.line(&format!("{}.push({});", name, format_expr(expr)));
-            }
             Statement::FunctionCall { name, args, .. } => {
                 self.line(&format!("{}({});", name, format_expr_list(args)));
             }
@@ -817,6 +831,15 @@ impl SourceFormatter {
             Statement::Require { expr, message, .. } => {
                 let message = message.as_ref().map(|message| format!(", {}", format_string_literal(message))).unwrap_or_default();
                 self.line(&format!("require({}{});", format_expr(expr), message));
+            }
+            Statement::Block { body, .. } => {
+                self.line("{");
+                self.indent += 1;
+                for statement in body {
+                    self.write_statement(statement);
+                }
+                self.indent = self.indent.saturating_sub(1);
+                self.line("}");
             }
             Statement::If { condition, then_branch, else_branch, .. } => {
                 self.line(&format!("if ({}) {{", format_expr(condition)));
@@ -915,14 +938,8 @@ fn format_state_bindings(bindings: &[StateBindingAst<'_>]) -> String {
         .join(", ")
 }
 
-fn format_console_args(args: &[ConsoleArg<'_>]) -> String {
-    args.iter()
-        .map(|arg| match arg {
-            ConsoleArg::Identifier(name, _) => name.clone(),
-            ConsoleArg::Literal(expr) => format_expr(expr),
-        })
-        .collect::<Vec<_>>()
-        .join(", ")
+fn format_console_args(args: &[Expr<'_>]) -> String {
+    args.iter().map(format_expr).collect::<Vec<_>>().join(", ")
 }
 
 fn format_expr_list(exprs: &[Expr<'_>]) -> String {
@@ -958,6 +975,9 @@ fn format_expr_with_prec(expr: &Expr<'_>, parent_prec: u8, right_child: bool) ->
         }
         ExprKind::Slice { source, start, end, .. } => {
             format!("{}.slice({}, {})", format_expr_with_prec(source, PREC_POSTFIX, false), format_expr(start), format_expr(end))
+        }
+        ExprKind::Append { source, args, .. } => {
+            format!("{}.append({})", format_expr_with_prec(source, PREC_POSTFIX, false), format_expr_list(args))
         }
         ExprKind::ArrayIndex { source, index } => {
             format!("{}[{}]", format_expr_with_prec(source, PREC_POSTFIX, false), format_expr(index))
@@ -1045,6 +1065,7 @@ fn expr_precedence(kind: &ExprKind<'_>) -> u8 {
         | ExprKind::New { .. }
         | ExprKind::Split { .. }
         | ExprKind::Slice { .. }
+        | ExprKind::Append { .. }
         | ExprKind::ArrayIndex { .. }
         | ExprKind::FieldAccess { .. }
         | ExprKind::UnarySuffix { .. }
@@ -1172,7 +1193,13 @@ fn parse_type_name_pair(pair: Pair<'_, Rule>) -> Result<TypeRef, CompilerError> 
             Some(size_pair) => match size_pair.as_rule() {
                 Rule::array_size => {
                     let raw = size_pair.as_str().trim();
-                    if let Ok(size) = raw.parse::<usize>() { ArrayDim::Fixed(size) } else { ArrayDim::Constant(raw.to_string()) }
+                    if raw == "_" {
+                        ArrayDim::Inferred
+                    } else if let Ok(size) = raw.parse::<usize>() {
+                        ArrayDim::Fixed(size)
+                    } else {
+                        ArrayDim::Constant(raw.to_string())
+                    }
                 }
                 Rule::Identifier => ArrayDim::Constant(size_pair.as_str().to_string()),
                 _ => return Err(CompilerError::Unsupported("invalid array dimension".to_string())),
@@ -1187,18 +1214,55 @@ fn parse_type_name_pair(pair: Pair<'_, Rule>) -> Result<TypeRef, CompilerError> 
 pub fn parse_contract_ast<'i>(source: &'i str) -> Result<ContractAst<'i>, CompilerError> {
     let mut pairs = parse_source_file(source)?;
     let source_pair = pairs.next().ok_or_else(|| CompilerError::Unsupported("empty source".to_string()))?;
+    let mut pragma = None;
     let mut contract = None;
 
     for pair in source_pair.into_inner() {
-        if pair.as_rule() == Rule::contract_definition {
-            contract = Some(parse_contract_definition(pair)?);
+        match pair.as_rule() {
+            Rule::pragma_directive => {
+                if pragma.is_some() {
+                    let span = Span::from(pair.as_span());
+                    return Err(
+                        CompilerError::Unsupported("multiple pragma directives are not supported".to_string()).with_span(&span)
+                    );
+                }
+                pragma = Some(parse_pragma_directive(pair)?);
+            }
+            Rule::contract_definition => contract = Some(parse_contract_definition(pair, pragma.clone())?),
+            _ => {}
         }
     }
 
     contract.ok_or_else(|| CompilerError::Unsupported("no contract definition".to_string()))
 }
 
-fn parse_contract_definition<'i>(pair: Pair<'i, Rule>) -> Result<ContractAst<'i>, CompilerError> {
+pub fn parse_expression_ast<'i>(source: &'i str) -> Result<Expr<'i>, CompilerError> {
+    let mut pairs = parse_expression_rule(source)?;
+    let expr_pair = pairs.next().ok_or_else(|| CompilerError::Unsupported("empty expression".to_string()))?;
+    let span = expr_pair.as_span();
+    if !source[..span.start()].trim().is_empty() || !source[span.end()..].trim().is_empty() {
+        return Err(CompilerError::Unsupported("unexpected trailing tokens in expression".to_string()));
+    }
+    parse_expression(expr_pair)
+}
+
+fn parse_pragma_directive<'i>(pair: Pair<'i, Rule>) -> Result<PragmaDirectiveAst<'i>, CompilerError> {
+    let span = Span::from(pair.as_span());
+    let mut inner = pair.into_inner();
+    let name_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing pragma name".to_string()))?;
+    let name_span = Span::from(name_pair.as_span());
+    let name = name_pair.as_str().to_string();
+    let value_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing pragma value".to_string()))?;
+    let value_span = Span::from(value_pair.as_span());
+    let value = value_pair.as_str().trim().to_string();
+
+    Ok(PragmaDirectiveAst { name, value, span, name_span, value_span })
+}
+
+fn parse_contract_definition<'i>(
+    pair: Pair<'i, Rule>,
+    pragma: Option<PragmaDirectiveAst<'i>>,
+) -> Result<ContractAst<'i>, CompilerError> {
     let span = Span::from(pair.as_span());
 
     let mut inner = pair.into_inner();
@@ -1229,7 +1293,7 @@ fn parse_contract_definition<'i>(pair: Pair<'i, Rule>) -> Result<ContractAst<'i>
         }
     }
 
-    Ok(ContractAst { name, params, structs, fields, constants, functions, span, name_span })
+    Ok(ContractAst { pragma, name, params, structs, fields, constants, functions, span, name_span })
 }
 
 fn parse_struct_definition<'i>(pair: Pair<'i, Rule>) -> Result<StructAst<'i>, CompilerError> {
@@ -1485,15 +1549,6 @@ fn parse_statement<'i>(pair: Pair<'i, Rule>) -> Result<Statement<'i>, CompilerEr
                 right_name_span,
             })
         }
-        Rule::push_statement => {
-            let mut inner = pair.into_inner();
-            let ident = inner.next().ok_or_else(|| CompilerError::Unsupported("missing push target".to_string()).with_span(&span))?;
-            let expr_pair =
-                inner.next().ok_or_else(|| CompilerError::Unsupported("missing push expression".to_string()).with_span(&span))?;
-            let Identifier { name, span: name_span } = parse_identifier(ident).map_err(|err| err.with_span(&span))?;
-            let expr = parse_expression(expr_pair).map_err(|err| err.with_span(&span))?;
-            Ok(Statement::ArrayPush { name, expr, span, name_span })
-        }
         Rule::function_call_assignment => {
             let mut inner = pair.into_inner();
             let mut bindings = Vec::new();
@@ -1563,9 +1618,12 @@ fn parse_statement<'i>(pair: Pair<'i, Rule>) -> Result<Statement<'i>, CompilerEr
         }
         Rule::return_statement => {
             let mut inner = pair.into_inner();
-            let list_pair =
+            let value_pair =
                 inner.next().ok_or_else(|| CompilerError::Unsupported("missing return values".to_string()).with_span(&span))?;
-            let exprs = parse_expression_list(list_pair).map_err(|err| err.with_span(&span))?;
+            let exprs = match value_pair.as_rule() {
+                Rule::expression_list => parse_expression_list(value_pair).map_err(|err| err.with_span(&span))?,
+                _ => vec![parse_expression(value_pair).map_err(|err| err.with_span(&span))?],
+            };
             Ok(Statement::Return { exprs, span })
         }
         Rule::time_op_statement => {
@@ -1596,6 +1654,10 @@ fn parse_statement<'i>(pair: Pair<'i, Rule>) -> Result<Statement<'i>, CompilerEr
             let expr = parse_expression(expr_pair).map_err(|err| err.with_span(&span))?;
             let (message, message_span) = message.unzip();
             Ok(Statement::Require { expr, message, span, message_span })
+        }
+        Rule::braced_block => {
+            let (body, block_span) = parse_block(pair).map_err(|err| err.with_span(&span))?;
+            Ok(Statement::Block { body, span: block_span })
         }
         Rule::if_statement => {
             let mut inner = pair.into_inner();
@@ -1658,6 +1720,11 @@ fn parse_block<'i>(pair: Pair<'i, Rule>) -> Result<(Vec<Statement<'i>>, Span<'i>
     let span = Span::from(pair.as_span());
     match pair.as_rule() {
         Rule::block => {
+            let inner =
+                pair.into_inner().next().ok_or_else(|| CompilerError::Unsupported("empty block".to_string()).with_span(&span))?;
+            parse_block(inner)
+        }
+        Rule::braced_block => {
             let mut statements = Vec::new();
             let mut block_span: Option<Span<'i>> = None;
             for stmt_pair in pair.into_inner() {
@@ -1679,19 +1746,11 @@ fn parse_block<'i>(pair: Pair<'i, Rule>) -> Result<(Vec<Statement<'i>>, Span<'i>
     }
 }
 
-fn parse_console_parameter_list<'i>(pair: Pair<'i, Rule>) -> Result<Vec<ConsoleArg<'i>>, CompilerError> {
+fn parse_console_parameter_list<'i>(pair: Pair<'i, Rule>) -> Result<Vec<Expr<'i>>, CompilerError> {
     let mut args = Vec::new();
 
     for param in pair.into_inner() {
-        let value = if param.as_rule() == Rule::console_parameter { single_inner(param)? } else { param };
-        match value.as_rule() {
-            Rule::Identifier => {
-                let Identifier { name, span } = parse_identifier(value)?;
-                args.push(ConsoleArg::Identifier(name, span));
-            }
-            Rule::literal => args.push(ConsoleArg::Literal(parse_literal(single_inner(value)?)?)),
-            _ => return Err(CompilerError::Unsupported("console.log arguments not supported".to_string())),
-        }
+        args.push(parse_expression(param)?);
     }
     Ok(args)
 }
@@ -1767,6 +1826,7 @@ fn parse_expression<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError>
         Rule::cast => parse_cast(pair),
         Rule::state_object => parse_state_object(pair),
         Rule::field_access
+        | Rule::append_call
         | Rule::split_call
         | Rule::slice_call
         | Rule::tuple_index
@@ -1826,6 +1886,19 @@ fn parse_postfix<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {
                 let span = expr.span.join(&postfix_span);
                 expr = Expr::new(ExprKind::Slice { source: Box::new(expr), start, end, span: postfix_span }, span);
             }
+            Rule::append_call => {
+                let mut append_inner = postfix.into_inner();
+                let list_pair =
+                    append_inner.next().ok_or_else(|| CompilerError::Unsupported("missing append expressions".to_string()))?;
+                let args = parse_expression_list(list_pair)?;
+                if args.is_empty() {
+                    return Err(
+                        CompilerError::Unsupported("append requires at least one expression".to_string()).with_span(&postfix_span)
+                    );
+                }
+                let span = expr.span.join(&postfix_span);
+                expr = Expr::new(ExprKind::Append { source: Box::new(expr), args, span: postfix_span }, span);
+            }
             Rule::tuple_index => {
                 let mut index_inner = postfix.into_inner();
                 let index_pair = index_inner.next().ok_or_else(|| CompilerError::Unsupported("missing tuple index".to_string()))?;
@@ -1879,6 +1952,7 @@ fn expr_root_identifier(expr: &Expr<'_>) -> Option<String> {
     match &expr.kind {
         ExprKind::Identifier(name) => Some(name.clone()),
         ExprKind::FieldAccess { source, .. }
+        | ExprKind::Append { source, .. }
         | ExprKind::ArrayIndex { source, .. }
         | ExprKind::UnarySuffix { source, .. }
         | ExprKind::Split { source, .. }
@@ -1913,12 +1987,19 @@ fn parse_return_type_list<'i>(pair: Pair<'i, Rule>) -> Result<(Vec<TypeRef>, Vec
     let mut return_types = Vec::new();
     let mut return_spans = Vec::new();
     for user_type in pair.into_inner() {
-        if user_type.as_rule() != Rule::type_name {
-            continue;
+        match user_type.as_rule() {
+            Rule::type_name => {
+                let type_span = Span::from(user_type.as_span());
+                return_types.push(parse_type_name_pair(user_type)?);
+                return_spans.push(type_span);
+            }
+            Rule::return_type_list => {
+                let (nested_types, nested_spans) = parse_return_type_list(user_type)?;
+                return_types.extend(nested_types);
+                return_spans.extend(nested_spans);
+            }
+            _ => {}
         }
-        let type_span = Span::from(user_type.as_span());
-        return_types.push(parse_type_name_pair(user_type)?);
-        return_spans.push(type_span);
     }
     Ok((return_types, return_spans))
 }
@@ -2088,15 +2169,8 @@ fn parse_cast<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {
         return Ok(Expr::new(ExprKind::Call { name: type_name, args, name_span: type_span }, span));
     }
 
-    // Handle single byte cast (duplicate check removed above)
-    // Support type[N] syntax
-    if let Some(bracket_pos) = type_name.find('[') {
-        if type_name.ends_with(']') {
-            let size_str = &type_name[bracket_pos + 1..type_name.len() - 1];
-            if size_str.is_empty() || size_str.parse::<usize>().is_ok() {
-                return Ok(Expr::new(ExprKind::Call { name: type_name, args, name_span: type_span }, span));
-            }
-        }
+    if parse_type_ref(&type_name).is_ok() {
+        return Ok(Expr::new(ExprKind::Call { name: type_name, args, name_span: type_span }, span));
     }
 
     Err(CompilerError::Unsupported(format!("cast type not supported: {type_name}")))
@@ -2144,7 +2218,10 @@ fn apply_number_unit<'i>(expr: Expr<'i>, unit: &str) -> Result<Expr<'i>, Compile
         "kas" => 100_000_000,
         _ => return Err(CompilerError::Unsupported(format!("number unit '{unit}' not supported"))),
     };
-    Ok(Expr::new(ExprKind::Int(value.saturating_mul(multiplier)), span))
+    let scaled = value
+        .checked_mul(multiplier)
+        .ok_or_else(|| CompilerError::InvalidLiteral(format!("number literal overflow for unit '{unit}'")))?;
+    Ok(Expr::new(ExprKind::Int(scaled), span))
 }
 
 fn parse_date_literal<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {

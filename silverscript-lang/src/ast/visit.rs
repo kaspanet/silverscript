@@ -1,6 +1,6 @@
 use super::{
-    ConsoleArg, ConstantAst, ContractAst, ContractFieldAst, Expr, ExprKind, FunctionAst, FunctionAttributeArgAst,
-    FunctionAttributeAst, ParamAst, StateBindingAst, Statement,
+    ConstantAst, ContractAst, ContractFieldAst, Expr, ExprKind, FunctionAst, FunctionAttributeArgAst, FunctionAttributeAst, ParamAst,
+    StateBindingAst, Statement,
 };
 use crate::span::Span;
 
@@ -20,7 +20,6 @@ pub enum NameKind {
     StateBinding,
     CallTarget,
     IdentifierExpr,
-    ConsoleIdentifier,
 }
 
 pub trait AstVisitorMut<'i> {
@@ -61,10 +60,6 @@ pub trait AstVisitorMut<'i> {
 
     fn visit_statement(&mut self, statement: &mut Statement<'i>) {
         walk_statement_mut(self, statement);
-    }
-
-    fn visit_console_arg(&mut self, arg: &mut ConsoleArg<'i>) {
-        walk_console_arg_mut(self, arg);
     }
 
     fn visit_expr(&mut self, expr: &mut Expr<'i>) {
@@ -199,12 +194,6 @@ pub fn walk_statement_mut<'i, V: AstVisitorMut<'i> + ?Sized>(visitor: &mut V, st
             visitor.visit_name(right_name, NameKind::AssignmentTarget);
             visitor.visit_expr(expr);
         }
-        Statement::ArrayPush { name, expr, span, name_span } => {
-            visitor.visit_span(span);
-            visitor.visit_span(name_span);
-            visitor.visit_name(name, NameKind::AssignmentTarget);
-            visitor.visit_expr(expr);
-        }
         Statement::FunctionCall { name, args, span, name_span } => {
             visitor.visit_span(span);
             visitor.visit_span(name_span);
@@ -263,6 +252,12 @@ pub fn walk_statement_mut<'i, V: AstVisitorMut<'i> + ?Sized>(visitor: &mut V, st
             }
             visitor.visit_expr(expr);
         }
+        Statement::Block { body, span } => {
+            visitor.visit_span(span);
+            for statement in body {
+                visitor.visit_statement(statement);
+            }
+        }
         Statement::If { condition, then_branch, else_branch, span, then_span, else_span } => {
             visitor.visit_span(span);
             visitor.visit_span(then_span);
@@ -300,19 +295,9 @@ pub fn walk_statement_mut<'i, V: AstVisitorMut<'i> + ?Sized>(visitor: &mut V, st
         Statement::Console { args, span } => {
             visitor.visit_span(span);
             for arg in args {
-                visitor.visit_console_arg(arg);
+                visitor.visit_expr(arg);
             }
         }
-    }
-}
-
-pub fn walk_console_arg_mut<'i, V: AstVisitorMut<'i> + ?Sized>(visitor: &mut V, arg: &mut ConsoleArg<'i>) {
-    match arg {
-        ConsoleArg::Identifier(name, span) => {
-            visitor.visit_name(name, NameKind::ConsoleIdentifier);
-            visitor.visit_span(span);
-        }
-        ConsoleArg::Literal(expr) => visitor.visit_expr(expr),
     }
 }
 
@@ -346,6 +331,13 @@ pub fn walk_expr_mut<'i, V: AstVisitorMut<'i> + ?Sized>(visitor: &mut V, expr: &
             visitor.visit_expr(source);
             visitor.visit_expr(start);
             visitor.visit_expr(end);
+        }
+        ExprKind::Append { source, args, span } => {
+            visitor.visit_span(span);
+            visitor.visit_expr(source);
+            for arg in args {
+                visitor.visit_expr(arg);
+            }
         }
         ExprKind::Unary { expr, .. } => {
             visitor.visit_expr(expr);

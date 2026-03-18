@@ -21,7 +21,7 @@ byte[2] seed=0x1234;
 entrypoint function main(int x):(int, int){
 int total=(x+LIMIT)*2;
 int[] values=[1,2,3];
-values.push(total);
+values = values.append(total);
 if(x>0&&x<LIMIT){
 require(checkSig(s,pk), "ok");
 }else{
@@ -43,7 +43,7 @@ return(total, values[0]);
     entrypoint function main(int x): (int, int) {
         int total = (x + LIMIT) * 2;
         int[] values = [1, 2, 3];
-        values.push(total);
+        values = values.append(total);
         if (x > 0 && x < LIMIT) {
             require(checkSig(s, pk), "ok");
         } else {
@@ -73,11 +73,11 @@ contract Advanced(int limit, pubkey owner) {
         (int left, int right) = compute(1 + 2 * 3);
         {balance: int current} = readState();
         int[] values = [1, 2];
-        values.push(current);
+        values = values.append(current);
         byte[] tail = this.activeScriptPubKey.slice(1, this.activeScriptPubKey.length);
         validateOutputState(0, {balance: current});
         for (i, 0, limit, limit) {
-            console.log("loop", i);
+            console.log("loop", i + current);
         }
         balance = current;
         require(this.age >= 10, "age");
@@ -114,7 +114,7 @@ fn compiled_formatted_contract_preserves_exact_ast_for_basic_contract() {
         int input = 1 + 2;
         (int left, int right) = compute(input);
         require(left < right, "ordered");
-        console.log("pair", LIMIT);
+        console.log("pair", LIMIT + input);
     }
 }
 "#;

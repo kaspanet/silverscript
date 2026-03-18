@@ -23,13 +23,27 @@ fn parses_timeops_and_console() {
         contract TimeLock(pubkey owner) {
             function unlock(sig s) {
                 require(this.age >= 10 days, "too early");
-                console.log("ok", 1, true);
+                console.log("ok", 1 + 2, checkSig(s, owner));
             }
         }
     "#;
 
     let result = parse_source_file(input);
     assert!(result.is_ok());
+}
+
+#[test]
+fn rejects_number_unit_overflow() {
+    let input = r#"
+        contract TimeLock() {
+            entrypoint function main() {
+                require(this.age >= 9223372036854775807 weeks);
+            }
+        }
+    "#;
+
+    let err = parse_contract_ast(input).expect_err("unit multiplication overflow should be rejected");
+    assert!(err.to_string().contains("overflow"), "unexpected error: {err}");
 }
 
 #[test]
@@ -204,4 +218,47 @@ fn rejects_invalid_for_arities() {
         }
     "#;
     assert!(parse_source_file(too_few_args).is_err());
+}
+
+#[test]
+fn rejects_omitting_parentheses_in_tuple_return_signature() {
+    let input = r#"
+        contract Returns() {
+            function pair() : int, int {
+                return(1, 2);
+            }
+        }
+    "#;
+
+    assert!(parse_contract_ast(input).is_err());
+}
+
+#[test]
+fn rejects_omitting_parentheses_in_tuple_return_statement() {
+    let input = r#"
+        contract Returns() {
+            function pair() : (int, int) {
+                return 1, 2;
+            }
+        }
+    "#;
+
+    assert!(parse_contract_ast(input).is_err());
+}
+
+#[test]
+fn parses_tuple_variable_declaration_without_parentheses_as_tuple_assignment_syntax() {
+    let input = r#"
+        contract Returns() {
+            function pair() : (int, int) {
+                return(1, 2);
+            }
+
+            entrypoint function main() {
+                int a, int b = pair();
+            }
+        }
+    "#;
+
+    assert!(parse_contract_ast(input).is_ok());
 }

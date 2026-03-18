@@ -1,17 +1,15 @@
 use kaspa_consensus_core::Hash;
-use kaspa_consensus_core::hashing::sighash::SigHashReusedValuesUnsync;
-use kaspa_consensus_core::tx::{
-    CovenantBinding, PopulatedTransaction, ScriptPublicKey, Transaction, TransactionId, TransactionInput, TransactionOutpoint,
-    TransactionOutput, UtxoEntry, VerifiableTransaction,
-};
-use kaspa_txscript::caches::Cache;
-use kaspa_txscript::covenants::CovenantsContext;
-use kaspa_txscript::opcodes::codes::OpTrue;
-use kaspa_txscript::script_builder::ScriptBuilder;
-use kaspa_txscript::{EngineCtx, EngineFlags, TxScriptEngine, pay_to_script_hash_script};
+use kaspa_consensus_core::tx::{Transaction, TransactionOutput, UtxoEntry};
 use kaspa_txscript_errors::TxScriptError;
 use silverscript_lang::ast::Expr;
 use silverscript_lang::compiler::{CompileOptions, CompiledContract, CovenantDeclCallOptions, compile_contract, struct_object};
+
+mod common;
+
+use common::{
+    assert_verify_like_error, covenant_decl_sigscript, covenant_output, covenant_utxo, execute_input_with_covenants,
+    plain_covenant_output, plain_utxo, push_redeem_script, tx_input,
+};
 
 const COV_A: Hash = Hash::from_bytes(*b"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
 const COV_B: Hash = Hash::from_bytes(*b"BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB");
@@ -21,9 +19,9 @@ const AUTH_SINGLETON_SOURCE: &str = r#"
         int value = init_value;
 
         #[covenant.singleton]
-        function step(State prev_state, State[] new_states) {
+        function step(State prev_state, State new_state) {
             require(prev_state.value >= 0);
-            require(new_states.length <= 1);
+            require(new_state.value >= 0);
             require(OpAuthOutputIdx(this.activeInputIndex, 0) >= 0);
         }
     }
@@ -102,9 +100,8 @@ const AUTH_SINGLETON_ARRAY_RUNTIME_SOURCE: &str = r#"
         int value = init_value;
 
         #[covenant.singleton]
-        function step(State prev_state, State[] new_states) {
-            require(new_states.length == 1);
-            require(new_states[0].value == prev_state.value + 1);
+        function step(State prev_state, State new_state) {
+            require(new_state.value == prev_state.value + 1);
             require(OpAuthOutputIdx(this.activeInputIndex, 0) >= 0);
         }
     }
@@ -138,24 +135,16 @@ fn function_param_type_names(compiled: &CompiledContract<'_>, function_name: &st
         .collect()
 }
 
-fn push_redeem_script(script: &[u8]) -> Vec<u8> {
-    ScriptBuilder::new().add_data(script).expect("push redeem script").drain()
-}
-
 fn generated_auth_entrypoint_name(function_name: &str) -> String {
     format!("__{function_name}")
 }
 
-fn covenant_decl_sigscript(compiled: &CompiledContract<'_>, function_name: &str, args: Vec<Expr<'_>>, is_leader: bool) -> Vec<u8> {
-    let mut sigscript = compiled
-        .build_sig_script_for_covenant_decl(function_name, args, CovenantDeclCallOptions { is_leader })
-        .expect("build covenant declaration sigscript");
-    sigscript.extend_from_slice(&push_redeem_script(&compiled.script));
-    sigscript
-}
-
 fn state_array_arg(values: Vec<i64>) -> Expr<'static> {
     values.into_iter().map(|value| struct_object(vec![("value", Expr::int(value))])).collect::<Vec<_>>().into()
+}
+
+fn state_arg(value: i64) -> Expr<'static> {
+    struct_object(vec![("value", Expr::int(value))])
 }
 
 fn cov_decl_nm_leader_sigscript(compiled: &CompiledContract<'_>, next_values: Vec<i64>) -> Vec<u8> {
@@ -166,68 +155,12 @@ fn redeem_only_sigscript(compiled: &CompiledContract<'_>) -> Vec<u8> {
     push_redeem_script(&compiled.script)
 }
 
-fn tx_input(index: u32, signature_script: Vec<u8>) -> TransactionInput {
-    TransactionInput {
-        previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([index as u8 + 1; 32]), index },
-        signature_script,
-        sequence: 0,
-        sig_op_count: 0,
-    }
-}
-
-fn covenant_output(compiled: &CompiledContract<'_>, authorizing_input: u16, covenant_id: Hash) -> TransactionOutput {
-    TransactionOutput {
-        value: 1_000,
-        script_public_key: pay_to_script_hash_script(&compiled.script),
-        covenant: Some(CovenantBinding { authorizing_input, covenant_id }),
-    }
-}
-
-fn plain_covenant_output(authorizing_input: u16, covenant_id: Hash) -> TransactionOutput {
-    TransactionOutput {
-        value: 1_000,
-        script_public_key: ScriptPublicKey::new(0, vec![OpTrue].into()),
-        covenant: Some(CovenantBinding { authorizing_input, covenant_id }),
-    }
-}
-
-fn covenant_utxo(compiled: &CompiledContract<'_>, covenant_id: Hash) -> UtxoEntry {
-    UtxoEntry::new(1_500, pay_to_script_hash_script(&compiled.script), 0, false, Some(covenant_id))
-}
-
-fn plain_utxo(covenant_id: Hash) -> UtxoEntry {
-    UtxoEntry::new(1_500, ScriptPublicKey::new(0, vec![OpTrue].into()), 0, false, Some(covenant_id))
-}
-
-fn execute_input_with_covenants(tx: Transaction, entries: Vec<UtxoEntry>, input_idx: usize) -> Result<(), TxScriptError> {
-    let reused_values = SigHashReusedValuesUnsync::new();
-    let sig_cache = Cache::new(10_000);
-    let input = tx.inputs[input_idx].clone();
-    let populated = PopulatedTransaction::new(&tx, entries);
-    let cov_ctx = CovenantsContext::from_tx(&populated).map_err(TxScriptError::from)?;
-    let utxo = populated.utxo(input_idx).expect("selected input utxo");
-
-    let mut vm = TxScriptEngine::from_transaction_input(
-        &populated,
-        &input,
-        input_idx,
-        utxo,
-        EngineCtx::new(&sig_cache).with_reused(&reused_values).with_covenants_ctx(&cov_ctx),
-        EngineFlags { covenants_enabled: true },
-    );
-    vm.execute()
-}
-
-fn assert_verify_like_error(err: TxScriptError) {
-    assert!(matches!(err, TxScriptError::VerifyError | TxScriptError::EvalFalse), "expected verify/eval-false, got {err:?}");
-}
-
 #[test]
 fn singleton_allows_exactly_one_authorized_output() {
     let active = compile_state(AUTH_SINGLETON_SOURCE, 10);
     let out = compile_state(AUTH_SINGLETON_SOURCE, 10);
 
-    let input0 = tx_input(0, covenant_decl_sigscript(&active, "step", vec![state_array_arg(vec![10])], false));
+    let input0 = tx_input(0, covenant_decl_sigscript(&active, "step", vec![state_arg(10)], false));
     let outputs = vec![covenant_output(&out, 0, COV_A)];
     let tx = Transaction::new(1, vec![input0], outputs, 0, Default::default(), 0, vec![]);
     let entries = vec![covenant_utxo(&active, COV_A)];
@@ -242,7 +175,7 @@ fn singleton_rejects_two_authorized_outputs_from_same_input() {
     let out0 = compile_state(AUTH_SINGLETON_SOURCE, 10);
     let out1 = compile_state(AUTH_SINGLETON_SOURCE, 10);
 
-    let input0 = tx_input(0, covenant_decl_sigscript(&active, "step", vec![state_array_arg(vec![10])], false));
+    let input0 = tx_input(0, covenant_decl_sigscript(&active, "step", vec![state_arg(10)], false));
     let outputs = vec![covenant_output(&out0, 0, COV_A), covenant_output(&out1, 0, COV_A)];
     let tx = Transaction::new(1, vec![input0], outputs, 0, Default::default(), 0, vec![]);
     let entries = vec![covenant_utxo(&active, COV_A)];
@@ -356,7 +289,7 @@ fn singleton_transition_termination_allowed_rejects_two_outputs() {
 fn singleton_missing_authorized_output_returns_invalid_auth_index_error() {
     let active = compile_state(AUTH_SINGLETON_SOURCE, 10);
 
-    let input0 = tx_input(0, covenant_decl_sigscript(&active, "step", vec![state_array_arg(vec![])], false));
+    let input0 = tx_input(0, covenant_decl_sigscript(&active, "step", vec![state_arg(10)], false));
     let tx = Transaction::new(1, vec![input0], vec![], 0, Default::default(), 0, vec![]);
     let entries = vec![covenant_utxo(&active, COV_A)];
 
@@ -519,7 +452,7 @@ fn singleton_rejects_authorized_output_with_different_script() {
     let active = compile_state(AUTH_SINGLETON_SOURCE, 10);
     let different = compile_state(AUTH_SINGLETON_SOURCE, 11);
 
-    let input0 = tx_input(0, covenant_decl_sigscript(&active, "step", vec![state_array_arg(vec![10])], false));
+    let input0 = tx_input(0, covenant_decl_sigscript(&active, "step", vec![state_arg(10)], false));
     let tx = Transaction::new(1, vec![input0], vec![covenant_output(&different, 0, COV_A)], 0, Default::default(), 0, vec![]);
     let entries = vec![covenant_utxo(&active, COV_A)];
 
@@ -578,27 +511,27 @@ fn many_to_many_transition_happy_path_succeeds() {
 }
 
 #[test]
-fn runtime_accepts_state_array_entrypoint_argument_for_generated_wrapper() {
+fn runtime_accepts_state_entrypoint_argument_for_generated_wrapper() {
     let active = compile_state(AUTH_SINGLETON_ARRAY_RUNTIME_SOURCE, 10);
     let out = compile_state(AUTH_SINGLETON_ARRAY_RUNTIME_SOURCE, 11);
 
-    let input0 = tx_input(0, covenant_decl_sigscript(&active, "step", vec![state_array_arg(vec![11])], false));
+    let input0 = tx_input(0, covenant_decl_sigscript(&active, "step", vec![state_arg(11)], false));
     let outputs = vec![covenant_output(&out, 0, COV_A)];
     let tx = Transaction::new(1, vec![input0], outputs, 0, Default::default(), 0, vec![]);
     let entries = vec![covenant_utxo(&active, COV_A)];
 
     let result = execute_input_with_covenants(tx, entries, 0);
-    assert!(result.is_ok(), "generated wrapper should accept State[] entrypoint args at runtime: {}", result.unwrap_err());
+    assert!(result.is_ok(), "generated wrapper should accept State entrypoint args at runtime: {}", result.unwrap_err());
 }
 
 #[test]
-fn runtime_passes_state_array_into_generated_policy_function() {
+fn runtime_passes_state_into_generated_policy_function() {
     let active = compile_state(AUTH_SINGLETON_ARRAY_RUNTIME_SOURCE, 10);
     let out = compile_state(AUTH_SINGLETON_ARRAY_RUNTIME_SOURCE, 11);
 
     let wrapper_name = generated_auth_entrypoint_name("step");
     let wrapper_param_types = function_param_type_names(&active, &wrapper_name);
-    assert_eq!(wrapper_param_types, vec!["State[]".to_string()]);
+    assert_eq!(wrapper_param_types, vec!["State".to_string()]);
 
     let policy = active
         .ast
@@ -608,15 +541,15 @@ fn runtime_passes_state_array_into_generated_policy_function() {
         .expect("generated covenant policy exists");
     assert!(!policy.entrypoint, "generated covenant policy must remain non-entrypoint");
     let policy_param_types: Vec<String> = policy.params.iter().map(|param| param.type_ref.type_name()).collect();
-    assert_eq!(policy_param_types, vec!["State".to_string(), "State[]".to_string()]);
+    assert_eq!(policy_param_types, vec!["State".to_string(), "State".to_string()]);
 
-    let input0 = tx_input(0, covenant_decl_sigscript(&active, "step", vec![state_array_arg(vec![12])], false));
+    let input0 = tx_input(0, covenant_decl_sigscript(&active, "step", vec![state_arg(12)], false));
     let outputs = vec![covenant_output(&out, 0, COV_A)];
     let tx = Transaction::new(1, vec![input0], outputs, 0, Default::default(), 0, vec![]);
     let entries = vec![covenant_utxo(&active, COV_A)];
 
     let err = execute_input_with_covenants(tx, entries, 0)
-        .expect_err("generated policy should reject when the State[] argument content is wrong");
+        .expect_err("generated policy should reject when the State argument content is wrong");
     assert_verify_like_error(err);
 }
 

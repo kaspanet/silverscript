@@ -2,7 +2,7 @@ use crate::ast::Expr;
 use crate::span;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct SourceSpan {
     pub line: u32,
     pub col: u32,
@@ -27,14 +27,20 @@ pub struct DebugInfoRecorder<'i> {
     steps: Vec<DebugStep<'i>>,
     params: Vec<DebugParamMapping>,
     entry_points: Vec<DebugFunctionRange>,
-    constants: Vec<DebugConstantMapping<'i>>,
+    constructor_args: Vec<DebugNamedValue<'i>>,
+    constants: Vec<DebugNamedValue<'i>>,
     next_sequence: u32,
 }
 
 impl<'i> DebugInfoRecorder<'i> {
     /// Appends one recorded step.
-    pub fn record_step(&mut self, step: DebugStep<'i>) {
+    pub fn record_step(&mut self, step: DebugStep<'i>) -> usize {
         self.steps.push(step);
+        self.steps.len().saturating_sub(1)
+    }
+
+    pub fn step_mut(&mut self, index: usize) -> Option<&mut DebugStep<'i>> {
+        self.steps.get_mut(index)
     }
 
     /// Appends one parameter stack mapping.
@@ -47,9 +53,12 @@ impl<'i> DebugInfoRecorder<'i> {
         self.entry_points.push(function);
     }
 
-    /// Appends one constructor constant mapping.
-    pub fn record_constant(&mut self, constant: DebugConstantMapping<'i>) {
-        self.constants.push(constant);
+    pub fn record_constructor_arg(&mut self, binding: DebugNamedValue<'i>) {
+        self.constructor_args.push(binding);
+    }
+
+    pub fn record_constant(&mut self, binding: DebugNamedValue<'i>) {
+        self.constants.push(binding);
     }
 
     /// Returns the next global sequence id for one emitted debug event.
@@ -70,7 +79,14 @@ impl<'i> DebugInfoRecorder<'i> {
 
     /// Builds the final serializable debug payload.
     pub fn into_debug_info(self, source: String) -> DebugInfo<'i> {
-        DebugInfo { source, steps: self.steps, params: self.params, functions: self.entry_points, constants: self.constants }
+        DebugInfo {
+            source,
+            steps: self.steps,
+            params: self.params,
+            functions: self.entry_points,
+            constructor_args: self.constructor_args,
+            constants: self.constants,
+        }
     }
 }
 
@@ -80,14 +96,26 @@ impl<'i> DebugInfoRecorder<'i> {
 pub struct DebugInfo<'i> {
     pub source: String,
     pub steps: Vec<DebugStep<'i>>,
+    #[serde(default)]
     pub params: Vec<DebugParamMapping>,
+    #[serde(default)]
     pub functions: Vec<DebugFunctionRange>,
-    pub constants: Vec<DebugConstantMapping<'i>>,
+    #[serde(default)]
+    pub constructor_args: Vec<DebugNamedValue<'i>>,
+    #[serde(default)]
+    pub constants: Vec<DebugNamedValue<'i>>,
 }
 
 impl<'i> DebugInfo<'i> {
     pub fn empty() -> Self {
-        Self { source: String::new(), steps: Vec::new(), params: Vec::new(), functions: Vec::new(), constants: Vec::new() }
+        Self {
+            source: String::new(),
+            steps: Vec::new(),
+            params: Vec::new(),
+            functions: Vec::new(),
+            constructor_args: Vec::new(),
+            constants: Vec::new(),
+        }
     }
 }
 
@@ -95,18 +123,44 @@ impl<'i> DebugInfo<'i> {
 pub struct DebugVariableUpdate<'i> {
     pub name: String,
     pub type_name: String,
+    #[serde(default)]
+    pub stack_binding: Option<DebugStackBinding>,
+    #[serde(default)]
+    pub structured_leaf_bindings: Option<Vec<DebugLeafBinding>>,
     /// Pre-resolved expression for debugger shadow evaluation.
     /// Identifiers may include inline synthetic placeholders (`__arg_*`).
     pub expr: Expr<'i>,
 }
 
-/// Maps function parameter to its stack position.
-/// Stack index is measured from stack top (0 = topmost param).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DebugStackBinding {
+    pub from_top: i64,
+    #[serde(default)]
+    pub stack_height: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DebugLeafBinding {
+    #[serde(default)]
+    pub field_path: Vec<String>,
+    pub type_name: String,
+    #[serde(default)]
+    pub stack_binding: Option<DebugStackBinding>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum DebugParamBinding {
+    SingleValue { stack_index: i64 },
+    StructuredValue { leaf_bindings: Vec<DebugLeafBinding> },
+}
+
+/// Maps one source parameter to either a single runtime slot or a lowered set of leaf slots.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DebugParamMapping {
     pub name: String,
     pub type_name: String,
-    pub stack_index: i64,
+    pub binding: DebugParamBinding,
     pub function: String,
 }
 
@@ -119,10 +173,8 @@ pub struct DebugFunctionRange {
     pub bytecode_end: usize,
 }
 
-/// Constructor constant (contract instantiation parameter).
-/// Recorded for display in debugger variable list.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DebugConstantMapping<'i> {
+pub struct DebugNamedValue<'i> {
     pub name: String,
     pub type_name: String,
     pub value: Expr<'i>,
@@ -143,6 +195,8 @@ pub struct DebugStep<'i> {
     pub frame_id: u32,
     #[serde(default)]
     pub variable_updates: Vec<DebugVariableUpdate<'i>>,
+    #[serde(default)]
+    pub console_args: Vec<Expr<'i>>,
 }
 
 impl<'i> DebugStep<'i> {
