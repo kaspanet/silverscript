@@ -3684,6 +3684,109 @@ fn runs_validate_output_state_with_template() {
 }
 
 #[test]
+fn runs_validate_output_state_with_template_using_passed_struct_layout() {
+    let target_hash_value = vec![0x44u8; 32];
+    let target_hash_hex = target_hash_value.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+
+    let target_source = format!(
+        r#"
+        contract A(byte[2] initY, int initX, byte[32] initTargetHash) {{
+            byte[2] y = initY;
+            int x = initX;
+            byte[32] targetHash = initTargetHash;
+
+            entrypoint function noop() {{
+                require(y == 0x3412);
+                require(x == 6);
+                require(targetHash == 0x{target_hash_hex});
+            }}
+        }}
+    "#
+    );
+
+    let target_a0 = compile_contract(
+        &target_source,
+        &[vec![0x55u8, 0x66u8].into(), Expr::int(0x1111_1111_1111_1111), vec![0x33u8; 32].into()],
+        CompileOptions::default(),
+    )
+    .expect("compile target succeeds");
+    let (a_prefix, a_suffix, a_template_hash) = compiled_template_parts_and_hash(&target_a0);
+
+    let target_output_compiled = compile_contract(
+        &target_source,
+        &[vec![0x34u8, 0x12u8].into(), 6.into(), target_hash_value.clone().into()],
+        CompileOptions::default(),
+    )
+    .expect("compile target output succeeds");
+    let a_prefix_hex = a_prefix.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+    let a_suffix_hex = a_suffix.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+    let a_template_hash_hex = a_template_hash.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+
+    let mux_source = format!(
+        r#"
+        contract M(int initX, byte[2] initY) {{
+            struct C {{
+                byte[2] y;
+                int x;
+                byte[32] targetHash;
+            }}
+
+            int x = initX;
+            byte[2] y = initY;
+
+            entrypoint function routeToA(byte[32] targetHash) {{
+                C next = {{
+                    y: 0x3412,
+                    x: x + 1,
+                    targetHash: targetHash
+                }};
+                validateOutputStateWithTemplate(
+                    0,
+                    next,
+                    0x{a_prefix_hex},
+                    0x{a_suffix_hex},
+                    0x{a_template_hash_hex}
+                );
+            }}
+        }}
+    "#
+    );
+
+    let mux_input_compiled = compile_contract(&mux_source, &[5.into(), vec![0x10u8, 0x20u8].into()], CompileOptions::default())
+        .expect("compile mux succeeds");
+
+    let sigscript = mux_input_compiled.build_sig_script("routeToA", vec![target_hash_value.clone().into()]).expect("sigscript builds");
+    let sigscript = pay_to_script_hash_signature_script(mux_input_compiled.script.clone(), sigscript).unwrap();
+    let input = test_input(0, sigscript);
+
+    let input_spk = pay_to_script_hash_script(&mux_input_compiled.script);
+    let output_spk = pay_to_script_hash_script(&target_output_compiled.script);
+    let output = TransactionOutput { value: 1000, script_public_key: output_spk, covenant: None };
+    let tx = Transaction::new(1, vec![input], vec![output.clone()], 0, Default::default(), 0, vec![]);
+    let utxo_entry = UtxoEntry::new(output.value, input_spk, 0, tx.is_coinbase(), None);
+
+    let result = execute_input(tx, vec![utxo_entry], 0);
+    assert!(
+        result.is_ok(),
+        "validateOutputStateWithTemplate should route into a target contract whose State matches the passed struct layout: {}",
+        result.unwrap_err()
+    );
+
+    let a_sigscript = target_output_compiled.build_sig_script("noop", vec![]).expect("A sigscript builds");
+    let a_sigscript = pay_to_script_hash_signature_script(target_output_compiled.script.clone(), a_sigscript).unwrap();
+    let a_input = test_input(0, a_sigscript);
+    let a_output = TransactionOutput { value: 1000, script_public_key: ScriptPublicKey::new(0, vec![OpTrue].into()), covenant: None };
+    let a_tx = Transaction::new(1, vec![a_input], vec![a_output], 0, Default::default(), 0, vec![]);
+    let a_utxo = UtxoEntry::new(1000, pay_to_script_hash_script(&target_output_compiled.script), 0, a_tx.is_coinbase(), None);
+    let a_result = execute_input(a_tx, vec![a_utxo], 0);
+    assert!(
+        a_result.is_ok(),
+        "target contract should observe the expected field values after routing with the passed struct layout: {}",
+        a_result.unwrap_err()
+    );
+}
+
+#[test]
 fn validate_output_state_with_template_rejects_wrong_template_hash() {
     let target_source = r#"
         contract A(byte[32] initMuxHash, byte[32] initAHash, int initX, byte[2] initY) {
@@ -4523,6 +4626,43 @@ fn rejects_validate_output_state_with_incorrect_state_variable_type() {
     let err = compile_contract(source, &[5.into(), vec![1u8, 2u8].into()], CompileOptions::default())
         .expect_err("wrong struct type should be rejected");
     assert!(err.to_string().contains("State") || err.to_string().contains("struct"), "unexpected error: {err}");
+}
+
+#[test]
+fn validate_output_state_with_template_uses_passed_struct_layout_not_local_state_layout() {
+    let source = r#"
+        contract M(int initX, byte[2] initY) {
+            struct C {
+                byte[2] y;
+                int x;
+                byte[32] targetHash;
+            }
+
+            int x = initX;
+            byte[2] y = initY;
+
+            entrypoint function route(byte[32] targetHash) {
+                C next = {
+                    y: 0x3412,
+                    x: x + 1,
+                    targetHash: targetHash
+                };
+                validateOutputStateWithTemplate(
+                    0,
+                    next,
+                    0x51,
+                    0x52,
+                    0x0000000000000000000000000000000000000000000000000000000000000000
+                );
+            }
+        }
+    "#;
+
+    let result = compile_contract(source, &[5.into(), vec![0x10u8, 0x20u8].into()], CompileOptions::default());
+    assert!(
+        result.is_ok(),
+        "validateOutputStateWithTemplate should encode the passed struct layout instead of the local State layout: {result:?}"
+    );
 }
 
 #[test]

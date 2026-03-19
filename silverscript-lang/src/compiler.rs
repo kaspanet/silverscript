@@ -293,6 +293,15 @@ fn resolve_struct_access<'i>(
     }
 }
 
+fn flattened_struct_field_specs_for_type(type_ref: &TypeRef, structs: &StructRegistry) -> Result<Vec<StructFieldSpec>, CompilerError> {
+    let mut leaves = Vec::new();
+    flatten_struct_fields(type_ref, structs, &mut Vec::new(), &mut leaves)?;
+    Ok(leaves
+        .into_iter()
+        .map(|(path, type_ref)| StructFieldSpec { name: path.last().cloned().unwrap_or_default(), type_ref })
+        .collect())
+}
+
 fn lower_expr<'i>(expr: &Expr<'i>, scope: &LoweringScope, structs: &StructRegistry) -> Result<Expr<'i>, CompilerError> {
     let span = expr.span;
     match &expr.kind {
@@ -1599,15 +1608,22 @@ fn fixed_type_size_with_constants_ref<'i>(type_ref: &TypeRef, constants: &HashMa
     Some(array_len * element_size)
 }
 
+fn fixed_state_field_payload_len_for_type_ref<'i>(
+    type_ref: &TypeRef,
+    contract_constants: &HashMap<String, Expr<'i>>,
+) -> Result<(usize, bool), CompilerError> {
+    let payload_len = fixed_type_size_with_constants_ref(type_ref, contract_constants).ok_or_else(|| {
+        CompilerError::Unsupported(format!("readInputState does not support field type {}", type_name_from_ref(type_ref)))
+    })?;
+    let decode_numeric = type_ref.array_dims.is_empty() && matches!(type_ref.base, TypeBase::Int | TypeBase::Bool);
+    Ok((payload_len, decode_numeric))
+}
+
 fn fixed_state_field_payload_len<'i>(
     field: &ContractFieldAst<'i>,
     contract_constants: &HashMap<String, Expr<'i>>,
 ) -> Result<(usize, bool), CompilerError> {
-    let payload_len = fixed_type_size_with_constants_ref(&field.type_ref, contract_constants).ok_or_else(|| {
-        CompilerError::Unsupported(format!("readInputState does not support field type {}", type_name_from_ref(&field.type_ref)))
-    })?;
-    let decode_numeric = field.type_ref.array_dims.is_empty() && matches!(field.type_ref.base, TypeBase::Int | TypeBase::Bool);
-    Ok((payload_len, decode_numeric))
+    fixed_state_field_payload_len_for_type_ref(&field.type_ref, contract_constants)
 }
 
 fn array_element_size_ref(type_ref: &TypeRef) -> Option<i64> {
@@ -2971,11 +2987,22 @@ fn compile_statement<'i>(
                 .map(|_| Vec::new());
             }
             if name == "validateOutputStateWithTemplate" {
+                let uses_local_state_layout = matches!(args.get(1).map(|arg| &arg.kind), Some(ExprKind::StateObject(_)));
+                let state_type = if let Some(state_arg) = args.get(1) {
+                    match &state_arg.kind {
+                        ExprKind::StateObject(_) => TypeRef { base: TypeBase::Custom("State".to_string()), array_dims: Vec::new() },
+                        _ => {
+                            let scope = lowering_scope_from_types(types)?;
+                            infer_struct_expr_type(state_arg, &scope, structs, contract_fields)?
+                        }
+                    }
+                } else {
+                    TypeRef { base: TypeBase::Custom("State".to_string()), array_dims: Vec::new() }
+                };
                 let lowered_args = if let Some(state_arg) = args.get(1) {
                     match &state_arg.kind {
                         ExprKind::StateObject(_) => args.to_vec(),
                         _ => {
-                            let state_type = TypeRef { base: TypeBase::Custom("State".to_string()), array_dims: Vec::new() };
                             let scope = lowering_scope_from_types(types)?;
                             let mut lowered = args.to_vec();
                             lowered[1] = lower_struct_value_to_state_object_expr(
@@ -2993,6 +3020,14 @@ fn compile_statement<'i>(
                 } else {
                     args.to_vec()
                 };
+                let layout_fields = if uses_local_state_layout {
+                    contract_fields
+                        .iter()
+                        .map(|field| StructFieldSpec { name: field.name.clone(), type_ref: field.type_ref.clone() })
+                        .collect::<Vec<_>>()
+                } else {
+                    flattened_struct_field_specs_for_type(&state_type, structs)?
+                };
                 return compile_validate_output_state_with_template_statement(
                     &lowered_args,
                     env,
@@ -3000,7 +3035,7 @@ fn compile_statement<'i>(
                     types,
                     builder,
                     options,
-                    contract_fields,
+                    &layout_fields,
                     script_size,
                     contract_constants,
                 )
@@ -3602,7 +3637,7 @@ fn compile_validate_output_state_with_template_statement(
     types: &HashMap<String, String>,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
-    contract_fields: &[ContractFieldAst<'_>],
+    layout_fields: &[StructFieldSpec],
     script_size: Option<i64>,
     contract_constants: &HashMap<String, Expr<'_>>,
 ) -> Result<(), CompilerError> {
@@ -3612,7 +3647,7 @@ fn compile_validate_output_state_with_template_statement(
                 .to_string(),
         ));
     }
-    if contract_fields.is_empty() {
+    if layout_fields.is_empty() {
         return Err(CompilerError::Unsupported("validateOutputStateWithTemplate requires contract fields".to_string()));
     }
 
@@ -3666,14 +3701,14 @@ fn compile_validate_output_state_with_template_statement(
     builder.add_op(OpBlake2b)?;
     builder.add_op(OpEqual)?;
     builder.add_op(OpVerify)?;
-    stack_depth = compile_encoded_state_object(
+    stack_depth = compile_encoded_object_with_layout(
         state_expr,
         env,
         stack_bindings,
         types,
         builder,
         options,
-        contract_fields,
+        layout_fields,
         script_size,
         contract_constants,
         "validateOutputStateWithTemplate",
@@ -3748,14 +3783,14 @@ fn compile_validate_output_state_with_template_statement(
     Ok(())
 }
 
-fn compile_encoded_state_object(
+fn compile_encoded_object_with_layout(
     state_expr: &Expr<'_>,
     env: &HashMap<String, Expr<'_>>,
     stack_bindings: &HashMap<String, i64>,
     types: &HashMap<String, String>,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
-    contract_fields: &[ContractFieldAst<'_>],
+    layout_fields: &[StructFieldSpec],
     script_size: Option<i64>,
     contract_constants: &HashMap<String, Expr<'_>>,
     builtin_name: &str,
@@ -3770,19 +3805,23 @@ fn compile_encoded_state_object(
             return Err(CompilerError::Unsupported(format!("duplicate state field '{}'", entry.name)));
         }
     }
-    if provided.len() != contract_fields.len() {
+    if provided.len() != layout_fields.len() {
         return Err(CompilerError::Unsupported("new_state must include all contract fields exactly once".to_string()));
     }
 
     let mut stack_depth = 0i64;
-    for field in contract_fields {
+    for field in layout_fields {
         let Some(new_value) = provided.remove(field.name.as_str()) else {
             return Err(CompilerError::Unsupported(format!("missing state field '{}'", field.name)));
         };
 
-        let (field_size, encode_numeric) = fixed_state_field_payload_len(field, contract_constants).map_err(|_| {
-            CompilerError::Unsupported(format!("{builtin_name} does not support field type {}", type_name_from_ref(&field.type_ref)))
-        })?;
+        let (field_size, encode_numeric) =
+            fixed_state_field_payload_len_for_type_ref(&field.type_ref, contract_constants).map_err(|_| {
+                CompilerError::Unsupported(format!(
+                    "{builtin_name} does not support field type {}",
+                    type_name_from_ref(&field.type_ref)
+                ))
+            })?;
 
         if encode_numeric {
             compile_expr(
@@ -3823,12 +3862,42 @@ fn compile_encoded_state_object(
         stack_depth -= 1;
     }
 
-    for _ in 1..contract_fields.len() {
+    for _ in 1..layout_fields.len() {
         builder.add_op(OpCat)?;
         stack_depth -= 1;
     }
 
     Ok(stack_depth)
+}
+
+fn compile_encoded_state_object(
+    state_expr: &Expr<'_>,
+    env: &HashMap<String, Expr<'_>>,
+    stack_bindings: &HashMap<String, i64>,
+    types: &HashMap<String, String>,
+    builder: &mut ScriptBuilder,
+    options: CompileOptions,
+    contract_fields: &[ContractFieldAst<'_>],
+    script_size: Option<i64>,
+    contract_constants: &HashMap<String, Expr<'_>>,
+    builtin_name: &str,
+) -> Result<i64, CompilerError> {
+    let layout_fields = contract_fields
+        .iter()
+        .map(|field| StructFieldSpec { name: field.name.clone(), type_ref: field.type_ref.clone() })
+        .collect::<Vec<_>>();
+    compile_encoded_object_with_layout(
+        state_expr,
+        env,
+        stack_bindings,
+        types,
+        builder,
+        options,
+        &layout_fields,
+        script_size,
+        contract_constants,
+        builtin_name,
+    )
 }
 
 #[derive(Debug)]
