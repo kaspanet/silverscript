@@ -3556,6 +3556,42 @@ fn compiled_template_parts_and_hash(compiled: &CompiledContract) -> (Vec<u8>, Ve
     (prefix, suffix, template_hash)
 }
 
+fn run_read_input_state_with_template_case(
+    reader_source: &str,
+    reader_constructor_args: &[Expr<'static>],
+    target_input_compiled: &CompiledContract<'_>,
+) -> Result<(), kaspa_txscript_errors::TxScriptError> {
+    run_read_input_state_with_template_case_with_input_spk(
+        reader_source,
+        reader_constructor_args,
+        target_input_compiled,
+        pay_to_script_hash_script(&target_input_compiled.script),
+    )
+}
+
+fn run_read_input_state_with_template_case_with_input_spk(
+    reader_source: &str,
+    reader_constructor_args: &[Expr<'static>],
+    target_input_compiled: &CompiledContract<'_>,
+    input1_spk: ScriptPublicKey,
+) -> Result<(), kaspa_txscript_errors::TxScriptError> {
+    let reader_compiled =
+        compile_contract(reader_source, reader_constructor_args, CompileOptions::default()).expect("compile reader succeeds");
+
+    let input0 = test_input(0, vec![]);
+    let input1 = test_input(1, sigscript_push_script(&target_input_compiled.script));
+    let output = TransactionOutput {
+        value: 1000,
+        script_public_key: ScriptPublicKey::new(0, reader_compiled.script.clone().into()),
+        covenant: None,
+    };
+    let tx = Transaction::new(1, vec![input0.clone(), input1], vec![output.clone()], 0, Default::default(), 0, vec![]);
+    let utxo0 = UtxoEntry::new(output.value, output.script_public_key.clone(), 0, tx.is_coinbase(), None);
+    let utxo1 = UtxoEntry::new(1000, input1_spk, 0, tx.is_coinbase(), None);
+
+    execute_input(tx, vec![utxo0, utxo1], 0)
+}
+
 fn run_validate_output_state_with_template_case(
     template_prefix: Vec<u8>,
     template_suffix: Vec<u8>,
@@ -4603,6 +4639,284 @@ fn runs_read_input_state_into_state_variable() {
     let utxo1 = UtxoEntry::new(1000, ScriptPublicKey::new(0, vec![OpTrue].into()), 0, tx.is_coinbase(), None);
     let result = execute_input(tx, vec![utxo0, utxo1], 0);
     assert!(result.is_ok(), "readInputState runtime failed: {}", result.unwrap_err());
+}
+
+#[test]
+fn runs_read_input_state_with_template_into_typed_struct_variable() {
+    let target_hash_value = vec![0x44u8; 32];
+    let target_hash_hex = target_hash_value.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+
+    let target_source = r#"
+        contract A(byte[2] initY, int initX, byte[32] initTargetHash) {
+            byte[2] y = initY;
+            int x = initX;
+            byte[32] targetHash = initTargetHash;
+
+            entrypoint function noop() {
+                require(true);
+            }
+        }
+    "#;
+    let target_input_compiled = compile_contract(
+        target_source,
+        &[vec![0x34u8, 0x12u8].into(), 8.into(), target_hash_value.clone().into()],
+        CompileOptions::default(),
+    )
+    .expect("compile target succeeds");
+    let (template_prefix, template_suffix, template_hash) = compiled_template_parts_and_hash(&target_input_compiled);
+
+    let reader_source = format!(
+        r#"
+        contract Reader(int initRound) {{
+            struct RemoteState {{
+                byte[2] y;
+                int x;
+                byte[32] targetHash;
+            }}
+
+            int round = initRound;
+
+            entrypoint function main() {{
+                RemoteState remote = readInputStateWithTemplate(
+                    1,
+                    {},
+                    {},
+                    0x{}
+                );
+                require(round == 5);
+                require(remote.y == 0x3412);
+                require(remote.x == 8);
+                require(remote.targetHash == 0x{target_hash_hex});
+            }}
+        }}
+    "#,
+        template_prefix.len(),
+        template_suffix.len(),
+        template_hash.iter().map(|byte| format!("{byte:02x}")).collect::<String>(),
+    );
+
+    let result = run_read_input_state_with_template_case(&reader_source, &[5.into()], &target_input_compiled);
+    assert!(
+        result.is_ok(),
+        "readInputStateWithTemplate should decode a foreign input using the passed struct layout: {}",
+        result.unwrap_err()
+    );
+}
+
+#[test]
+fn runs_read_input_state_with_template_destructuring() {
+    let target_hash_value = vec![0x55u8; 32];
+    let target_hash_hex = target_hash_value.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+
+    let target_source = r#"
+        contract A(byte[2] initY, int initX, byte[32] initTargetHash) {
+            byte[2] y = initY;
+            int x = initX;
+            byte[32] targetHash = initTargetHash;
+
+            entrypoint function noop() {
+                require(true);
+            }
+        }
+    "#;
+    let target_input_compiled = compile_contract(
+        target_source,
+        &[vec![0x78u8, 0x56u8].into(), 11.into(), target_hash_value.clone().into()],
+        CompileOptions::default(),
+    )
+    .expect("compile target succeeds");
+    let (template_prefix, template_suffix, template_hash) = compiled_template_parts_and_hash(&target_input_compiled);
+
+    let reader_source = format!(
+        r#"
+        contract Reader() {{
+            struct RemoteState {{
+                byte[2] y;
+                int x;
+                byte[32] targetHash;
+            }}
+
+            entrypoint function main() {{
+                {{y: byte[2] inY, x: int inX, targetHash: byte[32] inHash}} = readInputStateWithTemplate(
+                    1,
+                    {},
+                    {},
+                    0x{}
+                );
+                require(inY == 0x7856);
+                require(inX == 11);
+                require(inHash == 0x{target_hash_hex});
+            }}
+        }}
+    "#,
+        template_prefix.len(),
+        template_suffix.len(),
+        template_hash.iter().map(|byte| format!("{byte:02x}")).collect::<String>(),
+    );
+
+    let result = run_read_input_state_with_template_case(&reader_source, &[], &target_input_compiled);
+    assert!(result.is_ok(), "readInputStateWithTemplate destructuring should succeed: {}", result.unwrap_err());
+}
+
+#[test]
+fn read_input_state_with_template_rejects_wrong_template_hash() {
+    let target_source = r#"
+        contract A(byte[2] initY, int initX) {
+            byte[2] y = initY;
+            int x = initX;
+
+            entrypoint function noop() {
+                require(true);
+            }
+        }
+    "#;
+    let target_input_compiled = compile_contract(target_source, &[vec![0x34u8, 0x12u8].into(), 8.into()], CompileOptions::default())
+        .expect("compile target succeeds");
+    let (template_prefix, template_suffix, mut template_hash) = compiled_template_parts_and_hash(&target_input_compiled);
+    template_hash[0] ^= 0x01;
+
+    let reader_source = format!(
+        r#"
+        contract Reader() {{
+            struct RemoteState {{
+                byte[2] y;
+                int x;
+            }}
+
+            entrypoint function main() {{
+                RemoteState remote = readInputStateWithTemplate(
+                    1,
+                    {},
+                    {},
+                    0x{}
+                );
+                require(remote.y == 0x3412);
+                require(remote.x == 8);
+            }}
+        }}
+    "#,
+        template_prefix.len(),
+        template_suffix.len(),
+        template_hash.iter().map(|byte| format!("{byte:02x}")).collect::<String>(),
+    );
+
+    let result = run_read_input_state_with_template_case(&reader_source, &[], &target_input_compiled);
+    assert!(result.is_err(), "wrong template hash should fail at runtime");
+}
+
+#[test]
+fn read_input_state_with_template_rejects_wrong_template_sizes() {
+    let target_source = r#"
+        contract A(byte[2] initY, int initX) {
+            byte[2] y = initY;
+            int x = initX;
+
+            entrypoint function noop() {
+                require(true);
+            }
+        }
+    "#;
+    let target_input_compiled = compile_contract(target_source, &[vec![0x34u8, 0x12u8].into(), 8.into()], CompileOptions::default())
+        .expect("compile target succeeds");
+    let (template_prefix, template_suffix, template_hash) = compiled_template_parts_and_hash(&target_input_compiled);
+    let wrong_prefix_len = template_prefix.len() + 1;
+
+    let reader_source = format!(
+        r#"
+        contract Reader() {{
+            struct RemoteState {{
+                byte[2] y;
+                int x;
+            }}
+
+            entrypoint function main() {{
+                RemoteState remote = readInputStateWithTemplate(
+                    1,
+                    {},
+                    {},
+                    0x{}
+                );
+                require(remote.y == 0x3412);
+                require(remote.x == 8);
+            }}
+        }}
+    "#,
+        wrong_prefix_len,
+        template_suffix.len(),
+        template_hash.iter().map(|byte| format!("{byte:02x}")).collect::<String>(),
+    );
+
+    let result = run_read_input_state_with_template_case(&reader_source, &[], &target_input_compiled);
+    assert!(result.is_err(), "wrong template sizes should fail at runtime");
+}
+
+#[test]
+fn read_input_state_with_template_rejects_input_with_wrong_p2sh_commitment() {
+    let target_source = r#"
+        contract A(byte[2] initY, int initX) {
+            byte[2] y = initY;
+            int x = initX;
+
+            entrypoint function noop() {
+                require(true);
+            }
+        }
+    "#;
+    let target_input_compiled = compile_contract(target_source, &[vec![0x34u8, 0x12u8].into(), 8.into()], CompileOptions::default())
+        .expect("compile target succeeds");
+    let (template_prefix, template_suffix, template_hash) = compiled_template_parts_and_hash(&target_input_compiled);
+
+    let reader_source = format!(
+        r#"
+        contract Reader() {{
+            struct RemoteState {{
+                byte[2] y;
+                int x;
+            }}
+
+            entrypoint function main() {{
+                RemoteState remote = readInputStateWithTemplate(
+                    1,
+                    {},
+                    {},
+                    0x{}
+                );
+                require(remote.y == 0x3412);
+                require(remote.x == 8);
+            }}
+        }}
+    "#,
+        template_prefix.len(),
+        template_suffix.len(),
+        template_hash.iter().map(|byte| format!("{byte:02x}")).collect::<String>(),
+    );
+
+    let wrong_input_spk = pay_to_script_hash_script(&[OpTrue]);
+    let result = run_read_input_state_with_template_case_with_input_spk(&reader_source, &[], &target_input_compiled, wrong_input_spk);
+    assert!(result.is_err(), "wrong foreign input P2SH commitment should fail at runtime");
+}
+
+#[test]
+fn rejects_read_input_state_with_template_outside_direct_binding() {
+    let source = r#"
+        contract Reader() {
+            struct RemoteState {
+                int x;
+            }
+
+            function check(RemoteState remote) {
+                require(remote.x > 0);
+            }
+
+            entrypoint function main(int prefixLen, int suffixLen, byte[32] templateHash) {
+                check(readInputStateWithTemplate(1, prefixLen, suffixLen, templateHash));
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default())
+        .expect_err("readInputStateWithTemplate should be rejected outside direct struct bindings");
+    assert!(err.to_string().contains("must be assigned to a struct variable or destructured directly"), "unexpected error: {err}");
 }
 
 #[test]

@@ -302,6 +302,29 @@ fn flattened_struct_field_specs_for_type(type_ref: &TypeRef, structs: &StructReg
         .collect())
 }
 
+fn binary_expr<'i>(op: BinaryOp, left: Expr<'i>, right: Expr<'i>) -> Expr<'i> {
+    Expr::new(ExprKind::Binary { op, left: Box::new(left), right: Box::new(right) }, span::Span::default())
+}
+
+fn input_sigscript_base_expr<'i>(input_idx: &Expr<'i>, script_size_expr: Expr<'i>) -> Expr<'i> {
+    binary_expr(BinaryOp::Sub, Expr::call("OpTxInputScriptSigLen", vec![input_idx.clone()]), script_size_expr)
+}
+
+fn input_sigscript_substr_expr<'i>(input_idx: &Expr<'i>, start: Expr<'i>, end: Expr<'i>) -> Expr<'i> {
+    Expr::call("OpTxInputScriptSigSubstr", vec![input_idx.clone(), start, end])
+}
+
+fn input_script_pubkey_expr<'i>(input_idx: &Expr<'i>) -> Expr<'i> {
+    Expr::new(
+        ExprKind::Introspection {
+            kind: IntrospectionKind::InputScriptPubKey,
+            index: Box::new(input_idx.clone()),
+            field_span: span::Span::default(),
+        },
+        span::Span::default(),
+    )
+}
+
 fn lower_expr<'i>(expr: &Expr<'i>, scope: &LoweringScope, structs: &StructRegistry) -> Result<Expr<'i>, CompilerError> {
     let span = expr.span;
     match &expr.kind {
@@ -474,6 +497,44 @@ fn read_input_state_field_expr_symbolic<'i>(
     if decode_numeric { Ok(Expr::call("OpBin2Num", vec![substr])) } else { Ok(substr) }
 }
 
+fn read_input_state_with_template_values<'i>(
+    args: &[Expr<'i>],
+    expected_type: &TypeRef,
+    structs: &StructRegistry,
+    contract_constants: &HashMap<String, Expr<'i>>,
+) -> Result<Vec<Expr<'i>>, CompilerError> {
+    if args.len() != 4 {
+        return Err(CompilerError::Unsupported(
+            "readInputStateWithTemplate(input_idx, template_prefix_len, template_suffix_len, expected_template_hash) expects 4 arguments"
+                .to_string(),
+        ));
+    }
+
+    let layout_fields = flattened_struct_field_specs_for_type(expected_type, structs)?;
+    if layout_fields.is_empty() {
+        return Err(CompilerError::Unsupported("readInputStateWithTemplate requires a struct type".to_string()));
+    }
+
+    let script_size_expr = templated_input_script_size_expr(&args[1], &args[2], &layout_fields, contract_constants)?;
+    let state_start_offset_expr = args[1].clone();
+    let input_idx = &args[0];
+    let mut field_chunk_offset = 0usize;
+    let mut lowered = Vec::with_capacity(layout_fields.len());
+    for field in &layout_fields {
+        lowered.push(read_input_state_field_expr_with_type(
+            input_idx,
+            &field.type_ref,
+            state_start_offset_expr.clone(),
+            field_chunk_offset,
+            script_size_expr.clone(),
+            contract_constants,
+            "readInputStateWithTemplate",
+        )?);
+        field_chunk_offset += encoded_field_chunk_size_for_type_ref(&field.type_ref, contract_constants)?;
+    }
+    Ok(lowered)
+}
+
 fn lower_struct_value_to_state_object_expr<'i>(
     expr: &Expr<'i>,
     expected_type: &TypeRef,
@@ -537,6 +598,9 @@ fn lower_struct_value_expr<'i>(
             }
             Ok(lowered)
         }
+        ExprKind::Call { name, .. } if name == "readInputStateWithTemplate" => Err(CompilerError::Unsupported(
+            "readInputStateWithTemplate must be assigned to a struct variable or destructured directly".to_string(),
+        )),
         ExprKind::Identifier(_) | ExprKind::FieldAccess { .. } => {
             let (base, path, actual_type) = resolve_struct_access(expr, scope, structs)?;
             let actual_struct_name = struct_name_from_type_ref(&actual_type, structs)
@@ -667,6 +731,9 @@ fn infer_struct_expr_type<'i>(
             }
             Ok(TypeRef { base: TypeBase::Custom("State".to_string()), array_dims: Vec::new() })
         }
+        ExprKind::Call { name, .. } if name == "readInputStateWithTemplate" => Err(CompilerError::Unsupported(
+            "readInputStateWithTemplate must be assigned to a struct variable or destructured directly".to_string(),
+        )),
         _ => Err(CompilerError::Unsupported("struct destructuring requires a struct value".to_string())),
     }
 }
@@ -1455,6 +1522,18 @@ fn store_struct_binding<'i>(
 ) -> Result<(), CompilerError> {
     let lowered_values =
         lower_runtime_struct_expr(expr, type_ref, types, structs, contract_fields, contract_constants, contract_field_prefix_len)?;
+    store_struct_binding_from_lowered_values(name, type_ref, lowered_values, env, types, structs, is_assignment)
+}
+
+fn store_struct_binding_from_lowered_values<'i>(
+    name: &str,
+    type_ref: &TypeRef,
+    lowered_values: Vec<Expr<'i>>,
+    env: &mut HashMap<String, Expr<'i>>,
+    types: &mut HashMap<String, String>,
+    structs: &StructRegistry,
+    is_assignment: bool,
+) -> Result<(), CompilerError> {
     let leaf_bindings = flatten_type_ref_leaves(type_ref, structs)?;
     let original_env = env.clone();
     let mut pending = Vec::with_capacity(leaf_bindings.len());
@@ -2565,6 +2644,38 @@ fn compile_statement<'i>(
             if struct_name_from_type_ref(type_ref, structs).is_some() {
                 let expr =
                     expr.as_ref().ok_or_else(|| CompilerError::Unsupported("variable definition requires initializer".to_string()))?;
+                if let ExprKind::Call { name: builtin_name, args, .. } = &expr.kind
+                    && builtin_name == "readInputStateWithTemplate"
+                {
+                    let lowered_values = read_input_state_with_template_values(args, type_ref, structs, contract_constants)?;
+                    let layout_fields = flattened_struct_field_specs_for_type(type_ref, structs)?;
+                    compile_read_input_state_with_template_validation(
+                        args,
+                        env,
+                        stack_bindings,
+                        types,
+                        builder,
+                        options,
+                        &layout_fields,
+                        script_size,
+                        contract_constants,
+                    )?;
+                    store_struct_binding_from_lowered_values(name, type_ref, lowered_values, env, types, structs, false)?;
+                    return push_struct_leaf_stack_bindings(
+                        name,
+                        type_ref,
+                        env,
+                        assigned_names,
+                        identifier_uses,
+                        types,
+                        stack_bindings,
+                        builder,
+                        options,
+                        structs,
+                        script_size,
+                        contract_constants,
+                    );
+                }
                 store_struct_binding(
                     name,
                     type_ref,
@@ -3092,21 +3203,26 @@ fn compile_statement<'i>(
             Ok(Vec::new())
         }
         Statement::StateFunctionCallAssign { bindings, name, args, .. } => {
-            if name == "readInputState" {
+            if name == "readInputState" || name == "readInputStateWithTemplate" {
                 return compile_read_input_state_statement(
                     bindings,
+                    name,
                     args,
                     env,
+                    stack_bindings,
                     types,
+                    builder,
+                    options,
                     contract_fields,
                     contract_field_prefix_len,
                     script_size,
                     contract_constants,
+                    structs,
                 )
                 .map(|_| Vec::new());
             }
             Err(CompilerError::Unsupported(format!(
-                "state destructuring assignment is only supported for readInputState(), got '{}()'",
+                "state destructuring assignment is only supported for readInputState()/readInputStateWithTemplate(), got '{}()'",
                 name
             )))
         }
@@ -3317,6 +3433,39 @@ fn compile_statement<'i>(
                 if struct_name_from_type_ref(&expected_type_ref, structs).is_some()
                     || struct_array_name_from_type_ref(&expected_type_ref, structs).is_some()
                 {
+                    if let ExprKind::Call { name: builtin_name, args, .. } = &expr.kind
+                        && builtin_name == "readInputStateWithTemplate"
+                    {
+                        if struct_array_name_from_type_ref(&expected_type_ref, structs).is_some() {
+                            return Err(CompilerError::Unsupported(
+                                "readInputStateWithTemplate does not support struct array assignments".to_string(),
+                            ));
+                        }
+                        let lowered_values =
+                            read_input_state_with_template_values(args, &expected_type_ref, structs, contract_constants)?;
+                        let layout_fields = flattened_struct_field_specs_for_type(&expected_type_ref, structs)?;
+                        compile_read_input_state_with_template_validation(
+                            args,
+                            env,
+                            stack_bindings,
+                            types,
+                            builder,
+                            options,
+                            &layout_fields,
+                            script_size,
+                            contract_constants,
+                        )?;
+                        return store_struct_binding_from_lowered_values(
+                            name,
+                            &expected_type_ref,
+                            lowered_values,
+                            env,
+                            types,
+                            structs,
+                            true,
+                        )
+                        .map(|_| Vec::new());
+                    }
                     return store_struct_binding(
                         name,
                         &expected_type_ref,
@@ -3386,11 +3535,28 @@ fn encoded_field_chunk_size<'i>(
     Ok(data_prefix(payload_size).len() + payload_size)
 }
 
+fn encoded_field_chunk_size_for_type_ref<'i>(
+    type_ref: &TypeRef,
+    contract_constants: &HashMap<String, Expr<'i>>,
+) -> Result<usize, CompilerError> {
+    let (payload_size, _) = fixed_state_field_payload_len_for_type_ref(type_ref, contract_constants)?;
+    Ok(data_prefix(payload_size).len() + payload_size)
+}
+
 fn encoded_state_len<'i>(
     contract_fields: &[ContractFieldAst<'i>],
     contract_constants: &HashMap<String, Expr<'i>>,
 ) -> Result<usize, CompilerError> {
     contract_fields.iter().try_fold(0usize, |acc, field| Ok(acc + encoded_field_chunk_size(field, contract_constants)?))
+}
+
+fn encoded_state_len_for_layout_fields<'i>(
+    layout_fields: &[StructFieldSpec],
+    contract_constants: &HashMap<String, Expr<'i>>,
+) -> Result<usize, CompilerError> {
+    layout_fields
+        .iter()
+        .try_fold(0usize, |acc, field| Ok(acc + encoded_field_chunk_size_for_type_ref(&field.type_ref, contract_constants)?))
 }
 
 fn state_start_offset<'i>(
@@ -3402,6 +3568,20 @@ fn state_start_offset<'i>(
     contract_field_prefix_len
         .checked_sub(total_state_len)
         .ok_or_else(|| CompilerError::Unsupported("state offset underflow".to_string()))
+}
+
+fn templated_input_script_size_expr<'i>(
+    template_prefix_len: &Expr<'i>,
+    template_suffix_len: &Expr<'i>,
+    layout_fields: &[StructFieldSpec],
+    contract_constants: &HashMap<String, Expr<'i>>,
+) -> Result<Expr<'i>, CompilerError> {
+    let total_state_len = encoded_state_len_for_layout_fields(layout_fields, contract_constants)?;
+    Ok(binary_expr(
+        BinaryOp::Add,
+        binary_expr(BinaryOp::Add, template_prefix_len.clone(), Expr::int(total_state_len as i64)),
+        template_suffix_len.clone(),
+    ))
 }
 
 fn read_input_state_binding_expr<'i>(
@@ -3436,67 +3616,326 @@ fn read_input_state_binding_expr<'i>(
     if decode_numeric { Ok(Expr::call("OpBin2Num", vec![substr])) } else { Ok(substr) }
 }
 
+fn read_input_state_field_expr_with_type<'i>(
+    input_idx: &Expr<'i>,
+    field_type: &TypeRef,
+    state_start_offset_expr: Expr<'i>,
+    field_chunk_offset: usize,
+    script_size_expr: Expr<'i>,
+    contract_constants: &HashMap<String, Expr<'i>>,
+    builtin_name: &str,
+) -> Result<Expr<'i>, CompilerError> {
+    let (field_payload_len, decode_numeric) =
+        fixed_state_field_payload_len_for_type_ref(field_type, contract_constants).map_err(|_| {
+            CompilerError::Unsupported(format!("{builtin_name} does not support field type {}", type_name_from_ref(field_type)))
+        })?;
+    let field_payload_offset = binary_expr(
+        BinaryOp::Add,
+        state_start_offset_expr,
+        Expr::int((field_chunk_offset + data_prefix(field_payload_len).len()) as i64),
+    );
+    let start = binary_expr(BinaryOp::Add, input_sigscript_base_expr(input_idx, script_size_expr), field_payload_offset);
+    let end = binary_expr(BinaryOp::Add, start.clone(), Expr::int(field_payload_len as i64));
+    let substr = input_sigscript_substr_expr(input_idx, start, end);
+
+    if decode_numeric { Ok(Expr::call("OpBin2Num", vec![substr])) } else { Ok(substr) }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn compile_read_input_state_statement<'i>(
     bindings: &[StateBindingAst<'i>],
+    name: &str,
     args: &[Expr<'i>],
     env: &mut HashMap<String, Expr<'i>>,
+    stack_bindings: &HashMap<String, i64>,
     types: &mut HashMap<String, String>,
+    builder: &mut ScriptBuilder,
+    options: CompileOptions,
     contract_fields: &[ContractFieldAst<'i>],
     contract_field_prefix_len: usize,
     script_size: Option<i64>,
     contract_constants: &HashMap<String, Expr<'i>>,
+    structs: &StructRegistry,
 ) -> Result<(), CompilerError> {
-    if args.len() != 1 {
-        return Err(CompilerError::Unsupported("readInputState(input_idx) expects 1 argument".to_string()));
-    }
-    if contract_fields.is_empty() {
-        return Err(CompilerError::Unsupported("readInputState requires contract fields".to_string()));
-    }
-    let script_size_value =
-        script_size.ok_or_else(|| CompilerError::Unsupported("readInputState requires this.scriptSize".to_string()))?;
-
     let mut bindings_by_field: HashMap<&str, &StateBindingAst<'i>> = HashMap::new();
     for binding in bindings {
         if bindings_by_field.insert(binding.field_name.as_str(), binding).is_some() {
             return Err(CompilerError::Unsupported(format!("duplicate state field '{}'", binding.field_name)));
         }
     }
-    if bindings_by_field.len() != contract_fields.len() {
-        return Err(CompilerError::Unsupported("readInputState bindings must include all contract fields exactly once".to_string()));
-    }
+    match name {
+        "readInputState" => {
+            if args.len() != 1 {
+                return Err(CompilerError::Unsupported("readInputState(input_idx) expects 1 argument".to_string()));
+            }
+            if contract_fields.is_empty() {
+                return Err(CompilerError::Unsupported("readInputState requires contract fields".to_string()));
+            }
+            if bindings_by_field.len() != contract_fields.len() {
+                return Err(CompilerError::Unsupported(
+                    "readInputState bindings must include all contract fields exactly once".to_string(),
+                ));
+            }
 
-    let total_state_len = encoded_state_len(contract_fields, contract_constants)?;
-    let state_start_offset = contract_field_prefix_len
-        .checked_sub(total_state_len)
-        .ok_or_else(|| CompilerError::Unsupported("readInputState state offset underflow".to_string()))?;
+            let script_size_value =
+                script_size.ok_or_else(|| CompilerError::Unsupported("readInputState requires this.scriptSize".to_string()))?;
+            let total_state_len = encoded_state_len(contract_fields, contract_constants)?;
+            let state_start_offset = contract_field_prefix_len
+                .checked_sub(total_state_len)
+                .ok_or_else(|| CompilerError::Unsupported("readInputState state offset underflow".to_string()))?;
 
-    let input_idx = args[0].clone();
-    let mut field_chunk_offset = 0usize;
+            let input_idx = args[0].clone();
+            let mut field_chunk_offset = 0usize;
+            for field in contract_fields {
+                let binding = bindings_by_field.get(field.name.as_str()).ok_or_else(|| {
+                    CompilerError::Unsupported("readInputState bindings must include all contract fields exactly once".to_string())
+                })?;
 
-    for field in contract_fields {
-        let binding = bindings_by_field.get(field.name.as_str()).ok_or_else(|| {
-            CompilerError::Unsupported("readInputState bindings must include all contract fields exactly once".to_string())
-        })?;
+                let binding_type = type_name_from_ref(&binding.type_ref);
+                let field_type = type_name_from_ref(&field.type_ref);
+                if binding_type != field_type {
+                    return Err(CompilerError::Unsupported(format!(
+                        "readInputState binding '{}' expects {}",
+                        binding.name, field_type
+                    )));
+                }
 
-        let binding_type = type_name_from_ref(&binding.type_ref);
-        let field_type = type_name_from_ref(&field.type_ref);
-        if binding_type != field_type {
-            return Err(CompilerError::Unsupported(format!("readInputState binding '{}' expects {}", binding.name, field_type)));
+                let binding_expr = read_input_state_binding_expr(
+                    &input_idx,
+                    field,
+                    state_start_offset,
+                    field_chunk_offset,
+                    script_size_value,
+                    contract_constants,
+                )?;
+                env.insert(binding.name.clone(), binding_expr);
+                types.insert(binding.name.clone(), binding_type);
+
+                field_chunk_offset += encoded_field_chunk_size(field, contract_constants)?;
+            }
+
+            Ok(())
         }
+        "readInputStateWithTemplate" => {
+            if args.len() != 4 {
+                return Err(CompilerError::Unsupported(
+                    "readInputStateWithTemplate(input_idx, template_prefix_len, template_suffix_len, expected_template_hash) expects 4 arguments"
+                        .to_string(),
+                ));
+            }
 
-        let binding_expr = read_input_state_binding_expr(
-            &input_idx,
-            field,
-            state_start_offset,
-            field_chunk_offset,
-            script_size_value,
-            contract_constants,
-        )?;
-        env.insert(binding.name.clone(), binding_expr);
-        types.insert(binding.name.clone(), binding_type);
+            let struct_name = struct_name_for_state_bindings(bindings, structs)?;
+            let struct_spec =
+                structs.get(&struct_name).ok_or_else(|| CompilerError::Unsupported(format!("unknown struct '{struct_name}'")))?;
+            if bindings_by_field.len() != struct_spec.fields.len() {
+                return Err(CompilerError::Unsupported(
+                    "readInputStateWithTemplate bindings must include all target fields exactly once".to_string(),
+                ));
+            }
 
-        field_chunk_offset += encoded_field_chunk_size(field, contract_constants)?;
+            let layout_fields = flattened_struct_field_specs_for_type(
+                &TypeRef { base: TypeBase::Custom(struct_name.clone()), array_dims: Vec::new() },
+                structs,
+            )?;
+            compile_read_input_state_with_template_validation(
+                args,
+                env,
+                stack_bindings,
+                types,
+                builder,
+                options,
+                &layout_fields,
+                script_size,
+                contract_constants,
+            )?;
+
+            let input_idx = args[0].clone();
+            let state_start_offset_expr = args[1].clone();
+            let script_size_expr = templated_input_script_size_expr(&args[1], &args[2], &layout_fields, contract_constants)?;
+            let mut field_chunk_offset = 0usize;
+
+            for field in &struct_spec.fields {
+                let binding = bindings_by_field.get(field.name.as_str()).ok_or_else(|| {
+                    CompilerError::Unsupported(
+                        "readInputStateWithTemplate bindings must include all target fields exactly once".to_string(),
+                    )
+                })?;
+
+                if struct_name_from_type_ref(&field.type_ref, structs).is_some() {
+                    return Err(CompilerError::Unsupported(
+                        "readInputStateWithTemplate does not support nested struct fields in destructuring".to_string(),
+                    ));
+                }
+
+                let binding_type = type_name_from_ref(&binding.type_ref);
+                let field_type = type_name_from_ref(&field.type_ref);
+                if binding_type != field_type {
+                    return Err(CompilerError::Unsupported(format!(
+                        "readInputStateWithTemplate binding '{}' expects {}",
+                        binding.name, field_type
+                    )));
+                }
+
+                let binding_expr = read_input_state_field_expr_with_type(
+                    &input_idx,
+                    &field.type_ref,
+                    state_start_offset_expr.clone(),
+                    field_chunk_offset,
+                    script_size_expr.clone(),
+                    contract_constants,
+                    "readInputStateWithTemplate",
+                )?;
+                env.insert(binding.name.clone(), binding_expr);
+                types.insert(binding.name.clone(), binding_type);
+
+                field_chunk_offset += encoded_field_chunk_size_for_type_ref(&field.type_ref, contract_constants)?;
+            }
+
+            Ok(())
+        }
+        _ => Err(CompilerError::Unsupported(format!(
+            "state destructuring assignment is only supported for readInputState()/readInputStateWithTemplate(), got '{}()'",
+            name
+        ))),
     }
+}
+
+fn struct_name_for_state_bindings<'i>(bindings: &[StateBindingAst<'i>], structs: &StructRegistry) -> Result<String, CompilerError> {
+    let matches = structs
+        .iter()
+        .filter_map(|(name, spec)| {
+            if spec.fields.len() != bindings.len() {
+                return None;
+            }
+            let all_match = spec.fields.iter().all(|field| {
+                bindings
+                    .iter()
+                    .find(|binding| binding.field_name == field.name)
+                    .is_some_and(|binding| binding.type_ref == field.type_ref)
+            });
+            all_match.then(|| name.clone())
+        })
+        .collect::<Vec<_>>();
+
+    match matches.as_slice() {
+        [name] => Ok(name.clone()),
+        [] => Err(CompilerError::Unsupported("readInputStateWithTemplate bindings must match a declared struct layout".to_string())),
+        _ => Err(CompilerError::Unsupported(
+            "readInputStateWithTemplate bindings match multiple struct layouts; assign into an explicitly typed struct first"
+                .to_string(),
+        )),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compile_read_input_state_with_template_validation(
+    args: &[Expr<'_>],
+    env: &HashMap<String, Expr<'_>>,
+    stack_bindings: &HashMap<String, i64>,
+    types: &HashMap<String, String>,
+    builder: &mut ScriptBuilder,
+    options: CompileOptions,
+    layout_fields: &[StructFieldSpec],
+    script_size: Option<i64>,
+    contract_constants: &HashMap<String, Expr<'_>>,
+) -> Result<(), CompilerError> {
+    if args.len() != 4 {
+        return Err(CompilerError::Unsupported(
+            "readInputStateWithTemplate(input_idx, template_prefix_len, template_suffix_len, expected_template_hash) expects 4 arguments"
+                .to_string(),
+        ));
+    }
+    if layout_fields.is_empty() {
+        return Err(CompilerError::Unsupported("readInputStateWithTemplate requires a struct type".to_string()));
+    }
+
+    let input_idx = &args[0];
+    let template_prefix_len = &args[1];
+    let template_suffix_len = &args[2];
+    let expected_template_hash = &args[3];
+    let script_size_expr =
+        templated_input_script_size_expr(template_prefix_len, template_suffix_len, layout_fields, contract_constants)?;
+    let prefix_len_expr = template_prefix_len.clone();
+    let suffix_len_expr = template_suffix_len.clone();
+    let script_base_expr = input_sigscript_base_expr(input_idx, script_size_expr.clone());
+    let prefix_end_expr = binary_expr(BinaryOp::Add, script_base_expr.clone(), prefix_len_expr.clone());
+    let script_end_expr = binary_expr(BinaryOp::Add, script_base_expr.clone(), script_size_expr.clone());
+    let state_len = encoded_state_len_for_layout_fields(layout_fields, contract_constants)?;
+    let suffix_start_expr = binary_expr(BinaryOp::Add, prefix_end_expr.clone(), Expr::int(state_len as i64));
+    let suffix_end_expr = binary_expr(BinaryOp::Add, suffix_start_expr.clone(), suffix_len_expr);
+
+    let actual_redeem_script_expr = input_sigscript_substr_expr(input_idx, script_base_expr.clone(), script_end_expr);
+    let actual_prefix_expr = input_sigscript_substr_expr(input_idx, script_base_expr, prefix_end_expr);
+    let actual_suffix_expr = input_sigscript_substr_expr(input_idx, suffix_start_expr, suffix_end_expr);
+    let actual_template_expr = binary_expr(BinaryOp::Add, actual_prefix_expr, actual_suffix_expr);
+    let expected_input_spk_expr = Expr::new(
+        ExprKind::New {
+            name: "ScriptPubKeyP2SHFromRedeemScript".to_string(),
+            args: vec![actual_redeem_script_expr],
+            name_span: span::Span::default(),
+        },
+        span::Span::default(),
+    );
+    let actual_input_spk_expr = input_script_pubkey_expr(input_idx);
+
+    let mut stack_depth = 0i64;
+
+    compile_expr(
+        &actual_input_spk_expr,
+        env,
+        stack_bindings,
+        types,
+        builder,
+        options,
+        &mut HashSet::new(),
+        &mut stack_depth,
+        script_size,
+        contract_constants,
+    )?;
+    compile_expr(
+        &expected_input_spk_expr,
+        env,
+        stack_bindings,
+        types,
+        builder,
+        options,
+        &mut HashSet::new(),
+        &mut stack_depth,
+        script_size,
+        contract_constants,
+    )?;
+    builder.add_op(OpEqual)?;
+    builder.add_op(OpVerify)?;
+    stack_depth = 0;
+
+    compile_expr(
+        &actual_template_expr,
+        env,
+        stack_bindings,
+        types,
+        builder,
+        options,
+        &mut HashSet::new(),
+        &mut stack_depth,
+        script_size,
+        contract_constants,
+    )?;
+    compile_expr(
+        expected_template_hash,
+        env,
+        stack_bindings,
+        types,
+        builder,
+        options,
+        &mut HashSet::new(),
+        &mut stack_depth,
+        script_size,
+        contract_constants,
+    )?;
+    builder.add_op(OpSwap)?;
+    builder.add_op(OpBlake2b)?;
+    builder.add_op(OpEqual)?;
+    builder.add_op(OpVerify)?;
 
     Ok(())
 }
@@ -4058,7 +4497,7 @@ fn compile_inline_call<'i>(
         for (param, arg) in function.params.iter().zip(args.iter()) {
             let param_type_name = type_name_from_ref(&param.type_ref);
             let matches = if struct_name_from_type_ref(&param.type_ref, structs).is_some() {
-                lower_runtime_struct_expr(
+                match lower_runtime_struct_expr(
                     arg,
                     &param.type_ref,
                     caller_types,
@@ -4066,8 +4505,13 @@ fn compile_inline_call<'i>(
                     contract_fields,
                     contract_constants,
                     contract_field_prefix_len,
-                )
-                .is_ok()
+                ) {
+                    Ok(_) => true,
+                    Err(err) if matches!(&arg.kind, ExprKind::Call { name, .. } if name == "readInputStateWithTemplate") => {
+                        return Err(err);
+                    }
+                    Err(_) => false,
+                }
             } else if struct_array_name_from_type_ref(&param.type_ref, structs).is_some() {
                 match &arg.kind {
                     ExprKind::Identifier(name) => caller_types

@@ -936,6 +936,16 @@ Validates that `tx.outputs[outputIndex].scriptPubKey` is a P2SH paying to the **
 
 Validates that `tx.outputs[outputIndex].scriptPubKey` is a P2SH paying to a **different script template** with the **same state layout** and the provided next state.
 
+**`readInputStateWithTemplate(int inputIndex, int templatePrefixLen, int templateSuffixLen, byte[32] expectedTemplateHash)`**
+
+Reads another input's state using an explicitly chosen struct layout, after slicing the foreign input's template prefix/suffix by the provided lengths and checking that their hash matches `expectedTemplateHash`.
+
+Use it with a direct struct binding or destructuring assignment:
+
+```javascript
+OtherState other = readInputStateWithTemplate(inputIndex, templatePrefixLen, templateSuffixLen, expectedTemplateHash);
+```
+
 Small example:
 
 ```javascript
@@ -960,6 +970,13 @@ What this checks:
 - Verifies output `0` has exactly that scriptPubKey.
 
 In practice, `validateOutputState(...)` enforces continuation into the same contract, while `validateOutputStateWithTemplate(...)` enforces continuation into a different script template that shares the same serialized state layout.
+
+Security note:
+
+- `readInputState(...)` and `readInputStateWithTemplate(...)` are input-state decoders. They read bytes from another input's sigscript and decode them as state.
+- `readInputState(...)` is appropriate when the surrounding covenant domain guarantees a single allowed contract/layout for the foreign input.
+- `readInputStateWithTemplate(...)` is appropriate when multiple templates may share a covenant domain; it additionally validates the foreign input's template hash and checks that the claimed redeem-script bytes match the foreign input's P2SH `scriptPubKey`.
+- Without those surrounding guarantees, plain `readInputState(...)` would also need extra correlation checks between the foreign input and the inspected part of its sigscript.
 
 ### Covenant Examples
 
