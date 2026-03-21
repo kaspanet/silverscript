@@ -97,7 +97,7 @@ function validateOutputStateWithTemplate(
  *   - Without that surrounding guarantee, you need extra checks tying the
  *     inspected sigscript bytes to the foreign input.
  */
-function readInputState(int inputIndex);
+function readInputState(int inputIndex) : (State);
 
 /**
  * Role:
@@ -107,7 +107,8 @@ function readInputState(int inputIndex);
  * Definition:
  *      Slice a claimed foreign redeem script out of the input sigscript, verify
  *      its template hash and P2SH commitment, and then decode the state bytes
- *      using the passed struct layout.
+ *      using the passed struct layout. The returned `object` is interpreted
+ *      using the struct type implied by the assignment or destructuring target.
  *
  * Example:
  * ```js
@@ -135,4 +136,4 @@ function readInputStateWithTemplate(
     int templatePrefixLen,
     int templateSuffixLen,
     byte[32] expectedTemplateHash
-);
+) : (object);
