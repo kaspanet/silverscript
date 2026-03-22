@@ -1474,12 +1474,16 @@ fn store_struct_binding<'i>(
     Ok(())
 }
 
+fn struct_assignment_temp_name(name: &str, path: &[String]) -> String {
+    format!("__struct_assign_{}__{}", name, path.join("__"))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn push_struct_leaf_stack_bindings<'i>(
     name: &str,
     type_ref: &TypeRef,
-    env: &HashMap<String, Expr<'i>>,
-    assigned_names: &HashSet<String>,
+    env: &mut HashMap<String, Expr<'i>>,
+    _assigned_names: &HashSet<String>,
     identifier_uses: &HashMap<String, usize>,
     types: &HashMap<String, String>,
     stack_bindings: &mut HashMap<String, i64>,
@@ -1489,7 +1493,7 @@ fn push_struct_leaf_stack_bindings<'i>(
     script_size: Option<i64>,
     contract_constants: &HashMap<String, Expr<'i>>,
 ) -> Result<Vec<String>, CompilerError> {
-    if assigned_names.contains(name) || identifier_uses.get(name).copied().unwrap_or(0) < 2 {
+    if identifier_uses.get(name).copied().unwrap_or(0) < 2 {
         return Ok(Vec::new());
     }
 
@@ -1523,6 +1527,7 @@ fn push_struct_leaf_stack_bindings<'i>(
             contract_constants,
         )?;
         push_stack_binding(stack_bindings, &leaf_name);
+        env.remove(&leaf_name);
         added.push(leaf_name);
     }
 
@@ -1889,11 +1894,9 @@ fn apply_statement_aliases<'i>(stmt: &Statement<'i>, aliases: &HashMap<String, S
             span: *span,
             name_span: *name_span,
         },
-        Statement::StructDestructure { bindings, expr, span } => Statement::StructDestructure {
-            bindings: bindings.clone(),
-            expr: apply_identifier_aliases(expr, aliases),
-            span: *span,
-        },
+        Statement::StructDestructure { bindings, expr, span } => {
+            Statement::StructDestructure { bindings: bindings.clone(), expr: apply_identifier_aliases(expr, aliases), span: *span }
+        }
         Statement::Assign { name, expr, span, name_span } => Statement::Assign {
             name: aliases.get(name).cloned().unwrap_or_else(|| name.clone()),
             expr: apply_identifier_aliases(expr, aliases),
@@ -1917,9 +1920,7 @@ fn apply_statement_aliases<'i>(stmt: &Statement<'i>, aliases: &HashMap<String, S
         Statement::If { condition, then_branch, else_branch, span, then_span, else_span } => Statement::If {
             condition: apply_identifier_aliases(condition, aliases),
             then_branch: then_branch.iter().map(|stmt| apply_statement_aliases(stmt, aliases)).collect(),
-            else_branch: else_branch
-                .as_ref()
-                .map(|branch| branch.iter().map(|stmt| apply_statement_aliases(stmt, aliases)).collect()),
+            else_branch: else_branch.as_ref().map(|branch| branch.iter().map(|stmt| apply_statement_aliases(stmt, aliases)).collect()),
             span: *span,
             then_span: *then_span,
             else_span: *else_span,
@@ -1934,10 +1935,9 @@ fn apply_statement_aliases<'i>(stmt: &Statement<'i>, aliases: &HashMap<String, S
             ident_span: *ident_span,
             body_span: *body_span,
         },
-        Statement::Return { exprs, span } => Statement::Return {
-            exprs: exprs.iter().map(|expr| apply_identifier_aliases(expr, aliases)).collect(),
-            span: *span,
-        },
+        Statement::Return { exprs, span } => {
+            Statement::Return { exprs: exprs.iter().map(|expr| apply_identifier_aliases(expr, aliases)).collect(), span: *span }
+        }
         Statement::Console { args, span } => Statement::Console {
             args: args
                 .iter()
@@ -1960,9 +1960,7 @@ fn synthetic_if_binding_name(name: &str, next_if_id: &mut usize) -> String {
 }
 
 fn original_name_from_synthetic_if_binding(name: &str) -> Option<String> {
-    name.strip_prefix("__if_")
-        .and_then(|rest| rest.rsplit_once('_'))
-        .map(|(original, _)| original.to_string())
+    name.strip_prefix("__if_").and_then(|rest| rest.rsplit_once('_')).map(|(original, _)| original.to_string())
 }
 
 fn normalize_function_body_if_reassignments<'i>(
@@ -2070,10 +2068,8 @@ fn normalize_if_statement_reassignments<'i>(
     }
 
     let targeted = our_vars_reassigned.iter().cloned().collect::<HashSet<_>>();
-    let synthetic_names = our_vars_reassigned
-        .iter()
-        .map(|name| (name.clone(), synthetic_if_binding_name(name, next_if_id)))
-        .collect::<HashMap<_, _>>();
+    let synthetic_names =
+        our_vars_reassigned.iter().map(|name| (name.clone(), synthetic_if_binding_name(name, next_if_id))).collect::<HashMap<_, _>>();
 
     let mut rewrite_then_scope = scope.clone();
     let rewritten_then = rewrite_if_branch_reassignments(
@@ -2230,8 +2226,8 @@ fn rebind_stack_binding(bindings: &mut HashMap<String, i64>, name: &str) {
         let mut shadow_index = 0usize;
         loop {
             let shadow_name = format!("{HIDDEN_STACK_BINDING_PREFIX}_{name}_{shadow_index}");
-            if !bindings.contains_key(&shadow_name) {
-                bindings.insert(shadow_name, previous_depth);
+            if let std::collections::hash_map::Entry::Vacant(e) = bindings.entry(shadow_name) {
+                e.insert(previous_depth);
                 break;
             }
             shadow_index += 1;
@@ -2240,11 +2236,7 @@ fn rebind_stack_binding(bindings: &mut HashMap<String, i64>, name: &str) {
     push_stack_binding(bindings, name);
 }
 
-fn drop_stack_binding(
-    bindings: &mut HashMap<String, i64>,
-    name: &str,
-    builder: &mut ScriptBuilder,
-) -> Result<(), CompilerError> {
+fn drop_stack_binding(bindings: &mut HashMap<String, i64>, name: &str, builder: &mut ScriptBuilder) -> Result<(), CompilerError> {
     let Some(removed_depth) = bindings.remove(name) else {
         return Ok(());
     };
@@ -2968,8 +2960,7 @@ fn compile_entrypoint_function<'i>(
 
     let remaining_param_bindings = flattened_param_names.iter().filter(|name| stack_bindings.contains_key(*name)).count();
     let remaining_contract_field_bindings = contract_fields.iter().filter(|field| stack_bindings.contains_key(&field.name)).count();
-    let remaining_local_bindings =
-        stack_bindings.len().saturating_sub(remaining_param_bindings + remaining_contract_field_bindings);
+    let remaining_local_bindings = stack_bindings.len().saturating_sub(remaining_param_bindings + remaining_contract_field_bindings);
 
     let return_count = flattened_returns.len();
     if return_count == 0 {
@@ -3209,10 +3200,10 @@ fn compile_statement<'i>(
 
                 if force_stack_materialization
                     || (!assigned_names.contains(name)
-                    && identifier_uses.get(name).copied().unwrap_or(0) >= 2
-                    && (!env.contains_key(name) || existing_is_predeclared_default)
-                    && !stack_bindings.contains_key(name)
-                    && matches!(effective_type_name.as_str(), "int" | "bool" | "byte"))
+                        && identifier_uses.get(name).copied().unwrap_or(0) >= 2
+                        && (!env.contains_key(name) || existing_is_predeclared_default)
+                        && !stack_bindings.contains_key(name)
+                        && matches!(effective_type_name.as_str(), "int" | "bool" | "byte"))
                 {
                     let mut forced_last_uses = HashMap::new();
                     if let Some(original_name) = original_name_from_synthetic_if_binding(name) {
@@ -3700,12 +3691,65 @@ fn compile_statement<'i>(
             }
             Ok(added_stack_locals)
         }
-        Statement::Assign { name, expr, .. } => {
+        Statement::Assign { name, expr, span, name_span } => {
             if let Some(type_name) = types.get(name) {
                 let expected_type_ref = parse_type_ref(type_name)?;
-                if struct_name_from_type_ref(&expected_type_ref, structs).is_some()
-                    || struct_array_name_from_type_ref(&expected_type_ref, structs).is_some()
-                {
+                if struct_name_from_type_ref(&expected_type_ref, structs).is_some() {
+                    let lowered_values = lower_runtime_struct_expr(
+                        expr,
+                        &expected_type_ref,
+                        types,
+                        structs,
+                        contract_fields,
+                        contract_constants,
+                        contract_field_prefix_len,
+                    )?;
+                    let leaf_bindings = flatten_type_ref_leaves(&expected_type_ref, structs)?;
+                    let original_env = env.clone();
+                    let mut temps = Vec::with_capacity(leaf_bindings.len());
+
+                    types.insert(name.clone(), type_name.clone());
+                    for ((path, field_type), lowered_expr) in leaf_bindings.into_iter().zip(lowered_values.into_iter()) {
+                        let leaf_name = flattened_struct_name(name, &path);
+                        let temp_name = struct_assignment_temp_name(name, &path);
+                        let resolved_temp = resolve_expr_for_runtime(lowered_expr, &original_env, types, &mut HashSet::new())?;
+                        types.insert(temp_name.clone(), type_name_from_ref(&field_type));
+                        env.insert(temp_name.clone(), resolved_temp);
+                        temps.push((leaf_name, temp_name));
+                    }
+
+                    for (leaf_name, temp_name) in temps {
+                        compile_statement(
+                            &Statement::Assign {
+                                name: leaf_name,
+                                expr: Expr::identifier(temp_name.clone()),
+                                span: *span,
+                                name_span: *name_span,
+                            },
+                            env,
+                            assigned_names,
+                            identifier_uses,
+                            remaining_identifier_uses,
+                            types,
+                            stack_bindings,
+                            builder,
+                            options,
+                            contract_fields,
+                            contract_field_prefix_len,
+                            contract_constants,
+                            structs,
+                            functions,
+                            function_order,
+                            function_index,
+                            script_size,
+                            recorder,
+                        )?;
+                        env.remove(&temp_name);
+                        types.remove(&temp_name);
+                    }
+                    return Ok(Vec::new());
+                }
+                if struct_array_name_from_type_ref(&expected_type_ref, structs).is_some() {
                     return store_struct_binding(
                         name,
                         &expected_type_ref,
@@ -3778,8 +3822,11 @@ fn compile_statement<'i>(
                     let resolved = resolve_expr_for_runtime(lowered_expr, env, types, &mut HashSet::new())?;
                     env.insert(name.clone(), resolved);
                 } else {
-                    let updated =
-                        if let Some(previous) = env.get(name) { replace_identifier(&lowered_expr, name, previous) } else { lowered_expr };
+                    let updated = if let Some(previous) = env.get(name) {
+                        replace_identifier(&lowered_expr, name, previous)
+                    } else {
+                        lowered_expr
+                    };
                     let resolved = resolve_expr_for_runtime(updated, env, types, &mut HashSet::new())?;
                     env.insert(name.clone(), resolved);
                 }
@@ -4478,11 +4525,7 @@ fn compile_if_statement<'i>(
     let condition = lower_runtime_expr(condition, types, structs)?;
     let original_env = env.clone();
     let original_stack_bindings = stack_bindings.clone();
-    let visible_names = original_env
-        .keys()
-        .chain(original_stack_bindings.keys())
-        .cloned()
-        .collect::<HashSet<_>>();
+    let visible_names = original_env.keys().chain(original_stack_bindings.keys()).cloned().collect::<HashSet<_>>();
 
     let mut stack_depth = 0i64;
     compile_expr(
@@ -4786,11 +4829,8 @@ fn compile_block<'i>(
     recorder: &mut DebugRecorder<'i>,
 ) -> Result<(), CompilerError> {
     let mut added_stack_locals = Vec::new();
-    let original_stack_binding_names = if scoped_stack_locals {
-        Some(stack_bindings.keys().cloned().collect::<HashSet<_>>())
-    } else {
-        None
-    };
+    let original_stack_binding_names =
+        if scoped_stack_locals { Some(stack_bindings.keys().cloned().collect::<HashSet<_>>()) } else { None };
     for stmt in statements {
         recorder.begin_statement_at(builder.script().len(), env, stack_bindings);
         added_stack_locals.extend(
@@ -5781,20 +5821,18 @@ fn compile_expr_with_tracking<'i>(
             *stack_depth = depth_before + 1;
             Ok(())
         }
-        ExprKind::Call { name, args, .. } => {
-            compile_call_expr(
-                name.as_str(),
-                args,
-                &scope,
-                builder,
-                options,
-                visiting,
-                stack_depth,
-                script_size,
-                contract_constants,
-                tracking,
-            )
-        }
+        ExprKind::Call { name, args, .. } => compile_call_expr(
+            name.as_str(),
+            args,
+            &scope,
+            builder,
+            options,
+            visiting,
+            stack_depth,
+            script_size,
+            contract_constants,
+            tracking,
+        ),
         ExprKind::New { name, args, .. } => match name.as_str() {
             "LockingBytecodeNullData" => {
                 if args.len() != 1 {
@@ -6502,6 +6540,7 @@ fn expr_is_bytes_inner<'i>(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn compile_length_expr<'i>(
     expr: &Expr<'i>,
     env: &HashMap<String, Expr<'i>>,
@@ -7320,6 +7359,7 @@ fn compile_opcode_call<'i>(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn compile_concat_operand<'i>(
     expr: &Expr<'i>,
     env: &HashMap<String, Expr<'i>>,

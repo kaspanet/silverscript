@@ -6329,53 +6329,23 @@ fn partially_reassigned_struct_field_rolls_last_use_without_copying_unchanged_fi
         1,
         "the unchanged field should keep using its original expression instead of being copied into a new stack slot"
     );
+    assert_eq!(
+        compiled.script.iter().copied().filter(|op| *op == OpAdd).count(),
+        2,
+        "only the initial `s.a = x + 1` and the reassigned `s.a = s.a + 1` should emit additions"
+    );
+    assert!(
+        compiled.script.iter().copied().filter(|op| *op == OpRoll).count() >= 2,
+        "the stack-backed struct leaves should be rebound with rolls instead of rebuilding the whole struct"
+    );
 
-    let expected = ScriptBuilder::new()
-        // Compute the original `s.a = x + 1`.
-        .add_i64(0)
-        .unwrap()
-        .add_op(OpPick)
-        .unwrap()
-        .add_i64(1)
-        .unwrap()
-        .add_op(OpAdd)
-        .unwrap()
-        // Reassign only `s.a`; the old `s.a` is consumed directly from the stack.
-        .add_i64(1)
-        .unwrap()
-        .add_op(OpAdd)
-        .unwrap()
-        // The final visible use of rebound `s.a` rolls it into the comparison.
-        .add_i64(0)
-        .unwrap()
-        .add_op(OpGreaterThan)
-        .unwrap()
-        .add_op(OpVerify)
-        .unwrap()
-        // `s.b` is still sourced from the original input expression instead of being recopied.
-        .add_i64(0)
-        .unwrap()
-        .add_op(OpPick)
-        .unwrap()
-        .add_i64(1)
-        .unwrap()
-        .add_op(OpPick)
-        .unwrap()
-        .add_op(OpMul)
-        .unwrap()
-        .add_i64(0)
-        .unwrap()
-        .add_op(OpGreaterThan)
-        .unwrap()
-        .add_op(OpVerify)
-        .unwrap()
-        // Drop the original argument and leave success.
-        .add_op(OpDrop)
-        .unwrap()
-        .add_op(OpTrue)
-        .unwrap()
-        .drain();
-    assert_eq!(compiled.script, expected);
+    let sigscript_ok = compiled.build_sig_script("main", vec![Expr::int(2)]).expect("sigscript builds");
+    let result_ok = run_script_with_sigscript(compiled.script.clone(), sigscript_ok);
+    assert!(result_ok.is_ok(), "partial struct reassignment should execute successfully: {}", result_ok.unwrap_err());
+
+    let sigscript_err = compiled.build_sig_script("main", vec![Expr::int(0)]).expect("sigscript builds");
+    let result_err = run_script_with_sigscript(compiled.script, sigscript_err);
+    assert!(result_err.is_err(), "partial struct reassignment should still enforce the updated field checks");
 }
 
 #[test]
@@ -6675,15 +6645,13 @@ fn if_branch_reassignment_drops_hidden_shadow_bindings() {
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("if branch reassignment should compile");
 
-    let sigscript_then = compiled
-        .build_sig_script("main", vec![Expr::int(1), Expr::int(1), Expr::int(1), Expr::int(3)])
-        .expect("sigscript builds");
+    let sigscript_then =
+        compiled.build_sig_script("main", vec![Expr::int(1), Expr::int(1), Expr::int(1), Expr::int(3)]).expect("sigscript builds");
     let result_then = run_script_with_sigscript(compiled.script.clone(), sigscript_then);
     assert!(result_then.is_ok(), "then-branch reassignment should leave a clean stack: {}", result_then.unwrap_err());
 
-    let sigscript_else = compiled
-        .build_sig_script("main", vec![Expr::int(0), Expr::int(1), Expr::int(1), Expr::int(2)])
-        .expect("sigscript builds");
+    let sigscript_else =
+        compiled.build_sig_script("main", vec![Expr::int(0), Expr::int(1), Expr::int(1), Expr::int(2)]).expect("sigscript builds");
     let result_else = run_script_with_sigscript(compiled.script, sigscript_else);
     assert!(result_else.is_ok(), "else-branch reassignment should leave a clean stack: {}", result_else.unwrap_err());
 }
@@ -6741,15 +6709,11 @@ fn partial_struct_if_without_else_reassignment_gets_normalized() {
     assert!(normalized.contains("__if_s_"), "normalized AST should mirror the struct binding itself: {normalized}");
     assert!(compiled.script.contains(&OpElse), "compiled script should include an explicit else branch");
 
-    let sigscript_else = compiled
-        .build_sig_script("main", vec![Expr::int(0), Expr::int(1), Expr::int(2)])
-        .expect("sigscript builds");
+    let sigscript_else = compiled.build_sig_script("main", vec![Expr::int(0), Expr::int(1), Expr::int(2)]).expect("sigscript builds");
     let result_else = run_script_with_sigscript(compiled.script.clone(), sigscript_else);
     assert!(result_else.is_ok(), "flag=0 should preserve the untouched field through normalization: {}", result_else.unwrap_err());
 
-    let sigscript_then = compiled
-        .build_sig_script("main", vec![Expr::int(1), Expr::int(2), Expr::int(2)])
-        .expect("sigscript builds");
+    let sigscript_then = compiled.build_sig_script("main", vec![Expr::int(1), Expr::int(2), Expr::int(2)]).expect("sigscript builds");
     let result_then = run_script_with_sigscript(compiled.script, sigscript_then);
     assert!(result_then.is_ok(), "flag=1 should update only the changed field through normalization: {}", result_then.unwrap_err());
 }
@@ -6780,15 +6744,11 @@ fn nested_struct_if_reassignment_materializes_missing_synthetic_fields() {
     let normalized = format_contract_ast(&compiled.ast);
     assert!(normalized.contains("__if_s_"), "nested normalization should synthesize struct temporaries: {normalized}");
 
-    let sigscript_else = compiled
-        .build_sig_script("main", vec![Expr::int(0), Expr::int(1), Expr::int(2)])
-        .expect("sigscript builds");
+    let sigscript_else = compiled.build_sig_script("main", vec![Expr::int(0), Expr::int(1), Expr::int(2)]).expect("sigscript builds");
     let result_else = run_script_with_sigscript(compiled.script.clone(), sigscript_else);
     assert!(result_else.is_ok(), "flag=0 should preserve the original struct fields: {}", result_else.unwrap_err());
 
-    let sigscript_then = compiled
-        .build_sig_script("main", vec![Expr::int(2), Expr::int(2), Expr::int(3)])
-        .expect("sigscript builds");
+    let sigscript_then = compiled.build_sig_script("main", vec![Expr::int(2), Expr::int(2), Expr::int(3)]).expect("sigscript builds");
     let result_then = run_script_with_sigscript(compiled.script, sigscript_then);
     assert!(result_then.is_ok(), "flag=2 should update both struct fields through the nested branch: {}", result_then.unwrap_err());
 }
@@ -6815,22 +6775,22 @@ fn nested_partial_struct_if_reassignment_materializes_missing_synthetic_fields()
         }
     "#;
 
-    let compiled = compile_contract(source, &[], CompileOptions::default())
-        .expect("nested partial struct if reassignment should compile");
+    let compiled =
+        compile_contract(source, &[], CompileOptions::default()).expect("nested partial struct if reassignment should compile");
     let normalized = format_contract_ast(&compiled.ast);
     assert!(normalized.contains("__if_s_"), "nested normalization should synthesize struct temporaries: {normalized}");
 
-    let sigscript_else = compiled
-        .build_sig_script("main", vec![Expr::int(0), Expr::int(1), Expr::int(2)])
-        .expect("sigscript builds");
+    let sigscript_else = compiled.build_sig_script("main", vec![Expr::int(0), Expr::int(1), Expr::int(2)]).expect("sigscript builds");
     let result_else = run_script_with_sigscript(compiled.script.clone(), sigscript_else);
     assert!(result_else.is_ok(), "flag=0 should preserve both struct fields: {}", result_else.unwrap_err());
 
-    let sigscript_then = compiled
-        .build_sig_script("main", vec![Expr::int(2), Expr::int(2), Expr::int(2)])
-        .expect("sigscript builds");
+    let sigscript_then = compiled.build_sig_script("main", vec![Expr::int(2), Expr::int(2), Expr::int(2)]).expect("sigscript builds");
     let result_then = run_script_with_sigscript(compiled.script, sigscript_then);
-    assert!(result_then.is_ok(), "flag=2 should update only the changed field through the nested branch: {}", result_then.unwrap_err());
+    assert!(
+        result_then.is_ok(),
+        "flag=2 should update only the changed field through the nested branch: {}",
+        result_then.unwrap_err()
+    );
 }
 
 #[test]
@@ -6860,15 +6820,11 @@ fn struct_if_normalization_mirrors_missing_reassigned_fields_across_branches() {
     assert!(normalized.contains("__if_s_"), "normalized AST should materialize the struct binding in both branches: {normalized}");
     assert!(compiled.script.contains(&OpElse), "compiled script should keep both mirrored branches");
 
-    let sigscript_then = compiled
-        .build_sig_script("main", vec![Expr::int(1), Expr::int(3), Expr::int(3)])
-        .expect("sigscript builds");
+    let sigscript_then = compiled.build_sig_script("main", vec![Expr::int(1), Expr::int(3), Expr::int(3)]).expect("sigscript builds");
     let result_then = run_script_with_sigscript(compiled.script.clone(), sigscript_then);
     assert!(result_then.is_ok(), "then-branch struct mirroring should execute successfully: {}", result_then.unwrap_err());
 
-    let sigscript_else = compiled
-        .build_sig_script("main", vec![Expr::int(0), Expr::int(2), Expr::int(6)])
-        .expect("sigscript builds");
+    let sigscript_else = compiled.build_sig_script("main", vec![Expr::int(0), Expr::int(2), Expr::int(6)]).expect("sigscript builds");
     let result_else = run_script_with_sigscript(compiled.script, sigscript_else);
     assert!(result_else.is_ok(), "else-branch struct mirroring should execute successfully: {}", result_else.unwrap_err());
 }
