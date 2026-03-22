@@ -381,7 +381,7 @@ pub enum Statement<'i> {
         span: Span<'i>,
     },
     Console {
-        args: Vec<ConsoleArg<'i>>,
+        args: Vec<Expr<'i>>,
         #[serde(skip_deserializing)]
         span: Span<'i>,
     },
@@ -406,13 +406,6 @@ impl<'i> Statement<'i> {
             | Statement::Console { span, .. } => *span,
         }
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", content = "data", rename_all = "snake_case")]
-pub enum ConsoleArg<'i> {
-    Identifier(String, #[serde(skip_deserializing)] Span<'i>),
-    Literal(Expr<'i>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -915,14 +908,8 @@ fn format_state_bindings(bindings: &[StateBindingAst<'_>]) -> String {
         .join(", ")
 }
 
-fn format_console_args(args: &[ConsoleArg<'_>]) -> String {
-    args.iter()
-        .map(|arg| match arg {
-            ConsoleArg::Identifier(name, _) => name.clone(),
-            ConsoleArg::Literal(expr) => format_expr(expr),
-        })
-        .collect::<Vec<_>>()
-        .join(", ")
+fn format_console_args(args: &[Expr<'_>]) -> String {
+    args.iter().map(format_expr).collect::<Vec<_>>().join(", ")
 }
 
 fn format_expr_list(exprs: &[Expr<'_>]) -> String {
@@ -1689,19 +1676,11 @@ fn parse_block<'i>(pair: Pair<'i, Rule>) -> Result<(Vec<Statement<'i>>, Span<'i>
     }
 }
 
-fn parse_console_parameter_list<'i>(pair: Pair<'i, Rule>) -> Result<Vec<ConsoleArg<'i>>, CompilerError> {
+fn parse_console_parameter_list<'i>(pair: Pair<'i, Rule>) -> Result<Vec<Expr<'i>>, CompilerError> {
     let mut args = Vec::new();
 
     for param in pair.into_inner() {
-        let value = if param.as_rule() == Rule::console_parameter { single_inner(param)? } else { param };
-        match value.as_rule() {
-            Rule::Identifier => {
-                let Identifier { name, span } = parse_identifier(value)?;
-                args.push(ConsoleArg::Identifier(name, span));
-            }
-            Rule::literal => args.push(ConsoleArg::Literal(parse_literal(single_inner(value)?)?)),
-            _ => return Err(CompilerError::Unsupported("console.log arguments not supported".to_string())),
-        }
+        args.push(parse_expression(param)?);
     }
     Ok(args)
 }

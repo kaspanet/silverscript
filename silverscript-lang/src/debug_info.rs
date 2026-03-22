@@ -171,6 +171,8 @@ pub struct DebugStep<'i> {
     pub frame_id: u32,
     #[serde(default)]
     pub variable_updates: Vec<DebugVariableUpdate<'i>>,
+    #[serde(default)]
+    pub console_args: Vec<Expr<'i>>,
 }
 
 impl<'i> DebugStep<'i> {

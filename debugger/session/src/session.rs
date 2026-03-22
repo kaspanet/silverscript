@@ -14,8 +14,8 @@ use silverscript_lang::debug_info::{
     DebugFunctionRange, DebugInfo, DebugNamedValue, DebugStep, DebugVariableUpdate, RuntimeBinding, SourceSpan, StepId, StepKind,
 };
 
-use crate::presentation::build_source_context;
 pub use crate::presentation::{SourceContext, SourceContextLine};
+use crate::presentation::{build_source_context, format_value as format_debug_value};
 use crate::util::{decode_i64, encode_hex};
 
 pub type DebugTx<'a> = PopulatedTransaction<'a>;
@@ -136,6 +136,7 @@ pub struct DebugSession<'a, 'i> {
     breakpoints: HashSet<u32>,
     // Source-level step ids that were already visited in this session.
     executed_steps: HashSet<StepId>,
+    console_output: Vec<String>,
 }
 
 struct ShadowBindingValue {
@@ -228,6 +229,7 @@ impl<'a, 'i> DebugSession<'a, 'i> {
             source_lines,
             breakpoints: HashSet::new(),
             executed_steps: HashSet::new(),
+            console_output: Vec::new(),
         })
     }
 
@@ -262,6 +264,11 @@ impl<'a, 'i> DebugSession<'a, 'i> {
     /// Step out: advance to next source step at a shallower call depth.
     pub fn step_out(&mut self) -> Result<Option<SessionState<'i>>, kaspa_txscript_errors::TxScriptError> {
         self.step_with_depth_predicate(|candidate, current| candidate < current)
+    }
+
+    pub fn run_to_completion(&mut self) -> Result<(), kaspa_txscript_errors::TxScriptError> {
+        while self.step_into()?.is_some() {}
+        Ok(())
     }
 
     /// Shared stepping loop for `step_into`, `step_over`, and `step_out`.
@@ -327,24 +334,24 @@ impl<'a, 'i> DebugSession<'a, 'i> {
     /// Advances execution to the first user statement, skipping dispatcher/synthetic bytecode.
     /// Call this after session creation to skip over contract setup code.
     /// Skips opcodes until the first source step is encountered.
-    pub fn run_to_first_executed_statement(&mut self) -> Result<(), kaspa_txscript_errors::TxScriptError> {
+    pub fn run_to_first_executed_statement(&mut self) -> Result<Option<SessionState<'i>>, kaspa_txscript_errors::TxScriptError> {
         if self.step_order.is_empty() {
-            return Ok(());
+            return Ok(None);
         }
         loop {
             if self.pc >= self.opcodes.len() {
-                return Ok(());
+                return Ok(None);
             }
             let offset = self.current_byte_offset();
             if self.engine.is_executing() {
                 if let Some(index) = self.steppable_step_index_for_offset(offset, None) {
                     self.current_step_index = Some(index);
                     self.mark_step_executed(index);
-                    return Ok(());
+                    return Ok(Some(self.state()));
                 }
             }
             if self.step_opcode()?.is_none() {
-                return Ok(());
+                return Ok(None);
             }
         }
     }
@@ -352,7 +359,7 @@ impl<'a, 'i> DebugSession<'a, 'i> {
     /// Continues execution until a breakpoint is hit or script completes.
     pub fn continue_to_breakpoint(&mut self) -> Result<Option<SessionState<'i>>, kaspa_txscript_errors::TxScriptError> {
         if self.breakpoints.is_empty() {
-            self.run_until_end()?;
+            self.run_to_completion()?;
             return Ok(None);
         }
         loop {
@@ -377,6 +384,10 @@ impl<'a, 'i> DebugSession<'a, 'i> {
     /// Returns true if the script engine is still running.
     pub fn is_executing(&self) -> bool {
         self.engine.is_executing()
+    }
+
+    pub fn take_console_output(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.console_output)
     }
 
     pub fn debug_info(&self) -> &DebugInfo<'i> {
@@ -472,15 +483,8 @@ impl<'a, 'i> DebugSession<'a, 'i> {
     }
 
     pub fn evaluate_expression(&self, expr_src: &str) -> Result<(String, DebugValue), String> {
-        let scope_state = self.current_scope_state()?;
         let expr = parse_expression_ast(expr_src).map_err(|err| format!("parse error: {err}"))?;
-        let (shadow_bindings, env, stack_bindings, eval_types) = self.scope_state_eval_context(&scope_state)?;
-        let (bytecode, type_name) = compile_debug_expr(&expr, &env, &stack_bindings, &eval_types)
-            .map_err(|err| format!("failed to compile debug expression: {err}"))?;
-        let script = self.build_shadow_script(&shadow_bindings, &bytecode)?;
-        let bytes = self.execute_shadow_script(&script)?;
-        let value = decode_value_by_type(&type_name, bytes)?;
-        Ok((type_name, value))
+        self.evaluate_parsed_expression(&expr)
     }
 
     /// Returns the debug step for the current bytecode position.
@@ -695,9 +699,27 @@ impl<'a, 'i> DebugSession<'a, 'i> {
     }
 
     fn mark_step_executed(&mut self, step_index: usize) {
-        if let Some(step) = self.step_at_order(step_index) {
+        if let Some(step) = self.step_at_order(step_index).cloned() {
             self.executed_steps.insert(step.id());
+            self.render_console_messages(&step);
         }
+    }
+
+    fn render_console_messages(&mut self, step: &DebugStep<'i>) {
+        if step.console_args.is_empty() {
+            return;
+        }
+
+        self.console_output.push(
+            step.console_args
+                .iter()
+                .map(|expr| match self.evaluate_parsed_expression(expr) {
+                    Ok((type_name, value)) => format_debug_value(&type_name, &value),
+                    Err(err) => format_debug_value("", &DebugValue::Unknown(err)),
+                })
+                .collect::<Vec<_>>()
+                .join(" "),
+        );
     }
 
     fn sync_step_cursor_to_current_offset(&mut self) {
@@ -928,6 +950,21 @@ impl<'a, 'i> DebugSession<'a, 'i> {
         let script = self.build_shadow_script(&shadow_bindings, &bytecode)?;
         let bytes = self.execute_shadow_script(&script)?;
         decode_value_by_type(type_name, bytes)
+    }
+
+    fn evaluate_parsed_expression(&self, expr: &Expr<'i>) -> Result<(String, DebugValue), String> {
+        let scope_state = self.current_scope_state()?;
+        self.evaluate_expr_in_scope(&scope_state, expr)
+    }
+
+    fn evaluate_expr_in_scope(&self, scope_state: &ScopeState<'i>, expr: &Expr<'i>) -> Result<(String, DebugValue), String> {
+        let (shadow_bindings, env, stack_bindings, eval_types) = self.scope_state_eval_context(scope_state)?;
+        let (bytecode, type_name) = compile_debug_expr(expr, &env, &stack_bindings, &eval_types)
+            .map_err(|err| format!("failed to compile debug expression: {err}"))?;
+        let script = self.build_shadow_script(&shadow_bindings, &bytecode)?;
+        let bytes = self.execute_shadow_script(&script)?;
+        let value = decode_value_by_type(&type_name, bytes)?;
+        Ok((type_name, value))
     }
 
     fn scope_state_eval_context(&self, scope_state: &ScopeState<'i>) -> Result<ShadowResolution<'i>, String> {
@@ -1200,6 +1237,64 @@ mod tests {
     }
 
     #[test]
+    fn console_logs_resolve_inline_frame_bindings() {
+        let mut sig_builder = ScriptBuilder::new();
+        sig_builder.add_i64(5).unwrap();
+        let sigscript = sig_builder.drain();
+
+        let mut session = make_session(
+            vec![DebugParamMapping { name: "a".to_string(), type_name: "int".to_string(), stack_index: 0, function: "f".to_string() }],
+            vec![
+                DebugStep {
+                    bytecode_start: 0,
+                    bytecode_end: 0,
+                    span: SourceSpan { line: 1, col: 1, end_line: 1, end_col: 1 },
+                    kind: StepKind::InlineCallEnter { callee: "inner".to_string() },
+                    sequence: 0,
+                    call_depth: 0,
+                    frame_id: 1,
+                    variable_updates: vec![DebugVariableUpdate {
+                        name: "x".to_string(),
+                        type_name: "int".to_string(),
+                        runtime_binding: None,
+                        expr: Expr::identifier("a"),
+                    }],
+                    console_args: vec![],
+                },
+                DebugStep {
+                    bytecode_start: 0,
+                    bytecode_end: 0,
+                    span: SourceSpan { line: 1, col: 1, end_line: 1, end_col: 1 },
+                    kind: StepKind::Source {},
+                    sequence: 1,
+                    call_depth: 1,
+                    frame_id: 1,
+                    variable_updates: vec![],
+                    console_args: vec![
+                        Expr::new(ExprKind::String("inner".to_string()), span::Span::default()),
+                        Expr::new(
+                            ExprKind::Binary {
+                                op: BinaryOp::Add,
+                                left: Box::new(Expr::identifier("x")),
+                                right: Box::new(Expr::int(1)),
+                            },
+                            span::Span::default(),
+                        ),
+                    ],
+                },
+            ],
+            &sigscript,
+        )
+        .unwrap();
+
+        session.current_step_index = Some(1);
+        session.executed_steps.insert(StepId::new(0, 1));
+        session.mark_step_executed(1);
+
+        assert_eq!(session.take_console_output(), vec!["inner 6"]);
+    }
+
+    #[test]
     fn list_variables_returns_unknown_for_uncompilable_expr() {
         let mut sig_builder = ScriptBuilder::new();
         sig_builder.add_i64(5).unwrap();
@@ -1221,6 +1316,7 @@ mod tests {
                     runtime_binding: None,
                     expr: Expr::identifier("missing"),
                 }],
+                console_args: vec![],
             }],
             &sigscript,
         )
@@ -1271,6 +1367,7 @@ mod tests {
                         ),
                     },
                 ],
+                console_args: vec![],
             }],
             &sigscript,
         )
@@ -1375,6 +1472,7 @@ mod tests {
                         ),
                     },
                 ],
+                console_args: vec![],
             }],
             &sigscript,
         )
@@ -1411,6 +1509,7 @@ mod tests {
                         runtime_binding: Some(RuntimeBinding::DataStackSlot { from_top: 0 }),
                         expr: Expr::identifier("missing"),
                     }],
+                    console_args: vec![],
                 },
                 DebugStep {
                     bytecode_start: 0,
@@ -1421,6 +1520,7 @@ mod tests {
                     call_depth: 0,
                     frame_id: 0,
                     variable_updates: vec![],
+                    console_args: vec![],
                 },
             ],
             &sigscript,
@@ -1458,6 +1558,7 @@ mod tests {
                         runtime_binding: Some(RuntimeBinding::DataStackSlot { from_top: 0 }),
                         expr: Expr::identifier("missing"),
                     }],
+                    console_args: vec![],
                 },
                 DebugStep {
                     bytecode_start: 0,
@@ -1468,6 +1569,7 @@ mod tests {
                     call_depth: 0,
                     frame_id: 0,
                     variable_updates: vec![],
+                    console_args: vec![],
                 },
             ],
             &sigscript,

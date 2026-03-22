@@ -112,6 +112,28 @@ fn debug_session_provides_source_context_and_vars() -> Result<(), Box<dyn Error>
 }
 
 #[test]
+fn debug_session_emits_console_logs_when_landing_on_step() -> Result<(), Box<dyn Error>> {
+    let source = r#"pragma silverscript ^0.1.0;
+
+contract ConsoleStep() {
+    entrypoint function inspect(int a, int b) {
+        console.log("sum", a + b);
+        require(a + b > 0);
+    }
+}
+"#;
+
+    with_session_for_source(source, vec![], "inspect", vec![Expr::int(2), Expr::int(3)], |session| {
+        session.run_to_first_executed_statement()?;
+        assert_eq!(session.take_console_output(), vec!["sum 5"]);
+
+        session.step_opcode()?;
+        assert!(session.take_console_output().is_empty(), "single-opcode stepping should move past the zero-width console step");
+        Ok(())
+    })
+}
+
+#[test]
 fn debug_session_steps_forward() -> Result<(), Box<dyn Error>> {
     with_session(|session| {
         session.run_to_first_executed_statement()?;

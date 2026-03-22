@@ -14,12 +14,12 @@ use kaspa_txscript::{
     EngineCtx, EngineFlags, SeqCommitAccessor, TxScriptEngine, pay_to_address_script, pay_to_script_hash_script,
     pay_to_script_hash_signature_script,
 };
-use silverscript_lang::ast::{Expr, parse_contract_ast};
+use silverscript_lang::ast::{Expr, ExprKind, parse_contract_ast};
 use silverscript_lang::compiler::{
     CompileOptions, CompiledContract, CovenantDeclCallOptions, FunctionAbiEntry, FunctionInputAbi, compile_contract,
     compile_contract_ast, function_branch_index, struct_object,
 };
-use silverscript_lang::debug_info::RuntimeBinding;
+use silverscript_lang::debug_info::{RuntimeBinding, StepKind};
 
 fn run_script_with_selector(script: Vec<u8>, selector: Option<i64>) -> Result<(), kaspa_txscript_errors::TxScriptError> {
     let sigscript = selector_sigscript(selector);
@@ -202,6 +202,33 @@ fn compile_contract_emits_debug_info_when_recording_enabled() {
     assert!(!debug_info.steps.is_empty());
     assert!(!debug_info.functions.is_empty());
     assert!(debug_info.params.iter().any(|param| param.name == "x"));
+}
+
+#[test]
+fn debug_info_records_console_expression_args() {
+    let source = r#"
+        contract DebugConsole() {
+            entrypoint function spend(int x, int y) {
+                console.log("sum", x + y);
+                require(x + y > 0);
+            }
+        }
+    "#;
+
+    let options = CompileOptions { record_debug_infos: true, ..Default::default() };
+    let compiled = compile_contract(source, &[], options).expect("compile succeeds");
+    let debug_info = compiled.debug_info.expect("debug info should be present");
+
+    let console_step = debug_info
+        .steps
+        .iter()
+        .find(|step| matches!(step.kind, StepKind::Source {}) && !step.console_args.is_empty())
+        .expect("console step should be recorded");
+
+    assert_eq!(console_step.bytecode_start, console_step.bytecode_end, "console step should be zero-width");
+    assert_eq!(console_step.console_args.len(), 2);
+    assert!(matches!(console_step.console_args[0].kind, ExprKind::String(ref value) if value == "sum"));
+    assert!(matches!(console_step.console_args[1].kind, ExprKind::Binary { .. }));
 }
 
 #[test]
