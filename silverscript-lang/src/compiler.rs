@@ -1639,6 +1639,15 @@ fn collect_identifier_uses<'i>(statements: &[Statement<'i>]) -> HashMap<String, 
     uses
 }
 
+fn consume_statement_identifier_uses<'i>(stmt: &Statement<'i>, remaining_uses: &mut HashMap<String, usize>) {
+    let mut stmt_uses = HashMap::new();
+    collect_statement_identifier_uses(stmt, &mut stmt_uses);
+    for (name, count) in stmt_uses {
+        let entry = remaining_uses.entry(name).or_insert(0);
+        *entry = entry.saturating_sub(count);
+    }
+}
+
 fn bump_identifier_use(uses: &mut HashMap<String, usize>, name: &str) {
     *uses.entry(name.to_string()).or_insert(0) += 1;
 }
@@ -1950,6 +1959,12 @@ fn synthetic_if_binding_name(name: &str, next_if_id: &mut usize) -> String {
     generated
 }
 
+fn original_name_from_synthetic_if_binding(name: &str) -> Option<String> {
+    name.strip_prefix("__if_")
+        .and_then(|rest| rest.rsplit_once('_'))
+        .map(|(original, _)| original.to_string())
+}
+
 fn normalize_function_body_if_reassignments<'i>(
     statements: &[Statement<'i>],
     scope: &mut HashMap<String, TypeRef>,
@@ -2148,6 +2163,19 @@ fn rewrite_if_branch_reassignments<'i>(
 
     for original in ordered_targets {
         let synthetic = synthetic_names.get(original).cloned().expect("synthetic binding");
+        if !aliases.contains_key(original) {
+            let type_ref = outer_scope.get(original).cloned().expect("outer if variable type");
+            rewritten.push(Statement::VariableDefinition {
+                type_ref,
+                modifiers: Vec::new(),
+                name: synthetic.clone(),
+                expr: Some(Expr::identifier(original.clone())),
+                span: span::Span::default(),
+                type_span: span::Span::default(),
+                modifier_spans: Vec::new(),
+                name_span: span::Span::default(),
+            });
+        }
         rewritten.push(Statement::Assign {
             name: original.clone(),
             expr: Expr::identifier(synthetic),
@@ -2240,6 +2268,18 @@ fn drop_stack_binding(
     }
 
     Ok(())
+}
+
+fn consume_stack_binding(bindings: &mut HashMap<String, i64>, name: &str) {
+    let Some(removed_depth) = bindings.remove(name) else {
+        return;
+    };
+
+    for depth in bindings.values_mut() {
+        if *depth > removed_depth {
+            *depth -= 1;
+        }
+    }
 }
 
 fn validate_return_types<'i>(
@@ -2802,8 +2842,6 @@ fn compile_entrypoint_function<'i>(
         .enumerate()
         .map(|(index, name)| (name.clone(), (contract_field_count + (param_count - 1 - index)) as i64))
         .collect::<HashMap<_, _>>();
-    let initial_stack_binding_count = stack_bindings.len() + contract_field_count;
-
     for (index, field) in contract_fields.iter().enumerate() {
         stack_bindings.insert(field.name.clone(), (contract_field_count - 1 - index) as i64);
     }
@@ -2866,6 +2904,7 @@ fn compile_entrypoint_function<'i>(
     recorder.begin_entrypoint(&function.name, function, contract_fields);
 
     let body_len = function.body.len();
+    let mut remaining_identifier_uses = identifier_uses.clone();
     for (index, stmt) in function.body.iter().enumerate() {
         recorder.begin_statement_at(builder.script().len(), &env, &stack_bindings);
         if let Statement::Return { exprs, .. } = stmt {
@@ -2892,6 +2931,7 @@ fn compile_entrypoint_function<'i>(
                 &mut env,
                 &assigned_names,
                 &identifier_uses,
+                &remaining_identifier_uses,
                 &mut types,
                 &mut stack_bindings,
                 &mut builder,
@@ -2909,6 +2949,7 @@ fn compile_entrypoint_function<'i>(
             .map_err(|err| err.with_span(&stmt.span()))?;
         }
         recorder.finish_statement_at(stmt, builder.script().len(), &env, &types, &stack_bindings)?;
+        consume_statement_identifier_uses(stmt, &mut remaining_identifier_uses);
     }
 
     let flattened_returns = if has_return {
@@ -2925,27 +2966,32 @@ fn compile_entrypoint_function<'i>(
         Vec::new()
     };
 
+    let remaining_param_bindings = flattened_param_names.iter().filter(|name| stack_bindings.contains_key(*name)).count();
+    let remaining_contract_field_bindings = contract_fields.iter().filter(|field| stack_bindings.contains_key(&field.name)).count();
+    let remaining_local_bindings =
+        stack_bindings.len().saturating_sub(remaining_param_bindings + remaining_contract_field_bindings);
+
     let return_count = flattened_returns.len();
     if return_count == 0 {
-        for _ in 0..stack_bindings.len().saturating_sub(initial_stack_binding_count) {
+        for _ in 0..remaining_local_bindings {
             builder.add_i64(return_count as i64)?;
             builder.add_op(OpRoll)?;
             builder.add_op(OpDrop)?;
         }
-        for _ in 0..param_count {
+        for _ in 0..remaining_param_bindings {
             builder.add_op(OpDrop)?;
         }
-        for _ in 0..contract_field_count {
+        for _ in 0..remaining_contract_field_bindings {
             builder.add_op(OpDrop)?;
         }
         builder.add_op(OpTrue)?;
     } else {
         let mut stack_depth = 0i64;
         for expr in &flattened_returns {
-            compile_expr(
+            compile_tracked_expr(
                 expr,
                 &env,
-                &stack_bindings,
+                &mut stack_bindings,
                 &types,
                 &mut builder,
                 options,
@@ -2955,17 +3001,17 @@ fn compile_entrypoint_function<'i>(
                 constants,
             )?;
         }
-        for _ in 0..stack_bindings.len().saturating_sub(initial_stack_binding_count) {
+        for _ in 0..remaining_local_bindings {
             builder.add_i64(return_count as i64)?;
             builder.add_op(OpRoll)?;
             builder.add_op(OpDrop)?;
         }
-        for _ in 0..param_count {
+        for _ in 0..remaining_param_bindings {
             builder.add_i64(return_count as i64)?;
             builder.add_op(OpRoll)?;
             builder.add_op(OpDrop)?;
         }
-        for _ in 0..contract_field_count {
+        for _ in 0..remaining_contract_field_bindings {
             builder.add_i64(return_count as i64)?;
             builder.add_op(OpRoll)?;
             builder.add_op(OpDrop)?;
@@ -2982,6 +3028,7 @@ fn compile_statement<'i>(
     env: &mut HashMap<String, Expr<'i>>,
     assigned_names: &HashSet<String>,
     identifier_uses: &HashMap<String, usize>,
+    remaining_identifier_uses: &HashMap<String, usize>,
     types: &mut HashMap<String, String>,
     stack_bindings: &mut HashMap<String, i64>,
     builder: &mut ScriptBuilder,
@@ -3157,15 +3204,26 @@ fn compile_statement<'i>(
                 }
                 types.insert(name.clone(), effective_type_name.clone());
                 let existing_is_predeclared_default = is_predeclared_scalar_default(name, &effective_type_name, env);
+                let force_stack_materialization = name.starts_with("__if_")
+                    && matches!(&expr.kind, ExprKind::Identifier(identifier) if stack_bindings.contains_key(identifier));
 
-                if !assigned_names.contains(name)
+                if force_stack_materialization
+                    || (!assigned_names.contains(name)
                     && identifier_uses.get(name).copied().unwrap_or(0) >= 2
                     && (!env.contains_key(name) || existing_is_predeclared_default)
                     && !stack_bindings.contains_key(name)
-                    && matches!(effective_type_name.as_str(), "int" | "bool" | "byte")
+                    && matches!(effective_type_name.as_str(), "int" | "bool" | "byte"))
                 {
+                    let mut forced_last_uses = HashMap::new();
+                    if let Some(original_name) = original_name_from_synthetic_if_binding(name) {
+                        if stack_bindings.contains_key(&original_name) {
+                            let mut expr_uses = HashMap::new();
+                            collect_expr_identifier_uses(&expr, &mut expr_uses);
+                            forced_last_uses.insert(original_name.clone(), expr_uses.remove(&original_name).unwrap_or(1));
+                        }
+                    }
                     let mut stack_depth = 0i64;
-                    compile_expr(
+                    compile_tracked_expr_with_forced_last_uses(
                         &expr,
                         env,
                         stack_bindings,
@@ -3176,6 +3234,7 @@ fn compile_statement<'i>(
                         &mut stack_depth,
                         script_size,
                         contract_constants,
+                        forced_last_uses,
                     )?;
                     env.insert(name.clone(), expr);
                     push_stack_binding(stack_bindings, name);
@@ -3293,8 +3352,15 @@ fn compile_statement<'i>(
         }
         Statement::Require { expr, .. } => {
             let expr = lower_runtime_expr(expr, types, structs)?;
+            let mut expr_uses = HashMap::new();
+            collect_expr_identifier_uses(&expr, &mut expr_uses);
+            let forced_last_uses = expr_uses
+                .into_iter()
+                .filter(|(name, _)| stack_bindings.contains_key(name))
+                .filter(|(name, count)| remaining_identifier_uses.get(name).copied().unwrap_or(0) == *count)
+                .collect::<HashMap<_, _>>();
             let mut stack_depth = 0i64;
-            compile_expr(
+            compile_tracked_expr_with_forced_last_uses(
                 &expr,
                 env,
                 stack_bindings,
@@ -3305,6 +3371,7 @@ fn compile_statement<'i>(
                 &mut stack_depth,
                 script_size,
                 contract_constants,
+                forced_last_uses,
             )?;
             builder.add_op(OpVerify)?;
             Ok(Vec::new())
@@ -3508,6 +3575,7 @@ fn compile_statement<'i>(
                     env,
                     assigned_names,
                     identifier_uses,
+                    remaining_identifier_uses,
                     types,
                     stack_bindings,
                     builder,
@@ -3608,7 +3676,7 @@ fn compile_statement<'i>(
                         && matches!(binding_type_name.as_str(), "int" | "bool" | "byte")
                     {
                         let mut stack_depth = 0i64;
-                        compile_expr(
+                        compile_tracked_expr(
                             &lowered,
                             env,
                             stack_bindings,
@@ -3684,8 +3752,14 @@ fn compile_statement<'i>(
                     && (stack_bindings.contains_key(name)
                         || matches!(&lowered_expr.kind, ExprKind::Identifier(identifier) if identifier.starts_with("__if_")));
                 if should_rebind_stack {
+                    let mut forced_last_uses = HashMap::new();
+                    if stack_bindings.contains_key(name) {
+                        let mut expr_uses = HashMap::new();
+                        collect_expr_identifier_uses(&lowered_expr, &mut expr_uses);
+                        forced_last_uses.insert(name.clone(), expr_uses.remove(name).unwrap_or(1));
+                    }
                     let mut stack_depth = 0i64;
-                    compile_expr(
+                    compile_tracked_expr_with_forced_last_uses(
                         &lowered_expr,
                         env,
                         stack_bindings,
@@ -3696,6 +3770,7 @@ fn compile_statement<'i>(
                         &mut stack_depth,
                         script_size,
                         contract_constants,
+                        forced_last_uses,
                     )?;
                     rebind_stack_binding(stack_bindings, name);
                     let resolved = resolve_expr_for_runtime(lowered_expr, env, types, &mut HashSet::new())?;
@@ -3713,8 +3788,14 @@ fn compile_statement<'i>(
                 && (stack_bindings.contains_key(name)
                     || matches!(&lowered_expr.kind, ExprKind::Identifier(identifier) if identifier.starts_with("__if_")));
             if should_rebind_stack {
+                let mut forced_last_uses = HashMap::new();
+                if stack_bindings.contains_key(name) {
+                    let mut expr_uses = HashMap::new();
+                    collect_expr_identifier_uses(&lowered_expr, &mut expr_uses);
+                    forced_last_uses.insert(name.clone(), expr_uses.remove(name).unwrap_or(1));
+                }
                 let mut stack_depth = 0i64;
-                compile_expr(
+                compile_tracked_expr_with_forced_last_uses(
                     &lowered_expr,
                     env,
                     stack_bindings,
@@ -3725,6 +3806,7 @@ fn compile_statement<'i>(
                     &mut stack_depth,
                     script_size,
                     contract_constants,
+                    forced_last_uses,
                 )?;
                 rebind_stack_binding(stack_bindings, name);
                 let resolved = resolve_expr_for_runtime(lowered_expr, env, types, &mut HashSet::new())?;
@@ -4280,6 +4362,7 @@ fn compile_inline_call<'i>(
 
     let mut returns: Vec<Expr<'i>> = Vec::new();
     let initial_stack_binding_count = bindings.stack_bindings.len();
+    let mut remaining_identifier_uses = identifier_uses.clone();
     for param in &function.params {
         let param_type_name = type_name_from_ref(&param.type_ref);
         if !matches!(param_type_name.as_str(), "int" | "bool" | "byte")
@@ -4338,6 +4421,7 @@ fn compile_inline_call<'i>(
                 &mut bindings.env,
                 &assigned_names,
                 &identifier_uses,
+                &remaining_identifier_uses,
                 &mut bindings.types,
                 &mut bindings.stack_bindings,
                 builder,
@@ -4355,6 +4439,7 @@ fn compile_inline_call<'i>(
             .map_err(|err| err.with_span(&stmt.span()))?;
         }
         recorder.finish_statement_at(stmt, builder.script().len(), &bindings.env, &bindings.types, &bindings.stack_bindings)?;
+        consume_statement_identifier_uses(stmt, &mut remaining_identifier_uses);
     }
 
     for _ in 0..bindings.stack_bindings.len().saturating_sub(initial_stack_binding_count) {
@@ -4480,6 +4565,7 @@ fn compile_if_statement<'i>(
 
     let resolved_condition = resolve_expr_for_runtime(condition, &original_env, types, &mut HashSet::new())?;
     merge_env_after_if(env, &original_env, &then_env, &else_env, &resolved_condition);
+    merge_types_after_if(types, &then_types, &else_types);
     *stack_bindings = merge_stack_bindings_after_if(
         &visible_names,
         &original_stack_bindings,
@@ -4556,6 +4642,22 @@ fn merge_env_after_if<'i>(
                     span::Span::default(),
                 ),
             );
+        }
+    }
+}
+
+fn merge_types_after_if(
+    types: &mut HashMap<String, String>,
+    then_types: &HashMap<String, String>,
+    else_types: &HashMap<String, String>,
+) {
+    let names = then_types.keys().chain(else_types.keys()).cloned().collect::<HashSet<_>>();
+    for name in names {
+        match (then_types.get(&name), else_types.get(&name)) {
+            (Some(then_type), Some(else_type)) if then_type == else_type => {
+                types.insert(name, then_type.clone());
+            }
+            _ => {}
         }
     }
 }
@@ -4682,6 +4784,11 @@ fn compile_block<'i>(
     recorder: &mut DebugRecorder<'i>,
 ) -> Result<(), CompilerError> {
     let mut added_stack_locals = Vec::new();
+    let original_stack_binding_names = if scoped_stack_locals {
+        Some(stack_bindings.keys().cloned().collect::<HashSet<_>>())
+    } else {
+        None
+    };
     for stmt in statements {
         recorder.begin_statement_at(builder.script().len(), env, stack_bindings);
         added_stack_locals.extend(
@@ -4689,6 +4796,7 @@ fn compile_block<'i>(
                 stmt,
                 env,
                 assigned_names,
+                identifier_uses,
                 identifier_uses,
                 types,
                 stack_bindings,
@@ -4714,7 +4822,21 @@ fn compile_block<'i>(
             drop_stack_binding(stack_bindings, name, builder)?;
         }
         for name in &added_stack_locals {
-            types.remove(name);
+            if !name.starts_with("__if_") {
+                types.remove(name);
+            }
+        }
+    }
+
+    if let Some(original_stack_binding_names) = original_stack_binding_names {
+        let added_hidden_stack_bindings = stack_bindings
+            .keys()
+            .filter(|name| name.starts_with(HIDDEN_STACK_BINDING_PREFIX))
+            .filter(|name| !original_stack_binding_names.contains(*name))
+            .cloned()
+            .collect::<Vec<_>>();
+        for name in added_hidden_stack_bindings {
+            drop_stack_binding(stack_bindings, &name, builder)?;
         }
     }
 
@@ -5443,6 +5565,46 @@ struct CompilationScope<'a, 'i> {
     types: &'a HashMap<String, String>,
 }
 
+#[derive(Default)]
+struct ExprTrackingState {
+    consumed_stack_bindings: Vec<String>,
+    forced_last_uses: HashMap<String, usize>,
+}
+
+impl ExprTrackingState {
+    fn current_stack_binding_index(&self, name: &str, stack_bindings: &HashMap<String, i64>) -> Option<i64> {
+        let original = *stack_bindings.get(name)?;
+        let removed_above = self
+            .consumed_stack_bindings
+            .iter()
+            .filter_map(|consumed_name| stack_bindings.get(consumed_name))
+            .filter(|depth| **depth < original)
+            .count() as i64;
+        Some(original - removed_above)
+    }
+
+    fn should_roll_last_stack_use(&mut self, name: &str) -> bool {
+        let Some(remaining) = self.forced_last_uses.get_mut(name) else {
+            return false;
+        };
+        if *remaining == 0 {
+            return false;
+        }
+        *remaining -= 1;
+        if *remaining != 0 {
+            return false;
+        }
+        self.consumed_stack_bindings.push(name.to_string());
+        true
+    }
+
+    fn finish(self, stack_bindings: &mut HashMap<String, i64>) {
+        for name in self.consumed_stack_bindings {
+            consume_stack_binding(stack_bindings, &name);
+        }
+    }
+}
+
 fn compile_expr<'i>(
     expr: &Expr<'i>,
     env: &HashMap<String, Expr<'i>>,
@@ -5454,6 +5616,36 @@ fn compile_expr<'i>(
     stack_depth: &mut i64,
     script_size: Option<i64>,
     contract_constants: &HashMap<String, Expr<'i>>,
+) -> Result<(), CompilerError> {
+    let mut tracking = ExprTrackingState::default();
+    compile_expr_with_tracking(
+        expr,
+        env,
+        stack_bindings,
+        types,
+        builder,
+        options,
+        visiting,
+        stack_depth,
+        script_size,
+        contract_constants,
+        &mut tracking,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compile_expr_with_tracking<'i>(
+    expr: &Expr<'i>,
+    env: &HashMap<String, Expr<'i>>,
+    stack_bindings: &HashMap<String, i64>,
+    types: &HashMap<String, String>,
+    builder: &mut ScriptBuilder,
+    options: CompileOptions,
+    visiting: &mut HashSet<String>,
+    stack_depth: &mut i64,
+    script_size: Option<i64>,
+    contract_constants: &HashMap<String, Expr<'i>>,
+    tracking: &mut ExprTrackingState,
 ) -> Result<(), CompilerError> {
     let scope = CompilationScope { env, stack_bindings, types };
     match &expr.kind {
@@ -5500,10 +5692,10 @@ fn compile_expr<'i>(
             if !visiting.insert(name.clone()) {
                 return Err(CompilerError::CyclicIdentifier(name.clone()));
             }
-            if let Some(index) = stack_bindings.get(name) {
-                builder.add_i64(*index + *stack_depth)?;
+            if let Some(index) = tracking.current_stack_binding_index(name, stack_bindings) {
+                builder.add_i64(index + *stack_depth)?;
                 *stack_depth += 1;
-                builder.add_op(OpPick)?;
+                builder.add_op(if tracking.should_roll_last_stack_use(name) { OpRoll } else { OpPick })?;
                 visiting.remove(name);
                 return Ok(());
             }
@@ -5519,7 +5711,7 @@ fn compile_expr<'i>(
                         }
                     }
                 }
-                compile_expr(
+                compile_expr_with_tracking(
                     resolved_expr,
                     env,
                     stack_bindings,
@@ -5530,6 +5722,7 @@ fn compile_expr<'i>(
                     stack_depth,
                     script_size,
                     contract_constants,
+                    tracking,
                 )?;
                 visiting.remove(name);
                 return Ok(());
@@ -5538,7 +5731,7 @@ fn compile_expr<'i>(
             Err(CompilerError::UndefinedIdentifier(name.clone()))
         }
         ExprKind::IfElse { condition, then_expr, else_expr } => {
-            compile_expr(
+            compile_expr_with_tracking(
                 condition,
                 env,
                 stack_bindings,
@@ -5549,11 +5742,12 @@ fn compile_expr<'i>(
                 stack_depth,
                 script_size,
                 contract_constants,
+                tracking,
             )?;
             builder.add_op(OpIf)?;
             *stack_depth -= 1;
             let depth_before = *stack_depth;
-            compile_expr(
+            compile_expr_with_tracking(
                 then_expr,
                 env,
                 stack_bindings,
@@ -5564,10 +5758,11 @@ fn compile_expr<'i>(
                 stack_depth,
                 script_size,
                 contract_constants,
+                tracking,
             )?;
             builder.add_op(OpElse)?;
             *stack_depth = depth_before;
-            compile_expr(
+            compile_expr_with_tracking(
                 else_expr,
                 env,
                 stack_bindings,
@@ -5578,13 +5773,25 @@ fn compile_expr<'i>(
                 stack_depth,
                 script_size,
                 contract_constants,
+                tracking,
             )?;
             builder.add_op(OpEndIf)?;
             *stack_depth = depth_before + 1;
             Ok(())
         }
         ExprKind::Call { name, args, .. } => {
-            compile_call_expr(name.as_str(), args, &scope, builder, options, visiting, stack_depth, script_size, contract_constants)
+            compile_call_expr(
+                name.as_str(),
+                args,
+                &scope,
+                builder,
+                options,
+                visiting,
+                stack_depth,
+                script_size,
+                contract_constants,
+                tracking,
+            )
         }
         ExprKind::New { name, args, .. } => match name.as_str() {
             "LockingBytecodeNullData" => {
@@ -5600,7 +5807,7 @@ fn compile_expr<'i>(
                 if args.len() != 1 {
                     return Err(CompilerError::Unsupported("ScriptPubKeyP2PK expects a single pubkey argument".to_string()));
                 }
-                compile_expr(
+                compile_expr_with_tracking(
                     &args[0],
                     env,
                     stack_bindings,
@@ -5611,6 +5818,7 @@ fn compile_expr<'i>(
                     stack_depth,
                     script_size,
                     contract_constants,
+                    tracking,
                 )?;
                 builder.add_data(&[0x00, 0x00, OpData32])?;
                 *stack_depth += 1;
@@ -5627,7 +5835,7 @@ fn compile_expr<'i>(
                 if args.len() != 1 {
                     return Err(CompilerError::Unsupported("ScriptPubKeyP2SH expects a single bytes32 argument".to_string()));
                 }
-                compile_expr(
+                compile_expr_with_tracking(
                     &args[0],
                     env,
                     stack_bindings,
@@ -5638,6 +5846,7 @@ fn compile_expr<'i>(
                     stack_depth,
                     script_size,
                     contract_constants,
+                    tracking,
                 )?;
                 builder.add_data(&[0x00, 0x00])?;
                 *stack_depth += 1;
@@ -5664,7 +5873,7 @@ fn compile_expr<'i>(
                         "ScriptPubKeyP2SHFromRedeemScript expects a single redeem_script argument".to_string(),
                     ));
                 }
-                compile_expr(
+                compile_expr_with_tracking(
                     &args[0],
                     env,
                     stack_bindings,
@@ -5675,6 +5884,7 @@ fn compile_expr<'i>(
                     stack_depth,
                     script_size,
                     contract_constants,
+                    tracking,
                 )?;
                 builder.add_op(OpBlake2b)?;
                 builder.add_data(&[0x00, 0x00])?;
@@ -5699,7 +5909,19 @@ fn compile_expr<'i>(
             name => Err(CompilerError::Unsupported(format!("unknown constructor: {name}"))),
         },
         ExprKind::Unary { op, expr } => {
-            compile_expr(expr, env, stack_bindings, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
+            compile_expr_with_tracking(
+                expr,
+                env,
+                stack_bindings,
+                types,
+                builder,
+                options,
+                visiting,
+                stack_depth,
+                script_size,
+                contract_constants,
+                tracking,
+            )?;
             match op {
                 UnaryOp::Not => builder.add_op(OpNot)?,
                 UnaryOp::Neg => builder.add_op(OpNegate)?,
@@ -5722,6 +5944,7 @@ fn compile_expr<'i>(
                     stack_depth,
                     script_size,
                     contract_constants,
+                    tracking,
                 )?;
                 compile_concat_operand(
                     right,
@@ -5734,9 +5957,10 @@ fn compile_expr<'i>(
                     stack_depth,
                     script_size,
                     contract_constants,
+                    tracking,
                 )?;
             } else {
-                compile_expr(
+                compile_expr_with_tracking(
                     left,
                     env,
                     stack_bindings,
@@ -5747,8 +5971,9 @@ fn compile_expr<'i>(
                     stack_depth,
                     script_size,
                     contract_constants,
+                    tracking,
                 )?;
-                compile_expr(
+                compile_expr_with_tracking(
                     right,
                     env,
                     stack_bindings,
@@ -5759,6 +5984,7 @@ fn compile_expr<'i>(
                     stack_depth,
                     script_size,
                     contract_constants,
+                    tracking,
                 )?;
             }
             match op {
@@ -5836,6 +6062,7 @@ fn compile_expr<'i>(
             stack_depth,
             script_size,
             contract_constants,
+            tracking,
         ),
         ExprKind::UnarySuffix { source, kind, .. } => match kind {
             UnarySuffixKind::Length => compile_length_expr(
@@ -5849,6 +6076,7 @@ fn compile_expr<'i>(
                 stack_depth,
                 script_size,
                 contract_constants,
+                tracking,
             ),
             UnarySuffixKind::Reverse => Err(CompilerError::Unsupported("reverse() is not supported".to_string())),
         },
@@ -5873,7 +6101,7 @@ fn compile_expr<'i>(
             };
             let element_size = fixed_type_size(&element_type)
                 .ok_or_else(|| CompilerError::Unsupported("array element type must have known size".to_string()))?;
-            compile_expr(
+            compile_expr_with_tracking(
                 &resolved_source,
                 env,
                 stack_bindings,
@@ -5884,8 +6112,21 @@ fn compile_expr<'i>(
                 stack_depth,
                 script_size,
                 contract_constants,
+                tracking,
             )?;
-            compile_expr(index, env, stack_bindings, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
+            compile_expr_with_tracking(
+                index,
+                env,
+                stack_bindings,
+                types,
+                builder,
+                options,
+                visiting,
+                stack_depth,
+                script_size,
+                contract_constants,
+                tracking,
+            )?;
             builder.add_i64(element_size)?;
             *stack_depth += 1;
             builder.add_op(OpMul)?;
@@ -5904,7 +6145,7 @@ fn compile_expr<'i>(
             Ok(())
         }
         ExprKind::Slice { source, start, end, .. } => {
-            compile_expr(
+            compile_expr_with_tracking(
                 source,
                 env,
                 stack_bindings,
@@ -5915,9 +6156,34 @@ fn compile_expr<'i>(
                 stack_depth,
                 script_size,
                 contract_constants,
+                tracking,
             )?;
-            compile_expr(start, env, stack_bindings, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
-            compile_expr(end, env, stack_bindings, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
+            compile_expr_with_tracking(
+                start,
+                env,
+                stack_bindings,
+                types,
+                builder,
+                options,
+                visiting,
+                stack_depth,
+                script_size,
+                contract_constants,
+                tracking,
+            )?;
+            compile_expr_with_tracking(
+                end,
+                env,
+                stack_bindings,
+                types,
+                builder,
+                options,
+                visiting,
+                stack_depth,
+                script_size,
+                contract_constants,
+                tracking,
+            )?;
             builder.add_op(OpSubstr)?;
             *stack_depth -= 2;
             Ok(())
@@ -5963,7 +6229,19 @@ fn compile_expr<'i>(
             Ok(())
         }
         ExprKind::Introspection { kind, index, .. } => {
-            compile_expr(index, env, stack_bindings, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
+            compile_expr_with_tracking(
+                index,
+                env,
+                stack_bindings,
+                types,
+                builder,
+                options,
+                visiting,
+                stack_depth,
+                script_size,
+                contract_constants,
+                tracking,
+            )?;
             match kind {
                 IntrospectionKind::InputValue => {
                     builder.add_op(OpTxInputAmount)?;
@@ -6008,6 +6286,66 @@ fn compile_expr<'i>(
 }
 
 #[allow(clippy::too_many_arguments)]
+fn compile_tracked_expr<'i>(
+    expr: &Expr<'i>,
+    env: &HashMap<String, Expr<'i>>,
+    stack_bindings: &mut HashMap<String, i64>,
+    types: &HashMap<String, String>,
+    builder: &mut ScriptBuilder,
+    options: CompileOptions,
+    visiting: &mut HashSet<String>,
+    stack_depth: &mut i64,
+    script_size: Option<i64>,
+    contract_constants: &HashMap<String, Expr<'i>>,
+) -> Result<(), CompilerError> {
+    compile_tracked_expr_with_forced_last_uses(
+        expr,
+        env,
+        stack_bindings,
+        types,
+        builder,
+        options,
+        visiting,
+        stack_depth,
+        script_size,
+        contract_constants,
+        HashMap::new(),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compile_tracked_expr_with_forced_last_uses<'i>(
+    expr: &Expr<'i>,
+    env: &HashMap<String, Expr<'i>>,
+    stack_bindings: &mut HashMap<String, i64>,
+    types: &HashMap<String, String>,
+    builder: &mut ScriptBuilder,
+    options: CompileOptions,
+    visiting: &mut HashSet<String>,
+    stack_depth: &mut i64,
+    script_size: Option<i64>,
+    contract_constants: &HashMap<String, Expr<'i>>,
+    forced_last_uses: HashMap<String, usize>,
+) -> Result<(), CompilerError> {
+    let mut tracking = ExprTrackingState { consumed_stack_bindings: Vec::new(), forced_last_uses };
+    let result = compile_expr_with_tracking(
+        expr,
+        env,
+        stack_bindings,
+        types,
+        builder,
+        options,
+        visiting,
+        stack_depth,
+        script_size,
+        contract_constants,
+        &mut tracking,
+    );
+    tracking.finish(stack_bindings);
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
 fn compile_split_part<'i>(
     source: &Expr<'i>,
     index: &Expr<'i>,
@@ -6021,11 +6359,36 @@ fn compile_split_part<'i>(
     stack_depth: &mut i64,
     script_size: Option<i64>,
     contract_constants: &HashMap<String, Expr<'i>>,
+    tracking: &mut ExprTrackingState,
 ) -> Result<(), CompilerError> {
-    compile_expr(source, env, stack_bindings, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
+    compile_expr_with_tracking(
+        source,
+        env,
+        stack_bindings,
+        types,
+        builder,
+        options,
+        visiting,
+        stack_depth,
+        script_size,
+        contract_constants,
+        tracking,
+    )?;
     match part {
         SplitPart::Left => {
-            compile_expr(index, env, stack_bindings, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
+            compile_expr_with_tracking(
+                index,
+                env,
+                stack_bindings,
+                types,
+                builder,
+                options,
+                visiting,
+                stack_depth,
+                script_size,
+                contract_constants,
+                tracking,
+            )?;
             builder.add_i64(0)?;
             *stack_depth += 1;
             builder.add_op(OpSwap)?;
@@ -6036,7 +6399,19 @@ fn compile_split_part<'i>(
         SplitPart::Right => {
             builder.add_op(OpSize)?;
             *stack_depth += 1;
-            compile_expr(index, env, stack_bindings, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
+            compile_expr_with_tracking(
+                index,
+                env,
+                stack_bindings,
+                types,
+                builder,
+                options,
+                visiting,
+                stack_depth,
+                script_size,
+                contract_constants,
+                tracking,
+            )?;
             builder.add_op(OpSwap)?;
             builder.add_op(OpSubstr)?;
             *stack_depth -= 2;
@@ -6136,6 +6511,7 @@ fn compile_length_expr<'i>(
     stack_depth: &mut i64,
     script_size: Option<i64>,
     contract_constants: &HashMap<String, Expr<'i>>,
+    tracking: &mut ExprTrackingState,
 ) -> Result<(), CompilerError> {
     if let ExprKind::Identifier(name) = &expr.kind {
         if let Some(type_name) = types.get(name) {
@@ -6145,7 +6521,7 @@ fn compile_length_expr<'i>(
                 return Ok(());
             }
             if let Some(element_size) = array_element_size(type_name) {
-                compile_expr(
+                compile_expr_with_tracking(
                     expr,
                     env,
                     stack_bindings,
@@ -6156,6 +6532,7 @@ fn compile_length_expr<'i>(
                     stack_depth,
                     script_size,
                     contract_constants,
+                    tracking,
                 )?;
                 builder.add_op(OpSize)?;
                 builder.add_op(OpSwap)?;
@@ -6173,7 +6550,19 @@ fn compile_length_expr<'i>(
         *stack_depth += 1;
         return Ok(());
     }
-    compile_expr(expr, env, stack_bindings, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
+    compile_expr_with_tracking(
+        expr,
+        env,
+        stack_bindings,
+        types,
+        builder,
+        options,
+        visiting,
+        stack_depth,
+        script_size,
+        contract_constants,
+        tracking,
+    )?;
     builder.add_op(OpSize)?;
     builder.add_op(OpSwap)?;
     builder.add_op(OpDrop)?;
@@ -6190,6 +6579,7 @@ fn compile_call_expr<'i>(
     stack_depth: &mut i64,
     script_size: Option<i64>,
     contract_constants: &HashMap<String, Expr<'i>>,
+    tracking: &mut ExprTrackingState,
 ) -> Result<(), CompilerError> {
     match name {
         "OpSha256" => compile_opcode_call(
@@ -6204,12 +6594,13 @@ fn compile_call_expr<'i>(
             OpSHA256,
             script_size,
             contract_constants,
+            tracking,
         ),
         "sha256" => {
             if args.len() != 1 {
                 return Err(CompilerError::Unsupported("sha256() expects a single argument".to_string()));
             }
-            compile_expr(
+            compile_expr_with_tracking(
                 &args[0],
                 scope.env,
                 scope.stack_bindings,
@@ -6220,6 +6611,7 @@ fn compile_call_expr<'i>(
                 stack_depth,
                 script_size,
                 contract_constants,
+                tracking,
             )?;
             builder.add_op(OpSHA256)?;
             Ok(())
@@ -6236,6 +6628,7 @@ fn compile_call_expr<'i>(
             OpTxSubnetId,
             script_size,
             contract_constants,
+            tracking,
         ),
         "OpTxGas" => compile_opcode_call(
             name,
@@ -6249,6 +6642,7 @@ fn compile_call_expr<'i>(
             OpTxGas,
             script_size,
             contract_constants,
+            tracking,
         ),
         "OpTxPayloadLen" => compile_opcode_call(
             name,
@@ -6262,6 +6656,7 @@ fn compile_call_expr<'i>(
             OpTxPayloadLen,
             script_size,
             contract_constants,
+            tracking,
         ),
         "OpTxPayloadSubstr" => compile_opcode_call(
             name,
@@ -6275,6 +6670,7 @@ fn compile_call_expr<'i>(
             OpTxPayloadSubstr,
             script_size,
             contract_constants,
+            tracking,
         ),
         "OpOutpointTxId" => compile_opcode_call(
             name,
@@ -6288,6 +6684,7 @@ fn compile_call_expr<'i>(
             OpOutpointTxId,
             script_size,
             contract_constants,
+            tracking,
         ),
         "OpOutpointIndex" => compile_opcode_call(
             name,
@@ -6301,6 +6698,7 @@ fn compile_call_expr<'i>(
             OpOutpointIndex,
             script_size,
             contract_constants,
+            tracking,
         ),
         "OpTxInputScriptSigLen" => compile_opcode_call(
             name,
@@ -6314,6 +6712,7 @@ fn compile_call_expr<'i>(
             OpTxInputScriptSigLen,
             script_size,
             contract_constants,
+            tracking,
         ),
         "OpTxInputScriptSigSubstr" => compile_opcode_call(
             name,
@@ -6327,6 +6726,7 @@ fn compile_call_expr<'i>(
             OpTxInputScriptSigSubstr,
             script_size,
             contract_constants,
+            tracking,
         ),
         "OpTxInputSeq" => compile_opcode_call(
             name,
@@ -6340,6 +6740,7 @@ fn compile_call_expr<'i>(
             OpTxInputSeq,
             script_size,
             contract_constants,
+            tracking,
         ),
         "OpTxInputIsCoinbase" => compile_opcode_call(
             name,
@@ -6353,6 +6754,7 @@ fn compile_call_expr<'i>(
             OpTxInputIsCoinbase,
             script_size,
             contract_constants,
+            tracking,
         ),
         "OpTxInputSpkLen" => compile_opcode_call(
             name,
@@ -6366,6 +6768,7 @@ fn compile_call_expr<'i>(
             OpTxInputSpkLen,
             script_size,
             contract_constants,
+            tracking,
         ),
         "OpTxInputSpkSubstr" => compile_opcode_call(
             name,
@@ -6379,6 +6782,7 @@ fn compile_call_expr<'i>(
             OpTxInputSpkSubstr,
             script_size,
             contract_constants,
+            tracking,
         ),
         "OpTxOutputSpkLen" => compile_opcode_call(
             name,
@@ -6392,6 +6796,7 @@ fn compile_call_expr<'i>(
             OpTxOutputSpkLen,
             script_size,
             contract_constants,
+            tracking,
         ),
         "OpTxOutputSpkSubstr" => compile_opcode_call(
             name,
@@ -6405,6 +6810,7 @@ fn compile_call_expr<'i>(
             OpTxOutputSpkSubstr,
             script_size,
             contract_constants,
+            tracking,
         ),
         "OpAuthOutputCount" => compile_opcode_call(
             name,
@@ -6418,6 +6824,7 @@ fn compile_call_expr<'i>(
             OpAuthOutputCount,
             script_size,
             contract_constants,
+            tracking,
         ),
         "OpAuthOutputIdx" => compile_opcode_call(
             name,
@@ -6431,6 +6838,7 @@ fn compile_call_expr<'i>(
             OpAuthOutputIdx,
             script_size,
             contract_constants,
+            tracking,
         ),
         "OpInputCovenantId" => compile_opcode_call(
             name,
@@ -6444,6 +6852,7 @@ fn compile_call_expr<'i>(
             OpInputCovenantId,
             script_size,
             contract_constants,
+            tracking,
         ),
         "OpCovInputCount" => compile_opcode_call(
             name,
@@ -6457,6 +6866,7 @@ fn compile_call_expr<'i>(
             OpCovInputCount,
             script_size,
             contract_constants,
+            tracking,
         ),
         "OpCovInputIdx" => compile_opcode_call(
             name,
@@ -6470,6 +6880,7 @@ fn compile_call_expr<'i>(
             OpCovInputIdx,
             script_size,
             contract_constants,
+            tracking,
         ),
         "OpCovOutputCount" => compile_opcode_call(
             name,
@@ -6483,6 +6894,7 @@ fn compile_call_expr<'i>(
             OpCovOutputCount,
             script_size,
             contract_constants,
+            tracking,
         ),
         "OpCovOutputIdx" => compile_opcode_call(
             name,
@@ -6496,6 +6908,7 @@ fn compile_call_expr<'i>(
             OpCovOutputIdx,
             script_size,
             contract_constants,
+            tracking,
         ),
         "OpNum2Bin" => compile_opcode_call(
             name,
@@ -6509,6 +6922,7 @@ fn compile_call_expr<'i>(
             OpNum2Bin,
             script_size,
             contract_constants,
+            tracking,
         ),
         "OpBin2Num" => compile_opcode_call(
             name,
@@ -6522,6 +6936,7 @@ fn compile_call_expr<'i>(
             OpBin2Num,
             script_size,
             contract_constants,
+            tracking,
         ),
         "OpChainblockSeqCommit" => compile_opcode_call(
             name,
@@ -6535,13 +6950,14 @@ fn compile_call_expr<'i>(
             OpChainblockSeqCommit,
             script_size,
             contract_constants,
+            tracking,
         ),
         "bytes" => {
             if args.is_empty() || args.len() > 2 {
                 return Err(CompilerError::Unsupported("bytes() expects one or two arguments".to_string()));
             }
             if args.len() == 2 {
-                compile_expr(
+                compile_expr_with_tracking(
                     &args[0],
                     scope.env,
                     scope.stack_bindings,
@@ -6552,8 +6968,9 @@ fn compile_call_expr<'i>(
                     stack_depth,
                     script_size,
                     contract_constants,
+                    tracking,
                 )?;
-                compile_expr(
+                compile_expr_with_tracking(
                     &args[1],
                     scope.env,
                     scope.stack_bindings,
@@ -6564,6 +6981,7 @@ fn compile_call_expr<'i>(
                     stack_depth,
                     script_size,
                     contract_constants,
+                    tracking,
                 )?;
                 builder.add_op(OpNum2Bin)?;
                 *stack_depth -= 1;
@@ -6584,7 +7002,7 @@ fn compile_call_expr<'i>(
                         }
                     }
                     if expr_is_bytes(&args[0], scope.env, scope.types) {
-                        compile_expr(
+                        compile_expr_with_tracking(
                             &args[0],
                             scope.env,
                             scope.stack_bindings,
@@ -6595,10 +7013,11 @@ fn compile_call_expr<'i>(
                             stack_depth,
                             script_size,
                             contract_constants,
+                            tracking,
                         )?;
                         return Ok(());
                     }
-                    compile_expr(
+                    compile_expr_with_tracking(
                         &args[0],
                         scope.env,
                         scope.stack_bindings,
@@ -6609,6 +7028,7 @@ fn compile_call_expr<'i>(
                         stack_depth,
                         script_size,
                         contract_constants,
+                        tracking,
                     )?;
                     builder.add_i64(8)?;
                     *stack_depth += 1;
@@ -6618,7 +7038,7 @@ fn compile_call_expr<'i>(
                 }
                 _ => {
                     if expr_is_bytes(&args[0], scope.env, scope.types) {
-                        compile_expr(
+                        compile_expr_with_tracking(
                             &args[0],
                             scope.env,
                             scope.stack_bindings,
@@ -6629,10 +7049,11 @@ fn compile_call_expr<'i>(
                             stack_depth,
                             script_size,
                             contract_constants,
+                            tracking,
                         )?;
                         Ok(())
                     } else {
-                        compile_expr(
+                        compile_expr_with_tracking(
                             &args[0],
                             scope.env,
                             scope.stack_bindings,
@@ -6643,6 +7064,7 @@ fn compile_call_expr<'i>(
                             stack_depth,
                             script_size,
                             contract_constants,
+                            tracking,
                         )?;
                         builder.add_i64(8)?;
                         *stack_depth += 1;
@@ -6668,13 +7090,14 @@ fn compile_call_expr<'i>(
                 stack_depth,
                 script_size,
                 contract_constants,
+                tracking,
             )
         }
         "int" => {
             if args.len() != 1 {
                 return Err(CompilerError::Unsupported("int() expects a single argument".to_string()));
             }
-            compile_expr(
+            compile_expr_with_tracking(
                 &args[0],
                 scope.env,
                 scope.stack_bindings,
@@ -6685,6 +7108,7 @@ fn compile_call_expr<'i>(
                 stack_depth,
                 script_size,
                 contract_constants,
+                tracking,
             )?;
             Ok(())
         }
@@ -6692,7 +7116,7 @@ fn compile_call_expr<'i>(
             if args.len() != 1 {
                 return Err(CompilerError::Unsupported(format!("{name}() expects a single argument")));
             }
-            compile_expr(
+            compile_expr_with_tracking(
                 &args[0],
                 scope.env,
                 scope.stack_bindings,
@@ -6703,6 +7127,7 @@ fn compile_call_expr<'i>(
                 stack_depth,
                 script_size,
                 contract_constants,
+                tracking,
             )?;
             Ok(())
         }
@@ -6713,7 +7138,7 @@ fn compile_call_expr<'i>(
                 if args.len() != 1 && args.len() != 2 {
                     return Err(CompilerError::Unsupported(format!("{name}() expects 1 or 2 arguments")));
                 }
-                compile_expr(
+                compile_expr_with_tracking(
                     &args[0],
                     scope.env,
                     scope.stack_bindings,
@@ -6724,10 +7149,11 @@ fn compile_call_expr<'i>(
                     stack_depth,
                     script_size,
                     contract_constants,
+                    tracking,
                 )?;
                 if args.len() == 2 {
                     // byte[](value, size) - OpNum2Bin with size parameter
-                    compile_expr(
+                    compile_expr_with_tracking(
                         &args[1],
                         scope.env,
                         scope.stack_bindings,
@@ -6738,6 +7164,7 @@ fn compile_call_expr<'i>(
                         stack_depth,
                         script_size,
                         contract_constants,
+                        tracking,
                     )?;
                     *stack_depth += 1;
                     builder.add_op(OpNum2Bin)?;
@@ -6750,7 +7177,7 @@ fn compile_call_expr<'i>(
                 if args.len() != 1 {
                     return Err(CompilerError::Unsupported(format!("{name}() expects a single argument")));
                 }
-                compile_expr(
+                compile_expr_with_tracking(
                     &args[0],
                     scope.env,
                     scope.stack_bindings,
@@ -6761,6 +7188,7 @@ fn compile_call_expr<'i>(
                     stack_depth,
                     script_size,
                     contract_constants,
+                    tracking,
                 )?;
                 builder.add_i64(size)?;
                 *stack_depth += 1;
@@ -6773,7 +7201,7 @@ fn compile_call_expr<'i>(
             if args.len() != 1 {
                 return Err(CompilerError::Unsupported("blake2b() expects a single argument".to_string()));
             }
-            compile_expr(
+            compile_expr_with_tracking(
                 &args[0],
                 scope.env,
                 scope.stack_bindings,
@@ -6784,6 +7212,7 @@ fn compile_call_expr<'i>(
                 stack_depth,
                 script_size,
                 contract_constants,
+                tracking,
             )?;
             builder.add_op(OpBlake2b)?;
             Ok(())
@@ -6792,7 +7221,7 @@ fn compile_call_expr<'i>(
             if args.len() != 2 {
                 return Err(CompilerError::Unsupported("checkSig() expects 2 arguments".to_string()));
             }
-            compile_expr(
+            compile_expr_with_tracking(
                 &args[0],
                 scope.env,
                 scope.stack_bindings,
@@ -6803,8 +7232,9 @@ fn compile_call_expr<'i>(
                 stack_depth,
                 script_size,
                 contract_constants,
+                tracking,
             )?;
-            compile_expr(
+            compile_expr_with_tracking(
                 &args[1],
                 scope.env,
                 scope.stack_bindings,
@@ -6815,6 +7245,7 @@ fn compile_call_expr<'i>(
                 stack_depth,
                 script_size,
                 contract_constants,
+                tracking,
             )?;
             builder.add_op(OpCheckSig)?;
             *stack_depth -= 1;
@@ -6823,7 +7254,7 @@ fn compile_call_expr<'i>(
         "checkDataSig" => {
             // TODO: Remove this stub
             for arg in args {
-                compile_expr(
+                compile_expr_with_tracking(
                     arg,
                     scope.env,
                     scope.stack_bindings,
@@ -6834,6 +7265,7 @@ fn compile_call_expr<'i>(
                     stack_depth,
                     script_size,
                     contract_constants,
+                    tracking,
                 )?;
             }
             for _ in 0..args.len() {
@@ -6861,12 +7293,13 @@ fn compile_opcode_call<'i>(
     opcode: u8,
     script_size: Option<i64>,
     contract_constants: &HashMap<String, Expr<'i>>,
+    tracking: &mut ExprTrackingState,
 ) -> Result<(), CompilerError> {
     if args.len() != expected_args {
         return Err(CompilerError::Unsupported(format!("{name}() expects {expected_args} argument(s)")));
     }
     for arg in args {
-        compile_expr(
+        compile_expr_with_tracking(
             arg,
             scope.env,
             scope.stack_bindings,
@@ -6877,6 +7310,7 @@ fn compile_opcode_call<'i>(
             stack_depth,
             script_size,
             contract_constants,
+            tracking,
         )?;
     }
     builder.add_op(opcode)?;
@@ -6895,8 +7329,21 @@ fn compile_concat_operand<'i>(
     stack_depth: &mut i64,
     script_size: Option<i64>,
     contract_constants: &HashMap<String, Expr<'i>>,
+    tracking: &mut ExprTrackingState,
 ) -> Result<(), CompilerError> {
-    compile_expr(expr, env, stack_bindings, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
+    compile_expr_with_tracking(
+        expr,
+        env,
+        stack_bindings,
+        types,
+        builder,
+        options,
+        visiting,
+        stack_depth,
+        script_size,
+        contract_constants,
+        tracking,
+    )?;
     if !expr_is_bytes(expr, env, types) {
         builder.add_i64(1)?;
         *stack_depth += 1;

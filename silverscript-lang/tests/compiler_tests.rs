@@ -5548,16 +5548,21 @@ fn compile_time_length_for_fixed_size_int_array() {
     "#;
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
 
-    // Expected script for compile-time length:
-    // The nums.length should be replaced with a compile-time constant 5
-    // require(nums.length == 5) becomes: <5> <5> OP_NUMEQUALVERIFY, then OP_TRUE for entrypoint return
-    let expected_script = vec![
-        0x55, // OP_5 (push 5 for nums.length)
-        0x55, // OP_5 (push 5 for comparison)
-        0x9c, // OP_NUMEQUALVERIFY (combined OP_NUMEQUAL + OP_VERIFY)
-        0x69, // OP_VERIFY
-        0x51, // OP_TRUE (entrypoint return value)
-    ];
+    let expected_script = ScriptBuilder::new()
+        // `nums.length` is folded to the compile-time constant `5`.
+        .add_i64(5)
+        .unwrap()
+        // Compare it against the literal `5`.
+        .add_i64(5)
+        .unwrap()
+        .add_op(OpNumEqual)
+        .unwrap()
+        .add_op(OpVerify)
+        .unwrap()
+        // Entrypoints leave the success sentinel.
+        .add_op(OpTrue)
+        .unwrap()
+        .drain();
 
     assert_eq!(
         compiled.script, expected_script,
@@ -5578,16 +5583,21 @@ fn compile_time_length_for_fixed_size_byte_array() {
     "#;
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
 
-    // Expected script for compile-time length:
-    // data.length should be replaced with a compile-time constant 3
-    // require(data.length == 3) becomes: <3> <3> OP_NUMEQUALVERIFY, then OP_TRUE for entrypoint return
-    let expected_script = vec![
-        0x53, // OP_3 (push 3 for data.length)
-        0x53, // OP_3 (push 3 for comparison)
-        0x9c, // OP_NUMEQUALVERIFY (combined OP_NUMEQUAL + OP_VERIFY)
-        0x69, // OP_VERIFY
-        0x51, // OP_TRUE (entrypoint return value)
-    ];
+    let expected_script = ScriptBuilder::new()
+        // `data.length` is folded to the compile-time constant `3`.
+        .add_i64(3)
+        .unwrap()
+        // Compare it against the literal `3`.
+        .add_i64(3)
+        .unwrap()
+        .add_op(OpNumEqual)
+        .unwrap()
+        .add_op(OpVerify)
+        .unwrap()
+        // Entrypoints leave the success sentinel.
+        .add_op(OpTrue)
+        .unwrap()
+        .drain();
 
     assert_eq!(
         compiled.script, expected_script,
@@ -5610,20 +5620,29 @@ fn compile_time_length_for_inferred_array_sizes() {
     "#;
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
 
-    // Both lengths should be compile-time constants (no OP_SIZE path):
-    // require(data.length == 4) -> OP_4 OP_4 OP_NUMEQUALVERIFY
-    // require(nums.length == 3) -> OP_3 OP_3 OP_NUMEQUALVERIFY
-    let expected_script = vec![
-        0x54, // OP_4 (data.length)
-        0x54, // OP_4
-        0x9c, // OP_NUMEQUALVERIFY
-        0x69, // OP_VERIFY
-        0x53, // OP_3 (nums.length)
-        0x53, // OP_3
-        0x9c, // OP_NUMEQUALVERIFY
-        0x69, // OP_VERIFY
-        0x51, // OP_TRUE
-    ];
+    let expected_script = ScriptBuilder::new()
+        // `data.length` is inferred as `4`.
+        .add_i64(4)
+        .unwrap()
+        .add_i64(4)
+        .unwrap()
+        .add_op(OpNumEqual)
+        .unwrap()
+        .add_op(OpVerify)
+        .unwrap()
+        // `nums.length` is inferred as `3`.
+        .add_i64(3)
+        .unwrap()
+        .add_i64(3)
+        .unwrap()
+        .add_op(OpNumEqual)
+        .unwrap()
+        .add_op(OpVerify)
+        .unwrap()
+        // Entrypoints leave the success sentinel.
+        .add_op(OpTrue)
+        .unwrap()
+        .drain();
 
     assert_eq!(
         compiled.script, expected_script,
@@ -5719,17 +5738,20 @@ fn compile_time_length_with_constant_size() {
     "#;
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
 
-    // Expected script for compile-time length with constant size:
-    // nums.length should be replaced with compile-time constant 5 (from SIZE)
-    // SIZE constant should also be replaced with 5
-    // require(nums.length == SIZE) becomes: <5> <5> OP_NUMEQUALVERIFY
-    let expected_script = vec![
-        0x55, // OP_5 (push 5 for nums.length)
-        0x55, // OP_5 (push 5 for SIZE constant)
-        0x9c, // OP_NUMEQUALVERIFY
-        0x69, // OP_VERIFY
-        0x51, // OP_TRUE (entrypoint return value)
-    ];
+    let expected_script = ScriptBuilder::new()
+        // Both `nums.length` and `SIZE` fold to the same compile-time constant.
+        .add_i64(5)
+        .unwrap()
+        .add_i64(5)
+        .unwrap()
+        .add_op(OpNumEqual)
+        .unwrap()
+        .add_op(OpVerify)
+        .unwrap()
+        // Entrypoints leave the success sentinel.
+        .add_op(OpTrue)
+        .unwrap()
+        .drain();
 
     assert_eq!(
         compiled.script, expected_script,
@@ -6246,6 +6268,44 @@ fn reassignment_pushes_new_value_and_rebinds_stack_local() {
 }
 
 #[test]
+fn last_use_of_reassigned_param_rolls_instead_of_picking() {
+    let source = r#"
+        contract ConsumeReassignedParam() {
+            entrypoint function main(int x) {
+                x = x + 1;
+                require(x > 0);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("param reassignment should compile");
+    let expected = ScriptBuilder::new()
+        .add_i64(0)
+        .unwrap()
+        .add_op(OpRoll)
+        .unwrap()
+        .add_i64(1)
+        .unwrap()
+        .add_op(OpAdd)
+        .unwrap()
+        // The final visible use of rebound `x` rolls it into the comparison.
+        .add_i64(0)
+        .unwrap()
+        .add_op(OpRoll)
+        .unwrap()
+        .add_i64(0)
+        .unwrap()
+        .add_op(OpGreaterThan)
+        .unwrap()
+        .add_op(OpVerify)
+        .unwrap()
+        .add_op(OpTrue)
+        .unwrap()
+        .drain();
+    assert_eq!(compiled.script, expected);
+}
+
+#[test]
 fn if_without_else_reassignment_gets_normalized() {
     let source = r#"
         contract MissingElse() {
@@ -6265,6 +6325,77 @@ fn if_without_else_reassignment_gets_normalized() {
     assert!(normalized.contains("__if_x_"), "normalized AST should introduce an if-local binding for x: {normalized}");
 
     assert!(compiled.script.contains(&OpElse), "compiled script should include an explicit else branch");
+}
+
+#[test]
+fn normalized_if_branches_roll_their_last_use_of_reassigned_param() {
+    let source = r#"
+        contract MissingElseConsume() {
+            entrypoint function main(int x) {
+                if (true) {
+                    x = x + 1;
+                }
+                require(x > 0);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("normalized if should compile");
+    let expected = ScriptBuilder::new()
+        .add_i64(1)
+        .unwrap()
+        .add_op(OpIf)
+        .unwrap()
+        .add_i64(0)
+        .unwrap()
+        .add_op(OpRoll)
+        .unwrap()
+        .add_i64(1)
+        .unwrap()
+        .add_op(OpAdd)
+        .unwrap()
+        .add_i64(0)
+        .unwrap()
+        .add_op(OpPick)
+        .unwrap()
+        .add_i64(1)
+        .unwrap()
+        .add_op(OpRoll)
+        .unwrap()
+        .add_op(OpDrop)
+        .unwrap()
+        .add_op(OpElse)
+        .unwrap()
+        .add_i64(0)
+        .unwrap()
+        .add_op(OpRoll)
+        .unwrap()
+        .add_i64(0)
+        .unwrap()
+        .add_op(OpPick)
+        .unwrap()
+        .add_i64(1)
+        .unwrap()
+        .add_op(OpRoll)
+        .unwrap()
+        .add_op(OpDrop)
+        .unwrap()
+        .add_op(OpEndIf)
+        .unwrap()
+        .add_i64(0)
+        .unwrap()
+        .add_op(OpRoll)
+        .unwrap()
+        .add_i64(0)
+        .unwrap()
+        .add_op(OpGreaterThan)
+        .unwrap()
+        .add_op(OpVerify)
+        .unwrap()
+        .add_op(OpTrue)
+        .unwrap()
+        .drain();
+    assert_eq!(compiled.script, expected);
 }
 
 #[test]
@@ -6306,29 +6437,35 @@ fn if_normalization_mirrors_missing_reassigned_vars_across_branches() {
         // Pick `x` and push `x + 1`.
         .add_i64(3)
         .unwrap()
-        .add_op(OpPick)
+        .add_op(OpRoll)
         .unwrap()
         .add_i64(1)
         .unwrap()
         .add_op(OpAdd)
         .unwrap()
-        // Pick `x` again to preserve the pre-branch stack shape for mirrored rebinding.
+        // Mirror the branch outputs so both branches leave the same stack shape.
         .add_i64(3)
         .unwrap()
-        .add_op(OpPick)
+        .add_op(OpRoll)
         .unwrap()
-        // Pick `y`.
         .add_i64(1)
         .unwrap()
         .add_op(OpPick)
         .unwrap()
-        // Pick `y` again so both mirrored outputs are available.
         .add_i64(1)
         .unwrap()
         .add_op(OpPick)
         .unwrap()
-        // Drop the original branch inputs that have now been mirrored.
+        // Drop the original `flag` and stale `x` inputs after mirroring them.
+        .add_i64(3)
+        .unwrap()
+        .add_op(OpRoll)
+        .unwrap()
         .add_op(OpDrop)
+        .unwrap()
+        .add_i64(2)
+        .unwrap()
+        .add_op(OpRoll)
         .unwrap()
         .add_op(OpDrop)
         .unwrap()
@@ -6338,29 +6475,35 @@ fn if_normalization_mirrors_missing_reassigned_vars_across_branches() {
         // Pick `y` and push `y * 2`.
         .add_i64(2)
         .unwrap()
-        .add_op(OpPick)
+        .add_op(OpRoll)
         .unwrap()
         .add_i64(2)
         .unwrap()
         .add_op(OpMul)
         .unwrap()
-        // Pick `flag` again so the mirrored stack layout matches the then-branch shape.
-        .add_i64(4)
+        // Mirror the branch outputs so the else branch matches the then-branch shape.
+        .add_i64(3)
         .unwrap()
-        .add_op(OpPick)
+        .add_op(OpRoll)
         .unwrap()
-        // Pick `x`.
         .add_i64(0)
         .unwrap()
         .add_op(OpPick)
         .unwrap()
-        // Pick `y`.
         .add_i64(2)
         .unwrap()
         .add_op(OpPick)
         .unwrap()
-        // Drop the original branch inputs that have now been mirrored.
+        // Drop the original `flag` and stale `y` inputs after mirroring them.
+        .add_i64(3)
+        .unwrap()
+        .add_op(OpRoll)
+        .unwrap()
         .add_op(OpDrop)
+        .unwrap()
+        .add_i64(2)
+        .unwrap()
+        .add_op(OpRoll)
         .unwrap()
         .add_op(OpDrop)
         .unwrap()
@@ -6368,7 +6511,7 @@ fn if_normalization_mirrors_missing_reassigned_vars_across_branches() {
         .add_op(OpEndIf)
         .unwrap()
         // Pick the mirrored `x`.
-        .add_op(Op1Negate)
+        .add_i64(1)
         .unwrap()
         .add_op(OpPick)
         .unwrap()
@@ -6382,12 +6525,9 @@ fn if_normalization_mirrors_missing_reassigned_vars_across_branches() {
         .unwrap()
         .add_op(OpVerify)
         .unwrap()
-        // Push the encoded depth used to pick the mirrored `y`.
-        .add_op(OpData1)
-        .unwrap()
-        .add_op(OpSize)
-        .unwrap()
         // Pick the mirrored `y`.
+        .add_i64(0)
+        .unwrap()
         .add_op(OpPick)
         .unwrap()
         // Pick `expected_y`.
@@ -6416,7 +6556,6 @@ fn if_normalization_mirrors_missing_reassigned_vars_across_branches() {
         .unwrap()
         .drain();
     assert_eq!(compiled.script, expected);
-
 }
 
 #[test]
@@ -6798,6 +6937,7 @@ fn compile_time_if_branch_stores_struct_fields_once_and_reuses_them() {
         .unwrap()
         .add_op(OpIf)
         .unwrap()
+        // Compute `s.a = x + 1`.
         .add_i64(0)
         .unwrap()
         .add_op(OpPick)
@@ -6806,6 +6946,7 @@ fn compile_time_if_branch_stores_struct_fields_once_and_reuses_them() {
         .unwrap()
         .add_op(OpAdd)
         .unwrap()
+        // Compute `s.b = x * x`.
         .add_i64(1)
         .unwrap()
         .add_op(OpPick)
@@ -6816,6 +6957,7 @@ fn compile_time_if_branch_stores_struct_fields_once_and_reuses_them() {
         .unwrap()
         .add_op(OpMul)
         .unwrap()
+        // Reuse `s.a` and `s.b` across both require statements.
         .add_i64(1)
         .unwrap()
         .add_op(OpPick)
@@ -6856,6 +6998,11 @@ fn compile_time_if_branch_stores_struct_fields_once_and_reuses_them() {
         .unwrap()
         .add_op(OpVerify)
         .unwrap()
+        // Drop the cached struct fields from their actual stack positions.
+        .add_i64(1)
+        .unwrap()
+        .add_op(OpRoll)
+        .unwrap()
         .add_op(OpDrop)
         .unwrap()
         .add_op(OpDrop)
@@ -6868,6 +7015,7 @@ fn compile_time_if_branch_stores_struct_fields_once_and_reuses_them() {
         .unwrap()
         .add_op(OpEndIf)
         .unwrap()
+        // Drop the original argument and leave success.
         .add_op(OpDrop)
         .unwrap()
         .add_op(OpTrue)
@@ -6937,164 +7085,143 @@ fn conditional_counter_in_unrolled_loop_matches_expected_script_with_bound_3() {
         // Iteration 0 guard has folded to `true`.
         .add_i64(1)
         .unwrap()
-        // Enter iteration 0.
         .add_op(OpIf)
         .unwrap()
-        // Push the initial `count`.
+        // Increment `count`.
         .add_i64(0)
         .unwrap()
-        // Push the increment amount.
         .add_i64(1)
         .unwrap()
-        // Compute `count + 1`.
         .add_op(OpAdd)
         .unwrap()
-        // Push the depth needed to pick the mirrored `count`.
+        // Mirror the synthetic branch output and drop the stale pre-branch binding.
         .add_i64(0)
         .unwrap()
-        // Pick the mirrored `count`.
         .add_op(OpPick)
         .unwrap()
-        // Drop the pre-mirrored binding.
-        .add_op(OpDrop)
-        .unwrap()
-        // Start the synthetic `else` branch inserted for `if (true)`.
-        .add_op(OpElse)
-        .unwrap()
-        // Push the old `count`.
-        .add_i64(0)
-        .unwrap()
-        // Push the depth needed to mirror it.
-        .add_i64(0)
-        .unwrap()
-        // Pick the mirrored `count`.
-        .add_op(OpPick)
-        .unwrap()
-        // Drop the pre-mirrored binding.
-        .add_op(OpDrop)
-        .unwrap()
-        // Finish the inner `if`.
-        .add_op(OpEndIf)
-        .unwrap()
-        // Iteration 1 guard has also folded to `true`.
         .add_i64(1)
         .unwrap()
-        // Enter iteration 1.
+        .add_op(OpRoll)
+        .unwrap()
+        .add_op(OpDrop)
+        .unwrap()
+        .add_op(OpElse)
+        .unwrap()
+        // Missing `else` branch still mirrors the old `count`.
+        .add_i64(0)
+        .unwrap()
+        .add_i64(0)
+        .unwrap()
+        .add_op(OpPick)
+        .unwrap()
+        .add_i64(1)
+        .unwrap()
+        .add_op(OpRoll)
+        .unwrap()
+        .add_op(OpDrop)
+        .unwrap()
+        .add_op(OpEndIf)
+        .unwrap()
+        // Iteration 1.
+        .add_i64(1)
+        .unwrap()
         .add_op(OpIf)
         .unwrap()
-        // Push the depth used to pick the current `count`.
-        .add_op(Op1Negate)
-        .unwrap()
-        // Pick the current `count` directly from its deterministic stack slot.
-        .add_op(OpPick)
-        .unwrap()
-        // Push the increment amount.
-        .add_i64(1)
-        .unwrap()
-        // Compute `count + 1`.
-        .add_op(OpAdd)
-        .unwrap()
-        // Push the depth needed to pick the mirrored `count`.
-        .add_i64(0)
-        .unwrap()
-        // Pick the mirrored `count`.
-        .add_op(OpPick)
-        .unwrap()
-        // Drop the pre-mirrored binding.
-        .add_op(OpDrop)
-        .unwrap()
-        // Start the synthetic `else` branch inserted for iteration 1.
-        .add_op(OpElse)
-        .unwrap()
-        // Push the depth used to pick the current `count`.
-        .add_op(Op1Negate)
-        .unwrap()
-        // Pick the current `count` directly from its deterministic stack slot.
-        .add_op(OpPick)
-        .unwrap()
-        // Push the old `count`.
-        .add_i64(0)
-        .unwrap()
-        // Pick the mirrored `count`.
-        .add_op(OpPick)
-        .unwrap()
-        // Drop the pre-mirrored binding.
-        .add_op(OpDrop)
-        .unwrap()
-        // Finish iteration 1's synthetic `if`.
-        .add_op(OpEndIf)
-        .unwrap()
-        // Iteration 2 guard has also folded to `true`.
-        .add_i64(1)
-        .unwrap()
-        // Enter iteration 2.
-        .add_op(OpIf)
-        .unwrap()
-        // Push the depth used to pick the current `count`.
-        .add_op(Op1Negate)
-        .unwrap()
-        // Pick the current `count` directly from its deterministic stack slot.
-        .add_op(OpPick)
-        .unwrap()
-        // Push the increment amount.
-        .add_i64(1)
-        .unwrap()
-        // Compute `count + 1`.
-        .add_op(OpAdd)
-        .unwrap()
-        // Push the depth needed to pick the mirrored `count`.
-        .add_i64(0)
-        .unwrap()
-        // Pick the mirrored `count`.
-        .add_op(OpPick)
-        .unwrap()
-        // Drop the pre-mirrored binding.
-        .add_op(OpDrop)
-        .unwrap()
-        // Start the synthetic `else` branch inserted for iteration 2.
-        .add_op(OpElse)
-        .unwrap()
-        // Push the depth used to pick the current `count`.
-        .add_op(Op1Negate)
-        .unwrap()
-        // Pick the current `count` directly from its deterministic stack slot.
-        .add_op(OpPick)
-        .unwrap()
-        // Push the old `count`.
-        .add_i64(0)
-        .unwrap()
-        // Pick the mirrored `count`.
-        .add_op(OpPick)
-        .unwrap()
-        // Drop the pre-mirrored binding.
-        .add_op(OpDrop)
-        .unwrap()
-        // Finish iteration 2's synthetic `if`.
-        .add_op(OpEndIf)
-        .unwrap()
-        // Push the depth used to pick the final `count`.
-        .add_op(Op1Negate)
-        .unwrap()
-        // Pick the final `count` directly from its deterministic stack slot.
-        .add_op(OpPick)
-        .unwrap()
-        // Push the comparison bound.
-        .add_i64(0)
-        .unwrap()
-        // Require `count >= 0`.
-        .add_op(OpGreaterThanOrEqual)
-        .unwrap()
-        .add_op(OpVerify)
-        .unwrap()
-        // Roll the stale base `count` to the top.
         .add_i64(0)
         .unwrap()
         .add_op(OpRoll)
         .unwrap()
-        // Drop the stale base `count`.
+        .add_i64(1)
+        .unwrap()
+        .add_op(OpAdd)
+        .unwrap()
+        .add_i64(0)
+        .unwrap()
+        .add_op(OpPick)
+        .unwrap()
+        .add_i64(1)
+        .unwrap()
+        .add_op(OpRoll)
+        .unwrap()
         .add_op(OpDrop)
         .unwrap()
-        // Leave the success sentinel.
+        .add_op(OpElse)
+        .unwrap()
+        .add_i64(0)
+        .unwrap()
+        .add_op(OpRoll)
+        .unwrap()
+        .add_i64(0)
+        .unwrap()
+        .add_op(OpPick)
+        .unwrap()
+        .add_i64(1)
+        .unwrap()
+        .add_op(OpRoll)
+        .unwrap()
+        .add_op(OpDrop)
+        .unwrap()
+        .add_op(OpEndIf)
+        .unwrap()
+        // Iteration 2.
+        .add_i64(1)
+        .unwrap()
+        .add_op(OpIf)
+        .unwrap()
+        .add_i64(0)
+        .unwrap()
+        .add_op(OpRoll)
+        .unwrap()
+        .add_i64(1)
+        .unwrap()
+        .add_op(OpAdd)
+        .unwrap()
+        .add_i64(0)
+        .unwrap()
+        .add_op(OpPick)
+        .unwrap()
+        .add_i64(1)
+        .unwrap()
+        .add_op(OpRoll)
+        .unwrap()
+        .add_op(OpDrop)
+        .unwrap()
+        .add_op(OpElse)
+        .unwrap()
+        .add_i64(0)
+        .unwrap()
+        .add_op(OpRoll)
+        .unwrap()
+        .add_i64(0)
+        .unwrap()
+        .add_op(OpPick)
+        .unwrap()
+        .add_i64(1)
+        .unwrap()
+        .add_op(OpRoll)
+        .unwrap()
+        .add_op(OpDrop)
+        .unwrap()
+        .add_op(OpEndIf)
+        .unwrap()
+        // Require the final count to be non-negative.
+        .add_i64(0)
+        .unwrap()
+        .add_op(OpPick)
+        .unwrap()
+        .add_i64(0)
+        .unwrap()
+        .add_op(OpGreaterThanOrEqual)
+        .unwrap()
+        .add_op(OpVerify)
+        .unwrap()
+        // Drop the stale base count and leave success.
+        .add_i64(0)
+        .unwrap()
+        .add_op(OpRoll)
+        .unwrap()
+        .add_op(OpDrop)
+        .unwrap()
         .add_op(OpTrue)
         .unwrap()
         .drain();
