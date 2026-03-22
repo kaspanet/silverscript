@@ -42,7 +42,7 @@
     - [Output Introspection](#output-introspection)
 11. [Covenants](#covenants)
     - [Creating ScriptPubKey](#creating-scriptpubkey)
-    - [State Transition Helper](#state-transition-helper)
+    - [State Transition Builtins](#state-transition-builtins)
     - [Covenant Examples](#covenant-examples)
 12. [Advanced Features](#advanced-features)
     - [Constants](#constants)
@@ -926,29 +926,54 @@ Create a P2SH scriptPubKey directly from a redeem script:
 byte[35] outputScriptPubKey = new ScriptPubKeyP2SHFromRedeemScript(redeemScript);
 ```
 
-### State Transition Helper
+### State Transition Builtins
 
-**`validateOutputState(int outputIndex, object newState)`**
+SilverScript provides four builtins for state routing and cross-template state inspection.
 
-Validates that `tx.outputs[outputIndex].scriptPubKey` is a P2SH paying to the **same contract code** with **updated state fields**.
+- **Validate Output State**: validate continuation into the same contract template. `newState` must provide every state field exactly once in the local `State` layout.
 
-**`validateOutputStateWithTemplate(int outputIndex, object newState, byte[] templatePrefix, byte[] templateSuffix, byte[32] expectedTemplateHash)`**
+```js
+validateOutputState(int outputIndex, object newState)
+```
 
-Validates that `tx.outputs[outputIndex].scriptPubKey` is a P2SH paying to a **different script template** with the **same state layout** and the provided next state.
+- **Validate Output State With Template**: validate continuation into a foreign contract template. `newState` is encoded using the struct layout implied by the value you pass, then inserted between `templatePrefix` and `templateSuffix`.
 
-**`readInputStateWithTemplate(int inputIndex, int templatePrefixLen, int templateSuffixLen, byte[32] expectedTemplateHash)`**
+```js
+validateOutputStateWithTemplate(
+    int outputIndex,
+    object newState,
+    byte[] templatePrefix,
+    byte[] templateSuffix,
+    byte[32] expectedTemplateHash
+)
+```
 
-Reads another input's state using an explicitly chosen struct layout, after slicing the foreign input's template prefix/suffix by the provided lengths and checking that their hash matches `expectedTemplateHash`.
+- **Read Input State**: read another input as this contract's own `State`.
+
+```js
+readInputState(int inputIndex)
+```
+
+- **Read Input State With Template**: read another input using a foreign struct layout. It checks the foreign template hash and the foreign input's P2SH commitment before decoding.
+
+```js
+readInputStateWithTemplate(
+    int inputIndex,
+    int templatePrefixLen,
+    int templateSuffixLen,
+    byte[32] expectedTemplateHash
+)
+```
 
 Use it with a direct struct binding or destructuring assignment:
 
-```javascript
+```js
 OtherState other = readInputStateWithTemplate(inputIndex, templatePrefixLen, templateSuffixLen, expectedTemplateHash);
 ```
 
-Small example:
+Same-template example:
 
-```javascript
+```js
 pragma silverscript ^0.1.0;
 
 contract Counter(int initCount, byte[2] initTag) {
@@ -961,17 +986,7 @@ contract Counter(int initCount, byte[2] initTag) {
 }
 ```
 
-What this checks:
-
-- Reads the current redeem script from the active input sigscript.
-- Keeps the contract tail (the immutable "rest of script") unchanged.
-- Rebuilds a new redeem script using the provided next field values (`count`, `tag`) + the same tail.
-- Computes the P2SH scriptPubKey for that new redeem script.
-- Verifies output `0` has exactly that scriptPubKey.
-
-In practice, `validateOutputState(...)` enforces continuation into the same contract, while `validateOutputStateWithTemplate(...)` enforces continuation into a different script template that shares the same serialized state layout.
-
-Security note:
+Input-side note:
 
 - `readInputState(...)` and `readInputStateWithTemplate(...)` are input-state decoders. They read bytes from another input's sigscript and decode them as state.
 - `readInputState(...)` is appropriate when the surrounding covenant domain guarantees a single allowed contract/layout for the foreign input.
