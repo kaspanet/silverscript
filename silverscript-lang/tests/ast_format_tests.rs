@@ -77,7 +77,7 @@ contract Advanced(int limit, pubkey owner) {
         byte[] tail = this.activeScriptPubKey.slice(1, this.activeScriptPubKey.length);
         validateOutputState(0, {balance: current});
         for (i, 0, limit, limit) {
-            console.log("loop", i);
+            console.log("loop", i + current);
         }
         balance = current;
         require(this.age >= 10, "age");
@@ -114,7 +114,7 @@ fn compiled_formatted_contract_preserves_exact_ast_for_basic_contract() {
         int input = 1 + 2;
         (int left, int right) = compute(input);
         require(left < right, "ordered");
-        console.log("pair", LIMIT);
+        console.log("pair", LIMIT + input);
     }
 }
 "#;
