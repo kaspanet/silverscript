@@ -2212,17 +2212,34 @@ fn rebind_stack_binding(bindings: &mut HashMap<String, i64>, name: &str) {
     push_stack_binding(bindings, name);
 }
 
-fn pop_stack_bindings(bindings: &mut HashMap<String, i64>, names: &[String]) {
-    if names.is_empty() {
-        return;
+fn drop_stack_binding(
+    bindings: &mut HashMap<String, i64>,
+    name: &str,
+    builder: &mut ScriptBuilder,
+) -> Result<(), CompilerError> {
+    let Some(removed_depth) = bindings.remove(name) else {
+        return Ok(());
+    };
+
+    if removed_depth < 0 {
+        return Err(CompilerError::Unsupported(format!("invalid negative stack depth for binding '{name}'")));
     }
 
-    for name in names {
-        bindings.remove(name);
+    if removed_depth == 0 {
+        builder.add_op(OpDrop)?;
+    } else {
+        builder.add_i64(removed_depth)?;
+        builder.add_op(OpRoll)?;
+        builder.add_op(OpDrop)?;
     }
+
     for depth in bindings.values_mut() {
-        *depth -= names.len() as i64;
+        if *depth > removed_depth {
+            *depth -= 1;
+        }
     }
+
+    Ok(())
 }
 
 fn validate_return_types<'i>(
@@ -4484,7 +4501,6 @@ fn count_branch_only_stack_bindings_after_if(
         .into_iter()
         .filter(|name| !original_stack_bindings.contains_key(name))
         .filter(|name| !visible_names.contains(name))
-        .filter(|name| !name.starts_with(HIDDEN_STACK_BINDING_PREFIX))
         .filter(|name| matches!((then_stack_bindings.get(name), else_stack_bindings.get(name)), (Some(then_depth), Some(else_depth)) if then_depth == else_depth))
         .count()
 }
@@ -4694,13 +4710,12 @@ fn compile_block<'i>(
     }
 
     if scoped_stack_locals && !added_stack_locals.is_empty() {
-        for _ in 0..added_stack_locals.len() {
-            builder.add_op(OpDrop)?;
+        for name in &added_stack_locals {
+            drop_stack_binding(stack_bindings, name, builder)?;
         }
         for name in &added_stack_locals {
             types.remove(name);
         }
-        pop_stack_bindings(stack_bindings, &added_stack_locals);
     }
 
     Ok(())

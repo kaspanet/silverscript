@@ -6448,6 +6448,42 @@ fn if_reassignment_pushes_shared_outputs_in_branch_order() {
     assert!(compiled.script.contains(&OpElse), "compiled script should encode both branch outputs");
 }
 
+// Regresses branch-local cleanup when an `if` branch rebinds an outer stack local:
+// the branch temporary must be removed from its real stack depth without leaving a
+// hidden shadow binding behind after the branch merges.
+#[test]
+fn if_branch_reassignment_drops_hidden_shadow_bindings() {
+    let source = r#"
+        contract BranchShadowCleanup() {
+            entrypoint function main(int flag, int a, int b, int expected) {
+                int d = a + b;
+                d = d - a;
+                if (flag > 0) {
+                    int c = d + b;
+                    d = a + c;
+                } else {
+                    d = d + a;
+                }
+                require(d == expected);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("if branch reassignment should compile");
+
+    let sigscript_then = compiled
+        .build_sig_script("main", vec![Expr::int(1), Expr::int(1), Expr::int(1), Expr::int(3)])
+        .expect("sigscript builds");
+    let result_then = run_script_with_sigscript(compiled.script.clone(), sigscript_then);
+    assert!(result_then.is_ok(), "then-branch reassignment should leave a clean stack: {}", result_then.unwrap_err());
+
+    let sigscript_else = compiled
+        .build_sig_script("main", vec![Expr::int(0), Expr::int(1), Expr::int(1), Expr::int(2)])
+        .expect("sigscript builds");
+    let result_else = run_script_with_sigscript(compiled.script, sigscript_else);
+    assert!(result_else.is_ok(), "else-branch reassignment should leave a clean stack: {}", result_else.unwrap_err());
+}
+
 #[test]
 fn local_bool_expression_is_stored_once_and_reused() {
     let source = r#"
