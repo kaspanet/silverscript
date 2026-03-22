@@ -7,7 +7,7 @@ use crate::debug_info::{
     RuntimeBinding, SourceSpan, StepKind,
 };
 
-use super::{CompilerError, resolve_expr_for_debug};
+use super::{BindingStack, CompilerError, resolve_expr_for_debug};
 
 /// Contract-level debug recorder used by the compiler.
 ///
@@ -50,12 +50,7 @@ impl<'i> DebugRecorder<'i> {
     }
 
     /// Starts one statement frame at the provided bytecode offset.
-    pub fn begin_statement_at(
-        &mut self,
-        bytecode_offset: usize,
-        env: &HashMap<String, Expr<'i>>,
-        stack_bindings: &HashMap<String, i64>,
-    ) {
+    pub fn begin_statement_at(&mut self, bytecode_offset: usize, env: &HashMap<String, Expr<'i>>, stack_bindings: &BindingStack) {
         self.inner.begin_statement_at(bytecode_offset, env, stack_bindings);
     }
 
@@ -66,7 +61,7 @@ impl<'i> DebugRecorder<'i> {
         bytecode_end: usize,
         env: &HashMap<String, Expr<'i>>,
         types: &HashMap<String, String>,
-        stack_bindings: &HashMap<String, i64>,
+        stack_bindings: &BindingStack,
     ) -> Result<(), CompilerError> {
         self.inner.finish_statement_at(stmt, bytecode_end, env, types, stack_bindings)
     }
@@ -78,7 +73,7 @@ impl<'i> DebugRecorder<'i> {
         bytecode_offset: usize,
         function: &FunctionAst<'i>,
         env: &HashMap<String, Expr<'i>>,
-        stack_bindings: &HashMap<String, i64>,
+        stack_bindings: &BindingStack,
     ) -> Result<(), CompilerError> {
         self.inner.begin_inline_call(span, bytecode_offset, function, env, stack_bindings)
     }
@@ -112,14 +107,14 @@ trait DebugRecorderImpl<'i>: fmt::Debug {
     fn begin_entrypoint(&mut self, name: &str, function: &FunctionAst<'i>, contract_fields: &[ContractFieldAst<'i>]);
     fn finish_entrypoint(&mut self, script_len: usize);
     fn set_entrypoint_start(&mut self, name: &str, bytecode_start: usize);
-    fn begin_statement_at(&mut self, bytecode_offset: usize, env: &HashMap<String, Expr<'i>>, stack_bindings: &HashMap<String, i64>);
+    fn begin_statement_at(&mut self, bytecode_offset: usize, env: &HashMap<String, Expr<'i>>, stack_bindings: &BindingStack);
     fn finish_statement_at(
         &mut self,
         stmt: &Statement<'i>,
         bytecode_end: usize,
         env: &HashMap<String, Expr<'i>>,
         types: &HashMap<String, String>,
-        stack_bindings: &HashMap<String, i64>,
+        stack_bindings: &BindingStack,
     ) -> Result<(), CompilerError>;
     fn begin_inline_call(
         &mut self,
@@ -127,7 +122,7 @@ trait DebugRecorderImpl<'i>: fmt::Debug {
         bytecode_offset: usize,
         function: &FunctionAst<'i>,
         env: &HashMap<String, Expr<'i>>,
-        stack_bindings: &HashMap<String, i64>,
+        stack_bindings: &BindingStack,
     ) -> Result<(), CompilerError>;
     fn finish_inline_call(&mut self, span: SourceSpan, bytecode_offset: usize, callee: &str);
     fn record_variable_binding(
@@ -150,13 +145,7 @@ impl<'i> DebugRecorderImpl<'i> for NoopDebugRecorder {
     fn begin_entrypoint(&mut self, _name: &str, _function: &FunctionAst<'i>, _contract_fields: &[ContractFieldAst<'i>]) {}
     fn finish_entrypoint(&mut self, _script_len: usize) {}
     fn set_entrypoint_start(&mut self, _name: &str, _bytecode_start: usize) {}
-    fn begin_statement_at(
-        &mut self,
-        _bytecode_offset: usize,
-        _env: &HashMap<String, Expr<'i>>,
-        _stack_bindings: &HashMap<String, i64>,
-    ) {
-    }
+    fn begin_statement_at(&mut self, _bytecode_offset: usize, _env: &HashMap<String, Expr<'i>>, _stack_bindings: &BindingStack) {}
 
     fn finish_statement_at(
         &mut self,
@@ -164,7 +153,7 @@ impl<'i> DebugRecorderImpl<'i> for NoopDebugRecorder {
         _bytecode_end: usize,
         _env: &HashMap<String, Expr<'i>>,
         _types: &HashMap<String, String>,
-        _stack_bindings: &HashMap<String, i64>,
+        _stack_bindings: &BindingStack,
     ) -> Result<(), CompilerError> {
         Ok(())
     }
@@ -175,7 +164,7 @@ impl<'i> DebugRecorderImpl<'i> for NoopDebugRecorder {
         _bytecode_offset: usize,
         _function: &FunctionAst<'i>,
         _env: &HashMap<String, Expr<'i>>,
-        _stack_bindings: &HashMap<String, i64>,
+        _stack_bindings: &BindingStack,
     ) -> Result<(), CompilerError> {
         Ok(())
     }
@@ -254,14 +243,14 @@ impl<'i> DebugRecorderImpl<'i> for ActiveDebugRecorder<'i> {
         entrypoint.bytecode_start = Some(bytecode_start);
     }
 
-    fn begin_statement_at(&mut self, bytecode_offset: usize, env: &HashMap<String, Expr<'i>>, stack_bindings: &HashMap<String, i64>) {
+    fn begin_statement_at(&mut self, bytecode_offset: usize, env: &HashMap<String, Expr<'i>>, stack_bindings: &BindingStack) {
         let Some(entrypoint) = self.active_entrypoint_mut() else {
             return;
         };
         entrypoint.statement_stack.push(StatementFrame {
             start: bytecode_offset,
             env_before: env.clone(),
-            stack_bindings_before: stack_bindings.clone(),
+            stack_bindings_before: stack_bindings.clone_depths(),
         });
     }
 
@@ -271,7 +260,7 @@ impl<'i> DebugRecorderImpl<'i> for ActiveDebugRecorder<'i> {
         bytecode_end: usize,
         env: &HashMap<String, Expr<'i>>,
         types: &HashMap<String, String>,
-        stack_bindings: &HashMap<String, i64>,
+        stack_bindings: &BindingStack,
     ) -> Result<(), CompilerError> {
         let Some(entrypoint) = self.active_entrypoint_mut() else {
             return Ok(());
@@ -294,7 +283,7 @@ impl<'i> DebugRecorderImpl<'i> for ActiveDebugRecorder<'i> {
         bytecode_offset: usize,
         function: &FunctionAst<'i>,
         env: &HashMap<String, Expr<'i>>,
-        stack_bindings: &HashMap<String, i64>,
+        stack_bindings: &BindingStack,
     ) -> Result<(), CompilerError> {
         let Some(entrypoint) = self.active_entrypoint_mut() else {
             return Ok(());
@@ -519,7 +508,7 @@ fn collect_variable_updates<'i>(
     before_stack_bindings: &HashMap<String, i64>,
     after_env: &HashMap<String, Expr<'i>>,
     types: &HashMap<String, String>,
-    after_stack_bindings: &HashMap<String, i64>,
+    after_stack_bindings: &BindingStack,
 ) -> Result<Vec<DebugVariableUpdate<'i>>, CompilerError> {
     let mut names: Vec<String> =
         after_env.keys().chain(after_stack_bindings.keys()).cloned().collect::<HashSet<_>>().into_iter().collect();
@@ -533,7 +522,7 @@ fn collect_variable_updates<'i>(
 
         let after_expr = after_env.get(&name).cloned().unwrap_or_else(|| Expr::identifier(name.clone()));
         let expr_changed = before_env.get(&name) != Some(&after_expr);
-        let before_runtime_binding = runtime_binding_for_stack_name(&name, before_stack_bindings);
+        let before_runtime_binding = static_binding_for_stack_name(&name, before_stack_bindings);
         let after_runtime_binding = runtime_binding_for_stack_name(&name, after_stack_bindings);
         if !expr_changed && before_runtime_binding == after_runtime_binding {
             continue;
@@ -557,11 +546,15 @@ fn resolve_variable_update<'i>(
     Ok(())
 }
 
-fn runtime_binding_for_stack_name(name: &str, stack_bindings: &HashMap<String, i64>) -> Option<RuntimeBinding> {
+fn static_binding_for_stack_name(name: &str, stack_bindings: &HashMap<String, i64>) -> Option<RuntimeBinding> {
     stack_bindings.get(name).copied().map(|from_top| RuntimeBinding::DataStackSlot { from_top })
 }
 
-fn runtime_binding_for_inline_binding<'i>(expr: &Expr<'i>, stack_bindings: &HashMap<String, i64>) -> Option<RuntimeBinding> {
+fn runtime_binding_for_stack_name(name: &str, stack_bindings: &BindingStack) -> Option<RuntimeBinding> {
+    stack_bindings.depth_from_top(name).map(|from_top| RuntimeBinding::DataStackSlot { from_top })
+}
+
+fn runtime_binding_for_inline_binding<'i>(expr: &Expr<'i>, stack_bindings: &BindingStack) -> Option<RuntimeBinding> {
     match &expr.kind {
         crate::ast::ExprKind::Identifier(identifier) => runtime_binding_for_stack_name(identifier, stack_bindings),
         _ => None,
@@ -575,7 +568,7 @@ mod tests {
     use crate::ast::{Expr, parse_contract_ast};
     use crate::debug_info::{RuntimeBinding, StepKind};
 
-    use super::{DebugRecorder, SourceSpan, collect_variable_updates};
+    use super::{BindingStack, DebugRecorder, SourceSpan, collect_variable_updates};
 
     #[test]
     fn noop_recorders_are_pure_noops() {
@@ -597,10 +590,12 @@ mod tests {
 
         let span = SourceSpan::from(stmt.span());
 
-        recorder.begin_statement_at(0, &HashMap::new(), &HashMap::new());
-        recorder.finish_statement_at(stmt, 0, &HashMap::new(), &HashMap::new(), &HashMap::new()).expect("noop statement recording");
+        recorder.begin_statement_at(0, &HashMap::new(), &BindingStack::default());
+        recorder
+            .finish_statement_at(stmt, 0, &HashMap::new(), &HashMap::new(), &BindingStack::default())
+            .expect("noop statement recording");
 
-        recorder.begin_inline_call(span, 1, function, &HashMap::new(), &HashMap::new()).expect("noop begin call recording");
+        recorder.begin_inline_call(span, 1, function, &HashMap::new(), &BindingStack::default()).expect("noop begin call recording");
         recorder.finish_inline_call(span, 2, "callee");
         recorder.record_variable_binding("tmp".to_string(), "int".to_string(), Expr::int(1), None, 2, span);
         recorder.finish_entrypoint(1);
@@ -635,13 +630,13 @@ mod tests {
         types.insert("x".to_string(), "int".to_string());
         types.insert("y".to_string(), "int".to_string());
 
-        recorder.begin_statement_at(0, &before, &HashMap::new());
-        recorder.finish_statement_at(stmt, 0, &after, &types, &HashMap::new()).expect("record_step first statement");
+        recorder.begin_statement_at(0, &before, &BindingStack::default());
+        recorder.finish_statement_at(stmt, 0, &after, &types, &BindingStack::default()).expect("record_step first statement");
 
         let span = SourceSpan::from(stmt.span());
         let mut inline_env = HashMap::new();
         inline_env.insert("x".to_string(), Expr::int(3));
-        recorder.begin_inline_call(span, 1, function, &inline_env, &HashMap::new()).expect("begin call recording");
+        recorder.begin_inline_call(span, 1, function, &inline_env, &BindingStack::default()).expect("begin call recording");
         recorder.record_variable_binding("tmp".to_string(), "int".to_string(), Expr::int(9), None, 1, span);
         recorder.finish_inline_call(span, 2, "callee");
 
@@ -686,6 +681,7 @@ mod tests {
         let after_stack_bindings = HashMap::from([("amount".to_string(), 2)]);
         let types = HashMap::from([("amount".to_string(), "int".to_string())]);
 
+        let after_stack_bindings = BindingStack::from_depths(after_stack_bindings);
         let updates = collect_variable_updates(&before_env, &before_stack_bindings, &after_env, &types, &after_stack_bindings)
             .expect("collect updates");
 

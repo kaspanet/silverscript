@@ -25,6 +25,61 @@ use debug_value_types::infer_debug_expr_value_type;
 pub const SYNTHETIC_ARG_PREFIX: &str = "__arg";
 const COVENANT_POLICY_PREFIX: &str = "__covenant_policy";
 
+#[derive(Debug, Clone, Default)]
+struct BindingStack {
+    depths: HashMap<String, i64>,
+}
+
+impl BindingStack {
+    fn from_depths(depths: HashMap<String, i64>) -> Self {
+        Self { depths }
+    }
+
+    fn set_depth_from_top(&mut self, name: &str, depth: i64) {
+        self.depths.insert(name.to_string(), depth);
+    }
+
+    fn len(&self) -> usize {
+        self.depths.len()
+    }
+
+    fn contains(&self, name: &str) -> bool {
+        self.depths.contains_key(name)
+    }
+
+    fn depth_from_top(&self, name: &str) -> Option<i64> {
+        self.depths.get(name).copied()
+    }
+
+    fn keys(&self) -> std::collections::hash_map::Keys<'_, String, i64> {
+        self.depths.keys()
+    }
+
+    fn clone_depths(&self) -> HashMap<String, i64> {
+        self.depths.clone()
+    }
+
+    fn push_binding(&mut self, name: &str) {
+        for depth in self.depths.values_mut() {
+            *depth += 1;
+        }
+        self.depths.insert(name.to_string(), 0);
+    }
+
+    fn pop_top_bindings(&mut self, names: &[String]) {
+        if names.is_empty() {
+            return;
+        }
+
+        for name in names {
+            self.depths.remove(name);
+        }
+        for depth in self.depths.values_mut() {
+            *depth -= names.len() as i64;
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CovenantDeclCallOptions {
     pub is_leader: bool,
@@ -1144,7 +1199,7 @@ fn compile_contract_fields<'i>(
     let mut field_values = HashMap::new();
     let mut field_types = HashMap::new();
     let mut builder = ScriptBuilder::new();
-    let stack_bindings = HashMap::new();
+    let stack_bindings = BindingStack::default();
 
     for field in fields {
         if env.contains_key(&field.name) {
@@ -1570,7 +1625,7 @@ fn push_struct_leaf_stack_bindings<'i>(
     assigned_names: &HashSet<String>,
     identifier_uses: &HashMap<String, usize>,
     types: &HashMap<String, String>,
-    stack_bindings: &mut HashMap<String, i64>,
+    stack_bindings: &mut BindingStack,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
     structs: &StructRegistry,
@@ -1589,7 +1644,7 @@ fn push_struct_leaf_stack_bindings<'i>(
         }
 
         let leaf_name = flattened_struct_name(name, &path);
-        if stack_bindings.contains_key(&leaf_name) {
+        if stack_bindings.contains(&leaf_name) {
             continue;
         }
 
@@ -1610,7 +1665,7 @@ fn push_struct_leaf_stack_bindings<'i>(
             script_size,
             contract_constants,
         )?;
-        push_stack_binding(stack_bindings, &leaf_name);
+        stack_bindings.push_binding(&leaf_name);
         added.push(leaf_name);
     }
 
@@ -1860,26 +1915,6 @@ fn collect_assigned_names_into<'i>(statements: &[Statement<'i>], assigned: &mut 
             }
             _ => {}
         }
-    }
-}
-
-fn push_stack_binding(bindings: &mut HashMap<String, i64>, name: &str) {
-    for depth in bindings.values_mut() {
-        *depth += 1;
-    }
-    bindings.insert(name.to_string(), 0);
-}
-
-fn pop_stack_bindings(bindings: &mut HashMap<String, i64>, names: &[String]) {
-    if names.is_empty() {
-        return;
-    }
-
-    for name in names {
-        bindings.remove(name);
-    }
-    for depth in bindings.values_mut() {
-        *depth -= names.len() as i64;
     }
 }
 
@@ -2438,15 +2473,17 @@ fn compile_entrypoint_function<'i>(
     }
 
     let param_count = flattened_param_names.len();
-    let mut stack_bindings = flattened_param_names
-        .iter()
-        .enumerate()
-        .map(|(index, name)| (name.clone(), (contract_field_count + (param_count - 1 - index)) as i64))
-        .collect::<HashMap<_, _>>();
+    let mut stack_bindings = BindingStack::from_depths(
+        flattened_param_names
+            .iter()
+            .enumerate()
+            .map(|(index, name)| (name.clone(), (contract_field_count + (param_count - 1 - index)) as i64))
+            .collect::<HashMap<_, _>>(),
+    );
     let initial_stack_binding_count = stack_bindings.len() + contract_field_count;
 
     for (index, field) in contract_fields.iter().enumerate() {
-        stack_bindings.insert(field.name.clone(), (contract_field_count - 1 - index) as i64);
+        stack_bindings.set_depth_from_top(&field.name, (contract_field_count - 1 - index) as i64);
     }
 
     for field in contract_fields {
@@ -2625,7 +2662,7 @@ fn compile_statement<'i>(
     assigned_names: &HashSet<String>,
     identifier_uses: &HashMap<String, usize>,
     types: &mut HashMap<String, String>,
-    stack_bindings: &mut HashMap<String, i64>,
+    stack_bindings: &mut BindingStack,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
     enable_mutable_scalar_stack_locals: bool,
@@ -2840,7 +2877,7 @@ fn compile_statement<'i>(
                 let stack_for_mutation = enable_mutable_scalar_stack_locals && assigned_names.contains(name);
                 if (stack_for_reuse || stack_for_mutation)
                     && (!env.contains_key(name) || existing_is_predeclared_default)
-                    && !stack_bindings.contains_key(name)
+                    && !stack_bindings.contains(name)
                     && matches!(effective_type_name.as_str(), "int" | "bool" | "byte")
                 {
                     let mut stack_depth = 0i64;
@@ -2857,7 +2894,7 @@ fn compile_statement<'i>(
                         contract_constants,
                     )?;
                     env.insert(name.clone(), expr);
-                    push_stack_binding(stack_bindings, name);
+                    stack_bindings.push_binding(name);
                     Ok(vec![name.clone()])
                 } else {
                     env.insert(name.clone(), expr);
@@ -3346,7 +3383,7 @@ fn compile_statement<'i>(
                         && !assigned_names.contains(&binding.name)
                         && identifier_uses.get(&binding.name).copied().unwrap_or(0) >= 2
                         && (!env.contains_key(&binding.name) || existing_is_predeclared_default)
-                        && !stack_bindings.contains_key(&binding.name)
+                        && !stack_bindings.contains(&binding.name)
                         && matches!(binding_type_name.as_str(), "int" | "bool" | "byte")
                     {
                         let mut stack_depth = 0i64;
@@ -3363,7 +3400,7 @@ fn compile_statement<'i>(
                             contract_constants,
                         )?;
                         env.insert(binding.name.clone(), lowered);
-                        push_stack_binding(stack_bindings, &binding.name);
+                        stack_bindings.push_binding(&binding.name);
                         added_stack_locals.push(binding.name.clone());
                     } else {
                         env.insert(binding.name.clone(), lowered);
@@ -3377,7 +3414,7 @@ fn compile_statement<'i>(
                 // If this is a stack-bound scalar local, compile a real mutation instead of
                 // rewriting `env[name]` (which can explode under unrolled control flow).
                 if enable_mutable_scalar_stack_locals
-                    && stack_bindings.contains_key(name)
+                    && stack_bindings.contains(name)
                     && matches!(type_name.as_str(), "int" | "bool" | "byte")
                 {
                     let expected_type_ref = parse_type_ref(type_name)?;
@@ -3416,7 +3453,7 @@ fn compile_statement<'i>(
                     // We peel the b items under new_value into altstack (keeping new_value at top),
                     // drop the old target, then restore the peeled items. This makes new_value end
                     // up exactly where the old binding was.
-                    let b = *stack_bindings.get(name).expect("checked contains_key above");
+                    let b = stack_bindings.depth_from_top(name).expect("checked contains above");
                     for _ in 0..b {
                         builder.add_op(OpSwap)?;
                         builder.add_op(OpToAltStack)?;
@@ -3647,7 +3684,7 @@ fn compile_read_input_state_statement<'i>(
     name: &str,
     args: &[Expr<'i>],
     env: &mut HashMap<String, Expr<'i>>,
-    stack_bindings: &HashMap<String, i64>,
+    stack_bindings: &BindingStack,
     types: &mut HashMap<String, String>,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
@@ -3831,7 +3868,7 @@ fn struct_name_for_state_bindings<'i>(bindings: &[StateBindingAst<'i>], structs:
 fn compile_read_input_state_with_template_validation(
     args: &[Expr<'_>],
     env: &HashMap<String, Expr<'_>>,
-    stack_bindings: &HashMap<String, i64>,
+    stack_bindings: &BindingStack,
     types: &HashMap<String, String>,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
@@ -3944,7 +3981,7 @@ fn compile_read_input_state_with_template_validation(
 fn compile_validate_output_state_statement(
     args: &[Expr<'_>],
     env: &HashMap<String, Expr<'_>>,
-    stack_bindings: &HashMap<String, i64>,
+    stack_bindings: &BindingStack,
     types: &HashMap<String, String>,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
@@ -4072,7 +4109,7 @@ fn compile_validate_output_state_statement(
 fn compile_validate_output_state_with_template_statement(
     args: &[Expr<'_>],
     env: &HashMap<String, Expr<'_>>,
-    stack_bindings: &HashMap<String, i64>,
+    stack_bindings: &BindingStack,
     types: &HashMap<String, String>,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
@@ -4225,7 +4262,7 @@ fn compile_validate_output_state_with_template_statement(
 fn compile_encoded_object_with_layout(
     state_expr: &Expr<'_>,
     env: &HashMap<String, Expr<'_>>,
-    stack_bindings: &HashMap<String, i64>,
+    stack_bindings: &BindingStack,
     types: &HashMap<String, String>,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
@@ -4312,7 +4349,7 @@ fn compile_encoded_object_with_layout(
 fn compile_encoded_state_object(
     state_expr: &Expr<'_>,
     env: &HashMap<String, Expr<'_>>,
-    stack_bindings: &HashMap<String, i64>,
+    stack_bindings: &BindingStack,
     types: &HashMap<String, String>,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
@@ -4344,7 +4381,7 @@ struct InlineCallBindings<'i> {
     env: HashMap<String, Expr<'i>>,
     debug_env: HashMap<String, Expr<'i>>,
     types: HashMap<String, String>,
-    stack_bindings: HashMap<String, i64>,
+    stack_bindings: BindingStack,
     return_rewrites: Vec<(String, Expr<'i>)>,
     preserved_return_idents: HashSet<String>,
 }
@@ -4352,7 +4389,7 @@ struct InlineCallBindings<'i> {
 fn prepare_inline_call_bindings<'i>(
     function: &FunctionAst<'i>,
     args: &[Expr<'i>],
-    caller_stack_bindings: &HashMap<String, i64>,
+    caller_stack_bindings: &BindingStack,
     caller_types: &HashMap<String, String>,
     caller_env: &HashMap<String, Expr<'i>>,
     contract_constants: &HashMap<String, Expr<'i>>,
@@ -4419,7 +4456,7 @@ fn prepare_inline_call_bindings<'i>(
             } else {
                 match arg {
                     Expr { kind: ExprKind::Identifier(identifier), .. }
-                        if caller_stack_bindings.contains_key(identifier)
+                        if caller_stack_bindings.contains(identifier)
                             && caller_types
                                 .get(identifier)
                                 .is_some_and(|other_type| is_type_assignable(other_type, &param_type_name, contract_constants)) =>
@@ -4467,7 +4504,7 @@ fn compile_inline_call<'i>(
     name: &str,
     args: &[Expr<'i>],
     call_span: SourceSpan,
-    caller_stack_bindings: &HashMap<String, i64>,
+    caller_stack_bindings: &BindingStack,
     caller_types: &mut HashMap<String, String>,
     caller_env: &mut HashMap<String, Expr<'i>>,
     builder: &mut ScriptBuilder,
@@ -4578,7 +4615,7 @@ fn compile_inline_call<'i>(
         if !matches!(param_type_name.as_str(), "int" | "bool" | "byte")
             || identifier_uses.get(&param.name).copied().unwrap_or(0) < 2
             || assigned_names.contains(&param.name)
-            || bindings.stack_bindings.contains_key(&param.name)
+            || bindings.stack_bindings.contains(&param.name)
         {
             continue;
         }
@@ -4600,7 +4637,7 @@ fn compile_inline_call<'i>(
             script_size,
             contract_constants,
         )?;
-        push_stack_binding(&mut bindings.stack_bindings, &param.name);
+        bindings.stack_bindings.push_binding(&param.name);
     }
     let body_len = function.body.len();
     for (index, stmt) in function.body.iter().enumerate() {
@@ -4669,7 +4706,7 @@ fn compile_if_statement<'i>(
     assigned_names: &HashSet<String>,
     identifier_uses: &HashMap<String, usize>,
     types: &mut HashMap<String, String>,
-    stack_bindings: &mut HashMap<String, i64>,
+    stack_bindings: &mut BindingStack,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
     enable_mutable_scalar_stack_locals: bool,
@@ -4856,7 +4893,7 @@ fn compile_time_op_statement<'i>(
     tx_var: &TimeVar,
     expr: &Expr<'i>,
     env: &mut HashMap<String, Expr<'i>>,
-    stack_bindings: &HashMap<String, i64>,
+    stack_bindings: &BindingStack,
     types: &HashMap<String, String>,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
@@ -4896,7 +4933,7 @@ fn compile_block<'i>(
     assigned_names: &HashSet<String>,
     identifier_uses: &HashMap<String, usize>,
     types: &mut HashMap<String, String>,
-    stack_bindings: &mut HashMap<String, i64>,
+    stack_bindings: &mut BindingStack,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
     enable_mutable_scalar_stack_locals: bool,
@@ -4947,7 +4984,7 @@ fn compile_block<'i>(
         for name in &added_stack_locals {
             types.remove(name);
         }
-        pop_stack_bindings(stack_bindings, &added_stack_locals);
+        stack_bindings.pop_top_bindings(&added_stack_locals);
     }
 
     Ok(())
@@ -4965,7 +5002,7 @@ fn compile_for_statement<'i>(
     assigned_names: &HashSet<String>,
     identifier_uses: &HashMap<String, usize>,
     types: &mut HashMap<String, String>,
-    stack_bindings: &mut HashMap<String, i64>,
+    stack_bindings: &mut BindingStack,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
     enable_mutable_scalar_stack_locals: bool,
@@ -5082,7 +5119,7 @@ fn compile_constant_for_statement<'i>(
     assigned_names: &HashSet<String>,
     identifier_uses: &HashMap<String, usize>,
     types: &mut HashMap<String, String>,
-    stack_bindings: &mut HashMap<String, i64>,
+    stack_bindings: &mut BindingStack,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
     enable_mutable_scalar_stack_locals: bool,
@@ -5107,7 +5144,7 @@ fn compile_constant_for_statement<'i>(
             ident.to_string(),
             "int".to_string(),
             Expr::int(value),
-            stack_bindings.get(ident).copied().map(|from_top| RuntimeBinding::DataStackSlot { from_top }),
+            stack_bindings.depth_from_top(ident).map(|from_top| RuntimeBinding::DataStackSlot { from_top }),
             builder.script().len(),
             loop_span,
         );
@@ -5149,7 +5186,7 @@ fn compile_runtime_for_statement<'i>(
     assigned_names: &HashSet<String>,
     identifier_uses: &HashMap<String, usize>,
     types: &mut HashMap<String, String>,
-    stack_bindings: &mut HashMap<String, i64>,
+    stack_bindings: &mut BindingStack,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
     enable_mutable_scalar_stack_locals: bool,
@@ -5172,7 +5209,7 @@ fn compile_runtime_for_statement<'i>(
             ident.to_string(),
             "int".to_string(),
             loop_value,
-            stack_bindings.get(ident).copied().map(|from_top| RuntimeBinding::DataStackSlot { from_top }),
+            stack_bindings.depth_from_top(ident).map(|from_top| RuntimeBinding::DataStackSlot { from_top }),
             builder.script().len(),
             loop_span,
         );
@@ -5385,13 +5422,13 @@ fn resolve_expr_for_runtime<'i>(
 fn resolve_return_expr_for_runtime<'i>(
     expr: Expr<'i>,
     env: &HashMap<String, Expr<'i>>,
-    stack_bindings: &HashMap<String, i64>,
+    stack_bindings: &BindingStack,
     types: &HashMap<String, String>,
     visiting: &mut HashSet<String>,
 ) -> Result<Expr<'i>, CompilerError> {
     let preserve_identifier = |name: &str| {
         name.starts_with(SYNTHETIC_ARG_PREFIX)
-            || stack_bindings.contains_key(name)
+            || stack_bindings.contains(name)
             || types.get(name).is_some_and(|type_name| is_array_type(type_name))
     };
     resolve_expr_with_policy(expr, env, visiting, &preserve_identifier)
@@ -5678,14 +5715,14 @@ fn replace_identifier<'i>(expr: &Expr<'i>, target: &str, replacement: &Expr<'i>)
 
 struct CompilationScope<'a, 'i> {
     env: &'a HashMap<String, Expr<'i>>,
-    stack_bindings: &'a HashMap<String, i64>,
+    stack_bindings: &'a BindingStack,
     types: &'a HashMap<String, String>,
 }
 
 fn compile_expr<'i>(
     expr: &Expr<'i>,
     env: &HashMap<String, Expr<'i>>,
-    stack_bindings: &HashMap<String, i64>,
+    stack_bindings: &BindingStack,
     types: &HashMap<String, String>,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
@@ -5739,8 +5776,8 @@ fn compile_expr<'i>(
             if !visiting.insert(name.clone()) {
                 return Err(CompilerError::CyclicIdentifier(name.clone()));
             }
-            if let Some(index) = stack_bindings.get(name) {
-                builder.add_i64(*index + *stack_depth)?;
+            if let Some(index) = stack_bindings.depth_from_top(name) {
+                builder.add_i64(index + *stack_depth)?;
                 *stack_depth += 1;
                 builder.add_op(OpPick)?;
                 visiting.remove(name);
@@ -6252,7 +6289,7 @@ fn compile_split_part<'i>(
     index: &Expr<'i>,
     part: SplitPart,
     env: &HashMap<String, Expr<'i>>,
-    stack_bindings: &HashMap<String, i64>,
+    stack_bindings: &BindingStack,
     types: &HashMap<String, String>,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
@@ -6367,7 +6404,7 @@ fn expr_is_bytes_inner<'i>(
 fn compile_length_expr<'i>(
     expr: &Expr<'i>,
     env: &HashMap<String, Expr<'i>>,
-    stack_bindings: &HashMap<String, i64>,
+    stack_bindings: &BindingStack,
     types: &HashMap<String, String>,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
@@ -7139,7 +7176,7 @@ fn compile_opcode_call<'i>(
 fn compile_concat_operand<'i>(
     expr: &Expr<'i>,
     env: &HashMap<String, Expr<'i>>,
-    stack_bindings: &HashMap<String, i64>,
+    stack_bindings: &BindingStack,
     types: &HashMap<String, String>,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
@@ -7246,10 +7283,11 @@ pub fn compile_debug_expr<'i>(
     let mut builder = ScriptBuilder::new();
     let mut stack_depth = 0i64;
     let type_name = infer_debug_expr_value_type(expr, env, types, &mut HashSet::new())?;
+    let stack_bindings = BindingStack::from_depths(stack_bindings.clone());
     compile_expr(
         expr,
         env,
-        stack_bindings,
+        &stack_bindings,
         types,
         &mut builder,
         CompileOptions::default(),
