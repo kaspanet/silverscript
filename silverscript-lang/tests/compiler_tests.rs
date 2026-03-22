@@ -14,7 +14,7 @@ use kaspa_txscript::{
     EngineCtx, EngineFlags, SeqCommitAccessor, TxScriptEngine, pay_to_address_script, pay_to_script_hash_script,
     pay_to_script_hash_signature_script,
 };
-use silverscript_lang::ast::{Expr, parse_contract_ast};
+use silverscript_lang::ast::{Expr, format_contract_ast, parse_contract_ast};
 use silverscript_lang::compiler::{
     CompileOptions, CompiledContract, CovenantDeclCallOptions, FunctionAbiEntry, FunctionInputAbi, compile_contract,
     compile_contract_ast, function_branch_index, struct_object,
@@ -6194,6 +6194,261 @@ fn local_alias_reassignment_from_alias_passes_for_x_5() {
 }
 
 #[test]
+fn reassignment_pushes_new_value_and_rebinds_stack_local() {
+    let source = r#"
+        contract ReassignPush() {
+            entrypoint function main(int start) {
+                int x = start + 1;
+                x = x + 1;
+                require(x == 4);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("reassignment should compile");
+    let expected = ScriptBuilder::new()
+        // Initialize `x` from the `start` argument.
+        .add_i64(0)
+        .unwrap()
+        .add_op(OpPick)
+        .unwrap()
+        .add_i64(1)
+        .unwrap()
+        .add_op(OpAdd)
+        .unwrap()
+        // Rebind `x` by incrementing the just-initialized stack local again.
+        .add_i64(1)
+        .unwrap()
+        .add_op(OpAdd)
+        .unwrap()
+        // Verify the rebound top-of-stack value.
+        .add_i64(4)
+        .unwrap()
+        .add_op(OpNumEqual)
+        .unwrap()
+        .add_op(OpVerify)
+        .unwrap()
+        // Drop the shadowed pre-reassignment stack binding.
+        .add_op(OpDrop)
+        .unwrap()
+        .add_op(OpTrue)
+        .unwrap()
+        .drain();
+    assert_eq!(compiled.script, expected);
+
+    let sigscript_ok = compiled.build_sig_script("main", vec![Expr::int(2)]).expect("sigscript builds");
+    let result_ok = run_script_with_sigscript(compiled.script.clone(), sigscript_ok);
+    assert!(result_ok.is_ok(), "reassigned stack local should execute successfully: {}", result_ok.unwrap_err());
+
+    let sigscript_err = compiled.build_sig_script("main", vec![Expr::int(1)]).expect("sigscript builds");
+    let result_err = run_script_with_sigscript(compiled.script, sigscript_err);
+    assert!(result_err.is_err(), "reassigned stack local should still enforce the updated value");
+}
+
+#[test]
+fn if_without_else_reassignment_gets_normalized() {
+    let source = r#"
+        contract MissingElse() {
+            entrypoint function main(int flag) {
+                int x = 1;
+                if (flag > 0) {
+                    x = x + 1;
+                }
+                require(x == 2 - (flag <= 0));
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("if without else should compile");
+    let normalized = format_contract_ast(&compiled.ast);
+    assert!(normalized.contains("else"), "normalized AST should include an else branch: {normalized}");
+    assert!(normalized.contains("__if_x_"), "normalized AST should introduce an if-local binding for x: {normalized}");
+
+    assert!(compiled.script.contains(&OpElse), "compiled script should include an explicit else branch");
+}
+
+#[test]
+fn if_normalization_mirrors_missing_reassigned_vars_across_branches() {
+    let source = r#"
+        contract BranchMirror() {
+            entrypoint function main(int flag, int x, int y, int expected_x, int expected_y) {
+                if (flag > 0) {
+                    x = x + 1;
+                } else {
+                    y = y * 2;
+                }
+                require(x == expected_x);
+                require(y == expected_y);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("branch mirroring should compile");
+    let normalized = format_contract_ast(&compiled.ast);
+    assert!(normalized.contains("__if_x_"), "normalized AST should materialize x in both branches: {normalized}");
+    assert!(normalized.contains("__if_y_"), "normalized AST should materialize y in both branches: {normalized}");
+
+    assert!(compiled.script.contains(&OpElse), "compiled script should keep both mirrored branches");
+    let expected = ScriptBuilder::new()
+        // Pick `flag` from the stack.
+        .add_i64(4)
+        .unwrap()
+        .add_op(OpPick)
+        .unwrap()
+        // Compare `flag > 0`.
+        .add_i64(0)
+        .unwrap()
+        .add_op(OpGreaterThan)
+        .unwrap()
+        // Branch on the result of `flag > 0`.
+        .add_op(OpIf)
+        .unwrap()
+        // Pick `x` and push `x + 1`.
+        .add_i64(3)
+        .unwrap()
+        .add_op(OpPick)
+        .unwrap()
+        .add_i64(1)
+        .unwrap()
+        .add_op(OpAdd)
+        .unwrap()
+        // Pick `x` again to preserve the pre-branch stack shape for mirrored rebinding.
+        .add_i64(3)
+        .unwrap()
+        .add_op(OpPick)
+        .unwrap()
+        // Pick `y`.
+        .add_i64(1)
+        .unwrap()
+        .add_op(OpPick)
+        .unwrap()
+        // Pick `y` again so both mirrored outputs are available.
+        .add_i64(1)
+        .unwrap()
+        .add_op(OpPick)
+        .unwrap()
+        // Drop the original branch inputs that have now been mirrored.
+        .add_op(OpDrop)
+        .unwrap()
+        .add_op(OpDrop)
+        .unwrap()
+        // Start the `else` branch.
+        .add_op(OpElse)
+        .unwrap()
+        // Pick `y` and push `y * 2`.
+        .add_i64(2)
+        .unwrap()
+        .add_op(OpPick)
+        .unwrap()
+        .add_i64(2)
+        .unwrap()
+        .add_op(OpMul)
+        .unwrap()
+        // Pick `flag` again so the mirrored stack layout matches the then-branch shape.
+        .add_i64(4)
+        .unwrap()
+        .add_op(OpPick)
+        .unwrap()
+        // Pick `x`.
+        .add_i64(0)
+        .unwrap()
+        .add_op(OpPick)
+        .unwrap()
+        // Pick `y`.
+        .add_i64(2)
+        .unwrap()
+        .add_op(OpPick)
+        .unwrap()
+        // Drop the original branch inputs that have now been mirrored.
+        .add_op(OpDrop)
+        .unwrap()
+        .add_op(OpDrop)
+        .unwrap()
+        // Finish the branch.
+        .add_op(OpEndIf)
+        .unwrap()
+        // Pick the mirrored `x`.
+        .add_op(Op1Negate)
+        .unwrap()
+        .add_op(OpPick)
+        .unwrap()
+        // Pick `expected_x`.
+        .add_i64(4)
+        .unwrap()
+        .add_op(OpPick)
+        .unwrap()
+        // Require `x == expected_x`.
+        .add_op(OpNumEqual)
+        .unwrap()
+        .add_op(OpVerify)
+        .unwrap()
+        // Push the encoded depth used to pick the mirrored `y`.
+        .add_op(OpData1)
+        .unwrap()
+        .add_op(OpSize)
+        .unwrap()
+        // Pick the mirrored `y`.
+        .add_op(OpPick)
+        .unwrap()
+        // Pick `expected_y`.
+        .add_i64(3)
+        .unwrap()
+        .add_op(OpPick)
+        .unwrap()
+        // Require `y == expected_y`.
+        .add_op(OpNumEqual)
+        .unwrap()
+        .add_op(OpVerify)
+        .unwrap()
+        // Drop the remaining locals and arguments.
+        .add_op(OpDrop)
+        .unwrap()
+        .add_op(OpDrop)
+        .unwrap()
+        .add_op(OpDrop)
+        .unwrap()
+        .add_op(OpDrop)
+        .unwrap()
+        .add_op(OpDrop)
+        .unwrap()
+        // Leave the success sentinel.
+        .add_op(OpTrue)
+        .unwrap()
+        .drain();
+    assert_eq!(compiled.script, expected);
+
+}
+
+#[test]
+fn if_reassignment_pushes_shared_outputs_in_branch_order() {
+    let source = r#"
+        contract BranchReassignOrder() {
+            entrypoint function main(int flag, int expected_x, int expected_y) {
+                int x = 1;
+                int y = 2;
+                if (flag > 0) {
+                    int z = 5;
+                    x = x + z;
+                    x = x + 1;
+                    y = y * 2;
+                } else {
+                    y = y * 3;
+                    x = x + y;
+                }
+                require(x == expected_x && y == expected_y);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("branch reassignment ordering should compile");
+    let normalized = format_contract_ast(&compiled.ast);
+    assert!(normalized.contains("__if_x_"), "normalized AST should route x through an if-local binding: {normalized}");
+    assert!(normalized.contains("__if_y_"), "normalized AST should route y through an if-local binding: {normalized}");
+
+    assert!(compiled.script.contains(&OpElse), "compiled script should encode both branch outputs");
+}
+
+#[test]
 fn local_bool_expression_is_stored_once_and_reused() {
     let source = r#"
         contract BoolRepeat() {
@@ -6584,4 +6839,229 @@ fn compile_time_if_branch_stores_struct_fields_once_and_reuses_them() {
         .drain();
 
     assert_eq!(compiled.script, expected);
+}
+
+#[test]
+fn conditional_counter_in_unrolled_loop_stays_linear() {
+    const SOURCE: &str = r#"
+pragma silverscript ^0.1.0;
+
+contract CounterLoop(int BOUND) {
+    entrypoint function main() {
+        int count = 0;
+        // Keep this loop small so regressions fail fast (the previous exponential blow-up
+        // already manifested at single-digit iteration counts).
+        for (i, 0, BOUND, BOUND) {
+            if (true) {
+                count = count + 1;
+            }
+        }
+        require(count >= 0);
+    }
+}
+"#;
+
+    let bounds = [4i64, 8i64, 12i64];
+    let mut lens = Vec::new();
+    for b in bounds {
+        let args = [Expr::int(b)];
+        let compiled = compile_contract(SOURCE, &args, CompileOptions::default()).expect("compile succeeds");
+        lens.push(compiled.script.len());
+    }
+
+    assert!(lens[0] < lens[1] && lens[1] < lens[2], "expected monotonic growth, got {lens:?}");
+    let d1 = lens[1] - lens[0];
+    let d2 = lens[2] - lens[1];
+
+    assert!(d2 <= d1 * 2, "unexpected superlinear growth: lens={lens:?} d1={d1} d2={d2}");
+
+    // Absolute cap: the old exponential behavior already blew past this by bound=8..12.
+    assert!(lens[2] < 5_000, "unexpected script size: lens={lens:?}");
+}
+
+#[test]
+fn conditional_counter_in_unrolled_loop_matches_expected_script_with_bound_3() {
+    let source = r#"
+        contract CounterLoop(int BOUND) {
+            entrypoint function main() {
+                int count = 0;
+                for (i, 0, BOUND, BOUND) {
+                    if (true) {
+                        count = count + 1;
+                    }
+                }
+                require(count >= 0);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[Expr::int(3)], CompileOptions::default()).expect("compile succeeds");
+
+    let expected_script = ScriptBuilder::new()
+        // Iteration 0 guard has folded to `true`.
+        .add_i64(1)
+        .unwrap()
+        // Enter iteration 0.
+        .add_op(OpIf)
+        .unwrap()
+        // Push the initial `count`.
+        .add_i64(0)
+        .unwrap()
+        // Push the increment amount.
+        .add_i64(1)
+        .unwrap()
+        // Compute `count + 1`.
+        .add_op(OpAdd)
+        .unwrap()
+        // Push the depth needed to pick the mirrored `count`.
+        .add_i64(0)
+        .unwrap()
+        // Pick the mirrored `count`.
+        .add_op(OpPick)
+        .unwrap()
+        // Drop the pre-mirrored binding.
+        .add_op(OpDrop)
+        .unwrap()
+        // Start the synthetic `else` branch inserted for `if (true)`.
+        .add_op(OpElse)
+        .unwrap()
+        // Push the old `count`.
+        .add_i64(0)
+        .unwrap()
+        // Push the depth needed to mirror it.
+        .add_i64(0)
+        .unwrap()
+        // Pick the mirrored `count`.
+        .add_op(OpPick)
+        .unwrap()
+        // Drop the pre-mirrored binding.
+        .add_op(OpDrop)
+        .unwrap()
+        // Finish the inner `if`.
+        .add_op(OpEndIf)
+        .unwrap()
+        // Iteration 1 guard has also folded to `true`.
+        .add_i64(1)
+        .unwrap()
+        // Enter iteration 1.
+        .add_op(OpIf)
+        .unwrap()
+        // Push the depth used to pick the current `count`.
+        .add_op(Op1Negate)
+        .unwrap()
+        // Pick the current `count` directly from its deterministic stack slot.
+        .add_op(OpPick)
+        .unwrap()
+        // Push the increment amount.
+        .add_i64(1)
+        .unwrap()
+        // Compute `count + 1`.
+        .add_op(OpAdd)
+        .unwrap()
+        // Push the depth needed to pick the mirrored `count`.
+        .add_i64(0)
+        .unwrap()
+        // Pick the mirrored `count`.
+        .add_op(OpPick)
+        .unwrap()
+        // Drop the pre-mirrored binding.
+        .add_op(OpDrop)
+        .unwrap()
+        // Start the synthetic `else` branch inserted for iteration 1.
+        .add_op(OpElse)
+        .unwrap()
+        // Push the depth used to pick the current `count`.
+        .add_op(Op1Negate)
+        .unwrap()
+        // Pick the current `count` directly from its deterministic stack slot.
+        .add_op(OpPick)
+        .unwrap()
+        // Push the old `count`.
+        .add_i64(0)
+        .unwrap()
+        // Pick the mirrored `count`.
+        .add_op(OpPick)
+        .unwrap()
+        // Drop the pre-mirrored binding.
+        .add_op(OpDrop)
+        .unwrap()
+        // Finish iteration 1's synthetic `if`.
+        .add_op(OpEndIf)
+        .unwrap()
+        // Iteration 2 guard has also folded to `true`.
+        .add_i64(1)
+        .unwrap()
+        // Enter iteration 2.
+        .add_op(OpIf)
+        .unwrap()
+        // Push the depth used to pick the current `count`.
+        .add_op(Op1Negate)
+        .unwrap()
+        // Pick the current `count` directly from its deterministic stack slot.
+        .add_op(OpPick)
+        .unwrap()
+        // Push the increment amount.
+        .add_i64(1)
+        .unwrap()
+        // Compute `count + 1`.
+        .add_op(OpAdd)
+        .unwrap()
+        // Push the depth needed to pick the mirrored `count`.
+        .add_i64(0)
+        .unwrap()
+        // Pick the mirrored `count`.
+        .add_op(OpPick)
+        .unwrap()
+        // Drop the pre-mirrored binding.
+        .add_op(OpDrop)
+        .unwrap()
+        // Start the synthetic `else` branch inserted for iteration 2.
+        .add_op(OpElse)
+        .unwrap()
+        // Push the depth used to pick the current `count`.
+        .add_op(Op1Negate)
+        .unwrap()
+        // Pick the current `count` directly from its deterministic stack slot.
+        .add_op(OpPick)
+        .unwrap()
+        // Push the old `count`.
+        .add_i64(0)
+        .unwrap()
+        // Pick the mirrored `count`.
+        .add_op(OpPick)
+        .unwrap()
+        // Drop the pre-mirrored binding.
+        .add_op(OpDrop)
+        .unwrap()
+        // Finish iteration 2's synthetic `if`.
+        .add_op(OpEndIf)
+        .unwrap()
+        // Push the depth used to pick the final `count`.
+        .add_op(Op1Negate)
+        .unwrap()
+        // Pick the final `count` directly from its deterministic stack slot.
+        .add_op(OpPick)
+        .unwrap()
+        // Push the comparison bound.
+        .add_i64(0)
+        .unwrap()
+        // Require `count >= 0`.
+        .add_op(OpGreaterThanOrEqual)
+        .unwrap()
+        .add_op(OpVerify)
+        .unwrap()
+        // Roll the stale base `count` to the top.
+        .add_i64(0)
+        .unwrap()
+        .add_op(OpRoll)
+        .unwrap()
+        // Drop the stale base `count`.
+        .add_op(OpDrop)
+        .unwrap()
+        // Leave the success sentinel.
+        .add_op(OpTrue)
+        .unwrap()
+        .drain();
+
+    assert_eq!(compiled.script, expected_script);
 }

@@ -24,6 +24,7 @@ use debug_value_types::infer_debug_expr_value_type;
 /// Prefix used for synthetic argument bindings during inline function expansion.
 pub const SYNTHETIC_ARG_PREFIX: &str = "__arg";
 const COVENANT_POLICY_PREFIX: &str = "__covenant_policy";
+const HIDDEN_STACK_BINDING_PREFIX: &str = "__stack_shadow";
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CovenantDeclCallOptions {
@@ -833,6 +834,18 @@ fn compile_contract_impl<'i>(
     }
 
     let lowered_contract = lower_covenant_declarations(contract, &constants)?;
+    let mut lowered_contract = lowered_contract;
+    let mut next_if_id = 0usize;
+    for function in &mut lowered_contract.functions {
+        let mut scope = HashMap::new();
+        for field in &lowered_contract.fields {
+            scope.insert(field.name.clone(), field.type_ref.clone());
+        }
+        for param in &function.params {
+            scope.insert(param.name.clone(), param.type_ref.clone());
+        }
+        function.body = normalize_function_body_if_reassignments(&function.body, &mut scope, &mut next_if_id);
+    }
     let structs = build_struct_registry(&lowered_contract)?;
     validate_struct_graph(&structs)?;
     validate_contract_struct_usage(&lowered_contract, &structs)?;
@@ -1755,11 +1768,448 @@ fn collect_assigned_names_into<'i>(statements: &[Statement<'i>], assigned: &mut 
     }
 }
 
+fn collect_if_reassigned_outer_names<'i>(
+    statements: &[Statement<'i>],
+    outer_scope: &HashSet<String>,
+    ordered: &mut Vec<String>,
+    seen: &mut HashSet<String>,
+) {
+    for stmt in statements {
+        match stmt {
+            Statement::Assign { name, .. } if outer_scope.contains(name) && seen.insert(name.clone()) => {
+                ordered.push(name.clone());
+            }
+            Statement::If { then_branch, else_branch, .. } => {
+                collect_if_reassigned_outer_names(then_branch, outer_scope, ordered, seen);
+                if let Some(else_branch) = else_branch {
+                    collect_if_reassigned_outer_names(else_branch, outer_scope, ordered, seen);
+                }
+            }
+            Statement::For { body, .. } => collect_if_reassigned_outer_names(body, outer_scope, ordered, seen),
+            _ => {}
+        }
+    }
+}
+
+fn collect_branch_assigned_names<'i>(statements: &[Statement<'i>], assigned: &mut HashSet<String>) {
+    for stmt in statements {
+        match stmt {
+            Statement::Assign { name, .. } => {
+                assigned.insert(name.clone());
+            }
+            Statement::If { then_branch, else_branch, .. } => {
+                collect_branch_assigned_names(then_branch, assigned);
+                if let Some(else_branch) = else_branch {
+                    collect_branch_assigned_names(else_branch, assigned);
+                }
+            }
+            Statement::For { body, .. } => collect_branch_assigned_names(body, assigned),
+            _ => {}
+        }
+    }
+}
+
+fn apply_identifier_aliases<'i>(expr: &Expr<'i>, aliases: &HashMap<String, String>) -> Expr<'i> {
+    let mut rewritten = expr.clone();
+    for (from, to) in aliases {
+        rewritten = replace_identifier(&rewritten, from, &Expr::identifier(to.clone()));
+    }
+    rewritten
+}
+
+fn apply_statement_aliases<'i>(stmt: &Statement<'i>, aliases: &HashMap<String, String>) -> Statement<'i> {
+    match stmt {
+        Statement::VariableDefinition { type_ref, modifiers, name, expr, span, type_span, modifier_spans, name_span } => {
+            Statement::VariableDefinition {
+                type_ref: type_ref.clone(),
+                modifiers: modifiers.clone(),
+                name: name.clone(),
+                expr: expr.as_ref().map(|expr| apply_identifier_aliases(expr, aliases)),
+                span: *span,
+                type_span: *type_span,
+                modifier_spans: modifier_spans.clone(),
+                name_span: *name_span,
+            }
+        }
+        Statement::TupleAssignment {
+            left_type_ref,
+            left_name,
+            right_type_ref,
+            right_name,
+            expr,
+            span,
+            left_type_span,
+            left_name_span,
+            right_type_span,
+            right_name_span,
+        } => Statement::TupleAssignment {
+            left_type_ref: left_type_ref.clone(),
+            left_name: left_name.clone(),
+            right_type_ref: right_type_ref.clone(),
+            right_name: right_name.clone(),
+            expr: apply_identifier_aliases(expr, aliases),
+            span: *span,
+            left_type_span: *left_type_span,
+            left_name_span: *left_name_span,
+            right_type_span: *right_type_span,
+            right_name_span: *right_name_span,
+        },
+        Statement::ArrayPush { name, expr, span, name_span } => Statement::ArrayPush {
+            name: aliases.get(name).cloned().unwrap_or_else(|| name.clone()),
+            expr: apply_identifier_aliases(expr, aliases),
+            span: *span,
+            name_span: *name_span,
+        },
+        Statement::FunctionCall { name, args, span, name_span } => Statement::FunctionCall {
+            name: name.clone(),
+            args: args.iter().map(|arg| apply_identifier_aliases(arg, aliases)).collect(),
+            span: *span,
+            name_span: *name_span,
+        },
+        Statement::FunctionCallAssign { bindings, name, args, span, name_span } => Statement::FunctionCallAssign {
+            bindings: bindings.clone(),
+            name: name.clone(),
+            args: args.iter().map(|arg| apply_identifier_aliases(arg, aliases)).collect(),
+            span: *span,
+            name_span: *name_span,
+        },
+        Statement::StateFunctionCallAssign { bindings, name, args, span, name_span } => Statement::StateFunctionCallAssign {
+            bindings: bindings.clone(),
+            name: name.clone(),
+            args: args.iter().map(|arg| apply_identifier_aliases(arg, aliases)).collect(),
+            span: *span,
+            name_span: *name_span,
+        },
+        Statement::StructDestructure { bindings, expr, span } => Statement::StructDestructure {
+            bindings: bindings.clone(),
+            expr: apply_identifier_aliases(expr, aliases),
+            span: *span,
+        },
+        Statement::Assign { name, expr, span, name_span } => Statement::Assign {
+            name: aliases.get(name).cloned().unwrap_or_else(|| name.clone()),
+            expr: apply_identifier_aliases(expr, aliases),
+            span: *span,
+            name_span: *name_span,
+        },
+        Statement::TimeOp { tx_var, expr, message, span, tx_var_span, message_span } => Statement::TimeOp {
+            tx_var: *tx_var,
+            expr: apply_identifier_aliases(expr, aliases),
+            message: message.clone(),
+            span: *span,
+            tx_var_span: *tx_var_span,
+            message_span: *message_span,
+        },
+        Statement::Require { expr, message, span, message_span } => Statement::Require {
+            expr: apply_identifier_aliases(expr, aliases),
+            message: message.clone(),
+            span: *span,
+            message_span: *message_span,
+        },
+        Statement::If { condition, then_branch, else_branch, span, then_span, else_span } => Statement::If {
+            condition: apply_identifier_aliases(condition, aliases),
+            then_branch: then_branch.iter().map(|stmt| apply_statement_aliases(stmt, aliases)).collect(),
+            else_branch: else_branch
+                .as_ref()
+                .map(|branch| branch.iter().map(|stmt| apply_statement_aliases(stmt, aliases)).collect()),
+            span: *span,
+            then_span: *then_span,
+            else_span: *else_span,
+        },
+        Statement::For { ident, start, end, max_iterations, body, span, ident_span, body_span } => Statement::For {
+            ident: ident.clone(),
+            start: apply_identifier_aliases(start, aliases),
+            end: apply_identifier_aliases(end, aliases),
+            max_iterations: apply_identifier_aliases(max_iterations, aliases),
+            body: body.iter().map(|stmt| apply_statement_aliases(stmt, aliases)).collect(),
+            span: *span,
+            ident_span: *ident_span,
+            body_span: *body_span,
+        },
+        Statement::Return { exprs, span } => Statement::Return {
+            exprs: exprs.iter().map(|expr| apply_identifier_aliases(expr, aliases)).collect(),
+            span: *span,
+        },
+        Statement::Console { args, span } => Statement::Console {
+            args: args
+                .iter()
+                .map(|arg| match arg {
+                    crate::ast::ConsoleArg::Identifier(name, arg_span) => {
+                        crate::ast::ConsoleArg::Identifier(aliases.get(name).cloned().unwrap_or_else(|| name.clone()), *arg_span)
+                    }
+                    crate::ast::ConsoleArg::Literal(expr) => crate::ast::ConsoleArg::Literal(apply_identifier_aliases(expr, aliases)),
+                })
+                .collect(),
+            span: *span,
+        },
+    }
+}
+
+fn synthetic_if_binding_name(name: &str, next_if_id: &mut usize) -> String {
+    let generated = format!("__if_{name}_{}", *next_if_id);
+    *next_if_id += 1;
+    generated
+}
+
+fn normalize_function_body_if_reassignments<'i>(
+    statements: &[Statement<'i>],
+    scope: &mut HashMap<String, TypeRef>,
+    next_if_id: &mut usize,
+) -> Vec<Statement<'i>> {
+    let mut normalized = Vec::with_capacity(statements.len());
+    for stmt in statements {
+        let rewritten = normalize_statement_if_reassignments(stmt, scope, next_if_id);
+        update_scope_with_statement(&rewritten, scope);
+        normalized.push(rewritten);
+    }
+    normalized
+}
+
+fn normalize_statement_if_reassignments<'i>(
+    stmt: &Statement<'i>,
+    scope: &HashMap<String, TypeRef>,
+    next_if_id: &mut usize,
+) -> Statement<'i> {
+    match stmt {
+        Statement::If { condition, then_branch, else_branch, span, then_span, else_span } => normalize_if_statement_reassignments(
+            condition,
+            then_branch,
+            else_branch.as_deref(),
+            *span,
+            *then_span,
+            *else_span,
+            scope,
+            next_if_id,
+        ),
+        Statement::For { ident, start, end, max_iterations, body, span, ident_span, body_span } => {
+            let mut body_scope = scope.clone();
+            body_scope.insert(ident.clone(), parse_type_ref("int").expect("int type should parse"));
+            Statement::For {
+                ident: ident.clone(),
+                start: start.clone(),
+                end: end.clone(),
+                max_iterations: max_iterations.clone(),
+                body: normalize_function_body_if_reassignments(body, &mut body_scope, next_if_id),
+                span: *span,
+                ident_span: *ident_span,
+                body_span: *body_span,
+            }
+        }
+        _ => stmt.clone(),
+    }
+}
+
+fn normalize_if_statement_reassignments<'i>(
+    condition: &Expr<'i>,
+    then_branch: &[Statement<'i>],
+    else_branch: Option<&[Statement<'i>]>,
+    span: span::Span<'i>,
+    then_span: span::Span<'i>,
+    else_span: Option<span::Span<'i>>,
+    scope: &HashMap<String, TypeRef>,
+    next_if_id: &mut usize,
+) -> Statement<'i> {
+    let mut then_scope = scope.clone();
+    let mut normalized_then = normalize_function_body_if_reassignments(then_branch, &mut then_scope, next_if_id);
+    let mut else_scope = scope.clone();
+    let mut normalized_else = normalize_function_body_if_reassignments(else_branch.unwrap_or(&[]), &mut else_scope, next_if_id);
+
+    let outer_scope = scope.keys().cloned().collect::<HashSet<_>>();
+    let mut our_vars_reassigned = Vec::new();
+    let mut seen = HashSet::new();
+    collect_if_reassigned_outer_names(&normalized_then, &outer_scope, &mut our_vars_reassigned, &mut seen);
+    collect_if_reassigned_outer_names(&normalized_else, &outer_scope, &mut our_vars_reassigned, &mut seen);
+
+    if our_vars_reassigned.is_empty() {
+        return Statement::If {
+            condition: condition.clone(),
+            then_branch: normalized_then,
+            else_branch: else_branch.map(|_| normalized_else),
+            span,
+            then_span,
+            else_span,
+        };
+    }
+
+    let mut then_assigned = HashSet::new();
+    collect_branch_assigned_names(&normalized_then, &mut then_assigned);
+    let mut else_assigned = HashSet::new();
+    collect_branch_assigned_names(&normalized_else, &mut else_assigned);
+
+    for name in &our_vars_reassigned {
+        if !then_assigned.contains(name) {
+            normalized_then.push(Statement::Assign {
+                name: name.clone(),
+                expr: Expr::identifier(name.clone()),
+                span,
+                name_span: span,
+            });
+        }
+        if !else_assigned.contains(name) {
+            normalized_else.push(Statement::Assign {
+                name: name.clone(),
+                expr: Expr::identifier(name.clone()),
+                span,
+                name_span: span,
+            });
+        }
+    }
+
+    let targeted = our_vars_reassigned.iter().cloned().collect::<HashSet<_>>();
+    let synthetic_names = our_vars_reassigned
+        .iter()
+        .map(|name| (name.clone(), synthetic_if_binding_name(name, next_if_id)))
+        .collect::<HashMap<_, _>>();
+
+    let mut rewrite_then_scope = scope.clone();
+    let rewritten_then = rewrite_if_branch_reassignments(
+        &normalized_then,
+        &mut rewrite_then_scope,
+        &our_vars_reassigned,
+        &targeted,
+        &synthetic_names,
+        scope,
+        next_if_id,
+    );
+
+    let mut rewrite_else_scope = scope.clone();
+    let rewritten_else = rewrite_if_branch_reassignments(
+        &normalized_else,
+        &mut rewrite_else_scope,
+        &our_vars_reassigned,
+        &targeted,
+        &synthetic_names,
+        scope,
+        next_if_id,
+    );
+
+    Statement::If {
+        condition: condition.clone(),
+        then_branch: rewritten_then,
+        else_branch: Some(rewritten_else),
+        span,
+        then_span,
+        else_span: Some(else_span.unwrap_or(span)),
+    }
+}
+
+fn rewrite_if_branch_reassignments<'i>(
+    statements: &[Statement<'i>],
+    scope: &mut HashMap<String, TypeRef>,
+    ordered_targets: &[String],
+    targeted: &HashSet<String>,
+    synthetic_names: &HashMap<String, String>,
+    outer_scope: &HashMap<String, TypeRef>,
+    next_if_id: &mut usize,
+) -> Vec<Statement<'i>> {
+    let mut rewritten = Vec::new();
+    let mut aliases = HashMap::new();
+
+    for stmt in statements {
+        let aliased_stmt = apply_statement_aliases(stmt, &aliases);
+        match aliased_stmt {
+            Statement::Assign { name, expr, span, name_span } if targeted.contains(&name) => {
+                let synthetic_name = synthetic_names.get(&name).cloned().expect("synthetic binding for reassigned if variable");
+                let type_ref = outer_scope.get(&name).cloned().expect("outer if variable type");
+                if aliases.contains_key(&name) {
+                    rewritten.push(Statement::Assign { name: synthetic_name, expr, span, name_span });
+                } else {
+                    aliases.insert(name.clone(), synthetic_name.clone());
+                    scope.insert(synthetic_name.clone(), type_ref.clone());
+                    rewritten.push(Statement::VariableDefinition {
+                        type_ref,
+                        modifiers: Vec::new(),
+                        name: synthetic_name,
+                        expr: Some(expr),
+                        span,
+                        type_span: span,
+                        modifier_spans: Vec::new(),
+                        name_span,
+                    });
+                }
+            }
+            Statement::If { condition, then_branch, else_branch, span, then_span, else_span } => {
+                rewritten.push(normalize_if_statement_reassignments(
+                    &condition,
+                    &then_branch,
+                    else_branch.as_deref(),
+                    span,
+                    then_span,
+                    else_span,
+                    scope,
+                    next_if_id,
+                ));
+            }
+            other => {
+                update_scope_with_statement(&other, scope);
+                rewritten.push(other);
+            }
+        }
+    }
+
+    for original in ordered_targets {
+        let synthetic = synthetic_names.get(original).cloned().expect("synthetic binding");
+        rewritten.push(Statement::Assign {
+            name: original.clone(),
+            expr: Expr::identifier(synthetic),
+            span: span::Span::default(),
+            name_span: span::Span::default(),
+        });
+    }
+
+    rewritten
+}
+
+fn update_scope_with_statement<'i>(stmt: &Statement<'i>, scope: &mut HashMap<String, TypeRef>) {
+    match stmt {
+        Statement::VariableDefinition { type_ref, name, .. } => {
+            scope.insert(name.clone(), type_ref.clone());
+        }
+        Statement::TupleAssignment { left_type_ref, left_name, right_type_ref, right_name, .. } => {
+            scope.insert(left_name.clone(), left_type_ref.clone());
+            scope.insert(right_name.clone(), right_type_ref.clone());
+        }
+        Statement::FunctionCallAssign { bindings, .. } => {
+            for binding in bindings {
+                scope.insert(binding.name.clone(), binding.type_ref.clone());
+            }
+        }
+        Statement::StateFunctionCallAssign { bindings, .. } | Statement::StructDestructure { bindings, .. } => {
+            for binding in bindings {
+                scope.insert(binding.name.clone(), binding.type_ref.clone());
+            }
+        }
+        Statement::If { .. }
+        | Statement::Assign { .. }
+        | Statement::ArrayPush { .. }
+        | Statement::FunctionCall { .. }
+        | Statement::TimeOp { .. }
+        | Statement::Require { .. }
+        | Statement::For { .. }
+        | Statement::Return { .. }
+        | Statement::Console { .. } => {}
+    }
+}
+
 fn push_stack_binding(bindings: &mut HashMap<String, i64>, name: &str) {
     for depth in bindings.values_mut() {
         *depth += 1;
     }
     bindings.insert(name.to_string(), 0);
+}
+
+fn rebind_stack_binding(bindings: &mut HashMap<String, i64>, name: &str) {
+    if let Some(previous_depth) = bindings.get(name).copied() {
+        let mut shadow_index = 0usize;
+        loop {
+            let shadow_name = format!("{HIDDEN_STACK_BINDING_PREFIX}_{name}_{shadow_index}");
+            if !bindings.contains_key(&shadow_name) {
+                bindings.insert(shadow_name, previous_depth);
+                break;
+            }
+            shadow_index += 1;
+        }
+    }
+    push_stack_binding(bindings, name);
 }
 
 fn pop_stack_bindings(bindings: &mut HashMap<String, i64>, names: &[String]) {
@@ -3213,17 +3663,61 @@ fn compile_statement<'i>(
                             .unwrap_or_default()
                     )));
                 }
+                let should_rebind_stack = !name.starts_with("__if_")
+                    && (stack_bindings.contains_key(name)
+                        || matches!(&lowered_expr.kind, ExprKind::Identifier(identifier) if identifier.starts_with("__if_")));
+                if should_rebind_stack {
+                    let mut stack_depth = 0i64;
+                    compile_expr(
+                        &lowered_expr,
+                        env,
+                        stack_bindings,
+                        types,
+                        builder,
+                        options,
+                        &mut HashSet::new(),
+                        &mut stack_depth,
+                        script_size,
+                        contract_constants,
+                    )?;
+                    rebind_stack_binding(stack_bindings, name);
+                    let resolved = resolve_expr_for_runtime(lowered_expr, env, types, &mut HashSet::new())?;
+                    env.insert(name.clone(), resolved);
+                } else {
+                    let updated =
+                        if let Some(previous) = env.get(name) { replace_identifier(&lowered_expr, name, previous) } else { lowered_expr };
+                    let resolved = resolve_expr_for_runtime(updated, env, types, &mut HashSet::new())?;
+                    env.insert(name.clone(), resolved);
+                }
+                return Ok(Vec::new());
+            }
+            let lowered_expr = lower_runtime_expr(expr, types, structs)?;
+            let should_rebind_stack = !name.starts_with("__if_")
+                && (stack_bindings.contains_key(name)
+                    || matches!(&lowered_expr.kind, ExprKind::Identifier(identifier) if identifier.starts_with("__if_")));
+            if should_rebind_stack {
+                let mut stack_depth = 0i64;
+                compile_expr(
+                    &lowered_expr,
+                    env,
+                    stack_bindings,
+                    types,
+                    builder,
+                    options,
+                    &mut HashSet::new(),
+                    &mut stack_depth,
+                    script_size,
+                    contract_constants,
+                )?;
+                rebind_stack_binding(stack_bindings, name);
+                let resolved = resolve_expr_for_runtime(lowered_expr, env, types, &mut HashSet::new())?;
+                env.insert(name.clone(), resolved);
+            } else {
                 let updated =
                     if let Some(previous) = env.get(name) { replace_identifier(&lowered_expr, name, previous) } else { lowered_expr };
                 let resolved = resolve_expr_for_runtime(updated, env, types, &mut HashSet::new())?;
                 env.insert(name.clone(), resolved);
-                return Ok(Vec::new());
             }
-            let lowered_expr = lower_runtime_expr(expr, types, structs)?;
-            let updated =
-                if let Some(previous) = env.get(name) { replace_identifier(&lowered_expr, name, previous) } else { lowered_expr };
-            let resolved = resolve_expr_for_runtime(updated, env, types, &mut HashSet::new())?;
-            env.insert(name.clone(), resolved);
             Ok(Vec::new())
         }
         Statement::Console { .. } => Ok(Vec::new()),
@@ -3878,6 +4372,14 @@ fn compile_if_statement<'i>(
     recorder: &mut DebugRecorder<'i>,
 ) -> Result<(), CompilerError> {
     let condition = lower_runtime_expr(condition, types, structs)?;
+    let original_env = env.clone();
+    let original_stack_bindings = stack_bindings.clone();
+    let visible_names = original_env
+        .keys()
+        .chain(original_stack_bindings.keys())
+        .cloned()
+        .collect::<HashSet<_>>();
+
     let mut stack_depth = 0i64;
     compile_expr(
         &condition,
@@ -3893,9 +4395,9 @@ fn compile_if_statement<'i>(
     )?;
     builder.add_op(OpIf)?;
 
-    let original_env = env.clone();
     let mut then_env = original_env.clone();
     let mut then_types = types.clone();
+    let mut then_stack_bindings = original_stack_bindings.clone();
     predeclare_if_branch_locals(then_branch, &mut then_env, &mut then_types, structs)?;
     compile_block(
         then_branch,
@@ -3903,7 +4405,7 @@ fn compile_if_statement<'i>(
         assigned_names,
         identifier_uses,
         &mut then_types,
-        stack_bindings,
+        &mut then_stack_bindings,
         builder,
         options,
         contract_fields,
@@ -3918,10 +4420,12 @@ fn compile_if_statement<'i>(
         recorder,
     )?;
 
+    builder.add_op(OpElse)?;
+
     let mut else_env = original_env.clone();
+    let mut else_types = types.clone();
+    let mut else_stack_bindings = original_stack_bindings.clone();
     if let Some(else_branch) = else_branch {
-        builder.add_op(OpElse)?;
-        let mut else_types = types.clone();
         predeclare_if_branch_locals(else_branch, &mut else_env, &mut else_types, structs)?;
         compile_block(
             else_branch,
@@ -3929,7 +4433,7 @@ fn compile_if_statement<'i>(
             assigned_names,
             identifier_uses,
             &mut else_types,
-            stack_bindings,
+            &mut else_stack_bindings,
             builder,
             options,
             contract_fields,
@@ -3947,9 +4451,68 @@ fn compile_if_statement<'i>(
 
     builder.add_op(OpEndIf)?;
 
+    let branch_only_binding_count = count_branch_only_stack_bindings_after_if(
+        &visible_names,
+        &original_stack_bindings,
+        &then_stack_bindings,
+        &else_stack_bindings,
+    );
+    for _ in 0..branch_only_binding_count {
+        builder.add_op(OpDrop)?;
+    }
+
     let resolved_condition = resolve_expr_for_runtime(condition, &original_env, types, &mut HashSet::new())?;
     merge_env_after_if(env, &original_env, &then_env, &else_env, &resolved_condition);
+    *stack_bindings = merge_stack_bindings_after_if(
+        &visible_names,
+        &original_stack_bindings,
+        &then_stack_bindings,
+        &else_stack_bindings,
+        branch_only_binding_count as i64,
+    );
     Ok(())
+}
+
+fn count_branch_only_stack_bindings_after_if(
+    visible_names: &HashSet<String>,
+    original_stack_bindings: &HashMap<String, i64>,
+    then_stack_bindings: &HashMap<String, i64>,
+    else_stack_bindings: &HashMap<String, i64>,
+) -> usize {
+    let names = then_stack_bindings.keys().chain(else_stack_bindings.keys()).cloned().collect::<HashSet<_>>();
+    names
+        .into_iter()
+        .filter(|name| !original_stack_bindings.contains_key(name))
+        .filter(|name| !visible_names.contains(name))
+        .filter(|name| !name.starts_with(HIDDEN_STACK_BINDING_PREFIX))
+        .filter(|name| matches!((then_stack_bindings.get(name), else_stack_bindings.get(name)), (Some(then_depth), Some(else_depth)) if then_depth == else_depth))
+        .count()
+}
+
+fn merge_stack_bindings_after_if(
+    visible_names: &HashSet<String>,
+    original_stack_bindings: &HashMap<String, i64>,
+    then_stack_bindings: &HashMap<String, i64>,
+    else_stack_bindings: &HashMap<String, i64>,
+    dropped_binding_count: i64,
+) -> HashMap<String, i64> {
+    let mut merged = HashMap::new();
+    for name in visible_names {
+        match (then_stack_bindings.get(name), else_stack_bindings.get(name)) {
+            (Some(then_depth), Some(else_depth)) if then_depth == else_depth => {
+                merged.insert(name.clone(), *then_depth - dropped_binding_count);
+            }
+            (Some(then_depth), None) if original_stack_bindings.get(name) == Some(then_depth) => {
+                merged.insert(name.clone(), *then_depth);
+            }
+            (None, Some(else_depth)) if original_stack_bindings.get(name) == Some(else_depth) => {
+                merged.insert(name.clone(), *else_depth);
+            }
+            (None, None) => {}
+            _ => {}
+        }
+    }
+    merged
 }
 
 fn merge_env_after_if<'i>(
