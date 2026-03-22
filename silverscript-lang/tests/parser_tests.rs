@@ -23,7 +23,7 @@ fn parses_timeops_and_console() {
         contract TimeLock(pubkey owner) {
             function unlock(sig s) {
                 require(this.age >= 10 days, "too early");
-                console.log("ok", 1, true);
+                console.log("ok", 1 + 2, checkSig(s, owner));
             }
         }
     "#;
