@@ -3351,12 +3351,14 @@ fn compile_statement<'i>(
             Ok(Vec::new())
         }
         Statement::Require { expr, .. } => {
-            let expr = lower_runtime_expr(expr, types, structs)?;
             let mut expr_uses = HashMap::new();
-            collect_expr_identifier_uses(&expr, &mut expr_uses);
+            collect_expr_identifier_uses(expr, &mut expr_uses);
+            let expr = lower_runtime_expr(expr, types, structs)?;
             let forced_last_uses = expr_uses
                 .into_iter()
                 .filter(|(name, _)| stack_bindings.contains_key(name))
+                .filter(|(name, _)| matches!(types.get(name).map(String::as_str), Some("int" | "bool" | "byte")))
+                .filter(|(_, count)| *count == 1)
                 .filter(|(name, count)| remaining_identifier_uses.get(name).copied().unwrap_or(0) == *count)
                 .collect::<HashMap<_, _>>();
             let mut stack_depth = 0i64;
