@@ -5,12 +5,12 @@ use std::path::{Path, PathBuf};
 
 use clap::Parser;
 use debugger_session::args::{parse_call_args, parse_ctor_args, parse_hex_bytes};
-use debugger_session::format_failure_report;
 use debugger_session::session::{DebugEngine, DebugSession, ShadowTxContext, Variable, VariableOrigin};
 use debugger_session::test_runner::{
     TestExpectation, TestTxInputScenarioResolved, TestTxOutputScenarioResolved, TestTxScenarioResolved, discover_sidecar_path,
     resolve_contract_test,
 };
+use debugger_session::{format_failure_report, format_value};
 use kaspa_consensus_core::Hash;
 use kaspa_consensus_core::hashing::sighash::SigHashReusedValuesUnsync;
 use kaspa_consensus_core::tx::{
@@ -127,30 +127,25 @@ fn show_vars(session: &DebugSession<'_, '_>) {
             if variables.is_empty() {
                 println!("No variables in scope.");
             } else {
-                print_variable_section(session, "Contract Constants", &variables, |origin| {
+                print_variable_section("Contract Constants", &variables, |origin| {
                     matches!(origin, VariableOrigin::ConstructorArg | VariableOrigin::Constant)
                 });
-                print_variable_section(session, "Entrypoint Parameters", &variables, |origin| origin == VariableOrigin::Param);
-                print_variable_section(session, "Locals", &variables, |origin| origin == VariableOrigin::Local);
+                print_variable_section("Entrypoint Parameters", &variables, |origin| origin == VariableOrigin::Param);
+                print_variable_section("Locals", &variables, |origin| origin == VariableOrigin::Local);
             }
         }
         Err(err) => println!("ERROR: {err}"),
     }
 }
 
-fn print_variable_section(
-    session: &DebugSession<'_, '_>,
-    title: &str,
-    variables: &[Variable],
-    matches_origin: impl Fn(VariableOrigin) -> bool,
-) {
+fn print_variable_section(title: &str, variables: &[Variable], matches_origin: impl Fn(VariableOrigin) -> bool) {
     let section_vars: Vec<_> = variables.iter().filter(|var| matches_origin(var.origin)).collect();
     if section_vars.is_empty() {
         return;
     }
     println!("{title}:");
     for var in section_vars {
-        println!("  {} ({}) = {}", var.name, var.type_name, session.format_value(&var.type_name, &var.value));
+        println!("  {} ({}) = {}", var.name, var.type_name, format_value(&var.type_name, &var.value));
     }
 }
 
@@ -182,7 +177,7 @@ fn show_step_view(session: &DebugSession<'_, '_>, console_lines: &[String]) {
 
 fn print_failure(session: &DebugSession<'_, '_>, err: kaspa_txscript_errors::TxScriptError) {
     let report = session.build_failure_report(&err);
-    let formatted = format_failure_report(&report, &|type_name, value| session.format_value(type_name, value));
+    let formatted = format_failure_report(&report, &format_value);
     eprintln!("{formatted}");
 }
 
@@ -310,8 +305,8 @@ fn run_repl(session: &mut DebugSession<'_, '_>) -> Result<(), Box<dyn std::error
                     println!("Usage: eval <expr>");
                 } else {
                     match session.evaluate_expression(rest) {
-                        Ok(result) => {
-                            println!("{rest} = ({}) {}", result.type_name, session.format_value(&result.type_name, &result.value));
+                        Ok((type_name, value)) => {
+                            println!("{rest} = ({type_name}) {}", format_value(&type_name, &value));
                         }
                         Err(err) => println!("ERROR: {err}"),
                     }
@@ -321,7 +316,7 @@ fn run_repl(session: &mut DebugSession<'_, '_>) -> Result<(), Box<dyn std::error
                 if let Some(name) = rest.split_whitespace().next().filter(|_| !rest.is_empty()) {
                     match session.variable_by_name(name) {
                         Ok(var) => {
-                            println!("{} ({}) = {}", var.name, var.type_name, session.format_value(&var.type_name, &var.value));
+                            println!("{} ({}) = {}", var.name, var.type_name, format_value(&var.type_name, &var.value));
                         }
                         Err(err) => println!("ERROR: {err}"),
                     }

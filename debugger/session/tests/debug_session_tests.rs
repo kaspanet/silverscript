@@ -12,7 +12,10 @@ use kaspa_txscript::covenants::CovenantsContext;
 use kaspa_txscript::opcodes::codes::OpTrue;
 use kaspa_txscript::{EngineCtx, EngineFlags};
 
-use debugger_session::session::{DebugSession, DebugValue, ShadowTxContext};
+use debugger_session::{
+    format_value,
+    session::{DebugSession, DebugValue, ShadowTxContext},
+};
 use silverscript_lang::ast::{Expr, ExprKind, parse_contract_ast};
 use silverscript_lang::compiler::{CompileOptions, compile_contract};
 use silverscript_lang::debug_info::StepKind;
@@ -209,8 +212,8 @@ contract Shadow(int x) {
         assert_eq!(x_count, 1, "expected a single visible x variable");
 
         let x = session.variable_by_name("x")?;
-        assert!(!x.is_constant, "function parameter should shadow constructor constant");
-        assert_eq!(session.format_value(&x.type_name, &x.value), "3");
+        assert_eq!(x.origin.label(), "arg", "function parameter should shadow constructor constant");
+        assert_eq!(format_value(&x.type_name, &x.value), "3");
         Ok(())
     })
 }
@@ -233,15 +236,15 @@ contract ShadowMath(int fee) {
 
         session.step_over()?;
         let local_after_init = session.variable_by_name("local")?;
-        assert_eq!(session.format_value(&local_after_init.type_name, &local_after_init.value), "4");
+        assert_eq!(format_value(&local_after_init.type_name, &local_after_init.value), "4");
 
         session.step_over()?;
         let local_after_update = session.variable_by_name("local")?;
-        assert_eq!(session.format_value(&local_after_update.type_name, &local_after_update.value), "7");
+        assert_eq!(format_value(&local_after_update.type_name, &local_after_update.value), "7");
 
         let fee = session.variable_by_name("fee")?;
-        assert!(!fee.is_constant);
-        assert_eq!(session.format_value(&fee.type_name, &fee.value), "3");
+        assert_eq!(fee.origin.label(), "arg");
+        assert_eq!(format_value(&fee.type_name, &fee.value), "3");
         Ok(())
     })
 }
@@ -263,10 +266,10 @@ contract FieldOffset(int c) {
         session.run_to_first_executed_statement()?;
 
         let a = session.variable_by_name("a")?;
-        assert_eq!(session.format_value(&a.type_name, &a.value), "5");
+        assert_eq!(format_value(&a.type_name, &a.value), "5");
 
         let x = session.variable_by_name("x")?;
-        assert_eq!(session.format_value(&x.type_name, &x.value), "7");
+        assert_eq!(format_value(&x.type_name, &x.value), "7");
         Ok(())
     })
 }
@@ -290,7 +293,7 @@ contract FieldMath(int c) {
 
         for _ in 0..4 {
             if let Ok(z) = session.variable_by_name("z") {
-                assert_eq!(session.format_value(&z.type_name, &z.value), "14");
+                assert_eq!(format_value(&z.type_name, &z.value), "14");
                 return Ok(());
             }
             if session.step_over()?.is_none() {
@@ -358,7 +361,7 @@ contract OpcodeCursor() {
         assert_ne!(after_si.line, start.line, "si should refresh statement cursor");
 
         let x = session.variable_by_name("x")?;
-        assert_eq!(session.format_value(&x.type_name, &x.value), "1");
+        assert_eq!(format_value(&x.type_name, &x.value), "1");
         Ok(())
     })
 }
@@ -406,11 +409,11 @@ contract LocalVars() {
 
         session.step_over()?;
         let x_after_init = session.variable_by_name("x")?;
-        assert_eq!(session.format_value(&x_after_init.type_name, &x_after_init.value), "4");
+        assert_eq!(format_value(&x_after_init.type_name, &x_after_init.value), "4");
 
         session.step_over()?;
         let x_after_assign = session.variable_by_name("x")?;
-        assert_eq!(session.format_value(&x_after_assign.type_name, &x_after_assign.value), "6");
+        assert_eq!(format_value(&x_after_assign.type_name, &x_after_assign.value), "6");
         Ok(())
     })
 }
@@ -462,7 +465,7 @@ contract InlineCalls() {
         }
         assert_eq!(after_over.line, 11, "step_over should eventually move past inline call");
         let b = session.variable_by_name("b")?;
-        assert_eq!(session.format_value(&b.type_name, &b.value), "4", "inline return should resolve against caller params");
+        assert_eq!(format_value(&b.type_name, &b.value), "4", "inline return should resolve against caller params");
         Ok(())
     })?;
 
@@ -670,7 +673,7 @@ contract InlineParams() {
             let in_callee = session.call_stack().iter().any(|name| name == "add1");
             if in_callee {
                 if let Ok(x) = session.variable_by_name("x") {
-                    let rendered = session.format_value(&x.type_name, &x.value);
+                    let rendered = format_value(&x.type_name, &x.value);
                     assert_eq!(rendered, "4", "inline param x should reflect caller-provided value");
                     saw_inline_param = true;
                     break;
@@ -722,12 +725,9 @@ contract InlineEval() {
             _ => return Err("expected inline callee bindings x and y to be ints".into()),
         };
 
-        let evaluated = session.evaluate_expression("((y * 2) + (x - 1)) - (y - x)")?;
-        assert_eq!(evaluated.type_name, "int");
-        assert_eq!(
-            session.format_value(&evaluated.type_name, &evaluated.value),
-            ((y_value * 2) + (x_value - 1) - (y_value - x_value)).to_string()
-        );
+        let (type_name, value) = session.evaluate_expression("((y * 2) + (x - 1)) - (y - x)")?;
+        assert_eq!(type_name, "int");
+        assert_eq!(format_value(&type_name, &value), ((y_value * 2) + (x_value - 1) - (y_value - x_value)).to_string());
         Ok(())
     })
 }
@@ -752,15 +752,13 @@ contract ScopeKinds(int init_amount) {
         let vars = session.list_variables()?;
         let init_amount = vars.iter().find(|var| var.name == "init_amount").ok_or("missing ctor arg")?;
         assert_eq!(init_amount.origin.label(), "ctor");
-        assert!(!init_amount.is_constant);
 
         let bonus = vars.iter().find(|var| var.name == "BONUS").ok_or("missing contract constant")?;
         assert_eq!(bonus.origin.label(), "const");
-        assert!(bonus.is_constant);
 
-        let evaluated = session.evaluate_expression("init_amount + BONUS + delta")?;
-        assert_eq!(evaluated.type_name, "int");
-        assert_eq!(session.format_value(&evaluated.type_name, &evaluated.value), "12");
+        let (type_name, value) = session.evaluate_expression("init_amount + BONUS + delta")?;
+        assert_eq!(type_name, "int");
+        assert_eq!(format_value(&type_name, &value), "12");
         Ok(())
     })
 }
@@ -799,7 +797,7 @@ contract StepVisibility(int init_amount) {
             session.current_span().ok_or("missing span after step")?;
 
             let base = session.variable_by_name("base")?;
-            assert_eq!(session.format_value(&base.type_name, &base.value), "11");
+            assert_eq!(format_value(&base.type_name, &base.value), "11");
             Ok(())
         },
     )
@@ -852,19 +850,19 @@ contract ShiftedBindings() {
             assert!(current_line > call_line, "expected to step past inline call");
 
             let amount = session.variable_by_name("amount")?;
-            assert_eq!(session.format_value(&amount.type_name, &amount.value), "11");
+            assert_eq!(format_value(&amount.type_name, &amount.value), "11");
 
             let delta = session.variable_by_name("delta")?;
-            assert_eq!(session.format_value(&delta.type_name, &delta.value), "3");
+            assert_eq!(format_value(&delta.type_name, &delta.value), "3");
 
             let values = session.variable_by_name("values")?;
-            assert_eq!(session.format_value(&values.type_name, &values.value), "[4, 5]");
+            assert_eq!(format_value(&values.type_name, &values.value), "[4, 5]");
 
             let base = session.variable_by_name("base")?;
-            assert_eq!(session.format_value(&base.type_name, &base.value), "15");
+            assert_eq!(format_value(&base.type_name, &base.value), "15");
 
             let after = session.variable_by_name("after")?;
-            assert_eq!(session.format_value(&after.type_name, &after.value), "20");
+            assert_eq!(format_value(&after.type_name, &after.value), "20");
 
             Ok(())
         },
@@ -930,7 +928,7 @@ contract LoopIndex() {
 
         for _ in 0..12 {
             if let Ok(i) = session.variable_by_name("i") {
-                assert_eq!(session.format_value(&i.type_name, &i.value), "0");
+                assert_eq!(format_value(&i.type_name, &i.value), "0");
                 saw_loop_index = true;
                 break;
             }
@@ -998,7 +996,7 @@ contract CovLocal() {
 
     for _ in 0..4 {
         if let Ok(covid) = session.variable_by_name("covid") {
-            let rendered = session.format_value(&covid.type_name, &covid.value);
+            let rendered = format_value(&covid.type_name, &covid.value);
             assert_eq!(rendered, format!("0x{}", "11".repeat(32)));
             return Ok(());
         }
@@ -1061,8 +1059,8 @@ contract CovEval() {
     let mut session = DebugSession::full(&sigscript, &compiled.script, source, debug_info, engine)?.with_shadow_tx_context(shadow_ctx);
     session.run_to_first_executed_statement()?;
 
-    let evaluated = session.evaluate_expression("OpInputCovenantId(this.activeInputIndex)")?;
-    assert_eq!(evaluated.type_name, "byte[32]");
-    assert_eq!(session.format_value(&evaluated.type_name, &evaluated.value), format!("0x{}", "22".repeat(32)));
+    let (type_name, value) = session.evaluate_expression("OpInputCovenantId(this.activeInputIndex)")?;
+    assert_eq!(type_name, "byte[32]");
+    assert_eq!(format_value(&type_name, &value), format!("0x{}", "22".repeat(32)));
     Ok(())
 }
