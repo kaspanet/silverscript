@@ -1,54 +1,59 @@
 use std::collections::{HashMap, HashSet};
 
 use super::CompilerError;
+use indexmap::IndexSet;
 use kaspa_txscript::opcodes::codes::*;
 use kaspa_txscript::script_builder::ScriptBuilder;
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct StackBindings {
-    depths: HashMap<String, i64>,
+    names: IndexSet<String>,
 }
 
 impl StackBindings {
     pub(crate) fn from_depths(depths: HashMap<String, i64>) -> Self {
-        Self { depths }
+        let mut ordered = depths.into_iter().collect::<Vec<_>>();
+        ordered.sort_by_key(|(_, depth)| *depth);
+        assert!(
+            ordered.iter().enumerate().all(|(expected_depth, (_, depth))| *depth == expected_depth as i64),
+            "illegal stack binding depths"
+        );
+        Self { names: ordered.into_iter().map(|(name, _)| name).collect() }
     }
 
     pub(crate) fn set_depth_from_top(&mut self, name: &str, depth: i64) {
-        self.depths.insert(name.to_string(), depth);
+        assert!((0..=self.names.len() as i64).contains(&depth), "depth out of bounds: {depth}");
+        let target_index = depth as usize;
+        self.names.insert_before(target_index, name.to_string());
     }
 
     pub(crate) fn len(&self) -> usize {
-        self.depths.len()
+        self.names.len()
     }
 
     pub(crate) fn contains(&self, name: &str) -> bool {
-        self.depths.contains_key(name)
+        self.names.contains(name)
     }
 
     pub(crate) fn depth_from_top(&self, name: &str) -> Option<i64> {
-        self.depths.get(name).copied()
+        self.names.get_index_of(name).map(|index| index as i64)
     }
 
-    pub(crate) fn keys(&self) -> std::collections::hash_map::Keys<'_, String, i64> {
-        self.depths.keys()
+    pub(crate) fn keys(&self) -> impl Iterator<Item = &String> {
+        self.names.iter()
     }
 
     pub(crate) fn clone_depths(&self) -> HashMap<String, i64> {
-        self.depths.clone()
+        self.binding_order_top_to_bottom().into_iter().enumerate().map(|(depth, name)| (name, depth as i64)).collect()
     }
 
     pub(crate) fn binding_order_top_to_bottom(&self) -> Vec<String> {
-        let mut ordered = self.depths.iter().map(|(name, depth)| (name.clone(), *depth)).collect::<Vec<_>>();
-        ordered.sort_by_key(|(_, depth)| *depth);
-        ordered.into_iter().map(|(name, _)| name).collect()
+        self.names.iter().cloned().collect()
     }
 
     pub(crate) fn push_binding(&mut self, name: &str) {
-        for depth in self.depths.values_mut() {
-            *depth += 1;
-        }
-        self.depths.insert(name.to_string(), 0);
+        assert!(!self.contains(name), "binding already exists: {name}");
+        self.set_depth_from_top(name, 0);
     }
 
     /// Removes the named bindings from the stack while preserving the relative
@@ -77,12 +82,7 @@ impl StackBindings {
                 builder.add_op(OpDrop)?;
             }
 
-            self.depths.remove(&name);
-            for depth in self.depths.values_mut() {
-                if *depth > depth_from_top {
-                    *depth -= 1;
-                }
-            }
+            self.remove_name(&name);
         }
 
         Ok(())
@@ -109,15 +109,7 @@ impl StackBindings {
         builder.add_op(OpRoll)?;
         builder.add_op(OpDrop)?;
 
-        for (n, d) in self.depths.iter_mut() {
-            if n == name {
-                *d = 0;
-                continue;
-            }
-            if *d < depth_from_top {
-                *d += 1;
-            }
-        }
+        self.move_name_to_top(name);
 
         Ok(())
     }
@@ -176,12 +168,7 @@ impl StackBindings {
             builder.add_op(OpRoll)?;
             builder.add_op(OpToAltStack)?;
 
-            self.depths.remove(&moved_name);
-            for depth in self.depths.values_mut() {
-                if *depth > depth_from_top {
-                    *depth -= 1;
-                }
-            }
+            self.remove_name(&moved_name);
             remaining_order.remove(depth_from_top as usize);
         }
 
@@ -196,10 +183,16 @@ impl StackBindings {
     }
 
     fn reset_to_target_order(&mut self, target_order: &[String]) {
-        self.depths.clear();
-        for (depth, name) in target_order.iter().enumerate() {
-            self.depths.insert(name.clone(), depth as i64);
-        }
+        self.names = target_order.iter().cloned().collect();
+    }
+
+    fn remove_name(&mut self, name: &str) {
+        self.names.shift_remove(name);
+    }
+
+    fn move_name_to_top(&mut self, name: &str) {
+        let from = self.names.get_index_of(name).expect("binding should exist before moving to top");
+        self.names.move_index(from, 0);
     }
 }
 

@@ -677,8 +677,8 @@ mod tests {
     fn collect_variable_updates_records_runtime_slot_changes_without_env_expr() {
         let before_env = HashMap::new();
         let after_env = HashMap::new();
-        let before_stack_bindings = HashMap::from([("amount".to_string(), 1)]);
-        let after_stack_bindings = HashMap::from([("amount".to_string(), 2)]);
+        let before_stack_bindings = HashMap::from([("tmp".to_string(), 0), ("amount".to_string(), 1)]);
+        let after_stack_bindings = HashMap::from([("x".to_string(), 0), ("y".to_string(), 1), ("amount".to_string(), 2)]);
         let types = HashMap::from([("amount".to_string(), "int".to_string())]);
 
         let after_stack_bindings = StackBindings::from_depths(after_stack_bindings);

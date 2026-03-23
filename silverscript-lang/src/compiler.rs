@@ -2425,12 +2425,12 @@ fn compile_entrypoint_function<'i>(
         flattened_param_names
             .iter()
             .enumerate()
-            .map(|(index, name)| (name.clone(), (contract_field_count + (param_count - 1 - index)) as i64))
+            .map(|(index, name)| (name.clone(), (param_count - 1 - index) as i64))
             .collect::<HashMap<_, _>>(),
     );
     let initial_stack_binding_count = stack_bindings.len() + contract_field_count;
 
-    for (index, field) in contract_fields.iter().enumerate() {
+    for (index, field) in contract_fields.iter().enumerate().rev() {
         stack_bindings.set_depth_from_top(&field.name, (contract_field_count - 1 - index) as i64);
     }
 
@@ -7253,9 +7253,11 @@ pub(super) fn resolve_expr_for_debug<'i>(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use kaspa_txscript::opcodes::codes::OpData1;
 
-    use super::{Op0, OpPushData1, OpPushData2, data_prefix};
+    use super::{Op0, OpPushData1, OpPushData2, StackBindings, data_prefix};
 
     #[test]
     fn data_prefix_encodes_small_pushes() {
@@ -7274,5 +7276,29 @@ mod tests {
     #[test]
     fn data_prefix_encodes_pushdata2() {
         assert_eq!(data_prefix(256), vec![OpPushData2, 0x00, 0x01]);
+    }
+
+    #[test]
+    fn entrypoint_stack_setup_places_contract_fields_above_params_in_depth_order() {
+        let contract_field_count = 2usize;
+        let flattened_param_names = ["param_a", "param_b"];
+        let param_count = flattened_param_names.len();
+        let mut stack_bindings = StackBindings::from_depths(
+            flattened_param_names
+                .iter()
+                .enumerate()
+                .map(|(index, name)| (name.to_string(), (param_count - 1 - index) as i64))
+                .collect::<HashMap<_, _>>(),
+        );
+        let contract_fields = ["field_a", "field_b"];
+
+        for (index, field) in contract_fields.iter().enumerate().rev() {
+            stack_bindings.set_depth_from_top(field, (contract_field_count - 1 - index) as i64);
+        }
+
+        assert_eq!(
+            stack_bindings.binding_order_top_to_bottom(),
+            ["field_b", "field_a", "param_b", "param_a"].into_iter().map(str::to_string).collect::<Vec<_>>()
+        );
     }
 }
