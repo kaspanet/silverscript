@@ -279,3 +279,156 @@ fn apply_local_opcode(order: &[String], opcode: u8) -> Option<Vec<String>> {
     }
     Some(next)
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use super::{StackBindings, apply_local_opcode, local_stack_reordering_opcodes, longest_keepable_suffix_start};
+    use kaspa_consensus_core::hashing::sighash::SigHashReusedValuesUnsync;
+    use kaspa_consensus_core::tx::PopulatedTransaction;
+    use kaspa_txscript::caches::Cache;
+    use kaspa_txscript::opcodes::codes::*;
+    use kaspa_txscript::script_builder::ScriptBuilder;
+    use kaspa_txscript::{EngineFlags, TxScriptEngine, deserialize_i64};
+
+    fn bindings(depths: &[(&str, i64)]) -> StackBindings {
+        StackBindings::from_depths(depths.iter().map(|(name, depth)| ((*name).to_string(), *depth)).collect::<HashMap<_, _>>())
+    }
+
+    fn names(order: &[&str]) -> Vec<String> {
+        order.iter().map(|name| (*name).to_string()).collect()
+    }
+
+    fn execute_script_and_decode_stack(script: Vec<u8>) -> Vec<i64> {
+        let reused_values = SigHashReusedValuesUnsync::new();
+        let sig_cache = Cache::new(128);
+        let stacks = TxScriptEngine::<PopulatedTransaction, SigHashReusedValuesUnsync>::from_script(
+            &script,
+            &reused_values,
+            &sig_cache,
+            EngineFlags::default(),
+        )
+        .execute_and_return_stacks()
+        .expect("script executes");
+
+        stacks.dstack.iter().map(|entry| deserialize_i64(entry, true).expect("stack entry decodes to int")).collect()
+    }
+
+    #[test]
+    fn rebinding_moves_name_to_top_and_shifts_shallower_bindings() {
+        let mut stack_bindings = bindings(&[("a", 0), ("b", 1), ("c", 2)]);
+        let mut builder = ScriptBuilder::new();
+
+        stack_bindings.emit_update_stack_for_rebinding("b", &mut builder).expect("rebind stack slot");
+
+        assert_eq!(builder.drain(), vec![Op2, OpRoll, OpDrop]);
+        assert_eq!(stack_bindings.binding_order_top_to_bottom(), names(&["b", "a", "c"]));
+        assert_eq!(stack_bindings.depth_from_top("b"), Some(0));
+        assert_eq!(stack_bindings.depth_from_top("a"), Some(1));
+        assert_eq!(stack_bindings.depth_from_top("c"), Some(2));
+    }
+
+    #[test]
+    fn drop_bindings_uses_drop_for_top_and_roll_for_deeper_entries() {
+        let mut stack_bindings = bindings(&[("a", 0), ("b", 1), ("c", 2)]);
+        let mut builder = ScriptBuilder::new();
+
+        stack_bindings.emit_drop_bindings(&names(&["a", "c"]), &mut builder).expect("drop selected bindings");
+
+        assert_eq!(builder.drain(), vec![OpDrop, Op1, OpRoll, OpDrop]);
+        assert_eq!(stack_bindings.binding_order_top_to_bottom(), names(&["b"]));
+    }
+
+    #[test]
+    fn stack_reordering_uses_local_swap_when_available() {
+        let mut stack_bindings = bindings(&[("a", 0), ("b", 1)]);
+        let mut builder = ScriptBuilder::new();
+
+        stack_bindings.emit_stack_reordering(&names(&["b", "a"]), &mut builder).expect("reorder with swap");
+
+        assert_eq!(builder.drain(), vec![OpSwap]);
+        assert_eq!(stack_bindings.binding_order_top_to_bottom(), names(&["b", "a"]));
+    }
+
+    #[test]
+    fn stack_reordering_uses_suffix_rebuild_for_non_local_permutation() {
+        let current_order = names(&["a", "b", "c", "e", "d"]);
+        let target_order = names(&["a", "b", "c", "d", "e"]);
+        assert_eq!(local_stack_reordering_opcodes(&current_order, &target_order), None);
+
+        let mut stack_bindings = bindings(&[("a", 0), ("b", 1), ("c", 2), ("e", 3), ("d", 4)]);
+        let mut builder = ScriptBuilder::new();
+
+        stack_bindings.emit_stack_reordering(&target_order, &mut builder).expect("reorder with suffix rebuild");
+
+        let script = builder.drain();
+        assert!(script.contains(&OpToAltStack));
+        assert!(script.contains(&OpFromAltStack));
+        assert_eq!(stack_bindings.binding_order_top_to_bottom(), target_order);
+    }
+
+    #[test]
+    fn longest_keepable_suffix_start_finds_maximal_target_suffix() {
+        let current = names(&["a", "c", "b", "d"]);
+        let target = names(&["a", "b", "c", "d"]);
+
+        assert_eq!(longest_keepable_suffix_start(&current, &target), 2);
+    }
+
+    #[test]
+    fn local_stack_reordering_search_finds_two_op_sequence() {
+        let current = names(&["a", "b", "c"]);
+        let target = names(&["b", "c", "a"]);
+
+        let opcodes = local_stack_reordering_opcodes(&current, &target).expect("two-op local sequence");
+        assert_eq!(opcodes.len(), 2);
+
+        let mut reordered = current;
+        for opcode in opcodes {
+            reordered = apply_local_opcode(&reordered, opcode).expect("planned local opcode should apply");
+        }
+        assert_eq!(reordered, target);
+    }
+
+    #[test]
+    fn apply_local_opcode_matches_stack_machine_rotation_direction() {
+        assert_eq!(apply_local_opcode(&names(&["a", "b", "c"]), OpRot), Some(names(&["c", "a", "b"])));
+        assert_eq!(apply_local_opcode(&names(&["a", "b", "c", "d"]), Op2Swap), Some(names(&["c", "d", "a", "b"])));
+        assert_eq!(apply_local_opcode(&names(&["a"]), OpSwap), None);
+    }
+
+    #[test]
+    fn emitted_stack_reordering_matches_engine_execution() {
+        let mut stack_bindings = bindings(&[("a", 0), ("b", 1), ("c", 2), ("e", 3), ("d", 4)]);
+        let target_order = names(&["a", "b", "c", "d", "e"]);
+
+        let mut reorder_builder = ScriptBuilder::new();
+        stack_bindings.emit_stack_reordering(&target_order, &mut reorder_builder).expect("emit stack reordering");
+
+        let mut script = ScriptBuilder::new();
+        for value in [5, 4, 3, 2, 1] {
+            script.add_i64(value).expect("push test value");
+        }
+        script.add_ops(&reorder_builder.drain()).expect("append reordering ops");
+
+        assert_eq!(execute_script_and_decode_stack(script.drain()), vec![4, 5, 3, 2, 1]);
+        assert_eq!(stack_bindings.binding_order_top_to_bottom(), target_order);
+    }
+
+    #[test]
+    fn emitted_rebinding_matches_engine_execution() {
+        let mut stack_bindings = bindings(&[("a", 0), ("b", 1), ("c", 2)]);
+        let mut rebinding_builder = ScriptBuilder::new();
+        stack_bindings.emit_update_stack_for_rebinding("b", &mut rebinding_builder).expect("emit rebinding update");
+
+        let mut script = ScriptBuilder::new();
+        for value in [3, 2, 1, 9] {
+            script.add_i64(value).expect("push test value");
+        }
+        script.add_ops(&rebinding_builder.drain()).expect("append rebinding ops");
+
+        assert_eq!(execute_script_and_decode_stack(script.drain()), vec![3, 1, 9]);
+        assert_eq!(stack_bindings.binding_order_top_to_bottom(), names(&["b", "a", "c"]));
+    }
+}
