@@ -5,12 +5,12 @@ use std::path::{Path, PathBuf};
 
 use clap::Parser;
 use debugger_session::args::{parse_call_args, parse_ctor_args, parse_hex_bytes};
-use debugger_session::format_failure_report;
 use debugger_session::session::{DebugEngine, DebugSession, ShadowTxContext, Variable, VariableOrigin};
 use debugger_session::test_runner::{
     TestExpectation, TestTxInputScenarioResolved, TestTxOutputScenarioResolved, TestTxScenarioResolved, discover_sidecar_path,
     resolve_contract_test,
 };
+use debugger_session::{format_failure_report, format_value};
 use kaspa_consensus_core::Hash;
 use kaspa_consensus_core::hashing::sighash::SigHashReusedValuesUnsync;
 use kaspa_consensus_core::tx::{
@@ -127,41 +127,57 @@ fn show_vars(session: &DebugSession<'_, '_>) {
             if variables.is_empty() {
                 println!("No variables in scope.");
             } else {
-                print_variable_section(session, "Contract Constants", &variables, |origin| {
+                print_variable_section("Contract Constants", &variables, |origin| {
                     matches!(origin, VariableOrigin::ConstructorArg | VariableOrigin::Constant)
                 });
-                print_variable_section(session, "Entrypoint Parameters", &variables, |origin| origin == VariableOrigin::Param);
-                print_variable_section(session, "Locals", &variables, |origin| origin == VariableOrigin::Local);
+                print_variable_section("Entrypoint Parameters", &variables, |origin| origin == VariableOrigin::Param);
+                print_variable_section("Locals", &variables, |origin| origin == VariableOrigin::Local);
             }
         }
         Err(err) => println!("ERROR: {err}"),
     }
 }
 
-fn print_variable_section(
-    session: &DebugSession<'_, '_>,
-    title: &str,
-    variables: &[Variable],
-    matches_origin: impl Fn(VariableOrigin) -> bool,
-) {
+fn print_variable_section(title: &str, variables: &[Variable], matches_origin: impl Fn(VariableOrigin) -> bool) {
     let section_vars: Vec<_> = variables.iter().filter(|var| matches_origin(var.origin)).collect();
     if section_vars.is_empty() {
         return;
     }
     println!("{title}:");
     for var in section_vars {
-        println!("  {} ({}) = {}", var.name, var.type_name, session.format_value(&var.type_name, &var.value));
+        println!("  {} ({}) = {}", var.name, var.type_name, format_value(&var.type_name, &var.value));
     }
 }
 
-fn show_step_view(session: &DebugSession<'_, '_>) {
+fn print_console_messages(lines: &[String]) {
+    for line in lines {
+        println!("{line}");
+    }
+}
+
+fn print_non_status_stdout(stdout: &str) {
+    for line in stdout.lines() {
+        if line == "PASS" || line == "PASS (expected failure)" {
+            continue;
+        }
+        println!("{line}");
+    }
+    if stdout.ends_with('\n') || stdout.is_empty() {
+        return;
+    }
+    println!();
+}
+
+fn show_step_view(session: &DebugSession<'_, '_>, console_lines: &[String]) {
     show_source_context(session);
     show_vars(session);
+    println!("Console:");
+    print_console_messages(console_lines);
 }
 
 fn print_failure(session: &DebugSession<'_, '_>, err: kaspa_txscript_errors::TxScriptError) {
     let report = session.build_failure_report(&err);
-    let formatted = format_failure_report(&report, &|type_name, value| session.format_value(type_name, value));
+    let formatted = format_failure_report(&report, &format_value);
     eprintln!("{formatted}");
 }
 
@@ -180,8 +196,12 @@ fn run_repl(session: &mut DebugSession<'_, '_>) -> Result<(), Box<dyn std::error
         let cmd = cmd.trim();
         if cmd.is_empty() || cmd == "n" || cmd == "next" {
             match session.step_over() {
-                Ok(Some(_)) => show_step_view(session),
-                Ok(None) => {
+                Ok(Some(_)) => {
+                    let console_output = session.take_console_output();
+                    show_step_view(session, &console_output);
+                }
+                Ok(_) => {
+                    print_console_messages(&session.take_console_output());
                     println!("Done.");
                     break;
                 }
@@ -198,8 +218,12 @@ fn run_repl(session: &mut DebugSession<'_, '_>) -> Result<(), Box<dyn std::error
         let rest = parts.next().unwrap_or("").trim();
         match command {
             "step" | "s" => match session.step_into() {
-                Ok(Some(_)) => show_step_view(session),
-                Ok(None) => {
+                Ok(Some(_)) => {
+                    let console_output = session.take_console_output();
+                    show_step_view(session, &console_output);
+                }
+                Ok(_) => {
+                    print_console_messages(&session.take_console_output());
                     println!("Done.");
                     break;
                 }
@@ -209,8 +233,12 @@ fn run_repl(session: &mut DebugSession<'_, '_>) -> Result<(), Box<dyn std::error
                 }
             },
             "si" => match session.step_opcode() {
-                Ok(Some(_)) => show_step_view(session),
-                Ok(None) => {
+                Ok(Some(_)) => {
+                    let console_output = session.take_console_output();
+                    show_step_view(session, &console_output);
+                }
+                Ok(_) => {
+                    print_console_messages(&session.take_console_output());
                     println!("Done.");
                     break;
                 }
@@ -220,8 +248,12 @@ fn run_repl(session: &mut DebugSession<'_, '_>) -> Result<(), Box<dyn std::error
                 }
             },
             "finish" | "out" => match session.step_out() {
-                Ok(Some(_)) => show_step_view(session),
-                Ok(None) => {
+                Ok(Some(_)) => {
+                    let console_output = session.take_console_output();
+                    show_step_view(session, &console_output);
+                }
+                Ok(_) => {
+                    print_console_messages(&session.take_console_output());
                     println!("Done.");
                     break;
                 }
@@ -231,8 +263,12 @@ fn run_repl(session: &mut DebugSession<'_, '_>) -> Result<(), Box<dyn std::error
                 }
             },
             "c" | "continue" => match session.continue_to_breakpoint() {
-                Ok(Some(_)) => show_step_view(session),
+                Ok(Some(_)) => {
+                    let console_output = session.take_console_output();
+                    show_step_view(session, &console_output);
+                }
                 Ok(None) => {
+                    print_console_messages(&session.take_console_output());
                     println!("Done.");
                     break;
                 }
@@ -269,8 +305,8 @@ fn run_repl(session: &mut DebugSession<'_, '_>) -> Result<(), Box<dyn std::error
                     println!("Usage: eval <expr>");
                 } else {
                     match session.evaluate_expression(rest) {
-                        Ok(result) => {
-                            println!("{rest} = ({}) {}", result.type_name, session.format_value(&result.type_name, &result.value));
+                        Ok((type_name, value)) => {
+                            println!("{rest} = ({type_name}) {}", format_value(&type_name, &value));
                         }
                         Err(err) => println!("ERROR: {err}"),
                     }
@@ -280,7 +316,7 @@ fn run_repl(session: &mut DebugSession<'_, '_>) -> Result<(), Box<dyn std::error
                 if let Some(name) = rest.split_whitespace().next().filter(|_| !rest.is_empty()) {
                     match session.variable_by_name(name) {
                         Ok(var) => {
-                            println!("{} ({}) = {}", var.name, var.type_name, session.format_value(&var.type_name, &var.value));
+                            println!("{} ({}) = {}", var.name, var.type_name, format_value(&var.type_name, &var.value));
                         }
                         Err(err) => println!("ERROR: {err}"),
                     }
@@ -317,7 +353,12 @@ fn run_all_tests(test_file: &str, script_path: Option<&str>) -> Result<(), Box<d
             args.push(path);
         }
         let result = std::process::Command::new(std::env::current_exe()?).args(&args).output()?;
+        let stdout = String::from_utf8_lossy(&result.stdout);
         let stderr = String::from_utf8_lossy(&result.stderr);
+        println!("  RUN   {name}");
+        if !stdout.is_empty() {
+            print_non_status_stdout(&stdout);
+        }
         if result.status.success() {
             passed += 1;
             println!("  PASS  {name}");
@@ -549,12 +590,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if cli.run {
         let expect_fail = expect == Some(TestExpectation::Fail);
-        match session.continue_to_breakpoint() {
-            Ok(_) if expect_fail => {
+        match session.run_to_completion() {
+            Ok(()) if expect_fail => {
+                print_console_messages(&session.take_console_output());
                 eprintln!("FAIL: expected failure but script passed");
                 Err("FAIL".into())
             }
-            Ok(_) => {
+            Ok(()) => {
+                print_console_messages(&session.take_console_output());
                 println!("PASS");
                 Ok(())
             }
@@ -570,7 +613,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         println!("Stepping through {} bytes of script", compiled.script.len());
         session.run_to_first_executed_statement()?;
-        show_source_context(&session);
+        let console_output = session.take_console_output();
+        show_step_view(&session, &console_output);
         run_repl(&mut session)?;
         Ok(())
     }

@@ -1222,10 +1222,7 @@ fn statement_uses_script_size(stmt: &Statement<'_>) -> bool {
                 || body.iter().any(statement_uses_script_size)
         }
         Statement::Return { exprs, .. } => exprs.iter().any(expr_uses_script_size),
-        Statement::Console { args, .. } => args.iter().any(|arg| match arg {
-            crate::ast::ConsoleArg::Identifier(_, _) => false,
-            crate::ast::ConsoleArg::Literal(expr) => expr_uses_script_size(expr),
-        }),
+        Statement::Console { args, .. } => args.iter().any(expr_uses_script_size),
     }
 }
 
@@ -1840,10 +1837,7 @@ fn collect_statement_identifier_uses<'i>(stmt: &Statement<'i>, uses: &mut HashMa
         }
         Statement::Console { args, .. } => {
             for arg in args {
-                match arg {
-                    crate::ast::ConsoleArg::Identifier(name, ..) => bump_identifier_use(uses, name),
-                    crate::ast::ConsoleArg::Literal(expr) => collect_expr_identifier_uses(expr, uses),
-                }
+                collect_expr_identifier_uses(arg, uses);
             }
         }
     }

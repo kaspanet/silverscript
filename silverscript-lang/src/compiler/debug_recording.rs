@@ -270,10 +270,12 @@ impl<'i> DebugRecorderImpl<'i> for ActiveDebugRecorder<'i> {
         };
 
         let updates = collect_variable_updates(&frame.env_before, &frame.stack_bindings_before, env, types, stack_bindings)?;
+        let console_args = collect_console_args(stmt, env)?;
         let span = SourceSpan::from(stmt.span());
         let bytecode_len = bytecode_end.saturating_sub(frame.start);
         let step_index = entrypoint.push_step(frame.start, frame.start + bytecode_len, span, StepKind::Source {});
         entrypoint.steps[step_index].variable_updates.extend(updates);
+        entrypoint.steps[step_index].console_args.extend(console_args);
         Ok(())
     }
 
@@ -362,6 +364,7 @@ impl<'i> DebugRecorderImpl<'i> for ActiveDebugRecorder<'i> {
                     call_depth: step.call_depth,
                     frame_id: step.frame_id,
                     variable_updates: step.variable_updates,
+                    console_args: step.console_args,
                 });
             }
 
@@ -464,6 +467,7 @@ impl<'i> StagedEntrypointDebug<'i> {
             call_depth,
             frame_id,
             variable_updates: Vec::new(),
+            console_args: Vec::new(),
         });
         self.steps.len().saturating_sub(1)
     }
@@ -544,6 +548,14 @@ fn resolve_variable_update<'i>(
     let resolved = resolve_expr_for_debug(expr, env, &mut HashSet::new())?;
     updates.push(DebugVariableUpdate { name: name.to_string(), type_name: type_name.to_string(), runtime_binding, expr: resolved });
     Ok(())
+}
+
+fn collect_console_args<'i>(stmt: &Statement<'i>, env: &HashMap<String, Expr<'i>>) -> Result<Vec<Expr<'i>>, CompilerError> {
+    let Statement::Console { args, .. } = stmt else {
+        return Ok(Vec::new());
+    };
+
+    args.iter().cloned().map(|expr| resolve_expr_for_debug(expr, env, &mut HashSet::new())).collect()
 }
 
 fn static_binding_for_stack_name(name: &str, stack_bindings: &HashMap<String, i64>) -> Option<RuntimeBinding> {
