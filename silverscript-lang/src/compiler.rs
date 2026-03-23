@@ -59,6 +59,12 @@ impl BindingStack {
         self.depths.clone()
     }
 
+    fn binding_order_top_to_bottom(&self) -> Vec<String> {
+        let mut ordered = self.depths.iter().map(|(name, depth)| (name.clone(), *depth)).collect::<Vec<_>>();
+        ordered.sort_by_key(|(_, depth)| *depth);
+        ordered.into_iter().map(|(name, _)| name).collect()
+    }
+
     fn push_binding(&mut self, name: &str) {
         for depth in self.depths.values_mut() {
             *depth += 1;
@@ -66,44 +72,76 @@ impl BindingStack {
         self.depths.insert(name.to_string(), 0);
     }
 
-    fn pop_top_bindings(&mut self, names: &[String]) {
+    /// Removes the named bindings from the stack while preserving the relative
+    /// order of all surviving bindings.
+    ///
+    /// The removal order is current top-to-bottom among the bindings being
+    /// removed, which minimizes the total `ROLL` depth for this direct
+    /// `ROLL+DROP` strategy.
+    fn emit_drop_bindings(&mut self, names: &[String], builder: &mut ScriptBuilder) -> Result<(), CompilerError> {
         if names.is_empty() {
-            return;
+            return Ok(());
         }
 
-        for name in names {
-            self.depths.remove(name);
+        let names_to_remove = names.iter().cloned().collect::<HashSet<_>>();
+        // Remove bindings from smallest depth to largest. That way each step
+        // sees the next removable binding at its current minimal depth: if it
+        // is already on top we can `DROP`, otherwise we `ROLL(depth)` then
+        // `DROP`.
+        for name in self.binding_order_top_to_bottom() {
+            if !names_to_remove.contains(&name) {
+                continue;
+            }
+
+            let depth_from_top = self.depth_from_top(&name).expect("binding should exist before dropping");
+            if depth_from_top == 0 {
+                builder.add_op(OpDrop)?;
+            } else {
+                builder.add_i64(depth_from_top)?;
+                builder.add_op(OpRoll)?;
+                builder.add_op(OpDrop)?;
+            }
+
+            self.depths.remove(&name);
+            for depth in self.depths.values_mut() {
+                if *depth > depth_from_top {
+                    *depth -= 1;
+                }
+            }
         }
-        for depth in self.depths.values_mut() {
-            *depth -= names.len() as i64;
-        }
+
+        Ok(())
     }
 
-    /// Rewrites the physical stack after a scalar reassignment so the existing
-    /// binding depths remain valid.
+    /// Rewrites the physical stack after a scalar reassignment and updates the
+    /// binding model to reflect the new stack shape.
     ///
     /// Assumptions:
     /// - `name` is already bound in this `BindingStack`
     /// - the newly computed RHS value is currently on top of the stack
-    /// - the compiler wants the rebinding to preserve the current depth model
-    ///   for all other bindings
+    /// - the compiler wants the rebound name to move to depth `0`
     ///
-    /// Operationally, this moves the top value down into the previous slot of
-    /// `name` and restores every intervening stack item above it, so the only
-    /// logical change is the value bound to `name`.
-    fn emit_update_stack_for_rebinding(&self, name: &str, builder: &mut ScriptBuilder) -> Result<(), CompilerError> {
+    /// Operationally, this rolls the old bound value to the top, drops it, and
+    /// leaves the newly computed RHS value at the top. The binding model is
+    /// then updated so:
+    /// - `name` becomes depth `0`
+    /// - bindings that were above the old slot shift by `+1`
+    /// - deeper bindings keep their previous depths
+    fn emit_update_stack_for_rebinding(&mut self, name: &str, builder: &mut ScriptBuilder) -> Result<(), CompilerError> {
         let depth_from_top = self.depth_from_top(name).expect("binding should exist before stack rebinding");
 
-        // RHS value is already on top of the stack. Rewrite the physical stack so
-        // the existing binding depths remain valid after rebinding this name.
-        for _ in 0..depth_from_top {
-            builder.add_op(OpSwap)?;
-            builder.add_op(OpToAltStack)?;
-        }
-        builder.add_op(OpSwap)?;
+        builder.add_i64(depth_from_top + 1)?;
+        builder.add_op(OpRoll)?;
         builder.add_op(OpDrop)?;
-        for _ in 0..depth_from_top {
-            builder.add_op(OpFromAltStack)?;
+
+        for (n, d) in self.depths.iter_mut() {
+            if n == name {
+                *d = 0;
+                continue;
+            }
+            if *d < depth_from_top {
+                *d += 1;
+            }
         }
 
         Ok(())
@@ -119,6 +157,141 @@ impl BindingStack {
         builder.add_op(OpPick)?;
         Ok(true)
     }
+
+    /// Reorders the current stack-bound locals so their final top-to-bottom
+    /// order matches `target_order`.
+    ///
+    /// This treats reconciliation as an explicit permutation problem, but it
+    /// avoids moving bindings that can remain in place. Specifically, it keeps
+    /// the longest suffix of `target_order` that is already a subsequence of
+    /// the current order, and only extracts/rebuilds the remaining target
+    /// prefix.
+    ///
+    /// The current and target orders must refer to the same live binding set.
+    fn emit_stack_reordering(&mut self, target_order: &[String], builder: &mut ScriptBuilder) -> Result<(), CompilerError> {
+        let current_order = self.binding_order_top_to_bottom();
+        if current_order == target_order {
+            return Ok(());
+        }
+
+        let current_names = self.depths.keys().cloned().collect::<HashSet<_>>();
+        let target_names = target_order.iter().cloned().collect::<HashSet<_>>();
+        if current_names != target_names {
+            return Err(CompilerError::Unsupported(
+                "stack reconciliation requires both layouts to contain the same bindings".to_string(),
+            ));
+        }
+
+        if let Some(opcode) = peephole_stack_reordering_opcode(&current_order, target_order) {
+            builder.add_op(opcode)?;
+            self.depths.clear();
+            for (depth, name) in target_order.iter().enumerate() {
+                self.depths.insert(name.clone(), depth as i64);
+            }
+            return Ok(());
+        }
+
+        let keep_start = longest_keepable_suffix_start(&current_order, target_order);
+        let move_prefix = &target_order[..keep_start];
+        let keep_suffix = &target_order[keep_start..];
+        let mut remaining_order = current_order;
+
+        for name in move_prefix {
+            let depth_from_top = remaining_order
+                .iter()
+                .position(|current_name| current_name == name)
+                .expect("target binding should exist during stack reordering") as i64;
+            builder.add_i64(depth_from_top)?;
+            builder.add_op(OpRoll)?;
+            builder.add_op(OpToAltStack)?;
+
+            self.depths.remove(name);
+            for depth in self.depths.values_mut() {
+                if *depth > depth_from_top {
+                    *depth -= 1;
+                }
+            }
+            remaining_order.remove(depth_from_top as usize);
+        }
+
+        debug_assert_eq!(remaining_order, keep_suffix);
+
+        for _ in 0..move_prefix.len() {
+            builder.add_op(OpFromAltStack)?;
+        }
+
+        self.depths.clear();
+        for (depth, name) in target_order.iter().enumerate() {
+            self.depths.insert(name.clone(), depth as i64);
+        }
+
+        Ok(())
+    }
+}
+
+fn longest_keepable_suffix_start(current_order: &[String], target_order: &[String]) -> usize {
+    let mut i = current_order.len();
+    let mut j = target_order.len();
+
+    while j > 0 {
+        while i > 0 && current_order[i - 1] != target_order[j - 1] {
+            i -= 1;
+        }
+        if i == 0 {
+            break;
+        }
+        i -= 1;
+        j -= 1;
+    }
+
+    j
+}
+
+fn peephole_stack_reordering_opcode(current_order: &[String], target_order: &[String]) -> Option<u8> {
+    if current_order.len() != target_order.len() {
+        return None;
+    }
+
+    if current_order.len() >= 2
+        && target_order[0] == current_order[1]
+        && target_order[1] == current_order[0]
+        && target_order[2..] == current_order[2..]
+    {
+        return Some(OpSwap);
+    }
+
+    if current_order.len() >= 3
+        && target_order[0] == current_order[2]
+        && target_order[1] == current_order[0]
+        && target_order[2] == current_order[1]
+        && target_order[3..] == current_order[3..]
+    {
+        return Some(OpRot);
+    }
+
+    if current_order.len() >= 4
+        && target_order[0] == current_order[2]
+        && target_order[1] == current_order[3]
+        && target_order[2] == current_order[0]
+        && target_order[3] == current_order[1]
+        && target_order[4..] == current_order[4..]
+    {
+        return Some(Op2Swap);
+    }
+
+    if current_order.len() >= 6
+        && target_order[0] == current_order[4]
+        && target_order[1] == current_order[5]
+        && target_order[2] == current_order[0]
+        && target_order[3] == current_order[1]
+        && target_order[4] == current_order[2]
+        && target_order[5] == current_order[3]
+        && target_order[6..] == current_order[6..]
+    {
+        return Some(Op2Rot);
+    }
+
+    None
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -4769,8 +4942,10 @@ fn compile_if_statement<'i>(
     builder.add_op(OpIf)?;
 
     let original_env = env.clone();
+    let original_stack_bindings = stack_bindings.clone();
     let mut then_env = original_env.clone();
     let mut then_types = types.clone();
+    let mut then_stack_bindings = original_stack_bindings.clone();
     predeclare_if_branch_locals(then_branch, &mut then_env, &mut then_types, structs)?;
     compile_block(
         then_branch,
@@ -4778,7 +4953,7 @@ fn compile_if_statement<'i>(
         assigned_names,
         identifier_uses,
         &mut then_types,
-        stack_bindings,
+        &mut then_stack_bindings,
         builder,
         options,
         enable_mutable_scalar_stack_locals,
@@ -4798,6 +4973,7 @@ fn compile_if_statement<'i>(
     if let Some(else_branch) = else_branch {
         builder.add_op(OpElse)?;
         let mut else_types = types.clone();
+        let mut else_stack_bindings = original_stack_bindings.clone();
         predeclare_if_branch_locals(else_branch, &mut else_env, &mut else_types, structs)?;
         compile_block(
             else_branch,
@@ -4805,7 +4981,7 @@ fn compile_if_statement<'i>(
             assigned_names,
             identifier_uses,
             &mut else_types,
-            stack_bindings,
+            &mut else_stack_bindings,
             builder,
             options,
             enable_mutable_scalar_stack_locals,
@@ -4820,6 +4996,13 @@ fn compile_if_statement<'i>(
             true,
             recorder,
         )?;
+        let target_order = then_stack_bindings.binding_order_top_to_bottom();
+        else_stack_bindings.emit_stack_reordering(&target_order, builder)?;
+        *stack_bindings = then_stack_bindings;
+    } else {
+        let target_order = original_stack_bindings.binding_order_top_to_bottom();
+        then_stack_bindings.emit_stack_reordering(&target_order, builder)?;
+        *stack_bindings = original_stack_bindings;
     }
 
     builder.add_op(OpEndIf)?;
@@ -5010,13 +5193,10 @@ fn compile_block<'i>(
     }
 
     if scoped_stack_locals && !added_stack_locals.is_empty() {
-        for _ in 0..added_stack_locals.len() {
-            builder.add_op(OpDrop)?;
-        }
+        stack_bindings.emit_drop_bindings(&added_stack_locals, builder)?;
         for name in &added_stack_locals {
             types.remove(name);
         }
-        stack_bindings.pop_top_bindings(&added_stack_locals);
     }
 
     Ok(())

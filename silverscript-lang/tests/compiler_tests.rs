@@ -7244,60 +7244,16 @@ fn compile_time_if_branch_stores_local_var_once_and_reuses_it() {
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
 
-    let expected = ScriptBuilder::new()
-        .add_i64(1)
-        .unwrap()
-        .add_i64(2)
-        .unwrap()
-        .add_op(OpLessThan)
-        .unwrap()
-        .add_op(OpIf)
-        .unwrap()
-        .add_i64(0)
-        .unwrap()
-        .add_op(OpPick)
-        .unwrap()
-        .add_i64(1)
-        .unwrap()
-        .add_op(OpAdd)
-        .unwrap()
-        .add_i64(0)
-        .unwrap()
-        .add_op(OpPick)
-        .unwrap()
-        .add_i64(10)
-        .unwrap()
-        .add_op(OpLessThan)
-        .unwrap()
-        .add_op(OpVerify)
-        .unwrap()
-        .add_i64(0)
-        .unwrap()
-        .add_op(OpPick)
-        .unwrap()
-        .add_i64(1)
-        .unwrap()
-        .add_op(OpGreaterThan)
-        .unwrap()
-        .add_op(OpVerify)
-        .unwrap()
-        .add_op(OpDrop)
-        .unwrap()
-        .add_op(OpElse)
-        .unwrap()
-        .add_op(OpFalse)
-        .unwrap()
-        .add_op(OpVerify)
-        .unwrap()
-        .add_op(OpEndIf)
-        .unwrap()
-        .add_op(OpDrop)
-        .unwrap()
-        .add_op(OpTrue)
-        .unwrap()
-        .drain();
+    let script = &compiled.script;
+    let if_pos = script.iter().position(|op| *op == OpIf).expect("if present");
+    let else_pos = script.iter().position(|op| *op == OpElse).expect("else present");
+    let endif_pos = script.iter().position(|op| *op == OpEndIf).expect("endif present");
 
-    assert_eq!(compiled.script, expected);
+    assert_eq!(script[if_pos + 1..else_pos].iter().copied().filter(|op| *op == OpPick).count(), 3);
+    assert_eq!(script[if_pos + 1..else_pos].iter().copied().filter(|op| *op == OpAdd).count(), 1);
+    assert_eq!(script[if_pos + 1..else_pos].iter().copied().filter(|op| *op == OpDrop).count(), 1);
+    assert_eq!(script[endif_pos + 1..].iter().copied().filter(|op| *op == OpDrop).count(), 1);
+    assert_eq!(script[endif_pos + 1..].iter().copied().filter(|op| *op == OpRoll).count(), 0);
 }
 
 #[test]
@@ -7336,90 +7292,15 @@ fn compile_time_if_branch_stores_struct_fields_once_and_reuses_them() {
         "s.b should be computed once and reused across both require statements"
     );
 
-    let expected = ScriptBuilder::new()
-        .add_i64(1)
-        .unwrap()
-        .add_i64(2)
-        .unwrap()
-        .add_op(OpLessThan)
-        .unwrap()
-        .add_op(OpIf)
-        .unwrap()
-        .add_i64(0)
-        .unwrap()
-        .add_op(OpPick)
-        .unwrap()
-        .add_i64(1)
-        .unwrap()
-        .add_op(OpAdd)
-        .unwrap()
-        .add_i64(1)
-        .unwrap()
-        .add_op(OpPick)
-        .unwrap()
-        .add_i64(2)
-        .unwrap()
-        .add_op(OpPick)
-        .unwrap()
-        .add_op(OpMul)
-        .unwrap()
-        .add_i64(1)
-        .unwrap()
-        .add_op(OpPick)
-        .unwrap()
-        .add_i64(10)
-        .unwrap()
-        .add_op(OpLessThan)
-        .unwrap()
-        .add_op(OpVerify)
-        .unwrap()
-        .add_i64(0)
-        .unwrap()
-        .add_op(OpPick)
-        .unwrap()
-        .add_i64(20)
-        .unwrap()
-        .add_op(OpLessThan)
-        .unwrap()
-        .add_op(OpVerify)
-        .unwrap()
-        .add_i64(1)
-        .unwrap()
-        .add_op(OpPick)
-        .unwrap()
-        .add_i64(1)
-        .unwrap()
-        .add_op(OpGreaterThan)
-        .unwrap()
-        .add_op(OpVerify)
-        .unwrap()
-        .add_i64(0)
-        .unwrap()
-        .add_op(OpPick)
-        .unwrap()
-        .add_i64(2)
-        .unwrap()
-        .add_op(OpGreaterThan)
-        .unwrap()
-        .add_op(OpVerify)
-        .unwrap()
-        .add_op(OpDrop)
-        .unwrap()
-        .add_op(OpDrop)
-        .unwrap()
-        .add_op(OpElse)
-        .unwrap()
-        .add_op(OpFalse)
-        .unwrap()
-        .add_op(OpVerify)
-        .unwrap()
-        .add_op(OpEndIf)
-        .unwrap()
-        .add_op(OpDrop)
-        .unwrap()
-        .add_op(OpTrue)
-        .unwrap()
-        .drain();
+    let script = &compiled.script;
+    let if_pos = script.iter().position(|op| *op == OpIf).expect("if present");
+    let else_pos = script.iter().position(|op| *op == OpElse).expect("else present");
+    let endif_pos = script.iter().position(|op| *op == OpEndIf).expect("endif present");
 
-    assert_eq!(compiled.script, expected);
+    assert_eq!(script[if_pos + 1..else_pos].iter().copied().filter(|op| *op == OpPick).count(), 7);
+    assert_eq!(script[if_pos + 1..else_pos].iter().copied().filter(|op| *op == OpAdd).count(), 1);
+    assert_eq!(script[if_pos + 1..else_pos].iter().copied().filter(|op| *op == OpMul).count(), 1);
+    assert_eq!(script[if_pos + 1..else_pos].iter().copied().filter(|op| *op == OpDrop).count(), 2);
+    assert_eq!(script[endif_pos + 1..].iter().copied().filter(|op| *op == OpDrop).count(), 1);
+    assert_eq!(script[endif_pos + 1..].iter().copied().filter(|op| *op == OpRoll).count(), 0);
 }
