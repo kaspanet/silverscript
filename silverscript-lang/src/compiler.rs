@@ -1566,11 +1566,64 @@ fn store_struct_binding_from_lowered_values<'i>(
 }
 
 #[allow(clippy::too_many_arguments)]
+fn store_struct_binding_with_stack_rebindings<'i>(
+    name: &str,
+    type_ref: &TypeRef,
+    lowered_values: Vec<Expr<'i>>,
+    env: &mut HashMap<String, Expr<'i>>,
+    types: &mut HashMap<String, String>,
+    stack_bindings: &mut StackBindings,
+    builder: &mut ScriptBuilder,
+    options: CompileOptions,
+    structs: &StructRegistry,
+    script_size: Option<i64>,
+    contract_constants: &HashMap<String, Expr<'i>>,
+) -> Result<(), CompilerError> {
+    let leaf_bindings = flatten_type_ref_leaves(type_ref, structs)?;
+    let original_env = env.clone();
+
+    types.insert(name.to_string(), type_name_from_ref(type_ref));
+    for ((path, field_type), lowered_expr) in leaf_bindings.into_iter().zip(lowered_values.into_iter()) {
+        let leaf_name = flattened_struct_name(name, &path);
+        let field_type_name = type_name_from_ref(&field_type);
+        types.insert(leaf_name.clone(), field_type_name.clone());
+
+        if matches!(field_type_name.as_str(), "int" | "bool" | "byte") && stack_bindings.contains(&leaf_name) {
+            let mut stack_depth = 0i64;
+            compile_expr(
+                &lowered_expr,
+                env,
+                stack_bindings,
+                types,
+                builder,
+                options,
+                &mut HashSet::new(),
+                &mut stack_depth,
+                script_size,
+                contract_constants,
+            )?;
+            stack_bindings.emit_update_stack_for_rebinding(&leaf_name, builder)?;
+            continue;
+        }
+
+        let updated = if let Some(previous) = original_env.get(&leaf_name) {
+            replace_identifier(&lowered_expr, &leaf_name, previous)
+        } else {
+            lowered_expr
+        };
+        let stored_expr = resolve_expr_for_runtime(updated, &original_env, types, &mut HashSet::new())?;
+        env.insert(leaf_name, stored_expr);
+    }
+
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
 fn push_struct_leaf_stack_bindings<'i>(
     name: &str,
     type_ref: &TypeRef,
     env: &HashMap<String, Expr<'i>>,
-    assigned_names: &HashSet<String>,
+    _assigned_names: &HashSet<String>,
     identifier_uses: &HashMap<String, usize>,
     types: &HashMap<String, String>,
     stack_bindings: &mut StackBindings,
@@ -1580,7 +1633,7 @@ fn push_struct_leaf_stack_bindings<'i>(
     script_size: Option<i64>,
     contract_constants: &HashMap<String, Expr<'i>>,
 ) -> Result<Vec<String>, CompilerError> {
-    if assigned_names.contains(name) || identifier_uses.get(name).copied().unwrap_or(0) < 2 {
+    if identifier_uses.get(name).copied().unwrap_or(0) < 2 {
         return Ok(Vec::new());
     }
 
@@ -3431,30 +3484,44 @@ fn compile_statement<'i>(
                             script_size,
                             contract_constants,
                         )?;
-                        return store_struct_binding_from_lowered_values(
+                        store_struct_binding_with_stack_rebindings(
                             name,
                             &expected_type_ref,
                             lowered_values,
                             env,
                             types,
+                            stack_bindings,
+                            builder,
+                            options,
                             structs,
-                            true,
-                        )
-                        .map(|_| Vec::new());
+                            script_size,
+                            contract_constants,
+                        )?;
+                        return Ok(Vec::new());
                     }
-                    return store_struct_binding(
-                        name,
-                        &expected_type_ref,
+                    let lowered_values = lower_runtime_struct_expr(
                         expr,
-                        env,
+                        &expected_type_ref,
                         types,
                         structs,
                         contract_fields,
                         contract_constants,
                         contract_field_prefix_len,
-                        true,
-                    )
-                    .map(|_| Vec::new());
+                    )?;
+                    store_struct_binding_with_stack_rebindings(
+                        name,
+                        &expected_type_ref,
+                        lowered_values,
+                        env,
+                        types,
+                        stack_bindings,
+                        builder,
+                        options,
+                        structs,
+                        script_size,
+                        contract_constants,
+                    )?;
+                    return Ok(Vec::new());
                 }
                 if is_array_type(type_name) {
                     match &expr.kind {

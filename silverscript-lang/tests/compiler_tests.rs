@@ -15,7 +15,7 @@ use kaspa_txscript::{
     EngineCtx, EngineFlags, SeqCommitAccessor, TxScriptEngine, pay_to_address_script, pay_to_script_hash_script,
     pay_to_script_hash_signature_script,
 };
-use silverscript_lang::ast::{Expr, parse_contract_ast};
+use silverscript_lang::ast::{Expr, format_contract_ast, parse_contract_ast};
 use silverscript_lang::compiler::{
     CompileOptions, CompiledContract, CovenantDeclCallOptions, FunctionAbiEntry, FunctionInputAbi, compile_contract,
     compile_contract_ast, function_branch_index, struct_object,
@@ -7303,4 +7303,294 @@ fn compile_time_if_branch_stores_struct_fields_once_and_reuses_them() {
     assert_eq!(script[if_pos + 1..else_pos].iter().copied().filter(|op| *op == OpDrop).count(), 2);
     assert_eq!(script[endif_pos + 1..].iter().copied().filter(|op| *op == OpDrop).count(), 1);
     assert_eq!(script[endif_pos + 1..].iter().copied().filter(|op| *op == OpRoll).count(), 0);
+}
+
+#[test]
+fn partially_reassigned_struct_field_rolls_last_use_without_copying_unchanged_fields() {
+    let source = r#"
+        contract ConsumePartialStructField() {
+            struct S {
+                int a;
+                int b;
+            }
+
+            entrypoint function main(int x) {
+                S s = {a: x + 1, b: x * x};
+                s = {a: s.a + 1, b: s.b};
+                require(s.a > 0);
+                require(s.b > 0);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("partial struct reassignment should compile");
+    assert_eq!(
+        compiled.script.iter().copied().filter(|op| *op == OpMul).count(),
+        1,
+        "the unchanged field should keep using its original expression instead of being copied into a new stack slot"
+    );
+    assert_eq!(
+        compiled.script.iter().copied().filter(|op| *op == OpAdd).count(),
+        2,
+        "only the initial `s.a = x + 1` and the reassigned `s.a = s.a + 1` should emit additions"
+    );
+    assert!(
+        compiled.script.iter().copied().filter(|op| *op == OpRoll).count() >= 2,
+        "the stack-backed struct leaves should be rebound with rolls instead of rebuilding the whole struct"
+    );
+
+    let sigscript_ok = compiled.build_sig_script("main", vec![Expr::int(2)]).expect("sigscript builds");
+    let result_ok = run_script_with_sigscript(compiled.script.clone(), sigscript_ok);
+    assert!(result_ok.is_ok(), "partial struct reassignment should execute successfully: {}", result_ok.unwrap_err());
+
+    let sigscript_err = compiled.build_sig_script("main", vec![Expr::int(0)]).expect("sigscript builds");
+    let result_err = run_script_with_sigscript(compiled.script, sigscript_err);
+    assert!(result_err.is_err(), "partial struct reassignment should still enforce the updated field checks");
+}
+
+#[test]
+fn if_branch_reassignment_drops_hidden_shadow_bindings() {
+    let source = r#"
+        contract BranchShadowCleanup() {
+            entrypoint function main(int flag, int a, int b, int expected) {
+                int d = a + b;
+                d = d - a;
+                if (flag > 0) {
+                    int c = d + b;
+                    d = a + c;
+                } else {
+                    d = d + a;
+                }
+                require(d == expected);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("if branch reassignment should compile");
+
+    let sigscript_then =
+        compiled.build_sig_script("main", vec![Expr::int(1), Expr::int(1), Expr::int(1), Expr::int(3)]).expect("sigscript builds");
+    let result_then = run_script_with_sigscript(compiled.script.clone(), sigscript_then);
+    assert!(result_then.is_ok(), "then-branch reassignment should leave a clean stack: {}", result_then.unwrap_err());
+
+    let sigscript_else =
+        compiled.build_sig_script("main", vec![Expr::int(0), Expr::int(1), Expr::int(1), Expr::int(2)]).expect("sigscript builds");
+    let result_else = run_script_with_sigscript(compiled.script, sigscript_else);
+    assert!(result_else.is_ok(), "else-branch reassignment should leave a clean stack: {}", result_else.unwrap_err());
+}
+
+#[test]
+fn struct_if_reassignment_preserves_types_after_merge() {
+    let source = r#"
+        contract StructMergeTypes() {
+            struct S {
+                int a;
+                int b;
+            }
+
+            function verify_pair(S value, int expected_a, int expected_b) {
+                require(value.a == expected_a);
+                require(value.b == expected_b);
+            }
+
+            entrypoint function main(int flag, int expected_a, int expected_b) {
+                S s = {a: 2, b: 3};
+                if (flag > 0) {
+                    s = {a: s.a + 1, b: s.b + 1};
+                } else {
+                    s = {a: s.a + 2, b: s.b + 2};
+                }
+                S t = s;
+                verify_pair(t, expected_a, expected_b);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("post-if struct type merge should compile");
+    let normalized = format_contract_ast(&compiled.ast);
+    assert!(normalized.contains("S t = s;"), "merged struct type should still allow assignment after the if: {normalized}");
+}
+
+#[test]
+fn partial_struct_if_reassignment_preserves_types_after_merge() {
+    let source = r#"
+        contract PartialStructMergeTypes() {
+            struct S {
+                int a;
+                int b;
+            }
+
+            function verify_pair(S value, int expected_a, int expected_b) {
+                require(value.a == expected_a);
+                require(value.b == expected_b);
+            }
+
+            entrypoint function main(int flag, int expected_a, int expected_b) {
+                S s = {a: 2, b: 3};
+                if (flag > 0) {
+                    s = {a: s.a + 1, b: s.b};
+                } else {
+                    s = {a: s.a, b: s.b + 2};
+                }
+                S t = s;
+                verify_pair(t, expected_a, expected_b);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("post-if partial struct type merge should compile");
+    let normalized = format_contract_ast(&compiled.ast);
+    assert!(normalized.contains("S t = s;"), "merged struct type should still allow assignment after the if: {normalized}");
+}
+
+#[test]
+fn struct_if_branch_reassignment_drops_hidden_shadow_bindings() {
+    let source = r#"
+        contract StructBranchCleanup() {
+            struct S {
+                int a;
+                int b;
+            }
+
+            entrypoint function main(int flag, int x, int y, int expected_a, int expected_b) {
+                S s = {a: x, b: y};
+                if (flag > 0) {
+                    S t = {a: s.a + 1, b: s.b + 2};
+                    s = {a: t.a + y, b: t.b + x};
+                } else {
+                    S t = {a: s.a + x, b: s.b + y};
+                    s = {a: t.a + 1, b: t.b + 1};
+                }
+                require(s.a == expected_a);
+                require(s.b == expected_b);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("struct branch cleanup should compile");
+
+    let sigscript_then = compiled
+        .build_sig_script("main", vec![Expr::int(1), Expr::int(2), Expr::int(3), Expr::int(6), Expr::int(7)])
+        .expect("sigscript builds");
+    let result_then = run_script_with_sigscript(compiled.script.clone(), sigscript_then);
+    assert!(result_then.is_ok(), "then-branch struct cleanup should leave a clean stack: {}", result_then.unwrap_err());
+
+    let sigscript_else = compiled
+        .build_sig_script("main", vec![Expr::int(0), Expr::int(2), Expr::int(3), Expr::int(5), Expr::int(7)])
+        .expect("sigscript builds");
+    let result_else = run_script_with_sigscript(compiled.script, sigscript_else);
+    assert!(result_else.is_ok(), "else-branch struct cleanup should leave a clean stack: {}", result_else.unwrap_err());
+}
+
+#[test]
+fn partial_struct_if_branch_reassignment_drops_hidden_shadow_bindings() {
+    let source = r#"
+        contract PartialStructBranchCleanup() {
+            struct S {
+                int a;
+                int b;
+            }
+
+            entrypoint function main(int flag, int x, int y, int expected_a, int expected_b) {
+                S s = {a: x, b: y};
+                if (flag > 0) {
+                    S t = {a: s.a + 1, b: s.b};
+                    s = {a: t.a + y, b: s.b};
+                } else {
+                    S t = {a: s.a, b: s.b + y};
+                    s = {a: s.a, b: t.b + x};
+                }
+                require(s.a == expected_a);
+                require(s.b == expected_b);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("partial struct branch cleanup should compile");
+
+    let sigscript_then = compiled
+        .build_sig_script("main", vec![Expr::int(1), Expr::int(2), Expr::int(3), Expr::int(6), Expr::int(3)])
+        .expect("sigscript builds");
+    let result_then = run_script_with_sigscript(compiled.script.clone(), sigscript_then);
+    assert!(result_then.is_ok(), "then-branch partial struct cleanup should leave a clean stack: {}", result_then.unwrap_err());
+
+    let sigscript_else = compiled
+        .build_sig_script("main", vec![Expr::int(0), Expr::int(2), Expr::int(3), Expr::int(2), Expr::int(8)])
+        .expect("sigscript builds");
+    let result_else = run_script_with_sigscript(compiled.script, sigscript_else);
+    assert!(result_else.is_ok(), "else-branch partial struct cleanup should leave a clean stack: {}", result_else.unwrap_err());
+}
+
+#[test]
+fn conditional_counter_in_unrolled_loop_stays_linear() {
+    const SOURCE: &str = r#"
+pragma silverscript ^0.1.0;
+
+contract CounterLoop(int BOUND) {
+    entrypoint function main() {
+        int count = 0;
+        for (i, 0, BOUND, BOUND) {
+            if (true) {
+                count = count + 1;
+            }
+        }
+        require(count >= 0);
+    }
+}
+"#;
+
+    let bounds = [4i64, 8i64, 12i64];
+    let mut lens = Vec::new();
+    for b in bounds {
+        let args = [Expr::int(b)];
+        let compiled = compile_contract(SOURCE, &args, CompileOptions::default()).expect("compile succeeds");
+        lens.push(compiled.script.len());
+    }
+
+    assert!(lens[0] < lens[1] && lens[1] < lens[2], "expected monotonic growth, got {lens:?}");
+    let d1 = lens[1] - lens[0];
+    let d2 = lens[2] - lens[1];
+
+    assert!(d2 <= d1 * 2, "unexpected superlinear growth: lens={lens:?} d1={d1} d2={d2}");
+    assert!(lens[2] < 5_000, "unexpected script size: lens={lens:?}");
+}
+
+#[test]
+fn struct_conditional_counter_in_unrolled_loop_stays_linear() {
+    const SOURCE: &str = r#"
+pragma silverscript ^0.1.0;
+
+contract StructCounterLoop(int BOUND) {
+    struct S {
+        int a;
+        int b;
+    }
+
+    entrypoint function main() {
+        S s = {a: 0, b: 0};
+        for (i, 0, BOUND, BOUND) {
+            if (true) {
+                s = {a: s.a + 1, b: s.b + 1};
+            }
+        }
+        require(s.a >= 0);
+        require(s.b >= 0);
+    }
+}
+"#;
+
+    let bounds = [4i64, 8i64, 12i64];
+    let mut lens = Vec::new();
+    for b in bounds {
+        let args = [Expr::int(b)];
+        let compiled = compile_contract(SOURCE, &args, CompileOptions::default()).expect("compile succeeds");
+        lens.push(compiled.script.len());
+    }
+
+    assert!(lens[0] < lens[1] && lens[1] < lens[2], "expected monotonic growth, got {lens:?}");
+    let d1 = lens[1] - lens[0];
+    let d2 = lens[2] - lens[1];
+
+    assert!(d2 <= d1 * 2, "unexpected superlinear growth: lens={lens:?} d1={d1} d2={d2}");
+    assert!(lens[2] < 10_000, "unexpected script size: lens={lens:?}");
 }
