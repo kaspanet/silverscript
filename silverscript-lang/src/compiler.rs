@@ -78,6 +78,47 @@ impl BindingStack {
             *depth -= names.len() as i64;
         }
     }
+
+    /// Rewrites the physical stack after a scalar reassignment so the existing
+    /// binding depths remain valid.
+    ///
+    /// Assumptions:
+    /// - `name` is already bound in this `BindingStack`
+    /// - the newly computed RHS value is currently on top of the stack
+    /// - the compiler wants the rebinding to preserve the current depth model
+    ///   for all other bindings
+    ///
+    /// Operationally, this moves the top value down into the previous slot of
+    /// `name` and restores every intervening stack item above it, so the only
+    /// logical change is the value bound to `name`.
+    fn emit_update_stack_for_rebinding(&self, name: &str, builder: &mut ScriptBuilder) -> Result<(), CompilerError> {
+        let depth_from_top = self.depth_from_top(name).expect("binding should exist before stack rebinding");
+
+        // RHS value is already on top of the stack. Rewrite the physical stack so
+        // the existing binding depths remain valid after rebinding this name.
+        for _ in 0..depth_from_top {
+            builder.add_op(OpSwap)?;
+            builder.add_op(OpToAltStack)?;
+        }
+        builder.add_op(OpSwap)?;
+        builder.add_op(OpDrop)?;
+        for _ in 0..depth_from_top {
+            builder.add_op(OpFromAltStack)?;
+        }
+
+        Ok(())
+    }
+
+    fn emit_copy_binding_to_top(&self, name: &str, stack_depth: &mut i64, builder: &mut ScriptBuilder) -> Result<bool, CompilerError> {
+        let Some(index) = self.depth_from_top(name) else {
+            return Ok(false);
+        };
+
+        builder.add_i64(index + *stack_depth)?;
+        *stack_depth += 1;
+        builder.add_op(OpPick)?;
+        Ok(true)
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -3453,16 +3494,7 @@ fn compile_statement<'i>(
                     // We peel the b items under new_value into altstack (keeping new_value at top),
                     // drop the old target, then restore the peeled items. This makes new_value end
                     // up exactly where the old binding was.
-                    let b = stack_bindings.depth_from_top(name).expect("checked contains above");
-                    for _ in 0..b {
-                        builder.add_op(OpSwap)?;
-                        builder.add_op(OpToAltStack)?;
-                    }
-                    builder.add_op(OpSwap)?;
-                    builder.add_op(OpDrop)?;
-                    for _ in 0..b {
-                        builder.add_op(OpFromAltStack)?;
-                    }
+                    stack_bindings.emit_update_stack_for_rebinding(name, builder)?;
                     return Ok(Vec::new());
                 }
 
@@ -5776,10 +5808,7 @@ fn compile_expr<'i>(
             if !visiting.insert(name.clone()) {
                 return Err(CompilerError::CyclicIdentifier(name.clone()));
             }
-            if let Some(index) = stack_bindings.depth_from_top(name) {
-                builder.add_i64(index + *stack_depth)?;
-                *stack_depth += 1;
-                builder.add_op(OpPick)?;
+            if stack_bindings.emit_copy_binding_to_top(name, stack_depth, builder)? {
                 visiting.remove(name);
                 return Ok(());
             }
