@@ -18,281 +18,15 @@ use covenant_declarations::lower_covenant_declarations;
 
 mod debug_recording;
 mod debug_value_types;
+mod stack_bindings;
 
 use debug_recording::DebugRecorder;
 use debug_value_types::infer_debug_expr_value_type;
+use stack_bindings::StackBindings;
+
 /// Prefix used for synthetic argument bindings during inline function expansion.
 pub const SYNTHETIC_ARG_PREFIX: &str = "__arg";
 const COVENANT_POLICY_PREFIX: &str = "__covenant_policy";
-
-#[derive(Debug, Clone, Default)]
-struct BindingStack {
-    depths: HashMap<String, i64>,
-}
-
-impl BindingStack {
-    fn from_depths(depths: HashMap<String, i64>) -> Self {
-        Self { depths }
-    }
-
-    fn set_depth_from_top(&mut self, name: &str, depth: i64) {
-        self.depths.insert(name.to_string(), depth);
-    }
-
-    fn len(&self) -> usize {
-        self.depths.len()
-    }
-
-    fn contains(&self, name: &str) -> bool {
-        self.depths.contains_key(name)
-    }
-
-    fn depth_from_top(&self, name: &str) -> Option<i64> {
-        self.depths.get(name).copied()
-    }
-
-    fn keys(&self) -> std::collections::hash_map::Keys<'_, String, i64> {
-        self.depths.keys()
-    }
-
-    fn clone_depths(&self) -> HashMap<String, i64> {
-        self.depths.clone()
-    }
-
-    fn binding_order_top_to_bottom(&self) -> Vec<String> {
-        let mut ordered = self.depths.iter().map(|(name, depth)| (name.clone(), *depth)).collect::<Vec<_>>();
-        ordered.sort_by_key(|(_, depth)| *depth);
-        ordered.into_iter().map(|(name, _)| name).collect()
-    }
-
-    fn push_binding(&mut self, name: &str) {
-        for depth in self.depths.values_mut() {
-            *depth += 1;
-        }
-        self.depths.insert(name.to_string(), 0);
-    }
-
-    /// Removes the named bindings from the stack while preserving the relative
-    /// order of all surviving bindings.
-    ///
-    /// The removal order is current top-to-bottom among the bindings being
-    /// removed, which minimizes the total `ROLL` depth for this direct
-    /// `ROLL+DROP` strategy.
-    fn emit_drop_bindings(&mut self, names: &[String], builder: &mut ScriptBuilder) -> Result<(), CompilerError> {
-        if names.is_empty() {
-            return Ok(());
-        }
-
-        let names_to_remove = names.iter().cloned().collect::<HashSet<_>>();
-        // Remove bindings from smallest depth to largest. That way each step
-        // sees the next removable binding at its current minimal depth: if it
-        // is already on top we can `DROP`, otherwise we `ROLL(depth)` then
-        // `DROP`.
-        for name in self.binding_order_top_to_bottom() {
-            if !names_to_remove.contains(&name) {
-                continue;
-            }
-
-            let depth_from_top = self.depth_from_top(&name).expect("binding should exist before dropping");
-            if depth_from_top == 0 {
-                builder.add_op(OpDrop)?;
-            } else {
-                builder.add_i64(depth_from_top)?;
-                builder.add_op(OpRoll)?;
-                builder.add_op(OpDrop)?;
-            }
-
-            self.depths.remove(&name);
-            for depth in self.depths.values_mut() {
-                if *depth > depth_from_top {
-                    *depth -= 1;
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Rewrites the physical stack after a scalar reassignment and updates the
-    /// binding model to reflect the new stack shape.
-    ///
-    /// Assumptions:
-    /// - `name` is already bound in this `BindingStack`
-    /// - the newly computed RHS value is currently on top of the stack
-    /// - the compiler wants the rebound name to move to depth `0`
-    ///
-    /// Operationally, this rolls the old bound value to the top, drops it, and
-    /// leaves the newly computed RHS value at the top. The binding model is
-    /// then updated so:
-    /// - `name` becomes depth `0`
-    /// - bindings that were above the old slot shift by `+1`
-    /// - deeper bindings keep their previous depths
-    fn emit_update_stack_for_rebinding(&mut self, name: &str, builder: &mut ScriptBuilder) -> Result<(), CompilerError> {
-        let depth_from_top = self.depth_from_top(name).expect("binding should exist before stack rebinding");
-
-        builder.add_i64(depth_from_top + 1)?;
-        builder.add_op(OpRoll)?;
-        builder.add_op(OpDrop)?;
-
-        for (n, d) in self.depths.iter_mut() {
-            if n == name {
-                *d = 0;
-                continue;
-            }
-            if *d < depth_from_top {
-                *d += 1;
-            }
-        }
-
-        Ok(())
-    }
-
-    fn emit_copy_binding_to_top(&self, name: &str, stack_depth: &mut i64, builder: &mut ScriptBuilder) -> Result<bool, CompilerError> {
-        let Some(index) = self.depth_from_top(name) else {
-            return Ok(false);
-        };
-
-        builder.add_i64(index + *stack_depth)?;
-        *stack_depth += 1;
-        builder.add_op(OpPick)?;
-        Ok(true)
-    }
-
-    /// Reorders the current stack-bound locals so their final top-to-bottom
-    /// order matches `target_order`.
-    ///
-    /// This treats reconciliation as an explicit permutation problem, but it
-    /// avoids moving bindings that can remain in place. Specifically, it keeps
-    /// the longest suffix of `target_order` that is already a subsequence of
-    /// the current order, and only extracts/rebuilds the remaining target
-    /// prefix.
-    ///
-    /// The current and target orders must refer to the same live binding set.
-    fn emit_stack_reordering(&mut self, target_order: &[String], builder: &mut ScriptBuilder) -> Result<(), CompilerError> {
-        let current_order = self.binding_order_top_to_bottom();
-        if current_order == target_order {
-            return Ok(());
-        }
-
-        let current_names = self.depths.keys().cloned().collect::<HashSet<_>>();
-        let target_names = target_order.iter().cloned().collect::<HashSet<_>>();
-        if current_names != target_names {
-            return Err(CompilerError::Unsupported(
-                "stack reconciliation requires both layouts to contain the same bindings".to_string(),
-            ));
-        }
-
-        if let Some(opcode) = peephole_stack_reordering_opcode(&current_order, target_order) {
-            builder.add_op(opcode)?;
-            self.depths.clear();
-            for (depth, name) in target_order.iter().enumerate() {
-                self.depths.insert(name.clone(), depth as i64);
-            }
-            return Ok(());
-        }
-
-        let keep_start = longest_keepable_suffix_start(&current_order, target_order);
-        let move_prefix = &target_order[..keep_start];
-        let keep_suffix = &target_order[keep_start..];
-        let mut remaining_order = current_order;
-
-        for name in move_prefix {
-            let depth_from_top = remaining_order
-                .iter()
-                .position(|current_name| current_name == name)
-                .expect("target binding should exist during stack reordering") as i64;
-            builder.add_i64(depth_from_top)?;
-            builder.add_op(OpRoll)?;
-            builder.add_op(OpToAltStack)?;
-
-            self.depths.remove(name);
-            for depth in self.depths.values_mut() {
-                if *depth > depth_from_top {
-                    *depth -= 1;
-                }
-            }
-            remaining_order.remove(depth_from_top as usize);
-        }
-
-        debug_assert_eq!(remaining_order, keep_suffix);
-
-        for _ in 0..move_prefix.len() {
-            builder.add_op(OpFromAltStack)?;
-        }
-
-        self.depths.clear();
-        for (depth, name) in target_order.iter().enumerate() {
-            self.depths.insert(name.clone(), depth as i64);
-        }
-
-        Ok(())
-    }
-}
-
-fn longest_keepable_suffix_start(current_order: &[String], target_order: &[String]) -> usize {
-    let mut i = current_order.len();
-    let mut j = target_order.len();
-
-    while j > 0 {
-        while i > 0 && current_order[i - 1] != target_order[j - 1] {
-            i -= 1;
-        }
-        if i == 0 {
-            break;
-        }
-        i -= 1;
-        j -= 1;
-    }
-
-    j
-}
-
-fn peephole_stack_reordering_opcode(current_order: &[String], target_order: &[String]) -> Option<u8> {
-    if current_order.len() != target_order.len() {
-        return None;
-    }
-
-    if current_order.len() >= 2
-        && target_order[0] == current_order[1]
-        && target_order[1] == current_order[0]
-        && target_order[2..] == current_order[2..]
-    {
-        return Some(OpSwap);
-    }
-
-    if current_order.len() >= 3
-        && target_order[0] == current_order[2]
-        && target_order[1] == current_order[0]
-        && target_order[2] == current_order[1]
-        && target_order[3..] == current_order[3..]
-    {
-        return Some(OpRot);
-    }
-
-    if current_order.len() >= 4
-        && target_order[0] == current_order[2]
-        && target_order[1] == current_order[3]
-        && target_order[2] == current_order[0]
-        && target_order[3] == current_order[1]
-        && target_order[4..] == current_order[4..]
-    {
-        return Some(Op2Swap);
-    }
-
-    if current_order.len() >= 6
-        && target_order[0] == current_order[4]
-        && target_order[1] == current_order[5]
-        && target_order[2] == current_order[0]
-        && target_order[3] == current_order[1]
-        && target_order[4] == current_order[2]
-        && target_order[5] == current_order[3]
-        && target_order[6..] == current_order[6..]
-    {
-        return Some(Op2Rot);
-    }
-
-    None
-}
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CovenantDeclCallOptions {
@@ -1413,7 +1147,7 @@ fn compile_contract_fields<'i>(
     let mut field_values = HashMap::new();
     let mut field_types = HashMap::new();
     let mut builder = ScriptBuilder::new();
-    let stack_bindings = BindingStack::default();
+    let stack_bindings = StackBindings::default();
 
     for field in fields {
         if env.contains_key(&field.name) {
@@ -1839,7 +1573,7 @@ fn push_struct_leaf_stack_bindings<'i>(
     assigned_names: &HashSet<String>,
     identifier_uses: &HashMap<String, usize>,
     types: &HashMap<String, String>,
-    stack_bindings: &mut BindingStack,
+    stack_bindings: &mut StackBindings,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
     structs: &StructRegistry,
@@ -2687,7 +2421,7 @@ fn compile_entrypoint_function<'i>(
     }
 
     let param_count = flattened_param_names.len();
-    let mut stack_bindings = BindingStack::from_depths(
+    let mut stack_bindings = StackBindings::from_depths(
         flattened_param_names
             .iter()
             .enumerate()
@@ -2876,7 +2610,7 @@ fn compile_statement<'i>(
     assigned_names: &HashSet<String>,
     identifier_uses: &HashMap<String, usize>,
     types: &mut HashMap<String, String>,
-    stack_bindings: &mut BindingStack,
+    stack_bindings: &mut StackBindings,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
     enable_mutable_scalar_stack_locals: bool,
@@ -3889,7 +3623,7 @@ fn compile_read_input_state_statement<'i>(
     name: &str,
     args: &[Expr<'i>],
     env: &mut HashMap<String, Expr<'i>>,
-    stack_bindings: &BindingStack,
+    stack_bindings: &StackBindings,
     types: &mut HashMap<String, String>,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
@@ -4073,7 +3807,7 @@ fn struct_name_for_state_bindings<'i>(bindings: &[StateBindingAst<'i>], structs:
 fn compile_read_input_state_with_template_validation(
     args: &[Expr<'_>],
     env: &HashMap<String, Expr<'_>>,
-    stack_bindings: &BindingStack,
+    stack_bindings: &StackBindings,
     types: &HashMap<String, String>,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
@@ -4186,7 +3920,7 @@ fn compile_read_input_state_with_template_validation(
 fn compile_validate_output_state_statement(
     args: &[Expr<'_>],
     env: &HashMap<String, Expr<'_>>,
-    stack_bindings: &BindingStack,
+    stack_bindings: &StackBindings,
     types: &HashMap<String, String>,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
@@ -4314,7 +4048,7 @@ fn compile_validate_output_state_statement(
 fn compile_validate_output_state_with_template_statement(
     args: &[Expr<'_>],
     env: &HashMap<String, Expr<'_>>,
-    stack_bindings: &BindingStack,
+    stack_bindings: &StackBindings,
     types: &HashMap<String, String>,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
@@ -4467,7 +4201,7 @@ fn compile_validate_output_state_with_template_statement(
 fn compile_encoded_object_with_layout(
     state_expr: &Expr<'_>,
     env: &HashMap<String, Expr<'_>>,
-    stack_bindings: &BindingStack,
+    stack_bindings: &StackBindings,
     types: &HashMap<String, String>,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
@@ -4554,7 +4288,7 @@ fn compile_encoded_object_with_layout(
 fn compile_encoded_state_object(
     state_expr: &Expr<'_>,
     env: &HashMap<String, Expr<'_>>,
-    stack_bindings: &BindingStack,
+    stack_bindings: &StackBindings,
     types: &HashMap<String, String>,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
@@ -4586,7 +4320,7 @@ struct InlineCallBindings<'i> {
     env: HashMap<String, Expr<'i>>,
     debug_env: HashMap<String, Expr<'i>>,
     types: HashMap<String, String>,
-    stack_bindings: BindingStack,
+    stack_bindings: StackBindings,
     return_rewrites: Vec<(String, Expr<'i>)>,
     preserved_return_idents: HashSet<String>,
 }
@@ -4594,7 +4328,7 @@ struct InlineCallBindings<'i> {
 fn prepare_inline_call_bindings<'i>(
     function: &FunctionAst<'i>,
     args: &[Expr<'i>],
-    caller_stack_bindings: &BindingStack,
+    caller_stack_bindings: &StackBindings,
     caller_types: &HashMap<String, String>,
     caller_env: &HashMap<String, Expr<'i>>,
     contract_constants: &HashMap<String, Expr<'i>>,
@@ -4709,7 +4443,7 @@ fn compile_inline_call<'i>(
     name: &str,
     args: &[Expr<'i>],
     call_span: SourceSpan,
-    caller_stack_bindings: &BindingStack,
+    caller_stack_bindings: &StackBindings,
     caller_types: &mut HashMap<String, String>,
     caller_env: &mut HashMap<String, Expr<'i>>,
     builder: &mut ScriptBuilder,
@@ -4911,7 +4645,7 @@ fn compile_if_statement<'i>(
     assigned_names: &HashSet<String>,
     identifier_uses: &HashMap<String, usize>,
     types: &mut HashMap<String, String>,
-    stack_bindings: &mut BindingStack,
+    stack_bindings: &mut StackBindings,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
     enable_mutable_scalar_stack_locals: bool,
@@ -4943,6 +4677,7 @@ fn compile_if_statement<'i>(
 
     let original_env = env.clone();
     let original_stack_bindings = stack_bindings.clone();
+
     let mut then_env = original_env.clone();
     let mut then_types = types.clone();
     let mut then_stack_bindings = original_stack_bindings.clone();
@@ -5108,7 +4843,7 @@ fn compile_time_op_statement<'i>(
     tx_var: &TimeVar,
     expr: &Expr<'i>,
     env: &mut HashMap<String, Expr<'i>>,
-    stack_bindings: &BindingStack,
+    stack_bindings: &StackBindings,
     types: &HashMap<String, String>,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
@@ -5148,7 +4883,7 @@ fn compile_block<'i>(
     assigned_names: &HashSet<String>,
     identifier_uses: &HashMap<String, usize>,
     types: &mut HashMap<String, String>,
-    stack_bindings: &mut BindingStack,
+    stack_bindings: &mut StackBindings,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
     enable_mutable_scalar_stack_locals: bool,
@@ -5214,7 +4949,7 @@ fn compile_for_statement<'i>(
     assigned_names: &HashSet<String>,
     identifier_uses: &HashMap<String, usize>,
     types: &mut HashMap<String, String>,
-    stack_bindings: &mut BindingStack,
+    stack_bindings: &mut StackBindings,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
     enable_mutable_scalar_stack_locals: bool,
@@ -5331,7 +5066,7 @@ fn compile_constant_for_statement<'i>(
     assigned_names: &HashSet<String>,
     identifier_uses: &HashMap<String, usize>,
     types: &mut HashMap<String, String>,
-    stack_bindings: &mut BindingStack,
+    stack_bindings: &mut StackBindings,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
     enable_mutable_scalar_stack_locals: bool,
@@ -5398,7 +5133,7 @@ fn compile_runtime_for_statement<'i>(
     assigned_names: &HashSet<String>,
     identifier_uses: &HashMap<String, usize>,
     types: &mut HashMap<String, String>,
-    stack_bindings: &mut BindingStack,
+    stack_bindings: &mut StackBindings,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
     enable_mutable_scalar_stack_locals: bool,
@@ -5634,7 +5369,7 @@ fn resolve_expr_for_runtime<'i>(
 fn resolve_return_expr_for_runtime<'i>(
     expr: Expr<'i>,
     env: &HashMap<String, Expr<'i>>,
-    stack_bindings: &BindingStack,
+    stack_bindings: &StackBindings,
     types: &HashMap<String, String>,
     visiting: &mut HashSet<String>,
 ) -> Result<Expr<'i>, CompilerError> {
@@ -5927,14 +5662,14 @@ fn replace_identifier<'i>(expr: &Expr<'i>, target: &str, replacement: &Expr<'i>)
 
 struct CompilationScope<'a, 'i> {
     env: &'a HashMap<String, Expr<'i>>,
-    stack_bindings: &'a BindingStack,
+    stack_bindings: &'a StackBindings,
     types: &'a HashMap<String, String>,
 }
 
 fn compile_expr<'i>(
     expr: &Expr<'i>,
     env: &HashMap<String, Expr<'i>>,
-    stack_bindings: &BindingStack,
+    stack_bindings: &StackBindings,
     types: &HashMap<String, String>,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
@@ -6498,7 +6233,7 @@ fn compile_split_part<'i>(
     index: &Expr<'i>,
     part: SplitPart,
     env: &HashMap<String, Expr<'i>>,
-    stack_bindings: &BindingStack,
+    stack_bindings: &StackBindings,
     types: &HashMap<String, String>,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
@@ -6613,7 +6348,7 @@ fn expr_is_bytes_inner<'i>(
 fn compile_length_expr<'i>(
     expr: &Expr<'i>,
     env: &HashMap<String, Expr<'i>>,
-    stack_bindings: &BindingStack,
+    stack_bindings: &StackBindings,
     types: &HashMap<String, String>,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
@@ -7385,7 +7120,7 @@ fn compile_opcode_call<'i>(
 fn compile_concat_operand<'i>(
     expr: &Expr<'i>,
     env: &HashMap<String, Expr<'i>>,
-    stack_bindings: &BindingStack,
+    stack_bindings: &StackBindings,
     types: &HashMap<String, String>,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
@@ -7492,7 +7227,7 @@ pub fn compile_debug_expr<'i>(
     let mut builder = ScriptBuilder::new();
     let mut stack_depth = 0i64;
     let type_name = infer_debug_expr_value_type(expr, env, types, &mut HashSet::new())?;
-    let stack_bindings = BindingStack::from_depths(stack_bindings.clone());
+    let stack_bindings = StackBindings::from_depths(stack_bindings.clone());
     compile_expr(
         expr,
         env,
