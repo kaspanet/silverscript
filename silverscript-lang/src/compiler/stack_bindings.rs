@@ -138,11 +138,15 @@ impl StackBindings {
 
         let current_names = current_order.iter().cloned().collect::<HashSet<_>>();
         let target_names = target_order.iter().cloned().collect::<HashSet<_>>();
+        assert_eq!(current_order.len(), current_names.len(), "current stack order should not contain duplicates");
+        assert_eq!(target_order.len(), target_names.len(), "target stack order should not contain duplicates");
         if current_names != target_names {
             return Err(CompilerError::Unsupported(
                 "stack reconciliation requires both layouts to contain the same bindings".to_string(),
             ));
         }
+        // At this point both layouts are duplicate-free and contain exactly the
+        // same bindings, so they are just two permutations of the same set.
 
         if let Some(opcodes) = local_stack_reordering_opcodes(&current_order, target_order) {
             for opcode in opcodes {
@@ -154,25 +158,20 @@ impl StackBindings {
 
         let keep_start = longest_keepable_suffix_start(&current_order, target_order);
         let move_prefix = &target_order[..keep_start];
-        let mut remaining_order = current_order;
+        let mut remaining_names = self.names.clone();
 
         for name in move_prefix {
-            let depth_from_top = remaining_order
-                .iter()
-                .position(|current_name| current_name == name)
-                .expect("target binding should exist during stack reordering") as i64;
-            let moved_name =
-                remaining_order.get(depth_from_top as usize).expect("planned stack reordering depth should remain valid").clone();
+            let index = remaining_names.get_index_of(name).expect("binding existence was asserted above");
+            let depth_from_top = index as i64;
 
             builder.add_i64(depth_from_top)?;
             builder.add_op(OpRoll)?;
             builder.add_op(OpToAltStack)?;
 
-            self.remove_name(&moved_name);
-            remaining_order.remove(depth_from_top as usize);
+            remaining_names.shift_remove_index(index);
         }
 
-        debug_assert_eq!(remaining_order, target_order[move_prefix.len()..]);
+        debug_assert_eq!(remaining_names.iter().cloned().collect::<Vec<_>>(), target_order[move_prefix.len()..]);
 
         for _ in 0..move_prefix.len() {
             builder.add_op(OpFromAltStack)?;
