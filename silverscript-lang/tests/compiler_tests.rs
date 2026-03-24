@@ -905,23 +905,37 @@ fn disallow_comparing_byte_array_to_byte_constant() {
 }
 
 #[test]
-fn allow_comparing_byte_array_to_byte_constant_with_cast() {
+fn disallow_comparing_dynamic_and_fixed_byte_arrays_without_cast_in_contract_scope() {
     let source = r#"
-        contract Test(byte[32] genesisPk, byte genesisIdentifierType) {
-            byte[32] ownerIdentifier = genesisPk;
-            byte identifierType = genesisIdentifierType;
-            byte constant ZERO = 0x00;
+        contract Test(byte[] x) {
+            byte[2] y = 0x1234;
 
             entrypoint function main() {
-                if (byte[](ownerIdentifier) == byte[](ZERO)) {
-                    require(true);
-                }
+                require(x == y);
             }
         }
     "#;
 
-    let _ = compile_contract(source, &[Expr::bytes(vec![1u8; 32]), Expr::byte(0)], CompileOptions::default())
-        .expect("comparing byte[32] to byte should be allowed with cast");
+    assert!(
+        compile_contract(source, &[Expr::bytes(vec![0x12])], CompileOptions::default()).is_err(),
+        "comparing byte[] to byte[2] should be rejected without cast"
+    );
+}
+
+#[test]
+fn allow_comparing_dynamic_and_fixed_byte_arrays_with_cast_in_contract_scope() {
+    let source = r#"
+        contract Test(byte[] x) {
+            byte[2] y = 0x1234;
+
+            entrypoint function main() {
+                require(x == byte[](y));
+            }
+        }
+    "#;
+
+    compile_contract(source, &[Expr::bytes(vec![0x12])], CompileOptions::default())
+        .expect("comparing byte[] to byte[2] should be allowed with cast");
 }
 
 #[test]
@@ -941,7 +955,7 @@ fn rejects_comparing_different_scalar_types_without_cast() {
 }
 
 #[test]
-fn allows_comparing_dynamic_and_fixed_arrays_with_same_element_type() {
+fn disallow_comparing_dynamic_and_fixed_int_arrays_without_cast() {
     let source = r#"
         contract Arrays() {
             entrypoint function main() {
@@ -952,39 +966,116 @@ fn allows_comparing_dynamic_and_fixed_arrays_with_same_element_type() {
         }
     "#;
 
-    let result = compile_contract(source, &[], CompileOptions::default());
-    assert!(result.is_ok(), "int[] == int[1] should compile");
+    assert!(compile_contract(source, &[], CompileOptions::default()).is_err(), "int[] == int[1] should be rejected");
 }
 
 #[test]
-fn allows_comparing_contract_dynamic_array_field_with_fixed_array_local() {
-    let source = r#"
-        contract Arrays(byte[] b) {
-            entrypoint function main() {
-                byte[4] x = b.split(4)[0];
-                require(x != b);
-            }
-        }
-    "#;
-
-    let result = compile_contract(source, &[Expr::bytes(b"abcde".to_vec())], CompileOptions::default());
-    assert!(result.is_ok(), "byte[4] != byte[] should compile even when the field value is byte[5]");
-}
-
-#[test]
-fn rejects_comparing_fixed_arrays_with_different_sizes() {
+fn allows_comparing_dynamic_and_fixed_int_arrays_with_cast() {
     let source = r#"
         contract Arrays() {
             entrypoint function main() {
-                int[1] x = [1];
-                int[2] y = [1, 2];
-                require(x != y);
+                int[] x = [1];
+                int[1] y = [1];
+                require(x == int[](y));
             }
         }
     "#;
 
-    let result = compile_contract(source, &[], CompileOptions::default());
-    assert!(result.is_err(), "int[1] != int[2] should be rejected");
+    assert!(compile_contract(source, &[], CompileOptions::default()).is_ok(), "int[] == int[](int[1]) should compile");
+}
+
+#[test]
+fn allows_comparing_inferred_and_fixed_byte_arrays_when_sizes_match() {
+    let source = r#"
+        contract Arrays() {
+            entrypoint function main() {
+                byte[_] x = 0x1256;
+                byte[2] y = 0x1234;
+                require(x == y);
+            }
+        }
+    "#;
+
+    assert!(compile_contract(source, &[], CompileOptions::default()).is_ok(), "byte[_] should infer to byte[2]");
+}
+
+#[test]
+fn rejects_comparing_inferred_and_fixed_byte_arrays_when_sizes_differ() {
+    let source = r#"
+        contract Arrays() {
+            entrypoint function main() {
+                byte[_] x = 0x12;
+                byte[2] y = 0x1234;
+                require(x == y);
+            }
+        }
+    "#;
+
+    assert!(
+        compile_contract(source, &[], CompileOptions::default()).is_err(),
+        "byte[_] inferred as byte[1] should not compare to byte[2]"
+    );
+}
+
+#[test]
+fn infers_fixed_sizes_for_multiple_array_element_types() {
+    let source = r#"
+        contract Arrays() {
+            entrypoint function main() {
+                int[_] ints = [1, 2, 3, 4];
+                int[4] ints_expected = [1, 2, 3, 4];
+                bool[_] flags = [true, false];
+                bool[2] flags_expected = [true, false];
+                pubkey[_] keys = [
+                    0x0101010101010101010101010101010101010101010101010101010101010101,
+                    0x0202020202020202020202020202020202020202020202020202020202020202
+                ];
+                pubkey[2] keys_expected = [
+                    0x0303030303030303030303030303030303030303030303030303030303030303,
+                    0x0404040404040404040404040404040404040404040404040404040404040404
+                ];
+                require(ints == ints_expected);
+                require(flags == flags_expected);
+                require(keys == keys_expected);
+            }
+        }
+    "#;
+
+    assert!(
+        compile_contract(source, &[], CompileOptions::default()).is_ok(),
+        "type[_] should infer fixed sizes across supported element types"
+    );
+}
+
+#[test]
+fn rejects_comparing_dynamic_and_fixed_arrays_without_cast_in_function_scope() {
+    let source = r#"
+        contract Arrays() {
+            entrypoint function main(byte[] x) {
+                byte[2] y = 0x1234;
+                require(x == y);
+            }
+        }
+    "#;
+
+    assert!(
+        compile_contract(source, &[], CompileOptions::default()).is_err(),
+        "byte[] param should not compare to byte[2] without cast"
+    );
+}
+
+#[test]
+fn allows_comparing_dynamic_and_fixed_arrays_with_cast_in_function_scope() {
+    let source = r#"
+        contract Arrays() {
+            entrypoint function main(byte[] x) {
+                byte[2] y = 0x1234;
+                require(x == byte[](y));
+            }
+        }
+    "#;
+
+    assert!(compile_contract(source, &[], CompileOptions::default()).is_ok(), "byte[] param should compare to byte[](byte[2])");
 }
 
 #[test]
@@ -3014,7 +3105,7 @@ fn runs_slice_with_explicit_end_bounds() {
                 byte[] data = 0x0102030405060708090a;
                 byte[] segment = data.slice(3, 8);
                 require(segment.length == 5);
-                require(segment == 0x0405060708);
+                require(segment == byte[](0x0405060708));
             }
         }
     "#;
@@ -3034,8 +3125,8 @@ fn runs_slice_reconstruction_and_compare_runtime_example() {
                 byte[] right = data.slice(4, 10);
                 byte[] rebuilt = left + right;
 
-                require(left == 0x01020304);
-                require(right == 0x05060708090a);
+                require(left == byte[](0x01020304));
+                require(right == byte[](0x05060708090a));
                 require(rebuilt.length == data.length);
                 require(rebuilt == data);
             }
@@ -4725,7 +4816,7 @@ fn read_input_state_accepts_pubkey_and_bool_fields_under_selector_dispatch() {
             entrypoint function main() {
                 State s = readInputState(this.activeInputIndex);
                 require(s.flag);
-                require(s.owner == 0x0202020202020202020202020202020202020202020202020202020202020202);
+                require(s.owner == pubkey(0x0202020202020202020202020202020202020202020202020202020202020202));
             }
         }
     "#;
@@ -5714,7 +5805,7 @@ fn compiles_opcode_builtins() {
             r#"
                 contract Test() {
                     entrypoint function main() {
-                        require(OpSha256(bytes("msg")) == bytes("hash"));
+                        require(byte[](OpSha256(bytes("msg"))) == byte[]("hash"));
                     }
                 }
             "#,
@@ -5967,7 +6058,30 @@ fn compiles_opcode_builtins() {
             r#"
                 contract Test() {
                     entrypoint function main() {
-                        require(OpTxInputIsCoinbase(0) == 0);
+                        require(OpTxInputDaaScore(0) == 0);
+                    }
+                }
+            "#,
+            ScriptBuilder::new()
+                .add_i64(0)
+                .unwrap()
+                .add_op(OpTxInputDaaScore)
+                .unwrap()
+                .add_i64(0)
+                .unwrap()
+                .add_op(OpNumEqual)
+                .unwrap()
+                .add_op(OpVerify)
+                .unwrap()
+                .add_op(OpTrue)
+                .unwrap()
+                .drain(),
+        ),
+        (
+            r#"
+                contract Test() {
+                    entrypoint function main() {
+                        require(OpTxInputIsCoinbase(0) == false);
                     }
                 }
             "#,
@@ -6138,7 +6252,7 @@ fn compiles_opcode_builtins() {
             r#"
                 contract Test() {
                     entrypoint function main() {
-                        require(OpInputCovenantId(0) == bytes("cov"));
+                        require(byte[](OpInputCovenantId(0)) == bytes("cov"));
                     }
                 }
             "#,
@@ -6451,7 +6565,7 @@ fn executes_opcode_builtins_basic() {
             r#"
                 contract Test() {
                     entrypoint function main() {
-                        require(OpTxInputIsCoinbase(0) == 0);
+                        require(OpTxInputIsCoinbase(0) == bool(0));
                     }
                 }
             "#,
@@ -6525,7 +6639,7 @@ fn executes_opcode_builtins_covenants() {
             entrypoint function main() {
                 require(OpAuthOutputCount(0) == 2);
                 require(OpAuthOutputIdx(0, 1) == 2);
-                require(OpInputCovenantId(0) == bytes("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"));
+                require(byte[](OpInputCovenantId(0)) == bytes("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"));
                 require(OpCovInputCount(bytes("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")) == 2);
                 require(OpCovInputIdx(bytes("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"), 1) == 2);
                 require(OpCovOutputCount(bytes("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")) == 2);
@@ -7008,8 +7122,8 @@ fn compile_time_length_for_inferred_array_sizes() {
     let source = r#"
         contract Test() {
             entrypoint function test() {
-                byte[] data = 0x1234abcd;
-                int[] nums = [1, 2, 3];
+                byte[_] data = 0x1234abcd;
+                int[_] nums = [1, 2, 3];
                 require(data.length == 4);
                 require(nums.length == 3);
             }

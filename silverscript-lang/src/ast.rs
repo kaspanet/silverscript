@@ -214,6 +214,7 @@ impl<'de> Deserialize<'de> for TypeBase {
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum ArrayDim {
     Dynamic,
+    Inferred,
     Fixed(usize),
     Constant(String),
 }
@@ -224,6 +225,7 @@ impl TypeRef {
         for dim in &self.array_dims {
             match dim {
                 ArrayDim::Dynamic => out.push_str("[]"),
+                ArrayDim::Inferred => out.push_str("[_]"),
                 ArrayDim::Fixed(size) => out.push_str(&format!("[{size}]")),
                 ArrayDim::Constant(name) => out.push_str(&format!("[{name}]")),
             }
@@ -1159,7 +1161,13 @@ fn parse_type_name_pair(pair: Pair<'_, Rule>) -> Result<TypeRef, CompilerError> 
             Some(size_pair) => match size_pair.as_rule() {
                 Rule::array_size => {
                     let raw = size_pair.as_str().trim();
-                    if let Ok(size) = raw.parse::<usize>() { ArrayDim::Fixed(size) } else { ArrayDim::Constant(raw.to_string()) }
+                    if raw == "_" {
+                        ArrayDim::Inferred
+                    } else if let Ok(size) = raw.parse::<usize>() {
+                        ArrayDim::Fixed(size)
+                    } else {
+                        ArrayDim::Constant(raw.to_string())
+                    }
                 }
                 Rule::Identifier => ArrayDim::Constant(size_pair.as_str().to_string()),
                 _ => return Err(CompilerError::Unsupported("invalid array dimension".to_string())),
@@ -2077,15 +2085,8 @@ fn parse_cast<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {
         return Ok(Expr::new(ExprKind::Call { name: type_name, args, name_span: type_span }, span));
     }
 
-    // Handle single byte cast (duplicate check removed above)
-    // Support type[N] syntax
-    if let Some(bracket_pos) = type_name.find('[') {
-        if type_name.ends_with(']') {
-            let size_str = &type_name[bracket_pos + 1..type_name.len() - 1];
-            if size_str.is_empty() || size_str.parse::<usize>().is_ok() {
-                return Ok(Expr::new(ExprKind::Call { name: type_name, args, name_span: type_span }, span));
-            }
-        }
+    if parse_type_ref(&type_name).is_ok() {
+        return Ok(Expr::new(ExprKind::Call { name: type_name, args, name_span: type_span }, span));
     }
 
     Err(CompilerError::Unsupported(format!("cast type not supported: {type_name}")))

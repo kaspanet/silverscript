@@ -1317,35 +1317,63 @@ fn infer_expr_type_ref_for_comparison<'i>(
             return Some(type_ref);
         }
     }
+    if let ExprKind::Call { name, .. } = &expr.kind {
+        let is_builtin_cast = matches!(name.as_str(), "int" | "bool" | "byte" | "string" | "pubkey" | "sig" | "datasig")
+            || (name.contains('[')
+                && parse_type_ref(name).ok().is_some_and(|type_ref| !matches!(type_ref.base, TypeBase::Custom(_))));
+        let is_known_builtin = matches!(
+            name.as_str(),
+            "int"
+                | "bool"
+                | "byte"
+                | "string"
+                | "pubkey"
+                | "sig"
+                | "datasig"
+                | "bytes"
+                | "blake2b"
+                | "sha256"
+                | "OpSha256"
+                | "OpTxSubnetId"
+                | "OpTxPayloadSubstr"
+                | "OpOutpointTxId"
+                | "OpTxInputScriptSigSubstr"
+                | "OpTxInputSeq"
+                | "OpTxInputSpkSubstr"
+                | "OpTxOutputSpkSubstr"
+                | "OpNum2Bin"
+                | "OpBin2Num"
+                | "OpChainblockSeqCommit"
+                | "LockingBytecodeNullData"
+                | "ScriptPubKeyP2PK"
+                | "ScriptPubKeyP2SH"
+                | "ScriptPubKeyP2SHFromRedeemScript"
+                | "OpInputCovenantId"
+                | "OpTxGas"
+                | "OpTxPayloadLen"
+                | "OpTxInputIndex"
+                | "OpTxInputIsCoinbase"
+                | "OpTxInputScriptSigLen"
+                | "OpTxInputSpkLen"
+                | "OpOutpointIndex"
+                | "OpTxOutputSpkLen"
+                | "OpAuthOutputCount"
+                | "OpAuthOutputIdx"
+                | "OpCovInputCount"
+                | "OpCovInputIdx"
+                | "OpCovOutputCount"
+                | "OpCovOutputIdx"
+        );
+        if !is_builtin_cast && !is_known_builtin {
+            return None;
+        }
+    }
     let type_name = infer_debug_expr_value_type(expr, env, types, &mut HashSet::new()).ok()?;
     parse_type_ref(&type_name).ok()
 }
 
-fn array_comparison_types_compatible(left_type: &TypeRef, right_type: &TypeRef) -> bool {
-    let (Some(left_element), Some(right_element)) = (array_element_type_ref(left_type), array_element_type_ref(right_type)) else {
-        return false;
-    };
-
-    if !comparison_types_compatible(&left_element, &right_element) {
-        return false;
-    }
-
-    match (array_size_ref(left_type), array_size_ref(right_type)) {
-        (Some(left_size), Some(right_size)) => left_size == right_size,
-        _ => true,
-    }
-}
-
 fn comparison_types_compatible(left_type: &TypeRef, right_type: &TypeRef) -> bool {
-    if type_name_from_ref(left_type) == type_name_from_ref(right_type) {
-        return true;
-    }
-
-    if is_array_type_ref(left_type) && is_array_type_ref(right_type) {
-        return array_comparison_types_compatible(left_type, right_type);
-    }
-
-    false
+    type_name_from_ref(left_type) == type_name_from_ref(right_type)
 }
 
 fn array_literal_matches_type_ref<'i>(values: &[Expr<'i>], type_ref: &TypeRef) -> bool {
@@ -1749,7 +1777,7 @@ fn array_size_with_constants_ref<'i>(type_ref: &TypeRef, constants: &HashMap<Str
             }
             None
         }
-        ArrayDim::Dynamic => None,
+        ArrayDim::Dynamic | ArrayDim::Inferred => None,
     }
 }
 
@@ -1993,7 +2021,11 @@ fn validate_return_types<'i>(
 }
 
 fn has_explicit_array_size_ref(type_ref: &TypeRef) -> bool {
-    !matches!(type_ref.array_size(), Some(ArrayDim::Dynamic) | None)
+    !matches!(type_ref.array_size(), Some(ArrayDim::Dynamic | ArrayDim::Inferred) | None)
+}
+
+fn has_inferred_array_size_ref(type_ref: &TypeRef) -> bool {
+    matches!(type_ref.array_size(), Some(ArrayDim::Inferred))
 }
 
 fn is_array_type_assignable_ref<'i>(actual: &TypeRef, expected: &TypeRef, constants: &HashMap<String, Expr<'i>>) -> bool {
@@ -2061,7 +2093,7 @@ fn infer_fixed_array_type_from_initializer_ref<'i>(
     types: &HashMap<String, String>,
     constants: &HashMap<String, Expr<'i>>,
 ) -> Option<TypeRef> {
-    if !declared_type.array_size().is_some_and(|dim| matches!(dim, ArrayDim::Dynamic)) {
+    if !has_inferred_array_size_ref(declared_type) {
         return None;
     }
 
@@ -2833,13 +2865,16 @@ fn compile_statement<'i>(
             }
 
             let type_name = type_name_from_ref(type_ref);
-            let effective_type_name =
-                if is_array_type(&type_name) && array_size_with_constants(&type_name, contract_constants).is_none() {
-                    infer_fixed_array_type_from_initializer(&type_name, expr.as_ref(), types, contract_constants)
-                        .unwrap_or_else(|| type_name.clone())
-                } else {
-                    type_name.clone()
-                };
+            let effective_type_name = if has_inferred_array_size_ref(type_ref) {
+                infer_fixed_array_type_from_initializer(&type_name, expr.as_ref(), types, contract_constants).ok_or_else(|| {
+                    CompilerError::Unsupported(format!(
+                        "variable '{}' requires an initializer with inferrable size for type {}",
+                        name, type_name
+                    ))
+                })?
+            } else {
+                type_name.clone()
+            };
 
             // Check if this is a fixed-size array (e.g., byte[N]) or dynamic array (e.g., byte[])
             let is_fixed_size_array =
@@ -7096,6 +7131,24 @@ fn compile_call_expr<'i>(
             )?;
             Ok(())
         }
+        "bool" | "string" => {
+            if args.len() != 1 {
+                return Err(CompilerError::Unsupported(format!("{name}() expects a single argument")));
+            }
+            compile_expr(
+                &args[0],
+                scope.env,
+                scope.stack_bindings,
+                scope.types,
+                builder,
+                options,
+                visiting,
+                stack_depth,
+                script_size,
+                contract_constants,
+            )?;
+            Ok(())
+        }
         "sig" | "pubkey" | "datasig" => {
             if args.len() != 1 {
                 return Err(CompilerError::Unsupported(format!("{name}() expects a single argument")));
@@ -7176,6 +7229,24 @@ fn compile_call_expr<'i>(
                 *stack_depth -= 1;
                 Ok(())
             }
+        }
+        name if parse_type_ref(name).is_ok_and(|type_ref| is_array_type_ref(&type_ref)) => {
+            if args.len() != 1 {
+                return Err(CompilerError::Unsupported(format!("{name}() expects a single argument")));
+            }
+            compile_expr(
+                &args[0],
+                scope.env,
+                scope.stack_bindings,
+                scope.types,
+                builder,
+                options,
+                visiting,
+                stack_depth,
+                script_size,
+                contract_constants,
+            )?;
+            Ok(())
         }
         "blake2b" => {
             if args.len() != 1 {
