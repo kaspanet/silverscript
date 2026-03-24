@@ -6,9 +6,9 @@ use kaspa_txscript::serialize_i64;
 use serde::{Deserialize, Serialize};
 
 use crate::ast::{
-    ArrayDim, BinaryOp, ContractAst, ContractFieldAst, Expr, ExprKind, FunctionAst, IntrospectionKind, NullaryOp, SplitPart,
-    StateBindingAst, StateFieldExpr, Statement, TimeVar, TypeBase, TypeRef, UnaryOp, UnarySuffixKind, parse_contract_ast,
-    parse_type_ref,
+    ArrayDim, BinaryOp, ConstantAst, ContractAst, ContractFieldAst, Expr, ExprKind, FunctionAst, IntrospectionKind, NullaryOp,
+    ParamAst, SplitPart, StateBindingAst, StateFieldExpr, Statement, TimeVar, TypeBase, TypeRef, UnaryOp, UnarySuffixKind,
+    parse_contract_ast, parse_type_ref,
 };
 use crate::debug_info::{DebugInfo, RuntimeBinding, SourceSpan};
 pub use crate::errors::{CompilerError, ErrorSpan};
@@ -955,7 +955,9 @@ fn compile_contract_impl<'i>(
                 compiled_entrypoints.push(compile_entrypoint_function(
                     func,
                     index,
+                    &lowered_contract.params,
                     &lowered_contract.fields,
+                    &lowered_contract.constants,
                     contract_field_prefix_len,
                     &constants,
                     options,
@@ -1298,6 +1300,52 @@ fn expr_matches_type_ref<'i>(expr: &Expr<'i>, type_ref: &TypeRef) -> bool {
         TypeBase::Datasig => byte_array_len(expr) == Some(64),
         TypeBase::Custom(_) => false,
     }
+}
+
+fn infer_expr_type_ref_for_comparison<'i>(
+    expr: &Expr<'i>,
+    env: &HashMap<String, Expr<'i>>,
+    types: &HashMap<String, String>,
+) -> Option<TypeRef> {
+    if let ExprKind::Identifier(name) = &expr.kind {
+        if let Some(type_ref) = types.get(name).and_then(|type_name| parse_type_ref(type_name).ok()) {
+            return Some(type_ref);
+        }
+    }
+    if let Some((name, _)) = env.iter().find(|(_, value)| value.kind == expr.kind) {
+        if let Some(type_ref) = types.get(name).and_then(|type_name| parse_type_ref(type_name).ok()) {
+            return Some(type_ref);
+        }
+    }
+    let type_name = infer_debug_expr_value_type(expr, env, types, &mut HashSet::new()).ok()?;
+    parse_type_ref(&type_name).ok()
+}
+
+fn array_comparison_types_compatible(left_type: &TypeRef, right_type: &TypeRef) -> bool {
+    let (Some(left_element), Some(right_element)) = (array_element_type_ref(left_type), array_element_type_ref(right_type)) else {
+        return false;
+    };
+
+    if !comparison_types_compatible(&left_element, &right_element) {
+        return false;
+    }
+
+    match (array_size_ref(left_type), array_size_ref(right_type)) {
+        (Some(left_size), Some(right_size)) => left_size == right_size,
+        _ => true,
+    }
+}
+
+fn comparison_types_compatible(left_type: &TypeRef, right_type: &TypeRef) -> bool {
+    if type_name_from_ref(left_type) == type_name_from_ref(right_type) {
+        return true;
+    }
+
+    if is_array_type_ref(left_type) && is_array_type_ref(right_type) {
+        return array_comparison_types_compatible(left_type, right_type);
+    }
+
+    false
 }
 
 fn array_literal_matches_type_ref<'i>(values: &[Expr<'i>], type_ref: &TypeRef) -> bool {
@@ -2439,7 +2487,9 @@ pub fn function_branch_index<'i>(contract: &ContractAst<'i>, function_name: &str
 fn compile_entrypoint_function<'i>(
     function: &FunctionAst<'i>,
     function_index: usize,
+    contract_params: &[ParamAst<'i>],
     contract_fields: &[ContractFieldAst<'i>],
+    contract_constants: &[ConstantAst<'i>],
     contract_field_prefix_len: usize,
     constants: &HashMap<String, Expr<'i>>,
     options: CompileOptions,
@@ -2452,6 +2502,30 @@ fn compile_entrypoint_function<'i>(
     let contract_field_count = contract_fields.len();
     let mut flattened_param_names = Vec::new();
     let mut types = HashMap::new();
+    for param in contract_params {
+        let param_type_name = type_name_from_ref(&param.type_ref);
+        types.insert(param.name.clone(), param_type_name.clone());
+        if struct_name_from_type_ref(&param.type_ref, structs).is_some()
+            || struct_array_name_from_type_ref(&param.type_ref, structs).is_some()
+        {
+            for (path, field_type) in flatten_type_ref_leaves(&param.type_ref, structs)? {
+                let leaf_name = flattened_struct_name(&param.name, &path);
+                types.insert(leaf_name, type_name_from_ref(&field_type));
+            }
+        }
+    }
+    for constant in contract_constants {
+        let constant_type_name = type_name_from_ref(&constant.type_ref);
+        types.insert(constant.name.clone(), constant_type_name.clone());
+        if struct_name_from_type_ref(&constant.type_ref, structs).is_some()
+            || struct_array_name_from_type_ref(&constant.type_ref, structs).is_some()
+        {
+            for (path, field_type) in flatten_type_ref_leaves(&constant.type_ref, structs)? {
+                let leaf_name = flattened_struct_name(&constant.name, &path);
+                types.insert(leaf_name, type_name_from_ref(&field_type));
+            }
+        }
+    }
     for param in &function.params {
         let param_type_name = type_name_from_ref(&param.type_ref);
         types.insert(param.name.clone(), param_type_name.clone());
@@ -6012,6 +6086,22 @@ fn compile_expr<'i>(
             Ok(())
         }
         ExprKind::Binary { op, left, right } => {
+            if matches!(op, BinaryOp::Eq | BinaryOp::Ne | BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge) {
+                if let (Some(left_type), Some(right_type)) =
+                    (
+                        infer_expr_type_ref_for_comparison(left, env, types),
+                        infer_expr_type_ref_for_comparison(right, env, types),
+                    )
+                {
+                    if !comparison_types_compatible(&left_type, &right_type) {
+                        return Err(CompilerError::Unsupported(format!(
+                            "type mismatch: cannot compare {} and {}",
+                            type_name_from_ref(&left_type),
+                            type_name_from_ref(&right_type)
+                        )));
+                    }
+                }
+            }
             let bytes_eq =
                 matches!(op, BinaryOp::Eq | BinaryOp::Ne) && (expr_is_bytes(left, env, types) || expr_is_bytes(right, env, types));
             let bytes_add = matches!(op, BinaryOp::Add) && (expr_is_bytes(left, env, types) || expr_is_bytes(right, env, types));

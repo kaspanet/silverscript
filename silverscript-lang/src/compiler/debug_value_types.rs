@@ -32,7 +32,13 @@ fn introspection_value_type(kind: IntrospectionKind) -> &'static str {
 
 fn builtin_call_value_type(name: &str) -> &'static str {
     match name {
+        "int" => "int",
+        "bool" => "bool",
         "byte" => "byte",
+        "string" => "string",
+        "pubkey" => "pubkey",
+        "sig" => "sig",
+        "datasig" => "datasig",
         "bytes"
         | "blake2b"
         | "sha256"
@@ -102,9 +108,16 @@ pub(super) fn infer_debug_expr_value_type<'i>(
                     Ok("int".to_string())
                 }
             }
-            BinaryOp::BitOr | BinaryOp::BitXor | BinaryOp::BitAnd | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Mod => {
-                Ok("int".to_string())
+            BinaryOp::BitOr | BinaryOp::BitXor | BinaryOp::BitAnd => {
+                let left_type = infer_debug_expr_value_type(left, env, types, visiting)?;
+                let right_type = infer_debug_expr_value_type(right, env, types, visiting)?;
+                if left_type == right_type && is_bytes_type(&left_type) {
+                    Ok(left_type)
+                } else {
+                    Ok("int".to_string())
+                }
             }
+            BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Mod => Ok("int".to_string()),
         },
         ExprKind::IfElse { then_expr, else_expr, .. } => {
             let then_type = infer_debug_expr_value_type(then_expr, env, types, visiting)?;

@@ -883,9 +883,9 @@ fn build_sig_script_rejects_unknown_function() {
 }
 
 #[test]
-fn regression_allows_comparing_byte_array_to_byte_constant() {
+fn disallow_comparing_byte_array_to_byte_constant() {
     let source = r#"
-        contract Reproduce(byte[32] genesisPk, byte genesisIdentifierType) {
+        contract Test(byte[32] genesisPk, byte genesisIdentifierType) {
             byte[32] ownerIdentifier = genesisPk;
             byte identifierType = genesisIdentifierType;
             byte constant ZERO = 0x00;
@@ -898,8 +898,93 @@ fn regression_allows_comparing_byte_array_to_byte_constant() {
         }
     "#;
 
-    compile_contract(source, &[Expr::bytes(vec![1u8; 32]), Expr::byte(0)], CompileOptions::default())
-        .expect("regression: byte[32] == byte currently compiles");
+    assert!(
+        compile_contract(source, &[Expr::bytes(vec![1u8; 32]), Expr::byte(0)], CompileOptions::default()).is_err(),
+        "comparing byte[32] to byte should be rejected without cast"
+    );
+}
+
+#[test]
+fn allow_comparing_byte_array_to_byte_constant_with_cast() {
+    let source = r#"
+        contract Test(byte[32] genesisPk, byte genesisIdentifierType) {
+            byte[32] ownerIdentifier = genesisPk;
+            byte identifierType = genesisIdentifierType;
+            byte constant ZERO = 0x00;
+
+            entrypoint function main() {
+                if (byte[](ownerIdentifier) == byte[](ZERO)) {
+                    require(true);
+                }
+            }
+        }
+    "#;
+
+    let _ = compile_contract(source, &[Expr::bytes(vec![1u8; 32]), Expr::byte(0)], CompileOptions::default())
+        .expect("comparing byte[32] to byte should be allowed with cast");
+}
+
+#[test]
+fn rejects_comparing_different_scalar_types_without_cast() {
+    let source = r#"
+        contract Reproduce() {
+            entrypoint function main() {
+                if (1 == true) {
+                    require(false);
+                }
+            }
+        }
+    "#;
+
+    let result = compile_contract(source, &[], CompileOptions::default());
+    assert!(result.is_err(), "int == bool should be rejected");
+}
+
+#[test]
+fn allows_comparing_dynamic_and_fixed_arrays_with_same_element_type() {
+    let source = r#"
+        contract Arrays() {
+            entrypoint function main() {
+                int[] x = [1];
+                int[1] y = [1];
+                require(x == y);
+            }
+        }
+    "#;
+
+    let result = compile_contract(source, &[], CompileOptions::default());
+    assert!(result.is_ok(), "int[] == int[1] should compile");
+}
+
+#[test]
+fn allows_comparing_contract_dynamic_array_field_with_fixed_array_local() {
+    let source = r#"
+        contract Arrays(byte[] b) {
+            entrypoint function main() {
+                byte[4] x = b.split(4)[0];
+                require(x != b);
+            }
+        }
+    "#;
+
+    let result = compile_contract(source, &[Expr::bytes(b"abcde".to_vec())], CompileOptions::default());
+    assert!(result.is_ok(), "byte[4] != byte[] should compile even when the field value is byte[5]");
+}
+
+#[test]
+fn rejects_comparing_fixed_arrays_with_different_sizes() {
+    let source = r#"
+        contract Arrays() {
+            entrypoint function main() {
+                int[1] x = [1];
+                int[2] y = [1, 2];
+                require(x != y);
+            }
+        }
+    "#;
+
+    let result = compile_contract(source, &[], CompileOptions::default());
+    assert!(result.is_err(), "int[1] != int[2] should be rejected");
 }
 
 #[test]
