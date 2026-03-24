@@ -54,6 +54,36 @@ contract Logging(int seed) {
     )
 }
 
+fn write_structured_console_fixture() -> std::path::PathBuf {
+    let nonce = SystemTime::now().duration_since(UNIX_EPOCH).expect("clock").as_nanos();
+    let dir = std::env::temp_dir().join(format!("cli_debugger_console_fixture_{}_{}", std::process::id(), nonce));
+    std::fs::create_dir_all(&dir).expect("create temp fixture dir");
+
+    let script_path = dir.join("structured_console.sil");
+    std::fs::write(
+        &script_path,
+        r#"pragma silverscript ^0.1.0;
+
+contract DebugSmallInline() {
+    int amount = 1;
+    bool active = true;
+    byte[1] tag = 0xaa;
+
+    entrypoint function inspect(State[] next_states) {
+        console.log("total sum of amounts: ", next_states[0].amount + next_states[1].amount);
+
+        require(next_states[0].active == active);
+        require(next_states[0].tag == tag);
+        require(next_states[1].tag == 0xbb);
+    }
+}
+"#,
+    )
+    .expect("write fixture contract");
+
+    script_path
+}
+
 fn shared_example_path(name: &str) -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples").join(name)
 }
@@ -314,6 +344,35 @@ fn cli_debugger_interactive_prints_console_logs_automatically() {
 
     assert!(stderr.is_empty(), "unexpected stderr: {stderr}");
     assert!(stdout.contains("seed 5"), "missing first console log: {stdout}");
+}
+
+#[test]
+fn cli_debugger_interactive_does_not_duplicate_startup_console_logs_for_structured_arrays() {
+    let script_path = write_structured_console_fixture();
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_cli-debugger"))
+        .arg(&script_path)
+        .arg("--function")
+        .arg("inspect")
+        .arg("--arg")
+        .arg(r#"[{"amount":5,"active":true,"tag":"0xaa"},{"amount":9,"active":true,"tag":"0xbb"}]"#)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn cli-debugger");
+
+    child.stdin.as_mut().expect("stdin available").write_all(b"q\n").expect("write stdin");
+
+    let output = child.wait_with_output().expect("wait for cli-debugger");
+    assert!(output.status.success(), "cli-debugger exited with status {:?}", output.status.code());
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let needle = "total sum of amounts:  14";
+
+    assert!(stderr.is_empty(), "unexpected stderr: {stderr}");
+    assert_eq!(stdout.matches(needle).count(), 1, "expected exactly one startup console log: {stdout}");
 }
 
 #[test]

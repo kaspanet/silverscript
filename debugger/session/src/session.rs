@@ -310,7 +310,6 @@ impl<'a, 'i> DebugSession<'a, 'i> {
             };
 
             if self.advance_to_step(target_index)? {
-                self.current_step_index = Some(target_index);
                 self.mark_step_executed(target_index);
                 return Ok(Some(self.state()));
             }
@@ -360,7 +359,6 @@ impl<'a, 'i> DebugSession<'a, 'i> {
             let offset = self.current_byte_offset();
             if self.engine.is_executing() {
                 if let Some(index) = self.steppable_step_index_for_offset(offset, None) {
-                    self.current_step_index = Some(index);
                     self.mark_step_executed(index);
                     return Ok(Some(self.state()));
                 }
@@ -824,8 +822,11 @@ impl<'a, 'i> DebugSession<'a, 'i> {
     }
 
     fn mark_step_executed(&mut self, step_index: usize) {
+        self.current_step_index = Some(step_index);
         if let Some(step) = self.step_at_order(step_index).cloned() {
-            self.executed_steps.insert(step.id());
+            if !self.executed_steps.insert(step.id()) {
+                return;
+            }
             self.capture_inline_scope_snapshot(&step);
             self.render_console_messages(&step);
         }
@@ -884,7 +885,6 @@ impl<'a, 'i> DebugSession<'a, 'i> {
             // `si` executes raw opcodes; keep statement cursor in sync so later
             // source-level steps (`next`/`step`/`finish`) start from the real
             // current step instead of an old one.
-            self.current_step_index = Some(index);
             self.mark_step_executed(index);
         }
     }
@@ -1847,8 +1847,7 @@ mod tests {
         )
         .unwrap();
 
-        session.current_step_index = Some(1);
-        session.executed_steps.insert(StepId::new(0, 1));
+        session.mark_step_executed(0);
         session.mark_step_executed(1);
 
         assert_eq!(session.take_console_output(), vec!["inner 6"]);
