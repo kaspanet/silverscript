@@ -3098,6 +3098,24 @@ fn runs_array_runtime_examples() {
 }
 
 #[test]
+fn runs_int_array_push_length_runtime_example() {
+    let source = r#"
+        contract Arrays() {
+            entrypoint function main() {
+                int[] x = [1, 2, 3];
+                x.push(4);
+                require(x.length == 4);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let sigscript = ScriptBuilder::new().drain();
+    let result = run_script_with_sigscript(compiled.script, sigscript);
+    assert!(result.is_ok(), "int[] push length runtime example failed: {}", result.unwrap_err());
+}
+
+#[test]
 fn runs_slice_with_explicit_end_bounds() {
     let source = r#"
         contract SliceLowering() {

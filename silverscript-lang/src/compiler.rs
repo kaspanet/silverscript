@@ -6489,7 +6489,9 @@ fn expr_is_bytes_inner<'i>(
     match &expr.kind {
         ExprKind::Byte(_) => true,
         ExprKind::String(_) => true,
-        ExprKind::Array(values) => values.iter().all(|value| matches!(&value.kind, ExprKind::Byte(_))),
+        // Array literals are encoded to their packed byte representation at compile time,
+        // regardless of element type, so downstream bytewise ops must treat them as bytes.
+        ExprKind::Array(_) => true,
         ExprKind::Slice { .. } => true,
         ExprKind::New { name, .. } => matches!(
             name.as_str(),
