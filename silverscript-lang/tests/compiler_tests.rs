@@ -883,6 +883,26 @@ fn build_sig_script_rejects_unknown_function() {
 }
 
 #[test]
+fn regression_allows_comparing_byte_array_to_byte_constant() {
+    let source = r#"
+        contract Reproduce(byte[32] genesisPk, byte genesisIdentifierType) {
+            byte[32] ownerIdentifier = genesisPk;
+            byte identifierType = genesisIdentifierType;
+            byte constant ZERO = 0x00;
+
+            entrypoint function main() {
+                if (ownerIdentifier == ZERO) {
+                    require(true);
+                }
+            }
+        }
+    "#;
+
+    compile_contract(source, &[Expr::bytes(vec![1u8; 32]), Expr::byte(0)], CompileOptions::default())
+        .expect("regression: byte[32] == byte currently compiles");
+}
+
+#[test]
 fn build_sig_script_rejects_wrong_argument_count() {
     let source = r#"
         contract C() {
