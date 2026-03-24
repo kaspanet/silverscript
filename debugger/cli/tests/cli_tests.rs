@@ -410,7 +410,7 @@ fn cli_debugger_accepts_struct_constructor_arg_and_renders_source_level_value() 
 }
 
 #[test]
-fn cli_debugger_accepts_state_arg_with_byte_one_field_and_renders_source_level_value() {
+fn cli_debugger_evals_structured_state_expressions() {
     let script_path = shared_example_path("debug_state.sil");
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_cli-debugger"))
@@ -427,7 +427,7 @@ fn cli_debugger_accepts_state_arg_with_byte_one_field_and_renders_source_level_v
         .spawn()
         .expect("failed to spawn cli-debugger");
 
-    let input = b"vars\np next_state\nq\n";
+    let input = b"eval next_state\neval next_state.amount\neval next_state.amount + amount\nq\n";
     child.stdin.as_mut().expect("stdin available").write_all(input).expect("write stdin");
 
     let output = child.wait_with_output().expect("wait for cli-debugger");
@@ -437,41 +437,9 @@ fn cli_debugger_accepts_state_arg_with_byte_one_field_and_renders_source_level_v
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     assert!(stderr.is_empty(), "unexpected stderr: {stderr}");
-    assert!(stdout.contains("next_state (State) = {amount: 5, active: true, tag: 0xaa}"), "missing rendered State value: {stdout}");
-}
-
-#[test]
-fn cli_debugger_accepts_state_array_arg_with_byte_one_field_and_renders_source_level_value() {
-    let script_path = shared_example_path("debug_state.sil");
-
-    let mut child = Command::new(env!("CARGO_BIN_EXE_cli-debugger"))
-        .arg(&script_path)
-        .arg("--function")
-        .arg("inspect_state_array")
-        .arg("--ctor-arg")
-        .arg("4")
-        .arg("--arg")
-        .arg(r#"[{"amount":5,"active":true,"tag":"0xaa"},{"amount":7,"active":true,"tag":"0xaa"}]"#)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("failed to spawn cli-debugger");
-
-    let input = b"vars\np next_states\nq\n";
-    child.stdin.as_mut().expect("stdin available").write_all(input).expect("write stdin");
-
-    let output = child.wait_with_output().expect("wait for cli-debugger");
-    assert!(output.status.success(), "cli-debugger exited with status {:?}", output.status.code());
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-
-    assert!(stderr.is_empty(), "unexpected stderr: {stderr}");
-    assert!(
-        stdout.contains("next_states (State[]) = [{amount: 5, active: true, tag: 0xaa}, {amount: 7, active: true, tag: 0xaa}]"),
-        "missing rendered State[] value: {stdout}"
-    );
+    assert!(stdout.contains("next_state = (State) {amount: 5, active: true, tag: 0xaa}"), "missing state eval output: {stdout}");
+    assert!(stdout.contains("next_state.amount = (int) 5"), "missing state field eval output: {stdout}");
+    assert!(stdout.contains("next_state.amount + amount = (int) 6"), "missing state arithmetic eval output: {stdout}");
 }
 
 #[test]

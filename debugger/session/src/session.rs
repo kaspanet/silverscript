@@ -8,12 +8,15 @@ use kaspa_txscript::script_builder::ScriptBuilder;
 use kaspa_txscript::{DynOpcodeImplementation, EngineCtx, EngineFlags, TxScriptEngine, parse_script};
 use serde::{Deserialize, Serialize};
 
-use silverscript_lang::ast::{Expr, ExprKind, parse_contract_ast, parse_expression_ast};
+use silverscript_lang::ast::{
+    Expr, ExprKind, StateFieldExpr, TypeBase, UnarySuffixKind, parse_contract_ast, parse_expression_ast, parse_type_ref,
+};
 use silverscript_lang::compiler::{compile_debug_expr, flattened_struct_name};
 use silverscript_lang::debug_info::{
-    DebugFunctionRange, DebugInfo, DebugNamedValue, DebugParamBinding, DebugParamLeafBinding, DebugStep, DebugVariableUpdate,
+    DebugFunctionRange, DebugInfo, DebugLeafBinding, DebugNamedValue, DebugParamBinding, DebugStep, DebugVariableUpdate,
     RuntimeBinding, SourceSpan, StepId, StepKind,
 };
+use silverscript_lang::span;
 
 pub use crate::presentation::{SourceContext, SourceContextLine};
 use crate::presentation::{build_source_context, format_value as format_debug_value};
@@ -140,6 +143,7 @@ pub struct DebugSession<'a, 'i> {
     breakpoints: HashSet<u32>,
     // Source-level step ids that were already visited in this session.
     executed_steps: HashSet<StepId>,
+    inline_scope_snapshots: HashMap<u32, HashMap<String, Variable>>,
     console_output: Vec<String>,
 }
 
@@ -164,7 +168,7 @@ struct VisibleScope<'a, 'i> {
 #[derive(Clone)]
 enum ScopeValueSource<'i> {
     RuntimeSlot { from_top: i64 },
-    StructuredParam { leaf_bindings: Vec<DebugParamLeafBinding> },
+    StructuredBinding { base_name: String, leaf_bindings: Vec<DebugLeafBinding> },
     Expr(Expr<'i>),
 }
 
@@ -239,6 +243,7 @@ impl<'a, 'i> DebugSession<'a, 'i> {
             source_lines,
             breakpoints: HashSet::new(),
             executed_steps: HashSet::new(),
+            inline_scope_snapshots: HashMap::new(),
             console_output: Vec::new(),
         })
     }
@@ -608,18 +613,30 @@ impl<'a, 'i> DebugSession<'a, 'i> {
                     let leaf_bindings = leaf_bindings.clone();
                     bindings.entry(param.name.clone()).or_insert_with(|| ScopeBinding {
                         type_name: param.type_name.clone(),
-                        source: ScopeValueSource::StructuredParam { leaf_bindings: leaf_bindings.clone() },
+                        source: ScopeValueSource::StructuredBinding {
+                            base_name: param.name.clone(),
+                            leaf_bindings: leaf_bindings
+                                .iter()
+                                .map(|leaf| DebugLeafBinding {
+                                    field_path: leaf.field_path.clone(),
+                                    type_name: leaf.type_name.clone(),
+                                    stack_index: None,
+                                })
+                                .collect(),
+                        },
                         origin,
                         hidden: false,
                     });
                     for leaf in &leaf_bindings {
                         let leaf_name = flattened_struct_name(&param.name, &leaf.field_path);
-                        bindings.entry(leaf_name).or_insert_with(|| ScopeBinding {
-                            type_name: leaf.type_name.clone(),
-                            source: ScopeValueSource::RuntimeSlot { from_top: leaf.stack_index },
-                            origin,
-                            hidden: true,
-                        });
+                        if let Some(stack_index) = leaf.stack_index {
+                            bindings.entry(leaf_name).or_insert_with(|| ScopeBinding {
+                                type_name: leaf.type_name.clone(),
+                                source: ScopeValueSource::RuntimeSlot { from_top: stack_index },
+                                origin,
+                                hidden: true,
+                            });
+                        }
                     }
                 }
             }
@@ -628,10 +645,28 @@ impl<'a, 'i> DebugSession<'a, 'i> {
         record_debug_named_values(&mut bindings, &self.debug_info.constructor_args, VariableOrigin::ConstructorArg);
         record_debug_named_values(&mut bindings, &self.debug_info.constants, VariableOrigin::Constant);
 
+        let frozen_inline_names = if scope.context.step_id.frame_id == 0 {
+            HashSet::new()
+        } else {
+            self.freeze_inline_snapshot_bindings(&mut bindings, scope.context.step_id.frame_id)
+        };
+
         for (name, update) in &scope.updates {
-            let source = match update.runtime_binding.as_ref() {
-                Some(RuntimeBinding::DataStackSlot { from_top }) => ScopeValueSource::RuntimeSlot { from_top: *from_top },
-                None => ScopeValueSource::Expr(update.expr.clone()),
+            if frozen_inline_names.contains(name) {
+                continue;
+            }
+            let source = match (&update.structured_leaf_bindings, update.runtime_binding.as_ref()) {
+                (Some(leaf_bindings), _) => {
+                    ScopeValueSource::StructuredBinding { base_name: name.clone(), leaf_bindings: leaf_bindings.clone() }
+                }
+                (None, Some(_))
+                    if is_inline_synthetic_name(name)
+                        && matches!(&update.expr.kind, ExprKind::Identifier(identifier) if frozen_inline_names.contains(identifier)) =>
+                {
+                    ScopeValueSource::Expr(update.expr.clone())
+                }
+                (None, Some(RuntimeBinding::DataStackSlot { from_top })) => ScopeValueSource::RuntimeSlot { from_top: *from_top },
+                (None, None) => ScopeValueSource::Expr(update.expr.clone()),
             };
             bindings
                 .entry(name.clone())
@@ -649,6 +684,60 @@ impl<'a, 'i> DebugSession<'a, 'i> {
         }
 
         bindings
+    }
+
+    fn freeze_inline_snapshot_bindings(&self, bindings: &mut ScopeState<'i>, frame_id: u32) -> HashSet<String> {
+        let Some(parent_vars) = self.inline_scope_snapshots.get(&frame_id) else {
+            return HashSet::new();
+        };
+        let mut frozen_names = HashSet::new();
+
+        for (name, variable) in parent_vars {
+            let Some(expr) = debug_value_to_expr(&variable.value) else {
+                continue;
+            };
+
+            let structured_leaf_bindings = bindings.get(name.as_str()).and_then(|existing| match &existing.source {
+                ScopeValueSource::StructuredBinding { leaf_bindings, .. } => Some(leaf_bindings.clone()),
+                _ => None,
+            });
+            if let Some(leaf_bindings) = structured_leaf_bindings {
+                frozen_names.insert(name.clone());
+                for leaf in &leaf_bindings {
+                    let Some(leaf_value) = structured_leaf_value(&variable.value, &leaf.field_path) else {
+                        continue;
+                    };
+                    let Some(leaf_expr) = debug_value_to_expr(&leaf_value) else {
+                        continue;
+                    };
+                    let leaf_name = flattened_struct_name(name, &leaf.field_path);
+                    bindings.insert(
+                        leaf_name.clone(),
+                        ScopeBinding {
+                            type_name: leaf.type_name.clone(),
+                            source: ScopeValueSource::Expr(leaf_expr),
+                            origin: variable.origin,
+                            hidden: true,
+                        },
+                    );
+                    frozen_names.insert(leaf_name);
+                }
+                continue;
+            }
+
+            bindings.insert(
+                name.clone(),
+                ScopeBinding {
+                    type_name: variable.type_name.clone(),
+                    source: ScopeValueSource::Expr(expr),
+                    origin: variable.origin,
+                    hidden: false,
+                },
+            );
+            frozen_names.insert(name.clone());
+        }
+
+        frozen_names
     }
 
     fn collect_variables_map(&self, scope_state: &ScopeState<'i>) -> HashMap<String, Variable> {
@@ -737,8 +826,26 @@ impl<'a, 'i> DebugSession<'a, 'i> {
     fn mark_step_executed(&mut self, step_index: usize) {
         if let Some(step) = self.step_at_order(step_index).cloned() {
             self.executed_steps.insert(step.id());
+            self.capture_inline_scope_snapshot(&step);
             self.render_console_messages(&step);
         }
+    }
+
+    fn capture_inline_scope_snapshot(&mut self, step: &DebugStep<'i>) {
+        if !matches!(step.kind, StepKind::InlineCallEnter { .. }) || self.inline_scope_snapshots.contains_key(&step.frame_id) {
+            return;
+        }
+
+        let step_id = self.current_scope_step_id();
+        let Ok(scope_state) = self.scope_state(step_id) else {
+            return;
+        };
+        let snapshot = self
+            .collect_variables_map(&scope_state)
+            .into_iter()
+            .filter(|(_, variable)| matches!(variable.origin, VariableOrigin::Param | VariableOrigin::ContractField))
+            .collect();
+        self.inline_scope_snapshots.insert(step.frame_id, snapshot);
     }
 
     fn render_console_messages(&mut self, step: &DebugStep<'i>) {
@@ -975,14 +1082,22 @@ impl<'a, 'i> DebugSession<'a, 'i> {
         }
         match &binding.source {
             ScopeValueSource::RuntimeSlot { from_top } => self.read_stack_value(*from_top, &binding.type_name),
-            ScopeValueSource::StructuredParam { leaf_bindings } => self.read_structured_param_value(&binding.type_name, leaf_bindings),
+            ScopeValueSource::StructuredBinding { base_name, leaf_bindings } => {
+                self.read_structured_binding_value(scope_state, base_name, &binding.type_name, leaf_bindings)
+            }
             ScopeValueSource::Expr(expr) => self.evaluate_scope_expr_as(scope_state, expr, &binding.type_name),
         }
     }
 
     fn evaluate_scope_expr_as(&self, scope_state: &ScopeState<'i>, expr: &Expr<'i>, type_name: &str) -> Result<DebugValue, String> {
         let (shadow_bindings, env, stack_bindings, eval_types) = self.scope_state_eval_context(scope_state)?;
-        let (bytecode, _) = compile_debug_expr(expr, &env, &stack_bindings, &eval_types)
+        if is_structured_type_name(type_name) {
+            return self
+                .try_resolve_expr_value(scope_state, expr, &mut HashSet::new())
+                .ok_or_else(|| format!("failed to resolve structured expression of type '{type_name}'"));
+        }
+        let prepared_expr = lower_expr_for_eval(expr, scope_state)?;
+        let (bytecode, _) = compile_debug_expr(&prepared_expr, &env, &stack_bindings, &eval_types)
             .map_err(|err| format!("failed to compile debug expression: {err}"))?;
         let script = self.build_shadow_script(&shadow_bindings, &bytecode)?;
         let bytes = self.execute_shadow_script(&script)?;
@@ -996,7 +1111,14 @@ impl<'a, 'i> DebugSession<'a, 'i> {
 
     fn evaluate_expr_in_scope(&self, scope_state: &ScopeState<'i>, expr: &Expr<'i>) -> Result<(String, DebugValue), String> {
         let (shadow_bindings, env, stack_bindings, eval_types) = self.scope_state_eval_context(scope_state)?;
-        let (bytecode, type_name) = compile_debug_expr(expr, &env, &stack_bindings, &eval_types)
+        if let Some(type_name) = direct_expr_type_name(scope_state, expr).filter(|type_name| is_structured_type_name(type_name)) {
+            let value = self
+                .try_resolve_expr_value(scope_state, expr, &mut HashSet::new())
+                .ok_or_else(|| format!("failed to resolve structured expression of type '{type_name}'"))?;
+            return Ok((type_name, value));
+        }
+        let prepared_expr = lower_expr_for_eval(expr, scope_state)?;
+        let (bytecode, type_name) = compile_debug_expr(&prepared_expr, &env, &stack_bindings, &eval_types)
             .map_err(|err| format!("failed to compile debug expression: {err}"))?;
         let script = self.build_shadow_script(&shadow_bindings, &bytecode)?;
         let bytes = self.execute_shadow_script(&script)?;
@@ -1018,7 +1140,7 @@ impl<'a, 'i> DebugSession<'a, 'i> {
                         ShadowBindingValue { name: name.clone(), stack_index: *from_top, value: self.read_stack_at_index(*from_top)? },
                     );
                 }
-                ScopeValueSource::StructuredParam { .. } => {}
+                ScopeValueSource::StructuredBinding { .. } => {}
                 ScopeValueSource::Expr(expr) => {
                     env.insert(name.clone(), expr.clone());
                 }
@@ -1082,12 +1204,20 @@ impl<'a, 'i> DebugSession<'a, 'i> {
         decode_value_by_type(type_name, bytes)
     }
 
-    fn read_structured_param_value(&self, type_name: &str, leaf_bindings: &[DebugParamLeafBinding]) -> Result<DebugValue, String> {
+    fn read_structured_binding_value(
+        &self,
+        scope_state: &ScopeState<'i>,
+        base_name: &str,
+        type_name: &str,
+        leaf_bindings: &[DebugLeafBinding],
+    ) -> Result<DebugValue, String> {
         if type_name.ends_with("[]") {
             let mut leaf_arrays = Vec::with_capacity(leaf_bindings.len());
             let mut expected_len = None;
             for leaf in leaf_bindings {
-                let value = self.read_stack_value(leaf.stack_index, &leaf.type_name)?;
+                let leaf_name = flattened_struct_name(base_name, &leaf.field_path);
+                let binding = scope_state.get(&leaf_name).ok_or_else(|| format!("missing structured leaf binding '{leaf_name}'"))?;
+                let value = self.resolve_scope_binding(scope_state, binding)?;
                 let DebugValue::Array(values) = value else {
                     return Err(format!("structured array leaf '{}' did not decode to an array", format_field_path(&leaf.field_path)));
                 };
@@ -1115,7 +1245,9 @@ impl<'a, 'i> DebugSession<'a, 'i> {
 
         let mut fields = Vec::with_capacity(leaf_bindings.len());
         for leaf in leaf_bindings {
-            let value = self.read_stack_value(leaf.stack_index, &leaf.type_name)?;
+            let leaf_name = flattened_struct_name(base_name, &leaf.field_path);
+            let binding = scope_state.get(&leaf_name).ok_or_else(|| format!("missing structured leaf binding '{leaf_name}'"))?;
+            let value = self.resolve_scope_binding(scope_state, binding)?;
             insert_object_path(&mut fields, &leaf.field_path, value)?;
         }
         Ok(DebugValue::Object(fields))
@@ -1129,8 +1261,8 @@ impl<'a, 'i> DebugSession<'a, 'i> {
     ) -> Option<DebugValue> {
         match &binding.source {
             ScopeValueSource::RuntimeSlot { from_top } => self.read_stack_value(*from_top, &binding.type_name).ok(),
-            ScopeValueSource::StructuredParam { leaf_bindings } => {
-                self.read_structured_param_value(&binding.type_name, leaf_bindings).ok()
+            ScopeValueSource::StructuredBinding { base_name, leaf_bindings } => {
+                self.read_structured_binding_value(scope_state, base_name, &binding.type_name, leaf_bindings).ok()
             }
             ScopeValueSource::Expr(expr) => self.try_resolve_expr_value(scope_state, expr, visiting),
         }
@@ -1189,6 +1321,25 @@ impl<'a, 'i> DebugSession<'a, 'i> {
                 };
                 fields.into_iter().find_map(|(name, value)| (name == *field).then_some(value))
             }
+            ExprKind::ArrayIndex { source, index } => {
+                let Some(DebugValue::Array(values)) = self.try_resolve_expr_value(scope_state, source, visiting) else {
+                    return None;
+                };
+                let Some(DebugValue::Int(index)) = self.try_resolve_expr_value(scope_state, index, visiting) else {
+                    return None;
+                };
+                let index = usize::try_from(index).ok()?;
+                values.get(index).cloned()
+            }
+            ExprKind::UnarySuffix { source, kind, .. } => match kind {
+                UnarySuffixKind::Length => match self.try_resolve_expr_value(scope_state, source, visiting)? {
+                    DebugValue::Array(values) => Some(DebugValue::Int(values.len() as i64)),
+                    DebugValue::Bytes(bytes) => Some(DebugValue::Int(bytes.len() as i64)),
+                    DebugValue::String(value) => Some(DebugValue::Int(value.len() as i64)),
+                    _ => None,
+                },
+                UnarySuffixKind::Reverse => None,
+            },
             _ => None,
         }
     }
@@ -1258,6 +1409,57 @@ fn format_field_path(path: &[String]) -> String {
     if path.is_empty() { "<root>".to_string() } else { path.join(".") }
 }
 
+fn structured_leaf_value(value: &DebugValue, field_path: &[String]) -> Option<DebugValue> {
+    if field_path.is_empty() {
+        return Some(value.clone());
+    }
+
+    match value {
+        DebugValue::Array(items) => {
+            let mut values = Vec::with_capacity(items.len());
+            for item in items {
+                values.push(structured_leaf_value(item, field_path)?);
+            }
+            Some(DebugValue::Array(values))
+        }
+        DebugValue::Object(fields) => {
+            let (field_name, rest) = field_path.split_first()?;
+            let value = fields.iter().find_map(|(name, value)| (name == field_name).then_some(value))?;
+            structured_leaf_value(value, rest)
+        }
+        _ => None,
+    }
+}
+
+fn debug_value_to_expr<'i>(value: &DebugValue) -> Option<Expr<'i>> {
+    match value {
+        DebugValue::Int(value) => Some(Expr::int(*value)),
+        DebugValue::Bool(value) => Some(Expr::bool(*value)),
+        DebugValue::Bytes(bytes) => Some(Expr::bytes(bytes.clone())),
+        DebugValue::String(value) => Some(Expr::new(ExprKind::String(value.clone()), span::Span::default())),
+        DebugValue::Array(items) => {
+            Some(Expr::new(ExprKind::Array(items.iter().map(debug_value_to_expr).collect::<Option<Vec<_>>>()?), span::Span::default()))
+        }
+        DebugValue::Object(fields) => Some(Expr::new(
+            ExprKind::StateObject(
+                fields
+                    .iter()
+                    .map(|(name, value)| {
+                        Some(StateFieldExpr {
+                            name: name.clone(),
+                            expr: debug_value_to_expr(value)?,
+                            span: span::Span::default(),
+                            name_span: span::Span::default(),
+                        })
+                    })
+                    .collect::<Option<Vec<_>>>()?,
+            ),
+            span::Span::default(),
+        )),
+        DebugValue::Unknown(_) => None,
+    }
+}
+
 /// Executes sigscript to seed the stack before debugging lockscript.
 fn seed_engine_with_sigscript(engine: &mut DebugEngine<'_>, sigscript: &[u8]) -> Result<(), kaspa_txscript_errors::TxScriptError> {
     for opcode in parse_script::<DebugTx<'_>, DebugReused>(sigscript) {
@@ -1290,8 +1492,215 @@ fn range_matches_offset(bytecode_start: usize, bytecode_end: usize, offset: usiz
     if bytecode_start == bytecode_end { offset == bytecode_start } else { offset >= bytecode_start && offset < bytecode_end }
 }
 
+fn map_expr_children_for_eval<'i, F>(expr: &'i Expr<'i>, map_child: &mut F) -> Result<Expr<'i>, String>
+where
+    F: FnMut(&'i Expr<'i>) -> Result<Expr<'i>, String>,
+{
+    let span = expr.span;
+    match &expr.kind {
+        ExprKind::Unary { op, expr } => Ok(Expr::new(ExprKind::Unary { op: *op, expr: Box::new(map_child(expr)?) }, span)),
+        ExprKind::Binary { op, left, right } => {
+            Ok(Expr::new(ExprKind::Binary { op: *op, left: Box::new(map_child(left)?), right: Box::new(map_child(right)?) }, span))
+        }
+        ExprKind::IfElse { condition, then_expr, else_expr } => Ok(Expr::new(
+            ExprKind::IfElse {
+                condition: Box::new(map_child(condition)?),
+                then_expr: Box::new(map_child(then_expr)?),
+                else_expr: Box::new(map_child(else_expr)?),
+            },
+            span,
+        )),
+        ExprKind::Array(values) => {
+            Ok(Expr::new(ExprKind::Array(values.iter().map(&mut *map_child).collect::<Result<Vec<_>, _>>()?), span))
+        }
+        ExprKind::StateObject(fields) => Ok(Expr::new(
+            ExprKind::StateObject(
+                fields
+                    .iter()
+                    .map(|field| {
+                        Ok(StateFieldExpr {
+                            name: field.name.clone(),
+                            expr: map_child(&field.expr)?,
+                            span: field.span,
+                            name_span: field.name_span,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, String>>()?,
+            ),
+            span,
+        )),
+        ExprKind::FieldAccess { source, field, field_span } => Ok(Expr::new(
+            ExprKind::FieldAccess { source: Box::new(map_child(source)?), field: field.clone(), field_span: *field_span },
+            span,
+        )),
+        ExprKind::Call { name, args, name_span } => Ok(Expr::new(
+            ExprKind::Call {
+                name: name.clone(),
+                args: args.iter().map(&mut *map_child).collect::<Result<Vec<_>, _>>()?,
+                name_span: *name_span,
+            },
+            span,
+        )),
+        ExprKind::New { name, args, name_span } => Ok(Expr::new(
+            ExprKind::New {
+                name: name.clone(),
+                args: args.iter().map(&mut *map_child).collect::<Result<Vec<_>, _>>()?,
+                name_span: *name_span,
+            },
+            span,
+        )),
+        ExprKind::Split { source, index, part, span: split_span } => Ok(Expr::new(
+            ExprKind::Split {
+                source: Box::new(map_child(source)?),
+                index: Box::new(map_child(index)?),
+                part: *part,
+                span: *split_span,
+            },
+            span,
+        )),
+        ExprKind::Slice { source, start, end, span: slice_span } => Ok(Expr::new(
+            ExprKind::Slice {
+                source: Box::new(map_child(source)?),
+                start: Box::new(map_child(start)?),
+                end: Box::new(map_child(end)?),
+                span: *slice_span,
+            },
+            span,
+        )),
+        ExprKind::ArrayIndex { source, index } => {
+            Ok(Expr::new(ExprKind::ArrayIndex { source: Box::new(map_child(source)?), index: Box::new(map_child(index)?) }, span))
+        }
+        ExprKind::Introspection { kind, index, field_span } => {
+            Ok(Expr::new(ExprKind::Introspection { kind: *kind, index: Box::new(map_child(index)?), field_span: *field_span }, span))
+        }
+        ExprKind::UnarySuffix { source, kind, span: suffix_span } => {
+            Ok(Expr::new(ExprKind::UnarySuffix { source: Box::new(map_child(source)?), kind: *kind, span: *suffix_span }, span))
+        }
+        _ => Ok(expr.clone()),
+    }
+}
+
+enum StructuredFieldAccessBase<'i> {
+    Binding(String),
+    IndexedBinding(String, &'i Expr<'i>),
+}
+
+fn collect_structured_field_access<'i>(expr: &'i Expr<'i>) -> Option<(StructuredFieldAccessBase<'i>, Vec<String>)> {
+    match &expr.kind {
+        ExprKind::FieldAccess { source, field, .. } => {
+            let (base, mut path) = collect_structured_field_access(source)?;
+            path.push(field.clone());
+            Some((base, path))
+        }
+        ExprKind::Identifier(name) => Some((StructuredFieldAccessBase::Binding(name.clone()), Vec::new())),
+        ExprKind::ArrayIndex { source, index } => match &source.kind {
+            ExprKind::Identifier(name) => Some((StructuredFieldAccessBase::IndexedBinding(name.clone(), index), Vec::new())),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn lower_structured_field_access_for_eval<'i>(expr: &'i Expr<'i>, scope_state: &ScopeState<'i>) -> Result<Option<Expr<'i>>, String> {
+    let Some((base, field_path)) = collect_structured_field_access(expr) else {
+        return Ok(None);
+    };
+    let base_name = match &base {
+        StructuredFieldAccessBase::Binding(name) | StructuredFieldAccessBase::IndexedBinding(name, _) => name,
+    };
+    let Some(binding) = scope_state.get(base_name.as_str()) else {
+        return Ok(None);
+    };
+    let ScopeValueSource::StructuredBinding { leaf_bindings, .. } = &binding.source else {
+        return Ok(None);
+    };
+    if !leaf_bindings.iter().any(|leaf| leaf.field_path == field_path) {
+        return Ok(None);
+    }
+
+    let lowered_leaf = Expr::identifier(flattened_struct_name(base_name, &field_path));
+    Ok(Some(match base {
+        StructuredFieldAccessBase::Binding(_) => Expr::new(lowered_leaf.kind, expr.span),
+        StructuredFieldAccessBase::IndexedBinding(_, index) => Expr::new(
+            ExprKind::ArrayIndex { source: Box::new(lowered_leaf), index: Box::new(lower_expr_for_eval(index, scope_state)?) },
+            expr.span,
+        ),
+    }))
+}
+
+fn lower_structured_length_for_eval<'i>(expr: &Expr<'i>, scope_state: &ScopeState<'i>) -> Result<Option<Expr<'i>>, String> {
+    let span = expr.span;
+    let ExprKind::UnarySuffix { source, kind, span: suffix_span } = &expr.kind else {
+        return Ok(None);
+    };
+    if !matches!(kind, UnarySuffixKind::Length) {
+        return Ok(None);
+    }
+    let ExprKind::Identifier(name) = &source.kind else {
+        return Ok(None);
+    };
+    let Some(binding) = scope_state.get(name.as_str()) else {
+        return Ok(None);
+    };
+    let ScopeValueSource::StructuredBinding { leaf_bindings, .. } = &binding.source else {
+        return Ok(None);
+    };
+    if !binding.type_name.ends_with("[]") {
+        return Ok(None);
+    }
+    let Some(first_leaf) = leaf_bindings.first() else {
+        return Err("structured array must contain fields".to_string());
+    };
+    Ok(Some(Expr::new(
+        ExprKind::UnarySuffix {
+            source: Box::new(Expr::identifier(flattened_struct_name(name, &first_leaf.field_path))),
+            kind: *kind,
+            span: *suffix_span,
+        },
+        span,
+    )))
+}
+
+fn lower_expr_for_eval<'i>(expr: &'i Expr<'i>, scope_state: &ScopeState<'i>) -> Result<Expr<'i>, String> {
+    match &expr.kind {
+        ExprKind::FieldAccess { .. } => {
+            if let Some(lowered) = lower_structured_field_access_for_eval(expr, scope_state)? {
+                return Ok(lowered);
+            }
+            map_expr_children_for_eval(expr, &mut |child| lower_expr_for_eval(child, scope_state))
+        }
+        ExprKind::UnarySuffix { .. } => {
+            if let Some(lowered) = lower_structured_length_for_eval(expr, scope_state)? {
+                return Ok(lowered);
+            }
+            map_expr_children_for_eval(expr, &mut |child| lower_expr_for_eval(child, scope_state))
+        }
+        _ => map_expr_children_for_eval(expr, &mut |child| lower_expr_for_eval(child, scope_state)),
+    }
+}
+
 fn is_inline_synthetic_name(name: &str) -> bool {
     name.starts_with("__arg_") || name.starts_with("__struct_")
+}
+
+fn is_structured_type_name(type_name: &str) -> bool {
+    parse_type_ref(type_name).ok().is_some_and(|type_ref| is_structured_type_ref(&type_ref))
+}
+
+fn direct_expr_type_name<'i>(scope_state: &ScopeState<'i>, expr: &Expr<'i>) -> Option<String> {
+    match &expr.kind {
+        ExprKind::Identifier(name) => scope_state.get(name).map(|binding| binding.type_name.clone()),
+        ExprKind::ArrayIndex { source, .. } => {
+            let source_type = direct_expr_type_name(scope_state, source)?;
+            let type_ref = parse_type_ref(&source_type).ok()?;
+            Some(type_ref.element_type()?.type_name())
+        }
+        _ => None,
+    }
+}
+
+fn is_structured_type_ref(type_ref: &silverscript_lang::ast::TypeRef) -> bool {
+    matches!(&type_ref.base, TypeBase::Custom(_)) || type_ref.element_type().is_some_and(|element| is_structured_type_ref(&element))
 }
 
 fn record_debug_named_values<'i>(bindings: &mut ScopeState<'i>, values: &[DebugNamedValue<'i>], origin: VariableOrigin) {
@@ -1311,7 +1720,7 @@ mod tests {
 
     use silverscript_lang::ast::{BinaryOp, Expr, ExprKind, StateFieldExpr};
     use silverscript_lang::debug_info::{
-        DebugFunctionRange, DebugInfo, DebugNamedValue, DebugParamBinding, DebugParamLeafBinding, DebugParamMapping, DebugStep,
+        DebugFunctionRange, DebugInfo, DebugLeafBinding, DebugNamedValue, DebugParamBinding, DebugParamMapping, DebugStep,
         DebugVariableUpdate, SourceSpan, StepKind,
     };
     use silverscript_lang::span;
@@ -1325,7 +1734,7 @@ mod tests {
         }
     }
 
-    fn structured_param(name: &str, type_name: &str, leaf_bindings: Vec<DebugParamLeafBinding>) -> DebugParamMapping {
+    fn structured_param(name: &str, type_name: &str, leaf_bindings: Vec<DebugLeafBinding>) -> DebugParamMapping {
         DebugParamMapping {
             name: name.to_string(),
             type_name: type_name.to_string(),
@@ -1379,6 +1788,7 @@ mod tests {
                 ExprKind::Binary { op: BinaryOp::Add, left: Box::new(Expr::identifier("a")), right: Box::new(Expr::identifier("b")) },
                 span::Span::default(),
             ),
+            structured_leaf_bindings: None,
         };
         let scope_state = session.scope_state(StepId::ROOT).unwrap();
         let value = session.evaluate_scope_expr_as(&scope_state, &update.expr, &update.type_name).unwrap();
@@ -1407,6 +1817,7 @@ mod tests {
                         type_name: "int".to_string(),
                         runtime_binding: None,
                         expr: Expr::identifier("a"),
+                        structured_leaf_bindings: None,
                     }],
                     console_args: vec![],
                 },
@@ -1464,6 +1875,7 @@ mod tests {
                     type_name: "int".to_string(),
                     runtime_binding: None,
                     expr: Expr::identifier("missing"),
+                    structured_leaf_bindings: None,
                 }],
                 console_args: vec![],
             }],
@@ -1501,6 +1913,7 @@ mod tests {
                         type_name: "int".to_string(),
                         runtime_binding: None,
                         expr: Expr::identifier("a"),
+                        structured_leaf_bindings: None,
                     },
                     DebugVariableUpdate {
                         name: "x".to_string(),
@@ -1514,6 +1927,7 @@ mod tests {
                             },
                             span::Span::default(),
                         ),
+                        structured_leaf_bindings: None,
                     },
                 ],
                 console_args: vec![],
@@ -1600,12 +2014,14 @@ mod tests {
                         type_name: "int".to_string(),
                         runtime_binding: None,
                         expr: Expr::identifier("a"),
+                        structured_leaf_bindings: None,
                     },
                     DebugVariableUpdate {
                         name: "__arg_inner_0".to_string(),
                         type_name: "int".to_string(),
                         runtime_binding: None,
                         expr: Expr::identifier("__arg_outer_0"),
+                        structured_leaf_bindings: None,
                     },
                     DebugVariableUpdate {
                         name: "x".to_string(),
@@ -1619,6 +2035,7 @@ mod tests {
                             },
                             span::Span::default(),
                         ),
+                        structured_leaf_bindings: None,
                     },
                 ],
                 console_args: vec![],
@@ -1657,6 +2074,7 @@ mod tests {
                         type_name: "int".to_string(),
                         runtime_binding: Some(RuntimeBinding::DataStackSlot { from_top: 0 }),
                         expr: Expr::identifier("missing"),
+                        structured_leaf_bindings: None,
                     }],
                     console_args: vec![],
                 },
@@ -1706,6 +2124,7 @@ mod tests {
                         type_name: "int".to_string(),
                         runtime_binding: Some(RuntimeBinding::DataStackSlot { from_top: 0 }),
                         expr: Expr::identifier("missing"),
+                        structured_leaf_bindings: None,
                     }],
                     console_args: vec![],
                 },
@@ -1760,8 +2179,8 @@ mod tests {
                 "next",
                 "State",
                 vec![
-                    DebugParamLeafBinding { field_path: vec!["amount".to_string()], type_name: "int".to_string(), stack_index: 1 },
-                    DebugParamLeafBinding { field_path: vec!["code".to_string()], type_name: "byte[2]".to_string(), stack_index: 0 },
+                    DebugLeafBinding { field_path: vec!["amount".to_string()], type_name: "int".to_string(), stack_index: Some(1) },
+                    DebugLeafBinding { field_path: vec!["code".to_string()], type_name: "byte[2]".to_string(), stack_index: Some(0) },
                 ],
             )],
             vec![],
@@ -1775,5 +2194,60 @@ mod tests {
         let scope_state = session.scope_state(StepId::ROOT).expect("scope state");
         assert!(scope_state.contains_key("__struct_next_amount"));
         assert!(scope_state.get("__struct_next_amount").is_some_and(|binding| binding.hidden));
+    }
+
+    #[test]
+    fn lower_expr_for_eval_rewrites_structured_bindings_to_hidden_leaves() {
+        let session = make_session(
+            vec![
+                structured_param(
+                    "next",
+                    "State",
+                    vec![DebugLeafBinding {
+                        field_path: vec!["amount".to_string()],
+                        type_name: "int".to_string(),
+                        stack_index: Some(0),
+                    }],
+                ),
+                structured_param(
+                    "next_states",
+                    "State[]",
+                    vec![DebugLeafBinding {
+                        field_path: vec!["amount".to_string()],
+                        type_name: "int[]".to_string(),
+                        stack_index: Some(1),
+                    }],
+                ),
+            ],
+            vec![],
+            &[],
+        )
+        .unwrap();
+
+        let scope_state = session.scope_state(StepId::ROOT).expect("scope state");
+
+        let field_expr = parse_expression_ast("next.amount").expect("parse field");
+        let lowered_field = lower_expr_for_eval(&field_expr, &scope_state).expect("lower field access");
+        assert!(matches!(lowered_field.kind, ExprKind::Identifier(ref name) if name == "__struct_next_amount"));
+
+        let indexed_expr = parse_expression_ast("next_states[0].amount").expect("parse indexed field");
+        let lowered_indexed = lower_expr_for_eval(&indexed_expr, &scope_state).expect("lower indexed field access");
+        match lowered_indexed.kind {
+            ExprKind::ArrayIndex { source, index } => {
+                assert!(matches!(source.kind, ExprKind::Identifier(ref name) if name == "__struct_next_states_amount"));
+                assert!(matches!(index.kind, ExprKind::Int(0)));
+            }
+            other => panic!("expected lowered array index, got {other:?}"),
+        }
+
+        let length_expr = parse_expression_ast("next_states.length").expect("parse structured length");
+        let lowered_length = lower_expr_for_eval(&length_expr, &scope_state).expect("lower structured length");
+        match lowered_length.kind {
+            ExprKind::UnarySuffix { source, kind, .. } => {
+                assert!(matches!(source.kind, ExprKind::Identifier(ref name) if name == "__struct_next_states_amount"));
+                assert!(matches!(kind, UnarySuffixKind::Length));
+            }
+            other => panic!("expected lowered length suffix, got {other:?}"),
+        }
     }
 }

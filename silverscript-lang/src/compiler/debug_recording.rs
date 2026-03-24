@@ -1,9 +1,9 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 
-use crate::ast::{ConstantAst, ContractFieldAst, Expr, FunctionAst, ParamAst, Statement};
+use crate::ast::{ConstantAst, ContractFieldAst, Expr, ExprKind, FunctionAst, ParamAst, Statement, parse_type_ref};
 use crate::debug_info::{
-    DebugFunctionRange, DebugInfo, DebugInfoRecorder, DebugNamedValue, DebugParamBinding, DebugParamLeafBinding, DebugParamMapping,
+    DebugFunctionRange, DebugInfo, DebugInfoRecorder, DebugLeafBinding, DebugNamedValue, DebugParamBinding, DebugParamMapping,
     DebugStep, DebugVariableUpdate, RuntimeBinding, SourceSpan, StepKind,
 };
 
@@ -73,8 +73,9 @@ impl<'i> DebugRecorder<'i> {
         env: &HashMap<String, Expr<'i>>,
         types: &HashMap<String, String>,
         stack_bindings: &HashMap<String, i64>,
+        structs: &super::StructRegistry,
     ) -> Result<(), CompilerError> {
-        self.inner.finish_statement_at(stmt, bytecode_end, env, types, stack_bindings)
+        self.inner.finish_statement_at(stmt, bytecode_end, env, types, stack_bindings, structs)
     }
 
     /// Records an inline call entry step and opens a nested call frame.
@@ -84,9 +85,11 @@ impl<'i> DebugRecorder<'i> {
         bytecode_offset: usize,
         function: &FunctionAst<'i>,
         env: &HashMap<String, Expr<'i>>,
+        types: &HashMap<String, String>,
         stack_bindings: &HashMap<String, i64>,
+        structs: &super::StructRegistry,
     ) -> Result<(), CompilerError> {
-        self.inner.begin_inline_call(span, bytecode_offset, function, env, stack_bindings)
+        self.inner.begin_inline_call(span, bytecode_offset, function, env, types, stack_bindings, structs)
     }
 
     /// Records an inline call exit step and closes the active nested call frame.
@@ -132,6 +135,7 @@ trait DebugRecorderImpl<'i>: fmt::Debug {
         env: &HashMap<String, Expr<'i>>,
         types: &HashMap<String, String>,
         stack_bindings: &HashMap<String, i64>,
+        structs: &super::StructRegistry,
     ) -> Result<(), CompilerError>;
     fn begin_inline_call(
         &mut self,
@@ -139,7 +143,9 @@ trait DebugRecorderImpl<'i>: fmt::Debug {
         bytecode_offset: usize,
         function: &FunctionAst<'i>,
         env: &HashMap<String, Expr<'i>>,
+        types: &HashMap<String, String>,
         stack_bindings: &HashMap<String, i64>,
+        structs: &super::StructRegistry,
     ) -> Result<(), CompilerError>;
     fn finish_inline_call(&mut self, span: SourceSpan, bytecode_offset: usize, callee: &str);
     fn record_variable_binding(
@@ -185,6 +191,7 @@ impl<'i> DebugRecorderImpl<'i> for NoopDebugRecorder {
         _env: &HashMap<String, Expr<'i>>,
         _types: &HashMap<String, String>,
         _stack_bindings: &HashMap<String, i64>,
+        _structs: &super::StructRegistry,
     ) -> Result<(), CompilerError> {
         Ok(())
     }
@@ -195,7 +202,9 @@ impl<'i> DebugRecorderImpl<'i> for NoopDebugRecorder {
         _bytecode_offset: usize,
         _function: &FunctionAst<'i>,
         _env: &HashMap<String, Expr<'i>>,
+        _types: &HashMap<String, String>,
         _stack_bindings: &HashMap<String, i64>,
+        _structs: &super::StructRegistry,
     ) -> Result<(), CompilerError> {
         Ok(())
     }
@@ -299,6 +308,7 @@ impl<'i> DebugRecorderImpl<'i> for ActiveDebugRecorder<'i> {
         env: &HashMap<String, Expr<'i>>,
         types: &HashMap<String, String>,
         stack_bindings: &HashMap<String, i64>,
+        structs: &super::StructRegistry,
     ) -> Result<(), CompilerError> {
         let Some(entrypoint) = self.active_entrypoint_mut() else {
             return Ok(());
@@ -307,7 +317,7 @@ impl<'i> DebugRecorderImpl<'i> for ActiveDebugRecorder<'i> {
             return Ok(());
         };
 
-        let updates = collect_variable_updates(&frame.env_before, &frame.stack_bindings_before, env, types, stack_bindings)?;
+        let updates = collect_variable_updates(&frame.env_before, &frame.stack_bindings_before, env, types, stack_bindings, structs)?;
         let console_args = collect_console_args(stmt, env)?;
         let span = SourceSpan::from(stmt.span());
         let bytecode_len = bytecode_end.saturating_sub(frame.start);
@@ -323,7 +333,9 @@ impl<'i> DebugRecorderImpl<'i> for ActiveDebugRecorder<'i> {
         bytecode_offset: usize,
         function: &FunctionAst<'i>,
         env: &HashMap<String, Expr<'i>>,
+        types: &HashMap<String, String>,
         stack_bindings: &HashMap<String, i64>,
+        structs: &super::StructRegistry,
     ) -> Result<(), CompilerError> {
         let Some(entrypoint) = self.active_entrypoint_mut() else {
             return Ok(());
@@ -340,21 +352,26 @@ impl<'i> DebugRecorderImpl<'i> for ActiveDebugRecorder<'i> {
             callee_frame_id,
         );
 
-        let mut updates = Vec::new();
-        let mut synthetic_names: Vec<String> = env.keys().filter(|name| name.starts_with("__arg_")).cloned().collect();
-        synthetic_names.sort_unstable();
-        for name in synthetic_names {
-            if let Some(expr) = env.get(&name).cloned() {
-                let runtime_binding = runtime_binding_for_inline_binding(&expr, stack_bindings);
-                resolve_variable_update(env, &mut updates, &name, "internal", expr, runtime_binding)?;
-            }
-        }
+        let mut updates = collect_inline_runtime_updates(env, types, stack_bindings)?;
 
         for param in &function.params {
             let expr = env.get(&param.name).cloned().unwrap_or_else(|| Expr::identifier(param.name.clone()));
             let runtime_binding = runtime_binding_for_inline_binding(&expr, stack_bindings)
                 .or_else(|| runtime_binding_for_stack_name(&param.name, stack_bindings));
-            resolve_variable_update(env, &mut updates, &param.name, &param.type_ref.type_name(), expr, runtime_binding)?;
+            let structured_leaf_bindings = structured_leaf_bindings_for_type_ref(&param.type_ref, structs)?;
+            let has_structured_binding = structured_leaf_bindings.is_some();
+            resolve_variable_update(
+                env,
+                &mut updates,
+                &param.name,
+                &param.type_ref.type_name(),
+                expr.clone(),
+                runtime_binding,
+                structured_leaf_bindings,
+            )?;
+            if has_structured_binding {
+                collect_inline_struct_leaf_updates(env, &mut updates, param, &expr, stack_bindings, structs)?;
+            }
         }
 
         entrypoint.steps[enter_step_index].variable_updates.extend(updates);
@@ -383,7 +400,13 @@ impl<'i> DebugRecorderImpl<'i> for ActiveDebugRecorder<'i> {
             return;
         };
         let step_index = entrypoint.push_step(bytecode_offset, bytecode_offset, span, StepKind::Source {});
-        entrypoint.steps[step_index].variable_updates.push(DebugVariableUpdate { name, type_name, runtime_binding, expr });
+        entrypoint.steps[step_index].variable_updates.push(DebugVariableUpdate {
+            name,
+            type_name,
+            runtime_binding,
+            structured_leaf_bindings: None,
+            expr,
+        });
     }
 
     fn into_debug_info(mut self: Box<Self>, source: String) -> Option<DebugInfo<'i>> {
@@ -554,10 +577,10 @@ impl<'i> StagedEntrypointDebug<'i> {
             let binding = if let Some(leaf_specs) = leaf_specs {
                 let mut leaf_bindings = Vec::with_capacity(leaf_specs.len());
                 for (field_path, leaf_type_name) in leaf_specs {
-                    leaf_bindings.push(DebugParamLeafBinding {
+                    leaf_bindings.push(DebugLeafBinding {
                         field_path,
                         type_name: leaf_type_name,
-                        stack_index: next_stack_index(),
+                        stack_index: Some(next_stack_index()),
                     });
                 }
                 DebugParamBinding::StructuredValue { leaf_bindings }
@@ -596,12 +619,43 @@ struct CallFrame {
     call_depth: u32,
 }
 
+fn structured_leaf_bindings_for_type_ref(
+    type_ref: &crate::ast::TypeRef,
+    structs: &super::StructRegistry,
+) -> Result<Option<Vec<DebugLeafBinding>>, CompilerError> {
+    if super::struct_name_from_type_ref(type_ref, structs).is_none()
+        && super::struct_array_name_from_type_ref(type_ref, structs).is_none()
+    {
+        return Ok(None);
+    }
+
+    Ok(Some(
+        super::flatten_type_ref_leaves(type_ref, structs)?
+            .into_iter()
+            .map(|(field_path, leaf_type)| DebugLeafBinding {
+                field_path,
+                type_name: super::type_name_from_ref(&leaf_type),
+                stack_index: None,
+            })
+            .collect(),
+    ))
+}
+
+fn structured_leaf_bindings_for_type_name(
+    type_name: &str,
+    structs: &super::StructRegistry,
+) -> Result<Option<Vec<DebugLeafBinding>>, CompilerError> {
+    let type_ref = parse_type_ref(type_name)?;
+    structured_leaf_bindings_for_type_ref(&type_ref, structs)
+}
+
 fn collect_variable_updates<'i>(
     before_env: &HashMap<String, Expr<'i>>,
     before_stack_bindings: &HashMap<String, i64>,
     after_env: &HashMap<String, Expr<'i>>,
     types: &HashMap<String, String>,
     after_stack_bindings: &HashMap<String, i64>,
+    structs: &super::StructRegistry,
 ) -> Result<Vec<DebugVariableUpdate<'i>>, CompilerError> {
     let mut names: Vec<String> =
         after_env.keys().chain(after_stack_bindings.keys()).cloned().collect::<HashSet<_>>().into_iter().collect();
@@ -621,8 +675,41 @@ fn collect_variable_updates<'i>(
             continue;
         }
 
-        resolve_variable_update(after_env, &mut updates, &name, type_name, after_expr, after_runtime_binding)?;
+        resolve_variable_update(after_env, &mut updates, &name, type_name, after_expr, after_runtime_binding, None)?;
     }
+
+    for (name, type_name) in types {
+        let Some(structured_leaf_bindings) = structured_leaf_bindings_for_type_name(type_name, structs)? else {
+            continue;
+        };
+
+        let mut leaf_changed = false;
+        let mut leaf_present = false;
+        for leaf in &structured_leaf_bindings {
+            let leaf_name = super::flattened_struct_name(name, &leaf.field_path);
+            let after_expr = after_env.get(&leaf_name).cloned().unwrap_or_else(|| Expr::identifier(leaf_name.clone()));
+            let expr_changed = before_env.get(&leaf_name) != Some(&after_expr);
+            let before_runtime_binding = runtime_binding_for_stack_name(&leaf_name, before_stack_bindings);
+            let after_runtime_binding = runtime_binding_for_stack_name(&leaf_name, after_stack_bindings);
+            leaf_present |= after_env.contains_key(&leaf_name) || after_stack_bindings.contains_key(&leaf_name);
+            leaf_changed |= expr_changed || before_runtime_binding != after_runtime_binding;
+        }
+
+        if !leaf_present || !leaf_changed {
+            continue;
+        }
+
+        resolve_variable_update(
+            after_env,
+            &mut updates,
+            name,
+            type_name,
+            Expr::identifier(name.to_string()),
+            None,
+            Some(structured_leaf_bindings),
+        )?;
+    }
+
     Ok(updates)
 }
 
@@ -633,9 +720,16 @@ fn resolve_variable_update<'i>(
     type_name: &str,
     expr: Expr<'i>,
     runtime_binding: Option<RuntimeBinding>,
+    structured_leaf_bindings: Option<Vec<DebugLeafBinding>>,
 ) -> Result<(), CompilerError> {
     let resolved = resolve_expr_for_debug(expr, env, &mut HashSet::new())?;
-    updates.push(DebugVariableUpdate { name: name.to_string(), type_name: type_name.to_string(), runtime_binding, expr: resolved });
+    updates.push(DebugVariableUpdate {
+        name: name.to_string(),
+        type_name: type_name.to_string(),
+        runtime_binding,
+        structured_leaf_bindings,
+        expr: resolved,
+    });
     Ok(())
 }
 
@@ -658,11 +752,73 @@ fn runtime_binding_for_inline_binding<'i>(expr: &Expr<'i>, stack_bindings: &Hash
     }
 }
 
+fn collect_inline_runtime_updates<'i>(
+    env: &HashMap<String, Expr<'i>>,
+    types: &HashMap<String, String>,
+    stack_bindings: &HashMap<String, i64>,
+) -> Result<Vec<DebugVariableUpdate<'i>>, CompilerError> {
+    let mut names = env
+        .keys()
+        .filter(|name| name.starts_with("__arg_") || name.starts_with("__struct_"))
+        .chain(stack_bindings.keys().filter(|name| !env.contains_key(*name)))
+        .cloned()
+        .collect::<Vec<_>>();
+    names.sort_unstable();
+    names.dedup();
+
+    let mut updates = Vec::new();
+    for name in names {
+        let Some(type_name) = types
+            .get(&name)
+            .map(String::as_str)
+            .or_else(|| (name.starts_with("__arg_") || name.starts_with("__struct_")).then_some("internal"))
+        else {
+            continue;
+        };
+        let expr = env.get(&name).cloned().unwrap_or_else(|| Expr::identifier(name.clone()));
+        let runtime_binding = runtime_binding_for_stack_name(&name, stack_bindings)
+            .or_else(|| runtime_binding_for_inline_binding(&expr, stack_bindings));
+        resolve_variable_update(env, &mut updates, &name, type_name, expr, runtime_binding, None)?;
+    }
+    Ok(updates)
+}
+
+fn collect_inline_struct_leaf_updates<'i>(
+    env: &HashMap<String, Expr<'i>>,
+    updates: &mut Vec<DebugVariableUpdate<'i>>,
+    param: &ParamAst<'i>,
+    param_expr: &Expr<'i>,
+    stack_bindings: &HashMap<String, i64>,
+    structs: &super::StructRegistry,
+) -> Result<(), CompilerError> {
+    let ExprKind::Identifier(source_name) = &param_expr.kind else {
+        return Ok(());
+    };
+
+    for (field_path, field_type) in super::flatten_type_ref_leaves(&param.type_ref, structs)? {
+        let target_leaf_name = super::flattened_struct_name(&param.name, &field_path);
+        let source_leaf_name = super::flattened_struct_name(source_name, &field_path);
+        let runtime_binding = runtime_binding_for_stack_name(&source_leaf_name, stack_bindings);
+        resolve_variable_update(
+            env,
+            updates,
+            &target_leaf_name,
+            &super::type_name_from_ref(&field_type),
+            Expr::identifier(source_leaf_name),
+            runtime_binding,
+            None,
+        )?;
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
 
     use crate::ast::{Expr, parse_contract_ast};
+    use crate::compiler::{CompileOptions, compile_contract};
     use crate::debug_info::{RuntimeBinding, StepKind};
 
     use super::{DebugRecorder, SourceSpan, collect_variable_updates};
@@ -689,9 +845,13 @@ mod tests {
         let span = SourceSpan::from(stmt.span());
 
         recorder.begin_statement_at(0, &HashMap::new(), &HashMap::new());
-        recorder.finish_statement_at(stmt, 0, &HashMap::new(), &HashMap::new(), &HashMap::new()).expect("noop statement recording");
+        recorder
+            .finish_statement_at(stmt, 0, &HashMap::new(), &HashMap::new(), &HashMap::new(), &structs)
+            .expect("noop statement recording");
 
-        recorder.begin_inline_call(span, 1, function, &HashMap::new(), &HashMap::new()).expect("noop begin call recording");
+        recorder
+            .begin_inline_call(span, 1, function, &HashMap::new(), &HashMap::new(), &HashMap::new(), &structs)
+            .expect("noop begin call recording");
         recorder.finish_inline_call(span, 2, "callee");
         recorder.record_variable_binding("tmp".to_string(), "int".to_string(), Expr::int(1), None, 2, span);
         recorder.finish_entrypoint(1);
@@ -728,12 +888,12 @@ mod tests {
         types.insert("y".to_string(), "int".to_string());
 
         recorder.begin_statement_at(0, &before, &HashMap::new());
-        recorder.finish_statement_at(stmt, 0, &after, &types, &HashMap::new()).expect("record_step first statement");
+        recorder.finish_statement_at(stmt, 0, &after, &types, &HashMap::new(), &structs).expect("record_step first statement");
 
         let span = SourceSpan::from(stmt.span());
         let mut inline_env = HashMap::new();
         inline_env.insert("x".to_string(), Expr::int(3));
-        recorder.begin_inline_call(span, 1, function, &inline_env, &HashMap::new()).expect("begin call recording");
+        recorder.begin_inline_call(span, 1, function, &inline_env, &types, &HashMap::new(), &structs).expect("begin call recording");
         recorder.record_variable_binding("tmp".to_string(), "int".to_string(), Expr::int(9), None, 1, span);
         recorder.finish_inline_call(span, 2, "callee");
 
@@ -772,18 +932,73 @@ mod tests {
 
     #[test]
     fn collect_variable_updates_records_runtime_slot_changes_without_env_expr() {
+        let contract =
+            parse_contract_ast("contract Demo() { entrypoint function spend() { require(true); } }").expect("parse contract");
+        let structs = super::super::build_struct_registry(&contract).expect("build struct registry");
         let before_env = HashMap::new();
         let after_env = HashMap::new();
         let before_stack_bindings = HashMap::from([("amount".to_string(), 1)]);
         let after_stack_bindings = HashMap::from([("amount".to_string(), 2)]);
         let types = HashMap::from([("amount".to_string(), "int".to_string())]);
 
-        let updates = collect_variable_updates(&before_env, &before_stack_bindings, &after_env, &types, &after_stack_bindings)
-            .expect("collect updates");
+        let updates =
+            collect_variable_updates(&before_env, &before_stack_bindings, &after_env, &types, &after_stack_bindings, &structs)
+                .expect("collect updates");
 
         assert_eq!(updates.len(), 1);
         assert_eq!(updates[0].name, "amount");
         assert_eq!(updates[0].expr, Expr::identifier("amount"));
         assert_eq!(updates[0].runtime_binding, Some(RuntimeBinding::DataStackSlot { from_top: 2 }));
+    }
+
+    #[test]
+    fn inline_structured_params_record_leaf_updates() {
+        let source = r#"
+            pragma silverscript ^0.1.0;
+
+            contract InlineStruct() {
+                int amount = 1;
+                bool active = true;
+                byte[1] tag = 0xaa;
+
+                function inspect_inner(State inner_state) {
+                    int bumped = inner_state.amount + amount;
+                    require(bumped > 0);
+                }
+
+                entrypoint function inspect(State next_state) {
+                    inspect_inner(next_state);
+                    require(next_state.active == active);
+                }
+            }
+        "#;
+
+        let compiled =
+            compile_contract(source, &[], CompileOptions { record_debug_infos: true, ..Default::default() }).expect("compile");
+        let debug_info = compiled.debug_info.expect("debug info");
+        let inline_enter_step = debug_info
+            .steps
+            .iter()
+            .find(|step| matches!(step.kind, StepKind::InlineCallEnter { .. }) && step.frame_id == 1)
+            .expect("inline enter step");
+
+        for name in [
+            "__struct_inner_state_amount",
+            "__struct_inner_state_active",
+            "__struct_inner_state_tag",
+            "__struct_next_state_amount",
+            "__struct_next_state_active",
+            "__struct_next_state_tag",
+            "inner_state",
+        ] {
+            assert!(
+                inline_enter_step.variable_updates.iter().any(|update| update.name == name),
+                "missing inline structured update for {name}"
+            );
+        }
+
+        let inner_state =
+            inline_enter_step.variable_updates.iter().find(|update| update.name == "inner_state").expect("inner_state update");
+        assert!(inner_state.structured_leaf_bindings.is_some(), "inline structured param should carry structured metadata");
     }
 }

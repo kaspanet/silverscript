@@ -870,16 +870,17 @@ contract ShiftedBindings() {
 }
 
 #[test]
-fn debug_session_classifies_contract_fields_separately_from_entrypoint_params() -> Result<(), Box<dyn Error>> {
+fn debug_session_evaluates_structured_state_expressions() -> Result<(), Box<dyn Error>> {
     let source = r#"pragma silverscript ^0.1.0;
 
-contract ScopeKinds() {
+contract StructuredEvalState() {
     int amount = 1;
-    byte[32] owner = 0x1111111111111111111111111111111111111111111111111111111111111111;
-    byte[2] tag = 0xabcd;
+    bool active = true;
+    byte[1] tag = 0xaa;
 
-    entrypoint function inspect(State next) {
-        require(next.amount > amount);
+    entrypoint function inspect(State next_state) {
+        int bumped = next_state.amount + amount;
+        require(bumped > 0);
     }
 }
 "#;
@@ -888,71 +889,34 @@ contract ScopeKinds() {
         source,
         vec![],
         "inspect",
-        vec![struct_object(vec![
-            ("amount", Expr::int(7)),
-            ("owner", Expr::bytes(vec![0x22u8; 32])),
-            ("tag", Expr::bytes(vec![0xbe, 0xef])),
-        ])],
+        vec![struct_object(vec![("amount", Expr::int(5)), ("active", Expr::bool(true)), ("tag", Expr::bytes(vec![0xaa]))])],
         |session| {
             session.run_to_first_executed_statement()?;
 
-            let amount = session.variable_by_name("amount")?;
-            assert_eq!(amount.origin.label(), "state");
+            let (type_name, value) = session.evaluate_expression("next_state")?;
+            assert_eq!(type_name, "State");
+            assert_eq!(format_value(&type_name, &value), "{amount: 5, active: true, tag: 0xaa}");
 
-            let owner = session.variable_by_name("owner")?;
-            assert_eq!(owner.origin.label(), "state");
+            let (type_name, value) = session.evaluate_expression("next_state.amount")?;
+            assert_eq!(type_name, "int");
+            assert_eq!(format_value(&type_name, &value), "5");
 
-            let tag = session.variable_by_name("tag")?;
-            assert_eq!(tag.origin.label(), "state");
-
-            let next = session.variable_by_name("next")?;
-            assert_eq!(next.origin.label(), "arg");
+            let (type_name, value) = session.evaluate_expression("next_state.amount + amount")?;
+            assert_eq!(type_name, "int");
+            assert_eq!(format_value(&type_name, &value), "6");
             Ok(())
         },
     )
 }
 
 #[test]
-fn debug_session_formats_live_state_param_as_object_and_keeps_lowered_locals_resolvable() -> Result<(), Box<dyn Error>> {
+fn debug_session_evaluates_structured_state_array_expressions() -> Result<(), Box<dyn Error>> {
     let source = r#"pragma silverscript ^0.1.0;
 
-contract StructuredStateParam() {
+contract StructuredEvalStateArray() {
     int amount = 1;
-    byte[32] owner = 0x1111111111111111111111111111111111111111111111111111111111111111;
-
-    entrypoint function inspect(State next) {
-        int bumped = next.amount + 1;
-        require(bumped > amount);
-    }
-}
-"#;
-
-    with_session_for_source(
-        source,
-        vec![],
-        "inspect",
-        vec![struct_object(vec![("amount", Expr::int(7)), ("owner", Expr::bytes(vec![0x22u8; 32]))])],
-        |session| {
-            session.run_to_first_executed_statement()?;
-
-            let next = session.variable_by_name("next")?;
-            assert_eq!(format_value(&next.type_name, &next.value), format!("{{amount: 7, owner: 0x{}}}", "22".repeat(32)));
-
-            session.step_over()?;
-            let bumped = session.variable_by_name("bumped")?;
-            assert_eq!(format_value(&bumped.type_name, &bumped.value), "8");
-            Ok(())
-        },
-    )
-}
-
-#[test]
-fn debug_session_formats_live_state_array_param_as_object_array() -> Result<(), Box<dyn Error>> {
-    let source = r#"pragma silverscript ^0.1.0;
-
-contract StructuredStateArrayParam() {
-    int amount = 1;
-    byte[32] owner = 0x1111111111111111111111111111111111111111111111111111111111111111;
+    bool active = true;
+    byte[1] tag = 0xaa;
 
     entrypoint function inspect(State[] next_states) {
         require(next_states.length == 2);
@@ -966,22 +930,169 @@ contract StructuredStateArrayParam() {
         "inspect",
         vec![Expr::new(
             ExprKind::Array(vec![
-                struct_object(vec![("amount", Expr::int(7)), ("owner", Expr::bytes(vec![0x22u8; 32]))]),
-                struct_object(vec![("amount", Expr::int(9)), ("owner", Expr::bytes(vec![0x33u8; 32]))]),
+                struct_object(vec![("amount", Expr::int(5)), ("active", Expr::bool(true)), ("tag", Expr::bytes(vec![0xaa]))]),
+                struct_object(vec![("amount", Expr::int(7)), ("active", Expr::bool(true)), ("tag", Expr::bytes(vec![0xaa]))]),
             ]),
             Default::default(),
         )],
         |session| {
             session.run_to_first_executed_statement()?;
 
-            let next_states = session.variable_by_name("next_states")?;
+            let (type_name, value) = session.evaluate_expression("next_states")?;
+            assert_eq!(type_name, "State[]");
             assert_eq!(
-                format_value(&next_states.type_name, &next_states.value),
-                format!("[{{amount: 7, owner: 0x{}}}, {{amount: 9, owner: 0x{}}}]", "22".repeat(32), "33".repeat(32))
+                format_value(&type_name, &value),
+                "[{amount: 5, active: true, tag: 0xaa}, {amount: 7, active: true, tag: 0xaa}]"
             );
+
+            let (type_name, value) = session.evaluate_expression("next_states.length")?;
+            assert_eq!(type_name, "int");
+            assert_eq!(format_value(&type_name, &value), "2");
+
+            let (type_name, value) = session.evaluate_expression("next_states[0]")?;
+            assert_eq!(type_name, "State");
+            assert_eq!(format_value(&type_name, &value), "{amount: 5, active: true, tag: 0xaa}");
+
+            let (type_name, value) = session.evaluate_expression("next_states[1].amount - next_states[0].amount")?;
+            assert_eq!(type_name, "int");
+            assert_eq!(format_value(&type_name, &value), "2");
             Ok(())
         },
     )
+}
+
+#[test]
+fn debug_session_evaluates_custom_struct_expressions() -> Result<(), Box<dyn Error>> {
+    let source = r#"pragma silverscript ^0.1.0;
+
+contract StructuredEvalPair() {
+    struct Pair {
+        int amount;
+        byte[2] code;
+    }
+
+    entrypoint function inspect(Pair next_pair) {
+        require(next_pair.amount > 0);
+    }
+}
+"#;
+
+    with_session_for_source(
+        source,
+        vec![],
+        "inspect",
+        vec![struct_object(vec![("amount", Expr::int(9)), ("code", Expr::bytes(vec![0x12, 0x34]))])],
+        |session| {
+            session.run_to_first_executed_statement()?;
+
+            let (type_name, value) = session.evaluate_expression("next_pair")?;
+            assert_eq!(type_name, "Pair");
+            assert_eq!(format_value(&type_name, &value), "{amount: 9, code: 0x1234}");
+
+            let (type_name, value) = session.evaluate_expression("next_pair.amount")?;
+            assert_eq!(type_name, "int");
+            assert_eq!(format_value(&type_name, &value), "9");
+
+            let (type_name, value) = session.evaluate_expression("next_pair.code")?;
+            assert_eq!(type_name, "byte[2]");
+            assert_eq!(format_value(&type_name, &value), "0x1234");
+            Ok(())
+        },
+    )
+}
+
+#[test]
+fn debug_session_preserves_structured_scope_inside_inline_calls() -> Result<(), Box<dyn Error>> {
+    let source = r#"pragma silverscript ^0.1.0;
+
+contract InlineStructuredEval() {
+    int amount = 1;
+    bool active = true;
+    byte[1] tag = 0xaa;
+
+    function inspect_inner(State inner_state) {
+        int bumped = inner_state.amount + amount;
+        require(bumped > 0);
+    }
+
+    entrypoint function inspect(State next_state) {
+        inspect_inner(next_state);
+        require(next_state.active == active);
+    }
+}
+"#;
+
+    with_session_for_source(
+        source,
+        vec![],
+        "inspect",
+        vec![struct_object(vec![("amount", Expr::int(5)), ("active", Expr::bool(true)), ("tag", Expr::bytes(vec![0xaa]))])],
+        |session| {
+            session.run_to_first_executed_statement()?;
+
+            for _ in 0..3 {
+                if !session.call_stack().is_empty() && session.variable_by_name("inner_state").is_ok() {
+                    break;
+                }
+                session.step_into()?.ok_or("expected inline step")?;
+            }
+
+            assert_eq!(session.call_stack(), vec!["inspect_inner".to_string()]);
+            let vars = session.list_variables()?;
+            assert!(!vars.iter().any(|var| var.name.starts_with("__struct_")));
+
+            let inner_state = session.variable_by_name("inner_state")?;
+            assert_eq!(format_value(&inner_state.type_name, &inner_state.value), "{amount: 5, active: true, tag: 0xaa}");
+
+            let next_state = session.variable_by_name("next_state")?;
+            assert_eq!(format_value(&next_state.type_name, &next_state.value), "{amount: 5, active: true, tag: 0xaa}");
+
+            let (type_name, value) = session.evaluate_expression("inner_state")?;
+            assert_eq!(type_name, "State");
+            assert_eq!(format_value(&type_name, &value), "{amount: 5, active: true, tag: 0xaa}");
+
+            let (type_name, value) = session.evaluate_expression("inner_state.amount")?;
+            assert_eq!(type_name, "int");
+            assert_eq!(format_value(&type_name, &value), "5");
+
+            let (type_name, value) = session.evaluate_expression("next_state.amount + amount")?;
+            assert_eq!(type_name, "int");
+            assert_eq!(format_value(&type_name, &value), "6");
+            Ok(())
+        },
+    )
+}
+
+#[test]
+fn debug_session_evaluates_structured_expressions_without_source_text() -> Result<(), Box<dyn Error>> {
+    let source = r#"pragma silverscript ^0.1.0;
+
+contract MissingStructuredSource() {
+    int amount = 1;
+
+    entrypoint function inspect(State next) {
+        require(next.amount > amount);
+    }
+}
+"#;
+
+    let compile_opts = CompileOptions { record_debug_infos: true, ..Default::default() };
+    let compiled = compile_contract(source, &[], compile_opts)?;
+    let mut debug_info = compiled.debug_info.clone().ok_or("missing debug info")?;
+    debug_info.source.clear();
+
+    let sig_cache = Cache::new(10_000);
+    let reused_values = SigHashReusedValuesUnsync::new();
+    let ctx = EngineCtx::new(&sig_cache).with_reused(&reused_values);
+    let engine = debugger_session::session::DebugEngine::new(ctx, EngineFlags { covenants_enabled: true });
+    let sigscript = compiled.build_sig_script("inspect", vec![struct_object(vec![("amount", Expr::int(7))])])?;
+    let mut session = DebugSession::full(&sigscript, &compiled.script, "", Some(debug_info), engine)?;
+
+    session.run_to_first_executed_statement()?;
+    let (type_name, value) = session.evaluate_expression("next.amount")?;
+    assert_eq!(type_name, "int");
+    assert_eq!(format_value(&type_name, &value), "7");
+    Ok(())
 }
 
 #[test]

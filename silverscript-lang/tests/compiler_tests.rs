@@ -284,10 +284,10 @@ fn debug_info_records_struct_param_leaf_bindings_in_runtime_order() {
     assert_eq!(leaf_bindings.len(), 2);
     assert_eq!(leaf_bindings[0].field_path, vec!["amount".to_string()]);
     assert_eq!(leaf_bindings[0].type_name, "int");
-    assert_eq!(leaf_bindings[0].stack_index, 2);
+    assert_eq!(leaf_bindings[0].stack_index, Some(2));
     assert_eq!(leaf_bindings[1].field_path, vec!["code".to_string()]);
     assert_eq!(leaf_bindings[1].type_name, "byte[2]");
-    assert_eq!(leaf_bindings[1].stack_index, 1);
+    assert_eq!(leaf_bindings[1].stack_index, Some(1));
 
     let fee = debug_info.params.iter().find(|param| param.name == "fee").expect("scalar param should be recorded");
     assert_eq!(fee.binding, DebugParamBinding::SingleValue { stack_index: 0 });
@@ -319,10 +319,10 @@ fn debug_info_records_state_array_param_leaf_bindings_in_runtime_order() {
     assert_eq!(leaf_bindings.len(), 2);
     assert_eq!(leaf_bindings[0].field_path, vec!["amount".to_string()]);
     assert_eq!(leaf_bindings[0].type_name, "int[]");
-    assert_eq!(leaf_bindings[0].stack_index, 4);
+    assert_eq!(leaf_bindings[0].stack_index, Some(4));
     assert_eq!(leaf_bindings[1].field_path, vec!["owner".to_string()]);
     assert_eq!(leaf_bindings[1].type_name, "byte[32][]");
-    assert_eq!(leaf_bindings[1].stack_index, 3);
+    assert_eq!(leaf_bindings[1].stack_index, Some(3));
 
     let fee = debug_info.params.iter().find(|param| param.name == "fee").expect("scalar param should be recorded");
     assert_eq!(fee.binding, DebugParamBinding::SingleValue { stack_index: 2 });
