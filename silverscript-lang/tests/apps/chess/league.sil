@@ -1,0 +1,122 @@
+pragma silverscript ^0.1.0;
+
+contract League(
+    byte[32] init_league_template,
+    byte[32] init_player_template,
+    byte[32] init_mux_template,
+    byte[32] init_routes_commitment,
+    int init_base_rating,
+    byte[32] init_admin
+) {
+    struct PlayerState {
+        byte[32] league_template;
+        byte[32] player_template;
+        byte[32] mux_template;
+        byte[32] routes_commitment;
+        byte[32] owner;
+        byte[32] player_id;
+        int open_games;
+        int rating;
+        int games;
+        int wins;
+        int draws;
+        int losses;
+    }
+
+    // Naming convention: `*_template` fields carry template selectors (hash-
+    // sized values), not object identities.
+    //
+    // Each live League UTXO is one immutable registration lane. A registration
+    // spend always:
+    // 1. recreates the same League lane
+    // 2. emits exactly one fresh Player
+    //
+    // Unique player ids come from the spent registration outpoint:
+    // blake2b("LeaguePlayerId" || outpoint_txid || outpoint_index_le32)
+    //
+    // This avoids any mutable next_player_id counter and allows many
+    // registration lanes to operate in parallel.
+    byte[32] league_template = init_league_template;
+    byte[32] player_template = init_player_template;
+    byte[32] mux_template = init_mux_template;
+    byte[32] routes_commitment = init_routes_commitment;
+    int base_rating = init_base_rating;
+    byte[32] admin = init_admin;
+
+    entrypoint function register_player(
+        sig owner_sig,
+        pubkey owner_pk,
+        byte[] player_prefix,
+        byte[] player_suffix
+    ) {
+        // The owner key being installed into the fresh Player signs once here.
+        // Uniqueness does not come from the key; it comes from the spent
+        // registration outpoint, but this signature proves the account is
+        // created for a willing owner.
+        require(checkSig(owner_sig, owner_pk));
+
+        byte[32] owner = blake2b(owner_pk);
+        byte[32] spent_outpoint_txid = OpOutpointTxId(this.activeInputIndex);
+        byte[4] spent_outpoint_index = byte[4](OpOutpointIndex(this.activeInputIndex));
+        byte[] player_id_domain = byte[]("LeaguePlayerId");
+        byte[32] player_id = blake2b(player_id_domain + spent_outpoint_txid + spent_outpoint_index);
+
+        PlayerState next_player = {
+            league_template: league_template,
+            player_template: player_template,
+            mux_template: mux_template,
+            routes_commitment: routes_commitment,
+            owner: owner,
+            player_id: player_id,
+            open_games: 0,
+            rating: base_rating,
+            games: 0,
+            wins: 0,
+            draws: 0,
+            losses: 0
+        };
+
+        // Registration spends are fixed-shape: recreate this lane and create
+        // one Player.
+        require(OpAuthOutputCount(this.activeInputIndex) == 2);
+
+        // Auth output 0 recreates the immutable registration lane verbatim.
+        // Because League state never changes, direct scriptPubKey equality is enough.
+        int output_idx = OpAuthOutputIdx(this.activeInputIndex, 0);
+        require(tx.outputs[output_idx].scriptPubKey == tx.inputs[this.activeInputIndex].scriptPubKey);
+        require(tx.outputs[output_idx].value == tx.inputs[this.activeInputIndex].value);
+
+        // Auth output 1 is the freshly registered Player, validated against the
+        // foreign Player state layout and template selector.
+        validateOutputStateWithTemplate(
+            OpAuthOutputIdx(this.activeInputIndex, 1),
+            next_player,
+            player_prefix,
+            player_suffix,
+            player_template
+        );
+    }
+
+    // Admin-signed same-SPK continuity path for adjusting lane value without
+    // changing the immutable League state or closing the lane.
+    entrypoint function rebalance(sig admin_sig, pubkey admin_pk) {
+        require(blake2b(admin_pk) == admin);
+        require(checkSig(admin_sig, admin_pk));
+        require(OpAuthOutputCount(this.activeInputIndex) == 1);
+        int output_idx = OpAuthOutputIdx(this.activeInputIndex, 0);
+        require(tx.outputs[output_idx].scriptPubKey == tx.inputs[this.activeInputIndex].scriptPubKey);
+    }
+
+    // Admin-signed fan-out path for splitting one immutable registration lane
+    // into two identical lanes.
+    entrypoint function fork(sig admin_sig, pubkey admin_pk) {
+        require(blake2b(admin_pk) == admin);
+        require(checkSig(admin_sig, admin_pk));
+        require(OpAuthOutputCount(this.activeInputIndex) == 2);
+
+        int left_idx = OpAuthOutputIdx(this.activeInputIndex, 0);
+        int right_idx = OpAuthOutputIdx(this.activeInputIndex, 1);
+        require(tx.outputs[left_idx].scriptPubKey == tx.inputs[this.activeInputIndex].scriptPubKey);
+        require(tx.outputs[right_idx].scriptPubKey == tx.inputs[this.activeInputIndex].scriptPubKey);
+    }
+}

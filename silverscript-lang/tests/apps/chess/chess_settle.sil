@@ -1,0 +1,196 @@
+pragma silverscript ^0.1.0;
+// @consts constants.sil
+
+contract ChessSettle(
+    byte[32] init_player_template,
+    byte[32] init_white_player,
+    byte[32] init_black_player,
+    int init_status,
+) {
+    // Naming convention: `*_template` fields carry template selectors (hash-
+    // sized values), not object identities.
+    byte[32] player_template = init_player_template;
+    byte[32] white_player = init_white_player;
+    byte[32] black_player = init_black_player;
+    int status = init_status;
+
+    struct PlayerState {
+        byte[32] league_template;
+        byte[32] player_template;
+        byte[32] mux_template;
+        byte[32] routes_commitment;
+        byte[32] owner;
+        byte[32] player_id;
+        int open_games;
+        int rating;
+        int games;
+        int wins;
+        int draws;
+        int losses;
+    }
+
+    entrypoint function settle(
+        byte[] player_prefix,
+        byte[] player_suffix
+    ) {
+        require(status != LIVE);
+        int player_prefix_len = player_prefix.length;
+        int player_suffix_len = player_suffix.length;
+
+        byte[32] cov_id = OpInputCovenantId(this.activeInputIndex);
+        require(OpCovInputCount(cov_id) == 3);
+        require(OpCovInputIdx(cov_id, 0) == this.activeInputIndex);
+        require(OpAuthOutputCount(this.activeInputIndex) == 2);
+
+        int white_input_idx = OpCovInputIdx(cov_id, 1);
+        int black_input_idx = OpCovInputIdx(cov_id, 2);
+        PlayerState white_in = readInputStateWithTemplate(white_input_idx, player_prefix_len, player_suffix_len, player_template);
+        PlayerState black_in = readInputStateWithTemplate(black_input_idx, player_prefix_len, player_suffix_len, player_template);
+
+        require(blake2b(white_in.owner + white_in.player_id) == white_player);
+        require(blake2b(black_in.owner + black_in.player_id) == black_player);
+
+        int stake = tx.inputs[this.activeInputIndex].value;
+        int white_output_value = tx.inputs[white_input_idx].value;
+        int black_output_value = tx.inputs[black_input_idx].value;
+
+        int white_wins = white_in.wins;
+        int white_draws = white_in.draws;
+        int white_losses = white_in.losses;
+        int black_wins = black_in.wins;
+        int black_draws = black_in.draws;
+        int black_losses = black_in.losses;
+        int white_actual = 0;
+        int black_actual = 0;
+        int white_expected = 500;
+        int black_expected = 500;
+
+        if (status == WWIN) {
+            white_wins = white_wins + 1;
+            black_losses = black_losses + 1;
+            white_actual = 1000;
+            white_output_value = white_output_value + stake;
+        } else if (status == BWIN) {
+            black_wins = black_wins + 1;
+            white_losses = white_losses + 1;
+            black_actual = 1000;
+            black_output_value = black_output_value + stake;
+        } else {
+            require(status == DRAW);
+            white_draws = white_draws + 1;
+            black_draws = black_draws + 1;
+            white_actual = 500;
+            black_actual = 500;
+            int white_share = stake / 2;
+            int black_share = stake - white_share;
+            white_output_value = white_output_value + white_share;
+            black_output_value = black_output_value + black_share;
+        }
+
+        // Approximate Elo update used here:
+        // https://en.wikipedia.org/wiki/Elo_rating_system
+        //
+        // Exact reference formula:
+        //   E = 1 / (1 + 10^((R_opp - R_self) / 400))
+        //   delta = K * (actual - E)
+        //
+        // This covenant does not compute the exact logistic expectation.
+        // Instead it approximates E with bounded integer buckets in
+        // SCALE = 1000 units and then applies:
+        //   delta = floor(32 * (actual - expected) / 1000)
+        //
+        // A few comparison points for the expected score of the lower-rated side:
+        //   diff = -400: exact ~= 909, approx = 910
+        //   diff = -150: exact ~= 703, approx = 700
+        //   diff =    0: exact = 500, approx = 500
+        //   diff =  150: exact ~= 297, approx = 300
+        //   diff =  400: exact ~=  91, approx = 90
+        int diff = black_in.rating - white_in.rating;
+        int abs_diff = diff;
+        if (abs_diff < 0) {
+            abs_diff = 0 - abs_diff;
+        }
+        int favored_expected = 990;
+        if (abs_diff < 800) {
+            favored_expected = 970;
+            if (abs_diff < 600) {
+                favored_expected = 910;
+                if (abs_diff < 400) {
+                    favored_expected = 820;
+                    if (abs_diff < 250) {
+                        favored_expected = 700;
+                        if (abs_diff < 150) {
+                            favored_expected = 600;
+                            if (abs_diff < 75) {
+                                favored_expected = 500;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if (diff < 0) {
+            white_expected = favored_expected;
+            black_expected = 1000 - favored_expected;
+        } else if (diff > 0) {
+            white_expected = 1000 - favored_expected;
+            black_expected = favored_expected;
+        }
+
+        int white_rating = white_in.rating + ((32 * (white_actual - white_expected)) / 1000);
+        int black_rating = black_in.rating + ((32 * (black_actual - black_expected)) / 1000);
+
+        require(white_in.open_games > 0);
+        require(black_in.open_games > 0);
+
+        PlayerState next_white = {
+            league_template: white_in.league_template,
+            player_template: white_in.player_template,
+            mux_template: white_in.mux_template,
+            routes_commitment: white_in.routes_commitment,
+            owner: white_in.owner,
+            player_id: white_in.player_id,
+            open_games: white_in.open_games - 1,
+            rating: white_rating,
+            games: white_in.games + 1,
+            wins: white_wins,
+            draws: white_draws,
+            losses: white_losses
+        };
+
+        PlayerState next_black = {
+            league_template: black_in.league_template,
+            player_template: black_in.player_template,
+            mux_template: black_in.mux_template,
+            routes_commitment: black_in.routes_commitment,
+            owner: black_in.owner,
+            player_id: black_in.player_id,
+            open_games: black_in.open_games - 1,
+            rating: black_rating,
+            games: black_in.games + 1,
+            wins: black_wins,
+            draws: black_draws,
+            losses: black_losses
+        };
+
+        int white_output_idx = OpAuthOutputIdx(this.activeInputIndex, 0);
+        int black_output_idx = OpAuthOutputIdx(this.activeInputIndex, 1);
+        require(tx.outputs[white_output_idx].value == white_output_value);
+        require(tx.outputs[black_output_idx].value == black_output_value);
+        validateOutputStateWithTemplate(
+            white_output_idx,
+            next_white,
+            player_prefix,
+            player_suffix,
+            player_template
+        );
+        validateOutputStateWithTemplate(
+            black_output_idx,
+            next_black,
+            player_prefix,
+            player_suffix,
+            player_template
+        );
+    }
+}

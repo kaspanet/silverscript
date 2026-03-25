@@ -1,0 +1,224 @@
+pragma silverscript ^0.1.0;
+// @consts constants.sil
+
+contract Player(
+    byte[32] init_league_template,
+    byte[32] init_player_template,
+    byte[32] init_mux_template,
+    byte[32] init_routes_commitment,
+    byte[32] init_owner,
+    byte[32] init_player_id,
+    int init_open_games,
+    int init_rating,
+    int init_games,
+    int init_wins,
+    int init_draws,
+    int init_losses
+) {
+    // Naming convention: `*_template` fields carry template selectors (hash-
+    // sized values), not player or game object identities.
+
+    struct GameState {
+        byte[32] mux_template;
+        byte[288] route_templates;
+        byte[32] white_player;
+        byte[32] black_player;
+        byte[64] board;
+        int turn;
+        int status;
+        int move_timeout;
+        byte[4] castle_rights;
+        int en_passant_idx;
+        int pending_src_idx;
+        int pending_dst_idx;
+        int pending_promo;
+        int recent_castle;
+        int draw_state;
+    }
+
+    struct SettleState {
+        byte[32] player_template;
+        byte[32] white_player;
+        byte[32] black_player;
+        int status;
+    }
+
+    byte[32] league_template = init_league_template;
+    byte[32] player_template = init_player_template;
+    byte[32] mux_template = init_mux_template;
+    byte[32] routes_commitment = init_routes_commitment;
+    byte[32] owner = init_owner;
+    byte[32] player_id = init_player_id;
+    int open_games = init_open_games;
+    int rating = init_rating;
+    int games = init_games;
+    int wins = init_wins;
+    int draws = init_draws;
+    int losses = init_losses;
+
+    entrypoint function start_game(
+        sig owner_sig,
+        pubkey owner_pk,
+        int self_side,
+        int player_prefix_len,
+        int player_suffix_len,
+        byte[288] route_templates,
+        int move_timeout,
+        byte[] mux_prefix,
+        byte[] mux_suffix
+    ) {
+        require(self_side == 0 || self_side == 1);
+        require(move_timeout > 0);
+        require(blake2b(owner_pk) == owner);
+        require(checkSig(owner_sig, owner_pk));
+        require(blake2b(route_templates) == routes_commitment);
+
+        byte[32] cov_id = OpInputCovenantId(this.activeInputIndex);
+        require(OpCovInputCount(cov_id) == 2);
+        require(OpCovInputIdx(cov_id, 0) == this.activeInputIndex);
+        int other_input_idx = OpCovInputIdx(cov_id, 1);
+
+        State other = readInputStateWithTemplate(other_input_idx, player_prefix_len, player_suffix_len, player_template);
+        require(other.player_id != player_id);
+
+        byte[32] self_ref = blake2b(owner + player_id);
+        byte[32] other_ref = blake2b(other.owner + other.player_id);
+        byte[32] white_player = self_ref;
+        byte[32] black_player = other_ref;
+        if (self_side == 1) {
+            white_player = other_ref;
+            black_player = self_ref;
+        }
+
+        State next_self = {
+            league_template: league_template,
+            player_template: player_template,
+            mux_template: mux_template,
+            routes_commitment: routes_commitment,
+            owner: owner,
+            player_id: player_id,
+            open_games: open_games + 1,
+            rating: rating,
+            games: games,
+            wins: wins,
+            draws: draws,
+            losses: losses
+        };
+
+        State next_other = {
+            league_template: other.league_template,
+            player_template: other.player_template,
+            mux_template: other.mux_template,
+            routes_commitment: other.routes_commitment,
+            owner: other.owner,
+            player_id: other.player_id,
+            open_games: other.open_games + 1,
+            rating: other.rating,
+            games: other.games,
+            wins: other.wins,
+            draws: other.draws,
+            losses: other.losses
+        };
+
+        GameState next_game = {
+            mux_template: mux_template,
+            route_templates: route_templates,
+            white_player: white_player,
+            black_player: black_player,
+            board: 0x04020305060302040101010101010101000000000000000000000000000000000000000000000000000000000000000009090909090909090c0a0b0d0e0b0a0c,
+            turn: 0,
+            status: 0,
+            move_timeout: move_timeout,
+            castle_rights: 0x01010101,
+            en_passant_idx: -1,
+            pending_src_idx: -1,
+            pending_dst_idx: -1,
+            pending_promo: 0,
+            recent_castle: 0,
+            draw_state: 3
+        };
+
+        require(OpAuthOutputCount(this.activeInputIndex) == 3);
+        validateOutputState(OpAuthOutputIdx(this.activeInputIndex, 0), next_self);
+        validateOutputState(OpAuthOutputIdx(this.activeInputIndex, 1), next_other);
+        validateOutputStateWithTemplate(
+            OpAuthOutputIdx(this.activeInputIndex, 2),
+            next_game,
+            mux_prefix,
+            mux_suffix,
+            mux_template
+        );
+    }
+
+    entrypoint function delegate_start_game(
+        sig owner_sig,
+        pubkey owner_pk,
+        int move_timeout,
+        int player_prefix_len,
+        int player_suffix_len
+    ) {
+        require(move_timeout > 0);
+        require(blake2b(owner_pk) == owner);
+        require(checkSig(owner_sig, owner_pk));
+
+        byte[32] cov_id = OpInputCovenantId(this.activeInputIndex);
+        require(OpCovInputCount(cov_id) == 2);
+        require(OpCovInputIdx(cov_id, 0) != this.activeInputIndex);
+        require(OpAuthOutputCount(this.activeInputIndex) == 0);
+
+        int leader_input_idx = OpCovInputIdx(cov_id, 0);
+        // The delegate path still reads the leader so it independently verifies
+        // that input 0 is really another Player under `player_template`, not just
+        // some arbitrary covenant peer in the same shared covenant group.
+        State leader = readInputStateWithTemplate(leader_input_idx, player_prefix_len, player_suffix_len, player_template);
+        // The leader-side shape and output validation already force the peer to
+        // be a distinct Player, but we keep this check so the delegate path
+        // still exercises a meaningful foreign-input read.
+        require(leader.player_id != player_id);
+    }
+
+    entrypoint function delegate_settle(
+        int settle_prefix_len,
+        int settle_suffix_len,
+        byte[32] settle_template,
+        byte[288] route_templates
+    ) {
+        byte[32] cov_id = OpInputCovenantId(this.activeInputIndex);
+        require(OpCovInputCount(cov_id) == 3);
+        require(OpCovInputIdx(cov_id, 0) != this.activeInputIndex);
+        require(OpAuthOutputCount(this.activeInputIndex) == 0);
+
+        int leader_input_idx = OpCovInputIdx(cov_id, 0);
+        require(blake2b(route_templates) == routes_commitment);
+        require(blake2b(settle_template + player_template) == route_templates.slice(256, 288));
+        SettleState leader = readInputStateWithTemplate(leader_input_idx, settle_prefix_len, settle_suffix_len, settle_template);
+
+        // Settlement is driven by a terminal settle worker state, not by a
+        // player signature, so the delegate only checks that the leader is
+        // really a terminal settlement contract that references this player.
+        require(leader.status != 0);
+        require(leader.player_template == player_template);
+
+        byte[32] self_ref = blake2b(owner + player_id);
+        require(self_ref == leader.white_player || self_ref == leader.black_player);
+    }
+
+    // Owner-signed same-SPK continuity path for depositing to or withdrawing
+    // from the Player UTXO without changing its serialized state.
+    entrypoint function rebalance(sig owner_sig, pubkey owner_pk) {
+        require(blake2b(owner_pk) == owner);
+        require(checkSig(owner_sig, owner_pk));
+        require(OpAuthOutputCount(this.activeInputIndex) == 1);
+        int output_idx = OpAuthOutputIdx(this.activeInputIndex, 0);
+        require(tx.outputs[output_idx].scriptPubKey == tx.inputs[this.activeInputIndex].scriptPubKey);
+    }
+
+    // Terminal owner-signed path for closing the Player account. Requiring
+    // open_games == 0 prevents abandoning live game obligations.
+    entrypoint function retire(sig owner_sig, pubkey owner_pk) {
+        require(blake2b(owner_pk) == owner);
+        require(checkSig(owner_sig, owner_pk));
+        require(open_games == 0);
+        require(OpAuthOutputCount(this.activeInputIndex) == 0);
+    }
+}
