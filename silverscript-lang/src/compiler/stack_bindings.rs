@@ -45,6 +45,14 @@ pub(crate) struct StackBindings {
 }
 
 impl StackBindings {
+    #[cfg(test)]
+    pub(crate) fn from_order_top_to_bottom(names: Vec<String>) -> Self {
+        let input_len = names.len();
+        let names: IndexSet<_> = names.into_iter().collect();
+        assert_eq!(input_len, names.len(), "stack binding order should not contain duplicates");
+        Self { names }
+    }
+
     pub(crate) fn from_depths(depths: HashMap<String, i64>) -> Self {
         let mut ordered = depths.into_iter().collect::<Vec<_>>();
         ordered.sort_by_key(|(_, depth)| *depth);
@@ -297,7 +305,7 @@ fn apply_local_opcode(order: &[String], opcode: u8) -> Option<Vec<String>> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
 
     use super::{StackBindings, apply_local_opcode, local_stack_reordering_opcodes, longest_keepable_suffix_start};
     use kaspa_consensus_core::hashing::sighash::SigHashReusedValuesUnsync;
@@ -315,6 +323,10 @@ mod tests {
         order.iter().map(|name| (*name).to_string()).collect()
     }
 
+    /// Executes a raw script and decodes the resulting main stack as integers.
+    ///
+    /// The returned order matches txscript's raw stack iteration order, which
+    /// is bottom-to-top in `Stack::inner`.
     fn execute_script_and_decode_stack(script: Vec<u8>) -> Vec<i64> {
         let reused_values = SigHashReusedValuesUnsync::new();
         let sig_cache = Cache::new(128);
@@ -322,12 +334,45 @@ mod tests {
             &script,
             &reused_values,
             &sig_cache,
-            EngineFlags::default(),
+            EngineFlags { covenants_enabled: true },
         )
         .execute_and_return_stacks()
         .expect("script executes");
 
         stacks.dstack.iter().map(|entry| deserialize_i64(entry, true).expect("stack entry decodes to int")).collect()
+    }
+
+    /// Executes local stack ops against a logical top-to-bottom test stack.
+    ///
+    /// This helper bridges between the test model and txscript's push/stack
+    /// ordering so the rest of the test can stay in top-to-bottom terms.
+    fn execute_local_opcode_sequence_top_to_bottom(values_top_to_bottom: &[i64], opcodes: &[u8]) -> Vec<i64> {
+        let mut script = ScriptBuilder::new();
+        for value in values_top_to_bottom.iter().rev() {
+            script.add_i64(*value).expect("push test value");
+        }
+        script.add_ops(opcodes).expect("append local opcodes");
+        let mut result = execute_script_and_decode_stack(script.drain());
+        // Normalize the engine's raw bottom-to-top order back into the logical
+        // top-to-bottom order used by `StackBindings` and `apply_local_opcode`.
+        result.reverse();
+        result
+    }
+
+    /// Enumerates the one- and two-op local sequences in planner search order.
+    ///
+    /// The sweep test uses this to compare the planner against the same
+    /// canonical ordering it uses internally.
+    fn local_opcode_sequences_in_search_order() -> Vec<Vec<u8>> {
+        let local_ops = [OpSwap, OpRot, Op2Swap, Op2Rot];
+        let mut sequences = Vec::new();
+        sequences.extend(local_ops.iter().map(|opcode| vec![*opcode]));
+        for first in local_ops {
+            for second in local_ops {
+                sequences.push(vec![first, second]);
+            }
+        }
+        sequences
     }
 
     #[test]
@@ -426,6 +471,7 @@ mod tests {
     fn apply_local_opcode_matches_stack_machine_rotation_direction() {
         assert_eq!(apply_local_opcode(&names(&["a", "b", "c"]), OpRot), Some(names(&["c", "a", "b"])));
         assert_eq!(apply_local_opcode(&names(&["a", "b", "c", "d"]), Op2Swap), Some(names(&["c", "d", "a", "b"])));
+        assert_eq!(apply_local_opcode(&names(&["a", "b", "c", "d", "e", "f"]), Op2Rot), Some(names(&["e", "f", "a", "b", "c", "d"])));
         assert_eq!(apply_local_opcode(&names(&["a"]), OpSwap), None);
     }
 
@@ -439,11 +485,7 @@ mod tests {
         ];
 
         for (values, opcode) in executable_cases {
-            let mut initial_script = ScriptBuilder::new();
-            for value in &values {
-                initial_script.add_i64(*value).expect("push test value");
-            }
-            let initial_stack = execute_script_and_decode_stack(initial_script.drain());
+            let initial_stack = execute_local_opcode_sequence_top_to_bottom(&values, &[]);
             let current_labels = (0..initial_stack.len()).map(|index| format!("v{index}")).collect::<Vec<_>>();
             let expected_labels = apply_local_opcode(&current_labels, opcode).expect("opcode should apply to labeled stack");
 
@@ -456,20 +498,66 @@ mod tests {
                 .map(|label| *expected_by_label.get(&label).expect("label should map to test value"))
                 .collect::<Vec<_>>();
 
-            let mut script = ScriptBuilder::new();
-            for value in values {
-                script.add_i64(value).expect("push test value");
-            }
-            script.add_op(opcode).expect("append local opcode");
-
             assert_eq!(
-                execute_script_and_decode_stack(script.drain()),
+                execute_local_opcode_sequence_top_to_bottom(&values, &[opcode]),
                 expected_stack,
                 "opcode {opcode} should match apply_local_opcode permutation"
             );
         }
 
         assert_eq!(apply_local_opcode(&names(&["a"]), OpSwap), None);
+    }
+
+    /// This test validates the local stack-reordering fast path in four steps:
+    ///
+    /// 1. Start from a named stack longer than any local opcode touches.
+    /// 2. Sweep every one- and two-op local sequence in planner search order.
+    /// 3. Use the script engine as the ground truth for the target order each
+    ///    sequence actually reaches, and only keep the first sequence that
+    ///    reaches each distinct target.
+    /// 4. For each non-identity target, assert that both
+    ///    `local_stack_reordering_opcodes` and `emit_stack_reordering`
+    ///    choose exactly that same sequence. For identity targets, only
+    ///    check the outer `emit_stack_reordering` fast path.
+    #[test]
+    fn local_stack_reordering_and_emit_match_canonical_one_or_two_op_sequences() {
+        let initial_values = vec![11, 22, 33, 44, 55, 66, 77, 88];
+        let initial_order = (0..initial_values.len()).map(|index| format!("v{index}")).collect::<Vec<_>>();
+        let value_to_label = initial_values.iter().copied().zip(initial_order.iter().cloned()).collect::<HashMap<_, _>>();
+        let mut seen_targets = HashSet::new();
+
+        for source_opcodes in local_opcode_sequences_in_search_order() {
+            // Derive the target layout from the real engine.
+            let target_values = execute_local_opcode_sequence_top_to_bottom(&initial_values, &source_opcodes);
+            let target_order = target_values
+                .iter()
+                .map(|value| value_to_label.get(value).expect("target value should map to initial label").clone())
+                .collect::<Vec<_>>();
+            // Only test the first sequence that reaches each target, which is
+            // the same sequence the planner should pick for that target.
+            if !seen_targets.insert(target_order.clone()) {
+                continue;
+            }
+
+            if target_order != initial_order {
+                assert_eq!(
+                    local_stack_reordering_opcodes(&initial_order, &target_order),
+                    Some(source_opcodes.clone()),
+                    "planner should choose the first matching local sequence for target {target_order:?}"
+                );
+            }
+
+            let mut stack_bindings = StackBindings::from_order_top_to_bottom(initial_order.clone());
+            let mut builder = ScriptBuilder::new();
+            stack_bindings.emit_stack_reordering(&target_order, &mut builder).expect("emit stack reordering");
+
+            assert_eq!(
+                builder.drain(),
+                if target_order == initial_order { vec![] } else { source_opcodes.clone() },
+                "emit_stack_reordering should emit the first matching local sequence for target {target_order:?}"
+            );
+            assert_eq!(stack_bindings.binding_order_top_to_bottom(), target_order);
+        }
     }
 
     #[test]
