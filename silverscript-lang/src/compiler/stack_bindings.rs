@@ -226,21 +226,57 @@ impl StackBindings {
     }
 }
 
+/// Returns the start index in `target_order` of the longest suffix that can be
+/// left in place by the suffix-rebuild stack reordering strategy.
+///
+/// In that strategy:
+/// - a prefix of `target_order` is extracted to altstack and restored later
+/// - the bindings that are not moved stay on the main stack in their original
+///   relative order
+/// - after the restore, those untouched bindings therefore occupy a suffix of
+///   the final target layout
+///
+/// So this helper looks for the longest suffix of `target_order` that appears
+/// as a subsequence of `current_order`.
+///
+/// Example:
+/// - `current = [a, b, c, d, e]`
+/// - `target  = [c, a, b, d, e]`
+/// - the keepable suffix is `[a, b, d, e]`
+///   - it is a subsequence of `current`
+///   - it starts at index `1` in `target`
+/// - so the function returns `1`, meaning only `[c]` must move
+///
+/// Another example:
+/// - `current = [a, b, c, d]`
+/// - `target  = [d, c, b, a]`
+/// - the longest keepable suffix is `[a]`
+/// - so the function returns `3`
+///
+/// The returned value is therefore:
+/// - `0` when the whole target can be kept in place
+/// - `target.len()` when no non-empty target suffix is keepable
 fn longest_keepable_suffix_start(current_order: &[String], target_order: &[String]) -> usize {
     let mut i = current_order.len();
     let mut j = target_order.len();
 
     while j > 0 {
+        // Walk backward through `current_order` until we find the current
+        // suffix item `target_order[j - 1]`, or prove that it is missing.
         while i > 0 && current_order[i - 1] != target_order[j - 1] {
             i -= 1;
         }
         if i == 0 {
             break;
         }
+        // We matched one more suffix item, so extend the keepable suffix one
+        // step to the left in `target_order` and continue the backward scan.
         i -= 1;
         j -= 1;
     }
 
+    // `j` is now the start index of the longest keepable suffix in
+    // `target_order`, so `target_order[j..]` is the untouched portion.
     j
 }
 
@@ -433,16 +469,47 @@ mod tests {
         let cases = [
             (vec!["a", "b", "c"], vec!["a", "b", "c"], 0),
             (vec!["a", "c", "b", "d"], vec!["a", "b", "c", "d"], 2),
+            // move:        ↓
+            // current: [a, b, c]
+            // target:  [b, a, c]
+            // keep:        ^^^^
             (vec!["a", "b", "c"], vec!["b", "a", "c"], 1),
+            // move:           ↓
+            // current: [a, b, c]
+            // target:  [c, a, b]
+            // keep:        ^^^^
             (vec!["a", "b", "c"], vec!["c", "a", "b"], 1),
             (vec!["a", "b", "c"], vec!["a", "c", "b"], 2),
+            // move:        ↓  ↓  ↓
+            // current: [a, b, c, d]
+            // target:  [b, c, d, a]
+            // keep:              ^
             (vec!["a", "b", "c", "d"], vec!["b", "c", "d", "a"], 3),
             (vec!["a", "b", "c", "d"], vec!["a", "d", "b", "c"], 2),
             (vec!["a", "b", "c", "d"], vec!["c", "d", "a", "b"], 2),
             (vec!["x"], vec!["x"], 0),
             (vec!["x", "y"], vec!["y", "x"], 1),
             (vec!["a", "b", "c", "d"], vec!["a", "b", "d", "c"], 3),
+            // move:           ↓
+            // current: [a, b, c, d, e]
+            // target:  [c, a, b, d, e]
+            // keep:        ^^^^^^^^^^
             (vec!["a", "b", "c", "d", "e"], vec!["c", "a", "b", "d", "e"], 1),
+            // move:              ↓
+            // current: [a, b, c, d]
+            // target:  [d, a, b, c]
+            // keep:        ^^^^^^^
+            (vec!["a", "b", "c", "d"], vec!["d", "a", "b", "c"], 1),
+            // move:        ↓  ↓  ↓
+            // current: [a, b, c, d]
+            // target:  [d, c, b, a]
+            // keep:              ^
+            (vec!["a", "b", "c", "d"], vec!["d", "c", "b", "a"], 3),
+            // move:                 ↓
+            // current: [a, b, c, d, e]
+            // target:  [e, a, b, c, d]
+            // keep:        ^^^^^^^^^^
+            (vec!["a", "b", "c", "d", "e"], vec!["e", "a", "b", "c", "d"], 1),
         ];
 
         for (current, target, expected) in cases {
