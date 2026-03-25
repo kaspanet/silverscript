@@ -19,7 +19,7 @@ use silverscript_lang::compiler::{
     CompileOptions, CompiledContract, CovenantDeclCallOptions, FunctionAbiEntry, FunctionInputAbi, compile_contract,
     compile_contract_ast, function_branch_index, struct_object,
 };
-use silverscript_lang::debug_info::{RuntimeBinding, StepKind};
+use silverscript_lang::debug_info::{DebugParamBinding, RuntimeBinding, StepKind};
 
 fn run_script_with_selector(script: Vec<u8>, selector: Option<i64>) -> Result<(), kaspa_txscript_errors::TxScriptError> {
     let sigscript = selector_sigscript(selector);
@@ -255,6 +255,77 @@ fn debug_info_records_runtime_binding_for_stable_scalar_local() {
         .expect("y update should be recorded");
 
     assert!(matches!(y_update.runtime_binding, Some(RuntimeBinding::DataStackSlot { .. })));
+}
+
+#[test]
+fn debug_info_records_struct_param_leaf_bindings_in_runtime_order() {
+    let source = r#"
+        contract DebugStructParam() {
+            struct Pair {
+                int amount;
+                byte[2] code;
+            }
+
+            entrypoint function spend(Pair next, int fee) {
+                require(fee >= 0);
+            }
+        }
+    "#;
+
+    let options = CompileOptions { record_debug_infos: true, ..Default::default() };
+    let compiled = compile_contract(source, &[], options).expect("compile succeeds");
+    let debug_info = compiled.debug_info.expect("debug info should be present");
+
+    let next = debug_info.params.iter().find(|param| param.name == "next").expect("structured param should be recorded");
+    assert_eq!(next.type_name, "Pair");
+    let DebugParamBinding::StructuredValue { leaf_bindings } = &next.binding else {
+        panic!("expected structured binding");
+    };
+    assert_eq!(leaf_bindings.len(), 2);
+    assert_eq!(leaf_bindings[0].field_path, vec!["amount".to_string()]);
+    assert_eq!(leaf_bindings[0].type_name, "int");
+    assert_eq!(leaf_bindings[0].stack_index, Some(2));
+    assert_eq!(leaf_bindings[1].field_path, vec!["code".to_string()]);
+    assert_eq!(leaf_bindings[1].type_name, "byte[2]");
+    assert_eq!(leaf_bindings[1].stack_index, Some(1));
+
+    let fee = debug_info.params.iter().find(|param| param.name == "fee").expect("scalar param should be recorded");
+    assert_eq!(fee.binding, DebugParamBinding::SingleValue { stack_index: 0 });
+}
+
+#[test]
+fn debug_info_records_state_array_param_leaf_bindings_in_runtime_order() {
+    let source = r#"
+        contract DebugStateArrayParam() {
+            int amount = 1;
+            byte[32] owner = 0x1111111111111111111111111111111111111111111111111111111111111111;
+
+            entrypoint function spend(State[] next_states, int fee) {
+                require(fee >= 0);
+            }
+        }
+    "#;
+
+    let options = CompileOptions { record_debug_infos: true, ..Default::default() };
+    let compiled = compile_contract(source, &[], options).expect("compile succeeds");
+    let debug_info = compiled.debug_info.expect("debug info should be present");
+
+    let next_states =
+        debug_info.params.iter().find(|param| param.name == "next_states").expect("state-array param should be recorded");
+    assert_eq!(next_states.type_name, "State[]");
+    let DebugParamBinding::StructuredValue { leaf_bindings } = &next_states.binding else {
+        panic!("expected structured binding");
+    };
+    assert_eq!(leaf_bindings.len(), 2);
+    assert_eq!(leaf_bindings[0].field_path, vec!["amount".to_string()]);
+    assert_eq!(leaf_bindings[0].type_name, "int[]");
+    assert_eq!(leaf_bindings[0].stack_index, Some(4));
+    assert_eq!(leaf_bindings[1].field_path, vec!["owner".to_string()]);
+    assert_eq!(leaf_bindings[1].type_name, "byte[32][]");
+    assert_eq!(leaf_bindings[1].stack_index, Some(3));
+
+    let fee = debug_info.params.iter().find(|param| param.name == "fee").expect("scalar param should be recorded");
+    assert_eq!(fee.binding, DebugParamBinding::SingleValue { stack_index: 2 });
 }
 
 #[test]
