@@ -13,45 +13,71 @@ trait ScriptBuilderStackBindingExt {
 
 impl ScriptBuilderStackBindingExt for ScriptBuilder {
     fn drop_from_depth(&mut self, depth: i64) -> Result<(), CompilerError> {
-        if depth == 0 {
-            self.add_op(OpDrop)?;
-        } else if depth == 1 {
-            self.add_op(OpNip)?;
-        } else if depth == 2 {
-            self.add_op(OpRot)?;
-            self.add_op(OpDrop)?;
-        } else {
-            self.add_i64(depth)?;
-            self.add_op(OpRoll)?;
-            self.add_op(OpDrop)?;
+        // read: [a, ..., c] = [bottom ... top]
+        match depth {
+            // [x] -> []
+            0 => {
+                self.add_op(OpDrop)?;
+            }
+            // [x, a] -> [a]
+            1 => {
+                self.add_op(OpNip)?;
+            }
+            // [x, a, b] -> [a, b]
+            2 => {
+                self.add_op(OpRot)?;
+                self.add_op(OpDrop)?;
+            }
+            _ => {
+                // [..., x, ..., top] -> [..., ..., top]
+                self.add_i64(depth)?;
+                self.add_op(OpRoll)?;
+                self.add_op(OpDrop)?;
+            }
         }
 
         Ok(())
     }
 
     fn pick_from_depth(&mut self, depth: i64) -> Result<(), CompilerError> {
-        if depth == 0 {
-            self.add_op(OpDup)?;
-        } else if depth == 1 {
-            self.add_op(OpOver)?;
-        } else {
-            self.add_i64(depth)?;
-            self.add_op(OpPick)?;
+        // read: [a, ..., c] = [bottom ... top]
+        match depth {
+            // [x] -> [x, x]
+            0 => {
+                self.add_op(OpDup)?;
+            }
+            // [x, a] -> [x, a, x]
+            1 => {
+                self.add_op(OpOver)?;
+            }
+            _ => {
+                // [..., x, ..., top] -> [..., x, ..., top, x]
+                self.add_i64(depth)?;
+                self.add_op(OpPick)?;
+            }
         }
 
         Ok(())
     }
 
     fn roll_from_depth(&mut self, depth: i64) -> Result<(), CompilerError> {
-        if depth == 0 {
-            return Ok(());
-        } else if depth == 1 {
-            self.add_op(OpSwap)?;
-        } else if depth == 2 {
-            self.add_op(OpRot)?;
-        } else {
-            self.add_i64(depth)?;
-            self.add_op(OpRoll)?;
+        // read: [a, ..., c] = [bottom ... top]
+        match depth {
+            // [x] -> [x]
+            0 => {}
+            // [x, a] -> [a, x]
+            1 => {
+                self.add_op(OpSwap)?;
+            }
+            // [x, a, b] -> [a, b, x]
+            2 => {
+                self.add_op(OpRot)?;
+            }
+            _ => {
+                // [..., x, ..., top] -> [..., ..., top, x]
+                self.add_i64(depth)?;
+                self.add_op(OpRoll)?;
+            }
         }
 
         Ok(())
