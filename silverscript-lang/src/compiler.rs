@@ -4783,12 +4783,10 @@ fn compile_if_statement<'i>(
             true,
             recorder,
         )?;
-        let target_order = then_stack_bindings.binding_order_top_to_bottom();
-        else_stack_bindings.emit_stack_reordering(&target_order, builder)?;
+        else_stack_bindings.emit_stack_reordering(&then_stack_bindings, builder)?;
         *stack_bindings = then_stack_bindings;
     } else {
-        let target_order = original_stack_bindings.binding_order_top_to_bottom();
-        then_stack_bindings.emit_stack_reordering(&target_order, builder)?;
+        then_stack_bindings.emit_stack_reordering(&original_stack_bindings, builder)?;
         *stack_bindings = original_stack_bindings;
     }
 

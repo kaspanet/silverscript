@@ -93,7 +93,7 @@ pub(crate) struct StackBindings {
 
 impl StackBindings {
     #[cfg(test)]
-    pub(crate) fn from_order_top_to_bottom(ordered_names: Vec<String>) -> Self {
+    pub(crate) fn from_order(ordered_names: Vec<String>) -> Self {
         let input_len = ordered_names.len();
         let stack: IndexSet<_> = ordered_names.into_iter().collect();
         assert_eq!(input_len, stack.len(), "stack binding order should not contain duplicates");
@@ -138,6 +138,16 @@ impl StackBindings {
 
     pub(crate) fn binding_order_top_to_bottom(&self) -> Vec<String> {
         self.stack.iter().cloned().collect()
+    }
+
+    pub(crate) fn set_eq(&self, other: &Self) -> bool {
+        // default `IndexSet` equality is set equality (i.e., order can differ)
+        self.stack == other.stack
+    }
+
+    pub(crate) fn order_eq(&self, other: &Self) -> bool {
+        // `IndexSet` slices compare full equality
+        self.stack.as_slice() == other.stack.as_slice()
     }
 
     pub(crate) fn push_binding(&mut self, name: &str) {
@@ -210,28 +220,20 @@ impl StackBindings {
         Ok(true)
     }
 
-    pub(crate) fn emit_stack_reordering(&mut self, target_order: &[String], builder: &mut ScriptBuilder) -> Result<(), CompilerError> {
-        let current_order = self.binding_order_top_to_bottom();
-        if current_order == target_order {
+    pub(crate) fn emit_stack_reordering(&self, target_bindings: &Self, builder: &mut ScriptBuilder) -> Result<(), CompilerError> {
+        if self.order_eq(target_bindings) {
             return Ok(());
         }
 
-        let current_set = current_order.iter().cloned().collect::<HashSet<_>>();
-        let target_set = target_order.iter().cloned().collect::<HashSet<_>>();
-        assert_eq!(current_order.len(), current_set.len(), "current stack order should not contain duplicates");
-        assert_eq!(target_order.len(), target_set.len(), "target stack order should not contain duplicates");
-        assert_eq!(current_set, target_set, "stack reconciliation requires both layouts to contain the same bindings");
-        // At this point both layouts are duplicate-free and contain exactly the
-        // same bindings, so they are just two permutations of the same set.
+        let permutation = Permutation::from_orders(self, target_bindings);
 
-        if let Some(opcodes) = local_stack_reordering_opcodes(&current_order, target_order) {
+        if let Some(opcodes) = permutation.local_stack_reordering_opcodes() {
             builder.add_ops(&opcodes)?;
-            self.reset_to_target_order(target_order);
             return Ok(());
         }
 
-        let keep_start = longest_keepable_suffix_start(&current_order, target_order);
-        let move_prefix = &target_order[..keep_start];
+        let keep_start = permutation.longest_keepable_suffix_start();
+        let move_prefix = &target_bindings.stack[..keep_start];
         let mut remaining_stack = self.stack.clone();
 
         for name in move_prefix {
@@ -244,18 +246,12 @@ impl StackBindings {
             remaining_stack.shift_remove_index(index);
         }
 
-        debug_assert_eq!(remaining_stack.iter().cloned().collect::<Vec<_>>(), target_order[move_prefix.len()..]);
+        debug_assert!(remaining_stack.iter().eq(target_bindings.stack[move_prefix.len()..].iter()));
 
         for _ in 0..move_prefix.len() {
             builder.add_op(OpFromAltStack)?;
         }
-
-        self.reset_to_target_order(target_order);
         Ok(())
-    }
-
-    fn reset_to_target_order(&mut self, target_order: &[String]) {
-        self.stack = target_order.iter().cloned().collect();
     }
 
     fn remove_name(&mut self, name: &str) {
@@ -268,130 +264,117 @@ impl StackBindings {
     }
 }
 
-/// Returns the start index in `target_order` of the longest suffix that can be
-/// left in place by the suffix-rebuild stack reordering strategy.
-///
-/// In that strategy:
-/// - a prefix of `target_order` is extracted to altstack and restored later
-/// - the bindings that are not moved stay on the main stack in their original
-///   relative order
-/// - after the restore, those untouched bindings therefore occupy a suffix of
-///   the final target layout
-///
-/// So this helper looks for the longest suffix of `target_order` that appears
-/// as a subsequence of `current_order`.
-///
-/// Example:
-/// - `current = [a, b, c, d, e]`
-/// - `target  = [c, a, b, d, e]`
-/// - the keepable suffix is `[a, b, d, e]`
-///   - it is a subsequence of `current`
-///   - it starts at index `1` in `target`
-/// - so the function returns `1`, meaning only `[c]` must move
-///
-/// Another example:
-/// - `current = [a, b, c, d]`
-/// - `target  = [d, c, b, a]`
-/// - the longest keepable suffix is `[a]`
-/// - so the function returns `3`
-///
-/// The returned value is therefore:
-/// - `0` when the whole target can be kept in place
-/// - `target.len()` when no non-empty target suffix is keepable
-fn longest_keepable_suffix_start(current_order: &[String], target_order: &[String]) -> usize {
-    let mut i = current_order.len();
-    let mut j = target_order.len();
-
-    while j > 0 {
-        // Walk backward through `current_order` until we find the current
-        // suffix item `target_order[j - 1]`, or prove that it is missing.
-        while i > 0 && current_order[i - 1] != target_order[j - 1] {
-            i -= 1;
-        }
-        if i == 0 {
-            break;
-        }
-        // We matched one more suffix item, so extend the keepable suffix one
-        // step to the left in `target_order` and continue the backward scan.
-        i -= 1;
-        j -= 1;
-    }
-
-    // `j` is now the start index of the longest keepable suffix in
-    // `target_order`, so `target_order[j..]` is the untouched portion.
-    j
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Permutation {
+    indices: Vec<usize>,
 }
 
-/// Searches the bounded local opcode space used by the planner and returns the
-/// first 1- or 2-op sequence that exactly rewrites `current_order` into
-/// `target_order`.
-fn local_stack_reordering_opcodes(current_order: &[String], target_order: &[String]) -> Option<Vec<u8>> {
-    if current_order.len() != target_order.len() {
-        return None;
+impl Permutation {
+    fn identity(len: usize) -> Self {
+        Self { indices: (0..len).collect() }
     }
 
-    let local_ops = [OpSwap, OpRot, Op2Swap, Op2Rot];
+    fn from_orders(current_order: &StackBindings, target_order: &StackBindings) -> Self {
+        assert!(current_order.set_eq(target_order), "stack reconciliation requires both layouts to contain the same bindings");
+        Self { indices: target_order.stack.iter().map(|name| current_order.stack.get_index_of(name).expect("set equal")).collect() }
+    }
 
-    for opcode in local_ops {
-        if let Some(next_order) = apply_local_opcode(current_order, opcode)
-            && next_order == target_order
-        {
-            return Some(vec![opcode]);
+    fn len(&self) -> usize {
+        self.indices.len()
+    }
+
+    /// Returns the start index of the longest keepable target suffix.
+    ///
+    /// Once the target layout is expressed as positions in the current layout,
+    /// a keepable suffix is exactly a suffix whose positions stay strictly
+    /// increasing left-to-right.
+    ///
+    /// Example:
+    /// - `current = [a, b, c, d, e]`
+    /// - `target  = [c, a, b, d, e]`
+    /// - permutation indices are `[2, 0, 1, 3, 4]`
+    /// - the longest increasing suffix is `[0, 1, 3, 4]`
+    /// - so the function returns `1`, meaning only `[c]` must move
+    fn longest_keepable_suffix_start(&self) -> usize {
+        let mut j = self.indices.len();
+        while j > 1 && self.indices[j - 2] < self.indices[j - 1] {
+            j -= 1;
         }
+        j.saturating_sub(1)
     }
 
-    for first in local_ops {
-        let Some(mid_order) = apply_local_opcode(current_order, first) else {
-            continue;
-        };
-        for second in local_ops {
-            if let Some(next_order) = apply_local_opcode(&mid_order, second)
-                && next_order == target_order
+    /// Searches the bounded local opcode space and returns the first 1- or 2-op
+    /// sequence that exactly realizes this permutation.
+    fn local_stack_reordering_opcodes(&self) -> Option<Vec<u8>> {
+        let local_ops = [OpSwap, OpRot, Op2Swap, Op2Rot];
+        let identity = Self::identity(self.len());
+
+        for opcode in local_ops {
+            if let Some(next) = identity.apply_local_opcode(opcode)
+                && next == *self
             {
-                return Some(vec![first, second]);
+                return Some(vec![opcode]);
             }
         }
+
+        for first in local_ops {
+            let Some(mid) = identity.apply_local_opcode(first) else {
+                continue;
+            };
+            for second in local_ops {
+                if let Some(next) = mid.apply_local_opcode(second)
+                    && next == *self
+                {
+                    return Some(vec![first, second]);
+                }
+            }
+        }
+
+        None
     }
 
-    None
-}
-
-/// Applies one local stack opcode to the compiler's top-to-bottom binding model.
-///
-/// This is the symbolic counterpart of the small bounded search in
-/// `local_stack_reordering_opcodes`: given the current logical binding order, it
-/// predicts what `SWAP`, `ROT`, `2SWAP`, or `2ROT` would do to the top portion
-/// of the stack.
-///
-/// Returns `None` when:
-/// - the opcode is not part of that local search space, or
-/// - the current stack is too short for the opcode to apply.
-#[allow(non_upper_case_globals)]
-fn apply_local_opcode(order: &[String], opcode: u8) -> Option<Vec<String>> {
-    let mut next = order.to_vec();
-    match opcode {
-        OpSwap if next.len() >= 2 => {
-            next.swap(0, 1);
+    /// Applies one local stack opcode to this target-as-current-index
+    /// permutation.
+    ///
+    /// This is the symbolic counterpart of the small bounded search used by
+    /// `local_stack_reordering_opcodes`: it predicts what `SWAP`, `ROT`,
+    /// `2SWAP`, or `2ROT` would do to the top portion of the current layout.
+    ///
+    /// Returns `None` when:
+    /// - the opcode is not part of that local search space, or
+    /// - the current stack is too short for the opcode to apply.
+    #[allow(non_upper_case_globals)]
+    fn apply_local_opcode(&self, opcode: u8) -> Option<Self> {
+        let mut next = self.indices.clone();
+        match opcode {
+            OpSwap if next.len() >= 2 => {
+                next.swap(0, 1);
+            }
+            OpRot if next.len() >= 3 => {
+                next[..3].rotate_right(1);
+            }
+            Op2Swap if next.len() >= 4 => {
+                next[..4].rotate_left(2);
+            }
+            Op2Rot if next.len() >= 6 => {
+                next[..6].rotate_right(2);
+            }
+            _ => return None,
         }
-        OpRot if next.len() >= 3 => {
-            next[..3].rotate_right(1);
-        }
-        Op2Swap if next.len() >= 4 => {
-            next[..4].rotate_left(2);
-        }
-        Op2Rot if next.len() >= 6 => {
-            next[..6].rotate_right(2);
-        }
-        _ => return None,
+        Some(Self { indices: next })
     }
-    Some(next)
+
+    #[cfg(test)]
+    fn apply_to<T: Clone>(&self, canonical_order: &[T]) -> Vec<T> {
+        self.indices.iter().map(|&index| canonical_order[index].clone()).collect()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use std::collections::{HashMap, HashSet};
 
-    use super::{StackBindings, apply_local_opcode, local_stack_reordering_opcodes, longest_keepable_suffix_start};
+    use super::{Permutation, StackBindings};
     use kaspa_consensus_core::hashing::sighash::SigHashReusedValuesUnsync;
     use kaspa_consensus_core::tx::PopulatedTransaction;
     use kaspa_txscript::caches::Cache;
@@ -405,6 +388,12 @@ mod tests {
 
     fn names(order: &[&str]) -> Vec<String> {
         order.iter().map(|name| (*name).to_string()).collect()
+    }
+
+    fn permutation(current: &[&str], target: &[&str]) -> Permutation {
+        let current_bindings = StackBindings::from_order(names(current));
+        let target_bindings = StackBindings::from_order(names(target));
+        Permutation::from_orders(&current_bindings, &target_bindings)
     }
 
     /// Executes a raw script and decodes the resulting main stack as integers.
@@ -486,30 +475,38 @@ mod tests {
 
     #[test]
     fn stack_reordering_uses_local_swap_when_available() {
-        let mut stack_bindings = bindings(&[("a", 0), ("b", 1)]);
+        let stack_bindings = bindings(&[("a", 0), ("b", 1)]);
+        let target_bindings = bindings(&[("b", 0), ("a", 1)]);
         let mut builder = ScriptBuilder::new();
 
-        stack_bindings.emit_stack_reordering(&names(&["b", "a"]), &mut builder).expect("reorder with swap");
+        stack_bindings.emit_stack_reordering(&target_bindings, &mut builder).expect("reorder with swap");
 
         assert_eq!(builder.drain(), vec![OpSwap]);
-        assert_eq!(stack_bindings.binding_order_top_to_bottom(), names(&["b", "a"]));
     }
 
     #[test]
     fn stack_reordering_uses_suffix_rebuild_for_non_local_permutation() {
         let current_order = names(&["a", "b", "c", "e", "d"]);
         let target_order = names(&["a", "b", "c", "d", "e"]);
-        assert_eq!(local_stack_reordering_opcodes(&current_order, &target_order), None);
+        let current_bindings = StackBindings::from_order(current_order.clone());
+        let target_bindings = StackBindings::from_order(target_order.clone());
+        assert_eq!(Permutation::from_orders(&current_bindings, &target_bindings).local_stack_reordering_opcodes(), None);
 
-        let mut stack_bindings = bindings(&[("a", 0), ("b", 1), ("c", 2), ("e", 3), ("d", 4)]);
         let mut builder = ScriptBuilder::new();
 
-        stack_bindings.emit_stack_reordering(&target_order, &mut builder).expect("reorder with suffix rebuild");
+        current_bindings.emit_stack_reordering(&target_bindings, &mut builder).expect("reorder with suffix rebuild");
 
         let script = builder.drain();
         assert!(script.contains(&OpToAltStack));
         assert!(script.contains(&OpFromAltStack));
-        assert_eq!(stack_bindings.binding_order_top_to_bottom(), target_order);
+
+        let mut script_builder = ScriptBuilder::new();
+        for value in [5, 4, 3, 2, 1] {
+            script_builder.add_i64(value).expect("push test value");
+        }
+        script_builder.add_ops(&script).expect("append reordering ops");
+
+        assert_eq!(execute_script_and_decode_stack(script_builder.drain()), vec![4, 5, 3, 2, 1]);
     }
 
     #[test]
@@ -565,10 +562,9 @@ mod tests {
             (vec!["a", "b", "c", "d", "e", "f"], vec!["b", "d", "a", "c", "e", "f"], 2),
         ];
 
-        for (current, target, expected) in cases {
-            let current = current.into_iter().map(str::to_string).collect::<Vec<_>>();
-            let target = target.into_iter().map(str::to_string).collect::<Vec<_>>();
-            assert_eq!(longest_keepable_suffix_start(&current, &target), expected, "current={current:?} target={target:?}");
+        for (current, target, expected_start) in cases {
+            let actual_start = permutation(&current, &target).longest_keepable_suffix_start();
+            assert_eq!(actual_start, expected_start, "current={current:?} target={target:?}");
         }
     }
 
@@ -577,22 +573,26 @@ mod tests {
         let current = names(&["a", "b", "c"]);
         let target = names(&["b", "c", "a"]);
 
-        let opcodes = local_stack_reordering_opcodes(&current, &target).expect("two-op local sequence");
+        let current_bindings = StackBindings::from_order(current.clone());
+        let target_bindings = StackBindings::from_order(target.clone());
+        let opcodes = Permutation::from_orders(&current_bindings, &target_bindings)
+            .local_stack_reordering_opcodes()
+            .expect("two-op local sequence");
         assert_eq!(opcodes.len(), 2);
 
-        let mut reordered = current;
+        let mut reordered = Permutation::identity(current.len());
         for opcode in opcodes {
-            reordered = apply_local_opcode(&reordered, opcode).expect("planned local opcode should apply");
+            reordered = reordered.apply_local_opcode(opcode).expect("planned local opcode should apply");
         }
-        assert_eq!(reordered, target);
+        assert_eq!(reordered.apply_to(&current), target);
     }
 
     #[test]
     fn apply_local_opcode_matches_stack_machine_rotation_direction() {
-        assert_eq!(apply_local_opcode(&names(&["a", "b", "c"]), OpRot), Some(names(&["c", "a", "b"])));
-        assert_eq!(apply_local_opcode(&names(&["a", "b", "c", "d"]), Op2Swap), Some(names(&["c", "d", "a", "b"])));
-        assert_eq!(apply_local_opcode(&names(&["a", "b", "c", "d", "e", "f"]), Op2Rot), Some(names(&["e", "f", "a", "b", "c", "d"])));
-        assert_eq!(apply_local_opcode(&names(&["a"]), OpSwap), None);
+        assert_eq!(Permutation::identity(3).apply_local_opcode(OpRot).map(|p| p.indices), Some(vec![2, 0, 1]));
+        assert_eq!(Permutation::identity(4).apply_local_opcode(Op2Swap).map(|p| p.indices), Some(vec![2, 3, 0, 1]));
+        assert_eq!(Permutation::identity(6).apply_local_opcode(Op2Rot).map(|p| p.indices), Some(vec![4, 5, 0, 1, 2, 3]));
+        assert_eq!(Permutation::identity(1).apply_local_opcode(OpSwap), None);
     }
 
     #[test]
@@ -603,7 +603,10 @@ mod tests {
         for (stack_len, opcode) in executable_cases {
             let values = (0..stack_len).map(i64::from).collect::<Vec<_>>();
             let current_order = values.iter().map(ToString::to_string).collect::<Vec<_>>();
-            let expected_order = apply_local_opcode(&current_order, opcode).expect("opcode should apply to labeled stack");
+            let expected_order = Permutation::identity(current_order.len())
+                .apply_local_opcode(opcode)
+                .expect("opcode should apply to labeled stack")
+                .apply_to(&current_order);
             let actual_order = execute_local_opcode_sequence_top_to_bottom(&values, &[opcode])
                 .into_iter()
                 .map(|value| value.to_string())
@@ -612,7 +615,7 @@ mod tests {
             assert_eq!(actual_order, expected_order, "opcode {opcode} should match apply_local_opcode permutation");
         }
 
-        assert_eq!(apply_local_opcode(&names(&["a"]), OpSwap), None);
+        assert_eq!(Permutation::identity(1).apply_local_opcode(OpSwap), None);
     }
 
     /// This test validates the local stack-reordering fast path in four steps:
@@ -646,34 +649,35 @@ mod tests {
                 continue;
             }
 
+            let current_bindings = StackBindings::from_order(initial_order.clone());
+            let target_bindings = StackBindings::from_order(target_order.clone());
+
             if target_order != initial_order {
                 assert_eq!(
-                    local_stack_reordering_opcodes(&initial_order, &target_order),
+                    Permutation::from_orders(&current_bindings, &target_bindings).local_stack_reordering_opcodes(),
                     Some(source_opcodes.clone()),
                     "planner should choose the first matching local sequence for target {target_order:?}"
                 );
             }
 
-            let mut stack_bindings = StackBindings::from_order_top_to_bottom(initial_order.clone());
             let mut builder = ScriptBuilder::new();
-            stack_bindings.emit_stack_reordering(&target_order, &mut builder).expect("emit stack reordering");
+            current_bindings.emit_stack_reordering(&target_bindings, &mut builder).expect("emit stack reordering");
 
             assert_eq!(
                 builder.drain(),
                 if target_order == initial_order { vec![] } else { source_opcodes.clone() },
                 "emit_stack_reordering should emit the first matching local sequence for target {target_order:?}"
             );
-            assert_eq!(stack_bindings.binding_order_top_to_bottom(), target_order);
         }
     }
 
     #[test]
     fn emitted_stack_reordering_matches_engine_execution() {
-        let mut stack_bindings = bindings(&[("a", 0), ("b", 1), ("c", 2), ("e", 3), ("d", 4)]);
-        let target_order = names(&["a", "b", "c", "d", "e"]);
+        let stack_bindings = bindings(&[("a", 0), ("b", 1), ("c", 2), ("e", 3), ("d", 4)]);
+        let target_bindings = bindings(&[("a", 0), ("b", 1), ("c", 2), ("d", 3), ("e", 4)]);
 
         let mut reorder_builder = ScriptBuilder::new();
-        stack_bindings.emit_stack_reordering(&target_order, &mut reorder_builder).expect("emit stack reordering");
+        stack_bindings.emit_stack_reordering(&target_bindings, &mut reorder_builder).expect("emit stack reordering");
 
         let mut script = ScriptBuilder::new();
         for value in [5, 4, 3, 2, 1] {
@@ -682,7 +686,6 @@ mod tests {
         script.add_ops(&reorder_builder.drain()).expect("append reordering ops");
 
         assert_eq!(execute_script_and_decode_stack(script.drain()), vec![4, 5, 3, 2, 1]);
-        assert_eq!(stack_bindings.binding_order_top_to_bottom(), target_order);
     }
 
     #[test]
