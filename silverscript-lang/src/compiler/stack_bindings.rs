@@ -553,32 +553,19 @@ mod tests {
 
     #[test]
     fn apply_local_opcode_check_against_script_engine() {
-        let executable_cases = [
-            (vec![11, 22], OpSwap),
-            (vec![11, 22, 33], OpRot),
-            (vec![11, 22, 33, 44], Op2Swap),
-            (vec![11, 22, 33, 44, 55, 66], Op2Rot),
-        ];
+        let executable_cases =
+            [(2, OpSwap), (10, OpSwap), (3, OpRot), (10, OpRot), (4, Op2Swap), (10, Op2Swap), (6, Op2Rot), (10, Op2Rot)];
 
-        for (values, opcode) in executable_cases {
-            let initial_stack = execute_local_opcode_sequence_top_to_bottom(&values, &[]);
-            let current_labels = (0..initial_stack.len()).map(|index| format!("v{index}")).collect::<Vec<_>>();
-            let expected_labels = apply_local_opcode(&current_labels, opcode).expect("opcode should apply to labeled stack");
-
-            let mut expected_by_label = HashMap::new();
-            for (label, value) in current_labels.iter().cloned().zip(initial_stack.iter().copied()) {
-                expected_by_label.insert(label, value);
-            }
-            let expected_stack = expected_labels
+        for (stack_len, opcode) in executable_cases {
+            let values = (0..stack_len).map(i64::from).collect::<Vec<_>>();
+            let current_order = values.iter().map(ToString::to_string).collect::<Vec<_>>();
+            let expected_order = apply_local_opcode(&current_order, opcode).expect("opcode should apply to labeled stack");
+            let actual_order = execute_local_opcode_sequence_top_to_bottom(&values, &[opcode])
                 .into_iter()
-                .map(|label| *expected_by_label.get(&label).expect("label should map to test value"))
+                .map(|value| value.to_string())
                 .collect::<Vec<_>>();
 
-            assert_eq!(
-                execute_local_opcode_sequence_top_to_bottom(&values, &[opcode]),
-                expected_stack,
-                "opcode {opcode} should match apply_local_opcode permutation"
-            );
+            assert_eq!(actual_order, expected_order, "opcode {opcode} should match apply_local_opcode permutation");
         }
 
         assert_eq!(apply_local_opcode(&names(&["a"]), OpSwap), None);
