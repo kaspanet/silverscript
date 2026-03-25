@@ -1,6 +1,6 @@
 # SilverScript CLI Debugger
 
-A light-weight tool for stepping through and testing SilverScript smart contracts.
+A light-weight, GDB-like attempt at stepping through and testing SilverScript contracts.
 
 ### Quick Start
 
@@ -13,7 +13,7 @@ cli-debugger <path> -f <function> [--ctor-arg <val>]... [--arg <val>]...
 cli-debugger ./counter.sil -f check --ctor-arg 10 --arg 7
 ```
 
-Structured `State` and struct-like args use JSON:
+Structured `State` and custom `struct` args use JSON:
 
 ```bash
 cli-debugger ./vault.sil -f inspect --arg '{"amount":7,"tag":"0xbeef"}'
@@ -63,20 +63,50 @@ doubled + 1 = (int) 15
 Done.
 ```
 
-### Essential Commands
+### Commands
 
 | Command | Action |
 |---|---|
-| `n` | **Next**: Step over to the next statement |
-| `s` | **Step**: Step into a function |
-| `c` | **Continue**: Run until the next breakpoint or completion |
-| `b <line>` | **Break**: Set a breakpoint (e.g., `b 10`) |
+| `n` (`next`, `over`) | **Next**: Step over to the next statement |
+| `s` (`step`, `into`) | **Step**: Step into a function |
+| `si` | **Step Opcode**: Advance by one VM opcode |
+| `finish` (`out`) | **Step Out**: Continue until the current frame returns |
+| `c` (`continue`) | **Continue**: Run until the next breakpoint or completion |
+| `b [line]` (`break [line]`) | **Break**: Set a breakpoint (e.g. `b 10`) or list current breakpoints |
 | `vars` | **Variables**: List all variables and constants in scope |
-| `eval <expr>` | **Evaluate**: Run an expression in the current debugger scope |
-| `p <name>` | **Print**: Show the value of a specific variable |
+| `e <expr>` (`eval <expr>`) | **Evaluate**: Run an expression in the current debugger scope |
+| `p <name>` (`print <name>`) | **Print**: Show the value of a specific variable |
 | `stack` | **Stack**: Inspect the raw Kaspa VM execution stack |
-| `l` | **List**: Show the source code around your current position |
-| `q` | **Quit**: Exit the debugger |
+| `l` (`list`) | **List**: Show the source code around your current position |
+| `h` / `?` (`help`) | **Help**: Show the command summary |
+| `q` (`quit`) | **Quit**: Exit the debugger |
+
+### Inspection
+
+Use `vars` to inspect the current source-level scope and `eval` to check expressions in that scope. This works for scalars, `State`, `State[]`, and custom `struct` values.
+
+```bash
+cli-debugger examples/debug_struct_state_matrix.sil --function inspect_state \
+  --ctor-arg '{"amount":3,"code":"0x1234"}' \
+  --arg '{"amount":5,"active":true,"tag":"0xaa"}'
+```
+
+```text
+(sdb) vars
+Contract Constants:
+  seed_pair (Pair) = {amount: 3, code: 0x1234}
+Contract State:
+  amount (int) = 1
+  active (bool) = true
+  tag (byte[1]) = 0xaa
+Call Arguments:
+  next_state (State) = {amount: 5, active: true, tag: 0xaa}
+
+(sdb) eval next_state.amount + amount
+next_state.amount + amount = (int) 6
+```
+
+If the contract executes a source-level `console.log(...)`, its output appears under `Console:` while stepping. The same `vars` and `eval` flow also works for custom structs such as `Pair`.
 
 ---
 
@@ -121,17 +151,17 @@ Structured args use the same JSON object and object-array form inside `.test.jso
 }
 ```
 
-### Commands
+### Test Commands
 
 ```bash
-# Run all tests using the sidecar inferred from the contract path
+# Run all tests using the matching `.test.json` file inferred from the contract path
 cli-debugger <contract-path> --run-all
 
-# Run a specific test case using the sidecar inferred from the contract path
+# Run a specific test case using the matching `.test.json` file inferred from the contract path
 cli-debugger <contract-path> --run --test-name <name>
 ```
 
-Add `--test-file <path>` to either form to use an explicit test file instead of the inferred json file path
+Add `--test-file <path>` to either form to use an explicit test file instead of the inferred `.test.json` path.
 
 **Output Example:**
 ```text

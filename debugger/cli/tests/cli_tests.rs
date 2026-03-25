@@ -84,8 +84,59 @@ contract DebugSmallInline() {
     script_path
 }
 
-fn shared_example_path(name: &str) -> std::path::PathBuf {
-    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples").join(name)
+fn write_debug_state_fixture() -> std::path::PathBuf {
+    let nonce = SystemTime::now().duration_since(UNIX_EPOCH).expect("clock").as_nanos();
+    let dir = std::env::temp_dir().join(format!("cli_debugger_state_fixture_{}_{}", std::process::id(), nonce));
+    std::fs::create_dir_all(&dir).expect("create temp fixture dir");
+
+    let script_path = dir.join("debug_state.sil");
+    std::fs::write(
+        &script_path,
+        r#"pragma silverscript ^0.1.0;
+
+contract DebugState(int ctor_x) {
+    int constant const_y = 5;
+
+    int amount = 1;
+    bool active = true;
+    byte[1] tag = 0xaa;
+    struct Pair {
+        int amount;
+        byte[2] code;
+    }
+
+    entrypoint function inspect_state(State next_state) {
+        int bumped = next_state.amount + 1;
+        byte[1] next_tag = next_state.tag;
+
+        require(bumped > amount);
+        require(next_state.active == active);
+        require(next_tag == next_state.tag);
+    }
+
+    entrypoint function inspect_state_array(State[] next_states) {
+        int first_amount = next_states[0].amount;
+        byte[1] second_tag = next_states[1].tag;
+
+        require(next_states.length == 2);
+        require(first_amount < next_states[1].amount);
+        require(next_states[0].active == true);
+        require(second_tag == next_states[1].tag);
+    }
+
+    entrypoint function inspect_pair(Pair next_pair) {
+        int pair_amount = next_pair.amount;
+        byte[2] pair_tag = next_pair.code;
+
+        require(pair_amount > 0);
+        require(pair_tag == next_pair.code);
+    }
+}
+"#,
+    )
+    .expect("write fixture contract");
+
+    script_path
 }
 
 fn write_named_test_fixture(script_name: &str, test_file_name: &str) -> (std::path::PathBuf, std::path::PathBuf) {
@@ -470,7 +521,7 @@ fn cli_debugger_accepts_struct_constructor_arg_and_renders_source_level_value() 
 
 #[test]
 fn cli_debugger_evals_structured_state_expressions() {
-    let script_path = shared_example_path("debug_state.sil");
+    let script_path = write_debug_state_fixture();
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_cli-debugger"))
         .arg(&script_path)
