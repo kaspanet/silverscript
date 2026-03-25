@@ -33,7 +33,6 @@ impl ScriptBuilderStackBindingExt for ScriptBuilder {
         } else {
             self.add_i64(depth_from_top)?;
             self.add_op(OpPick)?;
-            self.add_op(OpDup)?;
         }
 
         Ok(())
