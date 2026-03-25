@@ -364,15 +364,15 @@ fn branch_heavy_if_else_logic_matches_rust_model_across_cases() {
     // Snapshot these metrics exactly so compiler codegen changes must consciously
     // acknowledge their size impact on a branch-heavy stress case.
     assert_eq!(
-        script_len, 358,
+        script_len, 342,
         "branch_maze metrics: script_len={script_len} instruction_count={instruction_count} charged_op_count={charged_op_count}"
     );
     assert_eq!(
-        instruction_count, 358,
+        instruction_count, 342,
         "branch_maze metrics: script_len={script_len} instruction_count={instruction_count} charged_op_count={charged_op_count}"
     );
     assert_eq!(
-        charged_op_count, 236,
+        charged_op_count, 234,
         "branch_maze metrics: script_len={script_len} instruction_count={instruction_count} charged_op_count={charged_op_count}"
     );
     let cases = [(7, 2, 5, 4), (7, 2, -3, 4), (2, 7, 5, 4), (2, 7, 5, 3), (4, 4, 9, 2), (-3, 1, 6, -2), (10, -1, -4, 7), (0, 0, 0, 0)];
@@ -503,11 +503,11 @@ fn sorting_network_over_fixed_array_matches_rust_model_across_cases() {
     let script_len = compiled.script.len();
     let (instruction_count, charged_op_count) = script_op_counts(&compiled.script);
     assert_eq!(
-        script_len, 912,
+        script_len, 881,
         "sorting_network metrics: script_len={script_len} instruction_count={instruction_count} charged_op_count={charged_op_count}"
     );
     assert_eq!(
-        instruction_count, 912,
+        instruction_count, 881,
         "sorting_network metrics: script_len={script_len} instruction_count={instruction_count} charged_op_count={charged_op_count}"
     );
     assert_eq!(
