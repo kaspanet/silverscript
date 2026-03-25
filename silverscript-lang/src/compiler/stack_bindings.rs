@@ -5,6 +5,41 @@ use indexmap::IndexSet;
 use kaspa_txscript::opcodes::codes::*;
 use kaspa_txscript::script_builder::ScriptBuilder;
 
+trait ScriptBuilderStackBindingExt {
+    fn drop_from_depth(&mut self, depth_from_top: i64) -> Result<(), CompilerError>;
+    fn pick_from_depth(&mut self, depth_from_top: i64) -> Result<(), CompilerError>;
+}
+
+impl ScriptBuilderStackBindingExt for ScriptBuilder {
+    fn drop_from_depth(&mut self, depth_from_top: i64) -> Result<(), CompilerError> {
+        if depth_from_top == 0 {
+            self.add_op(OpDrop)?;
+        } else if depth_from_top == 1 {
+            self.add_op(OpNip)?;
+        } else {
+            self.add_i64(depth_from_top)?;
+            self.add_op(OpRoll)?;
+            self.add_op(OpDrop)?;
+        }
+
+        Ok(())
+    }
+
+    fn pick_from_depth(&mut self, depth_from_top: i64) -> Result<(), CompilerError> {
+        if depth_from_top == 0 {
+            self.add_op(OpDup)?;
+        } else if depth_from_top == 1 {
+            self.add_op(OpOver)?;
+        } else {
+            self.add_i64(depth_from_top)?;
+            self.add_op(OpPick)?;
+            self.add_op(OpDup)?;
+        }
+
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub(crate) struct StackBindings {
     names: IndexSet<String>,
@@ -74,13 +109,7 @@ impl StackBindings {
             }
 
             let depth_from_top = self.depth_from_top(&name).expect("binding should exist before dropping");
-            if depth_from_top == 0 {
-                builder.add_op(OpDrop)?;
-            } else {
-                builder.add_i64(depth_from_top)?;
-                builder.add_op(OpRoll)?;
-                builder.add_op(OpDrop)?;
-            }
+            builder.drop_from_depth(depth_from_top)?;
 
             self.remove_name(&name);
         }
@@ -105,9 +134,7 @@ impl StackBindings {
     pub(crate) fn emit_update_stack_for_rebinding(&mut self, name: &str, builder: &mut ScriptBuilder) -> Result<(), CompilerError> {
         let depth_from_top = self.depth_from_top(name).expect("binding should exist before stack rebinding");
 
-        builder.add_i64(depth_from_top + 1)?;
-        builder.add_op(OpRoll)?;
-        builder.add_op(OpDrop)?;
+        builder.drop_from_depth(depth_from_top + 1)?;
 
         self.move_name_to_top(name);
 
@@ -124,9 +151,8 @@ impl StackBindings {
             return Ok(false);
         };
 
-        builder.add_i64(index + *stack_depth)?;
+        builder.pick_from_depth(index + *stack_depth)?;
         *stack_depth += 1;
-        builder.add_op(OpPick)?;
         Ok(true)
     }
 
@@ -149,9 +175,7 @@ impl StackBindings {
         // same bindings, so they are just two permutations of the same set.
 
         if let Some(opcodes) = local_stack_reordering_opcodes(&current_order, target_order) {
-            for opcode in opcodes {
-                builder.add_op(opcode)?;
-            }
+            builder.add_ops(&opcodes)?;
             self.reset_to_target_order(target_order);
             return Ok(());
         }
@@ -328,7 +352,7 @@ mod tests {
 
         stack_bindings.emit_drop_bindings(&names(&["a", "c"]), &mut builder).expect("drop selected bindings");
 
-        assert_eq!(builder.drain(), vec![OpDrop, Op1, OpRoll, OpDrop]);
+        assert_eq!(builder.drain(), vec![OpDrop, OpNip]);
         assert_eq!(stack_bindings.binding_order_top_to_bottom(), names(&["b"]));
     }
 
@@ -362,10 +386,26 @@ mod tests {
 
     #[test]
     fn longest_keepable_suffix_start_finds_maximal_target_suffix() {
-        let current = names(&["a", "c", "b", "d"]);
-        let target = names(&["a", "b", "c", "d"]);
+        let cases = [
+            (vec!["a", "b", "c"], vec!["a", "b", "c"], 0),
+            (vec!["a", "c", "b", "d"], vec!["a", "b", "c", "d"], 2),
+            (vec!["a", "b", "c"], vec!["b", "a", "c"], 1),
+            (vec!["a", "b", "c"], vec!["c", "a", "b"], 1),
+            (vec!["a", "b", "c"], vec!["a", "c", "b"], 2),
+            (vec!["a", "b", "c", "d"], vec!["b", "c", "d", "a"], 3),
+            (vec!["a", "b", "c", "d"], vec!["a", "d", "b", "c"], 2),
+            (vec!["a", "b", "c", "d"], vec!["c", "d", "a", "b"], 2),
+            (vec!["x"], vec!["x"], 0),
+            (vec!["x", "y"], vec!["y", "x"], 1),
+            (vec!["a", "b", "c", "d"], vec!["a", "b", "d", "c"], 3),
+            (vec!["a", "b", "c", "d", "e"], vec!["c", "a", "b", "d", "e"], 1),
+        ];
 
-        assert_eq!(longest_keepable_suffix_start(&current, &target), 2);
+        for (current, target, expected) in cases {
+            let current = current.into_iter().map(str::to_string).collect::<Vec<_>>();
+            let target = target.into_iter().map(str::to_string).collect::<Vec<_>>();
+            assert_eq!(longest_keepable_suffix_start(&current, &target), expected, "current={current:?} target={target:?}");
+        }
     }
 
     #[test]
@@ -387,6 +427,49 @@ mod tests {
     fn apply_local_opcode_matches_stack_machine_rotation_direction() {
         assert_eq!(apply_local_opcode(&names(&["a", "b", "c"]), OpRot), Some(names(&["c", "a", "b"])));
         assert_eq!(apply_local_opcode(&names(&["a", "b", "c", "d"]), Op2Swap), Some(names(&["c", "d", "a", "b"])));
+        assert_eq!(apply_local_opcode(&names(&["a"]), OpSwap), None);
+    }
+
+    #[test]
+    fn apply_local_opcode_check_against_script_engine() {
+        let executable_cases = [
+            (vec![11, 22], OpSwap),
+            (vec![11, 22, 33], OpRot),
+            (vec![11, 22, 33, 44], Op2Swap),
+            (vec![11, 22, 33, 44, 55, 66], Op2Rot),
+        ];
+
+        for (values, opcode) in executable_cases {
+            let mut initial_script = ScriptBuilder::new();
+            for value in &values {
+                initial_script.add_i64(*value).expect("push test value");
+            }
+            let initial_stack = execute_script_and_decode_stack(initial_script.drain());
+            let current_labels = (0..initial_stack.len()).map(|index| format!("v{index}")).collect::<Vec<_>>();
+            let expected_labels = apply_local_opcode(&current_labels, opcode).expect("opcode should apply to labeled stack");
+
+            let mut expected_by_label = HashMap::new();
+            for (label, value) in current_labels.iter().cloned().zip(initial_stack.iter().copied()) {
+                expected_by_label.insert(label, value);
+            }
+            let expected_stack = expected_labels
+                .into_iter()
+                .map(|label| *expected_by_label.get(&label).expect("label should map to test value"))
+                .collect::<Vec<_>>();
+
+            let mut script = ScriptBuilder::new();
+            for value in values {
+                script.add_i64(value).expect("push test value");
+            }
+            script.add_op(opcode).expect("append local opcode");
+
+            assert_eq!(
+                execute_script_and_decode_stack(script.drain()),
+                expected_stack,
+                "opcode {opcode} should match apply_local_opcode permutation"
+            );
+        }
+
         assert_eq!(apply_local_opcode(&names(&["a"]), OpSwap), None);
     }
 
