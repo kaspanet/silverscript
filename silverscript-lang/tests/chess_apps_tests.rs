@@ -720,71 +720,71 @@ fn size_snapshots() -> Vec<SizeSnapshot> {
         SizeSnapshot {
             name: "chess_mux.sil",
             ctor: mux_constructor_args,
-            expected_script_len: 1609,
-            expected_instruction_count: 954,
-            expected_charged_op_count: 642,
+            expected_script_len: 1601,
+            expected_instruction_count: 946,
+            expected_charged_op_count: 641,
         },
         SizeSnapshot {
             name: "chess_settle.sil",
             ctor: settle_constructor_args,
-            expected_script_len: 2685,
-            expected_instruction_count: 2077,
-            expected_charged_op_count: 1348,
+            expected_script_len: 2666,
+            expected_instruction_count: 2058,
+            expected_charged_op_count: 1347,
         },
         SizeSnapshot {
             name: "chess_pawn.sil",
             ctor: pawn_constructor_args,
-            expected_script_len: 1856,
-            expected_instruction_count: 1229,
+            expected_script_len: 1846,
+            expected_instruction_count: 1219,
             expected_charged_op_count: 794,
         },
         SizeSnapshot {
             name: "chess_knight.sil",
             ctor: pawn_constructor_args,
-            expected_script_len: 1394,
-            expected_instruction_count: 803,
+            expected_script_len: 1392,
+            expected_instruction_count: 801,
             expected_charged_op_count: 529,
         },
         SizeSnapshot {
             name: "chess_vert.sil",
             ctor: pawn_constructor_args,
-            expected_script_len: 2066,
-            expected_instruction_count: 1422,
+            expected_script_len: 2060,
+            expected_instruction_count: 1416,
             expected_charged_op_count: 925,
         },
         SizeSnapshot {
             name: "chess_horiz.sil",
             ctor: pawn_constructor_args,
-            expected_script_len: 2066,
-            expected_instruction_count: 1422,
+            expected_script_len: 2060,
+            expected_instruction_count: 1416,
             expected_charged_op_count: 925,
         },
         SizeSnapshot {
             name: "chess_diag.sil",
             ctor: pawn_constructor_args,
-            expected_script_len: 1825,
-            expected_instruction_count: 1219,
+            expected_script_len: 1823,
+            expected_instruction_count: 1217,
             expected_charged_op_count: 795,
         },
         SizeSnapshot {
             name: "chess_king.sil",
             ctor: pawn_constructor_args,
-            expected_script_len: 1541,
-            expected_instruction_count: 948,
+            expected_script_len: 1537,
+            expected_instruction_count: 944,
             expected_charged_op_count: 621,
         },
         SizeSnapshot {
             name: "chess_castle.sil",
             ctor: pawn_constructor_args,
-            expected_script_len: 1552,
-            expected_instruction_count: 955,
+            expected_script_len: 1548,
+            expected_instruction_count: 951,
             expected_charged_op_count: 617,
         },
         SizeSnapshot {
             name: "chess_castle_challenge.sil",
             ctor: pawn_constructor_args,
-            expected_script_len: 1764,
-            expected_instruction_count: 1151,
+            expected_script_len: 1762,
+            expected_instruction_count: 1149,
             expected_charged_op_count: 744,
         },
     ]
@@ -864,13 +864,23 @@ fn league_constructor_args() -> Vec<Expr<'static>> {
 
 #[test]
 fn chess_apps_compile_and_probe_sizes_within_noise() {
+    let mut actual_sizes = Vec::new();
+
     for snapshot in size_snapshots() {
         let source = local_contract_source(snapshot.name);
         let compiled = compile_contract(source, &(snapshot.ctor)(), CompileOptions::default())
             .unwrap_or_else(|err| panic!("{} should compile: {err}", snapshot.name));
         let (instruction_count, charged_op_count) = script_op_counts(&compiled.script);
 
-        assert_size_within_noise(&format!("{} script_len", snapshot.name), compiled.script.len(), snapshot.expected_script_len);
+        actual_sizes.push((snapshot.name, compiled.script.len(), instruction_count, charged_op_count));
+    }
+
+    for (name, script_len, instruction_count, charged_op_count) in &actual_sizes {
+        println!("{name} {script_len} / {instruction_count} / {charged_op_count}");
+    }
+
+    for (snapshot, (_, script_len, instruction_count, charged_op_count)) in size_snapshots().into_iter().zip(actual_sizes) {
+        assert_size_within_noise(&format!("{} script_len", snapshot.name), script_len, snapshot.expected_script_len);
         assert_size_within_noise(
             &format!("{} instruction_count", snapshot.name),
             instruction_count,

@@ -361,18 +361,19 @@ fn branch_heavy_if_else_logic_matches_rust_model_across_cases() {
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("branch-heavy contract should compile");
     let script_len = compiled.script.len();
     let (instruction_count, charged_op_count) = script_op_counts(&compiled.script);
+    println!("branch_maze {script_len} / {instruction_count} / {charged_op_count}");
     // Snapshot these metrics exactly so compiler codegen changes must consciously
     // acknowledge their size impact on a branch-heavy stress case.
     assert_eq!(
-        script_len, 342,
+        script_len, 326,
         "branch_maze metrics: script_len={script_len} instruction_count={instruction_count} charged_op_count={charged_op_count}"
     );
     assert_eq!(
-        instruction_count, 342,
+        instruction_count, 326,
         "branch_maze metrics: script_len={script_len} instruction_count={instruction_count} charged_op_count={charged_op_count}"
     );
     assert_eq!(
-        charged_op_count, 234,
+        charged_op_count, 231,
         "branch_maze metrics: script_len={script_len} instruction_count={instruction_count} charged_op_count={charged_op_count}"
     );
     let cases = [(7, 2, 5, 4), (7, 2, -3, 4), (2, 7, 5, 4), (2, 7, 5, 3), (4, 4, 9, 2), (-3, 1, 6, -2), (10, -1, -4, 7), (0, 0, 0, 0)];
@@ -502,16 +503,17 @@ fn sorting_network_over_fixed_array_matches_rust_model_across_cases() {
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("sorting-network contract should compile");
     let script_len = compiled.script.len();
     let (instruction_count, charged_op_count) = script_op_counts(&compiled.script);
+    println!("sorting_network {script_len} / {instruction_count} / {charged_op_count}");
     assert_eq!(
-        script_len, 881,
+        script_len, 780,
         "sorting_network metrics: script_len={script_len} instruction_count={instruction_count} charged_op_count={charged_op_count}"
     );
     assert_eq!(
-        instruction_count, 881,
+        instruction_count, 780,
         "sorting_network metrics: script_len={script_len} instruction_count={instruction_count} charged_op_count={charged_op_count}"
     );
     assert_eq!(
-        charged_op_count, 618,
+        charged_op_count, 607,
         "sorting_network metrics: script_len={script_len} instruction_count={instruction_count} charged_op_count={charged_op_count}"
     );
 

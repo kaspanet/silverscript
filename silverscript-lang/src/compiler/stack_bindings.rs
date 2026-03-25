@@ -8,6 +8,7 @@ use kaspa_txscript::script_builder::ScriptBuilder;
 trait ScriptBuilderStackBindingExt {
     fn drop_from_depth(&mut self, depth: i64) -> Result<(), CompilerError>;
     fn pick_from_depth(&mut self, depth: i64) -> Result<(), CompilerError>;
+    fn roll_from_depth(&mut self, depth: i64) -> Result<(), CompilerError>;
 }
 
 impl ScriptBuilderStackBindingExt for ScriptBuilder {
@@ -16,6 +17,9 @@ impl ScriptBuilderStackBindingExt for ScriptBuilder {
             self.add_op(OpDrop)?;
         } else if depth == 1 {
             self.add_op(OpNip)?;
+        } else if depth == 2 {
+            self.add_op(OpRot)?;
+            self.add_op(OpDrop)?;
         } else {
             self.add_i64(depth)?;
             self.add_op(OpRoll)?;
@@ -33,6 +37,21 @@ impl ScriptBuilderStackBindingExt for ScriptBuilder {
         } else {
             self.add_i64(depth)?;
             self.add_op(OpPick)?;
+        }
+
+        Ok(())
+    }
+
+    fn roll_from_depth(&mut self, depth: i64) -> Result<(), CompilerError> {
+        if depth == 0 {
+            return Ok(());
+        } else if depth == 1 {
+            self.add_op(OpSwap)?;
+        } else if depth == 2 {
+            self.add_op(OpRot)?;
+        } else {
+            self.add_i64(depth)?;
+            self.add_op(OpRoll)?;
         }
 
         Ok(())
@@ -193,8 +212,7 @@ impl StackBindings {
             let index = remaining_stack.get_index_of(name).expect("binding existence was asserted above");
             let depth = index as i64;
 
-            builder.add_i64(depth)?;
-            builder.add_op(OpRoll)?;
+            builder.roll_from_depth(depth)?;
             builder.add_op(OpToAltStack)?;
 
             remaining_stack.shift_remove_index(index);
@@ -422,7 +440,7 @@ mod tests {
 
         stack_bindings.emit_update_stack_for_rebinding("b", &mut builder).expect("rebind stack slot");
 
-        assert_eq!(builder.drain(), vec![Op2, OpRoll, OpDrop]);
+        assert_eq!(builder.drain(), vec![OpRot, OpDrop]);
         assert_eq!(stack_bindings.binding_order_top_to_bottom(), names(&["b", "a", "c"]));
         assert_eq!(stack_bindings.depth("b"), Some(0));
         assert_eq!(stack_bindings.depth("a"), Some(1));
