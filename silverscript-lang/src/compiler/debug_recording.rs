@@ -515,7 +515,7 @@ fn collect_variable_updates<'i>(
     after_stack_bindings: &StackBindings,
 ) -> Result<Vec<DebugVariableUpdate<'i>>, CompilerError> {
     let mut names: Vec<String> =
-        after_env.keys().chain(after_stack_bindings.keys()).cloned().collect::<HashSet<_>>().into_iter().collect();
+        after_env.keys().chain(after_stack_bindings.names()).cloned().collect::<HashSet<_>>().into_iter().collect();
     names.sort_unstable();
 
     let mut updates = Vec::new();

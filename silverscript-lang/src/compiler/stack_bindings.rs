@@ -41,16 +41,18 @@ impl ScriptBuilderStackBindingExt for ScriptBuilder {
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct StackBindings {
-    names: IndexSet<String>,
+    // Logical equivalent of the runtime stack, stored top-to-bottom so index
+    // equals depth (from top).
+    stack: IndexSet<String>,
 }
 
 impl StackBindings {
     #[cfg(test)]
-    pub(crate) fn from_order_top_to_bottom(names: Vec<String>) -> Self {
-        let input_len = names.len();
-        let names: IndexSet<_> = names.into_iter().collect();
-        assert_eq!(input_len, names.len(), "stack binding order should not contain duplicates");
-        Self { names }
+    pub(crate) fn from_order_top_to_bottom(ordered_names: Vec<String>) -> Self {
+        let input_len = ordered_names.len();
+        let stack: IndexSet<_> = ordered_names.into_iter().collect();
+        assert_eq!(input_len, stack.len(), "stack binding order should not contain duplicates");
+        Self { stack }
     }
 
     pub(crate) fn from_depths(depths: HashMap<String, i64>) -> Self {
@@ -60,29 +62,29 @@ impl StackBindings {
             ordered.iter().enumerate().all(|(expected_depth, (_, depth))| *depth == expected_depth as i64),
             "illegal stack binding depths"
         );
-        Self { names: ordered.into_iter().map(|(name, _)| name).collect() }
+        Self { stack: ordered.into_iter().map(|(name, _)| name).collect() }
     }
 
     pub(crate) fn set_depth(&mut self, name: &str, depth: i64) {
-        assert!((0..=self.names.len() as i64).contains(&depth), "depth out of bounds: {depth}");
+        assert!((0..=self.stack.len() as i64).contains(&depth), "depth out of bounds: {depth}");
         let target_index = depth as usize;
-        self.names.insert_before(target_index, name.to_string());
+        self.stack.insert_before(target_index, name.to_string());
     }
 
     pub(crate) fn len(&self) -> usize {
-        self.names.len()
+        self.stack.len()
     }
 
     pub(crate) fn contains(&self, name: &str) -> bool {
-        self.names.contains(name)
+        self.stack.contains(name)
     }
 
     pub(crate) fn depth(&self, name: &str) -> Option<i64> {
-        self.names.get_index_of(name).map(|index| index as i64)
+        self.stack.get_index_of(name).map(|index| index as i64)
     }
 
-    pub(crate) fn keys(&self) -> impl Iterator<Item = &String> {
-        self.names.iter()
+    pub(crate) fn names(&self) -> impl Iterator<Item = &String> {
+        self.stack.iter()
     }
 
     pub(crate) fn clone_depths(&self) -> HashMap<String, i64> {
@@ -90,7 +92,7 @@ impl StackBindings {
     }
 
     pub(crate) fn binding_order_top_to_bottom(&self) -> Vec<String> {
-        self.names.iter().cloned().collect()
+        self.stack.iter().cloned().collect()
     }
 
     pub(crate) fn push_binding(&mut self, name: &str) {
@@ -169,15 +171,11 @@ impl StackBindings {
             return Ok(());
         }
 
-        let current_names = current_order.iter().cloned().collect::<HashSet<_>>();
-        let target_names = target_order.iter().cloned().collect::<HashSet<_>>();
-        assert_eq!(current_order.len(), current_names.len(), "current stack order should not contain duplicates");
-        assert_eq!(target_order.len(), target_names.len(), "target stack order should not contain duplicates");
-        if current_names != target_names {
-            return Err(CompilerError::Unsupported(
-                "stack reconciliation requires both layouts to contain the same bindings".to_string(),
-            ));
-        }
+        let current_set = current_order.iter().cloned().collect::<HashSet<_>>();
+        let target_set = target_order.iter().cloned().collect::<HashSet<_>>();
+        assert_eq!(current_order.len(), current_set.len(), "current stack order should not contain duplicates");
+        assert_eq!(target_order.len(), target_set.len(), "target stack order should not contain duplicates");
+        assert_eq!(current_set, target_set, "stack reconciliation requires both layouts to contain the same bindings");
         // At this point both layouts are duplicate-free and contain exactly the
         // same bindings, so they are just two permutations of the same set.
 
@@ -189,20 +187,20 @@ impl StackBindings {
 
         let keep_start = longest_keepable_suffix_start(&current_order, target_order);
         let move_prefix = &target_order[..keep_start];
-        let mut remaining_names = self.names.clone();
+        let mut remaining_stack = self.stack.clone();
 
         for name in move_prefix {
-            let index = remaining_names.get_index_of(name).expect("binding existence was asserted above");
+            let index = remaining_stack.get_index_of(name).expect("binding existence was asserted above");
             let depth = index as i64;
 
             builder.add_i64(depth)?;
             builder.add_op(OpRoll)?;
             builder.add_op(OpToAltStack)?;
 
-            remaining_names.shift_remove_index(index);
+            remaining_stack.shift_remove_index(index);
         }
 
-        debug_assert_eq!(remaining_names.iter().cloned().collect::<Vec<_>>(), target_order[move_prefix.len()..]);
+        debug_assert_eq!(remaining_stack.iter().cloned().collect::<Vec<_>>(), target_order[move_prefix.len()..]);
 
         for _ in 0..move_prefix.len() {
             builder.add_op(OpFromAltStack)?;
@@ -213,16 +211,16 @@ impl StackBindings {
     }
 
     fn reset_to_target_order(&mut self, target_order: &[String]) {
-        self.names = target_order.iter().cloned().collect();
+        self.stack = target_order.iter().cloned().collect();
     }
 
     fn remove_name(&mut self, name: &str) {
-        self.names.shift_remove(name);
+        self.stack.shift_remove(name);
     }
 
     fn move_name_to_top(&mut self, name: &str) {
-        let from = self.names.get_index_of(name).expect("binding should exist before moving to top");
-        self.names.move_index(from, 0);
+        let from = self.stack.get_index_of(name).expect("binding should exist before moving to top");
+        self.stack.move_index(from, 0);
     }
 }
 
