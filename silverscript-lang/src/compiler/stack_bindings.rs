@@ -110,12 +110,6 @@ impl StackBindings {
         Self { stack: ordered.into_iter().map(|(name, _)| name).collect() }
     }
 
-    pub(crate) fn set_depth(&mut self, name: &str, depth: i64) {
-        assert!((0..=self.stack.len() as i64).contains(&depth), "depth out of bounds: {depth}");
-        let target_index = depth as usize;
-        self.stack.insert_before(target_index, name.to_string());
-    }
-
     pub(crate) fn len(&self) -> usize {
         self.stack.len()
     }
@@ -133,10 +127,10 @@ impl StackBindings {
     }
 
     pub(crate) fn clone_depths(&self) -> HashMap<String, i64> {
-        self.binding_order_top_to_bottom().into_iter().enumerate().map(|(depth, name)| (name, depth as i64)).collect()
+        self.stack.iter().cloned().enumerate().map(|(depth, name)| (name, depth as i64)).collect()
     }
 
-    pub(crate) fn binding_order_top_to_bottom(&self) -> Vec<String> {
+    pub(crate) fn binding_order(&self) -> Vec<String> {
         self.stack.iter().cloned().collect()
     }
 
@@ -150,13 +144,28 @@ impl StackBindings {
         self.stack.as_slice() == other.stack.as_slice()
     }
 
+    pub(crate) fn set_depth(&mut self, name: &str, depth: i64) {
+        assert!((0..=self.stack.len() as i64).contains(&depth), "depth out of bounds: {depth}");
+        let target_index = depth as usize;
+        self.stack.insert_before(target_index, name.to_string());
+    }
+
     pub(crate) fn push_binding(&mut self, name: &str) {
         assert!(!self.contains(name), "binding already exists: {name}");
         self.set_depth(name, 0);
     }
 
-    /// Removes the named bindings from the stack while preserving the relative
-    /// order of all surviving bindings.
+    fn remove_binding(&mut self, name: &str) {
+        self.stack.shift_remove(name);
+    }
+
+    fn move_binding_to_top(&mut self, name: &str) {
+        let from = self.stack.get_index_of(name).expect("binding should exist before moving to top");
+        self.stack.move_index(from, 0);
+    }
+
+    /// Emits stack ops to remove the named bindings while preserving the
+    /// relative order of all surviving bindings.
     ///
     /// The removal order is current top-to-bottom among the bindings being
     /// removed, which minimizes the total `ROLL` depth for this direct
@@ -167,7 +176,7 @@ impl StackBindings {
         }
 
         let names_to_remove = names.iter().cloned().collect::<HashSet<_>>();
-        for name in self.binding_order_top_to_bottom() {
+        for name in self.binding_order() {
             if !names_to_remove.contains(&name) {
                 continue;
             }
@@ -175,14 +184,14 @@ impl StackBindings {
             let depth = self.depth(&name).expect("binding should exist before dropping");
             builder.drop_from_depth(depth)?;
 
-            self.remove_name(&name);
+            self.remove_binding(&name);
         }
 
         Ok(())
     }
 
-    /// Rewrites the physical stack after a scalar reassignment and updates the
-    /// binding model to reflect the new stack shape.
+    /// Rewrites the physical stack after rebinding an existing binding and
+    /// updates the binding model to reflect the new stack shape.
     ///
     /// Assumptions:
     /// - `name` is already bound in this `StackBindings`
@@ -200,11 +209,15 @@ impl StackBindings {
 
         builder.drop_from_depth(depth + 1)?;
 
-        self.move_name_to_top(name);
+        self.move_binding_to_top(name);
 
         Ok(())
     }
 
+    /// Emits a copy of the named binding onto the runtime stack top.
+    ///
+    /// `stack_depth` accounts for transient values already pushed above the
+    /// logical binding layout during expression compilation.
     pub(crate) fn emit_copy_binding_to_top(
         &self,
         name: &str,
@@ -220,6 +233,11 @@ impl StackBindings {
         Ok(true)
     }
 
+    /// Emits code to transform the current runtime stack layout into
+    /// `target_bindings`.
+    ///
+    /// This first tries the bounded local-op fast path, then falls back to the
+    /// suffix-rebuild strategy using altstack.
     pub(crate) fn emit_stack_reordering(&self, target_bindings: &Self, builder: &mut ScriptBuilder) -> Result<(), CompilerError> {
         if self.order_eq(target_bindings) {
             return Ok(());
@@ -252,15 +270,6 @@ impl StackBindings {
             builder.add_op(OpFromAltStack)?;
         }
         Ok(())
-    }
-
-    fn remove_name(&mut self, name: &str) {
-        self.stack.shift_remove(name);
-    }
-
-    fn move_name_to_top(&mut self, name: &str) {
-        let from = self.stack.get_index_of(name).expect("binding should exist before moving to top");
-        self.stack.move_index(from, 0);
     }
 }
 
@@ -456,7 +465,7 @@ mod tests {
         stack_bindings.emit_update_stack_for_rebinding("b", &mut builder).expect("rebind stack slot");
 
         assert_eq!(builder.drain(), vec![OpRot, OpDrop]);
-        assert_eq!(stack_bindings.binding_order_top_to_bottom(), names(&["b", "a", "c"]));
+        assert_eq!(stack_bindings.binding_order(), names(&["b", "a", "c"]));
         assert_eq!(stack_bindings.depth("b"), Some(0));
         assert_eq!(stack_bindings.depth("a"), Some(1));
         assert_eq!(stack_bindings.depth("c"), Some(2));
@@ -470,7 +479,7 @@ mod tests {
         stack_bindings.emit_drop_bindings(&names(&["a", "c"]), &mut builder).expect("drop selected bindings");
 
         assert_eq!(builder.drain(), vec![OpDrop, OpNip]);
-        assert_eq!(stack_bindings.binding_order_top_to_bottom(), names(&["b"]));
+        assert_eq!(stack_bindings.binding_order(), names(&["b"]));
     }
 
     #[test]
@@ -701,6 +710,6 @@ mod tests {
         script.add_ops(&rebinding_builder.drain()).expect("append rebinding ops");
 
         assert_eq!(execute_script_and_decode_stack(script.drain()), vec![3, 1, 9]);
-        assert_eq!(stack_bindings.binding_order_top_to_bottom(), names(&["b", "a", "c"]));
+        assert_eq!(stack_bindings.binding_order(), names(&["b", "a", "c"]));
     }
 }

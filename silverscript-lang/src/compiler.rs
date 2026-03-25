@@ -7338,7 +7338,7 @@ mod tests {
         }
 
         assert_eq!(
-            stack_bindings.binding_order_top_to_bottom(),
+            stack_bindings.binding_order(),
             ["field_b", "field_a", "param_b", "param_a"].into_iter().map(str::to_string).collect::<Vec<_>>()
         );
     }
