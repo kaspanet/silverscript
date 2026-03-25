@@ -280,6 +280,9 @@ fn longest_keepable_suffix_start(current_order: &[String], target_order: &[Strin
     j
 }
 
+/// Searches the bounded local opcode space used by the planner and returns the
+/// first 1- or 2-op sequence that exactly rewrites `current_order` into
+/// `target_order`.
 fn local_stack_reordering_opcodes(current_order: &[String], target_order: &[String]) -> Option<Vec<u8>> {
     if current_order.len() != target_order.len() {
         return None;
@@ -311,30 +314,33 @@ fn local_stack_reordering_opcodes(current_order: &[String], target_order: &[Stri
     None
 }
 
+/// Applies one local stack opcode to the compiler's top-to-bottom binding model.
+///
+/// This is the symbolic counterpart of the small bounded search in
+/// `local_stack_reordering_opcodes`: given the current logical binding order, it
+/// predicts what `SWAP`, `ROT`, `2SWAP`, or `2ROT` would do to the top portion
+/// of the stack.
+///
+/// Returns `None` when:
+/// - the opcode is not part of that local search space, or
+/// - the current stack is too short for the opcode to apply.
+#[allow(non_upper_case_globals)]
 fn apply_local_opcode(order: &[String], opcode: u8) -> Option<Vec<String>> {
     let mut next = order.to_vec();
-    if opcode == OpSwap {
-        if next.len() < 2 {
-            return None;
+    match opcode {
+        OpSwap if next.len() >= 2 => {
+            next.swap(0, 1);
         }
-        next.swap(0, 1);
-    } else if opcode == OpRot {
-        if next.len() < 3 {
-            return None;
+        OpRot if next.len() >= 3 => {
+            next[..3].rotate_right(1);
         }
-        next[..3].rotate_right(1);
-    } else if opcode == Op2Swap {
-        if next.len() < 4 {
-            return None;
+        Op2Swap if next.len() >= 4 => {
+            next[..4].rotate_left(2);
         }
-        next[..4].rotate_left(2);
-    } else if opcode == Op2Rot {
-        if next.len() < 6 {
-            return None;
+        Op2Rot if next.len() >= 6 => {
+            next[..6].rotate_right(2);
         }
-        next[..6].rotate_right(2);
-    } else {
-        return None;
+        _ => return None,
     }
     Some(next)
 }
@@ -510,6 +516,11 @@ mod tests {
             // target:  [e, a, b, c, d]
             // keep:        ^^^^^^^^^^
             (vec!["a", "b", "c", "d", "e"], vec!["e", "a", "b", "c", "d"], 1),
+            // move:        ↓     ↓
+            // current: [a, b, c, d, e, f]
+            // target:  [b, d, a, c, e, f]
+            // keep:           ^^^^^^^^^^
+            (vec!["a", "b", "c", "d", "e", "f"], vec!["b", "d", "a", "c", "e", "f"], 2),
         ];
 
         for (current, target, expected) in cases {
