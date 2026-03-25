@@ -3620,9 +3620,7 @@ fn compiles_contract_fields_as_script_prolog() {
         .unwrap()
         .add_data(&[0x12, 0x34])
         .unwrap()
-        .add_i64(1)
-        .unwrap()
-        .add_op(OpPick)
+        .add_op(OpOver)
         .unwrap()
         .add_i64(5)
         .unwrap()
@@ -3715,11 +3713,8 @@ fn compiles_validate_output_state_to_expected_script() {
         .unwrap()
 
         // ---- Build new_state.x = x + 1 ----
-        // push depth index of x (x is second item from top: y=0, x=1)
-        .add_i64(1)
-        .unwrap()
-        // duplicate x from stack
-        .add_op(OpPick)
+        // duplicate x from stack (x is second item from top: y=0, x=1)
+        .add_op(OpOver)
         .unwrap()
         // push literal 1
         .add_i64(1)
@@ -6460,19 +6455,13 @@ fn compiles_reused_variables_and_verifies() {
         .unwrap()
         .add_op(OpAdd)
         .unwrap()
-        .add_i64(0)
+        .add_op(OpDup)
         .unwrap()
-        .add_op(OpPick)
-        .unwrap()
-        .add_i64(1)
-        .unwrap()
-        .add_op(OpPick)
+        .add_op(OpOver)
         .unwrap()
         .add_op(OpMul)
         .unwrap()
-        .add_i64(1)
-        .unwrap()
-        .add_op(OpPick)
+        .add_op(OpOver)
         .unwrap()
         .add_op(OpAdd)
         .unwrap()
@@ -6519,19 +6508,13 @@ fn return_reused_local_is_stored_once_and_reused() {
         .unwrap()
         .add_op(OpAdd)
         .unwrap()
-        .add_i64(0)
+        .add_op(OpDup)
         .unwrap()
-        .add_op(OpPick)
-        .unwrap()
-        .add_i64(1)
-        .unwrap()
-        .add_op(OpPick)
+        .add_op(OpOver)
         .unwrap()
         .add_op(OpMul)
         .unwrap()
-        .add_i64(1)
-        .unwrap()
-        .add_op(OpPick)
+        .add_op(OpOver)
         .unwrap()
         .add_op(OpAdd)
         .unwrap()
@@ -7167,21 +7150,15 @@ fn inline_argument_alias_does_not_store_param_in_addition_to_reused_local() {
 
     let body = ScriptBuilder::new()
         // Copy `x` twice and compute `x * x`, leaving the new local `y` on stack.
-        .add_i64(0)
+        .add_op(OpDup)
         .unwrap()
-        .add_op(OpPick)
-        .unwrap()
-        .add_i64(1)
-        .unwrap()
-        .add_op(OpPick)
+        .add_op(OpOver)
         .unwrap()
         .add_op(OpMul)
         .unwrap()
         // Inline `f(y)`: there is no explicit store for callee param `z`.
         // We just read the already-stored `y` slot, proving `z` is only an alias.
-        .add_i64(0)
-        .unwrap()
-        .add_op(OpPick)
+        .add_op(OpDup)
         .unwrap()
         .add_i64(1)
         .unwrap()
@@ -7190,9 +7167,7 @@ fn inline_argument_alias_does_not_store_param_in_addition_to_reused_local() {
         .add_op(OpVerify)
         .unwrap()
         // Inline `g(y)`: same again, read `y` directly instead of storing `z`.
-        .add_i64(0)
-        .unwrap()
-        .add_op(OpPick)
+        .add_op(OpDup)
         .unwrap()
         .add_i64(10)
         .unwrap()
@@ -7216,7 +7191,9 @@ fn inline_argument_alias_does_not_store_param_in_addition_to_reused_local() {
     let expected = wrap_with_dispatch(body, selector);
 
     assert_eq!(compiled.script, expected);
-    assert_eq!(compiled.script.iter().copied().filter(|op| *op == OpPick).count(), 4);
+    assert_eq!(compiled.script.iter().copied().filter(|op| *op == OpDup).count(), 3);
+    assert_eq!(compiled.script.iter().copied().filter(|op| *op == OpOver).count(), 1);
+    assert_eq!(compiled.script.iter().copied().filter(|op| *op == OpPick).count(), 0);
     assert_eq!(compiled.script.iter().copied().filter(|op| *op == OpMul).count(), 1);
 
     let sigscript_ok = compiled.build_sig_script("main", vec![Expr::int(2)]).expect("sigscript builds");
@@ -7253,9 +7230,7 @@ fn inline_argument_alias_reuses_entrypoint_param_without_extra_stack_storage() {
     let body = ScriptBuilder::new()
         // Inline `f(y)`: `y` is already the entrypoint param on stack, so `z`
         // is only an alias and we simply read that slot.
-        .add_i64(0)
-        .unwrap()
-        .add_op(OpPick)
+        .add_op(OpDup)
         .unwrap()
         .add_i64(1)
         .unwrap()
@@ -7264,9 +7239,7 @@ fn inline_argument_alias_reuses_entrypoint_param_without_extra_stack_storage() {
         .add_op(OpVerify)
         .unwrap()
         // Inline `g(y)`: same aliasing behavior, still no explicit store for `z`.
-        .add_i64(0)
-        .unwrap()
-        .add_op(OpPick)
+        .add_op(OpDup)
         .unwrap()
         .add_i64(10)
         .unwrap()
@@ -7284,7 +7257,9 @@ fn inline_argument_alias_reuses_entrypoint_param_without_extra_stack_storage() {
     let expected = wrap_with_dispatch(body, selector);
 
     assert_eq!(compiled.script, expected);
-    assert_eq!(compiled.script.iter().copied().filter(|op| *op == OpPick).count(), 2);
+    assert_eq!(compiled.script.iter().copied().filter(|op| *op == OpDup).count(), 2);
+    assert_eq!(compiled.script.iter().copied().filter(|op| *op == OpOver).count(), 0);
+    assert_eq!(compiled.script.iter().copied().filter(|op| *op == OpPick).count(), 0);
     assert_eq!(compiled.script.iter().copied().filter(|op| *op == OpDrop).count(), 1);
 
     let sigscript_ok = compiled.build_sig_script("main", vec![Expr::int(2)]).expect("sigscript builds");
@@ -7314,20 +7289,14 @@ fn local_alias_reuses_existing_stack_slot_without_explicit_store() {
 
     let body = ScriptBuilder::new()
         // Copy `x` twice and compute `x * x`, leaving the reused local `y` on stack.
-        .add_i64(0)
+        .add_op(OpDup)
         .unwrap()
-        .add_op(OpPick)
-        .unwrap()
-        .add_i64(1)
-        .unwrap()
-        .add_op(OpPick)
+        .add_op(OpOver)
         .unwrap()
         .add_op(OpMul)
         .unwrap()
         // First `require(y > 1)` reads the stored `y` value.
-        .add_i64(0)
-        .unwrap()
-        .add_op(OpPick)
+        .add_op(OpDup)
         .unwrap()
         .add_i64(1)
         .unwrap()
@@ -7337,9 +7306,7 @@ fn local_alias_reuses_existing_stack_slot_without_explicit_store() {
         .unwrap()
         // `int z = y` does not emit any explicit store. The next require still
         // reads the same stack slot directly, showing `z` aliases `y`.
-        .add_i64(0)
-        .unwrap()
-        .add_op(OpPick)
+        .add_op(OpDup)
         .unwrap()
         .add_i64(1)
         .unwrap()
@@ -7364,7 +7331,9 @@ fn local_alias_reuses_existing_stack_slot_without_explicit_store() {
 
     assert_eq!(compiled.script, expected);
     assert_eq!(compiled.script.iter().copied().filter(|op| *op == OpMul).count(), 1);
-    assert_eq!(compiled.script.iter().copied().filter(|op| *op == OpPick).count(), 4);
+    assert_eq!(compiled.script.iter().copied().filter(|op| *op == OpDup).count(), 3);
+    assert_eq!(compiled.script.iter().copied().filter(|op| *op == OpOver).count(), 1);
+    assert_eq!(compiled.script.iter().copied().filter(|op| *op == OpPick).count(), 0);
 
     let sigscript_ok = compiled.build_sig_script("main", vec![Expr::int(2)]).expect("sigscript builds");
     let result_ok = run_script_with_sigscript(compiled.script.clone(), sigscript_ok);
@@ -7617,8 +7586,9 @@ fn compile_time_if_branch_stores_local_var_once_and_reuses_it() {
     let if_pos = script.iter().position(|op| *op == OpIf).expect("if present");
     let else_pos = script.iter().position(|op| *op == OpElse).expect("else present");
     let endif_pos = script.iter().position(|op| *op == OpEndIf).expect("endif present");
-
-    assert_eq!(script[if_pos + 1..else_pos].iter().copied().filter(|op| *op == OpPick).count(), 3);
+    assert_eq!(script[if_pos + 1..else_pos].iter().copied().filter(|op| *op == OpDup).count(), 3);
+    assert_eq!(script[if_pos + 1..else_pos].iter().copied().filter(|op| *op == OpOver).count(), 0);
+    assert_eq!(script[if_pos + 1..else_pos].iter().copied().filter(|op| *op == OpPick).count(), 0);
     assert_eq!(script[if_pos + 1..else_pos].iter().copied().filter(|op| *op == OpAdd).count(), 1);
     assert_eq!(script[if_pos + 1..else_pos].iter().copied().filter(|op| *op == OpDrop).count(), 1);
     assert_eq!(script[endif_pos + 1..].iter().copied().filter(|op| *op == OpDrop).count(), 1);
@@ -7665,8 +7635,9 @@ fn compile_time_if_branch_stores_struct_fields_once_and_reuses_them() {
     let if_pos = script.iter().position(|op| *op == OpIf).expect("if present");
     let else_pos = script.iter().position(|op| *op == OpElse).expect("else present");
     let endif_pos = script.iter().position(|op| *op == OpEndIf).expect("endif present");
-
-    assert_eq!(script[if_pos + 1..else_pos].iter().copied().filter(|op| *op == OpPick).count(), 7);
+    assert_eq!(script[if_pos + 1..else_pos].iter().copied().filter(|op| *op == OpDup).count(), 3);
+    assert_eq!(script[if_pos + 1..else_pos].iter().copied().filter(|op| *op == OpOver).count(), 3);
+    assert_eq!(script[if_pos + 1..else_pos].iter().copied().filter(|op| *op == OpPick).count(), 1);
     assert_eq!(script[if_pos + 1..else_pos].iter().copied().filter(|op| *op == OpAdd).count(), 1);
     assert_eq!(script[if_pos + 1..else_pos].iter().copied().filter(|op| *op == OpMul).count(), 1);
     assert_eq!(script[if_pos + 1..else_pos].iter().copied().filter(|op| *op == OpDrop).count(), 2);
