@@ -2477,7 +2477,7 @@ fn compile_entrypoint_function<'i>(
     let initial_stack_binding_count = stack_bindings.len() + contract_field_count;
 
     for (index, field) in contract_fields.iter().enumerate().rev() {
-        stack_bindings.set_depth_from_top(&field.name, (contract_field_count - 1 - index) as i64);
+        stack_bindings.set_depth(&field.name, (contract_field_count - 1 - index) as i64);
     }
 
     for field in contract_fields {
@@ -5137,7 +5137,7 @@ fn compile_constant_for_statement<'i>(
             ident.to_string(),
             "int".to_string(),
             Expr::int(value),
-            stack_bindings.depth_from_top(ident).map(|from_top| RuntimeBinding::DataStackSlot { from_top }),
+            stack_bindings.depth(ident).map(|from_top| RuntimeBinding::DataStackSlot { from_top }),
             builder.script().len(),
             loop_span,
         );
@@ -5200,7 +5200,7 @@ fn compile_runtime_for_statement<'i>(
             ident.to_string(),
             "int".to_string(),
             loop_value,
-            stack_bindings.depth_from_top(ident).map(|from_top| RuntimeBinding::DataStackSlot { from_top }),
+            stack_bindings.depth(ident).map(|from_top| RuntimeBinding::DataStackSlot { from_top }),
             builder.script().len(),
             loop_span,
         );
@@ -7336,7 +7336,7 @@ mod tests {
         let contract_fields = ["field_a", "field_b"];
 
         for (index, field) in contract_fields.iter().enumerate().rev() {
-            stack_bindings.set_depth_from_top(field, (contract_field_count - 1 - index) as i64);
+            stack_bindings.set_depth(field, (contract_field_count - 1 - index) as i64);
         }
 
         assert_eq!(

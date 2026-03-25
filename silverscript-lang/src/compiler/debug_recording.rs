@@ -563,7 +563,7 @@ fn static_binding_for_stack_name(name: &str, stack_bindings: &HashMap<String, i6
 }
 
 fn runtime_binding_for_stack_name(name: &str, stack_bindings: &StackBindings) -> Option<RuntimeBinding> {
-    stack_bindings.depth_from_top(name).map(|from_top| RuntimeBinding::DataStackSlot { from_top })
+    stack_bindings.depth(name).map(|from_top| RuntimeBinding::DataStackSlot { from_top })
 }
 
 fn runtime_binding_for_inline_binding<'i>(expr: &Expr<'i>, stack_bindings: &StackBindings) -> Option<RuntimeBinding> {

@@ -6,18 +6,18 @@ use kaspa_txscript::opcodes::codes::*;
 use kaspa_txscript::script_builder::ScriptBuilder;
 
 trait ScriptBuilderStackBindingExt {
-    fn drop_from_depth(&mut self, depth_from_top: i64) -> Result<(), CompilerError>;
-    fn pick_from_depth(&mut self, depth_from_top: i64) -> Result<(), CompilerError>;
+    fn drop_from_depth(&mut self, depth: i64) -> Result<(), CompilerError>;
+    fn pick_from_depth(&mut self, depth: i64) -> Result<(), CompilerError>;
 }
 
 impl ScriptBuilderStackBindingExt for ScriptBuilder {
-    fn drop_from_depth(&mut self, depth_from_top: i64) -> Result<(), CompilerError> {
-        if depth_from_top == 0 {
+    fn drop_from_depth(&mut self, depth: i64) -> Result<(), CompilerError> {
+        if depth == 0 {
             self.add_op(OpDrop)?;
-        } else if depth_from_top == 1 {
+        } else if depth == 1 {
             self.add_op(OpNip)?;
         } else {
-            self.add_i64(depth_from_top)?;
+            self.add_i64(depth)?;
             self.add_op(OpRoll)?;
             self.add_op(OpDrop)?;
         }
@@ -25,13 +25,13 @@ impl ScriptBuilderStackBindingExt for ScriptBuilder {
         Ok(())
     }
 
-    fn pick_from_depth(&mut self, depth_from_top: i64) -> Result<(), CompilerError> {
-        if depth_from_top == 0 {
+    fn pick_from_depth(&mut self, depth: i64) -> Result<(), CompilerError> {
+        if depth == 0 {
             self.add_op(OpDup)?;
-        } else if depth_from_top == 1 {
+        } else if depth == 1 {
             self.add_op(OpOver)?;
         } else {
-            self.add_i64(depth_from_top)?;
+            self.add_i64(depth)?;
             self.add_op(OpPick)?;
         }
 
@@ -63,7 +63,7 @@ impl StackBindings {
         Self { names: ordered.into_iter().map(|(name, _)| name).collect() }
     }
 
-    pub(crate) fn set_depth_from_top(&mut self, name: &str, depth: i64) {
+    pub(crate) fn set_depth(&mut self, name: &str, depth: i64) {
         assert!((0..=self.names.len() as i64).contains(&depth), "depth out of bounds: {depth}");
         let target_index = depth as usize;
         self.names.insert_before(target_index, name.to_string());
@@ -77,7 +77,7 @@ impl StackBindings {
         self.names.contains(name)
     }
 
-    pub(crate) fn depth_from_top(&self, name: &str) -> Option<i64> {
+    pub(crate) fn depth(&self, name: &str) -> Option<i64> {
         self.names.get_index_of(name).map(|index| index as i64)
     }
 
@@ -95,7 +95,7 @@ impl StackBindings {
 
     pub(crate) fn push_binding(&mut self, name: &str) {
         assert!(!self.contains(name), "binding already exists: {name}");
-        self.set_depth_from_top(name, 0);
+        self.set_depth(name, 0);
     }
 
     /// Removes the named bindings from the stack while preserving the relative
@@ -115,8 +115,8 @@ impl StackBindings {
                 continue;
             }
 
-            let depth_from_top = self.depth_from_top(&name).expect("binding should exist before dropping");
-            builder.drop_from_depth(depth_from_top)?;
+            let depth = self.depth(&name).expect("binding should exist before dropping");
+            builder.drop_from_depth(depth)?;
 
             self.remove_name(&name);
         }
@@ -139,9 +139,9 @@ impl StackBindings {
     /// - bindings that were above the old slot shift by `+1`
     /// - deeper bindings keep their previous depths
     pub(crate) fn emit_update_stack_for_rebinding(&mut self, name: &str, builder: &mut ScriptBuilder) -> Result<(), CompilerError> {
-        let depth_from_top = self.depth_from_top(name).expect("binding should exist before stack rebinding");
+        let depth = self.depth(name).expect("binding should exist before stack rebinding");
 
-        builder.drop_from_depth(depth_from_top + 1)?;
+        builder.drop_from_depth(depth + 1)?;
 
         self.move_name_to_top(name);
 
@@ -154,7 +154,7 @@ impl StackBindings {
         stack_depth: &mut i64,
         builder: &mut ScriptBuilder,
     ) -> Result<bool, CompilerError> {
-        let Some(index) = self.depth_from_top(name) else {
+        let Some(index) = self.depth(name) else {
             return Ok(false);
         };
 
@@ -193,9 +193,9 @@ impl StackBindings {
 
         for name in move_prefix {
             let index = remaining_names.get_index_of(name).expect("binding existence was asserted above");
-            let depth_from_top = index as i64;
+            let depth = index as i64;
 
-            builder.add_i64(depth_from_top)?;
+            builder.add_i64(depth)?;
             builder.add_op(OpRoll)?;
             builder.add_op(OpToAltStack)?;
 
@@ -420,9 +420,9 @@ mod tests {
 
         assert_eq!(builder.drain(), vec![Op2, OpRoll, OpDrop]);
         assert_eq!(stack_bindings.binding_order_top_to_bottom(), names(&["b", "a", "c"]));
-        assert_eq!(stack_bindings.depth_from_top("b"), Some(0));
-        assert_eq!(stack_bindings.depth_from_top("a"), Some(1));
-        assert_eq!(stack_bindings.depth_from_top("c"), Some(2));
+        assert_eq!(stack_bindings.depth("b"), Some(0));
+        assert_eq!(stack_bindings.depth("a"), Some(1));
+        assert_eq!(stack_bindings.depth("c"), Some(2));
     }
 
     #[test]
