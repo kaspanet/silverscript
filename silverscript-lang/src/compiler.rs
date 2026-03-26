@@ -393,14 +393,28 @@ fn lower_expr<'i>(expr: &Expr<'i>, scope: &LoweringScope, structs: &StructRegist
         ExprKind::StateObject(_) => {
             Err(CompilerError::Unsupported("struct literals are only supported in struct-typed positions".to_string()))
         }
-        ExprKind::Call { name, args, name_span } => Ok(Expr::new(
-            ExprKind::Call {
-                name: name.clone(),
-                args: args.iter().map(|arg| lower_expr(arg, scope, structs)).collect::<Result<Vec<_>, _>>()?,
-                name_span: *name_span,
-            },
-            span,
-        )),
+        ExprKind::Call { name, args, name_span } => {
+            let lowered_args = args.iter().map(|arg| lower_expr(arg, scope, structs)).collect::<Result<Vec<_>, _>>()?;
+            if name.starts_with("byte[") && name.ends_with(']') {
+                let size_part = &name[5..name.len() - 1];
+                if !size_part.is_empty() && lowered_args.len() == 1 {
+                    let size = size_part
+                        .parse::<i64>()
+                        .map_err(|_| CompilerError::Unsupported(format!("{name}() is not supported")))?;
+                    if let Some(source_type) = infer_lowered_expr_type_name(&lowered_args[0], scope)
+                        && let Some(source_size) = byte_sequence_cast_size(&source_type)
+                        && let Some(source_size) = source_size
+                        && source_size != size
+                    {
+                        return Err(CompilerError::Unsupported(format!("cannot cast {source_type} to {name}")));
+                    }
+                }
+            }
+            Ok(Expr::new(
+                ExprKind::Call { name: name.clone(), args: lowered_args, name_span: *name_span },
+                span,
+            ))
+        }
         ExprKind::New { name, args, name_span } => Ok(Expr::new(
             ExprKind::New {
                 name: name.clone(),
@@ -1467,6 +1481,15 @@ fn lower_runtime_expr<'i>(
 ) -> Result<Expr<'i>, CompilerError> {
     let scope = lowering_scope_from_types(types)?;
     lower_expr(expr, &scope, structs)
+}
+
+fn infer_lowered_expr_type_name<'i>(expr: &Expr<'i>, scope: &LoweringScope) -> Option<String> {
+    let types = scope
+        .vars
+        .iter()
+        .map(|(name, type_ref)| (name.clone(), type_name_from_ref(type_ref)))
+        .collect::<HashMap<_, _>>();
+    infer_debug_expr_value_type(expr, &HashMap::new(), &types, &mut HashSet::new()).ok()
 }
 
 fn lower_runtime_struct_expr<'i>(
@@ -7213,6 +7236,31 @@ fn compile_call_expr<'i>(
                 if args.len() != 1 {
                     return Err(CompilerError::Unsupported(format!("{name}() expects a single argument")));
                 }
+                let source_type = infer_debug_expr_value_type(&args[0], scope.env, scope.types, &mut HashSet::new()).ok();
+                if let Some(source_type) = source_type.as_deref() {
+                    if let Some(source_size) = byte_sequence_cast_size(source_type) {
+                        if let Some(source_size) = source_size {
+                            if source_size != size {
+                                return Err(CompilerError::Unsupported(format!(
+                                    "cannot cast {source_type} to {name}"
+                                )));
+                            }
+                        }
+                        compile_expr(
+                            &args[0],
+                            scope.env,
+                            scope.stack_bindings,
+                            scope.types,
+                            builder,
+                            options,
+                            visiting,
+                            stack_depth,
+                            script_size,
+                            contract_constants,
+                        )?;
+                        return Ok(());
+                    }
+                }
                 compile_expr(
                     &args[0],
                     scope.env,
@@ -7398,6 +7446,20 @@ fn is_bytes_type(type_name: &str) -> bool {
         }
     }
     is_array_type(type_name)
+}
+
+fn byte_sequence_cast_size(type_name: &str) -> Option<Option<i64>> {
+    match type_name {
+        "bytes" | "byte[]" | "string" => Some(None),
+        "byte" => Some(Some(1)),
+        "pubkey" => Some(Some(32)),
+        "sig" => Some(Some(65)),
+        "datasig" => Some(Some(64)),
+        _ => match array_element_type(type_name).as_deref() {
+            Some("byte") => Some(array_size(type_name).map(|size| size as i64)),
+            _ => None,
+        },
+    }
 }
 
 fn build_null_data_script<'i>(arg: &Expr<'i>) -> Result<Vec<u8>, CompilerError> {

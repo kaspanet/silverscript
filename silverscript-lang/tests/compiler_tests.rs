@@ -1079,6 +1079,66 @@ fn allows_comparing_dynamic_and_fixed_arrays_with_cast_in_function_scope() {
 }
 
 #[test]
+fn byte_array_to_fixed_byte_array_cast_compiles_without_num2bin() {
+    let source = r#"
+        contract Arrays() {
+            entrypoint function main() {
+                byte[] route_templates = 0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f;
+                byte[32] target_template = byte[32](route_templates.slice(16, 48));
+                require(byte[](target_template) == route_templates.slice(16, 48));
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("byte[] to byte[32] cast should compile");
+    assert!(
+        !compiled.script.iter().copied().any(|op| op == OpNum2Bin),
+        "byte[] to byte[32] cast should not emit OpNum2Bin"
+    );
+    assert!(run_script_with_selector(compiled.script, None).is_ok(), "byte[] to byte[32] cast should execute");
+}
+
+#[test]
+fn rejects_cast_between_different_fixed_byte_array_sizes() {
+    let source = r#"
+        contract Arrays() {
+            entrypoint function main() {
+                byte[32] hash = 0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f;
+                byte[31] truncated = byte[31](hash);
+                require(truncated.length == 31);
+            }
+        }
+    "#;
+
+    let err =
+        compile_contract(source, &[], CompileOptions::default()).expect_err("byte[32] to byte[31] cast should be rejected");
+    assert!(
+        err.to_string().contains("cannot cast byte[32] to byte[31]"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn rejects_cast_from_smaller_fixed_byte_array_to_larger_fixed_byte_array() {
+    let source = r#"
+        contract Arrays() {
+            entrypoint function main() {
+                byte[31] hash = 0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e;
+                byte[32] padded = byte[32](hash);
+                require(padded.length == 32);
+            }
+        }
+    "#;
+
+    let err =
+        compile_contract(source, &[], CompileOptions::default()).expect_err("byte[31] to byte[32] cast should be rejected");
+    assert!(
+        err.to_string().contains("cannot cast byte[31] to byte[32]"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
 fn build_sig_script_rejects_wrong_argument_count() {
     let source = r#"
         contract C() {
