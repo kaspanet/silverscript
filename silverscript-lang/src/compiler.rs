@@ -3867,6 +3867,36 @@ fn struct_name_for_state_bindings<'i>(bindings: &[StateBindingAst<'i>], structs:
     }
 }
 
+/// Validation half of `readInputStateWithTemplate(...)`.
+///
+/// This builtin is stronger than `readInputState(...)`: before decoding any
+/// fields, it proves that the claimed foreign redeem script matches both the
+/// supplied template hash and the foreign input's actual P2SH `scriptPubKey`.
+///
+/// Pseudocode:
+///   args = (input_idx, template_prefix_len, template_suffix_len, expected_template_hash)
+///   require target state layout is a non-empty flattened struct
+///
+///   script_size = template_prefix_len + encoded_state_len(layout_fields) + template_suffix_len
+///   script_base = input_sigscript_len(input_idx) - script_size
+///
+///   actual_redeem_script = input_sigscript[script_base .. script_base + script_size]
+///   prefix = input_sigscript[script_base .. script_base + template_prefix_len]
+///   suffix = input_sigscript[
+///       script_base + template_prefix_len + encoded_state_len(layout_fields)
+///       ..
+///       script_base + script_size
+///   ]
+///
+///   actual_template = prefix || suffix
+///   require blake2b(actual_template) == expected_template_hash
+///
+///   expected_input_spk = ScriptPubKeyP2SHFromRedeemScript(actual_redeem_script)
+///   require input_script_pubkey(input_idx) == expected_input_spk
+///
+/// The field-value reads are built separately by
+/// `read_input_state_with_template_values(...)` using the same flattened
+/// layout and byte offsets.
 #[allow(clippy::too_many_arguments)]
 fn compile_read_input_state_with_template_validation(
     args: &[Expr<'_>],
@@ -3876,7 +3906,7 @@ fn compile_read_input_state_with_template_validation(
     builder: &mut ScriptBuilder,
     options: CompileOptions,
     layout_fields: &[StructFieldSpec],
-    script_size: Option<i64>,
+    current_script_size: Option<i64>,
     contract_constants: &HashMap<String, Expr<'_>>,
 ) -> Result<(), CompilerError> {
     let Ok([input_idx, template_prefix_len, template_suffix_len, expected_template_hash]): Result<&[Expr<'_>; 4], _> = args.try_into()
@@ -3926,7 +3956,7 @@ fn compile_read_input_state_with_template_validation(
         options,
         &mut HashSet::new(),
         &mut stack_depth,
-        script_size,
+        current_script_size,
         contract_constants,
     )?;
     compile_expr(
@@ -3938,7 +3968,7 @@ fn compile_read_input_state_with_template_validation(
         options,
         &mut HashSet::new(),
         &mut stack_depth,
-        script_size,
+        current_script_size,
         contract_constants,
     )?;
     builder.add_op(OpEqual)?;
@@ -3954,7 +3984,7 @@ fn compile_read_input_state_with_template_validation(
         options,
         &mut HashSet::new(),
         &mut stack_depth,
-        script_size,
+        current_script_size,
         contract_constants,
     )?;
     compile_expr(
@@ -3966,7 +3996,7 @@ fn compile_read_input_state_with_template_validation(
         options,
         &mut HashSet::new(),
         &mut stack_depth,
-        script_size,
+        current_script_size,
         contract_constants,
     )?;
     builder.add_op(OpSwap)?;
