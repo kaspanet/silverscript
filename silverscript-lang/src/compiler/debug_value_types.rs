@@ -125,6 +125,8 @@ pub(super) fn infer_debug_expr_value_type<'i>(
                 let right_type = infer_debug_expr_value_type(right, env, types, visiting)?;
                 if left_type == "string" || right_type == "string" {
                     Ok("string".to_string())
+                } else if left_type == "byte" || right_type == "byte" {
+                    Ok("int".to_string())
                 } else if is_bytes_type(&left_type) {
                     Ok(left_type)
                 } else if is_bytes_type(&right_type) {

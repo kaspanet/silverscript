@@ -869,6 +869,75 @@ fn build_sig_script_builds_expected_script() {
 }
 
 #[test]
+fn byte_variable_from_int_literal_uses_raw_byte_push() {
+    let source = r#"
+        contract Bytes() {
+            entrypoint function main() {
+                byte x = 5;
+                require(OpBin2Num(x) == 5);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("byte int literal should compile");
+    let expected = ScriptBuilder::new()
+        .add_data(&[5u8])
+        .unwrap()
+        .add_op(OpBin2Num)
+        .unwrap()
+        .add_i64(5)
+        .unwrap()
+        .add_op(OpNumEqual)
+        .unwrap()
+        .add_op(OpVerify)
+        .unwrap()
+        .add_op(OpTrue)
+        .unwrap()
+        .drain();
+    assert_eq!(compiled.script, expected);
+    assert!(run_script_with_selector(compiled.script, None).is_ok(), "byte int literal script should execute");
+}
+
+#[test]
+fn rejects_adding_byte_values() {
+    let source = r#"
+        contract Bytes() {
+            entrypoint function main() {
+                byte x = 5;
+                byte y = 7;
+                require(x + y > 0);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("byte addition should be rejected");
+    assert!(
+        err.to_string().contains("byte values do not support '+'"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn rejects_assigning_sum_of_byte_values_to_byte() {
+    let source = r#"
+        contract Bytes() {
+            entrypoint function main() {
+                byte x = 5;
+                byte y = 7;
+                byte z = x + y;
+                require(OpBin2Num(z) == 12);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("byte addition assignment should be rejected");
+    assert!(
+        err.to_string().contains("byte values do not support '+'"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
 fn build_sig_script_rejects_unknown_function() {
     let source = r#"
         contract C() {

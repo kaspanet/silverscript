@@ -2110,6 +2110,16 @@ fn expr_matches_return_type_ref_hint<'i>(expr: &Expr<'i>, type_ref: &TypeRef) ->
     }
 }
 
+fn coerce_expr_for_declared_scalar_type<'i>(expr: Expr<'i>, type_name: &str) -> Expr<'i> {
+    if type_name == "byte"
+        && let ExprKind::Int(value) = expr.kind
+        && (0..=255).contains(&value)
+    {
+        return Expr::new(ExprKind::Byte(value as u8), expr.span);
+    }
+    expr
+}
+
 fn infer_fixed_array_type_from_initializer_ref<'i>(
     declared_type: &TypeRef,
     initializer: Option<&Expr<'i>>,
@@ -2979,7 +2989,7 @@ fn compile_statement<'i>(
             } else {
                 let expr =
                     expr.clone().ok_or_else(|| CompilerError::Unsupported("variable definition requires initializer".to_string()))?;
-                let expr = lower_runtime_expr(&expr, types, structs)?;
+                let expr = coerce_expr_for_declared_scalar_type(lower_runtime_expr(&expr, types, structs)?, &effective_type_name);
                 let expected_type_ref = parse_type_ref(&effective_type_name)?;
                 if !expr_matches_return_type_ref(&expr, &expected_type_ref, types, contract_constants) {
                     return Err(CompilerError::Unsupported(format!(
@@ -3537,7 +3547,7 @@ fn compile_statement<'i>(
                 // If this is a stack-bound scalar local, compile a real mutation instead of
                 // rewriting `env[name]` (which can explode under unrolled control flow).
                 if stack_bindings.contains(name) && is_not_struct {
-                    let lowered_expr = lower_runtime_expr(expr, types, structs)?;
+                    let lowered_expr = coerce_expr_for_declared_scalar_type(lower_runtime_expr(expr, types, structs)?, type_name);
                     if !expr_matches_return_type_ref(&lowered_expr, &expected_type_ref, types, contract_constants) {
                         return Err(CompilerError::Unsupported(format!(
                             "variable '{}' expects {}{}",
@@ -3667,7 +3677,7 @@ fn compile_statement<'i>(
                         }
                     }
                 }
-                let lowered_expr = lower_runtime_expr(expr, types, structs)?;
+                let lowered_expr = coerce_expr_for_declared_scalar_type(lower_runtime_expr(expr, types, structs)?, type_name);
                 if !expr_matches_return_type_ref(&lowered_expr, &expected_type_ref, types, contract_constants) {
                     return Err(CompilerError::Unsupported(format!(
                         "variable '{}' expects {}{}",
@@ -6159,6 +6169,13 @@ fn compile_expr<'i>(
                         )));
                     }
                 }
+            }
+            let left_value_type = infer_debug_expr_value_type(left, env, types, &mut HashSet::new()).ok();
+            let right_value_type = infer_debug_expr_value_type(right, env, types, &mut HashSet::new()).ok();
+            if matches!(op, BinaryOp::Add)
+                && (left_value_type.as_deref() == Some("byte") || right_value_type.as_deref() == Some("byte"))
+            {
+                return Err(CompilerError::Unsupported("byte values do not support '+'".to_string()));
             }
             let bytes_eq =
                 matches!(op, BinaryOp::Eq | BinaryOp::Ne) && (expr_is_bytes(left, env, types) || expr_is_bytes(right, env, types));
