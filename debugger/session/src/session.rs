@@ -1149,7 +1149,11 @@ impl<'a, 'i> DebugSession<'a, 'i> {
 
         let mut shadow_bindings = shadow_by_name.into_values().collect::<Vec<_>>();
         shadow_bindings.sort_by(|left, right| right.stack_index.cmp(&left.stack_index));
-        let stack_bindings = shadow_bindings.iter().map(|binding| (binding.name.clone(), binding.stack_index)).collect();
+        let stack_bindings = shadow_bindings
+            .iter()
+            .enumerate()
+            .map(|(index, binding)| (binding.name.clone(), (shadow_bindings.len() - 1 - index) as i64))
+            .collect();
         Ok((shadow_bindings, env, stack_bindings, eval_types))
     }
 

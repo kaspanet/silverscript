@@ -1,3 +1,4 @@
+use blake2b_simd::Params as Blake2bParams;
 use kaspa_addresses::{Address, Prefix, Version};
 use kaspa_consensus_core::Hash;
 use kaspa_consensus_core::hashing::sighash::SigHashReusedValuesUnsync;
@@ -11,10 +12,10 @@ use kaspa_txscript::covenants::CovenantsContext;
 use kaspa_txscript::opcodes::codes::*;
 use kaspa_txscript::script_builder::ScriptBuilder;
 use kaspa_txscript::{
-    EngineCtx, EngineFlags, SeqCommitAccessor, TxScriptEngine, pay_to_address_script, pay_to_script_hash_script,
+    EngineCtx, EngineFlags, SeqCommitAccessor, TxScriptEngine, parse_script, pay_to_address_script, pay_to_script_hash_script,
     pay_to_script_hash_signature_script,
 };
-use silverscript_lang::ast::{Expr, ExprKind, parse_contract_ast};
+use silverscript_lang::ast::{Expr, ExprKind, format_contract_ast, parse_contract_ast};
 use silverscript_lang::compiler::{
     CompileOptions, CompiledContract, CovenantDeclCallOptions, FunctionAbiEntry, FunctionInputAbi, compile_contract,
     compile_contract_ast, function_branch_index, struct_object,
@@ -90,6 +91,21 @@ fn run_script_with_sigscript(script: Vec<u8>, sigscript: Vec<u8>) -> Result<(), 
         EngineFlags { covenants_enabled: true },
     );
     vm.execute()
+}
+
+fn script_op_counts(script: &[u8]) -> (usize, usize) {
+    let mut instruction_count = 0;
+    let mut charged_op_count = 0;
+
+    for opcode in parse_script::<PopulatedTransaction<'static>, SigHashReusedValuesUnsync>(script) {
+        let opcode = opcode.expect("compiled script should parse");
+        instruction_count += 1;
+        if !opcode.is_push_opcode() {
+            charged_op_count += 1;
+        }
+    }
+
+    (instruction_count, charged_op_count)
 }
 
 fn sigscript_push_script(script: &[u8]) -> Vec<u8> {
@@ -202,6 +218,335 @@ fn compile_contract_emits_debug_info_when_recording_enabled() {
     assert!(!debug_info.steps.is_empty());
     assert!(!debug_info.functions.is_empty());
     assert!(debug_info.params.iter().any(|param| param.name == "x"));
+}
+
+#[test]
+fn branch_heavy_if_else_logic_matches_rust_model_across_cases() {
+    fn branch_maze_expected(a: i64, b: i64, c: i64, d: i64) -> (i64, i64, i64, i64) {
+        let mut x = a + b;
+        let mut y = c - d;
+        let mut z = 1i64;
+        let mut score = 0i64;
+
+        if a > b {
+            x += c;
+            if c > 0 {
+                y += a;
+                score += 3;
+            } else {
+                z *= 2;
+                score -= 2;
+            }
+        } else {
+            x -= d;
+            if d % 2 == 0 {
+                y -= b;
+                score += 5;
+            } else {
+                z += 3;
+                score -= 1;
+            }
+        }
+
+        if x > y {
+            z += x - y;
+            if (a + d) > (b + c) {
+                score += z;
+            } else {
+                score -= z;
+            }
+        } else {
+            x += z;
+            y += z;
+            if (c - a) > d {
+                score += x;
+            } else {
+                score += y;
+            }
+        }
+
+        if (x + y + z) % 2 == 0 {
+            score += 7;
+        } else {
+            score -= 4;
+        }
+
+        if score > 10 {
+            x -= 1;
+        } else if score < -5 {
+            y += 2;
+        } else {
+            z += 1;
+        }
+
+        (x, y, z, score)
+    }
+
+    let source = r#"
+        contract BranchMaze() {
+            entrypoint function main(
+                int a,
+                int b,
+                int c,
+                int d,
+                int expected_x,
+                int expected_y,
+                int expected_z,
+                int expected_score
+            ) {
+                int x = a + b;
+                int y = c - d;
+                int z = 1;
+                int score = 0;
+
+                if (a > b) {
+                    x = x + c;
+                    if (c > 0) {
+                        y = y + a;
+                        score = score + 3;
+                    } else {
+                        z = z * 2;
+                        score = score - 2;
+                    }
+                } else {
+                    x = x - d;
+                    if ((d % 2) == 0) {
+                        y = y - b;
+                        score = score + 5;
+                    } else {
+                        z = z + 3;
+                        score = score - 1;
+                    }
+                }
+
+                if (x > y) {
+                    z = z + x - y;
+                    if ((a + d) > (b + c)) {
+                        score = score + z;
+                    } else {
+                        score = score - z;
+                    }
+                } else {
+                    x = x + z;
+                    y = y + z;
+                    if ((c - a) > d) {
+                        score = score + x;
+                    } else {
+                        score = score + y;
+                    }
+                }
+
+                if (((x + y) + z) % 2 == 0) {
+                    score = score + 7;
+                } else {
+                    score = score - 4;
+                }
+
+                if (score > 10) {
+                    x = x - 1;
+                } else if (score < -5) {
+                    y = y + 2;
+                } else {
+                    z = z + 1;
+                }
+
+                require(x == expected_x);
+                require(y == expected_y);
+                require(z == expected_z);
+                require(score == expected_score);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("branch-heavy contract should compile");
+    let script_len = compiled.script.len();
+    let (instruction_count, charged_op_count) = script_op_counts(&compiled.script);
+    println!("branch_maze {script_len} / {instruction_count} / {charged_op_count}");
+    // Snapshot these metrics exactly so compiler codegen changes must consciously
+    // acknowledge their size impact on a branch-heavy stress case.
+    assert_eq!(
+        script_len, 326,
+        "branch_maze metrics: script_len={script_len} instruction_count={instruction_count} charged_op_count={charged_op_count}"
+    );
+    assert_eq!(
+        instruction_count, 326,
+        "branch_maze metrics: script_len={script_len} instruction_count={instruction_count} charged_op_count={charged_op_count}"
+    );
+    assert_eq!(
+        charged_op_count, 231,
+        "branch_maze metrics: script_len={script_len} instruction_count={instruction_count} charged_op_count={charged_op_count}"
+    );
+    let cases = [(7, 2, 5, 4), (7, 2, -3, 4), (2, 7, 5, 4), (2, 7, 5, 3), (4, 4, 9, 2), (-3, 1, 6, -2), (10, -1, -4, 7), (0, 0, 0, 0)];
+
+    for (a, b, c, d) in cases {
+        let (expected_x, expected_y, expected_z, expected_score) = branch_maze_expected(a, b, c, d);
+        let sigscript = compiled
+            .build_sig_script(
+                "main",
+                vec![
+                    Expr::int(a),
+                    Expr::int(b),
+                    Expr::int(c),
+                    Expr::int(d),
+                    Expr::int(expected_x),
+                    Expr::int(expected_y),
+                    Expr::int(expected_z),
+                    Expr::int(expected_score),
+                ],
+            )
+            .expect("sigscript builds");
+        let result = run_script_with_sigscript(compiled.script.clone(), sigscript);
+        assert!(
+            result.is_ok(),
+            "branch-heavy case ({a}, {b}, {c}, {d}) should match Rust model ({expected_x}, {expected_y}, {expected_z}, {expected_score}): {result:?}"
+        );
+    }
+
+    let (a, b, c, d) = cases[0];
+    let (expected_x, expected_y, expected_z, expected_score) = branch_maze_expected(a, b, c, d);
+    let wrong_sigscript = compiled
+        .build_sig_script(
+            "main",
+            vec![
+                Expr::int(a),
+                Expr::int(b),
+                Expr::int(c),
+                Expr::int(d),
+                Expr::int(expected_x),
+                Expr::int(expected_y),
+                Expr::int(expected_z),
+                Expr::int(expected_score + 1),
+            ],
+        )
+        .expect("sigscript builds");
+    let err = run_script_with_sigscript(compiled.script.clone(), wrong_sigscript)
+        .expect_err("branch-heavy case with wrong expected output should fail");
+    assert!(format!("{err:?}").contains("Verify"), "wrong expected output should fail with verify error, got: {err:?}");
+}
+
+#[test]
+fn sorting_network_over_fixed_array_matches_rust_model_across_cases() {
+    fn sorted_expected(values: [i64; 8]) -> [i64; 8] {
+        let mut values = values;
+        values.sort_unstable();
+        values
+    }
+
+    let source = r#"
+        contract SortingNetworkCheck() {
+            entrypoint function main(
+                int[8] values,
+                int expected_a,
+                int expected_b,
+                int expected_c,
+                int expected_d,
+                int expected_e,
+                int expected_f,
+                int expected_g,
+                int expected_h
+            ) {
+                int a = values[0];
+                int b = values[1];
+                int c = values[2];
+                int d = values[3];
+                int e = values[4];
+                int f = values[5];
+                int g = values[6];
+                int h = values[7];
+
+                if (a > b) { int tmp = a; a = b; b = tmp; }
+                if (c > d) { int tmp = c; c = d; d = tmp; }
+                if (e > f) { int tmp = e; e = f; f = tmp; }
+                if (g > h) { int tmp = g; g = h; h = tmp; }
+
+                if (a > c) { int tmp = a; a = c; c = tmp; }
+                if (b > d) { int tmp = b; b = d; d = tmp; }
+                if (e > g) { int tmp = e; e = g; g = tmp; }
+                if (f > h) { int tmp = f; f = h; h = tmp; }
+
+                if (b > c) { int tmp = b; b = c; c = tmp; }
+                if (f > g) { int tmp = f; f = g; g = tmp; }
+                if (a > e) { int tmp = a; a = e; e = tmp; }
+                if (d > h) { int tmp = d; d = h; h = tmp; }
+
+                if (b > f) { int tmp = b; b = f; f = tmp; }
+                if (c > g) { int tmp = c; c = g; g = tmp; }
+
+                if (b > e) { int tmp = b; b = e; e = tmp; }
+                if (d > g) { int tmp = d; d = g; g = tmp; }
+
+                if (c > e) { int tmp = c; c = e; e = tmp; }
+                if (d > f) { int tmp = d; d = f; f = tmp; }
+
+                if (d > e) { int tmp = d; d = e; e = tmp; }
+
+                require(a <= b);
+                require(b <= c);
+                require(c <= d);
+                require(d <= e);
+                require(e <= f);
+                require(f <= g);
+                require(g <= h);
+
+                require(a == expected_a);
+                require(b == expected_b);
+                require(c == expected_c);
+                require(d == expected_d);
+                require(e == expected_e);
+                require(f == expected_f);
+                require(g == expected_g);
+                require(h == expected_h);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("sorting-network contract should compile");
+    let script_len = compiled.script.len();
+    let (instruction_count, charged_op_count) = script_op_counts(&compiled.script);
+    println!("sorting_network {script_len} / {instruction_count} / {charged_op_count}");
+    assert_eq!(
+        script_len, 780,
+        "sorting_network metrics: script_len={script_len} instruction_count={instruction_count} charged_op_count={charged_op_count}"
+    );
+    assert_eq!(
+        instruction_count, 780,
+        "sorting_network metrics: script_len={script_len} instruction_count={instruction_count} charged_op_count={charged_op_count}"
+    );
+    assert_eq!(
+        charged_op_count, 607,
+        "sorting_network metrics: script_len={script_len} instruction_count={instruction_count} charged_op_count={charged_op_count}"
+    );
+
+    let cases = [
+        [8, 7, 6, 5, 4, 3, 2, 1],
+        [3, 1, 4, 1, 5, 9, 2, 6],
+        [0, -3, 7, 7, -1, 4, 2, 2],
+        [10, 0, -10, 5, -5, 3, 1, 8],
+        [1, 2, 3, 4, 5, 6, 7, 8],
+        [9, 9, 9, 1, 1, 1, 5, 5],
+    ];
+
+    for values in cases {
+        let [expected_a, expected_b, expected_c, expected_d, expected_e, expected_f, expected_g, expected_h] = sorted_expected(values);
+        let sigscript = compiled
+            .build_sig_script(
+                "main",
+                vec![
+                    values.to_vec().into(),
+                    Expr::int(expected_a),
+                    Expr::int(expected_b),
+                    Expr::int(expected_c),
+                    Expr::int(expected_d),
+                    Expr::int(expected_e),
+                    Expr::int(expected_f),
+                    Expr::int(expected_g),
+                    Expr::int(expected_h),
+                ],
+            )
+            .expect("sigscript builds");
+        let result = run_script_with_sigscript(compiled.script.clone(), sigscript);
+        assert!(result.is_ok(), "sorting-network case {values:?} should match Rust model: {result:?}");
+    }
 }
 
 #[test]
@@ -2995,6 +3340,45 @@ fn allows_array_assignment_with_compatible_types() {
 }
 
 #[test]
+fn inline_pubkey_param_reassignment_compiles_and_runs() {
+    let source = r#"
+        contract ReassignNonScalar() {
+            function verify(pubkey selected, pubkey other, pubkey expected, bool take_other) {
+                if (take_other) {
+                    selected = other;
+                }
+                require(selected == expected);
+            }
+
+            entrypoint function main(pubkey a, pubkey b, pubkey expected, bool take_other) {
+                verify(a, b, expected, take_other);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+
+    let a = vec![0x11u8; 32];
+    let b = vec![0x22u8; 32];
+
+    let sigscript_take_b = compiled
+        .build_sig_script("main", vec![Expr::bytes(a.clone()), Expr::bytes(b.clone()), Expr::bytes(b.clone()), Expr::bool(true)])
+        .expect("sigscript builds");
+    let result_take_b = run_script_with_sigscript(compiled.script.clone(), sigscript_take_b);
+    assert!(result_take_b.is_ok(), "inline pubkey reassignment should allow taking the second value: {}", result_take_b.unwrap_err());
+
+    let sigscript_keep_a = compiled
+        .build_sig_script("main", vec![Expr::bytes(a.clone()), Expr::bytes(b), Expr::bytes(a), Expr::bool(false)])
+        .expect("sigscript builds");
+    let result_keep_a = run_script_with_sigscript(compiled.script, sigscript_keep_a);
+    assert!(
+        result_keep_a.is_ok(),
+        "inline pubkey reassignment should preserve the first value when branch is skipped: {}",
+        result_keep_a.unwrap_err()
+    );
+}
+
+#[test]
 fn rejects_unsized_array_type() {
     let source = r#"
         contract Arrays() {
@@ -3348,9 +3732,7 @@ fn compiles_contract_fields_as_script_prolog() {
         .unwrap()
         .add_data(&[0x12, 0x34])
         .unwrap()
-        .add_i64(1)
-        .unwrap()
-        .add_op(OpPick)
+        .add_op(OpOver)
         .unwrap()
         .add_i64(5)
         .unwrap()
@@ -3443,11 +3825,8 @@ fn compiles_validate_output_state_to_expected_script() {
         .unwrap()
 
         // ---- Build new_state.x = x + 1 ----
-        // push depth index of x (x is second item from top: y=0, x=1)
-        .add_i64(1)
-        .unwrap()
-        // duplicate x from stack
-        .add_op(OpPick)
+        // duplicate x from stack (x is second item from top: y=0, x=1)
+        .add_op(OpOver)
         .unwrap()
         // push literal 1
         .add_i64(1)
@@ -3643,6 +4022,455 @@ fn runs_validate_output_state_with_state_variable() {
 
     let result = execute_input(tx, vec![utxo_entry], 0);
     assert!(result.is_ok(), "validateOutputState runtime failed: {}", result.unwrap_err());
+}
+
+fn compiled_template_parts_and_hash(compiled: &CompiledContract) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+    let layout = compiled.state_layout;
+    let prefix = compiled.script[..layout.start].to_vec();
+    let suffix = compiled.script[layout.start + layout.len..].to_vec();
+    let template_hash = Blake2bParams::new().hash_length(32).to_state().update(&prefix).update(&suffix).finalize().as_bytes().to_vec();
+    (prefix, suffix, template_hash)
+}
+
+fn run_read_input_state_with_template_case(
+    reader_source: &str,
+    reader_constructor_args: &[Expr<'static>],
+    target_input_compiled: &CompiledContract<'_>,
+) -> Result<(), kaspa_txscript_errors::TxScriptError> {
+    run_read_input_state_with_template_case_with_input_spk(
+        reader_source,
+        reader_constructor_args,
+        target_input_compiled,
+        pay_to_script_hash_script(&target_input_compiled.script),
+    )
+}
+
+fn run_read_input_state_with_template_case_with_input_spk(
+    reader_source: &str,
+    reader_constructor_args: &[Expr<'static>],
+    target_input_compiled: &CompiledContract<'_>,
+    input1_spk: ScriptPublicKey,
+) -> Result<(), kaspa_txscript_errors::TxScriptError> {
+    let reader_compiled =
+        compile_contract(reader_source, reader_constructor_args, CompileOptions::default()).expect("compile reader succeeds");
+
+    let input0 = test_input(0, vec![]);
+    let input1 = test_input(1, sigscript_push_script(&target_input_compiled.script));
+    let output = TransactionOutput {
+        value: 1000,
+        script_public_key: ScriptPublicKey::new(0, reader_compiled.script.clone().into()),
+        covenant: None,
+    };
+    let tx = Transaction::new(1, vec![input0.clone(), input1], vec![output.clone()], 0, Default::default(), 0, vec![]);
+    let utxo0 = UtxoEntry::new(output.value, output.script_public_key.clone(), 0, tx.is_coinbase(), None);
+    let utxo1 = UtxoEntry::new(1000, input1_spk, 0, tx.is_coinbase(), None);
+
+    execute_input(tx, vec![utxo0, utxo1], 0)
+}
+
+fn run_validate_output_state_with_template_case(
+    template_prefix: Vec<u8>,
+    template_suffix: Vec<u8>,
+    expected_template_hash: Vec<u8>,
+    output_compiled: &CompiledContract,
+) -> Result<(), kaspa_txscript_errors::TxScriptError> {
+    let mux_source = format!(
+        r#"
+        contract M(byte[32] initMuxHash, byte[32] initAHash, int initX, byte[2] initY) {{
+            byte[32] muxHash = initMuxHash;
+            byte[32] aHash = initAHash;
+            int x = initX;
+            byte[2] y = initY;
+
+            entrypoint function routeToA() {{
+                validateOutputStateWithTemplate(
+                    0,
+                    {{muxHash: muxHash, aHash: aHash, x: x + 1, y: 0x3412}},
+                    0x{},
+                    0x{},
+                    0x{}
+                );
+            }}
+        }}
+    "#,
+        template_prefix.iter().map(|byte| format!("{byte:02x}")).collect::<String>(),
+        template_suffix.iter().map(|byte| format!("{byte:02x}")).collect::<String>(),
+        expected_template_hash.iter().map(|byte| format!("{byte:02x}")).collect::<String>(),
+    );
+
+    let mux_input_compiled = compile_contract(
+        &mux_source,
+        &[vec![0x11u8; 32].into(), expected_template_hash.into(), 5.into(), vec![0x10u8, 0x20u8].into()],
+        CompileOptions::default(),
+    )
+    .expect("compile mux succeeds");
+
+    let sigscript = mux_input_compiled.build_sig_script("routeToA", vec![]).expect("sigscript builds");
+    let sigscript = pay_to_script_hash_signature_script(mux_input_compiled.script.clone(), sigscript).unwrap();
+    let input = test_input(0, sigscript);
+
+    let input_spk = pay_to_script_hash_script(&mux_input_compiled.script);
+    let output_spk = pay_to_script_hash_script(&output_compiled.script);
+    let output = TransactionOutput { value: 1000, script_public_key: output_spk, covenant: None };
+    let tx = Transaction::new(1, vec![input], vec![output.clone()], 0, Default::default(), 0, vec![]);
+    let utxo_entry = UtxoEntry::new(output.value, input_spk, 0, tx.is_coinbase(), None);
+
+    execute_input(tx, vec![utxo_entry], 0)
+}
+
+#[test]
+fn runs_validate_output_state_with_template() {
+    let mux_hash = vec![0x11u8; 32];
+
+    let target_source = r#"
+        contract A(byte[32] initMuxHash, byte[32] initAHash, int initX, byte[2] initY) {
+            byte[32] muxHash = initMuxHash;
+            byte[32] aHash = initAHash;
+            int x = initX;
+            byte[2] y = initY;
+
+            entrypoint function noop() {
+                require(true);
+            }
+        }
+    "#;
+
+    let target_a0 = compile_contract(
+        target_source,
+        &[vec![0x11u8; 32].into(), vec![0x33u8; 32].into(), Expr::int(0x1111_1111_1111_1111), vec![0x55u8, 0x66u8].into()],
+        CompileOptions::default(),
+    )
+    .expect("compile target succeeds");
+    let (a_prefix, a_suffix, a_template_hash) = compiled_template_parts_and_hash(&target_a0);
+
+    let target_output_compiled = compile_contract(
+        target_source,
+        &[mux_hash.into(), a_template_hash.clone().into(), 6.into(), vec![0x34u8, 0x12u8].into()],
+        CompileOptions::default(),
+    )
+    .expect("compile target output succeeds");
+    let a_prefix_hex = a_prefix.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+    let a_suffix_hex = a_suffix.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+    let a_template_hash_hex = a_template_hash.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+
+    let mux_source = format!(
+        r#"
+        contract M(byte[32] initMuxHash, byte[32] initAHash, int initX, byte[2] initY) {{
+            byte[32] muxHash = initMuxHash;
+            byte[32] aHash = initAHash;
+            int x = initX;
+            byte[2] y = initY;
+
+            entrypoint function routeToA() {{
+                validateOutputStateWithTemplate(
+                    0,
+                    {{muxHash: muxHash, aHash: aHash, x: x + 1, y: 0x3412}},
+                    0x{a_prefix_hex},
+                    0x{a_suffix_hex},
+                    0x{a_template_hash_hex}
+                );
+            }}
+        }}
+    "#
+    );
+
+    let mux_input_compiled = compile_contract(
+        &mux_source,
+        &[vec![0x11u8; 32].into(), a_template_hash.clone().into(), 5.into(), vec![0x10u8, 0x20u8].into()],
+        CompileOptions::default(),
+    )
+    .expect("compile mux succeeds");
+
+    let sigscript = mux_input_compiled.build_sig_script("routeToA", vec![]).expect("sigscript builds");
+    let sigscript = pay_to_script_hash_signature_script(mux_input_compiled.script.clone(), sigscript).unwrap();
+    let input = test_input(0, sigscript);
+
+    let input_spk = pay_to_script_hash_script(&mux_input_compiled.script);
+    let output_spk = pay_to_script_hash_script(&target_output_compiled.script);
+    let output = TransactionOutput { value: 1000, script_public_key: output_spk, covenant: None };
+    let tx = Transaction::new(1, vec![input], vec![output.clone()], 0, Default::default(), 0, vec![]);
+    let utxo_entry = UtxoEntry::new(output.value, input_spk, 0, tx.is_coinbase(), None);
+
+    let result = execute_input(tx, vec![utxo_entry], 0);
+    assert!(result.is_ok(), "validateOutputStateWithTemplate runtime failed: {}", result.unwrap_err());
+}
+
+#[test]
+fn runs_validate_output_state_with_template_using_passed_struct_layout() {
+    let target_hash_value = vec![0x44u8; 32];
+    let target_hash_hex = target_hash_value.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+
+    let target_source = format!(
+        r#"
+        contract A(byte[2] initY, int initX, byte[32] initTargetHash) {{
+            byte[2] y = initY;
+            int x = initX;
+            byte[32] targetHash = initTargetHash;
+
+            entrypoint function noop() {{
+                require(y == 0x3412);
+                require(x == 6);
+                require(targetHash == 0x{target_hash_hex});
+            }}
+        }}
+    "#
+    );
+
+    let target_a0 = compile_contract(
+        &target_source,
+        &[vec![0x55u8, 0x66u8].into(), Expr::int(0x1111_1111_1111_1111), vec![0x33u8; 32].into()],
+        CompileOptions::default(),
+    )
+    .expect("compile target succeeds");
+    let (a_prefix, a_suffix, a_template_hash) = compiled_template_parts_and_hash(&target_a0);
+
+    let target_output_compiled = compile_contract(
+        &target_source,
+        &[vec![0x34u8, 0x12u8].into(), 6.into(), target_hash_value.clone().into()],
+        CompileOptions::default(),
+    )
+    .expect("compile target output succeeds");
+    let a_prefix_hex = a_prefix.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+    let a_suffix_hex = a_suffix.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+    let a_template_hash_hex = a_template_hash.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+
+    let mux_source = format!(
+        r#"
+        contract M(int initX, byte[2] initY) {{
+            struct C {{
+                byte[2] y;
+                int x;
+                byte[32] targetHash;
+            }}
+
+            int x = initX;
+            byte[2] y = initY;
+
+            entrypoint function routeToA(byte[32] targetHash) {{
+                C next = {{
+                    y: 0x3412,
+                    x: x + 1,
+                    targetHash: targetHash
+                }};
+                validateOutputStateWithTemplate(
+                    0,
+                    next,
+                    0x{a_prefix_hex},
+                    0x{a_suffix_hex},
+                    0x{a_template_hash_hex}
+                );
+            }}
+        }}
+    "#
+    );
+
+    let mux_input_compiled = compile_contract(&mux_source, &[5.into(), vec![0x10u8, 0x20u8].into()], CompileOptions::default())
+        .expect("compile mux succeeds");
+
+    let sigscript = mux_input_compiled.build_sig_script("routeToA", vec![target_hash_value.clone().into()]).expect("sigscript builds");
+    let sigscript = pay_to_script_hash_signature_script(mux_input_compiled.script.clone(), sigscript).unwrap();
+    let input = test_input(0, sigscript);
+
+    let input_spk = pay_to_script_hash_script(&mux_input_compiled.script);
+    let output_spk = pay_to_script_hash_script(&target_output_compiled.script);
+    let output = TransactionOutput { value: 1000, script_public_key: output_spk, covenant: None };
+    let tx = Transaction::new(1, vec![input], vec![output.clone()], 0, Default::default(), 0, vec![]);
+    let utxo_entry = UtxoEntry::new(output.value, input_spk, 0, tx.is_coinbase(), None);
+
+    let result = execute_input(tx, vec![utxo_entry], 0);
+    assert!(
+        result.is_ok(),
+        "validateOutputStateWithTemplate should route into a target contract whose State matches the passed struct layout: {}",
+        result.unwrap_err()
+    );
+
+    let a_sigscript = target_output_compiled.build_sig_script("noop", vec![]).expect("A sigscript builds");
+    let a_sigscript = pay_to_script_hash_signature_script(target_output_compiled.script.clone(), a_sigscript).unwrap();
+    let a_input = test_input(0, a_sigscript);
+    let a_output = TransactionOutput { value: 1000, script_public_key: ScriptPublicKey::new(0, vec![OpTrue].into()), covenant: None };
+    let a_tx = Transaction::new(1, vec![a_input], vec![a_output], 0, Default::default(), 0, vec![]);
+    let a_utxo = UtxoEntry::new(1000, pay_to_script_hash_script(&target_output_compiled.script), 0, a_tx.is_coinbase(), None);
+    let a_result = execute_input(a_tx, vec![a_utxo], 0);
+    assert!(
+        a_result.is_ok(),
+        "target contract should observe the expected field values after routing with the passed struct layout: {}",
+        a_result.unwrap_err()
+    );
+}
+
+#[test]
+fn validate_output_state_with_template_rejects_wrong_template_hash() {
+    let target_source = r#"
+        contract A(byte[32] initMuxHash, byte[32] initAHash, int initX, byte[2] initY) {
+            byte[32] muxHash = initMuxHash;
+            byte[32] aHash = initAHash;
+            int x = initX;
+            byte[2] y = initY;
+
+            entrypoint function noop() {
+                require(true);
+            }
+        }
+    "#;
+
+    let target = compile_contract(
+        target_source,
+        &[vec![0x11u8; 32].into(), vec![0x33u8; 32].into(), Expr::int(0x1111_1111_1111_1111), vec![0x55u8, 0x66u8].into()],
+        CompileOptions::default(),
+    )
+    .expect("compile target succeeds");
+    let (prefix, suffix, correct_template_hash) = compiled_template_parts_and_hash(&target);
+    let mut wrong_template_hash = correct_template_hash.clone();
+    wrong_template_hash[0] ^= 0x01;
+
+    let target_output = compile_contract(
+        target_source,
+        &[vec![0x11u8; 32].into(), correct_template_hash.into(), 6.into(), vec![0x34u8, 0x12u8].into()],
+        CompileOptions::default(),
+    )
+    .expect("compile target output succeeds");
+
+    let result = run_validate_output_state_with_template_case(prefix, suffix, wrong_template_hash, &target_output);
+    assert!(result.is_err(), "wrong template hash should fail at runtime");
+}
+
+#[test]
+fn validate_output_state_with_template_rejects_wrong_template_parts() {
+    let target_source = r#"
+        contract A(byte[32] initMuxHash, byte[32] initAHash, int initX, byte[2] initY) {
+            byte[32] muxHash = initMuxHash;
+            byte[32] aHash = initAHash;
+            int x = initX;
+            byte[2] y = initY;
+
+            entrypoint function noop() {
+                require(true);
+            }
+        }
+    "#;
+
+    let target = compile_contract(
+        target_source,
+        &[vec![0x11u8; 32].into(), vec![0x33u8; 32].into(), Expr::int(0x1111_1111_1111_1111), vec![0x55u8, 0x66u8].into()],
+        CompileOptions::default(),
+    )
+    .expect("compile target succeeds");
+    let (mut prefix, suffix, template_hash) = compiled_template_parts_and_hash(&target);
+    prefix.push(0x00);
+
+    let target_output = compile_contract(
+        target_source,
+        &[vec![0x11u8; 32].into(), template_hash.clone().into(), 6.into(), vec![0x34u8, 0x12u8].into()],
+        CompileOptions::default(),
+    )
+    .expect("compile target output succeeds");
+
+    let result = run_validate_output_state_with_template_case(prefix, suffix, template_hash, &target_output);
+    assert!(result.is_err(), "wrong template parts should fail at runtime");
+}
+
+#[test]
+fn validate_output_state_with_template_rejects_wrong_output_script() {
+    let target_source = r#"
+        contract A(byte[32] initMuxHash, byte[32] initAHash, int initX, byte[2] initY) {
+            byte[32] muxHash = initMuxHash;
+            byte[32] aHash = initAHash;
+            int x = initX;
+            byte[2] y = initY;
+
+            entrypoint function noop() {
+                require(true);
+            }
+        }
+    "#;
+
+    let target = compile_contract(
+        target_source,
+        &[vec![0x11u8; 32].into(), vec![0x33u8; 32].into(), Expr::int(0x1111_1111_1111_1111), vec![0x55u8, 0x66u8].into()],
+        CompileOptions::default(),
+    )
+    .expect("compile target succeeds");
+    let (prefix, suffix, template_hash) = compiled_template_parts_and_hash(&target);
+
+    let wrong_output = compile_contract(
+        target_source,
+        &[vec![0x11u8; 32].into(), template_hash.clone().into(), 7.into(), vec![0x34u8, 0x12u8].into()],
+        CompileOptions::default(),
+    )
+    .expect("compile wrong target output succeeds");
+
+    let result = run_validate_output_state_with_template_case(prefix, suffix, template_hash, &wrong_output);
+    assert!(result.is_err(), "wrong output script should fail at runtime");
+}
+
+#[test]
+fn validate_output_state_with_template_rejects_different_target_state_layout() {
+    let target_source = r#"
+        contract D(byte[32] initMuxHash, byte[32] initAHash, int initX) {
+            byte[32] muxHash = initMuxHash;
+            byte[32] aHash = initAHash;
+            int x = initX;
+
+            entrypoint function noop() {
+                require(true);
+            }
+        }
+    "#;
+
+    let target = compile_contract(
+        target_source,
+        &[vec![0x11u8; 32].into(), vec![0x33u8; 32].into(), Expr::int(0x1111_1111_1111_1111)],
+        CompileOptions::default(),
+    )
+    .expect("compile different-layout target succeeds");
+    let (prefix, suffix, template_hash) = compiled_template_parts_and_hash(&target);
+
+    let wrong_layout_output =
+        compile_contract(target_source, &[vec![0x11u8; 32].into(), template_hash.clone().into(), 6.into()], CompileOptions::default())
+            .expect("compile different-layout output succeeds");
+
+    let result = run_validate_output_state_with_template_case(prefix, suffix, template_hash, &wrong_layout_output);
+    assert!(result.is_err(), "different target state layout should fail at runtime");
+}
+
+#[test]
+fn conditional_counter_in_unrolled_loop_does_not_explode() {
+    const SOURCE: &str = r#"
+pragma silverscript ^0.1.0;
+
+contract Sweep(int BOUND, byte[64] init_board) {
+    byte[64] board = init_board;
+
+    entrypoint function main() {
+        int zero_count = 0;
+        // Keep this loop small so regressions fail fast (the previous exponential blow-up
+        // already manifested at single-digit iteration counts).
+        for (i, 0, BOUND, BOUND) {
+            if (OpBin2Num(board[i]) == 0) {
+                zero_count = zero_count + 1;
+            }
+        }
+        require(zero_count >= 0);
+    }
+}
+"#;
+
+    let bounds = [4i64, 8i64, 12i64];
+    let mut lens = Vec::new();
+    for b in bounds {
+        let args = [Expr::int(b), Expr::bytes(vec![0u8; 64])];
+        let compiled = compile_contract(SOURCE, &args, CompileOptions::default()).expect("compile succeeds");
+        lens.push(compiled.script.len());
+    }
+
+    // Monotonic growth, and no doubling behavior in this range.
+    assert!(lens[0] < lens[1] && lens[1] < lens[2], "expected monotonic growth, got {lens:?}");
+    let d1 = lens[1] - lens[0];
+    let d2 = lens[2] - lens[1];
+    assert!(d2 <= d1 * 2, "unexpected superlinear growth: lens={lens:?} d1={d1} d2={d2}");
+
+    // Absolute cap: the old exponential behavior already blew past this by bound=8..12.
+    assert!(lens[2] < 5_000, "unexpected script size: lens={lens:?}");
 }
 
 #[test]
@@ -3889,6 +4717,46 @@ fn validate_output_state_accepts_three_field_state_under_selector_dispatch() {
 
     let result = execute_input(tx, vec![utxo_entry], 0);
     assert!(result.is_ok(), "mixed-width state should validate output state under selector dispatch: {result:?}");
+}
+
+#[test]
+fn debug_validate_output_state_accepts_current_byte32_fields() {
+    let source = r#"
+        contract C(byte[32] initMuxHash, byte[32] initAHash, int initX, byte[2] initY) {
+            byte[32] muxHash = initMuxHash;
+            byte[32] aHash = initAHash;
+            int x = initX;
+            byte[2] y = initY;
+
+            entrypoint function main() {
+                validateOutputState(0, {muxHash: muxHash, aHash: aHash, x: x + 1, y: 0x3412});
+            }
+        }
+    "#;
+
+    let input_compiled = compile_contract(
+        source,
+        &[vec![0x11u8; 32].into(), vec![0x22u8; 32].into(), 5.into(), vec![0x10u8, 0x20u8].into()],
+        CompileOptions::default(),
+    )
+    .expect("compile succeeds");
+
+    let output_compiled = compile_contract(
+        source,
+        &[vec![0x11u8; 32].into(), vec![0x22u8; 32].into(), 6.into(), vec![0x34u8, 0x12u8].into()],
+        CompileOptions::default(),
+    )
+    .expect("compile succeeds");
+
+    let input = test_input(0, sigscript_push_script(&input_compiled.script));
+    let input_spk = pay_to_script_hash_script(&input_compiled.script);
+    let output_spk = pay_to_script_hash_script(&output_compiled.script);
+    let output = TransactionOutput { value: 1000, script_public_key: output_spk, covenant: None };
+    let tx = Transaction::new(1, vec![input], vec![output.clone()], 0, Default::default(), 0, vec![]);
+    let utxo_entry = UtxoEntry::new(output.value, input_spk, 0, tx.is_coinbase(), None);
+
+    let result = execute_input(tx, vec![utxo_entry], 0);
+    assert!(result.is_ok(), "validateOutputState should accept current byte[32] fields: {result:?}");
 }
 
 #[test]
@@ -4250,6 +5118,284 @@ fn runs_read_input_state_into_state_variable() {
 }
 
 #[test]
+fn runs_read_input_state_with_template_into_typed_struct_variable() {
+    let target_hash_value = vec![0x44u8; 32];
+    let target_hash_hex = target_hash_value.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+
+    let target_source = r#"
+        contract A(byte[2] initY, int initX, byte[32] initTargetHash) {
+            byte[2] y = initY;
+            int x = initX;
+            byte[32] targetHash = initTargetHash;
+
+            entrypoint function noop() {
+                require(true);
+            }
+        }
+    "#;
+    let target_input_compiled = compile_contract(
+        target_source,
+        &[vec![0x34u8, 0x12u8].into(), 8.into(), target_hash_value.clone().into()],
+        CompileOptions::default(),
+    )
+    .expect("compile target succeeds");
+    let (template_prefix, template_suffix, template_hash) = compiled_template_parts_and_hash(&target_input_compiled);
+
+    let reader_source = format!(
+        r#"
+        contract Reader(int initRound) {{
+            struct RemoteState {{
+                byte[2] y;
+                int x;
+                byte[32] targetHash;
+            }}
+
+            int round = initRound;
+
+            entrypoint function main() {{
+                RemoteState remote = readInputStateWithTemplate(
+                    1,
+                    {},
+                    {},
+                    0x{}
+                );
+                require(round == 5);
+                require(remote.y == 0x3412);
+                require(remote.x == 8);
+                require(remote.targetHash == 0x{target_hash_hex});
+            }}
+        }}
+    "#,
+        template_prefix.len(),
+        template_suffix.len(),
+        template_hash.iter().map(|byte| format!("{byte:02x}")).collect::<String>(),
+    );
+
+    let result = run_read_input_state_with_template_case(&reader_source, &[5.into()], &target_input_compiled);
+    assert!(
+        result.is_ok(),
+        "readInputStateWithTemplate should decode a foreign input using the passed struct layout: {}",
+        result.unwrap_err()
+    );
+}
+
+#[test]
+fn runs_read_input_state_with_template_destructuring() {
+    let target_hash_value = vec![0x55u8; 32];
+    let target_hash_hex = target_hash_value.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+
+    let target_source = r#"
+        contract A(byte[2] initY, int initX, byte[32] initTargetHash) {
+            byte[2] y = initY;
+            int x = initX;
+            byte[32] targetHash = initTargetHash;
+
+            entrypoint function noop() {
+                require(true);
+            }
+        }
+    "#;
+    let target_input_compiled = compile_contract(
+        target_source,
+        &[vec![0x78u8, 0x56u8].into(), 11.into(), target_hash_value.clone().into()],
+        CompileOptions::default(),
+    )
+    .expect("compile target succeeds");
+    let (template_prefix, template_suffix, template_hash) = compiled_template_parts_and_hash(&target_input_compiled);
+
+    let reader_source = format!(
+        r#"
+        contract Reader() {{
+            struct RemoteState {{
+                byte[2] y;
+                int x;
+                byte[32] targetHash;
+            }}
+
+            entrypoint function main() {{
+                {{y: byte[2] inY, x: int inX, targetHash: byte[32] inHash}} = readInputStateWithTemplate(
+                    1,
+                    {},
+                    {},
+                    0x{}
+                );
+                require(inY == 0x7856);
+                require(inX == 11);
+                require(inHash == 0x{target_hash_hex});
+            }}
+        }}
+    "#,
+        template_prefix.len(),
+        template_suffix.len(),
+        template_hash.iter().map(|byte| format!("{byte:02x}")).collect::<String>(),
+    );
+
+    let result = run_read_input_state_with_template_case(&reader_source, &[], &target_input_compiled);
+    assert!(result.is_ok(), "readInputStateWithTemplate destructuring should succeed: {}", result.unwrap_err());
+}
+
+#[test]
+fn read_input_state_with_template_rejects_wrong_template_hash() {
+    let target_source = r#"
+        contract A(byte[2] initY, int initX) {
+            byte[2] y = initY;
+            int x = initX;
+
+            entrypoint function noop() {
+                require(true);
+            }
+        }
+    "#;
+    let target_input_compiled = compile_contract(target_source, &[vec![0x34u8, 0x12u8].into(), 8.into()], CompileOptions::default())
+        .expect("compile target succeeds");
+    let (template_prefix, template_suffix, mut template_hash) = compiled_template_parts_and_hash(&target_input_compiled);
+    template_hash[0] ^= 0x01;
+
+    let reader_source = format!(
+        r#"
+        contract Reader() {{
+            struct RemoteState {{
+                byte[2] y;
+                int x;
+            }}
+
+            entrypoint function main() {{
+                RemoteState remote = readInputStateWithTemplate(
+                    1,
+                    {},
+                    {},
+                    0x{}
+                );
+                require(remote.y == 0x3412);
+                require(remote.x == 8);
+            }}
+        }}
+    "#,
+        template_prefix.len(),
+        template_suffix.len(),
+        template_hash.iter().map(|byte| format!("{byte:02x}")).collect::<String>(),
+    );
+
+    let result = run_read_input_state_with_template_case(&reader_source, &[], &target_input_compiled);
+    assert!(result.is_err(), "wrong template hash should fail at runtime");
+}
+
+#[test]
+fn read_input_state_with_template_rejects_wrong_template_sizes() {
+    let target_source = r#"
+        contract A(byte[2] initY, int initX) {
+            byte[2] y = initY;
+            int x = initX;
+
+            entrypoint function noop() {
+                require(true);
+            }
+        }
+    "#;
+    let target_input_compiled = compile_contract(target_source, &[vec![0x34u8, 0x12u8].into(), 8.into()], CompileOptions::default())
+        .expect("compile target succeeds");
+    let (template_prefix, template_suffix, template_hash) = compiled_template_parts_and_hash(&target_input_compiled);
+    let wrong_prefix_len = template_prefix.len() + 1;
+
+    let reader_source = format!(
+        r#"
+        contract Reader() {{
+            struct RemoteState {{
+                byte[2] y;
+                int x;
+            }}
+
+            entrypoint function main() {{
+                RemoteState remote = readInputStateWithTemplate(
+                    1,
+                    {},
+                    {},
+                    0x{}
+                );
+                require(remote.y == 0x3412);
+                require(remote.x == 8);
+            }}
+        }}
+    "#,
+        wrong_prefix_len,
+        template_suffix.len(),
+        template_hash.iter().map(|byte| format!("{byte:02x}")).collect::<String>(),
+    );
+
+    let result = run_read_input_state_with_template_case(&reader_source, &[], &target_input_compiled);
+    assert!(result.is_err(), "wrong template sizes should fail at runtime");
+}
+
+#[test]
+fn read_input_state_with_template_rejects_input_with_wrong_p2sh_commitment() {
+    let target_source = r#"
+        contract A(byte[2] initY, int initX) {
+            byte[2] y = initY;
+            int x = initX;
+
+            entrypoint function noop() {
+                require(true);
+            }
+        }
+    "#;
+    let target_input_compiled = compile_contract(target_source, &[vec![0x34u8, 0x12u8].into(), 8.into()], CompileOptions::default())
+        .expect("compile target succeeds");
+    let (template_prefix, template_suffix, template_hash) = compiled_template_parts_and_hash(&target_input_compiled);
+
+    let reader_source = format!(
+        r#"
+        contract Reader() {{
+            struct RemoteState {{
+                byte[2] y;
+                int x;
+            }}
+
+            entrypoint function main() {{
+                RemoteState remote = readInputStateWithTemplate(
+                    1,
+                    {},
+                    {},
+                    0x{}
+                );
+                require(remote.y == 0x3412);
+                require(remote.x == 8);
+            }}
+        }}
+    "#,
+        template_prefix.len(),
+        template_suffix.len(),
+        template_hash.iter().map(|byte| format!("{byte:02x}")).collect::<String>(),
+    );
+
+    let wrong_input_spk = pay_to_script_hash_script(&[OpTrue]);
+    let result = run_read_input_state_with_template_case_with_input_spk(&reader_source, &[], &target_input_compiled, wrong_input_spk);
+    assert!(result.is_err(), "wrong foreign input P2SH commitment should fail at runtime");
+}
+
+#[test]
+fn rejects_read_input_state_with_template_outside_direct_binding() {
+    let source = r#"
+        contract Reader() {
+            struct RemoteState {
+                int x;
+            }
+
+            function check(RemoteState remote) {
+                require(remote.x > 0);
+            }
+
+            entrypoint function main(int prefixLen, int suffixLen, byte[32] templateHash) {
+                check(readInputStateWithTemplate(1, prefixLen, suffixLen, templateHash));
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default())
+        .expect_err("readInputStateWithTemplate should be rejected outside direct struct bindings");
+    assert!(err.to_string().contains("must be assigned to a struct variable or destructured directly"), "unexpected error: {err}");
+}
+
+#[test]
 fn rejects_validate_output_state_with_incorrect_state_variable_type() {
     let source = r#"
         contract C(int initX, byte[2] initY) {
@@ -4270,6 +5416,43 @@ fn rejects_validate_output_state_with_incorrect_state_variable_type() {
     let err = compile_contract(source, &[5.into(), vec![1u8, 2u8].into()], CompileOptions::default())
         .expect_err("wrong struct type should be rejected");
     assert!(err.to_string().contains("State") || err.to_string().contains("struct"), "unexpected error: {err}");
+}
+
+#[test]
+fn validate_output_state_with_template_uses_passed_struct_layout_not_local_state_layout() {
+    let source = r#"
+        contract M(int initX, byte[2] initY) {
+            struct C {
+                byte[2] y;
+                int x;
+                byte[32] targetHash;
+            }
+
+            int x = initX;
+            byte[2] y = initY;
+
+            entrypoint function route(byte[32] targetHash) {
+                C next = {
+                    y: 0x3412,
+                    x: x + 1,
+                    targetHash: targetHash
+                };
+                validateOutputStateWithTemplate(
+                    0,
+                    next,
+                    0x51,
+                    0x52,
+                    0x0000000000000000000000000000000000000000000000000000000000000000
+                );
+            }
+        }
+    "#;
+
+    let result = compile_contract(source, &[5.into(), vec![0x10u8, 0x20u8].into()], CompileOptions::default());
+    assert!(
+        result.is_ok(),
+        "validateOutputStateWithTemplate should encode the passed struct layout instead of the local State layout: {result:?}"
+    );
 }
 
 #[test]
@@ -4645,6 +5828,29 @@ fn compiles_opcode_builtins() {
                 .add_data(b"seq")
                 .unwrap()
                 .add_op(OpEqual)
+                .unwrap()
+                .add_op(OpVerify)
+                .unwrap()
+                .add_op(OpTrue)
+                .unwrap()
+                .drain(),
+        ),
+        (
+            r#"
+                contract Test() {
+                    entrypoint function main() {
+                        require(OpTxInputDaaScore(0) == 0);
+                    }
+                }
+            "#,
+            ScriptBuilder::new()
+                .add_i64(0)
+                .unwrap()
+                .add_op(OpTxInputDaaScore)
+                .unwrap()
+                .add_i64(0)
+                .unwrap()
+                .add_op(OpNumEqual)
                 .unwrap()
                 .add_op(OpVerify)
                 .unwrap()
@@ -5126,6 +6332,16 @@ fn executes_opcode_builtins_basic() {
             "#,
         ),
         (
+            "input_daa_score",
+            r#"
+                contract Test() {
+                    entrypoint function main() {
+                        require(OpTxInputDaaScore(0) == 0);
+                    }
+                }
+            "#,
+        ),
+        (
             "is_coinbase",
             r#"
                 contract Test() {
@@ -5351,19 +6567,13 @@ fn compiles_reused_variables_and_verifies() {
         .unwrap()
         .add_op(OpAdd)
         .unwrap()
-        .add_i64(0)
+        .add_op(OpDup)
         .unwrap()
-        .add_op(OpPick)
-        .unwrap()
-        .add_i64(1)
-        .unwrap()
-        .add_op(OpPick)
+        .add_op(OpOver)
         .unwrap()
         .add_op(OpMul)
         .unwrap()
-        .add_i64(1)
-        .unwrap()
-        .add_op(OpPick)
+        .add_op(OpOver)
         .unwrap()
         .add_op(OpAdd)
         .unwrap()
@@ -5410,19 +6620,13 @@ fn return_reused_local_is_stored_once_and_reused() {
         .unwrap()
         .add_op(OpAdd)
         .unwrap()
-        .add_i64(0)
+        .add_op(OpDup)
         .unwrap()
-        .add_op(OpPick)
-        .unwrap()
-        .add_i64(1)
-        .unwrap()
-        .add_op(OpPick)
+        .add_op(OpOver)
         .unwrap()
         .add_op(OpMul)
         .unwrap()
-        .add_i64(1)
-        .unwrap()
-        .add_op(OpPick)
+        .add_op(OpOver)
         .unwrap()
         .add_op(OpAdd)
         .unwrap()
@@ -6058,21 +7262,15 @@ fn inline_argument_alias_does_not_store_param_in_addition_to_reused_local() {
 
     let body = ScriptBuilder::new()
         // Copy `x` twice and compute `x * x`, leaving the new local `y` on stack.
-        .add_i64(0)
+        .add_op(OpDup)
         .unwrap()
-        .add_op(OpPick)
-        .unwrap()
-        .add_i64(1)
-        .unwrap()
-        .add_op(OpPick)
+        .add_op(OpOver)
         .unwrap()
         .add_op(OpMul)
         .unwrap()
         // Inline `f(y)`: there is no explicit store for callee param `z`.
         // We just read the already-stored `y` slot, proving `z` is only an alias.
-        .add_i64(0)
-        .unwrap()
-        .add_op(OpPick)
+        .add_op(OpDup)
         .unwrap()
         .add_i64(1)
         .unwrap()
@@ -6081,9 +7279,7 @@ fn inline_argument_alias_does_not_store_param_in_addition_to_reused_local() {
         .add_op(OpVerify)
         .unwrap()
         // Inline `g(y)`: same again, read `y` directly instead of storing `z`.
-        .add_i64(0)
-        .unwrap()
-        .add_op(OpPick)
+        .add_op(OpDup)
         .unwrap()
         .add_i64(10)
         .unwrap()
@@ -6107,7 +7303,9 @@ fn inline_argument_alias_does_not_store_param_in_addition_to_reused_local() {
     let expected = wrap_with_dispatch(body, selector);
 
     assert_eq!(compiled.script, expected);
-    assert_eq!(compiled.script.iter().copied().filter(|op| *op == OpPick).count(), 4);
+    assert_eq!(compiled.script.iter().copied().filter(|op| *op == OpDup).count(), 3);
+    assert_eq!(compiled.script.iter().copied().filter(|op| *op == OpOver).count(), 1);
+    assert_eq!(compiled.script.iter().copied().filter(|op| *op == OpPick).count(), 0);
     assert_eq!(compiled.script.iter().copied().filter(|op| *op == OpMul).count(), 1);
 
     let sigscript_ok = compiled.build_sig_script("main", vec![Expr::int(2)]).expect("sigscript builds");
@@ -6144,9 +7342,7 @@ fn inline_argument_alias_reuses_entrypoint_param_without_extra_stack_storage() {
     let body = ScriptBuilder::new()
         // Inline `f(y)`: `y` is already the entrypoint param on stack, so `z`
         // is only an alias and we simply read that slot.
-        .add_i64(0)
-        .unwrap()
-        .add_op(OpPick)
+        .add_op(OpDup)
         .unwrap()
         .add_i64(1)
         .unwrap()
@@ -6155,9 +7351,7 @@ fn inline_argument_alias_reuses_entrypoint_param_without_extra_stack_storage() {
         .add_op(OpVerify)
         .unwrap()
         // Inline `g(y)`: same aliasing behavior, still no explicit store for `z`.
-        .add_i64(0)
-        .unwrap()
-        .add_op(OpPick)
+        .add_op(OpDup)
         .unwrap()
         .add_i64(10)
         .unwrap()
@@ -6175,7 +7369,9 @@ fn inline_argument_alias_reuses_entrypoint_param_without_extra_stack_storage() {
     let expected = wrap_with_dispatch(body, selector);
 
     assert_eq!(compiled.script, expected);
-    assert_eq!(compiled.script.iter().copied().filter(|op| *op == OpPick).count(), 2);
+    assert_eq!(compiled.script.iter().copied().filter(|op| *op == OpDup).count(), 2);
+    assert_eq!(compiled.script.iter().copied().filter(|op| *op == OpOver).count(), 0);
+    assert_eq!(compiled.script.iter().copied().filter(|op| *op == OpPick).count(), 0);
     assert_eq!(compiled.script.iter().copied().filter(|op| *op == OpDrop).count(), 1);
 
     let sigscript_ok = compiled.build_sig_script("main", vec![Expr::int(2)]).expect("sigscript builds");
@@ -6205,20 +7401,14 @@ fn local_alias_reuses_existing_stack_slot_without_explicit_store() {
 
     let body = ScriptBuilder::new()
         // Copy `x` twice and compute `x * x`, leaving the reused local `y` on stack.
-        .add_i64(0)
+        .add_op(OpDup)
         .unwrap()
-        .add_op(OpPick)
-        .unwrap()
-        .add_i64(1)
-        .unwrap()
-        .add_op(OpPick)
+        .add_op(OpOver)
         .unwrap()
         .add_op(OpMul)
         .unwrap()
         // First `require(y > 1)` reads the stored `y` value.
-        .add_i64(0)
-        .unwrap()
-        .add_op(OpPick)
+        .add_op(OpDup)
         .unwrap()
         .add_i64(1)
         .unwrap()
@@ -6228,9 +7418,7 @@ fn local_alias_reuses_existing_stack_slot_without_explicit_store() {
         .unwrap()
         // `int z = y` does not emit any explicit store. The next require still
         // reads the same stack slot directly, showing `z` aliases `y`.
-        .add_i64(0)
-        .unwrap()
-        .add_op(OpPick)
+        .add_op(OpDup)
         .unwrap()
         .add_i64(1)
         .unwrap()
@@ -6255,7 +7443,9 @@ fn local_alias_reuses_existing_stack_slot_without_explicit_store() {
 
     assert_eq!(compiled.script, expected);
     assert_eq!(compiled.script.iter().copied().filter(|op| *op == OpMul).count(), 1);
-    assert_eq!(compiled.script.iter().copied().filter(|op| *op == OpPick).count(), 4);
+    assert_eq!(compiled.script.iter().copied().filter(|op| *op == OpDup).count(), 3);
+    assert_eq!(compiled.script.iter().copied().filter(|op| *op == OpOver).count(), 1);
+    assert_eq!(compiled.script.iter().copied().filter(|op| *op == OpPick).count(), 0);
 
     let sigscript_ok = compiled.build_sig_script("main", vec![Expr::int(2)]).expect("sigscript builds");
     let result_ok = run_script_with_sigscript(compiled.script.clone(), sigscript_ok);
@@ -6504,60 +7694,17 @@ fn compile_time_if_branch_stores_local_var_once_and_reuses_it() {
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
 
-    let expected = ScriptBuilder::new()
-        .add_i64(1)
-        .unwrap()
-        .add_i64(2)
-        .unwrap()
-        .add_op(OpLessThan)
-        .unwrap()
-        .add_op(OpIf)
-        .unwrap()
-        .add_i64(0)
-        .unwrap()
-        .add_op(OpPick)
-        .unwrap()
-        .add_i64(1)
-        .unwrap()
-        .add_op(OpAdd)
-        .unwrap()
-        .add_i64(0)
-        .unwrap()
-        .add_op(OpPick)
-        .unwrap()
-        .add_i64(10)
-        .unwrap()
-        .add_op(OpLessThan)
-        .unwrap()
-        .add_op(OpVerify)
-        .unwrap()
-        .add_i64(0)
-        .unwrap()
-        .add_op(OpPick)
-        .unwrap()
-        .add_i64(1)
-        .unwrap()
-        .add_op(OpGreaterThan)
-        .unwrap()
-        .add_op(OpVerify)
-        .unwrap()
-        .add_op(OpDrop)
-        .unwrap()
-        .add_op(OpElse)
-        .unwrap()
-        .add_op(OpFalse)
-        .unwrap()
-        .add_op(OpVerify)
-        .unwrap()
-        .add_op(OpEndIf)
-        .unwrap()
-        .add_op(OpDrop)
-        .unwrap()
-        .add_op(OpTrue)
-        .unwrap()
-        .drain();
-
-    assert_eq!(compiled.script, expected);
+    let script = &compiled.script;
+    let if_pos = script.iter().position(|op| *op == OpIf).expect("if present");
+    let else_pos = script.iter().position(|op| *op == OpElse).expect("else present");
+    let endif_pos = script.iter().position(|op| *op == OpEndIf).expect("endif present");
+    assert_eq!(script[if_pos + 1..else_pos].iter().copied().filter(|op| *op == OpDup).count(), 3);
+    assert_eq!(script[if_pos + 1..else_pos].iter().copied().filter(|op| *op == OpOver).count(), 0);
+    assert_eq!(script[if_pos + 1..else_pos].iter().copied().filter(|op| *op == OpPick).count(), 0);
+    assert_eq!(script[if_pos + 1..else_pos].iter().copied().filter(|op| *op == OpAdd).count(), 1);
+    assert_eq!(script[if_pos + 1..else_pos].iter().copied().filter(|op| *op == OpDrop).count(), 1);
+    assert_eq!(script[endif_pos + 1..].iter().copied().filter(|op| *op == OpDrop).count(), 1);
+    assert_eq!(script[endif_pos + 1..].iter().copied().filter(|op| *op == OpRoll).count(), 0);
 }
 
 #[test]
@@ -6596,90 +7743,306 @@ fn compile_time_if_branch_stores_struct_fields_once_and_reuses_them() {
         "s.b should be computed once and reused across both require statements"
     );
 
-    let expected = ScriptBuilder::new()
-        .add_i64(1)
-        .unwrap()
-        .add_i64(2)
-        .unwrap()
-        .add_op(OpLessThan)
-        .unwrap()
-        .add_op(OpIf)
-        .unwrap()
-        .add_i64(0)
-        .unwrap()
-        .add_op(OpPick)
-        .unwrap()
-        .add_i64(1)
-        .unwrap()
-        .add_op(OpAdd)
-        .unwrap()
-        .add_i64(1)
-        .unwrap()
-        .add_op(OpPick)
-        .unwrap()
-        .add_i64(2)
-        .unwrap()
-        .add_op(OpPick)
-        .unwrap()
-        .add_op(OpMul)
-        .unwrap()
-        .add_i64(1)
-        .unwrap()
-        .add_op(OpPick)
-        .unwrap()
-        .add_i64(10)
-        .unwrap()
-        .add_op(OpLessThan)
-        .unwrap()
-        .add_op(OpVerify)
-        .unwrap()
-        .add_i64(0)
-        .unwrap()
-        .add_op(OpPick)
-        .unwrap()
-        .add_i64(20)
-        .unwrap()
-        .add_op(OpLessThan)
-        .unwrap()
-        .add_op(OpVerify)
-        .unwrap()
-        .add_i64(1)
-        .unwrap()
-        .add_op(OpPick)
-        .unwrap()
-        .add_i64(1)
-        .unwrap()
-        .add_op(OpGreaterThan)
-        .unwrap()
-        .add_op(OpVerify)
-        .unwrap()
-        .add_i64(0)
-        .unwrap()
-        .add_op(OpPick)
-        .unwrap()
-        .add_i64(2)
-        .unwrap()
-        .add_op(OpGreaterThan)
-        .unwrap()
-        .add_op(OpVerify)
-        .unwrap()
-        .add_op(OpDrop)
-        .unwrap()
-        .add_op(OpDrop)
-        .unwrap()
-        .add_op(OpElse)
-        .unwrap()
-        .add_op(OpFalse)
-        .unwrap()
-        .add_op(OpVerify)
-        .unwrap()
-        .add_op(OpEndIf)
-        .unwrap()
-        .add_op(OpDrop)
-        .unwrap()
-        .add_op(OpTrue)
-        .unwrap()
-        .drain();
+    let script = &compiled.script;
+    let if_pos = script.iter().position(|op| *op == OpIf).expect("if present");
+    let else_pos = script.iter().position(|op| *op == OpElse).expect("else present");
+    let endif_pos = script.iter().position(|op| *op == OpEndIf).expect("endif present");
+    assert_eq!(script[if_pos + 1..else_pos].iter().copied().filter(|op| *op == OpDup).count(), 3);
+    assert_eq!(script[if_pos + 1..else_pos].iter().copied().filter(|op| *op == OpOver).count(), 3);
+    assert_eq!(script[if_pos + 1..else_pos].iter().copied().filter(|op| *op == OpPick).count(), 1);
+    assert_eq!(script[if_pos + 1..else_pos].iter().copied().filter(|op| *op == OpAdd).count(), 1);
+    assert_eq!(script[if_pos + 1..else_pos].iter().copied().filter(|op| *op == OpMul).count(), 1);
+    assert_eq!(script[if_pos + 1..else_pos].iter().copied().filter(|op| *op == OpDrop).count(), 2);
+    assert_eq!(script[endif_pos + 1..].iter().copied().filter(|op| *op == OpDrop).count(), 1);
+    assert_eq!(script[endif_pos + 1..].iter().copied().filter(|op| *op == OpRoll).count(), 0);
+}
 
-    assert_eq!(compiled.script, expected);
+#[test]
+fn partially_reassigned_struct_field_rolls_last_use_without_copying_unchanged_fields() {
+    let source = r#"
+        contract ConsumePartialStructField() {
+            struct S {
+                int a;
+                int b;
+            }
+
+            entrypoint function main(int x) {
+                S s = {a: x + 1, b: x * x};
+                s = {a: s.a + 1, b: s.b};
+                require(s.a > 0);
+                require(s.b > 0);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("partial struct reassignment should compile");
+    assert_eq!(
+        compiled.script.iter().copied().filter(|op| *op == OpMul).count(),
+        1,
+        "the unchanged field should keep using its original expression instead of being copied into a new stack slot"
+    );
+    assert_eq!(
+        compiled.script.iter().copied().filter(|op| *op == OpAdd).count(),
+        2,
+        "only the initial `s.a = x + 1` and the reassigned `s.a = s.a + 1` should emit additions"
+    );
+    assert!(
+        compiled.script.iter().copied().filter(|op| *op == OpRoll).count() >= 2,
+        "the stack-backed struct leaves should be rebound with rolls instead of rebuilding the whole struct"
+    );
+
+    let sigscript_ok = compiled.build_sig_script("main", vec![Expr::int(2)]).expect("sigscript builds");
+    let result_ok = run_script_with_sigscript(compiled.script.clone(), sigscript_ok);
+    assert!(result_ok.is_ok(), "partial struct reassignment should execute successfully: {}", result_ok.unwrap_err());
+
+    let sigscript_err = compiled.build_sig_script("main", vec![Expr::int(0)]).expect("sigscript builds");
+    let result_err = run_script_with_sigscript(compiled.script, sigscript_err);
+    assert!(result_err.is_err(), "partial struct reassignment should still enforce the updated field checks");
+}
+
+#[test]
+fn if_branch_reassignment_drops_hidden_shadow_bindings() {
+    let source = r#"
+        contract BranchShadowCleanup() {
+            entrypoint function main(int flag, int a, int b, int expected) {
+                int d = a + b;
+                d = d - a;
+                if (flag > 0) {
+                    int c = d + b;
+                    d = a + c;
+                } else {
+                    d = d + a;
+                }
+                require(d == expected);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("if branch reassignment should compile");
+
+    let sigscript_then =
+        compiled.build_sig_script("main", vec![Expr::int(1), Expr::int(1), Expr::int(1), Expr::int(3)]).expect("sigscript builds");
+    let result_then = run_script_with_sigscript(compiled.script.clone(), sigscript_then);
+    assert!(result_then.is_ok(), "then-branch reassignment should leave a clean stack: {}", result_then.unwrap_err());
+
+    let sigscript_else =
+        compiled.build_sig_script("main", vec![Expr::int(0), Expr::int(1), Expr::int(1), Expr::int(2)]).expect("sigscript builds");
+    let result_else = run_script_with_sigscript(compiled.script, sigscript_else);
+    assert!(result_else.is_ok(), "else-branch reassignment should leave a clean stack: {}", result_else.unwrap_err());
+}
+
+#[test]
+fn struct_if_reassignment_preserves_types_after_merge() {
+    let source = r#"
+        contract StructMergeTypes() {
+            struct S {
+                int a;
+                int b;
+            }
+
+            function verify_pair(S value, int expected_a, int expected_b) {
+                require(value.a == expected_a);
+                require(value.b == expected_b);
+            }
+
+            entrypoint function main(int flag, int expected_a, int expected_b) {
+                S s = {a: 2, b: 3};
+                if (flag > 0) {
+                    s = {a: s.a + 1, b: s.b + 1};
+                } else {
+                    s = {a: s.a + 2, b: s.b + 2};
+                }
+                S t = s;
+                verify_pair(t, expected_a, expected_b);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("post-if struct type merge should compile");
+    let normalized = format_contract_ast(&compiled.ast);
+    assert!(normalized.contains("S t = s;"), "merged struct type should still allow assignment after the if: {normalized}");
+}
+
+#[test]
+fn partial_struct_if_reassignment_preserves_types_after_merge() {
+    let source = r#"
+        contract PartialStructMergeTypes() {
+            struct S {
+                int a;
+                int b;
+            }
+
+            function verify_pair(S value, int expected_a, int expected_b) {
+                require(value.a == expected_a);
+                require(value.b == expected_b);
+            }
+
+            entrypoint function main(int flag, int expected_a, int expected_b) {
+                S s = {a: 2, b: 3};
+                if (flag > 0) {
+                    s = {a: s.a + 1, b: s.b};
+                } else {
+                    s = {a: s.a, b: s.b + 2};
+                }
+                S t = s;
+                verify_pair(t, expected_a, expected_b);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("post-if partial struct type merge should compile");
+    let normalized = format_contract_ast(&compiled.ast);
+    assert!(normalized.contains("S t = s;"), "merged struct type should still allow assignment after the if: {normalized}");
+}
+
+#[test]
+fn struct_if_branch_reassignment_drops_hidden_shadow_bindings() {
+    let source = r#"
+        contract StructBranchCleanup() {
+            struct S {
+                int a;
+                int b;
+            }
+
+            entrypoint function main(int flag, int x, int y, int expected_a, int expected_b) {
+                S s = {a: x, b: y};
+                if (flag > 0) {
+                    S t = {a: s.a + 1, b: s.b + 2};
+                    s = {a: t.a + y, b: t.b + x};
+                } else {
+                    S t = {a: s.a + x, b: s.b + y};
+                    s = {a: t.a + 1, b: t.b + 1};
+                }
+                require(s.a == expected_a);
+                require(s.b == expected_b);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("struct branch cleanup should compile");
+
+    let sigscript_then = compiled
+        .build_sig_script("main", vec![Expr::int(1), Expr::int(2), Expr::int(3), Expr::int(6), Expr::int(7)])
+        .expect("sigscript builds");
+    let result_then = run_script_with_sigscript(compiled.script.clone(), sigscript_then);
+    assert!(result_then.is_ok(), "then-branch struct cleanup should leave a clean stack: {}", result_then.unwrap_err());
+
+    let sigscript_else = compiled
+        .build_sig_script("main", vec![Expr::int(0), Expr::int(2), Expr::int(3), Expr::int(5), Expr::int(7)])
+        .expect("sigscript builds");
+    let result_else = run_script_with_sigscript(compiled.script, sigscript_else);
+    assert!(result_else.is_ok(), "else-branch struct cleanup should leave a clean stack: {}", result_else.unwrap_err());
+}
+
+#[test]
+fn partial_struct_if_branch_reassignment_drops_hidden_shadow_bindings() {
+    let source = r#"
+        contract PartialStructBranchCleanup() {
+            struct S {
+                int a;
+                int b;
+            }
+
+            entrypoint function main(int flag, int x, int y, int expected_a, int expected_b) {
+                S s = {a: x, b: y};
+                if (flag > 0) {
+                    S t = {a: s.a + 1, b: s.b};
+                    s = {a: t.a + y, b: s.b};
+                } else {
+                    S t = {a: s.a, b: s.b + y};
+                    s = {a: s.a, b: t.b + x};
+                }
+                require(s.a == expected_a);
+                require(s.b == expected_b);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("partial struct branch cleanup should compile");
+
+    let sigscript_then = compiled
+        .build_sig_script("main", vec![Expr::int(1), Expr::int(2), Expr::int(3), Expr::int(6), Expr::int(3)])
+        .expect("sigscript builds");
+    let result_then = run_script_with_sigscript(compiled.script.clone(), sigscript_then);
+    assert!(result_then.is_ok(), "then-branch partial struct cleanup should leave a clean stack: {}", result_then.unwrap_err());
+
+    let sigscript_else = compiled
+        .build_sig_script("main", vec![Expr::int(0), Expr::int(2), Expr::int(3), Expr::int(2), Expr::int(8)])
+        .expect("sigscript builds");
+    let result_else = run_script_with_sigscript(compiled.script, sigscript_else);
+    assert!(result_else.is_ok(), "else-branch partial struct cleanup should leave a clean stack: {}", result_else.unwrap_err());
+}
+
+#[test]
+fn conditional_counter_in_unrolled_loop_stays_linear() {
+    const SOURCE: &str = r#"
+pragma silverscript ^0.1.0;
+
+contract CounterLoop(int BOUND) {
+    entrypoint function main() {
+        int count = 0;
+        for (i, 0, BOUND, BOUND) {
+            if (true) {
+                count = count + 1;
+            }
+        }
+        require(count >= 0);
+    }
+}
+"#;
+
+    let bounds = [4i64, 8i64, 12i64];
+    let mut lens = Vec::new();
+    for b in bounds {
+        let args = [Expr::int(b)];
+        let compiled = compile_contract(SOURCE, &args, CompileOptions::default()).expect("compile succeeds");
+        lens.push(compiled.script.len());
+    }
+
+    assert!(lens[0] < lens[1] && lens[1] < lens[2], "expected monotonic growth, got {lens:?}");
+    let d1 = lens[1] - lens[0];
+    let d2 = lens[2] - lens[1];
+
+    assert!(d2 <= d1 * 2, "unexpected superlinear growth: lens={lens:?} d1={d1} d2={d2}");
+    assert!(lens[2] < 5_000, "unexpected script size: lens={lens:?}");
+}
+
+#[test]
+fn struct_conditional_counter_in_unrolled_loop_stays_linear() {
+    const SOURCE: &str = r#"
+pragma silverscript ^0.1.0;
+
+contract StructCounterLoop(int BOUND) {
+    struct S {
+        int a;
+        int b;
+    }
+
+    entrypoint function main() {
+        S s = {a: 0, b: 0};
+        for (i, 0, BOUND, BOUND) {
+            if (true) {
+                s = {a: s.a + 1, b: s.b + 1};
+            }
+        }
+        require(s.a >= 0);
+        require(s.b >= 0);
+    }
+}
+"#;
+
+    let bounds = [4i64, 8i64, 12i64];
+    let mut lens = Vec::new();
+    for b in bounds {
+        let args = [Expr::int(b)];
+        let compiled = compile_contract(SOURCE, &args, CompileOptions::default()).expect("compile succeeds");
+        lens.push(compiled.script.len());
+    }
+
+    assert!(lens[0] < lens[1] && lens[1] < lens[2], "expected monotonic growth, got {lens:?}");
+    let d1 = lens[1] - lens[0];
+    let d2 = lens[2] - lens[1];
+
+    assert!(d2 <= d1 * 2, "unexpected superlinear growth: lens={lens:?} d1={d1} d2={d2}");
+    assert!(lens[2] < 10_000, "unexpected script size: lens={lens:?}");
 }

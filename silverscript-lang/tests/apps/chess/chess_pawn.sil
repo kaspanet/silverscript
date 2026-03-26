@@ -1,0 +1,359 @@
+pragma silverscript ^0.1.0;
+
+contract ChessPawn(
+    byte[32] init_mux_template,
+    byte[288] init_route_templates,
+    byte[32] init_white_player,
+    byte[32] init_black_player,
+    byte[64] init_board,
+    int init_turn,
+    int init_status,
+    int init_move_timeout,
+    byte[4] init_castle_rights,
+    int init_en_passant_idx,
+    int init_pending_src_idx,
+    int init_pending_dst_idx,
+    int init_pending_promo,
+    int init_recent_castle,
+    int init_draw_state
+) {
+    // Shared chess state layout:
+    // - status: 0 live, 1 white win, 2 black win, 3 draw
+    // - recent_castle: 0 none, 1 wK, 2 wQ, 3 bK, 4 bQ
+    // - draw_state: 3 normal, 1 draw claimed, 2 counterplay step, 4 white offered draw, 5 black offered draw
+    byte[32] mux_template = init_mux_template;
+    byte[288] route_templates = init_route_templates;
+    byte[32] white_player = init_white_player;
+    byte[32] black_player = init_black_player;
+    byte[64] board = init_board;
+    int turn = init_turn;
+    int status = init_status;
+    int move_timeout = init_move_timeout;
+    byte[4] castle_rights = init_castle_rights;
+    int en_passant_idx = init_en_passant_idx;
+    int pending_src_idx = init_pending_src_idx;
+    int pending_dst_idx = init_pending_dst_idx;
+    int pending_promo = init_pending_promo;
+    int recent_castle = init_recent_castle;
+    int draw_state = init_draw_state;
+
+    struct SettleState {
+        byte[32] player_template;
+        byte[32] white_player;
+        byte[32] black_player;
+        int status;
+    }
+
+    entrypoint function apply(byte[] mux_prefix, byte[] mux_suffix) {
+        // Workers only accept active move proofs routed out of ChessMux.
+        require(status == 0 /*LIVE*/);
+
+        int from_idx = OpBin2Num(pending_src_idx);
+        int to_idx = OpBin2Num(pending_dst_idx);
+        int promo_piece = OpBin2Num(pending_promo);
+
+        // Chess alternates between white (0) and black (1).
+        bool is_white_turn = turn == 0 /*WHITE*/;
+        bool is_black_turn = turn == 1 /*BLACK*/;
+        require(is_white_turn || is_black_turn);
+
+        // In draw negotiation the signer keeps their real side, but the move is
+        // judged as if they were piloting the opponent's pieces.
+        bool is_draw_claim_mode = draw_state < 3 /*NORMAL*/;
+        int effective_turn = turn;
+        if (is_draw_claim_mode) {
+            effective_turn = 1 - turn;
+        }
+
+        // A move must actually change squares.
+        require(from_idx != to_idx);
+
+        // Board access enforces src/dst index bounds.
+        byte[64] prev_board = board;
+        byte moving_piece = prev_board[from_idx];
+        byte target_piece = prev_board[to_idx];
+        int moving_num = OpBin2Num(moving_piece);
+        int target_num = OpBin2Num(target_piece);
+        // This route only accepts pawns:
+        // white pawn = 1, black pawn = 9.
+        require(moving_num == 1 || moving_num == 9);
+
+        bool moving_is_white = moving_num == 1;
+        bool moving_is_black = moving_num == 9;
+        bool target_is_empty = target_num == 0;
+        bool target_is_white = target_num >= 1 && target_num <= 6;
+        bool target_is_black = target_num >= 9 && target_num <= 14;
+
+        // The side to move must move its own pawn and cannot capture its own
+        // color on the destination square.
+        if (effective_turn == 0 /*WHITE*/) {
+            require(moving_is_white);
+            require(!target_is_white);
+        } else {
+            require(moving_is_black);
+            require(!target_is_black);
+        }
+
+        int ep_idx = OpBin2Num(en_passant_idx);
+        int from_y = from_idx / 8;
+        int from_x = from_idx % 8;
+        int to_y = to_idx / 8;
+        int to_x = to_idx % 8;
+        int dx = to_x - from_x;
+        int dy = to_y - from_y;
+
+        // White and black pawn rules share one shape once direction-specific
+        // constants are normalized here.
+        int dir = 1;
+        int start_rank = 1;
+        int ep_captured_piece = 9;
+        bool target_is_enemy = target_is_black;
+        if (moving_is_black) {
+            dir = -1;
+            start_rank = 6;
+            ep_captured_piece = 1;
+            target_is_enemy = target_is_white;
+        }
+
+        bool same_file = dx == 0;
+        // The destination file is exactly one column left or right of the source.
+        bool side_adjacent = dx == 1 || dx == -1;
+        bool one_forward = dy == dir;
+        bool two_forward = dy == 2 * dir;
+        int en_passant_capture_idx = -1;
+
+        // Pawn legality:
+        // - single forward push into an empty square
+        // - initial double push if both squares are empty
+        // - diagonal capture into an enemy piece
+        // - diagonal en passant capture into the committed target square
+        bool one_step = same_file && one_forward && target_is_empty;
+
+        bool two_step = false;
+        // Initial double-step: the pawn must start on its home rank, stay on
+        // the same file, advance two squares forward, and the intermediate
+        // square must also be empty.
+        if (from_y == start_rank && same_file && two_forward && target_is_empty) {
+            int mid_idx = (from_y + dir) * 8 + from_x;
+            two_step = OpBin2Num(prev_board[mid_idx]) == 0;
+        }
+
+        // Ordinary diagonal capture into an occupied enemy square.
+        bool capture = side_adjacent && one_forward && target_is_enemy;
+
+        bool en_passant = false;
+        // En passant captures into the committed en-passant target square,
+        // which is empty by definition. The captured pawn sits one rank behind
+        // that target square, opposite the pawn's movement direction.
+        if (side_adjacent && one_forward && target_is_empty && to_idx == ep_idx) {
+            en_passant_capture_idx = to_idx - dir * 8;
+            en_passant = OpBin2Num(prev_board[en_passant_capture_idx]) == ep_captured_piece;
+        }
+
+        // A pawn move is legal iff it matches one of the four allowed cases above.
+        require(one_step || two_step || capture || en_passant);
+
+        byte arrived_piece = moving_piece;
+        bool reaches_back_rank = to_y == 0 || to_y == 7;
+        // Castle challenge prep makes pawn attacks look like ordinary diagonal
+        // captures into a king target on the proof board, so proof mode never
+        // treats the move as a promotion.
+        if (recent_castle != 0 /*CLEAR*/) {
+            require(promo_piece == 0);
+        } else {
+            // ChessMux already constrained promo_piece. Here we only
+            // distinguish between promotion and non-promotion moves.
+            if (reaches_back_rank) {
+                require(promo_piece != 0);
+                int arrived_num = promo_piece;
+                if (moving_is_black) {
+                    arrived_num = arrived_num + 8;
+                }
+                arrived_piece = byte(arrived_num);
+            } else {
+                require(promo_piece == 0);
+            }
+        }
+
+        // Capturing the enemy king is the on-chain terminal condition.
+        // Off-chain clients may enforce stricter classical no-self-check rules,
+        // but on chain a king capture conclusively proves the winner.
+        int next_status = status;
+        if (recent_castle != 0 /*CLEAR*/) {
+            if (moving_is_white) {
+                require(target_num == 14);
+                next_status = 1 /*WWIN*/;
+            } else {
+                require(target_num == 6);
+                next_status = 2 /*BWIN*/;
+            }
+        } else if (is_draw_claim_mode) {
+            if (effective_turn == 0 /*WHITE*/ && target_num == 14) {
+                if (turn == 0 /*WHITE*/) {
+                    next_status = 1 /*WWIN*/;
+                } else {
+                    next_status = 2 /*BWIN*/;
+                }
+            }
+            if (effective_turn == 1 /*BLACK*/ && target_num == 6) {
+                if (turn == 0 /*WHITE*/) {
+                    next_status = 1 /*WWIN*/;
+                } else {
+                    next_status = 2 /*BWIN*/;
+                }
+            }
+        } else {
+            if (moving_is_white && target_num == 14) {
+                next_status = 1 /*WWIN*/;
+            }
+            if (moving_is_black && target_num == 6) {
+                next_status = 2 /*BWIN*/;
+            }
+        }
+
+        int next_draw_state = draw_state;
+        if (draw_state == 1 /*CLAIMED*/) {
+            next_draw_state = 2 /*DEFENSE*/;
+        } else if (draw_state == 2 /*DEFENSE*/) {
+            if (next_status == 0 /*LIVE*/) {
+                if (turn == 0 /*WHITE*/) {
+                    next_status = 2 /*BWIN*/;
+                } else {
+                    next_status = 1 /*WWIN*/;
+                }
+            }
+        }
+
+        int next_en_passant_idx = -1;
+        if (two_step) {
+            next_en_passant_idx = from_idx + dir * 8;
+        }
+
+        byte[] prev_dyn = byte[](prev_board);
+
+        // Rewrite the board through one 3-slot splice shape:
+        // - source square becomes empty
+        // - destination square gets the moved/promoted pawn
+        // - third square is either the en-passant captured pawn, or a dummy
+        //   untouched square on ordinary pawn moves
+        int a = from_idx;
+        byte va = byte(0x00);
+        int b = to_idx;
+        byte vb = arrived_piece;
+        // Sort the two real rewritten squares first.
+        if (a > b) {
+            a = to_idx;
+            va = arrived_piece;
+            b = from_idx;
+            vb = byte(0x00);
+        }
+
+        int k_idx = 0;
+        byte vk = prev_board[0];
+        // Pick a dummy third square distinct from a and b so ordinary moves can
+        // share the same 3-slot rewrite shape as en passant.
+        // Since a < b, at least one of {0, 1, 2} differs from both.
+        if (a == 0) {
+            k_idx = 1;
+            vk = prev_board[1];
+            if (b == 1) {
+                k_idx = 2;
+                vk = prev_board[2];
+            }
+        }
+        // En passant replaces the dummy third square with the captured pawn.
+        if (en_passant) {
+            k_idx = en_passant_capture_idx;
+            vk = byte(0x00);
+        }
+
+        int x = a;
+        byte vx = va;
+        int y = b;
+        byte vy = vb;
+        int z = k_idx;
+        byte vz = vk;
+        // Insert the third rewritten square into sorted order.
+        // The default order is a < b < k_idx; only adjust when k_idx falls earlier.
+        if (k_idx < a) {
+            x = k_idx;
+            vx = vk;
+            y = a;
+            vy = va;
+            z = b;
+            vz = vb;
+        } else if (k_idx < b) {
+            y = k_idx;
+            vy = vk;
+            z = b;
+            vz = vb;
+        }
+
+        // Apply the three point-mutations in one splice expression.
+        byte[] prefix = prev_dyn.slice(0, x);
+        byte[] middle_xy = prev_dyn.slice(x + 1, y);
+        byte[] middle_yz = prev_dyn.slice(y + 1, z);
+        byte[] suffix = prev_dyn.slice(z + 1, 64);
+        byte[64] next_board = prefix + byte[1](vx) + middle_xy + byte[1](vy) + middle_yz + byte[1](vz) + suffix;
+
+        State next_state = {
+            mux_template: mux_template,
+            route_templates: route_templates,
+            white_player: white_player,
+            black_player: black_player,
+            board: next_board,
+            turn: 1 - turn,
+            status: next_status,
+            move_timeout: move_timeout,
+            castle_rights: castle_rights,
+            en_passant_idx: next_en_passant_idx,
+            pending_src_idx: -1,
+            pending_dst_idx: -1,
+            pending_promo: 0 /*CLEAR*/,
+            recent_castle: 0 /*CLEAR*/,
+            draw_state: next_draw_state
+        };
+        require(OpAuthOutputCount(this.activeInputIndex) == 1);
+        int output_idx = OpAuthOutputIdx(this.activeInputIndex, 0);
+        require(tx.outputs[output_idx].value == tx.inputs[this.activeInputIndex].value);
+        validateOutputStateWithTemplate(
+            output_idx,
+            next_state,
+            mux_prefix,
+            mux_suffix,
+            mux_template
+        );
+    }
+
+    entrypoint function timeout(byte[32] player_template, byte[] settle_prefix, byte[] settle_suffix) {
+        require(status == 0 /*LIVE*/);
+
+        // Worker timeout is permissionless. Once a bad route strands funds in a
+        // worker state, anyone may prove the worker UTXO is old enough and
+        // return the game to mux with the objective timeout outcome.
+        require(this.age >= move_timeout);
+
+        int next_status = status;
+        if (draw_state == 1 /*CLAIMED*/) {
+            next_status = 3 /*DRAW*/;
+        } else if (turn == 0 /*WHITE*/) {
+            next_status = 2 /*BWIN*/;
+        } else {
+            next_status = 1 /*WWIN*/;
+        }
+
+        byte[32] settle_template = blake2b(settle_prefix + settle_suffix);
+        require(blake2b(settle_template + player_template) == route_templates.slice(256, 288));
+
+        SettleState next_state = {
+            player_template: player_template,
+            white_player: white_player,
+            black_player: black_player,
+            status: next_status
+        };
+        require(OpAuthOutputCount(this.activeInputIndex) == 1);
+        int output_idx = OpAuthOutputIdx(this.activeInputIndex, 0);
+        require(tx.outputs[output_idx].value == tx.inputs[this.activeInputIndex].value);
+        validateOutputStateWithTemplate(output_idx, next_state, settle_prefix, settle_suffix, settle_template);
+    }
+}

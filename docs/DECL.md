@@ -4,7 +4,7 @@
 
 This document specifies the covenant declaration API, where users declare policy functions and the compiler generates the corresponding covenant entrypoints and wrappers.
 
-Without declarations, these patterns are written manually with `OpAuth*`/`OpCov*` plus `readInputState`/`validateOutputState`. The declaration layer standardizes that pattern, removes user boilerplate, and acts as a security guard so users do not need to be experts in covenant opcodes to write secure covenants.
+Without declarations, these patterns are written manually with `OpAuth*`/`OpCov*` plus `readInputState`/`validateOutputState` (or `validateOutputStateWithTemplate` for cross-template routing). The declaration layer standardizes that pattern, removes user boilerplate, and acts as a security guard so users do not need to be experts in covenant opcodes to write secure covenants.
 
 Scope: syntax and lowering semantics.
 
@@ -369,5 +369,5 @@ contract SeqCommitMirror(byte[32] init_seqcommit) {
 
 1. `State` is an implicit compiler type synthesized from contract fields.
 2. Internally the compiler can lower `State`/`State[]` into any representation; this doc only fixes the user-facing API.
-3. Existing `readInputState`/`validateOutputState` remain the codegen backbone.
+3. Existing `readInputState`/`validateOutputState` remain the codegen backbone; `validateOutputStateWithTemplate` is available for manual cross-template routing, not declaration lowering.
 4. `N:M` lowering keeps one transition group per transaction.

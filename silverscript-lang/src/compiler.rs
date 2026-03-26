@@ -18,9 +18,12 @@ use covenant_declarations::lower_covenant_declarations;
 
 mod debug_recording;
 mod debug_value_types;
+mod stack_bindings;
 
 use debug_recording::DebugRecorder;
 use debug_value_types::infer_debug_expr_value_type;
+use stack_bindings::StackBindings;
+
 /// Prefix used for synthetic argument bindings during inline function expansion.
 pub const SYNTHETIC_ARG_PREFIX: &str = "__arg";
 const COVENANT_POLICY_PREFIX: &str = "__covenant_policy";
@@ -64,6 +67,12 @@ pub struct FunctionAbiEntry {
     pub inputs: Vec<FunctionInputAbi>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompiledStateLayout {
+    pub start: usize,
+    pub len: usize,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CompiledContract<'i> {
     pub contract_name: String,
@@ -71,6 +80,7 @@ pub struct CompiledContract<'i> {
     pub ast: ContractAst<'i>,
     pub abi: Vec<FunctionAbiEntry>,
     pub without_selector: bool,
+    pub state_layout: CompiledStateLayout,
     pub debug_info: Option<DebugInfo<'i>>,
 }
 
@@ -286,6 +296,38 @@ fn resolve_struct_access<'i>(
     }
 }
 
+fn flattened_struct_field_specs_for_type(type_ref: &TypeRef, structs: &StructRegistry) -> Result<Vec<StructFieldSpec>, CompilerError> {
+    let mut leaves = Vec::new();
+    flatten_struct_fields(type_ref, structs, &mut Vec::new(), &mut leaves)?;
+    Ok(leaves
+        .into_iter()
+        .map(|(path, type_ref)| StructFieldSpec { name: path.last().cloned().unwrap_or_default(), type_ref })
+        .collect())
+}
+
+fn binary_expr<'i>(op: BinaryOp, left: Expr<'i>, right: Expr<'i>) -> Expr<'i> {
+    Expr::new(ExprKind::Binary { op, left: Box::new(left), right: Box::new(right) }, span::Span::default())
+}
+
+fn input_sigscript_base_expr<'i>(input_idx: &Expr<'i>, script_size_expr: Expr<'i>) -> Expr<'i> {
+    binary_expr(BinaryOp::Sub, Expr::call("OpTxInputScriptSigLen", vec![input_idx.clone()]), script_size_expr)
+}
+
+fn input_sigscript_substr_expr<'i>(input_idx: &Expr<'i>, start: Expr<'i>, end: Expr<'i>) -> Expr<'i> {
+    Expr::call("OpTxInputScriptSigSubstr", vec![input_idx.clone(), start, end])
+}
+
+fn input_script_pubkey_expr<'i>(input_idx: &Expr<'i>) -> Expr<'i> {
+    Expr::new(
+        ExprKind::Introspection {
+            kind: IntrospectionKind::InputScriptPubKey,
+            index: Box::new(input_idx.clone()),
+            field_span: span::Span::default(),
+        },
+        span::Span::default(),
+    )
+}
+
 fn lower_expr<'i>(expr: &Expr<'i>, scope: &LoweringScope, structs: &StructRegistry) -> Result<Expr<'i>, CompilerError> {
     let span = expr.span;
     match &expr.kind {
@@ -458,6 +500,46 @@ fn read_input_state_field_expr_symbolic<'i>(
     if decode_numeric { Ok(Expr::call("OpBin2Num", vec![substr])) } else { Ok(substr) }
 }
 
+fn read_input_state_with_template_values<'i>(
+    args: &[Expr<'i>],
+    expected_type: &TypeRef,
+    structs: &StructRegistry,
+    contract_constants: &HashMap<String, Expr<'i>>,
+) -> Result<Vec<Expr<'i>>, CompilerError> {
+    let Ok([input_idx, template_prefix_len, template_suffix_len, _expected_template_hash]): Result<&[Expr<'i>; 4], _> =
+        args.try_into()
+    else {
+        return Err(CompilerError::Unsupported(
+            "readInputStateWithTemplate(input_idx, template_prefix_len, template_suffix_len, expected_template_hash) expects 4 arguments"
+                .to_string(),
+        ));
+    };
+
+    let layout_fields = flattened_struct_field_specs_for_type(expected_type, structs)?;
+    if layout_fields.is_empty() {
+        return Err(CompilerError::Unsupported("readInputStateWithTemplate requires a struct type".to_string()));
+    }
+
+    let script_size_expr =
+        templated_input_script_size_expr(template_prefix_len, template_suffix_len, &layout_fields, contract_constants)?;
+    let state_start_offset_expr = template_prefix_len.clone();
+    let mut field_chunk_offset = 0usize;
+    let mut lowered = Vec::with_capacity(layout_fields.len());
+    for field in &layout_fields {
+        lowered.push(read_input_state_field_expr_with_type(
+            input_idx,
+            &field.type_ref,
+            state_start_offset_expr.clone(),
+            field_chunk_offset,
+            script_size_expr.clone(),
+            contract_constants,
+            "readInputStateWithTemplate",
+        )?);
+        field_chunk_offset += encoded_field_chunk_size_for_type_ref(&field.type_ref, contract_constants)?;
+    }
+    Ok(lowered)
+}
+
 fn lower_struct_value_to_state_object_expr<'i>(
     expr: &Expr<'i>,
     expected_type: &TypeRef,
@@ -521,6 +603,9 @@ fn lower_struct_value_expr<'i>(
             }
             Ok(lowered)
         }
+        ExprKind::Call { name, .. } if name == "readInputStateWithTemplate" => Err(CompilerError::Unsupported(
+            "readInputStateWithTemplate must be assigned to a struct variable or destructured directly".to_string(),
+        )),
         ExprKind::Identifier(_) | ExprKind::FieldAccess { .. } => {
             let (base, path, actual_type) = resolve_struct_access(expr, scope, structs)?;
             let actual_struct_name = struct_name_from_type_ref(&actual_type, structs)
@@ -651,6 +736,9 @@ fn infer_struct_expr_type<'i>(
             }
             Ok(TypeRef { base: TypeBase::Custom("State".to_string()), array_dims: Vec::new() })
         }
+        ExprKind::Call { name, .. } if name == "readInputStateWithTemplate" => Err(CompilerError::Unsupported(
+            "readInputStateWithTemplate must be assigned to a struct variable or destructured directly".to_string(),
+        )),
         _ => Err(CompilerError::Unsupported("struct destructuring requires a struct value".to_string())),
     }
 }
@@ -858,7 +946,9 @@ fn compile_contract_impl<'i>(
 
         let mut recorder = DebugRecorder::new(options.record_debug_infos);
         recorder.record_contract_scope(&contract.params, constructor_args, &contract.constants);
-        let contract_field_prefix_len = if without_selector { field_prolog_script.len() } else { 1 + field_prolog_script.len() };
+        let selector_prefix_len = if without_selector { 0 } else { 1 };
+        let contract_field_prefix_len = selector_prefix_len + field_prolog_script.len();
+        let state_layout = CompiledStateLayout { start: selector_prefix_len, len: field_prolog_script.len() };
         let mut compiled_entrypoints = Vec::new();
         for (index, func) in lowered_contract.functions.iter().enumerate() {
             if func.entrypoint {
@@ -926,6 +1016,7 @@ fn compile_contract_impl<'i>(
                 ast: lowered_contract.clone(),
                 abi: function_abi_entries,
                 without_selector,
+                state_layout,
                 debug_info,
             });
         }
@@ -938,6 +1029,7 @@ fn compile_contract_impl<'i>(
                 ast: lowered_contract.clone(),
                 abi: function_abi_entries,
                 without_selector,
+                state_layout,
                 debug_info,
             });
         }
@@ -1057,7 +1149,7 @@ fn compile_contract_fields<'i>(
     let mut field_values = HashMap::new();
     let mut field_types = HashMap::new();
     let mut builder = ScriptBuilder::new();
-    let stack_bindings = HashMap::new();
+    let stack_bindings = StackBindings::default();
 
     for field in fields {
         if env.contains_key(&field.name) {
@@ -1111,7 +1203,9 @@ fn statement_uses_script_size(stmt: &Statement<'_>) -> bool {
         Statement::VariableDefinition { expr, .. } => expr.as_ref().is_some_and(expr_uses_script_size),
         Statement::TupleAssignment { expr, .. } => expr_uses_script_size(expr),
         Statement::ArrayPush { expr, .. } => expr_uses_script_size(expr),
-        Statement::FunctionCall { name, args, .. } => name == "validateOutputState" || args.iter().any(expr_uses_script_size),
+        Statement::FunctionCall { name, args, .. } => {
+            name == "validateOutputState" || name == "validateOutputStateWithTemplate" || args.iter().any(expr_uses_script_size)
+        }
         Statement::FunctionCallAssign { args, .. } => args.iter().any(expr_uses_script_size),
         Statement::StateFunctionCallAssign { name, args, .. } => name == "readInputState" || args.iter().any(expr_uses_script_size),
         Statement::StructDestructure { expr, .. } => expr_uses_script_size(expr),
@@ -1430,6 +1524,18 @@ fn store_struct_binding<'i>(
 ) -> Result<(), CompilerError> {
     let lowered_values =
         lower_runtime_struct_expr(expr, type_ref, types, structs, contract_fields, contract_constants, contract_field_prefix_len)?;
+    store_struct_binding_from_lowered_values(name, type_ref, lowered_values, env, types, structs, is_assignment)
+}
+
+fn store_struct_binding_from_lowered_values<'i>(
+    name: &str,
+    type_ref: &TypeRef,
+    lowered_values: Vec<Expr<'i>>,
+    env: &mut HashMap<String, Expr<'i>>,
+    types: &mut HashMap<String, String>,
+    structs: &StructRegistry,
+    is_assignment: bool,
+) -> Result<(), CompilerError> {
     let leaf_bindings = flatten_type_ref_leaves(type_ref, structs)?;
     let original_env = env.clone();
     let mut pending = Vec::with_capacity(leaf_bindings.len());
@@ -1459,21 +1565,73 @@ fn store_struct_binding<'i>(
 }
 
 #[allow(clippy::too_many_arguments)]
+fn store_struct_binding_with_stack_rebindings<'i>(
+    name: &str,
+    type_ref: &TypeRef,
+    lowered_values: Vec<Expr<'i>>,
+    env: &mut HashMap<String, Expr<'i>>,
+    types: &mut HashMap<String, String>,
+    stack_bindings: &mut StackBindings,
+    builder: &mut ScriptBuilder,
+    options: CompileOptions,
+    structs: &StructRegistry,
+    script_size: Option<i64>,
+    contract_constants: &HashMap<String, Expr<'i>>,
+) -> Result<(), CompilerError> {
+    let leaf_bindings = flatten_type_ref_leaves(type_ref, structs)?;
+    let original_env = env.clone();
+
+    types.insert(name.to_string(), type_name_from_ref(type_ref));
+    for ((path, field_type), lowered_expr) in leaf_bindings.into_iter().zip(lowered_values.into_iter()) {
+        let leaf_name = flattened_struct_name(name, &path);
+        let field_type_name = type_name_from_ref(&field_type);
+        types.insert(leaf_name.clone(), field_type_name.clone());
+
+        if matches!(field_type_name.as_str(), "int" | "bool" | "byte") && stack_bindings.contains(&leaf_name) {
+            let mut stack_depth = 0i64;
+            compile_expr(
+                &lowered_expr,
+                env,
+                stack_bindings,
+                types,
+                builder,
+                options,
+                &mut HashSet::new(),
+                &mut stack_depth,
+                script_size,
+                contract_constants,
+            )?;
+            stack_bindings.emit_update_stack_for_rebinding(&leaf_name, builder)?;
+            continue;
+        }
+
+        let updated = if let Some(previous) = original_env.get(&leaf_name) {
+            replace_identifier(&lowered_expr, &leaf_name, previous)
+        } else {
+            lowered_expr
+        };
+        let stored_expr = resolve_expr_for_runtime(updated, &original_env, types, &mut HashSet::new())?;
+        env.insert(leaf_name, stored_expr);
+    }
+
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
 fn push_struct_leaf_stack_bindings<'i>(
     name: &str,
     type_ref: &TypeRef,
     env: &HashMap<String, Expr<'i>>,
-    assigned_names: &HashSet<String>,
     identifier_uses: &HashMap<String, usize>,
     types: &HashMap<String, String>,
-    stack_bindings: &mut HashMap<String, i64>,
+    stack_bindings: &mut StackBindings,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
     structs: &StructRegistry,
     script_size: Option<i64>,
     contract_constants: &HashMap<String, Expr<'i>>,
 ) -> Result<Vec<String>, CompilerError> {
-    if assigned_names.contains(name) || identifier_uses.get(name).copied().unwrap_or(0) < 2 {
+    if identifier_uses.get(name).copied().unwrap_or(0) < 2 {
         return Ok(Vec::new());
     }
 
@@ -1485,7 +1643,7 @@ fn push_struct_leaf_stack_bindings<'i>(
         }
 
         let leaf_name = flattened_struct_name(name, &path);
-        if stack_bindings.contains_key(&leaf_name) {
+        if stack_bindings.contains(&leaf_name) {
             continue;
         }
 
@@ -1506,7 +1664,7 @@ fn push_struct_leaf_stack_bindings<'i>(
             script_size,
             contract_constants,
         )?;
-        push_stack_binding(stack_bindings, &leaf_name);
+        stack_bindings.push_binding(&leaf_name);
         added.push(leaf_name);
     }
 
@@ -1583,15 +1741,22 @@ fn fixed_type_size_with_constants_ref<'i>(type_ref: &TypeRef, constants: &HashMa
     Some(array_len * element_size)
 }
 
+fn fixed_state_field_payload_len_for_type_ref<'i>(
+    type_ref: &TypeRef,
+    contract_constants: &HashMap<String, Expr<'i>>,
+) -> Result<(usize, bool), CompilerError> {
+    let payload_len = fixed_type_size_with_constants_ref(type_ref, contract_constants).ok_or_else(|| {
+        CompilerError::Unsupported(format!("readInputState does not support field type {}", type_name_from_ref(type_ref)))
+    })?;
+    let decode_numeric = type_ref.array_dims.is_empty() && matches!(type_ref.base, TypeBase::Int | TypeBase::Bool);
+    Ok((payload_len, decode_numeric))
+}
+
 fn fixed_state_field_payload_len<'i>(
     field: &ContractFieldAst<'i>,
     contract_constants: &HashMap<String, Expr<'i>>,
 ) -> Result<(usize, bool), CompilerError> {
-    let payload_len = fixed_type_size_with_constants_ref(&field.type_ref, contract_constants).ok_or_else(|| {
-        CompilerError::Unsupported(format!("readInputState does not support field type {}", type_name_from_ref(&field.type_ref)))
-    })?;
-    let decode_numeric = field.type_ref.array_dims.is_empty() && matches!(field.type_ref.base, TypeBase::Int | TypeBase::Bool);
-    Ok((payload_len, decode_numeric))
+    fixed_state_field_payload_len_for_type_ref(&field.type_ref, contract_constants)
 }
 
 fn array_element_size_ref(type_ref: &TypeRef) -> Option<i64> {
@@ -1746,26 +1911,6 @@ fn collect_assigned_names_into<'i>(statements: &[Statement<'i>], assigned: &mut 
             }
             _ => {}
         }
-    }
-}
-
-fn push_stack_binding(bindings: &mut HashMap<String, i64>, name: &str) {
-    for depth in bindings.values_mut() {
-        *depth += 1;
-    }
-    bindings.insert(name.to_string(), 0);
-}
-
-fn pop_stack_bindings(bindings: &mut HashMap<String, i64>, names: &[String]) {
-    if names.is_empty() {
-        return;
-    }
-
-    for name in names {
-        bindings.remove(name);
-    }
-    for depth in bindings.values_mut() {
-        *depth -= names.len() as i64;
     }
 }
 
@@ -2324,15 +2469,17 @@ fn compile_entrypoint_function<'i>(
     }
 
     let param_count = flattened_param_names.len();
-    let mut stack_bindings = flattened_param_names
-        .iter()
-        .enumerate()
-        .map(|(index, name)| (name.clone(), (contract_field_count + (param_count - 1 - index)) as i64))
-        .collect::<HashMap<_, _>>();
+    let mut stack_bindings = StackBindings::from_depths(
+        flattened_param_names
+            .iter()
+            .enumerate()
+            .map(|(index, name)| (name.clone(), (param_count - 1 - index) as i64))
+            .collect::<HashMap<_, _>>(),
+    );
     let initial_stack_binding_count = stack_bindings.len() + contract_field_count;
 
-    for (index, field) in contract_fields.iter().enumerate() {
-        stack_bindings.insert(field.name.clone(), (contract_field_count - 1 - index) as i64);
+    for (index, field) in contract_fields.iter().enumerate().rev() {
+        stack_bindings.insert_binding(&field.name, (contract_field_count - 1 - index) as i64);
     }
 
     for field in contract_fields {
@@ -2510,7 +2657,7 @@ fn compile_statement<'i>(
     assigned_names: &HashSet<String>,
     identifier_uses: &HashMap<String, usize>,
     types: &mut HashMap<String, String>,
-    stack_bindings: &mut HashMap<String, i64>,
+    stack_bindings: &mut StackBindings,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
     contract_fields: &[ContractFieldAst<'i>],
@@ -2528,6 +2675,37 @@ fn compile_statement<'i>(
             if struct_name_from_type_ref(type_ref, structs).is_some() {
                 let expr =
                     expr.as_ref().ok_or_else(|| CompilerError::Unsupported("variable definition requires initializer".to_string()))?;
+                if let ExprKind::Call { name: builtin_name, args, .. } = &expr.kind
+                    && builtin_name == "readInputStateWithTemplate"
+                {
+                    let lowered_values = read_input_state_with_template_values(args, type_ref, structs, contract_constants)?;
+                    let layout_fields = flattened_struct_field_specs_for_type(type_ref, structs)?;
+                    compile_read_input_state_with_template_validation(
+                        args,
+                        env,
+                        stack_bindings,
+                        types,
+                        builder,
+                        options,
+                        &layout_fields,
+                        script_size,
+                        contract_constants,
+                    )?;
+                    store_struct_binding_from_lowered_values(name, type_ref, lowered_values, env, types, structs, false)?;
+                    return push_struct_leaf_stack_bindings(
+                        name,
+                        type_ref,
+                        env,
+                        identifier_uses,
+                        types,
+                        stack_bindings,
+                        builder,
+                        options,
+                        structs,
+                        script_size,
+                        contract_constants,
+                    );
+                }
                 store_struct_binding(
                     name,
                     type_ref,
@@ -2544,7 +2722,6 @@ fn compile_statement<'i>(
                     name,
                     type_ref,
                     env,
-                    assigned_names,
                     identifier_uses,
                     types,
                     stack_bindings,
@@ -2685,10 +2862,14 @@ fn compile_statement<'i>(
                 types.insert(name.clone(), effective_type_name.clone());
                 let existing_is_predeclared_default = is_predeclared_scalar_default(name, &effective_type_name, env);
 
-                if !assigned_names.contains(name)
-                    && identifier_uses.get(name).copied().unwrap_or(0) >= 2
+                // Scalars can be kept on the stack for reuse (>=2 uses with no mutation), or (optionally)
+                // for mutation to avoid nested IfElse expression blowups under unrolled control flow.
+                let used_at_least_twice = identifier_uses.get(name).copied().unwrap_or(0) >= 2;
+                let stack_for_reuse = used_at_least_twice && !assigned_names.contains(name);
+                let stack_for_mutation = assigned_names.contains(name);
+                if (stack_for_reuse || stack_for_mutation)
                     && (!env.contains_key(name) || existing_is_predeclared_default)
-                    && !stack_bindings.contains_key(name)
+                    && !stack_bindings.contains(name)
                     && matches!(effective_type_name.as_str(), "int" | "bool" | "byte")
                 {
                     let mut stack_depth = 0i64;
@@ -2705,7 +2886,7 @@ fn compile_statement<'i>(
                         contract_constants,
                     )?;
                     env.insert(name.clone(), expr);
-                    push_stack_binding(stack_bindings, name);
+                    stack_bindings.push_binding(name);
                     Ok(vec![name.clone()])
                 } else {
                     env.insert(name.clone(), expr);
@@ -2943,6 +3124,61 @@ fn compile_statement<'i>(
                 )
                 .map(|_| Vec::new());
             }
+            if name == "validateOutputStateWithTemplate" {
+                let uses_local_state_layout = matches!(args.get(1).map(|arg| &arg.kind), Some(ExprKind::StateObject(_)));
+                let state_type = if let Some(state_arg) = args.get(1) {
+                    match &state_arg.kind {
+                        ExprKind::StateObject(_) => TypeRef { base: TypeBase::Custom("State".to_string()), array_dims: Vec::new() },
+                        _ => {
+                            let scope = lowering_scope_from_types(types)?;
+                            infer_struct_expr_type(state_arg, &scope, structs, contract_fields)?
+                        }
+                    }
+                } else {
+                    TypeRef { base: TypeBase::Custom("State".to_string()), array_dims: Vec::new() }
+                };
+                let lowered_args = if let Some(state_arg) = args.get(1) {
+                    match &state_arg.kind {
+                        ExprKind::StateObject(_) => args.to_vec(),
+                        _ => {
+                            let scope = lowering_scope_from_types(types)?;
+                            let mut lowered = args.to_vec();
+                            lowered[1] = lower_struct_value_to_state_object_expr(
+                                state_arg,
+                                &state_type,
+                                &scope,
+                                structs,
+                                contract_fields,
+                                contract_constants,
+                                contract_field_prefix_len,
+                            )?;
+                            lowered
+                        }
+                    }
+                } else {
+                    args.to_vec()
+                };
+                let layout_fields = if uses_local_state_layout {
+                    contract_fields
+                        .iter()
+                        .map(|field| StructFieldSpec { name: field.name.clone(), type_ref: field.type_ref.clone() })
+                        .collect::<Vec<_>>()
+                } else {
+                    flattened_struct_field_specs_for_type(&state_type, structs)?
+                };
+                return compile_validate_output_state_with_template_statement(
+                    &lowered_args,
+                    env,
+                    stack_bindings,
+                    types,
+                    builder,
+                    options,
+                    &layout_fields,
+                    script_size,
+                    contract_constants,
+                )
+                .map(|_| Vec::new());
+            }
             let function = functions.get(name).ok_or_else(|| CompilerError::Unsupported(format!("function '{}' not found", name)))?;
             let returns = compile_inline_call(
                 name,
@@ -2994,21 +3230,26 @@ fn compile_statement<'i>(
             Ok(Vec::new())
         }
         Statement::StateFunctionCallAssign { bindings, name, args, .. } => {
-            if name == "readInputState" {
+            if name == "readInputState" || name == "readInputStateWithTemplate" {
                 return compile_read_input_state_statement(
                     bindings,
+                    name,
                     args,
                     env,
+                    stack_bindings,
                     types,
+                    builder,
+                    options,
                     contract_fields,
                     contract_field_prefix_len,
                     script_size,
                     contract_constants,
+                    structs,
                 )
                 .map(|_| Vec::new());
             }
             Err(CompilerError::Unsupported(format!(
-                "state destructuring assignment is only supported for readInputState(), got '{}()'",
+                "state destructuring assignment is only supported for readInputState()/readInputStateWithTemplate(), got '{}()'",
                 name
             )))
         }
@@ -3111,7 +3352,6 @@ fn compile_statement<'i>(
                             &binding.name,
                             &binding.type_ref,
                             env,
-                            assigned_names,
                             identifier_uses,
                             types,
                             stack_bindings,
@@ -3131,7 +3371,7 @@ fn compile_statement<'i>(
                         && !assigned_names.contains(&binding.name)
                         && identifier_uses.get(&binding.name).copied().unwrap_or(0) >= 2
                         && (!env.contains_key(&binding.name) || existing_is_predeclared_default)
-                        && !stack_bindings.contains_key(&binding.name)
+                        && !stack_bindings.contains(&binding.name)
                         && matches!(binding_type_name.as_str(), "int" | "bool" | "byte")
                     {
                         let mut stack_depth = 0i64;
@@ -3148,7 +3388,7 @@ fn compile_statement<'i>(
                             contract_constants,
                         )?;
                         env.insert(binding.name.clone(), lowered);
-                        push_stack_binding(stack_bindings, &binding.name);
+                        stack_bindings.push_binding(&binding.name);
                         added_stack_locals.push(binding.name.clone());
                     } else {
                         env.insert(binding.name.clone(), lowered);
@@ -3160,22 +3400,121 @@ fn compile_statement<'i>(
         Statement::Assign { name, expr, .. } => {
             if let Some(type_name) = types.get(name) {
                 let expected_type_ref = parse_type_ref(type_name)?;
+                let is_not_struct = struct_name_from_type_ref(&expected_type_ref, structs).is_none()
+                    && struct_array_name_from_type_ref(&expected_type_ref, structs).is_none();
+                // If this is a stack-bound scalar local, compile a real mutation instead of
+                // rewriting `env[name]` (which can explode under unrolled control flow).
+                if stack_bindings.contains(name) && is_not_struct {
+                    let lowered_expr = lower_runtime_expr(expr, types, structs)?;
+                    if !expr_matches_return_type_ref(&lowered_expr, &expected_type_ref, types, contract_constants) {
+                        return Err(CompilerError::Unsupported(format!(
+                            "variable '{}' expects {}{}",
+                            name,
+                            type_name,
+                            expr_matches_return_type_ref_hint(&lowered_expr, &expected_type_ref)
+                                .map(|hint| format!("; {hint}"))
+                                .unwrap_or_default()
+                        )));
+                    }
+
+                    // Compute RHS value onto the stack.
+                    let mut stack_depth = 0i64;
+                    compile_expr(
+                        &lowered_expr,
+                        env,
+                        stack_bindings,
+                        types,
+                        builder,
+                        options,
+                        &mut HashSet::new(),
+                        &mut stack_depth,
+                        script_size,
+                        contract_constants,
+                    )?;
+
+                    // Replace the existing binding in-place without changing the overall stack layout.
+                    //
+                    // Stack shape after RHS:
+                    //   ... [target at depth b+1] [b items above target] [new_value]
+                    //
+                    // We peel the b items under new_value into altstack (keeping new_value at top),
+                    // drop the old target, then restore the peeled items. This makes new_value end
+                    // up exactly where the old binding was.
+                    stack_bindings.emit_update_stack_for_rebinding(name, builder)?;
+                    let updated = if let Some(previous) = env.get(name) {
+                        replace_identifier(&lowered_expr, name, previous)
+                    } else {
+                        lowered_expr
+                    };
+                    let resolved = resolve_expr_for_runtime(updated, env, types, &mut HashSet::new())?;
+                    env.insert(name.clone(), resolved);
+                    return Ok(Vec::new());
+                }
+
+                let expected_type_ref = parse_type_ref(type_name)?;
                 if struct_name_from_type_ref(&expected_type_ref, structs).is_some()
                     || struct_array_name_from_type_ref(&expected_type_ref, structs).is_some()
                 {
-                    return store_struct_binding(
-                        name,
-                        &expected_type_ref,
+                    if let ExprKind::Call { name: builtin_name, args, .. } = &expr.kind
+                        && builtin_name == "readInputStateWithTemplate"
+                    {
+                        if struct_array_name_from_type_ref(&expected_type_ref, structs).is_some() {
+                            return Err(CompilerError::Unsupported(
+                                "readInputStateWithTemplate does not support struct array assignments".to_string(),
+                            ));
+                        }
+                        let lowered_values =
+                            read_input_state_with_template_values(args, &expected_type_ref, structs, contract_constants)?;
+                        let layout_fields = flattened_struct_field_specs_for_type(&expected_type_ref, structs)?;
+                        compile_read_input_state_with_template_validation(
+                            args,
+                            env,
+                            stack_bindings,
+                            types,
+                            builder,
+                            options,
+                            &layout_fields,
+                            script_size,
+                            contract_constants,
+                        )?;
+                        store_struct_binding_with_stack_rebindings(
+                            name,
+                            &expected_type_ref,
+                            lowered_values,
+                            env,
+                            types,
+                            stack_bindings,
+                            builder,
+                            options,
+                            structs,
+                            script_size,
+                            contract_constants,
+                        )?;
+                        return Ok(Vec::new());
+                    }
+                    let lowered_values = lower_runtime_struct_expr(
                         expr,
-                        env,
+                        &expected_type_ref,
                         types,
                         structs,
                         contract_fields,
                         contract_constants,
                         contract_field_prefix_len,
-                        true,
-                    )
-                    .map(|_| Vec::new());
+                    )?;
+                    store_struct_binding_with_stack_rebindings(
+                        name,
+                        &expected_type_ref,
+                        lowered_values,
+                        env,
+                        types,
+                        stack_bindings,
+                        builder,
+                        options,
+                        structs,
+                        script_size,
+                        contract_constants,
+                    )?;
+                    return Ok(Vec::new());
                 }
                 if is_array_type(type_name) {
                     match &expr.kind {
@@ -3232,11 +3571,28 @@ fn encoded_field_chunk_size<'i>(
     Ok(data_prefix(payload_size).len() + payload_size)
 }
 
+fn encoded_field_chunk_size_for_type_ref<'i>(
+    type_ref: &TypeRef,
+    contract_constants: &HashMap<String, Expr<'i>>,
+) -> Result<usize, CompilerError> {
+    let (payload_size, _) = fixed_state_field_payload_len_for_type_ref(type_ref, contract_constants)?;
+    Ok(data_prefix(payload_size).len() + payload_size)
+}
+
 fn encoded_state_len<'i>(
     contract_fields: &[ContractFieldAst<'i>],
     contract_constants: &HashMap<String, Expr<'i>>,
 ) -> Result<usize, CompilerError> {
     contract_fields.iter().try_fold(0usize, |acc, field| Ok(acc + encoded_field_chunk_size(field, contract_constants)?))
+}
+
+fn encoded_state_len_for_layout_fields<'i>(
+    layout_fields: &[StructFieldSpec],
+    contract_constants: &HashMap<String, Expr<'i>>,
+) -> Result<usize, CompilerError> {
+    layout_fields
+        .iter()
+        .try_fold(0usize, |acc, field| Ok(acc + encoded_field_chunk_size_for_type_ref(&field.type_ref, contract_constants)?))
 }
 
 fn state_start_offset<'i>(
@@ -3248,6 +3604,20 @@ fn state_start_offset<'i>(
     contract_field_prefix_len
         .checked_sub(total_state_len)
         .ok_or_else(|| CompilerError::Unsupported("state offset underflow".to_string()))
+}
+
+fn templated_input_script_size_expr<'i>(
+    template_prefix_len: &Expr<'i>,
+    template_suffix_len: &Expr<'i>,
+    layout_fields: &[StructFieldSpec],
+    contract_constants: &HashMap<String, Expr<'i>>,
+) -> Result<Expr<'i>, CompilerError> {
+    let total_state_len = encoded_state_len_for_layout_fields(layout_fields, contract_constants)?;
+    Ok(binary_expr(
+        BinaryOp::Add,
+        binary_expr(BinaryOp::Add, template_prefix_len.clone(), Expr::int(total_state_len as i64)),
+        template_suffix_len.clone(),
+    ))
 }
 
 fn read_input_state_binding_expr<'i>(
@@ -3282,67 +3652,356 @@ fn read_input_state_binding_expr<'i>(
     if decode_numeric { Ok(Expr::call("OpBin2Num", vec![substr])) } else { Ok(substr) }
 }
 
+fn read_input_state_field_expr_with_type<'i>(
+    input_idx: &Expr<'i>,
+    field_type: &TypeRef,
+    state_start_offset_expr: Expr<'i>,
+    field_chunk_offset: usize,
+    script_size_expr: Expr<'i>,
+    contract_constants: &HashMap<String, Expr<'i>>,
+    builtin_name: &str,
+) -> Result<Expr<'i>, CompilerError> {
+    let (field_payload_len, decode_numeric) =
+        fixed_state_field_payload_len_for_type_ref(field_type, contract_constants).map_err(|_| {
+            CompilerError::Unsupported(format!("{builtin_name} does not support field type {}", type_name_from_ref(field_type)))
+        })?;
+    let field_payload_offset = binary_expr(
+        BinaryOp::Add,
+        state_start_offset_expr,
+        Expr::int((field_chunk_offset + data_prefix(field_payload_len).len()) as i64),
+    );
+    let start = binary_expr(BinaryOp::Add, input_sigscript_base_expr(input_idx, script_size_expr), field_payload_offset);
+    let end = binary_expr(BinaryOp::Add, start.clone(), Expr::int(field_payload_len as i64));
+    let substr = input_sigscript_substr_expr(input_idx, start, end);
+
+    if decode_numeric { Ok(Expr::call("OpBin2Num", vec![substr])) } else { Ok(substr) }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn compile_read_input_state_statement<'i>(
     bindings: &[StateBindingAst<'i>],
+    name: &str,
     args: &[Expr<'i>],
     env: &mut HashMap<String, Expr<'i>>,
+    stack_bindings: &StackBindings,
     types: &mut HashMap<String, String>,
+    builder: &mut ScriptBuilder,
+    options: CompileOptions,
     contract_fields: &[ContractFieldAst<'i>],
     contract_field_prefix_len: usize,
     script_size: Option<i64>,
     contract_constants: &HashMap<String, Expr<'i>>,
+    structs: &StructRegistry,
 ) -> Result<(), CompilerError> {
-    if args.len() != 1 {
-        return Err(CompilerError::Unsupported("readInputState(input_idx) expects 1 argument".to_string()));
-    }
-    if contract_fields.is_empty() {
-        return Err(CompilerError::Unsupported("readInputState requires contract fields".to_string()));
-    }
-    let script_size_value =
-        script_size.ok_or_else(|| CompilerError::Unsupported("readInputState requires this.scriptSize".to_string()))?;
-
     let mut bindings_by_field: HashMap<&str, &StateBindingAst<'i>> = HashMap::new();
     for binding in bindings {
         if bindings_by_field.insert(binding.field_name.as_str(), binding).is_some() {
             return Err(CompilerError::Unsupported(format!("duplicate state field '{}'", binding.field_name)));
         }
     }
-    if bindings_by_field.len() != contract_fields.len() {
-        return Err(CompilerError::Unsupported("readInputState bindings must include all contract fields exactly once".to_string()));
-    }
+    match name {
+        "readInputState" => {
+            if args.len() != 1 {
+                return Err(CompilerError::Unsupported("readInputState(input_idx) expects 1 argument".to_string()));
+            }
+            if contract_fields.is_empty() {
+                return Err(CompilerError::Unsupported("readInputState requires contract fields".to_string()));
+            }
+            if bindings_by_field.len() != contract_fields.len() {
+                return Err(CompilerError::Unsupported(
+                    "readInputState bindings must include all contract fields exactly once".to_string(),
+                ));
+            }
 
-    let total_state_len = encoded_state_len(contract_fields, contract_constants)?;
-    let state_start_offset = contract_field_prefix_len
-        .checked_sub(total_state_len)
-        .ok_or_else(|| CompilerError::Unsupported("readInputState state offset underflow".to_string()))?;
+            let script_size_value =
+                script_size.ok_or_else(|| CompilerError::Unsupported("readInputState requires this.scriptSize".to_string()))?;
+            let total_state_len = encoded_state_len(contract_fields, contract_constants)?;
+            let state_start_offset = contract_field_prefix_len
+                .checked_sub(total_state_len)
+                .ok_or_else(|| CompilerError::Unsupported("readInputState state offset underflow".to_string()))?;
 
-    let input_idx = args[0].clone();
-    let mut field_chunk_offset = 0usize;
+            let input_idx = args[0].clone();
+            let mut field_chunk_offset = 0usize;
+            for field in contract_fields {
+                let binding = bindings_by_field.get(field.name.as_str()).ok_or_else(|| {
+                    CompilerError::Unsupported("readInputState bindings must include all contract fields exactly once".to_string())
+                })?;
 
-    for field in contract_fields {
-        let binding = bindings_by_field.get(field.name.as_str()).ok_or_else(|| {
-            CompilerError::Unsupported("readInputState bindings must include all contract fields exactly once".to_string())
-        })?;
+                let binding_type = type_name_from_ref(&binding.type_ref);
+                let field_type = type_name_from_ref(&field.type_ref);
+                if binding_type != field_type {
+                    return Err(CompilerError::Unsupported(format!(
+                        "readInputState binding '{}' expects {}",
+                        binding.name, field_type
+                    )));
+                }
 
-        let binding_type = type_name_from_ref(&binding.type_ref);
-        let field_type = type_name_from_ref(&field.type_ref);
-        if binding_type != field_type {
-            return Err(CompilerError::Unsupported(format!("readInputState binding '{}' expects {}", binding.name, field_type)));
+                let binding_expr = read_input_state_binding_expr(
+                    &input_idx,
+                    field,
+                    state_start_offset,
+                    field_chunk_offset,
+                    script_size_value,
+                    contract_constants,
+                )?;
+                env.insert(binding.name.clone(), binding_expr);
+                types.insert(binding.name.clone(), binding_type);
+
+                field_chunk_offset += encoded_field_chunk_size(field, contract_constants)?;
+            }
+
+            Ok(())
         }
+        "readInputStateWithTemplate" => {
+            let Ok([input_idx, template_prefix_len, template_suffix_len, _expected_template_hash]): Result<&[Expr<'i>; 4], _> =
+                args.try_into()
+            else {
+                return Err(CompilerError::Unsupported(
+                    "readInputStateWithTemplate(input_idx, template_prefix_len, template_suffix_len, expected_template_hash) expects 4 arguments"
+                        .to_string(),
+                ));
+            };
 
-        let binding_expr = read_input_state_binding_expr(
-            &input_idx,
-            field,
-            state_start_offset,
-            field_chunk_offset,
-            script_size_value,
-            contract_constants,
-        )?;
-        env.insert(binding.name.clone(), binding_expr);
-        types.insert(binding.name.clone(), binding_type);
+            let struct_name = struct_name_for_state_bindings(bindings, structs)?;
+            let struct_spec =
+                structs.get(&struct_name).ok_or_else(|| CompilerError::Unsupported(format!("unknown struct '{struct_name}'")))?;
+            if bindings_by_field.len() != struct_spec.fields.len() {
+                return Err(CompilerError::Unsupported(
+                    "readInputStateWithTemplate bindings must include all target fields exactly once".to_string(),
+                ));
+            }
 
-        field_chunk_offset += encoded_field_chunk_size(field, contract_constants)?;
+            let layout_fields = flattened_struct_field_specs_for_type(
+                &TypeRef { base: TypeBase::Custom(struct_name.clone()), array_dims: Vec::new() },
+                structs,
+            )?;
+            compile_read_input_state_with_template_validation(
+                args,
+                env,
+                stack_bindings,
+                types,
+                builder,
+                options,
+                &layout_fields,
+                script_size,
+                contract_constants,
+            )?;
+
+            let input_idx = input_idx.clone();
+            let state_start_offset_expr = template_prefix_len.clone();
+            let script_size_expr =
+                templated_input_script_size_expr(template_prefix_len, template_suffix_len, &layout_fields, contract_constants)?;
+            let mut field_chunk_offset = 0usize;
+
+            for field in &struct_spec.fields {
+                let binding = bindings_by_field.get(field.name.as_str()).ok_or_else(|| {
+                    CompilerError::Unsupported(
+                        "readInputStateWithTemplate bindings must include all target fields exactly once".to_string(),
+                    )
+                })?;
+
+                if struct_name_from_type_ref(&field.type_ref, structs).is_some() {
+                    return Err(CompilerError::Unsupported(
+                        "readInputStateWithTemplate does not support nested struct fields in destructuring".to_string(),
+                    ));
+                }
+
+                let binding_type = type_name_from_ref(&binding.type_ref);
+                let field_type = type_name_from_ref(&field.type_ref);
+                if binding_type != field_type {
+                    return Err(CompilerError::Unsupported(format!(
+                        "readInputStateWithTemplate binding '{}' expects {}",
+                        binding.name, field_type
+                    )));
+                }
+
+                let binding_expr = read_input_state_field_expr_with_type(
+                    &input_idx,
+                    &field.type_ref,
+                    state_start_offset_expr.clone(),
+                    field_chunk_offset,
+                    script_size_expr.clone(),
+                    contract_constants,
+                    "readInputStateWithTemplate",
+                )?;
+                env.insert(binding.name.clone(), binding_expr);
+                types.insert(binding.name.clone(), binding_type);
+
+                field_chunk_offset += encoded_field_chunk_size_for_type_ref(&field.type_ref, contract_constants)?;
+            }
+
+            Ok(())
+        }
+        _ => Err(CompilerError::Unsupported(format!(
+            "state destructuring assignment is only supported for readInputState()/readInputStateWithTemplate(), got '{}()'",
+            name
+        ))),
     }
+}
+
+fn struct_name_for_state_bindings<'i>(bindings: &[StateBindingAst<'i>], structs: &StructRegistry) -> Result<String, CompilerError> {
+    let matches = structs
+        .iter()
+        .filter_map(|(name, spec)| {
+            if spec.fields.len() != bindings.len() {
+                return None;
+            }
+            let all_match = spec.fields.iter().all(|field| {
+                bindings
+                    .iter()
+                    .find(|binding| binding.field_name == field.name)
+                    .is_some_and(|binding| binding.type_ref == field.type_ref)
+            });
+            all_match.then(|| name.clone())
+        })
+        .collect::<Vec<_>>();
+
+    match matches.as_slice() {
+        [name] => Ok(name.clone()),
+        [] => Err(CompilerError::Unsupported("readInputStateWithTemplate bindings must match a declared struct layout".to_string())),
+        _ => Err(CompilerError::Unsupported(
+            "readInputStateWithTemplate bindings match multiple struct layouts; assign into an explicitly typed struct first"
+                .to_string(),
+        )),
+    }
+}
+
+/// Validation half of `readInputStateWithTemplate(...)`.
+///
+/// This builtin is stronger than `readInputState(...)`: before decoding any
+/// fields, it proves that the claimed foreign redeem script matches both the
+/// supplied template hash and the foreign input's actual P2SH `scriptPubKey`.
+///
+/// Pseudocode:
+///   args = (input_idx, template_prefix_len, template_suffix_len, expected_template_hash)
+///   require target state layout is a non-empty flattened struct
+///
+///   script_size = template_prefix_len + encoded_state_len(layout_fields) + template_suffix_len
+///   script_base = input_sigscript_len(input_idx) - script_size
+///
+///   actual_redeem_script = input_sigscript[script_base .. script_base + script_size]
+///   prefix = input_sigscript[script_base .. script_base + template_prefix_len]
+///   suffix = input_sigscript[
+///       script_base + template_prefix_len + encoded_state_len(layout_fields)
+///       ..
+///       script_base + script_size
+///   ]
+///
+///   actual_template = prefix || suffix
+///   require blake2b(actual_template) == expected_template_hash
+///
+///   expected_input_spk = ScriptPubKeyP2SHFromRedeemScript(actual_redeem_script)
+///   require input_script_pubkey(input_idx) == expected_input_spk
+///
+/// The field-value reads are built separately by
+/// `read_input_state_with_template_values(...)` using the same flattened
+/// layout and byte offsets.
+#[allow(clippy::too_many_arguments)]
+fn compile_read_input_state_with_template_validation(
+    args: &[Expr<'_>],
+    env: &HashMap<String, Expr<'_>>,
+    stack_bindings: &StackBindings,
+    types: &HashMap<String, String>,
+    builder: &mut ScriptBuilder,
+    options: CompileOptions,
+    layout_fields: &[StructFieldSpec],
+    current_script_size: Option<i64>,
+    contract_constants: &HashMap<String, Expr<'_>>,
+) -> Result<(), CompilerError> {
+    let Ok([input_idx, template_prefix_len, template_suffix_len, expected_template_hash]): Result<&[Expr<'_>; 4], _> = args.try_into()
+    else {
+        return Err(CompilerError::Unsupported(
+            "readInputStateWithTemplate(input_idx, template_prefix_len, template_suffix_len, expected_template_hash) expects 4 arguments"
+                .to_string(),
+        ));
+    };
+    if layout_fields.is_empty() {
+        return Err(CompilerError::Unsupported("readInputStateWithTemplate requires a struct type".to_string()));
+    }
+
+    let script_size_expr =
+        templated_input_script_size_expr(template_prefix_len, template_suffix_len, layout_fields, contract_constants)?;
+    let prefix_len_expr = template_prefix_len.clone();
+    let suffix_len_expr = template_suffix_len.clone();
+    let script_base_expr = input_sigscript_base_expr(input_idx, script_size_expr.clone());
+    let prefix_end_expr = binary_expr(BinaryOp::Add, script_base_expr.clone(), prefix_len_expr.clone());
+    let script_end_expr = binary_expr(BinaryOp::Add, script_base_expr.clone(), script_size_expr.clone());
+    let state_len = encoded_state_len_for_layout_fields(layout_fields, contract_constants)?;
+    let suffix_start_expr = binary_expr(BinaryOp::Add, prefix_end_expr.clone(), Expr::int(state_len as i64));
+    let suffix_end_expr = binary_expr(BinaryOp::Add, suffix_start_expr.clone(), suffix_len_expr);
+
+    let actual_redeem_script_expr = input_sigscript_substr_expr(input_idx, script_base_expr.clone(), script_end_expr);
+    let actual_prefix_expr = input_sigscript_substr_expr(input_idx, script_base_expr, prefix_end_expr);
+    let actual_suffix_expr = input_sigscript_substr_expr(input_idx, suffix_start_expr, suffix_end_expr);
+    let actual_template_expr = binary_expr(BinaryOp::Add, actual_prefix_expr, actual_suffix_expr);
+    let expected_input_spk_expr = Expr::new(
+        ExprKind::New {
+            name: "ScriptPubKeyP2SHFromRedeemScript".to_string(),
+            args: vec![actual_redeem_script_expr],
+            name_span: span::Span::default(),
+        },
+        span::Span::default(),
+    );
+    let actual_input_spk_expr = input_script_pubkey_expr(input_idx);
+
+    let mut stack_depth = 0i64;
+
+    compile_expr(
+        &actual_input_spk_expr,
+        env,
+        stack_bindings,
+        types,
+        builder,
+        options,
+        &mut HashSet::new(),
+        &mut stack_depth,
+        current_script_size,
+        contract_constants,
+    )?;
+    compile_expr(
+        &expected_input_spk_expr,
+        env,
+        stack_bindings,
+        types,
+        builder,
+        options,
+        &mut HashSet::new(),
+        &mut stack_depth,
+        current_script_size,
+        contract_constants,
+    )?;
+    builder.add_op(OpEqual)?;
+    builder.add_op(OpVerify)?;
+    stack_depth = 0;
+
+    compile_expr(
+        &actual_template_expr,
+        env,
+        stack_bindings,
+        types,
+        builder,
+        options,
+        &mut HashSet::new(),
+        &mut stack_depth,
+        current_script_size,
+        contract_constants,
+    )?;
+    compile_expr(
+        expected_template_hash,
+        env,
+        stack_bindings,
+        types,
+        builder,
+        options,
+        &mut HashSet::new(),
+        &mut stack_depth,
+        current_script_size,
+        contract_constants,
+    )?;
+    builder.add_op(OpSwap)?;
+    builder.add_op(OpBlake2b)?;
+    builder.add_op(OpEqual)?;
+    builder.add_op(OpVerify)?;
 
     Ok(())
 }
@@ -3351,7 +4010,7 @@ fn compile_read_input_state_statement<'i>(
 fn compile_validate_output_state_statement(
     args: &[Expr<'_>],
     env: &HashMap<String, Expr<'_>>,
-    stack_bindings: &HashMap<String, i64>,
+    stack_bindings: &StackBindings,
     types: &HashMap<String, String>,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
@@ -3360,89 +4019,30 @@ fn compile_validate_output_state_statement(
     script_size: Option<i64>,
     contract_constants: &HashMap<String, Expr<'_>>,
 ) -> Result<(), CompilerError> {
-    if args.len() != 2 {
+    let Ok([output_idx, state_expr]): Result<&[Expr<'_>; 2], _> = args.try_into() else {
         return Err(CompilerError::Unsupported("validateOutputState(output_idx, new_state) expects 2 arguments".to_string()));
-    }
+    };
     if contract_fields.is_empty() {
         return Err(CompilerError::Unsupported("validateOutputState requires contract fields".to_string()));
     }
 
-    let output_idx = &args[0];
-    let ExprKind::StateObject(state_entries) = &args[1].kind else {
-        return Err(CompilerError::Unsupported("validateOutputState second argument must be an object literal".to_string()));
-    };
-
-    let mut provided = HashMap::new();
-    for entry in state_entries {
-        if provided.insert(entry.name.as_str(), &entry.expr).is_some() {
-            return Err(CompilerError::Unsupported(format!("duplicate state field '{}'", entry.name)));
-        }
-    }
-    if provided.len() != contract_fields.len() {
-        return Err(CompilerError::Unsupported("new_state must include all contract fields exactly once".to_string()));
-    }
+    let mut stack_depth = compile_encoded_state_object(
+        state_expr,
+        env,
+        stack_bindings,
+        types,
+        builder,
+        options,
+        contract_fields,
+        script_size,
+        contract_constants,
+        "validateOutputState",
+    )?;
 
     let total_state_len = encoded_state_len(contract_fields, contract_constants)?;
     let state_start_offset = contract_field_prefix_len
         .checked_sub(total_state_len)
         .ok_or_else(|| CompilerError::Unsupported("validateOutputState state offset underflow".to_string()))?;
-
-    let mut stack_depth = 0i64;
-    for field in contract_fields {
-        let Some(new_value) = provided.remove(field.name.as_str()) else {
-            return Err(CompilerError::Unsupported(format!("missing state field '{}'", field.name)));
-        };
-
-        let (field_size, encode_numeric) = fixed_state_field_payload_len(field, contract_constants).map_err(|_| {
-            CompilerError::Unsupported(format!(
-                "validateOutputState does not support field type {}",
-                type_name_from_ref(&field.type_ref)
-            ))
-        })?;
-
-        if encode_numeric {
-            compile_expr(
-                new_value,
-                env,
-                stack_bindings,
-                types,
-                builder,
-                options,
-                &mut HashSet::new(),
-                &mut stack_depth,
-                script_size,
-                contract_constants,
-            )?;
-            builder.add_i64(field_size as i64)?;
-            stack_depth += 1;
-            builder.add_op(OpNum2Bin)?;
-            stack_depth -= 1;
-        } else {
-            compile_expr(
-                new_value,
-                env,
-                stack_bindings,
-                types,
-                builder,
-                options,
-                &mut HashSet::new(),
-                &mut stack_depth,
-                script_size,
-                contract_constants,
-            )?;
-        }
-        let prefix = data_prefix(field_size);
-        builder.add_data(&prefix)?;
-        stack_depth += 1;
-        builder.add_op(OpSwap)?;
-        builder.add_op(OpCat)?;
-        stack_depth -= 1;
-    }
-
-    for _ in 1..contract_fields.len() {
-        builder.add_op(OpCat)?;
-        stack_depth -= 1;
-    }
 
     let script_size_value =
         script_size.ok_or_else(|| CompilerError::Unsupported("validateOutputState requires this.scriptSize".to_string()))?;
@@ -3534,12 +4134,278 @@ fn compile_validate_output_state_statement(
     Ok(())
 }
 
+fn compile_validate_output_state_with_template_statement(
+    args: &[Expr<'_>],
+    env: &HashMap<String, Expr<'_>>,
+    stack_bindings: &StackBindings,
+    types: &HashMap<String, String>,
+    builder: &mut ScriptBuilder,
+    options: CompileOptions,
+    layout_fields: &[StructFieldSpec],
+    script_size: Option<i64>,
+    contract_constants: &HashMap<String, Expr<'_>>,
+) -> Result<(), CompilerError> {
+    let Ok([output_idx, state_expr, template_prefix, template_suffix, expected_template_hash]): Result<&[Expr<'_>; 5], _> =
+        args.try_into()
+    else {
+        return Err(CompilerError::Unsupported(
+            "validateOutputStateWithTemplate(output_idx, new_state, template_prefix, template_suffix, expected_template_hash) expects 5 arguments"
+                .to_string(),
+        ));
+    };
+    if layout_fields.is_empty() {
+        return Err(CompilerError::Unsupported("validateOutputStateWithTemplate requires contract fields".to_string()));
+    }
+
+    let mut stack_depth = 0i64;
+
+    compile_expr(
+        template_prefix,
+        env,
+        stack_bindings,
+        types,
+        builder,
+        options,
+        &mut HashSet::new(),
+        &mut stack_depth,
+        script_size,
+        contract_constants,
+    )?;
+    compile_expr(
+        template_suffix,
+        env,
+        stack_bindings,
+        types,
+        builder,
+        options,
+        &mut HashSet::new(),
+        &mut stack_depth,
+        script_size,
+        contract_constants,
+    )?;
+    builder.add_op(OpCat)?;
+    stack_depth -= 1;
+    compile_expr(
+        expected_template_hash,
+        env,
+        stack_bindings,
+        types,
+        builder,
+        options,
+        &mut HashSet::new(),
+        &mut stack_depth,
+        script_size,
+        contract_constants,
+    )?;
+    builder.add_op(OpSwap)?;
+    builder.add_op(OpBlake2b)?;
+    builder.add_op(OpEqual)?;
+    builder.add_op(OpVerify)?;
+    stack_depth = compile_encoded_object_with_layout(
+        state_expr,
+        env,
+        stack_bindings,
+        types,
+        builder,
+        options,
+        layout_fields,
+        script_size,
+        contract_constants,
+        "validateOutputStateWithTemplate",
+    )?;
+
+    compile_expr(
+        template_prefix,
+        env,
+        stack_bindings,
+        types,
+        builder,
+        options,
+        &mut HashSet::new(),
+        &mut stack_depth,
+        script_size,
+        contract_constants,
+    )?;
+    builder.add_op(OpSwap)?;
+    builder.add_op(OpCat)?;
+    stack_depth -= 1;
+
+    compile_expr(
+        template_suffix,
+        env,
+        stack_bindings,
+        types,
+        builder,
+        options,
+        &mut HashSet::new(),
+        &mut stack_depth,
+        script_size,
+        contract_constants,
+    )?;
+    builder.add_op(OpCat)?;
+    stack_depth -= 1;
+
+    builder.add_op(OpBlake2b)?;
+    builder.add_data(&[0x00, 0x00])?;
+    stack_depth += 1;
+    builder.add_data(&[OpBlake2b])?;
+    stack_depth += 1;
+    builder.add_op(OpCat)?;
+    stack_depth -= 1;
+    builder.add_data(&[0x20])?;
+    stack_depth += 1;
+    builder.add_op(OpCat)?;
+    stack_depth -= 1;
+    builder.add_op(OpSwap)?;
+    builder.add_op(OpCat)?;
+    stack_depth -= 1;
+    builder.add_data(&[OpEqual])?;
+    stack_depth += 1;
+    builder.add_op(OpCat)?;
+    stack_depth -= 1;
+
+    compile_expr(
+        output_idx,
+        env,
+        stack_bindings,
+        types,
+        builder,
+        options,
+        &mut HashSet::new(),
+        &mut stack_depth,
+        script_size,
+        contract_constants,
+    )?;
+    builder.add_op(OpTxOutputSpk)?;
+    builder.add_op(OpEqual)?;
+    builder.add_op(OpVerify)?;
+
+    Ok(())
+}
+
+fn compile_encoded_object_with_layout(
+    state_expr: &Expr<'_>,
+    env: &HashMap<String, Expr<'_>>,
+    stack_bindings: &StackBindings,
+    types: &HashMap<String, String>,
+    builder: &mut ScriptBuilder,
+    options: CompileOptions,
+    layout_fields: &[StructFieldSpec],
+    script_size: Option<i64>,
+    contract_constants: &HashMap<String, Expr<'_>>,
+    builtin_name: &str,
+) -> Result<i64, CompilerError> {
+    let ExprKind::StateObject(state_entries) = &state_expr.kind else {
+        return Err(CompilerError::Unsupported(format!("{builtin_name} second argument must be an object literal")));
+    };
+
+    let mut provided = HashMap::new();
+    for entry in state_entries {
+        if provided.insert(entry.name.as_str(), &entry.expr).is_some() {
+            return Err(CompilerError::Unsupported(format!("duplicate state field '{}'", entry.name)));
+        }
+    }
+    if provided.len() != layout_fields.len() {
+        return Err(CompilerError::Unsupported("new_state must include all contract fields exactly once".to_string()));
+    }
+
+    let mut stack_depth = 0i64;
+    for field in layout_fields {
+        let Some(new_value) = provided.remove(field.name.as_str()) else {
+            return Err(CompilerError::Unsupported(format!("missing state field '{}'", field.name)));
+        };
+
+        let (field_size, encode_numeric) =
+            fixed_state_field_payload_len_for_type_ref(&field.type_ref, contract_constants).map_err(|_| {
+                CompilerError::Unsupported(format!(
+                    "{builtin_name} does not support field type {}",
+                    type_name_from_ref(&field.type_ref)
+                ))
+            })?;
+
+        if encode_numeric {
+            compile_expr(
+                new_value,
+                env,
+                stack_bindings,
+                types,
+                builder,
+                options,
+                &mut HashSet::new(),
+                &mut stack_depth,
+                script_size,
+                contract_constants,
+            )?;
+            builder.add_i64(field_size as i64)?;
+            stack_depth += 1;
+            builder.add_op(OpNum2Bin)?;
+            stack_depth -= 1;
+        } else {
+            compile_expr(
+                new_value,
+                env,
+                stack_bindings,
+                types,
+                builder,
+                options,
+                &mut HashSet::new(),
+                &mut stack_depth,
+                script_size,
+                contract_constants,
+            )?;
+        }
+        let prefix = data_prefix(field_size);
+        builder.add_data(&prefix)?;
+        stack_depth += 1;
+        builder.add_op(OpSwap)?;
+        builder.add_op(OpCat)?;
+        stack_depth -= 1;
+    }
+
+    for _ in 1..layout_fields.len() {
+        builder.add_op(OpCat)?;
+        stack_depth -= 1;
+    }
+
+    Ok(stack_depth)
+}
+
+fn compile_encoded_state_object(
+    state_expr: &Expr<'_>,
+    env: &HashMap<String, Expr<'_>>,
+    stack_bindings: &StackBindings,
+    types: &HashMap<String, String>,
+    builder: &mut ScriptBuilder,
+    options: CompileOptions,
+    contract_fields: &[ContractFieldAst<'_>],
+    script_size: Option<i64>,
+    contract_constants: &HashMap<String, Expr<'_>>,
+    builtin_name: &str,
+) -> Result<i64, CompilerError> {
+    let layout_fields = contract_fields
+        .iter()
+        .map(|field| StructFieldSpec { name: field.name.clone(), type_ref: field.type_ref.clone() })
+        .collect::<Vec<_>>();
+    compile_encoded_object_with_layout(
+        state_expr,
+        env,
+        stack_bindings,
+        types,
+        builder,
+        options,
+        &layout_fields,
+        script_size,
+        contract_constants,
+        builtin_name,
+    )
+}
+
 #[derive(Debug)]
 struct InlineCallBindings<'i> {
     env: HashMap<String, Expr<'i>>,
     debug_env: HashMap<String, Expr<'i>>,
     types: HashMap<String, String>,
-    stack_bindings: HashMap<String, i64>,
+    stack_bindings: StackBindings,
     return_rewrites: Vec<(String, Expr<'i>)>,
     preserved_return_idents: HashSet<String>,
 }
@@ -3547,7 +4413,7 @@ struct InlineCallBindings<'i> {
 fn prepare_inline_call_bindings<'i>(
     function: &FunctionAst<'i>,
     args: &[Expr<'i>],
-    caller_stack_bindings: &HashMap<String, i64>,
+    caller_stack_bindings: &StackBindings,
     caller_types: &HashMap<String, String>,
     caller_env: &HashMap<String, Expr<'i>>,
     contract_constants: &HashMap<String, Expr<'i>>,
@@ -3614,7 +4480,7 @@ fn prepare_inline_call_bindings<'i>(
             } else {
                 match arg {
                     Expr { kind: ExprKind::Identifier(identifier), .. }
-                        if caller_stack_bindings.contains_key(identifier)
+                        if caller_stack_bindings.contains(identifier)
                             && caller_types
                                 .get(identifier)
                                 .is_some_and(|other_type| is_type_assignable(other_type, &param_type_name, contract_constants)) =>
@@ -3662,7 +4528,7 @@ fn compile_inline_call<'i>(
     name: &str,
     args: &[Expr<'i>],
     call_span: SourceSpan,
-    caller_stack_bindings: &HashMap<String, i64>,
+    caller_stack_bindings: &StackBindings,
     caller_types: &mut HashMap<String, String>,
     caller_env: &mut HashMap<String, Expr<'i>>,
     builder: &mut ScriptBuilder,
@@ -3692,7 +4558,7 @@ fn compile_inline_call<'i>(
         for (param, arg) in function.params.iter().zip(args.iter()) {
             let param_type_name = type_name_from_ref(&param.type_ref);
             let matches = if struct_name_from_type_ref(&param.type_ref, structs).is_some() {
-                lower_runtime_struct_expr(
+                match lower_runtime_struct_expr(
                     arg,
                     &param.type_ref,
                     caller_types,
@@ -3700,8 +4566,13 @@ fn compile_inline_call<'i>(
                     contract_fields,
                     contract_constants,
                     contract_field_prefix_len,
-                )
-                .is_ok()
+                ) {
+                    Ok(_) => true,
+                    Err(err) if matches!(&arg.kind, ExprKind::Call { name, .. } if name == "readInputStateWithTemplate") => {
+                        return Err(err);
+                    }
+                    Err(_) => false,
+                }
             } else if struct_array_name_from_type_ref(&param.type_ref, structs).is_some() {
                 match &arg.kind {
                     ExprKind::Identifier(name) => caller_types
@@ -3776,7 +4647,7 @@ fn compile_inline_call<'i>(
         if !matches!(param_type_name.as_str(), "int" | "bool" | "byte")
             || identifier_uses.get(&param.name).copied().unwrap_or(0) < 2
             || assigned_names.contains(&param.name)
-            || bindings.stack_bindings.contains_key(&param.name)
+            || bindings.stack_bindings.contains(&param.name)
         {
             continue;
         }
@@ -3798,7 +4669,7 @@ fn compile_inline_call<'i>(
             script_size,
             contract_constants,
         )?;
-        push_stack_binding(&mut bindings.stack_bindings, &param.name);
+        bindings.stack_bindings.push_binding(&param.name);
     }
     let body_len = function.body.len();
     for (index, stmt) in function.body.iter().enumerate() {
@@ -3873,7 +4744,7 @@ fn compile_if_statement<'i>(
     assigned_names: &HashSet<String>,
     identifier_uses: &HashMap<String, usize>,
     types: &mut HashMap<String, String>,
-    stack_bindings: &mut HashMap<String, i64>,
+    stack_bindings: &mut StackBindings,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
     contract_fields: &[ContractFieldAst<'i>],
@@ -3903,8 +4774,11 @@ fn compile_if_statement<'i>(
     builder.add_op(OpIf)?;
 
     let original_env = env.clone();
+    let original_stack_bindings = stack_bindings.clone();
+
     let mut then_env = original_env.clone();
     let mut then_types = types.clone();
+    let mut then_stack_bindings = original_stack_bindings.clone();
     predeclare_if_branch_locals(then_branch, &mut then_env, &mut then_types, structs)?;
     compile_block(
         then_branch,
@@ -3912,7 +4786,7 @@ fn compile_if_statement<'i>(
         assigned_names,
         identifier_uses,
         &mut then_types,
-        stack_bindings,
+        &mut then_stack_bindings,
         builder,
         options,
         contract_fields,
@@ -3931,6 +4805,7 @@ fn compile_if_statement<'i>(
     if let Some(else_branch) = else_branch {
         builder.add_op(OpElse)?;
         let mut else_types = types.clone();
+        let mut else_stack_bindings = original_stack_bindings.clone();
         predeclare_if_branch_locals(else_branch, &mut else_env, &mut else_types, structs)?;
         compile_block(
             else_branch,
@@ -3938,7 +4813,7 @@ fn compile_if_statement<'i>(
             assigned_names,
             identifier_uses,
             &mut else_types,
-            stack_bindings,
+            &mut else_stack_bindings,
             builder,
             options,
             contract_fields,
@@ -3952,6 +4827,11 @@ fn compile_if_statement<'i>(
             true,
             recorder,
         )?;
+        else_stack_bindings.emit_stack_reordering(&then_stack_bindings, builder)?;
+        *stack_bindings = then_stack_bindings;
+    } else {
+        then_stack_bindings.emit_stack_reordering(&original_stack_bindings, builder)?;
+        *stack_bindings = original_stack_bindings;
     }
 
     builder.add_op(OpEndIf)?;
@@ -4057,7 +4937,7 @@ fn compile_time_op_statement<'i>(
     tx_var: &TimeVar,
     expr: &Expr<'i>,
     env: &mut HashMap<String, Expr<'i>>,
-    stack_bindings: &HashMap<String, i64>,
+    stack_bindings: &StackBindings,
     types: &HashMap<String, String>,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
@@ -4097,7 +4977,7 @@ fn compile_block<'i>(
     assigned_names: &HashSet<String>,
     identifier_uses: &HashMap<String, usize>,
     types: &mut HashMap<String, String>,
-    stack_bindings: &mut HashMap<String, i64>,
+    stack_bindings: &mut StackBindings,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
     contract_fields: &[ContractFieldAst<'i>],
@@ -4140,13 +5020,10 @@ fn compile_block<'i>(
     }
 
     if scoped_stack_locals && !added_stack_locals.is_empty() {
-        for _ in 0..added_stack_locals.len() {
-            builder.add_op(OpDrop)?;
-        }
+        stack_bindings.emit_drop_bindings(&added_stack_locals, builder)?;
         for name in &added_stack_locals {
             types.remove(name);
         }
-        pop_stack_bindings(stack_bindings, &added_stack_locals);
     }
 
     Ok(())
@@ -4164,7 +5041,7 @@ fn compile_for_statement<'i>(
     assigned_names: &HashSet<String>,
     identifier_uses: &HashMap<String, usize>,
     types: &mut HashMap<String, String>,
-    stack_bindings: &mut HashMap<String, i64>,
+    stack_bindings: &mut StackBindings,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
     contract_fields: &[ContractFieldAst<'i>],
@@ -4278,7 +5155,7 @@ fn compile_constant_for_statement<'i>(
     assigned_names: &HashSet<String>,
     identifier_uses: &HashMap<String, usize>,
     types: &mut HashMap<String, String>,
-    stack_bindings: &mut HashMap<String, i64>,
+    stack_bindings: &mut StackBindings,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
     contract_fields: &[ContractFieldAst<'i>],
@@ -4302,7 +5179,7 @@ fn compile_constant_for_statement<'i>(
             ident.to_string(),
             "int".to_string(),
             Expr::int(value),
-            stack_bindings.get(ident).copied().map(|from_top| RuntimeBinding::DataStackSlot { from_top }),
+            stack_bindings.depth(ident).map(|from_top| RuntimeBinding::DataStackSlot { from_top }),
             builder.script().len(),
             loop_span,
         );
@@ -4343,7 +5220,7 @@ fn compile_runtime_for_statement<'i>(
     assigned_names: &HashSet<String>,
     identifier_uses: &HashMap<String, usize>,
     types: &mut HashMap<String, String>,
-    stack_bindings: &mut HashMap<String, i64>,
+    stack_bindings: &mut StackBindings,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
     contract_fields: &[ContractFieldAst<'i>],
@@ -4365,7 +5242,7 @@ fn compile_runtime_for_statement<'i>(
             ident.to_string(),
             "int".to_string(),
             loop_value,
-            stack_bindings.get(ident).copied().map(|from_top| RuntimeBinding::DataStackSlot { from_top }),
+            stack_bindings.depth(ident).map(|from_top| RuntimeBinding::DataStackSlot { from_top }),
             builder.script().len(),
             loop_span,
         );
@@ -4577,13 +5454,13 @@ fn resolve_expr_for_runtime<'i>(
 fn resolve_return_expr_for_runtime<'i>(
     expr: Expr<'i>,
     env: &HashMap<String, Expr<'i>>,
-    stack_bindings: &HashMap<String, i64>,
+    stack_bindings: &StackBindings,
     types: &HashMap<String, String>,
     visiting: &mut HashSet<String>,
 ) -> Result<Expr<'i>, CompilerError> {
     let preserve_identifier = |name: &str| {
         name.starts_with(SYNTHETIC_ARG_PREFIX)
-            || stack_bindings.contains_key(name)
+            || stack_bindings.contains(name)
             || types.get(name).is_some_and(|type_name| is_array_type(type_name))
     };
     resolve_expr_with_policy(expr, env, visiting, &preserve_identifier)
@@ -4870,14 +5747,14 @@ fn replace_identifier<'i>(expr: &Expr<'i>, target: &str, replacement: &Expr<'i>)
 
 struct CompilationScope<'a, 'i> {
     env: &'a HashMap<String, Expr<'i>>,
-    stack_bindings: &'a HashMap<String, i64>,
+    stack_bindings: &'a StackBindings,
     types: &'a HashMap<String, String>,
 }
 
 fn compile_expr<'i>(
     expr: &Expr<'i>,
     env: &HashMap<String, Expr<'i>>,
-    stack_bindings: &HashMap<String, i64>,
+    stack_bindings: &StackBindings,
     types: &HashMap<String, String>,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
@@ -4916,9 +5793,9 @@ fn compile_expr<'i>(
             *stack_depth += 1;
             Ok(())
         }
-        ExprKind::StateObject(_) => {
-            Err(CompilerError::Unsupported("state object literals are only supported in validateOutputState".to_string()))
-        }
+        ExprKind::StateObject(_) => Err(CompilerError::Unsupported(
+            "state object literals are only supported in validateOutputState-style builtins".to_string(),
+        )),
         ExprKind::FieldAccess { .. } => {
             Err(CompilerError::Unsupported("struct field access should be lowered before compilation".to_string()))
         }
@@ -4931,10 +5808,7 @@ fn compile_expr<'i>(
             if !visiting.insert(name.clone()) {
                 return Err(CompilerError::CyclicIdentifier(name.clone()));
             }
-            if let Some(index) = stack_bindings.get(name) {
-                builder.add_i64(*index + *stack_depth)?;
-                *stack_depth += 1;
-                builder.add_op(OpPick)?;
+            if stack_bindings.emit_copy_binding_to_top(name, stack_depth, builder)? {
                 visiting.remove(name);
                 return Ok(());
             }
@@ -5444,7 +6318,7 @@ fn compile_split_part<'i>(
     index: &Expr<'i>,
     part: SplitPart,
     env: &HashMap<String, Expr<'i>>,
-    stack_bindings: &HashMap<String, i64>,
+    stack_bindings: &StackBindings,
     types: &HashMap<String, String>,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
@@ -5559,7 +6433,7 @@ fn expr_is_bytes_inner<'i>(
 fn compile_length_expr<'i>(
     expr: &Expr<'i>,
     env: &HashMap<String, Expr<'i>>,
-    stack_bindings: &HashMap<String, i64>,
+    stack_bindings: &StackBindings,
     types: &HashMap<String, String>,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
@@ -5769,6 +6643,19 @@ fn compile_call_expr<'i>(
             visiting,
             stack_depth,
             OpTxInputSeq,
+            script_size,
+            contract_constants,
+        ),
+        "OpTxInputDaaScore" => compile_opcode_call(
+            name,
+            args,
+            1,
+            scope,
+            builder,
+            options,
+            visiting,
+            stack_depth,
+            OpTxInputDaaScore,
             script_size,
             contract_constants,
         ),
@@ -6318,7 +7205,7 @@ fn compile_opcode_call<'i>(
 fn compile_concat_operand<'i>(
     expr: &Expr<'i>,
     env: &HashMap<String, Expr<'i>>,
-    stack_bindings: &HashMap<String, i64>,
+    stack_bindings: &StackBindings,
     types: &HashMap<String, String>,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
@@ -6425,10 +7312,11 @@ pub fn compile_debug_expr<'i>(
     let mut builder = ScriptBuilder::new();
     let mut stack_depth = 0i64;
     let type_name = infer_debug_expr_value_type(expr, env, types, &mut HashSet::new())?;
+    let stack_bindings = StackBindings::from_depths(stack_bindings.clone());
     compile_expr(
         expr,
         env,
-        stack_bindings,
+        &stack_bindings,
         types,
         &mut builder,
         CompileOptions::default(),
@@ -6450,9 +7338,11 @@ pub(super) fn resolve_expr_for_debug<'i>(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use kaspa_txscript::opcodes::codes::OpData1;
 
-    use super::{Op0, OpPushData1, OpPushData2, data_prefix};
+    use super::{Op0, OpPushData1, OpPushData2, StackBindings, data_prefix};
 
     #[test]
     fn data_prefix_encodes_small_pushes() {
@@ -6471,5 +7361,29 @@ mod tests {
     #[test]
     fn data_prefix_encodes_pushdata2() {
         assert_eq!(data_prefix(256), vec![OpPushData2, 0x00, 0x01]);
+    }
+
+    #[test]
+    fn entrypoint_stack_setup_places_contract_fields_above_params_in_depth_order() {
+        let contract_field_count = 2usize;
+        let flattened_param_names = ["param_a", "param_b"];
+        let param_count = flattened_param_names.len();
+        let mut stack_bindings = StackBindings::from_depths(
+            flattened_param_names
+                .iter()
+                .enumerate()
+                .map(|(index, name)| (name.to_string(), (param_count - 1 - index) as i64))
+                .collect::<HashMap<_, _>>(),
+        );
+        let contract_fields = ["field_a", "field_b"];
+
+        for (index, field) in contract_fields.iter().enumerate().rev() {
+            stack_bindings.insert_binding(field, (contract_field_count - 1 - index) as i64);
+        }
+
+        assert_eq!(
+            stack_bindings.binding_order(),
+            ["field_b", "field_a", "param_b", "param_a"].into_iter().map(str::to_string).collect::<Vec<_>>()
+        );
     }
 }

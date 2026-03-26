@@ -1,0 +1,247 @@
+pragma silverscript ^0.1.0;
+
+contract ChessKnight(
+    byte[32] init_mux_template,
+    byte[288] init_route_templates,
+    byte[32] init_white_player,
+    byte[32] init_black_player,
+    byte[64] init_board,
+    int init_turn,
+    int init_status,
+    int init_move_timeout,
+    byte[4] init_castle_rights,
+    int init_en_passant_idx,
+    int init_pending_src_idx,
+    int init_pending_dst_idx,
+    int init_pending_promo,
+    int init_recent_castle,
+    int init_draw_state
+) {
+    // Shared chess state layout:
+    // - status: 0 live, 1 white win, 2 black win, 3 draw
+    // - recent_castle: 0 none, 1 wK, 2 wQ, 3 bK, 4 bQ
+    // - draw_state: 3 normal, 1 draw claimed, 2 counterplay step, 4 white offered draw, 5 black offered draw
+    byte[32] mux_template = init_mux_template;
+    byte[288] route_templates = init_route_templates;
+    byte[32] white_player = init_white_player;
+    byte[32] black_player = init_black_player;
+    byte[64] board = init_board;
+    int turn = init_turn;
+    int status = init_status;
+    int move_timeout = init_move_timeout;
+    byte[4] castle_rights = init_castle_rights;
+    int en_passant_idx = init_en_passant_idx;
+    int pending_src_idx = init_pending_src_idx;
+    int pending_dst_idx = init_pending_dst_idx;
+    int pending_promo = init_pending_promo;
+    int recent_castle = init_recent_castle;
+    int draw_state = init_draw_state;
+
+    struct SettleState {
+        byte[32] player_template;
+        byte[32] white_player;
+        byte[32] black_player;
+        int status;
+    }
+
+    entrypoint function apply(byte[] mux_prefix, byte[] mux_suffix) {
+        // Workers only accept active move proofs routed out of ChessMux.
+        require(status == 0 /*LIVE*/);
+
+        int from_idx = OpBin2Num(pending_src_idx);
+        int to_idx = OpBin2Num(pending_dst_idx);
+
+        int from_y = from_idx / 8;
+        int from_x = from_idx % 8;
+        int to_y = to_idx / 8;
+        int to_x = to_idx % 8;
+
+        // Chess alternates between white (0) and black (1).
+        bool is_white_turn = turn == 0 /*WHITE*/;
+        bool is_black_turn = turn == 1 /*BLACK*/;
+        require(is_white_turn || is_black_turn);
+
+        // In draw negotiation the signer keeps their real side, but the move is
+        // judged as if they were piloting the opponent's pieces.
+        bool is_draw_claim_mode = draw_state < 3 /*NORMAL*/;
+        int effective_turn = turn;
+        if (is_draw_claim_mode) {
+            effective_turn = 1 - turn;
+        }
+
+        // A move must actually change squares.
+        require(from_idx != to_idx);
+
+        // Board access enforces src/dst index bounds.
+        byte[64] prev_board = board;
+        byte moving_piece = prev_board[from_idx];
+        byte target_piece = prev_board[to_idx];
+        int moving_num = OpBin2Num(moving_piece);
+        int target_num = OpBin2Num(target_piece);
+        // This route only accepts knights:
+        // white knight = 2, black knight = 10.
+        require(moving_num == 2 || moving_num == 10);
+
+        bool moving_is_white = moving_num == 2;
+        bool moving_is_black = moving_num == 10;
+        bool target_is_white = target_num >= 1 && target_num <= 6;
+        bool target_is_black = target_num >= 9 && target_num <= 14;
+
+        // The side to move must move its own knight and cannot capture its own
+        // color on the destination square.
+        if (effective_turn == 0 /*WHITE*/) {
+            require(moving_is_white);
+            require(!target_is_white);
+        } else {
+            require(moving_is_black);
+            require(!target_is_black);
+        }
+
+        bool side_step_right = to_x == from_x + 1;
+        bool side_step_left = to_x + 1 == from_x;
+        bool side_step_two_right = to_x == from_x + 2;
+        bool side_step_two_left = to_x + 2 == from_x;
+        bool side_adjacent = side_step_right || side_step_left;
+        bool up_one = to_y == from_y + 1;
+        bool down_one = to_y + 1 == from_y;
+        bool up_two = to_y == from_y + 2;
+        bool down_two = to_y + 2 == from_y;
+
+        // A knight moves in an L-shape: 1 by 2 or 2 by 1. No path-clear scan is
+        // needed because knights jump.
+        bool shape_1 = side_adjacent && (up_two || down_two);
+        bool shape_2 = (side_step_two_right || side_step_two_left) && (up_one || down_one);
+        require(shape_1 || shape_2);
+
+        // Rewrite the board by clearing the source square and filling the
+        // destination square, using low/high index order to keep the splice
+        // logic simple for both move directions.
+        int low_idx = from_idx;
+        int high_idx = to_idx;
+        byte first_slot = byte(0x00);
+        byte second_slot = moving_piece;
+        if (from_idx > to_idx) {
+            low_idx = to_idx;
+            high_idx = from_idx;
+            first_slot = moving_piece;
+            second_slot = byte(0x00);
+        }
+
+        byte[] prev_dyn = byte[](prev_board);
+        byte[] prefix = prev_dyn.slice(0, low_idx);
+        byte[] middle = prev_dyn.slice(low_idx + 1, high_idx);
+        byte[] suffix = prev_dyn.slice(high_idx + 1, 64);
+        byte[64] next_board = prefix + byte[1](first_slot) + middle + byte[1](second_slot) + suffix;
+
+        int next_status = status;
+        if (recent_castle != 0 /*CLEAR*/) {
+            if (turn == 0 /*WHITE*/) {
+                require(target_num == 14);
+                next_status = 1 /*WWIN*/;
+            } else {
+                require(target_num == 6);
+                next_status = 2 /*BWIN*/;
+            }
+        } else if (is_draw_claim_mode) {
+            // During draw negotiation, a king capture still proves success, but
+            // the signer wins the dispute even though the captured king belongs
+            // to the side they were temporarily piloting.
+            if (effective_turn == 0 /*WHITE*/ && target_num == 14) {
+                if (turn == 0 /*WHITE*/) {
+                    next_status = 1 /*WWIN*/;
+                } else {
+                    next_status = 2 /*BWIN*/;
+                }
+            }
+            if (effective_turn == 1 /*BLACK*/ && target_num == 6) {
+                if (turn == 0 /*WHITE*/) {
+                    next_status = 1 /*WWIN*/;
+                } else {
+                    next_status = 2 /*BWIN*/;
+                }
+            }
+        } else {
+            if (turn == 0 /*WHITE*/ && target_num == 14) {
+                next_status = 1 /*WWIN*/;
+            }
+            if (turn == 1 /*BLACK*/ && target_num == 6) {
+                next_status = 2 /*BWIN*/;
+            }
+        }
+
+        int next_draw_state = draw_state;
+        if (draw_state == 1 /*CLAIMED*/) {
+            next_draw_state = 2 /*DEFENSE*/;
+        } else if (draw_state == 2 /*DEFENSE*/) {
+            // A failed phase-2 counterplay means the original draw claim was false.
+            // The claimant loses immediately instead of returning to normal play.
+            if (next_status == 0 /*LIVE*/) {
+                if (turn == 0 /*WHITE*/) {
+                    next_status = 2 /*BWIN*/;
+                } else {
+                    next_status = 1 /*WWIN*/;
+                }
+            }
+        }
+
+        State next_state = {
+            mux_template: mux_template,
+            route_templates: route_templates,
+            white_player: white_player,
+            black_player: black_player,
+            board: next_board,
+            turn: 1 - turn,
+            status: next_status,
+            move_timeout: move_timeout,
+            castle_rights: castle_rights,
+            en_passant_idx: -1,
+            pending_src_idx: -1,
+            pending_dst_idx: -1,
+            pending_promo: 0 /*CLEAR*/,
+            recent_castle: 0 /*CLEAR*/,
+            draw_state: next_draw_state
+        };
+        require(OpAuthOutputCount(this.activeInputIndex) == 1);
+        int output_idx = OpAuthOutputIdx(this.activeInputIndex, 0);
+        require(tx.outputs[output_idx].value == tx.inputs[this.activeInputIndex].value);
+        validateOutputStateWithTemplate(
+            output_idx,
+            next_state,
+            mux_prefix,
+            mux_suffix,
+            mux_template
+        );
+    }
+
+    entrypoint function timeout(byte[32] player_template, byte[] settle_prefix, byte[] settle_suffix) {
+        require(status == 0 /*LIVE*/);
+
+        // Worker timeout is permissionless. Once a bad route strands funds in a
+        // worker state, anyone may prove the worker UTXO is old enough and
+        // return the game to mux with the objective timeout outcome.
+        require(this.age >= move_timeout);
+
+        int next_status = status;
+        if (draw_state == 1 /*CLAIMED*/) {
+            next_status = 3 /*DRAW*/;
+        } else if (turn == 0 /*WHITE*/) {
+            next_status = 2 /*BWIN*/;
+        } else {
+            next_status = 1 /*WWIN*/;
+        }
+
+        byte[32] settle_template = blake2b(settle_prefix + settle_suffix);
+        require(blake2b(settle_template + player_template) == route_templates.slice(256, 288));
+
+        SettleState next_state = {
+            player_template: player_template,
+            white_player: white_player,
+            black_player: black_player,
+            status: next_status
+        };
+        require(OpAuthOutputCount(this.activeInputIndex) == 1);
+        int output_idx = OpAuthOutputIdx(this.activeInputIndex, 0);
+        require(tx.outputs[output_idx].value == tx.inputs[this.activeInputIndex].value);
+        validateOutputStateWithTemplate(output_idx, next_state, settle_prefix, settle_suffix, settle_template);
+    }
+}

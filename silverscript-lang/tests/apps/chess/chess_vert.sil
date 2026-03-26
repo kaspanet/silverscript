@@ -1,0 +1,276 @@
+pragma silverscript ^0.1.0;
+
+contract ChessVert(
+    byte[32] init_mux_template,
+    byte[288] init_route_templates,
+    byte[32] init_white_player,
+    byte[32] init_black_player,
+    byte[64] init_board,
+    int init_turn,
+    int init_status,
+    int init_move_timeout,
+    byte[4] init_castle_rights,
+    int init_en_passant_idx,
+    int init_pending_src_idx,
+    int init_pending_dst_idx,
+    int init_pending_promo,
+    int init_recent_castle,
+    int init_draw_state
+) {
+    // Shared chess state layout:
+    // - status: 0 live, 1 white win, 2 black win, 3 draw
+    // - recent_castle: 0 none, 1 wK, 2 wQ, 3 bK, 4 bQ
+    // - draw_state: 3 normal, 1 draw claimed, 2 counterplay step, 4 white offered draw, 5 black offered draw
+    byte[32] mux_template = init_mux_template;
+    byte[288] route_templates = init_route_templates;
+    byte[32] white_player = init_white_player;
+    byte[32] black_player = init_black_player;
+    byte[64] board = init_board;
+    int turn = init_turn;
+    int status = init_status;
+    int move_timeout = init_move_timeout;
+    byte[4] castle_rights = init_castle_rights;
+    int en_passant_idx = init_en_passant_idx;
+    int pending_src_idx = init_pending_src_idx;
+    int pending_dst_idx = init_pending_dst_idx;
+    int pending_promo = init_pending_promo;
+    int recent_castle = init_recent_castle;
+    int draw_state = init_draw_state;
+
+    struct SettleState {
+        byte[32] player_template;
+        byte[32] white_player;
+        byte[32] black_player;
+        int status;
+    }
+
+    function abs_int(int value) : (int) {
+        int result = value;
+        if (value < 0) {
+            result = 0 - value;
+        }
+        return(result);
+    }
+
+    entrypoint function apply(byte[] mux_prefix, byte[] mux_suffix) {
+        // Workers only accept active move proofs routed out of ChessMux.
+        require(status == 0 /*LIVE*/);
+
+        int from_idx = OpBin2Num(pending_src_idx);
+        int to_idx = OpBin2Num(pending_dst_idx);
+
+        // Chess alternates between white (0) and black (1).
+        require(turn == 0 /*WHITE*/ || turn == 1 /*BLACK*/);
+
+        // In draw negotiation the signer keeps their real side, but the move is
+        // judged as if they were piloting the opponent's pieces.
+        bool is_draw_claim_mode = draw_state < 3 /*NORMAL*/;
+        int effective_turn = turn;
+        if (is_draw_claim_mode) {
+            effective_turn = 1 - turn;
+        }
+
+        // A move must actually change squares.
+        require(from_idx != to_idx);
+
+        // Board access enforces src/dst index bounds.
+        byte[64] prev_board = board;
+        byte moving_piece = prev_board[from_idx];
+        byte target_piece = prev_board[to_idx];
+        int moving_num = OpBin2Num(moving_piece);
+        int target_num = OpBin2Num(target_piece);
+        // Straight routes are shared by rooks and queens:
+        // white rook = 4, white queen = 5, black rook = 12, black queen = 13.
+        require(moving_num == 4 || moving_num == 5 || moving_num == 12 || moving_num == 13);
+
+        bool target_is_white = target_num >= 1 && target_num <= 6;
+        bool target_is_black = target_num >= 9 && target_num <= 14;
+        // The side to move must move its own straight-moving piece and cannot
+        // capture its own color on the destination square.
+        if (effective_turn == 0 /*WHITE*/) {
+            require(moving_num == 4 || moving_num == 5);
+            require(!target_is_white);
+        } else {
+            require(moving_num == 12 || moving_num == 13);
+            require(!target_is_black);
+        }
+
+        int from_y = from_idx / 8;
+        int from_x = from_idx % 8;
+        int to_y = to_idx / 8;
+        int to_x = to_idx % 8;
+        
+        // Vertical rook/queen movement keeps the same file and changes rank.
+        require(to_x == from_x && to_y != from_y);
+        int dy = to_y - from_y;
+        int dir = 1;
+        if (dy < 0) {
+            dir = -1;
+        }
+        (int distance) = abs_int(dy);
+
+        // Every square strictly between source and destination must be empty for
+        // a rook or queen straight move to be legal.
+        int clear = 1;
+        for (i, 0, 7, 7) {
+            if (i < distance + -1) {
+                int scan_x = from_x;
+                int scan_y = from_y + dir * (i + 1);
+                int scan_idx = scan_y * 8 + scan_x;
+                if (OpBin2Num(prev_board[scan_idx]) != 0) {
+                    clear = 0;
+                }
+            }
+        }
+        require(clear == 1);
+
+        // Rewrite the board by clearing the source square and filling the
+        // destination square, using low/high index order to keep the splice
+        // logic simple for both move directions.
+        int low_idx = from_idx;
+        int high_idx = to_idx;
+        byte first_slot = byte(0x00);
+        byte second_slot = moving_piece;
+        if (from_idx > to_idx) {
+            low_idx = to_idx;
+            high_idx = from_idx;
+            first_slot = moving_piece;
+            second_slot = byte(0x00);
+        }
+
+        byte[] prev_dyn = byte[](prev_board);
+        byte[] prefix = prev_dyn.slice(0, low_idx);
+        byte[] middle = prev_dyn.slice(low_idx + 1, high_idx);
+        byte[] suffix = prev_dyn.slice(high_idx + 1, 64);
+        byte[64] next_board = prefix + byte[1](first_slot) + middle + byte[1](second_slot) + suffix;
+
+        // Capturing the enemy king is the on-chain terminal condition.
+        // Off-chain clients may enforce stricter classical no-self-check rules,
+        // but on chain a king capture conclusively proves the winner.
+        int next_status = status;
+        if (recent_castle != 0 /*CLEAR*/) {
+            if (turn == 0 /*WHITE*/) {
+                require(target_num == 14);
+                next_status = 1 /*WWIN*/;
+            } else {
+                require(target_num == 6);
+                next_status = 2 /*BWIN*/;
+            }
+        } else if (is_draw_claim_mode) {
+            if (effective_turn == 0 /*WHITE*/ && target_num == 14) {
+                if (turn == 0 /*WHITE*/) {
+                    next_status = 1 /*WWIN*/;
+                } else {
+                    next_status = 2 /*BWIN*/;
+                }
+            }
+            if (effective_turn == 1 /*BLACK*/ && target_num == 6) {
+                if (turn == 0 /*WHITE*/) {
+                    next_status = 1 /*WWIN*/;
+                } else {
+                    next_status = 2 /*BWIN*/;
+                }
+            }
+        } else {
+            if (turn == 0 /*WHITE*/ && target_num == 14) {
+                next_status = 1 /*WWIN*/;
+            }
+            if (turn == 1 /*BLACK*/ && target_num == 6) {
+                next_status = 2 /*BWIN*/;
+            }
+        }
+
+        int next_draw_state = draw_state;
+        if (draw_state == 1 /*CLAIMED*/) {
+            next_draw_state = 2 /*DEFENSE*/;
+        } else if (draw_state == 2 /*DEFENSE*/) {
+            if (next_status == 0 /*LIVE*/) {
+                if (turn == 0 /*WHITE*/) {
+                    next_status = 2 /*BWIN*/;
+                } else {
+                    next_status = 1 /*WWIN*/;
+                }
+            }
+        }
+
+        byte next_white_can_castle_k = castle_rights[0];
+        byte next_white_can_castle_q = castle_rights[1];
+        byte next_black_can_castle_k = castle_rights[2];
+        byte next_black_can_castle_q = castle_rights[3];
+        // Any rook move out of a castling corner, into a castling corner, or
+        // capture on a castling corner clears that corner's bit. This keeps a
+        // corner from being reassigned to some other rook later.
+        if (from_idx == 0 || to_idx == 0) {
+            next_white_can_castle_q = byte(0x00);
+        }
+        if (from_idx == 7 || to_idx == 7) {
+            next_white_can_castle_k = byte(0x00);
+        }
+        if (from_idx == 56 || to_idx == 56) {
+            next_black_can_castle_q = byte(0x00);
+        }
+        if (from_idx == 63 || to_idx == 63) {
+            next_black_can_castle_k = byte(0x00);
+        }
+
+        byte[4] next_castle_rights = byte[1](next_white_can_castle_k) + byte[1](next_white_can_castle_q) + byte[1](next_black_can_castle_k) + byte[1](next_black_can_castle_q);
+
+        // Return to ChessMux with the updated board, the turn flipped, and the
+        // pending move cleared.
+        State next_state = {
+            mux_template: mux_template,
+            route_templates: route_templates,
+            white_player: white_player,
+            black_player: black_player,
+            board: next_board,
+            turn: 1 - turn,
+            status: next_status,
+            move_timeout: move_timeout,
+            castle_rights: next_castle_rights,
+            en_passant_idx: -1,
+            pending_src_idx: -1,
+            pending_dst_idx: -1,
+            pending_promo: 0 /*CLEAR*/,
+            recent_castle: 0 /*CLEAR*/,
+            draw_state: next_draw_state
+        };
+        // The worker must produce exactly one authorized covenant output back to
+        // the mux template with the new state above.
+        require(OpAuthOutputCount(this.activeInputIndex) == 1);
+        int output_idx = OpAuthOutputIdx(this.activeInputIndex, 0);
+        require(tx.outputs[output_idx].value == tx.inputs[this.activeInputIndex].value);
+        validateOutputStateWithTemplate(output_idx, next_state, mux_prefix, mux_suffix, mux_template);
+    }
+
+    entrypoint function timeout(byte[32] player_template, byte[] settle_prefix, byte[] settle_suffix) {
+        require(status == 0 /*LIVE*/);
+
+        // Worker timeout is permissionless. Once a bad route strands funds in a
+        // worker state, anyone may prove the worker UTXO is old enough and
+        // return the game to mux with the objective timeout outcome.
+        require(this.age >= move_timeout);
+
+        int next_status = status;
+        if (draw_state == 1 /*CLAIMED*/) {
+            next_status = 3 /*DRAW*/;
+        } else if (turn == 0 /*WHITE*/) {
+            next_status = 2 /*BWIN*/;
+        } else {
+            next_status = 1 /*WWIN*/;
+        }
+
+        byte[32] settle_template = blake2b(settle_prefix + settle_suffix);
+        require(blake2b(settle_template + player_template) == route_templates.slice(256, 288));
+
+        SettleState next_state = {
+            player_template: player_template,
+            white_player: white_player,
+            black_player: black_player,
+            status: next_status
+        };
+        require(OpAuthOutputCount(this.activeInputIndex) == 1);
+        int output_idx = OpAuthOutputIdx(this.activeInputIndex, 0);
+        require(tx.outputs[output_idx].value == tx.inputs[this.activeInputIndex].value);
+        validateOutputStateWithTemplate(output_idx, next_state, settle_prefix, settle_suffix, settle_template);
+    }
+}

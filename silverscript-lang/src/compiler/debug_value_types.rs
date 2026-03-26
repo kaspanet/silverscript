@@ -50,6 +50,9 @@ fn builtin_call_value_type(name: &str) -> &'static str {
         | "ScriptPubKeyP2PK"
         | "ScriptPubKeyP2SH"
         | "ScriptPubKeyP2SHFromRedeemScript" => "byte[]",
+        "OpTxInputDaaScore" | "OpAuthOutputCount" | "OpCovInputCount" | "OpCovInputIdx" | "OpCovOutputCount" | "OpCovOutputIdx" => {
+            "int"
+        }
         "OpInputCovenantId" => "byte[32]",
         _ => "byte[]",
     }
@@ -140,9 +143,9 @@ pub(super) fn infer_debug_expr_value_type<'i>(
         ExprKind::FieldAccess { .. } => {
             Err(CompilerError::Unsupported("struct field access should be lowered before compilation".to_string()))
         }
-        ExprKind::StateObject(_) => {
-            Err(CompilerError::Unsupported("state object literals are only supported in validateOutputState".to_string()))
-        }
+        ExprKind::StateObject(_) => Err(CompilerError::Unsupported(
+            "state object literals are only supported in validateOutputState-style builtins".to_string(),
+        )),
     }
 }
 
