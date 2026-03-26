@@ -1,5 +1,4 @@
 pragma silverscript ^0.1.0;
-// @consts constants.sil
 
 contract ChessCastle(
     byte[32] init_mux_template,
@@ -47,14 +46,14 @@ contract ChessCastle(
 
     entrypoint function apply(byte[] mux_prefix, byte[] mux_suffix) {
         // Workers only accept active move proofs routed out of ChessMux.
-        require(status == LIVE);
-        require(draw_state >= NORMAL);
+        require(status == 0 /*LIVE*/);
+        require(draw_state >= 3 /*NORMAL*/);
 
         int from_idx = OpBin2Num(pending_src_idx);
         int to_idx = OpBin2Num(pending_dst_idx);
 
         // Chess alternates between white (0) and black (1).
-        require(turn == WHITE || turn == BLACK);
+        require(turn == 0 /*WHITE*/ || turn == 1 /*BLACK*/);
 
         // A castling move must actually change squares.
         require(from_idx != to_idx);
@@ -71,7 +70,7 @@ contract ChessCastle(
 
         bool moving_is_white = moving_num == 6;
         bool moving_is_black = moving_num == 14;
-        if (turn == WHITE) {
+        if (turn == 0 /*WHITE*/) {
             require(moving_is_white);
         } else {
             require(moving_is_black);
@@ -193,7 +192,7 @@ contract ChessCastle(
             en_passant_idx: -1,
             pending_src_idx: -1,
             pending_dst_idx: -1,
-            pending_promo: CLEAR,
+            pending_promo: 0 /*CLEAR*/,
             recent_castle: next_recent_castle,
             draw_state: draw_state
         };
@@ -210,7 +209,7 @@ contract ChessCastle(
     }
 
     entrypoint function timeout(byte[32] player_template, byte[] settle_prefix, byte[] settle_suffix) {
-        require(status == LIVE);
+        require(status == 0 /*LIVE*/);
 
         // Worker timeout is permissionless. Once a bad route strands funds in a
         // worker state, anyone may prove the worker UTXO is old enough and
@@ -218,12 +217,12 @@ contract ChessCastle(
         require(this.age >= move_timeout);
 
         int next_status = status;
-        if (draw_state == CLAIMED) {
-            next_status = DRAW;
-        } else if (turn == WHITE) {
-            next_status = BWIN;
+        if (draw_state == 1 /*CLAIMED*/) {
+            next_status = 3 /*DRAW*/;
+        } else if (turn == 0 /*WHITE*/) {
+            next_status = 2 /*BWIN*/;
         } else {
-            next_status = WWIN;
+            next_status = 1 /*WWIN*/;
         }
 
         byte[32] settle_template = blake2b(settle_prefix + settle_suffix);

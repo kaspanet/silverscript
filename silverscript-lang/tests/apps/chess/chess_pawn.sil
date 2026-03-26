@@ -1,5 +1,4 @@
 pragma silverscript ^0.1.0;
-// @consts constants.sil
 
 contract ChessPawn(
     byte[32] init_mux_template,
@@ -47,20 +46,20 @@ contract ChessPawn(
 
     entrypoint function apply(byte[] mux_prefix, byte[] mux_suffix) {
         // Workers only accept active move proofs routed out of ChessMux.
-        require(status == LIVE);
+        require(status == 0 /*LIVE*/);
 
         int from_idx = OpBin2Num(pending_src_idx);
         int to_idx = OpBin2Num(pending_dst_idx);
         int promo_piece = OpBin2Num(pending_promo);
 
         // Chess alternates between white (0) and black (1).
-        bool is_white_turn = turn == WHITE;
-        bool is_black_turn = turn == BLACK;
+        bool is_white_turn = turn == 0 /*WHITE*/;
+        bool is_black_turn = turn == 1 /*BLACK*/;
         require(is_white_turn || is_black_turn);
 
         // In draw negotiation the signer keeps their real side, but the move is
         // judged as if they were piloting the opponent's pieces.
-        bool is_draw_claim_mode = draw_state < NORMAL;
+        bool is_draw_claim_mode = draw_state < 3 /*NORMAL*/;
         int effective_turn = turn;
         if (is_draw_claim_mode) {
             effective_turn = 1 - turn;
@@ -87,7 +86,7 @@ contract ChessPawn(
 
         // The side to move must move its own pawn and cannot capture its own
         // color on the destination square.
-        if (effective_turn == WHITE) {
+        if (effective_turn == 0 /*WHITE*/) {
             require(moving_is_white);
             require(!target_is_white);
         } else {
@@ -159,7 +158,7 @@ contract ChessPawn(
         // Castle challenge prep makes pawn attacks look like ordinary diagonal
         // captures into a king target on the proof board, so proof mode never
         // treats the move as a promotion.
-        if (recent_castle != CLEAR) {
+        if (recent_castle != 0 /*CLEAR*/) {
             require(promo_piece == 0);
         } else {
             // ChessMux already constrained promo_piece. Here we only
@@ -180,47 +179,47 @@ contract ChessPawn(
         // Off-chain clients may enforce stricter classical no-self-check rules,
         // but on chain a king capture conclusively proves the winner.
         int next_status = status;
-        if (recent_castle != CLEAR) {
+        if (recent_castle != 0 /*CLEAR*/) {
             if (moving_is_white) {
                 require(target_num == 14);
-                next_status = WWIN;
+                next_status = 1 /*WWIN*/;
             } else {
                 require(target_num == 6);
-                next_status = BWIN;
+                next_status = 2 /*BWIN*/;
             }
         } else if (is_draw_claim_mode) {
-            if (effective_turn == WHITE && target_num == 14) {
-                if (turn == WHITE) {
-                    next_status = WWIN;
+            if (effective_turn == 0 /*WHITE*/ && target_num == 14) {
+                if (turn == 0 /*WHITE*/) {
+                    next_status = 1 /*WWIN*/;
                 } else {
-                    next_status = BWIN;
+                    next_status = 2 /*BWIN*/;
                 }
             }
-            if (effective_turn == BLACK && target_num == 6) {
-                if (turn == WHITE) {
-                    next_status = WWIN;
+            if (effective_turn == 1 /*BLACK*/ && target_num == 6) {
+                if (turn == 0 /*WHITE*/) {
+                    next_status = 1 /*WWIN*/;
                 } else {
-                    next_status = BWIN;
+                    next_status = 2 /*BWIN*/;
                 }
             }
         } else {
             if (moving_is_white && target_num == 14) {
-                next_status = WWIN;
+                next_status = 1 /*WWIN*/;
             }
             if (moving_is_black && target_num == 6) {
-                next_status = BWIN;
+                next_status = 2 /*BWIN*/;
             }
         }
 
         int next_draw_state = draw_state;
-        if (draw_state == CLAIMED) {
-            next_draw_state = DEFENSE;
-        } else if (draw_state == DEFENSE) {
-            if (next_status == LIVE) {
-                if (turn == WHITE) {
-                    next_status = BWIN;
+        if (draw_state == 1 /*CLAIMED*/) {
+            next_draw_state = 2 /*DEFENSE*/;
+        } else if (draw_state == 2 /*DEFENSE*/) {
+            if (next_status == 0 /*LIVE*/) {
+                if (turn == 0 /*WHITE*/) {
+                    next_status = 2 /*BWIN*/;
                 } else {
-                    next_status = WWIN;
+                    next_status = 1 /*WWIN*/;
                 }
             }
         }
@@ -310,8 +309,8 @@ contract ChessPawn(
             en_passant_idx: next_en_passant_idx,
             pending_src_idx: -1,
             pending_dst_idx: -1,
-            pending_promo: CLEAR,
-            recent_castle: CLEAR,
+            pending_promo: 0 /*CLEAR*/,
+            recent_castle: 0 /*CLEAR*/,
             draw_state: next_draw_state
         };
         require(OpAuthOutputCount(this.activeInputIndex) == 1);
@@ -327,7 +326,7 @@ contract ChessPawn(
     }
 
     entrypoint function timeout(byte[32] player_template, byte[] settle_prefix, byte[] settle_suffix) {
-        require(status == LIVE);
+        require(status == 0 /*LIVE*/);
 
         // Worker timeout is permissionless. Once a bad route strands funds in a
         // worker state, anyone may prove the worker UTXO is old enough and
@@ -335,12 +334,12 @@ contract ChessPawn(
         require(this.age >= move_timeout);
 
         int next_status = status;
-        if (draw_state == CLAIMED) {
-            next_status = DRAW;
-        } else if (turn == WHITE) {
-            next_status = BWIN;
+        if (draw_state == 1 /*CLAIMED*/) {
+            next_status = 3 /*DRAW*/;
+        } else if (turn == 0 /*WHITE*/) {
+            next_status = 2 /*BWIN*/;
         } else {
-            next_status = WWIN;
+            next_status = 1 /*WWIN*/;
         }
 
         byte[32] settle_template = blake2b(settle_prefix + settle_suffix);

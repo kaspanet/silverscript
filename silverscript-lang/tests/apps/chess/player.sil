@@ -1,5 +1,4 @@
 pragma silverscript ^0.1.0;
-// @consts constants.sil
 
 contract Player(
     byte[32] init_league_template,

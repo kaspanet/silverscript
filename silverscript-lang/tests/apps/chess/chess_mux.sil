@@ -1,5 +1,4 @@
 pragma silverscript ^0.1.0;
-// @consts constants.sil
 
 contract ChessMux(
     byte[32] init_mux_template,
@@ -67,14 +66,14 @@ contract ChessMux(
     ) {
         // Only idle mux states may start a new move. Workers return here after
         // they have validated and applied exactly one committed move.
-        require(status == LIVE);
+        require(status == 0 /*LIVE*/);
 
         // The side-to-move commitment is `blake2b(owner || player_id)`, where
         // `owner = blake2b(pk)`. Downstream workers rely on the committed
         // pending move and do not repeat signature checks.
         byte[32] owner = blake2b(pk);
         byte[32] player_ref = blake2b(owner + player_id);
-        if (turn == WHITE) {
+        if (turn == 0 /*WHITE*/) {
             require(player_ref == white_player);
         } else {
             require(player_ref == black_player);
@@ -93,7 +92,7 @@ contract ChessMux(
         // 8  -> blake2b(settle_template || player_template)
         // The first 8 items are direct worker templates; the last item is a
         // commitment to two templates packed together.
-        require(selector >= PAWN && selector <= MUX);
+        require(selector >= 0 /*PAWN*/ && selector <= 8 /*MUX*/);
 
         // termination_action intent:
         // 0 -> clear
@@ -101,44 +100,44 @@ contract ChessMux(
         // 2 -> claim draw in mux
         // 3 -> surrender in mux
         // 4 -> accept draw in mux
-        require(termination_action >= CLEAR && termination_action <= ACCEPT);
+        require(termination_action >= 0 /*CLEAR*/ && termination_action <= 4 /*ACCEPT*/);
 
         int next_status = status;
         int next_turn = turn;
         int next_en_passant_idx = en_passant_idx;
         int next_pending_src_idx = -1;
         int next_pending_dst_idx = -1;
-        int next_pending_promo = CLEAR;
-        int next_recent_castle = CLEAR;
+        int next_pending_promo = 0 /*CLEAR*/;
+        int next_recent_castle = 0 /*CLEAR*/;
         int next_draw_state = draw_state;
 
-        if (selector == MUX) {
-            require(from_x == -1 && from_y == -1 && to_x == -1 && to_y == -1 && promo_piece == CLEAR);
+        if (selector == 8 /*MUX*/) {
+            require(from_x == -1 && from_y == -1 && to_x == -1 && to_y == -1 && promo_piece == 0 /*CLEAR*/);
 
             next_en_passant_idx = -1;
-            next_recent_castle = CLEAR;
+            next_recent_castle = 0 /*CLEAR*/;
 
-            if (termination_action == CLAIM) {
+            if (termination_action == 2 /*CLAIM*/) {
                 // Draw negotiation starts from the ordinary idle mux state. The
                 // next ply belongs to the opponent, who now tries to find a
                 // saving move for the claimant side.
-                require(draw_state == NORMAL);
-                require(recent_castle == CLEAR);
+                require(draw_state == 3 /*NORMAL*/);
+                require(recent_castle == 0 /*CLEAR*/);
 
                 next_turn = 1 - turn;
-                next_draw_state = CLAIMED;
-            } else if (termination_action == SURRENDER) {
+                next_draw_state = 1 /*CLAIMED*/;
+            } else if (termination_action == 3 /*SURRENDER*/) {
                 // Surrender is a mux-to-mux terminal transition. The side to move
                 // concedes immediately and the game returns to mux with terminal status.
-                next_status = BWIN - turn;
-                next_draw_state = NORMAL;
+                next_status = 2 /*BWIN*/ - turn;
+                next_draw_state = 3 /*NORMAL*/;
             } else {
                 // Draw agreement is accepted asynchronously on the opponent's
                 // turn after being attached to the previous move.
-                require(termination_action == ACCEPT);
-                require(draw_state + turn == BOFFER);
-                next_status = DRAW;
-                next_draw_state = NORMAL;
+                require(termination_action == 4 /*ACCEPT*/);
+                require(draw_state + turn == 5 /*BOFFER*/);
+                next_status = 3 /*DRAW*/;
+                next_draw_state = 3 /*NORMAL*/;
             }
         } else {
             // The mux only commits moves whose endpoints are on the 8x8 board.
@@ -153,33 +152,33 @@ contract ChessMux(
             //
             // Pawn promotion choices therefore use:
             // 2 knight, 3 bishop, 4 rook, 5 queen
-            require(promo_piece == 0 || (selector == PAWN && promo_piece >= 2 && promo_piece <= 5));
+            require(promo_piece == 0 || (selector == 0 /*PAWN*/ && promo_piece >= 2 && promo_piece <= 5));
 
             // Worker routes only accept "no side action" or "offer draw".
-            require(termination_action == CLEAR || termination_action == OFFER);
+            require(termination_action == 0 /*CLEAR*/ || termination_action == 1 /*OFFER*/);
 
             // Draw-claim mode may reuse only the ordinary move workers.
-            require(draw_state >= NORMAL || selector <= KING);
+            require(draw_state >= 3 /*NORMAL*/ || selector <= 5 /*KING*/);
 
             // A draw offer may ride only on a normal-play move, not on castle
             // challenge prep and not inside draw-claim mode.
-            require(termination_action == CLEAR || (selector <= CASTLE && draw_state >= NORMAL));
+            require(termination_action == 0 /*CLEAR*/ || (selector <= 6 /*CASTLE*/ && draw_state >= 3 /*NORMAL*/));
 
             // Any ordinary reply clears a pending draw offer; an attached offer
             // below immediately replaces it with the current mover's offer.
-            if (draw_state > NORMAL) {
-                next_draw_state = NORMAL;
+            if (draw_state > 3 /*NORMAL*/) {
+                next_draw_state = 3 /*NORMAL*/;
             }
 
             // Draw offers are recorded on the mux state returned from the move.
-            if (termination_action == OFFER) {
-                next_draw_state = WOFFER + turn;
+            if (termination_action == 1 /*OFFER*/) {
+                next_draw_state = 4 /*WOFFER*/ + turn;
             }
             
             // Ordinary replies clear recent_castle; only prep preserves it and
             // enters the explicit castle-challenge path.
-            if (selector == PREP) {
-                require(recent_castle != CLEAR);
+            if (selector == 7 /*PREP*/) {
+                require(recent_castle != 0 /*CLEAR*/);
                 next_recent_castle = recent_castle;
             }
             
@@ -233,14 +232,14 @@ contract ChessMux(
         byte[] settle_suffix
     ) {
         // Timeout only applies while the game is still live.
-        require(status == LIVE);
+        require(status == 0 /*LIVE*/);
 
         // The side waiting on a response is `turn`, so the timeout claimant is
         // always the opposite signer, authenticated by the same
         // `blake2b(owner || player_id)` commitment used in `route`.
         byte[32] owner = blake2b(pk);
         byte[32] player_ref = blake2b(owner + player_id);
-        if (turn == WHITE) {
+        if (turn == 0 /*WHITE*/) {
             require(player_ref == black_player);
         } else {
             require(player_ref == white_player);
@@ -253,12 +252,12 @@ contract ChessMux(
 
         // Ordinary timeout loses for the side that owed the next signed route.
         // Draw-state 1 is the one exception: silence accepts the draw claim.
-        int next_status = WWIN;
-        if (turn == WHITE) {
-            next_status = BWIN;
+        int next_status = 1 /*WWIN*/;
+        if (turn == 0 /*WHITE*/) {
+            next_status = 2 /*BWIN*/;
         }
-        if (draw_state == CLAIMED) {
-            next_status = DRAW;
+        if (draw_state == 1 /*CLAIMED*/) {
+            next_status = 3 /*DRAW*/;
         }
 
         byte[32] settle_template = blake2b(settle_prefix + settle_suffix);
@@ -277,7 +276,7 @@ contract ChessMux(
     }
 
     entrypoint function settle(byte[32] player_template, byte[] settle_prefix, byte[] settle_suffix) {
-        require(status != LIVE);
+        require(status != 0 /*LIVE*/);
         byte[32] settle_template = blake2b(settle_prefix + settle_suffix);
         require(blake2b(settle_template + player_template) == route_templates.slice(256, 288));
 

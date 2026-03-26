@@ -1,5 +1,4 @@
 pragma silverscript ^0.1.0;
-// @consts constants.sil
 
 contract ChessSettle(
     byte[32] init_player_template,
@@ -33,7 +32,7 @@ contract ChessSettle(
         byte[] player_prefix,
         byte[] player_suffix
     ) {
-        require(status != LIVE);
+        require(status != 0 /*LIVE*/);
         int player_prefix_len = player_prefix.length;
         int player_suffix_len = player_suffix.length;
 
@@ -65,18 +64,18 @@ contract ChessSettle(
         int white_expected = 500;
         int black_expected = 500;
 
-        if (status == WWIN) {
+        if (status == 1 /*WWIN*/) {
             white_wins = white_wins + 1;
             black_losses = black_losses + 1;
             white_actual = 1000;
             white_output_value = white_output_value + stake;
-        } else if (status == BWIN) {
+        } else if (status == 2 /*BWIN*/) {
             black_wins = black_wins + 1;
             white_losses = white_losses + 1;
             black_actual = 1000;
             black_output_value = black_output_value + stake;
         } else {
-            require(status == DRAW);
+            require(status == 3 /*DRAW*/);
             white_draws = white_draws + 1;
             black_draws = black_draws + 1;
             white_actual = 500;
