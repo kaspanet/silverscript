@@ -909,10 +909,7 @@ fn byte_variable_from_out_of_range_int_literal_is_rejected() {
         }
     "#;
 
-    assert!(
-        compile_contract(source, &[], CompileOptions::default()).is_err(),
-        "byte x = 256 should be rejected"
-    );
+    assert!(compile_contract(source, &[], CompileOptions::default()).is_err(), "byte x = 256 should be rejected");
 }
 
 #[test]
@@ -928,14 +925,8 @@ fn byte_equality_uses_op_equal_not_op_numequal() {
     "#;
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("byte equality should compile");
-    assert!(
-        compiled.script.iter().copied().any(|op| op == OpEqual),
-        "byte equality should use OP_EQUAL"
-    );
-    assert!(
-        !compiled.script.iter().copied().any(|op| op == OpNumEqual),
-        "byte equality should not use OP_NUMEQUAL"
-    );
+    assert!(compiled.script.iter().copied().any(|op| op == OpEqual), "byte equality should use OP_EQUAL");
+    assert!(!compiled.script.iter().copied().any(|op| op == OpNumEqual), "byte equality should not use OP_NUMEQUAL");
 }
 
 #[test]
@@ -977,10 +968,7 @@ fn byte_equality_with_out_of_range_rhs_int_literal_is_rejected() {
         }
     "#;
 
-    assert!(
-        compile_contract(source, &[], CompileOptions::default()).is_err(),
-        "x == 256 should be rejected when x is a byte"
-    );
+    assert!(compile_contract(source, &[], CompileOptions::default()).is_err(), "x == 256 should be rejected when x is a byte");
 }
 
 #[test]
@@ -996,10 +984,7 @@ fn rejects_adding_byte_values() {
     "#;
 
     let err = compile_contract(source, &[], CompileOptions::default()).expect_err("byte addition should be rejected");
-    assert!(
-        err.to_string().contains("byte values do not support '+'"),
-        "unexpected error: {err}"
-    );
+    assert!(err.to_string().contains("byte values do not support '+'"), "unexpected error: {err}");
 }
 
 #[test]
@@ -1016,10 +1001,7 @@ fn rejects_assigning_sum_of_byte_values_to_byte() {
     "#;
 
     let err = compile_contract(source, &[], CompileOptions::default()).expect_err("byte addition assignment should be rejected");
-    assert!(
-        err.to_string().contains("byte values do not support '+'"),
-        "unexpected error: {err}"
-    );
+    assert!(err.to_string().contains("byte values do not support '+'"), "unexpected error: {err}");
 }
 
 #[test]
@@ -1245,10 +1227,7 @@ fn byte_array_to_fixed_byte_array_cast_compiles_without_num2bin() {
     "#;
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("byte[] to byte[32] cast should compile");
-    assert!(
-        !compiled.script.iter().copied().any(|op| op == OpNum2Bin),
-        "byte[] to byte[32] cast should not emit OpNum2Bin"
-    );
+    assert!(!compiled.script.iter().copied().any(|op| op == OpNum2Bin), "byte[] to byte[32] cast should not emit OpNum2Bin");
     assert!(run_script_with_selector(compiled.script, None).is_ok(), "byte[] to byte[32] cast should execute");
 }
 
@@ -1264,12 +1243,8 @@ fn rejects_cast_between_different_fixed_byte_array_sizes() {
         }
     "#;
 
-    let err =
-        compile_contract(source, &[], CompileOptions::default()).expect_err("byte[32] to byte[31] cast should be rejected");
-    assert!(
-        err.to_string().contains("cannot cast byte[32] to byte[31]"),
-        "unexpected error: {err}"
-    );
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("byte[32] to byte[31] cast should be rejected");
+    assert!(err.to_string().contains("cannot cast byte[32] to byte[31]"), "unexpected error: {err}");
 }
 
 #[test]
@@ -1284,12 +1259,8 @@ fn rejects_cast_from_smaller_fixed_byte_array_to_larger_fixed_byte_array() {
         }
     "#;
 
-    let err =
-        compile_contract(source, &[], CompileOptions::default()).expect_err("byte[31] to byte[32] cast should be rejected");
-    assert!(
-        err.to_string().contains("cannot cast byte[31] to byte[32]"),
-        "unexpected error: {err}"
-    );
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("byte[31] to byte[32] cast should be rejected");
+    assert!(err.to_string().contains("cannot cast byte[31] to byte[32]"), "unexpected error: {err}");
 }
 
 #[test]

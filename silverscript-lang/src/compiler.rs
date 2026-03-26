@@ -398,9 +398,8 @@ fn lower_expr<'i>(expr: &Expr<'i>, scope: &LoweringScope, structs: &StructRegist
             if name.starts_with("byte[") && name.ends_with(']') {
                 let size_part = &name[5..name.len() - 1];
                 if !size_part.is_empty() && lowered_args.len() == 1 {
-                    let size = size_part
-                        .parse::<i64>()
-                        .map_err(|_| CompilerError::Unsupported(format!("{name}() is not supported")))?;
+                    let size =
+                        size_part.parse::<i64>().map_err(|_| CompilerError::Unsupported(format!("{name}() is not supported")))?;
                     if let Some(source_type) = infer_lowered_expr_type_name(&lowered_args[0], scope)
                         && let Some(source_size) = byte_sequence_cast_size(&source_type)
                         && let Some(source_size) = source_size
@@ -410,10 +409,7 @@ fn lower_expr<'i>(expr: &Expr<'i>, scope: &LoweringScope, structs: &StructRegist
                     }
                 }
             }
-            Ok(Expr::new(
-                ExprKind::Call { name: name.clone(), args: lowered_args, name_span: *name_span },
-                span,
-            ))
+            Ok(Expr::new(ExprKind::Call { name: name.clone(), args: lowered_args, name_span: *name_span }, span))
         }
         ExprKind::New { name, args, name_span } => Ok(Expr::new(
             ExprKind::New {
@@ -1333,8 +1329,7 @@ fn infer_expr_type_ref_for_comparison<'i>(
     }
     if let ExprKind::Call { name, .. } = &expr.kind {
         let is_builtin_cast = matches!(name.as_str(), "int" | "bool" | "byte" | "string" | "pubkey" | "sig" | "datasig")
-            || (name.contains('[')
-                && parse_type_ref(name).ok().is_some_and(|type_ref| !matches!(type_ref.base, TypeBase::Custom(_))));
+            || (name.contains('[') && parse_type_ref(name).ok().is_some_and(|type_ref| !matches!(type_ref.base, TypeBase::Custom(_))));
         let is_known_builtin = matches!(
             name.as_str(),
             "int"
@@ -1484,11 +1479,7 @@ fn lower_runtime_expr<'i>(
 }
 
 fn infer_lowered_expr_type_name<'i>(expr: &Expr<'i>, scope: &LoweringScope) -> Option<String> {
-    let types = scope
-        .vars
-        .iter()
-        .map(|(name, type_ref)| (name.clone(), type_name_from_ref(type_ref)))
-        .collect::<HashMap<_, _>>();
+    let types = scope.vars.iter().map(|(name, type_ref)| (name.clone(), type_name_from_ref(type_ref))).collect::<HashMap<_, _>>();
     infer_debug_expr_value_type(expr, &HashMap::new(), &types, &mut HashSet::new()).ok()
 }
 
@@ -6165,11 +6156,12 @@ fn compile_expr<'i>(
         }
         ExprKind::Binary { op, left, right } => {
             let left_cmp_type = infer_expr_type_ref_for_comparison(left, env, types);
-            let coerced_right = if matches!(op, BinaryOp::Eq | BinaryOp::Ne | BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge) {
-                coerce_rhs_byte_literal_for_comparison(left_cmp_type.as_ref(), right)
-            } else {
-                right.as_ref().clone()
-            };
+            let coerced_right =
+                if matches!(op, BinaryOp::Eq | BinaryOp::Ne | BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge) {
+                    coerce_rhs_byte_literal_for_comparison(left_cmp_type.as_ref(), right)
+                } else {
+                    right.as_ref().clone()
+                };
             if matches!(op, BinaryOp::Eq | BinaryOp::Ne | BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge) {
                 if let (Some(left_type), Some(right_type)) =
                     (left_cmp_type.clone(), infer_expr_type_ref_for_comparison(&coerced_right, env, types))
@@ -6190,8 +6182,8 @@ fn compile_expr<'i>(
             {
                 return Err(CompilerError::Unsupported("byte values do not support '+'".to_string()));
             }
-            let bytes_eq =
-                matches!(op, BinaryOp::Eq | BinaryOp::Ne) && (expr_is_bytes(left, env, types) || expr_is_bytes(&coerced_right, env, types));
+            let bytes_eq = matches!(op, BinaryOp::Eq | BinaryOp::Ne)
+                && (expr_is_bytes(left, env, types) || expr_is_bytes(&coerced_right, env, types));
             let bytes_add = matches!(op, BinaryOp::Add) && (expr_is_bytes(left, env, types) || expr_is_bytes(right, env, types));
             if bytes_add {
                 compile_concat_operand(
@@ -7271,9 +7263,7 @@ fn compile_call_expr<'i>(
                     if let Some(source_size) = byte_sequence_cast_size(source_type) {
                         if let Some(source_size) = source_size {
                             if source_size != size {
-                                return Err(CompilerError::Unsupported(format!(
-                                    "cannot cast {source_type} to {name}"
-                                )));
+                                return Err(CompilerError::Unsupported(format!("cannot cast {source_type} to {name}")));
                             }
                         }
                         compile_expr(
