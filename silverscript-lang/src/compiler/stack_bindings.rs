@@ -91,6 +91,18 @@ pub(crate) struct StackBindings {
     stack: IndexSet<String>,
 }
 
+impl PartialEq for StackBindings {
+    fn eq(&self, other: &Self) -> bool {
+        // `IndexSet`'s default equality is set equality, which ignores order.
+        // `StackBindings` equality should mean full stack-layout equality, so
+        // we compare the ordered slices directly. Use `set_eq` for relaxed
+        // same-bindings comparison.
+        self.stack.as_slice() == other.stack.as_slice()
+    }
+}
+
+impl Eq for StackBindings {}
+
 impl StackBindings {
     #[cfg(test)]
     pub(crate) fn from_order(ordered_names: Vec<String>) -> Self {
@@ -137,11 +149,6 @@ impl StackBindings {
     pub(crate) fn set_eq(&self, other: &Self) -> bool {
         // default `IndexSet` equality is set equality (i.e., order can differ)
         self.stack == other.stack
-    }
-
-    pub(crate) fn order_eq(&self, other: &Self) -> bool {
-        // `IndexSet` slices compare full equality
-        self.stack.as_slice() == other.stack.as_slice()
     }
 
     pub(crate) fn insert_binding(&mut self, name: &str, depth: i64) {
@@ -238,7 +245,7 @@ impl StackBindings {
     /// This first tries the bounded local-op fast path, then falls back to the
     /// suffix-rebuild strategy using altstack.
     pub(crate) fn emit_stack_reordering(&self, target_bindings: &Self, builder: &mut ScriptBuilder) -> Result<(), CompilerError> {
-        if self.order_eq(target_bindings) {
+        if self == target_bindings {
             return Ok(());
         }
 
