@@ -899,6 +899,91 @@ fn byte_variable_from_int_literal_uses_raw_byte_push() {
 }
 
 #[test]
+fn byte_variable_from_out_of_range_int_literal_is_rejected() {
+    let source = r#"
+        contract Bytes() {
+            entrypoint function main() {
+                byte x = 256;
+                require(true);
+            }
+        }
+    "#;
+
+    assert!(
+        compile_contract(source, &[], CompileOptions::default()).is_err(),
+        "byte x = 256 should be rejected"
+    );
+}
+
+#[test]
+fn byte_equality_uses_op_equal_not_op_numequal() {
+    let source = r#"
+        contract Bytes() {
+            entrypoint function main() {
+                byte x = 5;
+                byte y = 7;
+                require(x == y);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("byte equality should compile");
+    assert!(
+        compiled.script.iter().copied().any(|op| op == OpEqual),
+        "byte equality should use OP_EQUAL"
+    );
+    assert!(
+        !compiled.script.iter().copied().any(|op| op == OpNumEqual),
+        "byte equality should not use OP_NUMEQUAL"
+    );
+}
+
+#[test]
+fn byte_equality_with_rhs_int_literal_uses_raw_byte_push() {
+    let source = r#"
+        contract Bytes() {
+            entrypoint function main() {
+                byte x = 1;
+                require(x == 1);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("byte equality with rhs literal should compile");
+    let expected = ScriptBuilder::new()
+        .add_data(&[1u8])
+        .unwrap()
+        .add_data(&[1u8])
+        .unwrap()
+        .add_op(OpEqual)
+        .unwrap()
+        .add_op(OpVerify)
+        .unwrap()
+        .add_op(OpTrue)
+        .unwrap()
+        .drain();
+    assert_eq!(compiled.script, expected);
+    assert!(run_script_with_selector(compiled.script, None).is_ok(), "byte equality with rhs literal should execute");
+}
+
+#[test]
+fn byte_equality_with_out_of_range_rhs_int_literal_is_rejected() {
+    let source = r#"
+        contract Bytes() {
+            entrypoint function main() {
+                byte x = 5;
+                require(x == 256);
+            }
+        }
+    "#;
+
+    assert!(
+        compile_contract(source, &[], CompileOptions::default()).is_err(),
+        "x == 256 should be rejected when x is a byte"
+    );
+}
+
+#[test]
 fn rejects_adding_byte_values() {
     let source = r#"
         contract Bytes() {

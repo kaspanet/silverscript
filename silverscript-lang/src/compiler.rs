@@ -2120,6 +2120,16 @@ fn coerce_expr_for_declared_scalar_type<'i>(expr: Expr<'i>, type_name: &str) -> 
     expr
 }
 
+fn coerce_rhs_byte_literal_for_comparison<'i>(left_type: Option<&TypeRef>, right: &Expr<'i>) -> Expr<'i> {
+    if left_type.is_some_and(|type_ref| matches!(type_ref.base, TypeBase::Byte) && type_ref.array_dims.is_empty())
+        && let ExprKind::Int(value) = right.kind
+        && (0..=255).contains(&value)
+    {
+        return Expr::new(ExprKind::Byte(value as u8), right.span);
+    }
+    right.clone()
+}
+
 fn infer_fixed_array_type_from_initializer_ref<'i>(
     declared_type: &TypeRef,
     initializer: Option<&Expr<'i>>,
@@ -6154,12 +6164,15 @@ fn compile_expr<'i>(
             Ok(())
         }
         ExprKind::Binary { op, left, right } => {
+            let left_cmp_type = infer_expr_type_ref_for_comparison(left, env, types);
+            let coerced_right = if matches!(op, BinaryOp::Eq | BinaryOp::Ne | BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge) {
+                coerce_rhs_byte_literal_for_comparison(left_cmp_type.as_ref(), right)
+            } else {
+                right.as_ref().clone()
+            };
             if matches!(op, BinaryOp::Eq | BinaryOp::Ne | BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge) {
                 if let (Some(left_type), Some(right_type)) =
-                    (
-                        infer_expr_type_ref_for_comparison(left, env, types),
-                        infer_expr_type_ref_for_comparison(right, env, types),
-                    )
+                    (left_cmp_type.clone(), infer_expr_type_ref_for_comparison(&coerced_right, env, types))
                 {
                     if !comparison_types_compatible(&left_type, &right_type) {
                         return Err(CompilerError::Unsupported(format!(
@@ -6171,14 +6184,14 @@ fn compile_expr<'i>(
                 }
             }
             let left_value_type = infer_debug_expr_value_type(left, env, types, &mut HashSet::new()).ok();
-            let right_value_type = infer_debug_expr_value_type(right, env, types, &mut HashSet::new()).ok();
+            let right_value_type = infer_debug_expr_value_type(&coerced_right, env, types, &mut HashSet::new()).ok();
             if matches!(op, BinaryOp::Add)
                 && (left_value_type.as_deref() == Some("byte") || right_value_type.as_deref() == Some("byte"))
             {
                 return Err(CompilerError::Unsupported("byte values do not support '+'".to_string()));
             }
             let bytes_eq =
-                matches!(op, BinaryOp::Eq | BinaryOp::Ne) && (expr_is_bytes(left, env, types) || expr_is_bytes(right, env, types));
+                matches!(op, BinaryOp::Eq | BinaryOp::Ne) && (expr_is_bytes(left, env, types) || expr_is_bytes(&coerced_right, env, types));
             let bytes_add = matches!(op, BinaryOp::Add) && (expr_is_bytes(left, env, types) || expr_is_bytes(right, env, types));
             if bytes_add {
                 compile_concat_operand(
@@ -6219,7 +6232,7 @@ fn compile_expr<'i>(
                     contract_constants,
                 )?;
                 compile_expr(
-                    right,
+                    &coerced_right,
                     env,
                     stack_bindings,
                     types,
