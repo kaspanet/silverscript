@@ -272,6 +272,12 @@ impl StackBindings {
     }
 }
 
+/// A permutation over stack positions, represented in target-indexed form.
+///
+/// Read as:
+/// `target[i] = current[indices[i]]`
+///
+/// So `indices[i]` tells us which current slot should fill target slot `i`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Permutation {
     indices: Vec<usize>,
@@ -282,6 +288,13 @@ impl Permutation {
         Self { indices: (0..len).collect() }
     }
 
+    /// Builds the permutation that transforms `current_order` into
+    /// `target_order`.
+    ///
+    /// Example:
+    /// - current: [a, b, c, d]
+    /// - target:  [c, d, a, b]
+    /// - indices: [2, 3, 0, 1]
     fn from_orders(current_order: &StackBindings, target_order: &StackBindings) -> Self {
         assert!(current_order.set_eq(target_order), "stack reconciliation requires both layouts to contain the same bindings");
         Self { indices: target_order.stack.iter().map(|name| current_order.stack.get_index_of(name).expect("set equal")).collect() }
