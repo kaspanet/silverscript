@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use blake2b_simd::Params as Blake2bParams;
 use kaspa_consensus_core::Hash;
@@ -101,6 +101,30 @@ fn apps_root() -> PathBuf {
 fn source_cache() -> &'static Mutex<HashMap<String, &'static str>> {
     static CACHE: OnceLock<Mutex<HashMap<String, &'static str>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn compiled_contract_cache() -> &'static Mutex<HashMap<String, Arc<CompiledContract<'static>>>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, Arc<CompiledContract<'static>>>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn compile_cache_key(source: &'static str, ctor: &[Expr<'static>]) -> String {
+    format!("{:p}:{}:{}", source.as_ptr(), source.len(), serde_json::to_string(ctor).expect("serialize chess ctor args"))
+}
+
+fn compile_cached(source: &'static str, ctor: &[Expr<'static>]) -> Arc<CompiledContract<'static>> {
+    let key = compile_cache_key(source, ctor);
+    {
+        let cache = compiled_contract_cache().lock().expect("compile cache mutex poisoned");
+        if let Some(compiled) = cache.get(&key) {
+            return Arc::clone(compiled);
+        }
+    }
+
+    let compiled = Arc::new(compile_contract(source, ctor, CompileOptions::default()).expect("compile chess contract succeeds"));
+    let mut cache = compiled_contract_cache().lock().expect("compile cache mutex poisoned");
+    cache.insert(key, Arc::clone(&compiled));
+    compiled
 }
 
 fn contract_path(name: &str) -> PathBuf {
@@ -371,7 +395,7 @@ fn routes_commitment(route_templates: &[u8]) -> Hash {
 }
 
 fn template_fixture(source: &'static str, ctor: &[Expr<'static>]) -> TemplateFixture {
-    let compiled = compile_contract(source, ctor, CompileOptions::default()).expect("compile template source succeeds");
+    let compiled = compile_cached(source, ctor);
     let layout = compiled.state_layout;
     let prefix = compiled.script[..layout.start].to_vec();
     let suffix = compiled.script[layout.start + layout.len..].to_vec();
@@ -379,39 +403,43 @@ fn template_fixture(source: &'static str, ctor: &[Expr<'static>]) -> TemplateFix
     TemplateFixture { source, prefix, suffix, hash }
 }
 
-fn build_fixture() -> MuxChessFixture {
-    let dummy_board = standard_board();
-    let game_ctor = vec![
-        Expr::bytes(vec![0x11u8; 32]),
-        Expr::bytes(vec![0x33u8; 32 * 9]),
-        Expr::bytes(vec![0x21u8; 32]),
-        Expr::bytes(vec![0x22u8; 32]),
-        Expr::bytes(dummy_board),
-        Expr::int(0),
-        Expr::int(0),
-        Expr::int(DEFAULT_MOVE_TIMEOUT),
-        castle_rights_expr(full_castle_rights()),
-        Expr::int(-1),
-        Expr::int(-1),
-        Expr::int(-1),
-        Expr::int(0),
-        Expr::int(0),
-        Expr::int(3),
-    ];
-    let settle_ctor = vec![Expr::bytes(vec![0x44u8; 32]), Expr::bytes(vec![0x21u8; 32]), Expr::bytes(vec![0x22u8; 32]), Expr::int(0)];
+fn fixture() -> &'static MuxChessFixture {
+    static FIXTURE: OnceLock<MuxChessFixture> = OnceLock::new();
+    FIXTURE.get_or_init(|| {
+        let dummy_board = standard_board();
+        let game_ctor = vec![
+            Expr::bytes(vec![0x11u8; 32]),
+            Expr::bytes(vec![0x33u8; 32 * 9]),
+            Expr::bytes(vec![0x21u8; 32]),
+            Expr::bytes(vec![0x22u8; 32]),
+            Expr::bytes(dummy_board),
+            Expr::int(0),
+            Expr::int(0),
+            Expr::int(DEFAULT_MOVE_TIMEOUT),
+            castle_rights_expr(full_castle_rights()),
+            Expr::int(-1),
+            Expr::int(-1),
+            Expr::int(-1),
+            Expr::int(0),
+            Expr::int(0),
+            Expr::int(3),
+        ];
+        let settle_ctor =
+            vec![Expr::bytes(vec![0x44u8; 32]), Expr::bytes(vec![0x21u8; 32]), Expr::bytes(vec![0x22u8; 32]), Expr::int(0)];
 
-    MuxChessFixture {
-        mux: template_fixture(mux_source(), &game_ctor),
-        settle: template_fixture(settle_source(), &settle_ctor),
-        pawn: template_fixture(pawn_source(), &game_ctor),
-        knight: template_fixture(knight_source(), &game_ctor),
-        vert: template_fixture(vert_source(), &game_ctor),
-        horiz: template_fixture(horiz_source(), &game_ctor),
-        diag: template_fixture(diag_source(), &game_ctor),
-        king: template_fixture(king_source(), &game_ctor),
-        castle: template_fixture(castle_source(), &game_ctor),
-        castle_challenge: template_fixture(castle_challenge_source(), &game_ctor),
-    }
+        MuxChessFixture {
+            mux: template_fixture(mux_source(), &game_ctor),
+            settle: template_fixture(settle_source(), &settle_ctor),
+            pawn: template_fixture(pawn_source(), &game_ctor),
+            knight: template_fixture(knight_source(), &game_ctor),
+            vert: template_fixture(vert_source(), &game_ctor),
+            horiz: template_fixture(horiz_source(), &game_ctor),
+            diag: template_fixture(diag_source(), &game_ctor),
+            king: template_fixture(king_source(), &game_ctor),
+            castle: template_fixture(castle_source(), &game_ctor),
+            castle_challenge: template_fixture(castle_challenge_source(), &game_ctor),
+        }
+    })
 }
 
 fn compile_state(
@@ -420,7 +448,7 @@ fn compile_state(
     white_hash: &Hash,
     black_hash: &Hash,
     state: GameStateArgs<'_>,
-) -> CompiledContract<'static> {
+) -> Arc<CompiledContract<'static>> {
     let ctor = vec![
         hash_expr(fix.mux.hash),
         Expr::bytes(packed_route_templates(fix)),
@@ -438,7 +466,7 @@ fn compile_state(
         Expr::int(state.recent_castle),
         Expr::int(state.draw_state),
     ];
-    compile_contract(source, &ctor, CompileOptions::default()).expect("compile game state")
+    compile_cached(source, &ctor)
 }
 
 fn compile_settle_state(
@@ -447,12 +475,12 @@ fn compile_settle_state(
     white_hash: &Hash,
     black_hash: &Hash,
     status: i64,
-) -> CompiledContract<'static> {
+) -> Arc<CompiledContract<'static>> {
     let ctor = vec![hash_expr(*player_template), hash_expr(*white_hash), hash_expr(*black_hash), Expr::int(status)];
-    compile_contract(source, &ctor, CompileOptions::default()).expect("compile settle state")
+    compile_cached(source, &ctor)
 }
 
-fn compile_player_state(source: &'static str, state: PlayerStateArgs<'_>) -> CompiledContract<'static> {
+fn compile_player_state(source: &'static str, state: PlayerStateArgs<'_>) -> Arc<CompiledContract<'static>> {
     let ctor = vec![
         hash_expr(*state.league_template),
         hash_expr(*state.player_template),
@@ -467,7 +495,7 @@ fn compile_player_state(source: &'static str, state: PlayerStateArgs<'_>) -> Com
         Expr::int(state.draws),
         Expr::int(state.losses),
     ];
-    compile_contract(source, &ctor, CompileOptions::default()).expect("compile player state")
+    compile_cached(source, &ctor)
 }
 
 fn player_template_hash(fix: &MuxChessFixture) -> Hash {
@@ -868,8 +896,8 @@ fn chess_apps_compile_and_probe_sizes_within_noise() {
 
     for snapshot in size_snapshots() {
         let source = local_contract_source(snapshot.name);
-        let compiled = compile_contract(source, &(snapshot.ctor)(), CompileOptions::default())
-            .unwrap_or_else(|err| panic!("{} should compile: {err}", snapshot.name));
+        let ctor = (snapshot.ctor)();
+        let compiled = compile_cached(source, &ctor);
         let (instruction_count, charged_op_count) = script_op_counts(&compiled.script);
 
         actual_sizes.push((snapshot.name, compiled.script.len(), instruction_count, charged_op_count));
@@ -893,8 +921,8 @@ fn chess_apps_compile_and_probe_sizes_within_noise() {
 #[test]
 fn league_register_player_runtime_matches_expected_output_state() {
     let owner = player_from_seed(7);
-    let fix = build_fixture();
-    let route_templates = packed_route_templates(&fix);
+    let fix = fixture();
+    let route_templates = packed_route_templates(fix);
     let routes_commitment = routes_commitment(&route_templates);
 
     let league_template = repeated_hash(0x11);
@@ -903,43 +931,35 @@ fn league_register_player_runtime_matches_expected_output_state() {
     let covenant_id = Hash::from_bytes([0x66u8; 32]);
     let player_id_domain = b"LeaguePlayerId".to_vec();
 
-    let player_template_contract = compile_contract(
-        player_source(),
-        &[
-            hash_expr(league_template),
-            hash_expr(repeated_hash(0x44)),
-            hash_expr(fix.mux.hash),
-            hash_expr(routes_commitment),
-            hash_expr(repeated_hash(0x55)),
-            hash_expr(repeated_hash(0x77)),
-            Expr::int(0),
-            Expr::int(900),
-            Expr::int(1),
-            Expr::int(2),
-            Expr::int(3),
-            Expr::int(4),
-        ],
-        CompileOptions::default(),
-    )
-    .expect("compile player template succeeds");
+    let player_template_ctor = vec![
+        hash_expr(league_template),
+        hash_expr(repeated_hash(0x44)),
+        hash_expr(fix.mux.hash),
+        hash_expr(routes_commitment),
+        hash_expr(repeated_hash(0x55)),
+        hash_expr(repeated_hash(0x77)),
+        Expr::int(0),
+        Expr::int(900),
+        Expr::int(1),
+        Expr::int(2),
+        Expr::int(3),
+        Expr::int(4),
+    ];
+    let player_template_contract = compile_cached(player_source(), &player_template_ctor);
     let layout = player_template_contract.state_layout;
     let player_prefix = player_template_contract.script[..layout.start].to_vec();
     let player_suffix = player_template_contract.script[layout.start + layout.len..].to_vec();
     let player_template = blake2b_bytes(&[player_prefix.as_slice(), player_suffix.as_slice()].concat());
 
-    let league = compile_contract(
-        league_source(),
-        &[
-            hash_expr(league_template),
-            hash_expr(player_template),
-            hash_expr(fix.mux.hash),
-            hash_expr(routes_commitment),
-            Expr::int(base_rating),
-            hash_expr(admin),
-        ],
-        CompileOptions::default(),
-    )
-    .expect("compile league succeeds");
+    let league_ctor = vec![
+        hash_expr(league_template),
+        hash_expr(player_template),
+        hash_expr(fix.mux.hash),
+        hash_expr(routes_commitment),
+        Expr::int(base_rating),
+        hash_expr(admin),
+    ];
+    let league = compile_cached(league_source(), &league_ctor);
 
     let league_input = TransactionInput {
         previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([0xabu8; 32]), index: 7 },
@@ -996,8 +1016,8 @@ fn league_register_player_runtime_matches_expected_output_state() {
 
 #[test]
 fn player_start_game_runtime_matches_expected_output_states() {
-    let fix = build_fixture();
-    let route_templates = packed_route_templates(&fix);
+    let fix = fixture();
+    let route_templates = packed_route_templates(fix);
     let routes_commitment = routes_commitment(&route_templates);
     let white = player_from_seed(0x31);
     let black = player_from_seed(0x32);
@@ -1104,7 +1124,7 @@ fn player_start_game_runtime_matches_expected_output_states() {
     );
     let opening_mux = compile_state(
         fix.mux.source,
-        &fix,
+        fix,
         &white.player_ref,
         &black.player_ref,
         GameStateArgs {
@@ -1203,7 +1223,7 @@ fn player_start_game_runtime_matches_expected_output_states() {
 
 #[test]
 fn mux_route_to_pawn_runtime_matches_expected_output_state() {
-    let fix = build_fixture();
+    let fix = fixture();
     let white = player_from_seed(1);
     let black = player_from_seed(2);
     let board0 = standard_board();
@@ -1211,7 +1231,7 @@ fn mux_route_to_pawn_runtime_matches_expected_output_state() {
 
     let mux0 = compile_state(
         fix.mux.source,
-        &fix,
+        fix,
         &white.player_ref,
         &black.player_ref,
         GameStateArgs {
@@ -1230,7 +1250,7 @@ fn mux_route_to_pawn_runtime_matches_expected_output_state() {
 
     let pawn0 = compile_state(
         fix.pawn.source,
-        &fix,
+        fix,
         &white.player_ref,
         &black.player_ref,
         GameStateArgs {
@@ -1252,7 +1272,7 @@ fn mux_route_to_pawn_runtime_matches_expected_output_state() {
 
 #[test]
 fn pawn_apply_runtime_matches_expected_output_state() {
-    let fix = build_fixture();
+    let fix = fixture();
     let white = player_from_seed(1);
     let black = player_from_seed(2);
     let board0 = standard_board();
@@ -1260,7 +1280,7 @@ fn pawn_apply_runtime_matches_expected_output_state() {
 
     let pawn0 = compile_state(
         fix.pawn.source,
-        &fix,
+        fix,
         &white.player_ref,
         &black.player_ref,
         GameStateArgs {
@@ -1280,7 +1300,7 @@ fn pawn_apply_runtime_matches_expected_output_state() {
     move_piece(&mut board1, 4, 1, 4, 3);
     let mux1 = compile_state(
         fix.mux.source,
-        &fix,
+        fix,
         &white.player_ref,
         &black.player_ref,
         GameStateArgs {
@@ -1302,7 +1322,7 @@ fn pawn_apply_runtime_matches_expected_output_state() {
 
 #[test]
 fn knight_apply_runtime_matches_expected_output_state() {
-    let fix = build_fixture();
+    let fix = fixture();
     let white = player_from_seed(1);
     let black = player_from_seed(2);
     let mut board1 = standard_board();
@@ -1311,7 +1331,7 @@ fn knight_apply_runtime_matches_expected_output_state() {
 
     let knight1 = compile_state(
         fix.knight.source,
-        &fix,
+        fix,
         &white.player_ref,
         &black.player_ref,
         GameStateArgs {
@@ -1331,7 +1351,7 @@ fn knight_apply_runtime_matches_expected_output_state() {
     move_piece(&mut board2, 6, 7, 5, 5);
     let mux2 = compile_state(
         fix.mux.source,
-        &fix,
+        fix,
         &white.player_ref,
         &black.player_ref,
         GameStateArgs {
@@ -1353,7 +1373,7 @@ fn knight_apply_runtime_matches_expected_output_state() {
 
 #[test]
 fn vert_apply_runtime_matches_expected_output_state() {
-    let fix = build_fixture();
+    let fix = fixture();
     let white = player_from_seed(1);
     let black = player_from_seed(2);
     let mut board3 = vec![0u8; 64];
@@ -1362,7 +1382,7 @@ fn vert_apply_runtime_matches_expected_output_state() {
 
     let vert = compile_state(
         fix.vert.source,
-        &fix,
+        fix,
         &white.player_ref,
         &black.player_ref,
         GameStateArgs {
@@ -1382,7 +1402,7 @@ fn vert_apply_runtime_matches_expected_output_state() {
     move_piece(&mut board4, 0, 0, 0, 3);
     let mux4 = compile_state(
         fix.mux.source,
-        &fix,
+        fix,
         &white.player_ref,
         &black.player_ref,
         GameStateArgs {
@@ -1404,7 +1424,7 @@ fn vert_apply_runtime_matches_expected_output_state() {
 
 #[test]
 fn horiz_apply_runtime_matches_expected_output_state() {
-    let fix = build_fixture();
+    let fix = fixture();
     let white = player_from_seed(1);
     let black = player_from_seed(2);
     let mut board7 = vec![0u8; 64];
@@ -1413,7 +1433,7 @@ fn horiz_apply_runtime_matches_expected_output_state() {
 
     let horiz_left = compile_state(
         fix.horiz.source,
-        &fix,
+        fix,
         &white.player_ref,
         &black.player_ref,
         GameStateArgs {
@@ -1433,7 +1453,7 @@ fn horiz_apply_runtime_matches_expected_output_state() {
     move_piece(&mut board8, 7, 3, 4, 3);
     let mux8 = compile_state(
         fix.mux.source,
-        &fix,
+        fix,
         &white.player_ref,
         &black.player_ref,
         GameStateArgs {
@@ -1455,7 +1475,7 @@ fn horiz_apply_runtime_matches_expected_output_state() {
 
 #[test]
 fn diag_apply_runtime_matches_expected_output_state() {
-    let fix = build_fixture();
+    let fix = fixture();
     let white = player_from_seed(1);
     let black = player_from_seed(2);
     let mut board11 = vec![0u8; 64];
@@ -1464,7 +1484,7 @@ fn diag_apply_runtime_matches_expected_output_state() {
 
     let diag_up_right = compile_state(
         fix.diag.source,
-        &fix,
+        fix,
         &white.player_ref,
         &black.player_ref,
         GameStateArgs {
@@ -1484,7 +1504,7 @@ fn diag_apply_runtime_matches_expected_output_state() {
     move_piece(&mut board12, 0, 0, 3, 3);
     let mux12 = compile_state(
         fix.mux.source,
-        &fix,
+        fix,
         &white.player_ref,
         &black.player_ref,
         GameStateArgs {
@@ -1506,7 +1526,7 @@ fn diag_apply_runtime_matches_expected_output_state() {
 
 #[test]
 fn king_apply_runtime_matches_expected_output_state() {
-    let fix = build_fixture();
+    let fix = fixture();
     let white = player_from_seed(1);
     let black = player_from_seed(2);
     let mut board19 = vec![0u8; 64];
@@ -1515,7 +1535,7 @@ fn king_apply_runtime_matches_expected_output_state() {
 
     let king = compile_state(
         fix.king.source,
-        &fix,
+        fix,
         &white.player_ref,
         &black.player_ref,
         GameStateArgs {
@@ -1535,7 +1555,7 @@ fn king_apply_runtime_matches_expected_output_state() {
     move_piece(&mut board20, 4, 0, 4, 1);
     let mux20 = compile_state(
         fix.mux.source,
-        &fix,
+        fix,
         &white.player_ref,
         &black.player_ref,
         GameStateArgs {
@@ -1557,7 +1577,7 @@ fn king_apply_runtime_matches_expected_output_state() {
 
 #[test]
 fn castle_apply_runtime_matches_expected_output_state() {
-    let fix = build_fixture();
+    let fix = fixture();
     let white = player_from_seed(1);
     let black = player_from_seed(2);
     let mut board21 = vec![0u8; 64];
@@ -1567,7 +1587,7 @@ fn castle_apply_runtime_matches_expected_output_state() {
 
     let castle = compile_state(
         fix.castle.source,
-        &fix,
+        fix,
         &white.player_ref,
         &black.player_ref,
         GameStateArgs {
@@ -1590,7 +1610,7 @@ fn castle_apply_runtime_matches_expected_output_state() {
     board22[7] = 0x00;
     let mux22 = compile_state(
         fix.mux.source,
-        &fix,
+        fix,
         &white.player_ref,
         &black.player_ref,
         GameStateArgs {
@@ -1612,7 +1632,7 @@ fn castle_apply_runtime_matches_expected_output_state() {
 
 #[test]
 fn castle_challenge_apply_runtime_matches_expected_output_state() {
-    let fix = build_fixture();
+    let fix = fixture();
     let white = player_from_seed(1);
     let black = player_from_seed(2);
     let mut board0 = vec![0u8; 64];
@@ -1623,7 +1643,7 @@ fn castle_challenge_apply_runtime_matches_expected_output_state() {
 
     let prep0 = compile_state(
         fix.castle_challenge.source,
-        &fix,
+        fix,
         &white.player_ref,
         &black.player_ref,
         GameStateArgs {
@@ -1642,7 +1662,7 @@ fn castle_challenge_apply_runtime_matches_expected_output_state() {
 
     let pawn0 = compile_state(
         fix.pawn.source,
-        &fix,
+        fix,
         &white.player_ref,
         &black.player_ref,
         GameStateArgs {
@@ -1664,8 +1684,8 @@ fn castle_challenge_apply_runtime_matches_expected_output_state() {
 
 #[test]
 fn settle_runtime_matches_expected_output_states() {
-    let fix = build_fixture();
-    let route_templates = packed_route_templates(&fix);
+    let fix = fixture();
+    let route_templates = packed_route_templates(fix);
     let routes_commitment = routes_commitment(&route_templates);
     let base_rating = 1200;
     let league_template = repeated_hash(0x33);
