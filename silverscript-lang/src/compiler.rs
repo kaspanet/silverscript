@@ -3397,10 +3397,13 @@ fn compile_statement<'i>(
         }
         Statement::Assign { name, expr, .. } => {
             if let Some(type_name) = types.get(name) {
+                let expected_type_ref = parse_type_ref(type_name)?;
                 // If this is a stack-bound scalar local, compile a real mutation instead of
                 // rewriting `env[name]` (which can explode under unrolled control flow).
-                if stack_bindings.contains(name) && matches!(type_name.as_str(), "int" | "bool" | "byte") {
-                    let expected_type_ref = parse_type_ref(type_name)?;
+                if stack_bindings.contains(name)
+                    && struct_name_from_type_ref(&expected_type_ref, structs).is_none()
+                    && struct_array_name_from_type_ref(&expected_type_ref, structs).is_none()
+                {
                     let lowered_expr = lower_runtime_expr(expr, types, structs)?;
                     if !expr_matches_return_type_ref(&lowered_expr, &expected_type_ref, types, contract_constants) {
                         return Err(CompilerError::Unsupported(format!(

@@ -3269,6 +3269,45 @@ fn allows_array_assignment_with_compatible_types() {
 }
 
 #[test]
+fn inline_pubkey_param_reassignment_compiles_and_runs() {
+    let source = r#"
+        contract ReassignNonScalar() {
+            function verify(pubkey selected, pubkey other, pubkey expected, bool take_other) {
+                if (take_other) {
+                    selected = other;
+                }
+                require(selected == expected);
+            }
+
+            entrypoint function main(pubkey a, pubkey b, pubkey expected, bool take_other) {
+                verify(a, b, expected, take_other);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+
+    let a = vec![0x11u8; 32];
+    let b = vec![0x22u8; 32];
+
+    let sigscript_take_b = compiled
+        .build_sig_script("main", vec![Expr::bytes(a.clone()), Expr::bytes(b.clone()), Expr::bytes(b.clone()), Expr::bool(true)])
+        .expect("sigscript builds");
+    let result_take_b = run_script_with_sigscript(compiled.script.clone(), sigscript_take_b);
+    assert!(result_take_b.is_ok(), "inline pubkey reassignment should allow taking the second value: {}", result_take_b.unwrap_err());
+
+    let sigscript_keep_a = compiled
+        .build_sig_script("main", vec![Expr::bytes(a.clone()), Expr::bytes(b), Expr::bytes(a), Expr::bool(false)])
+        .expect("sigscript builds");
+    let result_keep_a = run_script_with_sigscript(compiled.script, sigscript_keep_a);
+    assert!(
+        result_keep_a.is_ok(),
+        "inline pubkey reassignment should preserve the first value when branch is skipped: {}",
+        result_keep_a.unwrap_err()
+    );
+}
+
+#[test]
 fn rejects_unsized_array_type() {
     let source = r#"
         contract Arrays() {
