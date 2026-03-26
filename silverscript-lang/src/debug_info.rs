@@ -120,6 +120,8 @@ pub struct DebugVariableUpdate<'i> {
     pub type_name: String,
     #[serde(default)]
     pub runtime_binding: Option<RuntimeBinding>,
+    #[serde(default)]
+    pub structured_leaf_bindings: Option<Vec<DebugLeafBinding>>,
     /// Pre-resolved expression for debugger shadow evaluation.
     /// Identifiers may include inline synthetic placeholders (`__arg_*`).
     pub expr: Expr<'i>,
@@ -130,13 +132,28 @@ pub enum RuntimeBinding {
     DataStackSlot { from_top: i64 },
 }
 
-/// Maps function parameter to its stack position.
-/// Stack index is measured from stack top (0 = topmost param).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DebugLeafBinding {
+    #[serde(default)]
+    pub field_path: Vec<String>,
+    pub type_name: String,
+    #[serde(default)]
+    pub stack_index: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum DebugParamBinding {
+    SingleValue { stack_index: i64 },
+    StructuredValue { leaf_bindings: Vec<DebugLeafBinding> },
+}
+
+/// Maps one source parameter to either a single runtime slot or a lowered set of leaf slots.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DebugParamMapping {
     pub name: String,
     pub type_name: String,
-    pub stack_index: i64,
+    pub binding: DebugParamBinding,
     pub function: String,
 }
 

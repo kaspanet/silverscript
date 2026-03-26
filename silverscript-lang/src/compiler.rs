@@ -239,7 +239,7 @@ fn validate_struct_graph(structs: &StructRegistry) -> Result<(), CompilerError> 
     Ok(())
 }
 
-fn flattened_struct_name(base: &str, path: &[String]) -> String {
+pub fn flattened_struct_name(base: &str, path: &[String]) -> String {
     let mut out = format!("__struct_{base}");
     for part in path {
         out.push('_');
@@ -2537,7 +2537,7 @@ fn compile_entrypoint_function<'i>(
         }
     }
 
-    recorder.begin_entrypoint(&function.name, function, contract_fields);
+    recorder.begin_entrypoint(&function.name, function, contract_fields, structs)?;
 
     let body_len = function.body.len();
     for (index, stmt) in function.body.iter().enumerate() {
@@ -2582,7 +2582,7 @@ fn compile_entrypoint_function<'i>(
             )
             .map_err(|err| err.with_span(&stmt.span()))?;
         }
-        recorder.finish_statement_at(stmt, builder.script().len(), &env, &types, &stack_bindings)?;
+        recorder.finish_statement_at(stmt, builder.script().len(), &env, &types, &stack_bindings, structs)?;
     }
 
     let flattened_returns = if has_return {
@@ -4631,7 +4631,15 @@ fn compile_inline_call<'i>(
     }
 
     let call_start = builder.script().len();
-    recorder.begin_inline_call(call_span, call_start, function, &bindings.debug_env, &bindings.stack_bindings)?;
+    recorder.begin_inline_call(
+        call_span,
+        call_start,
+        function,
+        &bindings.debug_env,
+        &bindings.types,
+        &bindings.stack_bindings,
+        structs,
+    )?;
 
     let mut returns: Vec<Expr<'i>> = Vec::new();
     let initial_stack_binding_count = bindings.stack_bindings.len();
@@ -4709,7 +4717,14 @@ fn compile_inline_call<'i>(
             )
             .map_err(|err| err.with_span(&stmt.span()))?;
         }
-        recorder.finish_statement_at(stmt, builder.script().len(), &bindings.env, &bindings.types, &bindings.stack_bindings)?;
+        recorder.finish_statement_at(
+            stmt,
+            builder.script().len(),
+            &bindings.env,
+            &bindings.types,
+            &bindings.stack_bindings,
+            structs,
+        )?;
     }
 
     for _ in 0..bindings.stack_bindings.len().saturating_sub(initial_stack_binding_count) {
@@ -5002,7 +5017,7 @@ fn compile_block<'i>(
             )
             .map_err(|err| err.with_span(&stmt.span()))?,
         );
-        recorder.finish_statement_at(stmt, builder.script().len(), env, types, stack_bindings)?;
+        recorder.finish_statement_at(stmt, builder.script().len(), env, types, stack_bindings, structs)?;
     }
 
     if scoped_stack_locals && !added_stack_locals.is_empty() {
