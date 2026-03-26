@@ -2479,7 +2479,7 @@ fn compile_entrypoint_function<'i>(
     let initial_stack_binding_count = stack_bindings.len() + contract_field_count;
 
     for (index, field) in contract_fields.iter().enumerate().rev() {
-        stack_bindings.set_depth(&field.name, (contract_field_count - 1 - index) as i64);
+        stack_bindings.insert_binding(&field.name, (contract_field_count - 1 - index) as i64);
     }
 
     for field in contract_fields {
@@ -7379,7 +7379,7 @@ mod tests {
         let contract_fields = ["field_a", "field_b"];
 
         for (index, field) in contract_fields.iter().enumerate().rev() {
-            stack_bindings.set_depth(field, (contract_field_count - 1 - index) as i64);
+            stack_bindings.insert_binding(field, (contract_field_count - 1 - index) as i64);
         }
 
         assert_eq!(

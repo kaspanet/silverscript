@@ -144,19 +144,18 @@ impl StackBindings {
         self.stack.as_slice() == other.stack.as_slice()
     }
 
-    pub(crate) fn set_depth(&mut self, name: &str, depth: i64) {
+    pub(crate) fn insert_binding(&mut self, name: &str, depth: i64) {
         assert!((0..=self.stack.len() as i64).contains(&depth), "depth out of bounds: {depth}");
         let target_index = depth as usize;
-        self.stack.insert_before(target_index, name.to_string());
+        assert!(self.stack.insert_before(target_index, name.to_string()).1, "binding already exists: {name}");
     }
 
     pub(crate) fn push_binding(&mut self, name: &str) {
-        assert!(!self.contains(name), "binding already exists: {name}");
-        self.set_depth(name, 0);
+        self.insert_binding(name, 0);
     }
 
     fn remove_binding(&mut self, name: &str) {
-        self.stack.shift_remove(name);
+        assert!(self.stack.shift_remove(name), "removed binding {name} should exist");
     }
 
     fn move_binding_to_top(&mut self, name: &str) {
