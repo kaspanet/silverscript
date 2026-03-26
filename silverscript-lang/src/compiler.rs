@@ -506,21 +506,23 @@ fn read_input_state_with_template_values<'i>(
     structs: &StructRegistry,
     contract_constants: &HashMap<String, Expr<'i>>,
 ) -> Result<Vec<Expr<'i>>, CompilerError> {
-    if args.len() != 4 {
+    let Ok([input_idx, template_prefix_len, template_suffix_len, _expected_template_hash]): Result<&[Expr<'i>; 4], _> =
+        args.try_into()
+    else {
         return Err(CompilerError::Unsupported(
             "readInputStateWithTemplate(input_idx, template_prefix_len, template_suffix_len, expected_template_hash) expects 4 arguments"
                 .to_string(),
         ));
-    }
+    };
 
     let layout_fields = flattened_struct_field_specs_for_type(expected_type, structs)?;
     if layout_fields.is_empty() {
         return Err(CompilerError::Unsupported("readInputStateWithTemplate requires a struct type".to_string()));
     }
 
-    let script_size_expr = templated_input_script_size_expr(&args[1], &args[2], &layout_fields, contract_constants)?;
-    let state_start_offset_expr = args[1].clone();
-    let input_idx = &args[0];
+    let script_size_expr =
+        templated_input_script_size_expr(template_prefix_len, template_suffix_len, &layout_fields, contract_constants)?;
+    let state_start_offset_expr = template_prefix_len.clone();
     let mut field_chunk_offset = 0usize;
     let mut lowered = Vec::with_capacity(layout_fields.len());
     for field in &layout_fields {
@@ -3752,12 +3754,14 @@ fn compile_read_input_state_statement<'i>(
             Ok(())
         }
         "readInputStateWithTemplate" => {
-            if args.len() != 4 {
+            let Ok([input_idx, template_prefix_len, template_suffix_len, _expected_template_hash]): Result<&[Expr<'i>; 4], _> =
+                args.try_into()
+            else {
                 return Err(CompilerError::Unsupported(
                     "readInputStateWithTemplate(input_idx, template_prefix_len, template_suffix_len, expected_template_hash) expects 4 arguments"
                         .to_string(),
                 ));
-            }
+            };
 
             let struct_name = struct_name_for_state_bindings(bindings, structs)?;
             let struct_spec =
@@ -3784,9 +3788,10 @@ fn compile_read_input_state_statement<'i>(
                 contract_constants,
             )?;
 
-            let input_idx = args[0].clone();
-            let state_start_offset_expr = args[1].clone();
-            let script_size_expr = templated_input_script_size_expr(&args[1], &args[2], &layout_fields, contract_constants)?;
+            let input_idx = input_idx.clone();
+            let state_start_offset_expr = template_prefix_len.clone();
+            let script_size_expr =
+                templated_input_script_size_expr(template_prefix_len, template_suffix_len, &layout_fields, contract_constants)?;
             let mut field_chunk_offset = 0usize;
 
             for field in &struct_spec.fields {
@@ -3874,20 +3879,17 @@ fn compile_read_input_state_with_template_validation(
     script_size: Option<i64>,
     contract_constants: &HashMap<String, Expr<'_>>,
 ) -> Result<(), CompilerError> {
-    if args.len() != 4 {
+    let Ok([input_idx, template_prefix_len, template_suffix_len, expected_template_hash]): Result<&[Expr<'_>; 4], _> = args.try_into()
+    else {
         return Err(CompilerError::Unsupported(
             "readInputStateWithTemplate(input_idx, template_prefix_len, template_suffix_len, expected_template_hash) expects 4 arguments"
                 .to_string(),
         ));
-    }
+    };
     if layout_fields.is_empty() {
         return Err(CompilerError::Unsupported("readInputStateWithTemplate requires a struct type".to_string()));
     }
 
-    let input_idx = &args[0];
-    let template_prefix_len = &args[1];
-    let template_suffix_len = &args[2];
-    let expected_template_hash = &args[3];
     let script_size_expr =
         templated_input_script_size_expr(template_prefix_len, template_suffix_len, layout_fields, contract_constants)?;
     let prefix_len_expr = template_prefix_len.clone();
@@ -3988,16 +3990,15 @@ fn compile_validate_output_state_statement(
     script_size: Option<i64>,
     contract_constants: &HashMap<String, Expr<'_>>,
 ) -> Result<(), CompilerError> {
-    if args.len() != 2 {
+    let Ok([output_idx, state_expr]): Result<&[Expr<'_>; 2], _> = args.try_into() else {
         return Err(CompilerError::Unsupported("validateOutputState(output_idx, new_state) expects 2 arguments".to_string()));
-    }
+    };
     if contract_fields.is_empty() {
         return Err(CompilerError::Unsupported("validateOutputState requires contract fields".to_string()));
     }
 
-    let output_idx = &args[0];
     let mut stack_depth = compile_encoded_state_object(
-        &args[1],
+        state_expr,
         env,
         stack_bindings,
         types,
@@ -4115,21 +4116,17 @@ fn compile_validate_output_state_with_template_statement(
     script_size: Option<i64>,
     contract_constants: &HashMap<String, Expr<'_>>,
 ) -> Result<(), CompilerError> {
-    if args.len() != 5 {
+    let Ok([output_idx, state_expr, template_prefix, template_suffix, expected_template_hash]): Result<&[Expr<'_>; 5], _> =
+        args.try_into()
+    else {
         return Err(CompilerError::Unsupported(
             "validateOutputStateWithTemplate(output_idx, new_state, template_prefix, template_suffix, expected_template_hash) expects 5 arguments"
                 .to_string(),
         ));
-    }
+    };
     if layout_fields.is_empty() {
         return Err(CompilerError::Unsupported("validateOutputStateWithTemplate requires contract fields".to_string()));
     }
-
-    let output_idx = &args[0];
-    let state_expr = &args[1];
-    let template_prefix = &args[2];
-    let template_suffix = &args[3];
-    let expected_template_hash = &args[4];
 
     let mut stack_depth = 0i64;
 
