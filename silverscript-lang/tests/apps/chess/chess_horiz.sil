@@ -260,7 +260,7 @@ contract ChessHoriz(
         }
 
         byte[32] settle_template = blake2b(settle_prefix + settle_suffix);
-        require(blake2b(settle_template + player_template) == route_templates.slice(256, 288));
+        require(blake2b(settle_template + player_template) == byte[32](route_templates.slice(256, 288)));
 
         SettleState next_state = {
             player_template: player_template,

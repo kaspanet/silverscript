@@ -213,7 +213,7 @@ contract ChessMux(
         byte[] all_route_templates = move_route_templates + mux_template;
         int hash_start = selector * 32;
         int hash_end = hash_start + 32;
-        byte[32] target_template = all_route_templates.slice(hash_start, hash_end);
+        byte[32] target_template = byte[32](all_route_templates.slice(hash_start, hash_end));
         validateOutputStateWithTemplate(
             output_idx,
             next_state,
@@ -261,7 +261,7 @@ contract ChessMux(
         }
 
         byte[32] settle_template = blake2b(settle_prefix + settle_suffix);
-        require(blake2b(settle_template + player_template) == route_templates.slice(256, 288));
+        require(blake2b(settle_template + player_template) == byte[32](route_templates.slice(256, 288)));
 
         SettleState next_state = {
             player_template: player_template,
@@ -278,7 +278,7 @@ contract ChessMux(
     entrypoint function settle(byte[32] player_template, byte[] settle_prefix, byte[] settle_suffix) {
         require(status != 0 /*LIVE*/);
         byte[32] settle_template = blake2b(settle_prefix + settle_suffix);
-        require(blake2b(settle_template + player_template) == route_templates.slice(256, 288));
+        require(blake2b(settle_template + player_template) == byte[32](route_templates.slice(256, 288)));
 
         SettleState next_state = {
             player_template: player_template,

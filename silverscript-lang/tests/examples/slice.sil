@@ -3,6 +3,6 @@ pragma silverscript ^0.1.0;
 contract Slice(byte[20] pkh) {
     entrypoint function spend() {
         byte[] actualPkh = tx.inputs[this.activeInputIndex].scriptPubKey.slice(3, 23);
-        require(pkh == actualPkh);
+        require(byte[](pkh) == actualPkh);
     }
 }

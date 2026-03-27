@@ -144,7 +144,7 @@ type_name = { base_type ~ array_suffix* }
 base_type = { builtin_type | Identifier }
 builtin_type = { "int" | "bool" | "string" | "pubkey" | "sig" | "datasig" | "byte" }
 array_suffix = { "[" ~ array_size? ~ "]" }
-array_size = { Identifier | (ASCII_NONZERO_DIGIT ~ ASCII_DIGIT*) }
+array_size = { "_" | Identifier | (ASCII_NONZERO_DIGIT ~ ASCII_DIGIT*) }
 
 VersionLiteral = @{ ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT+ }
 

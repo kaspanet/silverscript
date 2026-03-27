@@ -6,9 +6,9 @@ use kaspa_txscript::serialize_i64;
 use serde::{Deserialize, Serialize};
 
 use crate::ast::{
-    ArrayDim, BinaryOp, ContractAst, ContractFieldAst, Expr, ExprKind, FunctionAst, IntrospectionKind, NullaryOp, SplitPart,
-    StateBindingAst, StateFieldExpr, Statement, TimeVar, TypeBase, TypeRef, UnaryOp, UnarySuffixKind, parse_contract_ast,
-    parse_type_ref,
+    ArrayDim, BinaryOp, ConstantAst, ContractAst, ContractFieldAst, Expr, ExprKind, FunctionAst, IntrospectionKind, NullaryOp,
+    ParamAst, SplitPart, StateBindingAst, StateFieldExpr, Statement, TimeVar, TypeBase, TypeRef, UnaryOp, UnarySuffixKind,
+    parse_contract_ast, parse_type_ref,
 };
 use crate::debug_info::{DebugInfo, RuntimeBinding, SourceSpan};
 pub use crate::errors::{CompilerError, ErrorSpan};
@@ -393,14 +393,24 @@ fn lower_expr<'i>(expr: &Expr<'i>, scope: &LoweringScope, structs: &StructRegist
         ExprKind::StateObject(_) => {
             Err(CompilerError::Unsupported("struct literals are only supported in struct-typed positions".to_string()))
         }
-        ExprKind::Call { name, args, name_span } => Ok(Expr::new(
-            ExprKind::Call {
-                name: name.clone(),
-                args: args.iter().map(|arg| lower_expr(arg, scope, structs)).collect::<Result<Vec<_>, _>>()?,
-                name_span: *name_span,
-            },
-            span,
-        )),
+        ExprKind::Call { name, args, name_span } => {
+            let lowered_args = args.iter().map(|arg| lower_expr(arg, scope, structs)).collect::<Result<Vec<_>, _>>()?;
+            if name.starts_with("byte[") && name.ends_with(']') {
+                let size_part = &name[5..name.len() - 1];
+                if !size_part.is_empty() && lowered_args.len() == 1 {
+                    let size =
+                        size_part.parse::<i64>().map_err(|_| CompilerError::Unsupported(format!("{name}() is not supported")))?;
+                    if let Some(source_type) = infer_lowered_expr_type_name(&lowered_args[0], scope)
+                        && let Some(source_size) = byte_sequence_cast_size(&source_type)
+                        && let Some(source_size) = source_size
+                        && source_size != size
+                    {
+                        return Err(CompilerError::Unsupported(format!("cannot cast {source_type} to {name}")));
+                    }
+                }
+            }
+            Ok(Expr::new(ExprKind::Call { name: name.clone(), args: lowered_args, name_span: *name_span }, span))
+        }
         ExprKind::New { name, args, name_span } => Ok(Expr::new(
             ExprKind::New {
                 name: name.clone(),
@@ -955,7 +965,9 @@ fn compile_contract_impl<'i>(
                 compiled_entrypoints.push(compile_entrypoint_function(
                     func,
                     index,
+                    &lowered_contract.params,
                     &lowered_contract.fields,
+                    &lowered_contract.constants,
                     contract_field_prefix_len,
                     &constants,
                     options,
@@ -1300,6 +1312,79 @@ fn expr_matches_type_ref<'i>(expr: &Expr<'i>, type_ref: &TypeRef) -> bool {
     }
 }
 
+fn infer_expr_type_ref_for_comparison<'i>(
+    expr: &Expr<'i>,
+    env: &HashMap<String, Expr<'i>>,
+    types: &HashMap<String, String>,
+) -> Option<TypeRef> {
+    if let ExprKind::Identifier(name) = &expr.kind {
+        if let Some(type_ref) = types.get(name).and_then(|type_name| parse_type_ref(type_name).ok()) {
+            return Some(type_ref);
+        }
+    }
+    if let Some((name, _)) = env.iter().find(|(_, value)| value.kind == expr.kind) {
+        if let Some(type_ref) = types.get(name).and_then(|type_name| parse_type_ref(type_name).ok()) {
+            return Some(type_ref);
+        }
+    }
+    if let ExprKind::Call { name, .. } = &expr.kind {
+        let is_builtin_cast = matches!(name.as_str(), "int" | "bool" | "byte" | "string" | "pubkey" | "sig" | "datasig")
+            || (name.contains('[') && parse_type_ref(name).ok().is_some_and(|type_ref| !matches!(type_ref.base, TypeBase::Custom(_))));
+        let is_known_builtin = matches!(
+            name.as_str(),
+            "int"
+                | "bool"
+                | "byte"
+                | "string"
+                | "pubkey"
+                | "sig"
+                | "datasig"
+                | "bytes"
+                | "blake2b"
+                | "sha256"
+                | "OpSha256"
+                | "OpTxSubnetId"
+                | "OpTxPayloadSubstr"
+                | "OpOutpointTxId"
+                | "OpTxInputScriptSigSubstr"
+                | "OpTxInputSeq"
+                | "OpTxInputSpkSubstr"
+                | "OpTxOutputSpkSubstr"
+                | "OpNum2Bin"
+                | "OpBin2Num"
+                | "OpChainblockSeqCommit"
+                | "LockingBytecodeNullData"
+                | "ScriptPubKeyP2PK"
+                | "ScriptPubKeyP2SH"
+                | "ScriptPubKeyP2SHFromRedeemScript"
+                | "OpInputCovenantId"
+                | "OpTxGas"
+                | "OpTxPayloadLen"
+                | "OpTxInputIndex"
+                | "OpTxInputIsCoinbase"
+                | "OpTxInputScriptSigLen"
+                | "OpTxInputSpkLen"
+                | "OpOutpointIndex"
+                | "OpTxOutputSpkLen"
+                | "OpAuthOutputCount"
+                | "OpAuthOutputIdx"
+                | "OpCovInputCount"
+                | "OpCovInputIdx"
+                | "OpCovOutputCount"
+                | "OpCovOutputIdx"
+        );
+        if !is_builtin_cast && !is_known_builtin {
+            return None;
+        }
+    }
+    let type_name = infer_debug_expr_value_type(expr, env, types, &mut HashSet::new()).ok()?;
+    parse_type_ref(&type_name).ok()
+}
+
+fn comparison_types_compatible(left_type: &TypeRef, right_type: &TypeRef) -> bool {
+    type_name_from_ref(left_type) == type_name_from_ref(right_type)
+}
+
 fn array_literal_matches_type_ref<'i>(values: &[Expr<'i>], type_ref: &TypeRef) -> bool {
     let Some(element_type) = array_element_type_ref(type_ref) else {
         return false;
@@ -1391,6 +1476,11 @@ fn lower_runtime_expr<'i>(
 ) -> Result<Expr<'i>, CompilerError> {
     let scope = lowering_scope_from_types(types)?;
     lower_expr(expr, &scope, structs)
+}
+
+fn infer_lowered_expr_type_name<'i>(expr: &Expr<'i>, scope: &LoweringScope) -> Option<String> {
+    let types = scope.vars.iter().map(|(name, type_ref)| (name.clone(), type_name_from_ref(type_ref))).collect::<HashMap<_, _>>();
+    infer_debug_expr_value_type(expr, &HashMap::new(), &types, &mut HashSet::new()).ok()
 }
 
 fn lower_runtime_struct_expr<'i>(
@@ -1701,7 +1791,7 @@ fn array_size_with_constants_ref<'i>(type_ref: &TypeRef, constants: &HashMap<Str
             }
             None
         }
-        ArrayDim::Dynamic => None,
+        ArrayDim::Dynamic | ArrayDim::Inferred => None,
     }
 }
 
@@ -1945,7 +2035,11 @@ fn validate_return_types<'i>(
 }
 
 fn has_explicit_array_size_ref(type_ref: &TypeRef) -> bool {
-    !matches!(type_ref.array_size(), Some(ArrayDim::Dynamic) | None)
+    !matches!(type_ref.array_size(), Some(ArrayDim::Dynamic | ArrayDim::Inferred) | None)
+}
+
+fn has_inferred_array_size_ref(type_ref: &TypeRef) -> bool {
+    matches!(type_ref.array_size(), Some(ArrayDim::Inferred))
 }
 
 fn is_array_type_assignable_ref<'i>(actual: &TypeRef, expected: &TypeRef, constants: &HashMap<String, Expr<'i>>) -> bool {
@@ -2007,13 +2101,33 @@ fn expr_matches_return_type_ref_hint<'i>(expr: &Expr<'i>, type_ref: &TypeRef) ->
     }
 }
 
+fn coerce_expr_for_declared_scalar_type<'i>(expr: Expr<'i>, type_name: &str) -> Expr<'i> {
+    if type_name == "byte"
+        && let ExprKind::Int(value) = expr.kind
+        && (0..=255).contains(&value)
+    {
+        return Expr::new(ExprKind::Byte(value as u8), expr.span);
+    }
+    expr
+}
+
+fn coerce_rhs_byte_literal_for_comparison<'i>(left_type: Option<&TypeRef>, right: &Expr<'i>) -> Expr<'i> {
+    if left_type.is_some_and(|type_ref| matches!(type_ref.base, TypeBase::Byte) && type_ref.array_dims.is_empty())
+        && let ExprKind::Int(value) = right.kind
+        && (0..=255).contains(&value)
+    {
+        return Expr::new(ExprKind::Byte(value as u8), right.span);
+    }
+    right.clone()
+}
+
 fn infer_fixed_array_type_from_initializer_ref<'i>(
     declared_type: &TypeRef,
     initializer: Option<&Expr<'i>>,
     types: &HashMap<String, String>,
     constants: &HashMap<String, Expr<'i>>,
 ) -> Option<TypeRef> {
-    if !declared_type.array_size().is_some_and(|dim| matches!(dim, ArrayDim::Dynamic)) {
+    if !has_inferred_array_size_ref(declared_type) {
         return None;
     }
 
@@ -2439,7 +2553,9 @@ pub fn function_branch_index<'i>(contract: &ContractAst<'i>, function_name: &str
 fn compile_entrypoint_function<'i>(
     function: &FunctionAst<'i>,
     function_index: usize,
+    contract_params: &[ParamAst<'i>],
     contract_fields: &[ContractFieldAst<'i>],
+    contract_constants: &[ConstantAst<'i>],
     contract_field_prefix_len: usize,
     constants: &HashMap<String, Expr<'i>>,
     options: CompileOptions,
@@ -2452,6 +2568,30 @@ fn compile_entrypoint_function<'i>(
     let contract_field_count = contract_fields.len();
     let mut flattened_param_names = Vec::new();
     let mut types = HashMap::new();
+    for param in contract_params {
+        let param_type_name = type_name_from_ref(&param.type_ref);
+        types.insert(param.name.clone(), param_type_name.clone());
+        if struct_name_from_type_ref(&param.type_ref, structs).is_some()
+            || struct_array_name_from_type_ref(&param.type_ref, structs).is_some()
+        {
+            for (path, field_type) in flatten_type_ref_leaves(&param.type_ref, structs)? {
+                let leaf_name = flattened_struct_name(&param.name, &path);
+                types.insert(leaf_name, type_name_from_ref(&field_type));
+            }
+        }
+    }
+    for constant in contract_constants {
+        let constant_type_name = type_name_from_ref(&constant.type_ref);
+        types.insert(constant.name.clone(), constant_type_name.clone());
+        if struct_name_from_type_ref(&constant.type_ref, structs).is_some()
+            || struct_array_name_from_type_ref(&constant.type_ref, structs).is_some()
+        {
+            for (path, field_type) in flatten_type_ref_leaves(&constant.type_ref, structs)? {
+                let leaf_name = flattened_struct_name(&constant.name, &path);
+                types.insert(leaf_name, type_name_from_ref(&field_type));
+            }
+        }
+    }
     for param in &function.params {
         let param_type_name = type_name_from_ref(&param.type_ref);
         types.insert(param.name.clone(), param_type_name.clone());
@@ -2759,13 +2899,16 @@ fn compile_statement<'i>(
             }
 
             let type_name = type_name_from_ref(type_ref);
-            let effective_type_name =
-                if is_array_type(&type_name) && array_size_with_constants(&type_name, contract_constants).is_none() {
-                    infer_fixed_array_type_from_initializer(&type_name, expr.as_ref(), types, contract_constants)
-                        .unwrap_or_else(|| type_name.clone())
-                } else {
-                    type_name.clone()
-                };
+            let effective_type_name = if has_inferred_array_size_ref(type_ref) {
+                infer_fixed_array_type_from_initializer(&type_name, expr.as_ref(), types, contract_constants).ok_or_else(|| {
+                    CompilerError::Unsupported(format!(
+                        "variable '{}' requires an initializer with inferrable size for type {}",
+                        name, type_name
+                    ))
+                })?
+            } else {
+                type_name.clone()
+            };
 
             // Check if this is a fixed-size array (e.g., byte[N]) or dynamic array (e.g., byte[])
             let is_fixed_size_array =
@@ -2847,7 +2990,7 @@ fn compile_statement<'i>(
             } else {
                 let expr =
                     expr.clone().ok_or_else(|| CompilerError::Unsupported("variable definition requires initializer".to_string()))?;
-                let expr = lower_runtime_expr(&expr, types, structs)?;
+                let expr = coerce_expr_for_declared_scalar_type(lower_runtime_expr(&expr, types, structs)?, &effective_type_name);
                 let expected_type_ref = parse_type_ref(&effective_type_name)?;
                 if !expr_matches_return_type_ref(&expr, &expected_type_ref, types, contract_constants) {
                     return Err(CompilerError::Unsupported(format!(
@@ -3405,7 +3548,7 @@ fn compile_statement<'i>(
                 // If this is a stack-bound scalar local, compile a real mutation instead of
                 // rewriting `env[name]` (which can explode under unrolled control flow).
                 if stack_bindings.contains(name) && is_not_struct {
-                    let lowered_expr = lower_runtime_expr(expr, types, structs)?;
+                    let lowered_expr = coerce_expr_for_declared_scalar_type(lower_runtime_expr(expr, types, structs)?, type_name);
                     if !expr_matches_return_type_ref(&lowered_expr, &expected_type_ref, types, contract_constants) {
                         return Err(CompilerError::Unsupported(format!(
                             "variable '{}' expects {}{}",
@@ -3535,7 +3678,7 @@ fn compile_statement<'i>(
                         }
                     }
                 }
-                let lowered_expr = lower_runtime_expr(expr, types, structs)?;
+                let lowered_expr = coerce_expr_for_declared_scalar_type(lower_runtime_expr(expr, types, structs)?, type_name);
                 if !expr_matches_return_type_ref(&lowered_expr, &expected_type_ref, types, contract_constants) {
                     return Err(CompilerError::Unsupported(format!(
                         "variable '{}' expects {}{}",
@@ -6012,8 +6155,35 @@ fn compile_expr<'i>(
             Ok(())
         }
         ExprKind::Binary { op, left, right } => {
-            let bytes_eq =
-                matches!(op, BinaryOp::Eq | BinaryOp::Ne) && (expr_is_bytes(left, env, types) || expr_is_bytes(right, env, types));
+            let left_cmp_type = infer_expr_type_ref_for_comparison(left, env, types);
+            let coerced_right =
+                if matches!(op, BinaryOp::Eq | BinaryOp::Ne | BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge) {
+                    coerce_rhs_byte_literal_for_comparison(left_cmp_type.as_ref(), right)
+                } else {
+                    right.as_ref().clone()
+                };
+            if matches!(op, BinaryOp::Eq | BinaryOp::Ne | BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge) {
+                if let (Some(left_type), Some(right_type)) =
+                    (left_cmp_type.clone(), infer_expr_type_ref_for_comparison(&coerced_right, env, types))
+                {
+                    if !comparison_types_compatible(&left_type, &right_type) {
+                        return Err(CompilerError::Unsupported(format!(
+                            "type mismatch: cannot compare {} and {}",
+                            type_name_from_ref(&left_type),
+                            type_name_from_ref(&right_type)
+                        )));
+                    }
+                }
+            }
+            let left_value_type = infer_debug_expr_value_type(left, env, types, &mut HashSet::new()).ok();
+            let right_value_type = infer_debug_expr_value_type(&coerced_right, env, types, &mut HashSet::new()).ok();
+            if matches!(op, BinaryOp::Add)
+                && (left_value_type.as_deref() == Some("byte") || right_value_type.as_deref() == Some("byte"))
+            {
+                return Err(CompilerError::Unsupported("byte values do not support '+'".to_string()));
+            }
+            let bytes_eq = matches!(op, BinaryOp::Eq | BinaryOp::Ne)
+                && (expr_is_bytes(left, env, types) || expr_is_bytes(&coerced_right, env, types));
             let bytes_add = matches!(op, BinaryOp::Add) && (expr_is_bytes(left, env, types) || expr_is_bytes(right, env, types));
             if bytes_add {
                 compile_concat_operand(
@@ -6054,7 +6224,7 @@ fn compile_expr<'i>(
                     contract_constants,
                 )?;
                 compile_expr(
-                    right,
+                    &coerced_right,
                     env,
                     stack_bindings,
                     types,
@@ -6364,7 +6534,9 @@ fn expr_is_bytes_inner<'i>(
     match &expr.kind {
         ExprKind::Byte(_) => true,
         ExprKind::String(_) => true,
-        ExprKind::Array(values) => values.iter().all(|value| matches!(&value.kind, ExprKind::Byte(_))),
+        // Array literals are encoded to their packed byte representation at compile time,
+        // regardless of element type, so downstream bytewise ops must treat them as bytes.
+        ExprKind::Array(_) => true,
         ExprKind::Slice { .. } => true,
         ExprKind::New { name, .. } => matches!(
             name.as_str(),
@@ -7006,6 +7178,24 @@ fn compile_call_expr<'i>(
             )?;
             Ok(())
         }
+        "bool" | "string" => {
+            if args.len() != 1 {
+                return Err(CompilerError::Unsupported(format!("{name}() expects a single argument")));
+            }
+            compile_expr(
+                &args[0],
+                scope.env,
+                scope.stack_bindings,
+                scope.types,
+                builder,
+                options,
+                visiting,
+                stack_depth,
+                script_size,
+                contract_constants,
+            )?;
+            Ok(())
+        }
         "sig" | "pubkey" | "datasig" => {
             if args.len() != 1 {
                 return Err(CompilerError::Unsupported(format!("{name}() expects a single argument")));
@@ -7068,6 +7258,29 @@ fn compile_call_expr<'i>(
                 if args.len() != 1 {
                     return Err(CompilerError::Unsupported(format!("{name}() expects a single argument")));
                 }
+                let source_type = infer_debug_expr_value_type(&args[0], scope.env, scope.types, &mut HashSet::new()).ok();
+                if let Some(source_type) = source_type.as_deref() {
+                    if let Some(source_size) = byte_sequence_cast_size(source_type) {
+                        if let Some(source_size) = source_size {
+                            if source_size != size {
+                                return Err(CompilerError::Unsupported(format!("cannot cast {source_type} to {name}")));
+                            }
+                        }
+                        compile_expr(
+                            &args[0],
+                            scope.env,
+                            scope.stack_bindings,
+                            scope.types,
+                            builder,
+                            options,
+                            visiting,
+                            stack_depth,
+                            script_size,
+                            contract_constants,
+                        )?;
+                        return Ok(());
+                    }
+                }
                 compile_expr(
                     &args[0],
                     scope.env,
@@ -7086,6 +7299,24 @@ fn compile_call_expr<'i>(
                 *stack_depth -= 1;
                 Ok(())
             }
+        }
+        name if parse_type_ref(name).is_ok_and(|type_ref| is_array_type_ref(&type_ref)) => {
+            if args.len() != 1 {
+                return Err(CompilerError::Unsupported(format!("{name}() expects a single argument")));
+            }
+            compile_expr(
+                &args[0],
+                scope.env,
+                scope.stack_bindings,
+                scope.types,
+                builder,
+                options,
+                visiting,
+                stack_depth,
+                script_size,
+                contract_constants,
+            )?;
+            Ok(())
         }
         "blake2b" => {
             if args.len() != 1 {
@@ -7235,6 +7466,20 @@ fn is_bytes_type(type_name: &str) -> bool {
         }
     }
     is_array_type(type_name)
+}
+
+fn byte_sequence_cast_size(type_name: &str) -> Option<Option<i64>> {
+    match type_name {
+        "bytes" | "byte[]" | "string" => Some(None),
+        "byte" => Some(Some(1)),
+        "pubkey" => Some(Some(32)),
+        "sig" => Some(Some(65)),
+        "datasig" => Some(Some(64)),
+        _ => match array_element_type(type_name).as_deref() {
+            Some("byte") => Some(array_size(type_name).map(|size| size as i64)),
+            _ => None,
+        },
+    }
 }
 
 fn build_null_data_script<'i>(arg: &Expr<'i>) -> Result<Vec<u8>, CompilerError> {

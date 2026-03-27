@@ -189,7 +189,7 @@ contract Player(
 
         int leader_input_idx = OpCovInputIdx(cov_id, 0);
         require(blake2b(route_templates) == routes_commitment);
-        require(blake2b(settle_template + player_template) == route_templates.slice(256, 288));
+        require(blake2b(settle_template + player_template) == byte[32](route_templates.slice(256, 288)));
         SettleState leader = readInputStateWithTemplate(leader_input_idx, settle_prefix_len, settle_suffix_len, settle_template);
 
         // Settlement is driven by a terminal settle worker state, not by a

@@ -19,6 +19,6 @@ contract Test(int x) {
             require(i < 20);
             require(checkSig(s, pk));
         } else
-            require(b == 0x01);
+            require(b == byte[](0x01));
     }
 }

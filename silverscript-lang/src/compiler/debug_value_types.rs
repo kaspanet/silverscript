@@ -1,9 +1,9 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::ast::{BinaryOp, Expr, ExprKind, IntrospectionKind, NullaryOp, UnaryOp, UnarySuffixKind};
+use crate::ast::{BinaryOp, Expr, ExprKind, IntrospectionKind, NullaryOp, TypeBase, UnaryOp, UnarySuffixKind};
 use crate::errors::CompilerError;
 
-use super::{array_element_type, is_bytes_type};
+use super::{array_element_type, is_bytes_type, parse_type_ref};
 
 fn nullary_value_type(op: NullaryOp) -> &'static str {
     match op {
@@ -32,11 +32,31 @@ fn introspection_value_type(kind: IntrospectionKind) -> &'static str {
 
 fn builtin_call_value_type(name: &str) -> &'static str {
     match name {
+        "int" => "int",
+        "bool" => "bool",
         "byte" => "byte",
+        "string" => "string",
+        "pubkey" => "pubkey",
+        "sig" => "sig",
+        "datasig" => "datasig",
+        "OpBin2Num"
+        | "OpTxInputDaaScore"
+        | "OpTxGas"
+        | "OpTxPayloadLen"
+        | "OpTxInputIndex"
+        | "OpTxInputScriptSigLen"
+        | "OpTxInputSpkLen"
+        | "OpOutpointIndex"
+        | "OpTxOutputSpkLen"
+        | "OpAuthOutputCount"
+        | "OpAuthOutputIdx"
+        | "OpCovInputCount"
+        | "OpCovInputIdx"
+        | "OpCovOutputCount"
+        | "OpCovOutputIdx" => "int",
+        "OpTxInputIsCoinbase" => "bool",
+        "blake2b" | "sha256" | "OpSha256" => "byte[32]",
         "bytes"
-        | "blake2b"
-        | "sha256"
-        | "OpSha256"
         | "OpTxSubnetId"
         | "OpTxPayloadSubstr"
         | "OpOutpointTxId"
@@ -50,12 +70,23 @@ fn builtin_call_value_type(name: &str) -> &'static str {
         | "ScriptPubKeyP2PK"
         | "ScriptPubKeyP2SH"
         | "ScriptPubKeyP2SHFromRedeemScript" => "byte[]",
-        "OpTxInputDaaScore" | "OpAuthOutputCount" | "OpCovInputCount" | "OpCovInputIdx" | "OpCovOutputCount" | "OpCovOutputIdx" => {
-            "int"
-        }
         "OpInputCovenantId" => "byte[32]",
         _ => "byte[]",
     }
+}
+
+fn is_builtin_cast_type_name(name: &str) -> bool {
+    if matches!(name, "int" | "bool" | "byte" | "string" | "pubkey" | "sig" | "datasig") {
+        return true;
+    }
+    if !name.contains('[') {
+        return false;
+    }
+    let Ok(type_ref) = parse_type_ref(name) else {
+        return false;
+    };
+
+    !matches!(type_ref.base, TypeBase::Custom(_))
 }
 
 pub(super) fn infer_debug_expr_value_type<'i>(
@@ -94,6 +125,8 @@ pub(super) fn infer_debug_expr_value_type<'i>(
                 let right_type = infer_debug_expr_value_type(right, env, types, visiting)?;
                 if left_type == "string" || right_type == "string" {
                     Ok("string".to_string())
+                } else if left_type == "byte" || right_type == "byte" {
+                    Ok("int".to_string())
                 } else if is_bytes_type(&left_type) {
                     Ok(left_type)
                 } else if is_bytes_type(&right_type) {
@@ -102,9 +135,12 @@ pub(super) fn infer_debug_expr_value_type<'i>(
                     Ok("int".to_string())
                 }
             }
-            BinaryOp::BitOr | BinaryOp::BitXor | BinaryOp::BitAnd | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Mod => {
-                Ok("int".to_string())
+            BinaryOp::BitOr | BinaryOp::BitXor | BinaryOp::BitAnd => {
+                let left_type = infer_debug_expr_value_type(left, env, types, visiting)?;
+                let right_type = infer_debug_expr_value_type(right, env, types, visiting)?;
+                if left_type == right_type && is_bytes_type(&left_type) { Ok(left_type) } else { Ok("int".to_string()) }
             }
+            BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Mod => Ok("int".to_string()),
         },
         ExprKind::IfElse { then_expr, else_expr, .. } => {
             let then_type = infer_debug_expr_value_type(then_expr, env, types, visiting)?;
@@ -130,7 +166,7 @@ pub(super) fn infer_debug_expr_value_type<'i>(
         ExprKind::Nullary(kind) => Ok(nullary_value_type(*kind).to_string()),
         ExprKind::Introspection { kind, .. } => Ok(introspection_value_type(*kind).to_string()),
         ExprKind::Call { name, .. } => {
-            if name.starts_with("byte[") {
+            if is_builtin_cast_type_name(name) {
                 Ok(name.clone())
             } else {
                 Ok(builtin_call_value_type(name).to_string())

@@ -869,6 +869,142 @@ fn build_sig_script_builds_expected_script() {
 }
 
 #[test]
+fn byte_variable_from_int_literal_uses_raw_byte_push() {
+    let source = r#"
+        contract Bytes() {
+            entrypoint function main() {
+                byte x = 5;
+                require(OpBin2Num(x) == 5);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("byte int literal should compile");
+    let expected = ScriptBuilder::new()
+        .add_data(&[5u8])
+        .unwrap()
+        .add_op(OpBin2Num)
+        .unwrap()
+        .add_i64(5)
+        .unwrap()
+        .add_op(OpNumEqual)
+        .unwrap()
+        .add_op(OpVerify)
+        .unwrap()
+        .add_op(OpTrue)
+        .unwrap()
+        .drain();
+    assert_eq!(compiled.script, expected);
+    assert!(run_script_with_selector(compiled.script, None).is_ok(), "byte int literal script should execute");
+}
+
+#[test]
+fn byte_variable_from_out_of_range_int_literal_is_rejected() {
+    let source = r#"
+        contract Bytes() {
+            entrypoint function main() {
+                byte x = 256;
+                require(true);
+            }
+        }
+    "#;
+
+    assert!(compile_contract(source, &[], CompileOptions::default()).is_err(), "byte x = 256 should be rejected");
+}
+
+#[test]
+fn byte_equality_uses_op_equal_not_op_numequal() {
+    let source = r#"
+        contract Bytes() {
+            entrypoint function main() {
+                byte x = 5;
+                byte y = 7;
+                require(x == y);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("byte equality should compile");
+    assert!(compiled.script.iter().copied().any(|op| op == OpEqual), "byte equality should use OP_EQUAL");
+    assert!(!compiled.script.iter().copied().any(|op| op == OpNumEqual), "byte equality should not use OP_NUMEQUAL");
+}
+
+#[test]
+fn byte_equality_with_rhs_int_literal_uses_raw_byte_push() {
+    let source = r#"
+        contract Bytes() {
+            entrypoint function main() {
+                byte x = 1;
+                require(x == 1);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("byte equality with rhs literal should compile");
+    let expected = ScriptBuilder::new()
+        .add_data(&[1u8])
+        .unwrap()
+        .add_data(&[1u8])
+        .unwrap()
+        .add_op(OpEqual)
+        .unwrap()
+        .add_op(OpVerify)
+        .unwrap()
+        .add_op(OpTrue)
+        .unwrap()
+        .drain();
+    assert_eq!(compiled.script, expected);
+    assert!(run_script_with_selector(compiled.script, None).is_ok(), "byte equality with rhs literal should execute");
+}
+
+#[test]
+fn byte_equality_with_out_of_range_rhs_int_literal_is_rejected() {
+    let source = r#"
+        contract Bytes() {
+            entrypoint function main() {
+                byte x = 5;
+                require(x == 256);
+            }
+        }
+    "#;
+
+    assert!(compile_contract(source, &[], CompileOptions::default()).is_err(), "x == 256 should be rejected when x is a byte");
+}
+
+#[test]
+fn rejects_adding_byte_values() {
+    let source = r#"
+        contract Bytes() {
+            entrypoint function main() {
+                byte x = 5;
+                byte y = 7;
+                require(x + y > 0);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("byte addition should be rejected");
+    assert!(err.to_string().contains("byte values do not support '+'"), "unexpected error: {err}");
+}
+
+#[test]
+fn rejects_assigning_sum_of_byte_values_to_byte() {
+    let source = r#"
+        contract Bytes() {
+            entrypoint function main() {
+                byte x = 5;
+                byte y = 7;
+                byte z = x + y;
+                require(OpBin2Num(z) == 12);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("byte addition assignment should be rejected");
+    assert!(err.to_string().contains("byte values do not support '+'"), "unexpected error: {err}");
+}
+
+#[test]
 fn build_sig_script_rejects_unknown_function() {
     let source = r#"
         contract C() {
@@ -880,6 +1016,251 @@ fn build_sig_script_rejects_unknown_function() {
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
     let result = compiled.build_sig_script("missing", vec![Expr::int(1)]);
     assert!(result.is_err());
+}
+
+#[test]
+fn disallow_comparing_byte_array_to_byte_constant() {
+    let source = r#"
+        contract Test(byte[32] genesisPk, byte genesisIdentifierType) {
+            byte[32] ownerIdentifier = genesisPk;
+            byte identifierType = genesisIdentifierType;
+            byte constant ZERO = 0x00;
+
+            entrypoint function main() {
+                if (ownerIdentifier == ZERO) {
+                    require(true);
+                }
+            }
+        }
+    "#;
+
+    assert!(
+        compile_contract(source, &[Expr::bytes(vec![1u8; 32]), Expr::byte(0)], CompileOptions::default()).is_err(),
+        "comparing byte[32] to byte should be rejected without cast"
+    );
+}
+
+#[test]
+fn disallow_comparing_dynamic_and_fixed_byte_arrays_without_cast_in_contract_scope() {
+    let source = r#"
+        contract Test(byte[] x) {
+            byte[2] y = 0x1234;
+
+            entrypoint function main() {
+                require(x == y);
+            }
+        }
+    "#;
+
+    assert!(
+        compile_contract(source, &[Expr::bytes(vec![0x12])], CompileOptions::default()).is_err(),
+        "comparing byte[] to byte[2] should be rejected without cast"
+    );
+}
+
+#[test]
+fn allow_comparing_dynamic_and_fixed_byte_arrays_with_cast_in_contract_scope() {
+    let source = r#"
+        contract Test(byte[] x) {
+            byte[2] y = 0x1234;
+
+            entrypoint function main() {
+                require(x == byte[](y));
+            }
+        }
+    "#;
+
+    compile_contract(source, &[Expr::bytes(vec![0x12])], CompileOptions::default())
+        .expect("comparing byte[] to byte[2] should be allowed with cast");
+}
+
+#[test]
+fn rejects_comparing_different_scalar_types_without_cast() {
+    let source = r#"
+        contract Reproduce() {
+            entrypoint function main() {
+                if (1 == true) {
+                    require(false);
+                }
+            }
+        }
+    "#;
+
+    let result = compile_contract(source, &[], CompileOptions::default());
+    assert!(result.is_err(), "int == bool should be rejected");
+}
+
+#[test]
+fn disallow_comparing_dynamic_and_fixed_int_arrays_without_cast() {
+    let source = r#"
+        contract Arrays() {
+            entrypoint function main() {
+                int[] x = [1];
+                int[1] y = [1];
+                require(x == y);
+            }
+        }
+    "#;
+
+    assert!(compile_contract(source, &[], CompileOptions::default()).is_err(), "int[] == int[1] should be rejected");
+}
+
+#[test]
+fn allows_comparing_dynamic_and_fixed_int_arrays_with_cast() {
+    let source = r#"
+        contract Arrays() {
+            entrypoint function main() {
+                int[] x = [1];
+                int[1] y = [1];
+                require(x == int[](y));
+            }
+        }
+    "#;
+
+    assert!(compile_contract(source, &[], CompileOptions::default()).is_ok(), "int[] == int[](int[1]) should compile");
+}
+
+#[test]
+fn allows_comparing_inferred_and_fixed_byte_arrays_when_sizes_match() {
+    let source = r#"
+        contract Arrays() {
+            entrypoint function main() {
+                byte[_] x = 0x1256;
+                byte[2] y = 0x1234;
+                require(x == y);
+            }
+        }
+    "#;
+
+    assert!(compile_contract(source, &[], CompileOptions::default()).is_ok(), "byte[_] should infer to byte[2]");
+}
+
+#[test]
+fn rejects_comparing_inferred_and_fixed_byte_arrays_when_sizes_differ() {
+    let source = r#"
+        contract Arrays() {
+            entrypoint function main() {
+                byte[_] x = 0x12;
+                byte[2] y = 0x1234;
+                require(x == y);
+            }
+        }
+    "#;
+
+    assert!(
+        compile_contract(source, &[], CompileOptions::default()).is_err(),
+        "byte[_] inferred as byte[1] should not compare to byte[2]"
+    );
+}
+
+#[test]
+fn infers_fixed_sizes_for_multiple_array_element_types() {
+    let source = r#"
+        contract Arrays() {
+            entrypoint function main() {
+                int[_] ints = [1, 2, 3, 4];
+                int[4] ints_expected = [1, 2, 3, 4];
+                bool[_] flags = [true, false];
+                bool[2] flags_expected = [true, false];
+                pubkey[_] keys = [
+                    0x0101010101010101010101010101010101010101010101010101010101010101,
+                    0x0202020202020202020202020202020202020202020202020202020202020202
+                ];
+                pubkey[2] keys_expected = [
+                    0x0303030303030303030303030303030303030303030303030303030303030303,
+                    0x0404040404040404040404040404040404040404040404040404040404040404
+                ];
+                require(ints == ints_expected);
+                require(flags == flags_expected);
+                require(keys == keys_expected);
+            }
+        }
+    "#;
+
+    assert!(
+        compile_contract(source, &[], CompileOptions::default()).is_ok(),
+        "type[_] should infer fixed sizes across supported element types"
+    );
+}
+
+#[test]
+fn rejects_comparing_dynamic_and_fixed_arrays_without_cast_in_function_scope() {
+    let source = r#"
+        contract Arrays() {
+            entrypoint function main(byte[] x) {
+                byte[2] y = 0x1234;
+                require(x == y);
+            }
+        }
+    "#;
+
+    assert!(
+        compile_contract(source, &[], CompileOptions::default()).is_err(),
+        "byte[] param should not compare to byte[2] without cast"
+    );
+}
+
+#[test]
+fn allows_comparing_dynamic_and_fixed_arrays_with_cast_in_function_scope() {
+    let source = r#"
+        contract Arrays() {
+            entrypoint function main(byte[] x) {
+                byte[2] y = 0x1234;
+                require(x == byte[](y));
+            }
+        }
+    "#;
+
+    assert!(compile_contract(source, &[], CompileOptions::default()).is_ok(), "byte[] param should compare to byte[](byte[2])");
+}
+
+#[test]
+fn byte_array_to_fixed_byte_array_cast_compiles_without_num2bin() {
+    let source = r#"
+        contract Arrays() {
+            entrypoint function main() {
+                byte[] route_templates = 0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f;
+                byte[32] target_template = byte[32](route_templates.slice(16, 48));
+                require(byte[](target_template) == route_templates.slice(16, 48));
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("byte[] to byte[32] cast should compile");
+    assert!(!compiled.script.iter().copied().any(|op| op == OpNum2Bin), "byte[] to byte[32] cast should not emit OpNum2Bin");
+    assert!(run_script_with_selector(compiled.script, None).is_ok(), "byte[] to byte[32] cast should execute");
+}
+
+#[test]
+fn rejects_cast_between_different_fixed_byte_array_sizes() {
+    let source = r#"
+        contract Arrays() {
+            entrypoint function main() {
+                byte[32] hash = 0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f;
+                byte[31] truncated = byte[31](hash);
+                require(truncated.length == 31);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("byte[32] to byte[31] cast should be rejected");
+    assert!(err.to_string().contains("cannot cast byte[32] to byte[31]"), "unexpected error: {err}");
+}
+
+#[test]
+fn rejects_cast_from_smaller_fixed_byte_array_to_larger_fixed_byte_array() {
+    let source = r#"
+        contract Arrays() {
+            entrypoint function main() {
+                byte[31] hash = 0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e;
+                byte[32] padded = byte[32](hash);
+                require(padded.length == 32);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("byte[31] to byte[32] cast should be rejected");
+    assert!(err.to_string().contains("cannot cast byte[31] to byte[32]"), "unexpected error: {err}");
 }
 
 #[test]
@@ -2902,6 +3283,24 @@ fn runs_array_runtime_examples() {
 }
 
 #[test]
+fn runs_int_array_push_length_runtime_example() {
+    let source = r#"
+        contract Arrays() {
+            entrypoint function main() {
+                int[] x = [1, 2, 3];
+                x.push(4);
+                require(x.length == 4);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let sigscript = ScriptBuilder::new().drain();
+    let result = run_script_with_sigscript(compiled.script, sigscript);
+    assert!(result.is_ok(), "int[] push length runtime example failed: {}", result.unwrap_err());
+}
+
+#[test]
 fn runs_slice_with_explicit_end_bounds() {
     let source = r#"
         contract SliceLowering() {
@@ -2909,7 +3308,7 @@ fn runs_slice_with_explicit_end_bounds() {
                 byte[] data = 0x0102030405060708090a;
                 byte[] segment = data.slice(3, 8);
                 require(segment.length == 5);
-                require(segment == 0x0405060708);
+                require(segment == byte[](0x0405060708));
             }
         }
     "#;
@@ -2929,8 +3328,8 @@ fn runs_slice_reconstruction_and_compare_runtime_example() {
                 byte[] right = data.slice(4, 10);
                 byte[] rebuilt = left + right;
 
-                require(left == 0x01020304);
-                require(right == 0x05060708090a);
+                require(left == byte[](0x01020304));
+                require(right == byte[](0x05060708090a));
                 require(rebuilt.length == data.length);
                 require(rebuilt == data);
             }
@@ -4620,7 +5019,7 @@ fn read_input_state_accepts_pubkey_and_bool_fields_under_selector_dispatch() {
             entrypoint function main() {
                 State s = readInputState(this.activeInputIndex);
                 require(s.flag);
-                require(s.owner == 0x0202020202020202020202020202020202020202020202020202020202020202);
+                require(s.owner == pubkey(0x0202020202020202020202020202020202020202020202020202020202020202));
             }
         }
     "#;
@@ -5609,7 +6008,7 @@ fn compiles_opcode_builtins() {
             r#"
                 contract Test() {
                     entrypoint function main() {
-                        require(OpSha256(bytes("msg")) == bytes("hash"));
+                        require(byte[](OpSha256(bytes("msg"))) == byte[]("hash"));
                     }
                 }
             "#,
@@ -5862,7 +6261,30 @@ fn compiles_opcode_builtins() {
             r#"
                 contract Test() {
                     entrypoint function main() {
-                        require(OpTxInputIsCoinbase(0) == 0);
+                        require(OpTxInputDaaScore(0) == 0);
+                    }
+                }
+            "#,
+            ScriptBuilder::new()
+                .add_i64(0)
+                .unwrap()
+                .add_op(OpTxInputDaaScore)
+                .unwrap()
+                .add_i64(0)
+                .unwrap()
+                .add_op(OpNumEqual)
+                .unwrap()
+                .add_op(OpVerify)
+                .unwrap()
+                .add_op(OpTrue)
+                .unwrap()
+                .drain(),
+        ),
+        (
+            r#"
+                contract Test() {
+                    entrypoint function main() {
+                        require(OpTxInputIsCoinbase(0) == false);
                     }
                 }
             "#,
@@ -6033,7 +6455,7 @@ fn compiles_opcode_builtins() {
             r#"
                 contract Test() {
                     entrypoint function main() {
-                        require(OpInputCovenantId(0) == bytes("cov"));
+                        require(byte[](OpInputCovenantId(0)) == bytes("cov"));
                     }
                 }
             "#,
@@ -6346,7 +6768,7 @@ fn executes_opcode_builtins_basic() {
             r#"
                 contract Test() {
                     entrypoint function main() {
-                        require(OpTxInputIsCoinbase(0) == 0);
+                        require(OpTxInputIsCoinbase(0) == bool(0));
                     }
                 }
             "#,
@@ -6420,7 +6842,7 @@ fn executes_opcode_builtins_covenants() {
             entrypoint function main() {
                 require(OpAuthOutputCount(0) == 2);
                 require(OpAuthOutputIdx(0, 1) == 2);
-                require(OpInputCovenantId(0) == bytes("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"));
+                require(byte[](OpInputCovenantId(0)) == bytes("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"));
                 require(OpCovInputCount(bytes("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")) == 2);
                 require(OpCovInputIdx(bytes("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"), 1) == 2);
                 require(OpCovOutputCount(bytes("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")) == 2);
@@ -6903,8 +7325,8 @@ fn compile_time_length_for_inferred_array_sizes() {
     let source = r#"
         contract Test() {
             entrypoint function test() {
-                byte[] data = 0x1234abcd;
-                int[] nums = [1, 2, 3];
+                byte[_] data = 0x1234abcd;
+                int[_] nums = [1, 2, 3];
                 require(data.length == 4);
                 require(nums.length == 3);
             }
