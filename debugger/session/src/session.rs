@@ -560,7 +560,7 @@ impl<'a, 'i> DebugSession<'a, 'i> {
         let mut stack = Vec::new();
         for step in self.active_steps() {
             match &step.kind {
-                StepKind::InlineCallEnter { callee } => stack.push(callee.clone()),
+                StepKind::InlineCallEnter { callee } => stack.push(self.display_function_name(callee)),
                 StepKind::InlineCallExit { .. } => {
                     stack.pop();
                 }

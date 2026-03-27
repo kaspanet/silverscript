@@ -40,10 +40,6 @@ cargo run -p cli-debugger -- \
 
 See [TUTORIAL.md](docs/TUTORIAL.md) for a full language and usage tutorial, and [DECL.md](docs/DECL.md) for the covenant declaration spec.
 
-For a debugger-focused walkthrough of structured state, source-level variable reconstruction, and evaluation flow, see [DEBUGGER_STRUCT_STATE_OVERVIEW.md](docs/DEBUGGER_STRUCT_STATE_OVERVIEW.md) and the shorter [DEBUGGER_STRUCT_STATE_QUICK_FLOW.md](docs/DEBUGGER_STRUCT_STATE_QUICK_FLOW.md).
-
-The accompanying debugger examples live under `examples/`, including `debug_struct_state_matrix.sil` and its constructor fixture.
-
 ## Credits
 
 See [CREDITS.md](CREDITS.md) for acknowledgements and credits.
