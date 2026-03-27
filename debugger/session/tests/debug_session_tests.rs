@@ -1220,8 +1220,7 @@ contract CovLocal() {
         EngineFlags { covenants_enabled: true },
     );
 
-    let shadow_ctx =
-        ShadowTxContext { tx: &populated_tx, input: input_ref, input_index: 0, utxo_entry: utxo_ref, covenants_ctx: &cov_ctx };
+    let shadow_ctx = ShadowTxContext { tx: &populated_tx, input: input_ref, input_index: 0, utxo_entry: utxo_ref };
 
     let mut session = DebugSession::full(&sigscript, &compiled.script, source, debug_info, engine)?.with_shadow_tx_context(shadow_ctx);
     session.run_to_first_executed_statement()?;
@@ -1285,8 +1284,7 @@ contract CovEval() {
         EngineFlags { covenants_enabled: true },
     );
 
-    let shadow_ctx =
-        ShadowTxContext { tx: &populated_tx, input: input_ref, input_index: 0, utxo_entry: utxo_ref, covenants_ctx: &cov_ctx };
+    let shadow_ctx = ShadowTxContext { tx: &populated_tx, input: input_ref, input_index: 0, utxo_entry: utxo_ref };
 
     let mut session = DebugSession::full(&sigscript, &compiled.script, source, debug_info, engine)?.with_shadow_tx_context(shadow_ctx);
     session.run_to_first_executed_statement()?;

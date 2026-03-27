@@ -573,40 +573,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         None
     };
-    let (script_path, raw_constructor_args, selected_name, raw_args, delegate, tx_scenario, expect) =
-        if let Some(test_file) = inferred_test_file.as_deref() {
-            let test_name = cli.test_name.as_deref().ok_or("--test-name requires --test-file or SCRIPT_PATH")?;
-            let script_override = cli.script_path.as_deref().map(Path::new);
-            let resolved = resolve_contract_test(test_file, test_name, script_override)
-                .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
-            let constructor_args =
-                if !cli.raw_ctor_args.is_empty() { cli.raw_ctor_args.clone() } else { resolved.test.constructor_args };
-            let fname = cli.function_name.clone().unwrap_or(resolved.test.function);
-            let args = if !cli.raw_args.is_empty() { cli.raw_args.clone() } else { resolved.test.args };
-            let expect = Some(resolved.test.expect);
-            (
-                resolved.script_path,
-                constructor_args,
-                fname,
-                args,
-                cli.delegate || resolved.test.delegate,
-                resolved.test.tx,
-                expect,
-            )
-        } else {
-            let path = cli.script_path.as_deref().ok_or("missing script path: pass SCRIPT_PATH or --test-file")?;
-            let constructor_args = cli.raw_ctor_args.clone();
-            let entrypoint_args = cli.raw_args.clone();
-            (
-                PathBuf::from(path),
-                constructor_args,
-                cli.function_name.clone().unwrap_or_default(),
-                entrypoint_args,
-                cli.delegate,
-                None,
-                None,
-            )
-        };
+    let (script_path, raw_constructor_args, selected_name, raw_args, delegate, tx_scenario, expect) = if let Some(test_file) =
+        inferred_test_file.as_deref()
+    {
+        let test_name = cli.test_name.as_deref().ok_or("--test-name requires --test-file or SCRIPT_PATH")?;
+        let script_override = cli.script_path.as_deref().map(Path::new);
+        let resolved =
+            resolve_contract_test(test_file, test_name, script_override).map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+        let constructor_args = if !cli.raw_ctor_args.is_empty() { cli.raw_ctor_args.clone() } else { resolved.test.constructor_args };
+        let fname = cli.function_name.clone().unwrap_or(resolved.test.function);
+        let args = if !cli.raw_args.is_empty() { cli.raw_args.clone() } else { resolved.test.args };
+        let expect = Some(resolved.test.expect);
+        (resolved.script_path, constructor_args, fname, args, cli.delegate || resolved.test.delegate, resolved.test.tx, expect)
+    } else {
+        let path = cli.script_path.as_deref().ok_or("missing script path: pass SCRIPT_PATH or --test-file")?;
+        let constructor_args = cli.raw_ctor_args.clone();
+        let entrypoint_args = cli.raw_args.clone();
+        (
+            PathBuf::from(path),
+            constructor_args,
+            cli.function_name.clone().unwrap_or_default(),
+            entrypoint_args,
+            cli.delegate,
+            None,
+            None,
+        )
+    };
 
     let source = fs::read_to_string(&script_path)?;
     let parsed_contract = parse_contract_ast(&source)?;

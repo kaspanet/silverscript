@@ -276,8 +276,7 @@ pub fn parse_call_args<'i>(contract: &ContractAst<'_>, function_name: &str, raw_
 }
 
 pub fn parse_state_value<'i>(contract: &ContractAst<'_>, raw_state: &str) -> Result<Expr<'i>, String> {
-    let value =
-        serde_json::from_str::<Value>(raw_state).map_err(|err| format!("invalid State value '{raw_state}': {err}"))?;
+    let value = serde_json::from_str::<Value>(raw_state).map_err(|err| format!("invalid State value '{raw_state}': {err}"))?;
     let Value::Object(entries) = value else {
         return Err("State value must be a JSON object".to_string());
     };

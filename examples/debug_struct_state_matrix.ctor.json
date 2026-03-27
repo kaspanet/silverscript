@@ -1,0 +1,30 @@
+[
+  {
+    "kind": "state_object",
+    "data": [
+      {
+        "name": "amount",
+        "expr": {
+          "kind": "int",
+          "data": 3
+        }
+      },
+      {
+        "name": "code",
+        "expr": {
+          "kind": "array",
+          "data": [
+            {
+              "kind": "byte",
+              "data": 18
+            },
+            {
+              "kind": "byte",
+              "data": 52
+            }
+          ]
+        }
+      }
+    ]
+  }
+]

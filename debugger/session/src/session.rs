@@ -12,7 +12,9 @@ use silverscript_lang::ast::{
     ContractAst, Expr, ExprKind, StateFieldExpr, TypeBase, TypeRef, UnarySuffixKind, parse_contract_ast, parse_expression_ast,
     parse_type_ref,
 };
-use silverscript_lang::compiler::{CovenantDeclBinding, CovenantDeclInfo, ResolvedCovenantCallTarget, compile_debug_expr, flattened_struct_name};
+use silverscript_lang::compiler::{
+    CovenantDeclBinding, CovenantDeclInfo, ResolvedCovenantCallTarget, compile_debug_expr, flattened_struct_name,
+};
 use silverscript_lang::debug_info::{
     DebugFunctionRange, DebugInfo, DebugLeafBinding, DebugNamedValue, DebugParamBinding, DebugStep, DebugVariableUpdate,
     RuntimeBinding, SourceSpan, StepId, StepKind,
@@ -1408,7 +1410,12 @@ impl<'a, 'i> DebugSession<'a, 'i> {
 
         let mut shadow_bindings = shadow_by_name.into_values().collect::<Vec<_>>();
         shadow_bindings.sort_by(|left, right| right.stack_index.cmp(&left.stack_index));
-        let stack_bindings = shadow_bindings.iter().map(|binding| (binding.name.clone(), binding.stack_index)).collect();
+        let binding_count = shadow_bindings.len();
+        let stack_bindings = shadow_bindings
+            .iter()
+            .enumerate()
+            .map(|(index, binding)| (binding.name.clone(), (binding_count - index - 1) as i64))
+            .collect();
         Ok((shadow_bindings, env, stack_bindings, eval_types))
     }
 
@@ -1440,7 +1447,7 @@ impl<'a, 'i> DebugSession<'a, 'i> {
                 let opcode = opcode.map_err(|err| format!("failed to parse shadow script: {err}"))?;
                 engine.execute_opcode(opcode).map_err(|err| format!("failed to execute shadow script: {err}"))?;
             }
-            return engine.stacks().dstack.last().cloned().ok_or_else(|| "shadow VM produced an empty stack".to_string());
+            engine.stacks().dstack.last().cloned().ok_or_else(|| "shadow VM produced an empty stack".to_string())
         } else {
             let mut engine =
                 TxScriptEngine::new(EngineCtx::new(&sig_cache).with_reused(&reused_values), EngineFlags { covenants_enabled: true });
@@ -1448,7 +1455,7 @@ impl<'a, 'i> DebugSession<'a, 'i> {
                 let opcode = opcode.map_err(|err| format!("failed to parse shadow script: {err}"))?;
                 engine.execute_opcode(opcode).map_err(|err| format!("failed to execute shadow script: {err}"))?;
             }
-            return engine.stacks().dstack.last().cloned().ok_or_else(|| "shadow VM produced an empty stack".to_string());
+            engine.stacks().dstack.last().cloned().ok_or_else(|| "shadow VM produced an empty stack".to_string())
         }
     }
 
