@@ -4,8 +4,8 @@ use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 
 use clap::Parser;
-use debugger_session::args::{parse_call_args, parse_ctor_args, parse_hex_bytes};
-use debugger_session::session::{DebugEngine, DebugSession, ShadowTxContext, Variable, VariableOrigin};
+use debugger_session::args::{parse_call_args, parse_ctor_args, parse_hex_bytes, parse_state_value};
+use debugger_session::session::{DebugEngine, DebugSession, DebugValue, ShadowTxContext, Variable, VariableOrigin};
 use debugger_session::test_runner::{
     TestExpectation, TestTxInputScenarioResolved, TestTxOutputScenarioResolved, TestTxScenarioResolved, discover_sidecar_path,
     resolve_contract_test,
@@ -21,8 +21,11 @@ use kaspa_txscript::caches::Cache;
 use kaspa_txscript::covenants::CovenantsContext;
 use kaspa_txscript::script_builder::ScriptBuilder;
 use kaspa_txscript::{EngineCtx, EngineFlags, pay_to_script_hash_script};
-use silverscript_lang::ast::{ContractAst, parse_contract_ast};
-use silverscript_lang::compiler::{CompileOptions, compile_contract};
+use silverscript_lang::ast::{ContractAst, Expr, ExprKind, parse_contract_ast};
+use silverscript_lang::compiler::{
+    CompileOptions, CovenantDeclBinding, CovenantDeclCallOptions, compile_contract, compile_contract_ast,
+    resolve_contract_state_values,
+};
 
 const PROMPT: &str = "(sdb) ";
 
@@ -46,6 +49,8 @@ struct CliArgs {
     raw_ctor_args: Vec<String>,
     #[arg(long = "arg", short = 'a')]
     raw_args: Vec<String>,
+    #[arg(long = "delegate")]
+    delegate: bool,
 }
 
 fn compile_script_for_ctor_args(
@@ -63,6 +68,136 @@ fn compile_script_for_ctor_args(
     Ok(compiled.script)
 }
 
+fn expr_to_debug_value(expr: &Expr<'_>) -> Result<debugger_session::session::DebugValue, String> {
+    use debugger_session::session::DebugValue;
+
+    match &expr.kind {
+        ExprKind::Int(value) => Ok(DebugValue::Int(*value)),
+        ExprKind::Bool(value) => Ok(DebugValue::Bool(*value)),
+        ExprKind::Byte(value) => Ok(DebugValue::Bytes(vec![*value])),
+        ExprKind::String(value) => Ok(DebugValue::String(value.clone())),
+        ExprKind::Array(values) => {
+            if values.iter().all(|value| matches!(value.kind, ExprKind::Byte(_))) {
+                return Ok(DebugValue::Bytes(
+                    values
+                        .iter()
+                        .map(|value| match value.kind {
+                            ExprKind::Byte(byte) => byte,
+                            _ => unreachable!("checked"),
+                        })
+                        .collect(),
+                ));
+            }
+            Ok(DebugValue::Array(values.iter().map(expr_to_debug_value).collect::<Result<Vec<_>, _>>()?))
+        }
+        ExprKind::StateObject(fields) => Ok(DebugValue::Object(
+            fields
+                .iter()
+                .map(|field| Ok((field.name.clone(), expr_to_debug_value(&field.expr)?)))
+                .collect::<Result<Vec<_>, String>>()?,
+        )),
+        other => Err(format!("unsupported resolved state expression in debugger: {other:?}")),
+    }
+}
+
+fn resolve_state_for_ctor_args(
+    parsed_contract: &ContractAst<'_>,
+    raw_ctor_args: &[String],
+    cache: &mut HashMap<Vec<String>, debugger_session::session::DebugValue>,
+) -> Result<debugger_session::session::DebugValue, Box<dyn std::error::Error>> {
+    if let Some(value) = cache.get(raw_ctor_args) {
+        return Ok(value.clone());
+    }
+
+    let ctor_args = parse_ctor_args(parsed_contract, raw_ctor_args)?;
+    let state_fields = resolve_contract_state_values(parsed_contract, &ctor_args)?;
+    let value = debugger_session::session::DebugValue::Object(
+        state_fields
+            .iter()
+            .map(|field| Ok((field.name.clone(), expr_to_debug_value(&field.value)?)))
+            .collect::<Result<Vec<_>, String>>()?,
+    );
+    cache.insert(raw_ctor_args.to_vec(), value.clone());
+    Ok(value)
+}
+
+fn resolve_state_from_raw(
+    parsed_contract: &ContractAst<'_>,
+    raw_state: &str,
+    cache: &mut HashMap<String, debugger_session::session::DebugValue>,
+) -> Result<debugger_session::session::DebugValue, Box<dyn std::error::Error>> {
+    if let Some(value) = cache.get(raw_state) {
+        return Ok(value.clone());
+    }
+
+    let expr = parse_state_value(parsed_contract, raw_state)?;
+    let value = expr_to_debug_value(&expr)?;
+    cache.insert(raw_state.to_string(), value.clone());
+    Ok(value)
+}
+
+fn materialize_script_for_explicit_state(
+    source: &str,
+    parsed_contract: &ContractAst<'_>,
+    raw_instance_args: &[String],
+    raw_state: &str,
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let instance_args = parse_ctor_args(parsed_contract, raw_instance_args)?;
+    let state = parse_state_value(parsed_contract, raw_state)?;
+    let base_compiled = compile_contract(source, &instance_args, CompileOptions::default())?;
+    let materialized_contract = contract_with_explicit_state(parsed_contract, &state)?;
+    let materialized = compile_contract_ast(&materialized_contract, &instance_args, CompileOptions::default())?;
+    let base_layout = base_compiled.state_layout;
+    let materialized_layout = materialized.state_layout;
+    if base_layout.len == 0 {
+        return Err("contract does not expose a materializable state segment".into());
+    }
+    if materialized_layout.len == 0 {
+        return Err("materialized contract did not expose a state segment".into());
+    }
+    let base_start = base_layout.start;
+    let base_end = base_layout.start + base_layout.len;
+    let materialized_start = materialized_layout.start;
+    let materialized_end = materialized_layout.start + materialized_layout.len;
+    let base_len = base_layout.len;
+    let materialized_len = materialized_layout.len;
+    if base_len != materialized_len {
+        return Err("explicit state changes encoded script size; provide raw script_hex instead".into());
+    }
+    if base_compiled.script.len() < base_end || materialized.script.len() < materialized_end {
+        return Err("state template range exceeds compiled script length".into());
+    }
+    if base_compiled.script[..base_start] != materialized.script[..materialized_start]
+        || base_compiled.script[base_end..] != materialized.script[materialized_end..]
+    {
+        return Err("explicit state changed non-state bytecode; provide raw script_hex instead".into());
+    }
+
+    let mut script = base_compiled.script;
+    script[base_start..base_end].copy_from_slice(&materialized.script[materialized_start..materialized_end]);
+    Ok(script)
+}
+
+fn contract_with_explicit_state<'i>(contract: &ContractAst<'i>, state: &Expr<'i>) -> Result<ContractAst<'i>, String> {
+    let ExprKind::StateObject(entries) = &state.kind else {
+        return Err("State value must be an object literal".to_string());
+    };
+
+    let mut provided = entries.iter().map(|entry| (entry.name.as_str(), entry.expr.clone())).collect::<HashMap<_, _>>();
+    if provided.len() != contract.fields.len() {
+        return Err("State value must include all contract fields exactly once".to_string());
+    }
+
+    let mut materialized = contract.clone();
+    for field in &mut materialized.fields {
+        field.expr = provided.remove(field.name.as_str()).ok_or_else(|| format!("missing state field '{}'", field.name))?;
+    }
+    if let Some(extra) = provided.keys().next() {
+        return Err(format!("unknown state field '{}'", extra));
+    }
+    Ok(materialized)
+}
+
 fn parse_hex_32(raw: &str, name: &str) -> Result<[u8; 32], Box<dyn std::error::Error>> {
     let bytes = parse_hex_bytes(raw)?;
     if bytes.len() != 32 {
@@ -74,11 +209,35 @@ fn parse_hex_32(raw: &str, name: &str) -> Result<[u8; 32], Box<dyn std::error::E
 }
 
 fn parse_hash32(raw: &str) -> Result<Hash, Box<dyn std::error::Error>> {
+    if raw.starts_with("0x") || raw.starts_with("0X") {
+        return Ok(Hash::from_bytes(parse_short_or_full_hex_32(raw, "hash")?));
+    }
+
+    if let Ok(value) = raw.parse::<u64>() {
+        return Ok(Hash::from_bytes(u64_to_hash_bytes(value)));
+    }
+
     Ok(Hash::from_bytes(parse_hex_32(raw, "hash")?))
 }
 
 fn parse_txid32(raw: &str) -> Result<TransactionId, Box<dyn std::error::Error>> {
     Ok(TransactionId::from_bytes(parse_hex_32(raw, "txid")?))
+}
+
+fn parse_short_or_full_hex_32(raw: &str, name: &str) -> Result<[u8; 32], Box<dyn std::error::Error>> {
+    let bytes = parse_hex_bytes(raw)?;
+    if bytes.len() > 32 {
+        return Err(format!("{name} expects at most 32 bytes, got {}", bytes.len()).into());
+    }
+    let mut array = [0u8; 32];
+    array[32 - bytes.len()..].copy_from_slice(&bytes);
+    Ok(array)
+}
+
+fn u64_to_hash_bytes(value: u64) -> [u8; 32] {
+    let mut array = [0u8; 32];
+    array[24..].copy_from_slice(&value.to_be_bytes());
+    array
 }
 
 fn build_p2pk_script(pubkey: &[u8]) -> Vec<u8> {
@@ -195,7 +354,7 @@ fn run_repl(session: &mut DebugSession<'_, '_>) -> Result<(), Box<dyn std::error
         }
 
         let cmd = cmd.trim();
-        if cmd.is_empty() || cmd == "n" || cmd == "next" {
+        if cmd.is_empty() || cmd == "n" || cmd == "next" || cmd == "over" {
             match session.step_over() {
                 Ok(Some(_)) => {
                     let console_output = session.take_console_output();
@@ -218,7 +377,7 @@ fn run_repl(session: &mut DebugSession<'_, '_>) -> Result<(), Box<dyn std::error
         let command = parts.next().unwrap_or("");
         let rest = parts.next().unwrap_or("").trim();
         match command {
-            "step" | "s" => match session.step_into() {
+            "step" | "s" | "into" => match session.step_into() {
                 Ok(Some(_)) => {
                     let console_output = session.take_console_output();
                     show_step_view(session, &console_output);
@@ -248,7 +407,7 @@ fn run_repl(session: &mut DebugSession<'_, '_>) -> Result<(), Box<dyn std::error
                     break;
                 }
             },
-            "finish" | "out" => match session.step_out() {
+            "finish" | "out" | "so" => match session.step_out() {
                 Ok(Some(_)) => {
                     let console_output = session.take_console_output();
                     show_step_view(session, &console_output);
@@ -329,11 +488,11 @@ fn run_repl(session: &mut DebugSession<'_, '_>) -> Result<(), Box<dyn std::error
             "q" | "quit" => break,
             "help" | "h" | "?" => {
                 println!(
-                    "Commands: next/over (n), step/into (s), step opcode (si), finish/out, continue (c), break (b <line>), list (l), vars, eval <expr> (e), print <name>, stack, quit (q)"
+                    "Commands: next/over (n), step/into (s), step opcode (si), finish/out/so, continue (c), break (b <line>), list (l), vars, eval <expr> (e), print <name>, stack, quit (q)"
                 )
             }
             _ => println!(
-                "Commands: next/over (n), step/into (s), step opcode (si), finish/out, continue (c), break (b <line>), list (l), vars, eval <expr> (e), print <name>, stack, quit (q)"
+                "Commands: next/over (n), step/into (s), step opcode (si), finish/out/so, continue (c), break (b <line>), list (l), vars, eval <expr> (e), print <name>, stack, quit (q)"
             ),
         }
     }
@@ -408,39 +567,62 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return run_all_tests(&test_file, cli.script_path.as_deref());
     }
 
-    // Resolve source, ctor args, function, call args, and tx from test file or CLI flags
+    // Resolve source, constructor args, function, call args, and tx from test file or CLI flags
     let inferred_test_file = if cli.test_file.is_some() || cli.test_name.is_some() {
         resolve_test_file_path(cli.test_file.as_deref(), cli.script_path.as_deref(), "run-test")?
     } else {
         None
     };
-    let (script_path, raw_ctor_args, selected_name, raw_args, tx_scenario, expect) =
+    let (script_path, raw_constructor_args, selected_name, raw_args, delegate, tx_scenario, expect) =
         if let Some(test_file) = inferred_test_file.as_deref() {
             let test_name = cli.test_name.as_deref().ok_or("--test-name requires --test-file or SCRIPT_PATH")?;
             let script_override = cli.script_path.as_deref().map(Path::new);
             let resolved = resolve_contract_test(test_file, test_name, script_override)
                 .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
-            let ctor = if !cli.raw_ctor_args.is_empty() { cli.raw_ctor_args.clone() } else { resolved.test.constructor_args };
+            let constructor_args =
+                if !cli.raw_ctor_args.is_empty() { cli.raw_ctor_args.clone() } else { resolved.test.constructor_args };
             let fname = cli.function_name.clone().unwrap_or(resolved.test.function);
             let args = if !cli.raw_args.is_empty() { cli.raw_args.clone() } else { resolved.test.args };
             let expect = Some(resolved.test.expect);
-            (resolved.script_path, ctor, fname, args, resolved.test.tx, expect)
+            (
+                resolved.script_path,
+                constructor_args,
+                fname,
+                args,
+                cli.delegate || resolved.test.delegate,
+                resolved.test.tx,
+                expect,
+            )
         } else {
             let path = cli.script_path.as_deref().ok_or("missing script path: pass SCRIPT_PATH or --test-file")?;
-            let ctor = cli.raw_ctor_args.clone();
-            let args = cli.raw_args.clone();
-            (PathBuf::from(path), ctor, cli.function_name.clone().unwrap_or_default(), args, None, None)
+            let constructor_args = cli.raw_ctor_args.clone();
+            let entrypoint_args = cli.raw_args.clone();
+            (
+                PathBuf::from(path),
+                constructor_args,
+                cli.function_name.clone().unwrap_or_default(),
+                entrypoint_args,
+                cli.delegate,
+                None,
+                None,
+            )
         };
 
     let source = fs::read_to_string(&script_path)?;
     let parsed_contract = parse_contract_ast(&source)?;
 
-    let ctor_args = parse_ctor_args(&parsed_contract, &raw_ctor_args)?;
+    let ctor_args = parse_ctor_args(&parsed_contract, &raw_constructor_args)?;
     let compile_opts = CompileOptions { record_debug_infos: true, ..Default::default() };
     let compiled = compile_contract(&source, &ctor_args, compile_opts)?;
     let debug_info = compiled.debug_info.clone();
     let mut ctor_script_cache = HashMap::<Vec<String>, Vec<u8>>::new();
-    ctor_script_cache.insert(raw_ctor_args.clone(), compiled.script.clone());
+    let mut ctor_state_cache = HashMap::<Vec<String>, debugger_session::session::DebugValue>::new();
+    let mut explicit_state_cache = HashMap::<String, debugger_session::session::DebugValue>::new();
+    ctor_script_cache.insert(raw_constructor_args.clone(), compiled.script.clone());
+    if !parsed_contract.fields.is_empty() {
+        let root_state = resolve_state_for_ctor_args(&parsed_contract, &raw_constructor_args, &mut ctor_state_cache)?;
+        ctor_state_cache.insert(raw_constructor_args.clone(), root_state);
+    }
 
     let selected_name = if selected_name.is_empty() {
         compiled.abi.first().map(|entry| entry.name.clone()).ok_or("contract has no functions")?
@@ -448,8 +630,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         selected_name
     };
 
-    let typed_args = parse_call_args(&compiled.ast, &selected_name, &raw_args)?;
-    let sigscript = compiled.build_sig_script(&selected_name, typed_args)?;
+    let covenant_target = compiled.resolve_covenant_call_target(&selected_name, CovenantDeclCallOptions { is_leader: !delegate });
+    let covenant_binding = covenant_target.as_ref().map(|target| target.info.binding);
+    let enable_covenant_session_mode = covenant_target.is_some();
+    let sigscript = if let Some(target) = covenant_target.as_ref() {
+        if delegate && target.info.binding != CovenantDeclBinding::Cov {
+            return Err("--delegate only applies to binding=cov covenant declarations".into());
+        }
+        let typed_args = parse_call_args(&compiled.ast, &target.generated_entrypoint_name, &raw_args)?;
+        compiled.build_sig_script_for_covenant_decl(&selected_name, typed_args, CovenantDeclCallOptions { is_leader: !delegate })?
+    } else {
+        if delegate {
+            return Err("--delegate only applies when --function names a source-level binding=cov covenant declaration".into());
+        }
+        let typed_args = parse_call_args(&compiled.ast, &selected_name, &raw_args)?;
+        compiled.build_sig_script(&selected_name, typed_args)?
+    };
 
     let tx = tx_scenario.unwrap_or_else(|| TestTxScenarioResolved {
         version: 1,
@@ -463,6 +659,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             utxo_value: 5000,
             covenant_id: None,
             constructor_args: None,
+            state: None,
             signature_script_hex: None,
             utxo_script_hex: None,
         }],
@@ -471,6 +668,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             covenant_id: None,
             authorizing_input: None,
             constructor_args: None,
+            state: None,
             script_hex: None,
             p2pk_pubkey: None,
         }],
@@ -485,6 +683,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut tx_inputs = Vec::with_capacity(tx.inputs.len());
     let mut utxo_specs = Vec::with_capacity(tx.inputs.len());
+    let mut input_covenant_ids = Vec::with_capacity(tx.inputs.len());
+    let mut input_covenant_states = Vec::with_capacity(tx.inputs.len());
+    let mut input_redeem_scripts = Vec::with_capacity(tx.inputs.len());
     for (input_idx, input) in tx.inputs.iter().enumerate() {
         let mut default_prev_txid = [0u8; 32];
         default_prev_txid.fill(input_idx as u8);
@@ -494,9 +695,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             TransactionId::from_bytes(default_prev_txid)
         };
 
-        let input_ctor_raw = input.constructor_args.clone().unwrap_or_else(|| raw_ctor_args.clone());
+        let input_constructor_args = input.constructor_args.clone().unwrap_or_else(|| raw_constructor_args.clone());
+        let input_covenant_state = if let Some(raw_state) = input.state.as_deref() {
+            Some(resolve_state_from_raw(&parsed_contract, raw_state, &mut explicit_state_cache)?)
+        } else if input.utxo_script_hex.is_none() || input.constructor_args.is_some() {
+            Some(resolve_state_for_ctor_args(&parsed_contract, &input_constructor_args, &mut ctor_state_cache)?)
+        } else {
+            None
+        };
         let redeem_script = if input.utxo_script_hex.is_none() {
-            Some(compile_script_for_ctor_args(&source, &parsed_contract, &input_ctor_raw, &mut ctor_script_cache)?)
+            if let Some(raw_state) = input.state.as_deref() {
+                Some(materialize_script_for_explicit_state(&source, &parsed_contract, &input_constructor_args, raw_state)?)
+            } else {
+                Some(compile_script_for_ctor_args(&source, &parsed_contract, &input_constructor_args, &mut ctor_script_cache)?)
+            }
         } else {
             None
         };
@@ -527,6 +739,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             sig_op_count: input.sig_op_count,
         });
         utxo_specs.push((input.utxo_value, utxo_spk, covenant_id));
+        input_covenant_ids.push(covenant_id);
+        input_covenant_states.push(input_covenant_state);
+        input_redeem_scripts.push(redeem_script);
     }
 
     let mut tx_outputs = Vec::with_capacity(tx.outputs.len());
@@ -538,8 +753,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let p2pk_script = build_p2pk_script(&pubkey_bytes);
             ScriptPublicKey::new(0, p2pk_script.into())
         } else {
-            let output_ctor_raw = output.constructor_args.clone().unwrap_or_else(|| raw_ctor_args.clone());
-            let output_script = compile_script_for_ctor_args(&source, &parsed_contract, &output_ctor_raw, &mut ctor_script_cache)?;
+            let output_constructor_args = output.constructor_args.clone().unwrap_or_else(|| raw_constructor_args.clone());
+            let output_script = if let Some(raw_state) = output.state.as_deref() {
+                materialize_script_for_explicit_state(&source, &parsed_contract, &output_constructor_args, raw_state)?
+            } else {
+                compile_script_for_ctor_args(&source, &parsed_contract, &output_constructor_args, &mut ctor_script_cache)?
+            };
             pay_to_script_hash_script(&output_script)
         };
 
@@ -572,16 +791,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         kas_tx.inputs.get(tx.active_input_index).ok_or_else(|| format!("missing tx input at index {}", tx.active_input_index))?;
     let active_utxo =
         populated_tx.utxo(tx.active_input_index).ok_or_else(|| format!("missing utxo entry for input {}", tx.active_input_index))?;
-    let engine = DebugEngine::from_transaction_input(&populated_tx, active_input, tx.active_input_index, active_utxo, ctx, flags);
-    let shadow_tx_context = ShadowTxContext {
-        tx: &populated_tx,
-        input: active_input,
-        input_index: tx.active_input_index,
-        utxo_entry: active_utxo,
-        covenants_ctx: &cov_ctx,
+    let active_covenant_input_state = input_covenant_states.get(tx.active_input_index).cloned().flatten();
+    let active_lockscript =
+        input_redeem_scripts.get(tx.active_input_index).cloned().flatten().unwrap_or_else(|| compiled.script.clone());
+    let covenant_input_states = active_utxo.covenant_id.and_then(|covenant_id| {
+        let mut values = Vec::new();
+        for (input_covenant_id, covenant_input_state) in input_covenant_ids.iter().zip(input_covenant_states.iter()) {
+            if *input_covenant_id != Some(covenant_id) {
+                continue;
+            }
+            values.push(covenant_input_state.clone()?);
+        }
+        Some(values)
+    });
+    let covenant_param_value = match covenant_binding {
+        Some(CovenantDeclBinding::Auth) => active_covenant_input_state.clone(),
+        Some(CovenantDeclBinding::Cov) => covenant_input_states.clone().map(DebugValue::Array),
+        None => None,
     };
+    let engine = DebugEngine::from_transaction_input(&populated_tx, active_input, tx.active_input_index, active_utxo, ctx, flags);
+    let shadow_tx_context =
+        ShadowTxContext { tx: &populated_tx, input: active_input, input_index: tx.active_input_index, utxo_entry: active_utxo };
     let mut session =
-        DebugSession::full(&sigscript, &compiled.script, &source, debug_info, engine)?.with_shadow_tx_context(shadow_tx_context);
+        DebugSession::full(&sigscript, &active_lockscript, &source, debug_info, engine)?.with_shadow_tx_context(shadow_tx_context);
+    if enable_covenant_session_mode {
+        session = session.with_covenant_mode(compiled.covenant_infos.clone(), covenant_param_value, covenant_target);
+    }
 
     if cli.run {
         let expect_fail = expect == Some(TestExpectation::Fail);

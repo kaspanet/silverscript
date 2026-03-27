@@ -9,9 +9,10 @@ use kaspa_txscript::{DynOpcodeImplementation, EngineCtx, EngineFlags, TxScriptEn
 use serde::{Deserialize, Serialize};
 
 use silverscript_lang::ast::{
-    Expr, ExprKind, StateFieldExpr, TypeBase, UnarySuffixKind, parse_contract_ast, parse_expression_ast, parse_type_ref,
+    ContractAst, Expr, ExprKind, StateFieldExpr, TypeBase, TypeRef, UnarySuffixKind, parse_contract_ast, parse_expression_ast,
+    parse_type_ref,
 };
-use silverscript_lang::compiler::{compile_debug_expr, flattened_struct_name};
+use silverscript_lang::compiler::{CovenantDeclBinding, CovenantDeclInfo, ResolvedCovenantCallTarget, compile_debug_expr, flattened_struct_name};
 use silverscript_lang::debug_info::{
     DebugFunctionRange, DebugInfo, DebugLeafBinding, DebugNamedValue, DebugParamBinding, DebugStep, DebugVariableUpdate,
     RuntimeBinding, SourceSpan, StepId, StepKind,
@@ -27,13 +28,12 @@ pub type DebugReused = SigHashReusedValuesUnsync;
 pub type DebugOpcode<'a> = DynOpcodeImplementation<DebugTx<'a>, DebugReused>;
 pub type DebugEngine<'a> = TxScriptEngine<'a, DebugTx<'a>, DebugReused>;
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct ShadowTxContext<'a> {
     pub tx: &'a DebugTx<'a>,
     pub input: &'a TransactionInput,
     pub input_index: usize,
     pub utxo_entry: &'a UtxoEntry,
-    pub covenants_ctx: &'a CovenantsContext,
 }
 
 #[derive(Debug, Clone)]
@@ -127,6 +127,25 @@ pub struct OpcodeMeta<'i> {
     pub step: Option<DebugStep<'i>>,
 }
 
+#[derive(Clone)]
+struct CovenantSessionContext {
+    bindings: Vec<CovenantDeclInfo>,
+}
+
+impl CovenantSessionContext {
+    fn binding_for_function(&self, function_name: &str) -> Option<&CovenantDeclInfo> {
+        self.bindings.iter().find(|binding| binding.matches_generated_name(function_name))
+    }
+
+    fn display_name_for_function(&self, function_name: &str) -> Option<String> {
+        self.binding_for_function(function_name).and_then(|binding| binding.display_name_for_function(function_name))
+    }
+
+    fn hides_name(&self, name: &str) -> bool {
+        name.starts_with("__cov_") || name.starts_with("__covenant_policy_")
+    }
+}
+
 pub struct DebugSession<'a, 'i> {
     engine: DebugEngine<'a>,
     shadow_tx_context: Option<ShadowTxContext<'a>>,
@@ -136,7 +155,11 @@ pub struct DebugSession<'a, 'i> {
     script_len: usize,
     pc: usize,
     debug_info: DebugInfo<'i>,
-    function_param_counts: HashMap<String, usize>,
+    contract_ast: Option<ContractAst<'i>>,
+    covenant_ctx: Option<CovenantSessionContext>,
+    covenant_param_value: Option<DebugValue>,
+    active_covenant_policy_name: Option<String>,
+    active_covenant_display_name: Option<String>,
     step_order: Vec<usize>,
     current_step_index: Option<usize>,
     source_lines: Vec<String>,
@@ -153,15 +176,15 @@ struct ShadowBindingValue {
     value: Vec<u8>,
 }
 
-struct VariableContext<'a> {
-    function_name: &'a str,
+struct VariableContext {
+    function_name: String,
     function_start: usize,
     function_end: usize,
     step_id: StepId,
 }
 
 struct VisibleScope<'a, 'i> {
-    context: VariableContext<'a>,
+    context: VariableContext,
     updates: HashMap<String, &'a DebugVariableUpdate<'i>>,
 }
 
@@ -170,6 +193,7 @@ enum ScopeValueSource<'i> {
     RuntimeSlot { from_top: i64 },
     StructuredBinding { base_name: String, leaf_bindings: Vec<DebugLeafBinding> },
     Expr(Expr<'i>),
+    Unavailable { message: String },
 }
 
 struct ScopeBinding<'i> {
@@ -194,7 +218,7 @@ impl<'a, 'i> DebugSession<'a, 'i> {
     pub fn full(
         sigscript: &[u8],
         lockscript: &[u8],
-        source: &str,
+        source: &'i str,
         debug_info: Option<DebugInfo<'i>>,
         mut engine: DebugEngine<'a>,
     ) -> Result<Self, kaspa_txscript_errors::TxScriptError> {
@@ -205,15 +229,12 @@ impl<'a, 'i> DebugSession<'a, 'i> {
     /// Internal constructor: parses script, prepares opcodes, extracts statement steps.
     pub fn from_scripts(
         script: &[u8],
-        source: &str,
+        source: &'i str,
         debug_info: Option<DebugInfo<'i>>,
         engine: DebugEngine<'a>,
     ) -> Result<Self, kaspa_txscript_errors::TxScriptError> {
         let debug_info = debug_info.unwrap_or_else(DebugInfo::empty);
-        let function_param_counts = parse_contract_ast(source)
-            .ok()
-            .map(|contract| contract.functions.into_iter().map(|function| (function.name, function.params.len())).collect())
-            .unwrap_or_default();
+        let contract_ast = parse_contract_ast(source).ok();
         let opcodes = parse_script::<DebugTx<'a>, DebugReused>(script).collect::<Result<Vec<_>, _>>()?;
         let op_displays = opcodes.iter().map(|op| format!("{op:?}")).collect();
         let opcodes: Vec<Option<DebugOpcode<'a>>> = opcodes.into_iter().map(Some).collect();
@@ -237,7 +258,11 @@ impl<'a, 'i> DebugSession<'a, 'i> {
             script_len,
             pc: 0,
             debug_info,
-            function_param_counts,
+            contract_ast,
+            covenant_ctx: None,
+            covenant_param_value: None,
+            active_covenant_policy_name: None,
+            active_covenant_display_name: None,
             step_order,
             current_step_index: None,
             source_lines,
@@ -263,6 +288,19 @@ impl<'a, 'i> DebugSession<'a, 'i> {
 
     pub fn with_shadow_tx_context(mut self, shadow_tx_context: ShadowTxContext<'a>) -> Self {
         self.shadow_tx_context = Some(shadow_tx_context);
+        self
+    }
+
+    pub fn with_covenant_mode(
+        mut self,
+        infos: Vec<CovenantDeclInfo>,
+        param_value: Option<DebugValue>,
+        active_call: Option<ResolvedCovenantCallTarget>,
+    ) -> Self {
+        self.covenant_ctx = (!infos.is_empty()).then_some(CovenantSessionContext { bindings: infos });
+        self.covenant_param_value = param_value;
+        self.active_covenant_policy_name = active_call.as_ref().map(|call| call.info.lowered.policy_function.clone());
+        self.active_covenant_display_name = active_call.as_ref().map(display_name_for_active_covenant_call);
         self
     }
 
@@ -347,7 +385,7 @@ impl<'a, 'i> DebugSession<'a, 'i> {
 
     /// Advances execution to the first user statement, skipping dispatcher/synthetic bytecode.
     /// Call this after session creation to skip over contract setup code.
-    /// Skips opcodes until the first source step is encountered.
+    /// Skips opcodes until the first real source step is encountered.
     pub fn run_to_first_executed_statement(&mut self) -> Result<Option<SessionState<'i>>, kaspa_txscript_errors::TxScriptError> {
         if self.step_order.is_empty() {
             return Ok(None);
@@ -358,7 +396,7 @@ impl<'a, 'i> DebugSession<'a, 'i> {
             }
             let offset = self.current_byte_offset();
             if self.engine.is_executing() {
-                if let Some(index) = self.steppable_step_index_for_offset(offset, None) {
+                if let Some(index) = self.initial_step_index_for_offset(offset, None) {
                     self.mark_step_executed(index);
                     return Ok(Some(self.state()));
                 }
@@ -491,8 +529,9 @@ impl<'a, 'i> DebugSession<'a, 'i> {
     /// Returns a specific variable by name, or error if not in scope.
     pub fn variable_by_name(&self, name: &str) -> Result<Variable, String> {
         let scope_state = self.current_scope_state()?;
-        let variables = self.collect_variables_map(&scope_state);
-        variables.get(name).cloned().ok_or_else(|| format!("unknown variable '{name}'"))
+        let binding = scope_state.get(name).ok_or_else(|| format!("unknown variable '{name}'"))?;
+        let value = self.resolve_scope_binding(&scope_state, binding).unwrap_or_else(DebugValue::Unknown);
+        Ok(Variable { name: name.to_string(), type_name: binding.type_name.clone(), value, origin: binding.origin })
     }
 
     pub fn evaluate_expression(&self, expr_src: &str) -> Result<(String, DebugValue), String> {
@@ -535,7 +574,7 @@ impl<'a, 'i> DebugSession<'a, 'i> {
         for step in self.active_steps() {
             match &step.kind {
                 StepKind::InlineCallEnter { callee } => stack.push(CallStackEntry {
-                    callee_name: callee.clone(),
+                    callee_name: self.display_function_name(callee),
                     call_site_span: Some(step.span),
                     sequence: step.sequence,
                     frame_id: step.frame_id,
@@ -550,16 +589,86 @@ impl<'a, 'i> DebugSession<'a, 'i> {
     }
 
     /// Returns the name of the function currently being executed.
-    pub fn current_function_name(&self) -> Option<&str> {
-        self.current_function_range().map(|range| range.name.as_str())
+    pub fn current_function_name(&self) -> Option<String> {
+        self.current_compiled_function_name().map(|function_name| self.display_function_name(&function_name))
     }
 
-    fn current_function_range(&self) -> Option<&DebugFunctionRange> {
-        let offset = self.current_byte_offset();
-        self.debug_info.functions.iter().find(|function| offset >= function.bytecode_start && offset < function.bytecode_end)
+    fn current_compiled_function_name(&self) -> Option<String> {
+        self.compiled_function_name_for_step(self.current_scope_step_id())
     }
 
-    fn current_variable_updates(&self, context: &VariableContext<'_>) -> HashMap<String, &DebugVariableUpdate<'i>> {
+    fn function_range_for_step(&self, step_id: StepId) -> Option<&DebugFunctionRange> {
+        let offset = self
+            .debug_info
+            .steps
+            .iter()
+            .find(|step| step.id() == step_id)
+            .map(|step| step.bytecode_start)
+            .unwrap_or_else(|| self.current_byte_offset());
+        self.debug_info.functions.iter().find(|function| range_matches_offset(function.bytecode_start, function.bytecode_end, offset))
+    }
+
+    fn compiled_function_name_for_step(&self, step_id: StepId) -> Option<String> {
+        let entrypoint = self.function_range_for_step(step_id)?;
+        if step_id.frame_id == 0 {
+            return Some(entrypoint.name.clone());
+        }
+
+        let mut active_calls = Vec::new();
+        let mut steps = self
+            .debug_info
+            .steps
+            .iter()
+            .filter(|step| {
+                step.sequence <= step_id.sequence
+                    && range_matches_offset(entrypoint.bytecode_start, entrypoint.bytecode_end, step.bytecode_start)
+            })
+            .collect::<Vec<_>>();
+        steps.sort_by_key(|step| step.sequence);
+
+        for step in steps {
+            match &step.kind {
+                StepKind::InlineCallEnter { callee } => active_calls.push((step.frame_id, callee.clone())),
+                StepKind::InlineCallExit { .. } => {
+                    active_calls.pop();
+                }
+                StepKind::Source {} => {}
+            }
+        }
+
+        active_calls
+            .into_iter()
+            .rev()
+            .find_map(|(frame_id, callee)| (frame_id == step_id.frame_id).then_some(callee))
+            .or_else(|| Some(entrypoint.name.clone()))
+    }
+
+    fn covenant_ctx(&self) -> Option<&CovenantSessionContext> {
+        self.covenant_ctx.as_ref()
+    }
+
+    fn param_origin(&self, name: &str) -> VariableOrigin {
+        if self.contract_ast.as_ref().is_some_and(|contract| contract.fields.iter().any(|field| field.name == name)) {
+            VariableOrigin::ContractField
+        } else {
+            VariableOrigin::Param
+        }
+    }
+
+    fn display_function_name(&self, function_name: &str) -> String {
+        if self.active_covenant_policy_name.as_deref() == Some(function_name) {
+            if let Some(name) = &self.active_covenant_display_name {
+                return name.clone();
+            }
+        }
+        self.covenant_ctx().and_then(|ctx| ctx.display_name_for_function(function_name)).unwrap_or_else(|| function_name.to_string())
+    }
+
+    fn is_hidden_debug_name(&self, name: &str) -> bool {
+        is_inline_synthetic_name(name) || self.covenant_ctx().is_some_and(|ctx| ctx.hides_name(name))
+    }
+
+    fn current_variable_updates(&self, context: &VariableContext) -> HashMap<String, &DebugVariableUpdate<'i>> {
         let mut latest_by_name: HashMap<String, (u32, &DebugVariableUpdate<'i>)> = HashMap::new();
         for step in self.debug_info.steps.iter().filter(|step| self.step_updates_are_visible(step, context)) {
             for update in &step.variable_updates {
@@ -574,14 +683,11 @@ impl<'a, 'i> DebugSession<'a, 'i> {
         latest_by_name.into_iter().map(|(name, (_, update))| (name, update)).collect()
     }
 
-    fn current_variable_context(&self, step_id: StepId) -> Result<VariableContext<'_>, String> {
-        let function = self.current_function_range().ok_or_else(|| "No function context available".to_string())?;
-        Ok(VariableContext {
-            function_name: function.name.as_str(),
-            function_start: function.bytecode_start,
-            function_end: function.bytecode_end,
-            step_id,
-        })
+    fn current_variable_context(&self, step_id: StepId) -> Result<VariableContext, String> {
+        let function = self.function_range_for_step(step_id).ok_or_else(|| "No function context available".to_string())?;
+        let function_name =
+            self.compiled_function_name_for_step(step_id).ok_or_else(|| "No function context available".to_string())?;
+        Ok(VariableContext { function_name, function_start: function.bytecode_start, function_end: function.bytecode_end, step_id })
     }
 
     fn scope_state(&self, step_id: StepId) -> Result<ScopeState<'i>, String> {
@@ -594,10 +700,9 @@ impl<'a, 'i> DebugSession<'a, 'i> {
         let mut bindings = HashMap::new();
         let function_params: Vec<_> =
             self.debug_info.params.iter().filter(|param| param.function == scope.context.function_name).collect();
-        let source_param_count = self.function_param_counts.get(scope.context.function_name).copied().unwrap_or(function_params.len());
 
-        for (index, param) in function_params.into_iter().enumerate() {
-            let origin = if index < source_param_count { VariableOrigin::Param } else { VariableOrigin::ContractField };
+        for param in function_params {
+            let origin = self.param_origin(&param.name);
             match &param.binding {
                 DebugParamBinding::SingleValue { stack_index } => {
                     bindings.entry(param.name.clone()).or_insert_with(|| ScopeBinding {
@@ -671,17 +776,117 @@ impl<'a, 'i> DebugSession<'a, 'i> {
                 .and_modify(|binding| {
                     binding.type_name = update.type_name.clone();
                     binding.source = source.clone();
-                    binding.hidden = is_inline_synthetic_name(name);
+                    binding.hidden = self.is_hidden_debug_name(name);
                 })
                 .or_insert_with(|| ScopeBinding {
                     type_name: update.type_name.clone(),
                     source,
                     origin: VariableOrigin::Local,
-                    hidden: is_inline_synthetic_name(name),
+                    hidden: self.is_hidden_debug_name(name),
                 });
         }
 
+        self.inject_covenant_overlay_bindings(scope, &mut bindings);
         bindings
+    }
+
+    fn inject_covenant_overlay_bindings(&self, scope: &VisibleScope<'_, 'i>, bindings: &mut ScopeState<'i>) {
+        let Some(binding_spec) = self.covenant_ctx().and_then(|ctx| ctx.binding_for_function(&scope.context.function_name)) else {
+            return;
+        };
+        let state_param_type = match parse_type_ref(&binding_spec.source_binding.param_type_name) {
+            Ok(type_ref) => type_ref,
+            Err(_) => {
+                bindings.insert(
+                    binding_spec.source_binding.param_name.clone(),
+                    ScopeBinding {
+                        type_name: binding_spec.source_binding.param_type_name.clone(),
+                        source: ScopeValueSource::Unavailable {
+                            message: format!(
+                                "failed to parse covenant state parameter type '{}'",
+                                binding_spec.source_binding.param_type_name
+                            ),
+                        },
+                        origin: VariableOrigin::Param,
+                        hidden: false,
+                    },
+                );
+                return;
+            }
+        };
+
+        let injected = self.covenant_param_value.as_ref().and_then(|value| {
+            self.inject_debug_value_binding(
+                bindings,
+                &binding_spec.source_binding.param_name,
+                &state_param_type,
+                value,
+                VariableOrigin::Param,
+            )
+        });
+        if injected.is_some() {
+            return;
+        }
+
+        let message = match binding_spec.binding {
+            CovenantDeclBinding::Auth => "prev_state is unavailable".to_string(),
+            CovenantDeclBinding::Cov => "prev_states is unavailable".to_string(),
+        };
+        bindings.insert(
+            binding_spec.source_binding.param_name.clone(),
+            ScopeBinding {
+                type_name: binding_spec.source_binding.param_type_name.clone(),
+                source: ScopeValueSource::Unavailable { message },
+                origin: VariableOrigin::Param,
+                hidden: false,
+            },
+        );
+    }
+
+    fn inject_debug_value_binding(
+        &self,
+        bindings: &mut ScopeState<'i>,
+        name: &str,
+        type_ref: &TypeRef,
+        value: &DebugValue,
+        origin: VariableOrigin,
+    ) -> Option<()> {
+        let type_name = type_ref.type_name();
+        let leaf_specs = flatten_contract_type_leaves(self.contract_ast.as_ref()?, type_ref).ok()?;
+        if leaf_specs.is_empty() {
+            let expr = debug_value_to_expr(value)?;
+            bindings.insert(name.to_string(), ScopeBinding { type_name, source: ScopeValueSource::Expr(expr), origin, hidden: false });
+            return Some(());
+        }
+        let leaf_bindings = leaf_specs
+            .iter()
+            .map(|(field_path, leaf_type)| DebugLeafBinding {
+                field_path: field_path.clone(),
+                type_name: leaf_type.type_name(),
+                stack_index: None,
+            })
+            .collect::<Vec<_>>();
+
+        bindings.insert(
+            name.to_string(),
+            ScopeBinding {
+                type_name,
+                source: ScopeValueSource::StructuredBinding { base_name: name.to_string(), leaf_bindings: leaf_bindings.clone() },
+                origin,
+                hidden: false,
+            },
+        );
+
+        for (field_path, leaf_type) in leaf_specs {
+            let leaf_value = structured_leaf_value(value, &field_path)?;
+            let leaf_expr = debug_value_to_expr(&leaf_value)?;
+            let leaf_name = flattened_struct_name(name, &field_path);
+            bindings.insert(
+                leaf_name,
+                ScopeBinding { type_name: leaf_type.type_name(), source: ScopeValueSource::Expr(leaf_expr), origin, hidden: true },
+            );
+        }
+        Some(())
     }
 
     fn freeze_inline_snapshot_bindings(&self, bindings: &mut ScopeState<'i>, frame_id: u32) -> HashSet<String> {
@@ -723,6 +928,21 @@ impl<'a, 'i> DebugSession<'a, 'i> {
                 continue;
             }
 
+            if is_structured_type_name(&variable.type_name)
+                && let Ok(type_ref) = parse_type_ref(&variable.type_name)
+                && self.inject_debug_value_binding(bindings, name, &type_ref, &variable.value, variable.origin).is_some()
+            {
+                frozen_names.insert(name.clone());
+                if let Some(contract) = self.contract_ast.as_ref()
+                    && let Ok(leaf_specs) = flatten_contract_type_leaves(contract, &type_ref)
+                {
+                    for (field_path, _) in leaf_specs {
+                        frozen_names.insert(flattened_struct_name(name, &field_path));
+                    }
+                }
+                continue;
+            }
+
             bindings.insert(
                 name.clone(),
                 ScopeBinding {
@@ -755,7 +975,7 @@ impl<'a, 'i> DebugSession<'a, 'i> {
         variables
     }
 
-    fn step_updates_are_visible(&self, step: &DebugStep<'i>, context: &VariableContext<'_>) -> bool {
+    fn step_updates_are_visible(&self, step: &DebugStep<'i>, context: &VariableContext) -> bool {
         if step.bytecode_start < context.function_start || step.bytecode_start >= context.function_end {
             return false;
         }
@@ -837,7 +1057,17 @@ impl<'a, 'i> DebugSession<'a, 'i> {
             return;
         }
 
-        let step_id = self.current_scope_step_id();
+        let step_id = self
+            .current_step_index
+            .map(|index| {
+                let parent_frame_id = if index == 0 {
+                    0
+                } else {
+                    self.step_at_order(index.saturating_sub(1)).map(|previous| previous.frame_id).unwrap_or(0)
+                };
+                StepId::new(step.sequence, parent_frame_id)
+            })
+            .unwrap_or_else(|| self.current_scope_step_id());
         let Ok(scope_state) = self.scope_state(step_id) else {
             return;
         };
@@ -893,7 +1123,11 @@ impl<'a, 'i> DebugSession<'a, 'i> {
         // InlineCallEnter is steppable so `step_into` can land on a call
         // boundary and build call-stack transitions. InlineCallExit is not
         // steppable to avoid synthetic extra stops while unwinding.
-        matches!(&step.kind, StepKind::Source {} | StepKind::InlineCallEnter { .. })
+        match &step.kind {
+            StepKind::Source {} => !is_synthetic_default_span(step.span),
+            StepKind::InlineCallEnter { .. } => true,
+            StepKind::InlineCallExit { .. } => false,
+        }
     }
 
     fn steppable_step_index_for_offset(&self, offset: usize, min_sequence: Option<u32>) -> Option<usize> {
@@ -915,6 +1149,28 @@ impl<'a, 'i> DebugSession<'a, 'i> {
             range_matches_offset(step.bytecode_start, step.bytecode_end, offset)
                 && min_sequence.is_none_or(|min_sequence| step.sequence >= min_sequence)
         })
+    }
+
+    fn initial_step_index_for_offset(&self, offset: usize, min_sequence: Option<u32>) -> Option<usize> {
+        let mut best: Option<(usize, u32, u32)> = None;
+        for (order_index, &step_index) in self.step_order.iter().enumerate() {
+            let Some(step) = self.debug_info.steps.get(step_index) else {
+                continue;
+            };
+            if !self.is_steppable_step(step)
+                || is_synthetic_default_span(step.span)
+                || !range_matches_offset(step.bytecode_start, step.bytecode_end, offset)
+                || min_sequence.is_some_and(|min_sequence| step.sequence < min_sequence)
+            {
+                continue;
+            }
+
+            match best {
+                Some((_, best_depth, best_sequence)) if (best_depth, best_sequence) <= (step.call_depth, step.sequence) => {}
+                _ => best = Some((order_index, step.call_depth, step.sequence)),
+            }
+        }
+        best.map(|(order_index, _, _)| order_index)
     }
 
     fn find_steppable_step_index(&self, predicate: impl Fn(&DebugStep<'i>) -> bool) -> Option<usize> {
@@ -1016,7 +1272,9 @@ impl<'a, 'i> DebugSession<'a, 'i> {
     }
 
     fn step_hits_breakpoint(&self, step: &DebugStep<'i>) -> bool {
-        (step.span.line..=step.span.end_line).any(|line| self.breakpoints.contains(&line))
+        matches!(step.kind, StepKind::Source {})
+            && !is_synthetic_default_span(step.span)
+            && (step.span.line..=step.span.end_line).any(|line| self.breakpoints.contains(&line))
     }
 
     /// Returns the current main stack as hex-encoded strings.
@@ -1052,14 +1310,14 @@ impl<'a, 'i> DebugSession<'a, 'i> {
     pub fn build_failure_report(&self, error: &kaspa_txscript_errors::TxScriptError) -> FailureReport {
         let failure_span = self.current_span();
         let call_stack = self.call_stack_with_spans();
-        let innermost_function = self.current_function_name().unwrap_or("<unknown>").to_string();
+        let innermost_function = self.current_function_name().unwrap_or_else(|| "<unknown>".to_string());
         let innermost_vars: Vec<Variable> =
             self.list_variables().unwrap_or_default().into_iter().filter(|v| v.origin != VariableOrigin::Constant).collect();
 
         let mut frames =
             vec![FailureFrame { function_name: innermost_function.clone(), span: failure_span, variables: innermost_vars }];
 
-        let entry_name = self.current_function_name().unwrap_or("<entry>").to_string();
+        let entry_name = self.current_function_name().unwrap_or_else(|| "<entry>".to_string());
         for idx in (0..call_stack.len()).rev() {
             let entry = &call_stack[idx];
             let caller_vars: Vec<Variable> = self
@@ -1086,6 +1344,7 @@ impl<'a, 'i> DebugSession<'a, 'i> {
                 self.read_structured_binding_value(scope_state, base_name, &binding.type_name, leaf_bindings)
             }
             ScopeValueSource::Expr(expr) => self.evaluate_scope_expr_as(scope_state, expr, &binding.type_name),
+            ScopeValueSource::Unavailable { message } => Err(message.clone()),
         }
     }
 
@@ -1140,7 +1399,7 @@ impl<'a, 'i> DebugSession<'a, 'i> {
                         ShadowBindingValue { name: name.clone(), stack_index: *from_top, value: self.read_stack_at_index(*from_top)? },
                     );
                 }
-                ScopeValueSource::StructuredBinding { .. } => {}
+                ScopeValueSource::StructuredBinding { .. } | ScopeValueSource::Unavailable { .. } => {}
                 ScopeValueSource::Expr(expr) => {
                     env.insert(name.clone(), expr.clone());
                 }
@@ -1149,11 +1408,7 @@ impl<'a, 'i> DebugSession<'a, 'i> {
 
         let mut shadow_bindings = shadow_by_name.into_values().collect::<Vec<_>>();
         shadow_bindings.sort_by(|left, right| right.stack_index.cmp(&left.stack_index));
-        let stack_bindings = shadow_bindings
-            .iter()
-            .enumerate()
-            .map(|(index, binding)| (binding.name.clone(), (shadow_bindings.len() - 1 - index) as i64))
-            .collect();
+        let stack_bindings = shadow_bindings.iter().map(|binding| (binding.name.clone(), binding.stack_index)).collect();
         Ok((shadow_bindings, env, stack_bindings, eval_types))
     }
 
@@ -1169,24 +1424,32 @@ impl<'a, 'i> DebugSession<'a, 'i> {
     fn execute_shadow_script(&self, script: &[u8]) -> Result<Vec<u8>, String> {
         let sig_cache = Cache::new(0);
         let reused_values = SigHashReusedValuesUnsync::new();
-        let mut engine: DebugEngine<'_> = if let Some(shadow) = self.shadow_tx_context {
-            let ctx = EngineCtx::new(&sig_cache).with_reused(&reused_values).with_covenants_ctx(shadow.covenants_ctx);
-            TxScriptEngine::from_transaction_input(
+        if let Some(shadow) = self.shadow_tx_context.as_ref() {
+            let covenants_ctx = CovenantsContext::from_tx(shadow.tx)
+                .map_err(|err| format!("failed to build covenants context for shadow evaluation: {err}"))?;
+            let ctx = EngineCtx::new(&sig_cache).with_reused(&reused_values).with_covenants_ctx(&covenants_ctx);
+            let mut engine = TxScriptEngine::from_transaction_input(
                 shadow.tx,
                 shadow.input,
                 shadow.input_index,
                 shadow.utxo_entry,
                 ctx,
                 EngineFlags { covenants_enabled: true },
-            )
+            );
+            for opcode in parse_script::<DebugTx<'_>, DebugReused>(script) {
+                let opcode = opcode.map_err(|err| format!("failed to parse shadow script: {err}"))?;
+                engine.execute_opcode(opcode).map_err(|err| format!("failed to execute shadow script: {err}"))?;
+            }
+            return engine.stacks().dstack.last().cloned().ok_or_else(|| "shadow VM produced an empty stack".to_string());
         } else {
-            TxScriptEngine::new(EngineCtx::new(&sig_cache).with_reused(&reused_values), EngineFlags { covenants_enabled: true })
-        };
-        for opcode in parse_script::<DebugTx<'_>, DebugReused>(script) {
-            let opcode = opcode.map_err(|err| format!("failed to parse shadow script: {err}"))?;
-            engine.execute_opcode(opcode).map_err(|err| format!("failed to execute shadow script: {err}"))?;
+            let mut engine =
+                TxScriptEngine::new(EngineCtx::new(&sig_cache).with_reused(&reused_values), EngineFlags { covenants_enabled: true });
+            for opcode in parse_script::<DebugTx<'_>, DebugReused>(script) {
+                let opcode = opcode.map_err(|err| format!("failed to parse shadow script: {err}"))?;
+                engine.execute_opcode(opcode).map_err(|err| format!("failed to execute shadow script: {err}"))?;
+            }
+            return engine.stacks().dstack.last().cloned().ok_or_else(|| "shadow VM produced an empty stack".to_string());
         }
-        engine.stacks().dstack.last().cloned().ok_or_else(|| "shadow VM produced an empty stack".to_string())
     }
 
     fn read_stack_at_index(&self, index: i64) -> Result<Vec<u8>, String> {
@@ -1269,6 +1532,7 @@ impl<'a, 'i> DebugSession<'a, 'i> {
                 self.read_structured_binding_value(scope_state, base_name, &binding.type_name, leaf_bindings).ok()
             }
             ScopeValueSource::Expr(expr) => self.try_resolve_expr_value(scope_state, expr, visiting),
+            ScopeValueSource::Unavailable { .. } => None,
         }
     }
 
@@ -1496,6 +1760,23 @@ fn range_matches_offset(bytecode_start: usize, bytecode_end: usize, offset: usiz
     if bytecode_start == bytecode_end { offset == bytecode_start } else { offset >= bytecode_start && offset < bytecode_end }
 }
 
+fn is_synthetic_default_span(span: SourceSpan) -> bool {
+    span.line == 1 && span.col == 1 && span.end_line == 1 && span.end_col == 1
+}
+
+fn display_name_for_active_covenant_call(target: &ResolvedCovenantCallTarget) -> String {
+    match target.info.binding {
+        CovenantDeclBinding::Auth => target.info.source_name.clone(),
+        CovenantDeclBinding::Cov => {
+            if target.is_leader {
+                format!("{} [leader]", target.info.source_name)
+            } else {
+                format!("{} [delegate]", target.info.source_name)
+            }
+        }
+    }
+}
+
 fn map_expr_children_for_eval<'i, F>(expr: &'i Expr<'i>, map_child: &mut F) -> Result<Expr<'i>, String>
 where
     F: FnMut(&'i Expr<'i>) -> Result<Expr<'i>, String>,
@@ -1685,6 +1966,37 @@ fn lower_expr_for_eval<'i>(expr: &'i Expr<'i>, scope_state: &ScopeState<'i>) -> 
 
 fn is_inline_synthetic_name(name: &str) -> bool {
     name.starts_with("__arg_") || name.starts_with("__struct_")
+}
+
+fn contract_struct_fields<'i>(contract: &ContractAst<'i>, name: &str) -> Option<Vec<(String, TypeRef)>> {
+    if name == "State" {
+        return Some(contract.fields.iter().map(|field| (field.name.clone(), field.type_ref.clone())).collect());
+    }
+    contract
+        .structs
+        .iter()
+        .find(|item| item.name == name)
+        .map(|item| item.fields.iter().map(|field| (field.name.clone(), field.type_ref.clone())).collect())
+}
+
+fn flatten_contract_type_leaves<'i>(contract: &ContractAst<'i>, type_ref: &TypeRef) -> Result<Vec<(Vec<String>, TypeRef)>, String> {
+    let TypeBase::Custom(name) = &type_ref.base else {
+        return Ok(vec![(Vec::new(), type_ref.clone())]);
+    };
+    let Some(fields) = contract_struct_fields(contract, name) else {
+        return Ok(vec![(Vec::new(), type_ref.clone())]);
+    };
+
+    let mut leaves = Vec::new();
+    for (field_name, field_type_ref) in fields {
+        let mut nested_type = field_type_ref;
+        nested_type.array_dims.extend(type_ref.array_dims.iter().cloned());
+        for (mut path, leaf_type) in flatten_contract_type_leaves(contract, &nested_type)? {
+            path.insert(0, field_name.clone());
+            leaves.push((path, leaf_type));
+        }
+    }
+    Ok(leaves)
 }
 
 fn is_structured_type_name(type_name: &str) -> bool {

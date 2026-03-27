@@ -10,11 +10,15 @@ use crate::ast::{
     ParamAst, SplitPart, StateBindingAst, StateFieldExpr, Statement, TimeVar, TypeBase, TypeRef, UnaryOp, UnarySuffixKind,
     parse_contract_ast, parse_type_ref,
 };
-use crate::debug_info::{DebugInfo, RuntimeBinding, SourceSpan};
+use crate::debug_info::{DebugInfo, DebugNamedValue, RuntimeBinding, SourceSpan};
 pub use crate::errors::{CompilerError, ErrorSpan};
 use crate::span;
 mod covenant_declarations;
 use covenant_declarations::lower_covenant_declarations;
+pub use covenant_declarations::{
+    CovenantDeclBinding, CovenantDeclInfo, CovenantDeclMode, CovenantLoweredNames, CovenantSourceBindingInfo,
+    ResolvedCovenantCallTarget,
+};
 
 mod debug_recording;
 mod debug_value_types;
@@ -55,6 +59,45 @@ pub struct CompileOptions {
     pub record_debug_infos: bool,
 }
 
+pub fn resolve_contract_state_values<'i>(
+    contract: &ContractAst<'i>,
+    constructor_args: &[Expr<'i>],
+) -> Result<Vec<DebugNamedValue<'i>>, CompilerError> {
+    if contract.params.len() != constructor_args.len() {
+        return Err(CompilerError::Unsupported("constructor argument count mismatch".to_string()));
+    }
+
+    let structs = build_struct_registry(contract)?;
+    let mut env: HashMap<String, Expr<'i>> =
+        contract.constants.iter().map(|constant| (constant.name.clone(), constant.expr.clone())).collect();
+
+    for (param, value) in contract.params.iter().zip(constructor_args.iter()) {
+        let param_type_name = type_name_from_ref(&param.type_ref);
+        if !expr_matches_declared_type_ref(value, &param.type_ref, &structs) {
+            return Err(CompilerError::Unsupported(format!("constructor argument '{}' expects {}", param.name, param_type_name)));
+        }
+        env.insert(param.name.clone(), value.clone());
+    }
+
+    let mut resolved_fields = Vec::with_capacity(contract.fields.len());
+    for field in &contract.fields {
+        if env.contains_key(&field.name) {
+            return Err(CompilerError::Unsupported(format!("duplicate contract field name: {}", field.name)));
+        }
+
+        let type_name = field.type_ref.type_name();
+        let resolved = resolve_expr(field.expr.clone(), &env, &mut HashSet::new())?;
+        if !expr_matches_declared_type_ref(&resolved, &field.type_ref, &structs) {
+            return Err(CompilerError::Unsupported(format!("contract field '{}' expects {}", field.name, type_name)));
+        }
+
+        env.insert(field.name.clone(), resolved.clone());
+        resolved_fields.push(DebugNamedValue { name: field.name.clone(), type_name, value: resolved });
+    }
+
+    Ok(resolved_fields)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FunctionInputAbi {
     pub name: String,
@@ -80,6 +123,8 @@ pub struct CompiledContract<'i> {
     pub ast: ContractAst<'i>,
     pub abi: Vec<FunctionAbiEntry>,
     pub without_selector: bool,
+    #[serde(default)]
+    pub covenant_infos: Vec<CovenantDeclInfo>,
     pub state_layout: CompiledStateLayout,
     pub debug_info: Option<DebugInfo<'i>>,
 }
@@ -930,7 +975,7 @@ fn compile_contract_impl<'i>(
         constants.insert(param.name.clone(), value.clone());
     }
 
-    let lowered_contract = lower_covenant_declarations(contract, &constants)?;
+    let (lowered_contract, covenant_infos) = lower_covenant_declarations(contract, &constants)?;
     let structs = build_struct_registry(&lowered_contract)?;
     validate_struct_graph(&structs)?;
     validate_contract_struct_usage(&lowered_contract, &structs)?;
@@ -1028,6 +1073,7 @@ fn compile_contract_impl<'i>(
                 ast: lowered_contract.clone(),
                 abi: function_abi_entries,
                 without_selector,
+                covenant_infos: covenant_infos.clone(),
                 state_layout,
                 debug_info,
             });
@@ -1041,6 +1087,7 @@ fn compile_contract_impl<'i>(
                 ast: lowered_contract.clone(),
                 abi: function_abi_entries,
                 without_selector,
+                covenant_infos: covenant_infos.clone(),
                 state_layout,
                 debug_info,
             });
@@ -2214,6 +2261,17 @@ fn infer_fixed_array_type_from_initializer<'i>(
 }
 
 impl<'i> CompiledContract<'i> {
+    pub fn resolve_covenant_call_target(
+        &self,
+        function_name: &str,
+        options: CovenantDeclCallOptions,
+    ) -> Option<ResolvedCovenantCallTarget> {
+        self.covenant_infos.iter().find(|info| info.source_name == function_name).cloned().and_then(|info| {
+            let generated_entrypoint_name = info.generated_entrypoint_name(options.is_leader)?.to_string();
+            Some(ResolvedCovenantCallTarget { generated_entrypoint_name, info, is_leader: options.is_leader })
+        })
+    }
+
     pub fn build_sig_script(&self, function_name: &str, args: Vec<Expr<'i>>) -> Result<Vec<u8>, CompilerError> {
         let structs = build_struct_registry(&self.ast)?;
         let function = self
@@ -2250,22 +2308,10 @@ impl<'i> CompiledContract<'i> {
         args: Vec<Expr<'i>>,
         options: CovenantDeclCallOptions,
     ) -> Result<Vec<u8>, CompilerError> {
-        let auth_entrypoint = generated_covenant_entrypoint_name(function_name);
-        if self.abi.iter().any(|entry| entry.name == auth_entrypoint) {
-            return self.build_sig_script(&auth_entrypoint, args);
-        }
-
-        let entrypoint = if options.is_leader {
-            generated_covenant_leader_entrypoint_name(function_name)
-        } else {
-            generated_covenant_delegate_entrypoint_name(function_name)
-        };
-
-        if self.abi.iter().any(|entry| entry.name == entrypoint) {
-            return self.build_sig_script(&entrypoint, args);
-        }
-
-        Err(CompilerError::Unsupported(format!("covenant declaration '{}' not found", function_name)))
+        let target = self
+            .resolve_covenant_call_target(function_name, options)
+            .ok_or_else(|| CompilerError::Unsupported(format!("covenant declaration '{}' not found", function_name)))?;
+        self.build_sig_script(&target.generated_entrypoint_name, args)
     }
 }
 

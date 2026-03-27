@@ -27,7 +27,7 @@ pub fn parse_hex_bytes(raw: &str) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
-pub fn bytes_expr(bytes: Vec<u8>) -> Expr<'static> {
+pub fn bytes_expr<'i>(bytes: Vec<u8>) -> Expr<'i> {
     Expr::new(ExprKind::Array(bytes.into_iter().map(Expr::byte).collect()), span::Span::default())
 }
 
@@ -98,13 +98,13 @@ fn validate_array_len(type_ref: &TypeRef, len: usize) -> Result<(), String> {
     Ok(())
 }
 
-fn parse_byte_array_arg(type_ref: &TypeRef, raw: &str) -> Result<Expr<'static>, String> {
+fn parse_byte_array_arg<'i>(type_ref: &TypeRef, raw: &str) -> Result<Expr<'i>, String> {
     let bytes = parse_hex_bytes(raw)?;
     validate_byte_array_len(type_ref, bytes.len())?;
     Ok(bytes_expr(bytes))
 }
 
-fn parse_scalar_arg(type_ref: &TypeRef, raw: &str) -> Result<Expr<'static>, String> {
+fn parse_scalar_arg<'i>(type_ref: &TypeRef, raw: &str) -> Result<Expr<'i>, String> {
     match type_ref.base {
         TypeBase::Int => Ok(Expr::int(parse_int_arg(raw)?)),
         TypeBase::Bool => match raw {
@@ -143,11 +143,11 @@ fn parse_scalar_arg(type_ref: &TypeRef, raw: &str) -> Result<Expr<'static>, Stri
     }
 }
 
-fn parse_struct_arg(
+fn parse_struct_arg<'i>(
     entries: &serde_json::Map<String, Value>,
     declared_fields: &[StructShapeField],
     shapes: &StructShapeRegistry,
-) -> Result<Expr<'static>, String> {
+) -> Result<Expr<'i>, String> {
     let mut provided = entries.iter().collect::<HashMap<_, _>>();
 
     let mut out = Vec::with_capacity(declared_fields.len());
@@ -168,7 +168,7 @@ fn parse_struct_arg(
     Ok(Expr::new(ExprKind::StateObject(out), span::Span::default()))
 }
 
-fn parse_array_arg(values: &[Value], type_ref: &TypeRef, shapes: &StructShapeRegistry) -> Result<Expr<'static>, String> {
+fn parse_array_arg<'i>(values: &[Value], type_ref: &TypeRef, shapes: &StructShapeRegistry) -> Result<Expr<'i>, String> {
     validate_array_len(type_ref, values.len())?;
     let element_type = type_ref.element_type().ok_or_else(|| format!("unsupported arg type '{}'", type_ref.type_name()))?;
     values
@@ -178,7 +178,7 @@ fn parse_array_arg(values: &[Value], type_ref: &TypeRef, shapes: &StructShapeReg
         .map(|values| Expr::new(ExprKind::Array(values), span::Span::default()))
 }
 
-fn parse_json_value_for_type(value: &Value, type_ref: &TypeRef, shapes: &StructShapeRegistry) -> Result<Expr<'static>, String> {
+fn parse_json_value_for_type<'i>(value: &Value, type_ref: &TypeRef, shapes: &StructShapeRegistry) -> Result<Expr<'i>, String> {
     if matches!(value, Value::Null) {
         return Err("null is not supported in structured args".to_string());
     }
@@ -218,7 +218,7 @@ fn parse_json_value_for_type(value: &Value, type_ref: &TypeRef, shapes: &StructS
     }
 }
 
-fn parse_typed_arg(type_ref: &TypeRef, shapes: &StructShapeRegistry, raw: &str) -> Result<Expr<'static>, String> {
+fn parse_typed_arg<'i>(type_ref: &TypeRef, shapes: &StructShapeRegistry, raw: &str) -> Result<Expr<'i>, String> {
     let trimmed = raw.trim();
     if trimmed == "null" {
         return Err("null is not supported in structured args".to_string());
@@ -245,7 +245,7 @@ fn parse_typed_arg(type_ref: &TypeRef, shapes: &StructShapeRegistry, raw: &str) 
     parse_scalar_arg(type_ref, trimmed)
 }
 
-fn parse_params(params: &[ParamAst<'_>], shapes: &StructShapeRegistry, raw_args: &[String]) -> Result<Vec<Expr<'static>>, String> {
+fn parse_params<'i>(params: &[ParamAst<'_>], shapes: &StructShapeRegistry, raw_args: &[String]) -> Result<Vec<Expr<'i>>, String> {
     if params.len() != raw_args.len() {
         return Err(format!("function expects {} arguments, got {}", params.len(), raw_args.len()));
     }
@@ -257,7 +257,7 @@ fn parse_params(params: &[ParamAst<'_>], shapes: &StructShapeRegistry, raw_args:
     Ok(typed_args)
 }
 
-pub fn parse_ctor_args(parsed_contract: &ContractAst<'_>, raw_ctor_args: &[String]) -> Result<Vec<Expr<'static>>, String> {
+pub fn parse_ctor_args<'i>(parsed_contract: &ContractAst<'_>, raw_ctor_args: &[String]) -> Result<Vec<Expr<'i>>, String> {
     let shapes = StructShapeRegistry::from_contract(parsed_contract);
     if parsed_contract.params.len() != raw_ctor_args.len() {
         return Err(format!("constructor expects {} arguments, got {}", parsed_contract.params.len(), raw_ctor_args.len()));
@@ -265,7 +265,7 @@ pub fn parse_ctor_args(parsed_contract: &ContractAst<'_>, raw_ctor_args: &[Strin
     parse_params(&parsed_contract.params, &shapes, raw_ctor_args)
 }
 
-pub fn parse_call_args(contract: &ContractAst<'_>, function_name: &str, raw_args: &[String]) -> Result<Vec<Expr<'static>>, String> {
+pub fn parse_call_args<'i>(contract: &ContractAst<'_>, function_name: &str, raw_args: &[String]) -> Result<Vec<Expr<'i>>, String> {
     let function = contract
         .functions
         .iter()
@@ -275,9 +275,25 @@ pub fn parse_call_args(contract: &ContractAst<'_>, function_name: &str, raw_args
     parse_params(&function.params, &shapes, raw_args)
 }
 
+pub fn parse_state_value<'i>(contract: &ContractAst<'_>, raw_state: &str) -> Result<Expr<'i>, String> {
+    let value =
+        serde_json::from_str::<Value>(raw_state).map_err(|err| format!("invalid State value '{raw_state}': {err}"))?;
+    let Value::Object(entries) = value else {
+        return Err("State value must be a JSON object".to_string());
+    };
+
+    let shapes = StructShapeRegistry::from_contract(contract);
+    let declared_fields = contract
+        .fields
+        .iter()
+        .map(|field| StructShapeField { name: field.name.clone(), type_ref: field.type_ref.clone() })
+        .collect::<Vec<_>>();
+    parse_struct_arg(&entries, &declared_fields, &shapes)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{parse_call_args, parse_ctor_args};
+    use super::{parse_call_args, parse_ctor_args, parse_state_value};
     use silverscript_lang::ast::{ExprKind, parse_contract_ast};
 
     fn debug_shapes_contract() -> silverscript_lang::ast::ContractAst<'static> {
@@ -345,6 +361,19 @@ mod tests {
         };
         let tag = fields.iter().find(|field| field.name == "tag").expect("tag field");
         assert!(matches!(tag.expr.kind, ExprKind::Array(ref values) if values.len() == 1));
+    }
+
+    #[test]
+    fn parses_explicit_state_value() {
+        let contract = debug_shapes_contract();
+        let value = parse_state_value(&contract, r#"{"amount":9,"active":false,"tag":"0xcc"}"#).expect("parse State value");
+        let ExprKind::StateObject(fields) = &value.kind else {
+            panic!("expected state object");
+        };
+        assert_eq!(fields.len(), 3);
+        assert!(fields.iter().any(|field| field.name == "amount"));
+        assert!(fields.iter().any(|field| field.name == "active"));
+        assert!(fields.iter().any(|field| field.name == "tag"));
     }
 
     #[test]

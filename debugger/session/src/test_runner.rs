@@ -13,6 +13,8 @@ pub struct ContractTestCase {
     pub name: String,
     pub function: String,
     #[serde(default)]
+    pub delegate: bool,
+    #[serde(default)]
     pub constructor_args: Vec<Value>,
     #[serde(default)]
     pub args: Vec<Value>,
@@ -52,9 +54,11 @@ pub struct TestTxInputScenario {
     pub sig_op_count: u8,
     pub utxo_value: u64,
     #[serde(default)]
-    pub covenant_id: Option<String>,
+    pub covenant_id: Option<Value>,
     #[serde(default)]
     pub constructor_args: Option<Vec<Value>>,
+    #[serde(default)]
+    pub state: Option<Value>,
     #[serde(default)]
     pub signature_script_hex: Option<String>,
     #[serde(default)]
@@ -65,11 +69,13 @@ pub struct TestTxInputScenario {
 pub struct TestTxOutputScenario {
     pub value: u64,
     #[serde(default)]
-    pub covenant_id: Option<String>,
+    pub covenant_id: Option<Value>,
     #[serde(default)]
     pub authorizing_input: Option<u16>,
     #[serde(default)]
     pub constructor_args: Option<Vec<Value>>,
+    #[serde(default)]
+    pub state: Option<Value>,
     #[serde(default)]
     pub script_hex: Option<String>,
     #[serde(default)]
@@ -87,6 +93,7 @@ pub struct ResolvedContractTest {
 pub struct ContractTestCaseResolved {
     pub name: String,
     pub function: String,
+    pub delegate: bool,
     pub constructor_args: Vec<String>,
     pub args: Vec<String>,
     pub expect: TestExpectation,
@@ -111,6 +118,7 @@ pub struct TestTxInputScenarioResolved {
     pub utxo_value: u64,
     pub covenant_id: Option<String>,
     pub constructor_args: Option<Vec<String>>,
+    pub state: Option<String>,
     pub signature_script_hex: Option<String>,
     pub utxo_script_hex: Option<String>,
 }
@@ -121,6 +129,7 @@ pub struct TestTxOutputScenarioResolved {
     pub covenant_id: Option<String>,
     pub authorizing_input: Option<u16>,
     pub constructor_args: Option<Vec<String>>,
+    pub state: Option<String>,
     pub script_hex: Option<String>,
     pub p2pk_pubkey: Option<String>,
 }
@@ -175,6 +184,7 @@ pub fn resolve_contract_test(
     let resolved = ContractTestCaseResolved {
         name: test.name,
         function: test.function,
+        delegate: test.delegate,
         constructor_args: values_to_args(&test.constructor_args)?,
         args: values_to_args(&test.args)?,
         expect: test.expect,
@@ -206,8 +216,9 @@ pub fn resolve_tx_scenario(tx: TestTxScenario) -> Result<TestTxScenarioResolved,
             sequence: input.sequence,
             sig_op_count: input.sig_op_count,
             utxo_value: input.utxo_value,
-            covenant_id: input.covenant_id,
+            covenant_id: input.covenant_id.as_ref().map(value_to_arg).transpose()?,
             constructor_args: input.constructor_args.as_ref().map(|values| values_to_args(values)).transpose()?,
+            state: input.state.as_ref().map(value_to_arg).transpose()?,
             signature_script_hex: input.signature_script_hex,
             utxo_script_hex: input.utxo_script_hex,
         });
@@ -217,9 +228,10 @@ pub fn resolve_tx_scenario(tx: TestTxScenario) -> Result<TestTxScenarioResolved,
     for output in tx.outputs {
         outputs.push(TestTxOutputScenarioResolved {
             value: output.value,
-            covenant_id: output.covenant_id,
+            covenant_id: output.covenant_id.as_ref().map(value_to_arg).transpose()?,
             authorizing_input: output.authorizing_input,
             constructor_args: output.constructor_args.as_ref().map(|values| values_to_args(values)).transpose()?,
+            state: output.state.as_ref().map(value_to_arg).transpose()?,
             script_hex: output.script_hex,
             p2pk_pubkey: output.p2pk_pubkey,
         });
