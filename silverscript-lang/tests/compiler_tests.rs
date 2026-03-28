@@ -505,15 +505,15 @@ fn sorting_network_over_fixed_array_matches_rust_model_across_cases() {
     let (instruction_count, charged_op_count) = script_op_counts(&compiled.script);
     println!("sorting_network {script_len} / {instruction_count} / {charged_op_count}");
     assert_eq!(
-        script_len, 780,
+        script_len, 772,
         "sorting_network metrics: script_len={script_len} instruction_count={instruction_count} charged_op_count={charged_op_count}"
     );
     assert_eq!(
-        instruction_count, 780,
+        instruction_count, 772,
         "sorting_network metrics: script_len={script_len} instruction_count={instruction_count} charged_op_count={charged_op_count}"
     );
     assert_eq!(
-        charged_op_count, 607,
+        charged_op_count, 599,
         "sorting_network metrics: script_len={script_len} instruction_count={instruction_count} charged_op_count={charged_op_count}"
     );
 
@@ -3245,8 +3245,6 @@ fn compiles_int_array_index_to_expected_script() {
         .add_op(OpAdd)
         .unwrap()
         .add_op(OpSubstr)
-        .unwrap()
-        .add_op(OpBin2Num)
         .unwrap()
         .add_i64(7)
         .unwrap()

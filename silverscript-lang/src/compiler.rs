@@ -6373,9 +6373,6 @@ fn compile_expr<'i>(
             *stack_depth -= 1;
             builder.add_op(OpSubstr)?;
             *stack_depth -= 2;
-            if element_type == "int" {
-                builder.add_op(OpBin2Num)?;
-            }
             Ok(())
         }
         ExprKind::Slice { source, start, end, .. } => {
