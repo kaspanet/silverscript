@@ -1468,10 +1468,13 @@ impl<'a, 'i> DebugSession<'a, 'i> {
                 shadow.input_index,
                 shadow.utxo_entry,
                 ctx,
-                EngineFlags { covenants_enabled: true },
+                EngineFlags { covenants_enabled: true, mass_per_sig_op: 0 },
             )
         } else {
-            TxScriptEngine::new(EngineCtx::new(&sig_cache).with_reused(&reused_values), EngineFlags { covenants_enabled: true })
+            TxScriptEngine::new(
+                EngineCtx::new(&sig_cache).with_reused(&reused_values),
+                EngineFlags { covenants_enabled: true, mass_per_sig_op: 0 },
+            )
         };
         for opcode in parse_script::<DebugTx<'_>, DebugReused>(script) {
             let opcode = opcode.map_err(|err| format!("failed to parse shadow script: {err}"))?;
@@ -2117,7 +2120,10 @@ mod tests {
         let sig_cache = Box::leak(Box::new(Cache::new(10_000)));
         let reused_values: &'static SigHashReusedValuesUnsync = Box::leak(Box::new(SigHashReusedValuesUnsync::new()));
         let engine: DebugEngine<'static> =
-            TxScriptEngine::new(EngineCtx::new(sig_cache).with_reused(reused_values), EngineFlags { covenants_enabled: true });
+            TxScriptEngine::new(
+                EngineCtx::new(sig_cache).with_reused(reused_values),
+                EngineFlags { covenants_enabled: true, mass_per_sig_op: 0 },
+            );
         let debug_info = DebugInfo {
             source: String::new(),
             steps,
@@ -2314,7 +2320,10 @@ mod tests {
         let sig_cache = Box::leak(Box::new(Cache::new(10_000)));
         let reused_values: &'static SigHashReusedValuesUnsync = Box::leak(Box::new(SigHashReusedValuesUnsync::new()));
         let engine: DebugEngine<'static> =
-            TxScriptEngine::new(EngineCtx::new(sig_cache).with_reused(reused_values), EngineFlags { covenants_enabled: true });
+            TxScriptEngine::new(
+                EngineCtx::new(sig_cache).with_reused(reused_values),
+                EngineFlags { covenants_enabled: true, mass_per_sig_op: 0 },
+            );
         let debug_info = DebugInfo {
             source: String::new(),
             steps: vec![],
