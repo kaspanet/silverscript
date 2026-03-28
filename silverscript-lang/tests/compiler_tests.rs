@@ -37,12 +37,12 @@ fn run_script_with_tx(
     let sig_cache = Cache::new(10_000);
     let sigscript = selector_sigscript(selector);
 
-    let input = TransactionInput {
-        previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([0u8; 32]), index: 0 },
-        signature_script: sigscript,
+    let input = TransactionInput::new(
+        TransactionOutpoint { transaction_id: TransactionId::from_bytes([0u8; 32]), index: 0 },
+        sigscript,
         sequence,
-        mass: TxInputMass::SigopCount(0.into()),
-    };
+        0,
+    );
     let output = TransactionOutput { value: 1000, script_public_key: ScriptPublicKey::new(0, script.clone().into()), covenant: None };
     let tx = Transaction::new(1, vec![input.clone()], vec![output.clone()], lock_time, Default::default(), 0, vec![]);
     let utxo_entry = UtxoEntry::new(output.value, output.script_public_key.clone(), 0, tx.is_coinbase(), None);
@@ -113,12 +113,12 @@ fn sigscript_push_script(script: &[u8]) -> Vec<u8> {
 }
 
 fn test_input(index: u32, signature_script: Vec<u8>) -> TransactionInput {
-    TransactionInput {
-        previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([index as u8; 32]), index },
+    TransactionInput::new(
+        TransactionOutpoint { transaction_id: TransactionId::from_bytes([index as u8; 32]), index },
         signature_script,
-        sequence: 0,
-        mass: TxInputMass::SigopCount(0.into()),
-    }
+        0,
+        0,
+    )
 }
 
 fn execute_input(tx: Transaction, entries: Vec<UtxoEntry>, input_idx: usize) -> Result<(), kaspa_txscript_errors::TxScriptError> {
@@ -903,6 +903,22 @@ fn byte_equality_with_out_of_range_rhs_int_literal_is_rejected() {
     "#;
 
     assert!(compile_contract(source, &[], CompileOptions::default()).is_err(), "x == 256 should be rejected when x is a byte");
+}
+
+#[test]
+fn bool_array_index_false_compares_numerically() {
+    let source = r#"
+        contract Flags() {
+            entrypoint function main() {
+                bool[] flags = [false];
+                require(flags[0] == false);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("bool[] index comparison should compile");
+    assert!(compiled.script.iter().copied().any(|op| op == OpNumEqual), "bool equality should use OP_NUMEQUAL");
+    assert!(run_script_with_selector(compiled.script, None).is_ok(), "bool[] index comparison should execute");
 }
 
 #[test]

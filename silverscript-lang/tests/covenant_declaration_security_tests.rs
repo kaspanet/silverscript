@@ -199,17 +199,24 @@ fn sig_array_arg<'i>(values: Vec<Vec<u8>>) -> Expr<'i> {
     values.into_iter().map(Expr::bytes).collect::<Vec<_>>().into()
 }
 
-fn compile_dog20_state<'a>(source: &'a str, owner: Vec<u8>, amount: i64) -> CompiledContract<'a> {
+fn witness_array_arg<'i>(values: Vec<u8>) -> Expr<'i> {
+    Expr::bytes(values)
+}
+
+fn compile_dog20_state<'a>(source: &'a str, owner: Vec<u8>, amount: i64, max_cov_ins: i64, max_cov_outs: i64) -> CompiledContract<'a> {
     compile_contract(
         source,
-        &[Expr::bytes(owner), Expr::int(amount), Expr::byte(0), Expr::bool(false), Expr::int(2), Expr::int(2)],
+        &[Expr::bytes(owner), Expr::int(amount), Expr::byte(0), Expr::bool(false), Expr::int(max_cov_ins), Expr::int(max_cov_outs)],
         CompileOptions::default(),
     )
     .expect("compile succeeds")
 }
 
 fn sign_tx_input(tx: Transaction, entries: Vec<UtxoEntry>, input_idx: usize, keypair: &Keypair) -> Vec<u8> {
-    let tx = MutableTransaction::with_entries(tx, entries);
+    let mut tx = MutableTransaction::with_entries(tx, entries);
+    for input in &mut tx.tx.inputs {
+        input.mass = kaspa_consensus_core::tx::TxInputMass::ComputeBudget(100.into());
+    }
     let reused_values = SigHashReusedValuesUnsync::new();
     let sig_hash = calc_schnorr_signature_hash(&tx.as_verifiable(), input_idx, SIG_HASH_ALL, &reused_values);
     let msg = secp256k1::Message::from_digest_slice(sig_hash.as_bytes().as_slice()).expect("valid sighash message");
@@ -228,21 +235,16 @@ fn redeem_only_sigscript(compiled: &CompiledContract<'_>) -> Vec<u8> {
 }
 
 fn tx_input(index: u32, signature_script: Vec<u8>) -> TransactionInput {
-    TransactionInput {
-        previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([index as u8 + 1; 32]), index },
+    TransactionInput::new(
+        TransactionOutpoint { transaction_id: TransactionId::from_bytes([index as u8 + 1; 32]), index },
         signature_script,
-        sequence: 0,
-        mass: TxInputMass::SigopCount(0.into()),
-    }
+        0,
+        0,
+    )
 }
 
-fn tx_input_with_sigops(index: u32, signature_script: Vec<u8>, sig_op_count: u8) -> TransactionInput {
-    TransactionInput {
-        previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([index as u8 + 1; 32]), index },
-        signature_script,
-        sequence: 0,
-        mass: TxInputMass::SigopCount(sig_op_count.into()),
-    }
+fn tx_input_from_outpoint_v1(previous_outpoint: TransactionOutpoint, signature_script: Vec<u8>) -> TransactionInput {
+    TransactionInput::new_with_compute_budget(previous_outpoint, signature_script, 0, 100)
 }
 
 fn covenant_output(compiled: &CompiledContract<'_>, authorizing_input: u16, covenant_id: Hash) -> TransactionOutput {
@@ -770,11 +772,10 @@ fn dog20_can_split_then_merge_tokens_with_two_way_fanout() {
     let split_owner_b_bytes = split_owner_b.x_only_public_key().0.serialize().to_vec();
     let merged_owner_bytes = merged_owner.x_only_public_key().0.serialize().to_vec();
 
-    let genesis = compile_dog20_state(&source, genesis_owner_bytes.clone(), 1_000);
-    panic!("{}", genesis.script.len());
-    let handoff = compile_dog20_state(&source, handoff_owner_bytes.clone(), 1_000);
-    let split_a = compile_dog20_state(&source, split_owner_a_bytes.clone(), 400);
-    let split_b = compile_dog20_state(&source, split_owner_b_bytes.clone(), 600);
+    let genesis = compile_dog20_state(&source, genesis_owner_bytes.clone(), 1_000, 2, 2);
+    let handoff = compile_dog20_state(&source, handoff_owner_bytes.clone(), 1_000, 2, 2);
+    let split_a = compile_dog20_state(&source, split_owner_a_bytes.clone(), 400, 2, 2);
+    let split_b = compile_dog20_state(&source, split_owner_b_bytes.clone(), 600, 2, 2);
 
     let handoff_outputs = vec![TransactionOutput {
         value: 1_000,
@@ -782,18 +783,32 @@ fn dog20_can_split_then_merge_tokens_with_two_way_fanout() {
         covenant: Some(CovenantBinding { authorizing_input: 0, covenant_id: COV_A }),
     }];
     let handoff_entries = vec![covenant_utxo(&genesis, COV_A)];
-    let handoff_unsigned_tx =
-        Transaction::new(1, vec![tx_input_with_sigops(0, vec![], 1)], handoff_outputs.clone(), 0, Default::default(), 0, vec![]);
+    let handoff_unsigned_tx = Transaction::new(
+        1,
+        vec![tx_input_from_outpoint_v1(TransactionOutpoint { transaction_id: TransactionId::from_bytes([1; 32]), index: 0 }, vec![])],
+        handoff_outputs.clone(),
+        0,
+        Default::default(),
+        0,
+        vec![],
+    );
     let handoff_sig = sign_tx_input(handoff_unsigned_tx, handoff_entries.clone(), 0, &genesis_owner);
     let handoff_sigscript = covenant_decl_sigscript(
         &genesis,
         "transfer",
-        vec![dog20_state_array_arg(vec![(handoff_owner_bytes.clone(), 1_000)]), sig_array_arg(vec![handoff_sig])],
+        vec![
+            dog20_state_array_arg(vec![(handoff_owner_bytes.clone(), 1_000)]),
+            sig_array_arg(vec![handoff_sig]),
+            witness_array_arg(vec![0]),
+        ],
         true,
     );
     let handoff_tx = Transaction::new(
         1,
-        vec![tx_input_with_sigops(0, handoff_sigscript, 1)],
+        vec![tx_input_from_outpoint_v1(
+            TransactionOutpoint { transaction_id: TransactionId::from_bytes([1; 32]), index: 0 },
+            handoff_sigscript,
+        )],
         handoff_outputs.clone(),
         0,
         Default::default(),
@@ -843,6 +858,7 @@ fn dog20_can_split_then_merge_tokens_with_two_way_fanout() {
         vec![
             dog20_state_array_arg(vec![(split_owner_a_bytes.clone(), 400), (split_owner_b_bytes.clone(), 600)]),
             sig_array_arg(vec![split_sig]),
+            witness_array_arg(vec![0]),
         ],
         true,
     );
@@ -863,7 +879,7 @@ fn dog20_can_split_then_merge_tokens_with_two_way_fanout() {
 
     execute_input_with_covenants(split_tx.clone(), split_entries, 0).expect("Dog20 split should succeed");
 
-    let merged = compile_dog20_state(&source, merged_owner_bytes.clone(), 1_000);
+    let merged = compile_dog20_state(&source, merged_owner_bytes.clone(), 1_000, 2, 2);
     let merge_outputs = vec![TransactionOutput {
         value: 2_000,
         script_public_key: pay_to_script_hash_script(&merged.script),
@@ -900,7 +916,11 @@ fn dog20_can_split_then_merge_tokens_with_two_way_fanout() {
     let merge_leader_sigscript = covenant_decl_sigscript(
         &split_a,
         "transfer",
-        vec![dog20_state_array_arg(vec![(merged_owner_bytes, 1_000)]), sig_array_arg(vec![merge_sig_a, merge_sig_b])],
+        vec![
+            dog20_state_array_arg(vec![(merged_owner_bytes, 1_000)]),
+            sig_array_arg(vec![merge_sig_a, merge_sig_b]),
+            witness_array_arg(vec![0, 1]),
+        ],
         true,
     );
     let merge_delegate_sigscript = covenant_decl_sigscript(&split_b, "transfer", vec![], false);
@@ -948,11 +968,11 @@ fn dog20_rejects_merge_when_one_signature_is_wrong() {
     let split_owner_b_bytes = split_owner_b.x_only_public_key().0.serialize().to_vec();
     let merged_owner_bytes = merged_owner.x_only_public_key().0.serialize().to_vec();
 
-    let genesis = compile_dog20_state(&source, genesis_owner_bytes.clone(), 1_000);
-    let handoff = compile_dog20_state(&source, handoff_owner_bytes.clone(), 1_000);
-    let split_a = compile_dog20_state(&source, split_owner_a_bytes.clone(), 400);
-    let split_b = compile_dog20_state(&source, split_owner_b_bytes.clone(), 600);
-    let merged = compile_dog20_state(&source, merged_owner_bytes.clone(), 1_000);
+    let genesis = compile_dog20_state(&source, genesis_owner_bytes.clone(), 1_000, 2, 2);
+    let handoff = compile_dog20_state(&source, handoff_owner_bytes.clone(), 1_000, 2, 2);
+    let split_a = compile_dog20_state(&source, split_owner_a_bytes.clone(), 400, 2, 2);
+    let split_b = compile_dog20_state(&source, split_owner_b_bytes.clone(), 600, 2, 2);
+    let merged = compile_dog20_state(&source, merged_owner_bytes.clone(), 1_000, 2, 2);
 
     let handoff_outputs = vec![TransactionOutput {
         value: 1_000,
@@ -960,18 +980,32 @@ fn dog20_rejects_merge_when_one_signature_is_wrong() {
         covenant: Some(CovenantBinding { authorizing_input: 0, covenant_id: COV_A }),
     }];
     let handoff_entries = vec![covenant_utxo(&genesis, COV_A)];
-    let handoff_unsigned_tx =
-        Transaction::new(1, vec![tx_input_with_sigops(0, vec![], 1)], handoff_outputs.clone(), 0, Default::default(), 0, vec![]);
+    let handoff_unsigned_tx = Transaction::new(
+        1,
+        vec![tx_input_from_outpoint_v1(TransactionOutpoint { transaction_id: TransactionId::from_bytes([1; 32]), index: 0 }, vec![])],
+        handoff_outputs.clone(),
+        0,
+        Default::default(),
+        0,
+        vec![],
+    );
     let handoff_sig = sign_tx_input(handoff_unsigned_tx, handoff_entries.clone(), 0, &genesis_owner);
     let handoff_sigscript = covenant_decl_sigscript(
         &genesis,
         "transfer",
-        vec![dog20_state_array_arg(vec![(handoff_owner_bytes.clone(), 1_000)]), sig_array_arg(vec![handoff_sig])],
+        vec![
+            dog20_state_array_arg(vec![(handoff_owner_bytes.clone(), 1_000)]),
+            sig_array_arg(vec![handoff_sig]),
+            witness_array_arg(vec![0]),
+        ],
         true,
     );
     let handoff_tx = Transaction::new(
         1,
-        vec![tx_input_with_sigops(0, handoff_sigscript, 1)],
+        vec![tx_input_from_outpoint_v1(
+            TransactionOutpoint { transaction_id: TransactionId::from_bytes([1; 32]), index: 0 },
+            handoff_sigscript,
+        )],
         handoff_outputs.clone(),
         0,
         Default::default(),
@@ -1021,6 +1055,7 @@ fn dog20_rejects_merge_when_one_signature_is_wrong() {
         vec![
             dog20_state_array_arg(vec![(split_owner_a_bytes.clone(), 400), (split_owner_b_bytes.clone(), 600)]),
             sig_array_arg(vec![split_sig]),
+            witness_array_arg(vec![0]),
         ],
         true,
     );
@@ -1077,7 +1112,11 @@ fn dog20_rejects_merge_when_one_signature_is_wrong() {
     let merge_leader_sigscript = covenant_decl_sigscript(
         &split_a,
         "transfer",
-        vec![dog20_state_array_arg(vec![(merged_owner_bytes, 1_000)]), sig_array_arg(vec![merge_sig_a, wrong_sig_b])],
+        vec![
+            dog20_state_array_arg(vec![(merged_owner_bytes, 1_000)]),
+            sig_array_arg(vec![merge_sig_a, wrong_sig_b]),
+            witness_array_arg(vec![0, 1]),
+        ],
         true,
     );
     let merge_delegate_sigscript = covenant_decl_sigscript(&split_b, "transfer", vec![], false);
@@ -1123,10 +1162,10 @@ fn dog20_rejects_split_when_amounts_do_not_match() {
     let split_owner_a_bytes = split_owner_a.x_only_public_key().0.serialize().to_vec();
     let split_owner_b_bytes = split_owner_b.x_only_public_key().0.serialize().to_vec();
 
-    let genesis = compile_dog20_state(&source, genesis_owner_bytes.clone(), 1_000);
-    let handoff = compile_dog20_state(&source, handoff_owner_bytes.clone(), 1_000);
-    let split_a = compile_dog20_state(&source, split_owner_a_bytes.clone(), 400);
-    let split_b = compile_dog20_state(&source, split_owner_b_bytes.clone(), 500);
+    let genesis = compile_dog20_state(&source, genesis_owner_bytes.clone(), 1_000, 2, 2);
+    let handoff = compile_dog20_state(&source, handoff_owner_bytes.clone(), 1_000, 2, 2);
+    let split_a = compile_dog20_state(&source, split_owner_a_bytes.clone(), 400, 2, 2);
+    let split_b = compile_dog20_state(&source, split_owner_b_bytes.clone(), 500, 2, 2);
 
     let handoff_outputs = vec![TransactionOutput {
         value: 1_000,
@@ -1134,18 +1173,32 @@ fn dog20_rejects_split_when_amounts_do_not_match() {
         covenant: Some(CovenantBinding { authorizing_input: 0, covenant_id: COV_A }),
     }];
     let handoff_entries = vec![covenant_utxo(&genesis, COV_A)];
-    let handoff_unsigned_tx =
-        Transaction::new(1, vec![tx_input_with_sigops(0, vec![], 1)], handoff_outputs.clone(), 0, Default::default(), 0, vec![]);
+    let handoff_unsigned_tx = Transaction::new(
+        1,
+        vec![tx_input_from_outpoint_v1(TransactionOutpoint { transaction_id: TransactionId::from_bytes([1; 32]), index: 0 }, vec![])],
+        handoff_outputs.clone(),
+        0,
+        Default::default(),
+        0,
+        vec![],
+    );
     let handoff_sig = sign_tx_input(handoff_unsigned_tx, handoff_entries.clone(), 0, &genesis_owner);
     let handoff_sigscript = covenant_decl_sigscript(
         &genesis,
         "transfer",
-        vec![dog20_state_array_arg(vec![(handoff_owner_bytes.clone(), 1_000)]), sig_array_arg(vec![handoff_sig])],
+        vec![
+            dog20_state_array_arg(vec![(handoff_owner_bytes.clone(), 1_000)]),
+            sig_array_arg(vec![handoff_sig]),
+            witness_array_arg(vec![0]),
+        ],
         true,
     );
     let handoff_tx = Transaction::new(
         1,
-        vec![tx_input_with_sigops(0, handoff_sigscript, 1)],
+        vec![tx_input_from_outpoint_v1(
+            TransactionOutpoint { transaction_id: TransactionId::from_bytes([1; 32]), index: 0 },
+            handoff_sigscript,
+        )],
         handoff_outputs.clone(),
         0,
         Default::default(),
@@ -1192,7 +1245,11 @@ fn dog20_rejects_split_when_amounts_do_not_match() {
     let split_sigscript = covenant_decl_sigscript(
         &handoff,
         "transfer",
-        vec![dog20_state_array_arg(vec![(split_owner_a_bytes, 400), (split_owner_b_bytes, 500)]), sig_array_arg(vec![split_sig])],
+        vec![
+            dog20_state_array_arg(vec![(split_owner_a_bytes, 400), (split_owner_b_bytes, 500)]),
+            sig_array_arg(vec![split_sig]),
+            witness_array_arg(vec![0]),
+        ],
         true,
     );
     let split_tx = Transaction::new(
