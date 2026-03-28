@@ -507,7 +507,7 @@ fn read_input_state_field_expr_symbolic<'i>(
     );
     let substr = Expr::call("OpTxInputScriptSigSubstr", vec![input_idx.clone(), start, end]);
 
-    if decode_numeric { Ok(Expr::call("OpBin2Num", vec![substr])) } else { Ok(substr) }
+    Ok(substr)
 }
 
 fn read_input_state_with_template_values<'i>(
@@ -3792,7 +3792,7 @@ fn read_input_state_binding_expr<'i>(
     );
     let substr = Expr::call("OpTxInputScriptSigSubstr", vec![input_idx.clone(), start, end]);
 
-    if decode_numeric { Ok(Expr::call("OpBin2Num", vec![substr])) } else { Ok(substr) }
+    Ok(substr)
 }
 
 fn read_input_state_field_expr_with_type<'i>(
@@ -3817,7 +3817,7 @@ fn read_input_state_field_expr_with_type<'i>(
     let end = binary_expr(BinaryOp::Add, start.clone(), Expr::int(field_payload_len as i64));
     let substr = input_sigscript_substr_expr(input_idx, start, end);
 
-    if decode_numeric { Ok(Expr::call("OpBin2Num", vec![substr])) } else { Ok(substr) }
+    Ok(substr)
 }
 
 #[allow(clippy::too_many_arguments)]
