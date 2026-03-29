@@ -33,6 +33,20 @@ fn parses_timeops_and_console() {
 }
 
 #[test]
+fn rejects_number_unit_overflow() {
+    let input = r#"
+        contract TimeLock() {
+            entrypoint function main() {
+                require(this.age >= 9223372036854775807 weeks);
+            }
+        }
+    "#;
+
+    let err = parse_contract_ast(input).expect_err("unit multiplication overflow should be rejected");
+    assert!(err.to_string().contains("overflow"), "unexpected error: {err}");
+}
+
+#[test]
 fn parses_arrays_and_introspection() {
     let input = r#"
         contract Complex(byte[20] hash) {

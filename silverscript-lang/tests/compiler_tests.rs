@@ -3683,6 +3683,35 @@ fn rejects_non_constant_for_loop_max_iterations() {
 }
 
 #[test]
+fn rejects_overflow_in_constant_for_loop_bounds() {
+    let cases = [
+        ("9223372036854775807 + 1", "constant integer overflow: 9223372036854775807 + 1"),
+        ("(-9223372036854775807) - 2", "constant integer overflow: -9223372036854775807 - 2"),
+        ("3037000500 * 3037000500", "constant integer overflow: 3037000500 * 3037000500"),
+        ("-(-9223372036854775807 - 1)", "constant integer overflow: -(-9223372036854775808)"),
+        ("(-9223372036854775807 - 1) / -1", "constant integer overflow: -9223372036854775808 / -1"),
+        ("(-9223372036854775807 - 1) % -1", "constant integer overflow: -9223372036854775808 % -1"),
+    ];
+
+    for (expr, expected) in cases {
+        let source = format!(
+            r#"
+                contract Loops() {{
+                    entrypoint function main() {{
+                        for (i, 0, 1, {expr}) {{
+                            require(i >= 0);
+                        }}
+                    }}
+                }}
+            "#
+        );
+
+        let err = compile_contract(&source, &[], CompileOptions::default()).expect_err("compile should fail");
+        assert!(err.to_string().contains(expected), "unexpected error: {err}");
+    }
+}
+
+#[test]
 fn runs_runtime_bounded_for_loop_example() {
     let source = r#"
         contract RuntimeLoop() {

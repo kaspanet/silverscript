@@ -5198,8 +5198,11 @@ fn compile_for_statement<'i>(
     script_size: Option<i64>,
     recorder: &mut DebugRecorder<'i>,
 ) -> Result<(), CompilerError> {
-    let max_iterations = eval_const_int(max_iterations_expr, contract_constants)
-        .map_err(|_| CompilerError::Unsupported("for loop max iterations must be a compile-time integer".to_string()))?;
+    let max_iterations = match eval_const_int(max_iterations_expr, contract_constants) {
+        Ok(value) => value,
+        Err(CompilerError::InvalidLiteral(message)) => return Err(CompilerError::InvalidLiteral(message)),
+        Err(_) => return Err(CompilerError::Unsupported("for loop max iterations must be a compile-time integer".to_string())),
+    };
     if max_iterations < 0 {
         return Err(CompilerError::Unsupported("for loop max iterations must be a non-negative compile-time integer".to_string()));
     }
@@ -5443,26 +5446,37 @@ fn eval_const_int<'i>(expr: &Expr<'i>, constants: &HashMap<String, Expr<'i>>) ->
             Some(value) => eval_const_int(value, constants),
             None => Err(CompilerError::Unsupported("for loop bounds must be constant integers".to_string())),
         },
-        ExprKind::Unary { op: UnaryOp::Neg, expr } => Ok(-eval_const_int(expr, constants)?),
+        ExprKind::Unary { op: UnaryOp::Neg, expr } => {
+            let value = eval_const_int(expr, constants)?;
+            value.checked_neg().ok_or_else(|| CompilerError::InvalidLiteral(format!("constant integer overflow: -({value})")))
+        }
         ExprKind::Unary { .. } => Err(CompilerError::Unsupported("for loop bounds must be constant integers".to_string())),
         ExprKind::Binary { op, left, right } => {
             let lhs = eval_const_int(left, constants)?;
             let rhs = eval_const_int(right, constants)?;
             match op {
-                BinaryOp::Add => Ok(lhs + rhs),
-                BinaryOp::Sub => Ok(lhs - rhs),
-                BinaryOp::Mul => Ok(lhs * rhs),
+                BinaryOp::Add => lhs
+                    .checked_add(rhs)
+                    .ok_or_else(|| CompilerError::InvalidLiteral(format!("constant integer overflow: {lhs} + {rhs}"))),
+                BinaryOp::Sub => lhs
+                    .checked_sub(rhs)
+                    .ok_or_else(|| CompilerError::InvalidLiteral(format!("constant integer overflow: {lhs} - {rhs}"))),
+                BinaryOp::Mul => lhs
+                    .checked_mul(rhs)
+                    .ok_or_else(|| CompilerError::InvalidLiteral(format!("constant integer overflow: {lhs} * {rhs}"))),
                 BinaryOp::Div => {
                     if rhs == 0 {
                         return Err(CompilerError::InvalidLiteral("division by zero in for loop bounds".to_string()));
                     }
-                    Ok(lhs / rhs)
+                    lhs.checked_div(rhs)
+                        .ok_or_else(|| CompilerError::InvalidLiteral(format!("constant integer overflow: {lhs} / {rhs}")))
                 }
                 BinaryOp::Mod => {
                     if rhs == 0 {
                         return Err(CompilerError::InvalidLiteral("modulo by zero in for loop bounds".to_string()));
                     }
-                    Ok(lhs % rhs)
+                    lhs.checked_rem(rhs)
+                        .ok_or_else(|| CompilerError::InvalidLiteral(format!("constant integer overflow: {lhs} % {rhs}")))
                 }
                 _ => Err(CompilerError::Unsupported("for loop bounds must be constant integers".to_string())),
             }
@@ -7585,7 +7599,9 @@ mod tests {
 
     use kaspa_txscript::opcodes::codes::OpData1;
 
-    use super::{Op0, OpPushData1, OpPushData2, StackBindings, data_prefix};
+    use crate::ast::{BinaryOp, Expr, ExprKind, UnaryOp};
+
+    use super::{Op0, OpPushData1, OpPushData2, StackBindings, data_prefix, eval_const_int};
 
     #[test]
     fn data_prefix_encodes_small_pushes() {
@@ -7628,5 +7644,79 @@ mod tests {
             stack_bindings.binding_order(),
             ["field_b", "field_a", "param_b", "param_a"].into_iter().map(str::to_string).collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn eval_const_int_rejects_checked_arithmetic_overflow() {
+        let constants = HashMap::new();
+        let cases = [
+            (
+                Expr::new(
+                    ExprKind::Binary {
+                        op: BinaryOp::Add,
+                        left: Box::new(Expr::int(i64::MAX)),
+                        right: Box::new(Expr::int(1)),
+                    },
+                    Default::default(),
+                ),
+                format!("constant integer overflow: {} + 1", i64::MAX),
+            ),
+            (
+                Expr::new(
+                    ExprKind::Binary {
+                        op: BinaryOp::Sub,
+                        left: Box::new(Expr::int(-i64::MAX)),
+                        right: Box::new(Expr::int(2)),
+                    },
+                    Default::default(),
+                ),
+                format!("constant integer overflow: {} - 2", -i64::MAX),
+            ),
+            (
+                Expr::new(
+                    ExprKind::Binary {
+                        op: BinaryOp::Mul,
+                        left: Box::new(Expr::int(3_037_000_500)),
+                        right: Box::new(Expr::int(3_037_000_500)),
+                    },
+                    Default::default(),
+                ),
+                "constant integer overflow: 3037000500 * 3037000500".to_string(),
+            ),
+            (
+                Expr::new(
+                    ExprKind::Unary { op: UnaryOp::Neg, expr: Box::new(Expr::int(i64::MIN)) },
+                    Default::default(),
+                ),
+                format!("constant integer overflow: -({})", i64::MIN),
+            ),
+            (
+                Expr::new(
+                    ExprKind::Binary {
+                        op: BinaryOp::Div,
+                        left: Box::new(Expr::int(i64::MIN)),
+                        right: Box::new(Expr::int(-1)),
+                    },
+                    Default::default(),
+                ),
+                format!("constant integer overflow: {} / -1", i64::MIN),
+            ),
+            (
+                Expr::new(
+                    ExprKind::Binary {
+                        op: BinaryOp::Mod,
+                        left: Box::new(Expr::int(i64::MIN)),
+                        right: Box::new(Expr::int(-1)),
+                    },
+                    Default::default(),
+                ),
+                format!("constant integer overflow: {} % -1", i64::MIN),
+            ),
+        ];
+
+        for (expr, expected) in cases {
+            let err = eval_const_int(&expr, &constants).expect_err("overflow should be rejected");
+            assert!(err.to_string().contains(&expected), "unexpected error: {err}");
+        }
     }
 }
