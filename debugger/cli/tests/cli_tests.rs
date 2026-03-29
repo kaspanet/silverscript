@@ -265,6 +265,197 @@ contract StructuredCtor(Pair seed) {
     )
 }
 
+fn write_covenant_omitted_args_fixture() -> (std::path::PathBuf, std::path::PathBuf) {
+    write_fixture_files(
+        "cov_debug_demo.sil",
+        "cov_debug_demo.test.json",
+        r#"pragma silverscript ^0.1.0;
+
+contract CovDebugDemo(int bump) {
+    int value = 0;
+
+    #[covenant(binding = cov, from = 2, to = 2, mode = verification)]
+    function step(State[] prev_states, State[] new_states) {
+        require(new_states[0].value == prev_states[0].value + bump);
+        require(new_states[1].value == prev_states[1].value);
+    }
+
+    #[covenant(binding = cov, from = 2, to = 2, mode = verification)]
+    function step_with_nonce(State[] prev_states, State[] new_states, int nonce) {
+        require(nonce == bump);
+        require(new_states[0].value == prev_states[0].value + bump);
+        require(new_states[1].value == prev_states[1].value);
+    }
+}
+"#,
+        r#"{
+  "tests": [
+    {
+      "name": "source_leader_infers_args",
+      "function": "step",
+      "constructor_args": [2],
+      "expect": "pass",
+      "tx": {
+        "active_input_index": 0,
+        "inputs": [
+          {
+            "utxo_value": 1000,
+            "covenant_id": 1,
+            "state": { "value": 7 }
+          },
+          {
+            "utxo_value": 1000,
+            "covenant_id": 1,
+            "state": { "value": 7 }
+          }
+        ],
+        "outputs": [
+          {
+            "value": 1000,
+            "covenant_id": 1,
+            "state": { "value": 9 }
+          },
+          {
+            "value": 1000,
+            "covenant_id": 1,
+            "state": { "value": 7 }
+          }
+        ]
+      }
+    },
+    {
+      "name": "source_leader_missing_nonce",
+      "function": "step_with_nonce",
+      "constructor_args": [2],
+      "expect": "pass",
+      "tx": {
+        "active_input_index": 0,
+        "inputs": [
+          {
+            "utxo_value": 1000,
+            "covenant_id": 1,
+            "state": { "value": 7 }
+          },
+          {
+            "utxo_value": 1000,
+            "covenant_id": 1,
+            "state": { "value": 7 }
+          }
+        ],
+        "outputs": [
+          {
+            "value": 1000,
+            "covenant_id": 1,
+            "state": { "value": 9 }
+          },
+          {
+            "value": 1000,
+            "covenant_id": 1,
+            "state": { "value": 7 }
+          }
+        ]
+      }
+    },
+    {
+      "name": "source_leader_explicit_empty_args",
+      "function": "step",
+      "constructor_args": [2],
+      "args": [],
+      "expect": "pass",
+      "tx": {
+        "active_input_index": 0,
+        "inputs": [
+          {
+            "utxo_value": 1000,
+            "covenant_id": 1,
+            "state": { "value": 7 }
+          },
+          {
+            "utxo_value": 1000,
+            "covenant_id": 1,
+            "state": { "value": 7 }
+          }
+        ],
+        "outputs": [
+          {
+            "value": 1000,
+            "covenant_id": 1,
+            "state": { "value": 9 }
+          },
+          {
+            "value": 1000,
+            "covenant_id": 1,
+            "state": { "value": 7 }
+          }
+        ]
+      }
+    }
+  ]
+}
+"#,
+    )
+}
+
+fn write_covenant_local_fixture() -> (std::path::PathBuf, std::path::PathBuf) {
+    write_fixture_files(
+        "cov_debug_locals.sil",
+        "cov_debug_locals.test.json",
+        r#"pragma silverscript ^0.1.0;
+
+contract CovDebugDemo(int bump) {
+    int value = 0;
+
+    #[covenant(binding = cov, from = 2, to = 2, mode = verification)]
+    function step(State[] prev_states, State[] new_states) {
+        int a = prev_states[0].value;
+        int b = a + bump + value;
+        require(new_states[0].value == prev_states[0].value + bump);
+        require(new_states[1].value == prev_states[1].value);
+        require(b == 16);
+    }
+}
+"#,
+        r#"{
+  "tests": [
+    {
+      "name": "source_leader_local",
+      "function": "step",
+      "constructor_args": [2],
+      "expect": "pass",
+      "tx": {
+        "active_input_index": 0,
+        "inputs": [
+          {
+            "utxo_value": 1000,
+            "covenant_id": 1,
+            "state": { "value": 7 }
+          },
+          {
+            "utxo_value": 1000,
+            "covenant_id": 1,
+            "state": { "value": 7 }
+          }
+        ],
+        "outputs": [
+          {
+            "value": 1000,
+            "covenant_id": 1,
+            "state": { "value": 9 }
+          },
+          {
+            "value": 1000,
+            "covenant_id": 1,
+            "state": { "value": 7 }
+          }
+        ]
+      }
+    }
+  ]
+}
+"#,
+    )
+}
+
 #[test]
 fn cli_debugger_repl_all_commands_smoke() {
     let tmp = std::env::temp_dir().join("cli_test_if_statement.sil");
@@ -666,6 +857,139 @@ fn cli_debugger_run_all_supports_structured_constructor_args_from_test_file() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("PASS  struct_ctor_pass"), "missing struct_ctor_pass line: {stdout}");
     assert!(stdout.contains("1 tests: 1 passed, 0 failed"), "missing summary line: {stdout}");
+}
+
+#[test]
+fn cli_debugger_run_test_file_infers_covenant_state_args_when_args_omitted() {
+    let (_script_path, test_file_path) = write_covenant_omitted_args_fixture();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cli-debugger"))
+        .arg("--run")
+        .arg("--test-file")
+        .arg(&test_file_path)
+        .arg("--test-name")
+        .arg("source_leader_infers_args")
+        .output()
+        .expect("run cli-debugger covenant inference test");
+
+    assert!(
+        output.status.success(),
+        "expected success, status={:?}, stderr={}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("PASS"), "expected PASS in stdout, got: {stdout}");
+}
+
+#[test]
+fn cli_debugger_run_test_file_reports_missing_non_state_covenant_args_when_args_omitted() {
+    let (_script_path, test_file_path) = write_covenant_omitted_args_fixture();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cli-debugger"))
+        .arg("--run")
+        .arg("--test-file")
+        .arg(&test_file_path)
+        .arg("--test-name")
+        .arg("source_leader_missing_nonce")
+        .output()
+        .expect("run cli-debugger covenant nonce inference test");
+
+    assert!(!output.status.success(), "expected missing nonce inference to fail");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("cannot infer omitted args for covenant 'step_with_nonce'; provide explicit args for nonce (int)"),
+        "unexpected stderr: {stderr}"
+    );
+}
+
+#[test]
+fn cli_debugger_run_test_file_preserves_explicit_empty_args_for_covenant_calls() {
+    let (_script_path, test_file_path) = write_covenant_omitted_args_fixture();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cli-debugger"))
+        .arg("--run")
+        .arg("--test-file")
+        .arg(&test_file_path)
+        .arg("--test-name")
+        .arg("source_leader_explicit_empty_args")
+        .output()
+        .expect("run cli-debugger explicit empty covenant args test");
+
+    assert!(!output.status.success(), "expected explicit empty args to remain strict");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("function expects 1 arguments, got 0"), "unexpected stderr: {stderr}");
+}
+
+#[test]
+fn cli_debugger_covenant_vars_render_source_level_args_and_active_state() {
+    let (script_path, test_file_path) = write_covenant_omitted_args_fixture();
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_cli-debugger"))
+        .arg(&script_path)
+        .arg("--function")
+        .arg("step")
+        .arg("--test-file")
+        .arg(&test_file_path)
+        .arg("--test-name")
+        .arg("source_leader_infers_args")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn cli-debugger");
+
+    let input = b"vars\nq\n";
+    child.stdin.as_mut().expect("stdin available").write_all(input).expect("write stdin");
+
+    let output = child.wait_with_output().expect("wait for cli-debugger");
+    assert!(output.status.success(), "cli-debugger exited with status {:?}", output.status.code());
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.is_empty(), "unexpected stderr: {stderr}");
+    assert!(stdout.contains("Contract State:\n  value (int) = 7"), "missing active contract state: {stdout}");
+    assert!(stdout.contains("prev_states (State[]) = [{value: 7}, {value: 7}]"), "missing prev_states call arg: {stdout}");
+    assert!(stdout.contains("new_states (State[]) = [{value: 9}, {value: 7}]"), "missing new_states call arg: {stdout}");
+
+    let call_args_index = stdout.find("Call Arguments:").expect("missing Call Arguments section");
+    let new_states_index = stdout.find("new_states (State[]) = [{value: 9}, {value: 7}]").expect("missing new_states render");
+    let locals_index = stdout.find("Locals:");
+    assert!(call_args_index < new_states_index, "new_states should appear under Call Arguments: {stdout}");
+    assert!(locals_index.is_none_or(|index| new_states_index < index), "new_states should not render as a local: {stdout}");
+}
+
+#[test]
+fn cli_debugger_resolves_covenant_local_from_prev_states_array() {
+    let (script_path, test_file_path) = write_covenant_local_fixture();
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_cli-debugger"))
+        .arg(&script_path)
+        .arg("--function")
+        .arg("step")
+        .arg("--test-file")
+        .arg(&test_file_path)
+        .arg("--test-name")
+        .arg("source_leader_local")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn cli-debugger");
+
+    let input = b"n\nvars\ne a\nq\n";
+    child.stdin.as_mut().expect("stdin available").write_all(input).expect("write stdin");
+
+    let output = child.wait_with_output().expect("wait for cli-debugger");
+    assert!(output.status.success(), "cli-debugger exited with status {:?}", output.status.code());
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.is_empty(), "unexpected stderr: {stderr}");
+    assert!(stdout.contains("a (int) = 7"), "missing resolved local a: {stdout}");
+    assert!(stdout.contains("a = (int) 7"), "missing resolved eval for a: {stdout}");
+    assert!(!stdout.contains("a (int) = <unavailable"), "local a should not be unavailable: {stdout}");
+    assert!(!stdout.contains("ERROR: failed to compile debug expression"), "local a should not hit debug compile failure: {stdout}");
 }
 
 #[test]

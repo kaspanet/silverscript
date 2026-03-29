@@ -1354,11 +1354,8 @@ contract Counter(int init_value) {
     let shadow_ctx = ShadowTxContext { tx: &populated_tx, input: input_ref, input_index: 0, utxo_entry: utxo_ref };
     let mut session = DebugSession::full(&sigscript, &compiled.script, source, debug_info, engine)?
         .with_shadow_tx_context(shadow_ctx)
-        .with_covenant_mode(
-            compiled.covenant_infos.clone(),
-            Some(DebugValue::Object(vec![("value".to_string(), DebugValue::Int(7))])),
-            Some(covenant_target),
-        );
+        .with_active_contract_state(Some(DebugValue::Object(vec![("value".to_string(), DebugValue::Int(7))])))
+        .with_covenant_mode(Some(DebugValue::Object(vec![("value".to_string(), DebugValue::Int(7))])), covenant_target);
 
     session.run_to_first_executed_statement()?;
 
@@ -1370,6 +1367,13 @@ contract Counter(int init_value) {
             let prev_state = session.variable_by_name("prev_state")?;
             assert_eq!(prev_state.type_name, "State");
             assert_eq!(format_value(&prev_state.type_name, &prev_state.value), "{value: 7}");
+
+            let new_states = session.variable_by_name("new_states")?;
+            assert_eq!(new_states.origin.label(), "arg");
+
+            let value = session.variable_by_name("value")?;
+            assert_eq!(value.origin.label(), "state");
+            assert_eq!(format_value(&value.type_name, &value.value), "7");
 
             let (type_name, value) = session.evaluate_expression("prev_state.value")?;
             assert_eq!(type_name, "int");
@@ -1383,4 +1387,101 @@ contract Counter(int init_value) {
     }
 
     Err("expected to step into source-level covenant policy frame".into())
+}
+
+#[test]
+fn debug_session_resolves_covenant_locals_derived_from_prev_state_arrays() -> Result<(), Box<dyn Error>> {
+    let source = r#"pragma silverscript ^0.1.0;
+
+contract CovDebugDemo(int bump) {
+    int value = 0;
+
+    #[covenant(binding = cov, from = 2, to = 2, mode = verification)]
+    function step(State[] prev_states, State[] new_states) {
+        int a = prev_states[0].value;
+        int b = a + bump + value;
+        require(new_states[0].value == prev_states[0].value + bump);
+        require(new_states[1].value == prev_states[1].value);
+        require(b == 16);
+    }
+}
+"#;
+
+    let compile_opts = CompileOptions { record_debug_infos: true, ..Default::default() };
+    let compiled = compile_contract(source, &[Expr::int(2)], compile_opts)?;
+    let debug_info = compiled.debug_info.clone();
+    let covenant_target = compiled
+        .resolve_covenant_call_target("step", CovenantDeclCallOptions { is_leader: true })
+        .ok_or("missing covenant call target")?;
+    let sigscript = compiled.build_sig_script_for_covenant_decl(
+        "step",
+        vec![vec![struct_object(vec![("value", Expr::int(9))]), struct_object(vec![("value", Expr::int(7))])].into()],
+        CovenantDeclCallOptions { is_leader: true },
+    )?;
+
+    let input0 = TransactionInput {
+        previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([0x66u8; 32]), index: 0 },
+        signature_script: sigscript.clone(),
+        sequence: 0,
+        sig_op_count: 0,
+    };
+    let input1 = TransactionInput {
+        previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([0x77u8; 32]), index: 0 },
+        signature_script: vec![OpTrue],
+        sequence: 0,
+        sig_op_count: 0,
+    };
+    let output0 = TransactionOutput { value: 1000, script_public_key: ScriptPublicKey::new(0, vec![OpTrue].into()), covenant: None };
+    let output1 = TransactionOutput { value: 1000, script_public_key: ScriptPublicKey::new(0, vec![OpTrue].into()), covenant: None };
+    let tx = Transaction::new(1, vec![input0, input1], vec![output0, output1], 0, Default::default(), 0, vec![]);
+
+    let covenant_id = Hash::from_bytes([0x44u8; 32]);
+    let utxo_entry0 =
+        UtxoEntry::new(1000, ScriptPublicKey::new(0, compiled.script.clone().into()), 0, tx.is_coinbase(), Some(covenant_id));
+    let utxo_entry1 =
+        UtxoEntry::new(1000, ScriptPublicKey::new(0, compiled.script.clone().into()), 0, tx.is_coinbase(), Some(covenant_id));
+    let populated_tx = PopulatedTransaction::new(&tx, vec![utxo_entry0, utxo_entry1]);
+    let cov_ctx = CovenantsContext::from_tx(&populated_tx)?;
+
+    let sig_cache = Cache::new(10_000);
+    let reused_values = SigHashReusedValuesUnsync::new();
+    let ctx = EngineCtx::new(&sig_cache).with_reused(&reused_values).with_covenants_ctx(&cov_ctx);
+    let input_ref = &tx.inputs[0];
+    let utxo_ref = populated_tx.utxo(0).ok_or("missing utxo for input 0")?;
+    let engine = debugger_session::session::DebugEngine::from_transaction_input(
+        &populated_tx,
+        input_ref,
+        0,
+        utxo_ref,
+        ctx,
+        EngineFlags { covenants_enabled: true },
+    );
+
+    let shadow_ctx = ShadowTxContext { tx: &populated_tx, input: input_ref, input_index: 0, utxo_entry: utxo_ref };
+    let mut session = DebugSession::full(&sigscript, &compiled.script, source, debug_info, engine)?
+        .with_shadow_tx_context(shadow_ctx)
+        .with_active_contract_state(Some(DebugValue::Object(vec![("value".to_string(), DebugValue::Int(7))])))
+        .with_covenant_mode(
+            Some(DebugValue::Array(vec![
+                DebugValue::Object(vec![("value".to_string(), DebugValue::Int(7))]),
+                DebugValue::Object(vec![("value".to_string(), DebugValue::Int(7))]),
+            ])),
+            covenant_target,
+        );
+
+    session.run_to_first_executed_statement()?;
+    session.step_over()?;
+
+    let a = session.variable_by_name("a")?;
+    assert_eq!(a.type_name, "int");
+    assert_eq!(format_value(&a.type_name, &a.value), "7");
+
+    let (type_name, value) = session.evaluate_expression("a")?;
+    assert_eq!(type_name, "int");
+    assert_eq!(format_value(&type_name, &value), "7");
+
+    let (type_name, value) = session.evaluate_expression("prev_states[0].value")?;
+    assert_eq!(type_name, "int");
+    assert_eq!(format_value(&type_name, &value), "7");
+    Ok(())
 }

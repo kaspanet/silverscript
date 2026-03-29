@@ -18,7 +18,7 @@ use kaspa_txscript::{
 use silverscript_lang::ast::{Expr, ExprKind, format_contract_ast, parse_contract_ast};
 use silverscript_lang::compiler::{
     CompileOptions, CompiledContract, CovenantDeclCallOptions, FunctionAbiEntry, FunctionInputAbi, compile_contract,
-    compile_contract_ast, function_branch_index, struct_object,
+    compile_contract_ast, function_branch_index, materialize_state_script, struct_object,
 };
 use silverscript_lang::debug_info::{DebugParamBinding, RuntimeBinding, StepKind};
 
@@ -4429,6 +4429,61 @@ fn compiled_template_parts_and_hash(compiled: &CompiledContract) -> (Vec<u8>, Ve
     let suffix = compiled.script[layout.start + layout.len..].to_vec();
     let template_hash = Blake2bParams::new().hash_length(32).to_state().update(&prefix).update(&suffix).finalize().as_bytes().to_vec();
     (prefix, suffix, template_hash)
+}
+
+#[test]
+fn materialize_state_script_replaces_only_state_segment() {
+    let source = r#"
+        contract A(int initX, byte[2] initY) {
+            int x = initX;
+            byte[2] y = initY;
+
+            entrypoint function main() {
+                require(true);
+            }
+        }
+    "#;
+
+    let compile_opts = CompileOptions { record_debug_infos: true, ..Default::default() };
+    let compiled = compile_contract(source, &[5.into(), vec![1u8, 2u8].into()], compile_opts).expect("compile succeeds");
+    let state = struct_object(vec![("x", Expr::int(6)), ("y", vec![0x34u8, 0x12u8].into())]);
+
+    let materialized_script = materialize_state_script(&compiled, &state).expect("materialize succeeds");
+
+    let mut contract = parse_contract_ast(source).expect("parse succeeds");
+    let ExprKind::StateObject(entries) = &state.kind else {
+        panic!("expected state object");
+    };
+    for field in &mut contract.fields {
+        field.expr =
+            entries.iter().find(|entry| entry.name == field.name).map(|entry| entry.expr.clone()).expect("state field exists");
+    }
+    let fully_materialized =
+        compile_contract_ast(&contract, &[5.into(), vec![1u8, 2u8].into()], CompileOptions::default()).expect("compile succeeds");
+
+    let layout = compiled.state_layout;
+    assert_eq!(materialized_script, fully_materialized.script);
+    assert_eq!(compiled.script[..layout.start], materialized_script[..layout.start]);
+    assert_eq!(compiled.script[layout.start + layout.len..], materialized_script[layout.start + layout.len..]);
+}
+
+#[test]
+fn materialize_state_script_requires_debug_info() {
+    let source = r#"
+        contract A(int initX, byte[2] initY) {
+            int x = initX;
+            byte[2] y = initY;
+
+            entrypoint function main() {
+                require(true);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[5.into(), vec![1u8, 2u8].into()], CompileOptions::default()).expect("compile succeeds");
+    let state = struct_object(vec![("x", Expr::int(6)), ("y", vec![0x34u8, 0x12u8].into())]);
+    let err = materialize_state_script(&compiled, &state).expect_err("materialize should require debug info");
+    assert!(err.to_string().contains("debug-enabled compilation"));
 }
 
 fn run_read_input_state_with_template_case(

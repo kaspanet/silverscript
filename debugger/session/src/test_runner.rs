@@ -17,7 +17,7 @@ pub struct ContractTestCase {
     #[serde(default)]
     pub constructor_args: Vec<Value>,
     #[serde(default)]
-    pub args: Vec<Value>,
+    pub args: Option<Vec<Value>>,
     pub expect: TestExpectation,
     #[serde(default)]
     pub tx: Option<TestTxScenario>,
@@ -95,7 +95,7 @@ pub struct ContractTestCaseResolved {
     pub function: String,
     pub delegate: bool,
     pub constructor_args: Vec<String>,
-    pub args: Vec<String>,
+    pub args: Option<Vec<String>>,
     pub expect: TestExpectation,
     pub tx: Option<TestTxScenarioResolved>,
 }
@@ -186,7 +186,7 @@ pub fn resolve_contract_test(
         function: test.function,
         delegate: test.delegate,
         constructor_args: values_to_args(&test.constructor_args)?,
-        args: values_to_args(&test.args)?,
+        args: test.args.as_ref().map(|values| values_to_args(values)).transpose()?,
         expect: test.expect,
         tx: test.tx.map(resolve_tx_scenario).transpose()?,
     };

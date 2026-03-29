@@ -20,6 +20,13 @@ cli-debugger ./vault.sil -f inspect --arg '{"amount":7,"tag":"0xbeef"}'
 cli-debugger ./vault.sil -f inspect_many --arg '[{"amount":7},{"amount":9}]'
 ```
 
+Contracts with source-level covenant declarations use the same debugger entrypoints. Pass the source function name to `--function`; the CLI resolves it to the generated wrapper and, when the fixture includes covenant transaction context, exposes `prev_state` and `prev_states` in scope while you step through the transition.
+
+```bash
+cli-debugger ./counter.sil --function step --test-file ./counter.test.json --test-name source_leader
+cli-debugger ./counter.sil --function rebalance --delegate --test-file ./counter.test.json --test-name source_delegate
+```
+
 ---
 
 ## Interactive Debugging
@@ -150,6 +157,33 @@ Structured args use the same JSON object and object-array form inside `.test.jso
   ]
 }
 ```
+
+For covenant flows, the `.test.json` file can describe the full state transition: the covenant states being spent on the input side, and the covenant states the transaction is expected to create on the output side. That gives the debugger enough context to populate `prev_state` / `prev_states` and makes the test data read like the transition under inspection.
+
+```json
+{
+  "tests": [
+    {
+      "name": "source_leader",
+      "function": "step",
+      "expect": "pass",
+      "tx": {
+        "active_input_index": 0,
+        "inputs": [
+          { "utxo_value": 1000, "covenant_id": 1, "state": { "value": 7 } },
+          { "utxo_value": 1000, "covenant_id": 1, "state": { "value": 9 } }
+        ],
+        "outputs": [
+          { "value": 1000, "covenant_id": 1, "state": { "value": 11 } },
+          { "value": 1000, "covenant_id": 1, "state": { "value": 13 } }
+        ]
+      }
+    }
+  ]
+}
+```
+
+Here the inputs describe the prior covenant state, and the outputs describe the next one. If `args` is omitted, `State` / `State[]` call args are inferred from matching `tx.outputs[*].state`.
 
 ### Test Commands
 

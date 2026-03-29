@@ -1,13 +1,13 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 
-use crate::ast::{ConstantAst, ContractFieldAst, Expr, ExprKind, FunctionAst, ParamAst, Statement, parse_type_ref};
+use crate::ast::{ConstantAst, ContractAst, ContractFieldAst, Expr, ExprKind, FunctionAst, ParamAst, Statement, parse_type_ref};
 use crate::debug_info::{
     DebugFunctionRange, DebugInfo, DebugInfoRecorder, DebugLeafBinding, DebugNamedValue, DebugParamBinding, DebugParamMapping,
     DebugStep, DebugVariableUpdate, RuntimeBinding, SourceSpan, StepKind,
 };
 
-use super::{CompilerError, StackBindings, resolve_expr_for_debug};
+use super::{CompilerError, StackBindings};
 
 /// Contract-level debug recorder used by the compiler.
 ///
@@ -30,8 +30,15 @@ impl<'i> DebugRecorder<'i> {
     }
 
     /// Records contract-scoped debugger bindings (constructor args and constant declarations).
-    pub fn record_contract_scope(&mut self, params: &[ParamAst<'i>], values: &[Expr<'i>], constants: &[ConstantAst<'i>]) {
-        self.inner.record_contract_scope(params, values, constants);
+    pub fn record_contract_scope(
+        &mut self,
+        params: &[ParamAst<'i>],
+        values: &[Expr<'i>],
+        constants: &[ConstantAst<'i>],
+        contract: &ContractAst<'i>,
+        field_values: &HashMap<String, Expr<'i>>,
+    ) {
+        self.inner.record_contract_scope(params, values, constants, contract, field_values);
     }
 
     /// Starts staging debug metadata for one entrypoint compilation.
@@ -112,7 +119,14 @@ impl<'i> DebugRecorder<'i> {
 }
 
 trait DebugRecorderImpl<'i>: fmt::Debug {
-    fn record_contract_scope(&mut self, params: &[ParamAst<'i>], values: &[Expr<'i>], constants: &[ConstantAst<'i>]);
+    fn record_contract_scope(
+        &mut self,
+        params: &[ParamAst<'i>],
+        values: &[Expr<'i>],
+        constants: &[ConstantAst<'i>],
+        contract: &ContractAst<'i>,
+        field_values: &HashMap<String, Expr<'i>>,
+    );
     fn begin_entrypoint(
         &mut self,
         name: &str,
@@ -159,7 +173,15 @@ trait DebugRecorderImpl<'i>: fmt::Debug {
 struct NoopDebugRecorder;
 
 impl<'i> DebugRecorderImpl<'i> for NoopDebugRecorder {
-    fn record_contract_scope(&mut self, _params: &[ParamAst<'i>], _values: &[Expr<'i>], _constants: &[ConstantAst<'i>]) {}
+    fn record_contract_scope(
+        &mut self,
+        _params: &[ParamAst<'i>],
+        _values: &[Expr<'i>],
+        _constants: &[ConstantAst<'i>],
+        _contract: &ContractAst<'i>,
+        _field_values: &HashMap<String, Expr<'i>>,
+    ) {
+    }
     fn begin_entrypoint(
         &mut self,
         _name: &str,
@@ -229,8 +251,29 @@ impl<'i> ActiveDebugRecorder<'i> {
     }
 }
 
+fn debug_named_contract_state<'i>(contract: &ContractAst<'i>, field_values: &HashMap<String, Expr<'i>>) -> Vec<DebugNamedValue<'i>> {
+    contract
+        .fields
+        .iter()
+        .filter_map(|field| {
+            field_values.get(&field.name).cloned().map(|value| DebugNamedValue {
+                name: field.name.clone(),
+                type_name: field.type_ref.type_name(),
+                value,
+            })
+        })
+        .collect()
+}
+
 impl<'i> DebugRecorderImpl<'i> for ActiveDebugRecorder<'i> {
-    fn record_contract_scope(&mut self, params: &[ParamAst<'i>], values: &[Expr<'i>], constants: &[ConstantAst<'i>]) {
+    fn record_contract_scope(
+        &mut self,
+        params: &[ParamAst<'i>],
+        values: &[Expr<'i>],
+        constants: &[ConstantAst<'i>],
+        contract: &ContractAst<'i>,
+        field_values: &HashMap<String, Expr<'i>>,
+    ) {
         for (param, value) in params.iter().zip(values.iter()) {
             self.recorder.record_constructor_arg(DebugNamedValue {
                 name: param.name.clone(),
@@ -245,6 +288,7 @@ impl<'i> DebugRecorderImpl<'i> for ActiveDebugRecorder<'i> {
                 value: constant.expr.clone(),
             });
         }
+        self.recorder.record_contract_state(debug_named_contract_state(contract, field_values));
     }
 
     fn begin_entrypoint(
@@ -307,7 +351,7 @@ impl<'i> DebugRecorderImpl<'i> for ActiveDebugRecorder<'i> {
         };
 
         let updates = collect_variable_updates(&frame.env_before, &frame.stack_bindings_before, env, types, stack_bindings, structs)?;
-        let console_args = collect_console_args(stmt, env)?;
+        let console_args = collect_console_args(stmt, env, types)?;
         let span = SourceSpan::from(stmt.span());
         let bytecode_len = bytecode_end.saturating_sub(frame.start);
         let step_index = entrypoint.push_step(frame.start, frame.start + bytecode_len, span, StepKind::Source {});
@@ -351,6 +395,7 @@ impl<'i> DebugRecorderImpl<'i> for ActiveDebugRecorder<'i> {
             let has_structured_binding = structured_leaf_bindings.is_some();
             resolve_variable_update(
                 env,
+                types,
                 &mut updates,
                 &param.name,
                 &param.type_ref.type_name(),
@@ -359,7 +404,7 @@ impl<'i> DebugRecorderImpl<'i> for ActiveDebugRecorder<'i> {
                 structured_leaf_bindings,
             )?;
             if has_structured_binding {
-                collect_inline_struct_leaf_updates(env, &mut updates, param, &expr, stack_bindings, structs)?;
+                collect_inline_struct_leaf_updates(env, types, &mut updates, param, &expr, stack_bindings, structs)?;
             }
         }
 
@@ -664,7 +709,7 @@ fn collect_variable_updates<'i>(
             continue;
         }
 
-        resolve_variable_update(after_env, &mut updates, &name, type_name, after_expr, after_runtime_binding, None)?;
+        resolve_variable_update(after_env, types, &mut updates, &name, type_name, after_expr, after_runtime_binding, None)?;
     }
 
     for (name, type_name) in types {
@@ -690,6 +735,7 @@ fn collect_variable_updates<'i>(
 
         resolve_variable_update(
             after_env,
+            types,
             &mut updates,
             name,
             type_name,
@@ -704,6 +750,7 @@ fn collect_variable_updates<'i>(
 
 fn resolve_variable_update<'i>(
     env: &HashMap<String, Expr<'i>>,
+    types: &HashMap<String, String>,
     updates: &mut Vec<DebugVariableUpdate<'i>>,
     name: &str,
     type_name: &str,
@@ -711,7 +758,7 @@ fn resolve_variable_update<'i>(
     runtime_binding: Option<RuntimeBinding>,
     structured_leaf_bindings: Option<Vec<DebugLeafBinding>>,
 ) -> Result<(), CompilerError> {
-    let resolved = resolve_expr_for_debug(expr, env, &mut HashSet::new())?;
+    let resolved = super::resolve_expr_for_runtime(expr, env, types, &mut HashSet::new())?;
     updates.push(DebugVariableUpdate {
         name: name.to_string(),
         type_name: type_name.to_string(),
@@ -722,12 +769,16 @@ fn resolve_variable_update<'i>(
     Ok(())
 }
 
-fn collect_console_args<'i>(stmt: &Statement<'i>, env: &HashMap<String, Expr<'i>>) -> Result<Vec<Expr<'i>>, CompilerError> {
+fn collect_console_args<'i>(
+    stmt: &Statement<'i>,
+    env: &HashMap<String, Expr<'i>>,
+    types: &HashMap<String, String>,
+) -> Result<Vec<Expr<'i>>, CompilerError> {
     let Statement::Console { args, .. } = stmt else {
         return Ok(Vec::new());
     };
 
-    args.iter().cloned().map(|expr| resolve_expr_for_debug(expr, env, &mut HashSet::new())).collect()
+    args.iter().cloned().map(|expr| super::resolve_expr_for_runtime(expr, env, types, &mut HashSet::new())).collect()
 }
 
 fn static_binding_for_stack_name(name: &str, stack_bindings: &HashMap<String, i64>) -> Option<RuntimeBinding> {
@@ -771,13 +822,14 @@ fn collect_inline_runtime_updates<'i>(
         let expr = env.get(&name).cloned().unwrap_or_else(|| Expr::identifier(name.clone()));
         let runtime_binding = runtime_binding_for_stack_name(&name, stack_bindings)
             .or_else(|| runtime_binding_for_inline_binding(&expr, stack_bindings));
-        resolve_variable_update(env, &mut updates, &name, type_name, expr, runtime_binding, None)?;
+        resolve_variable_update(env, types, &mut updates, &name, type_name, expr, runtime_binding, None)?;
     }
     Ok(updates)
 }
 
 fn collect_inline_struct_leaf_updates<'i>(
     env: &HashMap<String, Expr<'i>>,
+    types: &HashMap<String, String>,
     updates: &mut Vec<DebugVariableUpdate<'i>>,
     param: &ParamAst<'i>,
     param_expr: &Expr<'i>,
@@ -794,6 +846,7 @@ fn collect_inline_struct_leaf_updates<'i>(
         let runtime_binding = runtime_binding_for_stack_name(&source_leaf_name, stack_bindings);
         resolve_variable_update(
             env,
+            types,
             updates,
             &target_leaf_name,
             &super::type_name_from_ref(&field_type),
@@ -832,7 +885,7 @@ mod tests {
         let structs = super::super::build_struct_registry(&contract).expect("build struct registry");
 
         let mut recorder = DebugRecorder::new(false);
-        recorder.record_contract_scope(&contract.params, &[], &contract.constants);
+        recorder.record_contract_scope(&contract.params, &[], &contract.constants, &contract, &HashMap::new());
         recorder.begin_entrypoint("spend", function, &contract.fields, &structs).expect("noop begin entrypoint");
 
         let span = SourceSpan::from(stmt.span());

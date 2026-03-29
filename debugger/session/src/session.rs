@@ -131,16 +131,20 @@ pub struct OpcodeMeta<'i> {
 
 #[derive(Clone)]
 struct CovenantSessionContext {
-    bindings: Vec<CovenantDeclInfo>,
+    injected_param_value: Option<DebugValue>,
+    call_target: ResolvedCovenantCallTarget,
 }
 
 impl CovenantSessionContext {
     fn binding_for_function(&self, function_name: &str) -> Option<&CovenantDeclInfo> {
-        self.bindings.iter().find(|binding| binding.matches_generated_name(function_name))
+        self.call_target.info.matches_generated_name(function_name).then_some(&self.call_target.info)
     }
 
     fn display_name_for_function(&self, function_name: &str) -> Option<String> {
-        self.binding_for_function(function_name).and_then(|binding| binding.display_name_for_function(function_name))
+        if self.call_target.info.policy_function_name() == function_name {
+            return Some(self.call_target.display_name());
+        }
+        self.call_target.info.display_name_for_function(function_name)
     }
 
     fn hides_name(&self, name: &str) -> bool {
@@ -159,9 +163,7 @@ pub struct DebugSession<'a, 'i> {
     debug_info: DebugInfo<'i>,
     contract_ast: Option<ContractAst<'i>>,
     covenant_ctx: Option<CovenantSessionContext>,
-    covenant_param_value: Option<DebugValue>,
-    active_covenant_policy_name: Option<String>,
-    active_covenant_display_name: Option<String>,
+    active_contract_state: Option<DebugValue>,
     step_order: Vec<usize>,
     current_step_index: Option<usize>,
     source_lines: Vec<String>,
@@ -262,9 +264,7 @@ impl<'a, 'i> DebugSession<'a, 'i> {
             debug_info,
             contract_ast,
             covenant_ctx: None,
-            covenant_param_value: None,
-            active_covenant_policy_name: None,
-            active_covenant_display_name: None,
+            active_contract_state: None,
             step_order,
             current_step_index: None,
             source_lines,
@@ -293,16 +293,13 @@ impl<'a, 'i> DebugSession<'a, 'i> {
         self
     }
 
-    pub fn with_covenant_mode(
-        mut self,
-        infos: Vec<CovenantDeclInfo>,
-        param_value: Option<DebugValue>,
-        active_call: Option<ResolvedCovenantCallTarget>,
-    ) -> Self {
-        self.covenant_ctx = (!infos.is_empty()).then_some(CovenantSessionContext { bindings: infos });
-        self.covenant_param_value = param_value;
-        self.active_covenant_policy_name = active_call.as_ref().map(|call| call.info.lowered.policy_function.clone());
-        self.active_covenant_display_name = active_call.as_ref().map(display_name_for_active_covenant_call);
+    pub fn with_active_contract_state(mut self, active_contract_state: Option<DebugValue>) -> Self {
+        self.active_contract_state = active_contract_state;
+        self
+    }
+
+    pub fn with_covenant_mode(mut self, param_value: Option<DebugValue>, active_call: ResolvedCovenantCallTarget) -> Self {
+        self.covenant_ctx = Some(CovenantSessionContext { injected_param_value: param_value, call_target: active_call });
         self
     }
 
@@ -650,19 +647,46 @@ impl<'a, 'i> DebugSession<'a, 'i> {
     }
 
     fn param_origin(&self, name: &str) -> VariableOrigin {
+        self.binding_origin_for_function(None, name)
+    }
+
+    fn binding_origin_for_function(&self, function_name: Option<&str>, name: &str) -> VariableOrigin {
         if self.contract_ast.as_ref().is_some_and(|contract| contract.fields.iter().any(|field| field.name == name)) {
-            VariableOrigin::ContractField
-        } else {
+            return VariableOrigin::ContractField;
+        }
+
+        if function_name.is_none() {
+            return VariableOrigin::Param;
+        }
+
+        let Some(contract) = self.contract_ast.as_ref() else {
+            return VariableOrigin::Local;
+        };
+
+        let source_function_name = function_name.and_then(|function_name| {
+            contract.functions.iter().find(|function| function.name == function_name).map(|function| function.name.as_str()).or_else(
+                || {
+                    self.covenant_ctx()
+                        .and_then(|ctx| ctx.binding_for_function(function_name))
+                        .map(|binding| binding.source_name.as_str())
+                },
+            )
+        });
+
+        if source_function_name.is_some_and(|function_name| {
+            contract
+                .functions
+                .iter()
+                .find(|function| function.name == function_name)
+                .is_some_and(|function| function.params.iter().any(|param| param.name == name))
+        }) {
             VariableOrigin::Param
+        } else {
+            VariableOrigin::Local
         }
     }
 
     fn display_function_name(&self, function_name: &str) -> String {
-        if self.active_covenant_policy_name.as_deref() == Some(function_name) {
-            if let Some(name) = &self.active_covenant_display_name {
-                return name.clone();
-            }
-        }
         self.covenant_ctx().and_then(|ctx| ctx.display_name_for_function(function_name)).unwrap_or_else(|| function_name.to_string())
     }
 
@@ -749,6 +773,7 @@ impl<'a, 'i> DebugSession<'a, 'i> {
 
         record_debug_named_values(&mut bindings, &self.debug_info.constructor_args, VariableOrigin::ConstructorArg);
         record_debug_named_values(&mut bindings, &self.debug_info.constants, VariableOrigin::Constant);
+        self.inject_contract_state_bindings(&mut bindings);
 
         let frozen_inline_names = if scope.context.step_id.frame_id == 0 {
             HashSet::new()
@@ -783,7 +808,7 @@ impl<'a, 'i> DebugSession<'a, 'i> {
                 .or_insert_with(|| ScopeBinding {
                     type_name: update.type_name.clone(),
                     source,
-                    origin: VariableOrigin::Local,
+                    origin: self.binding_origin_for_function(Some(&scope.context.function_name), name),
                     hidden: self.is_hidden_debug_name(name),
                 });
         }
@@ -796,35 +821,12 @@ impl<'a, 'i> DebugSession<'a, 'i> {
         let Some(binding_spec) = self.covenant_ctx().and_then(|ctx| ctx.binding_for_function(&scope.context.function_name)) else {
             return;
         };
-        let state_param_type = match parse_type_ref(&binding_spec.source_binding.param_type_name) {
-            Ok(type_ref) => type_ref,
-            Err(_) => {
-                bindings.insert(
-                    binding_spec.source_binding.param_name.clone(),
-                    ScopeBinding {
-                        type_name: binding_spec.source_binding.param_type_name.clone(),
-                        source: ScopeValueSource::Unavailable {
-                            message: format!(
-                                "failed to parse covenant state parameter type '{}'",
-                                binding_spec.source_binding.param_type_name
-                            ),
-                        },
-                        origin: VariableOrigin::Param,
-                        hidden: false,
-                    },
-                );
-                return;
-            }
+        let Some((source_param_name, source_param_type)) = binding_spec.source_param() else {
+            return;
         };
 
-        let injected = self.covenant_param_value.as_ref().and_then(|value| {
-            self.inject_debug_value_binding(
-                bindings,
-                &binding_spec.source_binding.param_name,
-                &state_param_type,
-                value,
-                VariableOrigin::Param,
-            )
+        let injected = self.covenant_ctx().and_then(|ctx| ctx.injected_param_value.as_ref()).and_then(|value| {
+            self.inject_debug_value_binding(bindings, source_param_name, source_param_type, value, VariableOrigin::Param)
         });
         if injected.is_some() {
             return;
@@ -835,14 +837,34 @@ impl<'a, 'i> DebugSession<'a, 'i> {
             CovenantDeclBinding::Cov => "prev_states is unavailable".to_string(),
         };
         bindings.insert(
-            binding_spec.source_binding.param_name.clone(),
+            source_param_name.to_string(),
             ScopeBinding {
-                type_name: binding_spec.source_binding.param_type_name.clone(),
+                type_name: source_param_type.type_name(),
                 source: ScopeValueSource::Unavailable { message },
                 origin: VariableOrigin::Param,
                 hidden: false,
             },
         );
+    }
+
+    fn inject_contract_state_bindings(&self, bindings: &mut ScopeState<'i>) {
+        let Some(contract) = self.contract_ast.as_ref() else {
+            return;
+        };
+
+        let Some(state_value) = self.active_contract_state.as_ref() else {
+            record_debug_named_values(bindings, &self.debug_info.contract_state, VariableOrigin::ContractField);
+            return;
+        };
+
+        for field in &contract.fields {
+            let field_path = vec![field.name.clone()];
+            let Some(field_value) = structured_leaf_value(state_value, &field_path) else {
+                continue;
+            };
+            let _ =
+                self.inject_debug_value_binding(bindings, &field.name, &field.type_ref, &field_value, VariableOrigin::ContractField);
+        }
     }
 
     fn inject_debug_value_binding(
@@ -1771,19 +1793,6 @@ fn is_synthetic_default_span(span: SourceSpan) -> bool {
     span.line == 1 && span.col == 1 && span.end_line == 1 && span.end_col == 1
 }
 
-fn display_name_for_active_covenant_call(target: &ResolvedCovenantCallTarget) -> String {
-    match target.info.binding {
-        CovenantDeclBinding::Auth => target.info.source_name.clone(),
-        CovenantDeclBinding::Cov => {
-            if target.is_leader {
-                format!("{} [leader]", target.info.source_name)
-            } else {
-                format!("{} [delegate]", target.info.source_name)
-            }
-        }
-    }
-}
-
 fn map_expr_children_for_eval<'i, F>(expr: &'i Expr<'i>, map_child: &mut F) -> Result<Expr<'i>, String>
 where
     F: FnMut(&'i Expr<'i>) -> Result<Expr<'i>, String>,
@@ -2082,6 +2091,7 @@ mod tests {
             functions: vec![DebugFunctionRange { name: "f".to_string(), bytecode_start: 0, bytecode_end: 1 }],
             constructor_args: vec![],
             constants: vec![DebugNamedValue { name: "K".to_string(), type_name: "int".to_string(), value: Expr::int(7) }],
+            contract_state: vec![],
         };
         DebugSession::full(sigscript, &[], "", Some(debug_info), engine)
     }
@@ -2299,6 +2309,7 @@ mod tests {
                     span::Span::default(),
                 ),
             }],
+            contract_state: vec![],
         };
         let session = DebugSession::full(&[], &[], "", Some(debug_info), engine).unwrap();
         let scope_state = session.scope_state(StepId::ROOT).unwrap();
@@ -2309,6 +2320,54 @@ mod tests {
                 assert_eq!(fields.len(), 2);
                 assert!(matches!(fields[0], (ref name, DebugValue::Int(7)) if name == "amount"));
                 assert!(matches!(fields[1], (ref name, DebugValue::Bytes(ref bytes)) if name == "code" && bytes == &vec![0x12, 0x34]));
+            }
+            other => panic!("expected object debug value, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn active_contract_state_preserves_top_level_struct_fields() {
+        let sig_cache = Box::leak(Box::new(Cache::new(10_000)));
+        let reused_values: &'static SigHashReusedValuesUnsync = Box::leak(Box::new(SigHashReusedValuesUnsync::new()));
+        let engine: DebugEngine<'static> =
+            TxScriptEngine::new(EngineCtx::new(sig_cache).with_reused(reused_values), EngineFlags { covenants_enabled: true });
+        let source = r#"
+            contract Sample() {
+                struct Pair {
+                    int left;
+                    int right;
+                }
+
+                Pair pair = { left: 1, right: 2 };
+
+                entrypoint function main() {
+                    require(true);
+                }
+            }
+        "#;
+        let debug_info = DebugInfo {
+            source: source.to_string(),
+            steps: vec![],
+            params: vec![],
+            functions: vec![DebugFunctionRange { name: "main".to_string(), bytecode_start: 0, bytecode_end: 1 }],
+            constructor_args: vec![],
+            constants: vec![],
+            contract_state: vec![],
+        };
+        let session = DebugSession::full(&[], &[], source, Some(debug_info), engine).unwrap().with_active_contract_state(Some(
+            DebugValue::Object(vec![(
+                "pair".to_string(),
+                DebugValue::Object(vec![("left".to_string(), DebugValue::Int(7)), ("right".to_string(), DebugValue::Int(9))]),
+            )]),
+        ));
+
+        let scope_state = session.scope_state(StepId::ROOT).unwrap();
+        let vars = session.collect_variables_map(&scope_state);
+        let pair = vars.get("pair").expect("pair variable");
+        match &pair.value {
+            DebugValue::Object(fields) => {
+                assert!(matches!(fields[0], (ref name, DebugValue::Int(7)) if name == "left"));
+                assert!(matches!(fields[1], (ref name, DebugValue::Int(9)) if name == "right"));
             }
             other => panic!("expected object debug value, got {other:?}"),
         }

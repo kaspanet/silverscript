@@ -7,83 +7,108 @@ pub enum CovenantDeclBinding {
     Cov,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum CovenantDeclMode {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CovenantDeclMode {
     Verification,
     Transition,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CovenantLoweredNames {
-    pub policy_function: String,
-    pub auth_entrypoint: Option<String>,
-    pub leader_entrypoint: Option<String>,
-    pub delegate_entrypoint: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CovenantSourceBindingInfo {
-    pub param_name: String,
-    pub param_type_name: String,
+struct CovenantSourceParam {
+    name: String,
+    type_ref: TypeRef,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CovenantDeclInfo {
     pub source_name: String,
     pub binding: CovenantDeclBinding,
-    pub mode: CovenantDeclMode,
-    pub lowered: CovenantLoweredNames,
-    pub source_binding: CovenantSourceBindingInfo,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source_param: Option<CovenantSourceParam>,
 }
 
 impl CovenantDeclInfo {
-    pub fn generated_function_names(&self) -> impl Iterator<Item = &str> {
-        [
-            Some(self.lowered.policy_function.as_str()),
-            self.lowered.auth_entrypoint.as_deref(),
-            self.lowered.leader_entrypoint.as_deref(),
-            self.lowered.delegate_entrypoint.as_deref(),
-        ]
-        .into_iter()
-        .flatten()
+    pub fn policy_function_name(&self) -> String {
+        generated_covenant_policy_name(&self.source_name)
     }
 
-    pub fn matches_generated_name(&self, function_name: &str) -> bool {
-        self.generated_function_names().any(|name| name == function_name)
-    }
-
-    pub fn generated_entrypoint_name(&self, is_leader: bool) -> Option<&str> {
+    pub fn generated_entrypoint_name(&self, is_leader: bool) -> String {
         match self.binding {
-            CovenantDeclBinding::Auth => self.lowered.auth_entrypoint.as_deref(),
+            CovenantDeclBinding::Auth => generated_covenant_entrypoint_name(&self.source_name),
             CovenantDeclBinding::Cov => {
                 if is_leader {
-                    self.lowered.leader_entrypoint.as_deref()
+                    generated_covenant_leader_entrypoint_name(&self.source_name)
                 } else {
-                    self.lowered.delegate_entrypoint.as_deref()
+                    generated_covenant_delegate_entrypoint_name(&self.source_name)
                 }
             }
         }
     }
 
+    pub fn matches_generated_name(&self, function_name: &str) -> bool {
+        if self.policy_function_name() == function_name {
+            return true;
+        }
+        match self.binding {
+            CovenantDeclBinding::Auth => self.generated_entrypoint_name(true) == function_name,
+            CovenantDeclBinding::Cov => {
+                self.generated_entrypoint_name(true) == function_name || self.generated_entrypoint_name(false) == function_name
+            }
+        }
+    }
+
     pub fn display_name_for_function(&self, function_name: &str) -> Option<String> {
-        if self.lowered.policy_function == function_name || self.lowered.auth_entrypoint.as_deref() == Some(function_name) {
+        if self.policy_function_name() == function_name {
             return Some(self.source_name.clone());
         }
-        if self.lowered.leader_entrypoint.as_deref() == Some(function_name) {
-            return Some(format!("{} [leader]", self.source_name));
+        match self.binding {
+            CovenantDeclBinding::Auth => {
+                if self.generated_entrypoint_name(true) == function_name {
+                    Some(self.source_name.clone())
+                } else {
+                    None
+                }
+            }
+            CovenantDeclBinding::Cov => {
+                if self.generated_entrypoint_name(true) == function_name {
+                    Some(format!("{} [leader]", self.source_name))
+                } else if self.generated_entrypoint_name(false) == function_name {
+                    Some(format!("{} [delegate]", self.source_name))
+                } else {
+                    None
+                }
+            }
         }
-        if self.lowered.delegate_entrypoint.as_deref() == Some(function_name) {
-            return Some(format!("{} [delegate]", self.source_name));
-        }
-        None
+    }
+
+    pub fn source_param(&self) -> Option<(&str, &TypeRef)> {
+        self.source_param.as_ref().map(|param| (param.name.as_str(), &param.type_ref))
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedCovenantCallTarget {
     pub info: CovenantDeclInfo,
-    pub generated_entrypoint_name: String,
     pub is_leader: bool,
+}
+
+impl ResolvedCovenantCallTarget {
+    pub fn generated_entrypoint_name(&self) -> String {
+        self.info.generated_entrypoint_name(self.is_leader)
+    }
+
+    pub fn display_name(&self) -> String {
+        match self.info.binding {
+            CovenantDeclBinding::Auth => self.info.source_name.clone(),
+            CovenantDeclBinding::Cov => {
+                if self.is_leader {
+                    format!("{} [leader]", self.info.source_name)
+                } else {
+                    format!("{} [delegate]", self.info.source_name)
+                }
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -135,7 +160,7 @@ pub(super) fn lower_covenant_declarations<'i>(
         let declaration = parse_covenant_declaration(function, constants, true)?;
         validate_covenant_policy_state_shape(function, &declaration, &contract.fields)?;
 
-        infos.push(build_covenant_decl_info(function, declaration.binding, declaration.mode));
+        infos.push(build_covenant_decl_info(function, declaration.binding));
 
         let policy_name = generated_covenant_policy_name(&function.name);
 
@@ -174,26 +199,10 @@ pub(super) fn lower_covenant_declarations<'i>(
     Ok((lowered_contract, infos))
 }
 
-fn build_covenant_decl_info<'i>(function: &FunctionAst<'i>, binding: CovenantDeclBinding, mode: CovenantDeclMode) -> CovenantDeclInfo {
-    let source_binding = function
-        .params
-        .first()
-        .map(|param| CovenantSourceBindingInfo { param_name: param.name.clone(), param_type_name: param.type_ref.type_name() })
-        .unwrap_or_else(|| CovenantSourceBindingInfo { param_name: String::new(), param_type_name: String::new() });
-    CovenantDeclInfo {
-        source_name: function.name.clone(),
-        binding,
-        mode,
-        lowered: CovenantLoweredNames {
-            policy_function: generated_covenant_policy_name(&function.name),
-            auth_entrypoint: (binding == CovenantDeclBinding::Auth).then(|| generated_covenant_entrypoint_name(&function.name)),
-            leader_entrypoint: (binding == CovenantDeclBinding::Cov)
-                .then(|| generated_covenant_leader_entrypoint_name(&function.name)),
-            delegate_entrypoint: (binding == CovenantDeclBinding::Cov)
-                .then(|| generated_covenant_delegate_entrypoint_name(&function.name)),
-        },
-        source_binding,
-    }
+fn build_covenant_decl_info<'i>(function: &FunctionAst<'i>, binding: CovenantDeclBinding) -> CovenantDeclInfo {
+    let source_param =
+        function.params.first().map(|param| CovenantSourceParam { name: param.name.clone(), type_ref: param.type_ref.clone() });
+    CovenantDeclInfo { source_name: function.name.clone(), binding, source_param }
 }
 
 fn parse_covenant_declaration<'i>(
