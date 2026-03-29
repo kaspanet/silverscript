@@ -87,29 +87,24 @@ pub struct CompiledContract<'i> {
     pub debug_info: Option<DebugInfo<'i>>,
 }
 
-pub fn materialize_state_script<'i>(base_compiled: &CompiledContract<'i>, state: &Expr<'i>) -> Result<Vec<u8>, CompilerError> {
-    let debug_info = base_compiled
-        .debug_info
-        .as_ref()
-        .ok_or_else(|| CompilerError::Unsupported("state materialization requires debug-enabled compilation".to_string()))?;
-    let mut provided = collect_state_object_entries(state, "State value")?;
-    if provided.len() != base_compiled.ast.fields.len() {
-        return Err(CompilerError::Unsupported("State value must include all contract fields exactly once".to_string()));
-    }
+impl<'i> CompiledContract<'i> {
+    pub fn encode_state(&self, state: &Expr<'i>) -> Result<Vec<u8>, CompilerError> {
+        let structs = build_struct_registry(&self.ast)?;
+        let state_type = TypeRef { base: TypeBase::Custom("State".to_string()), array_dims: Vec::new() };
+        let encoded_state = encode_struct_value(state, &state_type, &structs)?;
+        if encoded_state.len() != self.state_layout.len {
+            return Err(CompilerError::Unsupported(format!(
+                "encoded state size mismatch: expected {} bytes, got {}",
+                self.state_layout.len,
+                encoded_state.len()
+            )));
+        }
 
-    let mut contract = base_compiled.ast.clone();
-    for field in &mut contract.fields {
-        field.expr = provided
-            .remove(field.name.as_str())
-            .cloned()
-            .ok_or_else(|| CompilerError::Unsupported(format!("missing state field '{}'", field.name)))?;
+        let layout = self.state_layout;
+        let mut script = self.script.clone();
+        script[layout.start..layout.start + layout.len].copy_from_slice(&encoded_state);
+        Ok(script)
     }
-    if let Some(extra) = provided.keys().next() {
-        return Err(CompilerError::Unsupported(format!("unknown state field '{}'", extra)));
-    }
-
-    let constructor_args = debug_info.constructor_args.iter().map(|arg| arg.value.clone()).collect::<Vec<_>>();
-    Ok(compile_contract_ast(&contract, &constructor_args, CompileOptions::default())?.script)
 }
 
 pub fn resolve_contract_state_expr<'i>(
@@ -151,6 +146,7 @@ fn collect_state_object_entries<'a, 'i>(
     }
     Ok(provided)
 }
+
 #[derive(Clone, Default)]
 struct LoweringScope {
     vars: HashMap<String, TypeRef>,

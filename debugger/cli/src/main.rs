@@ -24,7 +24,7 @@ use kaspa_txscript::{EngineCtx, EngineFlags, pay_to_script_hash_script};
 use silverscript_lang::ast::{ContractAst, Expr, ExprKind, parse_contract_ast};
 use silverscript_lang::compiler::{
     CompileOptions, CovenantDeclBinding, CovenantDeclCallOptions, ResolvedCovenantCallTarget, compile_contract,
-    materialize_state_script, resolve_contract_state_expr,
+    resolve_contract_state_expr,
 };
 
 const PROMPT: &str = "(sdb) ";
@@ -246,19 +246,6 @@ fn matching_covenant_output_states<'a>(
 
 fn encode_state_array_arg(output_states: &[&str]) -> Result<String, String> {
     Ok(format!("[{}]", output_states.join(",")))
-}
-
-fn materialize_script_for_explicit_state(
-    source: &str,
-    parsed_contract: &ContractAst<'_>,
-    raw_ctor_args: &[String],
-    raw_state: &str,
-) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    let ctor_args = parse_ctor_args(parsed_contract, raw_ctor_args)?;
-    let state = parse_state_value(parsed_contract, raw_state)?;
-    let compile_opts = CompileOptions { record_debug_infos: true, ..Default::default() };
-    let base_compiled = compile_contract(source, &ctor_args, compile_opts)?;
-    Ok(materialize_state_script(&base_compiled, &state)?)
 }
 
 fn parse_hex_32(raw: &str, name: &str) -> Result<[u8; 32], Box<dyn std::error::Error>> {
@@ -793,7 +780,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
         let redeem_script = if input.utxo_script_hex.is_none() {
             if let Some(raw_state) = input.state.as_deref() {
-                Some(materialize_script_for_explicit_state(&source, &parsed_contract, &input_constructor_args, raw_state)?)
+                let ctor_args = parse_ctor_args(&parsed_contract, &input_constructor_args)?;
+                let state = parse_state_value(&parsed_contract, raw_state)?;
+                let compile_opts = CompileOptions { record_debug_infos: true, ..Default::default() };
+                let compiled = compile_contract(&source, &ctor_args, compile_opts)?;
+                Some(compiled.encode_state(&state)?)
             } else {
                 Some(compile_script_for_ctor_args(&source, &parsed_contract, &input_constructor_args, &mut ctor_script_cache)?)
             }
@@ -843,7 +834,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         } else {
             let output_constructor_args = output.constructor_args.clone().unwrap_or_else(|| raw_constructor_args.clone());
             let output_script = if let Some(raw_state) = output.state.as_deref() {
-                materialize_script_for_explicit_state(&source, &parsed_contract, &output_constructor_args, raw_state)?
+                let ctor_args = parse_ctor_args(&parsed_contract, &output_constructor_args)?;
+                let state = parse_state_value(&parsed_contract, raw_state)?;
+                let compile_opts = CompileOptions { record_debug_infos: true, ..Default::default() };
+                let compiled = compile_contract(&source, &ctor_args, compile_opts)?;
+                compiled.encode_state(&state)?
             } else {
                 compile_script_for_ctor_args(&source, &parsed_contract, &output_constructor_args, &mut ctor_script_cache)?
             };
