@@ -5069,8 +5069,7 @@ fn read_input_state_accepts_pubkey_and_bool_fields_under_selector_dispatch() {
 #[test]
 fn read_input_state_runtime_preserves_supported_field_types_across_contract_shapes() {
     let run_case = |source: &str, args: Vec<Expr<'_>>, label: &str| {
-        let compiled =
-            compile_contract(source, &args, CompileOptions::default()).unwrap_or_else(|err| panic!("{label}: {err:?}"));
+        let compiled = compile_contract(source, &args, CompileOptions::default()).unwrap_or_else(|err| panic!("{label}: {err:?}"));
         let sigscript = compiled.build_sig_script("main", vec![]).expect("sigscript builds");
         let sigscript = pay_to_script_hash_signature_script(compiled.script.clone(), sigscript).expect("p2sh sigscript wraps");
         let input = test_input(0, sigscript);
@@ -5256,8 +5255,7 @@ fn read_input_state_runtime_preserves_supported_field_types_across_contract_shap
 #[test]
 fn read_input_state_runtime_preserves_supported_field_types_without_selector_dispatch() {
     let run_case = |source: &str, args: Vec<Expr<'_>>, label: &str| {
-        let compiled =
-            compile_contract(source, &args, CompileOptions::default()).unwrap_or_else(|err| panic!("{label}: {err:?}"));
+        let compiled = compile_contract(source, &args, CompileOptions::default()).unwrap_or_else(|err| panic!("{label}: {err:?}"));
         let sigscript = compiled.build_sig_script("main", vec![]).expect("sigscript builds");
         let sigscript = pay_to_script_hash_signature_script(compiled.script.clone(), sigscript).expect("p2sh sigscript wraps");
         let input = test_input(0, sigscript);
@@ -5321,6 +5319,7 @@ fn read_input_state_runtime_preserves_supported_field_types_without_selector_dis
     );
 }
 
+// TODO: Fix this bug by using builder.add_data_with_push_opcode instead of builder.add_data after covpp-reset2 is finalized.
 #[test]
 fn read_input_state_scalar_byte_regression_repros_runtime_mismatch() {
     let source = r#"
