@@ -876,6 +876,12 @@ impl<'a, 'i> DebugSession<'a, 'i> {
         origin: VariableOrigin,
     ) -> Option<()> {
         let type_name = type_ref.type_name();
+        if !is_structured_type_ref(type_ref) {
+            let expr = debug_value_to_expr(value)?;
+            bindings.insert(name.to_string(), ScopeBinding { type_name, source: ScopeValueSource::Expr(expr), origin, hidden: false });
+            return Some(());
+        }
+
         let leaf_specs = flatten_contract_type_leaves(self.contract_ast.as_ref()?, type_ref).ok()?;
         if leaf_specs.is_empty() {
             let expr = debug_value_to_expr(value)?;
