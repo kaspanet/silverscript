@@ -486,7 +486,7 @@ fn read_input_state_field_expr_symbolic<'i>(
 ) -> Result<Expr<'i>, CompilerError> {
     let state_start_offset = state_start_offset(contract_field_prefix_len, contract_fields, contract_constants)?;
     let script_size_expr = Expr::new(ExprKind::Nullary(NullaryOp::ThisScriptSize), span::Span::default());
-    let (field_payload_len, decode_numeric) = fixed_state_field_payload_len(field, contract_constants)?;
+    let field_payload_len = fixed_state_field_payload_len(field, contract_constants)?;
     let field_payload_offset = state_start_offset + field_chunk_offset + data_prefix(field_payload_len).len();
 
     let sig_len = Expr::call("OpTxInputScriptSigLen", vec![input_idx.clone()]);
@@ -507,7 +507,7 @@ fn read_input_state_field_expr_symbolic<'i>(
     );
     let substr = Expr::call("OpTxInputScriptSigSubstr", vec![input_idx.clone(), start, end]);
 
-    Ok(substr)
+    cast_read_input_state_expr(substr, &field.type_ref)
 }
 
 fn read_input_state_with_template_values<'i>(
@@ -1834,18 +1834,16 @@ fn fixed_type_size_with_constants_ref<'i>(type_ref: &TypeRef, constants: &HashMa
 fn fixed_state_field_payload_len_for_type_ref<'i>(
     type_ref: &TypeRef,
     contract_constants: &HashMap<String, Expr<'i>>,
-) -> Result<(usize, bool), CompilerError> {
-    let payload_len = fixed_type_size_with_constants_ref(type_ref, contract_constants).ok_or_else(|| {
+) -> Result<usize, CompilerError> {
+    fixed_type_size_with_constants_ref(type_ref, contract_constants).ok_or_else(|| {
         CompilerError::Unsupported(format!("readInputState does not support field type {}", type_name_from_ref(type_ref)))
-    })?;
-    let decode_numeric = type_ref.array_dims.is_empty() && matches!(type_ref.base, TypeBase::Int | TypeBase::Bool);
-    Ok((payload_len, decode_numeric))
+    })
 }
 
 fn fixed_state_field_payload_len<'i>(
     field: &ContractFieldAst<'i>,
     contract_constants: &HashMap<String, Expr<'i>>,
-) -> Result<(usize, bool), CompilerError> {
+) -> Result<usize, CompilerError> {
     fixed_state_field_payload_len_for_type_ref(&field.type_ref, contract_constants)
 }
 
@@ -3710,7 +3708,7 @@ fn encoded_field_chunk_size<'i>(
     field: &ContractFieldAst<'i>,
     contract_constants: &HashMap<String, Expr<'i>>,
 ) -> Result<usize, CompilerError> {
-    let (payload_size, _) = fixed_state_field_payload_len(field, contract_constants)?;
+    let payload_size = fixed_state_field_payload_len(field, contract_constants)?;
     Ok(data_prefix(payload_size).len() + payload_size)
 }
 
@@ -3718,7 +3716,7 @@ fn encoded_field_chunk_size_for_type_ref<'i>(
     type_ref: &TypeRef,
     contract_constants: &HashMap<String, Expr<'i>>,
 ) -> Result<usize, CompilerError> {
-    let (payload_size, _) = fixed_state_field_payload_len_for_type_ref(type_ref, contract_constants)?;
+    let payload_size = fixed_state_field_payload_len_for_type_ref(type_ref, contract_constants)?;
     Ok(data_prefix(payload_size).len() + payload_size)
 }
 
@@ -3771,7 +3769,7 @@ fn read_input_state_binding_expr<'i>(
     script_size_value: i64,
     contract_constants: &HashMap<String, Expr<'i>>,
 ) -> Result<Expr<'i>, CompilerError> {
-    let (field_payload_len, decode_numeric) = fixed_state_field_payload_len(field, contract_constants)?;
+    let field_payload_len = fixed_state_field_payload_len(field, contract_constants)?;
     let field_payload_offset = state_start_offset + field_chunk_offset + data_prefix(field_payload_len).len();
 
     let sig_len = Expr::call("OpTxInputScriptSigLen", vec![input_idx.clone()]);
@@ -3792,7 +3790,7 @@ fn read_input_state_binding_expr<'i>(
     );
     let substr = Expr::call("OpTxInputScriptSigSubstr", vec![input_idx.clone(), start, end]);
 
-    Ok(substr)
+    cast_read_input_state_expr(substr, &field.type_ref)
 }
 
 fn read_input_state_field_expr_with_type<'i>(
@@ -3804,7 +3802,7 @@ fn read_input_state_field_expr_with_type<'i>(
     contract_constants: &HashMap<String, Expr<'i>>,
     builtin_name: &str,
 ) -> Result<Expr<'i>, CompilerError> {
-    let (field_payload_len, decode_numeric) =
+    let field_payload_len =
         fixed_state_field_payload_len_for_type_ref(field_type, contract_constants).map_err(|_| {
             CompilerError::Unsupported(format!("{builtin_name} does not support field type {}", type_name_from_ref(field_type)))
         })?;
@@ -3817,7 +3815,17 @@ fn read_input_state_field_expr_with_type<'i>(
     let end = binary_expr(BinaryOp::Add, start.clone(), Expr::int(field_payload_len as i64));
     let substr = input_sigscript_substr_expr(input_idx, start, end);
 
-    Ok(substr)
+    cast_read_input_state_expr(substr, field_type)
+}
+
+fn cast_read_input_state_expr<'i>(substr: Expr<'i>, type_ref: &TypeRef) -> Result<Expr<'i>, CompilerError> {
+    let type_name = type_name_from_ref(type_ref);
+    match type_ref.base {
+        TypeBase::Custom(_) => {
+            Err(CompilerError::Unsupported(format!("readInputState does not support field type {type_name}")))
+        }
+        _ => Ok(Expr::call(type_name.as_str(), vec![substr])),
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -4458,7 +4466,7 @@ fn compile_encoded_object_with_layout(
             return Err(CompilerError::Unsupported(format!("missing state field '{}'", field.name)));
         };
 
-        let (field_size, encode_numeric) =
+        let field_size =
             fixed_state_field_payload_len_for_type_ref(&field.type_ref, contract_constants).map_err(|_| {
                 CompilerError::Unsupported(format!(
                     "{builtin_name} does not support field type {}",
@@ -4466,7 +4474,7 @@ fn compile_encoded_object_with_layout(
                 ))
             })?;
 
-        if encode_numeric {
+        if field.type_ref.array_dims.is_empty() && matches!(field.type_ref.base, TypeBase::Int | TypeBase::Bool) {
             compile_expr(
                 new_value,
                 env,
@@ -7175,7 +7183,7 @@ fn compile_call_expr<'i>(
             )?;
             Ok(())
         }
-        "bool" | "string" => {
+        "byte" | "bool" | "string" => {
             if args.len() != 1 {
                 return Err(CompilerError::Unsupported(format!("{name}() expects a single argument")));
             }

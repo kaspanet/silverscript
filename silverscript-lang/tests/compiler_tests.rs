@@ -4964,6 +4964,33 @@ fn read_input_state_accepts_self_state_under_selector_dispatch() {
 }
 
 #[test]
+fn read_input_state_int_addition_uses_numeric_semantics() {
+    let source = r#"
+        contract C(int initX) {
+            int x = initX;
+
+            entrypoint function main() {
+                State s = readInputState(this.activeInputIndex);
+                int y = s.x + 5;
+                require(y == 10);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[5.into()], CompileOptions::default()).expect("compile succeeds");
+    let sigscript = compiled.build_sig_script("main", vec![]).expect("sigscript builds");
+    let sigscript = pay_to_script_hash_signature_script(compiled.script.clone(), sigscript).expect("p2sh sigscript wraps");
+    let input = test_input(0, sigscript);
+    let input_spk = pay_to_script_hash_script(&compiled.script);
+    let output = TransactionOutput { value: 1000, script_public_key: input_spk.clone(), covenant: None };
+    let tx = Transaction::new(1, vec![input], vec![output.clone()], 0, Default::default(), 0, vec![]);
+    let utxo_entry = UtxoEntry::new(output.value, input_spk, 0, tx.is_coinbase(), None);
+
+    let result = execute_input(tx, vec![utxo_entry], 0);
+    assert!(result.is_ok(), "readInputState int arithmetic should use numeric semantics: {result:?}");
+}
+
+#[test]
 fn read_input_state_accepts_three_field_state_under_selector_dispatch() {
     let source = r#"
         contract C(int initAmount, byte[2] initCode, byte[32] initOwner) {
@@ -5037,6 +5064,299 @@ fn read_input_state_accepts_pubkey_and_bool_fields_under_selector_dispatch() {
 
     let result = execute_input(tx, vec![utxo_entry], 0);
     assert!(result.is_ok(), "readInputState should read pubkey and bool state under selector dispatch: {result:?}");
+}
+
+#[test]
+fn read_input_state_runtime_preserves_supported_field_types_across_contract_shapes() {
+    let run_case = |source: &str, args: Vec<Expr<'_>>, label: &str| {
+        let compiled =
+            compile_contract(source, &args, CompileOptions::default()).unwrap_or_else(|err| panic!("{label}: {err:?}"));
+        let sigscript = compiled.build_sig_script("main", vec![]).expect("sigscript builds");
+        let sigscript = pay_to_script_hash_signature_script(compiled.script.clone(), sigscript).expect("p2sh sigscript wraps");
+        let input = test_input(0, sigscript);
+        let input_spk = pay_to_script_hash_script(&compiled.script);
+        let output = TransactionOutput { value: 1000, script_public_key: input_spk.clone(), covenant: None };
+        let tx = Transaction::new(1, vec![input], vec![output.clone()], 0, Default::default(), 0, vec![]);
+        let utxo_entry = UtxoEntry::new(output.value, input_spk, 0, tx.is_coinbase(), None);
+
+        let result = execute_input(tx, vec![utxo_entry], 0);
+        assert!(result.is_ok(), "{label}: {result:?}");
+    };
+
+    run_case(
+        r#"
+            contract C(int initInt) {
+                int someInt = initInt;
+
+                entrypoint function noop() {
+                    require(true);
+                }
+
+                entrypoint function main() {
+                    State x = readInputState(this.activeInputIndex);
+                    require(x.someInt + 5 == 15);
+                }
+            }
+        "#,
+        vec![10.into()],
+        "int fields should preserve numeric semantics",
+    );
+
+    run_case(
+        r#"
+            contract C(int[2] initInts) {
+                int[2] someInts = initInts;
+
+                entrypoint function noop() {
+                    require(true);
+                }
+
+                entrypoint function main() {
+                    State x = readInputState(this.activeInputIndex);
+                    require(x.someInts.length == 2);
+                    require(x.someInts[0] == 1);
+                    require(x.someInts[1] + 5 == 7);
+                }
+            }
+        "#,
+        vec![vec![Expr::int(1), Expr::int(2)].into()],
+        "int[2] fields should preserve array indexing semantics",
+    );
+
+    run_case(
+        r#"
+            contract C(bool initBool) {
+                bool someBool = initBool;
+
+                entrypoint function noop() {
+                    require(true);
+                }
+
+                entrypoint function main() {
+                    State x = readInputState(this.activeInputIndex);
+                    require(x.someBool);
+                }
+            }
+        "#,
+        vec![true.into()],
+        "bool fields should preserve boolean semantics",
+    );
+
+    run_case(
+        r#"
+            contract C(bool[2] initBools) {
+                bool[2] someBools = initBools;
+
+                entrypoint function noop() {
+                    require(true);
+                }
+
+                entrypoint function main() {
+                    State x = readInputState(this.activeInputIndex);
+                    require(x.someBools.length == 2);
+                    require(x.someBools[0]);
+                    require(!x.someBools[1]);
+                }
+            }
+        "#,
+        vec![vec![Expr::bool(true), Expr::bool(false)].into()],
+        "bool[2] fields should preserve array indexing semantics",
+    );
+
+    run_case(
+        r#"
+            contract C(byte[2] initBytes2) {
+                byte[2] someBytes2 = initBytes2;
+
+                entrypoint function noop() {
+                    require(true);
+                }
+
+                entrypoint function main() {
+                    State x = readInputState(this.activeInputIndex);
+                    require(x.someBytes2.length == 2);
+                    require(x.someBytes2 == 0x3412);
+                }
+            }
+        "#,
+        vec![vec![0x34u8, 0x12u8].into()],
+        "byte[2] fields should preserve fixed-byte-array semantics",
+    );
+
+    run_case(
+        r#"
+            contract C(pubkey initPubkey) {
+                pubkey somePubkey = initPubkey;
+
+                entrypoint function noop() {
+                    require(true);
+                }
+
+                entrypoint function main() {
+                    State x = readInputState(this.activeInputIndex);
+                    require(x.somePubkey == pubkey(0x0202020202020202020202020202020202020202020202020202020202020202));
+
+                    byte[] owner = byte[](x.somePubkey);
+                    owner.push(byte(3));
+                    require(owner.length == 33);
+                }
+            }
+        "#,
+        vec![vec![2u8; 32].into()],
+        "pubkey fields should preserve fixed-size byte semantics",
+    );
+
+    run_case(
+        r#"
+            contract C(sig initSig) {
+                sig someSig = initSig;
+
+                entrypoint function noop() {
+                    require(true);
+                }
+
+                entrypoint function main() {
+                    State x = readInputState(this.activeInputIndex);
+                    require(x.someSig == sig(0x1111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111));
+
+                    byte[] sigBytes = byte[](x.someSig);
+                    sigBytes.push(byte(0x42));
+                    require(sigBytes.length == 66);
+                }
+            }
+        "#,
+        vec![vec![0x11u8; 65].into()],
+        "sig fields should preserve fixed-size byte semantics",
+    );
+
+    run_case(
+        r#"
+            contract C(datasig initDatasig) {
+                datasig someDatasig = initDatasig;
+
+                entrypoint function noop() {
+                    require(true);
+                }
+
+                entrypoint function main() {
+                    State x = readInputState(this.activeInputIndex);
+                    require(x.someDatasig == datasig(0x22222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222));
+
+                    byte[] datasigBytes = byte[](x.someDatasig);
+                    datasigBytes.push(byte(0x24));
+                    require(datasigBytes.length == 65);
+                }
+            }
+        "#,
+        vec![vec![0x22u8; 64].into()],
+        "datasig fields should preserve fixed-size byte semantics",
+    );
+}
+
+#[test]
+fn read_input_state_runtime_preserves_supported_field_types_without_selector_dispatch() {
+    let run_case = |source: &str, args: Vec<Expr<'_>>, label: &str| {
+        let compiled =
+            compile_contract(source, &args, CompileOptions::default()).unwrap_or_else(|err| panic!("{label}: {err:?}"));
+        let sigscript = compiled.build_sig_script("main", vec![]).expect("sigscript builds");
+        let sigscript = pay_to_script_hash_signature_script(compiled.script.clone(), sigscript).expect("p2sh sigscript wraps");
+        let input = test_input(0, sigscript);
+        let input_spk = pay_to_script_hash_script(&compiled.script);
+        let output = TransactionOutput { value: 1000, script_public_key: input_spk.clone(), covenant: None };
+        let tx = Transaction::new(1, vec![input], vec![output.clone()], 0, Default::default(), 0, vec![]);
+        let utxo_entry = UtxoEntry::new(output.value, input_spk, 0, tx.is_coinbase(), None);
+
+        let result = execute_input(tx, vec![utxo_entry], 0);
+        assert!(result.is_ok(), "{label}: {result:?}");
+    };
+
+    run_case(
+        r#"
+            contract C(int initInt) {
+                int someInt = initInt;
+
+                entrypoint function main() {
+                    State x = readInputState(this.activeInputIndex);
+                    require(x.someInt + 5 == 15);
+                }
+            }
+        "#,
+        vec![10.into()],
+        "single-entrypoint int fields should preserve numeric semantics",
+    );
+
+    run_case(
+        r#"
+            contract C(byte[2] initBytes2) {
+                byte[2] someBytes2 = initBytes2;
+
+                entrypoint function main() {
+                    State x = readInputState(this.activeInputIndex);
+                    require(x.someBytes2.length == 2);
+                    require(x.someBytes2 == 0x3412);
+                }
+            }
+        "#,
+        vec![vec![0x34u8, 0x12u8].into()],
+        "single-entrypoint byte[2] fields should preserve fixed-byte-array semantics",
+    );
+
+    run_case(
+        r#"
+            contract C(pubkey initPubkey) {
+                pubkey somePubkey = initPubkey;
+
+                entrypoint function main() {
+                    State x = readInputState(this.activeInputIndex);
+                    require(x.somePubkey == pubkey(0x0202020202020202020202020202020202020202020202020202020202020202));
+
+                    byte[] owner = byte[](x.somePubkey);
+                    owner.push(byte(3));
+                    require(owner.length == 33);
+                }
+            }
+        "#,
+        vec![vec![2u8; 32].into()],
+        "single-entrypoint pubkey fields should preserve fixed-size byte semantics",
+    );
+}
+
+#[test]
+fn read_input_state_scalar_byte_regression_repros_runtime_mismatch() {
+    let source = r#"
+        contract C(byte initByte, pubkey initOwner) {
+            byte someByte = initByte;
+            pubkey someOwner = initOwner;
+
+            entrypoint function noop() {
+                require(true);
+            }
+
+            entrypoint function main() {
+                State x = readInputState(this.activeInputIndex);
+
+                // The companion pubkey field proves the state offsets are otherwise correct for this layout.
+                require(x.someOwner == pubkey(0x0202020202020202020202020202020202020202020202020202020202020202));
+
+                // This should succeed once scalar byte fields round-trip through readInputState with
+                // the same semantics as ordinary byte values. Today it still fails at runtime.
+                require(x.someByte == 7);
+            }
+        }
+    "#;
+
+    let compiled =
+        compile_contract(source, &[Expr::byte(7), vec![2u8; 32].into()], CompileOptions::default()).expect("compile succeeds");
+    let sigscript = compiled.build_sig_script("main", vec![]).expect("sigscript builds");
+    let sigscript = pay_to_script_hash_signature_script(compiled.script.clone(), sigscript).expect("p2sh sigscript wraps");
+    let input = test_input(0, sigscript);
+    let input_spk = pay_to_script_hash_script(&compiled.script);
+    let output = TransactionOutput { value: 1000, script_public_key: input_spk.clone(), covenant: None };
+    let tx = Transaction::new(1, vec![input], vec![output.clone()], 0, Default::default(), 0, vec![]);
+    let utxo_entry = UtxoEntry::new(output.value, input_spk, 0, tx.is_coinbase(), None);
+
+    let result = execute_input(tx, vec![utxo_entry], 0);
+    assert!(result.is_err(), "scalar byte readInputState regression should currently fail at runtime");
 }
 
 #[test]
@@ -5356,9 +5676,6 @@ fn compiles_read_input_state_to_expected_script() {
         .unwrap()
         // bytes = sigScriptSubstr(input=1, start_x, end_x)
         .add_op(OpTxInputScriptSigSubstr)
-        .unwrap()
-        // decode bytes -> int
-        .add_op(OpBin2Num)
         .unwrap()
         // literal threshold
         .add_i64(7)
