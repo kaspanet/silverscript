@@ -202,7 +202,9 @@ fn compile_contract_omits_debug_info_when_recording_disabled() {
     assert!(compiled.debug_info.is_none());
 }
 
+// TODO: Un-ignore these debug-recording tests once compiler debug recording is re-enabled.
 #[test]
+#[ignore = "debug recording is currently disabled in compiler/mod.rs"]
 fn compile_contract_emits_debug_info_when_recording_enabled() {
     let source = r#"
         contract DebugToggle() {
@@ -550,6 +552,7 @@ fn sorting_network_over_fixed_array_matches_rust_model_across_cases() {
 }
 
 #[test]
+#[ignore = "debug recording is currently disabled in compiler/mod.rs"]
 fn debug_info_records_console_expression_args() {
     let source = r#"
         contract DebugConsole() {
@@ -577,6 +580,7 @@ fn debug_info_records_console_expression_args() {
 }
 
 #[test]
+#[ignore = "debug recording is currently disabled in compiler/mod.rs"]
 fn debug_info_records_runtime_binding_for_stable_scalar_local() {
     let source = r#"
         contract DebugBinding() {
@@ -603,6 +607,7 @@ fn debug_info_records_runtime_binding_for_stable_scalar_local() {
 }
 
 #[test]
+#[ignore = "debug recording is currently disabled in compiler/mod.rs"]
 fn debug_info_records_struct_param_leaf_bindings_in_runtime_order() {
     let source = r#"
         contract DebugStructParam() {
@@ -639,6 +644,7 @@ fn debug_info_records_struct_param_leaf_bindings_in_runtime_order() {
 }
 
 #[test]
+#[ignore = "debug recording is currently disabled in compiler/mod.rs"]
 fn debug_info_records_state_array_param_leaf_bindings_in_runtime_order() {
     let source = r#"
         contract DebugStateArrayParam() {
@@ -674,6 +680,7 @@ fn debug_info_records_state_array_param_leaf_bindings_in_runtime_order() {
 }
 
 #[test]
+#[ignore = "debug recording is currently disabled in compiler/mod.rs"]
 fn debug_info_distinguishes_ctor_args_from_contract_constants() {
     let source = r#"
         contract DebugConstants(int seed) {
@@ -696,6 +703,7 @@ fn debug_info_distinguishes_ctor_args_from_contract_constants() {
 }
 
 #[test]
+#[ignore = "debug recording is currently disabled in compiler/mod.rs"]
 fn debug_info_single_entrypoint_sequences_and_offsets_are_stable() {
     let source = r#"
         contract DebugSingle() {
@@ -729,6 +737,7 @@ fn debug_info_single_entrypoint_sequences_and_offsets_are_stable() {
 }
 
 #[test]
+#[ignore = "debug recording is currently disabled in compiler/mod.rs"]
 fn debug_info_selector_entrypoints_have_global_sequences_and_offset_ranges() {
     let source = r#"
         contract DebugSelector() {
