@@ -696,7 +696,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         selected_name
     };
 
-    let covenant_target = compiled.resolve_covenant_call_target(&selected_name, CovenantDeclCallOptions { is_leader: !delegate });
+    let covenant_target = compiled
+        .covenant_infos
+        .iter()
+        .find(|info| info.source_name == selected_name)
+        .cloned()
+        .map(|info| ResolvedCovenantCallTarget { info, is_leader: !delegate });
     let covenant_binding = covenant_target.as_ref().map(|target| target.info.binding);
     let raw_args = if allow_omitted_test_args_inference {
         if let (Some(target), Some(tx)) = (covenant_target.as_ref(), tx_scenario.as_ref()) {

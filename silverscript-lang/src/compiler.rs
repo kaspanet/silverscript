@@ -130,23 +130,6 @@ pub fn resolve_contract_state_expr<'i>(
     Ok(Expr::new(ExprKind::StateObject(fields), span::Span::default()))
 }
 
-fn collect_state_object_entries<'a, 'i>(
-    state_expr: &'a Expr<'i>,
-    object_name: &str,
-) -> Result<HashMap<&'a str, &'a Expr<'i>>, CompilerError> {
-    let ExprKind::StateObject(entries) = &state_expr.kind else {
-        return Err(CompilerError::Unsupported(format!("{object_name} must be an object literal")));
-    };
-
-    let mut provided = HashMap::new();
-    for entry in entries {
-        if provided.insert(entry.name.as_str(), &entry.expr).is_some() {
-            return Err(CompilerError::Unsupported(format!("duplicate state field '{}'", entry.name)));
-        }
-    }
-    Ok(provided)
-}
-
 #[derive(Clone, Default)]
 struct LoweringScope {
     vars: HashMap<String, TypeRef>,
@@ -2277,18 +2260,6 @@ fn infer_fixed_array_type_from_initializer<'i>(
 }
 
 impl<'i> CompiledContract<'i> {
-    pub fn resolve_covenant_call_target(
-        &self,
-        function_name: &str,
-        options: CovenantDeclCallOptions,
-    ) -> Option<ResolvedCovenantCallTarget> {
-        self.covenant_infos
-            .iter()
-            .find(|info| info.source_name == function_name)
-            .cloned()
-            .map(|info| ResolvedCovenantCallTarget { info, is_leader: options.is_leader })
-    }
-
     pub fn build_sig_script(&self, function_name: &str, args: Vec<Expr<'i>>) -> Result<Vec<u8>, CompilerError> {
         let structs = build_struct_registry(&self.ast)?;
         let function = self
@@ -2325,11 +2296,22 @@ impl<'i> CompiledContract<'i> {
         args: Vec<Expr<'i>>,
         options: CovenantDeclCallOptions,
     ) -> Result<Vec<u8>, CompilerError> {
-        let target = self
-            .resolve_covenant_call_target(function_name, options)
-            .ok_or_else(|| CompilerError::Unsupported(format!("covenant declaration '{}' not found", function_name)))?;
-        let generated_entrypoint_name = target.generated_entrypoint_name();
-        self.build_sig_script(&generated_entrypoint_name, args)
+        let auth_entrypoint = generated_covenant_entrypoint_name(function_name);
+        if self.abi.iter().any(|entry| entry.name == auth_entrypoint) {
+            return self.build_sig_script(&auth_entrypoint, args);
+        }
+
+        let entrypoint = if options.is_leader {
+            generated_covenant_leader_entrypoint_name(function_name)
+        } else {
+            generated_covenant_delegate_entrypoint_name(function_name)
+        };
+
+        if self.abi.iter().any(|entry| entry.name == entrypoint) {
+            return self.build_sig_script(&entrypoint, args);
+        }
+
+        Err(CompilerError::Unsupported(format!("covenant declaration '{}' not found", function_name)))
     }
 }
 
@@ -4509,7 +4491,16 @@ fn compile_encoded_object_with_layout(
     contract_constants: &HashMap<String, Expr<'_>>,
     builtin_name: &str,
 ) -> Result<i64, CompilerError> {
-    let mut provided = collect_state_object_entries(state_expr, &format!("{builtin_name} second argument"))?;
+    let ExprKind::StateObject(state_entries) = &state_expr.kind else {
+        return Err(CompilerError::Unsupported(format!("{builtin_name} second argument must be an object literal")));
+    };
+
+    let mut provided = HashMap::new();
+    for entry in state_entries {
+        if provided.insert(entry.name.as_str(), &entry.expr).is_some() {
+            return Err(CompilerError::Unsupported(format!("duplicate state field '{}'", entry.name)));
+        }
+    }
     if provided.len() != layout_fields.len() {
         return Err(CompilerError::Unsupported("new_state must include all contract fields exactly once".to_string()));
     }

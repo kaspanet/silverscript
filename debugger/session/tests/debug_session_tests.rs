@@ -17,7 +17,9 @@ use debugger_session::{
     session::{DebugSession, DebugValue, ShadowTxContext},
 };
 use silverscript_lang::ast::{Expr, ExprKind, parse_contract_ast};
-use silverscript_lang::compiler::{CompileOptions, CovenantDeclCallOptions, compile_contract, struct_object};
+use silverscript_lang::compiler::{
+    CompileOptions, CovenantDeclCallOptions, ResolvedCovenantCallTarget, compile_contract, struct_object,
+};
 use silverscript_lang::debug_info::StepKind;
 
 const IF_STATEMENT_CONTRACT: &str = r#"pragma silverscript ^0.1.0;
@@ -1314,7 +1316,11 @@ contract Counter(int init_value) {
     let compiled = compile_contract(source, &[Expr::int(7)], compile_opts)?;
     let debug_info = compiled.debug_info.clone();
     let covenant_target = compiled
-        .resolve_covenant_call_target("step", CovenantDeclCallOptions { is_leader: false })
+        .covenant_infos
+        .iter()
+        .find(|info| info.source_name == "step")
+        .cloned()
+        .map(|info| ResolvedCovenantCallTarget { info, is_leader: false })
         .ok_or("missing covenant call target")?;
     let sigscript = compiled.build_sig_script_for_covenant_decl(
         "step",
@@ -1411,7 +1417,11 @@ contract CovDebugDemo(int bump) {
     let compiled = compile_contract(source, &[Expr::int(2)], compile_opts)?;
     let debug_info = compiled.debug_info.clone();
     let covenant_target = compiled
-        .resolve_covenant_call_target("step", CovenantDeclCallOptions { is_leader: true })
+        .covenant_infos
+        .iter()
+        .find(|info| info.source_name == "step")
+        .cloned()
+        .map(|info| ResolvedCovenantCallTarget { info, is_leader: true })
         .ok_or("missing covenant call target")?;
     let sigscript = compiled.build_sig_script_for_covenant_decl(
         "step",
