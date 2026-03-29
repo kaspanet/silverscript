@@ -3802,10 +3802,9 @@ fn read_input_state_field_expr_with_type<'i>(
     contract_constants: &HashMap<String, Expr<'i>>,
     builtin_name: &str,
 ) -> Result<Expr<'i>, CompilerError> {
-    let field_payload_len =
-        fixed_state_field_payload_len_for_type_ref(field_type, contract_constants).map_err(|_| {
-            CompilerError::Unsupported(format!("{builtin_name} does not support field type {}", type_name_from_ref(field_type)))
-        })?;
+    let field_payload_len = fixed_state_field_payload_len_for_type_ref(field_type, contract_constants).map_err(|_| {
+        CompilerError::Unsupported(format!("{builtin_name} does not support field type {}", type_name_from_ref(field_type)))
+    })?;
     let field_payload_offset = binary_expr(
         BinaryOp::Add,
         state_start_offset_expr,
@@ -3821,9 +3820,7 @@ fn read_input_state_field_expr_with_type<'i>(
 fn cast_read_input_state_expr<'i>(substr: Expr<'i>, type_ref: &TypeRef) -> Result<Expr<'i>, CompilerError> {
     let type_name = type_name_from_ref(type_ref);
     match type_ref.base {
-        TypeBase::Custom(_) => {
-            Err(CompilerError::Unsupported(format!("readInputState does not support field type {type_name}")))
-        }
+        TypeBase::Custom(_) => Err(CompilerError::Unsupported(format!("readInputState does not support field type {type_name}"))),
         _ => Ok(Expr::call(type_name.as_str(), vec![substr])),
     }
 }
@@ -4466,13 +4463,9 @@ fn compile_encoded_object_with_layout(
             return Err(CompilerError::Unsupported(format!("missing state field '{}'", field.name)));
         };
 
-        let field_size =
-            fixed_state_field_payload_len_for_type_ref(&field.type_ref, contract_constants).map_err(|_| {
-                CompilerError::Unsupported(format!(
-                    "{builtin_name} does not support field type {}",
-                    type_name_from_ref(&field.type_ref)
-                ))
-            })?;
+        let field_size = fixed_state_field_payload_len_for_type_ref(&field.type_ref, contract_constants).map_err(|_| {
+            CompilerError::Unsupported(format!("{builtin_name} does not support field type {}", type_name_from_ref(&field.type_ref)))
+        })?;
 
         if field.type_ref.array_dims.is_empty() && matches!(field.type_ref.base, TypeBase::Int | TypeBase::Bool) {
             compile_expr(
