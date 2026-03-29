@@ -100,7 +100,8 @@ pub fn materialize_state_script<'i>(base_compiled: &CompiledContract<'i>, state:
     let mut contract = base_compiled.ast.clone();
     for field in &mut contract.fields {
         field.expr = provided
-            .remove(field.name.as_str()).cloned()
+            .remove(field.name.as_str())
+            .cloned()
             .ok_or_else(|| CompilerError::Unsupported(format!("missing state field '{}'", field.name)))?;
     }
     if let Some(extra) = provided.keys().next() {
