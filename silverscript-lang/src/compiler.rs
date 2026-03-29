@@ -549,7 +549,7 @@ fn read_input_state_field_expr_symbolic<'i>(
 ) -> Result<Expr<'i>, CompilerError> {
     let state_start_offset = state_start_offset(contract_field_prefix_len, contract_fields, contract_constants)?;
     let script_size_expr = Expr::new(ExprKind::Nullary(NullaryOp::ThisScriptSize), span::Span::default());
-    let (field_payload_len, decode_numeric) = fixed_state_field_payload_len(field, contract_constants)?;
+    let field_payload_len = fixed_state_field_payload_len(field, contract_constants)?;
     let field_payload_offset = state_start_offset + field_chunk_offset + data_prefix(field_payload_len).len();
 
     let sig_len = Expr::call("OpTxInputScriptSigLen", vec![input_idx.clone()]);
@@ -570,7 +570,7 @@ fn read_input_state_field_expr_symbolic<'i>(
     );
     let substr = Expr::call("OpTxInputScriptSigSubstr", vec![input_idx.clone(), start, end]);
 
-    if decode_numeric { Ok(Expr::call("OpBin2Num", vec![substr])) } else { Ok(substr) }
+    cast_read_input_state_expr(substr, &field.type_ref)
 }
 
 fn read_input_state_with_template_values<'i>(
@@ -1899,18 +1899,16 @@ fn fixed_type_size_with_constants_ref<'i>(type_ref: &TypeRef, constants: &HashMa
 fn fixed_state_field_payload_len_for_type_ref<'i>(
     type_ref: &TypeRef,
     contract_constants: &HashMap<String, Expr<'i>>,
-) -> Result<(usize, bool), CompilerError> {
-    let payload_len = fixed_type_size_with_constants_ref(type_ref, contract_constants).ok_or_else(|| {
+) -> Result<usize, CompilerError> {
+    fixed_type_size_with_constants_ref(type_ref, contract_constants).ok_or_else(|| {
         CompilerError::Unsupported(format!("readInputState does not support field type {}", type_name_from_ref(type_ref)))
-    })?;
-    let decode_numeric = type_ref.array_dims.is_empty() && matches!(type_ref.base, TypeBase::Int | TypeBase::Bool);
-    Ok((payload_len, decode_numeric))
+    })
 }
 
 fn fixed_state_field_payload_len<'i>(
     field: &ContractFieldAst<'i>,
     contract_constants: &HashMap<String, Expr<'i>>,
-) -> Result<(usize, bool), CompilerError> {
+) -> Result<usize, CompilerError> {
     fixed_state_field_payload_len_for_type_ref(&field.type_ref, contract_constants)
 }
 
@@ -3776,7 +3774,7 @@ fn encoded_field_chunk_size<'i>(
     field: &ContractFieldAst<'i>,
     contract_constants: &HashMap<String, Expr<'i>>,
 ) -> Result<usize, CompilerError> {
-    let (payload_size, _) = fixed_state_field_payload_len(field, contract_constants)?;
+    let payload_size = fixed_state_field_payload_len(field, contract_constants)?;
     Ok(data_prefix(payload_size).len() + payload_size)
 }
 
@@ -3784,7 +3782,7 @@ fn encoded_field_chunk_size_for_type_ref<'i>(
     type_ref: &TypeRef,
     contract_constants: &HashMap<String, Expr<'i>>,
 ) -> Result<usize, CompilerError> {
-    let (payload_size, _) = fixed_state_field_payload_len_for_type_ref(type_ref, contract_constants)?;
+    let payload_size = fixed_state_field_payload_len_for_type_ref(type_ref, contract_constants)?;
     Ok(data_prefix(payload_size).len() + payload_size)
 }
 
@@ -3837,7 +3835,7 @@ fn read_input_state_binding_expr<'i>(
     script_size_value: i64,
     contract_constants: &HashMap<String, Expr<'i>>,
 ) -> Result<Expr<'i>, CompilerError> {
-    let (field_payload_len, decode_numeric) = fixed_state_field_payload_len(field, contract_constants)?;
+    let field_payload_len = fixed_state_field_payload_len(field, contract_constants)?;
     let field_payload_offset = state_start_offset + field_chunk_offset + data_prefix(field_payload_len).len();
 
     let sig_len = Expr::call("OpTxInputScriptSigLen", vec![input_idx.clone()]);
@@ -3858,7 +3856,7 @@ fn read_input_state_binding_expr<'i>(
     );
     let substr = Expr::call("OpTxInputScriptSigSubstr", vec![input_idx.clone(), start, end]);
 
-    if decode_numeric { Ok(Expr::call("OpBin2Num", vec![substr])) } else { Ok(substr) }
+    cast_read_input_state_expr(substr, &field.type_ref)
 }
 
 fn read_input_state_field_expr_with_type<'i>(
@@ -3870,10 +3868,9 @@ fn read_input_state_field_expr_with_type<'i>(
     contract_constants: &HashMap<String, Expr<'i>>,
     builtin_name: &str,
 ) -> Result<Expr<'i>, CompilerError> {
-    let (field_payload_len, decode_numeric) =
-        fixed_state_field_payload_len_for_type_ref(field_type, contract_constants).map_err(|_| {
-            CompilerError::Unsupported(format!("{builtin_name} does not support field type {}", type_name_from_ref(field_type)))
-        })?;
+    let field_payload_len = fixed_state_field_payload_len_for_type_ref(field_type, contract_constants).map_err(|_| {
+        CompilerError::Unsupported(format!("{builtin_name} does not support field type {}", type_name_from_ref(field_type)))
+    })?;
     let field_payload_offset = binary_expr(
         BinaryOp::Add,
         state_start_offset_expr,
@@ -3883,7 +3880,15 @@ fn read_input_state_field_expr_with_type<'i>(
     let end = binary_expr(BinaryOp::Add, start.clone(), Expr::int(field_payload_len as i64));
     let substr = input_sigscript_substr_expr(input_idx, start, end);
 
-    if decode_numeric { Ok(Expr::call("OpBin2Num", vec![substr])) } else { Ok(substr) }
+    cast_read_input_state_expr(substr, field_type)
+}
+
+fn cast_read_input_state_expr<'i>(substr: Expr<'i>, type_ref: &TypeRef) -> Result<Expr<'i>, CompilerError> {
+    let type_name = type_name_from_ref(type_ref);
+    match type_ref.base {
+        TypeBase::Custom(_) => Err(CompilerError::Unsupported(format!("readInputState does not support field type {type_name}"))),
+        _ => Ok(Expr::call(type_name.as_str(), vec![substr])),
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -4515,15 +4520,11 @@ fn compile_encoded_object_with_layout(
             return Err(CompilerError::Unsupported(format!("missing state field '{}'", field.name)));
         };
 
-        let (field_size, encode_numeric) =
-            fixed_state_field_payload_len_for_type_ref(&field.type_ref, contract_constants).map_err(|_| {
-                CompilerError::Unsupported(format!(
-                    "{builtin_name} does not support field type {}",
-                    type_name_from_ref(&field.type_ref)
-                ))
-            })?;
+        let field_size = fixed_state_field_payload_len_for_type_ref(&field.type_ref, contract_constants).map_err(|_| {
+            CompilerError::Unsupported(format!("{builtin_name} does not support field type {}", type_name_from_ref(&field.type_ref)))
+        })?;
 
-        if encode_numeric {
+        if field.type_ref.array_dims.is_empty() && matches!(field.type_ref.base, TypeBase::Int | TypeBase::Bool) {
             compile_expr(
                 new_value,
                 env,
@@ -5254,8 +5255,11 @@ fn compile_for_statement<'i>(
     script_size: Option<i64>,
     recorder: &mut DebugRecorder<'i>,
 ) -> Result<(), CompilerError> {
-    let max_iterations = eval_const_int(max_iterations_expr, contract_constants)
-        .map_err(|_| CompilerError::Unsupported("for loop max iterations must be a compile-time integer".to_string()))?;
+    let max_iterations = match eval_const_int(max_iterations_expr, contract_constants) {
+        Ok(value) => value,
+        Err(CompilerError::InvalidLiteral(message)) => return Err(CompilerError::InvalidLiteral(message)),
+        Err(_) => return Err(CompilerError::Unsupported("for loop max iterations must be a compile-time integer".to_string())),
+    };
     if max_iterations < 0 {
         return Err(CompilerError::Unsupported("for loop max iterations must be a non-negative compile-time integer".to_string()));
     }
@@ -5499,26 +5503,37 @@ fn eval_const_int<'i>(expr: &Expr<'i>, constants: &HashMap<String, Expr<'i>>) ->
             Some(value) => eval_const_int(value, constants),
             None => Err(CompilerError::Unsupported("for loop bounds must be constant integers".to_string())),
         },
-        ExprKind::Unary { op: UnaryOp::Neg, expr } => Ok(-eval_const_int(expr, constants)?),
+        ExprKind::Unary { op: UnaryOp::Neg, expr } => {
+            let value = eval_const_int(expr, constants)?;
+            value.checked_neg().ok_or_else(|| CompilerError::InvalidLiteral(format!("constant integer overflow: -({value})")))
+        }
         ExprKind::Unary { .. } => Err(CompilerError::Unsupported("for loop bounds must be constant integers".to_string())),
         ExprKind::Binary { op, left, right } => {
             let lhs = eval_const_int(left, constants)?;
             let rhs = eval_const_int(right, constants)?;
             match op {
-                BinaryOp::Add => Ok(lhs + rhs),
-                BinaryOp::Sub => Ok(lhs - rhs),
-                BinaryOp::Mul => Ok(lhs * rhs),
+                BinaryOp::Add => lhs
+                    .checked_add(rhs)
+                    .ok_or_else(|| CompilerError::InvalidLiteral(format!("constant integer overflow: {lhs} + {rhs}"))),
+                BinaryOp::Sub => lhs
+                    .checked_sub(rhs)
+                    .ok_or_else(|| CompilerError::InvalidLiteral(format!("constant integer overflow: {lhs} - {rhs}"))),
+                BinaryOp::Mul => lhs
+                    .checked_mul(rhs)
+                    .ok_or_else(|| CompilerError::InvalidLiteral(format!("constant integer overflow: {lhs} * {rhs}"))),
                 BinaryOp::Div => {
                     if rhs == 0 {
                         return Err(CompilerError::InvalidLiteral("division by zero in for loop bounds".to_string()));
                     }
-                    Ok(lhs / rhs)
+                    lhs.checked_div(rhs)
+                        .ok_or_else(|| CompilerError::InvalidLiteral(format!("constant integer overflow: {lhs} / {rhs}")))
                 }
                 BinaryOp::Mod => {
                     if rhs == 0 {
                         return Err(CompilerError::InvalidLiteral("modulo by zero in for loop bounds".to_string()));
                     }
-                    Ok(lhs % rhs)
+                    lhs.checked_rem(rhs)
+                        .ok_or_else(|| CompilerError::InvalidLiteral(format!("constant integer overflow: {lhs} % {rhs}")))
                 }
                 _ => Err(CompilerError::Unsupported("for loop bounds must be constant integers".to_string())),
             }
@@ -6430,9 +6445,6 @@ fn compile_expr<'i>(
             *stack_depth -= 1;
             builder.add_op(OpSubstr)?;
             *stack_depth -= 2;
-            if element_type == "int" {
-                builder.add_op(OpBin2Num)?;
-            }
             Ok(())
         }
         ExprKind::Slice { source, start, end, .. } => {
@@ -7235,7 +7247,7 @@ fn compile_call_expr<'i>(
             )?;
             Ok(())
         }
-        "bool" | "string" => {
+        "byte" | "bool" | "string" => {
             if args.len() != 1 {
                 return Err(CompilerError::Unsupported(format!("{name}() expects a single argument")));
             }
@@ -7636,7 +7648,9 @@ mod tests {
 
     use kaspa_txscript::opcodes::codes::OpData1;
 
-    use super::{Op0, OpPushData1, OpPushData2, StackBindings, data_prefix};
+    use crate::ast::{BinaryOp, Expr, ExprKind, UnaryOp};
+
+    use super::{Op0, OpPushData1, OpPushData2, StackBindings, data_prefix, eval_const_int};
 
     #[test]
     fn data_prefix_encodes_small_pushes() {
@@ -7679,5 +7693,60 @@ mod tests {
             stack_bindings.binding_order(),
             ["field_b", "field_a", "param_b", "param_a"].into_iter().map(str::to_string).collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn eval_const_int_rejects_checked_arithmetic_overflow() {
+        let constants = HashMap::new();
+        let cases = [
+            (
+                Expr::new(
+                    ExprKind::Binary { op: BinaryOp::Add, left: Box::new(Expr::int(i64::MAX)), right: Box::new(Expr::int(1)) },
+                    Default::default(),
+                ),
+                format!("constant integer overflow: {} + 1", i64::MAX),
+            ),
+            (
+                Expr::new(
+                    ExprKind::Binary { op: BinaryOp::Sub, left: Box::new(Expr::int(-i64::MAX)), right: Box::new(Expr::int(2)) },
+                    Default::default(),
+                ),
+                format!("constant integer overflow: {} - 2", -i64::MAX),
+            ),
+            (
+                Expr::new(
+                    ExprKind::Binary {
+                        op: BinaryOp::Mul,
+                        left: Box::new(Expr::int(3_037_000_500)),
+                        right: Box::new(Expr::int(3_037_000_500)),
+                    },
+                    Default::default(),
+                ),
+                "constant integer overflow: 3037000500 * 3037000500".to_string(),
+            ),
+            (
+                Expr::new(ExprKind::Unary { op: UnaryOp::Neg, expr: Box::new(Expr::int(i64::MIN)) }, Default::default()),
+                format!("constant integer overflow: -({})", i64::MIN),
+            ),
+            (
+                Expr::new(
+                    ExprKind::Binary { op: BinaryOp::Div, left: Box::new(Expr::int(i64::MIN)), right: Box::new(Expr::int(-1)) },
+                    Default::default(),
+                ),
+                format!("constant integer overflow: {} / -1", i64::MIN),
+            ),
+            (
+                Expr::new(
+                    ExprKind::Binary { op: BinaryOp::Mod, left: Box::new(Expr::int(i64::MIN)), right: Box::new(Expr::int(-1)) },
+                    Default::default(),
+                ),
+                format!("constant integer overflow: {} % -1", i64::MIN),
+            ),
+        ];
+
+        for (expr, expected) in cases {
+            let err = eval_const_int(&expr, &constants).expect_err("overflow should be rejected");
+            assert!(err.to_string().contains(&expected), "unexpected error: {err}");
+        }
     }
 }
