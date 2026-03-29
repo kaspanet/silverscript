@@ -2134,7 +2134,10 @@ fn apply_number_unit<'i>(expr: Expr<'i>, unit: &str) -> Result<Expr<'i>, Compile
         "kas" => 100_000_000,
         _ => return Err(CompilerError::Unsupported(format!("number unit '{unit}' not supported"))),
     };
-    Ok(Expr::new(ExprKind::Int(value.saturating_mul(multiplier)), span))
+    let scaled = value
+        .checked_mul(multiplier)
+        .ok_or_else(|| CompilerError::InvalidLiteral(format!("number literal overflow for unit '{unit}'")))?;
+    Ok(Expr::new(ExprKind::Int(scaled), span))
 }
 
 fn parse_date_literal<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {
