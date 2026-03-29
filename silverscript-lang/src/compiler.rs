@@ -7652,22 +7652,14 @@ mod tests {
         let cases = [
             (
                 Expr::new(
-                    ExprKind::Binary {
-                        op: BinaryOp::Add,
-                        left: Box::new(Expr::int(i64::MAX)),
-                        right: Box::new(Expr::int(1)),
-                    },
+                    ExprKind::Binary { op: BinaryOp::Add, left: Box::new(Expr::int(i64::MAX)), right: Box::new(Expr::int(1)) },
                     Default::default(),
                 ),
                 format!("constant integer overflow: {} + 1", i64::MAX),
             ),
             (
                 Expr::new(
-                    ExprKind::Binary {
-                        op: BinaryOp::Sub,
-                        left: Box::new(Expr::int(-i64::MAX)),
-                        right: Box::new(Expr::int(2)),
-                    },
+                    ExprKind::Binary { op: BinaryOp::Sub, left: Box::new(Expr::int(-i64::MAX)), right: Box::new(Expr::int(2)) },
                     Default::default(),
                 ),
                 format!("constant integer overflow: {} - 2", -i64::MAX),
@@ -7684,30 +7676,19 @@ mod tests {
                 "constant integer overflow: 3037000500 * 3037000500".to_string(),
             ),
             (
-                Expr::new(
-                    ExprKind::Unary { op: UnaryOp::Neg, expr: Box::new(Expr::int(i64::MIN)) },
-                    Default::default(),
-                ),
+                Expr::new(ExprKind::Unary { op: UnaryOp::Neg, expr: Box::new(Expr::int(i64::MIN)) }, Default::default()),
                 format!("constant integer overflow: -({})", i64::MIN),
             ),
             (
                 Expr::new(
-                    ExprKind::Binary {
-                        op: BinaryOp::Div,
-                        left: Box::new(Expr::int(i64::MIN)),
-                        right: Box::new(Expr::int(-1)),
-                    },
+                    ExprKind::Binary { op: BinaryOp::Div, left: Box::new(Expr::int(i64::MIN)), right: Box::new(Expr::int(-1)) },
                     Default::default(),
                 ),
                 format!("constant integer overflow: {} / -1", i64::MIN),
             ),
             (
                 Expr::new(
-                    ExprKind::Binary {
-                        op: BinaryOp::Mod,
-                        left: Box::new(Expr::int(i64::MIN)),
-                        right: Box::new(Expr::int(-1)),
-                    },
+                    ExprKind::Binary { op: BinaryOp::Mod, left: Box::new(Expr::int(i64::MIN)), right: Box::new(Expr::int(-1)) },
                     Default::default(),
                 ),
                 format!("constant integer overflow: {} % -1", i64::MIN),
