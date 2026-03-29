@@ -157,7 +157,7 @@ pub(super) fn lower_covenant_declarations<'i>(
             continue;
         }
 
-        let declaration = parse_covenant_declaration(function, constants, true)?;
+        let declaration = parse_covenant_declaration(function, constants)?;
         validate_covenant_policy_state_shape(function, &declaration, &contract.fields)?;
 
         infos.push(build_covenant_decl_info(function, declaration.binding));
@@ -208,7 +208,6 @@ fn build_covenant_decl_info<'i>(function: &FunctionAst<'i>, binding: CovenantDec
 fn parse_covenant_declaration<'i>(
     function: &FunctionAst<'i>,
     constants: &HashMap<String, Expr<'i>>,
-    emit_warnings: bool,
 ) -> Result<CovenantDeclaration<'i>, CompilerError> {
     #[derive(Clone, Copy, PartialEq, Eq)]
     enum CovenantSyntax {
@@ -374,7 +373,7 @@ fn parse_covenant_declaration<'i>(
     if binding == CovenantDeclBinding::Auth && from_value != 1 {
         return Err(CompilerError::Unsupported("binding=auth requires from = 1".to_string()));
     }
-    if emit_warnings && binding == CovenantDeclBinding::Cov && from_value == 1 && args_by_name.contains_key("binding") {
+    if binding == CovenantDeclBinding::Cov && from_value == 1 && args_by_name.contains_key("binding") {
         eprintln!(
             "warning: #[covenant(...)] on function '{}' uses binding=cov with from=1; binding=auth is usually a better default",
             function.name

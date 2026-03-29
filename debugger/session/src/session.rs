@@ -14,6 +14,7 @@ use silverscript_lang::ast::{
 };
 use silverscript_lang::compiler::{
     CovenantDeclBinding, CovenantDeclInfo, ResolvedCovenantCallTarget, compile_debug_expr, flattened_struct_name,
+    resolve_contract_state_expr,
 };
 use silverscript_lang::debug_info::{
     DebugFunctionRange, DebugInfo, DebugLeafBinding, DebugNamedValue, DebugParamBinding, DebugStep, DebugVariableUpdate,
@@ -852,14 +853,17 @@ impl<'a, 'i> DebugSession<'a, 'i> {
             return;
         };
 
-        let Some(state_value) = self.active_contract_state.as_ref() else {
-            record_debug_named_values(bindings, &self.debug_info.contract_state, VariableOrigin::ContractField);
+        let state_value = if let Some(state_value) = self.active_contract_state.as_ref() {
+            state_value.clone()
+        } else if let Some(state_value) = self.resolved_contract_state_value() {
+            state_value
+        } else {
             return;
         };
 
         for field in &contract.fields {
             let field_path = vec![field.name.clone()];
-            let Some(field_value) = structured_leaf_value(state_value, &field_path) else {
+            let Some(field_value) = structured_leaf_value(&state_value, &field_path) else {
                 continue;
             };
             let _ =
@@ -917,6 +921,12 @@ impl<'a, 'i> DebugSession<'a, 'i> {
             );
         }
         Some(())
+    }
+
+    fn resolved_contract_state_value(&self) -> Option<DebugValue> {
+        let contract = self.contract_ast.as_ref()?;
+        let expr = resolve_contract_state_expr(contract, &self.debug_info.constructor_args, &self.debug_info.constants).ok()?;
+        expr_to_debug_value(&expr).ok()
     }
 
     fn freeze_inline_snapshot_bindings(&self, bindings: &mut ScopeState<'i>, frame_id: u32) -> HashSet<String> {
@@ -1763,6 +1773,36 @@ fn debug_value_to_expr<'i>(value: &DebugValue) -> Option<Expr<'i>> {
     }
 }
 
+fn expr_to_debug_value(expr: &Expr<'_>) -> Result<DebugValue, String> {
+    match &expr.kind {
+        ExprKind::Int(value) => Ok(DebugValue::Int(*value)),
+        ExprKind::Bool(value) => Ok(DebugValue::Bool(*value)),
+        ExprKind::Byte(value) => Ok(DebugValue::Bytes(vec![*value])),
+        ExprKind::String(value) => Ok(DebugValue::String(value.clone())),
+        ExprKind::Array(values) => {
+            if values.iter().all(|value| matches!(value.kind, ExprKind::Byte(_))) {
+                return Ok(DebugValue::Bytes(
+                    values
+                        .iter()
+                        .map(|value| match value.kind {
+                            ExprKind::Byte(byte) => byte,
+                            _ => unreachable!("checked"),
+                        })
+                        .collect(),
+                ));
+            }
+            Ok(DebugValue::Array(values.iter().map(expr_to_debug_value).collect::<Result<Vec<_>, _>>()?))
+        }
+        ExprKind::StateObject(fields) => Ok(DebugValue::Object(
+            fields
+                .iter()
+                .map(|field| Ok((field.name.clone(), expr_to_debug_value(&field.expr)?)))
+                .collect::<Result<Vec<_>, String>>()?,
+        )),
+        other => Err(format!("unsupported resolved state expression in debugger: {other:?}")),
+    }
+}
+
 /// Executes sigscript to seed the stack before debugging lockscript.
 fn seed_engine_with_sigscript(engine: &mut DebugEngine<'_>, sigscript: &[u8]) -> Result<(), kaspa_txscript_errors::TxScriptError> {
     for opcode in parse_script::<DebugTx<'_>, DebugReused>(sigscript) {
@@ -2097,7 +2137,6 @@ mod tests {
             functions: vec![DebugFunctionRange { name: "f".to_string(), bytecode_start: 0, bytecode_end: 1 }],
             constructor_args: vec![],
             constants: vec![DebugNamedValue { name: "K".to_string(), type_name: "int".to_string(), value: Expr::int(7) }],
-            contract_state: vec![],
         };
         DebugSession::full(sigscript, &[], "", Some(debug_info), engine)
     }
@@ -2315,7 +2354,6 @@ mod tests {
                     span::Span::default(),
                 ),
             }],
-            contract_state: vec![],
         };
         let session = DebugSession::full(&[], &[], "", Some(debug_info), engine).unwrap();
         let scope_state = session.scope_state(StepId::ROOT).unwrap();
@@ -2358,7 +2396,6 @@ mod tests {
             functions: vec![DebugFunctionRange { name: "main".to_string(), bytecode_start: 0, bytecode_end: 1 }],
             constructor_args: vec![],
             constants: vec![],
-            contract_state: vec![],
         };
         let session = DebugSession::full(&[], &[], source, Some(debug_info), engine).unwrap().with_active_contract_state(Some(
             DebugValue::Object(vec![(

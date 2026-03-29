@@ -29,7 +29,6 @@ pub struct DebugInfoRecorder<'i> {
     entry_points: Vec<DebugFunctionRange>,
     constructor_args: Vec<DebugNamedValue<'i>>,
     constants: Vec<DebugNamedValue<'i>>,
-    contract_state: Vec<DebugNamedValue<'i>>,
     next_sequence: u32,
 }
 
@@ -57,10 +56,6 @@ impl<'i> DebugInfoRecorder<'i> {
         self.constants.push(binding);
     }
 
-    pub fn record_contract_state(&mut self, bindings: Vec<DebugNamedValue<'i>>) {
-        self.contract_state = bindings;
-    }
-
     /// Returns the next global sequence id for one emitted debug event.
     pub fn next_sequence(&mut self) -> u32 {
         let sequence = self.next_sequence;
@@ -86,7 +81,6 @@ impl<'i> DebugInfoRecorder<'i> {
             functions: self.entry_points,
             constructor_args: self.constructor_args,
             constants: self.constants,
-            contract_state: self.contract_state,
         }
     }
 }
@@ -105,8 +99,6 @@ pub struct DebugInfo<'i> {
     pub constructor_args: Vec<DebugNamedValue<'i>>,
     #[serde(default)]
     pub constants: Vec<DebugNamedValue<'i>>,
-    #[serde(default)]
-    pub contract_state: Vec<DebugNamedValue<'i>>,
 }
 
 impl<'i> DebugInfo<'i> {
@@ -118,7 +110,6 @@ impl<'i> DebugInfo<'i> {
             functions: Vec::new(),
             constructor_args: Vec::new(),
             constants: Vec::new(),
-            contract_state: Vec::new(),
         }
     }
 }

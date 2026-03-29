@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 
-use crate::ast::{ConstantAst, ContractAst, ContractFieldAst, Expr, ExprKind, FunctionAst, ParamAst, Statement, parse_type_ref};
+use crate::ast::{ConstantAst, ContractFieldAst, Expr, ExprKind, FunctionAst, ParamAst, Statement, parse_type_ref};
 use crate::debug_info::{
     DebugFunctionRange, DebugInfo, DebugInfoRecorder, DebugLeafBinding, DebugNamedValue, DebugParamBinding, DebugParamMapping,
     DebugStep, DebugVariableUpdate, RuntimeBinding, SourceSpan, StepKind,
@@ -30,15 +30,8 @@ impl<'i> DebugRecorder<'i> {
     }
 
     /// Records contract-scoped debugger bindings (constructor args and constant declarations).
-    pub fn record_contract_scope(
-        &mut self,
-        params: &[ParamAst<'i>],
-        values: &[Expr<'i>],
-        constants: &[ConstantAst<'i>],
-        contract: &ContractAst<'i>,
-        field_values: &HashMap<String, Expr<'i>>,
-    ) {
-        self.inner.record_contract_scope(params, values, constants, contract, field_values);
+    pub fn record_contract_scope(&mut self, params: &[ParamAst<'i>], values: &[Expr<'i>], constants: &[ConstantAst<'i>]) {
+        self.inner.record_contract_scope(params, values, constants);
     }
 
     /// Starts staging debug metadata for one entrypoint compilation.
@@ -119,14 +112,7 @@ impl<'i> DebugRecorder<'i> {
 }
 
 trait DebugRecorderImpl<'i>: fmt::Debug {
-    fn record_contract_scope(
-        &mut self,
-        params: &[ParamAst<'i>],
-        values: &[Expr<'i>],
-        constants: &[ConstantAst<'i>],
-        contract: &ContractAst<'i>,
-        field_values: &HashMap<String, Expr<'i>>,
-    );
+    fn record_contract_scope(&mut self, params: &[ParamAst<'i>], values: &[Expr<'i>], constants: &[ConstantAst<'i>]);
     fn begin_entrypoint(
         &mut self,
         name: &str,
@@ -173,15 +159,7 @@ trait DebugRecorderImpl<'i>: fmt::Debug {
 struct NoopDebugRecorder;
 
 impl<'i> DebugRecorderImpl<'i> for NoopDebugRecorder {
-    fn record_contract_scope(
-        &mut self,
-        _params: &[ParamAst<'i>],
-        _values: &[Expr<'i>],
-        _constants: &[ConstantAst<'i>],
-        _contract: &ContractAst<'i>,
-        _field_values: &HashMap<String, Expr<'i>>,
-    ) {
-    }
+    fn record_contract_scope(&mut self, _params: &[ParamAst<'i>], _values: &[Expr<'i>], _constants: &[ConstantAst<'i>]) {}
     fn begin_entrypoint(
         &mut self,
         _name: &str,
@@ -251,29 +229,8 @@ impl<'i> ActiveDebugRecorder<'i> {
     }
 }
 
-fn debug_named_contract_state<'i>(contract: &ContractAst<'i>, field_values: &HashMap<String, Expr<'i>>) -> Vec<DebugNamedValue<'i>> {
-    contract
-        .fields
-        .iter()
-        .filter_map(|field| {
-            field_values.get(&field.name).cloned().map(|value| DebugNamedValue {
-                name: field.name.clone(),
-                type_name: field.type_ref.type_name(),
-                value,
-            })
-        })
-        .collect()
-}
-
 impl<'i> DebugRecorderImpl<'i> for ActiveDebugRecorder<'i> {
-    fn record_contract_scope(
-        &mut self,
-        params: &[ParamAst<'i>],
-        values: &[Expr<'i>],
-        constants: &[ConstantAst<'i>],
-        contract: &ContractAst<'i>,
-        field_values: &HashMap<String, Expr<'i>>,
-    ) {
+    fn record_contract_scope(&mut self, params: &[ParamAst<'i>], values: &[Expr<'i>], constants: &[ConstantAst<'i>]) {
         for (param, value) in params.iter().zip(values.iter()) {
             self.recorder.record_constructor_arg(DebugNamedValue {
                 name: param.name.clone(),
@@ -288,7 +245,6 @@ impl<'i> DebugRecorderImpl<'i> for ActiveDebugRecorder<'i> {
                 value: constant.expr.clone(),
             });
         }
-        self.recorder.record_contract_state(debug_named_contract_state(contract, field_values));
     }
 
     fn begin_entrypoint(
@@ -885,7 +841,7 @@ mod tests {
         let structs = super::super::build_struct_registry(&contract).expect("build struct registry");
 
         let mut recorder = DebugRecorder::new(false);
-        recorder.record_contract_scope(&contract.params, &[], &contract.constants, &contract, &HashMap::new());
+        recorder.record_contract_scope(&contract.params, &[], &contract.constants);
         recorder.begin_entrypoint("spend", function, &contract.fields, &structs).expect("noop begin entrypoint");
 
         let span = SourceSpan::from(stmt.span());

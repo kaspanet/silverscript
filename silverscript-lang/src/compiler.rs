@@ -10,7 +10,7 @@ use crate::ast::{
     ParamAst, SplitPart, StateBindingAst, StateFieldExpr, Statement, TimeVar, TypeBase, TypeRef, UnaryOp, UnarySuffixKind,
     parse_contract_ast, parse_type_ref,
 };
-use crate::debug_info::{DebugInfo, RuntimeBinding, SourceSpan};
+use crate::debug_info::{DebugInfo, DebugNamedValue, RuntimeBinding, SourceSpan};
 pub use crate::errors::{CompilerError, ErrorSpan};
 use crate::span;
 mod covenant_declarations;
@@ -88,90 +88,50 @@ pub struct CompiledContract<'i> {
 }
 
 pub fn materialize_state_script<'i>(base_compiled: &CompiledContract<'i>, state: &Expr<'i>) -> Result<Vec<u8>, CompilerError> {
-    if base_compiled.state_layout.len == 0 {
-        return Err(CompilerError::Unsupported("contract does not expose a materializable state segment".to_string()));
-    }
-
     let debug_info = base_compiled
         .debug_info
         .as_ref()
         .ok_or_else(|| CompilerError::Unsupported("state materialization requires debug-enabled compilation".to_string()))?;
-    let structs = build_struct_registry(&base_compiled.ast)?;
-    let mut constants: HashMap<String, Expr<'i>> =
-        debug_info.constants.iter().map(|constant| (constant.name.clone(), constant.value.clone())).collect();
-    for param in &debug_info.constructor_args {
-        constants.insert(param.name.clone(), param.value.clone());
-    }
-    let encoded_state = encode_contract_state_segment(&base_compiled.ast.fields, state, &structs, &constants)?;
-    if encoded_state.len() != base_compiled.state_layout.len {
-        return Err(CompilerError::Unsupported(
-            "explicit state changes encoded script size; provide raw script_hex instead".to_string(),
-        ));
-    }
-
-    let state_start = base_compiled.state_layout.start;
-    let state_end = base_compiled.state_layout.start + base_compiled.state_layout.len;
-    if base_compiled.script.len() < state_end {
-        return Err(CompilerError::Unsupported("state template range exceeds compiled script length".to_string()));
-    }
-
-    let mut script = base_compiled.script.clone();
-    script[state_start..state_end].copy_from_slice(&encoded_state);
-    Ok(script)
-}
-
-fn encode_contract_state_segment<'i>(
-    contract_fields: &[ContractFieldAst<'i>],
-    state: &Expr<'i>,
-    structs: &StructRegistry,
-    constants: &HashMap<String, Expr<'i>>,
-) -> Result<Vec<u8>, CompilerError> {
     let mut provided = collect_state_object_entries(state, "State value")?;
-    if provided.len() != contract_fields.len() {
+    if provided.len() != base_compiled.ast.fields.len() {
         return Err(CompilerError::Unsupported("State value must include all contract fields exactly once".to_string()));
     }
 
-    let mut out = Vec::new();
-    for field in contract_fields {
-        let value = provided
-            .remove(field.name.as_str())
+    let mut contract = base_compiled.ast.clone();
+    for field in &mut contract.fields {
+        field.expr = provided
+            .remove(field.name.as_str()).cloned()
             .ok_or_else(|| CompilerError::Unsupported(format!("missing state field '{}'", field.name)))?;
-        let type_name = type_name_from_ref(&field.type_ref);
-        if !expr_matches_declared_type_ref(value, &field.type_ref, structs) {
-            return Err(CompilerError::Unsupported(format!("contract field '{}' expects {}", field.name, type_name)));
-        }
-
-        let encoded = if struct_name_from_type_ref(&field.type_ref, structs).is_some() {
-            encode_struct_value(value, &field.type_ref, structs)?
-        } else if fixed_type_size_with_constants_ref(&field.type_ref, constants).is_some() {
-            encode_fixed_size_value(value, &type_name)?
-        } else {
-            match &value.kind {
-                ExprKind::Array(values) => {
-                    if is_byte_array(value) {
-                        values
-                            .iter()
-                            .filter_map(|entry| if let ExprKind::Byte(byte) = &entry.kind { Some(*byte) } else { None })
-                            .collect()
-                    } else {
-                        encode_array_literal(values, &type_name)?
-                    }
-                }
-                ExprKind::String(string) => string.as_bytes().to_vec(),
-                ExprKind::Byte(byte) => vec![*byte],
-                _ => {
-                    return Err(CompilerError::Unsupported(format!("contract field '{}' expects {}", field.name, type_name)));
-                }
-            }
-        };
-
-        out.extend_from_slice(&data_prefix(encoded.len()));
-        out.extend(encoded);
     }
     if let Some(extra) = provided.keys().next() {
         return Err(CompilerError::Unsupported(format!("unknown state field '{}'", extra)));
     }
-    Ok(out)
+
+    let constructor_args = debug_info.constructor_args.iter().map(|arg| arg.value.clone()).collect::<Vec<_>>();
+    Ok(compile_contract_ast(&contract, &constructor_args, CompileOptions::default())?.script)
+}
+
+pub fn resolve_contract_state_expr<'i>(
+    contract: &ContractAst<'i>,
+    constructor_args: &[DebugNamedValue<'i>],
+    constants: &[DebugNamedValue<'i>],
+) -> Result<Expr<'i>, CompilerError> {
+    let mut env = HashMap::new();
+    for constant in constants {
+        env.insert(constant.name.clone(), constant.value.clone());
+    }
+    for arg in constructor_args {
+        env.insert(arg.name.clone(), arg.value.clone());
+    }
+
+    let mut fields = Vec::with_capacity(contract.fields.len());
+    for field in &contract.fields {
+        let resolved = resolve_expr(field.expr.clone(), &env, &mut HashSet::new())?;
+        env.insert(field.name.clone(), resolved.clone());
+        fields.push(StateFieldExpr { name: field.name.clone(), expr: resolved, span: field.span, name_span: field.name_span });
+    }
+
+    Ok(Expr::new(ExprKind::StateObject(fields), span::Span::default()))
 }
 
 fn collect_state_object_entries<'a, 'i>(
@@ -195,13 +155,13 @@ struct LoweringScope {
     vars: HashMap<String, TypeRef>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct StructFieldSpec {
     name: String,
     type_ref: TypeRef,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct StructSpec {
     fields: Vec<StructFieldSpec>,
 }
@@ -1057,11 +1017,11 @@ fn compile_contract_impl<'i>(
     let mut script_size = if uses_script_size { Some(100i64) } else { None };
 
     for _ in 0..32 {
-        let (contract_fields, field_prolog_script) =
+        let (_contract_fields, field_prolog_script) =
             compile_contract_fields(&lowered_contract.fields, &constants, options, script_size, &structs)?;
 
         let mut recorder = DebugRecorder::new(options.record_debug_infos);
-        recorder.record_contract_scope(&contract.params, constructor_args, &contract.constants, &lowered_contract, &contract_fields);
+        recorder.record_contract_scope(&contract.params, constructor_args, &contract.constants);
         let selector_prefix_len = if without_selector { 0 } else { 1 };
         let contract_field_prefix_len = selector_prefix_len + field_prolog_script.len();
         let state_layout = CompiledStateLayout { start: selector_prefix_len, len: field_prolog_script.len() };
@@ -1891,10 +1851,14 @@ fn array_size_ref(type_ref: &TypeRef) -> Option<usize> {
 fn array_size_with_constants_ref<'i>(type_ref: &TypeRef, constants: &HashMap<String, Expr<'i>>) -> Option<usize> {
     match type_ref.array_size()? {
         ArrayDim::Fixed(size) => Some(*size),
-        ArrayDim::Constant(name) => constants
-            .get(name)
-            .and_then(|value| eval_const_int(value, constants).ok())
-            .and_then(|value| (value >= 0).then_some(value as usize)),
+        ArrayDim::Constant(name) => {
+            if let Some(Expr { kind: ExprKind::Int(value), .. }) = constants.get(name) {
+                if *value >= 0 {
+                    return Some(*value as usize);
+                }
+            }
+            None
+        }
         ArrayDim::Dynamic | ArrayDim::Inferred => None,
     }
 }

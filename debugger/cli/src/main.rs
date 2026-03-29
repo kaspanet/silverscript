@@ -24,9 +24,8 @@ use kaspa_txscript::{EngineCtx, EngineFlags, pay_to_script_hash_script};
 use silverscript_lang::ast::{ContractAst, Expr, ExprKind, parse_contract_ast};
 use silverscript_lang::compiler::{
     CompileOptions, CovenantDeclBinding, CovenantDeclCallOptions, ResolvedCovenantCallTarget, compile_contract,
-    materialize_state_script,
+    materialize_state_script, resolve_contract_state_expr,
 };
-use silverscript_lang::debug_info::DebugInfo;
 
 const PROMPT: &str = "(sdb) ";
 
@@ -114,27 +113,16 @@ fn resolve_state_for_ctor_args(
     let ctor_args = parse_ctor_args(parsed_contract, raw_ctor_args)?;
     let compile_opts = CompileOptions { record_debug_infos: true, ..Default::default() };
     let compiled = compile_contract(source, &ctor_args, compile_opts)?;
-    let value = contract_state_from_debug_info(
-        compiled
-            .debug_info
-            .as_ref()
-            .ok_or_else(|| "state resolution requires debug-enabled compilation".to_string())
-            .map_err(|err| -> Box<dyn std::error::Error> { err.into() })?,
-    )?;
+    let debug_info = compiled
+        .debug_info
+        .as_ref()
+        .ok_or_else(|| "state resolution requires debug-enabled compilation".to_string())
+        .map_err(|err| -> Box<dyn std::error::Error> { err.into() })?;
+    let expr = resolve_contract_state_expr(&compiled.ast, &debug_info.constructor_args, &debug_info.constants)
+        .map_err(|err| -> Box<dyn std::error::Error> { err.into() })?;
+    let value = expr_to_debug_value(&expr).map_err(|err| -> Box<dyn std::error::Error> { err.into() })?;
     cache.insert(raw_ctor_args.to_vec(), value.clone());
     Ok(value)
-}
-
-fn contract_state_from_debug_info(
-    debug_info: &DebugInfo<'_>,
-) -> Result<debugger_session::session::DebugValue, Box<dyn std::error::Error>> {
-    let fields = debug_info
-        .contract_state
-        .iter()
-        .map(|field| Ok((field.name.clone(), expr_to_debug_value(&field.value)?)))
-        .collect::<Result<Vec<_>, String>>()
-        .map_err(|err| -> Box<dyn std::error::Error> { err.into() })?;
-    Ok(debugger_session::session::DebugValue::Object(fields))
 }
 
 fn resolve_state_from_raw(
@@ -706,7 +694,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ctor_script_cache.insert(raw_constructor_args.clone(), compiled.script.clone());
     if !parsed_contract.fields.is_empty() {
         let root_state = if let Some(debug_info) = debug_info.as_ref() {
-            contract_state_from_debug_info(debug_info)?
+            let expr = resolve_contract_state_expr(&compiled.ast, &debug_info.constructor_args, &debug_info.constants)
+                .map_err(|err| -> Box<dyn std::error::Error> { err.into() })?;
+            expr_to_debug_value(&expr).map_err(|err| -> Box<dyn std::error::Error> { err.into() })?
         } else {
             resolve_state_for_ctor_args(&source, &parsed_contract, &raw_constructor_args, &mut ctor_state_cache)?
         };
