@@ -2837,7 +2837,7 @@ fn compiles_function_call_assignment_and_verifies() {
 }
 
 #[test]
-fn compiles_function_call_statement_drops_returns() {
+fn compiles_function_call_statement_elides_unused_return_expression() {
     let source = r#"
         contract Calls() {
             function f(int a) : (int) {
@@ -2854,8 +2854,8 @@ fn compiles_function_call_statement_drops_returns() {
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
     let selector = selector_for(&compiled, "main");
     assert!(
-        !compiled.script.windows(2).any(|window| window == [OpAdd, OpDrop]),
-        "ignored inline return values should be eliminated before codegen"
+        !compiled.script.contains(&OpAdd),
+        "unused inline return expressions should be elided entirely"
     );
     assert!(run_script_with_selector(compiled.script, selector).is_ok());
 }
