@@ -1235,8 +1235,8 @@ fn compile_statement<'i>(ctx: &mut CompileStatementContext<'_, 'i>, stmt: &State
         Statement::If { condition, then_branch, else_branch, .. } => {
             compile_if_statement(ctx, condition, then_branch, else_branch.as_deref()).map(|_| Vec::new())
         }
-        Statement::For { ident, start, end, max_iterations, body, span, .. } => {
-            compile_for_statement(ctx, ident, start, end, max_iterations, body, *span).map(|_| Vec::new())
+        Statement::For { .. } => {
+            unreachable!("lower_for_loops must remove for statements before codegen")
         }
         Statement::Return { .. } => compile_return_statement(),
         Statement::TupleAssignment { left_type_ref, left_name, right_type_ref, right_name, expr, .. } => {
@@ -2780,139 +2780,6 @@ fn compile_block<'i>(
 
     Ok(())
 }
-
-fn compile_for_statement<'i>(
-    ctx: &mut CompileStatementContext<'_, 'i>,
-    ident: &str,
-    start_expr: &Expr<'i>,
-    end_expr: &Expr<'i>,
-    max_iterations_expr: &Expr<'i>,
-    body: &[Statement<'i>],
-    _for_span: span::Span<'i>,
-) -> Result<(), CompilerError> {
-    let max_iterations = match eval_const_int(max_iterations_expr, ctx.contract_constants) {
-        Ok(value) => value,
-        Err(CompilerError::InvalidLiteral(message)) => return Err(CompilerError::InvalidLiteral(message)),
-        Err(_) => return Err(CompilerError::Unsupported("for loop max iterations must be a compile-time integer".to_string())),
-    };
-    if max_iterations < 0 {
-        return Err(CompilerError::Unsupported("for loop max iterations must be a non-negative compile-time integer".to_string()));
-    }
-
-    let start = start_expr.clone();
-    let end = end_expr.clone();
-
-    let name = ident.to_string();
-    let previous = ctx.env.get(&name).cloned();
-    let previous_type = ctx.types.get(&name).cloned();
-    ctx.types.insert(name.clone(), "int".to_string());
-
-    let result = if let (Ok(start), Ok(end)) =
-        (eval_const_int(start_expr, ctx.contract_constants), eval_const_int(end_expr, ctx.contract_constants))
-    {
-        compile_constant_for_statement(ctx, &name, start, end, max_iterations as usize, body)
-    } else {
-        compile_runtime_for_statement(ctx, &name, start, end, max_iterations as usize, body)
-    };
-
-    match previous {
-        Some(expr) => {
-            ctx.env.insert(name, expr);
-        }
-        None => {
-            ctx.env.remove(ident);
-        }
-    }
-
-    match previous_type {
-        Some(type_name) => {
-            ctx.types.insert(ident.to_string(), type_name);
-        }
-        None => {
-            ctx.types.remove(ident);
-        }
-    }
-
-    result
-}
-
-fn compile_constant_for_statement<'i>(
-    ctx: &mut CompileStatementContext<'_, 'i>,
-    ident: &str,
-    start: i64,
-    end: i64,
-    max_iterations: usize,
-    body: &[Statement<'i>],
-) -> Result<(), CompilerError> {
-    for iteration in 0..max_iterations {
-        let value = start + iteration as i64;
-        if value >= end {
-            break;
-        }
-
-        ctx.env.insert(ident.to_string(), Expr::int(value));
-        compile_block(
-            body,
-            ctx.env,
-            ctx.assigned_names,
-            ctx.identifier_uses,
-            ctx.types,
-            ctx.stack_bindings,
-            ctx.builder,
-            ctx.options,
-            ctx.contract_fields,
-            ctx.contract_field_prefix_len,
-            ctx.contract_constants,
-            ctx.structs,
-            ctx.functions,
-            ctx.function_order,
-            ctx.function_index,
-            ctx.script_size,
-            true,
-        )?;
-    }
-
-    Ok(())
-}
-
-fn compile_runtime_for_statement<'i>(
-    ctx: &mut CompileStatementContext<'_, 'i>,
-    ident: &str,
-    start: Expr<'i>,
-    end: Expr<'i>,
-    max_iterations: usize,
-    body: &[Statement<'i>],
-) -> Result<(), CompilerError> {
-    let mut current = resolve_expr_for_runtime(start, ctx.env, ctx.types, &mut HashSet::new())?;
-    let mut current_const = eval_const_int(&current, ctx.contract_constants).ok();
-    for _ in 0..max_iterations {
-        let loop_value = current_const.map_or_else(|| current.clone(), Expr::int);
-        ctx.env.insert(ident.to_string(), loop_value.clone());
-
-        let condition = Expr::new(
-            ExprKind::Binary { op: BinaryOp::Lt, left: Box::new(Expr::identifier(ident)), right: Box::new(end.clone()) },
-            span::Span::default(),
-        );
-        compile_if_statement(ctx, &condition, body, None)?;
-
-        if let Some(value) = ctx.env.get(ident).and_then(|expr| eval_const_int(expr, ctx.contract_constants).ok()) {
-            let next_value = value + 1;
-            current_const = Some(next_value);
-            current = Expr::int(next_value);
-            continue;
-        }
-
-        let next = Expr::new(
-            ExprKind::Binary { op: BinaryOp::Add, left: Box::new(Expr::identifier(ident)), right: Box::new(Expr::int(1)) },
-            span::Span::default(),
-        );
-        current_const = None;
-        current = resolve_expr_for_runtime(next, ctx.env, ctx.types, &mut HashSet::new())?;
-    }
-
-    Ok(())
-}
-
 pub(crate) fn eval_const_int<'i>(expr: &Expr<'i>, constants: &HashMap<String, Expr<'i>>) -> Result<i64, CompilerError> {
     match &expr.kind {
         ExprKind::Int(value) => Ok(*value),
