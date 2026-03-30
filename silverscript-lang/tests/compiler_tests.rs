@@ -13,7 +13,7 @@ use kaspa_txscript::opcodes::codes::*;
 use kaspa_txscript::script_builder::ScriptBuilder;
 use kaspa_txscript::{
     EngineCtx, EngineFlags, SeqCommitAccessor, TxScriptEngine, parse_script, pay_to_address_script, pay_to_script_hash_script,
-    pay_to_script_hash_signature_script, serialize_i64,
+    pay_to_script_hash_signature_script, script_to_str, serialize_i64,
 };
 use silverscript_lang::ast::{Expr, ExprKind, format_contract_ast, parse_contract_ast};
 use silverscript_lang::compiler::{
@@ -3218,6 +3218,132 @@ fn compiles_int_array_push_to_expected_script() {
         .drain();
 
     assert_eq!(compiled.script, expected);
+}
+
+#[test]
+fn branchy_three_slot_splice_repro_matches_current_codegen_shape() {
+    let source = r#"
+        pragma silverscript ^0.1.0;
+
+        contract Repro(
+            byte[32] init_mux_template,
+            byte[288] init_route_templates,
+            byte[32] init_white_player,
+            byte[32] init_black_player,
+            byte[64] init_board,
+            int init_turn,
+            int init_status,
+            int init_move_timeout,
+            byte[4] init_castle_rights,
+            int init_en_passant_idx,
+            int init_pending_src_idx,
+            int init_pending_dst_idx,
+            int init_pending_promo,
+            int init_recent_castle,
+            int init_draw_state
+        ) {
+            byte[64] board = init_board;
+            int pending_src_idx = init_pending_src_idx;
+            int pending_dst_idx = init_pending_dst_idx;
+
+            entrypoint function apply() {
+                int from_idx = OpBin2Num(pending_src_idx);
+                int to_idx = OpBin2Num(pending_dst_idx);
+                byte[64] prev_board = board;
+                byte moving_piece = prev_board[from_idx];
+                byte arrived_piece = moving_piece;
+
+                int a = from_idx;
+                byte va = byte(0x00);
+                int b = to_idx;
+                byte vb = arrived_piece;
+                if (a > b) {
+                    a = to_idx;
+                    va = arrived_piece;
+                    b = from_idx;
+                    vb = byte(0x00);
+                }
+
+                int k_idx = 0;
+                byte vk = prev_board[0];
+                if (a == 0) {
+                    k_idx = 1;
+                    vk = prev_board[1];
+                    if (b == 1) {
+                        k_idx = 2;
+                        vk = prev_board[2];
+                    }
+                }
+
+                int x = a;
+                byte vx = va;
+                int y = b;
+                byte vy = vb;
+                int z = k_idx;
+                byte vz = vk;
+                if (k_idx < a) {
+                    x = k_idx;
+                    vx = vk;
+                    y = a;
+                    vy = va;
+                    z = b;
+                    vz = vb;
+                } else if (k_idx < b) {
+                    y = k_idx;
+                    vy = vk;
+                    z = b;
+                    vz = vb;
+                }
+
+                byte[] prev_dyn = byte[](prev_board);
+                byte[] prefix = prev_dyn.slice(0, x);
+                byte[] middle_xy = prev_dyn.slice(x + 1, y);
+                byte[] middle_yz = prev_dyn.slice(y + 1, z);
+                byte[] suffix = prev_dyn.slice(z + 1, 64);
+                byte[64] next_board = prefix + byte[1](vx) + middle_xy + byte[1](vy) + middle_yz + byte[1](vz) + suffix;
+
+                require(next_board[10] == 1);
+                require(next_board[20] == 2);
+                require(next_board[30] == 3);
+                require(next_board[40] == 0);
+            }
+        }
+    "#;
+    let args = vec![
+        Expr::bytes(vec![0x11u8; 32]),
+        Expr::bytes({
+            let mut route_templates = Vec::with_capacity(32 * 9);
+            for byte in 0x12u8..=0x1au8 {
+                route_templates.extend_from_slice(&[byte; 32]);
+            }
+            route_templates
+        }),
+        Expr::bytes(vec![0x21u8; 32]),
+        Expr::bytes(vec![0x22u8; 32]),
+        Expr::bytes(vec![0u8; 64]),
+        Expr::int(0),
+        Expr::int(0),
+        Expr::int(600),
+        Expr::bytes(vec![1u8; 4]),
+        Expr::int(-1),
+        Expr::int(12),
+        Expr::int(28),
+        Expr::int(0),
+        Expr::int(0),
+        Expr::int(3),
+    ];
+    let compiled = compile_contract(source, &args, CompileOptions::default()).expect("compile succeeds");
+    let asm = script_to_str(&compiled.script).expect("compiled script should stringify");
+
+    // This is a reduced repro for the chess pawn blowup on the current branch.
+    // On master, the same source compiles to 544 bytes / 83 OpPick / 24 OpSubstr.
+    // On the current branch it expands dramatically because the branch-mutated
+    // splice indices and replacement bytes feed a dynamic-byte splice that gets
+    // rebuilt into a much larger opcode shape.
+    assert_eq!(compiled.script.len(), 8642);
+    assert_eq!(asm.matches("OpPick").count(), 1320);
+    assert_eq!(asm.matches("OpSubstr").count(), 80);
+    assert_eq!(asm.matches("OpDup").count(), 68);
 }
 
 #[test]
