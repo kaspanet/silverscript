@@ -2853,10 +2853,7 @@ fn compiles_function_call_statement_elides_unused_return_expression() {
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
     let selector = selector_for(&compiled, "main");
-    assert!(
-        !compiled.script.contains(&OpAdd),
-        "unused inline return expressions should be elided entirely"
-    );
+    assert!(!compiled.script.contains(&OpAdd), "unused inline return expressions should be elided entirely");
     assert!(run_script_with_selector(compiled.script, selector).is_ok());
 }
 
@@ -3192,6 +3189,8 @@ fn compiles_int_array_push_to_expected_script() {
         .unwrap()
         .add_op(OpCat)
         .unwrap()
+        .add_op(OpDup)
+        .unwrap()
         .add_op(OpSize)
         .unwrap()
         .add_op(OpSwap)
@@ -3207,6 +3206,12 @@ fn compiles_int_array_push_to_expected_script() {
         .add_op(OpNumEqual)
         .unwrap()
         .add_op(OpVerify)
+        .unwrap()
+        .add_i64(0)
+        .unwrap()
+        .add_op(OpRoll)
+        .unwrap()
+        .add_op(OpDrop)
         .unwrap()
         .add_op(OpTrue)
         .unwrap()
@@ -3485,9 +3490,15 @@ fn compiles_bytes20_array_push_without_num2bin() {
     let expected = ScriptBuilder::new()
         .add_data(&[])
         .unwrap()
+        .add_op(OpDup)
+        .unwrap()
         .add_data(&value)
         .unwrap()
         .add_op(OpCat)
+        .unwrap()
+        .add_op(OpNip)
+        .unwrap()
+        .add_op(OpDup)
         .unwrap()
         .add_op(OpSize)
         .unwrap()
@@ -3504,6 +3515,12 @@ fn compiles_bytes20_array_push_without_num2bin() {
         .add_op(OpNumEqual)
         .unwrap()
         .add_op(OpVerify)
+        .unwrap()
+        .add_data(&[])
+        .unwrap()
+        .add_op(OpRoll)
+        .unwrap()
+        .add_op(OpDrop)
         .unwrap()
         .add_op(OpTrue)
         .unwrap()

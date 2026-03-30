@@ -1279,73 +1279,91 @@ fn compile_variable_definition_statement<'i>(
         type_name.clone()
     };
 
-    let is_fixed_size_array =
-        is_array_type(&effective_type_name) && array_size_with_constants(&effective_type_name, ctx.contract_constants).is_some();
-    let is_dynamic_array =
-        is_array_type(&effective_type_name) && array_size_with_constants(&effective_type_name, ctx.contract_constants).is_none();
-
-    if is_dynamic_array {
-        let is_byte_array_type = effective_type_name.starts_with("byte[") && effective_type_name.ends_with("[]");
-        let initial = match expr {
-            Some(Expr { kind: ExprKind::Identifier(other), .. }) => match ctx.types.get(other) {
-                Some(other_type) if is_type_assignable(other_type, &effective_type_name, ctx.contract_constants) => {
-                    Expr::new(ExprKind::Identifier(other.clone()), span::Span::default())
-                }
-                Some(_) => return Err(CompilerError::Unsupported("array assignment requires compatible array types".to_string())),
-                None => return Err(CompilerError::UndefinedIdentifier(other.clone())),
-            },
-            Some(e) if is_byte_array_type => e.clone(),
-            Some(e @ Expr { kind: ExprKind::Array(values), .. }) => {
-                if !array_literal_matches_type_with_env(values, &effective_type_name, ctx.types, ctx.contract_constants) {
-                    return Err(CompilerError::Unsupported("array initializer must be another array".to_string()));
-                }
-                resolve_expr(Expr::new(ExprKind::Array(values.clone()), e.span), ctx.env, &mut HashSet::new())?
-            }
-            Some(_) => return Err(CompilerError::Unsupported("array initializer must be another array".to_string())),
-            None => Expr::new(ExprKind::Array(Vec::new()), span::Span::default()),
-        };
-        ctx.env.insert(name.to_string(), initial);
-        ctx.types.insert(name.to_string(), effective_type_name);
-        return Ok(Vec::new());
-    }
-
-    if is_fixed_size_array {
-        let expr = expr.cloned().ok_or_else(|| CompilerError::Unsupported("variable definition requires initializer".to_string()))?;
-        if let ExprKind::Array(values) = &expr.kind {
-            if let Some(expected_size) = array_size_with_constants(&effective_type_name, ctx.contract_constants)
-                && values.len() != expected_size
-            {
-                return Err(CompilerError::Unsupported(format!(
-                    "array size mismatch: expected {} elements for type {}, got {}",
-                    expected_size,
-                    effective_type_name,
-                    values.len()
-                )));
-            }
-            if !array_literal_matches_type_with_env(values, &effective_type_name, ctx.types, ctx.contract_constants) {
-                return Err(CompilerError::Unsupported(format!("array element type mismatch for type {}", effective_type_name)));
-            }
+    let is_array = is_array_type(&effective_type_name);
+    if is_array {
+        validate_array_initializer(expr, &effective_type_name, ctx.types, ctx.contract_constants)?;
+        let initial = array_initializer_expr(expr, &effective_type_name, ctx.types, ctx.env, ctx.contract_constants)?;
+        if array_size_with_constants(&effective_type_name, ctx.contract_constants).is_none() {
+            return compile_runtime_variable_definition(ctx, name, effective_type_name, initial);
         }
 
-        let stored_expr =
-            if matches!(&expr.kind, ExprKind::Array(_)) { resolve_expr(expr, ctx.env, &mut HashSet::new())? } else { expr };
-        ctx.env.insert(name.to_string(), stored_expr);
         ctx.types.insert(name.to_string(), effective_type_name);
+        ctx.env.insert(name.to_string(), initial);
         return Ok(Vec::new());
     }
 
     let expr = expr.cloned().ok_or_else(|| CompilerError::Unsupported("variable definition requires initializer".to_string()))?;
     let expr = coerce_expr_for_declared_scalar_type(expr, &effective_type_name);
-    ctx.types.insert(name.to_string(), effective_type_name.clone());
-    let existing_is_predeclared_default = is_predeclared_scalar_default(name, &effective_type_name, ctx.env);
+    compile_runtime_variable_definition(ctx, name, effective_type_name, expr)
+}
 
+fn validate_array_initializer<'i>(
+    expr: Option<&Expr<'i>>,
+    type_name: &str,
+    types: &HashMap<String, String>,
+    contract_constants: &HashMap<String, Expr<'i>>,
+) -> Result<(), CompilerError> {
+    match expr {
+        Some(Expr { kind: ExprKind::Identifier(other), .. }) => match types.get(other) {
+            Some(other_type) if is_type_assignable(other_type, type_name, contract_constants) => Ok(()),
+            Some(_) => Err(CompilerError::Unsupported("array assignment requires compatible array types".to_string())),
+            None => Err(CompilerError::UndefinedIdentifier(other.clone())),
+        },
+        Some(Expr { kind: ExprKind::Array(values), .. }) => {
+            if let Some(expected_size) = array_size_with_constants(type_name, contract_constants)
+                && values.len() != expected_size
+            {
+                return Err(CompilerError::Unsupported(format!(
+                    "array size mismatch: expected {} elements for type {}, got {}",
+                    expected_size, type_name, values.len()
+                )));
+            }
+            if !array_literal_matches_type_with_env(values, type_name, types, contract_constants) {
+                return Err(CompilerError::Unsupported(format!("array element type mismatch for type {}", type_name)));
+            }
+            Ok(())
+        }
+        Some(_) => Ok(()),
+        None if array_size_with_constants(type_name, contract_constants).is_none() => Ok(()),
+        None => Err(CompilerError::Unsupported("variable definition requires initializer".to_string())),
+    }
+}
+
+fn array_initializer_expr<'i>(
+    expr: Option<&Expr<'i>>,
+    type_name: &str,
+    types: &HashMap<String, String>,
+    env: &HashMap<String, Expr<'i>>,
+    contract_constants: &HashMap<String, Expr<'i>>,
+) -> Result<Expr<'i>, CompilerError> {
+    match expr {
+        Some(Expr { kind: ExprKind::Identifier(other), .. }) => match types.get(other) {
+        Some(other_type) if is_type_assignable(other_type, type_name, contract_constants) => {
+                Ok(Expr::new(ExprKind::Identifier(other.clone()), span::Span::default()))
+            }
+            Some(_) => Err(CompilerError::Unsupported("array assignment requires compatible array types".to_string())),
+            None => Err(CompilerError::UndefinedIdentifier(other.clone())),
+        },
+        Some(expr @ Expr { kind: ExprKind::Array(_), .. }) => resolve_expr(expr.clone(), env, &mut HashSet::new()),
+        Some(expr) => resolve_expr(expr.clone(), env, &mut HashSet::new()),
+        None => Ok(Expr::new(ExprKind::Array(Vec::new()), span::Span::default())),
+    }
+}
+
+fn compile_runtime_variable_definition<'i>(
+    ctx: &mut CompileStatementContext<'_, 'i>,
+    name: &str,
+    type_name: String,
+    expr: Expr<'i>,
+) -> Result<Vec<String>, CompilerError> {
+    ctx.types.insert(name.to_string(), type_name.clone());
+    let existing_is_predeclared_default = is_predeclared_scalar_default(name, &type_name, ctx.env);
     let used_at_least_twice = ctx.identifier_uses.get(name).copied().unwrap_or(0) >= 2;
     let stack_for_reuse = used_at_least_twice && !ctx.assigned_names.contains(name);
     let stack_for_mutation = ctx.assigned_names.contains(name);
     if (stack_for_reuse || stack_for_mutation)
         && (!ctx.env.contains_key(name) || existing_is_predeclared_default)
         && !ctx.stack_bindings.contains(name)
-        && matches!(effective_type_name.as_str(), "int" | "bool" | "byte")
     {
         let mut stack_depth = 0i64;
         compile_expr(
@@ -1360,7 +1378,12 @@ fn compile_variable_definition_statement<'i>(
             ctx.script_size,
             ctx.contract_constants,
         )?;
-        ctx.env.insert(name.to_string(), expr);
+        let stored_expr = if is_array_type(&type_name) {
+            Expr::new(ExprKind::Identifier(name.to_string()), span::Span::default())
+        } else {
+            expr
+        };
+        ctx.env.insert(name.to_string(), stored_expr);
         ctx.stack_bindings.push_binding(name);
         Ok(vec![name.to_string()])
     } else {
@@ -1542,6 +1565,29 @@ fn compile_assign_statement<'i>(
 ) -> Result<Vec<String>, CompilerError> {
     if let Some(type_name) = ctx.types.get(name) {
         if ctx.stack_bindings.contains(name) {
+            if is_array_type(type_name) {
+                if let ExprKind::Binary { op: BinaryOp::Add, left, right } = &expr.kind {
+                    if matches!(&left.kind, ExprKind::Identifier(left_name) if left_name == name) {
+                        ctx.stack_bindings.emit_move_binding_to_top(name, ctx.builder)?;
+                        let mut stack_depth = 0i64;
+                        compile_expr(
+                            right,
+                            ctx.env,
+                            ctx.stack_bindings,
+                            ctx.types,
+                            ctx.builder,
+                            ctx.options,
+                            &mut HashSet::new(),
+                            &mut stack_depth,
+                            ctx.script_size,
+                            ctx.contract_constants,
+                        )?;
+                        ctx.builder.add_op(OpCat)?;
+                        ctx.env.insert(name.to_string(), Expr::new(ExprKind::Identifier(name.to_string()), span::Span::default()));
+                        return Ok(Vec::new());
+                    }
+                }
+            }
             let lowered_expr = coerce_expr_for_declared_scalar_type(expr.clone(), type_name);
             let mut stack_depth = 0i64;
             compile_expr(
@@ -1557,29 +1603,15 @@ fn compile_assign_statement<'i>(
                 ctx.contract_constants,
             )?;
             ctx.stack_bindings.emit_update_stack_for_rebinding(name, ctx.builder)?;
-            let updated =
-                if let Some(previous) = ctx.env.get(name) { replace_identifier(&lowered_expr, name, previous) } else { lowered_expr };
-            let resolved = resolve_expr_for_runtime(updated, ctx.env, ctx.types, &mut HashSet::new())?;
-            ctx.env.insert(name.to_string(), resolved);
-            return Ok(Vec::new());
-        }
-
-        if is_array_type(type_name) {
-            match &expr.kind {
-                ExprKind::Identifier(other) => match ctx.types.get(other) {
-                    Some(other_type) if is_type_assignable(other_type, type_name, ctx.contract_constants) => {
-                        ctx.env.insert(name.to_string(), Expr::new(ExprKind::Identifier(other.clone()), span::Span::default()));
-                        return Ok(Vec::new());
-                    }
-                    Some(_) => return Err(CompilerError::Unsupported("array assignment requires compatible array types".to_string())),
-                    None => return Err(CompilerError::UndefinedIdentifier(other.clone())),
-                },
-                _ => {
-                    let resolved = resolve_expr(expr.clone(), ctx.env, &mut HashSet::new())?;
-                    ctx.env.insert(name.to_string(), resolved);
-                    return Ok(Vec::new());
-                }
+            if is_array_type(type_name) {
+                ctx.env.insert(name.to_string(), Expr::new(ExprKind::Identifier(name.to_string()), span::Span::default()));
+            } else {
+                let updated =
+                    if let Some(previous) = ctx.env.get(name) { replace_identifier(&lowered_expr, name, previous) } else { lowered_expr };
+                let resolved = resolve_expr_for_runtime(updated, ctx.env, ctx.types, &mut HashSet::new())?;
+                ctx.env.insert(name.to_string(), resolved);
             }
+            return Ok(Vec::new());
         }
 
         let lowered_expr = coerce_expr_for_declared_scalar_type(expr.clone(), type_name);
@@ -2924,6 +2956,9 @@ fn resolve_expr<'i>(
     match kind {
         ExprKind::Identifier(name) => {
             if let Some(value) = env.get(&name) {
+                if matches!(&value.kind, ExprKind::Identifier(inner) if inner == &name) {
+                    return Ok(Expr::new(ExprKind::Identifier(name), span));
+                }
                 if !visiting.insert(name.clone()) {
                     return Err(CompilerError::CyclicIdentifier(name));
                 }
@@ -3821,20 +3856,9 @@ fn compile_array_index_expr<'i>(
         Expr { kind: ExprKind::Identifier(_), .. } => source.clone(),
         _ => resolve_expr(source.clone(), ctx.scope.env, ctx.visiting)?,
     };
-    let element_type = match &resolved_source.kind {
-        ExprKind::Identifier(name) => {
-            let type_name = ctx.scope.types.get(name).or_else(|| {
-                ctx.scope.env.get(name).and_then(|value| match &value.kind {
-                    ExprKind::Identifier(inner) => ctx.scope.types.get(inner),
-                    _ => None,
-                })
-            });
-            type_name
-                .and_then(|t| array_element_type(t))
-                .ok_or_else(|| CompilerError::Unsupported(format!("array index requires array identifier: {name}")))?
-        }
-        _ => return Err(CompilerError::Unsupported("array index requires array identifier".to_string())),
-    };
+    let source_type = infer_debug_expr_value_type(&resolved_source, ctx.scope.env, ctx.scope.types, &mut HashSet::new())?;
+    let element_type = array_element_type(&source_type)
+        .ok_or_else(|| CompilerError::Unsupported(format!("array index requires array source, got {source_type}")))?;
     let element_size = fixed_type_size(&element_type)
         .ok_or_else(|| CompilerError::Unsupported("array element type must have known size".to_string()))?;
     compile_expr_with_context(ctx, &resolved_source)?;

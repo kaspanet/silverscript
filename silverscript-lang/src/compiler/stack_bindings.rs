@@ -220,6 +220,16 @@ impl StackBindings {
         Ok(())
     }
 
+    /// Moves an existing binding to the runtime stack top and updates the
+    /// binding model to match. This is useful for in-place updates where the
+    /// old bound value is about to be consumed to compute the new one.
+    pub(crate) fn emit_move_binding_to_top(&mut self, name: &str, builder: &mut ScriptBuilder) -> Result<(), CompilerError> {
+        let depth = self.depth(name).expect("binding should exist before moving to top");
+        builder.roll_from_depth(depth)?;
+        self.move_binding_to_top(name);
+        Ok(())
+    }
+
     /// Emits a copy of the named binding onto the runtime stack top.
     ///
     /// `stack_depth` accounts for transient values already pushed above the
