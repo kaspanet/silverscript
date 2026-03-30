@@ -1355,14 +1355,13 @@ fn compile_runtime_variable_definition<'i>(
         return Ok(vec![name.to_string()]);
     }
 
-    let existing_is_predeclared_default = is_predeclared_scalar_default(name, &type_name, ctx.env);
     let used_at_least_twice = ctx.identifier_uses.get(name).copied().unwrap_or(0) >= 2;
     let stack_for_reuse = used_at_least_twice && !ctx.assigned_names.contains(name);
     let stack_for_identifier_alias =
         matches!(&expr.kind, ExprKind::Identifier(other) if ctx.stack_bindings.contains(other) && !ctx.assigned_names.contains(name));
     let stack_for_mutation = ctx.assigned_names.contains(name);
     if (stack_for_reuse || stack_for_identifier_alias || stack_for_mutation)
-        && (!ctx.env.contains_key(name) || existing_is_predeclared_default)
+        && !ctx.env.contains_key(name)
         && !ctx.stack_bindings.contains(name)
     {
         let mut stack_depth = 0i64;
@@ -2518,13 +2517,11 @@ fn compile_if_statement<'i>(
     )?;
     ctx.builder.add_op(OpIf)?;
 
-    let original_env = ctx.env.clone();
     let original_stack_bindings = ctx.stack_bindings.clone();
 
-    let mut then_env = original_env.clone();
+    let mut then_env = ctx.env.clone();
     let mut then_types = ctx.types.clone();
     let mut then_stack_bindings = original_stack_bindings.clone();
-    predeclare_if_branch_locals(then_branch, &mut then_env, &mut then_types)?;
     compile_block(
         then_branch,
         &mut then_env,
@@ -2545,12 +2542,11 @@ fn compile_if_statement<'i>(
         true,
     )?;
 
-    let mut else_env = original_env.clone();
+    let mut else_env = ctx.env.clone();
     if let Some(else_branch) = else_branch {
         ctx.builder.add_op(OpElse)?;
         let mut else_types = ctx.types.clone();
         let mut else_stack_bindings = original_stack_bindings.clone();
-        predeclare_if_branch_locals(else_branch, &mut else_env, &mut else_types)?;
         compile_block(
             else_branch,
             &mut else_env,
@@ -2578,92 +2574,6 @@ fn compile_if_statement<'i>(
     }
 
     ctx.builder.add_op(OpEndIf)?;
-
-    let resolved_condition = resolve_expr_for_runtime(condition, &original_env, ctx.types, &mut HashSet::new())?;
-    merge_env_after_if(ctx.env, &original_env, &then_env, &else_env, &resolved_condition);
-    Ok(())
-}
-
-fn merge_env_after_if<'i>(
-    env: &mut HashMap<String, Expr<'i>>,
-    original_env: &HashMap<String, Expr<'i>>,
-    then_env: &HashMap<String, Expr<'i>>,
-    else_env: &HashMap<String, Expr<'i>>,
-    condition: &Expr<'i>,
-) {
-    for (name, original_expr) in original_env {
-        let then_expr = then_env.get(name).unwrap_or(original_expr);
-        let else_expr = else_env.get(name).unwrap_or(original_expr);
-
-        if then_expr == else_expr {
-            env.insert(name.clone(), then_expr.clone());
-        } else {
-            env.insert(
-                name.clone(),
-                Expr::new(
-                    ExprKind::IfElse {
-                        condition: Box::new(condition.clone()),
-                        then_expr: Box::new(then_expr.clone()),
-                        else_expr: Box::new(else_expr.clone()),
-                    },
-                    span::Span::default(),
-                ),
-            );
-        }
-    }
-}
-
-fn default_scalar_expr(type_name: &str) -> Option<Expr<'static>> {
-    match type_name {
-        "int" => Some(Expr::int(0)),
-        "bool" => Some(Expr::new(ExprKind::Bool(false), span::Span::default())),
-        "byte" => Some(Expr::new(ExprKind::Byte(0), span::Span::default())),
-        _ => None,
-    }
-}
-
-fn is_predeclared_scalar_default<'i>(name: &str, type_name: &str, env: &HashMap<String, Expr<'i>>) -> bool {
-    matches!(
-        (type_name, env.get(name).map(|expr| &expr.kind)),
-        ("int", Some(ExprKind::Int(0))) | ("bool", Some(ExprKind::Bool(false))) | ("byte", Some(ExprKind::Byte(0)))
-    )
-}
-
-fn predeclare_if_branch_locals<'i>(
-    statements: &[Statement<'i>],
-    env: &mut HashMap<String, Expr<'i>>,
-    types: &mut HashMap<String, String>,
-) -> Result<(), CompilerError> {
-    for stmt in statements {
-        match stmt {
-            Statement::VariableDefinition { type_ref, name, .. } => {
-                if types.contains_key(name) {
-                    continue;
-                }
-                let type_name = type_name_from_ref(type_ref);
-                let Some(default_expr) = default_scalar_expr(&type_name) else {
-                    continue;
-                };
-                types.insert(name.clone(), type_name);
-                env.insert(name.clone(), default_expr);
-            }
-            Statement::FunctionCallAssign { bindings, .. } => {
-                for binding in bindings {
-                    if types.contains_key(&binding.name) {
-                        continue;
-                    }
-                    let type_name = type_name_from_ref(&binding.type_ref);
-                    let Some(default_expr) = default_scalar_expr(&type_name) else {
-                        continue;
-                    };
-                    types.insert(binding.name.clone(), type_name);
-                    env.insert(binding.name.clone(), default_expr);
-                }
-            }
-            _ => {}
-        }
-    }
-
     Ok(())
 }
 
