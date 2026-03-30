@@ -14,6 +14,7 @@ use crate::span;
 mod covenant_declarations;
 mod compile;
 mod debug_value_types;
+mod inline_functions;
 mod stack_bindings;
 mod structs;
 mod type_check;

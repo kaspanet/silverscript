@@ -1,5 +1,6 @@
 use super::covenant_declarations::lower_covenant_declarations;
 use super::debug_value_types::infer_debug_expr_value_type;
+use super::inline_functions::lower_inline_functions;
 use super::stack_bindings::StackBindings;
 use super::*;
 use kaspa_txscript::opcodes::codes::*;
@@ -94,8 +95,9 @@ pub(super) fn compile_contract_impl<'i>(
     }
 
     let covenant_lowered_contract = lower_covenant_declarations(contract, &constants)?;
-    let structs = build_struct_registry(&covenant_lowered_contract)?;
-    let lowered_contract = lower_structs_contract(&covenant_lowered_contract, &structs, &constants)?;
+    let inline_lowered_contract = lower_inline_functions(&covenant_lowered_contract)?;
+    let structs = build_struct_registry(&inline_lowered_contract)?;
+    let lowered_contract = lower_structs_contract(&inline_lowered_contract, &structs, &constants)?;
     let mut lowered_constants = flatten_constructor_args_env(&covenant_lowered_contract.params, constructor_args, &structs)?;
     lowered_constants.extend(lowered_contract.constants.iter().map(|constant| (constant.name.clone(), constant.expr.clone())));
 
@@ -106,9 +108,13 @@ pub(super) fn compile_contract_impl<'i>(
 
     let without_selector = entrypoint_functions.len() == 1;
 
-    let functions_map = lowered_contract.functions.iter().cloned().map(|func| (func.name.clone(), func)).collect::<HashMap<_, _>>();
-    let function_order =
-        lowered_contract.functions.iter().enumerate().map(|(index, func)| (func.name.clone(), index)).collect::<HashMap<_, _>>();
+    let functions_map = covenant_lowered_contract.functions.iter().cloned().map(|func| (func.name.clone(), func)).collect::<HashMap<_, _>>();
+    let function_order = covenant_lowered_contract
+        .functions
+        .iter()
+        .enumerate()
+        .map(|(index, func)| (func.name.clone(), index))
+        .collect::<HashMap<_, _>>();
     let function_abi_entries = build_function_abi_entries(&covenant_lowered_contract);
     let uses_script_size = contract_uses_script_size(&lowered_contract);
 
@@ -122,11 +128,15 @@ pub(super) fn compile_contract_impl<'i>(
         let contract_field_prefix_len = selector_prefix_len + field_prolog_script.len();
         let state_layout = CompiledStateLayout { start: selector_prefix_len, len: field_prolog_script.len() };
         let mut compiled_entrypoints = Vec::new();
-        for (index, func) in lowered_contract.functions.iter().enumerate() {
+        for func in &lowered_contract.functions {
             if func.entrypoint {
+                let function_index = function_order
+                    .get(&func.name)
+                    .copied()
+                    .ok_or_else(|| CompilerError::Unsupported(format!("function '{}' not found", func.name)))?;
                 compiled_entrypoints.push(compile_entrypoint_function(
                     func,
-                    index,
+                    function_index,
                     &lowered_contract.params,
                     &lowered_contract.fields,
                     &lowered_contract.constants,

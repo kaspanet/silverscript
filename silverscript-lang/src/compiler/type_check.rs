@@ -802,6 +802,11 @@ fn validate_internal_call<'i>(
     }
 
     for (param, arg) in function.params.iter().zip(args.iter()) {
+        if matches!(&arg.kind, ExprKind::Call { name, .. } if name == "readInputStateWithTemplate") {
+            return Err(CompilerError::Unsupported(
+                "readInputStateWithTemplate must be assigned to a struct variable or destructured directly".to_string(),
+            ));
+        }
         let param_type_name = type_name_from_ref(&param.type_ref);
         validate_expr_assignable_to_type(arg, &param.type_ref, types, structs, constants, contract_fields)
             .map_err(|err| {
