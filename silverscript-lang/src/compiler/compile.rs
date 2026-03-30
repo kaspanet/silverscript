@@ -1282,11 +1282,10 @@ fn compile_variable_definition_statement<'i>(
     let is_array = is_array_type(&effective_type_name);
     if is_array {
         validate_array_initializer(expr, &effective_type_name, ctx.types, ctx.contract_constants)?;
-        let initial = array_initializer_expr(expr, &effective_type_name, ctx.types, ctx.env, ctx.contract_constants)?;
-        if array_size_with_constants(&effective_type_name, ctx.contract_constants).is_none() {
+        let initial = array_initializer_expr(expr, &effective_type_name, ctx.types, ctx.contract_constants)?;
+        if ctx.assigned_names.contains(name) {
             return compile_runtime_variable_definition(ctx, name, effective_type_name, initial);
         }
-
         ctx.types.insert(name.to_string(), effective_type_name);
         ctx.env.insert(name.to_string(), initial);
         return Ok(Vec::new());
@@ -1333,7 +1332,6 @@ fn array_initializer_expr<'i>(
     expr: Option<&Expr<'i>>,
     type_name: &str,
     types: &HashMap<String, String>,
-    env: &HashMap<String, Expr<'i>>,
     contract_constants: &HashMap<String, Expr<'i>>,
 ) -> Result<Expr<'i>, CompilerError> {
     match expr {
@@ -1344,8 +1342,7 @@ fn array_initializer_expr<'i>(
             Some(_) => Err(CompilerError::Unsupported("array assignment requires compatible array types".to_string())),
             None => Err(CompilerError::UndefinedIdentifier(other.clone())),
         },
-        Some(expr @ Expr { kind: ExprKind::Array(_), .. }) => resolve_expr(expr.clone(), env, &mut HashSet::new()),
-        Some(expr) => resolve_expr(expr.clone(), env, &mut HashSet::new()),
+        Some(expr) => Ok(expr.clone()),
         None => Ok(Expr::new(ExprKind::Array(Vec::new()), span::Span::default())),
     }
 }
@@ -1357,6 +1354,28 @@ fn compile_runtime_variable_definition<'i>(
     expr: Expr<'i>,
 ) -> Result<Vec<String>, CompilerError> {
     ctx.types.insert(name.to_string(), type_name.clone());
+    if is_array_type(&type_name) {
+        if ctx.stack_bindings.contains(name) {
+            return Err(CompilerError::Unsupported(format!("variable '{}' is already defined", name)));
+        }
+
+        let mut stack_depth = 0i64;
+        compile_expr(
+            &expr,
+            ctx.env,
+            ctx.stack_bindings,
+            ctx.types,
+            ctx.builder,
+            ctx.options,
+            &mut HashSet::new(),
+            &mut stack_depth,
+            ctx.script_size,
+            ctx.contract_constants,
+        )?;
+        ctx.stack_bindings.push_binding(name);
+        return Ok(vec![name.to_string()]);
+    }
+
     let existing_is_predeclared_default = is_predeclared_scalar_default(name, &type_name, ctx.env);
     let used_at_least_twice = ctx.identifier_uses.get(name).copied().unwrap_or(0) >= 2;
     let stack_for_reuse = used_at_least_twice && !ctx.assigned_names.contains(name);
@@ -1533,8 +1552,7 @@ fn compile_state_function_call_assign_statement<'i>(
             ctx.script_size,
             ctx.contract_constants,
             ctx.structs,
-        )
-        .map(|_| Vec::new());
+        );
     }
     Err(CompilerError::Unsupported(format!(
         "state destructuring assignment is only supported for readInputState()/readInputStateWithTemplate(), got '{}()'",
@@ -1565,29 +1583,6 @@ fn compile_assign_statement<'i>(
 ) -> Result<Vec<String>, CompilerError> {
     if let Some(type_name) = ctx.types.get(name) {
         if ctx.stack_bindings.contains(name) {
-            if is_array_type(type_name) {
-                if let ExprKind::Binary { op: BinaryOp::Add, left, right } = &expr.kind {
-                    if matches!(&left.kind, ExprKind::Identifier(left_name) if left_name == name) {
-                        ctx.stack_bindings.emit_move_binding_to_top(name, ctx.builder)?;
-                        let mut stack_depth = 0i64;
-                        compile_expr(
-                            right,
-                            ctx.env,
-                            ctx.stack_bindings,
-                            ctx.types,
-                            ctx.builder,
-                            ctx.options,
-                            &mut HashSet::new(),
-                            &mut stack_depth,
-                            ctx.script_size,
-                            ctx.contract_constants,
-                        )?;
-                        ctx.builder.add_op(OpCat)?;
-                        ctx.env.insert(name.to_string(), Expr::new(ExprKind::Identifier(name.to_string()), span::Span::default()));
-                        return Ok(Vec::new());
-                    }
-                }
-            }
             let lowered_expr = coerce_expr_for_declared_scalar_type(expr.clone(), type_name);
             let mut stack_depth = 0i64;
             compile_expr(
@@ -1603,15 +1598,20 @@ fn compile_assign_statement<'i>(
                 ctx.contract_constants,
             )?;
             ctx.stack_bindings.emit_update_stack_for_rebinding(name, ctx.builder)?;
-            if is_array_type(type_name) {
-                ctx.env.insert(name.to_string(), Expr::new(ExprKind::Identifier(name.to_string()), span::Span::default()));
-            } else {
+            if !is_array_type(type_name) {
                 let updated =
                     if let Some(previous) = ctx.env.get(name) { replace_identifier(&lowered_expr, name, previous) } else { lowered_expr };
                 let resolved = resolve_expr_for_runtime(updated, ctx.env, ctx.types, &mut HashSet::new())?;
                 ctx.env.insert(name.to_string(), resolved);
             }
             return Ok(Vec::new());
+        }
+
+        if is_array_type(type_name) {
+            return Err(CompilerError::Unsupported(format!(
+                "array variable '{}' must be stack-bound before reassignment",
+                name
+            )));
         }
 
         let lowered_expr = coerce_expr_for_declared_scalar_type(expr.clone(), type_name);
@@ -1759,7 +1759,7 @@ fn compile_read_input_state_statement<'i>(
     name: &str,
     args: &[Expr<'i>],
     env: &mut HashMap<String, Expr<'i>>,
-    stack_bindings: &StackBindings,
+    stack_bindings: &mut StackBindings,
     types: &mut HashMap<String, String>,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
@@ -1768,7 +1768,8 @@ fn compile_read_input_state_statement<'i>(
     script_size: Option<i64>,
     contract_constants: &HashMap<String, Expr<'i>>,
     structs: &StructRegistry,
-) -> Result<(), CompilerError> {
+) -> Result<Vec<String>, CompilerError> {
+    let added_stack_locals = Vec::new();
     let mut bindings_by_field: HashMap<&str, &StateBindingAst<'i>> = HashMap::new();
     for binding in bindings {
         if bindings_by_field.insert(binding.field_name.as_str(), binding).is_some() {
@@ -1820,13 +1821,13 @@ fn compile_read_input_state_statement<'i>(
                     script_size_value,
                     contract_constants,
                 )?;
-                env.insert(binding.name.clone(), binding_expr);
                 types.insert(binding.name.clone(), binding_type);
+                env.insert(binding.name.clone(), binding_expr);
 
                 field_chunk_offset += encoded_field_chunk_size(field, contract_constants)?;
             }
 
-            Ok(())
+            Ok(added_stack_locals)
         }
         "readInputStateWithTemplate" => {
             let Ok([input_idx, template_prefix_len, template_suffix_len, _expected_template_hash]): Result<&[Expr<'i>; 4], _> =
@@ -1891,13 +1892,13 @@ fn compile_read_input_state_statement<'i>(
                     contract_constants,
                     "readInputStateWithTemplate",
                 )?;
-                env.insert(binding.name.clone(), binding_expr);
                 types.insert(binding.name.clone(), binding_type);
+                env.insert(binding.name.clone(), binding_expr);
 
                 field_chunk_offset += encoded_field_chunk_size_for_type_ref(&field.type_ref, contract_constants)?;
             }
 
-            Ok(())
+            Ok(added_stack_locals)
         }
         _ => Err(CompilerError::Unsupported(format!(
             "state destructuring assignment is only supported for readInputState()/readInputStateWithTemplate(), got '{}()'",
@@ -3553,11 +3554,12 @@ fn compile_identifier_expr<'i>(ctx: &mut CompileExprContext<'_, 'i>, name: &str)
         if let Some(type_name) = ctx.scope.types.get(name) {
             if let ExprKind::Array(values) = &resolved_expr.kind {
                 if is_array_type(type_name) {
-                    let encoded = encode_array_literal(values, type_name)?;
-                    ctx.builder.add_data(&encoded)?;
-                    *ctx.stack_depth += 1;
-                    ctx.visiting.remove(name);
-                    return Ok(());
+                    if let Ok(encoded) = encode_array_literal(values, type_name) {
+                        ctx.builder.add_data(&encoded)?;
+                        *ctx.stack_depth += 1;
+                        ctx.visiting.remove(name);
+                        return Ok(());
+                    }
                 }
             }
         }
