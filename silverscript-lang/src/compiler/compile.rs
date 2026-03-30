@@ -1,5 +1,6 @@
 use super::covenant_declarations::lower_covenant_declarations;
 use super::debug_value_types::infer_debug_expr_value_type;
+use super::infer_array::lower_inferred_array_sizes;
 use super::inline_functions::lower_inline_functions;
 use super::stack_bindings::StackBindings;
 use super::*;
@@ -97,7 +98,8 @@ pub(super) fn compile_contract_impl<'i>(
     let covenant_lowered_contract = lower_covenant_declarations(contract, &constants)?;
     let inline_lowered_contract = lower_inline_functions(&covenant_lowered_contract)?;
     let structs = build_struct_registry(&inline_lowered_contract)?;
-    let lowered_contract = lower_structs_contract(&inline_lowered_contract, &structs, &constants)?;
+    let struct_lowered_contract = lower_structs_contract(&inline_lowered_contract, &structs, &constants)?;
+    let lowered_contract = lower_inferred_array_sizes(&struct_lowered_contract, &constants)?;
     let mut lowered_constants = flatten_constructor_args_env(&covenant_lowered_contract.params, constructor_args, &structs)?;
     lowered_constants.extend(lowered_contract.constants.iter().map(|constant| (constant.name.clone(), constant.expr.clone())));
 
@@ -431,7 +433,7 @@ fn comparison_types_compatible(left_type: &TypeRef, right_type: &TypeRef) -> boo
     )
 }
 
-fn array_literal_matches_type_with_env_ref<'i>(
+pub(super) fn array_literal_matches_type_with_env_ref<'i>(
     values: &[Expr<'i>],
     type_ref: &TypeRef,
     types: &HashMap<String, String>,
