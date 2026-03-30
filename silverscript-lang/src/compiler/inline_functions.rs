@@ -239,17 +239,13 @@ impl<'i> Inliner<'i> {
                 self.predeclare_branch_bindings(then_branch, &mut then_scope);
                 let lowered_then = self.lower_block(then_branch, &mut then_scope, function_index)?;
 
-                let (lowered_else, merged_scope) = if let Some(else_branch) = else_branch {
+                let lowered_else = if let Some(else_branch) = else_branch {
                     let mut else_scope = scope.clone();
                     self.predeclare_branch_bindings(else_branch, &mut else_scope);
-                    let lowered_else = self.lower_block(else_branch, &mut else_scope, function_index)?;
-                    let mut merged_scope = then_scope;
-                    merged_scope.extend(else_scope);
-                    (Some(lowered_else), merged_scope)
+                    Some(self.lower_block(else_branch, &mut else_scope, function_index)?)
                 } else {
-                    (None, then_scope)
+                    None
                 };
-                *scope = merged_scope;
                 vec![Statement::If {
                     condition: renamed_condition,
                     then_branch: lowered_then,

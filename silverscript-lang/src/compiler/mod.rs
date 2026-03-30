@@ -18,8 +18,8 @@ mod debug_value_types;
 mod infer_array;
 mod inline_functions;
 mod stack_bindings;
+mod static_check;
 mod structs;
-mod type_check;
 
 pub use compile::{compile_debug_expr, function_branch_index};
 use compile::compile_contract_impl;
@@ -33,7 +33,7 @@ pub(super) use structs::{
     struct_array_name_from_type_ref, struct_name_from_type_ref, validate_struct_graph,
 };
 use array_push::lower_array_pushes;
-use type_check::{type_check_contract, value_matches_type_ref};
+use static_check::{static_check_contract, value_matches_type_ref};
 
 /// Prefix used for synthetic argument bindings during inline function expansion.
 pub const SYNTHETIC_ARG_PREFIX: &str = "__arg";
@@ -101,7 +101,7 @@ pub fn compile_contract<'i>(
     options: CompileOptions,
 ) -> Result<CompiledContract<'i>, CompilerError> {
     let contract = parse_contract_ast(source)?;
-    type_check_contract(&contract, constructor_args, options)?;
+    static_check_contract(&contract, constructor_args, options)?;
     compile_contract_impl(&contract, constructor_args, options, Some(source))
 }
 
@@ -110,7 +110,7 @@ pub fn compile_contract_ast<'i>(
     constructor_args: &[Expr<'i>],
     options: CompileOptions,
 ) -> Result<CompiledContract<'i>, CompilerError> {
-    type_check_contract(contract, constructor_args, options)?;
+    static_check_contract(contract, constructor_args, options)?;
     compile_contract_impl(contract, constructor_args, options, None)
 }
 

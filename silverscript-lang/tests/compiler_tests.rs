@@ -8114,8 +8114,9 @@ fn inline_function_argument_expression_is_stored_once_and_reused() {
     assert!(result_err.is_err(), "stored inline argument should still enforce the second require");
 }
 
+// TODO: Optimize it so in require(z > 1) it'll pick y from the stack, without adding an extra variable.
 #[test]
-fn inline_argument_alias_does_not_store_param_in_addition_to_reused_local() {
+fn inline_argument_alias_snapshots_reused_local_per_call() {
     let source = r#"
         contract InlineAliasReuse() {
             function f(int z) {
@@ -8145,8 +8146,10 @@ fn inline_argument_alias_does_not_store_param_in_addition_to_reused_local() {
         .unwrap()
         .add_op(OpMul)
         .unwrap()
-        // Inline `f(y)`: there is no explicit store for callee param `z`.
-        // We just read the already-stored `y` slot, proving `z` is only an alias.
+        // Inline `f(y)`: snapshot `y` into a dedicated alias slot for the
+        // inlined callee.
+        .add_op(OpDup)
+        .unwrap()
         .add_op(OpDup)
         .unwrap()
         .add_i64(1)
@@ -8155,7 +8158,9 @@ fn inline_argument_alias_does_not_store_param_in_addition_to_reused_local() {
         .unwrap()
         .add_op(OpVerify)
         .unwrap()
-        // Inline `g(y)`: same again, read `y` directly instead of storing `z`.
+        // Inline `g(y)`: snapshot `y` again for the second inlined call.
+        .add_op(OpOver)
+        .unwrap()
         .add_op(OpDup)
         .unwrap()
         .add_i64(10)
@@ -8164,7 +8169,19 @@ fn inline_argument_alias_does_not_store_param_in_addition_to_reused_local() {
         .unwrap()
         .add_op(OpVerify)
         .unwrap()
-        // Drop the reused local `y`, then drop the original entrypoint param `x`.
+        // Drop the second alias, the first alias, the reused local `y`, then `x`.
+        .add_i64(0)
+        .unwrap()
+        .add_op(OpRoll)
+        .unwrap()
+        .add_op(OpDrop)
+        .unwrap()
+        .add_i64(0)
+        .unwrap()
+        .add_op(OpRoll)
+        .unwrap()
+        .add_op(OpDrop)
+        .unwrap()
         .add_i64(0)
         .unwrap()
         .add_op(OpRoll)
@@ -8180,8 +8197,8 @@ fn inline_argument_alias_does_not_store_param_in_addition_to_reused_local() {
     let expected = wrap_with_dispatch(body, selector);
 
     assert_eq!(compiled.script, expected);
-    assert_eq!(compiled.script.iter().copied().filter(|op| *op == OpDup).count(), 3);
-    assert_eq!(compiled.script.iter().copied().filter(|op| *op == OpOver).count(), 1);
+    assert_eq!(compiled.script.iter().copied().filter(|op| *op == OpDup).count(), 4);
+    assert_eq!(compiled.script.iter().copied().filter(|op| *op == OpOver).count(), 2);
     assert_eq!(compiled.script.iter().copied().filter(|op| *op == OpPick).count(), 0);
     assert_eq!(compiled.script.iter().copied().filter(|op| *op == OpMul).count(), 1);
 
@@ -8195,7 +8212,7 @@ fn inline_argument_alias_does_not_store_param_in_addition_to_reused_local() {
 }
 
 #[test]
-fn inline_argument_alias_reuses_entrypoint_param_without_extra_stack_storage() {
+fn inline_argument_alias_snapshots_entrypoint_param_once_per_inlined_call() {
     let source = r#"
         contract InlineParamAliasReuse() {
             function f(int z) {
@@ -8217,8 +8234,9 @@ fn inline_argument_alias_reuses_entrypoint_param_without_extra_stack_storage() {
     let selector = selector_for(&compiled, "main");
 
     let body = ScriptBuilder::new()
-        // Inline `f(y)`: `y` is already the entrypoint param on stack, so `z`
-        // is only an alias and we simply read that slot.
+        // Inline `f(y)`: snapshot the entrypoint param into a dedicated alias.
+        .add_op(OpDup)
+        .unwrap()
         .add_op(OpDup)
         .unwrap()
         .add_i64(1)
@@ -8227,7 +8245,9 @@ fn inline_argument_alias_reuses_entrypoint_param_without_extra_stack_storage() {
         .unwrap()
         .add_op(OpVerify)
         .unwrap()
-        // Inline `g(y)`: same aliasing behavior, still no explicit store for `z`.
+        // Inline `g(y)`: snapshot `y` again for the second inlined call.
+        .add_op(OpOver)
+        .unwrap()
         .add_op(OpDup)
         .unwrap()
         .add_i64(10)
@@ -8236,7 +8256,19 @@ fn inline_argument_alias_reuses_entrypoint_param_without_extra_stack_storage() {
         .unwrap()
         .add_op(OpVerify)
         .unwrap()
-        // Only the original entrypoint param `y` remains to clean up.
+        // Drop the second alias, the first alias, then the original `y`.
+        .add_i64(0)
+        .unwrap()
+        .add_op(OpRoll)
+        .unwrap()
+        .add_op(OpDrop)
+        .unwrap()
+        .add_i64(0)
+        .unwrap()
+        .add_op(OpRoll)
+        .unwrap()
+        .add_op(OpDrop)
+        .unwrap()
         .add_op(OpDrop)
         .unwrap()
         .add_op(OpTrue)
@@ -8246,10 +8278,10 @@ fn inline_argument_alias_reuses_entrypoint_param_without_extra_stack_storage() {
     let expected = wrap_with_dispatch(body, selector);
 
     assert_eq!(compiled.script, expected);
-    assert_eq!(compiled.script.iter().copied().filter(|op| *op == OpDup).count(), 2);
-    assert_eq!(compiled.script.iter().copied().filter(|op| *op == OpOver).count(), 0);
+    assert_eq!(compiled.script.iter().copied().filter(|op| *op == OpDup).count(), 3);
+    assert_eq!(compiled.script.iter().copied().filter(|op| *op == OpOver).count(), 1);
     assert_eq!(compiled.script.iter().copied().filter(|op| *op == OpPick).count(), 0);
-    assert_eq!(compiled.script.iter().copied().filter(|op| *op == OpDrop).count(), 1);
+    assert_eq!(compiled.script.iter().copied().filter(|op| *op == OpDrop).count(), 3);
 
     let sigscript_ok = compiled.build_sig_script("main", vec![Expr::int(2)]).expect("sigscript builds");
     let result_ok = run_script_with_sigscript(compiled.script.clone(), sigscript_ok);
@@ -8261,7 +8293,7 @@ fn inline_argument_alias_reuses_entrypoint_param_without_extra_stack_storage() {
 }
 
 #[test]
-fn local_alias_reuses_existing_stack_slot_without_explicit_store() {
+fn local_alias_snapshots_existing_stack_value_once() {
     let source = r#"
         contract LocalAliasReuse() {
             entrypoint function main(int x) {
@@ -8293,8 +8325,9 @@ fn local_alias_reuses_existing_stack_slot_without_explicit_store() {
         .unwrap()
         .add_op(OpVerify)
         .unwrap()
-        // `int z = y` does not emit any explicit store. The next require still
-        // reads the same stack slot directly, showing `z` aliases `y`.
+        // `int z = y` snapshots the current `y` value so the alias is frozen.
+        .add_op(OpDup)
+        .unwrap()
         .add_op(OpDup)
         .unwrap()
         .add_i64(1)
@@ -8303,7 +8336,13 @@ fn local_alias_reuses_existing_stack_slot_without_explicit_store() {
         .unwrap()
         .add_op(OpVerify)
         .unwrap()
-        // Drop the reused local `y`, then the original entrypoint param `x`.
+        // Drop `z`, then `y`, then the original entrypoint param `x`.
+        .add_i64(0)
+        .unwrap()
+        .add_op(OpRoll)
+        .unwrap()
+        .add_op(OpDrop)
+        .unwrap()
         .add_i64(0)
         .unwrap()
         .add_op(OpRoll)
@@ -8320,7 +8359,7 @@ fn local_alias_reuses_existing_stack_slot_without_explicit_store() {
 
     assert_eq!(compiled.script, expected);
     assert_eq!(compiled.script.iter().copied().filter(|op| *op == OpMul).count(), 1);
-    assert_eq!(compiled.script.iter().copied().filter(|op| *op == OpDup).count(), 3);
+    assert_eq!(compiled.script.iter().copied().filter(|op| *op == OpDup).count(), 4);
     assert_eq!(compiled.script.iter().copied().filter(|op| *op == OpOver).count(), 1);
     assert_eq!(compiled.script.iter().copied().filter(|op| *op == OpPick).count(), 0);
 
@@ -8419,6 +8458,27 @@ fn local_nested_expression_is_stored_once_and_reused() {
     let sigscript_err = compiled.build_sig_script("main", vec![Expr::int(10)]).expect("sigscript builds");
     let result_err = run_script_with_sigscript(compiled.script, sigscript_err);
     assert!(result_err.is_err(), "stored nested local should still enforce the second require");
+}
+
+#[test]
+fn rejects_using_branch_local_outside_its_scope() {
+    let source = r#"
+        contract BranchScope() {
+            entrypoint function main(bool cond) {
+                if (cond) {
+                    int x = 1;
+                    require(x == 1);
+                } else {
+                    int x = 2;
+                    require(x == 2);
+                }
+                require(x > 0);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("branch-local x should not be visible after the if");
+    assert!(err.to_string().contains("undefined identifier"), "unexpected error: {err}");
 }
 
 #[test]

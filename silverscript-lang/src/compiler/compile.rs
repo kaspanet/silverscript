@@ -516,7 +516,7 @@ pub(super) fn array_literal_matches_type_with_env_ref<'i>(
             .get(name)
             .and_then(|value_type| parse_type_ref(value_type).ok())
             .is_some_and(|value_type| is_type_assignable_ref(&value_type, &element_type, constants)),
-        _ => super::type_check::value_matches_type_ref(value, &element_type),
+        _ => super::static_check::value_matches_type_ref(value, &element_type),
     })
 }
 
@@ -1346,8 +1346,10 @@ fn compile_runtime_variable_definition<'i>(
     let existing_is_predeclared_default = is_predeclared_scalar_default(name, &type_name, ctx.env);
     let used_at_least_twice = ctx.identifier_uses.get(name).copied().unwrap_or(0) >= 2;
     let stack_for_reuse = used_at_least_twice && !ctx.assigned_names.contains(name);
+    let stack_for_identifier_alias =
+        matches!(&expr.kind, ExprKind::Identifier(other) if ctx.stack_bindings.contains(other) && !ctx.assigned_names.contains(name));
     let stack_for_mutation = ctx.assigned_names.contains(name);
-    if (stack_for_reuse || stack_for_mutation)
+    if (stack_for_reuse || stack_for_identifier_alias || stack_for_mutation)
         && (!ctx.env.contains_key(name) || existing_is_predeclared_default)
         && !ctx.stack_bindings.contains(name)
     {

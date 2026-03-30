@@ -1,7 +1,7 @@
 use super::*;
 use std::collections::{HashMap, HashSet};
 
-pub(super) fn type_check_contract<'i>(
+pub(super) fn static_check_contract<'i>(
     contract: &ContractAst<'i>,
     constructor_args: &[Expr<'i>],
     options: CompileOptions,
@@ -762,6 +762,13 @@ fn validate_expr_semantics<'i>(
         }
         ExprKind::FieldAccess { source, .. } | ExprKind::UnarySuffix { source, .. } => {
             validate_expr_semantics(source, env, prefer_env_for_comparison, types, structs, contract_fields)
+        }
+        ExprKind::Identifier(name) => {
+            if types.contains_key(name) || env.contains_key(name) {
+                Ok(())
+            } else {
+                Err(CompilerError::UndefinedIdentifier(name.clone()))
+            }
         }
         _ => Ok(()),
     }
