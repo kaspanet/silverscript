@@ -15,6 +15,7 @@ mod covenant_declarations;
 mod array_push;
 mod compile;
 mod debug_value_types;
+mod r#for;
 mod infer_array;
 mod inline_functions;
 mod stack_bindings;
@@ -33,6 +34,7 @@ pub(super) use structs::{
     struct_array_name_from_type_ref, struct_name_from_type_ref, validate_struct_graph,
 };
 use array_push::lower_array_pushes;
+use r#for::lower_for_loops;
 use static_check::{static_check_contract, value_matches_type_ref};
 
 /// Prefix used for synthetic argument bindings during inline function expansion.

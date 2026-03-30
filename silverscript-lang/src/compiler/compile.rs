@@ -100,7 +100,8 @@ pub(super) fn compile_contract_impl<'i>(
     let structs = build_struct_registry(&inline_lowered_contract)?;
     let struct_lowered_contract = lower_structs_contract(&inline_lowered_contract, &structs, &constants)?;
     let array_push_lowered_contract = lower_array_pushes(&struct_lowered_contract)?;
-    let lowered_contract = lower_inferred_array_sizes(&array_push_lowered_contract, &constants)?;
+    let for_lowered_contract = lower_for_loops(&array_push_lowered_contract, &constants)?;
+    let lowered_contract = lower_inferred_array_sizes(&for_lowered_contract, &constants)?;
     let mut lowered_constants = flatten_constructor_args_env(&covenant_lowered_contract.params, constructor_args, &structs)?;
     lowered_constants.extend(lowered_contract.constants.iter().map(|constant| (constant.name.clone(), constant.expr.clone())));
 
