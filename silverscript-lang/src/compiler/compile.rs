@@ -326,7 +326,7 @@ fn compile_contract_fields<'i>(
         let type_name = type_name_from_ref(&field.type_ref);
 
         let mut resolve_visiting = HashSet::new();
-        let resolved = resolve_expr(field.expr.clone(), &env, &mut resolve_visiting)?;
+        let resolved = resolve_expr(field.expr.clone(), base_constants, &mut resolve_visiting)?;
 
         let mut compile_visiting = HashSet::new();
         let mut stack_depth = 0i64;
@@ -2660,20 +2660,20 @@ pub(crate) fn eval_const_int<'i>(expr: &Expr<'i>, constants: &HashMap<String, Ex
 
 fn resolve_expr<'i>(
     expr: Expr<'i>,
-    env: &HashMap<String, Expr<'i>>,
+    constants: &HashMap<String, Expr<'i>>,
     visiting: &mut HashSet<String>,
 ) -> Result<Expr<'i>, CompilerError> {
     let Expr { kind, span } = expr;
     match kind {
         ExprKind::Identifier(name) => {
-            if let Some(value) = env.get(&name) {
+            if let Some(value) = constants.get(&name) {
                 if matches!(&value.kind, ExprKind::Identifier(inner) if inner == &name) {
                     return Ok(Expr::new(ExprKind::Identifier(name), span));
                 }
                 if !visiting.insert(name.clone()) {
                     return Err(CompilerError::CyclicIdentifier(name));
                 }
-                let resolved = resolve_expr(value.clone(), env, visiting)?;
+                let resolved = resolve_expr(value.clone(), constants, visiting)?;
                 visiting.remove(&name);
                 Ok(resolved)
             } else {
@@ -2681,28 +2681,28 @@ fn resolve_expr<'i>(
             }
         }
         ExprKind::Unary { op, expr } => {
-            Ok(Expr::new(ExprKind::Unary { op, expr: Box::new(resolve_expr(*expr, env, visiting)?) }, span))
+            Ok(Expr::new(ExprKind::Unary { op, expr: Box::new(resolve_expr(*expr, constants, visiting)?) }, span))
         }
         ExprKind::Binary { op, left, right } => Ok(Expr::new(
             ExprKind::Binary {
                 op,
-                left: Box::new(resolve_expr(*left, env, visiting)?),
-                right: Box::new(resolve_expr(*right, env, visiting)?),
+                left: Box::new(resolve_expr(*left, constants, visiting)?),
+                right: Box::new(resolve_expr(*right, constants, visiting)?),
             },
             span,
         )),
         ExprKind::IfElse { condition, then_expr, else_expr } => Ok(Expr::new(
             ExprKind::IfElse {
-                condition: Box::new(resolve_expr(*condition, env, visiting)?),
-                then_expr: Box::new(resolve_expr(*then_expr, env, visiting)?),
-                else_expr: Box::new(resolve_expr(*else_expr, env, visiting)?),
+                condition: Box::new(resolve_expr(*condition, constants, visiting)?),
+                then_expr: Box::new(resolve_expr(*then_expr, constants, visiting)?),
+                else_expr: Box::new(resolve_expr(*else_expr, constants, visiting)?),
             },
             span,
         )),
         ExprKind::Array(values) => {
             let mut resolved = Vec::with_capacity(values.len());
             for value in values {
-                resolved.push(resolve_expr(value, env, visiting)?);
+                resolved.push(resolve_expr(value, constants, visiting)?);
             }
             Ok(Expr::new(ExprKind::Array(resolved), span))
         }
@@ -2711,7 +2711,7 @@ fn resolve_expr<'i>(
             for field in fields {
                 resolved_fields.push(StateFieldExpr {
                     name: field.name,
-                    expr: resolve_expr(field.expr, env, visiting)?,
+                    expr: resolve_expr(field.expr, constants, visiting)?,
                     span: field.span,
                     name_span: field.name_span,
                 });
@@ -2719,26 +2719,30 @@ fn resolve_expr<'i>(
             Ok(Expr::new(ExprKind::StateObject(resolved_fields), span))
         }
         ExprKind::FieldAccess { source, field, field_span } => {
-            Ok(Expr::new(ExprKind::FieldAccess { source: Box::new(resolve_expr(*source, env, visiting)?), field, field_span }, span))
+            Ok(Expr::new(ExprKind::FieldAccess {
+                source: Box::new(resolve_expr(*source, constants, visiting)?),
+                field,
+                field_span,
+            }, span))
         }
         ExprKind::Call { name, args, name_span } => {
             let mut resolved = Vec::with_capacity(args.len());
             for arg in args {
-                resolved.push(resolve_expr(arg, env, visiting)?);
+                resolved.push(resolve_expr(arg, constants, visiting)?);
             }
             Ok(Expr::new(ExprKind::Call { name, args: resolved, name_span }, span))
         }
         ExprKind::New { name, args, name_span } => {
             let mut resolved = Vec::with_capacity(args.len());
             for arg in args {
-                resolved.push(resolve_expr(arg, env, visiting)?);
+                resolved.push(resolve_expr(arg, constants, visiting)?);
             }
             Ok(Expr::new(ExprKind::New { name, args: resolved, name_span }, span))
         }
         ExprKind::Split { source, index, part, span: split_span } => Ok(Expr::new(
             ExprKind::Split {
-                source: Box::new(resolve_expr(*source, env, visiting)?),
-                index: Box::new(resolve_expr(*index, env, visiting)?),
+                source: Box::new(resolve_expr(*source, constants, visiting)?),
+                index: Box::new(resolve_expr(*index, constants, visiting)?),
                 part,
                 span: split_span,
             },
@@ -2746,23 +2750,26 @@ fn resolve_expr<'i>(
         )),
         ExprKind::ArrayIndex { source, index } => Ok(Expr::new(
             ExprKind::ArrayIndex {
-                source: Box::new(resolve_expr(*source, env, visiting)?),
-                index: Box::new(resolve_expr(*index, env, visiting)?),
+                source: Box::new(resolve_expr(*source, constants, visiting)?),
+                index: Box::new(resolve_expr(*index, constants, visiting)?),
             },
             span,
         )),
         ExprKind::Introspection { kind, index, field_span } => {
-            Ok(Expr::new(ExprKind::Introspection { kind, index: Box::new(resolve_expr(*index, env, visiting)?), field_span }, span))
+            Ok(Expr::new(
+                ExprKind::Introspection { kind, index: Box::new(resolve_expr(*index, constants, visiting)?), field_span },
+                span,
+            ))
         }
         ExprKind::UnarySuffix { source, kind, span: suffix_span } => Ok(Expr::new(
-            ExprKind::UnarySuffix { source: Box::new(resolve_expr(*source, env, visiting)?), kind, span: suffix_span },
+            ExprKind::UnarySuffix { source: Box::new(resolve_expr(*source, constants, visiting)?), kind, span: suffix_span },
             span,
         )),
         ExprKind::Slice { source, start, end, span: slice_span } => Ok(Expr::new(
             ExprKind::Slice {
-                source: Box::new(resolve_expr(*source, env, visiting)?),
-                start: Box::new(resolve_expr(*start, env, visiting)?),
-                end: Box::new(resolve_expr(*end, env, visiting)?),
+                source: Box::new(resolve_expr(*source, constants, visiting)?),
+                start: Box::new(resolve_expr(*start, constants, visiting)?),
+                end: Box::new(resolve_expr(*end, constants, visiting)?),
                 span: slice_span,
             },
             span,
@@ -4028,10 +4035,10 @@ pub fn compile_debug_expr<'i>(
 
 pub(super) fn resolve_expr_for_debug<'i>(
     expr: Expr<'i>,
-    env: &HashMap<String, Expr<'i>>,
+    constants: &HashMap<String, Expr<'i>>,
     visiting: &mut HashSet<String>,
 ) -> Result<Expr<'i>, CompilerError> {
-    resolve_expr(expr, env, visiting)
+    resolve_expr(expr, constants, visiting)
 }
 
 #[cfg(test)]
