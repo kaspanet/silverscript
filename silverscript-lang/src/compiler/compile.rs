@@ -1227,8 +1227,8 @@ fn compile_statement<'i>(ctx: &mut CompileStatementContext<'_, 'i>, stmt: &State
             compile_for_statement(ctx, ident, start, end, max_iterations, body, *span).map(|_| Vec::new())
         }
         Statement::Return { .. } => compile_return_statement(),
-        Statement::TupleAssignment { left_name, right_name, expr, .. } => {
-            compile_tuple_assignment_statement(ctx, left_name, right_name, expr)
+        Statement::TupleAssignment { left_type_ref, left_name, right_type_ref, right_name, expr, .. } => {
+            compile_tuple_assignment_statement(ctx, left_type_ref, left_name, right_type_ref, right_name, expr)
         }
         Statement::FunctionCall { name, args, .. } => compile_function_call_statement(ctx, name, args),
         Statement::StateFunctionCallAssign { bindings, name, args, .. } => {
@@ -1377,6 +1377,34 @@ fn compile_runtime_variable_definition<'i>(
     }
 }
 
+fn compile_stack_variable_definition<'i>(
+    ctx: &mut CompileStatementContext<'_, 'i>,
+    name: &str,
+    type_name: String,
+    expr: Expr<'i>,
+) -> Result<Vec<String>, CompilerError> {
+    if ctx.stack_bindings.contains(name) {
+        return Err(CompilerError::Unsupported(format!("variable '{}' is already defined", name)));
+    }
+
+    ctx.types.insert(name.to_string(), type_name);
+    let mut stack_depth = 0i64;
+    compile_expr(
+        &expr,
+        ctx.env,
+        ctx.stack_bindings,
+        ctx.types,
+        ctx.builder,
+        ctx.options,
+        &mut HashSet::new(),
+        &mut stack_depth,
+        ctx.script_size,
+        ctx.contract_constants,
+    )?;
+    ctx.stack_bindings.push_binding(name);
+    Ok(vec![name.to_string()])
+}
+
 fn compile_array_push_statement<'i>(
     _ctx: &mut CompileStatementContext<'_, 'i>,
     _name: &str,
@@ -1428,7 +1456,9 @@ fn compile_return_statement<'i>() -> Result<Vec<String>, CompilerError> {
 
 fn compile_tuple_assignment_statement<'i>(
     ctx: &mut CompileStatementContext<'_, 'i>,
+    left_type_ref: &TypeRef,
     left_name: &str,
+    right_type_ref: &TypeRef,
     right_name: &str,
     expr: &Expr<'i>,
 ) -> Result<Vec<String>, CompilerError> {
@@ -1442,9 +1472,9 @@ fn compile_tuple_assignment_statement<'i>(
                 ExprKind::Split { source: source.clone(), index: index.clone(), part: SplitPart::Right, span: *split_span },
                 span::Span::default(),
             );
-            ctx.env.insert(left_name.to_string(), left_expr);
-            ctx.env.insert(right_name.to_string(), right_expr);
-            Ok(Vec::new())
+            let mut added = compile_stack_variable_definition(ctx, left_name, type_name_from_ref(left_type_ref), left_expr)?;
+            added.extend(compile_stack_variable_definition(ctx, right_name, type_name_from_ref(right_type_ref), right_expr)?);
+            Ok(added)
         }
         _ => Err(CompilerError::Unsupported("tuple assignment only supports split()".to_string())),
     }
@@ -1505,18 +1535,12 @@ fn compile_state_function_call_assign_statement<'i>(
 ) -> Result<Vec<String>, CompilerError> {
     if name == "readInputState" || name == "readInputStateWithTemplate" {
         return compile_read_input_state_statement(
+            ctx,
             bindings,
             name,
             args,
-            ctx.env,
-            ctx.stack_bindings,
-            ctx.types,
-            ctx.builder,
-            ctx.options,
             ctx.contract_fields,
             ctx.contract_field_prefix_len,
-            ctx.script_size,
-            ctx.contract_constants,
             ctx.structs,
         );
     }
@@ -1712,21 +1736,15 @@ fn cast_read_input_state_expr<'i>(substr: Expr<'i>, type_ref: &TypeRef) -> Resul
 
 #[allow(clippy::too_many_arguments)]
 fn compile_read_input_state_statement<'i>(
+    ctx: &mut CompileStatementContext<'_, 'i>,
     bindings: &[StateBindingAst<'i>],
     name: &str,
     args: &[Expr<'i>],
-    env: &mut HashMap<String, Expr<'i>>,
-    stack_bindings: &mut StackBindings,
-    types: &mut HashMap<String, String>,
-    builder: &mut ScriptBuilder,
-    options: CompileOptions,
     contract_fields: &[ContractFieldAst<'i>],
     contract_field_prefix_len: usize,
-    script_size: Option<i64>,
-    contract_constants: &HashMap<String, Expr<'i>>,
     structs: &StructRegistry,
 ) -> Result<Vec<String>, CompilerError> {
-    let added_stack_locals = Vec::new();
+    let mut added_stack_locals = Vec::new();
     let mut bindings_by_field: HashMap<&str, &StateBindingAst<'i>> = HashMap::new();
     for binding in bindings {
         if bindings_by_field.insert(binding.field_name.as_str(), binding).is_some() {
@@ -1748,8 +1766,8 @@ fn compile_read_input_state_statement<'i>(
             }
 
             let script_size_value =
-                script_size.ok_or_else(|| CompilerError::Unsupported("readInputState requires this.scriptSize".to_string()))?;
-            let total_state_len = encoded_state_len(contract_fields, contract_constants)?;
+                ctx.script_size.ok_or_else(|| CompilerError::Unsupported("readInputState requires this.scriptSize".to_string()))?;
+            let total_state_len = encoded_state_len(contract_fields, ctx.contract_constants)?;
             let state_start_offset = contract_field_prefix_len
                 .checked_sub(total_state_len)
                 .ok_or_else(|| CompilerError::Unsupported("readInputState state offset underflow".to_string()))?;
@@ -1776,12 +1794,12 @@ fn compile_read_input_state_statement<'i>(
                     state_start_offset,
                     field_chunk_offset,
                     script_size_value,
-                    contract_constants,
+                    ctx.contract_constants,
                 )?;
-                types.insert(binding.name.clone(), binding_type);
-                env.insert(binding.name.clone(), binding_expr);
+                added_stack_locals
+                    .extend(compile_stack_variable_definition(ctx, &binding.name, binding_type, binding_expr)?);
 
-                field_chunk_offset += encoded_field_chunk_size(field, contract_constants)?;
+                field_chunk_offset += encoded_field_chunk_size(field, ctx.contract_constants)?;
             }
 
             Ok(added_stack_locals)
@@ -1811,20 +1829,20 @@ fn compile_read_input_state_statement<'i>(
             )?;
             compile_read_input_state_with_template_validation(
                 args,
-                env,
-                stack_bindings,
-                types,
-                builder,
-                options,
+                ctx.env,
+                ctx.stack_bindings,
+                ctx.types,
+                ctx.builder,
+                ctx.options,
                 &layout_fields,
-                script_size,
-                contract_constants,
+                ctx.script_size,
+                ctx.contract_constants,
             )?;
 
             let input_idx = input_idx.clone();
             let state_start_offset_expr = template_prefix_len.clone();
             let script_size_expr =
-                templated_input_script_size_expr(template_prefix_len, template_suffix_len, &layout_fields, contract_constants)?;
+                templated_input_script_size_expr(template_prefix_len, template_suffix_len, &layout_fields, ctx.contract_constants)?;
             let mut field_chunk_offset = 0usize;
 
             for field in &struct_spec.fields {
@@ -1846,13 +1864,13 @@ fn compile_read_input_state_statement<'i>(
                     state_start_offset_expr.clone(),
                     field_chunk_offset,
                     script_size_expr.clone(),
-                    contract_constants,
+                    ctx.contract_constants,
                     "readInputStateWithTemplate",
                 )?;
-                types.insert(binding.name.clone(), binding_type);
-                env.insert(binding.name.clone(), binding_expr);
+                added_stack_locals
+                    .extend(compile_stack_variable_definition(ctx, &binding.name, binding_type, binding_expr)?);
 
-                field_chunk_offset += encoded_field_chunk_size_for_type_ref(&field.type_ref, contract_constants)?;
+                field_chunk_offset += encoded_field_chunk_size_for_type_ref(&field.type_ref, ctx.contract_constants)?;
             }
 
             Ok(added_stack_locals)
