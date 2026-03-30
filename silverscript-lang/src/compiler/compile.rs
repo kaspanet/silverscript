@@ -319,10 +319,6 @@ fn compile_contract_fields<'i>(
     let stack_bindings = StackBindings::default();
 
     for field in fields {
-        if env.contains_key(&field.name) {
-            return Err(CompilerError::Unsupported(format!("duplicate contract field name: {}", field.name)));
-        }
-
         let type_name = type_name_from_ref(&field.type_ref);
 
         let mut resolve_visiting = HashSet::new();
