@@ -2853,7 +2853,10 @@ fn compiles_function_call_statement_drops_returns() {
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
     let selector = selector_for(&compiled, "main");
-    assert!(compiled.script.windows(2).any(|window| window == [OpAdd, OpDrop]), "expected return value to be dropped");
+    assert!(
+        !compiled.script.windows(2).any(|window| window == [OpAdd, OpDrop]),
+        "ignored inline return values should be eliminated before codegen"
+    );
     assert!(run_script_with_selector(compiled.script, selector).is_ok());
 }
 

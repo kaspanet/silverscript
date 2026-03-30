@@ -151,7 +151,7 @@ impl<'i> Inliner<'i> {
                 name_span: *name_span,
             }],
             Statement::FunctionCall { name, args, span, name_span } => {
-                if let Some(function) = self.inline_target(name).filter(|function| function.return_types.is_empty()) {
+                if let Some(function) = self.inline_target(name) {
                     self.inline_call(&function, args, None, scope, function_index, *span)?
                 } else {
                     vec![Statement::FunctionCall {

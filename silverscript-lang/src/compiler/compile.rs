@@ -110,8 +110,8 @@ pub(super) fn compile_contract_impl<'i>(
 
     let without_selector = entrypoint_functions.len() == 1;
 
-    let functions_map = covenant_lowered_contract.functions.iter().cloned().map(|func| (func.name.clone(), func)).collect::<HashMap<_, _>>();
-    let function_order = covenant_lowered_contract
+    let functions_map = lowered_contract.functions.iter().cloned().map(|func| (func.name.clone(), func)).collect::<HashMap<_, _>>();
+    let function_order = lowered_contract
         .functions
         .iter()
         .enumerate()
@@ -1200,14 +1200,14 @@ fn compile_statement<'i>(
                     },
                     Some(e) if is_byte_array_type => {
                         // byte[] can be initialized from any bytes expression
-                        lower_runtime_expr(e, types, structs)?
+                        e.clone()
                     }
                     Some(e @ Expr { kind: ExprKind::Array(values), .. }) => {
                         if !array_literal_matches_type_with_env(values, &effective_type_name, types, contract_constants) {
                             return Err(CompilerError::Unsupported("array initializer must be another array".to_string()));
                         }
                         resolve_expr(
-                            lower_runtime_expr(&Expr::new(ExprKind::Array(values.clone()), e.span), types, structs)?,
+                            Expr::new(ExprKind::Array(values.clone()), e.span),
                             env,
                             &mut HashSet::new(),
                         )?
@@ -1222,7 +1222,7 @@ fn compile_statement<'i>(
                 // Fixed-size arrays like byte[N] can be initialized from expressions
                 let expr =
                     expr.clone().ok_or_else(|| CompilerError::Unsupported("variable definition requires initializer".to_string()))?;
-                let expr = lower_runtime_expr(&expr, types, structs)?;
+                let expr = expr;
 
                 // For array literals, validate that the size matches the declared type
                 if let ExprKind::Array(values) = &expr.kind {
@@ -1254,7 +1254,7 @@ fn compile_statement<'i>(
             } else {
                 let expr =
                     expr.clone().ok_or_else(|| CompilerError::Unsupported("variable definition requires initializer".to_string()))?;
-                let expr = coerce_expr_for_declared_scalar_type(lower_runtime_expr(&expr, types, structs)?, &effective_type_name);
+                let expr = coerce_expr_for_declared_scalar_type(expr, &effective_type_name);
                 types.insert(name.clone(), effective_type_name.clone());
                 let existing_is_predeclared_default = is_predeclared_scalar_default(name, &effective_type_name, env);
 
@@ -1332,7 +1332,7 @@ fn compile_statement<'i>(
             Ok(Vec::new())
         }
         Statement::Require { expr, .. } => {
-            let expr = lower_runtime_expr(expr, types, structs)?;
+            let expr = expr.clone();
             let mut stack_depth = 0i64;
             compile_expr(
                 &expr,
@@ -1350,7 +1350,7 @@ fn compile_statement<'i>(
             Ok(Vec::new())
         }
         Statement::TimeOp { tx_var, expr, .. } => {
-            let expr = lower_runtime_expr(expr, types, structs)?;
+            let expr = expr.clone();
             compile_time_op_statement(tx_var, &expr, env, stack_bindings, types, builder, options, script_size, contract_constants)
                 .map(|_| Vec::new())
         }
@@ -1453,43 +1453,10 @@ fn compile_statement<'i>(
                 )
                 .map(|_| Vec::new());
             }
-            let returns = compile_inline_call(
-                name,
-                args,
-                stack_bindings,
-                types,
-                env,
-                builder,
-                options,
-                contract_constants,
-                contract_fields,
-                contract_field_prefix_len,
-                structs,
-                functions,
-                function_order,
-                function_index,
-                script_size,
-            )?;
-            if !returns.is_empty() {
-                let mut stack_depth = 0i64;
-                for expr in returns {
-                    compile_expr(
-                        &expr,
-                        env,
-                        stack_bindings,
-                        types,
-                        builder,
-                        options,
-                        &mut HashSet::new(),
-                        &mut stack_depth,
-                        script_size,
-                        contract_constants,
-                    )?;
-                    builder.add_op(OpDrop)?;
-                    stack_depth -= 1;
-                }
-            }
-            Ok(Vec::new())
+            Err(CompilerError::Unsupported(format!(
+                "inline lowering must eliminate internal function calls before compilation, found '{}()'",
+                name
+            )))
         }
         Statement::StateFunctionCallAssign { bindings, name, args, .. } => {
             if name == "readInputState" || name == "readInputStateWithTemplate" {
@@ -1519,78 +1486,18 @@ fn compile_statement<'i>(
             unreachable!("lower_structs_contract must remove struct destructuring before codegen")
         }
         Statement::FunctionCallAssign { bindings, name, args, .. } => {
-            let function = functions.get(name).expect("type_check must validate function call assignments reference valid functions");
-            debug_assert!(
-                !function.return_types.is_empty(),
-                "type_check must validate function call assignments target functions with returns"
-            );
-            debug_assert_eq!(
-                function.return_types.len(),
-                bindings.len(),
-                "type_check must validate function call assignment binding count"
-            );
-            debug_assert!(
-                bindings.iter().zip(function.return_types.iter()).all(|(binding, return_type)| binding.type_ref == *return_type),
-                "type_check must validate function call assignment binding types"
-            );
-            let returns = compile_inline_call(
-                name,
-                args,
-                stack_bindings,
-                types,
-                env,
-                builder,
-                options,
-                contract_constants,
-                contract_fields,
-                contract_field_prefix_len,
-                structs,
-                functions,
-                function_order,
-                function_index,
-                script_size,
-            )?;
-            debug_assert_eq!(returns.len(), bindings.len(), "codegen returns must match validated function binding count");
-            let mut added_stack_locals = Vec::new();
-            for (binding, expr) in bindings.iter().zip(returns.into_iter()) {
-                let lowered = lower_runtime_expr(&expr, types, structs)?;
-                let binding_type_name = type_name_from_ref(&binding.type_ref);
-                types.insert(binding.name.clone(), binding_type_name.clone());
-                let existing_is_predeclared_default = is_predeclared_scalar_default(&binding.name, &binding_type_name, env);
-                if !assigned_names.contains(&binding.name)
-                    && identifier_uses.get(&binding.name).copied().unwrap_or(0) >= 2
-                    && (!env.contains_key(&binding.name) || existing_is_predeclared_default)
-                    && !stack_bindings.contains(&binding.name)
-                    && matches!(binding_type_name.as_str(), "int" | "bool" | "byte")
-                {
-                    let mut stack_depth = 0i64;
-                    compile_expr(
-                        &lowered,
-                        env,
-                        stack_bindings,
-                        types,
-                        builder,
-                        options,
-                        &mut HashSet::new(),
-                        &mut stack_depth,
-                        script_size,
-                        contract_constants,
-                    )?;
-                    env.insert(binding.name.clone(), lowered);
-                    stack_bindings.push_binding(&binding.name);
-                    added_stack_locals.push(binding.name.clone());
-                } else {
-                    env.insert(binding.name.clone(), lowered);
-                }
-            }
-            Ok(added_stack_locals)
+            let _ = (bindings, args, assigned_names, identifier_uses, functions, function_order, function_index);
+            Err(CompilerError::Unsupported(format!(
+                "inline lowering must eliminate function call assignments before compilation, found '{}()'",
+                name
+            )))
         }
         Statement::Assign { name, expr, .. } => {
             if let Some(type_name) = types.get(name) {
                 // If this is a stack-bound scalar local, compile a real mutation instead of
                 // rewriting `env[name]` (which can explode under unrolled control flow).
                 if stack_bindings.contains(name) {
-                    let lowered_expr = coerce_expr_for_declared_scalar_type(lower_runtime_expr(expr, types, structs)?, type_name);
+                    let lowered_expr = coerce_expr_for_declared_scalar_type(expr.clone(), type_name);
 
                     // Compute RHS value onto the stack.
                     let mut stack_depth = 0i64;
@@ -1645,14 +1552,14 @@ fn compile_statement<'i>(
                         }
                     }
                 }
-                let lowered_expr = coerce_expr_for_declared_scalar_type(lower_runtime_expr(expr, types, structs)?, type_name);
+                let lowered_expr = coerce_expr_for_declared_scalar_type(expr.clone(), type_name);
                 let updated =
                     if let Some(previous) = env.get(name) { replace_identifier(&lowered_expr, name, previous) } else { lowered_expr };
                 let resolved = resolve_expr_for_runtime(updated, env, types, &mut HashSet::new())?;
                 env.insert(name.clone(), resolved);
                 return Ok(Vec::new());
             }
-            let lowered_expr = lower_runtime_expr(expr, types, structs)?;
+            let lowered_expr = expr.clone();
             let updated =
                 if let Some(previous) = env.get(name) { replace_identifier(&lowered_expr, name, previous) } else { lowered_expr };
             let resolved = resolve_expr_for_runtime(updated, env, types, &mut HashSet::new())?;
@@ -2539,205 +2446,6 @@ fn compile_encoded_state_object(
     )
 }
 
-#[derive(Debug)]
-struct InlineCallBindings<'i> {
-    env: HashMap<String, Expr<'i>>,
-    types: HashMap<String, String>,
-    stack_bindings: StackBindings,
-    return_rewrites: Vec<(String, Expr<'i>)>,
-    preserved_return_idents: HashSet<String>,
-}
-
-fn prepare_inline_call_bindings<'i>(
-    function: &FunctionAst<'i>,
-    args: &[Expr<'i>],
-    caller_stack_bindings: &StackBindings,
-    caller_types: &HashMap<String, String>,
-    caller_env: &HashMap<String, Expr<'i>>,
-    contract_constants: &HashMap<String, Expr<'i>>,
-    structs: &StructRegistry,
-) -> Result<InlineCallBindings<'i>, CompilerError> {
-    let mut types = caller_types.clone();
-    let mut env: HashMap<String, Expr<'i>> = contract_constants.clone();
-    env.extend(caller_env.clone());
-    let mut return_rewrites = Vec::new();
-    let mut preserved_return_idents = HashSet::new();
-    for (param, arg) in function.params.iter().zip(args.iter()) {
-        let resolved = resolve_expr(arg.clone(), caller_env, &mut HashSet::new())?;
-        let param_type_name = type_name_from_ref(&param.type_ref);
-
-        preserved_return_idents.insert(param.name.clone());
-        types.insert(param.name.clone(), param_type_name.clone());
-        let (lowered, rewrite_expr) = if is_array_type(&param_type_name) {
-            match arg {
-                Expr { kind: ExprKind::Identifier(identifier), .. }
-                    if caller_types
-                        .get(identifier)
-                        .is_some_and(|other_type| is_type_assignable(other_type, &param_type_name, contract_constants)) =>
-                {
-                    (
-                        caller_env
-                            .get(identifier)
-                            .cloned()
-                            .unwrap_or_else(|| Expr::new(ExprKind::Identifier(identifier.clone()), span::Span::default())),
-                        Expr::new(ExprKind::Identifier(identifier.clone()), span::Span::default()),
-                    )
-                }
-                _ => {
-                    let lowered = lower_runtime_expr(&resolved, caller_types, structs)?;
-                    (lowered.clone(), lowered)
-                }
-            }
-        } else {
-            match arg {
-                Expr { kind: ExprKind::Identifier(identifier), .. }
-                    if caller_stack_bindings.contains(identifier)
-                        && caller_types
-                            .get(identifier)
-                            .is_some_and(|other_type| is_type_assignable(other_type, &param_type_name, contract_constants)) =>
-                {
-                    let ident = Expr::new(ExprKind::Identifier(identifier.clone()), span::Span::default());
-                    (ident.clone(), ident)
-                }
-                _ => {
-                    let lowered = lower_runtime_expr(&resolved, caller_types, structs)?;
-                    (lowered.clone(), lowered)
-                }
-            }
-        };
-        return_rewrites.push((param.name.clone(), rewrite_expr));
-        if !matches!(&lowered.kind, ExprKind::Identifier(identifier) if identifier == &param.name) {
-            env.insert(param.name.clone(), lowered);
-        }
-    }
-
-    let stack_bindings = caller_stack_bindings.clone();
-
-    Ok(InlineCallBindings { env, types, stack_bindings, return_rewrites, preserved_return_idents })
-}
-
-fn rewrite_inline_returns<'i>(returns: Vec<Expr<'i>>, rewrites: &[(String, Expr<'i>)]) -> Vec<Expr<'i>> {
-    if rewrites.is_empty() {
-        return returns;
-    }
-    returns
-        .into_iter()
-        .map(|expr| {
-            let mut current = expr;
-            for (temp_name, replacement) in rewrites {
-                current = replace_identifier(&current, temp_name, replacement);
-            }
-            current
-        })
-        .collect()
-}
-
-#[allow(clippy::too_many_arguments)]
-fn compile_inline_call<'i>(
-    name: &str,
-    args: &[Expr<'i>],
-    caller_stack_bindings: &StackBindings,
-    caller_types: &mut HashMap<String, String>,
-    caller_env: &mut HashMap<String, Expr<'i>>,
-    builder: &mut ScriptBuilder,
-    options: CompileOptions,
-    contract_constants: &HashMap<String, Expr<'i>>,
-    contract_fields: &[ContractFieldAst<'i>],
-    _contract_field_prefix_len: usize,
-    structs: &StructRegistry,
-    functions: &HashMap<String, FunctionAst<'i>>,
-    function_order: &HashMap<String, usize>,
-    caller_index: usize,
-    script_size: Option<i64>,
-) -> Result<Vec<Expr<'i>>, CompilerError> {
-    let function = functions.get(name).ok_or_else(|| CompilerError::Unsupported(format!("function '{}' not found", name)))?;
-    let callee_index =
-        function_order.get(name).copied().ok_or_else(|| CompilerError::Unsupported(format!("function '{}' not found", name)))?;
-    if callee_index >= caller_index {
-        return Err(CompilerError::Unsupported("functions may only call earlier-defined functions".to_string()));
-    }
-
-    if function.params.len() != args.len() {
-        return Err(CompilerError::Unsupported(format!("function '{}' expects {} arguments", name, function.params.len())));
-    }
-
-    let mut bindings =
-        prepare_inline_call_bindings(function, args, caller_stack_bindings, caller_types, caller_env, contract_constants, structs)?;
-
-    let assigned_names = collect_assigned_names(&function.body);
-    let identifier_uses = collect_identifier_uses(&function.body);
-
-    let mut returns: Vec<Expr<'i>> = Vec::new();
-    let initial_stack_binding_count = bindings.stack_bindings.len();
-    for param in &function.params {
-        let param_type_name = type_name_from_ref(&param.type_ref);
-        if !matches!(param_type_name.as_str(), "int" | "bool" | "byte")
-            || identifier_uses.get(&param.name).copied().unwrap_or(0) < 2
-            || assigned_names.contains(&param.name)
-            || bindings.stack_bindings.contains(&param.name)
-        {
-            continue;
-        }
-
-        let Some(bound_expr) = bindings.env.get(&param.name).cloned() else {
-            continue;
-        };
-
-        let mut stack_depth = 0i64;
-        compile_expr(
-            &bound_expr,
-            &bindings.env,
-            &bindings.stack_bindings,
-            &bindings.types,
-            builder,
-            options,
-            &mut HashSet::new(),
-            &mut stack_depth,
-            script_size,
-            contract_constants,
-        )?;
-        bindings.stack_bindings.push_binding(&param.name);
-    }
-    let body_len = function.body.len();
-    for (index, stmt) in function.body.iter().enumerate() {
-        if let Statement::Return { exprs, .. } = stmt {
-            debug_assert_eq!(index, body_len - 1, "type_check must validate return statements are last");
-            for expr in exprs {
-                let resolved =
-                    resolve_inline_return_expr(expr.clone(), &bindings.env, &bindings.preserved_return_idents, &mut HashSet::new())
-                        .map_err(|err| err.with_span(&expr.span))?;
-                returns.push(resolved);
-            }
-        } else {
-            compile_statement(
-                stmt,
-                &mut bindings.env,
-                &assigned_names,
-                &identifier_uses,
-                &mut bindings.types,
-                &mut bindings.stack_bindings,
-                builder,
-                options,
-                contract_fields,
-                0,
-                contract_constants,
-                structs,
-                functions,
-                function_order,
-                callee_index,
-                script_size,
-            )
-            .map_err(|err| err.with_span(&stmt.span()))?;
-        }
-    }
-
-    for _ in 0..bindings.stack_bindings.len().saturating_sub(initial_stack_binding_count) {
-        builder.add_op(OpDrop)?;
-    }
-
-    Ok(rewrite_inline_returns(returns, &bindings.return_rewrites))
-}
-
 #[allow(clippy::too_many_arguments)]
 fn compile_if_statement<'i>(
     condition: &Expr<'i>,
@@ -2759,7 +2467,7 @@ fn compile_if_statement<'i>(
     function_index: usize,
     script_size: Option<i64>,
 ) -> Result<(), CompilerError> {
-    let condition = lower_runtime_expr(condition, types, structs)?;
+    let condition = condition.clone();
     let mut stack_depth = 0i64;
     compile_expr(
         &condition,
@@ -3049,8 +2757,8 @@ fn compile_for_statement<'i>(
         return Err(CompilerError::Unsupported("for loop max iterations must be a non-negative compile-time integer".to_string()));
     }
 
-    let start = lower_runtime_expr(start_expr, types, structs)?;
-    let end = lower_runtime_expr(end_expr, types, structs)?;
+    let start = start_expr.clone();
+    let end = end_expr.clone();
 
     let name = ident.to_string();
     let previous = env.get(&name).cloned();
