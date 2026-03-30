@@ -2,6 +2,7 @@ use super::covenant_declarations::lower_covenant_declarations;
 use super::debug_value_types::infer_debug_expr_value_type;
 use super::infer_array::lower_inferred_array_sizes;
 use super::inline_functions::lower_inline_functions;
+use super::locals::lower_local_aliases;
 use super::stack_bindings::StackBindings;
 use super::*;
 use kaspa_txscript::opcodes::codes::*;
@@ -102,6 +103,7 @@ pub(super) fn compile_contract_impl<'i>(
     let array_push_lowered_contract = lower_array_pushes(&struct_lowered_contract)?;
     let for_lowered_contract = lower_for_loops(&array_push_lowered_contract, &constants)?;
     let lowered_contract = lower_inferred_array_sizes(&for_lowered_contract, &constants)?;
+    let lowered_contract = lower_local_aliases(&lowered_contract)?;
     let mut lowered_constants = flatten_constructor_args_env(&covenant_lowered_contract.params, constructor_args, &structs)?;
     lowered_constants.extend(lowered_contract.constants.iter().map(|constant| (constant.name.clone(), constant.expr.clone())));
 
@@ -876,15 +878,6 @@ fn infer_fixed_array_type_from_initializer_ref<'i>(
     }
 }
 
-fn array_literal_matches_type_with_env<'i>(
-    values: &[Expr<'i>],
-    type_name: &str,
-    types: &HashMap<String, String>,
-    constants: &HashMap<String, Expr<'i>>,
-) -> bool {
-    parse_type_ref(type_name).is_ok_and(|type_ref| array_literal_matches_type_with_env_ref(values, &type_ref, types, constants))
-}
-
 pub(super) fn is_array_type(type_name: &str) -> bool {
     parse_type_ref(type_name).is_ok_and(|type_ref| is_array_type_ref(&type_ref))
 }
@@ -1124,11 +1117,6 @@ fn compile_entrypoint_function<'i>(
     for field in contract_fields {
         types.insert(field.name.clone(), type_name_from_ref(&field.type_ref));
     }
-    let mut env: HashMap<String, Expr<'i>> = constants.clone();
-    // Remove any constructor/constant names that collide with function param names (prioritizing function parameters on name collision).
-    for param in &function.params {
-        env.remove(&param.name);
-    }
     let mut builder = ScriptBuilder::new();
     let mut return_exprs: Vec<Expr> = Vec::new();
     let assigned_names = collect_assigned_names(&function.body);
@@ -1137,7 +1125,6 @@ fn compile_entrypoint_function<'i>(
 
     let body_len = function.body.len();
     let mut statement_ctx = CompileStatementContext {
-        env: &mut env,
         assigned_names: &assigned_names,
         identifier_uses: &identifier_uses,
         types: &mut types,
@@ -1157,15 +1144,7 @@ fn compile_entrypoint_function<'i>(
         if let Statement::Return { exprs, .. } = stmt {
             debug_assert_eq!(index, body_len - 1, "type_check must validate return statements are last");
             for expr in exprs {
-                let resolved = resolve_return_expr_for_runtime(
-                    expr.clone(),
-                    statement_ctx.env,
-                    statement_ctx.stack_bindings,
-                    statement_ctx.types,
-                    &mut HashSet::new(),
-                )
-                .map_err(|err| err.with_span(&expr.span))?;
-                return_exprs.push(resolved);
+                return_exprs.push(expr.clone());
             }
         } else {
             compile_statement(&mut statement_ctx, stmt).map_err(|err| err.with_span(&stmt.span()))?;
@@ -1193,7 +1172,7 @@ fn compile_entrypoint_function<'i>(
         for expr in &flattened_returns {
             compile_expr(
                 expr,
-                &env,
+                constants,
                 &stack_bindings,
                 &types,
                 &mut builder,
@@ -1256,7 +1235,6 @@ fn compile_statement<'i>(ctx: &mut CompileStatementContext<'_, 'i>, stmt: &State
 }
 
 struct CompileStatementContext<'a, 'i> {
-    env: &'a mut HashMap<String, Expr<'i>>,
     assigned_names: &'a HashSet<String>,
     identifier_uses: &'a HashMap<String, usize>,
     types: &'a mut HashMap<String, String>,
@@ -1294,12 +1272,7 @@ fn compile_variable_definition_statement<'i>(
     let is_array = is_array_type(&effective_type_name);
     if is_array {
         let initial = array_initializer_expr(expr, &effective_type_name, ctx.types, ctx.contract_constants)?;
-        if ctx.assigned_names.contains(name) {
-            return compile_runtime_variable_definition(ctx, name, effective_type_name, initial);
-        }
-        ctx.types.insert(name.to_string(), effective_type_name);
-        ctx.env.insert(name.to_string(), initial);
-        return Ok(Vec::new());
+        return compile_runtime_variable_definition(ctx, name, effective_type_name, initial);
     }
 
     let expr = expr.cloned().ok_or_else(|| CompilerError::Unsupported("variable definition requires initializer".to_string()))?;
@@ -1333,59 +1306,25 @@ fn compile_runtime_variable_definition<'i>(
     expr: Expr<'i>,
 ) -> Result<Vec<String>, CompilerError> {
     ctx.types.insert(name.to_string(), type_name.clone());
-    if is_array_type(&type_name) {
-        if ctx.stack_bindings.contains(name) {
-            return Err(CompilerError::Unsupported(format!("variable '{}' is already defined", name)));
-        }
-
-        let mut stack_depth = 0i64;
-        compile_expr(
-            &expr,
-            ctx.env,
-            ctx.stack_bindings,
-            ctx.types,
-            ctx.builder,
-            ctx.options,
-            &mut HashSet::new(),
-            &mut stack_depth,
-            ctx.script_size,
-            ctx.contract_constants,
-        )?;
-        ctx.stack_bindings.push_binding(name);
-        return Ok(vec![name.to_string()]);
+    if ctx.stack_bindings.contains(name) {
+        return Err(CompilerError::Unsupported(format!("variable '{}' is already defined", name)));
     }
 
-    let used_at_least_twice = ctx.identifier_uses.get(name).copied().unwrap_or(0) >= 2;
-    let stack_for_reuse = used_at_least_twice && !ctx.assigned_names.contains(name);
-    let stack_for_identifier_alias =
-        matches!(&expr.kind, ExprKind::Identifier(other) if ctx.stack_bindings.contains(other) && !ctx.assigned_names.contains(name));
-    let stack_for_mutation = ctx.assigned_names.contains(name);
-    if (stack_for_reuse || stack_for_identifier_alias || stack_for_mutation)
-        && !ctx.env.contains_key(name)
-        && !ctx.stack_bindings.contains(name)
-    {
-        let mut stack_depth = 0i64;
-        compile_expr(
-            &expr,
-            ctx.env,
-            ctx.stack_bindings,
-            ctx.types,
-            ctx.builder,
-            ctx.options,
-            &mut HashSet::new(),
-            &mut stack_depth,
-            ctx.script_size,
-            ctx.contract_constants,
-        )?;
-        let stored_expr =
-            if is_array_type(&type_name) { Expr::new(ExprKind::Identifier(name.to_string()), span::Span::default()) } else { expr };
-        ctx.env.insert(name.to_string(), stored_expr);
-        ctx.stack_bindings.push_binding(name);
-        Ok(vec![name.to_string()])
-    } else {
-        ctx.env.insert(name.to_string(), expr);
-        Ok(Vec::new())
-    }
+    let mut stack_depth = 0i64;
+    compile_expr(
+        &expr,
+        ctx.contract_constants,
+        ctx.stack_bindings,
+        ctx.types,
+        ctx.builder,
+        ctx.options,
+        &mut HashSet::new(),
+        &mut stack_depth,
+        ctx.script_size,
+        ctx.contract_constants,
+    )?;
+    ctx.stack_bindings.push_binding(name);
+    Ok(vec![name.to_string()])
 }
 
 fn compile_stack_variable_definition<'i>(
@@ -1402,7 +1341,7 @@ fn compile_stack_variable_definition<'i>(
     let mut stack_depth = 0i64;
     compile_expr(
         &expr,
-        ctx.env,
+        ctx.contract_constants,
         ctx.stack_bindings,
         ctx.types,
         ctx.builder,
@@ -1428,7 +1367,7 @@ fn compile_require_statement<'i>(ctx: &mut CompileStatementContext<'_, 'i>, expr
     let mut stack_depth = 0i64;
     compile_expr(
         expr,
-        ctx.env,
+        ctx.contract_constants,
         ctx.stack_bindings,
         ctx.types,
         ctx.builder,
@@ -1450,7 +1389,6 @@ fn compile_time_branch_statement<'i>(
     compile_time_op_statement(
         tx_var,
         expr,
-        ctx.env,
         ctx.stack_bindings,
         ctx.types,
         ctx.builder,
@@ -1499,7 +1437,7 @@ fn compile_function_call_statement<'i>(
     if name == "validateOutputState" {
         return compile_validate_output_state_statement(
             args,
-            ctx.env,
+            ctx.contract_constants,
             ctx.stack_bindings,
             ctx.types,
             ctx.builder,
@@ -1521,7 +1459,7 @@ fn compile_function_call_statement<'i>(
         let layout_fields = layout_fields_for_state_object_expr(state_arg, ctx.contract_fields, ctx.structs)?;
         return compile_validate_output_state_with_template_statement(
             args,
-            ctx.env,
+            ctx.contract_constants,
             ctx.stack_bindings,
             ctx.types,
             ctx.builder,
@@ -1594,7 +1532,7 @@ fn compile_assign_statement<'i>(
         let mut stack_depth = 0i64;
         compile_expr(
             &lowered_expr,
-            ctx.env,
+            ctx.contract_constants,
             ctx.stack_bindings,
             ctx.types,
             ctx.builder,
@@ -1831,7 +1769,7 @@ fn compile_read_input_state_statement<'i>(
             )?;
             compile_read_input_state_with_template_validation(
                 args,
-                ctx.env,
+                ctx.contract_constants,
                 ctx.stack_bindings,
                 ctx.types,
                 ctx.builder,
@@ -2054,7 +1992,7 @@ fn compile_read_input_state_with_template_validation(
 #[allow(clippy::too_many_arguments)]
 fn compile_validate_output_state_statement(
     args: &[Expr<'_>],
-    env: &HashMap<String, Expr<'_>>,
+    constants: &HashMap<String, Expr<'_>>,
     stack_bindings: &StackBindings,
     types: &HashMap<String, String>,
     builder: &mut ScriptBuilder,
@@ -2073,7 +2011,7 @@ fn compile_validate_output_state_statement(
 
     let mut stack_depth = compile_encoded_state_object(
         state_expr,
-        env,
+        constants,
         stack_bindings,
         types,
         builder,
@@ -2168,7 +2106,7 @@ fn compile_validate_output_state_statement(
 
     compile_expr(
         output_idx,
-        env,
+        constants,
         stack_bindings,
         types,
         builder,
@@ -2226,7 +2164,7 @@ fn layout_fields_for_state_object_expr<'i>(
 
 fn compile_validate_output_state_with_template_statement(
     args: &[Expr<'_>],
-    env: &HashMap<String, Expr<'_>>,
+    constants: &HashMap<String, Expr<'_>>,
     stack_bindings: &StackBindings,
     types: &HashMap<String, String>,
     builder: &mut ScriptBuilder,
@@ -2251,7 +2189,7 @@ fn compile_validate_output_state_with_template_statement(
 
     compile_expr(
         template_prefix,
-        env,
+        constants,
         stack_bindings,
         types,
         builder,
@@ -2263,7 +2201,7 @@ fn compile_validate_output_state_with_template_statement(
     )?;
     compile_expr(
         template_suffix,
-        env,
+        constants,
         stack_bindings,
         types,
         builder,
@@ -2277,7 +2215,7 @@ fn compile_validate_output_state_with_template_statement(
     stack_depth -= 1;
     compile_expr(
         expected_template_hash,
-        env,
+        constants,
         stack_bindings,
         types,
         builder,
@@ -2293,7 +2231,7 @@ fn compile_validate_output_state_with_template_statement(
     builder.add_op(OpVerify)?;
     stack_depth = compile_encoded_object_with_layout(
         state_expr,
-        env,
+        constants,
         stack_bindings,
         types,
         builder,
@@ -2306,7 +2244,7 @@ fn compile_validate_output_state_with_template_statement(
 
     compile_expr(
         template_prefix,
-        env,
+        constants,
         stack_bindings,
         types,
         builder,
@@ -2322,7 +2260,7 @@ fn compile_validate_output_state_with_template_statement(
 
     compile_expr(
         template_suffix,
-        env,
+        constants,
         stack_bindings,
         types,
         builder,
@@ -2356,7 +2294,7 @@ fn compile_validate_output_state_with_template_statement(
 
     compile_expr(
         output_idx,
-        env,
+        constants,
         stack_bindings,
         types,
         builder,
@@ -2375,7 +2313,7 @@ fn compile_validate_output_state_with_template_statement(
 
 fn compile_encoded_object_with_layout(
     state_expr: &Expr<'_>,
-    env: &HashMap<String, Expr<'_>>,
+    constants: &HashMap<String, Expr<'_>>,
     stack_bindings: &StackBindings,
     types: &HashMap<String, String>,
     builder: &mut ScriptBuilder,
@@ -2412,7 +2350,7 @@ fn compile_encoded_object_with_layout(
         if field.type_ref.array_dims.is_empty() && matches!(field.type_ref.base, TypeBase::Int | TypeBase::Bool) {
             compile_expr(
                 new_value,
-                env,
+                constants,
                 stack_bindings,
                 types,
                 builder,
@@ -2429,7 +2367,7 @@ fn compile_encoded_object_with_layout(
         } else {
             compile_expr(
                 new_value,
-                env,
+                constants,
                 stack_bindings,
                 types,
                 builder,
@@ -2458,7 +2396,7 @@ fn compile_encoded_object_with_layout(
 
 fn compile_encoded_state_object(
     state_expr: &Expr<'_>,
-    env: &HashMap<String, Expr<'_>>,
+    constants: &HashMap<String, Expr<'_>>,
     stack_bindings: &StackBindings,
     types: &HashMap<String, String>,
     builder: &mut ScriptBuilder,
@@ -2474,7 +2412,7 @@ fn compile_encoded_state_object(
         .collect::<Vec<_>>();
     compile_encoded_object_with_layout(
         state_expr,
-        env,
+        constants,
         stack_bindings,
         types,
         builder,
@@ -2496,7 +2434,7 @@ fn compile_if_statement<'i>(
     let mut stack_depth = 0i64;
     compile_expr(
         &condition,
-        ctx.env,
+        ctx.contract_constants,
         ctx.stack_bindings,
         ctx.types,
         ctx.builder,
@@ -2510,12 +2448,10 @@ fn compile_if_statement<'i>(
 
     let original_stack_bindings = ctx.stack_bindings.clone();
 
-    let mut then_env = ctx.env.clone();
     let mut then_types = ctx.types.clone();
     let mut then_stack_bindings = original_stack_bindings.clone();
     compile_block(
         then_branch,
-        &mut then_env,
         ctx.assigned_names,
         ctx.identifier_uses,
         &mut then_types,
@@ -2533,14 +2469,12 @@ fn compile_if_statement<'i>(
         true,
     )?;
 
-    let mut else_env = ctx.env.clone();
     if let Some(else_branch) = else_branch {
         ctx.builder.add_op(OpElse)?;
         let mut else_types = ctx.types.clone();
         let mut else_stack_bindings = original_stack_bindings.clone();
         compile_block(
             else_branch,
-            &mut else_env,
             ctx.assigned_names,
             ctx.identifier_uses,
             &mut else_types,
@@ -2571,7 +2505,6 @@ fn compile_if_statement<'i>(
 fn compile_time_op_statement<'i>(
     tx_var: &TimeVar,
     expr: &Expr<'i>,
-    env: &mut HashMap<String, Expr<'i>>,
     stack_bindings: &StackBindings,
     types: &HashMap<String, String>,
     builder: &mut ScriptBuilder,
@@ -2582,7 +2515,7 @@ fn compile_time_op_statement<'i>(
     let mut stack_depth = 0i64;
     compile_expr(
         expr,
-        env,
+        contract_constants,
         stack_bindings,
         types,
         builder,
@@ -2611,7 +2544,6 @@ fn compile_block_statement<'i>(
 ) -> Result<(), CompilerError> {
     compile_block(
         body,
-        ctx.env,
         ctx.assigned_names,
         ctx.identifier_uses,
         ctx.types,
@@ -2633,7 +2565,6 @@ fn compile_block_statement<'i>(
 #[allow(clippy::too_many_arguments)]
 fn compile_block<'i>(
     statements: &[Statement<'i>],
-    env: &mut HashMap<String, Expr<'i>>,
     assigned_names: &HashSet<String>,
     identifier_uses: &HashMap<String, usize>,
     types: &mut HashMap<String, String>,
@@ -2652,7 +2583,6 @@ fn compile_block<'i>(
 ) -> Result<(), CompilerError> {
     let mut added_stack_locals = Vec::new();
     let mut statement_ctx = CompileStatementContext {
-        env,
         assigned_names,
         identifier_uses,
         types,
@@ -2841,316 +2771,15 @@ fn resolve_expr<'i>(
     }
 }
 
-pub(super) fn resolve_expr_for_runtime<'i>(
-    expr: Expr<'i>,
-    env: &HashMap<String, Expr<'i>>,
-    types: &HashMap<String, String>,
-    visiting: &mut HashSet<String>,
-) -> Result<Expr<'i>, CompilerError> {
-    let preserve_identifier = |name: &str| types.get(name).is_some_and(|type_name| is_array_type(type_name));
-    resolve_expr_with_policy(expr, env, visiting, &preserve_identifier)
-}
-
-fn resolve_return_expr_for_runtime<'i>(
-    expr: Expr<'i>,
-    env: &HashMap<String, Expr<'i>>,
-    stack_bindings: &StackBindings,
-    types: &HashMap<String, String>,
-    visiting: &mut HashSet<String>,
-) -> Result<Expr<'i>, CompilerError> {
-    let preserve_identifier =
-        |name: &str| stack_bindings.contains(name) || types.get(name).is_some_and(|type_name| is_array_type(type_name));
-    resolve_expr_with_policy(expr, env, visiting, &preserve_identifier)
-}
-
-fn resolve_inline_return_expr<'i>(
-    expr: Expr<'i>,
-    env: &HashMap<String, Expr<'i>>,
-    preserved_idents: &HashSet<String>,
-    visiting: &mut HashSet<String>,
-) -> Result<Expr<'i>, CompilerError> {
-    let preserve_identifier = |name: &str| preserved_idents.contains(name);
-    resolve_expr_with_policy(expr, env, visiting, &preserve_identifier)
-}
-
-fn resolve_expr_with_policy<'i, F>(
-    expr: Expr<'i>,
-    env: &HashMap<String, Expr<'i>>,
-    visiting: &mut HashSet<String>,
-    preserve_identifier: &F,
-) -> Result<Expr<'i>, CompilerError>
-where
-    F: Fn(&str) -> bool,
-{
-    let Expr { kind, span } = expr;
-    match kind {
-        ExprKind::Identifier(name) => {
-            if preserve_identifier(&name) {
-                return Ok(Expr::new(ExprKind::Identifier(name), span));
-            }
-            if let Some(value) = env.get(&name) {
-                if !visiting.insert(name.clone()) {
-                    return Err(CompilerError::CyclicIdentifier(name));
-                }
-                let resolved = resolve_expr_with_policy(value.clone(), env, visiting, preserve_identifier)?;
-                visiting.remove(&name);
-                Ok(resolved)
-            } else {
-                Ok(Expr::new(ExprKind::Identifier(name), span))
-            }
-        }
-        ExprKind::Unary { op, expr } => Ok(Expr::new(
-            ExprKind::Unary { op, expr: Box::new(resolve_expr_with_policy(*expr, env, visiting, preserve_identifier)?) },
-            span,
-        )),
-        ExprKind::Binary { op, left, right } => Ok(Expr::new(
-            ExprKind::Binary {
-                op,
-                left: Box::new(resolve_expr_with_policy(*left, env, visiting, preserve_identifier)?),
-                right: Box::new(resolve_expr_with_policy(*right, env, visiting, preserve_identifier)?),
-            },
-            span,
-        )),
-        ExprKind::IfElse { condition, then_expr, else_expr } => Ok(Expr::new(
-            ExprKind::IfElse {
-                condition: Box::new(resolve_expr_with_policy(*condition, env, visiting, preserve_identifier)?),
-                then_expr: Box::new(resolve_expr_with_policy(*then_expr, env, visiting, preserve_identifier)?),
-                else_expr: Box::new(resolve_expr_with_policy(*else_expr, env, visiting, preserve_identifier)?),
-            },
-            span,
-        )),
-        ExprKind::Array(values) => Ok(Expr::new(
-            ExprKind::Array(
-                values.into_iter().map(|value| resolve_expr_with_policy(value, env, visiting, preserve_identifier)).collect::<Result<
-                    Vec<_>,
-                    _,
-                >>(
-                )?,
-            ),
-            span,
-        )),
-        ExprKind::StateObject(fields) => Ok(Expr::new(
-            ExprKind::StateObject(
-                fields
-                    .into_iter()
-                    .map(|field| {
-                        Ok(StateFieldExpr {
-                            name: field.name,
-                            expr: resolve_expr_with_policy(field.expr, env, visiting, preserve_identifier)?,
-                            span: field.span,
-                            name_span: field.name_span,
-                        })
-                    })
-                    .collect::<Result<Vec<_>, CompilerError>>()?,
-            ),
-            span,
-        )),
-        ExprKind::FieldAccess { source, field, field_span } => Ok(Expr::new(
-            ExprKind::FieldAccess {
-                source: Box::new(resolve_expr_with_policy(*source, env, visiting, preserve_identifier)?),
-                field,
-                field_span,
-            },
-            span,
-        )),
-        ExprKind::Call { name, args, name_span } => Ok(Expr::new(
-            ExprKind::Call {
-                name,
-                args: args.into_iter().map(|arg| resolve_expr_with_policy(arg, env, visiting, preserve_identifier)).collect::<Result<
-                    Vec<_>,
-                    _,
-                >>(
-                )?,
-                name_span,
-            },
-            span,
-        )),
-        ExprKind::New { name, args, name_span } => Ok(Expr::new(
-            ExprKind::New {
-                name,
-                args: args.into_iter().map(|arg| resolve_expr_with_policy(arg, env, visiting, preserve_identifier)).collect::<Result<
-                    Vec<_>,
-                    _,
-                >>(
-                )?,
-                name_span,
-            },
-            span,
-        )),
-        ExprKind::Split { source, index, part, span: split_span } => Ok(Expr::new(
-            ExprKind::Split {
-                source: Box::new(resolve_expr_with_policy(*source, env, visiting, preserve_identifier)?),
-                index: Box::new(resolve_expr_with_policy(*index, env, visiting, preserve_identifier)?),
-                part,
-                span: split_span,
-            },
-            span,
-        )),
-        ExprKind::ArrayIndex { source, index } => Ok(Expr::new(
-            ExprKind::ArrayIndex {
-                source: Box::new(resolve_expr_with_policy(*source, env, visiting, preserve_identifier)?),
-                index: Box::new(resolve_expr_with_policy(*index, env, visiting, preserve_identifier)?),
-            },
-            span,
-        )),
-        ExprKind::Introspection { kind, index, field_span } => Ok(Expr::new(
-            ExprKind::Introspection {
-                kind,
-                index: Box::new(resolve_expr_with_policy(*index, env, visiting, preserve_identifier)?),
-                field_span,
-            },
-            span,
-        )),
-        ExprKind::UnarySuffix { source, kind, span: suffix_span } => Ok(Expr::new(
-            ExprKind::UnarySuffix {
-                source: Box::new(resolve_expr_with_policy(*source, env, visiting, preserve_identifier)?),
-                kind,
-                span: suffix_span,
-            },
-            span,
-        )),
-        ExprKind::Slice { source, start, end, span: slice_span } => Ok(Expr::new(
-            ExprKind::Slice {
-                source: Box::new(resolve_expr_with_policy(*source, env, visiting, preserve_identifier)?),
-                start: Box::new(resolve_expr_with_policy(*start, env, visiting, preserve_identifier)?),
-                end: Box::new(resolve_expr_with_policy(*end, env, visiting, preserve_identifier)?),
-                span: slice_span,
-            },
-            span,
-        )),
-        other => Ok(Expr::new(other, span)),
-    }
-}
-
-/// Replace `target` identifiers in `expr` with `replacement`.
-///
-/// Example: for `x = x + 1`, this rewrites the right side to
-/// `<previous x> + 1` before `resolve_expr` runs.
-pub(super) fn replace_identifier<'i>(expr: &Expr<'i>, target: &str, replacement: &Expr<'i>) -> Expr<'i> {
-    let span = expr.span;
-    match &expr.kind {
-        ExprKind::Identifier(name) if name == target => replacement.clone(),
-        ExprKind::Identifier(_) => expr.clone(),
-        ExprKind::Unary { op, expr: inner } => {
-            Expr::new(ExprKind::Unary { op: *op, expr: Box::new(replace_identifier(inner, target, replacement)) }, span)
-        }
-        ExprKind::Binary { op, left, right } => Expr::new(
-            ExprKind::Binary {
-                op: *op,
-                left: Box::new(replace_identifier(left, target, replacement)),
-                right: Box::new(replace_identifier(right, target, replacement)),
-            },
-            span,
-        ),
-        ExprKind::Array(values) => {
-            Expr::new(ExprKind::Array(values.iter().map(|value| replace_identifier(value, target, replacement)).collect()), span)
-        }
-        ExprKind::StateObject(fields) => Expr::new(
-            ExprKind::StateObject(
-                fields
-                    .iter()
-                    .map(|field| StateFieldExpr {
-                        name: field.name.clone(),
-                        expr: replace_identifier(&field.expr, target, replacement),
-                        span: field.span,
-                        name_span: field.name_span,
-                    })
-                    .collect(),
-            ),
-            span,
-        ),
-        ExprKind::FieldAccess { source, field, field_span } => Expr::new(
-            ExprKind::FieldAccess {
-                source: Box::new(replace_identifier(source, target, replacement)),
-                field: field.clone(),
-                field_span: *field_span,
-            },
-            span,
-        ),
-        ExprKind::Call { name, args, name_span } => Expr::new(
-            ExprKind::Call {
-                name: name.clone(),
-                args: args.iter().map(|arg| replace_identifier(arg, target, replacement)).collect(),
-                name_span: *name_span,
-            },
-            span,
-        ),
-        ExprKind::New { name, args, name_span } => Expr::new(
-            ExprKind::New {
-                name: name.clone(),
-                args: args.iter().map(|arg| replace_identifier(arg, target, replacement)).collect(),
-                name_span: *name_span,
-            },
-            span,
-        ),
-        ExprKind::Split { source, index, part, span: split_span } => Expr::new(
-            ExprKind::Split {
-                source: Box::new(replace_identifier(source, target, replacement)),
-                index: Box::new(replace_identifier(index, target, replacement)),
-                part: *part,
-                span: *split_span,
-            },
-            span,
-        ),
-        ExprKind::Slice { source, start, end, span: slice_span } => Expr::new(
-            ExprKind::Slice {
-                source: Box::new(replace_identifier(source, target, replacement)),
-                start: Box::new(replace_identifier(start, target, replacement)),
-                end: Box::new(replace_identifier(end, target, replacement)),
-                span: *slice_span,
-            },
-            span,
-        ),
-        ExprKind::ArrayIndex { source, index } => Expr::new(
-            ExprKind::ArrayIndex {
-                source: Box::new(replace_identifier(source, target, replacement)),
-                index: Box::new(replace_identifier(index, target, replacement)),
-            },
-            span,
-        ),
-        ExprKind::IfElse { condition, then_expr, else_expr } => Expr::new(
-            ExprKind::IfElse {
-                condition: Box::new(replace_identifier(condition, target, replacement)),
-                then_expr: Box::new(replace_identifier(then_expr, target, replacement)),
-                else_expr: Box::new(replace_identifier(else_expr, target, replacement)),
-            },
-            span,
-        ),
-        ExprKind::Introspection { kind, index, field_span } => Expr::new(
-            ExprKind::Introspection {
-                kind: *kind,
-                index: Box::new(replace_identifier(index, target, replacement)),
-                field_span: *field_span,
-            },
-            span,
-        ),
-        ExprKind::UnarySuffix { source, kind, span: suffix_span } => Expr::new(
-            ExprKind::UnarySuffix {
-                source: Box::new(replace_identifier(source, target, replacement)),
-                kind: *kind,
-                span: *suffix_span,
-            },
-            span,
-        ),
-        ExprKind::Int(_)
-        | ExprKind::Bool(_)
-        | ExprKind::Byte(_)
-        | ExprKind::String(_)
-        | ExprKind::DateLiteral(_)
-        | ExprKind::NumberWithUnit { .. }
-        | ExprKind::Nullary(_) => expr.clone(),
-    }
-}
-
 struct CompilationScope<'a, 'i> {
-    env: &'a HashMap<String, Expr<'i>>,
+    constants: &'a HashMap<String, Expr<'i>>,
     stack_bindings: &'a StackBindings,
     types: &'a HashMap<String, String>,
 }
 
 pub(super) fn compile_expr<'i>(
     expr: &Expr<'i>,
-    env: &HashMap<String, Expr<'i>>,
+    constants: &HashMap<String, Expr<'i>>,
     stack_bindings: &StackBindings,
     types: &HashMap<String, String>,
     builder: &mut ScriptBuilder,
@@ -3160,7 +2789,7 @@ pub(super) fn compile_expr<'i>(
     script_size: Option<i64>,
     contract_constants: &HashMap<String, Expr<'i>>,
 ) -> Result<(), CompilerError> {
-    let scope = CompilationScope { env, stack_bindings, types };
+    let scope = CompilationScope { constants, stack_bindings, types };
     let mut ctx = CompileExprContext { scope, builder, options, visiting, stack_depth, script_size, contract_constants };
     match &expr.kind {
         ExprKind::Int(value) => compile_int_expr(&mut ctx, *value),
@@ -3200,7 +2829,7 @@ struct CompileExprContext<'a, 'i> {
 fn compile_expr_with_context<'i>(ctx: &mut CompileExprContext<'_, 'i>, expr: &Expr<'i>) -> Result<(), CompilerError> {
     compile_expr(
         expr,
-        ctx.scope.env,
+        ctx.scope.constants,
         ctx.scope.stack_bindings,
         ctx.scope.types,
         ctx.builder,
@@ -3236,7 +2865,7 @@ fn compile_array_expr<'i>(ctx: &mut CompileExprContext<'_, 'i>, values: &[Expr<'
         *ctx.stack_depth += 1;
         return Ok(());
     }
-    let inferred_type = infer_fixed_array_runtime_type(values, ctx.scope.env, ctx.scope.types)
+    let inferred_type = infer_fixed_array_runtime_type(values, ctx.scope.constants, ctx.scope.types)
         .ok_or_else(|| CompilerError::Unsupported("array literal type cannot be inferred".to_string()))?;
     if let Ok(encoded) = encode_array_literal(values, &inferred_type) {
         ctx.builder.add_data(&encoded)?;
@@ -3291,14 +2920,14 @@ fn compile_array_literal_element<'i>(
 
 fn infer_fixed_array_runtime_type<'i>(
     values: &[Expr<'i>],
-    env: &HashMap<String, Expr<'i>>,
+    constants: &HashMap<String, Expr<'i>>,
     types: &HashMap<String, String>,
 ) -> Option<String> {
     infer_fixed_array_literal_type(values).or_else(|| {
-        let first_type = infer_debug_expr_value_type(values.first()?, env, types, &mut HashSet::new()).ok()?;
+        let first_type = infer_debug_expr_value_type(values.first()?, constants, types, &mut HashSet::new()).ok()?;
         fixed_type_size(&first_type)?;
         if values.iter().skip(1).all(|value| {
-            infer_debug_expr_value_type(value, env, types, &mut HashSet::new()).ok().as_deref() == Some(first_type.as_str())
+            infer_debug_expr_value_type(value, constants, types, &mut HashSet::new()).ok().as_deref() == Some(first_type.as_str())
         }) {
             Some(format!("{first_type}[]"))
         } else {
@@ -3329,19 +2958,7 @@ fn compile_identifier_expr<'i>(ctx: &mut CompileExprContext<'_, 'i>, name: &str)
         ctx.visiting.remove(name);
         return Ok(());
     }
-    if let Some(resolved_expr) = ctx.scope.env.get(name) {
-        if let Some(type_name) = ctx.scope.types.get(name) {
-            if let ExprKind::Array(values) = &resolved_expr.kind {
-                if is_array_type(type_name) {
-                    if let Ok(encoded) = encode_array_literal(values, type_name) {
-                        ctx.builder.add_data(&encoded)?;
-                        *ctx.stack_depth += 1;
-                        ctx.visiting.remove(name);
-                        return Ok(());
-                    }
-                }
-            }
-        }
+    if let Some(resolved_expr) = ctx.scope.constants.get(name) {
         compile_expr_with_context(ctx, resolved_expr)?;
         ctx.visiting.remove(name);
         return Ok(());
@@ -3480,26 +3097,29 @@ fn compile_binary_expr<'i>(
     left: &Expr<'i>,
     right: &Expr<'i>,
 ) -> Result<(), CompilerError> {
-    let left_cmp_type = infer_expr_type_ref_for_comparison(left, ctx.scope.env, ctx.scope.types);
+    let left_cmp_type = infer_expr_type_ref_for_comparison(left, ctx.scope.constants, ctx.scope.types);
     let coerced_right = if matches!(op, BinaryOp::Eq | BinaryOp::Ne | BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge) {
         coerce_rhs_byte_literal_for_comparison(left_cmp_type.as_ref(), right)
     } else {
         right.clone()
     };
-    let left_value_type = infer_debug_expr_value_type(left, ctx.scope.env, ctx.scope.types, &mut HashSet::new()).ok();
-    let right_value_type = infer_debug_expr_value_type(&coerced_right, ctx.scope.env, ctx.scope.types, &mut HashSet::new()).ok();
+    let left_value_type = infer_debug_expr_value_type(left, ctx.scope.constants, ctx.scope.types, &mut HashSet::new()).ok();
+    let right_value_type =
+        infer_debug_expr_value_type(&coerced_right, ctx.scope.constants, ctx.scope.types, &mut HashSet::new()).ok();
     debug_assert!(
         !matches!(op, BinaryOp::Add) || (left_value_type.as_deref() != Some("byte") && right_value_type.as_deref() != Some("byte")),
         "type_check must reject byte addition"
     );
     let bytes_eq = matches!(op, BinaryOp::Eq | BinaryOp::Ne)
-        && (expr_is_bytes(left, ctx.scope.env, ctx.scope.types) || expr_is_bytes(&coerced_right, ctx.scope.env, ctx.scope.types));
+        && (expr_is_bytes(left, ctx.scope.constants, ctx.scope.types)
+            || expr_is_bytes(&coerced_right, ctx.scope.constants, ctx.scope.types));
     let bytes_add = matches!(op, BinaryOp::Add)
-        && (expr_is_bytes(left, ctx.scope.env, ctx.scope.types) || expr_is_bytes(right, ctx.scope.env, ctx.scope.types));
+        && (expr_is_bytes(left, ctx.scope.constants, ctx.scope.types)
+            || expr_is_bytes(right, ctx.scope.constants, ctx.scope.types));
     if bytes_add {
         compile_concat_operand(
             left,
-            ctx.scope.env,
+            ctx.scope.constants,
             ctx.scope.stack_bindings,
             ctx.scope.types,
             ctx.builder,
@@ -3511,7 +3131,7 @@ fn compile_binary_expr<'i>(
         )?;
         compile_concat_operand(
             right,
-            ctx.scope.env,
+            ctx.scope.constants,
             ctx.scope.stack_bindings,
             ctx.scope.types,
             ctx.builder,
@@ -3594,7 +3214,7 @@ fn compile_split_expr<'i>(
         source,
         index,
         part,
-        ctx.scope.env,
+        ctx.scope.constants,
         ctx.scope.stack_bindings,
         ctx.scope.types,
         ctx.builder,
@@ -3614,7 +3234,7 @@ fn compile_unary_suffix_expr<'i>(
     match kind {
         UnarySuffixKind::Length => compile_length_expr(
             source,
-            ctx.scope.env,
+            ctx.scope.constants,
             ctx.scope.stack_bindings,
             ctx.scope.types,
             ctx.builder,
@@ -3635,9 +3255,10 @@ fn compile_array_index_expr<'i>(
 ) -> Result<(), CompilerError> {
     let resolved_source = match source {
         Expr { kind: ExprKind::Identifier(_), .. } => source.clone(),
-        _ => resolve_expr(source.clone(), ctx.scope.env, ctx.visiting)?,
+        _ => resolve_expr(source.clone(), ctx.scope.constants, ctx.visiting)?,
     };
-    let source_type = infer_debug_expr_value_type(&resolved_source, ctx.scope.env, ctx.scope.types, &mut HashSet::new())?;
+    let source_type =
+        infer_debug_expr_value_type(&resolved_source, ctx.scope.constants, ctx.scope.types, &mut HashSet::new())?;
     let element_type = array_element_type(&source_type)
         .ok_or_else(|| CompilerError::Unsupported(format!("array index requires array source, got {source_type}")))?;
     let element_size = fixed_type_size(&element_type)
@@ -4006,7 +3627,7 @@ struct CompileCallContext<'a, 'i> {
 fn compile_call_arg_with_context<'i>(ctx: &mut CompileCallContext<'_, 'i>, arg: &Expr<'i>) -> Result<(), CompilerError> {
     compile_expr(
         arg,
-        ctx.scope.env,
+        ctx.scope.constants,
         ctx.scope.stack_bindings,
         ctx.scope.types,
         ctx.builder,
@@ -4067,14 +3688,14 @@ fn compile_bytes_call<'i>(ctx: &mut CompileCallContext<'_, 'i>, args: &[Expr<'i>
             Ok(())
         }
         ExprKind::Identifier(name) => {
-            if let Some(expr) = ctx.scope.env.get(name) {
+            if let Some(expr) = ctx.scope.constants.get(name) {
                 if let ExprKind::String(value) = &expr.kind {
                     ctx.builder.add_data(value.as_bytes())?;
                     *ctx.stack_depth += 1;
                     return Ok(());
                 }
             }
-            if expr_is_bytes(&args[0], ctx.scope.env, ctx.scope.types) {
+            if expr_is_bytes(&args[0], ctx.scope.constants, ctx.scope.types) {
                 compile_call_arg_with_context(ctx, &args[0])?;
                 return Ok(());
             }
@@ -4086,7 +3707,7 @@ fn compile_bytes_call<'i>(ctx: &mut CompileCallContext<'_, 'i>, args: &[Expr<'i>
             Ok(())
         }
         _ => {
-            if expr_is_bytes(&args[0], ctx.scope.env, ctx.scope.types) {
+            if expr_is_bytes(&args[0], ctx.scope.constants, ctx.scope.types) {
                 compile_call_arg_with_context(ctx, &args[0])?;
                 Ok(())
             } else {
@@ -4107,7 +3728,7 @@ fn compile_length_call<'i>(ctx: &mut CompileCallContext<'_, 'i>, args: &[Expr<'i
     }
     compile_length_expr(
         &args[0],
-        ctx.scope.env,
+        ctx.scope.constants,
         ctx.scope.stack_bindings,
         ctx.scope.types,
         ctx.builder,
@@ -4154,7 +3775,8 @@ fn compile_byte_sequence_cast_call<'i>(
     if args.len() != 1 {
         return Err(CompilerError::Unsupported(format!("{name}() expects a single argument")));
     }
-    let source_type = infer_debug_expr_value_type(&args[0], ctx.scope.env, ctx.scope.types, &mut HashSet::new()).ok();
+    let source_type =
+        infer_debug_expr_value_type(&args[0], ctx.scope.constants, ctx.scope.types, &mut HashSet::new()).ok();
     if let Some(source_type) = source_type.as_deref() {
         if let Some(source_size) = byte_sequence_cast_size(source_type) {
             if let Some(source_size) = source_size {
@@ -4237,7 +3859,7 @@ fn compile_opcode_call<'i>(
     for arg in args {
         compile_expr(
             arg,
-            scope.env,
+            scope.constants,
             scope.stack_bindings,
             scope.types,
             builder,
@@ -4255,7 +3877,7 @@ fn compile_opcode_call<'i>(
 
 fn compile_concat_operand<'i>(
     expr: &Expr<'i>,
-    env: &HashMap<String, Expr<'i>>,
+    constants: &HashMap<String, Expr<'i>>,
     stack_bindings: &StackBindings,
     types: &HashMap<String, String>,
     builder: &mut ScriptBuilder,
@@ -4265,8 +3887,19 @@ fn compile_concat_operand<'i>(
     script_size: Option<i64>,
     contract_constants: &HashMap<String, Expr<'i>>,
 ) -> Result<(), CompilerError> {
-    compile_expr(expr, env, stack_bindings, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
-    if !expr_is_bytes(expr, env, types) {
+    compile_expr(
+        expr,
+        constants,
+        stack_bindings,
+        types,
+        builder,
+        options,
+        visiting,
+        stack_depth,
+        script_size,
+        contract_constants,
+    )?;
+    if !expr_is_bytes(expr, constants, types) {
         builder.add_i64(1)?;
         *stack_depth += 1;
         builder.add_op(OpNum2Bin)?;

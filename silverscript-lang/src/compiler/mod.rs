@@ -18,6 +18,7 @@ mod debug_value_types;
 mod r#for;
 mod infer_array;
 mod inline_functions;
+mod locals;
 mod stack_bindings;
 mod static_check;
 mod structs;

@@ -3145,6 +3145,8 @@ fn compiles_int_array_length_to_expected_script() {
     let expected = ScriptBuilder::new()
         .add_data(&[])
         .unwrap()
+        .add_op(OpDup)
+        .unwrap()
         .add_op(OpSize)
         .unwrap()
         .add_op(OpSwap)
@@ -3160,6 +3162,12 @@ fn compiles_int_array_length_to_expected_script() {
         .add_op(OpNumEqual)
         .unwrap()
         .add_op(OpVerify)
+        .unwrap()
+        .add_i64(0)
+        .unwrap()
+        .add_op(OpRoll)
+        .unwrap()
+        .add_op(OpDrop)
         .unwrap()
         .add_op(OpTrue)
         .unwrap()
@@ -8114,9 +8122,8 @@ fn inline_function_argument_expression_is_stored_once_and_reused() {
     assert!(result_err.is_err(), "stored inline argument should still enforce the second require");
 }
 
-// TODO: Optimize it so in require(z > 1) it'll pick y from the stack, without adding an extra variable.
 #[test]
-fn inline_argument_alias_snapshots_reused_local_per_call() {
+fn inline_argument_alias_reuses_existing_local_without_extra_snapshot() {
     let source = r#"
         contract InlineAliasReuse() {
             function f(int z) {
@@ -8139,16 +8146,11 @@ fn inline_argument_alias_snapshots_reused_local_per_call() {
     let selector = selector_for(&compiled, "main");
 
     let body = ScriptBuilder::new()
-        // Copy `x` twice and compute `x * x`, leaving the new local `y` on stack.
         .add_op(OpDup)
         .unwrap()
         .add_op(OpOver)
         .unwrap()
         .add_op(OpMul)
-        .unwrap()
-        // Inline `f(y)`: snapshot `y` into a dedicated alias slot for the
-        // inlined callee.
-        .add_op(OpDup)
         .unwrap()
         .add_op(OpDup)
         .unwrap()
@@ -8158,9 +8160,6 @@ fn inline_argument_alias_snapshots_reused_local_per_call() {
         .unwrap()
         .add_op(OpVerify)
         .unwrap()
-        // Inline `g(y)`: snapshot `y` again for the second inlined call.
-        .add_op(OpOver)
-        .unwrap()
         .add_op(OpDup)
         .unwrap()
         .add_i64(10)
@@ -8168,19 +8167,6 @@ fn inline_argument_alias_snapshots_reused_local_per_call() {
         .add_op(OpLessThan)
         .unwrap()
         .add_op(OpVerify)
-        .unwrap()
-        // Drop the second alias, the first alias, the reused local `y`, then `x`.
-        .add_i64(0)
-        .unwrap()
-        .add_op(OpRoll)
-        .unwrap()
-        .add_op(OpDrop)
-        .unwrap()
-        .add_i64(0)
-        .unwrap()
-        .add_op(OpRoll)
-        .unwrap()
-        .add_op(OpDrop)
         .unwrap()
         .add_i64(0)
         .unwrap()
@@ -8197,8 +8183,8 @@ fn inline_argument_alias_snapshots_reused_local_per_call() {
     let expected = wrap_with_dispatch(body, selector);
 
     assert_eq!(compiled.script, expected);
-    assert_eq!(compiled.script.iter().copied().filter(|op| *op == OpDup).count(), 4);
-    assert_eq!(compiled.script.iter().copied().filter(|op| *op == OpOver).count(), 2);
+    assert_eq!(compiled.script.iter().copied().filter(|op| *op == OpDup).count(), 3);
+    assert_eq!(compiled.script.iter().copied().filter(|op| *op == OpOver).count(), 1);
     assert_eq!(compiled.script.iter().copied().filter(|op| *op == OpPick).count(), 0);
     assert_eq!(compiled.script.iter().copied().filter(|op| *op == OpMul).count(), 1);
 
@@ -8234,9 +8220,6 @@ fn inline_argument_alias_snapshots_entrypoint_param_once_per_inlined_call() {
     let selector = selector_for(&compiled, "main");
 
     let body = ScriptBuilder::new()
-        // Inline `f(y)`: snapshot the entrypoint param into a dedicated alias.
-        .add_op(OpDup)
-        .unwrap()
         .add_op(OpDup)
         .unwrap()
         .add_i64(1)
@@ -8245,9 +8228,6 @@ fn inline_argument_alias_snapshots_entrypoint_param_once_per_inlined_call() {
         .unwrap()
         .add_op(OpVerify)
         .unwrap()
-        // Inline `g(y)`: snapshot `y` again for the second inlined call.
-        .add_op(OpOver)
-        .unwrap()
         .add_op(OpDup)
         .unwrap()
         .add_i64(10)
@@ -8255,19 +8235,6 @@ fn inline_argument_alias_snapshots_entrypoint_param_once_per_inlined_call() {
         .add_op(OpLessThan)
         .unwrap()
         .add_op(OpVerify)
-        .unwrap()
-        // Drop the second alias, the first alias, then the original `y`.
-        .add_i64(0)
-        .unwrap()
-        .add_op(OpRoll)
-        .unwrap()
-        .add_op(OpDrop)
-        .unwrap()
-        .add_i64(0)
-        .unwrap()
-        .add_op(OpRoll)
-        .unwrap()
-        .add_op(OpDrop)
         .unwrap()
         .add_op(OpDrop)
         .unwrap()
@@ -8278,10 +8245,10 @@ fn inline_argument_alias_snapshots_entrypoint_param_once_per_inlined_call() {
     let expected = wrap_with_dispatch(body, selector);
 
     assert_eq!(compiled.script, expected);
-    assert_eq!(compiled.script.iter().copied().filter(|op| *op == OpDup).count(), 3);
-    assert_eq!(compiled.script.iter().copied().filter(|op| *op == OpOver).count(), 1);
+    assert_eq!(compiled.script.iter().copied().filter(|op| *op == OpDup).count(), 2);
+    assert_eq!(compiled.script.iter().copied().filter(|op| *op == OpOver).count(), 0);
     assert_eq!(compiled.script.iter().copied().filter(|op| *op == OpPick).count(), 0);
-    assert_eq!(compiled.script.iter().copied().filter(|op| *op == OpDrop).count(), 3);
+    assert_eq!(compiled.script.iter().copied().filter(|op| *op == OpDrop).count(), 1);
 
     let sigscript_ok = compiled.build_sig_script("main", vec![Expr::int(2)]).expect("sigscript builds");
     let result_ok = run_script_with_sigscript(compiled.script.clone(), sigscript_ok);
@@ -8309,14 +8276,12 @@ fn local_alias_snapshots_existing_stack_value_once() {
     let selector = selector_for(&compiled, "main");
 
     let body = ScriptBuilder::new()
-        // Copy `x` twice and compute `x * x`, leaving the reused local `y` on stack.
         .add_op(OpDup)
         .unwrap()
         .add_op(OpOver)
         .unwrap()
         .add_op(OpMul)
         .unwrap()
-        // First `require(y > 1)` reads the stored `y` value.
         .add_op(OpDup)
         .unwrap()
         .add_i64(1)
@@ -8325,9 +8290,6 @@ fn local_alias_snapshots_existing_stack_value_once() {
         .unwrap()
         .add_op(OpVerify)
         .unwrap()
-        // `int z = y` snapshots the current `y` value so the alias is frozen.
-        .add_op(OpDup)
-        .unwrap()
         .add_op(OpDup)
         .unwrap()
         .add_i64(1)
@@ -8335,13 +8297,6 @@ fn local_alias_snapshots_existing_stack_value_once() {
         .add_op(OpGreaterThan)
         .unwrap()
         .add_op(OpVerify)
-        .unwrap()
-        // Drop `z`, then `y`, then the original entrypoint param `x`.
-        .add_i64(0)
-        .unwrap()
-        .add_op(OpRoll)
-        .unwrap()
-        .add_op(OpDrop)
         .unwrap()
         .add_i64(0)
         .unwrap()
@@ -8359,7 +8314,7 @@ fn local_alias_snapshots_existing_stack_value_once() {
 
     assert_eq!(compiled.script, expected);
     assert_eq!(compiled.script.iter().copied().filter(|op| *op == OpMul).count(), 1);
-    assert_eq!(compiled.script.iter().copied().filter(|op| *op == OpDup).count(), 4);
+    assert_eq!(compiled.script.iter().copied().filter(|op| *op == OpDup).count(), 3);
     assert_eq!(compiled.script.iter().copied().filter(|op| *op == OpOver).count(), 1);
     assert_eq!(compiled.script.iter().copied().filter(|op| *op == OpPick).count(), 0);
 
@@ -8495,7 +8450,8 @@ fn rejects_using_block_local_outside_its_scope() {
         }
     "#;
 
-    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("block-local x should not be visible after the block");
+    let err =
+        compile_contract(source, &[], CompileOptions::default()).expect_err("block-local x should not be visible after the block");
     assert!(err.to_string().contains("undefined identifier"), "unexpected error: {err}");
 }
 
