@@ -1,15 +1,11 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::ast::{ContractAst, Expr, ExprKind, FunctionAst, Statement, StateFieldExpr, TypeBase, TypeRef};
+use crate::ast::{ContractAst, Expr, ExprKind, FunctionAst, StateFieldExpr, Statement, TypeBase, TypeRef};
 
 use super::CompilerError;
 
 pub(super) fn lower_local_aliases<'i>(contract: &ContractAst<'i>) -> Result<ContractAst<'i>, CompilerError> {
-    let functions = contract
-        .functions
-        .iter()
-        .map(lower_function_local_aliases)
-        .collect::<Result<Vec<_>, _>>()?;
+    let functions = contract.functions.iter().map(lower_function_local_aliases).collect::<Result<Vec<_>, _>>()?;
 
     Ok(ContractAst { functions, ..contract.clone() })
 }
@@ -32,10 +28,18 @@ fn lower_statements<'i>(
 
     for stmt in statements {
         match stmt {
-            Statement::VariableDefinition { type_ref, modifiers, name, expr: Some(expr), span, type_span, modifier_spans, name_span }
-                if !assigned_names.contains(name)
-                    && identifier_uses.get(name).copied().unwrap_or(0) <= 1
-                    && !expr_references_any(expr, assigned_names) =>
+            Statement::VariableDefinition {
+                type_ref,
+                modifiers,
+                name,
+                expr: Some(expr),
+                span,
+                type_span,
+                modifier_spans,
+                name_span,
+            } if !assigned_names.contains(name)
+                && identifier_uses.get(name).copied().unwrap_or(0) <= 1
+                && !expr_references_any(expr, assigned_names) =>
             {
                 let lowered_expr = coerce_expr_for_declared_scalar_type(substitute_expr(expr, &local_aliases)?, type_ref);
                 local_aliases.insert(name.clone(), lowered_expr);
@@ -54,7 +58,18 @@ fn lower_statements<'i>(
                     name_span: *name_span,
                 });
             }
-            Statement::TupleAssignment { left_type_ref, left_name, right_type_ref, right_name, expr, span, left_type_span, left_name_span, right_type_span, right_name_span } => {
+            Statement::TupleAssignment {
+                left_type_ref,
+                left_name,
+                right_type_ref,
+                right_name,
+                expr,
+                span,
+                left_type_span,
+                left_name_span,
+                right_type_span,
+                right_name_span,
+            } => {
                 local_aliases.remove(left_name);
                 local_aliases.remove(right_name);
                 lowered.push(Statement::TupleAssignment {
@@ -113,7 +128,11 @@ fn lower_statements<'i>(
                 for binding in bindings {
                     local_aliases.remove(&binding.name);
                 }
-                lowered.push(Statement::StructDestructure { bindings: bindings.clone(), expr: substitute_expr(expr, &local_aliases)?, span: *span });
+                lowered.push(Statement::StructDestructure {
+                    bindings: bindings.clone(),
+                    expr: substitute_expr(expr, &local_aliases)?,
+                    span: *span,
+                });
             }
             Statement::Assign { name, expr, span, name_span } => {
                 local_aliases.remove(name);
@@ -212,9 +231,10 @@ fn substitute_expr<'i>(expr: &Expr<'i>, aliases: &HashMap<String, Expr<'i>>) -> 
             },
             span,
         ),
-        ExprKind::Array(values) => {
-            Expr::new(ExprKind::Array(values.iter().map(|value| substitute_expr(value, aliases)).collect::<Result<Vec<_>, _>>()?), span)
-        }
+        ExprKind::Array(values) => Expr::new(
+            ExprKind::Array(values.iter().map(|value| substitute_expr(value, aliases)).collect::<Result<Vec<_>, _>>()?),
+            span,
+        ),
         ExprKind::StateObject(fields) => Expr::new(
             ExprKind::StateObject(
                 fields
@@ -231,10 +251,9 @@ fn substitute_expr<'i>(expr: &Expr<'i>, aliases: &HashMap<String, Expr<'i>>) -> 
             ),
             span,
         ),
-        ExprKind::FieldAccess { source, field, field_span } => Expr::new(
-            ExprKind::FieldAccess { source: Box::new(substitute_expr(&source, aliases)?), field, field_span },
-            span,
-        ),
+        ExprKind::FieldAccess { source, field, field_span } => {
+            Expr::new(ExprKind::FieldAccess { source: Box::new(substitute_expr(&source, aliases)?), field, field_span }, span)
+        }
         ExprKind::Call { name, args, name_span } => Expr::new(
             ExprKind::Call {
                 name,
@@ -270,10 +289,9 @@ fn substitute_expr<'i>(expr: &Expr<'i>, aliases: &HashMap<String, Expr<'i>>) -> 
         ExprKind::Introspection { kind, index, field_span } => {
             Expr::new(ExprKind::Introspection { kind, index: Box::new(substitute_expr(&index, aliases)?), field_span }, span)
         }
-        ExprKind::UnarySuffix { source, kind, span: suffix_span } => Expr::new(
-            ExprKind::UnarySuffix { source: Box::new(substitute_expr(&source, aliases)?), kind, span: suffix_span },
-            span,
-        ),
+        ExprKind::UnarySuffix { source, kind, span: suffix_span } => {
+            Expr::new(ExprKind::UnarySuffix { source: Box::new(substitute_expr(&source, aliases)?), kind, span: suffix_span }, span)
+        }
         ExprKind::Slice { source, start, end, span: slice_span } => Expr::new(
             ExprKind::Slice {
                 source: Box::new(substitute_expr(&source, aliases)?),

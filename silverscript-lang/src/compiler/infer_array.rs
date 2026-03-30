@@ -132,16 +132,18 @@ fn lower_statement<'i>(
                 .ok_or_else(|| CompilerError::Unsupported(format!("cannot infer fixed array size from variable '{}'", name)))?;
             types.insert(name.clone(), type_name_from_ref(&lowered_type));
             Ok(match statement {
-                Statement::VariableDefinition { modifiers, span, type_span, modifier_spans, name_span, .. } => Statement::VariableDefinition {
-                    type_ref: lowered_type,
-                    modifiers: modifiers.clone(),
-                    name: name.clone(),
-                    expr: expr.clone(),
-                    span: *span,
-                    type_span: *type_span,
-                    modifier_spans: modifier_spans.clone(),
-                    name_span: *name_span,
-                },
+                Statement::VariableDefinition { modifiers, span, type_span, modifier_spans, name_span, .. } => {
+                    Statement::VariableDefinition {
+                        type_ref: lowered_type,
+                        modifiers: modifiers.clone(),
+                        name: name.clone(),
+                        expr: expr.clone(),
+                        span: *span,
+                        type_span: *type_span,
+                        modifier_spans: modifier_spans.clone(),
+                        name_span: *name_span,
+                    }
+                }
                 _ => unreachable!(),
             })
         }
@@ -149,8 +151,9 @@ fn lower_statement<'i>(
             let lowered_bindings = bindings
                 .iter()
                 .map(|binding| {
-                    let lowered_type = infer_type_ref(&binding.type_ref, None, types, constants)
-                        .ok_or_else(|| CompilerError::Unsupported(format!("cannot infer fixed array size from binding '{}'", binding.name)))?;
+                    let lowered_type = infer_type_ref(&binding.type_ref, None, types, constants).ok_or_else(|| {
+                        CompilerError::Unsupported(format!("cannot infer fixed array size from binding '{}'", binding.name))
+                    })?;
                     types.insert(binding.name.clone(), type_name_from_ref(&lowered_type));
                     Ok(ParamAst { type_ref: lowered_type, ..binding.clone() })
                 })

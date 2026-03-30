@@ -53,10 +53,7 @@ impl<'i> Inliner<'i> {
             scope.insert(param.name.clone(), param.name.clone());
         }
 
-        Ok(FunctionAst {
-            body: self.lower_block(&function.body, &mut scope, function_index)?,
-            ..function.clone()
-        })
+        Ok(FunctionAst { body: self.lower_block(&function.body, &mut scope, function_index)?, ..function.clone() })
     }
 
     fn lower_block(
@@ -308,7 +305,11 @@ impl<'i> Inliner<'i> {
             return Err(CompilerError::Unsupported("functions may only call earlier-defined functions".to_string()));
         }
         if function.params.len() != args.len() {
-            return Err(CompilerError::Unsupported(format!("function '{}' expects {} arguments", function.name, function.params.len())));
+            return Err(CompilerError::Unsupported(format!(
+                "function '{}' expects {} arguments",
+                function.name,
+                function.params.len()
+            )));
         }
 
         let mut local_scope = HashMap::new();
@@ -408,11 +409,9 @@ impl<'i> Inliner<'i> {
                     else_expr: Box::new(self.rename_expr(else_expr, scope)?),
                 },
                 ExprKind::Nullary(op) => ExprKind::Nullary(*op),
-                ExprKind::Introspection { kind, index, field_span } => ExprKind::Introspection {
-                    kind: *kind,
-                    index: Box::new(self.rename_expr(index, scope)?),
-                    field_span: *field_span,
-                },
+                ExprKind::Introspection { kind, index, field_span } => {
+                    ExprKind::Introspection { kind: *kind, index: Box::new(self.rename_expr(index, scope)?), field_span: *field_span }
+                }
                 ExprKind::StateObject(fields) => ExprKind::StateObject(
                     fields
                         .iter()
@@ -432,11 +431,9 @@ impl<'i> Inliner<'i> {
                     field_span: *field_span,
                 },
                 ExprKind::NumberWithUnit { value, unit } => ExprKind::NumberWithUnit { value: *value, unit: unit.clone() },
-                ExprKind::UnarySuffix { source, kind, span } => ExprKind::UnarySuffix {
-                    source: Box::new(self.rename_expr(source, scope)?),
-                    kind: *kind,
-                    span: *span,
-                },
+                ExprKind::UnarySuffix { source, kind, span } => {
+                    ExprKind::UnarySuffix { source: Box::new(self.rename_expr(source, scope)?), kind: *kind, span: *span }
+                }
             },
             span,
         ))

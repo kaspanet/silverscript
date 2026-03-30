@@ -664,7 +664,10 @@ pub(crate) fn lower_struct_destructure_statement<'i>(
     Ok(lowered)
 }
 
-pub(crate) fn flatten_type_ref_leaves(type_ref: &TypeRef, structs: &StructRegistry) -> Result<Vec<(Vec<String>, TypeRef)>, CompilerError> {
+pub(crate) fn flatten_type_ref_leaves(
+    type_ref: &TypeRef,
+    structs: &StructRegistry,
+) -> Result<Vec<(Vec<String>, TypeRef)>, CompilerError> {
     if let Some(struct_name) = struct_array_name_from_type_ref(type_ref, structs) {
         let outer_dims = type_ref.array_dims.clone();
         let item = structs.get(&struct_name).ok_or_else(|| CompilerError::Unsupported(format!("unknown struct '{struct_name}'")))?;
@@ -761,7 +764,8 @@ fn lower_struct_array_value_expr<'i>(
                 scope.vars.get(name).ok_or_else(|| CompilerError::Unsupported(format!("undefined identifier '{}'", name)))?;
             let actual_struct_name = struct_array_name_from_type_ref(actual_type, structs)
                 .ok_or_else(|| CompilerError::Unsupported(format!("expression expects struct {}", expected_type.type_name())))?;
-            if actual_struct_name != struct_name || !super::compile::is_type_assignable_ref(actual_type, expected_type, contract_constants)
+            if actual_struct_name != struct_name
+                || !super::compile::is_type_assignable_ref(actual_type, expected_type, contract_constants)
             {
                 return Err(CompilerError::Unsupported(format!("expression expects struct {}", expected_type.type_name())));
             }
@@ -808,8 +812,7 @@ pub(crate) fn flatten_runtime_return_exprs<'i>(
 ) -> Result<Vec<Expr<'i>>, CompilerError> {
     let mut flattened = Vec::new();
     for (expr, return_type) in exprs.iter().zip(return_types.iter()) {
-        if struct_name_from_type_ref(return_type, structs).is_some()
-            || struct_array_name_from_type_ref(return_type, structs).is_some()
+        if struct_name_from_type_ref(return_type, structs).is_some() || struct_array_name_from_type_ref(return_type, structs).is_some()
         {
             flattened.extend(lower_runtime_struct_expr(
                 expr,
@@ -831,7 +834,11 @@ fn scope_type_names(scope: &LoweringScope) -> HashMap<String, String> {
     scope.vars.iter().map(|(name, type_ref)| (name.clone(), type_name_from_ref(type_ref))).collect()
 }
 
-fn flatten_named_type_like<'i>(name: &str, type_ref: &TypeRef, structs: &StructRegistry) -> Result<Vec<(String, TypeRef)>, CompilerError> {
+fn flatten_named_type_like<'i>(
+    name: &str,
+    type_ref: &TypeRef,
+    structs: &StructRegistry,
+) -> Result<Vec<(String, TypeRef)>, CompilerError> {
     if struct_name_from_type_ref(type_ref, structs).is_some() || struct_array_name_from_type_ref(type_ref, structs).is_some() {
         Ok(flatten_type_ref_leaves(type_ref, structs)?
             .into_iter()
@@ -929,7 +936,8 @@ fn lower_call_args<'i>(
 
     let mut lowered = Vec::new();
     for (arg, param) in args.iter().zip(function.params.iter()) {
-        if struct_name_from_type_ref(&param.type_ref, structs).is_some() || struct_array_name_from_type_ref(&param.type_ref, structs).is_some()
+        if struct_name_from_type_ref(&param.type_ref, structs).is_some()
+            || struct_array_name_from_type_ref(&param.type_ref, structs).is_some()
         {
             lowered.extend(lower_runtime_struct_expr(
                 arg,
@@ -954,7 +962,8 @@ fn lower_function_call_bindings<'i>(
 ) -> Result<Vec<ParamAst<'i>>, CompilerError> {
     let mut lowered = Vec::new();
     for (binding, return_type) in bindings.iter().zip(callee_return_types.iter()) {
-        if struct_name_from_type_ref(return_type, structs).is_some() || struct_array_name_from_type_ref(return_type, structs).is_some() {
+        if struct_name_from_type_ref(return_type, structs).is_some() || struct_array_name_from_type_ref(return_type, structs).is_some()
+        {
             for (path, leaf_type) in flatten_type_ref_leaves(return_type, structs)? {
                 lowered.push(ParamAst {
                     type_ref: leaf_type,
@@ -1006,7 +1015,9 @@ fn lower_statements<'i>(
             }
             Statement::VariableDefinition { type_ref, modifiers, name, expr, span, type_span, modifier_spans, name_span } => {
                 scope.vars.insert(name.clone(), type_ref.clone());
-                if struct_name_from_type_ref(type_ref, structs).is_some() || struct_array_name_from_type_ref(type_ref, structs).is_some() {
+                if struct_name_from_type_ref(type_ref, structs).is_some()
+                    || struct_array_name_from_type_ref(type_ref, structs).is_some()
+                {
                     if let Some(Expr { kind: ExprKind::Call { name: builtin_name, args, .. }, .. }) = expr
                         && matches!(builtin_name.as_str(), "readInputState" | "readInputStateWithTemplate")
                         && let Some(struct_name) = struct_name_from_type_ref(type_ref, structs)
@@ -1031,10 +1042,11 @@ fn lower_statements<'i>(
                                 })
                                 .collect(),
                             name: builtin_name.clone(),
-                            args: args
-                                .iter()
-                                .map(|arg| lower_runtime_expr(arg, &scope_type_names(scope), structs))
-                                .collect::<Result<Vec<_>, _>>()?,
+                            args: args.iter().map(|arg| lower_runtime_expr(arg, &scope_type_names(scope), structs)).collect::<Result<
+                                Vec<_>,
+                                _,
+                            >>(
+                            )?,
                             span: *span,
                             name_span: *name_span,
                         });
@@ -1081,10 +1093,7 @@ fn lower_statements<'i>(
                         type_ref: type_ref.clone(),
                         modifiers: modifiers.clone(),
                         name: name.clone(),
-                        expr: expr
-                            .as_ref()
-                            .map(|expr| lower_runtime_expr(expr, &scope_type_names(scope), structs))
-                            .transpose()?,
+                        expr: expr.as_ref().map(|expr| lower_runtime_expr(expr, &scope_type_names(scope), structs)).transpose()?,
                         span: *span,
                         type_span: *type_span,
                         modifier_spans: modifier_spans.clone(),
@@ -1092,7 +1101,18 @@ fn lower_statements<'i>(
                     });
                 }
             }
-            Statement::TupleAssignment { left_type_ref, left_name, right_type_ref, right_name, expr, span, left_type_span, left_name_span, right_type_span, right_name_span } => {
+            Statement::TupleAssignment {
+                left_type_ref,
+                left_name,
+                right_type_ref,
+                right_name,
+                expr,
+                span,
+                left_type_span,
+                left_name_span,
+                right_type_span,
+                right_name_span,
+            } => {
                 scope.vars.insert(left_name.clone(), left_type_ref.clone());
                 scope.vars.insert(right_name.clone(), right_type_ref.clone());
                 lowered.push(Statement::TupleAssignment {
@@ -1137,10 +1157,11 @@ fn lower_statements<'i>(
                         lowered.push(Statement::StateFunctionCallAssign {
                             bindings: state_bindings.clone(),
                             name: builtin_name.clone(),
-                            args: args
-                                .iter()
-                                .map(|arg| lower_runtime_expr(arg, &scope_type_names(scope), structs))
-                                .collect::<Result<Vec<_>, _>>()?,
+                            args: args.iter().map(|arg| lower_runtime_expr(arg, &scope_type_names(scope), structs)).collect::<Result<
+                                Vec<_>,
+                                _,
+                            >>(
+                            )?,
                             span: *span,
                             name_span: *name_span,
                         });
@@ -1155,9 +1176,8 @@ fn lower_statements<'i>(
                         }
                         continue;
                     }
-                    for ((path, leaf_type), leaf_expr) in flatten_type_ref_leaves(&element_type, structs)?
-                        .into_iter()
-                        .zip(lower_runtime_struct_expr(
+                    for ((path, leaf_type), leaf_expr) in
+                        flatten_type_ref_leaves(&element_type, structs)?.into_iter().zip(lower_runtime_struct_expr(
                             expr,
                             &element_type,
                             &scope_type_names(scope),
@@ -1185,8 +1205,8 @@ fn lower_statements<'i>(
                 }
             }
             Statement::FunctionCall { name, args, span, name_span } => {
-            lowered.push(Statement::FunctionCall {
-                name: name.clone(),
+                lowered.push(Statement::FunctionCall {
+                    name: name.clone(),
                     args: lower_call_args(
                         name,
                         args,
@@ -1203,11 +1223,10 @@ fn lower_statements<'i>(
             }
             Statement::FunctionCallAssign { bindings, name, args, span, name_span } => {
                 let lowered_bindings = if let Some(function) = functions.get(name) {
-                    if function
-                        .return_types
-                        .iter()
-                        .any(|type_ref| struct_name_from_type_ref(type_ref, structs).is_some() || struct_array_name_from_type_ref(type_ref, structs).is_some())
-                    {
+                    if function.return_types.iter().any(|type_ref| {
+                        struct_name_from_type_ref(type_ref, structs).is_some()
+                            || struct_array_name_from_type_ref(type_ref, structs).is_some()
+                    }) {
                         lower_function_call_bindings(bindings, &function.return_types, structs)?
                     } else {
                         bindings.clone()
@@ -1277,7 +1296,9 @@ fn lower_statements<'i>(
                     });
                     continue;
                 };
-                if struct_name_from_type_ref(&type_ref, structs).is_some() || struct_array_name_from_type_ref(&type_ref, structs).is_some() {
+                if struct_name_from_type_ref(&type_ref, structs).is_some()
+                    || struct_array_name_from_type_ref(&type_ref, structs).is_some()
+                {
                     for (leaf_name, _leaf_type, leaf_expr) in lower_value_for_named_type(
                         name,
                         &type_ref,
@@ -1425,7 +1446,9 @@ pub(crate) fn flatten_constructor_args_env<'i>(
     let scope = LoweringScope::default();
     let mut env = HashMap::new();
     for (param, arg) in params.iter().zip(constructor_args.iter()) {
-        for (name, _, expr) in lower_value_for_named_type(param.name.as_str(), &param.type_ref, arg, &scope, structs, &[], &HashMap::new(), 0)? {
+        for (name, _, expr) in
+            lower_value_for_named_type(param.name.as_str(), &param.type_ref, arg, &scope, structs, &[], &HashMap::new(), 0)?
+        {
             env.insert(name, expr);
         }
     }
@@ -1486,7 +1509,8 @@ pub(crate) fn lower_structs_contract<'i>(
     let mut lowered_fields = Vec::new();
     for field in &contract.fields {
         scope.vars.insert(field.name.clone(), field.type_ref.clone());
-        if struct_name_from_type_ref(&field.type_ref, structs).is_some() || struct_array_name_from_type_ref(&field.type_ref, structs).is_some()
+        if struct_name_from_type_ref(&field.type_ref, structs).is_some()
+            || struct_array_name_from_type_ref(&field.type_ref, structs).is_some()
         {
             for (name, type_ref, expr) in lower_value_for_named_type(
                 &field.name,
@@ -1519,7 +1543,8 @@ pub(crate) fn lower_structs_contract<'i>(
         }
     }
 
-    let functions_map = contract.functions.iter().cloned().map(|function| (function.name.clone(), function)).collect::<HashMap<_, _>>();
+    let functions_map =
+        contract.functions.iter().cloned().map(|function| (function.name.clone(), function)).collect::<HashMap<_, _>>();
     let mut lowered_functions = Vec::new();
     for function in &contract.functions {
         let mut function_scope = initial_contract_scope(contract);

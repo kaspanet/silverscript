@@ -1682,10 +1682,8 @@ fn parse_block<'i>(pair: Pair<'i, Rule>) -> Result<(Vec<Statement<'i>>, Span<'i>
     let span = Span::from(pair.as_span());
     match pair.as_rule() {
         Rule::block => {
-            let inner = pair
-                .into_inner()
-                .next()
-                .ok_or_else(|| CompilerError::Unsupported("empty block".to_string()).with_span(&span))?;
+            let inner =
+                pair.into_inner().next().ok_or_else(|| CompilerError::Unsupported("empty block".to_string()).with_span(&span))?;
             parse_block(inner)
         }
         Rule::braced_block => {

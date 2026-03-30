@@ -5962,7 +5962,7 @@ fn compiles_read_input_state_to_expected_script() {
     assert_eq!(asm.matches("OpTxInputScriptSigSubstr").count(), 2, "should read two state fields");
     assert_eq!(asm.matches("OpGreaterThan").count(), 1, "should compare x numerically");
     assert_eq!(asm.matches("OpEqual").count(), 1, "should compare y bytewise");
-    assert!(compiled.script.ends_with(&[OpDrop as u8, OpDrop as u8, OpTrue as u8]), "expected stack cleanup for active state");
+    assert!(compiled.script.ends_with(&[OpDrop, OpDrop, OpTrue]), "expected stack cleanup for active state");
 }
 
 #[test]

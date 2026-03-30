@@ -40,10 +40,7 @@ fn lower_statement<'i>(statement: &Statement<'i>) -> Result<Statement<'i>, Compi
             span: *span,
             name_span: *name_span,
         }),
-        Statement::Block { body, span } => Ok(Statement::Block {
-            body: lower_block(body)?,
-            span: *span,
-        }),
+        Statement::Block { body, span } => Ok(Statement::Block { body: lower_block(body)?, span: *span }),
         Statement::If { condition, then_branch, else_branch, span, then_span, else_span } => Ok(Statement::If {
             condition: condition.clone(),
             then_branch: lower_block(then_branch)?,
