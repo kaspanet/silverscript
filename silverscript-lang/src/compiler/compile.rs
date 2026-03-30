@@ -1152,7 +1152,7 @@ fn compile_entrypoint_function<'i>(
                     statement_ctx.types,
                     &mut HashSet::new(),
                 )
-                    .map_err(|err| err.with_span(&expr.span))?;
+                .map_err(|err| err.with_span(&expr.span))?;
                 return_exprs.push(resolved);
             }
         } else {
@@ -1211,10 +1211,7 @@ fn compile_entrypoint_function<'i>(
     Ok((function.name.clone(), builder.drain()))
 }
 
-fn compile_statement<'i>(
-    ctx: &mut CompileStatementContext<'_, 'i>,
-    stmt: &Statement<'i>,
-) -> Result<Vec<String>, CompilerError> {
+fn compile_statement<'i>(ctx: &mut CompileStatementContext<'_, 'i>, stmt: &Statement<'i>) -> Result<Vec<String>, CompilerError> {
     match stmt {
         Statement::VariableDefinition { type_ref, name, expr, .. } => {
             compile_variable_definition_statement(ctx, type_ref, name, expr.as_ref())
@@ -2801,23 +2798,9 @@ fn compile_for_statement<'i>(
     let result = if let (Ok(start), Ok(end)) =
         (eval_const_int(start_expr, ctx.contract_constants), eval_const_int(end_expr, ctx.contract_constants))
     {
-        compile_constant_for_statement(
-            ctx,
-            &name,
-            start,
-            end,
-            max_iterations as usize,
-            body,
-        )
+        compile_constant_for_statement(ctx, &name, start, end, max_iterations as usize, body)
     } else {
-        compile_runtime_for_statement(
-            ctx,
-            &name,
-            start,
-            end,
-            max_iterations as usize,
-            body,
-        )
+        compile_runtime_for_statement(ctx, &name, start, end, max_iterations as usize, body)
     };
 
     match previous {
@@ -2973,9 +2956,6 @@ fn resolve_expr<'i>(
     let Expr { kind, span } = expr;
     match kind {
         ExprKind::Identifier(name) => {
-            if name.starts_with(SYNTHETIC_ARG_PREFIX) {
-                return Ok(Expr::new(ExprKind::Identifier(name), span));
-            }
             if let Some(value) = env.get(&name) {
                 if !visiting.insert(name.clone()) {
                     return Err(CompilerError::CyclicIdentifier(name));
@@ -3084,8 +3064,7 @@ pub(super) fn resolve_expr_for_runtime<'i>(
     types: &HashMap<String, String>,
     visiting: &mut HashSet<String>,
 ) -> Result<Expr<'i>, CompilerError> {
-    let preserve_identifier =
-        |name: &str| name.starts_with(SYNTHETIC_ARG_PREFIX) || types.get(name).is_some_and(|type_name| is_array_type(type_name));
+    let preserve_identifier = |name: &str| types.get(name).is_some_and(|type_name| is_array_type(type_name));
     resolve_expr_with_policy(expr, env, visiting, &preserve_identifier)
 }
 
@@ -3097,9 +3076,7 @@ fn resolve_return_expr_for_runtime<'i>(
     visiting: &mut HashSet<String>,
 ) -> Result<Expr<'i>, CompilerError> {
     let preserve_identifier = |name: &str| {
-        name.starts_with(SYNTHETIC_ARG_PREFIX)
-            || stack_bindings.contains(name)
-            || types.get(name).is_some_and(|type_name| is_array_type(type_name))
+        stack_bindings.contains(name) || types.get(name).is_some_and(|type_name| is_array_type(type_name))
     };
     resolve_expr_with_policy(expr, env, visiting, &preserve_identifier)
 }
@@ -3110,7 +3087,7 @@ fn resolve_inline_return_expr<'i>(
     preserved_idents: &HashSet<String>,
     visiting: &mut HashSet<String>,
 ) -> Result<Expr<'i>, CompilerError> {
-    let preserve_identifier = |name: &str| name.starts_with(SYNTHETIC_ARG_PREFIX) || preserved_idents.contains(name);
+    let preserve_identifier = |name: &str| preserved_idents.contains(name);
     resolve_expr_with_policy(expr, env, visiting, &preserve_identifier)
 }
 
