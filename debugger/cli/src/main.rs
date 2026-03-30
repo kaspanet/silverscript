@@ -692,14 +692,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             prev_index: 0,
             sequence: 0,
             sig_op_count: 100,
-            utxo_value: 5000,
+            amount: 5000,
             covenant_id: None,
             constructor_args: None,
             state: None,
             signature_script_hex: None,
         }],
         outputs: vec![TestTxOutputScenarioResolved {
-            value: 5000,
+            amount: 5000,
             covenant_id: None,
             authorizing_input: None,
             constructor_args: None,
@@ -762,7 +762,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             sequence: input.sequence,
             sig_op_count: input.sig_op_count,
         });
-        utxo_specs.push((input.utxo_value, utxo_spk, covenant_id));
+        utxo_specs.push((input.amount, utxo_spk, covenant_id));
         input_covenant_ids.push(covenant_id);
         input_covenant_states.push(input_covenant_state);
         input_redeem_scripts.push(Some(redeem_script));
@@ -797,7 +797,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             None
         };
 
-        tx_outputs.push(TransactionOutput { value: output.value, script_public_key, covenant });
+        tx_outputs.push(TransactionOutput { value: output.amount, script_public_key, covenant });
     }
 
     let kas_tx = Transaction::new(tx.version, tx_inputs, tx_outputs, tx.lock_time, Default::default(), 0, vec![]);

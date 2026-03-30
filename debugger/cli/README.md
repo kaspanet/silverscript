@@ -149,39 +149,10 @@ Structured args use the same JSON object and object-array form inside `.test.jso
       "args": [[{ "amount": 7 }, { "amount": 9 }]],
       "expect": "pass"
     }
-  ]
+  ] 
 }
 ```
 
-For covenant flows, the `.test.json` file can include a `tx` object that describes the full state transition: the covenant states being spent on the input side, and the covenant states the transaction is expected to create on the output side. That gives the debugger enough context to populate `prev_state` / `prev_states` and makes the test data read like the transition under inspection.
-
-```json
-{
-  "tests": [
-    {
-      "name": "ok",
-      "function": "verify",
-      "constructor_args": [2],
-      "expect": "pass",
-      "tx": {
-        "active_input_index": 0,
-        "inputs": [
-          { "utxo_value": 1000, "covenant_id": 1, "state": { "amount": 3 } },
-          { "utxo_value": 1000, "covenant_id": 1, "state": { "amount": 8 } }
-        ],
-        "outputs": [
-          { "value": 1000, "covenant_id": 1, "state": { "amount": 6 } },
-          { "value": 1000, "covenant_id": 1, "state": { "amount": 8 } }
-        ]
-      }
-    }
-  ]
-}
-```
-
-Here the inputs are the old state, and the outputs are the new state. In this example, the first amount changes from `3` to `6` and the second stays `8`. If `args` is omitted, `State` / `State[]` args are inferred from `tx.outputs[*].state`.
-
-Use `utxo_value` for input amounts and `value` for output amounts.
 
 ### Test Commands
 
@@ -203,3 +174,33 @@ Add `--test-file <path>` to either form to use an explicit test file instead of 
 
 10 tests: 9 passed, 1 failed
 ```
+
+
+### Covenant Declarations
+`.test.json` file can include a `tx` object that describes the full state transition: the covenant states being spent on the input side, and the covenant states the transaction is expected to create on the output side. That gives the debugger enough context to populate `prev_state` / `prev_states` and makes the test data read like the transition under inspection.
+
+```json
+{
+  "tests": [
+    {
+      "name": "ok",
+      "function": "verify",
+      "constructor_args": [2],
+      "expect": "pass",
+      "tx": {
+        "active_input_index": 0,
+        "inputs": [
+          { "amount": 1000, "covenant_id": 1, "state": { "value": 3 } },
+          { "amount": 1000, "covenant_id": 1, "state": { "value": 8 } }
+        ],
+        "outputs": [
+          { "amount": 1000, "covenant_id": 1, "state": { "value": 0 } },
+          { "amount": 1000, "covenant_id": 1, "state": { "value": 11 } }
+        ]
+      }
+    }
+  ]
+}
+```
+
+Here `inputs[*].state` is the old state, and `outputs[*].state` is the new state. In this example, the `state.value` data is merged into the output states, while the top-level sompi `amount` stays the same. `active_input_index` selects which input is currently being debugged. The exact fields inside each `state` object should match your contract's `State` type. If `args` is omitted, `State` / `State[]` args are inferred from `tx.outputs[*].state`.

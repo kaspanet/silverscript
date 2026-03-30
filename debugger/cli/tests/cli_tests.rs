@@ -299,24 +299,24 @@ contract CovDebugDemo(int bump) {
         "active_input_index": 0,
         "inputs": [
           {
-            "utxo_value": 1000,
+            "amount": 1000,
             "covenant_id": 1,
             "state": { "value": 7 }
           },
           {
-            "utxo_value": 1000,
+            "amount": 1000,
             "covenant_id": 1,
             "state": { "value": 7 }
           }
         ],
         "outputs": [
           {
-            "value": 1000,
+            "amount": 1000,
             "covenant_id": 1,
             "state": { "value": 9 }
           },
           {
-            "value": 1000,
+            "amount": 1000,
             "covenant_id": 1,
             "state": { "value": 7 }
           }
@@ -332,24 +332,24 @@ contract CovDebugDemo(int bump) {
         "active_input_index": 0,
         "inputs": [
           {
-            "utxo_value": 1000,
+            "amount": 1000,
             "covenant_id": 1,
             "state": { "value": 7 }
           },
           {
-            "utxo_value": 1000,
+            "amount": 1000,
             "covenant_id": 1,
             "state": { "value": 7 }
           }
         ],
         "outputs": [
           {
-            "value": 1000,
+            "amount": 1000,
             "covenant_id": 1,
             "state": { "value": 9 }
           },
           {
-            "value": 1000,
+            "amount": 1000,
             "covenant_id": 1,
             "state": { "value": 7 }
           }
@@ -366,24 +366,24 @@ contract CovDebugDemo(int bump) {
         "active_input_index": 0,
         "inputs": [
           {
-            "utxo_value": 1000,
+            "amount": 1000,
             "covenant_id": 1,
             "state": { "value": 7 }
           },
           {
-            "utxo_value": 1000,
+            "amount": 1000,
             "covenant_id": 1,
             "state": { "value": 7 }
           }
         ],
         "outputs": [
           {
-            "value": 1000,
+            "amount": 1000,
             "covenant_id": 1,
             "state": { "value": 9 }
           },
           {
-            "value": 1000,
+            "amount": 1000,
             "covenant_id": 1,
             "state": { "value": 7 }
           }
@@ -426,24 +426,24 @@ contract CovDebugDemo(int bump) {
         "active_input_index": 0,
         "inputs": [
           {
-            "utxo_value": 1000,
+            "amount": 1000,
             "covenant_id": 1,
             "state": { "value": 7 }
           },
           {
-            "utxo_value": 1000,
+            "amount": 1000,
             "covenant_id": 1,
             "state": { "value": 7 }
           }
         ],
         "outputs": [
           {
-            "value": 1000,
+            "amount": 1000,
             "covenant_id": 1,
             "state": { "value": 9 }
           },
           {
-            "value": 1000,
+            "amount": 1000,
             "covenant_id": 1,
             "state": { "value": 7 }
           }

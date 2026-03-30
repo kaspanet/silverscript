@@ -61,7 +61,7 @@ pub struct TestTxInputScenario {
     #[serde(default = "default_sig_op_count")]
     pub sig_op_count: u8,
     #[serde(default)]
-    pub utxo_value: u64,
+    pub amount: u64,
     #[serde(default)]
     pub covenant_id: Option<Value>,
     #[serde(default)]
@@ -74,7 +74,8 @@ pub struct TestTxInputScenario {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct TestTxOutputScenario {
-    pub value: u64,
+    #[serde(default)]
+    pub amount: u64,
     #[serde(default)]
     pub covenant_id: Option<Value>,
     #[serde(default)]
@@ -122,7 +123,7 @@ pub struct TestTxInputScenarioResolved {
     pub prev_index: u32,
     pub sequence: u64,
     pub sig_op_count: u8,
-    pub utxo_value: u64,
+    pub amount: u64,
     pub covenant_id: Option<String>,
     pub constructor_args: Option<Vec<String>>,
     pub state: Option<String>,
@@ -131,7 +132,7 @@ pub struct TestTxInputScenarioResolved {
 
 #[derive(Debug, Clone)]
 pub struct TestTxOutputScenarioResolved {
-    pub value: u64,
+    pub amount: u64,
     pub covenant_id: Option<String>,
     pub authorizing_input: Option<u16>,
     pub constructor_args: Option<Vec<String>>,
@@ -221,7 +222,7 @@ pub fn resolve_tx_scenario(tx: TestTxScenario) -> Result<TestTxScenarioResolved,
             prev_index: input.prev_index,
             sequence: input.sequence,
             sig_op_count: input.sig_op_count,
-            utxo_value: input.utxo_value,
+            amount: input.amount,
             covenant_id: input.covenant_id.as_ref().map(value_to_arg).transpose()?,
             constructor_args: input.constructor_args.as_ref().map(|values| values_to_args(values)).transpose()?,
             state: input.state.as_ref().map(value_to_arg).transpose()?,
@@ -232,7 +233,7 @@ pub fn resolve_tx_scenario(tx: TestTxScenario) -> Result<TestTxScenarioResolved,
     let mut outputs = Vec::with_capacity(tx.outputs.len());
     for output in tx.outputs {
         outputs.push(TestTxOutputScenarioResolved {
-            value: output.value,
+            amount: output.amount,
             covenant_id: output.covenant_id.as_ref().map(value_to_arg).transpose()?,
             authorizing_input: output.authorizing_input,
             constructor_args: output.constructor_args.as_ref().map(|values| values_to_args(values)).transpose()?,
@@ -285,7 +286,7 @@ pub fn build_covenants_context_for_test_tx(tx: &TestTxScenarioResolved) -> Resul
                 })
                 .transpose()?;
             Ok(TransactionOutput {
-                value: output.value,
+                value: output.amount,
                 script_public_key: ScriptPublicKey::new(0, Vec::<u8>::new().into()),
                 covenant,
             })
