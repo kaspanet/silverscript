@@ -783,16 +783,13 @@ impl<'a, 'i> DebugSession<'a, 'i> {
         };
 
         for (name, update) in &scope.updates {
-            if frozen_inline_names.contains(name) {
-                continue;
-            }
             let source = match (&update.structured_leaf_bindings, update.runtime_binding.as_ref()) {
                 (Some(leaf_bindings), _) => {
                     ScopeValueSource::StructuredBinding { base_name: name.clone(), leaf_bindings: leaf_bindings.clone() }
                 }
                 (None, Some(_))
                     if is_inline_synthetic_name(name)
-                        && matches!(&update.expr.kind, ExprKind::Identifier(identifier) if frozen_inline_names.contains(identifier)) =>
+                        && matches!(&update.expr.kind, ExprKind::Identifier(identifier) if identifier != name && frozen_inline_names.contains(identifier)) =>
                 {
                     ScopeValueSource::Expr(update.expr.clone())
                 }
@@ -1192,25 +1189,84 @@ impl<'a, 'i> DebugSession<'a, 'i> {
     }
 
     fn initial_step_index_for_offset(&self, offset: usize, min_sequence: Option<u32>) -> Option<usize> {
-        let mut best: Option<(usize, u32, u32)> = None;
+        if self.covenant_ctx().is_none() {
+            let mut best: Option<(usize, u32, u32)> = None;
+            for (order_index, &step_index) in self.step_order.iter().enumerate() {
+                let Some(step) = self.debug_info.steps.get(step_index) else {
+                    continue;
+                };
+                if !self.is_steppable_step(step)
+                    || is_synthetic_default_span(step.span)
+                    || !range_matches_offset(step.bytecode_start, step.bytecode_end, offset)
+                    || min_sequence.is_some_and(|min_sequence| step.sequence < min_sequence)
+                {
+                    continue;
+                }
+
+                match best {
+                    Some((_, best_depth, best_sequence)) if (best_depth, best_sequence) <= (step.call_depth, step.sequence) => {}
+                    _ => best = Some((order_index, step.call_depth, step.sequence)),
+                }
+            }
+            return best.map(|(order_index, _, _)| order_index);
+        }
+
+        let has_real_source_ahead = self.function_has_real_source_stop_from_offset(offset);
+        let mut best: Option<(usize, (u8, u32, u32))> = None;
         for (order_index, &step_index) in self.step_order.iter().enumerate() {
             let Some(step) = self.debug_info.steps.get(step_index) else {
                 continue;
             };
-            if !self.is_steppable_step(step)
-                || is_synthetic_default_span(step.span)
+            if !self.is_initial_stop_candidate(step)
                 || !range_matches_offset(step.bytecode_start, step.bytecode_end, offset)
                 || min_sequence.is_some_and(|min_sequence| step.sequence < min_sequence)
             {
                 continue;
             }
 
+            let Some(rank) = self.initial_stop_rank(step, has_real_source_ahead) else {
+                continue;
+            };
+
             match best {
-                Some((_, best_depth, best_sequence)) if (best_depth, best_sequence) <= (step.call_depth, step.sequence) => {}
-                _ => best = Some((order_index, step.call_depth, step.sequence)),
+                Some((_, best_rank)) if best_rank >= rank => {}
+                _ => best = Some((order_index, rank)),
             }
         }
-        best.map(|(order_index, _, _)| order_index)
+        best.map(|(order_index, _)| order_index)
+    }
+
+    fn is_initial_stop_candidate(&self, step: &DebugStep<'i>) -> bool {
+        matches!(step.kind, StepKind::Source {} | StepKind::InlineCallEnter { .. })
+    }
+
+    fn initial_stop_rank(&self, step: &DebugStep<'i>, has_real_source_ahead: bool) -> Option<(u8, u32, u32)> {
+        let priority = match &step.kind {
+            StepKind::Source {} if !is_synthetic_default_span(step.span) => 2,
+            StepKind::Source {} if !has_real_source_ahead => 1,
+            StepKind::Source {} => return None,
+            StepKind::InlineCallEnter { .. } => 0,
+            StepKind::InlineCallExit { .. } => return None,
+        };
+        Some((priority, step.call_depth, u32::MAX.saturating_sub(step.sequence)))
+    }
+
+    fn function_has_real_source_stop_from_offset(&self, offset: usize) -> bool {
+        let Some(function) = self
+            .debug_info
+            .functions
+            .iter()
+            .find(|function| range_matches_offset(function.bytecode_start, function.bytecode_end, offset))
+        else {
+            return false;
+        };
+
+        self.debug_info.steps.iter().any(|step| {
+            matches!(step.kind, StepKind::Source {})
+                && !is_synthetic_default_span(step.span)
+                && step.bytecode_start >= offset
+                && range_matches_offset(function.bytecode_start, function.bytecode_end, step.bytecode_start)
+        })
     }
 
     fn find_steppable_step_index(&self, predicate: impl Fn(&DebugStep<'i>) -> bool) -> Option<usize> {
@@ -1348,9 +1404,9 @@ impl<'a, 'i> DebugSession<'a, 'i> {
 
     /// Builds a structured failure report suitable for CLI/DAP rendering.
     pub fn build_failure_report(&self, error: &kaspa_txscript_errors::TxScriptError) -> FailureReport {
-        let failure_span = self.current_span();
-        let call_stack = self.call_stack_with_spans();
         let innermost_function = self.current_function_name().unwrap_or_else(|| "<unknown>".to_string());
+        let failure_span = self.failure_report_span_for_function(&innermost_function, self.current_span());
+        let call_stack = self.call_stack_with_spans();
         let innermost_vars: Vec<Variable> =
             self.list_variables().unwrap_or_default().into_iter().filter(|v| v.origin != VariableOrigin::Constant).collect();
 
@@ -1367,10 +1423,26 @@ impl<'a, 'i> DebugSession<'a, 'i> {
                 .filter(|v| v.origin != VariableOrigin::Constant)
                 .collect();
             let caller_name = if idx == 0 { entry_name.clone() } else { call_stack[idx - 1].callee_name.clone() };
-            frames.push(FailureFrame { function_name: caller_name, span: entry.call_site_span, variables: caller_vars });
+            let caller_span = self.failure_report_span_for_function(&caller_name, entry.call_site_span);
+            frames.push(FailureFrame { function_name: caller_name, span: caller_span, variables: caller_vars });
         }
 
         FailureReport { message: format!("{error}"), frames, source_text: self.source_lines.join("\n") }
+    }
+
+    fn failure_report_span_for_function(&self, function_name: &str, span: Option<SourceSpan>) -> Option<SourceSpan> {
+        match span {
+            Some(span) if !is_synthetic_default_span(span) => Some(span),
+            _ => self.source_function_header_span(function_name).or(span),
+        }
+    }
+
+    fn source_function_header_span(&self, function_name: &str) -> Option<SourceSpan> {
+        let source_name =
+            function_name.strip_suffix(" [leader]").or_else(|| function_name.strip_suffix(" [delegate]")).unwrap_or(function_name);
+        let contract = self.contract_ast.as_ref()?;
+        let function = contract.functions.iter().find(|function| function.name == source_name)?;
+        Some(SourceSpan::from(function.name_span))
     }
 
     fn resolve_scope_binding(&self, scope_state: &ScopeState<'i>, binding: &ScopeBinding<'i>) -> Result<DebugValue, String> {
@@ -1744,7 +1816,7 @@ fn structured_leaf_value(value: &DebugValue, field_path: &[String]) -> Option<De
     }
 }
 
-fn debug_value_to_expr<'i>(value: &DebugValue) -> Option<Expr<'i>> {
+pub fn debug_value_to_expr<'i>(value: &DebugValue) -> Option<Expr<'i>> {
     match value {
         DebugValue::Int(value) => Some(Expr::int(*value)),
         DebugValue::Bool(value) => Some(Expr::bool(*value)),
@@ -1773,7 +1845,7 @@ fn debug_value_to_expr<'i>(value: &DebugValue) -> Option<Expr<'i>> {
     }
 }
 
-fn expr_to_debug_value(expr: &Expr<'_>) -> Result<DebugValue, String> {
+pub fn expr_to_debug_value(expr: &Expr<'_>) -> Result<DebugValue, String> {
     match &expr.kind {
         ExprKind::Int(value) => Ok(DebugValue::Int(*value)),
         ExprKind::Bool(value) => Ok(DebugValue::Bool(*value)),

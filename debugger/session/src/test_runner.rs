@@ -1,7 +1,15 @@
 use std::path::{Path, PathBuf};
 
+use kaspa_consensus_core::Hash;
+use kaspa_consensus_core::tx::{
+    CovenantBinding, PopulatedTransaction, ScriptPublicKey, Transaction, TransactionId, TransactionInput, TransactionOutpoint,
+    TransactionOutput, UtxoEntry,
+};
+use kaspa_txscript::covenants::CovenantsContext;
 use serde::Deserialize;
 use serde_json::Value;
+
+use crate::args::parse_hex_bytes;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ContractTestFile {
@@ -61,8 +69,6 @@ pub struct TestTxInputScenario {
     pub state: Option<Value>,
     #[serde(default)]
     pub signature_script_hex: Option<String>,
-    #[serde(default)]
-    pub utxo_script_hex: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -120,7 +126,6 @@ pub struct TestTxInputScenarioResolved {
     pub constructor_args: Option<Vec<String>>,
     pub state: Option<String>,
     pub signature_script_hex: Option<String>,
-    pub utxo_script_hex: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -220,7 +225,6 @@ pub fn resolve_tx_scenario(tx: TestTxScenario) -> Result<TestTxScenarioResolved,
             constructor_args: input.constructor_args.as_ref().map(|values| values_to_args(values)).transpose()?,
             state: input.state.as_ref().map(value_to_arg).transpose()?,
             signature_script_hex: input.signature_script_hex,
-            utxo_script_hex: input.utxo_script_hex,
         });
     }
 
@@ -246,6 +250,59 @@ pub fn resolve_tx_scenario(tx: TestTxScenario) -> Result<TestTxScenarioResolved,
     })
 }
 
+pub fn build_covenants_context_for_test_tx(tx: &TestTxScenarioResolved) -> Result<CovenantsContext, String> {
+    if tx.active_input_index >= tx.inputs.len() {
+        return Err(format!("tx.active_input_index {} out of range for {} inputs", tx.active_input_index, tx.inputs.len()));
+    }
+
+    let inputs = tx
+        .inputs
+        .iter()
+        .enumerate()
+        .map(|(index, input)| TransactionInput {
+            previous_outpoint: TransactionOutpoint {
+                transaction_id: TransactionId::from_bytes(u64_to_hash_bytes(index as u64)),
+                index: input.prev_index,
+            },
+            signature_script: vec![],
+            sequence: input.sequence,
+            sig_op_count: input.sig_op_count,
+        })
+        .collect::<Vec<_>>();
+    let outputs = tx
+        .outputs
+        .iter()
+        .map(|output| {
+            let covenant = output
+                .covenant_id
+                .as_deref()
+                .map(|raw| {
+                    Ok::<CovenantBinding, String>(CovenantBinding {
+                        covenant_id: parse_test_hash32(raw)?,
+                        authorizing_input: output.authorizing_input.unwrap_or(tx.active_input_index as u16),
+                    })
+                })
+                .transpose()?;
+            Ok(TransactionOutput {
+                value: output.value,
+                script_public_key: ScriptPublicKey::new(0, Vec::<u8>::new().into()),
+                covenant,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let utxos = tx
+        .inputs
+        .iter()
+        .map(|input| {
+            let covenant_id = input.covenant_id.as_deref().map(parse_test_hash32).transpose()?;
+            Ok(UtxoEntry::new(0, ScriptPublicKey::new(0, Vec::<u8>::new().into()), 0, false, covenant_id))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let tx = Transaction::new(tx.version, inputs, outputs, tx.lock_time, Default::default(), 0, vec![]);
+    let populated_tx = PopulatedTransaction::new(&tx, utxos);
+    CovenantsContext::from_tx(&populated_tx).map_err(|err| err.to_string())
+}
+
 pub fn values_to_args(values: &[Value]) -> Result<Vec<String>, String> {
     values.iter().map(value_to_arg).collect()
 }
@@ -258,4 +315,42 @@ fn value_to_arg(value: &Value) -> Result<String, String> {
         Value::Null => Ok("null".to_string()),
         Value::Array(_) | Value::Object(_) => serde_json::to_string(value).map_err(|err| format!("invalid arg value: {err}")),
     }
+}
+
+fn parse_test_hash32(raw: &str) -> Result<Hash, String> {
+    if raw.starts_with("0x") || raw.starts_with("0X") {
+        return Ok(Hash::from_bytes(parse_short_or_full_hex_32(raw, "hash")?));
+    }
+
+    if let Ok(value) = raw.parse::<u64>() {
+        return Ok(Hash::from_bytes(u64_to_hash_bytes(value)));
+    }
+
+    Ok(Hash::from_bytes(parse_fixed_hex_32(raw, "hash")?))
+}
+
+fn parse_fixed_hex_32(raw: &str, name: &str) -> Result<[u8; 32], String> {
+    let bytes = parse_hex_bytes(raw)?;
+    if bytes.len() != 32 {
+        return Err(format!("{name} expects 32 bytes, got {}", bytes.len()));
+    }
+    let mut array = [0u8; 32];
+    array.copy_from_slice(&bytes);
+    Ok(array)
+}
+
+fn parse_short_or_full_hex_32(raw: &str, name: &str) -> Result<[u8; 32], String> {
+    let bytes = parse_hex_bytes(raw)?;
+    if bytes.len() > 32 {
+        return Err(format!("{name} expects at most 32 bytes, got {}", bytes.len()));
+    }
+    let mut array = [0u8; 32];
+    array[32 - bytes.len()..].copy_from_slice(&bytes);
+    Ok(array)
+}
+
+fn u64_to_hash_bytes(value: u64) -> [u8; 32] {
+    let mut array = [0u8; 32];
+    array[24..].copy_from_slice(&value.to_be_bytes());
+    array
 }

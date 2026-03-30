@@ -96,6 +96,82 @@ where
     f(&mut session)
 }
 
+fn single_field_state(value: i64) -> DebugValue {
+    DebugValue::Object(vec![("value".to_string(), DebugValue::Int(value))])
+}
+
+fn with_covenant_session<F>(
+    source: &'static str,
+    ctor_args: Vec<Expr<'static>>,
+    function_name: &str,
+    is_leader: bool,
+    call_args: Vec<Expr<'static>>,
+    covenant_input_states: Vec<DebugValue>,
+    output_count: usize,
+    mut f: F,
+) -> Result<(), Box<dyn Error>>
+where
+    F: FnMut(&mut DebugSession<'_, '_>) -> Result<(), Box<dyn Error>>,
+{
+    let compile_opts = CompileOptions { record_debug_infos: true, ..Default::default() };
+    let compiled = compile_contract(source, &ctor_args, compile_opts)?;
+    let debug_info = compiled.debug_info.clone();
+    let covenant_target = compiled
+        .covenant_infos
+        .iter()
+        .find(|info| info.source_name == function_name)
+        .cloned()
+        .map(|info| ResolvedCovenantCallTarget { info, is_leader })
+        .ok_or_else(|| format!("missing covenant call target for '{function_name}'"))?;
+    let sigscript = compiled.build_sig_script_for_covenant_decl(function_name, call_args, CovenantDeclCallOptions { is_leader })?;
+
+    let input_count = covenant_input_states.len().max(1);
+    let active_input_index = if is_leader || input_count == 1 { 0 } else { 1 };
+    let inputs = (0..input_count)
+        .map(|index| TransactionInput {
+            previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([(0x40 + index) as u8; 32]), index: 0 },
+            signature_script: if index == active_input_index { sigscript.clone() } else { vec![OpTrue] },
+            sequence: 0,
+            sig_op_count: 0,
+        })
+        .collect::<Vec<_>>();
+    let outputs = (0..output_count.max(1))
+        .map(|_| TransactionOutput { value: 1000, script_public_key: ScriptPublicKey::new(0, vec![OpTrue].into()), covenant: None })
+        .collect::<Vec<_>>();
+    let tx = Transaction::new(1, inputs, outputs, 0, Default::default(), 0, vec![]);
+
+    let covenant_id = Hash::from_bytes([0x5au8; 32]);
+    let utxos = (0..input_count)
+        .map(|_| UtxoEntry::new(1000, ScriptPublicKey::new(0, compiled.script.clone().into()), 0, tx.is_coinbase(), Some(covenant_id)))
+        .collect::<Vec<_>>();
+    let populated_tx = PopulatedTransaction::new(&tx, utxos);
+    let cov_ctx = CovenantsContext::from_tx(&populated_tx)?;
+
+    let sig_cache = Cache::new(10_000);
+    let reused_values = SigHashReusedValuesUnsync::new();
+    let ctx = EngineCtx::new(&sig_cache).with_reused(&reused_values).with_covenants_ctx(&cov_ctx);
+    let input_ref = &tx.inputs[active_input_index];
+    let utxo_ref = populated_tx.utxo(active_input_index).ok_or("missing utxo for active input")?;
+    let engine = debugger_session::session::DebugEngine::from_transaction_input(
+        &populated_tx,
+        input_ref,
+        active_input_index,
+        utxo_ref,
+        ctx,
+        EngineFlags { covenants_enabled: true },
+    );
+
+    let shadow_ctx = ShadowTxContext { tx: &populated_tx, input: input_ref, input_index: active_input_index, utxo_entry: utxo_ref };
+    let active_contract_state = covenant_input_states.get(active_input_index).cloned();
+    let covenant_param_value = Some(DebugValue::Array(covenant_input_states));
+    let mut session = DebugSession::full(&sigscript, &compiled.script, source, debug_info, engine)?
+        .with_shadow_tx_context(shadow_ctx)
+        .with_active_contract_state(active_contract_state)
+        .with_covenant_mode(covenant_param_value, covenant_target);
+
+    f(&mut session)
+}
+
 #[test]
 fn debug_session_provides_source_context_and_vars() -> Result<(), Box<dyn Error>> {
     with_session(|session| {
@@ -1493,5 +1569,56 @@ contract CovDebugDemo(int bump) {
     let (type_name, value) = session.evaluate_expression("prev_states[0].value")?;
     assert_eq!(type_name, "int");
     assert_eq!(format_value(&type_name, &value), "7");
+    Ok(())
+}
+
+#[test]
+fn debug_session_labels_cov_delegate_verification_frames_and_overlays_prev_states() -> Result<(), Box<dyn Error>> {
+    let source = r#"pragma silverscript ^0.1.0;
+
+contract CovDelegateVerify() {
+    int value = 1;
+
+    #[covenant(binding = cov, from = 2, to = 2, mode = verification)]
+    function step1(State[] prev_states, State[] new_states) {
+        require(new_states.length == 2);
+    }
+
+    #[covenant(binding = cov, from = 2, to = 2, mode = verification)]
+    function step(State[] prev_states, State[] new_states) {
+        require(new_states.length == 2);
+    }
+}
+"#;
+
+    for function_name in ["step1", "step"] {
+        with_covenant_session(
+            source,
+            vec![],
+            function_name,
+            false,
+            vec![],
+            vec![single_field_state(1), single_field_state(2)],
+            2,
+            |session| {
+                session.run_to_first_executed_statement()?;
+                let expected_name = format!("{function_name} [delegate]");
+                assert_eq!(session.current_function_name().as_deref(), Some(expected_name.as_str()));
+                assert!(session.call_stack().is_empty());
+
+                let prev_states = session.variable_by_name("prev_states")?;
+                assert_eq!(prev_states.type_name, "State[]");
+                assert_eq!(format_value(&prev_states.type_name, &prev_states.value), "[{value: 1}, {value: 2}]");
+
+                assert!(session.variable_by_name("new_states").is_err(), "delegate wrapper should not expose leader-only args");
+
+                let (type_name, value) = session.evaluate_expression("prev_states[1].value")?;
+                assert_eq!(type_name, "int");
+                assert_eq!(format_value(&type_name, &value), "2");
+                Ok(())
+            },
+        )?;
+    }
+
     Ok(())
 }

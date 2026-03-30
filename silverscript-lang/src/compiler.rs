@@ -4618,23 +4618,24 @@ fn prepare_inline_call_bindings<'i>(
     env.extend(caller_env.clone());
     let mut return_rewrites = Vec::new();
     let mut preserved_return_idents = HashSet::new();
-    let caller_scope = lowering_scope_from_types(caller_types)?;
     for (param, arg) in function.params.iter().zip(args.iter()) {
         let resolved = resolve_expr(arg.clone(), caller_env, &mut HashSet::new())?;
         let param_type_name = type_name_from_ref(&param.type_ref);
+        let is_structured_param = struct_name_from_type_ref(&param.type_ref, structs).is_some()
+            || struct_array_name_from_type_ref(&param.type_ref, structs).is_some();
 
         preserved_return_idents.insert(param.name.clone());
         types.insert(param.name.clone(), param_type_name.clone());
-        if struct_name_from_type_ref(&param.type_ref, structs).is_some() {
+        if is_structured_param {
             return_rewrites.push((param.name.clone(), resolved.clone()));
             if !matches!(&resolved.kind, ExprKind::Identifier(identifier) if identifier == &param.name) {
                 env.insert(param.name.clone(), resolved.clone());
             }
             for ((path, field_type), lowered_expr) in
-                flatten_type_ref_leaves(&param.type_ref, structs)?.into_iter().zip(lower_struct_value_expr(
+                flatten_type_ref_leaves(&param.type_ref, structs)?.into_iter().zip(lower_runtime_struct_expr(
                     &resolved,
                     &param.type_ref,
-                    &caller_scope,
+                    caller_types,
                     structs,
                     contract_fields,
                     contract_constants,
