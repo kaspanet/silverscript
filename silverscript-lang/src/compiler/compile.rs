@@ -99,7 +99,8 @@ pub(super) fn compile_contract_impl<'i>(
     let inline_lowered_contract = lower_inline_functions(&covenant_lowered_contract)?;
     let structs = build_struct_registry(&inline_lowered_contract)?;
     let struct_lowered_contract = lower_structs_contract(&inline_lowered_contract, &structs, &constants)?;
-    let lowered_contract = lower_inferred_array_sizes(&struct_lowered_contract, &constants)?;
+    let array_push_lowered_contract = lower_array_pushes(&struct_lowered_contract)?;
+    let lowered_contract = lower_inferred_array_sizes(&array_push_lowered_contract, &constants)?;
     let mut lowered_constants = flatten_constructor_args_env(&covenant_lowered_contract.params, constructor_args, &structs)?;
     lowered_constants.extend(lowered_contract.constants.iter().map(|constant| (constant.name.clone(), constant.expr.clone())));
 
@@ -1369,49 +1370,11 @@ fn compile_variable_definition_statement<'i>(
 }
 
 fn compile_array_push_statement<'i>(
-    ctx: &mut CompileStatementContext<'_, 'i>,
-    name: &str,
-    expr: &Expr<'i>,
+    _ctx: &mut CompileStatementContext<'_, 'i>,
+    _name: &str,
+    _expr: &Expr<'i>,
 ) -> Result<Vec<String>, CompilerError> {
-    let array_type = ctx.types.get(name).ok_or_else(|| CompilerError::UndefinedIdentifier(name.to_string()))?;
-    if !is_array_type(array_type) {
-        return Err(CompilerError::Unsupported("push() only supported on arrays".to_string()));
-    }
-    let element_type = array_element_type(array_type)
-        .ok_or_else(|| CompilerError::Unsupported("array element type must have known size".to_string()))?;
-    let _element_size = array_element_size(array_type)
-        .ok_or_else(|| CompilerError::Unsupported("array element type must have known size".to_string()))?;
-    let resolved_expr = resolve_expr(expr.clone(), ctx.env, &mut HashSet::new())?;
-    let element_expr = if element_type == "int" {
-        Expr::new(
-            ExprKind::Call { name: "byte[8]".to_string(), args: vec![resolved_expr], name_span: span::Span::default() },
-            span::Span::default(),
-        )
-    } else if matches!(element_type.as_str(), "bool" | "byte") {
-        Expr::new(
-            ExprKind::Call { name: "byte[1]".to_string(), args: vec![resolved_expr], name_span: span::Span::default() },
-            span::Span::default(),
-        )
-    } else if is_bytes_type(&element_type) {
-        if expr_is_bytes(&resolved_expr, ctx.env, ctx.types) {
-            resolved_expr
-        } else {
-            Expr::new(
-                ExprKind::Call { name: element_type.to_string(), args: vec![resolved_expr], name_span: span::Span::default() },
-                span::Span::default(),
-            )
-        }
-    } else {
-        return Err(CompilerError::Unsupported("array element type not supported".to_string()));
-    };
-
-    let current = ctx.env.get(name).cloned().unwrap_or_else(|| Expr::new(ExprKind::Array(Vec::new()), span::Span::default()));
-    let updated = Expr::new(
-        ExprKind::Binary { op: BinaryOp::Add, left: Box::new(current), right: Box::new(element_expr) },
-        span::Span::default(),
-    );
-    ctx.env.insert(name.to_string(), updated);
-    Ok(Vec::new())
+    unreachable!("lower_array_pushes must remove array push statements before codegen")
 }
 
 fn compile_require_statement<'i>(ctx: &mut CompileStatementContext<'_, 'i>, expr: &Expr<'i>) -> Result<Vec<String>, CompilerError> {
@@ -1611,7 +1574,11 @@ fn compile_assign_statement<'i>(
                     Some(_) => return Err(CompilerError::Unsupported("array assignment requires compatible array types".to_string())),
                     None => return Err(CompilerError::UndefinedIdentifier(other.clone())),
                 },
-                _ => return Err(CompilerError::Unsupported("array assignment only supports array identifiers".to_string())),
+                _ => {
+                    let resolved = resolve_expr(expr.clone(), ctx.env, &mut HashSet::new())?;
+                    ctx.env.insert(name.to_string(), resolved);
+                    return Ok(Vec::new());
+                }
             }
         }
 
@@ -3454,12 +3421,75 @@ fn compile_array_expr<'i>(ctx: &mut CompileExprContext<'_, 'i>, values: &[Expr<'
         *ctx.stack_depth += 1;
         return Ok(());
     }
-    let inferred_type = infer_fixed_array_literal_type(values)
+    let inferred_type = infer_fixed_array_runtime_type(values, ctx.scope.env, ctx.scope.types)
         .ok_or_else(|| CompilerError::Unsupported("array literal type cannot be inferred".to_string()))?;
-    let encoded = encode_array_literal(values, &inferred_type)?;
-    ctx.builder.add_data(&encoded)?;
-    *ctx.stack_depth += 1;
+    if let Ok(encoded) = encode_array_literal(values, &inferred_type) {
+        ctx.builder.add_data(&encoded)?;
+        *ctx.stack_depth += 1;
+        return Ok(());
+    }
+    compile_runtime_array_literal(ctx, values, &inferred_type)
+}
+
+fn compile_runtime_array_literal<'i>(
+    ctx: &mut CompileExprContext<'_, 'i>,
+    values: &[Expr<'i>],
+    array_type: &str,
+) -> Result<(), CompilerError> {
+    let element_type = array_element_type(array_type)
+        .ok_or_else(|| CompilerError::Unsupported("array literal type cannot be inferred".to_string()))?;
+    for (index, value) in values.iter().enumerate() {
+        compile_array_literal_element(ctx, value, &element_type)?;
+        if index > 0 {
+            ctx.builder.add_op(OpCat)?;
+            *ctx.stack_depth -= 1;
+        }
+    }
     Ok(())
+}
+
+fn compile_array_literal_element<'i>(
+    ctx: &mut CompileExprContext<'_, 'i>,
+    value: &Expr<'i>,
+    element_type: &str,
+) -> Result<(), CompilerError> {
+    match element_type {
+        "int" => {
+            compile_expr_with_context(ctx, value)?;
+            ctx.builder.add_i64(8)?;
+            *ctx.stack_depth += 1;
+            ctx.builder.add_op(OpNum2Bin)?;
+            *ctx.stack_depth -= 1;
+            Ok(())
+        }
+        "bool" => {
+            let cast_expr = Expr::new(
+                ExprKind::Call { name: "byte[1]".to_string(), args: vec![value.clone()], name_span: span::Span::default() },
+                span::Span::default(),
+            );
+            compile_expr_with_context(ctx, &cast_expr)
+        }
+        "byte" => compile_expr_with_context(ctx, value),
+        _ => compile_expr_with_context(ctx, value),
+    }
+}
+
+fn infer_fixed_array_runtime_type<'i>(
+    values: &[Expr<'i>],
+    env: &HashMap<String, Expr<'i>>,
+    types: &HashMap<String, String>,
+) -> Option<String> {
+    infer_fixed_array_literal_type(values).or_else(|| {
+        let first_type = infer_debug_expr_value_type(values.first()?, env, types, &mut HashSet::new()).ok()?;
+        fixed_type_size(&first_type)?;
+        if values.iter().skip(1).all(|value| {
+            infer_debug_expr_value_type(value, env, types, &mut HashSet::new()).ok().as_deref() == Some(first_type.as_str())
+        }) {
+            Some(format!("{first_type}[]"))
+        } else {
+            None
+        }
+    })
 }
 
 fn compile_state_object_expr<'i>() -> Result<(), CompilerError> {

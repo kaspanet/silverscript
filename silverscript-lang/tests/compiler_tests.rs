@@ -13,7 +13,7 @@ use kaspa_txscript::opcodes::codes::*;
 use kaspa_txscript::script_builder::ScriptBuilder;
 use kaspa_txscript::{
     EngineCtx, EngineFlags, SeqCommitAccessor, TxScriptEngine, parse_script, pay_to_address_script, pay_to_script_hash_script,
-    pay_to_script_hash_signature_script,
+    pay_to_script_hash_signature_script, serialize_i64,
 };
 use silverscript_lang::ast::{Expr, ExprKind, format_contract_ast, parse_contract_ast};
 use silverscript_lang::compiler::{
@@ -3188,11 +3188,7 @@ fn compiles_int_array_push_to_expected_script() {
     let expected = ScriptBuilder::new()
         .add_data(&[])
         .unwrap()
-        .add_i64(7)
-        .unwrap()
-        .add_i64(8)
-        .unwrap()
-        .add_op(OpNum2Bin)
+        .add_data(&serialize_i64(7, Some(8)).unwrap())
         .unwrap()
         .add_op(OpCat)
         .unwrap()
@@ -3236,11 +3232,7 @@ fn compiles_int_array_index_to_expected_script() {
     let expected = ScriptBuilder::new()
         .add_data(&[])
         .unwrap()
-        .add_i64(7)
-        .unwrap()
-        .add_i64(8)
-        .unwrap()
-        .add_op(OpNum2Bin)
+        .add_data(&serialize_i64(7, Some(8)).unwrap())
         .unwrap()
         .add_op(OpCat)
         .unwrap()

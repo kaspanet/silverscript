@@ -12,6 +12,7 @@ use crate::debug_info::DebugInfo;
 pub use crate::errors::{CompilerError, ErrorSpan};
 use crate::span;
 mod covenant_declarations;
+mod array_push;
 mod compile;
 mod debug_value_types;
 mod infer_array;
@@ -31,6 +32,7 @@ pub(super) use structs::{
     lower_structs_contract,
     struct_array_name_from_type_ref, struct_name_from_type_ref, validate_struct_graph,
 };
+use array_push::lower_array_pushes;
 use type_check::{type_check_contract, value_matches_type_ref};
 
 /// Prefix used for synthetic argument bindings during inline function expansion.
