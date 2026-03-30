@@ -344,7 +344,6 @@ fn compile_contract_fields<'i>(
             )?;
         }
 
-        env.insert(field.name.clone(), resolved.clone());
         field_values.insert(field.name.clone(), resolved);
         field_types.insert(field.name.clone(), type_name);
     }
@@ -432,11 +431,6 @@ fn infer_expr_type_ref_for_comparison<'i>(
     types: &HashMap<String, String>,
 ) -> Option<TypeRef> {
     if let ExprKind::Identifier(name) = &expr.kind {
-        if let Some(type_ref) = types.get(name).and_then(|type_name| parse_type_ref(type_name).ok()) {
-            return Some(type_ref);
-        }
-    }
-    if let Some((name, _)) = env.iter().find(|(_, value)| value.kind == expr.kind) {
         if let Some(type_ref) = types.get(name).and_then(|type_name| parse_type_ref(type_name).ok()) {
             return Some(type_ref);
         }
@@ -1518,10 +1512,7 @@ fn compile_assign_statement<'i>(
 ) -> Result<Vec<String>, CompilerError> {
     if let Some(type_name) = ctx.types.get(name) {
         if !ctx.stack_bindings.contains(name) {
-            return Err(CompilerError::Unsupported(format!(
-                "assigned variable '{}' must be stack-bound before reassignment",
-                name
-            )));
+            return Err(CompilerError::Unsupported(format!("assigned variable '{}' must be stack-bound before reassignment", name)));
         }
 
         let lowered_expr = coerce_expr_for_declared_scalar_type(expr.clone(), type_name);
@@ -1732,8 +1723,7 @@ fn compile_read_input_state_statement<'i>(
                     script_size_value,
                     ctx.contract_constants,
                 )?;
-                added_stack_locals
-                    .extend(compile_stack_variable_definition(ctx, &binding.name, binding_type, binding_expr)?);
+                added_stack_locals.extend(compile_stack_variable_definition(ctx, &binding.name, binding_type, binding_expr)?);
 
                 field_chunk_offset += encoded_field_chunk_size(field, ctx.contract_constants)?;
             }
@@ -1803,8 +1793,7 @@ fn compile_read_input_state_statement<'i>(
                     ctx.contract_constants,
                     "readInputStateWithTemplate",
                 )?;
-                added_stack_locals
-                    .extend(compile_stack_variable_definition(ctx, &binding.name, binding_type, binding_expr)?);
+                added_stack_locals.extend(compile_stack_variable_definition(ctx, &binding.name, binding_type, binding_expr)?);
 
                 field_chunk_offset += encoded_field_chunk_size_for_type_ref(&field.type_ref, ctx.contract_constants)?;
             }
@@ -2534,10 +2523,7 @@ fn compile_time_op_statement<'i>(
     Ok(())
 }
 
-fn compile_block_statement<'i>(
-    ctx: &mut CompileStatementContext<'_, 'i>,
-    body: &[Statement<'i>],
-) -> Result<(), CompilerError> {
+fn compile_block_statement<'i>(ctx: &mut CompileStatementContext<'_, 'i>, body: &[Statement<'i>]) -> Result<(), CompilerError> {
     compile_block(
         body,
         ctx.assigned_names,
@@ -2714,13 +2700,10 @@ fn resolve_expr<'i>(
             }
             Ok(Expr::new(ExprKind::StateObject(resolved_fields), span))
         }
-        ExprKind::FieldAccess { source, field, field_span } => {
-            Ok(Expr::new(ExprKind::FieldAccess {
-                source: Box::new(resolve_expr(*source, constants, visiting)?),
-                field,
-                field_span,
-            }, span))
-        }
+        ExprKind::FieldAccess { source, field, field_span } => Ok(Expr::new(
+            ExprKind::FieldAccess { source: Box::new(resolve_expr(*source, constants, visiting)?), field, field_span },
+            span,
+        )),
         ExprKind::Call { name, args, name_span } => {
             let mut resolved = Vec::with_capacity(args.len());
             for arg in args {
@@ -2751,12 +2734,10 @@ fn resolve_expr<'i>(
             },
             span,
         )),
-        ExprKind::Introspection { kind, index, field_span } => {
-            Ok(Expr::new(
-                ExprKind::Introspection { kind, index: Box::new(resolve_expr(*index, constants, visiting)?), field_span },
-                span,
-            ))
-        }
+        ExprKind::Introspection { kind, index, field_span } => Ok(Expr::new(
+            ExprKind::Introspection { kind, index: Box::new(resolve_expr(*index, constants, visiting)?), field_span },
+            span,
+        )),
         ExprKind::UnarySuffix { source, kind, span: suffix_span } => Ok(Expr::new(
             ExprKind::UnarySuffix { source: Box::new(resolve_expr(*source, constants, visiting)?), kind, span: suffix_span },
             span,
@@ -3107,8 +3088,7 @@ fn compile_binary_expr<'i>(
         right.clone()
     };
     let left_value_type = infer_debug_expr_value_type(left, ctx.scope.constants, ctx.scope.types, &mut HashSet::new()).ok();
-    let right_value_type =
-        infer_debug_expr_value_type(&coerced_right, ctx.scope.constants, ctx.scope.types, &mut HashSet::new()).ok();
+    let right_value_type = infer_debug_expr_value_type(&coerced_right, ctx.scope.constants, ctx.scope.types, &mut HashSet::new()).ok();
     debug_assert!(
         !matches!(op, BinaryOp::Add) || (left_value_type.as_deref() != Some("byte") && right_value_type.as_deref() != Some("byte")),
         "type_check must reject byte addition"
@@ -3117,8 +3097,7 @@ fn compile_binary_expr<'i>(
         && (expr_is_bytes(left, ctx.scope.constants, ctx.scope.types)
             || expr_is_bytes(&coerced_right, ctx.scope.constants, ctx.scope.types));
     let bytes_add = matches!(op, BinaryOp::Add)
-        && (expr_is_bytes(left, ctx.scope.constants, ctx.scope.types)
-            || expr_is_bytes(right, ctx.scope.constants, ctx.scope.types));
+        && (expr_is_bytes(left, ctx.scope.constants, ctx.scope.types) || expr_is_bytes(right, ctx.scope.constants, ctx.scope.types));
     if bytes_add {
         compile_concat_operand(
             left,
@@ -3260,8 +3239,7 @@ fn compile_array_index_expr<'i>(
         Expr { kind: ExprKind::Identifier(_), .. } => source.clone(),
         _ => resolve_expr(source.clone(), ctx.scope.constants, ctx.visiting)?,
     };
-    let source_type =
-        infer_debug_expr_value_type(&resolved_source, ctx.scope.constants, ctx.scope.types, &mut HashSet::new())?;
+    let source_type = infer_debug_expr_value_type(&resolved_source, ctx.scope.constants, ctx.scope.types, &mut HashSet::new())?;
     let element_type = array_element_type(&source_type)
         .ok_or_else(|| CompilerError::Unsupported(format!("array index requires array source, got {source_type}")))?;
     let element_size = fixed_type_size(&element_type)
@@ -3493,12 +3471,6 @@ fn expr_is_bytes_inner<'i>(
         ExprKind::Identifier(name) => {
             if !visiting.insert(name.clone()) {
                 return false;
-            }
-            if let Some(expr) = env.get(name) {
-                let result = expr_is_bytes_inner(expr, env, types, visiting)
-                    || types.get(name).map(|type_name| is_bytes_type(type_name)).unwrap_or(false);
-                visiting.remove(name);
-                return result;
             }
             visiting.remove(name);
             types.get(name).map(|type_name| is_bytes_type(type_name)).unwrap_or(false)
@@ -3778,8 +3750,7 @@ fn compile_byte_sequence_cast_call<'i>(
     if args.len() != 1 {
         return Err(CompilerError::Unsupported(format!("{name}() expects a single argument")));
     }
-    let source_type =
-        infer_debug_expr_value_type(&args[0], ctx.scope.constants, ctx.scope.types, &mut HashSet::new()).ok();
+    let source_type = infer_debug_expr_value_type(&args[0], ctx.scope.constants, ctx.scope.types, &mut HashSet::new()).ok();
     if let Some(source_type) = source_type.as_deref() {
         if let Some(source_size) = byte_sequence_cast_size(source_type) {
             if let Some(source_size) = source_size {
@@ -3890,18 +3861,7 @@ fn compile_concat_operand<'i>(
     script_size: Option<i64>,
     contract_constants: &HashMap<String, Expr<'i>>,
 ) -> Result<(), CompilerError> {
-    compile_expr(
-        expr,
-        constants,
-        stack_bindings,
-        types,
-        builder,
-        options,
-        visiting,
-        stack_depth,
-        script_size,
-        contract_constants,
-    )?;
+    compile_expr(expr, constants, stack_bindings, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
     if !expr_is_bytes(expr, constants, types) {
         builder.add_i64(1)?;
         *stack_depth += 1;
