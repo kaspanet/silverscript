@@ -111,114 +111,185 @@ pub(super) fn compile_contract_impl<'i>(
     let without_selector = entrypoint_functions.len() == 1;
 
     let functions_map = lowered_contract.functions.iter().cloned().map(|func| (func.name.clone(), func)).collect::<HashMap<_, _>>();
-    let function_order = lowered_contract
-        .functions
-        .iter()
-        .enumerate()
-        .map(|(index, func)| (func.name.clone(), index))
-        .collect::<HashMap<_, _>>();
+    let function_order =
+        lowered_contract.functions.iter().enumerate().map(|(index, func)| (func.name.clone(), index)).collect::<HashMap<_, _>>();
     let function_abi_entries = build_function_abi_entries(&covenant_lowered_contract);
     let uses_script_size = contract_uses_script_size(&lowered_contract);
 
     let mut script_size = if uses_script_size { Some(100i64) } else { None };
 
     for _ in 0..32 {
-        let (_contract_fields, field_prolog_script) =
-            compile_contract_fields(&lowered_contract.fields, &lowered_constants, options, script_size)?;
-
-        let selector_prefix_len = if without_selector { 0 } else { 1 };
-        let contract_field_prefix_len = selector_prefix_len + field_prolog_script.len();
-        let state_layout = CompiledStateLayout { start: selector_prefix_len, len: field_prolog_script.len() };
-        let mut compiled_entrypoints = Vec::new();
-        for func in &lowered_contract.functions {
-            if func.entrypoint {
-                let function_index = function_order
-                    .get(&func.name)
-                    .copied()
-                    .ok_or_else(|| CompilerError::Unsupported(format!("function '{}' not found", func.name)))?;
-                compiled_entrypoints.push(compile_entrypoint_function(
-                    func,
-                    function_index,
-                    &lowered_contract.params,
-                    &lowered_contract.fields,
-                    &lowered_contract.constants,
-                    contract_field_prefix_len,
-                    &lowered_constants,
-                    options,
-                    &structs,
-                    &functions_map,
-                    &function_order,
-                    script_size,
-                )?);
-            }
-        }
-
-        let script = if without_selector {
-            let (_name, entrypoint_script) = compiled_entrypoints
-                .first()
-                .ok_or_else(|| CompilerError::Unsupported("contract has no entrypoint functions".to_string()))?;
-            let mut script = field_prolog_script.clone();
-            script.extend(entrypoint_script.clone());
-            script
-        } else {
-            // Preserve the selector while encoding contract state once so
-            // reflection helpers can rewrite a single contiguous state segment.
-            let mut builder = ScriptBuilder::new();
-            builder.add_op(OpToAltStack)?;
-            builder.add_ops(&field_prolog_script)?;
-            builder.add_op(OpFromAltStack)?;
-            let total = compiled_entrypoints.len();
-            for (entrypoint_index, (_name, script)) in compiled_entrypoints.iter().enumerate() {
-                builder.add_op(OpDup)?;
-                builder.add_i64(entrypoint_index as i64)?;
-                builder.add_op(OpNumEqual)?;
-                builder.add_op(OpIf)?;
-                builder.add_op(OpDrop)?;
-                builder.add_ops(script)?;
-                builder.add_op(OpElse)?;
-                if entrypoint_index == total - 1 {
-                    builder.add_op(OpDrop)?;
-                    builder.add_op(OpFalse)?;
-                    builder.add_op(OpVerify)?;
-                }
-            }
-
-            for _ in 0..total {
-                builder.add_op(OpEndIf)?;
-            }
-
-            builder.drain()
-        };
+        let (script, state_layout) = compile_contract_script_iteration(
+            &lowered_contract,
+            &lowered_constants,
+            options,
+            script_size,
+            without_selector,
+            &structs,
+            &functions_map,
+            &function_order,
+        )?;
 
         let debug_info = None;
         if !uses_script_size {
-            return Ok(CompiledContract {
-                contract_name: lowered_contract.name.clone(),
-                script,
-                ast: covenant_lowered_contract.clone(),
-                abi: function_abi_entries,
+            return Ok(build_compiled_contract(
+                &lowered_contract,
+                &covenant_lowered_contract,
+                function_abi_entries.clone(),
                 without_selector,
+                script,
                 state_layout,
                 debug_info,
-            });
+            ));
         }
 
         let actual_size = script.len() as i64;
         if Some(actual_size) == script_size {
-            return Ok(CompiledContract {
-                contract_name: lowered_contract.name.clone(),
-                script,
-                ast: covenant_lowered_contract.clone(),
-                abi: function_abi_entries,
+            return Ok(build_compiled_contract(
+                &lowered_contract,
+                &covenant_lowered_contract,
+                function_abi_entries.clone(),
                 without_selector,
+                script,
                 state_layout,
                 debug_info,
-            });
+            ));
         }
         script_size = Some(actual_size);
     }
 
     Err(CompilerError::Unsupported("script size did not stabilize".to_string()))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compile_contract_script_iteration<'i>(
+    lowered_contract: &ContractAst<'i>,
+    lowered_constants: &HashMap<String, Expr<'i>>,
+    options: CompileOptions,
+    script_size: Option<i64>,
+    without_selector: bool,
+    structs: &StructRegistry,
+    functions_map: &HashMap<String, FunctionAst<'i>>,
+    function_order: &HashMap<String, usize>,
+) -> Result<(Vec<u8>, CompiledStateLayout), CompilerError> {
+    let (_contract_fields, field_prolog_script) =
+        compile_contract_fields(&lowered_contract.fields, lowered_constants, options, script_size)?;
+
+    let selector_prefix_len = if without_selector { 0 } else { 1 };
+    let contract_field_prefix_len = selector_prefix_len + field_prolog_script.len();
+    let state_layout = CompiledStateLayout { start: selector_prefix_len, len: field_prolog_script.len() };
+    let compiled_entrypoints = compile_entrypoint_scripts(
+        lowered_contract,
+        contract_field_prefix_len,
+        lowered_constants,
+        options,
+        structs,
+        functions_map,
+        function_order,
+        script_size,
+    )?;
+    let script = build_contract_script(without_selector, &field_prolog_script, &compiled_entrypoints)?;
+    Ok((script, state_layout))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compile_entrypoint_scripts<'i>(
+    lowered_contract: &ContractAst<'i>,
+    contract_field_prefix_len: usize,
+    lowered_constants: &HashMap<String, Expr<'i>>,
+    options: CompileOptions,
+    structs: &StructRegistry,
+    functions_map: &HashMap<String, FunctionAst<'i>>,
+    function_order: &HashMap<String, usize>,
+    script_size: Option<i64>,
+) -> Result<Vec<(String, Vec<u8>)>, CompilerError> {
+    let mut compiled_entrypoints = Vec::new();
+    for func in &lowered_contract.functions {
+        if func.entrypoint {
+            let function_index = function_order
+                .get(&func.name)
+                .copied()
+                .ok_or_else(|| CompilerError::Unsupported(format!("function '{}' not found", func.name)))?;
+            compiled_entrypoints.push(compile_entrypoint_function(
+                func,
+                function_index,
+                &lowered_contract.params,
+                &lowered_contract.fields,
+                &lowered_contract.constants,
+                contract_field_prefix_len,
+                lowered_constants,
+                options,
+                structs,
+                functions_map,
+                function_order,
+                script_size,
+            )?);
+        }
+    }
+    Ok(compiled_entrypoints)
+}
+
+fn build_contract_script(
+    without_selector: bool,
+    field_prolog_script: &[u8],
+    compiled_entrypoints: &[(String, Vec<u8>)],
+) -> Result<Vec<u8>, CompilerError> {
+    if without_selector {
+        let (_name, entrypoint_script) = compiled_entrypoints
+            .first()
+            .ok_or_else(|| CompilerError::Unsupported("contract has no entrypoint functions".to_string()))?;
+        let mut script = field_prolog_script.to_vec();
+        script.extend(entrypoint_script.clone());
+        return Ok(script);
+    }
+
+    // Preserve the selector while encoding contract state once so
+    // reflection helpers can rewrite a single contiguous state segment.
+    let mut builder = ScriptBuilder::new();
+    builder.add_op(OpToAltStack)?;
+    builder.add_ops(field_prolog_script)?;
+    builder.add_op(OpFromAltStack)?;
+    let total = compiled_entrypoints.len();
+    for (entrypoint_index, (_name, script)) in compiled_entrypoints.iter().enumerate() {
+        builder.add_op(OpDup)?;
+        builder.add_i64(entrypoint_index as i64)?;
+        builder.add_op(OpNumEqual)?;
+        builder.add_op(OpIf)?;
+        builder.add_op(OpDrop)?;
+        builder.add_ops(script)?;
+        builder.add_op(OpElse)?;
+        if entrypoint_index == total - 1 {
+            builder.add_op(OpDrop)?;
+            builder.add_op(OpFalse)?;
+            builder.add_op(OpVerify)?;
+        }
+    }
+
+    for _ in 0..total {
+        builder.add_op(OpEndIf)?;
+    }
+
+    Ok(builder.drain())
+}
+
+fn build_compiled_contract<'i>(
+    lowered_contract: &ContractAst<'i>,
+    covenant_lowered_contract: &ContractAst<'i>,
+    function_abi_entries: Vec<FunctionAbiEntry>,
+    without_selector: bool,
+    script: Vec<u8>,
+    state_layout: CompiledStateLayout,
+    debug_info: Option<DebugInfo<'i>>,
+) -> CompiledContract<'i> {
+    CompiledContract {
+        contract_name: lowered_contract.name.clone(),
+        script,
+        ast: covenant_lowered_contract.clone(),
+        abi: function_abi_entries,
+        without_selector,
+        state_layout,
+        debug_info,
+    }
 }
 
 fn contract_uses_script_size<'i>(contract: &ContractAst<'i>) -> bool {
@@ -421,16 +492,6 @@ fn infer_expr_type_ref_for_comparison<'i>(
     }
     let type_name = infer_debug_expr_value_type(expr, env, types, &mut HashSet::new()).ok()?;
     parse_type_ref(&type_name).ok()
-}
-
-fn comparison_types_compatible(left_type: &TypeRef, right_type: &TypeRef) -> bool {
-    if left_type == right_type {
-        return true;
-    }
-    matches!(
-        (&left_type.base, left_type.array_dims.as_slice(), &right_type.base, right_type.array_dims.as_slice()),
-        (TypeBase::Byte, [], TypeBase::Byte, [ArrayDim::Fixed(1)]) | (TypeBase::Byte, [ArrayDim::Fixed(1)], TypeBase::Byte, [])
-    )
 }
 
 pub(super) fn array_literal_matches_type_with_env_ref<'i>(
@@ -1063,34 +1124,39 @@ fn compile_entrypoint_function<'i>(
     let has_return = function.body.iter().any(contains_return);
 
     let body_len = function.body.len();
+    let mut statement_ctx = CompileStatementContext {
+        env: &mut env,
+        assigned_names: &assigned_names,
+        identifier_uses: &identifier_uses,
+        types: &mut types,
+        stack_bindings: &mut stack_bindings,
+        builder: &mut builder,
+        options,
+        contract_fields,
+        contract_field_prefix_len,
+        contract_constants: constants,
+        structs,
+        functions,
+        function_order,
+        function_index,
+        script_size,
+    };
     for (index, stmt) in function.body.iter().enumerate() {
         if let Statement::Return { exprs, .. } = stmt {
             debug_assert_eq!(index, body_len - 1, "type_check must validate return statements are last");
             for expr in exprs {
-                let resolved = resolve_return_expr_for_runtime(expr.clone(), &env, &stack_bindings, &types, &mut HashSet::new())
+                let resolved = resolve_return_expr_for_runtime(
+                    expr.clone(),
+                    statement_ctx.env,
+                    statement_ctx.stack_bindings,
+                    statement_ctx.types,
+                    &mut HashSet::new(),
+                )
                     .map_err(|err| err.with_span(&expr.span))?;
                 return_exprs.push(resolved);
             }
         } else {
-            compile_statement(
-                stmt,
-                &mut env,
-                &assigned_names,
-                &identifier_uses,
-                &mut types,
-                &mut stack_bindings,
-                &mut builder,
-                options,
-                contract_fields,
-                contract_field_prefix_len,
-                constants,
-                structs,
-                functions,
-                function_order,
-                function_index,
-                script_size,
-            )
-            .map_err(|err| err.with_span(&stmt.span()))?;
+            compile_statement(&mut statement_ctx, stmt).map_err(|err| err.with_span(&stmt.span()))?;
         }
     }
 
@@ -1145,429 +1211,429 @@ fn compile_entrypoint_function<'i>(
     Ok((function.name.clone(), builder.drain()))
 }
 
-#[allow(clippy::too_many_arguments)]
 fn compile_statement<'i>(
+    ctx: &mut CompileStatementContext<'_, 'i>,
     stmt: &Statement<'i>,
-    env: &mut HashMap<String, Expr<'i>>,
-    assigned_names: &HashSet<String>,
-    identifier_uses: &HashMap<String, usize>,
-    types: &mut HashMap<String, String>,
-    stack_bindings: &mut StackBindings,
-    builder: &mut ScriptBuilder,
-    options: CompileOptions,
-    contract_fields: &[ContractFieldAst<'i>],
-    contract_field_prefix_len: usize,
-    contract_constants: &HashMap<String, Expr<'i>>,
-    structs: &StructRegistry,
-    functions: &HashMap<String, FunctionAst<'i>>,
-    function_order: &HashMap<String, usize>,
-    function_index: usize,
-    script_size: Option<i64>,
 ) -> Result<Vec<String>, CompilerError> {
     match stmt {
         Statement::VariableDefinition { type_ref, name, expr, .. } => {
-            let type_name = type_name_from_ref(type_ref);
-            let effective_type_name = if has_inferred_array_size_ref(type_ref) {
-                infer_fixed_array_type_from_initializer(&type_name, expr.as_ref(), types, contract_constants).ok_or_else(|| {
-                    CompilerError::Unsupported(format!(
-                        "variable '{}' requires an initializer with inferrable size for type {}",
-                        name, type_name
-                    ))
-                })?
-            } else {
-                type_name.clone()
-            };
+            compile_variable_definition_statement(ctx, type_ref, name, expr.as_ref())
+        }
+        Statement::ArrayPush { name, expr, .. } => compile_array_push_statement(ctx, name, expr),
+        Statement::Require { expr, .. } => compile_require_statement(ctx, expr),
+        Statement::TimeOp { tx_var, expr, .. } => compile_time_branch_statement(ctx, tx_var, expr),
+        Statement::If { condition, then_branch, else_branch, .. } => {
+            compile_if_statement(ctx, condition, then_branch, else_branch.as_deref()).map(|_| Vec::new())
+        }
+        Statement::For { ident, start, end, max_iterations, body, span, .. } => {
+            compile_for_statement(ctx, ident, start, end, max_iterations, body, *span).map(|_| Vec::new())
+        }
+        Statement::Return { .. } => compile_return_statement(),
+        Statement::TupleAssignment { left_name, right_name, expr, .. } => {
+            compile_tuple_assignment_statement(ctx, left_name, right_name, expr)
+        }
+        Statement::FunctionCall { name, args, .. } => compile_function_call_statement(ctx, name, args),
+        Statement::StateFunctionCallAssign { bindings, name, args, .. } => {
+            compile_state_function_call_assign_statement(ctx, bindings, name, args)
+        }
+        Statement::StructDestructure { .. } => compile_struct_destructure_statement(),
+        Statement::FunctionCallAssign { bindings, name, args, .. } => {
+            compile_function_call_assign_statement(ctx, bindings, name, args)
+        }
+        Statement::Assign { name, expr, .. } => compile_assign_statement(ctx, name, expr),
+        Statement::Console { .. } => compile_console_statement(),
+    }
+}
 
-            // Check if this is a fixed-size array (e.g., byte[N]) or dynamic array (e.g., byte[])
-            let is_fixed_size_array =
-                is_array_type(&effective_type_name) && array_size_with_constants(&effective_type_name, contract_constants).is_some();
-            let is_dynamic_array =
-                is_array_type(&effective_type_name) && array_size_with_constants(&effective_type_name, contract_constants).is_none();
+struct CompileStatementContext<'a, 'i> {
+    env: &'a mut HashMap<String, Expr<'i>>,
+    assigned_names: &'a HashSet<String>,
+    identifier_uses: &'a HashMap<String, usize>,
+    types: &'a mut HashMap<String, String>,
+    stack_bindings: &'a mut StackBindings,
+    builder: &'a mut ScriptBuilder,
+    options: CompileOptions,
+    contract_fields: &'a [ContractFieldAst<'i>],
+    contract_field_prefix_len: usize,
+    contract_constants: &'a HashMap<String, Expr<'i>>,
+    structs: &'a StructRegistry,
+    functions: &'a HashMap<String, FunctionAst<'i>>,
+    function_order: &'a HashMap<String, usize>,
+    function_index: usize,
+    script_size: Option<i64>,
+}
 
-            if is_dynamic_array {
-                // For byte[] (dynamic byte arrays), allow initialization from any bytes expression
-                let is_byte_array_type = effective_type_name.starts_with("byte[") && effective_type_name.ends_with("[]");
+fn compile_variable_definition_statement<'i>(
+    ctx: &mut CompileStatementContext<'_, 'i>,
+    type_ref: &TypeRef,
+    name: &str,
+    expr: Option<&Expr<'i>>,
+) -> Result<Vec<String>, CompilerError> {
+    let type_name = type_name_from_ref(type_ref);
+    let effective_type_name = if has_inferred_array_size_ref(type_ref) {
+        infer_fixed_array_type_from_initializer(&type_name, expr, ctx.types, ctx.contract_constants).ok_or_else(|| {
+            CompilerError::Unsupported(format!(
+                "variable '{}' requires an initializer with inferrable size for type {}",
+                name, type_name
+            ))
+        })?
+    } else {
+        type_name.clone()
+    };
 
-                let initial = match expr {
-                    Some(Expr { kind: ExprKind::Identifier(other), .. }) => match types.get(other) {
-                        Some(other_type) if is_type_assignable(other_type, &effective_type_name, contract_constants) => {
-                            Expr::new(ExprKind::Identifier(other.clone()), span::Span::default())
-                        }
-                        Some(_) => {
-                            return Err(CompilerError::Unsupported("array assignment requires compatible array types".to_string()));
-                        }
-                        None => return Err(CompilerError::UndefinedIdentifier(other.clone())),
-                    },
-                    Some(e) if is_byte_array_type => {
-                        // byte[] can be initialized from any bytes expression
-                        e.clone()
-                    }
-                    Some(e @ Expr { kind: ExprKind::Array(values), .. }) => {
-                        if !array_literal_matches_type_with_env(values, &effective_type_name, types, contract_constants) {
-                            return Err(CompilerError::Unsupported("array initializer must be another array".to_string()));
-                        }
-                        resolve_expr(
-                            Expr::new(ExprKind::Array(values.clone()), e.span),
-                            env,
-                            &mut HashSet::new(),
-                        )?
-                    }
-                    Some(_) => return Err(CompilerError::Unsupported("array initializer must be another array".to_string())),
-                    None => Expr::new(ExprKind::Array(Vec::new()), span::Span::default()),
-                };
-                env.insert(name.clone(), initial);
-                types.insert(name.clone(), effective_type_name.clone());
-                Ok(Vec::new())
-            } else if is_fixed_size_array {
-                // Fixed-size arrays like byte[N] can be initialized from expressions
-                let expr =
-                    expr.clone().ok_or_else(|| CompilerError::Unsupported("variable definition requires initializer".to_string()))?;
-                let expr = expr;
+    let is_fixed_size_array =
+        is_array_type(&effective_type_name) && array_size_with_constants(&effective_type_name, ctx.contract_constants).is_some();
+    let is_dynamic_array =
+        is_array_type(&effective_type_name) && array_size_with_constants(&effective_type_name, ctx.contract_constants).is_none();
 
-                // For array literals, validate that the size matches the declared type
-                if let ExprKind::Array(values) = &expr.kind {
-                    if let Some(expected_size) = array_size_with_constants(&effective_type_name, contract_constants) {
-                        if values.len() != expected_size {
-                            return Err(CompilerError::Unsupported(format!(
-                                "array size mismatch: expected {} elements for type {}, got {}",
-                                expected_size,
-                                effective_type_name,
-                                values.len()
-                            )));
-                        }
-                    }
-
-                    // Validate element types match
-                    if !array_literal_matches_type_with_env(values, &effective_type_name, types, contract_constants) {
-                        return Err(CompilerError::Unsupported(format!(
-                            "array element type mismatch for type {}",
-                            effective_type_name
-                        )));
-                    }
+    if is_dynamic_array {
+        let is_byte_array_type = effective_type_name.starts_with("byte[") && effective_type_name.ends_with("[]");
+        let initial = match expr {
+            Some(Expr { kind: ExprKind::Identifier(other), .. }) => match ctx.types.get(other) {
+                Some(other_type) if is_type_assignable(other_type, &effective_type_name, ctx.contract_constants) => {
+                    Expr::new(ExprKind::Identifier(other.clone()), span::Span::default())
                 }
-
-                let stored_expr =
-                    if matches!(&expr.kind, ExprKind::Array(_)) { resolve_expr(expr, env, &mut HashSet::new())? } else { expr };
-                env.insert(name.clone(), stored_expr);
-                types.insert(name.clone(), effective_type_name.clone());
-                Ok(Vec::new())
-            } else {
-                let expr =
-                    expr.clone().ok_or_else(|| CompilerError::Unsupported("variable definition requires initializer".to_string()))?;
-                let expr = coerce_expr_for_declared_scalar_type(expr, &effective_type_name);
-                types.insert(name.clone(), effective_type_name.clone());
-                let existing_is_predeclared_default = is_predeclared_scalar_default(name, &effective_type_name, env);
-
-                // Scalars can be kept on the stack for reuse (>=2 uses with no mutation), or (optionally)
-                // for mutation to avoid nested IfElse expression blowups under unrolled control flow.
-                let used_at_least_twice = identifier_uses.get(name).copied().unwrap_or(0) >= 2;
-                let stack_for_reuse = used_at_least_twice && !assigned_names.contains(name);
-                let stack_for_mutation = assigned_names.contains(name);
-                if (stack_for_reuse || stack_for_mutation)
-                    && (!env.contains_key(name) || existing_is_predeclared_default)
-                    && !stack_bindings.contains(name)
-                    && matches!(effective_type_name.as_str(), "int" | "bool" | "byte")
-                {
-                    let mut stack_depth = 0i64;
-                    compile_expr(
-                        &expr,
-                        env,
-                        stack_bindings,
-                        types,
-                        builder,
-                        options,
-                        &mut HashSet::new(),
-                        &mut stack_depth,
-                        script_size,
-                        contract_constants,
-                    )?;
-                    env.insert(name.clone(), expr);
-                    stack_bindings.push_binding(name);
-                    Ok(vec![name.clone()])
-                } else {
-                    env.insert(name.clone(), expr);
-                    Ok(Vec::new())
+                Some(_) => return Err(CompilerError::Unsupported("array assignment requires compatible array types".to_string())),
+                None => return Err(CompilerError::UndefinedIdentifier(other.clone())),
+            },
+            Some(e) if is_byte_array_type => e.clone(),
+            Some(e @ Expr { kind: ExprKind::Array(values), .. }) => {
+                if !array_literal_matches_type_with_env(values, &effective_type_name, ctx.types, ctx.contract_constants) {
+                    return Err(CompilerError::Unsupported("array initializer must be another array".to_string()));
                 }
+                resolve_expr(Expr::new(ExprKind::Array(values.clone()), e.span), ctx.env, &mut HashSet::new())?
+            }
+            Some(_) => return Err(CompilerError::Unsupported("array initializer must be another array".to_string())),
+            None => Expr::new(ExprKind::Array(Vec::new()), span::Span::default()),
+        };
+        ctx.env.insert(name.to_string(), initial);
+        ctx.types.insert(name.to_string(), effective_type_name);
+        return Ok(Vec::new());
+    }
+
+    if is_fixed_size_array {
+        let expr = expr.cloned().ok_or_else(|| CompilerError::Unsupported("variable definition requires initializer".to_string()))?;
+        if let ExprKind::Array(values) = &expr.kind {
+            if let Some(expected_size) = array_size_with_constants(&effective_type_name, ctx.contract_constants)
+                && values.len() != expected_size
+            {
+                return Err(CompilerError::Unsupported(format!(
+                    "array size mismatch: expected {} elements for type {}, got {}",
+                    expected_size,
+                    effective_type_name,
+                    values.len()
+                )));
+            }
+            if !array_literal_matches_type_with_env(values, &effective_type_name, ctx.types, ctx.contract_constants) {
+                return Err(CompilerError::Unsupported(format!("array element type mismatch for type {}", effective_type_name)));
             }
         }
-        Statement::ArrayPush { name, expr, .. } => {
-            let array_type = types.get(name).ok_or_else(|| CompilerError::UndefinedIdentifier(name.clone()))?;
-            if !is_array_type(array_type) {
-                return Err(CompilerError::Unsupported("push() only supported on arrays".to_string()));
-            }
-            let element_type = array_element_type(array_type)
-                .ok_or_else(|| CompilerError::Unsupported("array element type must have known size".to_string()))?;
-            let _element_size = array_element_size(array_type)
-                .ok_or_else(|| CompilerError::Unsupported("array element type must have known size".to_string()))?;
-            let resolved_expr = resolve_expr(expr.clone(), env, &mut HashSet::new())?;
-            let element_expr = if element_type == "int" {
-                Expr::new(
-                    ExprKind::Call { name: "byte[8]".to_string(), args: vec![resolved_expr], name_span: span::Span::default() },
-                    span::Span::default(),
-                )
-            } else if matches!(element_type.as_str(), "bool" | "byte") {
-                Expr::new(
-                    ExprKind::Call { name: "byte[1]".to_string(), args: vec![resolved_expr], name_span: span::Span::default() },
-                    span::Span::default(),
-                )
-            } else if is_bytes_type(&element_type) {
-                if expr_is_bytes(&resolved_expr, env, types) {
-                    resolved_expr
-                } else {
-                    Expr::new(
-                        ExprKind::Call { name: element_type.to_string(), args: vec![resolved_expr], name_span: span::Span::default() },
-                        span::Span::default(),
-                    )
-                }
-            } else {
-                return Err(CompilerError::Unsupported("array element type not supported".to_string()));
-            };
 
-            let current = env.get(name).cloned().unwrap_or_else(|| Expr::new(ExprKind::Array(Vec::new()), span::Span::default()));
-            let updated = Expr::new(
-                ExprKind::Binary { op: BinaryOp::Add, left: Box::new(current), right: Box::new(element_expr) },
+        let stored_expr =
+            if matches!(&expr.kind, ExprKind::Array(_)) { resolve_expr(expr, ctx.env, &mut HashSet::new())? } else { expr };
+        ctx.env.insert(name.to_string(), stored_expr);
+        ctx.types.insert(name.to_string(), effective_type_name);
+        return Ok(Vec::new());
+    }
+
+    let expr = expr.cloned().ok_or_else(|| CompilerError::Unsupported("variable definition requires initializer".to_string()))?;
+    let expr = coerce_expr_for_declared_scalar_type(expr, &effective_type_name);
+    ctx.types.insert(name.to_string(), effective_type_name.clone());
+    let existing_is_predeclared_default = is_predeclared_scalar_default(name, &effective_type_name, ctx.env);
+
+    let used_at_least_twice = ctx.identifier_uses.get(name).copied().unwrap_or(0) >= 2;
+    let stack_for_reuse = used_at_least_twice && !ctx.assigned_names.contains(name);
+    let stack_for_mutation = ctx.assigned_names.contains(name);
+    if (stack_for_reuse || stack_for_mutation)
+        && (!ctx.env.contains_key(name) || existing_is_predeclared_default)
+        && !ctx.stack_bindings.contains(name)
+        && matches!(effective_type_name.as_str(), "int" | "bool" | "byte")
+    {
+        let mut stack_depth = 0i64;
+        compile_expr(
+            &expr,
+            ctx.env,
+            ctx.stack_bindings,
+            ctx.types,
+            ctx.builder,
+            ctx.options,
+            &mut HashSet::new(),
+            &mut stack_depth,
+            ctx.script_size,
+            ctx.contract_constants,
+        )?;
+        ctx.env.insert(name.to_string(), expr);
+        ctx.stack_bindings.push_binding(name);
+        Ok(vec![name.to_string()])
+    } else {
+        ctx.env.insert(name.to_string(), expr);
+        Ok(Vec::new())
+    }
+}
+
+fn compile_array_push_statement<'i>(
+    ctx: &mut CompileStatementContext<'_, 'i>,
+    name: &str,
+    expr: &Expr<'i>,
+) -> Result<Vec<String>, CompilerError> {
+    let array_type = ctx.types.get(name).ok_or_else(|| CompilerError::UndefinedIdentifier(name.to_string()))?;
+    if !is_array_type(array_type) {
+        return Err(CompilerError::Unsupported("push() only supported on arrays".to_string()));
+    }
+    let element_type = array_element_type(array_type)
+        .ok_or_else(|| CompilerError::Unsupported("array element type must have known size".to_string()))?;
+    let _element_size = array_element_size(array_type)
+        .ok_or_else(|| CompilerError::Unsupported("array element type must have known size".to_string()))?;
+    let resolved_expr = resolve_expr(expr.clone(), ctx.env, &mut HashSet::new())?;
+    let element_expr = if element_type == "int" {
+        Expr::new(
+            ExprKind::Call { name: "byte[8]".to_string(), args: vec![resolved_expr], name_span: span::Span::default() },
+            span::Span::default(),
+        )
+    } else if matches!(element_type.as_str(), "bool" | "byte") {
+        Expr::new(
+            ExprKind::Call { name: "byte[1]".to_string(), args: vec![resolved_expr], name_span: span::Span::default() },
+            span::Span::default(),
+        )
+    } else if is_bytes_type(&element_type) {
+        if expr_is_bytes(&resolved_expr, ctx.env, ctx.types) {
+            resolved_expr
+        } else {
+            Expr::new(
+                ExprKind::Call { name: element_type.to_string(), args: vec![resolved_expr], name_span: span::Span::default() },
+                span::Span::default(),
+            )
+        }
+    } else {
+        return Err(CompilerError::Unsupported("array element type not supported".to_string()));
+    };
+
+    let current = ctx.env.get(name).cloned().unwrap_or_else(|| Expr::new(ExprKind::Array(Vec::new()), span::Span::default()));
+    let updated = Expr::new(
+        ExprKind::Binary { op: BinaryOp::Add, left: Box::new(current), right: Box::new(element_expr) },
+        span::Span::default(),
+    );
+    ctx.env.insert(name.to_string(), updated);
+    Ok(Vec::new())
+}
+
+fn compile_require_statement<'i>(ctx: &mut CompileStatementContext<'_, 'i>, expr: &Expr<'i>) -> Result<Vec<String>, CompilerError> {
+    let mut stack_depth = 0i64;
+    compile_expr(
+        expr,
+        ctx.env,
+        ctx.stack_bindings,
+        ctx.types,
+        ctx.builder,
+        ctx.options,
+        &mut HashSet::new(),
+        &mut stack_depth,
+        ctx.script_size,
+        ctx.contract_constants,
+    )?;
+    ctx.builder.add_op(OpVerify)?;
+    Ok(Vec::new())
+}
+
+fn compile_time_branch_statement<'i>(
+    ctx: &mut CompileStatementContext<'_, 'i>,
+    tx_var: &TimeVar,
+    expr: &Expr<'i>,
+) -> Result<Vec<String>, CompilerError> {
+    compile_time_op_statement(
+        tx_var,
+        expr,
+        ctx.env,
+        ctx.stack_bindings,
+        ctx.types,
+        ctx.builder,
+        ctx.options,
+        ctx.script_size,
+        ctx.contract_constants,
+    )
+    .map(|_| Vec::new())
+}
+
+fn compile_return_statement<'i>() -> Result<Vec<String>, CompilerError> {
+    unreachable!("type_check must validate return statement placement")
+}
+
+fn compile_tuple_assignment_statement<'i>(
+    ctx: &mut CompileStatementContext<'_, 'i>,
+    left_name: &str,
+    right_name: &str,
+    expr: &Expr<'i>,
+) -> Result<Vec<String>, CompilerError> {
+    match &expr.kind {
+        ExprKind::Split { source, index, span: split_span, .. } => {
+            let left_expr = Expr::new(
+                ExprKind::Split { source: source.clone(), index: index.clone(), part: SplitPart::Left, span: *split_span },
                 span::Span::default(),
             );
-            env.insert(name.clone(), updated);
+            let right_expr = Expr::new(
+                ExprKind::Split { source: source.clone(), index: index.clone(), part: SplitPart::Right, span: *split_span },
+                span::Span::default(),
+            );
+            ctx.env.insert(left_name.to_string(), left_expr);
+            ctx.env.insert(right_name.to_string(), right_expr);
             Ok(Vec::new())
         }
-        Statement::Require { expr, .. } => {
-            let expr = expr.clone();
+        _ => Err(CompilerError::Unsupported("tuple assignment only supports split()".to_string())),
+    }
+}
+
+fn compile_function_call_statement<'i>(
+    ctx: &mut CompileStatementContext<'_, 'i>,
+    name: &str,
+    args: &[Expr<'i>],
+) -> Result<Vec<String>, CompilerError> {
+    if name == "validateOutputState" {
+        return compile_validate_output_state_statement(
+            args,
+            ctx.env,
+            ctx.stack_bindings,
+            ctx.types,
+            ctx.builder,
+            ctx.options,
+            ctx.contract_fields,
+            ctx.contract_field_prefix_len,
+            ctx.script_size,
+            ctx.contract_constants,
+        )
+        .map(|_| Vec::new());
+    }
+    if name == "validateOutputStateWithTemplate" {
+        let state_arg = args.get(1).ok_or_else(|| {
+            CompilerError::Unsupported(
+                "validateOutputStateWithTemplate(output_idx, new_state, template_prefix, template_suffix, expected_template_hash) expects 5 arguments"
+                    .to_string(),
+            )
+        })?;
+        let layout_fields = layout_fields_for_state_object_expr(state_arg, ctx.contract_fields, ctx.structs)?;
+        return compile_validate_output_state_with_template_statement(
+            args,
+            ctx.env,
+            ctx.stack_bindings,
+            ctx.types,
+            ctx.builder,
+            ctx.options,
+            &layout_fields,
+            ctx.script_size,
+            ctx.contract_constants,
+        )
+        .map(|_| Vec::new());
+    }
+    Err(CompilerError::Unsupported(format!(
+        "inline lowering must eliminate internal function calls before compilation, found '{}()'",
+        name
+    )))
+}
+
+fn compile_state_function_call_assign_statement<'i>(
+    ctx: &mut CompileStatementContext<'_, 'i>,
+    bindings: &[StateBindingAst<'i>],
+    name: &str,
+    args: &[Expr<'i>],
+) -> Result<Vec<String>, CompilerError> {
+    if name == "readInputState" || name == "readInputStateWithTemplate" {
+        return compile_read_input_state_statement(
+            bindings,
+            name,
+            args,
+            ctx.env,
+            ctx.stack_bindings,
+            ctx.types,
+            ctx.builder,
+            ctx.options,
+            ctx.contract_fields,
+            ctx.contract_field_prefix_len,
+            ctx.script_size,
+            ctx.contract_constants,
+            ctx.structs,
+        )
+        .map(|_| Vec::new());
+    }
+    Err(CompilerError::Unsupported(format!(
+        "state destructuring assignment is only supported for readInputState()/readInputStateWithTemplate(), got '{}()'",
+        name
+    )))
+}
+
+fn compile_struct_destructure_statement<'i>() -> Result<Vec<String>, CompilerError> {
+    unreachable!("lower_structs_contract must remove struct destructuring before codegen")
+}
+
+fn compile_function_call_assign_statement<'i>(
+    _ctx: &mut CompileStatementContext<'_, 'i>,
+    _bindings: &[ParamAst<'i>],
+    name: &str,
+    _args: &[Expr<'i>],
+) -> Result<Vec<String>, CompilerError> {
+    Err(CompilerError::Unsupported(format!(
+        "inline lowering must eliminate function call assignments before compilation, found '{}()'",
+        name
+    )))
+}
+
+fn compile_assign_statement<'i>(
+    ctx: &mut CompileStatementContext<'_, 'i>,
+    name: &str,
+    expr: &Expr<'i>,
+) -> Result<Vec<String>, CompilerError> {
+    if let Some(type_name) = ctx.types.get(name) {
+        if ctx.stack_bindings.contains(name) {
+            let lowered_expr = coerce_expr_for_declared_scalar_type(expr.clone(), type_name);
             let mut stack_depth = 0i64;
             compile_expr(
-                &expr,
-                env,
-                stack_bindings,
-                types,
-                builder,
-                options,
+                &lowered_expr,
+                ctx.env,
+                ctx.stack_bindings,
+                ctx.types,
+                ctx.builder,
+                ctx.options,
                 &mut HashSet::new(),
                 &mut stack_depth,
-                script_size,
-                contract_constants,
+                ctx.script_size,
+                ctx.contract_constants,
             )?;
-            builder.add_op(OpVerify)?;
-            Ok(Vec::new())
-        }
-        Statement::TimeOp { tx_var, expr, .. } => {
-            let expr = expr.clone();
-            compile_time_op_statement(tx_var, &expr, env, stack_bindings, types, builder, options, script_size, contract_constants)
-                .map(|_| Vec::new())
-        }
-        Statement::If { condition, then_branch, else_branch, .. } => compile_if_statement(
-            condition,
-            then_branch,
-            else_branch.as_deref(),
-            env,
-            assigned_names,
-            identifier_uses,
-            types,
-            stack_bindings,
-            builder,
-            options,
-            contract_fields,
-            contract_field_prefix_len,
-            contract_constants,
-            structs,
-            functions,
-            function_order,
-            function_index,
-            script_size,
-        )
-        .map(|_| Vec::new()),
-        Statement::For { ident, start, end, max_iterations, body, span, .. } => compile_for_statement(
-            ident,
-            start,
-            end,
-            max_iterations,
-            body,
-            *span,
-            env,
-            assigned_names,
-            identifier_uses,
-            types,
-            stack_bindings,
-            builder,
-            options,
-            contract_fields,
-            contract_field_prefix_len,
-            contract_constants,
-            structs,
-            functions,
-            function_order,
-            function_index,
-            script_size,
-        )
-        .map(|_| Vec::new()),
-        Statement::Return { .. } => unreachable!("type_check must validate return statement placement"),
-        Statement::TupleAssignment { left_name, right_name, expr, .. } => match &expr.kind {
-            ExprKind::Split { source, index, span: split_span, .. } => {
-                let left_expr = Expr::new(
-                    ExprKind::Split { source: source.clone(), index: index.clone(), part: SplitPart::Left, span: *split_span },
-                    span::Span::default(),
-                );
-                let right_expr = Expr::new(
-                    ExprKind::Split { source: source.clone(), index: index.clone(), part: SplitPart::Right, span: *split_span },
-                    span::Span::default(),
-                );
-                env.insert(left_name.clone(), left_expr);
-                env.insert(right_name.clone(), right_expr);
-                Ok(Vec::new())
-            }
-            _ => Err(CompilerError::Unsupported("tuple assignment only supports split()".to_string())),
-        },
-        Statement::FunctionCall { name, args, .. } => {
-            if name == "validateOutputState" {
-                return compile_validate_output_state_statement(
-                    args,
-                    env,
-                    stack_bindings,
-                    types,
-                    builder,
-                    options,
-                    contract_fields,
-                    contract_field_prefix_len,
-                    script_size,
-                    contract_constants,
-                )
-                .map(|_| Vec::new());
-            }
-            if name == "validateOutputStateWithTemplate" {
-                let state_arg = args.get(1).ok_or_else(|| {
-                    CompilerError::Unsupported(
-                        "validateOutputStateWithTemplate(output_idx, new_state, template_prefix, template_suffix, expected_template_hash) expects 5 arguments"
-                            .to_string(),
-                    )
-                })?;
-                let layout_fields = layout_fields_for_state_object_expr(state_arg, contract_fields, structs)?;
-                return compile_validate_output_state_with_template_statement(
-                    args,
-                    env,
-                    stack_bindings,
-                    types,
-                    builder,
-                    options,
-                    &layout_fields,
-                    script_size,
-                    contract_constants,
-                )
-                .map(|_| Vec::new());
-            }
-            Err(CompilerError::Unsupported(format!(
-                "inline lowering must eliminate internal function calls before compilation, found '{}()'",
-                name
-            )))
-        }
-        Statement::StateFunctionCallAssign { bindings, name, args, .. } => {
-            if name == "readInputState" || name == "readInputStateWithTemplate" {
-                return compile_read_input_state_statement(
-                    bindings,
-                    name,
-                    args,
-                    env,
-                    stack_bindings,
-                    types,
-                    builder,
-                    options,
-                    contract_fields,
-                    contract_field_prefix_len,
-                    script_size,
-                    contract_constants,
-                    structs,
-                )
-                .map(|_| Vec::new());
-            }
-            Err(CompilerError::Unsupported(format!(
-                "state destructuring assignment is only supported for readInputState()/readInputStateWithTemplate(), got '{}()'",
-                name
-            )))
-        }
-        Statement::StructDestructure { .. } => {
-            unreachable!("lower_structs_contract must remove struct destructuring before codegen")
-        }
-        Statement::FunctionCallAssign { bindings, name, args, .. } => {
-            let _ = (bindings, args, assigned_names, identifier_uses, functions, function_order, function_index);
-            Err(CompilerError::Unsupported(format!(
-                "inline lowering must eliminate function call assignments before compilation, found '{}()'",
-                name
-            )))
-        }
-        Statement::Assign { name, expr, .. } => {
-            if let Some(type_name) = types.get(name) {
-                // If this is a stack-bound scalar local, compile a real mutation instead of
-                // rewriting `env[name]` (which can explode under unrolled control flow).
-                if stack_bindings.contains(name) {
-                    let lowered_expr = coerce_expr_for_declared_scalar_type(expr.clone(), type_name);
-
-                    // Compute RHS value onto the stack.
-                    let mut stack_depth = 0i64;
-                    compile_expr(
-                        &lowered_expr,
-                        env,
-                        stack_bindings,
-                        types,
-                        builder,
-                        options,
-                        &mut HashSet::new(),
-                        &mut stack_depth,
-                        script_size,
-                        contract_constants,
-                    )?;
-
-                    // Replace the existing binding in-place without changing the overall stack layout.
-                    //
-                    // Stack shape after RHS:
-                    //   ... [target at depth b+1] [b items above target] [new_value]
-                    //
-                    // We peel the b items under new_value into altstack (keeping new_value at top),
-                    // drop the old target, then restore the peeled items. This makes new_value end
-                    // up exactly where the old binding was.
-                    stack_bindings.emit_update_stack_for_rebinding(name, builder)?;
-                    let updated = if let Some(previous) = env.get(name) {
-                        replace_identifier(&lowered_expr, name, previous)
-                    } else {
-                        lowered_expr
-                    };
-                    let resolved = resolve_expr_for_runtime(updated, env, types, &mut HashSet::new())?;
-                    env.insert(name.clone(), resolved);
-                    return Ok(Vec::new());
-                }
-
-                if is_array_type(type_name) {
-                    match &expr.kind {
-                        ExprKind::Identifier(other) => match types.get(other) {
-                            Some(other_type) if is_type_assignable(other_type, type_name, contract_constants) => {
-                                env.insert(name.clone(), Expr::new(ExprKind::Identifier(other.clone()), span::Span::default()));
-                                return Ok(Vec::new());
-                            }
-                            Some(_) => {
-                                return Err(CompilerError::Unsupported(
-                                    "array assignment requires compatible array types".to_string(),
-                                ));
-                            }
-                            None => return Err(CompilerError::UndefinedIdentifier(other.clone())),
-                        },
-                        _ => {
-                            return Err(CompilerError::Unsupported("array assignment only supports array identifiers".to_string()));
-                        }
-                    }
-                }
-                let lowered_expr = coerce_expr_for_declared_scalar_type(expr.clone(), type_name);
-                let updated =
-                    if let Some(previous) = env.get(name) { replace_identifier(&lowered_expr, name, previous) } else { lowered_expr };
-                let resolved = resolve_expr_for_runtime(updated, env, types, &mut HashSet::new())?;
-                env.insert(name.clone(), resolved);
-                return Ok(Vec::new());
-            }
-            let lowered_expr = expr.clone();
+            ctx.stack_bindings.emit_update_stack_for_rebinding(name, ctx.builder)?;
             let updated =
-                if let Some(previous) = env.get(name) { replace_identifier(&lowered_expr, name, previous) } else { lowered_expr };
-            let resolved = resolve_expr_for_runtime(updated, env, types, &mut HashSet::new())?;
-            env.insert(name.clone(), resolved);
-            Ok(Vec::new())
+                if let Some(previous) = ctx.env.get(name) { replace_identifier(&lowered_expr, name, previous) } else { lowered_expr };
+            let resolved = resolve_expr_for_runtime(updated, ctx.env, ctx.types, &mut HashSet::new())?;
+            ctx.env.insert(name.to_string(), resolved);
+            return Ok(Vec::new());
         }
-        Statement::Console { .. } => Ok(Vec::new()),
+
+        if is_array_type(type_name) {
+            match &expr.kind {
+                ExprKind::Identifier(other) => match ctx.types.get(other) {
+                    Some(other_type) if is_type_assignable(other_type, type_name, ctx.contract_constants) => {
+                        ctx.env.insert(name.to_string(), Expr::new(ExprKind::Identifier(other.clone()), span::Span::default()));
+                        return Ok(Vec::new());
+                    }
+                    Some(_) => return Err(CompilerError::Unsupported("array assignment requires compatible array types".to_string())),
+                    None => return Err(CompilerError::UndefinedIdentifier(other.clone())),
+                },
+                _ => return Err(CompilerError::Unsupported("array assignment only supports array identifiers".to_string())),
+            }
+        }
+
+        let lowered_expr = coerce_expr_for_declared_scalar_type(expr.clone(), type_name);
+        let updated =
+            if let Some(previous) = ctx.env.get(name) { replace_identifier(&lowered_expr, name, previous) } else { lowered_expr };
+        let resolved = resolve_expr_for_runtime(updated, ctx.env, ctx.types, &mut HashSet::new())?;
+        ctx.env.insert(name.to_string(), resolved);
+        return Ok(Vec::new());
     }
+
+    let updated = if let Some(previous) = ctx.env.get(name) { replace_identifier(expr, name, previous) } else { expr.clone() };
+    let resolved = resolve_expr_for_runtime(updated, ctx.env, ctx.types, &mut HashSet::new())?;
+    ctx.env.insert(name.to_string(), resolved);
+    Ok(Vec::new())
+}
+
+fn compile_console_statement<'i>() -> Result<Vec<String>, CompilerError> {
+    Ok(Vec::new())
 }
 
 pub(super) fn encoded_field_chunk_size<'i>(
@@ -2446,106 +2512,91 @@ fn compile_encoded_state_object(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
 fn compile_if_statement<'i>(
+    ctx: &mut CompileStatementContext<'_, 'i>,
     condition: &Expr<'i>,
     then_branch: &[Statement<'i>],
     else_branch: Option<&[Statement<'i>]>,
-    env: &mut HashMap<String, Expr<'i>>,
-    assigned_names: &HashSet<String>,
-    identifier_uses: &HashMap<String, usize>,
-    types: &mut HashMap<String, String>,
-    stack_bindings: &mut StackBindings,
-    builder: &mut ScriptBuilder,
-    options: CompileOptions,
-    contract_fields: &[ContractFieldAst<'i>],
-    contract_field_prefix_len: usize,
-    contract_constants: &HashMap<String, Expr<'i>>,
-    structs: &StructRegistry,
-    functions: &HashMap<String, FunctionAst<'i>>,
-    function_order: &HashMap<String, usize>,
-    function_index: usize,
-    script_size: Option<i64>,
 ) -> Result<(), CompilerError> {
     let condition = condition.clone();
     let mut stack_depth = 0i64;
     compile_expr(
         &condition,
-        env,
-        stack_bindings,
-        types,
-        builder,
-        options,
+        ctx.env,
+        ctx.stack_bindings,
+        ctx.types,
+        ctx.builder,
+        ctx.options,
         &mut HashSet::new(),
         &mut stack_depth,
-        script_size,
-        contract_constants,
+        ctx.script_size,
+        ctx.contract_constants,
     )?;
-    builder.add_op(OpIf)?;
+    ctx.builder.add_op(OpIf)?;
 
-    let original_env = env.clone();
-    let original_stack_bindings = stack_bindings.clone();
+    let original_env = ctx.env.clone();
+    let original_stack_bindings = ctx.stack_bindings.clone();
 
     let mut then_env = original_env.clone();
-    let mut then_types = types.clone();
+    let mut then_types = ctx.types.clone();
     let mut then_stack_bindings = original_stack_bindings.clone();
-        predeclare_if_branch_locals(then_branch, &mut then_env, &mut then_types)?;
+    predeclare_if_branch_locals(then_branch, &mut then_env, &mut then_types)?;
     compile_block(
         then_branch,
         &mut then_env,
-        assigned_names,
-        identifier_uses,
+        ctx.assigned_names,
+        ctx.identifier_uses,
         &mut then_types,
         &mut then_stack_bindings,
-        builder,
-        options,
-        contract_fields,
-        contract_field_prefix_len,
-        contract_constants,
-        structs,
-        functions,
-        function_order,
-        function_index,
-        script_size,
+        ctx.builder,
+        ctx.options,
+        ctx.contract_fields,
+        ctx.contract_field_prefix_len,
+        ctx.contract_constants,
+        ctx.structs,
+        ctx.functions,
+        ctx.function_order,
+        ctx.function_index,
+        ctx.script_size,
         true,
     )?;
 
     let mut else_env = original_env.clone();
     if let Some(else_branch) = else_branch {
-        builder.add_op(OpElse)?;
-        let mut else_types = types.clone();
+        ctx.builder.add_op(OpElse)?;
+        let mut else_types = ctx.types.clone();
         let mut else_stack_bindings = original_stack_bindings.clone();
         predeclare_if_branch_locals(else_branch, &mut else_env, &mut else_types)?;
         compile_block(
             else_branch,
             &mut else_env,
-            assigned_names,
-            identifier_uses,
+            ctx.assigned_names,
+            ctx.identifier_uses,
             &mut else_types,
             &mut else_stack_bindings,
-            builder,
-            options,
-            contract_fields,
-            contract_field_prefix_len,
-            contract_constants,
-            structs,
-            functions,
-            function_order,
-            function_index,
-            script_size,
+            ctx.builder,
+            ctx.options,
+            ctx.contract_fields,
+            ctx.contract_field_prefix_len,
+            ctx.contract_constants,
+            ctx.structs,
+            ctx.functions,
+            ctx.function_order,
+            ctx.function_index,
+            ctx.script_size,
             true,
         )?;
-        else_stack_bindings.emit_stack_reordering(&then_stack_bindings, builder)?;
-        *stack_bindings = then_stack_bindings;
+        else_stack_bindings.emit_stack_reordering(&then_stack_bindings, ctx.builder)?;
+        *ctx.stack_bindings = then_stack_bindings;
     } else {
-        then_stack_bindings.emit_stack_reordering(&original_stack_bindings, builder)?;
-        *stack_bindings = original_stack_bindings;
+        then_stack_bindings.emit_stack_reordering(&original_stack_bindings, ctx.builder)?;
+        *ctx.stack_bindings = original_stack_bindings;
     }
 
-    builder.add_op(OpEndIf)?;
+    ctx.builder.add_op(OpEndIf)?;
 
-    let resolved_condition = resolve_expr_for_runtime(condition, &original_env, types, &mut HashSet::new())?;
-    merge_env_after_if(env, &original_env, &then_env, &else_env, &resolved_condition);
+    let resolved_condition = resolve_expr_for_runtime(condition, &original_env, ctx.types, &mut HashSet::new())?;
+    merge_env_after_if(ctx.env, &original_env, &then_env, &else_env, &resolved_condition);
     Ok(())
 }
 
@@ -2690,65 +2741,47 @@ fn compile_block<'i>(
     scoped_stack_locals: bool,
 ) -> Result<(), CompilerError> {
     let mut added_stack_locals = Vec::new();
+    let mut statement_ctx = CompileStatementContext {
+        env,
+        assigned_names,
+        identifier_uses,
+        types,
+        stack_bindings,
+        builder,
+        options,
+        contract_fields,
+        contract_field_prefix_len,
+        contract_constants,
+        structs,
+        functions,
+        function_order,
+        function_index,
+        script_size,
+    };
     for stmt in statements {
-        added_stack_locals.extend(
-            compile_statement(
-                stmt,
-                env,
-                assigned_names,
-                identifier_uses,
-                types,
-                stack_bindings,
-                builder,
-                options,
-                contract_fields,
-                contract_field_prefix_len,
-                contract_constants,
-                structs,
-                functions,
-                function_order,
-                function_index,
-                script_size,
-            )
-            .map_err(|err| err.with_span(&stmt.span()))?,
-        );
+        added_stack_locals.extend(compile_statement(&mut statement_ctx, stmt).map_err(|err| err.with_span(&stmt.span()))?);
     }
 
     if scoped_stack_locals && !added_stack_locals.is_empty() {
-        stack_bindings.emit_drop_bindings(&added_stack_locals, builder)?;
+        statement_ctx.stack_bindings.emit_drop_bindings(&added_stack_locals, statement_ctx.builder)?;
         for name in &added_stack_locals {
-            types.remove(name);
+            statement_ctx.types.remove(name);
         }
     }
 
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 fn compile_for_statement<'i>(
+    ctx: &mut CompileStatementContext<'_, 'i>,
     ident: &str,
     start_expr: &Expr<'i>,
     end_expr: &Expr<'i>,
     max_iterations_expr: &Expr<'i>,
     body: &[Statement<'i>],
     _for_span: span::Span<'i>,
-    env: &mut HashMap<String, Expr<'i>>,
-    assigned_names: &HashSet<String>,
-    identifier_uses: &HashMap<String, usize>,
-    types: &mut HashMap<String, String>,
-    stack_bindings: &mut StackBindings,
-    builder: &mut ScriptBuilder,
-    options: CompileOptions,
-    contract_fields: &[ContractFieldAst<'i>],
-    contract_field_prefix_len: usize,
-    contract_constants: &HashMap<String, Expr<'i>>,
-    structs: &StructRegistry,
-    functions: &HashMap<String, FunctionAst<'i>>,
-    function_order: &HashMap<String, usize>,
-    function_index: usize,
-    script_size: Option<i64>,
 ) -> Result<(), CompilerError> {
-    let max_iterations = match eval_const_int(max_iterations_expr, contract_constants) {
+    let max_iterations = match eval_const_int(max_iterations_expr, ctx.contract_constants) {
         Ok(value) => value,
         Err(CompilerError::InvalidLiteral(message)) => return Err(CompilerError::InvalidLiteral(message)),
         Err(_) => return Err(CompilerError::Unsupported("for loop max iterations must be a compile-time integer".to_string())),
@@ -2761,102 +2794,60 @@ fn compile_for_statement<'i>(
     let end = end_expr.clone();
 
     let name = ident.to_string();
-    let previous = env.get(&name).cloned();
-    let previous_type = types.get(&name).cloned();
-    types.insert(name.clone(), "int".to_string());
+    let previous = ctx.env.get(&name).cloned();
+    let previous_type = ctx.types.get(&name).cloned();
+    ctx.types.insert(name.clone(), "int".to_string());
 
-    let result =
-        if let (Ok(start), Ok(end)) = (eval_const_int(start_expr, contract_constants), eval_const_int(end_expr, contract_constants)) {
-            compile_constant_for_statement(
-                &name,
-                start,
-                end,
-                max_iterations as usize,
-                body,
-                env,
-                assigned_names,
-                identifier_uses,
-                types,
-                stack_bindings,
-                builder,
-                options,
-                contract_fields,
-                contract_field_prefix_len,
-                contract_constants,
-                structs,
-                functions,
-                function_order,
-                function_index,
-                script_size,
-            )
-        } else {
-            compile_runtime_for_statement(
-                &name,
-                start,
-                end,
-                max_iterations as usize,
-                body,
-                env,
-                assigned_names,
-                identifier_uses,
-                types,
-                stack_bindings,
-                builder,
-                options,
-                contract_fields,
-                contract_field_prefix_len,
-                contract_constants,
-                structs,
-                functions,
-                function_order,
-                function_index,
-                script_size,
-            )
-        };
+    let result = if let (Ok(start), Ok(end)) =
+        (eval_const_int(start_expr, ctx.contract_constants), eval_const_int(end_expr, ctx.contract_constants))
+    {
+        compile_constant_for_statement(
+            ctx,
+            &name,
+            start,
+            end,
+            max_iterations as usize,
+            body,
+        )
+    } else {
+        compile_runtime_for_statement(
+            ctx,
+            &name,
+            start,
+            end,
+            max_iterations as usize,
+            body,
+        )
+    };
 
     match previous {
         Some(expr) => {
-            env.insert(name, expr);
+            ctx.env.insert(name, expr);
         }
         None => {
-            env.remove(ident);
+            ctx.env.remove(ident);
         }
     }
 
     match previous_type {
         Some(type_name) => {
-            types.insert(ident.to_string(), type_name);
+            ctx.types.insert(ident.to_string(), type_name);
         }
         None => {
-            types.remove(ident);
+            ctx.types.remove(ident);
         }
     }
 
     result
 }
 
-#[allow(clippy::too_many_arguments)]
 fn compile_constant_for_statement<'i>(
+    ctx: &mut CompileStatementContext<'_, 'i>,
     ident: &str,
     start: i64,
     end: i64,
     max_iterations: usize,
     body: &[Statement<'i>],
-    env: &mut HashMap<String, Expr<'i>>,
-    assigned_names: &HashSet<String>,
-    identifier_uses: &HashMap<String, usize>,
-    types: &mut HashMap<String, String>,
-    stack_bindings: &mut StackBindings,
-    builder: &mut ScriptBuilder,
-    options: CompileOptions,
-    contract_fields: &[ContractFieldAst<'i>],
-    contract_field_prefix_len: usize,
-    contract_constants: &HashMap<String, Expr<'i>>,
-    structs: &StructRegistry,
-    functions: &HashMap<String, FunctionAst<'i>>,
-    function_order: &HashMap<String, usize>,
-    function_index: usize,
-    script_size: Option<i64>,
 ) -> Result<(), CompilerError> {
     for iteration in 0..max_iterations {
         let value = start + iteration as i64;
@@ -2864,24 +2855,24 @@ fn compile_constant_for_statement<'i>(
             break;
         }
 
-        env.insert(ident.to_string(), Expr::int(value));
+        ctx.env.insert(ident.to_string(), Expr::int(value));
         compile_block(
             body,
-            env,
-            assigned_names,
-            identifier_uses,
-            types,
-            stack_bindings,
-            builder,
-            options,
-            contract_fields,
-            contract_field_prefix_len,
-            contract_constants,
-            structs,
-            functions,
-            function_order,
-            function_index,
-            script_size,
+            ctx.env,
+            ctx.assigned_names,
+            ctx.identifier_uses,
+            ctx.types,
+            ctx.stack_bindings,
+            ctx.builder,
+            ctx.options,
+            ctx.contract_fields,
+            ctx.contract_field_prefix_len,
+            ctx.contract_constants,
+            ctx.structs,
+            ctx.functions,
+            ctx.function_order,
+            ctx.function_index,
+            ctx.script_size,
             true,
         )?;
     }
@@ -2889,61 +2880,27 @@ fn compile_constant_for_statement<'i>(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 fn compile_runtime_for_statement<'i>(
+    ctx: &mut CompileStatementContext<'_, 'i>,
     ident: &str,
     start: Expr<'i>,
     end: Expr<'i>,
     max_iterations: usize,
     body: &[Statement<'i>],
-    env: &mut HashMap<String, Expr<'i>>,
-    assigned_names: &HashSet<String>,
-    identifier_uses: &HashMap<String, usize>,
-    types: &mut HashMap<String, String>,
-    stack_bindings: &mut StackBindings,
-    builder: &mut ScriptBuilder,
-    options: CompileOptions,
-    contract_fields: &[ContractFieldAst<'i>],
-    contract_field_prefix_len: usize,
-    contract_constants: &HashMap<String, Expr<'i>>,
-    structs: &StructRegistry,
-    functions: &HashMap<String, FunctionAst<'i>>,
-    function_order: &HashMap<String, usize>,
-    function_index: usize,
-    script_size: Option<i64>,
 ) -> Result<(), CompilerError> {
-    let mut current = resolve_expr_for_runtime(start, env, types, &mut HashSet::new())?;
-    let mut current_const = eval_const_int(&current, contract_constants).ok();
+    let mut current = resolve_expr_for_runtime(start, ctx.env, ctx.types, &mut HashSet::new())?;
+    let mut current_const = eval_const_int(&current, ctx.contract_constants).ok();
     for _ in 0..max_iterations {
         let loop_value = current_const.map_or_else(|| current.clone(), Expr::int);
-        env.insert(ident.to_string(), loop_value.clone());
+        ctx.env.insert(ident.to_string(), loop_value.clone());
 
         let condition = Expr::new(
             ExprKind::Binary { op: BinaryOp::Lt, left: Box::new(Expr::identifier(ident)), right: Box::new(end.clone()) },
             span::Span::default(),
         );
-        compile_if_statement(
-            &condition,
-            body,
-            None,
-            env,
-            assigned_names,
-            identifier_uses,
-            types,
-            stack_bindings,
-            builder,
-            options,
-            contract_fields,
-            contract_field_prefix_len,
-            contract_constants,
-            structs,
-            functions,
-            function_order,
-            function_index,
-            script_size,
-        )?;
+        compile_if_statement(ctx, &condition, body, None)?;
 
-        if let Some(value) = env.get(ident).and_then(|expr| eval_const_int(expr, contract_constants).ok()) {
+        if let Some(value) = ctx.env.get(ident).and_then(|expr| eval_const_int(expr, ctx.contract_constants).ok()) {
             let next_value = value + 1;
             current_const = Some(next_value);
             current = Expr::int(next_value);
@@ -2955,7 +2912,7 @@ fn compile_runtime_for_statement<'i>(
             span::Span::default(),
         );
         current_const = None;
-        current = resolve_expr_for_runtime(next, env, types, &mut HashSet::new())?;
+        current = resolve_expr_for_runtime(next, ctx.env, ctx.types, &mut HashSet::new())?;
     }
 
     Ok(())
@@ -3445,573 +3402,554 @@ pub(super) fn compile_expr<'i>(
     contract_constants: &HashMap<String, Expr<'i>>,
 ) -> Result<(), CompilerError> {
     let scope = CompilationScope { env, stack_bindings, types };
+    let mut ctx = CompileExprContext { scope, builder, options, visiting, stack_depth, script_size, contract_constants };
     match &expr.kind {
-        ExprKind::Int(value) => {
-            builder.add_i64(*value)?;
-            *stack_depth += 1;
-            Ok(())
-        }
-        ExprKind::Bool(value) => {
-            builder.add_op(if *value { OpTrue } else { OpFalse })?;
-            *stack_depth += 1;
-            Ok(())
-        }
-        ExprKind::Byte(byte) => {
-            builder.add_data(&[*byte])?;
-            *stack_depth += 1;
-            Ok(())
-        }
-        ExprKind::Array(values) => {
-            if values.is_empty() {
-                builder.add_data(&[])?;
-                *stack_depth += 1;
-                return Ok(());
-            }
-            let inferred_type = infer_fixed_array_literal_type(values)
-                .ok_or_else(|| CompilerError::Unsupported("array literal type cannot be inferred".to_string()))?;
-            let encoded = encode_array_literal(values, &inferred_type)?;
-            builder.add_data(&encoded)?;
-            *stack_depth += 1;
-            Ok(())
-        }
-        ExprKind::StateObject(_) => Err(CompilerError::Unsupported(
-            "state object literals are only supported in validateOutputState-style builtins".to_string(),
-        )),
-        ExprKind::FieldAccess { .. } => {
-            Err(CompilerError::Unsupported("struct field access should be lowered before compilation".to_string()))
-        }
-        ExprKind::String(value) => {
-            builder.add_data(value.as_bytes())?;
-            *stack_depth += 1;
-            Ok(())
-        }
-        ExprKind::Identifier(name) => {
-            if !visiting.insert(name.clone()) {
-                return Err(CompilerError::CyclicIdentifier(name.clone()));
-            }
-            if stack_bindings.emit_copy_binding_to_top(name, stack_depth, builder)? {
-                visiting.remove(name);
-                return Ok(());
-            }
-            if let Some(resolved_expr) = env.get(name) {
-                if let Some(type_name) = types.get(name) {
-                    if let ExprKind::Array(values) = &resolved_expr.kind {
-                        if is_array_type(type_name) {
-                            let encoded = encode_array_literal(values, type_name)?;
-                            builder.add_data(&encoded)?;
-                            *stack_depth += 1;
-                            visiting.remove(name);
-                            return Ok(());
-                        }
-                    }
-                }
-                compile_expr(
-                    resolved_expr,
-                    env,
-                    stack_bindings,
-                    types,
-                    builder,
-                    options,
-                    visiting,
-                    stack_depth,
-                    script_size,
-                    contract_constants,
-                )?;
-                visiting.remove(name);
-                return Ok(());
-            }
-            visiting.remove(name);
-            Err(CompilerError::UndefinedIdentifier(name.clone()))
-        }
-        ExprKind::IfElse { condition, then_expr, else_expr } => {
-            compile_expr(
-                condition,
-                env,
-                stack_bindings,
-                types,
-                builder,
-                options,
-                visiting,
-                stack_depth,
-                script_size,
-                contract_constants,
-            )?;
-            builder.add_op(OpIf)?;
-            *stack_depth -= 1;
-            let depth_before = *stack_depth;
-            compile_expr(
-                then_expr,
-                env,
-                stack_bindings,
-                types,
-                builder,
-                options,
-                visiting,
-                stack_depth,
-                script_size,
-                contract_constants,
-            )?;
-            builder.add_op(OpElse)?;
-            *stack_depth = depth_before;
-            compile_expr(
-                else_expr,
-                env,
-                stack_bindings,
-                types,
-                builder,
-                options,
-                visiting,
-                stack_depth,
-                script_size,
-                contract_constants,
-            )?;
-            builder.add_op(OpEndIf)?;
-            *stack_depth = depth_before + 1;
-            Ok(())
-        }
-        ExprKind::Call { name, args, .. } => {
-            compile_call_expr(name.as_str(), args, &scope, builder, options, visiting, stack_depth, script_size, contract_constants)
-        }
-        ExprKind::New { name, args, .. } => match name.as_str() {
-            "LockingBytecodeNullData" => {
-                if args.len() != 1 {
-                    return Err(CompilerError::Unsupported("LockingBytecodeNullData expects a single array argument".to_string()));
-                }
-                let script = build_null_data_script(&args[0])?;
-                builder.add_data(&script)?;
-                *stack_depth += 1;
-                Ok(())
-            }
-            "ScriptPubKeyP2PK" => {
-                if args.len() != 1 {
-                    return Err(CompilerError::Unsupported("ScriptPubKeyP2PK expects a single pubkey argument".to_string()));
-                }
-                compile_expr(
-                    &args[0],
-                    env,
-                    stack_bindings,
-                    types,
-                    builder,
-                    options,
-                    visiting,
-                    stack_depth,
-                    script_size,
-                    contract_constants,
-                )?;
-                builder.add_data(&[0x00, 0x00, OpData32])?;
-                *stack_depth += 1;
-                builder.add_op(OpSwap)?;
-                builder.add_op(OpCat)?;
-                *stack_depth -= 1;
-                builder.add_data(&[OpCheckSig])?;
-                *stack_depth += 1;
-                builder.add_op(OpCat)?;
-                *stack_depth -= 1;
-                Ok(())
-            }
-            "ScriptPubKeyP2SH" => {
-                if args.len() != 1 {
-                    return Err(CompilerError::Unsupported("ScriptPubKeyP2SH expects a single bytes32 argument".to_string()));
-                }
-                compile_expr(
-                    &args[0],
-                    env,
-                    stack_bindings,
-                    types,
-                    builder,
-                    options,
-                    visiting,
-                    stack_depth,
-                    script_size,
-                    contract_constants,
-                )?;
-                builder.add_data(&[0x00, 0x00])?;
-                *stack_depth += 1;
-                builder.add_data(&[OpBlake2b])?;
-                *stack_depth += 1;
-                builder.add_op(OpCat)?;
-                *stack_depth -= 1;
-                builder.add_data(&[0x20])?;
-                *stack_depth += 1;
-                builder.add_op(OpCat)?;
-                *stack_depth -= 1;
-                builder.add_op(OpSwap)?;
-                builder.add_op(OpCat)?;
-                *stack_depth -= 1;
-                builder.add_data(&[OpEqual])?;
-                *stack_depth += 1;
-                builder.add_op(OpCat)?;
-                *stack_depth -= 1;
-                Ok(())
-            }
-            "ScriptPubKeyP2SHFromRedeemScript" => {
-                if args.len() != 1 {
-                    return Err(CompilerError::Unsupported(
-                        "ScriptPubKeyP2SHFromRedeemScript expects a single redeem_script argument".to_string(),
-                    ));
-                }
-                compile_expr(
-                    &args[0],
-                    env,
-                    stack_bindings,
-                    types,
-                    builder,
-                    options,
-                    visiting,
-                    stack_depth,
-                    script_size,
-                    contract_constants,
-                )?;
-                builder.add_op(OpBlake2b)?;
-                builder.add_data(&[0x00, 0x00])?;
-                *stack_depth += 1;
-                builder.add_data(&[OpBlake2b])?;
-                *stack_depth += 1;
-                builder.add_op(OpCat)?;
-                *stack_depth -= 1;
-                builder.add_data(&[0x20])?;
-                *stack_depth += 1;
-                builder.add_op(OpCat)?;
-                *stack_depth -= 1;
-                builder.add_op(OpSwap)?;
-                builder.add_op(OpCat)?;
-                *stack_depth -= 1;
-                builder.add_data(&[OpEqual])?;
-                *stack_depth += 1;
-                builder.add_op(OpCat)?;
-                *stack_depth -= 1;
-                Ok(())
-            }
-            name => Err(CompilerError::Unsupported(format!("unknown constructor: {name}"))),
-        },
-        ExprKind::Unary { op, expr } => {
-            compile_expr(expr, env, stack_bindings, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
-            match op {
-                UnaryOp::Not => builder.add_op(OpNot)?,
-                UnaryOp::Neg => builder.add_op(OpNegate)?,
-            };
-            Ok(())
-        }
-        ExprKind::Binary { op, left, right } => {
-            let left_cmp_type = infer_expr_type_ref_for_comparison(left, env, types);
-            let coerced_right =
-                if matches!(op, BinaryOp::Eq | BinaryOp::Ne | BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge) {
-                    coerce_rhs_byte_literal_for_comparison(left_cmp_type.as_ref(), right)
-                } else {
-                    right.as_ref().clone()
-                };
-            if matches!(op, BinaryOp::Eq | BinaryOp::Ne | BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge) {
-                if let (Some(left_type), Some(right_type)) =
-                    (left_cmp_type.clone(), infer_expr_type_ref_for_comparison(&coerced_right, env, types))
-                {
-                    debug_assert!(
-                        comparison_types_compatible(&left_type, &right_type),
-                        "type_check must validate comparison operand compatibility"
-                    );
+        ExprKind::Int(value) => compile_int_expr(&mut ctx, *value),
+        ExprKind::Bool(value) => compile_bool_expr(&mut ctx, *value),
+        ExprKind::Byte(byte) => compile_byte_expr(&mut ctx, *byte),
+        ExprKind::Array(values) => compile_array_expr(&mut ctx, values),
+        ExprKind::StateObject(_) => compile_state_object_expr(),
+        ExprKind::FieldAccess { .. } => compile_field_access_expr(),
+        ExprKind::String(value) => compile_string_expr(&mut ctx, value),
+        ExprKind::Identifier(name) => compile_identifier_expr(&mut ctx, name),
+        ExprKind::IfElse { condition, then_expr, else_expr } => compile_if_else_expr(&mut ctx, condition, then_expr, else_expr),
+        ExprKind::Call { name, args, .. } => compile_call_branch_expr(&mut ctx, name, args),
+        ExprKind::New { name, args, .. } => compile_new_expr(&mut ctx, name, args),
+        ExprKind::Unary { op, expr } => compile_unary_expr(&mut ctx, *op, expr),
+        ExprKind::Binary { op, left, right } => compile_binary_expr(&mut ctx, *op, left, right),
+        ExprKind::Split { source, index, part, .. } => compile_split_expr(&mut ctx, source, index, *part),
+        ExprKind::UnarySuffix { source, kind, .. } => compile_unary_suffix_expr(&mut ctx, source, *kind),
+        ExprKind::ArrayIndex { source, index } => compile_array_index_expr(&mut ctx, source, index),
+        ExprKind::Slice { source, start, end, .. } => compile_slice_expr(&mut ctx, source, start, end),
+        ExprKind::Nullary(op) => compile_nullary_expr(&mut ctx, *op),
+        ExprKind::Introspection { kind, index, .. } => compile_introspection_expr(&mut ctx, *kind, index),
+        ExprKind::DateLiteral(value) => compile_date_literal_expr(&mut ctx, *value),
+        ExprKind::NumberWithUnit { .. } => compile_number_with_unit_expr(),
+    }
+}
+
+struct CompileExprContext<'a, 'i> {
+    scope: CompilationScope<'a, 'i>,
+    builder: &'a mut ScriptBuilder,
+    options: CompileOptions,
+    visiting: &'a mut HashSet<String>,
+    stack_depth: &'a mut i64,
+    script_size: Option<i64>,
+    contract_constants: &'a HashMap<String, Expr<'i>>,
+}
+
+fn compile_expr_with_context<'i>(ctx: &mut CompileExprContext<'_, 'i>, expr: &Expr<'i>) -> Result<(), CompilerError> {
+    compile_expr(
+        expr,
+        ctx.scope.env,
+        ctx.scope.stack_bindings,
+        ctx.scope.types,
+        ctx.builder,
+        ctx.options,
+        ctx.visiting,
+        ctx.stack_depth,
+        ctx.script_size,
+        ctx.contract_constants,
+    )
+}
+
+fn compile_int_expr<'i>(ctx: &mut CompileExprContext<'_, 'i>, value: i64) -> Result<(), CompilerError> {
+    ctx.builder.add_i64(value)?;
+    *ctx.stack_depth += 1;
+    Ok(())
+}
+
+fn compile_bool_expr<'i>(ctx: &mut CompileExprContext<'_, 'i>, value: bool) -> Result<(), CompilerError> {
+    ctx.builder.add_op(if value { OpTrue } else { OpFalse })?;
+    *ctx.stack_depth += 1;
+    Ok(())
+}
+
+fn compile_byte_expr<'i>(ctx: &mut CompileExprContext<'_, 'i>, byte: u8) -> Result<(), CompilerError> {
+    ctx.builder.add_data(&[byte])?;
+    *ctx.stack_depth += 1;
+    Ok(())
+}
+
+fn compile_array_expr<'i>(ctx: &mut CompileExprContext<'_, 'i>, values: &[Expr<'i>]) -> Result<(), CompilerError> {
+    if values.is_empty() {
+        ctx.builder.add_data(&[])?;
+        *ctx.stack_depth += 1;
+        return Ok(());
+    }
+    let inferred_type = infer_fixed_array_literal_type(values)
+        .ok_or_else(|| CompilerError::Unsupported("array literal type cannot be inferred".to_string()))?;
+    let encoded = encode_array_literal(values, &inferred_type)?;
+    ctx.builder.add_data(&encoded)?;
+    *ctx.stack_depth += 1;
+    Ok(())
+}
+
+fn compile_state_object_expr<'i>() -> Result<(), CompilerError> {
+    Err(CompilerError::Unsupported("state object literals are only supported in validateOutputState-style builtins".to_string()))
+}
+
+fn compile_field_access_expr<'i>() -> Result<(), CompilerError> {
+    Err(CompilerError::Unsupported("struct field access should be lowered before compilation".to_string()))
+}
+
+fn compile_string_expr<'i>(ctx: &mut CompileExprContext<'_, 'i>, value: &str) -> Result<(), CompilerError> {
+    ctx.builder.add_data(value.as_bytes())?;
+    *ctx.stack_depth += 1;
+    Ok(())
+}
+
+fn compile_identifier_expr<'i>(ctx: &mut CompileExprContext<'_, 'i>, name: &str) -> Result<(), CompilerError> {
+    if !ctx.visiting.insert(name.to_string()) {
+        return Err(CompilerError::CyclicIdentifier(name.to_string()));
+    }
+    if ctx.scope.stack_bindings.emit_copy_binding_to_top(name, ctx.stack_depth, ctx.builder)? {
+        ctx.visiting.remove(name);
+        return Ok(());
+    }
+    if let Some(resolved_expr) = ctx.scope.env.get(name) {
+        if let Some(type_name) = ctx.scope.types.get(name) {
+            if let ExprKind::Array(values) = &resolved_expr.kind {
+                if is_array_type(type_name) {
+                    let encoded = encode_array_literal(values, type_name)?;
+                    ctx.builder.add_data(&encoded)?;
+                    *ctx.stack_depth += 1;
+                    ctx.visiting.remove(name);
+                    return Ok(());
                 }
             }
-            let left_value_type = infer_debug_expr_value_type(left, env, types, &mut HashSet::new()).ok();
-            let right_value_type = infer_debug_expr_value_type(&coerced_right, env, types, &mut HashSet::new()).ok();
-            debug_assert!(
-                !matches!(op, BinaryOp::Add)
-                    || (left_value_type.as_deref() != Some("byte") && right_value_type.as_deref() != Some("byte")),
-                "type_check must reject byte addition"
-            );
-            let bytes_eq = matches!(op, BinaryOp::Eq | BinaryOp::Ne)
-                && (expr_is_bytes(left, env, types) || expr_is_bytes(&coerced_right, env, types));
-            let bytes_add = matches!(op, BinaryOp::Add) && (expr_is_bytes(left, env, types) || expr_is_bytes(right, env, types));
-            if bytes_add {
-                compile_concat_operand(
-                    left,
-                    env,
-                    stack_bindings,
-                    types,
-                    builder,
-                    options,
-                    visiting,
-                    stack_depth,
-                    script_size,
-                    contract_constants,
-                )?;
-                compile_concat_operand(
-                    right,
-                    env,
-                    stack_bindings,
-                    types,
-                    builder,
-                    options,
-                    visiting,
-                    stack_depth,
-                    script_size,
-                    contract_constants,
-                )?;
+        }
+        compile_expr_with_context(ctx, resolved_expr)?;
+        ctx.visiting.remove(name);
+        return Ok(());
+    }
+    ctx.visiting.remove(name);
+    Err(CompilerError::UndefinedIdentifier(name.to_string()))
+}
+
+fn compile_if_else_expr<'i>(
+    ctx: &mut CompileExprContext<'_, 'i>,
+    condition: &Expr<'i>,
+    then_expr: &Expr<'i>,
+    else_expr: &Expr<'i>,
+) -> Result<(), CompilerError> {
+    compile_expr_with_context(ctx, condition)?;
+    ctx.builder.add_op(OpIf)?;
+    *ctx.stack_depth -= 1;
+    let depth_before = *ctx.stack_depth;
+    compile_expr_with_context(ctx, then_expr)?;
+    ctx.builder.add_op(OpElse)?;
+    *ctx.stack_depth = depth_before;
+    compile_expr_with_context(ctx, else_expr)?;
+    ctx.builder.add_op(OpEndIf)?;
+    *ctx.stack_depth = depth_before + 1;
+    Ok(())
+}
+
+fn compile_call_branch_expr<'i>(ctx: &mut CompileExprContext<'_, 'i>, name: &str, args: &[Expr<'i>]) -> Result<(), CompilerError> {
+    compile_call_expr(
+        name,
+        args,
+        &ctx.scope,
+        ctx.builder,
+        ctx.options,
+        ctx.visiting,
+        ctx.stack_depth,
+        ctx.script_size,
+        ctx.contract_constants,
+    )
+}
+
+fn compile_new_expr<'i>(ctx: &mut CompileExprContext<'_, 'i>, name: &str, args: &[Expr<'i>]) -> Result<(), CompilerError> {
+    match name {
+        "LockingBytecodeNullData" => {
+            if args.len() != 1 {
+                return Err(CompilerError::Unsupported("LockingBytecodeNullData expects a single array argument".to_string()));
+            }
+            let script = build_null_data_script(&args[0])?;
+            ctx.builder.add_data(&script)?;
+            *ctx.stack_depth += 1;
+            Ok(())
+        }
+        "ScriptPubKeyP2PK" => {
+            if args.len() != 1 {
+                return Err(CompilerError::Unsupported("ScriptPubKeyP2PK expects a single pubkey argument".to_string()));
+            }
+            compile_expr_with_context(ctx, &args[0])?;
+            ctx.builder.add_data(&[0x00, 0x00, OpData32])?;
+            *ctx.stack_depth += 1;
+            ctx.builder.add_op(OpSwap)?;
+            ctx.builder.add_op(OpCat)?;
+            *ctx.stack_depth -= 1;
+            ctx.builder.add_data(&[OpCheckSig])?;
+            *ctx.stack_depth += 1;
+            ctx.builder.add_op(OpCat)?;
+            *ctx.stack_depth -= 1;
+            Ok(())
+        }
+        "ScriptPubKeyP2SH" => {
+            if args.len() != 1 {
+                return Err(CompilerError::Unsupported("ScriptPubKeyP2SH expects a single bytes32 argument".to_string()));
+            }
+            compile_expr_with_context(ctx, &args[0])?;
+            ctx.builder.add_data(&[0x00, 0x00])?;
+            *ctx.stack_depth += 1;
+            ctx.builder.add_data(&[OpBlake2b])?;
+            *ctx.stack_depth += 1;
+            ctx.builder.add_op(OpCat)?;
+            *ctx.stack_depth -= 1;
+            ctx.builder.add_data(&[0x20])?;
+            *ctx.stack_depth += 1;
+            ctx.builder.add_op(OpCat)?;
+            *ctx.stack_depth -= 1;
+            ctx.builder.add_op(OpSwap)?;
+            ctx.builder.add_op(OpCat)?;
+            *ctx.stack_depth -= 1;
+            ctx.builder.add_data(&[OpEqual])?;
+            *ctx.stack_depth += 1;
+            ctx.builder.add_op(OpCat)?;
+            *ctx.stack_depth -= 1;
+            Ok(())
+        }
+        "ScriptPubKeyP2SHFromRedeemScript" => {
+            if args.len() != 1 {
+                return Err(CompilerError::Unsupported(
+                    "ScriptPubKeyP2SHFromRedeemScript expects a single redeem_script argument".to_string(),
+                ));
+            }
+            compile_expr_with_context(ctx, &args[0])?;
+            ctx.builder.add_op(OpBlake2b)?;
+            ctx.builder.add_data(&[0x00, 0x00])?;
+            *ctx.stack_depth += 1;
+            ctx.builder.add_data(&[OpBlake2b])?;
+            *ctx.stack_depth += 1;
+            ctx.builder.add_op(OpCat)?;
+            *ctx.stack_depth -= 1;
+            ctx.builder.add_data(&[0x20])?;
+            *ctx.stack_depth += 1;
+            ctx.builder.add_op(OpCat)?;
+            *ctx.stack_depth -= 1;
+            ctx.builder.add_op(OpSwap)?;
+            ctx.builder.add_op(OpCat)?;
+            *ctx.stack_depth -= 1;
+            ctx.builder.add_data(&[OpEqual])?;
+            *ctx.stack_depth += 1;
+            ctx.builder.add_op(OpCat)?;
+            *ctx.stack_depth -= 1;
+            Ok(())
+        }
+        other => Err(CompilerError::Unsupported(format!("unknown constructor: {other}"))),
+    }
+}
+
+fn compile_unary_expr<'i>(ctx: &mut CompileExprContext<'_, 'i>, op: UnaryOp, expr: &Expr<'i>) -> Result<(), CompilerError> {
+    compile_expr_with_context(ctx, expr)?;
+    match op {
+        UnaryOp::Not => ctx.builder.add_op(OpNot)?,
+        UnaryOp::Neg => ctx.builder.add_op(OpNegate)?,
+    };
+    Ok(())
+}
+
+fn compile_binary_expr<'i>(
+    ctx: &mut CompileExprContext<'_, 'i>,
+    op: BinaryOp,
+    left: &Expr<'i>,
+    right: &Expr<'i>,
+) -> Result<(), CompilerError> {
+    let left_cmp_type = infer_expr_type_ref_for_comparison(left, ctx.scope.env, ctx.scope.types);
+    let coerced_right = if matches!(op, BinaryOp::Eq | BinaryOp::Ne | BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge) {
+        coerce_rhs_byte_literal_for_comparison(left_cmp_type.as_ref(), right)
+    } else {
+        right.clone()
+    };
+    let left_value_type = infer_debug_expr_value_type(left, ctx.scope.env, ctx.scope.types, &mut HashSet::new()).ok();
+    let right_value_type = infer_debug_expr_value_type(&coerced_right, ctx.scope.env, ctx.scope.types, &mut HashSet::new()).ok();
+    debug_assert!(
+        !matches!(op, BinaryOp::Add) || (left_value_type.as_deref() != Some("byte") && right_value_type.as_deref() != Some("byte")),
+        "type_check must reject byte addition"
+    );
+    let bytes_eq = matches!(op, BinaryOp::Eq | BinaryOp::Ne)
+        && (expr_is_bytes(left, ctx.scope.env, ctx.scope.types) || expr_is_bytes(&coerced_right, ctx.scope.env, ctx.scope.types));
+    let bytes_add = matches!(op, BinaryOp::Add)
+        && (expr_is_bytes(left, ctx.scope.env, ctx.scope.types) || expr_is_bytes(right, ctx.scope.env, ctx.scope.types));
+    if bytes_add {
+        compile_concat_operand(
+            left,
+            ctx.scope.env,
+            ctx.scope.stack_bindings,
+            ctx.scope.types,
+            ctx.builder,
+            ctx.options,
+            ctx.visiting,
+            ctx.stack_depth,
+            ctx.script_size,
+            ctx.contract_constants,
+        )?;
+        compile_concat_operand(
+            right,
+            ctx.scope.env,
+            ctx.scope.stack_bindings,
+            ctx.scope.types,
+            ctx.builder,
+            ctx.options,
+            ctx.visiting,
+            ctx.stack_depth,
+            ctx.script_size,
+            ctx.contract_constants,
+        )?;
+    } else {
+        compile_expr_with_context(ctx, left)?;
+        compile_expr_with_context(ctx, &coerced_right)?;
+    }
+    match op {
+        BinaryOp::Or => {
+            ctx.builder.add_op(OpBoolOr)?;
+        }
+        BinaryOp::And => {
+            ctx.builder.add_op(OpBoolAnd)?;
+        }
+        BinaryOp::BitOr => {
+            ctx.builder.add_op(OpOr)?;
+        }
+        BinaryOp::BitXor => {
+            ctx.builder.add_op(OpXor)?;
+        }
+        BinaryOp::BitAnd => {
+            ctx.builder.add_op(OpAnd)?;
+        }
+        BinaryOp::Eq => {
+            ctx.builder.add_op(if bytes_eq { OpEqual } else { OpNumEqual })?;
+        }
+        BinaryOp::Ne => {
+            if bytes_eq {
+                ctx.builder.add_op(OpEqual)?;
+                ctx.builder.add_op(OpNot)?;
             } else {
-                compile_expr(
-                    left,
-                    env,
-                    stack_bindings,
-                    types,
-                    builder,
-                    options,
-                    visiting,
-                    stack_depth,
-                    script_size,
-                    contract_constants,
-                )?;
-                compile_expr(
-                    &coerced_right,
-                    env,
-                    stack_bindings,
-                    types,
-                    builder,
-                    options,
-                    visiting,
-                    stack_depth,
-                    script_size,
-                    contract_constants,
-                )?;
+                ctx.builder.add_op(OpNumNotEqual)?;
             }
-            match op {
-                BinaryOp::Or => {
-                    builder.add_op(OpBoolOr)?;
-                }
-                BinaryOp::And => {
-                    builder.add_op(OpBoolAnd)?;
-                }
-                BinaryOp::BitOr => {
-                    builder.add_op(OpOr)?;
-                }
-                BinaryOp::BitXor => {
-                    builder.add_op(OpXor)?;
-                }
-                BinaryOp::BitAnd => {
-                    builder.add_op(OpAnd)?;
-                }
-                BinaryOp::Eq => {
-                    builder.add_op(if bytes_eq { OpEqual } else { OpNumEqual })?;
-                }
-                BinaryOp::Ne => {
-                    if bytes_eq {
-                        builder.add_op(OpEqual)?;
-                        builder.add_op(OpNot)?;
-                    } else {
-                        builder.add_op(OpNumNotEqual)?;
-                    }
-                }
-                BinaryOp::Lt => {
-                    builder.add_op(OpLessThan)?;
-                }
-                BinaryOp::Le => {
-                    builder.add_op(OpLessThanOrEqual)?;
-                }
-                BinaryOp::Gt => {
-                    builder.add_op(OpGreaterThan)?;
-                }
-                BinaryOp::Ge => {
-                    builder.add_op(OpGreaterThanOrEqual)?;
-                }
-                BinaryOp::Add => {
-                    if bytes_add {
-                        builder.add_op(OpCat)?;
-                    } else {
-                        builder.add_op(OpAdd)?;
-                    }
-                }
-                BinaryOp::Sub => {
-                    builder.add_op(OpSub)?;
-                }
-                BinaryOp::Mul => {
-                    builder.add_op(OpMul)?;
-                }
-                BinaryOp::Div => {
-                    builder.add_op(OpDiv)?;
-                }
-                BinaryOp::Mod => {
-                    builder.add_op(OpMod)?;
-                }
-            }
-            *stack_depth -= 1;
-            Ok(())
         }
-        ExprKind::Split { source, index, part, .. } => compile_split_part(
-            source,
-            index,
-            *part,
-            env,
-            stack_bindings,
-            types,
-            builder,
-            options,
-            visiting,
-            stack_depth,
-            script_size,
-            contract_constants,
-        ),
-        ExprKind::UnarySuffix { source, kind, .. } => match kind {
-            UnarySuffixKind::Length => compile_length_expr(
-                source,
-                env,
-                stack_bindings,
-                types,
-                builder,
-                options,
-                visiting,
-                stack_depth,
-                script_size,
-                contract_constants,
-            ),
-            UnarySuffixKind::Reverse => Err(CompilerError::Unsupported("reverse() is not supported".to_string())),
-        },
-        ExprKind::ArrayIndex { source, index } => {
-            let resolved_source = match source.as_ref() {
-                Expr { kind: ExprKind::Identifier(_), .. } => source.as_ref().clone(),
-                _ => resolve_expr(*source.clone(), env, visiting)?,
-            };
-            let element_type = match &resolved_source.kind {
-                ExprKind::Identifier(name) => {
-                    let type_name = types.get(name).or_else(|| {
-                        env.get(name).and_then(|value| match &value.kind {
-                            ExprKind::Identifier(inner) => types.get(inner),
-                            _ => None,
-                        })
-                    });
-                    type_name
-                        .and_then(|t| array_element_type(t))
-                        .ok_or_else(|| CompilerError::Unsupported(format!("array index requires array identifier: {name}")))?
-                }
-                _ => return Err(CompilerError::Unsupported("array index requires array identifier".to_string())),
-            };
-            let element_size = fixed_type_size(&element_type)
-                .ok_or_else(|| CompilerError::Unsupported("array element type must have known size".to_string()))?;
-            compile_expr(
-                &resolved_source,
-                env,
-                stack_bindings,
-                types,
-                builder,
-                options,
-                visiting,
-                stack_depth,
-                script_size,
-                contract_constants,
-            )?;
-            compile_expr(index, env, stack_bindings, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
-            builder.add_i64(element_size)?;
-            *stack_depth += 1;
-            builder.add_op(OpMul)?;
-            *stack_depth -= 1;
-            builder.add_op(OpDup)?;
-            *stack_depth += 1;
-            builder.add_i64(element_size)?;
-            *stack_depth += 1;
-            builder.add_op(OpAdd)?;
-            *stack_depth -= 1;
-            builder.add_op(OpSubstr)?;
-            *stack_depth -= 2;
-            Ok(())
+        BinaryOp::Lt => {
+            ctx.builder.add_op(OpLessThan)?;
         }
-        ExprKind::Slice { source, start, end, .. } => {
-            compile_expr(
-                source,
-                env,
-                stack_bindings,
-                types,
-                builder,
-                options,
-                visiting,
-                stack_depth,
-                script_size,
-                contract_constants,
-            )?;
-            compile_expr(start, env, stack_bindings, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
-            compile_expr(end, env, stack_bindings, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
-            builder.add_op(OpSubstr)?;
-            *stack_depth -= 2;
-            Ok(())
+        BinaryOp::Le => {
+            ctx.builder.add_op(OpLessThanOrEqual)?;
         }
-        ExprKind::Nullary(op) => {
-            match op {
-                NullaryOp::ActiveInputIndex => {
-                    builder.add_op(OpTxInputIndex)?;
-                }
-                NullaryOp::ActiveScriptPubKey => {
-                    builder.add_op(OpTxInputIndex)?;
-                    builder.add_op(OpTxInputSpk)?;
-                }
-                NullaryOp::ThisScriptSize => {
-                    let size = script_size
-                        .ok_or_else(|| CompilerError::Unsupported("this.scriptSize is only available at compile time".to_string()))?;
-                    builder.add_i64(size)?;
-                }
-                NullaryOp::ThisScriptSizeDataPrefix => {
-                    let size = script_size.ok_or_else(|| {
-                        CompilerError::Unsupported("this.scriptSizeDataPrefix is only available at compile time".to_string())
-                    })?;
-                    let size: usize = size.try_into().map_err(|_| {
-                        CompilerError::Unsupported("this.scriptSizeDataPrefix requires a non-negative script size".to_string())
-                    })?;
-                    let prefix = data_prefix(size);
-                    builder.add_data(&prefix)?;
-                }
-                NullaryOp::TxInputsLength => {
-                    builder.add_op(OpTxInputCount)?;
-                }
-                NullaryOp::TxOutputsLength => {
-                    builder.add_op(OpTxOutputCount)?;
-                }
-                NullaryOp::TxVersion => {
-                    builder.add_op(OpTxVersion)?;
-                }
-                NullaryOp::TxLockTime => {
-                    builder.add_op(OpTxLockTime)?;
-                }
-            }
-            *stack_depth += 1;
-            Ok(())
+        BinaryOp::Gt => {
+            ctx.builder.add_op(OpGreaterThan)?;
         }
-        ExprKind::Introspection { kind, index, .. } => {
-            compile_expr(index, env, stack_bindings, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
-            match kind {
-                IntrospectionKind::InputValue => {
-                    builder.add_op(OpTxInputAmount)?;
-                }
-                IntrospectionKind::InputScriptPubKey => {
-                    builder.add_op(OpTxInputSpk)?;
-                }
-                IntrospectionKind::InputSigScript => {
-                    builder.add_op(OpDup)?;
-                    builder.add_op(OpTxInputScriptSigLen)?;
-                    builder.add_i64(0)?;
-                    builder.add_op(OpSwap)?;
-                    builder.add_op(OpTxInputScriptSigSubstr)?;
-                }
-                IntrospectionKind::InputOutpointTransactionHash => {
-                    builder.add_op(OpOutpointTxId)?;
-                }
-                IntrospectionKind::InputOutpointIndex => {
-                    builder.add_op(OpOutpointIndex)?;
-                }
-                IntrospectionKind::InputSequenceNumber => {
-                    builder.add_op(OpTxInputSeq)?;
-                }
-                IntrospectionKind::OutputValue => {
-                    builder.add_op(OpTxOutputAmount)?;
-                }
-                IntrospectionKind::OutputScriptPubKey => {
-                    builder.add_op(OpTxOutputSpk)?;
-                }
-            }
-            Ok(())
+        BinaryOp::Ge => {
+            ctx.builder.add_op(OpGreaterThanOrEqual)?;
         }
-        ExprKind::DateLiteral(value) => {
-            builder.add_i64(*value)?;
-            *stack_depth += 1;
-            Ok(())
+        BinaryOp::Add => {
+            ctx.builder.add_op(if bytes_add { OpCat } else { OpAdd })?;
         }
-        ExprKind::NumberWithUnit { .. } => {
-            Err(CompilerError::Unsupported("number units must be normalized during parsing".to_string()))
+        BinaryOp::Sub => {
+            ctx.builder.add_op(OpSub)?;
+        }
+        BinaryOp::Mul => {
+            ctx.builder.add_op(OpMul)?;
+        }
+        BinaryOp::Div => {
+            ctx.builder.add_op(OpDiv)?;
+        }
+        BinaryOp::Mod => {
+            ctx.builder.add_op(OpMod)?;
         }
     }
+    *ctx.stack_depth -= 1;
+    Ok(())
+}
+
+fn compile_split_expr<'i>(
+    ctx: &mut CompileExprContext<'_, 'i>,
+    source: &Expr<'i>,
+    index: &Expr<'i>,
+    part: SplitPart,
+) -> Result<(), CompilerError> {
+    compile_split_part(
+        source,
+        index,
+        part,
+        ctx.scope.env,
+        ctx.scope.stack_bindings,
+        ctx.scope.types,
+        ctx.builder,
+        ctx.options,
+        ctx.visiting,
+        ctx.stack_depth,
+        ctx.script_size,
+        ctx.contract_constants,
+    )
+}
+
+fn compile_unary_suffix_expr<'i>(
+    ctx: &mut CompileExprContext<'_, 'i>,
+    source: &Expr<'i>,
+    kind: UnarySuffixKind,
+) -> Result<(), CompilerError> {
+    match kind {
+        UnarySuffixKind::Length => compile_length_expr(
+            source,
+            ctx.scope.env,
+            ctx.scope.stack_bindings,
+            ctx.scope.types,
+            ctx.builder,
+            ctx.options,
+            ctx.visiting,
+            ctx.stack_depth,
+            ctx.script_size,
+            ctx.contract_constants,
+        ),
+        UnarySuffixKind::Reverse => Err(CompilerError::Unsupported("reverse() is not supported".to_string())),
+    }
+}
+
+fn compile_array_index_expr<'i>(
+    ctx: &mut CompileExprContext<'_, 'i>,
+    source: &Expr<'i>,
+    index: &Expr<'i>,
+) -> Result<(), CompilerError> {
+    let resolved_source = match source {
+        Expr { kind: ExprKind::Identifier(_), .. } => source.clone(),
+        _ => resolve_expr(source.clone(), ctx.scope.env, ctx.visiting)?,
+    };
+    let element_type = match &resolved_source.kind {
+        ExprKind::Identifier(name) => {
+            let type_name = ctx.scope.types.get(name).or_else(|| {
+                ctx.scope.env.get(name).and_then(|value| match &value.kind {
+                    ExprKind::Identifier(inner) => ctx.scope.types.get(inner),
+                    _ => None,
+                })
+            });
+            type_name
+                .and_then(|t| array_element_type(t))
+                .ok_or_else(|| CompilerError::Unsupported(format!("array index requires array identifier: {name}")))?
+        }
+        _ => return Err(CompilerError::Unsupported("array index requires array identifier".to_string())),
+    };
+    let element_size = fixed_type_size(&element_type)
+        .ok_or_else(|| CompilerError::Unsupported("array element type must have known size".to_string()))?;
+    compile_expr_with_context(ctx, &resolved_source)?;
+    compile_expr_with_context(ctx, index)?;
+    ctx.builder.add_i64(element_size)?;
+    *ctx.stack_depth += 1;
+    ctx.builder.add_op(OpMul)?;
+    *ctx.stack_depth -= 1;
+    ctx.builder.add_op(OpDup)?;
+    *ctx.stack_depth += 1;
+    ctx.builder.add_i64(element_size)?;
+    *ctx.stack_depth += 1;
+    ctx.builder.add_op(OpAdd)?;
+    *ctx.stack_depth -= 1;
+    ctx.builder.add_op(OpSubstr)?;
+    *ctx.stack_depth -= 2;
+    Ok(())
+}
+
+fn compile_slice_expr<'i>(
+    ctx: &mut CompileExprContext<'_, 'i>,
+    source: &Expr<'i>,
+    start: &Expr<'i>,
+    end: &Expr<'i>,
+) -> Result<(), CompilerError> {
+    compile_expr_with_context(ctx, source)?;
+    compile_expr_with_context(ctx, start)?;
+    compile_expr_with_context(ctx, end)?;
+    ctx.builder.add_op(OpSubstr)?;
+    *ctx.stack_depth -= 2;
+    Ok(())
+}
+
+fn compile_nullary_expr<'i>(ctx: &mut CompileExprContext<'_, 'i>, op: NullaryOp) -> Result<(), CompilerError> {
+    match op {
+        NullaryOp::ActiveInputIndex => {
+            ctx.builder.add_op(OpTxInputIndex)?;
+        }
+        NullaryOp::ActiveScriptPubKey => {
+            ctx.builder.add_op(OpTxInputIndex)?;
+            ctx.builder.add_op(OpTxInputSpk)?;
+        }
+        NullaryOp::ThisScriptSize => {
+            let size = ctx
+                .script_size
+                .ok_or_else(|| CompilerError::Unsupported("this.scriptSize is only available at compile time".to_string()))?;
+            ctx.builder.add_i64(size)?;
+        }
+        NullaryOp::ThisScriptSizeDataPrefix => {
+            let size = ctx.script_size.ok_or_else(|| {
+                CompilerError::Unsupported("this.scriptSizeDataPrefix is only available at compile time".to_string())
+            })?;
+            let size: usize = size.try_into().map_err(|_| {
+                CompilerError::Unsupported("this.scriptSizeDataPrefix requires a non-negative script size".to_string())
+            })?;
+            let prefix = data_prefix(size);
+            ctx.builder.add_data(&prefix)?;
+        }
+        NullaryOp::TxInputsLength => {
+            ctx.builder.add_op(OpTxInputCount)?;
+        }
+        NullaryOp::TxOutputsLength => {
+            ctx.builder.add_op(OpTxOutputCount)?;
+        }
+        NullaryOp::TxVersion => {
+            ctx.builder.add_op(OpTxVersion)?;
+        }
+        NullaryOp::TxLockTime => {
+            ctx.builder.add_op(OpTxLockTime)?;
+        }
+    }
+    *ctx.stack_depth += 1;
+    Ok(())
+}
+
+fn compile_introspection_expr<'i>(
+    ctx: &mut CompileExprContext<'_, 'i>,
+    kind: IntrospectionKind,
+    index: &Expr<'i>,
+) -> Result<(), CompilerError> {
+    compile_expr_with_context(ctx, index)?;
+    match kind {
+        IntrospectionKind::InputValue => {
+            ctx.builder.add_op(OpTxInputAmount)?;
+        }
+        IntrospectionKind::InputScriptPubKey => {
+            ctx.builder.add_op(OpTxInputSpk)?;
+        }
+        IntrospectionKind::InputSigScript => {
+            ctx.builder.add_op(OpDup)?;
+            ctx.builder.add_op(OpTxInputScriptSigLen)?;
+            ctx.builder.add_i64(0)?;
+            ctx.builder.add_op(OpSwap)?;
+            ctx.builder.add_op(OpTxInputScriptSigSubstr)?;
+        }
+        IntrospectionKind::InputOutpointTransactionHash => {
+            ctx.builder.add_op(OpOutpointTxId)?;
+        }
+        IntrospectionKind::InputOutpointIndex => {
+            ctx.builder.add_op(OpOutpointIndex)?;
+        }
+        IntrospectionKind::InputSequenceNumber => {
+            ctx.builder.add_op(OpTxInputSeq)?;
+        }
+        IntrospectionKind::OutputValue => {
+            ctx.builder.add_op(OpTxOutputAmount)?;
+        }
+        IntrospectionKind::OutputScriptPubKey => {
+            ctx.builder.add_op(OpTxOutputSpk)?;
+        }
+    }
+    Ok(())
+}
+
+fn compile_date_literal_expr<'i>(ctx: &mut CompileExprContext<'_, 'i>, value: i64) -> Result<(), CompilerError> {
+    ctx.builder.add_i64(value)?;
+    *ctx.stack_depth += 1;
+    Ok(())
+}
+
+fn compile_number_with_unit_expr<'i>() -> Result<(), CompilerError> {
+    Err(CompilerError::Unsupported("number units must be normalized during parsing".to_string()))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -4200,733 +4138,271 @@ fn compile_call_expr<'i>(
     script_size: Option<i64>,
     contract_constants: &HashMap<String, Expr<'i>>,
 ) -> Result<(), CompilerError> {
+    let mut ctx = CompileCallContext { scope, builder, options, visiting, stack_depth, script_size, contract_constants };
     match name {
-        "OpSha256" => compile_opcode_call(
-            name,
-            args,
-            1,
-            scope,
-            builder,
-            options,
-            visiting,
-            stack_depth,
-            OpSHA256,
-            script_size,
-            contract_constants,
-        ),
-        "sha256" => {
-            if args.len() != 1 {
-                return Err(CompilerError::Unsupported("sha256() expects a single argument".to_string()));
-            }
-            compile_expr(
-                &args[0],
-                scope.env,
-                scope.stack_bindings,
-                scope.types,
-                builder,
-                options,
-                visiting,
-                stack_depth,
-                script_size,
-                contract_constants,
-            )?;
-            builder.add_op(OpSHA256)?;
+        "OpSha256" => compile_opcode_builtin_call(&mut ctx, name, args, 1, OpSHA256),
+        "sha256" => compile_sha256_call(&mut ctx, args),
+        "OpTxSubnetId" => compile_opcode_builtin_call(&mut ctx, name, args, 0, OpTxSubnetId),
+        "OpTxGas" => compile_opcode_builtin_call(&mut ctx, name, args, 0, OpTxGas),
+        "OpTxPayloadLen" => compile_opcode_builtin_call(&mut ctx, name, args, 0, OpTxPayloadLen),
+        "OpTxPayloadSubstr" => compile_opcode_builtin_call(&mut ctx, name, args, 2, OpTxPayloadSubstr),
+        "OpOutpointTxId" => compile_opcode_builtin_call(&mut ctx, name, args, 1, OpOutpointTxId),
+        "OpOutpointIndex" => compile_opcode_builtin_call(&mut ctx, name, args, 1, OpOutpointIndex),
+        "OpTxInputScriptSigLen" => compile_opcode_builtin_call(&mut ctx, name, args, 1, OpTxInputScriptSigLen),
+        "OpTxInputScriptSigSubstr" => compile_opcode_builtin_call(&mut ctx, name, args, 3, OpTxInputScriptSigSubstr),
+        "OpTxInputSeq" => compile_opcode_builtin_call(&mut ctx, name, args, 1, OpTxInputSeq),
+        "OpTxInputDaaScore" => compile_opcode_builtin_call(&mut ctx, name, args, 1, OpTxInputDaaScore),
+        "OpTxInputIsCoinbase" => compile_opcode_builtin_call(&mut ctx, name, args, 1, OpTxInputIsCoinbase),
+        "OpTxInputSpkLen" => compile_opcode_builtin_call(&mut ctx, name, args, 1, OpTxInputSpkLen),
+        "OpTxInputSpkSubstr" => compile_opcode_builtin_call(&mut ctx, name, args, 3, OpTxInputSpkSubstr),
+        "OpTxOutputSpkLen" => compile_opcode_builtin_call(&mut ctx, name, args, 1, OpTxOutputSpkLen),
+        "OpTxOutputSpkSubstr" => compile_opcode_builtin_call(&mut ctx, name, args, 3, OpTxOutputSpkSubstr),
+        "OpAuthOutputCount" => compile_opcode_builtin_call(&mut ctx, name, args, 1, OpAuthOutputCount),
+        "OpAuthOutputIdx" => compile_opcode_builtin_call(&mut ctx, name, args, 2, OpAuthOutputIdx),
+        "OpInputCovenantId" => compile_opcode_builtin_call(&mut ctx, name, args, 1, OpInputCovenantId),
+        "OpCovInputCount" => compile_opcode_builtin_call(&mut ctx, name, args, 1, OpCovInputCount),
+        "OpCovInputIdx" => compile_opcode_builtin_call(&mut ctx, name, args, 2, OpCovInputIdx),
+        "OpCovOutputCount" => compile_opcode_builtin_call(&mut ctx, name, args, 1, OpCovOutputCount),
+        "OpCovOutputIdx" => compile_opcode_builtin_call(&mut ctx, name, args, 2, OpCovOutputIdx),
+        "OpNum2Bin" => compile_opcode_builtin_call(&mut ctx, name, args, 2, OpNum2Bin),
+        "OpBin2Num" => compile_opcode_builtin_call(&mut ctx, name, args, 1, OpBin2Num),
+        "OpChainblockSeqCommit" => compile_opcode_builtin_call(&mut ctx, name, args, 1, OpChainblockSeqCommit),
+        "bytes" => compile_bytes_call(&mut ctx, args),
+        "length" => compile_length_call(&mut ctx, args),
+        "int" | "byte" | "bool" | "string" | "sig" | "pubkey" | "datasig" => compile_passthrough_cast_call(&mut ctx, name, args),
+        name if name.starts_with("byte[") && name.ends_with(']') => compile_byte_sequence_cast_call(&mut ctx, name, args),
+        name if parse_type_ref(name).is_ok_and(|type_ref| is_array_type_ref(&type_ref)) => {
+            compile_array_cast_call(&mut ctx, name, args)
+        }
+        "blake2b" => compile_blake2b_call(&mut ctx, args),
+        "checkSig" => compile_checksig_call(&mut ctx, args),
+        "checkDataSig" => compile_checkdatasig_call(&mut ctx, args),
+        _ => compile_unknown_function_call(name),
+    }
+}
+
+struct CompileCallContext<'a, 'i> {
+    scope: &'a CompilationScope<'a, 'i>,
+    builder: &'a mut ScriptBuilder,
+    options: CompileOptions,
+    visiting: &'a mut HashSet<String>,
+    stack_depth: &'a mut i64,
+    script_size: Option<i64>,
+    contract_constants: &'a HashMap<String, Expr<'i>>,
+}
+
+fn compile_call_arg_with_context<'i>(ctx: &mut CompileCallContext<'_, 'i>, arg: &Expr<'i>) -> Result<(), CompilerError> {
+    compile_expr(
+        arg,
+        ctx.scope.env,
+        ctx.scope.stack_bindings,
+        ctx.scope.types,
+        ctx.builder,
+        ctx.options,
+        ctx.visiting,
+        ctx.stack_depth,
+        ctx.script_size,
+        ctx.contract_constants,
+    )
+}
+
+fn compile_opcode_builtin_call<'i>(
+    ctx: &mut CompileCallContext<'_, 'i>,
+    name: &str,
+    args: &[Expr<'i>],
+    expected_args: usize,
+    opcode: u8,
+) -> Result<(), CompilerError> {
+    compile_opcode_call(
+        name,
+        args,
+        expected_args,
+        ctx.scope,
+        ctx.builder,
+        ctx.options,
+        ctx.visiting,
+        ctx.stack_depth,
+        opcode,
+        ctx.script_size,
+        ctx.contract_constants,
+    )
+}
+
+fn compile_sha256_call<'i>(ctx: &mut CompileCallContext<'_, 'i>, args: &[Expr<'i>]) -> Result<(), CompilerError> {
+    if args.len() != 1 {
+        return Err(CompilerError::Unsupported("sha256() expects a single argument".to_string()));
+    }
+    compile_call_arg_with_context(ctx, &args[0])?;
+    ctx.builder.add_op(OpSHA256)?;
+    Ok(())
+}
+
+fn compile_bytes_call<'i>(ctx: &mut CompileCallContext<'_, 'i>, args: &[Expr<'i>]) -> Result<(), CompilerError> {
+    if args.is_empty() || args.len() > 2 {
+        return Err(CompilerError::Unsupported("bytes() expects one or two arguments".to_string()));
+    }
+    if args.len() == 2 {
+        compile_call_arg_with_context(ctx, &args[0])?;
+        compile_call_arg_with_context(ctx, &args[1])?;
+        ctx.builder.add_op(OpNum2Bin)?;
+        *ctx.stack_depth -= 1;
+        return Ok(());
+    }
+    match &args[0].kind {
+        ExprKind::String(value) => {
+            ctx.builder.add_data(value.as_bytes())?;
+            *ctx.stack_depth += 1;
             Ok(())
         }
-        "OpTxSubnetId" => compile_opcode_call(
-            name,
-            args,
-            0,
-            scope,
-            builder,
-            options,
-            visiting,
-            stack_depth,
-            OpTxSubnetId,
-            script_size,
-            contract_constants,
-        ),
-        "OpTxGas" => compile_opcode_call(
-            name,
-            args,
-            0,
-            scope,
-            builder,
-            options,
-            visiting,
-            stack_depth,
-            OpTxGas,
-            script_size,
-            contract_constants,
-        ),
-        "OpTxPayloadLen" => compile_opcode_call(
-            name,
-            args,
-            0,
-            scope,
-            builder,
-            options,
-            visiting,
-            stack_depth,
-            OpTxPayloadLen,
-            script_size,
-            contract_constants,
-        ),
-        "OpTxPayloadSubstr" => compile_opcode_call(
-            name,
-            args,
-            2,
-            scope,
-            builder,
-            options,
-            visiting,
-            stack_depth,
-            OpTxPayloadSubstr,
-            script_size,
-            contract_constants,
-        ),
-        "OpOutpointTxId" => compile_opcode_call(
-            name,
-            args,
-            1,
-            scope,
-            builder,
-            options,
-            visiting,
-            stack_depth,
-            OpOutpointTxId,
-            script_size,
-            contract_constants,
-        ),
-        "OpOutpointIndex" => compile_opcode_call(
-            name,
-            args,
-            1,
-            scope,
-            builder,
-            options,
-            visiting,
-            stack_depth,
-            OpOutpointIndex,
-            script_size,
-            contract_constants,
-        ),
-        "OpTxInputScriptSigLen" => compile_opcode_call(
-            name,
-            args,
-            1,
-            scope,
-            builder,
-            options,
-            visiting,
-            stack_depth,
-            OpTxInputScriptSigLen,
-            script_size,
-            contract_constants,
-        ),
-        "OpTxInputScriptSigSubstr" => compile_opcode_call(
-            name,
-            args,
-            3,
-            scope,
-            builder,
-            options,
-            visiting,
-            stack_depth,
-            OpTxInputScriptSigSubstr,
-            script_size,
-            contract_constants,
-        ),
-        "OpTxInputSeq" => compile_opcode_call(
-            name,
-            args,
-            1,
-            scope,
-            builder,
-            options,
-            visiting,
-            stack_depth,
-            OpTxInputSeq,
-            script_size,
-            contract_constants,
-        ),
-        "OpTxInputDaaScore" => compile_opcode_call(
-            name,
-            args,
-            1,
-            scope,
-            builder,
-            options,
-            visiting,
-            stack_depth,
-            OpTxInputDaaScore,
-            script_size,
-            contract_constants,
-        ),
-        "OpTxInputIsCoinbase" => compile_opcode_call(
-            name,
-            args,
-            1,
-            scope,
-            builder,
-            options,
-            visiting,
-            stack_depth,
-            OpTxInputIsCoinbase,
-            script_size,
-            contract_constants,
-        ),
-        "OpTxInputSpkLen" => compile_opcode_call(
-            name,
-            args,
-            1,
-            scope,
-            builder,
-            options,
-            visiting,
-            stack_depth,
-            OpTxInputSpkLen,
-            script_size,
-            contract_constants,
-        ),
-        "OpTxInputSpkSubstr" => compile_opcode_call(
-            name,
-            args,
-            3,
-            scope,
-            builder,
-            options,
-            visiting,
-            stack_depth,
-            OpTxInputSpkSubstr,
-            script_size,
-            contract_constants,
-        ),
-        "OpTxOutputSpkLen" => compile_opcode_call(
-            name,
-            args,
-            1,
-            scope,
-            builder,
-            options,
-            visiting,
-            stack_depth,
-            OpTxOutputSpkLen,
-            script_size,
-            contract_constants,
-        ),
-        "OpTxOutputSpkSubstr" => compile_opcode_call(
-            name,
-            args,
-            3,
-            scope,
-            builder,
-            options,
-            visiting,
-            stack_depth,
-            OpTxOutputSpkSubstr,
-            script_size,
-            contract_constants,
-        ),
-        "OpAuthOutputCount" => compile_opcode_call(
-            name,
-            args,
-            1,
-            scope,
-            builder,
-            options,
-            visiting,
-            stack_depth,
-            OpAuthOutputCount,
-            script_size,
-            contract_constants,
-        ),
-        "OpAuthOutputIdx" => compile_opcode_call(
-            name,
-            args,
-            2,
-            scope,
-            builder,
-            options,
-            visiting,
-            stack_depth,
-            OpAuthOutputIdx,
-            script_size,
-            contract_constants,
-        ),
-        "OpInputCovenantId" => compile_opcode_call(
-            name,
-            args,
-            1,
-            scope,
-            builder,
-            options,
-            visiting,
-            stack_depth,
-            OpInputCovenantId,
-            script_size,
-            contract_constants,
-        ),
-        "OpCovInputCount" => compile_opcode_call(
-            name,
-            args,
-            1,
-            scope,
-            builder,
-            options,
-            visiting,
-            stack_depth,
-            OpCovInputCount,
-            script_size,
-            contract_constants,
-        ),
-        "OpCovInputIdx" => compile_opcode_call(
-            name,
-            args,
-            2,
-            scope,
-            builder,
-            options,
-            visiting,
-            stack_depth,
-            OpCovInputIdx,
-            script_size,
-            contract_constants,
-        ),
-        "OpCovOutputCount" => compile_opcode_call(
-            name,
-            args,
-            1,
-            scope,
-            builder,
-            options,
-            visiting,
-            stack_depth,
-            OpCovOutputCount,
-            script_size,
-            contract_constants,
-        ),
-        "OpCovOutputIdx" => compile_opcode_call(
-            name,
-            args,
-            2,
-            scope,
-            builder,
-            options,
-            visiting,
-            stack_depth,
-            OpCovOutputIdx,
-            script_size,
-            contract_constants,
-        ),
-        "OpNum2Bin" => compile_opcode_call(
-            name,
-            args,
-            2,
-            scope,
-            builder,
-            options,
-            visiting,
-            stack_depth,
-            OpNum2Bin,
-            script_size,
-            contract_constants,
-        ),
-        "OpBin2Num" => compile_opcode_call(
-            name,
-            args,
-            1,
-            scope,
-            builder,
-            options,
-            visiting,
-            stack_depth,
-            OpBin2Num,
-            script_size,
-            contract_constants,
-        ),
-        "OpChainblockSeqCommit" => compile_opcode_call(
-            name,
-            args,
-            1,
-            scope,
-            builder,
-            options,
-            visiting,
-            stack_depth,
-            OpChainblockSeqCommit,
-            script_size,
-            contract_constants,
-        ),
-        "bytes" => {
-            if args.is_empty() || args.len() > 2 {
-                return Err(CompilerError::Unsupported("bytes() expects one or two arguments".to_string()));
+        ExprKind::Identifier(name) => {
+            if let Some(expr) = ctx.scope.env.get(name) {
+                if let ExprKind::String(value) = &expr.kind {
+                    ctx.builder.add_data(value.as_bytes())?;
+                    *ctx.stack_depth += 1;
+                    return Ok(());
+                }
             }
-            if args.len() == 2 {
-                compile_expr(
-                    &args[0],
-                    scope.env,
-                    scope.stack_bindings,
-                    scope.types,
-                    builder,
-                    options,
-                    visiting,
-                    stack_depth,
-                    script_size,
-                    contract_constants,
-                )?;
-                compile_expr(
-                    &args[1],
-                    scope.env,
-                    scope.stack_bindings,
-                    scope.types,
-                    builder,
-                    options,
-                    visiting,
-                    stack_depth,
-                    script_size,
-                    contract_constants,
-                )?;
-                builder.add_op(OpNum2Bin)?;
-                *stack_depth -= 1;
+            if expr_is_bytes(&args[0], ctx.scope.env, ctx.scope.types) {
+                compile_call_arg_with_context(ctx, &args[0])?;
                 return Ok(());
             }
-            match &args[0].kind {
-                ExprKind::String(value) => {
-                    builder.add_data(value.as_bytes())?;
-                    *stack_depth += 1;
-                    Ok(())
-                }
-                ExprKind::Identifier(name) => {
-                    if let Some(expr) = scope.env.get(name) {
-                        if let ExprKind::String(value) = &expr.kind {
-                            builder.add_data(value.as_bytes())?;
-                            *stack_depth += 1;
-                            return Ok(());
-                        }
-                    }
-                    if expr_is_bytes(&args[0], scope.env, scope.types) {
-                        compile_expr(
-                            &args[0],
-                            scope.env,
-                            scope.stack_bindings,
-                            scope.types,
-                            builder,
-                            options,
-                            visiting,
-                            stack_depth,
-                            script_size,
-                            contract_constants,
-                        )?;
-                        return Ok(());
-                    }
-                    compile_expr(
-                        &args[0],
-                        scope.env,
-                        scope.stack_bindings,
-                        scope.types,
-                        builder,
-                        options,
-                        visiting,
-                        stack_depth,
-                        script_size,
-                        contract_constants,
-                    )?;
-                    builder.add_i64(8)?;
-                    *stack_depth += 1;
-                    builder.add_op(OpNum2Bin)?;
-                    *stack_depth -= 1;
-                    Ok(())
-                }
-                _ => {
-                    if expr_is_bytes(&args[0], scope.env, scope.types) {
-                        compile_expr(
-                            &args[0],
-                            scope.env,
-                            scope.stack_bindings,
-                            scope.types,
-                            builder,
-                            options,
-                            visiting,
-                            stack_depth,
-                            script_size,
-                            contract_constants,
-                        )?;
-                        Ok(())
-                    } else {
-                        compile_expr(
-                            &args[0],
-                            scope.env,
-                            scope.stack_bindings,
-                            scope.types,
-                            builder,
-                            options,
-                            visiting,
-                            stack_depth,
-                            script_size,
-                            contract_constants,
-                        )?;
-                        builder.add_i64(8)?;
-                        *stack_depth += 1;
-                        builder.add_op(OpNum2Bin)?;
-                        *stack_depth -= 1;
-                        Ok(())
-                    }
-                }
-            }
-        }
-        "length" => {
-            if args.len() != 1 {
-                return Err(CompilerError::Unsupported("length() expects a single argument".to_string()));
-            }
-            compile_length_expr(
-                &args[0],
-                scope.env,
-                scope.stack_bindings,
-                scope.types,
-                builder,
-                options,
-                visiting,
-                stack_depth,
-                script_size,
-                contract_constants,
-            )
-        }
-        "int" => {
-            if args.len() != 1 {
-                return Err(CompilerError::Unsupported("int() expects a single argument".to_string()));
-            }
-            compile_expr(
-                &args[0],
-                scope.env,
-                scope.stack_bindings,
-                scope.types,
-                builder,
-                options,
-                visiting,
-                stack_depth,
-                script_size,
-                contract_constants,
-            )?;
+            compile_call_arg_with_context(ctx, &args[0])?;
+            ctx.builder.add_i64(8)?;
+            *ctx.stack_depth += 1;
+            ctx.builder.add_op(OpNum2Bin)?;
+            *ctx.stack_depth -= 1;
             Ok(())
         }
-        "byte" | "bool" | "string" => {
-            if args.len() != 1 {
-                return Err(CompilerError::Unsupported(format!("{name}() expects a single argument")));
-            }
-            compile_expr(
-                &args[0],
-                scope.env,
-                scope.stack_bindings,
-                scope.types,
-                builder,
-                options,
-                visiting,
-                stack_depth,
-                script_size,
-                contract_constants,
-            )?;
-            Ok(())
-        }
-        "sig" | "pubkey" | "datasig" => {
-            if args.len() != 1 {
-                return Err(CompilerError::Unsupported(format!("{name}() expects a single argument")));
-            }
-            compile_expr(
-                &args[0],
-                scope.env,
-                scope.stack_bindings,
-                scope.types,
-                builder,
-                options,
-                visiting,
-                stack_depth,
-                script_size,
-                contract_constants,
-            )?;
-            Ok(())
-        }
-        name if name.starts_with("byte[") && name.ends_with(']') => {
-            let size_part = &name[5..name.len() - 1];
-            if size_part.is_empty() {
-                // Handle byte[] cast (dynamic array) - just compile the argument as-is
-                if args.len() != 1 && args.len() != 2 {
-                    return Err(CompilerError::Unsupported(format!("{name}() expects 1 or 2 arguments")));
-                }
-                compile_expr(
-                    &args[0],
-                    scope.env,
-                    scope.stack_bindings,
-                    scope.types,
-                    builder,
-                    options,
-                    visiting,
-                    stack_depth,
-                    script_size,
-                    contract_constants,
-                )?;
-                if args.len() == 2 {
-                    // byte[](value, size) - OpNum2Bin with size parameter
-                    compile_expr(
-                        &args[1],
-                        scope.env,
-                        scope.stack_bindings,
-                        scope.types,
-                        builder,
-                        options,
-                        visiting,
-                        stack_depth,
-                        script_size,
-                        contract_constants,
-                    )?;
-                    *stack_depth += 1;
-                    builder.add_op(OpNum2Bin)?;
-                    *stack_depth -= 1;
-                }
+        _ => {
+            if expr_is_bytes(&args[0], ctx.scope.env, ctx.scope.types) {
+                compile_call_arg_with_context(ctx, &args[0])?;
                 Ok(())
             } else {
-                // Handle byte[N] cast - extract size from byte[N]
-                let size = size_part.parse::<i64>().map_err(|_| CompilerError::Unsupported(format!("{name}() is not supported")))?;
-                if args.len() != 1 {
-                    return Err(CompilerError::Unsupported(format!("{name}() expects a single argument")));
-                }
-                let source_type = infer_debug_expr_value_type(&args[0], scope.env, scope.types, &mut HashSet::new()).ok();
-                if let Some(source_type) = source_type.as_deref() {
-                    if let Some(source_size) = byte_sequence_cast_size(source_type) {
-                        if let Some(source_size) = source_size {
-                            if source_size != size {
-                                return Err(CompilerError::Unsupported(format!("cannot cast {source_type} to {name}")));
-                            }
-                        }
-                        compile_expr(
-                            &args[0],
-                            scope.env,
-                            scope.stack_bindings,
-                            scope.types,
-                            builder,
-                            options,
-                            visiting,
-                            stack_depth,
-                            script_size,
-                            contract_constants,
-                        )?;
-                        return Ok(());
-                    }
-                }
-                compile_expr(
-                    &args[0],
-                    scope.env,
-                    scope.stack_bindings,
-                    scope.types,
-                    builder,
-                    options,
-                    visiting,
-                    stack_depth,
-                    script_size,
-                    contract_constants,
-                )?;
-                builder.add_i64(size)?;
-                *stack_depth += 1;
-                builder.add_op(OpNum2Bin)?;
-                *stack_depth -= 1;
+                compile_call_arg_with_context(ctx, &args[0])?;
+                ctx.builder.add_i64(8)?;
+                *ctx.stack_depth += 1;
+                ctx.builder.add_op(OpNum2Bin)?;
+                *ctx.stack_depth -= 1;
                 Ok(())
             }
         }
-        name if parse_type_ref(name).is_ok_and(|type_ref| is_array_type_ref(&type_ref)) => {
-            if args.len() != 1 {
-                return Err(CompilerError::Unsupported(format!("{name}() expects a single argument")));
-            }
-            compile_expr(
-                &args[0],
-                scope.env,
-                scope.stack_bindings,
-                scope.types,
-                builder,
-                options,
-                visiting,
-                stack_depth,
-                script_size,
-                contract_constants,
-            )?;
-            Ok(())
-        }
-        "blake2b" => {
-            if args.len() != 1 {
-                return Err(CompilerError::Unsupported("blake2b() expects a single argument".to_string()));
-            }
-            compile_expr(
-                &args[0],
-                scope.env,
-                scope.stack_bindings,
-                scope.types,
-                builder,
-                options,
-                visiting,
-                stack_depth,
-                script_size,
-                contract_constants,
-            )?;
-            builder.add_op(OpBlake2b)?;
-            Ok(())
-        }
-        "checkSig" => {
-            if args.len() != 2 {
-                return Err(CompilerError::Unsupported("checkSig() expects 2 arguments".to_string()));
-            }
-            compile_expr(
-                &args[0],
-                scope.env,
-                scope.stack_bindings,
-                scope.types,
-                builder,
-                options,
-                visiting,
-                stack_depth,
-                script_size,
-                contract_constants,
-            )?;
-            compile_expr(
-                &args[1],
-                scope.env,
-                scope.stack_bindings,
-                scope.types,
-                builder,
-                options,
-                visiting,
-                stack_depth,
-                script_size,
-                contract_constants,
-            )?;
-            builder.add_op(OpCheckSig)?;
-            *stack_depth -= 1;
-            Ok(())
-        }
-        "checkDataSig" => {
-            // TODO: Remove this stub
-            for arg in args {
-                compile_expr(
-                    arg,
-                    scope.env,
-                    scope.stack_bindings,
-                    scope.types,
-                    builder,
-                    options,
-                    visiting,
-                    stack_depth,
-                    script_size,
-                    contract_constants,
-                )?;
-            }
-            for _ in 0..args.len() {
-                builder.add_op(OpDrop)?;
-                *stack_depth -= 1;
-            }
-            builder.add_op(OpTrue)?;
-            *stack_depth += 1;
-            Ok(())
-        }
-        _ => Err(CompilerError::Unsupported(format!("unknown function call: {name}"))),
     }
+}
+
+fn compile_length_call<'i>(ctx: &mut CompileCallContext<'_, 'i>, args: &[Expr<'i>]) -> Result<(), CompilerError> {
+    if args.len() != 1 {
+        return Err(CompilerError::Unsupported("length() expects a single argument".to_string()));
+    }
+    compile_length_expr(
+        &args[0],
+        ctx.scope.env,
+        ctx.scope.stack_bindings,
+        ctx.scope.types,
+        ctx.builder,
+        ctx.options,
+        ctx.visiting,
+        ctx.stack_depth,
+        ctx.script_size,
+        ctx.contract_constants,
+    )
+}
+
+fn compile_passthrough_cast_call<'i>(
+    ctx: &mut CompileCallContext<'_, 'i>,
+    name: &str,
+    args: &[Expr<'i>],
+) -> Result<(), CompilerError> {
+    if args.len() != 1 {
+        return Err(CompilerError::Unsupported(format!("{name}() expects a single argument")));
+    }
+    compile_call_arg_with_context(ctx, &args[0])
+}
+
+fn compile_byte_sequence_cast_call<'i>(
+    ctx: &mut CompileCallContext<'_, 'i>,
+    name: &str,
+    args: &[Expr<'i>],
+) -> Result<(), CompilerError> {
+    let size_part = &name[5..name.len() - 1];
+    if size_part.is_empty() {
+        if args.len() != 1 && args.len() != 2 {
+            return Err(CompilerError::Unsupported(format!("{name}() expects 1 or 2 arguments")));
+        }
+        compile_call_arg_with_context(ctx, &args[0])?;
+        if args.len() == 2 {
+            compile_call_arg_with_context(ctx, &args[1])?;
+            *ctx.stack_depth += 1;
+            ctx.builder.add_op(OpNum2Bin)?;
+            *ctx.stack_depth -= 1;
+        }
+        return Ok(());
+    }
+
+    let size = size_part.parse::<i64>().map_err(|_| CompilerError::Unsupported(format!("{name}() is not supported")))?;
+    if args.len() != 1 {
+        return Err(CompilerError::Unsupported(format!("{name}() expects a single argument")));
+    }
+    let source_type = infer_debug_expr_value_type(&args[0], ctx.scope.env, ctx.scope.types, &mut HashSet::new()).ok();
+    if let Some(source_type) = source_type.as_deref() {
+        if let Some(source_size) = byte_sequence_cast_size(source_type) {
+            if let Some(source_size) = source_size {
+                if source_size != size {
+                    return Err(CompilerError::Unsupported(format!("cannot cast {source_type} to {name}")));
+                }
+            }
+            return compile_call_arg_with_context(ctx, &args[0]);
+        }
+    }
+    compile_call_arg_with_context(ctx, &args[0])?;
+    ctx.builder.add_i64(size)?;
+    *ctx.stack_depth += 1;
+    ctx.builder.add_op(OpNum2Bin)?;
+    *ctx.stack_depth -= 1;
+    Ok(())
+}
+
+fn compile_array_cast_call<'i>(ctx: &mut CompileCallContext<'_, 'i>, name: &str, args: &[Expr<'i>]) -> Result<(), CompilerError> {
+    if args.len() != 1 {
+        return Err(CompilerError::Unsupported(format!("{name}() expects a single argument")));
+    }
+    compile_call_arg_with_context(ctx, &args[0])
+}
+
+fn compile_blake2b_call<'i>(ctx: &mut CompileCallContext<'_, 'i>, args: &[Expr<'i>]) -> Result<(), CompilerError> {
+    if args.len() != 1 {
+        return Err(CompilerError::Unsupported("blake2b() expects a single argument".to_string()));
+    }
+    compile_call_arg_with_context(ctx, &args[0])?;
+    ctx.builder.add_op(OpBlake2b)?;
+    Ok(())
+}
+
+fn compile_checksig_call<'i>(ctx: &mut CompileCallContext<'_, 'i>, args: &[Expr<'i>]) -> Result<(), CompilerError> {
+    if args.len() != 2 {
+        return Err(CompilerError::Unsupported("checkSig() expects 2 arguments".to_string()));
+    }
+    compile_call_arg_with_context(ctx, &args[0])?;
+    compile_call_arg_with_context(ctx, &args[1])?;
+    ctx.builder.add_op(OpCheckSig)?;
+    *ctx.stack_depth -= 1;
+    Ok(())
+}
+
+fn compile_checkdatasig_call<'i>(ctx: &mut CompileCallContext<'_, 'i>, args: &[Expr<'i>]) -> Result<(), CompilerError> {
+    for arg in args {
+        compile_call_arg_with_context(ctx, arg)?;
+    }
+    for _ in 0..args.len() {
+        ctx.builder.add_op(OpDrop)?;
+        *ctx.stack_depth -= 1;
+    }
+    ctx.builder.add_op(OpTrue)?;
+    *ctx.stack_depth += 1;
+    Ok(())
+}
+
+fn compile_unknown_function_call(name: &str) -> Result<(), CompilerError> {
+    Err(CompilerError::Unsupported(format!("unknown function call: {name}")))
 }
 
 #[allow(clippy::too_many_arguments)]
