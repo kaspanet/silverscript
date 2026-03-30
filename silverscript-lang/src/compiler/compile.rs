@@ -1583,41 +1583,32 @@ fn compile_assign_statement<'i>(
     expr: &Expr<'i>,
 ) -> Result<Vec<String>, CompilerError> {
     if let Some(type_name) = ctx.types.get(name) {
-        if ctx.stack_bindings.contains(name) {
-            let lowered_expr = coerce_expr_for_declared_scalar_type(expr.clone(), type_name);
-            let mut stack_depth = 0i64;
-            compile_expr(
-                &lowered_expr,
-                ctx.env,
-                ctx.stack_bindings,
-                ctx.types,
-                ctx.builder,
-                ctx.options,
-                &mut HashSet::new(),
-                &mut stack_depth,
-                ctx.script_size,
-                ctx.contract_constants,
-            )?;
-            ctx.stack_bindings.emit_update_stack_for_rebinding(name, ctx.builder)?;
-            return Ok(Vec::new());
-        }
-
-        if is_array_type(type_name) {
-            return Err(CompilerError::Unsupported(format!("array variable '{}' must be stack-bound before reassignment", name)));
+        if !ctx.stack_bindings.contains(name) {
+            return Err(CompilerError::Unsupported(format!(
+                "assigned variable '{}' must be stack-bound before reassignment",
+                name
+            )));
         }
 
         let lowered_expr = coerce_expr_for_declared_scalar_type(expr.clone(), type_name);
-        let updated =
-            if let Some(previous) = ctx.env.get(name) { replace_identifier(&lowered_expr, name, previous) } else { lowered_expr };
-        let resolved = resolve_expr_for_runtime(updated, ctx.env, ctx.types, &mut HashSet::new())?;
-        ctx.env.insert(name.to_string(), resolved);
+        let mut stack_depth = 0i64;
+        compile_expr(
+            &lowered_expr,
+            ctx.env,
+            ctx.stack_bindings,
+            ctx.types,
+            ctx.builder,
+            ctx.options,
+            &mut HashSet::new(),
+            &mut stack_depth,
+            ctx.script_size,
+            ctx.contract_constants,
+        )?;
+        ctx.stack_bindings.emit_update_stack_for_rebinding(name, ctx.builder)?;
         return Ok(Vec::new());
     }
 
-    let updated = if let Some(previous) = ctx.env.get(name) { replace_identifier(expr, name, previous) } else { expr.clone() };
-    let resolved = resolve_expr_for_runtime(updated, ctx.env, ctx.types, &mut HashSet::new())?;
-    ctx.env.insert(name.to_string(), resolved);
-    Ok(Vec::new())
+    Err(CompilerError::UndefinedIdentifier(name.to_string()))
 }
 
 fn compile_console_statement<'i>() -> Result<Vec<String>, CompilerError> {
