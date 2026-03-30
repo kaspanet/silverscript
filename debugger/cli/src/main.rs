@@ -25,7 +25,7 @@ use kaspa_txscript::script_builder::ScriptBuilder;
 use kaspa_txscript::{EngineCtx, EngineFlags, pay_to_script_hash_script};
 use silverscript_lang::ast::{ContractAst, parse_contract_ast};
 use silverscript_lang::compiler::{
-    CompileOptions, CompiledContract, CovenantDeclBinding, CovenantDeclCallOptions, ResolvedCovenantCallTarget, compile_contract,
+    CompileOptions, CompiledContract, CovenantDeclBinding, CovenantDeclCallOptions, CovenantDeclInfo, compile_contract,
     resolve_contract_state_expr,
 };
 
@@ -51,8 +51,6 @@ struct CliArgs {
     raw_ctor_args: Vec<String>,
     #[arg(long = "arg", short = 'a')]
     raw_args: Vec<String>,
-    #[arg(long = "delegate")]
-    delegate: bool,
 }
 
 fn compiled_contract_for_ctor_args<'a, 'i>(
@@ -116,14 +114,14 @@ fn resolve_state_from_raw(
 
 fn infer_omitted_covenant_args(
     contract: &ContractAst<'_>,
-    target: &ResolvedCovenantCallTarget,
+    target: &CovenantDeclInfo,
     tx: &TestTxScenarioResolved,
 ) -> Result<Vec<String>, String> {
     if tx.active_input_index >= tx.inputs.len() {
         return Err(format!("tx.active_input_index {} out of range for {} inputs", tx.active_input_index, tx.inputs.len()));
     }
 
-    let generated_entrypoint_name = target.generated_entrypoint_name();
+    let generated_entrypoint_name = target.source_debug_entrypoint_name();
     let function = contract
         .functions
         .iter()
@@ -162,18 +160,15 @@ fn infer_omitted_covenant_args(
     } else {
         Err(format!(
             "cannot infer omitted args for covenant '{}'; provide explicit args for {}",
-            target.info.source_name,
+            target.source_name,
             unresolved.join(", ")
         ))
     }
 }
 
-fn matching_covenant_output_states<'a>(
-    target: &ResolvedCovenantCallTarget,
-    tx: &'a TestTxScenarioResolved,
-) -> Result<Vec<&'a str>, String> {
+fn matching_covenant_output_states<'a>(target: &CovenantDeclInfo, tx: &'a TestTxScenarioResolved) -> Result<Vec<&'a str>, String> {
     let covenants_ctx = build_covenants_context_for_test_tx(tx)?;
-    let output_indexes = match target.info.binding {
+    let output_indexes = match target.binding {
         CovenantDeclBinding::Auth => {
             covenants_ctx.input_ctxs.get(&tx.active_input_index).map(|ctx| ctx.auth_outputs.clone()).unwrap_or_default()
         }
@@ -181,11 +176,11 @@ fn matching_covenant_output_states<'a>(
             let active_covenant_id = tx.inputs[tx.active_input_index].covenant_id.as_ref().ok_or_else(|| {
                 format!(
                     "cannot infer omitted args for covenant '{}'; tx.inputs[{}].covenant_id is required",
-                    target.info.source_name, tx.active_input_index
+                    target.source_name, tx.active_input_index
                 )
             })?;
             let active_covenant_id = parse_hash32(active_covenant_id)
-                .map_err(|err| format!("cannot infer omitted args for covenant '{}': {err}", target.info.source_name))?;
+                .map_err(|err| format!("cannot infer omitted args for covenant '{}': {err}", target.source_name))?;
             covenants_ctx.shared_ctxs.get(&active_covenant_id).map(|ctx| ctx.output_indices.clone()).unwrap_or_default()
         }
     };
@@ -206,7 +201,7 @@ fn matching_covenant_output_states<'a>(
     } else {
         Err(format!(
             "cannot infer omitted args for covenant '{}'; add tx.outputs[*].state for output indexes {}",
-            target.info.source_name,
+            target.source_name,
             missing_state_indexes.iter().map(|index| index.to_string()).collect::<Vec<_>>().join(", ")
         ))
     }
@@ -593,7 +588,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         None
     };
-    let (script_path, raw_constructor_args, selected_name, raw_args, allow_omitted_test_args_inference, delegate, tx_scenario, expect) =
+    let (script_path, raw_constructor_args, selected_name, raw_args, allow_omitted_test_args_inference, tx_scenario, expect) =
         if let Some(test_file) = inferred_test_file.as_deref() {
             let test_name = cli.test_name.as_deref().ok_or("--test-name requires --test-file or SCRIPT_PATH")?;
             let script_override = cli.script_path.as_deref().map(Path::new);
@@ -610,30 +605,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 (Vec::new(), true)
             };
             let expect = Some(resolved.test.expect);
-            (
-                resolved.script_path,
-                constructor_args,
-                fname,
-                args,
-                allow_inference,
-                cli.delegate || resolved.test.delegate,
-                resolved.test.tx,
-                expect,
-            )
+            (resolved.script_path, constructor_args, fname, args, allow_inference, resolved.test.tx, expect)
         } else {
             let path = cli.script_path.as_deref().ok_or("missing script path: pass SCRIPT_PATH or --test-file")?;
             let constructor_args = cli.raw_ctor_args.clone();
             let entrypoint_args = cli.raw_args.clone();
-            (
-                PathBuf::from(path),
-                constructor_args,
-                cli.function_name.clone().unwrap_or_default(),
-                entrypoint_args,
-                false,
-                cli.delegate,
-                None,
-                None,
-            )
+            (PathBuf::from(path), constructor_args, cli.function_name.clone().unwrap_or_default(), entrypoint_args, false, None, None)
         };
 
     let source = fs::read_to_string(&script_path)?;
@@ -652,13 +629,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         selected_name
     };
 
-    let covenant_target = compiled
-        .covenant_infos
-        .iter()
-        .find(|info| info.source_name == selected_name)
-        .cloned()
-        .map(|info| ResolvedCovenantCallTarget { info, is_leader: !delegate });
-    let covenant_binding = covenant_target.as_ref().map(|target| target.info.binding);
+    let covenant_target = compiled.covenant_infos.iter().find(|info| info.source_name == selected_name).cloned();
+    let covenant_binding = covenant_target.as_ref().map(|target| target.binding);
     let raw_args = if allow_omitted_test_args_inference {
         if let (Some(target), Some(tx)) = (covenant_target.as_ref(), tx_scenario.as_ref()) {
             infer_omitted_covenant_args(&compiled.ast, target, tx).map_err(|err| -> Box<dyn std::error::Error> { err.into() })?
@@ -669,16 +641,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         raw_args
     };
     let sigscript = if let Some(target) = covenant_target.as_ref() {
-        if delegate && target.info.binding != CovenantDeclBinding::Cov {
-            return Err("--delegate only applies to binding=cov covenant declarations".into());
-        }
-        let generated_entrypoint_name = target.generated_entrypoint_name();
+        let generated_entrypoint_name = target.source_debug_entrypoint_name();
         let typed_args = parse_call_args(&compiled.ast, &generated_entrypoint_name, &raw_args)?;
-        compiled.build_sig_script_for_covenant_decl(&selected_name, typed_args, CovenantDeclCallOptions { is_leader: !delegate })?
+        compiled.build_sig_script_for_covenant_decl(&selected_name, typed_args, CovenantDeclCallOptions { is_leader: true })?
     } else {
-        if delegate {
-            return Err("--delegate only applies when --function names a source-level binding=cov covenant declaration".into());
-        }
         let typed_args = parse_call_args(&compiled.ast, &selected_name, &raw_args)?;
         compiled.build_sig_script(&selected_name, typed_args)?
     };

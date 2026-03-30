@@ -13,8 +13,7 @@ use silverscript_lang::ast::{
     parse_type_ref,
 };
 use silverscript_lang::compiler::{
-    CovenantDeclBinding, CovenantDeclInfo, ResolvedCovenantCallTarget, compile_debug_expr, flattened_struct_name,
-    resolve_contract_state_expr,
+    CovenantDeclBinding, CovenantDeclInfo, compile_debug_expr, flattened_struct_name, resolve_contract_state_expr,
 };
 use silverscript_lang::debug_info::{
     DebugFunctionRange, DebugInfo, DebugLeafBinding, DebugNamedValue, DebugParamBinding, DebugStep, DebugVariableUpdate,
@@ -133,19 +132,16 @@ pub struct OpcodeMeta<'i> {
 #[derive(Clone)]
 struct CovenantSessionContext {
     injected_param_value: Option<DebugValue>,
-    call_target: ResolvedCovenantCallTarget,
+    call_target: CovenantDeclInfo,
 }
 
 impl CovenantSessionContext {
     fn binding_for_function(&self, function_name: &str) -> Option<&CovenantDeclInfo> {
-        self.call_target.info.matches_generated_name(function_name).then_some(&self.call_target.info)
+        self.call_target.matches_source_debug_name(function_name).then_some(&self.call_target)
     }
 
-    fn display_name_for_function(&self, function_name: &str) -> Option<String> {
-        if self.call_target.info.policy_function_name() == function_name {
-            return Some(self.call_target.display_name());
-        }
-        self.call_target.info.display_name_for_function(function_name)
+    fn source_name_for_function(&self, function_name: &str) -> Option<&str> {
+        self.binding_for_function(function_name).map(|binding| binding.source_name.as_str())
     }
 
     fn hides_name(&self, name: &str) -> bool {
@@ -299,7 +295,7 @@ impl<'a, 'i> DebugSession<'a, 'i> {
         self
     }
 
-    pub fn with_covenant_mode(mut self, param_value: Option<DebugValue>, active_call: ResolvedCovenantCallTarget) -> Self {
+    pub fn with_covenant_mode(mut self, param_value: Option<DebugValue>, active_call: CovenantDeclInfo) -> Self {
         self.covenant_ctx = Some(CovenantSessionContext { injected_param_value: param_value, call_target: active_call });
         self
     }
@@ -558,7 +554,7 @@ impl<'a, 'i> DebugSession<'a, 'i> {
         let mut stack = Vec::new();
         for step in self.active_steps() {
             match &step.kind {
-                StepKind::InlineCallEnter { callee } => stack.push(self.display_function_name(callee)),
+                StepKind::InlineCallEnter { callee } => stack.push(self.source_function_name(callee)),
                 StepKind::InlineCallExit { .. } => {
                     stack.pop();
                 }
@@ -574,7 +570,7 @@ impl<'a, 'i> DebugSession<'a, 'i> {
         for step in self.active_steps() {
             match &step.kind {
                 StepKind::InlineCallEnter { callee } => stack.push(CallStackEntry {
-                    callee_name: self.display_function_name(callee),
+                    callee_name: self.source_function_name(callee),
                     call_site_span: Some(step.span),
                     sequence: step.sequence,
                     frame_id: step.frame_id,
@@ -590,7 +586,7 @@ impl<'a, 'i> DebugSession<'a, 'i> {
 
     /// Returns the name of the function currently being executed.
     pub fn current_function_name(&self) -> Option<String> {
-        self.current_compiled_function_name().map(|function_name| self.display_function_name(&function_name))
+        self.current_compiled_function_name().map(|function_name| self.source_function_name(&function_name))
     }
 
     fn current_compiled_function_name(&self) -> Option<String> {
@@ -687,8 +683,8 @@ impl<'a, 'i> DebugSession<'a, 'i> {
         }
     }
 
-    fn display_function_name(&self, function_name: &str) -> String {
-        self.covenant_ctx().and_then(|ctx| ctx.display_name_for_function(function_name)).unwrap_or_else(|| function_name.to_string())
+    fn source_function_name(&self, function_name: &str) -> String {
+        self.covenant_ctx().and_then(|ctx| ctx.source_name_for_function(function_name)).unwrap_or(function_name).to_string()
     }
 
     fn is_hidden_debug_name(&self, name: &str) -> bool {
@@ -1211,62 +1207,26 @@ impl<'a, 'i> DebugSession<'a, 'i> {
             return best.map(|(order_index, _, _)| order_index);
         }
 
-        let has_real_source_ahead = self.function_has_real_source_stop_from_offset(offset);
-        let mut best: Option<(usize, (u8, u32, u32))> = None;
+        let mut best: Option<(usize, u32, u32)> = None;
         for (order_index, &step_index) in self.step_order.iter().enumerate() {
             let Some(step) = self.debug_info.steps.get(step_index) else {
                 continue;
             };
-            if !self.is_initial_stop_candidate(step)
+            if !matches!(step.kind, StepKind::Source {})
+                || is_synthetic_default_span(step.span)
                 || !range_matches_offset(step.bytecode_start, step.bytecode_end, offset)
                 || min_sequence.is_some_and(|min_sequence| step.sequence < min_sequence)
             {
                 continue;
             }
 
-            let Some(rank) = self.initial_stop_rank(step, has_real_source_ahead) else {
-                continue;
-            };
-
             match best {
-                Some((_, best_rank)) if best_rank >= rank => {}
-                _ => best = Some((order_index, rank)),
+                Some((_, best_depth, best_sequence))
+                    if best_depth > step.call_depth || (best_depth == step.call_depth && best_sequence <= step.sequence) => {}
+                _ => best = Some((order_index, step.call_depth, step.sequence)),
             }
         }
-        best.map(|(order_index, _)| order_index)
-    }
-
-    fn is_initial_stop_candidate(&self, step: &DebugStep<'i>) -> bool {
-        matches!(step.kind, StepKind::Source {} | StepKind::InlineCallEnter { .. })
-    }
-
-    fn initial_stop_rank(&self, step: &DebugStep<'i>, has_real_source_ahead: bool) -> Option<(u8, u32, u32)> {
-        let priority = match &step.kind {
-            StepKind::Source {} if !is_synthetic_default_span(step.span) => 2,
-            StepKind::Source {} if !has_real_source_ahead => 1,
-            StepKind::Source {} => return None,
-            StepKind::InlineCallEnter { .. } => 0,
-            StepKind::InlineCallExit { .. } => return None,
-        };
-        Some((priority, step.call_depth, u32::MAX.saturating_sub(step.sequence)))
-    }
-
-    fn function_has_real_source_stop_from_offset(&self, offset: usize) -> bool {
-        let Some(function) = self
-            .debug_info
-            .functions
-            .iter()
-            .find(|function| range_matches_offset(function.bytecode_start, function.bytecode_end, offset))
-        else {
-            return false;
-        };
-
-        self.debug_info.steps.iter().any(|step| {
-            matches!(step.kind, StepKind::Source {})
-                && !is_synthetic_default_span(step.span)
-                && step.bytecode_start >= offset
-                && range_matches_offset(function.bytecode_start, function.bytecode_end, step.bytecode_start)
-        })
+        best.map(|(order_index, _, _)| order_index)
     }
 
     fn find_steppable_step_index(&self, predicate: impl Fn(&DebugStep<'i>) -> bool) -> Option<usize> {
@@ -1438,10 +1398,8 @@ impl<'a, 'i> DebugSession<'a, 'i> {
     }
 
     fn source_function_header_span(&self, function_name: &str) -> Option<SourceSpan> {
-        let source_name =
-            function_name.strip_suffix(" [leader]").or_else(|| function_name.strip_suffix(" [delegate]")).unwrap_or(function_name);
         let contract = self.contract_ast.as_ref()?;
-        let function = contract.functions.iter().find(|function| function.name == source_name)?;
+        let function = contract.functions.iter().find(|function| function.name == function_name)?;
         Some(SourceSpan::from(function.name_span))
     }
 

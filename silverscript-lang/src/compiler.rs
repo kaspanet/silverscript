@@ -15,7 +15,7 @@ pub use crate::errors::{CompilerError, ErrorSpan};
 use crate::span;
 mod covenant_declarations;
 use covenant_declarations::lower_covenant_declarations;
-pub use covenant_declarations::{CovenantDeclBinding, CovenantDeclInfo, ResolvedCovenantCallTarget};
+pub use covenant_declarations::{CovenantDeclBinding, CovenantDeclInfo};
 
 mod debug_recording;
 mod debug_value_types;

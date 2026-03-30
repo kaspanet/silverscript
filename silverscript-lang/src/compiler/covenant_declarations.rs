@@ -45,69 +45,16 @@ impl CovenantDeclInfo {
         }
     }
 
-    pub fn matches_generated_name(&self, function_name: &str) -> bool {
-        if self.policy_function_name() == function_name {
-            return true;
-        }
-        match self.binding {
-            CovenantDeclBinding::Auth => self.generated_entrypoint_name(true) == function_name,
-            CovenantDeclBinding::Cov => {
-                self.generated_entrypoint_name(true) == function_name || self.generated_entrypoint_name(false) == function_name
-            }
-        }
-    }
-
-    pub fn display_name_for_function(&self, function_name: &str) -> Option<String> {
-        if self.policy_function_name() == function_name {
-            return Some(self.source_name.clone());
-        }
-        match self.binding {
-            CovenantDeclBinding::Auth => {
-                if self.generated_entrypoint_name(true) == function_name {
-                    Some(self.source_name.clone())
-                } else {
-                    None
-                }
-            }
-            CovenantDeclBinding::Cov => {
-                if self.generated_entrypoint_name(true) == function_name {
-                    Some(format!("{} [leader]", self.source_name))
-                } else if self.generated_entrypoint_name(false) == function_name {
-                    Some(format!("{} [delegate]", self.source_name))
-                } else {
-                    None
-                }
-            }
-        }
-    }
-
     pub fn source_param(&self) -> Option<(&str, &TypeRef)> {
         self.source_param.as_ref().map(|param| (param.name.as_str(), &param.type_ref))
     }
-}
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ResolvedCovenantCallTarget {
-    pub info: CovenantDeclInfo,
-    pub is_leader: bool,
-}
-
-impl ResolvedCovenantCallTarget {
-    pub fn generated_entrypoint_name(&self) -> String {
-        self.info.generated_entrypoint_name(self.is_leader)
+    pub fn source_debug_entrypoint_name(&self) -> String {
+        self.generated_entrypoint_name(true)
     }
 
-    pub fn display_name(&self) -> String {
-        match self.info.binding {
-            CovenantDeclBinding::Auth => self.info.source_name.clone(),
-            CovenantDeclBinding::Cov => {
-                if self.is_leader {
-                    format!("{} [leader]", self.info.source_name)
-                } else {
-                    format!("{} [delegate]", self.info.source_name)
-                }
-            }
-        }
+    pub fn matches_source_debug_name(&self, function_name: &str) -> bool {
+        self.policy_function_name() == function_name || self.source_debug_entrypoint_name() == function_name
     }
 }
 
