@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::{HashMap, HashSet};
 
 pub(super) fn type_check_contract<'i>(
     contract: &ContractAst<'i>,
@@ -762,7 +763,7 @@ fn insert_type_binding<'i>(
 ) -> Result<(), CompilerError> {
     types.insert(name.to_string(), type_name_from_ref(type_ref));
     if (struct_name_from_type_ref(type_ref, structs).is_some() || struct_array_name_from_type_ref(type_ref, structs).is_some())
-        && let Ok(leaves) = compile::flatten_type_ref_leaves(type_ref, structs)
+        && let Ok(leaves) = flatten_type_ref_leaves(type_ref, structs)
     {
         for (path, leaf_type) in leaves {
             types.insert(flattened_struct_name(name, &path), type_name_from_ref(&leaf_type));
@@ -859,7 +860,7 @@ fn validate_expr_assignable_to_type<'i>(
         if matches!(expr.kind, ExprKind::StateObject(_)) {
             return validate_struct_literal_matches_type(expr, type_ref, types, structs, constants);
         }
-        compile::lower_runtime_struct_expr(expr, type_ref, types, structs, contract_fields, constants, 0).map(|_| ())
+        lower_runtime_struct_expr(expr, type_ref, types, structs, contract_fields, constants, 0).map(|_| ())
     } else if struct_array_name_from_type_ref(type_ref, structs).is_some() {
         if let ExprKind::Call { name, .. } = &expr.kind
             && name == "readInputStateWithTemplate"
@@ -889,7 +890,7 @@ fn validate_expr_assignable_to_type<'i>(
         {
             return Ok(());
         }
-        let lowered = compile::lower_runtime_expr(expr, types, structs)?;
+        let lowered = lower_runtime_expr(expr, types, structs)?;
         if expr_matches_return_type_ref(&lowered, type_ref, types, structs, constants) {
             Ok(())
         } else {

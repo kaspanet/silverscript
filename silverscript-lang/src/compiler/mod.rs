@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 use kaspa_txscript::script_builder::ScriptBuilder;
@@ -15,11 +15,20 @@ mod covenant_declarations;
 mod compile;
 mod debug_value_types;
 mod stack_bindings;
+mod structs;
 mod type_check;
 
 pub use compile::{compile_debug_expr, function_branch_index};
 use compile::compile_contract_impl;
 pub(super) use compile::{array_element_type, eval_const_int, is_bytes_type, type_name_from_ref};
+pub(super) use structs::{
+    StructFieldSpec, StructRegistry, build_struct_registry, ensure_known_or_builtin_type,
+    flatten_type_ref_leaves, flattened_struct_field_specs_for_type, flattened_struct_name,
+    flatten_constructor_args_env,
+    lower_runtime_expr, lower_runtime_struct_expr,
+    lower_structs_contract,
+    struct_array_name_from_type_ref, struct_name_from_type_ref, validate_struct_graph,
+};
 use type_check::{type_check_contract, value_matches_type_ref};
 
 /// Prefix used for synthetic argument bindings during inline function expansion.
@@ -81,24 +90,6 @@ pub struct CompiledContract<'i> {
     pub state_layout: CompiledStateLayout,
     pub debug_info: Option<DebugInfo<'i>>,
 }
-
-#[derive(Clone, Default)]
-struct LoweringScope {
-    vars: HashMap<String, TypeRef>,
-}
-
-#[derive(Clone)]
-pub(super) struct StructFieldSpec {
-    name: String,
-    type_ref: TypeRef,
-}
-
-#[derive(Clone)]
-pub(super) struct StructSpec {
-    fields: Vec<StructFieldSpec>,
-}
-
-pub(super) type StructRegistry = HashMap<String, StructSpec>;
 
 pub fn compile_contract<'i>(
     source: &'i str,
@@ -325,175 +316,6 @@ fn push_sigscript_arg<'i>(builder: &mut ScriptBuilder, arg: Expr<'i>) -> Result<
         }
     }
     Ok(())
-}
-
-pub(super) fn build_struct_registry<'i>(contract: &ContractAst<'i>) -> Result<StructRegistry, CompilerError> {
-    let mut registry = HashMap::new();
-    for item in &contract.structs {
-        if item.name == "State" {
-            return Err(CompilerError::Unsupported("'State' is a reserved struct name".to_string()));
-        }
-        let mut names = HashSet::new();
-        let fields = item
-            .fields
-            .iter()
-            .map(|field| {
-                if !names.insert(field.name.clone()) {
-                    return Err(CompilerError::Unsupported(format!("duplicate struct field '{}.{}'", item.name, field.name)));
-                }
-                Ok(StructFieldSpec { name: field.name.clone(), type_ref: field.type_ref.clone() })
-            })
-            .collect::<Result<Vec<_>, CompilerError>>()?;
-        if registry.insert(item.name.clone(), StructSpec { fields }).is_some() {
-            return Err(CompilerError::Unsupported(format!("duplicate struct name: {}", item.name)));
-        }
-    }
-
-    let mut state_field_names = HashSet::new();
-    let state_fields = contract
-        .fields
-        .iter()
-        .map(|field| {
-            if !state_field_names.insert(field.name.clone()) {
-                return Err(CompilerError::Unsupported(format!("duplicate contract field name: {}", field.name)));
-            }
-            Ok(StructFieldSpec { name: field.name.clone(), type_ref: field.type_ref.clone() })
-        })
-        .collect::<Result<Vec<_>, CompilerError>>()?;
-    registry.insert("State".to_string(), StructSpec { fields: state_fields });
-
-    Ok(registry)
-}
-
-pub(super) fn struct_name_from_type_ref<'a>(type_ref: &'a TypeRef, structs: &'a StructRegistry) -> Option<&'a str> {
-    if !type_ref.array_dims.is_empty() {
-        return None;
-    }
-    match &type_ref.base {
-        TypeBase::Custom(name) if structs.contains_key(name) => Some(name.as_str()),
-        _ => None,
-    }
-}
-
-fn struct_array_name_from_type_ref(type_ref: &TypeRef, structs: &StructRegistry) -> Option<String> {
-    let element_type = type_ref.element_type()?;
-    struct_name_from_type_ref(&element_type, structs).map(ToOwned::to_owned)
-}
-
-pub(super) fn ensure_known_or_builtin_type(type_ref: &TypeRef, structs: &StructRegistry, context: &str) -> Result<(), CompilerError> {
-    if type_ref.array_dims.is_empty() {
-        match &type_ref.base {
-            TypeBase::Custom(name) if !structs.contains_key(name) => {
-                return Err(CompilerError::Unsupported(format!("unknown type '{}' in {context}", name)));
-            }
-            _ => {}
-        }
-    } else if let TypeBase::Custom(name) = &type_ref.base {
-        if structs.contains_key(name) {
-            return Err(CompilerError::Unsupported(format!("arrays of struct type '{}' are not supported", name)));
-        }
-        return Err(CompilerError::Unsupported(format!("unknown type '{}' in {context}", name)));
-    }
-    Ok(())
-}
-
-pub(super) fn validate_struct_graph(structs: &StructRegistry) -> Result<(), CompilerError> {
-    fn visit(
-        name: &str,
-        structs: &StructRegistry,
-        visiting: &mut HashSet<String>,
-        visited: &mut HashSet<String>,
-    ) -> Result<(), CompilerError> {
-        if visited.contains(name) {
-            return Ok(());
-        }
-        if !visiting.insert(name.to_string()) {
-            return Err(CompilerError::Unsupported(format!("cyclic struct definition involving '{name}'")));
-        }
-        let item = structs.get(name).ok_or_else(|| CompilerError::Unsupported(format!("unknown struct '{name}'")))?;
-        for field in &item.fields {
-            ensure_known_or_builtin_type(&field.type_ref, structs, "struct field")?;
-            if let Some(child) = struct_name_from_type_ref(&field.type_ref, structs) {
-                visit(child, structs, visiting, visited)?;
-            }
-        }
-        visiting.remove(name);
-        visited.insert(name.to_string());
-        Ok(())
-    }
-
-    let mut visiting = HashSet::new();
-    let mut visited = HashSet::new();
-    for name in structs.keys() {
-        visit(name, structs, &mut visiting, &mut visited)?;
-    }
-    Ok(())
-}
-
-pub fn flattened_struct_name(base: &str, path: &[String]) -> String {
-    let mut out = format!("__struct_{base}");
-    for part in path {
-        out.push('_');
-        out.push_str(part);
-    }
-    out
-}
-
-fn flatten_struct_fields(
-    type_ref: &TypeRef,
-    structs: &StructRegistry,
-    prefix: &mut Vec<String>,
-    out: &mut Vec<(Vec<String>, TypeRef)>,
-) -> Result<(), CompilerError> {
-    if let Some(struct_name) = struct_name_from_type_ref(type_ref, structs) {
-        let item = structs.get(struct_name).ok_or_else(|| CompilerError::Unsupported(format!("unknown struct '{struct_name}'")))?;
-        for field in &item.fields {
-            prefix.push(field.name.clone());
-            flatten_struct_fields(&field.type_ref, structs, prefix, out)?;
-            prefix.pop();
-        }
-    } else {
-        out.push((prefix.clone(), type_ref.clone()));
-    }
-    Ok(())
-}
-
-fn resolve_struct_access<'i>(
-    expr: &Expr<'i>,
-    scope: &LoweringScope,
-    structs: &StructRegistry,
-) -> Result<(String, Vec<String>, TypeRef), CompilerError> {
-    match &expr.kind {
-        ExprKind::Identifier(name) => {
-            let type_ref = scope.vars.get(name).cloned().ok_or_else(|| CompilerError::UndefinedIdentifier(name.clone()))?;
-            Ok((name.clone(), Vec::new(), type_ref))
-        }
-        ExprKind::FieldAccess { source, field, .. } => {
-            let (base, mut path, current_type) = resolve_struct_access(source, scope, structs)?;
-            let struct_name = struct_name_from_type_ref(&current_type, structs)
-                .ok_or_else(|| CompilerError::Unsupported("field access requires a struct value".to_string()))?;
-            let item =
-                structs.get(struct_name).ok_or_else(|| CompilerError::Unsupported(format!("unknown struct '{struct_name}'")))?;
-            let field_type = item
-                .fields
-                .iter()
-                .find(|candidate| candidate.name == *field)
-                .map(|candidate| candidate.type_ref.clone())
-                .ok_or_else(|| CompilerError::Unsupported(format!("struct '{}' has no field '{}'", struct_name, field)))?;
-            path.push(field.clone());
-            Ok((base, path, field_type))
-        }
-        _ => Err(CompilerError::Unsupported("struct field access requires a struct variable".to_string())),
-    }
-}
-
-fn flattened_struct_field_specs_for_type(type_ref: &TypeRef, structs: &StructRegistry) -> Result<Vec<StructFieldSpec>, CompilerError> {
-    let mut leaves = Vec::new();
-    flatten_struct_fields(type_ref, structs, &mut Vec::new(), &mut leaves)?;
-    Ok(leaves
-        .into_iter()
-        .map(|(path, type_ref)| StructFieldSpec { name: path.last().cloned().unwrap_or_default(), type_ref })
-        .collect())
 }
 
 fn binary_expr<'i>(op: BinaryOp, left: Expr<'i>, right: Expr<'i>) -> Expr<'i> {

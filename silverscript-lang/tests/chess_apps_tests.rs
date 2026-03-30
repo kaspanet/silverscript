@@ -657,9 +657,9 @@ fn size_snapshots() -> Vec<SizeSnapshot> {
         SizeSnapshot {
             name: "player.sil",
             ctor: player_constructor_args,
-            expected_script_len: 2915,
-            expected_instruction_count: 2139,
-            expected_charged_op_count: 1489,
+            expected_script_len: 2864,
+            expected_instruction_count: 2105,
+            expected_charged_op_count: 1468,
         },
         SizeSnapshot {
             name: "chess_mux.sil",
@@ -671,9 +671,9 @@ fn size_snapshots() -> Vec<SizeSnapshot> {
         SizeSnapshot {
             name: "chess_settle.sil",
             ctor: settle_constructor_args,
-            expected_script_len: 2654,
-            expected_instruction_count: 2046,
-            expected_charged_op_count: 1335,
+            expected_script_len: 2803,
+            expected_instruction_count: 2118,
+            expected_charged_op_count: 1387,
         },
         SizeSnapshot {
             name: "chess_pawn.sil",
