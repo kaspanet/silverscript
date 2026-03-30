@@ -312,7 +312,6 @@ fn compile_contract_fields<'i>(
     options: CompileOptions,
     script_size: Option<i64>,
 ) -> Result<(HashMap<String, Expr<'i>>, Vec<u8>), CompilerError> {
-    let mut env = base_constants.clone();
     let mut field_values = HashMap::new();
     let mut field_types = HashMap::new();
     let mut builder = ScriptBuilder::new();
@@ -326,13 +325,13 @@ fn compile_contract_fields<'i>(
 
         let mut compile_visiting = HashSet::new();
         let mut stack_depth = 0i64;
-        if fixed_type_size_with_constants_ref(&field.type_ref, &env).is_some() {
+        if fixed_type_size_with_constants_ref(&field.type_ref, base_constants).is_some() {
             let encoded = encode_fixed_size_value(&resolved, &type_name)?;
             builder.add_data(&encoded)?;
         } else {
             compile_expr(
                 &resolved,
-                &env,
+                base_constants,
                 &stack_bindings,
                 &field_types,
                 &mut builder,
@@ -340,7 +339,7 @@ fn compile_contract_fields<'i>(
                 &mut compile_visiting,
                 &mut stack_depth,
                 script_size,
-                &env,
+                base_constants,
             )?;
         }
 
@@ -427,7 +426,7 @@ fn byte_array_len<'i>(expr: &Expr<'i>) -> Option<usize> {
 
 fn infer_expr_type_ref_for_comparison<'i>(
     expr: &Expr<'i>,
-    env: &HashMap<String, Expr<'i>>,
+    constants: &HashMap<String, Expr<'i>>,
     types: &HashMap<String, String>,
 ) -> Option<TypeRef> {
     if let ExprKind::Identifier(name) = &expr.kind {
@@ -485,7 +484,7 @@ fn infer_expr_type_ref_for_comparison<'i>(
             return None;
         }
     }
-    let type_name = infer_debug_expr_value_type(expr, env, types, &mut HashSet::new()).ok()?;
+    let type_name = infer_debug_expr_value_type(expr, constants, types, &mut HashSet::new()).ok()?;
     parse_type_ref(&type_name).ok()
 }
 
@@ -1755,7 +1754,6 @@ fn compile_read_input_state_statement<'i>(
             )?;
             compile_read_input_state_with_template_validation(
                 args,
-                ctx.contract_constants,
                 ctx.stack_bindings,
                 ctx.types,
                 ctx.builder,
@@ -1867,7 +1865,6 @@ fn struct_name_for_state_bindings<'i>(bindings: &[StateBindingAst<'i>], structs:
 #[allow(clippy::too_many_arguments)]
 fn compile_read_input_state_with_template_validation(
     args: &[Expr<'_>],
-    env: &HashMap<String, Expr<'_>>,
     stack_bindings: &StackBindings,
     types: &HashMap<String, String>,
     builder: &mut ScriptBuilder,
@@ -1916,7 +1913,7 @@ fn compile_read_input_state_with_template_validation(
 
     compile_expr(
         &actual_input_spk_expr,
-        env,
+        contract_constants,
         stack_bindings,
         types,
         builder,
@@ -1928,7 +1925,7 @@ fn compile_read_input_state_with_template_validation(
     )?;
     compile_expr(
         &expected_input_spk_expr,
-        env,
+        contract_constants,
         stack_bindings,
         types,
         builder,
@@ -1944,7 +1941,7 @@ fn compile_read_input_state_with_template_validation(
 
     compile_expr(
         &actual_template_expr,
-        env,
+        contract_constants,
         stack_bindings,
         types,
         builder,
@@ -1956,7 +1953,7 @@ fn compile_read_input_state_with_template_validation(
     )?;
     compile_expr(
         expected_template_hash,
-        env,
+        contract_constants,
         stack_bindings,
         types,
         builder,
@@ -3094,10 +3091,8 @@ fn compile_binary_expr<'i>(
         "type_check must reject byte addition"
     );
     let bytes_eq = matches!(op, BinaryOp::Eq | BinaryOp::Ne)
-        && (expr_is_bytes(left, ctx.scope.constants, ctx.scope.types)
-            || expr_is_bytes(&coerced_right, ctx.scope.constants, ctx.scope.types));
-    let bytes_add = matches!(op, BinaryOp::Add)
-        && (expr_is_bytes(left, ctx.scope.constants, ctx.scope.types) || expr_is_bytes(right, ctx.scope.constants, ctx.scope.types));
+        && (expr_is_bytes(left, ctx.scope.types) || expr_is_bytes(&coerced_right, ctx.scope.types));
+    let bytes_add = matches!(op, BinaryOp::Add) && (expr_is_bytes(left, ctx.scope.types) || expr_is_bytes(right, ctx.scope.types));
     if bytes_add {
         compile_concat_operand(
             left,
@@ -3196,7 +3191,6 @@ fn compile_split_expr<'i>(
         source,
         index,
         part,
-        ctx.scope.constants,
         ctx.scope.stack_bindings,
         ctx.scope.types,
         ctx.builder,
@@ -3216,7 +3210,6 @@ fn compile_unary_suffix_expr<'i>(
     match kind {
         UnarySuffixKind::Length => compile_length_expr(
             source,
-            ctx.scope.constants,
             ctx.scope.stack_bindings,
             ctx.scope.types,
             ctx.builder,
@@ -3371,7 +3364,6 @@ fn compile_split_part<'i>(
     source: &Expr<'i>,
     index: &Expr<'i>,
     part: SplitPart,
-    env: &HashMap<String, Expr<'i>>,
     stack_bindings: &StackBindings,
     types: &HashMap<String, String>,
     builder: &mut ScriptBuilder,
@@ -3381,10 +3373,32 @@ fn compile_split_part<'i>(
     script_size: Option<i64>,
     contract_constants: &HashMap<String, Expr<'i>>,
 ) -> Result<(), CompilerError> {
-    compile_expr(source, env, stack_bindings, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
+    compile_expr(
+        source,
+        contract_constants,
+        stack_bindings,
+        types,
+        builder,
+        options,
+        visiting,
+        stack_depth,
+        script_size,
+        contract_constants,
+    )?;
     match part {
         SplitPart::Left => {
-            compile_expr(index, env, stack_bindings, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
+            compile_expr(
+                index,
+                contract_constants,
+                stack_bindings,
+                types,
+                builder,
+                options,
+                visiting,
+                stack_depth,
+                script_size,
+                contract_constants,
+            )?;
             builder.add_i64(0)?;
             *stack_depth += 1;
             builder.add_op(OpSwap)?;
@@ -3395,7 +3409,18 @@ fn compile_split_part<'i>(
         SplitPart::Right => {
             builder.add_op(OpSize)?;
             *stack_depth += 1;
-            compile_expr(index, env, stack_bindings, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
+            compile_expr(
+                index,
+                contract_constants,
+                stack_bindings,
+                types,
+                builder,
+                options,
+                visiting,
+                stack_depth,
+                script_size,
+                contract_constants,
+            )?;
             builder.add_op(OpSwap)?;
             builder.add_op(OpSubstr)?;
             *stack_depth -= 2;
@@ -3404,17 +3429,12 @@ fn compile_split_part<'i>(
     }
 }
 
-fn expr_is_bytes<'i>(expr: &Expr<'i>, env: &HashMap<String, Expr<'i>>, types: &HashMap<String, String>) -> bool {
+fn expr_is_bytes<'i>(expr: &Expr<'i>, types: &HashMap<String, String>) -> bool {
     let mut visiting = HashSet::new();
-    expr_is_bytes_inner(expr, env, types, &mut visiting)
+    expr_is_bytes_inner(expr, types, &mut visiting)
 }
 
-fn expr_is_bytes_inner<'i>(
-    expr: &Expr<'i>,
-    env: &HashMap<String, Expr<'i>>,
-    types: &HashMap<String, String>,
-    visiting: &mut HashSet<String>,
-) -> bool {
+fn expr_is_bytes_inner<'i>(expr: &Expr<'i>, types: &HashMap<String, String>, visiting: &mut HashSet<String>) -> bool {
     match &expr.kind {
         ExprKind::Byte(_) => true,
         ExprKind::String(_) => true,
@@ -3448,10 +3468,10 @@ fn expr_is_bytes_inner<'i>(
         }
         ExprKind::Split { .. } => true,
         ExprKind::Binary { op: BinaryOp::Add, left, right } => {
-            expr_is_bytes_inner(left, env, types, visiting) || expr_is_bytes_inner(right, env, types, visiting)
+            expr_is_bytes_inner(left, types, visiting) || expr_is_bytes_inner(right, types, visiting)
         }
         ExprKind::IfElse { condition: _, then_expr, else_expr } => {
-            expr_is_bytes_inner(then_expr, env, types, visiting) && expr_is_bytes_inner(else_expr, env, types, visiting)
+            expr_is_bytes_inner(then_expr, types, visiting) && expr_is_bytes_inner(else_expr, types, visiting)
         }
         ExprKind::Introspection { kind, .. } => matches!(
             kind,
@@ -3482,7 +3502,6 @@ fn expr_is_bytes_inner<'i>(
 
 fn compile_length_expr<'i>(
     expr: &Expr<'i>,
-    env: &HashMap<String, Expr<'i>>,
     stack_bindings: &StackBindings,
     types: &HashMap<String, String>,
     builder: &mut ScriptBuilder,
@@ -3502,7 +3521,7 @@ fn compile_length_expr<'i>(
             if let Some(element_size) = array_element_size(type_name) {
                 compile_expr(
                     expr,
-                    env,
+                    contract_constants,
                     stack_bindings,
                     types,
                     builder,
@@ -3528,7 +3547,18 @@ fn compile_length_expr<'i>(
         *stack_depth += 1;
         return Ok(());
     }
-    compile_expr(expr, env, stack_bindings, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
+    compile_expr(
+        expr,
+        contract_constants,
+        stack_bindings,
+        types,
+        builder,
+        options,
+        visiting,
+        stack_depth,
+        script_size,
+        contract_constants,
+    )?;
     builder.add_op(OpSize)?;
     builder.add_op(OpSwap)?;
     builder.add_op(OpDrop)?;
@@ -3670,7 +3700,7 @@ fn compile_bytes_call<'i>(ctx: &mut CompileCallContext<'_, 'i>, args: &[Expr<'i>
                     return Ok(());
                 }
             }
-            if expr_is_bytes(&args[0], ctx.scope.constants, ctx.scope.types) {
+            if expr_is_bytes(&args[0], ctx.scope.types) {
                 compile_call_arg_with_context(ctx, &args[0])?;
                 return Ok(());
             }
@@ -3682,7 +3712,7 @@ fn compile_bytes_call<'i>(ctx: &mut CompileCallContext<'_, 'i>, args: &[Expr<'i>
             Ok(())
         }
         _ => {
-            if expr_is_bytes(&args[0], ctx.scope.constants, ctx.scope.types) {
+            if expr_is_bytes(&args[0], ctx.scope.types) {
                 compile_call_arg_with_context(ctx, &args[0])?;
                 Ok(())
             } else {
@@ -3703,7 +3733,6 @@ fn compile_length_call<'i>(ctx: &mut CompileCallContext<'_, 'i>, args: &[Expr<'i
     }
     compile_length_expr(
         &args[0],
-        ctx.scope.constants,
         ctx.scope.stack_bindings,
         ctx.scope.types,
         ctx.builder,
@@ -3862,7 +3891,7 @@ fn compile_concat_operand<'i>(
     contract_constants: &HashMap<String, Expr<'i>>,
 ) -> Result<(), CompilerError> {
     compile_expr(expr, constants, stack_bindings, types, builder, options, visiting, stack_depth, script_size, contract_constants)?;
-    if !expr_is_bytes(expr, constants, types) {
+    if !expr_is_bytes(expr, types) {
         builder.add_i64(1)?;
         *stack_depth += 1;
         builder.add_op(OpNum2Bin)?;
@@ -3965,18 +3994,18 @@ fn data_prefix(data_len: usize) -> Vec<u8> {
 /// Compiles a pre-resolved expression for debugger shadow evaluation.
 pub fn compile_debug_expr<'i>(
     expr: &Expr<'i>,
-    env: &HashMap<String, Expr<'i>>,
+    constants: &HashMap<String, Expr<'i>>,
     stack_bindings: &HashMap<String, i64>,
     types: &HashMap<String, String>,
 ) -> Result<(Vec<u8>, String), CompilerError> {
-    let constants = HashMap::new();
+    let empty_constants = HashMap::new();
     let mut builder = ScriptBuilder::new();
     let mut stack_depth = 0i64;
-    let type_name = infer_debug_expr_value_type(expr, env, types, &mut HashSet::new())?;
+    let type_name = infer_debug_expr_value_type(expr, constants, types, &mut HashSet::new())?;
     let stack_bindings = StackBindings::from_depths(stack_bindings.clone());
     compile_expr(
         expr,
-        env,
+        constants,
         &stack_bindings,
         types,
         &mut builder,
@@ -3984,7 +4013,7 @@ pub fn compile_debug_expr<'i>(
         &mut HashSet::new(),
         &mut stack_depth,
         None,
-        &constants,
+        &empty_constants,
     )?;
     Ok((builder.drain(), type_name))
 }
