@@ -239,6 +239,9 @@ fn validate_variable_definition_statement_shape<'i>(
         infer_fixed_array_type_from_initializer_type_check(type_ref, expr, ctx.types, ctx.constants).unwrap_or_else(|| type_ref.clone());
     let type_name = type_name_from_ref(&effective_type_ref);
     ensure_array_elements_have_known_size(&effective_type_ref, ctx.structs, &type_name)?;
+    if effective_type_ref.is_array() {
+        validate_array_initializer(expr, &effective_type_ref, ctx.types, ctx.constants)?;
+    }
     if let Some(expr) = expr {
         validate_expr_semantics(expr, ctx.env, ctx.prefer_env_for_comparison, ctx.types, ctx.structs, ctx.contract_fields)?;
         validate_expr_assignable_to_type(expr, type_ref, ctx.types, ctx.structs, ctx.constants, ctx.contract_fields).map_err(|err| {
@@ -258,6 +261,42 @@ fn validate_variable_definition_statement_shape<'i>(
         ctx.prefer_env_for_comparison.remove(name);
     }
     insert_type_binding(ctx.types, name, &effective_type_ref, ctx.structs)
+}
+
+fn validate_array_initializer<'i>(
+    expr: Option<&Expr<'i>>,
+    type_ref: &TypeRef,
+    types: &HashMap<String, String>,
+    constants: &HashMap<String, Expr<'i>>,
+) -> Result<(), CompilerError> {
+    let type_name = type_name_from_ref(type_ref);
+    match expr {
+        Some(Expr { kind: ExprKind::Identifier(other), .. }) => match types.get(other) {
+            Some(other_type) => match parse_type_ref(other_type) {
+                Ok(other_type_ref) if is_type_assignable_ref(&other_type_ref, type_ref, constants) => Ok(()),
+                Ok(_) => Err(CompilerError::Unsupported("array assignment requires compatible array types".to_string())),
+                Err(_) => Err(CompilerError::Unsupported("array assignment requires compatible array types".to_string())),
+            },
+            None => Err(CompilerError::UndefinedIdentifier(other.clone())),
+        },
+        Some(Expr { kind: ExprKind::Array(values), .. }) => {
+            if let Some(expected_size) = array_size_with_constants_ref(type_ref, constants)
+                && values.len() != expected_size
+            {
+                return Err(CompilerError::Unsupported(format!(
+                    "array size mismatch: expected {} elements for type {}, got {}",
+                    expected_size, type_name, values.len()
+                )));
+            }
+            if !array_literal_matches_type_with_env_ref(values, type_ref, types, constants) {
+                return Err(CompilerError::Unsupported(format!("array element type mismatch for type {}", type_name)));
+            }
+            Ok(())
+        }
+        Some(_) => Ok(()),
+        None if array_size_with_constants_ref(type_ref, constants).is_none() => Ok(()),
+        None => Err(CompilerError::Unsupported("variable definition requires initializer".to_string())),
+    }
 }
 
 fn validate_tuple_assignment_statement_shape<'i>(

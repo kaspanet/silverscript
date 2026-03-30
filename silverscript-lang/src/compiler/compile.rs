@@ -1281,7 +1281,6 @@ fn compile_variable_definition_statement<'i>(
 
     let is_array = is_array_type(&effective_type_name);
     if is_array {
-        validate_array_initializer(expr, &effective_type_name, ctx.types, ctx.contract_constants)?;
         let initial = array_initializer_expr(expr, &effective_type_name, ctx.types, ctx.contract_constants)?;
         if ctx.assigned_names.contains(name) {
             return compile_runtime_variable_definition(ctx, name, effective_type_name, initial);
@@ -1294,38 +1293,6 @@ fn compile_variable_definition_statement<'i>(
     let expr = expr.cloned().ok_or_else(|| CompilerError::Unsupported("variable definition requires initializer".to_string()))?;
     let expr = coerce_expr_for_declared_scalar_type(expr, &effective_type_name);
     compile_runtime_variable_definition(ctx, name, effective_type_name, expr)
-}
-
-fn validate_array_initializer<'i>(
-    expr: Option<&Expr<'i>>,
-    type_name: &str,
-    types: &HashMap<String, String>,
-    contract_constants: &HashMap<String, Expr<'i>>,
-) -> Result<(), CompilerError> {
-    match expr {
-        Some(Expr { kind: ExprKind::Identifier(other), .. }) => match types.get(other) {
-            Some(other_type) if is_type_assignable(other_type, type_name, contract_constants) => Ok(()),
-            Some(_) => Err(CompilerError::Unsupported("array assignment requires compatible array types".to_string())),
-            None => Err(CompilerError::UndefinedIdentifier(other.clone())),
-        },
-        Some(Expr { kind: ExprKind::Array(values), .. }) => {
-            if let Some(expected_size) = array_size_with_constants(type_name, contract_constants)
-                && values.len() != expected_size
-            {
-                return Err(CompilerError::Unsupported(format!(
-                    "array size mismatch: expected {} elements for type {}, got {}",
-                    expected_size, type_name, values.len()
-                )));
-            }
-            if !array_literal_matches_type_with_env(values, type_name, types, contract_constants) {
-                return Err(CompilerError::Unsupported(format!("array element type mismatch for type {}", type_name)));
-            }
-            Ok(())
-        }
-        Some(_) => Ok(()),
-        None if array_size_with_constants(type_name, contract_constants).is_none() => Ok(()),
-        None => Err(CompilerError::Unsupported("variable definition requires initializer".to_string())),
-    }
 }
 
 fn array_initializer_expr<'i>(
