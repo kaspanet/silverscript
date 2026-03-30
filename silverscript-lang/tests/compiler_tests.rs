@@ -8482,6 +8482,50 @@ fn rejects_using_branch_local_outside_its_scope() {
 }
 
 #[test]
+fn rejects_using_block_local_outside_its_scope() {
+    let source = r#"
+        contract BlockScope() {
+            entrypoint function main() {
+                {
+                    int x = 1;
+                    require(x == 1);
+                }
+                require(x > 0);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("block-local x should not be visible after the block");
+    assert!(err.to_string().contains("undefined identifier"), "unexpected error: {err}");
+}
+
+#[test]
+fn runs_standalone_block_and_preserves_outer_scope() {
+    let source = r#"
+        contract BlockRuntime() {
+            entrypoint function main(int x) {
+                int y = x + 1;
+                {
+                    int z = y + 1;
+                    require(z == x + 2);
+                }
+                require(y == x + 1);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+
+    let sigscript_ok = compiled.build_sig_script("main", vec![Expr::int(5)]).expect("sigscript builds");
+    let result_ok = run_script_with_sigscript(compiled.script.clone(), sigscript_ok);
+    assert!(result_ok.is_ok(), "standalone block should execute successfully: {}", result_ok.unwrap_err());
+
+    let sigscript_err = compiled.build_sig_script("main", vec![Expr::int(8)]).expect("sigscript builds");
+    let result_err = run_script_with_sigscript(compiled.script, sigscript_err);
+    assert!(result_err.is_ok(), "outer scope should remain valid after the block: {}", result_err.unwrap_err());
+}
+
+#[test]
 fn inline_nested_argument_expression_is_stored_once_and_reused() {
     let source = r#"
         contract InlineCallRepeat() {

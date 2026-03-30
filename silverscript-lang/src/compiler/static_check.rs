@@ -203,6 +203,7 @@ fn validate_statement_shapes<'i>(
             Statement::TimeOp { expr, .. } => validate_time_op_statement_shape(&mut ctx, expr)?,
             Statement::Console { args, .. } => validate_console_statement_shape(&mut ctx, args)?,
             Statement::Assign { name, expr, .. } => validate_assign_statement_shape(&mut ctx, name, expr)?,
+            Statement::Block { body, .. } => validate_block_statement_shape(&mut ctx, body)?,
             Statement::If { then_branch, else_branch, .. } => {
                 validate_if_statement_shape(&mut ctx, stmt, then_branch, else_branch.as_deref())?
             }
@@ -514,6 +515,28 @@ fn validate_if_statement_shape<'i>(
         )?;
     }
     Ok(())
+}
+
+fn validate_block_statement_shape<'i>(
+    ctx: &mut ValidateStatementShapesContext<'_, 'i>,
+    body: &[Statement<'i>],
+) -> Result<(), CompilerError> {
+    let mut block_types = ctx.types.clone();
+    let mut block_env = ctx.env.clone();
+    let mut block_prefer_env = ctx.prefer_env_for_comparison.clone();
+    validate_statement_shapes(
+        body,
+        &mut block_env,
+        &mut block_prefer_env,
+        &mut block_types,
+        ctx.return_types,
+        ctx.structs,
+        ctx.constants,
+        ctx.functions,
+        ctx.function_order,
+        ctx.function_index,
+        ctx.contract_fields,
+    )
 }
 
 fn validate_for_statement_shape<'i>(
@@ -1219,6 +1242,7 @@ fn fixed_type_size_ref(type_ref: &TypeRef, structs: &StructRegistry) -> Option<i
 fn statement_contains_return(stmt: &Statement<'_>) -> bool {
     match stmt {
         Statement::Return { .. } => true,
+        Statement::Block { body, .. } => body.iter().any(statement_contains_return),
         Statement::If { then_branch, else_branch, .. } => {
             then_branch.iter().any(statement_contains_return)
                 || else_branch.as_ref().is_some_and(|branch| branch.iter().any(statement_contains_return))

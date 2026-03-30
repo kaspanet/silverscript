@@ -163,6 +163,11 @@ fn lower_statement<'i>(
                 name_span: *name_span,
             })
         }
+        Statement::Block { body, span } => {
+            let mut block_types = types.clone();
+            let lowered_body = lower_block(body, &mut block_types, constants)?;
+            Ok(Statement::Block { body: lowered_body, span: *span })
+        }
         Statement::If { condition, then_branch, else_branch, span, then_span, else_span } => {
             let mut then_types = types.clone();
             let lowered_then = lower_block(then_branch, &mut then_types, constants)?;

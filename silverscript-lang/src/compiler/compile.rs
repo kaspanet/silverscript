@@ -368,6 +368,7 @@ fn statement_uses_script_size(stmt: &Statement<'_>) -> bool {
         Statement::Assign { expr, .. } => expr_uses_script_size(expr),
         Statement::TimeOp { expr, .. } => expr_uses_script_size(expr),
         Statement::Require { expr, .. } => expr_uses_script_size(expr),
+        Statement::Block { body, .. } => body.iter().any(statement_uses_script_size),
         Statement::If { condition, then_branch, else_branch, .. } => {
             expr_uses_script_size(condition)
                 || then_branch.iter().any(statement_uses_script_size)
@@ -630,6 +631,7 @@ fn array_element_size_ref(type_ref: &TypeRef) -> Option<i64> {
 fn contains_return(stmt: &Statement<'_>) -> bool {
     match stmt {
         Statement::Return { .. } => true,
+        Statement::Block { body, .. } => body.iter().any(contains_return),
         Statement::If { then_branch, else_branch, .. } => {
             then_branch.iter().any(contains_return) || else_branch.as_ref().is_some_and(|branch| branch.iter().any(contains_return))
         }
@@ -668,6 +670,11 @@ fn collect_statement_identifier_uses<'i>(stmt: &Statement<'i>, uses: &mut HashMa
         | Statement::TimeOp { expr, .. }
         | Statement::Require { expr, .. }
         | Statement::StructDestructure { expr, .. } => collect_expr_identifier_uses(expr, uses),
+        Statement::Block { body, .. } => {
+            for stmt in body {
+                collect_statement_identifier_uses(stmt, uses);
+            }
+        }
         Statement::ArrayPush { expr, .. } => collect_expr_identifier_uses(expr, uses),
         Statement::FunctionCall { args, .. }
         | Statement::FunctionCallAssign { args, .. }
@@ -762,6 +769,9 @@ fn collect_assigned_names_into<'i>(statements: &[Statement<'i>], assigned: &mut 
         match stmt {
             Statement::Assign { name, .. } | Statement::ArrayPush { name, .. } => {
                 assigned.insert(name.clone());
+            }
+            Statement::Block { body, .. } => {
+                collect_assigned_names_into(body, assigned);
             }
             Statement::If { then_branch, else_branch, .. } => {
                 collect_assigned_names_into(then_branch, assigned);
@@ -1221,6 +1231,7 @@ fn compile_statement<'i>(ctx: &mut CompileStatementContext<'_, 'i>, stmt: &State
         Statement::ArrayPush { name, expr, .. } => compile_array_push_statement(ctx, name, expr),
         Statement::Require { expr, .. } => compile_require_statement(ctx, expr),
         Statement::TimeOp { tx_var, expr, .. } => compile_time_branch_statement(ctx, tx_var, expr),
+        Statement::Block { body, .. } => compile_block_statement(ctx, body).map(|_| Vec::new()),
         Statement::If { condition, then_branch, else_branch, .. } => {
             compile_if_statement(ctx, condition, then_branch, else_branch.as_deref()).map(|_| Vec::new())
         }
@@ -2691,6 +2702,31 @@ fn compile_time_op_statement<'i>(
     }
 
     Ok(())
+}
+
+fn compile_block_statement<'i>(
+    ctx: &mut CompileStatementContext<'_, 'i>,
+    body: &[Statement<'i>],
+) -> Result<(), CompilerError> {
+    compile_block(
+        body,
+        ctx.env,
+        ctx.assigned_names,
+        ctx.identifier_uses,
+        ctx.types,
+        ctx.stack_bindings,
+        ctx.builder,
+        ctx.options,
+        ctx.contract_fields,
+        ctx.contract_field_prefix_len,
+        ctx.contract_constants,
+        ctx.structs,
+        ctx.functions,
+        ctx.function_order,
+        ctx.function_index,
+        ctx.script_size,
+        true,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]

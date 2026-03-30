@@ -150,6 +150,11 @@ impl<'i> Inliner<'i> {
                 span: *span,
                 name_span: *name_span,
             }],
+            Statement::Block { body, span } => {
+                let mut block_scope = scope.clone();
+                let lowered_body = self.lower_block(body, &mut block_scope, function_index)?;
+                vec![Statement::Block { body: lowered_body, span: *span }]
+            }
             Statement::FunctionCall { name, args, span, name_span } => {
                 if let Some(function) = self.inline_target(name) {
                     self.inline_call(&function, args, None, scope, function_index, *span)?

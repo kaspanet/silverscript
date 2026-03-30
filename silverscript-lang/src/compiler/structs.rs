@@ -990,6 +990,20 @@ fn lower_statements<'i>(
     let mut lowered = Vec::new();
     for stmt in statements {
         match stmt {
+            Statement::Block { body, span } => {
+                let mut block_scope = scope.clone();
+                let lowered_body = lower_statements(
+                    body,
+                    &mut block_scope,
+                    functions,
+                    return_types,
+                    structs,
+                    contract_fields,
+                    contract_constants,
+                    contract_field_prefix_len,
+                )?;
+                lowered.push(Statement::Block { body: lowered_body, span: *span });
+            }
             Statement::VariableDefinition { type_ref, modifiers, name, expr, span, type_span, modifier_spans, name_span } => {
                 scope.vars.insert(name.clone(), type_ref.clone());
                 if struct_name_from_type_ref(type_ref, structs).is_some() || struct_array_name_from_type_ref(type_ref, structs).is_some() {

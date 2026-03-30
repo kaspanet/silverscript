@@ -47,6 +47,10 @@ impl<'a, 'i> ForLowerer<'a, 'i> {
 
     fn lower_statement(&mut self, statement: &Statement<'i>) -> Result<Vec<Statement<'i>>, CompilerError> {
         match statement {
+            Statement::Block { body, span } => Ok(vec![Statement::Block {
+                body: self.lower_block(body)?,
+                span: *span,
+            }]),
             Statement::If { condition, then_branch, else_branch, span, then_span, else_span } => Ok(vec![Statement::If {
                 condition: condition.clone(),
                 then_branch: self.lower_block(then_branch)?,
@@ -176,14 +180,7 @@ impl<'a, 'i> ForLowerer<'a, 'i> {
                 name_span: ident_span,
             }];
             then_branch.extend(lowered_body.clone());
-            lowered.push(Statement::If {
-                condition: Expr::bool(true),
-                then_branch,
-                else_branch: None,
-                span,
-                then_span: span,
-                else_span: None,
-            });
+            lowered.push(Statement::Block { body: then_branch, span });
         }
 
         Ok(lowered)
