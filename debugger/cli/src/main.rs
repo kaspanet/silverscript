@@ -55,72 +55,48 @@ struct CliArgs {
     delegate: bool,
 }
 
-fn compile_script_for_ctor_args(
-    source: &str,
-    parsed_contract: &ContractAst<'_>,
-    raw_ctor_args: &[String],
-    cache: &mut HashMap<Vec<String>, Vec<u8>>,
-) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    if let Some(script) = cache.get(raw_ctor_args) {
-        return Ok(script.clone());
-    }
-    let compiled = compile_contract_for_ctor_args(source, parsed_contract, raw_ctor_args, CompileOptions::default())?;
-    cache.insert(raw_ctor_args.to_vec(), compiled.script.clone());
-    Ok(compiled.script)
-}
-
-fn compile_contract_for_ctor_args<'i>(
+fn compiled_contract_for_ctor_args<'a, 'i>(
     source: &'i str,
     parsed_contract: &ContractAst<'_>,
     raw_ctor_args: &[String],
-    compile_opts: CompileOptions,
-) -> Result<CompiledContract<'i>, Box<dyn std::error::Error>> {
-    let ctor_args = parse_ctor_args(parsed_contract, raw_ctor_args)?;
-    Ok(compile_contract(source, &ctor_args, compile_opts)?)
-}
-
-fn encode_state_script_for_ctor_args(
-    source: &str,
-    parsed_contract: &ContractAst<'_>,
-    raw_ctor_args: &[String],
-    raw_state: &str,
-) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    let compiled = compile_contract_for_ctor_args(
-        source,
-        parsed_contract,
-        raw_ctor_args,
-        CompileOptions { record_debug_infos: true, ..Default::default() },
-    )?;
-    let state = parse_state_value(parsed_contract, raw_state)?;
-    Ok(compiled.encode_state(&state)?)
-}
-
-fn resolve_state_for_ctor_args(
-    source: &str,
-    parsed_contract: &ContractAst<'_>,
-    raw_ctor_args: &[String],
-    cache: &mut HashMap<Vec<String>, debugger_session::session::DebugValue>,
-) -> Result<debugger_session::session::DebugValue, Box<dyn std::error::Error>> {
-    if let Some(value) = cache.get(raw_ctor_args) {
-        return Ok(value.clone());
+    cache: &'a mut HashMap<Vec<String>, CompiledContract<'i>>,
+) -> Result<&'a CompiledContract<'i>, Box<dyn std::error::Error>> {
+    if !cache.contains_key(raw_ctor_args) {
+        let ctor_args = parse_ctor_args(parsed_contract, raw_ctor_args)?;
+        let compiled = compile_contract(source, &ctor_args, CompileOptions { record_debug_infos: true, ..Default::default() })?;
+        cache.insert(raw_ctor_args.to_vec(), compiled);
     }
+    Ok(cache.get(raw_ctor_args).expect("compiled contract cache populated"))
+}
 
-    let compiled = compile_contract_for_ctor_args(
-        source,
-        parsed_contract,
-        raw_ctor_args,
-        CompileOptions { record_debug_infos: true, ..Default::default() },
-    )?;
-    let debug_info = compiled
-        .debug_info
-        .as_ref()
-        .ok_or_else(|| "state resolution requires debug-enabled compilation".to_string())
-        .map_err(|err| -> Box<dyn std::error::Error> { err.into() })?;
+fn resolve_locking_script_for_ctor_args<'i>(
+    source: &'i str,
+    parsed_contract: &ContractAst<'_>,
+    raw_ctor_args: &[String],
+    raw_state: Option<&str>,
+    cache: &mut HashMap<Vec<String>, CompiledContract<'i>>,
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let compiled = compiled_contract_for_ctor_args(source, parsed_contract, raw_ctor_args, cache)?;
+    if let Some(raw_state) = raw_state {
+        let state = parse_state_value(parsed_contract, raw_state)?;
+        Ok(compiled.encode_state(&state)?)
+    } else {
+        Ok(compiled.script.clone())
+    }
+}
+
+fn resolve_state_for_ctor_args<'i>(
+    source: &'i str,
+    parsed_contract: &ContractAst<'_>,
+    raw_ctor_args: &[String],
+    cache: &mut HashMap<Vec<String>, CompiledContract<'i>>,
+) -> Result<debugger_session::session::DebugValue, Box<dyn std::error::Error>> {
+    let compiled = compiled_contract_for_ctor_args(source, parsed_contract, raw_ctor_args, cache)?;
+    let debug_info =
+        compiled.debug_info.as_ref().ok_or_else(|| std::io::Error::other("state resolution requires debug-enabled compilation"))?;
     let expr = resolve_contract_state_expr(&compiled.ast, &debug_info.constructor_args, &debug_info.constants)
         .map_err(|err| -> Box<dyn std::error::Error> { err.into() })?;
-    let value = expr_to_debug_value(&expr).map_err(|err| -> Box<dyn std::error::Error> { err.into() })?;
-    cache.insert(raw_ctor_args.to_vec(), value.clone());
-    Ok(value)
+    expr_to_debug_value(&expr).map_err(|err| -> Box<dyn std::error::Error> { err.into() })
 }
 
 fn resolve_state_from_raw(
@@ -667,20 +643,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let compile_opts = CompileOptions { record_debug_infos: true, ..Default::default() };
     let compiled = compile_contract(&source, &ctor_args, compile_opts)?;
     let debug_info = compiled.debug_info.clone();
-    let mut ctor_script_cache = HashMap::<Vec<String>, Vec<u8>>::new();
-    let mut ctor_state_cache = HashMap::<Vec<String>, debugger_session::session::DebugValue>::new();
+    let mut ctor_contract_cache = HashMap::<Vec<String>, CompiledContract<'_>>::new();
     let mut explicit_state_cache = HashMap::<String, debugger_session::session::DebugValue>::new();
-    ctor_script_cache.insert(raw_constructor_args.clone(), compiled.script.clone());
-    if !parsed_contract.fields.is_empty() {
-        let root_state = if let Some(debug_info) = debug_info.as_ref() {
-            let expr = resolve_contract_state_expr(&compiled.ast, &debug_info.constructor_args, &debug_info.constants)
-                .map_err(|err| -> Box<dyn std::error::Error> { err.into() })?;
-            expr_to_debug_value(&expr).map_err(|err| -> Box<dyn std::error::Error> { err.into() })?
-        } else {
-            resolve_state_for_ctor_args(&source, &parsed_contract, &raw_constructor_args, &mut ctor_state_cache)?
-        };
-        ctor_state_cache.insert(raw_constructor_args.clone(), root_state);
-    }
 
     let selected_name = if selected_name.is_empty() {
         compiled.abi.first().map(|entry| entry.name.clone()).ok_or("contract has no functions")?
@@ -770,13 +734,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let input_covenant_state = if let Some(raw_state) = input.state.as_deref() {
             Some(resolve_state_from_raw(&parsed_contract, raw_state, &mut explicit_state_cache)?)
         } else {
-            Some(resolve_state_for_ctor_args(&source, &parsed_contract, &input_constructor_args, &mut ctor_state_cache)?)
+            Some(resolve_state_for_ctor_args(&source, &parsed_contract, &input_constructor_args, &mut ctor_contract_cache)?)
         };
-        let redeem_script = if let Some(raw_state) = input.state.as_deref() {
-            encode_state_script_for_ctor_args(&source, &parsed_contract, &input_constructor_args, raw_state)?
-        } else {
-            compile_script_for_ctor_args(&source, &parsed_contract, &input_constructor_args, &mut ctor_script_cache)?
-        };
+        let redeem_script = resolve_locking_script_for_ctor_args(
+            &source,
+            &parsed_contract,
+            &input_constructor_args,
+            input.state.as_deref(),
+            &mut ctor_contract_cache,
+        )?;
 
         let signature_script = if let Some(raw_sig) = input.signature_script_hex.as_deref() {
             parse_hex_bytes(raw_sig)?
@@ -812,11 +778,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ScriptPublicKey::new(0, p2pk_script.into())
         } else {
             let output_constructor_args = output.constructor_args.clone().unwrap_or_else(|| raw_constructor_args.clone());
-            let output_script = if let Some(raw_state) = output.state.as_deref() {
-                encode_state_script_for_ctor_args(&source, &parsed_contract, &output_constructor_args, raw_state)?
-            } else {
-                compile_script_for_ctor_args(&source, &parsed_contract, &output_constructor_args, &mut ctor_script_cache)?
-            };
+            let output_script = resolve_locking_script_for_ctor_args(
+                &source,
+                &parsed_contract,
+                &output_constructor_args,
+                output.state.as_deref(),
+                &mut ctor_contract_cache,
+            )?;
             pay_to_script_hash_script(&output_script)
         };
 

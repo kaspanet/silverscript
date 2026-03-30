@@ -60,6 +60,7 @@ pub struct TestTxInputScenario {
     pub sequence: u64,
     #[serde(default = "default_sig_op_count")]
     pub sig_op_count: u8,
+    #[serde(default)]
     pub utxo_value: u64,
     #[serde(default)]
     pub covenant_id: Option<Value>,
