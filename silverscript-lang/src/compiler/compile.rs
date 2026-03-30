@@ -1303,7 +1303,7 @@ fn array_initializer_expr<'i>(
 ) -> Result<Expr<'i>, CompilerError> {
     match expr {
         Some(Expr { kind: ExprKind::Identifier(other), .. }) => match types.get(other) {
-        Some(other_type) if is_type_assignable(other_type, type_name, contract_constants) => {
+            Some(other_type) if is_type_assignable(other_type, type_name, contract_constants) => {
                 Ok(Expr::new(ExprKind::Identifier(other.clone()), span::Span::default()))
             }
             Some(_) => Err(CompilerError::Unsupported("array assignment requires compatible array types".to_string())),
@@ -1364,11 +1364,8 @@ fn compile_runtime_variable_definition<'i>(
             ctx.script_size,
             ctx.contract_constants,
         )?;
-        let stored_expr = if is_array_type(&type_name) {
-            Expr::new(ExprKind::Identifier(name.to_string()), span::Span::default())
-        } else {
-            expr
-        };
+        let stored_expr =
+            if is_array_type(&type_name) { Expr::new(ExprKind::Identifier(name.to_string()), span::Span::default()) } else { expr };
         ctx.env.insert(name.to_string(), stored_expr);
         ctx.stack_bindings.push_binding(name);
         Ok(vec![name.to_string()])
@@ -1565,20 +1562,11 @@ fn compile_assign_statement<'i>(
                 ctx.contract_constants,
             )?;
             ctx.stack_bindings.emit_update_stack_for_rebinding(name, ctx.builder)?;
-            if !is_array_type(type_name) {
-                let updated =
-                    if let Some(previous) = ctx.env.get(name) { replace_identifier(&lowered_expr, name, previous) } else { lowered_expr };
-                let resolved = resolve_expr_for_runtime(updated, ctx.env, ctx.types, &mut HashSet::new())?;
-                ctx.env.insert(name.to_string(), resolved);
-            }
             return Ok(Vec::new());
         }
 
         if is_array_type(type_name) {
-            return Err(CompilerError::Unsupported(format!(
-                "array variable '{}' must be stack-bound before reassignment",
-                name
-            )));
+            return Err(CompilerError::Unsupported(format!("array variable '{}' must be stack-bound before reassignment", name)));
         }
 
         let lowered_expr = coerce_expr_for_declared_scalar_type(expr.clone(), type_name);
@@ -3045,9 +3033,8 @@ fn resolve_return_expr_for_runtime<'i>(
     types: &HashMap<String, String>,
     visiting: &mut HashSet<String>,
 ) -> Result<Expr<'i>, CompilerError> {
-    let preserve_identifier = |name: &str| {
-        stack_bindings.contains(name) || types.get(name).is_some_and(|type_name| is_array_type(type_name))
-    };
+    let preserve_identifier =
+        |name: &str| stack_bindings.contains(name) || types.get(name).is_some_and(|type_name| is_array_type(type_name));
     resolve_expr_with_policy(expr, env, visiting, &preserve_identifier)
 }
 
