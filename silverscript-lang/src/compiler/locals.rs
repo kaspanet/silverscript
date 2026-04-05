@@ -3,30 +3,52 @@ use std::collections::{HashMap, HashSet};
 use crate::ast::{ContractAst, Expr, ExprKind, FunctionAst, StateFieldExpr, Statement, TypeBase, TypeRef};
 
 use super::CompilerError;
+use super::debug_recording::DebugRecorder;
+use super::inline_functions::INLINE_LOCAL_PREFIX;
 
-pub(super) fn lower_local_aliases<'i>(contract: &ContractAst<'i>) -> Result<ContractAst<'i>, CompilerError> {
-    let functions = contract.functions.iter().map(lower_function_local_aliases).collect::<Result<Vec<_>, _>>()?;
+const STRUCT_LOCAL_PREFIX: &str = "__struct_";
+
+pub(super) fn lower_local_aliases<'i>(
+    contract: &ContractAst<'i>,
+    debug_recorder: &mut DebugRecorder<'i>,
+) -> Result<ContractAst<'i>, CompilerError> {
+    let preserve_debug_aliases = debug_recorder.is_enabled();
+    let mut functions = Vec::with_capacity(contract.functions.len());
+    for function in &contract.functions {
+        functions.push(lower_function_local_aliases(function, preserve_debug_aliases)?);
+    }
 
     Ok(ContractAst { functions, ..contract.clone() })
 }
 
-fn lower_function_local_aliases<'i>(function: &FunctionAst<'i>) -> Result<FunctionAst<'i>, CompilerError> {
+fn lower_function_local_aliases<'i>(
+    function: &FunctionAst<'i>,
+    preserve_debug_aliases: bool,
+) -> Result<FunctionAst<'i>, CompilerError> {
     let assigned_names = collect_assigned_names(&function.body);
     let identifier_uses = collect_identifier_uses(&function.body);
-    let body = lower_statements(&function.body, &assigned_names, &identifier_uses, &HashMap::new())?;
+    let body = lower_statements(&function.body, &HashMap::new(), &assigned_names, &identifier_uses, preserve_debug_aliases)?;
     Ok(FunctionAst { body, ..function.clone() })
 }
 
 fn lower_statements<'i>(
     statements: &[Statement<'i>],
+    aliases: &HashMap<String, Expr<'i>>,
     assigned_names: &HashSet<String>,
     identifier_uses: &HashMap<String, usize>,
-    aliases: &HashMap<String, Expr<'i>>,
+    preserve_debug_aliases: bool,
 ) -> Result<Vec<Statement<'i>>, CompilerError> {
     let mut lowered = Vec::with_capacity(statements.len());
     let mut local_aliases = aliases.clone();
 
     for stmt in statements {
+        let elide_statement = match stmt {
+            Statement::VariableDefinition { name, expr: Some(expr), .. } => {
+                should_elide_local_alias(name, expr, assigned_names, identifier_uses, preserve_debug_aliases)
+            }
+            _ => false,
+        };
+
         match stmt {
             Statement::VariableDefinition {
                 type_ref,
@@ -37,10 +59,7 @@ fn lower_statements<'i>(
                 type_span,
                 modifier_spans,
                 name_span,
-            } if !assigned_names.contains(name)
-                && identifier_uses.get(name).copied().unwrap_or(0) <= 1
-                && !expr_references_any(expr, assigned_names) =>
-            {
+            } if elide_statement => {
                 let lowered_expr = coerce_expr_for_declared_scalar_type(substitute_expr(expr, &local_aliases)?, type_ref);
                 local_aliases.insert(name.clone(), lowered_expr);
                 let _ = (type_ref, modifiers, span, type_span, modifier_spans, name_span);
@@ -158,15 +177,15 @@ fn lower_statements<'i>(
                 message_span: *message_span,
             }),
             Statement::Block { body, span } => lowered.push(Statement::Block {
-                body: lower_statements(body, assigned_names, identifier_uses, &local_aliases)?,
+                body: lower_statements(body, &local_aliases, assigned_names, identifier_uses, preserve_debug_aliases)?,
                 span: *span,
             }),
             Statement::If { condition, then_branch, else_branch, span, then_span, else_span } => lowered.push(Statement::If {
                 condition: substitute_expr(condition, &local_aliases)?,
-                then_branch: lower_statements(then_branch, assigned_names, identifier_uses, &local_aliases)?,
+                then_branch: lower_statements(then_branch, &local_aliases, assigned_names, identifier_uses, preserve_debug_aliases)?,
                 else_branch: else_branch
                     .as_ref()
-                    .map(|branch| lower_statements(branch, assigned_names, identifier_uses, &local_aliases))
+                    .map(|branch| lower_statements(branch, &local_aliases, assigned_names, identifier_uses, preserve_debug_aliases))
                     .transpose()?,
                 span: *span,
                 then_span: *then_span,
@@ -179,7 +198,7 @@ fn lower_statements<'i>(
                     start: substitute_expr(start, &local_aliases)?,
                     end: substitute_expr(end, &local_aliases)?,
                     max_iterations: substitute_expr(max_iterations, &local_aliases)?,
-                    body: lower_statements(body, assigned_names, identifier_uses, &local_aliases)?,
+                    body: lower_statements(body, &local_aliases, assigned_names, identifier_uses, preserve_debug_aliases)?,
                     span: *span,
                     ident_span: *ident_span,
                     body_span: *body_span,
@@ -197,6 +216,31 @@ fn lower_statements<'i>(
     }
 
     Ok(lowered)
+}
+
+fn should_elide_local_alias(
+    name: &str,
+    expr: &Expr<'_>,
+    assigned_names: &HashSet<String>,
+    identifier_uses: &HashMap<String, usize>,
+    preserve_debug_aliases: bool,
+) -> bool {
+    if preserve_debug_aliases && !name.starts_with("__") {
+        return false;
+    }
+
+    if preserve_debug_aliases
+        && (name.starts_with(INLINE_LOCAL_PREFIX)
+            || name.starts_with(STRUCT_LOCAL_PREFIX)
+            || expr_references_prefix(expr, INLINE_LOCAL_PREFIX)
+            || expr_references_prefix(expr, STRUCT_LOCAL_PREFIX))
+    {
+        return false;
+    }
+
+    !assigned_names.contains(name)
+        && identifier_uses.get(name).copied().unwrap_or(0) <= 1
+        && !expr_references_any(expr, assigned_names)
 }
 
 fn coerce_expr_for_declared_scalar_type<'i>(expr: Expr<'i>, type_ref: &TypeRef) -> Expr<'i> {
@@ -321,6 +365,37 @@ fn collect_identifier_uses<'i>(statements: &[Statement<'i>]) -> HashMap<String, 
 
 fn bump_identifier_use(uses: &mut HashMap<String, usize>, name: &str) {
     *uses.entry(name.to_string()).or_insert(0) += 1;
+}
+
+fn expr_references_prefix(expr: &Expr<'_>, prefix: &str) -> bool {
+    match &expr.kind {
+        ExprKind::Identifier(name) => name.starts_with(prefix),
+        ExprKind::Unary { expr, .. } => expr_references_prefix(expr, prefix),
+        ExprKind::Binary { left, right, .. } => expr_references_prefix(left, prefix) || expr_references_prefix(right, prefix),
+        ExprKind::IfElse { condition, then_expr, else_expr } => {
+            expr_references_prefix(condition, prefix)
+                || expr_references_prefix(then_expr, prefix)
+                || expr_references_prefix(else_expr, prefix)
+        }
+        ExprKind::Array(values) => values.iter().any(|value| expr_references_prefix(value, prefix)),
+        ExprKind::StateObject(fields) => fields.iter().any(|field| expr_references_prefix(&field.expr, prefix)),
+        ExprKind::Call { args, .. } | ExprKind::New { args, .. } => args.iter().any(|arg| expr_references_prefix(arg, prefix)),
+        ExprKind::Split { source, index, .. } | ExprKind::ArrayIndex { source, index } => {
+            expr_references_prefix(source, prefix) || expr_references_prefix(index, prefix)
+        }
+        ExprKind::Slice { source, start, end, .. } => {
+            expr_references_prefix(source, prefix) || expr_references_prefix(start, prefix) || expr_references_prefix(end, prefix)
+        }
+        ExprKind::Introspection { index, .. } => expr_references_prefix(index, prefix),
+        ExprKind::UnarySuffix { source, .. } | ExprKind::FieldAccess { source, .. } => expr_references_prefix(source, prefix),
+        ExprKind::Int(_)
+        | ExprKind::DateLiteral(_)
+        | ExprKind::Bool(_)
+        | ExprKind::Byte(_)
+        | ExprKind::String(_)
+        | ExprKind::Nullary(_)
+        | ExprKind::NumberWithUnit { .. } => false,
+    }
 }
 
 fn collect_statement_identifier_uses<'i>(stmt: &Statement<'i>, uses: &mut HashMap<String, usize>) {

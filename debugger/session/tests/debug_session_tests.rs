@@ -306,7 +306,7 @@ contract FieldMath(int c) {
 }
 
 #[test]
-fn debug_session_exposes_virtual_steps() -> Result<(), Box<dyn Error>> {
+fn debug_session_exposes_concrete_source_steps() -> Result<(), Box<dyn Error>> {
     let source = r#"pragma silverscript ^0.1.0;
 
 contract Virtuals() {
@@ -373,7 +373,7 @@ contract OpcodeCursor() {
 }
 
 #[test]
-fn debug_session_breakpoint_hits_virtual_line() -> Result<(), Box<dyn Error>> {
+fn debug_session_breakpoint_hits_source_line() -> Result<(), Box<dyn Error>> {
     let source = r#"pragma silverscript ^0.1.0;
 
 contract VirtualBp() {
@@ -387,10 +387,10 @@ contract VirtualBp() {
 
     with_session_for_source(source, vec![], "main", vec![Expr::int(3)], |session| {
         session.run_to_first_executed_statement()?;
-        assert!(session.add_breakpoint(6), "line with virtual assignment should be a valid breakpoint");
+        assert!(session.add_breakpoint(6), "line with assignment should be a valid breakpoint");
         let hit = session.continue_to_breakpoint()?;
-        assert!(hit.is_some(), "expected breakpoint on virtual line");
-        let span = session.current_span().ok_or("missing span at virtual breakpoint")?;
+        assert!(hit.is_some(), "expected breakpoint on assignment line");
+        let span = session.current_span().ok_or("missing span at assignment breakpoint")?;
         assert_eq!(span.line, 6);
         Ok(())
     })
@@ -458,18 +458,12 @@ contract InlineCalls() {
 
     with_session_for_source(source, vec![], "main", vec![Expr::int(3)], |session| {
         session.run_to_first_executed_statement()?;
-        let start = session.current_span().ok_or("missing start span")?;
-        assert_eq!(start.line, 10);
+        let start = session.current_step().ok_or("missing start step")?;
+        assert_eq!(start.span.line, 10);
 
         session.step_over()?;
-        let mut after_over = session.current_span().ok_or("missing span after step_over")?;
-        if after_over.line == 10 {
-            // In simplified inline stepping mode we may stop once on the call-site
-            // boundary before advancing past the call.
-            session.step_over()?;
-            after_over = session.current_span().ok_or("missing span after second step_over")?;
-        }
-        assert_eq!(after_over.line, 11, "step_over should eventually move past inline call");
+        let after_over = session.current_step().ok_or("missing step after step_over")?;
+        assert_eq!(after_over.span.line, 11, "step_over should move past inline call");
         let b = session.variable_by_name("b")?;
         assert_eq!(format_value(&b.type_name, &b.value), "4", "inline return should resolve against caller params");
         Ok(())
@@ -488,11 +482,7 @@ contract InlineCalls() {
         assert_eq!(session.call_stack(), vec!["addOne".to_string()]);
 
         session.step_out()?;
-        let mut after_out = session.current_span().ok_or("missing span after step_out")?;
-        if after_out.line == 10 {
-            session.step_over()?;
-            after_out = session.current_span().ok_or("missing span after post-step_out step_over")?;
-        }
+        let after_out = session.current_span().ok_or("missing span after step_out")?;
         assert_eq!(after_out.line, 11, "step_out should return to caller after inline call");
         assert!(session.call_stack().is_empty(), "call stack should unwind after step_out");
         Ok(())
@@ -596,7 +586,7 @@ contract NestedNoArgs() {
             lines.push(session.current_span().ok_or("missing span while stepping")?.line);
         }
 
-        assert_eq!(lines, vec![15, 10, 5, 6, 10, 15], "nested inline stepping order regressed");
+        assert_eq!(lines, vec![15, 10, 5, 6, 10, 11], "nested inline stepping order regressed");
         Ok(())
     })
 }
@@ -647,7 +637,9 @@ contract DebugPoC(int const) {
             lines.push(session.current_span().ok_or("missing span after step_into")?.line);
         }
 
-        assert!(lines.starts_with(&[16, 17, 10, 11, 12, 17, 18, 5]), "unexpected inline stepping prefix: {:?}", lines);
+        assert!(lines.starts_with(&[16, 17, 10, 11, 12]), "unexpected inline stepping prefix: {:?}", lines);
+        assert!(lines.windows(2).any(|window| window == [5, 6]), "expected to step through bump body: {:?}", lines);
+        assert_eq!(lines.last().copied(), Some(20), "expected final step to reach caller tail: {:?}", lines);
         Ok(())
     })
 }
@@ -1125,16 +1117,12 @@ contract NestedArgs() {
 
     with_session_for_source(source, vec![], "main", vec![Expr::int(0)], |session| {
         session.run_to_first_executed_statement()?;
-        let start = session.current_span().ok_or("missing start span")?;
-        assert_eq!(start.line, 15);
+        let start = session.current_step().ok_or("missing start step")?;
+        assert_eq!(start.span.line, 15);
 
         session.step_over()?;
-        let mut after_over = session.current_span().ok_or("missing span after step_over")?;
-        if after_over.line == 15 {
-            session.step_over()?;
-            after_over = session.current_span().ok_or("missing span after second step_over")?;
-        }
-        assert_eq!(after_over.line, 16, "step_over should move past nested inline call in caller");
+        let after_over = session.current_step().ok_or("missing step after step_over")?;
+        assert_eq!(after_over.span.line, 16, "step_over should move past nested inline call in caller");
         Ok(())
     })
 }
@@ -1170,6 +1158,409 @@ contract LoopIndex() {
         }
 
         assert!(saw_loop_index, "expected loop index 'i' to be visible while stepping loop body");
+        Ok(())
+    })
+}
+
+#[test]
+fn debug_session_step_over_preserves_loop_iterations_on_same_source_line() -> Result<(), Box<dyn Error>> {
+    let source = r#"pragma silverscript ^0.1.0;
+
+contract LoopStepOver() {
+    entrypoint function main() {
+        int sum = 0;
+        for(i,0,2,2){
+            sum = sum + i;
+        }
+        require(sum == 1);
+    }
+}
+"#;
+
+    with_session_for_source(source, vec![], "main", vec![], |session| {
+        session.run_to_first_executed_statement()?;
+
+        let mut saw_first_iteration = false;
+        for _ in 0..8 {
+            if let Ok(i) = session.variable_by_name("i") {
+                if format_value(&i.type_name, &i.value) == "0" {
+                    saw_first_iteration = true;
+                    break;
+                }
+            }
+            session.step_over()?.ok_or("expected to reach first loop iteration")?;
+        }
+
+        assert!(saw_first_iteration, "expected to stop within the first loop iteration");
+
+        session.step_over()?.ok_or("expected to step within the loop")?;
+        let line_after_next = session.current_span().ok_or("missing span after step_over in loop")?.line;
+        assert_ne!(line_after_next, 9, "step_over should not skip the remaining loop iteration");
+
+        let mut saw_second_iteration = false;
+        for _ in 0..8 {
+            if let Ok(i) = session.variable_by_name("i") {
+                if format_value(&i.type_name, &i.value) == "1" {
+                    saw_second_iteration = true;
+                    break;
+                }
+            }
+            if session.step_over()?.is_none() {
+                break;
+            }
+        }
+
+        assert!(saw_second_iteration, "expected to stop within the second loop iteration before leaving the loop");
+        Ok(())
+    })
+}
+
+#[test]
+fn debug_session_loop_header_keeps_outer_locals_across_iterations() -> Result<(), Box<dyn Error>> {
+    let source = r#"pragma silverscript ^0.1.0;
+
+contract LoopHeaderLocals() {
+    entrypoint function main() {
+        int sum = 0;
+        for(i,0,2,2){
+            sum = sum + i;
+        }
+        require(sum == 1);
+    }
+}
+"#;
+
+    with_session_for_source(source, vec![], "main", vec![], |session| {
+        session.run_to_first_executed_statement()?;
+        session.step_over()?.ok_or("expected for-header stop")?;
+        assert_eq!(session.current_span().ok_or("missing for-header span")?.line, 6);
+
+        session.step_over()?.ok_or("expected first loop-body stop")?;
+        assert_eq!(session.current_span().ok_or("missing first loop-body span")?.line, 7);
+
+        session.step_over()?.ok_or("expected second for-header stop")?;
+        assert_eq!(session.current_span().ok_or("missing second for-header span")?.line, 6);
+
+        let sum = session.variable_by_name("sum")?;
+        assert_eq!(format_value(&sum.type_name, &sum.value), "0");
+        Ok(())
+    })
+}
+
+#[test]
+fn debug_session_inline_loop_steps_stay_inside_callee() -> Result<(), Box<dyn Error>> {
+    let source = r#"pragma silverscript ^0.1.0;
+
+contract InlineLoop() {
+    function walk(int base) {
+        int total = base;
+        for(i, 0, 2, 2) {
+            total = total + i;
+        }
+        require(total >= base);
+    }
+
+    entrypoint function main() {
+        int alias = 1;
+        walk(alias);
+        require(alias == 1);
+    }
+}
+"#;
+
+    with_session_for_source(source, vec![], "main", vec![], |session| {
+        let caller_line = 14;
+
+        session.run_to_first_executed_statement()?;
+        let mut line = session.current_span().ok_or("missing initial span")?.line;
+        for _ in 0..3 {
+            if line == caller_line || line == 5 {
+                break;
+            }
+            session.step_over()?.ok_or("expected to reach walk call or callee entry")?;
+            line = session.current_span().ok_or("missing span while seeking walk")?.line;
+        }
+
+        if line == caller_line {
+            session.step_into()?.ok_or("expected to enter walk")?;
+            line = session.current_span().ok_or("missing walk entry span")?.line;
+        }
+
+        assert_eq!(line, 5, "expected to be at the first walk statement before loop stepping");
+
+        assert_eq!(session.current_span().ok_or("missing walk entry span")?.line, 5);
+
+        session.step_over()?.ok_or("expected loop header")?;
+        assert_eq!(session.current_span().ok_or("missing loop header span")?.line, 6);
+
+        session.step_over()?.ok_or("expected first loop body")?;
+        assert_eq!(session.current_span().ok_or("missing first loop body span")?.line, 7);
+
+        session.step_over()?.ok_or("expected second loop header")?;
+        assert_eq!(session.current_span().ok_or("missing second loop header span")?.line, 6);
+
+        session.step_over()?.ok_or("expected second loop body")?;
+        let second_body_line = session.current_span().ok_or("missing second loop body span")?.line;
+        assert_ne!(second_body_line, caller_line, "loop stepping regressed back to the caller while still inside walk");
+        assert_eq!(second_body_line, 7);
+        Ok(())
+    })
+}
+
+#[test]
+fn debug_session_inline_loop_preface_does_not_jump_to_caller() -> Result<(), Box<dyn Error>> {
+    let source = r#"pragma silverscript ^0.1.0;
+
+contract InlineLoopPreface() {
+    function walk(int threshold) {
+        int total = 7;
+        int even_acc = 0;
+        int odd_acc = 0;
+        bool touched_high = false;
+
+        for(i, 0, 2, 2) {
+            int current = i;
+
+            if (current % 2 == 0) {
+                even_acc = even_acc + current;
+            } else if (current > threshold) {
+                odd_acc = odd_acc + current;
+                touched_high = true;
+            } else {
+                odd_acc = odd_acc + 1;
+            }
+
+            total = total + current;
+        }
+
+        require(total >= threshold);
+    }
+
+    entrypoint function main() {
+        int branch_limit = 1;
+        walk(branch_limit);
+        require(branch_limit == 1);
+    }
+}
+"#;
+
+    with_session_for_source(source, vec![], "main", vec![], |session| {
+        session.run_to_first_executed_statement()?;
+        session.step_over()?.ok_or("expected walk call site")?;
+        let caller_line = session.current_span().ok_or("missing walk call span")?.line;
+        assert_eq!(session.current_span().ok_or("missing walk call span")?.line, caller_line);
+
+        session.step_into()?.ok_or("expected to enter walk")?;
+        let mut line = session.current_span().ok_or("missing walk entry span")?.line;
+        assert_ne!(line, caller_line, "step_into should enter walk rather than stay on the caller line");
+        assert!((5..=8).contains(&line), "expected to enter walk preface, got line {line}");
+
+        while line < 8 {
+            session.step_over()?.ok_or("expected to continue through walk preface")?;
+            line = session.current_span().ok_or("missing walk preface span")?.line;
+            assert_ne!(line, caller_line, "preface stepping regressed back to caller before the loop");
+        }
+
+        assert_eq!(line, 8, "expected to reach touched_high initialization before the loop");
+
+        session.step_over()?.ok_or("expected loop header")?;
+        let next_line = session.current_span().ok_or("missing loop header span")?.line;
+        assert_ne!(next_line, caller_line, "step_over jumped back to caller instead of entering the loop");
+        assert_eq!(next_line, 10);
+        Ok(())
+    })
+}
+
+#[test]
+fn debug_session_step_into_inline_call_with_args_enters_callee_immediately() -> Result<(), Box<dyn Error>> {
+    let source = r#"pragma silverscript ^0.1.0;
+
+contract InlineIntoArgs() {
+    function walk(int threshold) {
+        int total = threshold + 1;
+        require(total > threshold);
+    }
+
+    entrypoint function main() {
+        walk(1);
+        require(1 == 1);
+    }
+}
+"#;
+
+    with_session_for_source(source, vec![], "main", vec![], |session| {
+        session.run_to_first_executed_statement()?;
+        let call_line = session.current_span().ok_or("missing walk call span")?.line;
+        assert!(call_line > 0, "expected to stop on a real walk call line");
+
+        session.step_into()?.ok_or("expected to step into walk")?;
+        assert_ne!(session.current_span().ok_or("missing walk entry span")?.line, call_line);
+        assert_eq!(session.current_span().ok_or("missing walk entry span")?.line, 5);
+        Ok(())
+    })
+}
+
+const DEBUG_STRESS_SOURCE: &str = r#"pragma silverscript ^0.1.0;
+
+contract DebugStress() {
+    int constant START = 0;
+    int constant MAX_ITERS = 6;
+    int seed = 2;
+    int baseline = 4;
+
+    struct Pair {
+        int left;
+        int right;
+    }
+
+    struct Stats {
+        int total;
+        int evens;
+        int odds;
+        bool touched_high;
+    }
+
+    function inspect(Stats snapshot, Pair pair, int threshold) {
+        int spread = pair.right - pair.left;
+
+        if (snapshot.touched_high) {
+            require(spread >= 0);
+        } else if (snapshot.odds > snapshot.evens) {
+            require(threshold >= pair.left);
+        } else {
+            require(snapshot.evens >= 0);
+        }
+
+        require(snapshot.total > threshold);
+    }
+
+    function walk(Pair pair, int threshold) {
+        int total = pair.left + pair.right;
+        int even_acc = 0;
+        int odd_acc = 0;
+        bool touched_high = false;
+
+        for(i, START, MAX_ITERS, MAX_ITERS) {
+            int current = pair.left + i;
+
+            if (current % 2 == 0) {
+                even_acc = even_acc + current;
+            } else if (current > threshold) {
+                odd_acc = odd_acc + current;
+                touched_high = true;
+            } else {
+                odd_acc = odd_acc + 1;
+            }
+
+            total = total + current;
+        }
+
+        Stats snapshot = {
+            total: total,
+            evens: even_acc,
+            odds: odd_acc,
+            touched_high: touched_high
+        };
+
+        inspect(snapshot, pair, threshold);
+        require(snapshot.total >= pair.left + pair.right);
+    }
+
+    entrypoint function main() {
+        Pair start = {left: seed, right: seed + 3};
+        Pair alias = start;
+        int branch_limit = baseline + 2;
+
+        if (alias.right > 0) {
+            branch_limit = alias.right;
+        } else if (alias.right == branch_limit) {
+            branch_limit = branch_limit + 1;
+        } else {
+            branch_limit = branch_limit + 2;
+        }
+
+        walk(alias, branch_limit);
+
+        require(alias.left == seed);
+        require(alias.right == seed + 3);
+    }
+}
+"#;
+
+#[test]
+fn debug_session_t_sil_step_over_from_line_39_stays_in_walk() -> Result<(), Box<dyn Error>> {
+    let source = DEBUG_STRESS_SOURCE;
+
+    with_session_for_source(source, vec![], "main", vec![], |session| {
+        session.run_to_first_executed_statement()?;
+
+        let mut steps = 0usize;
+        while session.current_span().ok_or("missing current span while seeking line 39")?.line != 39 {
+            session.step_over()?.ok_or("expected to reach line 39 in target/t.sil")?;
+            steps = steps.saturating_add(1);
+            if steps > 32 {
+                return Err("failed to reach line 39 in target/t.sil within 32 step_over calls".into());
+            }
+        }
+
+        let rendered = session
+            .debug_info()
+            .steps
+            .iter()
+            .filter(|step| matches!(step.span.line, 36 | 37 | 38 | 39 | 41 | 42 | 80))
+            .map(|step| {
+                format!(
+                    "seq={} kind={:?} line={} depth={} frame={} bc={}..{}",
+                    step.sequence, step.kind, step.span.line, step.call_depth, step.frame_id, step.bytecode_start, step.bytecode_end
+                )
+            })
+            .collect::<Vec<_>>();
+
+        session.step_over()?.ok_or("expected a step after line 39")?;
+        let next_line = session.current_span().ok_or("missing post-line-39 span")?.line;
+        assert_eq!(
+            next_line, 41,
+            "step_over from target/t.sil line 39 should continue into the loop header, got line {next_line}; relevant steps: {rendered:#?}"
+        );
+        Ok(())
+    })
+}
+
+#[test]
+fn debug_session_t_sil_step_into_from_line_39_stays_in_walk() -> Result<(), Box<dyn Error>> {
+    let source = DEBUG_STRESS_SOURCE;
+
+    with_session_for_source(source, vec![], "main", vec![], |session| {
+        session.run_to_first_executed_statement()?;
+
+        let mut steps = 0usize;
+        while session.current_span().ok_or("missing current span while seeking line 39")?.line != 39 {
+            session.step_over()?.ok_or("expected to reach line 39 in target/t.sil")?;
+            steps = steps.saturating_add(1);
+            if steps > 32 {
+                return Err("failed to reach line 39 in target/t.sil within 32 step_over calls".into());
+            }
+        }
+
+        let rendered = session
+            .debug_info()
+            .steps
+            .iter()
+            .filter(|step| matches!(step.span.line, 36 | 37 | 38 | 39 | 41 | 42 | 80))
+            .map(|step| {
+                format!(
+                    "seq={} kind={:?} line={} depth={} frame={} bc={}..{}",
+                    step.sequence, step.kind, step.span.line, step.call_depth, step.frame_id, step.bytecode_start, step.bytecode_end
+                )
+            })
+            .collect::<Vec<_>>();
+
+        session.step_into()?.ok_or("expected a step after line 39")?;
+        let next_line = session.current_span().ok_or("missing post-line-39 span")?.line;
+        assert_eq!(
+            next_line, 41,
+            "step_into from target/t.sil line 39 should continue to the loop header, got line {next_line}; relevant steps: {rendered:#?}"
+        );
         Ok(())
     })
 }
@@ -1219,7 +1610,6 @@ contract CovLocal() {
         ctx,
         EngineFlags { covenants_enabled: true },
     );
-
     let shadow_ctx =
         ShadowTxContext { tx: &populated_tx, input: input_ref, input_index: 0, utxo_entry: utxo_ref, covenants_ctx: &cov_ctx };
 

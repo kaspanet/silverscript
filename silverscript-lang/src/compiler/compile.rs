@@ -96,14 +96,16 @@ pub(super) fn compile_contract_impl<'i>(
         constants.insert(param.name.clone(), value.clone());
     }
 
+    let mut debug_recorder = DebugRecorder::new(options.record_debug_infos);
+    debug_recorder.stage_source_functions(contract)?;
     let covenant_lowered_contract = lower_covenant_declarations(contract, &constants)?;
-    let inline_lowered_contract = lower_inline_functions(&covenant_lowered_contract)?;
+    let inline_lowered_contract = lower_inline_functions(&covenant_lowered_contract, &mut debug_recorder)?;
     let structs = build_struct_registry(&inline_lowered_contract)?;
     let struct_lowered_contract = lower_structs_contract(&inline_lowered_contract, &structs, &constants)?;
     let array_push_lowered_contract = lower_array_pushes(&struct_lowered_contract)?;
     let for_lowered_contract = lower_for_loops(&array_push_lowered_contract, &constants)?;
     let lowered_contract = lower_inferred_array_sizes(&for_lowered_contract, &constants)?;
-    let lowered_contract = lower_local_aliases(&lowered_contract)?;
+    let lowered_contract = lower_local_aliases(&lowered_contract, &mut debug_recorder)?;
     let mut lowered_constants = flatten_constructor_args_env(&covenant_lowered_contract.params, constructor_args, &structs)?;
     lowered_constants.extend(lowered_contract.constants.iter().map(|constant| (constant.name.clone(), constant.expr.clone())));
 
@@ -123,6 +125,8 @@ pub(super) fn compile_contract_impl<'i>(
     let mut script_size = if uses_script_size { Some(100i64) } else { None };
 
     for _ in 0..32 {
+        debug_recorder.record_contract_scope(&covenant_lowered_contract, constructor_args);
+
         let (script, state_layout) = compile_contract_script_iteration(
             &lowered_contract,
             &lowered_constants,
@@ -132,9 +136,10 @@ pub(super) fn compile_contract_impl<'i>(
             &structs,
             &functions_map,
             &function_order,
+            &mut debug_recorder,
         )?;
 
-        let debug_info = None;
+        let debug_info = debug_recorder.take_debug_info(_source);
         if !uses_script_size {
             return Ok(build_compiled_contract(
                 &lowered_contract,
@@ -175,6 +180,7 @@ fn compile_contract_script_iteration<'i>(
     structs: &StructRegistry,
     functions_map: &HashMap<String, FunctionAst<'i>>,
     function_order: &HashMap<String, usize>,
+    debug_recorder: &mut DebugRecorder<'i>,
 ) -> Result<(Vec<u8>, CompiledStateLayout), CompilerError> {
     let (_contract_fields, field_prolog_script) =
         compile_contract_fields(&lowered_contract.fields, lowered_constants, options, script_size)?;
@@ -191,8 +197,9 @@ fn compile_contract_script_iteration<'i>(
         functions_map,
         function_order,
         script_size,
+        debug_recorder,
     )?;
-    let script = build_contract_script(without_selector, &field_prolog_script, &compiled_entrypoints)?;
+    let script = build_contract_script(debug_recorder, without_selector, &field_prolog_script, &compiled_entrypoints)?;
     Ok((script, state_layout))
 }
 
@@ -206,6 +213,7 @@ fn compile_entrypoint_scripts<'i>(
     functions_map: &HashMap<String, FunctionAst<'i>>,
     function_order: &HashMap<String, usize>,
     script_size: Option<i64>,
+    debug_recorder: &mut DebugRecorder<'i>,
 ) -> Result<Vec<(String, Vec<u8>)>, CompilerError> {
     let mut compiled_entrypoints = Vec::new();
     for func in &lowered_contract.functions {
@@ -214,7 +222,7 @@ fn compile_entrypoint_scripts<'i>(
                 .get(&func.name)
                 .copied()
                 .ok_or_else(|| CompilerError::Unsupported(format!("function '{}' not found", func.name)))?;
-            compiled_entrypoints.push(compile_entrypoint_function(
+            let compiled = compile_entrypoint_function(
                 func,
                 function_index,
                 &lowered_contract.params,
@@ -227,13 +235,16 @@ fn compile_entrypoint_scripts<'i>(
                 functions_map,
                 function_order,
                 script_size,
-            )?);
+                debug_recorder,
+            )?;
+            compiled_entrypoints.push(compiled);
         }
     }
     Ok(compiled_entrypoints)
 }
 
 fn build_contract_script(
+    debug_recorder: &mut DebugRecorder<'_>,
     without_selector: bool,
     field_prolog_script: &[u8],
     compiled_entrypoints: &[(String, Vec<u8>)],
@@ -242,6 +253,7 @@ fn build_contract_script(
         let (_name, entrypoint_script) = compiled_entrypoints
             .first()
             .ok_or_else(|| CompilerError::Unsupported("contract has no entrypoint functions".to_string()))?;
+        debug_recorder.set_entrypoint_start(_name, field_prolog_script.len());
         let mut script = field_prolog_script.to_vec();
         script.extend(entrypoint_script.clone());
         return Ok(script);
@@ -254,12 +266,13 @@ fn build_contract_script(
     builder.add_ops(field_prolog_script)?;
     builder.add_op(OpFromAltStack)?;
     let total = compiled_entrypoints.len();
-    for (entrypoint_index, (_name, script)) in compiled_entrypoints.iter().enumerate() {
+    for (entrypoint_index, (name, script)) in compiled_entrypoints.iter().enumerate() {
         builder.add_op(OpDup)?;
         builder.add_i64(entrypoint_index as i64)?;
         builder.add_op(OpNumEqual)?;
         builder.add_op(OpIf)?;
         builder.add_op(OpDrop)?;
+        debug_recorder.set_entrypoint_start(name, builder.script().len());
         builder.add_ops(script)?;
         builder.add_op(OpElse)?;
         if entrypoint_index == total - 1 {
@@ -1074,7 +1087,9 @@ fn compile_entrypoint_function<'i>(
     functions: &HashMap<String, FunctionAst<'i>>,
     function_order: &HashMap<String, usize>,
     script_size: Option<i64>,
+    debug_recorder: &mut DebugRecorder<'i>,
 ) -> Result<(String, Vec<u8>), CompilerError> {
+    debug_recorder.begin_entrypoint(function, contract_fields, structs)?;
     let contract_field_count = contract_fields.len();
     let mut flattened_param_names = Vec::new();
     let mut types = HashMap::new();
@@ -1113,31 +1128,40 @@ fn compile_entrypoint_function<'i>(
     let has_return = function.body.iter().any(contains_return);
 
     let body_len = function.body.len();
-    let mut statement_ctx = CompileStatementContext {
-        assigned_names: &assigned_names,
-        identifier_uses: &identifier_uses,
-        types: &mut types,
-        stack_bindings: &mut stack_bindings,
-        builder: &mut builder,
-        options,
-        contract_fields,
-        contract_field_prefix_len,
-        contract_constants: constants,
-        structs,
-        functions,
-        function_order,
-        function_index,
-        script_size,
-    };
     for (index, stmt) in function.body.iter().enumerate() {
         if let Statement::Return { exprs, .. } = stmt {
             debug_assert_eq!(index, body_len - 1, "type_check must validate return statements are last");
             for expr in exprs {
                 return_exprs.push(expr.clone());
             }
-        } else {
-            compile_statement(&mut statement_ctx, stmt).map_err(|err| err.with_span(&stmt.span()))?;
+            continue;
         }
+
+        let statement_start = builder.script().len();
+        debug_recorder.begin_statement_at(stmt, statement_start, &types, &stack_bindings);
+
+        compile_statement(
+            &mut CompileStatementContext {
+                assigned_names: &assigned_names,
+                identifier_uses: &identifier_uses,
+                types: &mut types,
+                stack_bindings: &mut stack_bindings,
+                builder: &mut builder,
+                options,
+                contract_fields,
+                contract_field_prefix_len,
+                contract_constants: constants,
+                structs,
+                functions,
+                function_order,
+                function_index,
+                script_size,
+                debug_recorder,
+            },
+            stmt,
+        )
+        .map_err(|err| err.with_span(&stmt.span()))?;
+        debug_recorder.finish_statement_at(stmt, builder.script().len(), &types, &stack_bindings);
     }
 
     let flattened_returns = if has_return { return_exprs } else { Vec::new() };
@@ -1188,7 +1212,9 @@ fn compile_entrypoint_function<'i>(
             builder.add_op(OpDrop)?;
         }
     }
-    Ok((function.name.clone(), builder.drain()))
+    let script = builder.drain();
+    debug_recorder.finish_entrypoint(script.len());
+    Ok((function.name.clone(), script))
 }
 
 fn compile_statement<'i>(ctx: &mut CompileStatementContext<'_, 'i>, stmt: &Statement<'i>) -> Result<Vec<String>, CompilerError> {
@@ -1201,7 +1227,7 @@ fn compile_statement<'i>(ctx: &mut CompileStatementContext<'_, 'i>, stmt: &State
         Statement::TimeOp { tx_var, expr, .. } => compile_time_branch_statement(ctx, tx_var, expr),
         Statement::Block { body, .. } => compile_block_statement(ctx, body).map(|_| Vec::new()),
         Statement::If { condition, then_branch, else_branch, .. } => {
-            compile_if_statement(ctx, condition, then_branch, else_branch.as_deref()).map(|_| Vec::new())
+            compile_if_statement(ctx, stmt, condition, then_branch, else_branch.as_deref()).map(|_| Vec::new())
         }
         Statement::For { .. } => {
             unreachable!("lower_for_loops must remove for statements before codegen")
@@ -1238,6 +1264,7 @@ struct CompileStatementContext<'a, 'i> {
     function_order: &'a HashMap<String, usize>,
     function_index: usize,
     script_size: Option<i64>,
+    debug_recorder: &'a mut DebugRecorder<'i>,
 }
 
 fn compile_variable_definition_statement<'i>(
@@ -1388,7 +1415,7 @@ fn compile_time_branch_statement<'i>(
     .map(|_| Vec::new())
 }
 
-fn compile_return_statement<'i>() -> Result<Vec<String>, CompilerError> {
+fn compile_return_statement() -> Result<Vec<String>, CompilerError> {
     unreachable!("type_check must validate return statement placement")
 }
 
@@ -1488,7 +1515,7 @@ fn compile_state_function_call_assign_statement<'i>(
     )))
 }
 
-fn compile_struct_destructure_statement<'i>() -> Result<Vec<String>, CompilerError> {
+fn compile_struct_destructure_statement() -> Result<Vec<String>, CompilerError> {
     unreachable!("lower_structs_contract must remove struct destructuring before codegen")
 }
 
@@ -1535,7 +1562,7 @@ fn compile_assign_statement<'i>(
     Err(CompilerError::UndefinedIdentifier(name.to_string()))
 }
 
-fn compile_console_statement<'i>() -> Result<Vec<String>, CompilerError> {
+fn compile_console_statement() -> Result<Vec<String>, CompilerError> {
     Ok(Vec::new())
 }
 
@@ -2408,6 +2435,7 @@ fn compile_encoded_state_object(
 
 fn compile_if_statement<'i>(
     ctx: &mut CompileStatementContext<'_, 'i>,
+    stmt: &Statement<'i>,
     condition: &Expr<'i>,
     then_branch: &[Statement<'i>],
     else_branch: Option<&[Statement<'i>]>,
@@ -2427,50 +2455,57 @@ fn compile_if_statement<'i>(
         ctx.contract_constants,
     )?;
     ctx.builder.add_op(OpIf)?;
+    ctx.debug_recorder.record_current_statement_source_step_at(stmt, ctx.builder.script().len(), ctx.types, ctx.stack_bindings);
 
-    let original_stack_bindings = ctx.stack_bindings.clone();
+    let original_stack_bindings = (*ctx.stack_bindings).clone();
 
-    let mut then_types = ctx.types.clone();
+    let mut then_types = (*ctx.types).clone();
     let mut then_stack_bindings = original_stack_bindings.clone();
     compile_block(
+        &mut CompileStatementContext {
+            assigned_names: ctx.assigned_names,
+            identifier_uses: ctx.identifier_uses,
+            types: &mut then_types,
+            stack_bindings: &mut then_stack_bindings,
+            builder: ctx.builder,
+            options: ctx.options,
+            contract_fields: ctx.contract_fields,
+            contract_field_prefix_len: ctx.contract_field_prefix_len,
+            contract_constants: ctx.contract_constants,
+            structs: ctx.structs,
+            functions: ctx.functions,
+            function_order: ctx.function_order,
+            function_index: ctx.function_index,
+            script_size: ctx.script_size,
+            debug_recorder: ctx.debug_recorder,
+        },
         then_branch,
-        ctx.assigned_names,
-        ctx.identifier_uses,
-        &mut then_types,
-        &mut then_stack_bindings,
-        ctx.builder,
-        ctx.options,
-        ctx.contract_fields,
-        ctx.contract_field_prefix_len,
-        ctx.contract_constants,
-        ctx.structs,
-        ctx.functions,
-        ctx.function_order,
-        ctx.function_index,
-        ctx.script_size,
         true,
     )?;
 
     if let Some(else_branch) = else_branch {
         ctx.builder.add_op(OpElse)?;
-        let mut else_types = ctx.types.clone();
+        let mut else_types = (*ctx.types).clone();
         let mut else_stack_bindings = original_stack_bindings.clone();
         compile_block(
+            &mut CompileStatementContext {
+                assigned_names: ctx.assigned_names,
+                identifier_uses: ctx.identifier_uses,
+                types: &mut else_types,
+                stack_bindings: &mut else_stack_bindings,
+                builder: ctx.builder,
+                options: ctx.options,
+                contract_fields: ctx.contract_fields,
+                contract_field_prefix_len: ctx.contract_field_prefix_len,
+                contract_constants: ctx.contract_constants,
+                structs: ctx.structs,
+                functions: ctx.functions,
+                function_order: ctx.function_order,
+                function_index: ctx.function_index,
+                script_size: ctx.script_size,
+                debug_recorder: ctx.debug_recorder,
+            },
             else_branch,
-            ctx.assigned_names,
-            ctx.identifier_uses,
-            &mut else_types,
-            &mut else_stack_bindings,
-            ctx.builder,
-            ctx.options,
-            ctx.contract_fields,
-            ctx.contract_field_prefix_len,
-            ctx.contract_constants,
-            ctx.structs,
-            ctx.functions,
-            ctx.function_order,
-            ctx.function_index,
-            ctx.script_size,
             true,
         )?;
         else_stack_bindings.emit_stack_reordering(&then_stack_bindings, ctx.builder)?;
@@ -2521,75 +2556,54 @@ fn compile_time_op_statement<'i>(
 }
 
 fn compile_block_statement<'i>(ctx: &mut CompileStatementContext<'_, 'i>, body: &[Statement<'i>]) -> Result<(), CompilerError> {
-    compile_block(
-        body,
-        ctx.assigned_names,
-        ctx.identifier_uses,
-        ctx.types,
-        ctx.stack_bindings,
-        ctx.builder,
-        ctx.options,
-        ctx.contract_fields,
-        ctx.contract_field_prefix_len,
-        ctx.contract_constants,
-        ctx.structs,
-        ctx.functions,
-        ctx.function_order,
-        ctx.function_index,
-        ctx.script_size,
-        true,
-    )
+    compile_block(ctx, body, true)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn compile_block<'i>(
+    ctx: &mut CompileStatementContext<'_, 'i>,
     statements: &[Statement<'i>],
-    assigned_names: &HashSet<String>,
-    identifier_uses: &HashMap<String, usize>,
-    types: &mut HashMap<String, String>,
-    stack_bindings: &mut StackBindings,
-    builder: &mut ScriptBuilder,
-    options: CompileOptions,
-    contract_fields: &[ContractFieldAst<'i>],
-    contract_field_prefix_len: usize,
-    contract_constants: &HashMap<String, Expr<'i>>,
-    structs: &StructRegistry,
-    functions: &HashMap<String, FunctionAst<'i>>,
-    function_order: &HashMap<String, usize>,
-    function_index: usize,
-    script_size: Option<i64>,
     scoped_stack_locals: bool,
 ) -> Result<(), CompilerError> {
     let mut added_stack_locals = Vec::new();
-    let mut statement_ctx = CompileStatementContext {
-        assigned_names,
-        identifier_uses,
-        types,
-        stack_bindings,
-        builder,
-        options,
-        contract_fields,
-        contract_field_prefix_len,
-        contract_constants,
-        structs,
-        functions,
-        function_order,
-        function_index,
-        script_size,
-    };
     for stmt in statements {
-        added_stack_locals.extend(compile_statement(&mut statement_ctx, stmt).map_err(|err| err.with_span(&stmt.span()))?);
+        let statement_start = ctx.builder.script().len();
+        ctx.debug_recorder.begin_statement_at(stmt, statement_start, ctx.types, ctx.stack_bindings);
+
+        let added = compile_statement(
+            &mut CompileStatementContext {
+                assigned_names: ctx.assigned_names,
+                identifier_uses: ctx.identifier_uses,
+                types: ctx.types,
+                stack_bindings: ctx.stack_bindings,
+                builder: ctx.builder,
+                options: ctx.options,
+                contract_fields: ctx.contract_fields,
+                contract_field_prefix_len: ctx.contract_field_prefix_len,
+                contract_constants: ctx.contract_constants,
+                structs: ctx.structs,
+                functions: ctx.functions,
+                function_order: ctx.function_order,
+                function_index: ctx.function_index,
+                script_size: ctx.script_size,
+                debug_recorder: ctx.debug_recorder,
+            },
+            stmt,
+        )
+        .map_err(|err| err.with_span(&stmt.span()))?;
+        ctx.debug_recorder.finish_statement_at(stmt, ctx.builder.script().len(), ctx.types, ctx.stack_bindings);
+        added_stack_locals.extend(added);
     }
 
     if scoped_stack_locals && !added_stack_locals.is_empty() {
-        statement_ctx.stack_bindings.emit_drop_bindings(&added_stack_locals, statement_ctx.builder)?;
+        ctx.stack_bindings.emit_drop_bindings(&added_stack_locals, ctx.builder)?;
         for name in &added_stack_locals {
-            statement_ctx.types.remove(name);
+            ctx.types.remove(name);
         }
     }
 
     Ok(())
 }
+
 pub(crate) fn eval_const_int<'i>(expr: &Expr<'i>, constants: &HashMap<String, Expr<'i>>) -> Result<i64, CompilerError> {
     match &expr.kind {
         ExprKind::Int(value) => Ok(*value),
@@ -2917,11 +2931,11 @@ fn infer_fixed_array_runtime_type<'i>(
     })
 }
 
-fn compile_state_object_expr<'i>() -> Result<(), CompilerError> {
+fn compile_state_object_expr() -> Result<(), CompilerError> {
     Err(CompilerError::Unsupported("state object literals are only supported in validateOutputState-style builtins".to_string()))
 }
 
-fn compile_field_access_expr<'i>() -> Result<(), CompilerError> {
+fn compile_field_access_expr() -> Result<(), CompilerError> {
     Err(CompilerError::Unsupported("struct field access should be lowered before compilation".to_string()))
 }
 
@@ -3355,7 +3369,7 @@ fn compile_date_literal_expr<'i>(ctx: &mut CompileExprContext<'_, 'i>, value: i6
     Ok(())
 }
 
-fn compile_number_with_unit_expr<'i>() -> Result<(), CompilerError> {
+fn compile_number_with_unit_expr() -> Result<(), CompilerError> {
     Err(CompilerError::Unsupported("number units must be normalized during parsing".to_string()))
 }
 
@@ -4018,6 +4032,7 @@ pub fn compile_debug_expr<'i>(
     Ok((builder.drain(), type_name))
 }
 
+#[allow(dead_code)]
 pub(super) fn resolve_expr_for_debug<'i>(
     expr: Expr<'i>,
     constants: &HashMap<String, Expr<'i>>,
