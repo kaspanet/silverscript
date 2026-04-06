@@ -49,7 +49,11 @@ impl<'i, 'd> Inliner<'i, 'd> {
         name
     }
 
-    fn lower_entrypoint_function(&mut self, function: &FunctionAst<'i>, function_index: usize) -> Result<FunctionAst<'i>, CompilerError> {
+    fn lower_entrypoint_function(
+        &mut self,
+        function: &FunctionAst<'i>,
+        function_index: usize,
+    ) -> Result<FunctionAst<'i>, CompilerError> {
         let mut scope = HashMap::new();
         for param in &function.params {
             scope.insert(param.name.clone(), param.name.clone());

@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 
-use crate::ast::{ContractAst, ContractFieldAst, Expr, ExprKind, FunctionAst, ParamAst, StateBindingAst, StateFieldExpr, Statement, TypeRef};
+use crate::ast::{
+    ContractAst, ContractFieldAst, Expr, ExprKind, FunctionAst, ParamAst, StateBindingAst, StateFieldExpr, Statement, TypeRef,
+};
 use crate::debug_info::{
     DebugFunctionRange, DebugInfo, DebugInfoRecorder, DebugLeafBinding, DebugNamedValue, DebugParamBinding, DebugParamMapping,
     DebugStackBinding, DebugStep, DebugVariableUpdate, SourceSpan, StepKind,
@@ -30,7 +32,8 @@ pub(crate) struct DebugRecorder<'i> {
 
 impl<'i> DebugRecorder<'i> {
     pub(crate) fn new(options: CompileOptions, contract: &ContractAst<'i>) -> Result<Self, CompilerError> {
-        let mut recorder = Self { source_inline_depth: 0, active: options.record_debug_infos.then_some(ActiveDebugRecorder::default()) };
+        let mut recorder =
+            Self { source_inline_depth: 0, active: options.record_debug_infos.then_some(ActiveDebugRecorder::default()) };
         if let Some(active) = recorder.active.as_mut() {
             active.source_structs = build_struct_registry(contract)?;
             active.source_params_by_function =
@@ -119,9 +122,8 @@ impl<'i> DebugRecorder<'i> {
         let Some(active) = self.active.as_mut() else {
             return;
         };
-        active.current_source_statement_index = active
-            .current_source_statement_index
-            .saturating_add(source_statement_slot_count(statement));
+        active.current_source_statement_index =
+            active.current_source_statement_index.saturating_add(source_statement_slot_count(statement));
     }
 
     pub(super) fn begin_inline_source_call(&mut self, callee: &str, call_site_span: SourceSpan) {
@@ -1107,11 +1109,7 @@ fn inline_param_leaf_bindings(type_ref: &TypeRef, structs: &StructRegistry) -> O
     let mut leaf_bindings = flatten_type_ref_leaves(type_ref, structs)
         .ok()?
         .into_iter()
-        .map(|(field_path, leaf_type)| DebugLeafBinding {
-            field_path,
-            type_name: type_name_from_ref(&leaf_type),
-            stack_binding: None,
-        })
+        .map(|(field_path, leaf_type)| DebugLeafBinding { field_path, type_name: type_name_from_ref(&leaf_type), stack_binding: None })
         .collect::<Vec<_>>();
 
     leaf_bindings.sort_by(|left, right| left.field_path.cmp(&right.field_path));

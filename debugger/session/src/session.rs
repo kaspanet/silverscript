@@ -723,10 +723,10 @@ impl<'a, 'i> DebugSession<'a, 'i> {
             if frozen_inline_names.contains(name) {
                 continue;
             }
-            let has_runtime_structured_leaf_bindings =
-                update.structured_leaf_bindings.as_ref().is_some_and(|leaf_bindings| {
-                    leaf_bindings.iter().any(|leaf| leaf.stack_binding.is_some())
-                });
+            let has_runtime_structured_leaf_bindings = update
+                .structured_leaf_bindings
+                .as_ref()
+                .is_some_and(|leaf_bindings| leaf_bindings.iter().any(|leaf| leaf.stack_binding.is_some()));
             let structured_alias = match (&update.structured_leaf_bindings, &update.expr.kind) {
                 (_, ExprKind::Identifier(source_name))
                     if is_structured_type_name(&update.type_name) && !has_runtime_structured_leaf_bindings =>
