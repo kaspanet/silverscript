@@ -723,8 +723,14 @@ impl<'a, 'i> DebugSession<'a, 'i> {
             if frozen_inline_names.contains(name) {
                 continue;
             }
+            let has_runtime_structured_leaf_bindings =
+                update.structured_leaf_bindings.as_ref().is_some_and(|leaf_bindings| {
+                    leaf_bindings.iter().any(|leaf| leaf.stack_binding.is_some())
+                });
             let structured_alias = match (&update.structured_leaf_bindings, &update.expr.kind) {
-                (None, ExprKind::Identifier(source_name)) if is_structured_type_name(&update.type_name) => {
+                (_, ExprKind::Identifier(source_name))
+                    if is_structured_type_name(&update.type_name) && !has_runtime_structured_leaf_bindings =>
+                {
                     bindings.get(source_name.as_str()).and_then(|binding| match &binding.source {
                         ScopeValueSource::StructuredBinding { leaf_bindings, .. } => {
                             Some((source_name.clone(), leaf_bindings.clone()))
@@ -735,13 +741,18 @@ impl<'a, 'i> DebugSession<'a, 'i> {
                 _ => None,
             };
             let source = match (&update.structured_leaf_bindings, update.stack_binding.as_ref()) {
-                (Some(leaf_bindings), _) => {
+                (Some(leaf_bindings), _) if has_runtime_structured_leaf_bindings => {
                     ScopeValueSource::StructuredBinding { base_name: name.clone(), leaf_bindings: leaf_bindings.clone() }
                 }
-                (None, _) if structured_alias.is_some() => {
+                (_, _) if structured_alias.is_some() => {
                     let (_, leaf_bindings) = structured_alias.as_ref().expect("checked is_some above");
                     ScopeValueSource::StructuredBinding { base_name: name.clone(), leaf_bindings: leaf_bindings.clone() }
                 }
+                (Some(_), _) if is_structured_type_name(&update.type_name) => ScopeValueSource::Expr(update.expr.clone()),
+                (Some(_), Some(DebugStackBinding { from_top, stack_height })) => {
+                    ScopeValueSource::RuntimeSlot { from_top: shift_runtime_slot(*from_top, *stack_height, current_stack_len) }
+                }
+                (Some(_), None) => ScopeValueSource::Expr(update.expr.clone()),
                 (None, Some(_))
                     if is_inline_synthetic_name(name)
                         && matches!(&update.expr.kind, ExprKind::Identifier(identifier) if frozen_inline_names.contains(identifier)) =>
@@ -767,7 +778,9 @@ impl<'a, 'i> DebugSession<'a, 'i> {
                     hidden: is_inline_synthetic_name(name),
                 });
 
-            if let Some(leaf_bindings) = &update.structured_leaf_bindings {
+            if let Some(leaf_bindings) = &update.structured_leaf_bindings
+                && has_runtime_structured_leaf_bindings
+            {
                 for leaf in leaf_bindings {
                     let Some(DebugStackBinding { from_top, stack_height }) = leaf.stack_binding.as_ref() else {
                         continue;

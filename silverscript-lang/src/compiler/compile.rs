@@ -96,8 +96,7 @@ pub(super) fn compile_contract_impl<'i>(
         constants.insert(param.name.clone(), value.clone());
     }
 
-    let mut debug_recorder = DebugRecorder::new(options.record_debug_infos);
-    debug_recorder.stage_source_functions(contract)?;
+    let mut debug_recorder = DebugRecorder::new(options, contract)?;
     let covenant_lowered_contract = lower_covenant_declarations(contract, &constants)?;
     let inline_lowered_contract = lower_inline_functions(&covenant_lowered_contract, &mut debug_recorder)?;
     let structs = build_struct_registry(&inline_lowered_contract)?;
@@ -266,13 +265,13 @@ fn build_contract_script(
     builder.add_ops(field_prolog_script)?;
     builder.add_op(OpFromAltStack)?;
     let total = compiled_entrypoints.len();
-    for (entrypoint_index, (name, script)) in compiled_entrypoints.iter().enumerate() {
+    for (entrypoint_index, (_name, script)) in compiled_entrypoints.iter().enumerate() {
         builder.add_op(OpDup)?;
         builder.add_i64(entrypoint_index as i64)?;
         builder.add_op(OpNumEqual)?;
         builder.add_op(OpIf)?;
         builder.add_op(OpDrop)?;
-        debug_recorder.set_entrypoint_start(name, builder.script().len());
+        debug_recorder.set_entrypoint_start(_name, builder.script().len());
         builder.add_ops(script)?;
         builder.add_op(OpElse)?;
         if entrypoint_index == total - 1 {
@@ -1137,9 +1136,6 @@ fn compile_entrypoint_function<'i>(
             continue;
         }
 
-        let statement_start = builder.script().len();
-        debug_recorder.begin_statement_at(stmt, statement_start, &types, &stack_bindings);
-
         compile_statement(
             &mut CompileStatementContext {
                 assigned_names: &assigned_names,
@@ -1161,7 +1157,6 @@ fn compile_entrypoint_function<'i>(
             stmt,
         )
         .map_err(|err| err.with_span(&stmt.span()))?;
-        debug_recorder.finish_statement_at(stmt, builder.script().len(), &types, &stack_bindings);
     }
 
     let flattened_returns = if has_return { return_exprs } else { Vec::new() };
@@ -1218,7 +1213,10 @@ fn compile_entrypoint_function<'i>(
 }
 
 fn compile_statement<'i>(ctx: &mut CompileStatementContext<'_, 'i>, stmt: &Statement<'i>) -> Result<Vec<String>, CompilerError> {
-    match stmt {
+    let statement_start = ctx.builder.script().len();
+    ctx.debug_recorder.begin_statement_at(stmt, statement_start, ctx.types, ctx.stack_bindings);
+
+    let result = match stmt {
         Statement::VariableDefinition { type_ref, name, expr, .. } => {
             compile_variable_definition_statement(ctx, type_ref, name, expr.as_ref())
         }
@@ -1246,7 +1244,13 @@ fn compile_statement<'i>(ctx: &mut CompileStatementContext<'_, 'i>, stmt: &State
         }
         Statement::Assign { name, expr, .. } => compile_assign_statement(ctx, name, expr),
         Statement::Console { .. } => compile_console_statement(),
+    };
+
+    if result.is_ok() {
+        ctx.debug_recorder.finish_statement_at(stmt, ctx.builder.script().len(), ctx.types, ctx.stack_bindings);
     }
+
+    result
 }
 
 struct CompileStatementContext<'a, 'i> {
@@ -2566,9 +2570,6 @@ fn compile_block<'i>(
 ) -> Result<(), CompilerError> {
     let mut added_stack_locals = Vec::new();
     for stmt in statements {
-        let statement_start = ctx.builder.script().len();
-        ctx.debug_recorder.begin_statement_at(stmt, statement_start, ctx.types, ctx.stack_bindings);
-
         let added = compile_statement(
             &mut CompileStatementContext {
                 assigned_names: ctx.assigned_names,
@@ -2590,7 +2591,6 @@ fn compile_block<'i>(
             stmt,
         )
         .map_err(|err| err.with_span(&stmt.span()))?;
-        ctx.debug_recorder.finish_statement_at(stmt, ctx.builder.script().len(), ctx.types, ctx.stack_bindings);
         added_stack_locals.extend(added);
     }
 

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::ast::{ContractAst, ContractFieldAst, Expr, ExprKind, FunctionAst, ParamAst, StateBindingAst, StateFieldExpr, Statement};
+use crate::ast::{ContractAst, ContractFieldAst, Expr, ExprKind, FunctionAst, ParamAst, StateBindingAst, StateFieldExpr, Statement, TypeRef};
 use crate::debug_info::{
     DebugFunctionRange, DebugInfo, DebugInfoRecorder, DebugLeafBinding, DebugNamedValue, DebugParamBinding, DebugParamMapping,
     DebugStackBinding, DebugStep, DebugVariableUpdate, SourceSpan, StepKind,
@@ -8,8 +8,8 @@ use crate::debug_info::{
 
 use super::stack_bindings::StackBindings;
 use super::{
-    CompilerError, StructRegistry, flatten_type_ref_leaves, struct_array_name_from_type_ref, struct_name_from_type_ref,
-    type_name_from_ref,
+    CompileOptions, CompilerError, StructRegistry, build_struct_registry, flatten_type_ref_leaves, struct_array_name_from_type_ref,
+    struct_name_from_type_ref, type_name_from_ref,
 };
 
 /// High-level compiler/debug bridge.
@@ -22,14 +22,21 @@ use super::{
 ///
 /// The detailed source-step recorder will be built behind this facade in later
 /// steps without forcing more compiler call sites.
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub(crate) struct DebugRecorder<'i> {
+    source_inline_depth: usize,
     active: Option<ActiveDebugRecorder<'i>>,
 }
 
 impl<'i> DebugRecorder<'i> {
-    pub(crate) fn new(enabled: bool) -> Self {
-        Self { active: if enabled { Some(ActiveDebugRecorder::default()) } else { None } }
+    pub(crate) fn new(options: CompileOptions, contract: &ContractAst<'i>) -> Result<Self, CompilerError> {
+        let mut recorder = Self { source_inline_depth: 0, active: options.record_debug_infos.then_some(ActiveDebugRecorder::default()) };
+        if let Some(active) = recorder.active.as_mut() {
+            active.source_structs = build_struct_registry(contract)?;
+            active.source_params_by_function =
+                contract.functions.iter().map(|function| (function.name.clone(), function.params.clone())).collect();
+        }
+        Ok(recorder)
     }
 
     pub(crate) fn is_enabled(&self) -> bool {
@@ -42,6 +49,8 @@ impl<'i> DebugRecorder<'i> {
         };
 
         active.reset_iteration();
+        active.source_params_by_function =
+            contract.functions.iter().map(|function| (function.name.clone(), function.params.clone())).collect();
 
         for (param, value) in contract.params.iter().zip(constructor_args.iter()) {
             active.recorder.record_constructor_arg(DebugNamedValue {
@@ -60,26 +69,20 @@ impl<'i> DebugRecorder<'i> {
         }
     }
 
-    pub(super) fn stage_source_functions(&mut self, contract: &ContractAst<'i>) -> Result<(), CompilerError> {
-        let Some(active) = self.active.as_mut() else {
-            return Ok(());
-        };
-        active.source_params_by_function =
-            contract.functions.iter().map(|function| (function.name.clone(), function.params.clone())).collect();
-        Ok(())
-    }
-
     pub(super) fn begin_source_function(&mut self, function_name: &str) {
+        self.source_inline_depth = 0;
         let Some(active) = self.active.as_mut() else {
             return;
         };
         active.active_source_function_name = Some(function_name.to_string());
         active.active_source_inline_frames.clear();
         active.next_source_frame_id = 1;
+        active.current_source_statement_index = 0;
         active.inline_frame_plans_by_function.remove(function_name);
     }
 
     pub(super) fn finish_source_function(&mut self) {
+        self.source_inline_depth = 0;
         let Some(active) = self.active.as_mut() else {
             return;
         };
@@ -87,6 +90,7 @@ impl<'i> DebugRecorder<'i> {
         active.active_source_function_name = None;
         active.active_source_inline_frames.clear();
         active.next_source_frame_id = 1;
+        active.current_source_statement_index = 0;
     }
 
     pub(super) fn record_visible_name(&mut self, lowered_name: &str, visible_name: &str) {
@@ -103,7 +107,25 @@ impl<'i> DebugRecorder<'i> {
             .insert(lowered_name.to_string(), visible_name.to_string());
     }
 
-    pub(super) fn begin_inline_source_call(&mut self, callee: &str, call_site_span: SourceSpan, start_statement_index: usize) {
+    pub(super) fn current_source_statement_index(&self) -> usize {
+        self.active.as_ref().map_or(0, |active| active.current_source_statement_index)
+    }
+
+    pub(super) fn current_inline_depth(&self) -> usize {
+        self.source_inline_depth
+    }
+
+    pub(super) fn record_lowered_source_statement(&mut self, statement: &Statement<'i>) {
+        let Some(active) = self.active.as_mut() else {
+            return;
+        };
+        active.current_source_statement_index = active
+            .current_source_statement_index
+            .saturating_add(source_statement_slot_count(statement));
+    }
+
+    pub(super) fn begin_inline_source_call(&mut self, callee: &str, call_site_span: SourceSpan) {
+        self.source_inline_depth = self.source_inline_depth.saturating_add(1);
         let Some(active) = self.active.as_mut() else {
             return;
         };
@@ -118,33 +140,36 @@ impl<'i> DebugRecorder<'i> {
             call_site_span,
             frame_id,
             frame_depth,
-            start_statement_index,
+            start_statement_index: active.current_source_statement_index,
             param_updates: Vec::new(),
         });
     }
 
-    pub(super) fn record_inline_source_param(&mut self, name: &str, type_name: &str, expr: Expr<'i>) {
+    pub(super) fn record_inline_source_param(&mut self, name: &str, type_ref: &TypeRef, expr: Expr<'i>) {
         let Some(active) = self.active.as_mut() else {
             return;
         };
+        let type_name = type_ref.type_name();
         let rewritten_expr = active
             .active_source_function_name
             .as_deref()
             .map(|function_name| rewrite_debug_expr_with_function(expr.clone(), function_name, &active.visible_names_by_function))
             .unwrap_or(expr);
+        let structured_leaf_bindings = inline_param_leaf_bindings(type_ref, &active.source_structs);
         let Some(frame) = active.active_source_inline_frames.last_mut() else {
             return;
         };
         frame.param_updates.push(DebugVariableUpdate {
             name: name.to_string(),
-            type_name: type_name.to_string(),
+            type_name,
             stack_binding: None,
-            structured_leaf_bindings: None,
+            structured_leaf_bindings,
             expr: rewritten_expr,
         });
     }
 
-    pub(super) fn finish_inline_source_call(&mut self, body_end_statement_index: usize, resume_statement_index: usize) {
+    pub(super) fn finish_inline_source_call(&mut self, body_end_statement_index: usize) {
+        self.source_inline_depth = self.source_inline_depth.saturating_sub(1);
         let Some(active) = self.active.as_mut() else {
             return;
         };
@@ -165,7 +190,7 @@ impl<'i> DebugRecorder<'i> {
             start_statement_index: frame.start_statement_index,
             param_updates: frame.param_updates,
             body_end_statement_index,
-            resume_statement_index,
+            resume_statement_index: active.current_source_statement_index,
         });
     }
 
@@ -758,9 +783,10 @@ fn active_structured_leaf_spec<'a, 'i>(
     recorder.active.as_ref()?.structured_leaf_specs_by_function.get(function_name)?.get(lowered_name)
 }
 
-#[derive(Debug, Default)]
+#[derive(Default)]
 struct ActiveDebugRecorder<'i> {
     recorder: DebugInfoRecorder<'i>,
+    source_structs: StructRegistry,
     source_params_by_function: HashMap<String, Vec<ParamAst<'i>>>,
     visible_names_by_function: HashMap<String, HashMap<String, String>>,
     structured_leaf_specs_by_function: HashMap<String, HashMap<String, StructuredLeafSpec>>,
@@ -772,6 +798,7 @@ struct ActiveDebugRecorder<'i> {
     active_source_function_name: Option<String>,
     active_source_inline_frames: Vec<PendingInlineFrame<'i>>,
     next_source_frame_id: u32,
+    current_source_statement_index: usize,
     statement_debug_state_stack: Vec<StatementDebugState<'i>>,
     pending_statement_debug_states: Vec<Option<StatementDebugState<'i>>>,
 }
@@ -863,6 +890,7 @@ impl<'i> ActiveDebugRecorder<'i> {
         self.active_source_function_name = None;
         self.active_source_inline_frames.clear();
         self.next_source_frame_id = 1;
+        self.current_source_statement_index = 0;
         self.statement_debug_state_stack.clear();
         self.pending_statement_debug_states.clear();
     }
@@ -1071,6 +1099,37 @@ fn build_structured_leaf_specs_for_function<'i>(
     Ok(specs)
 }
 
+fn inline_param_leaf_bindings(type_ref: &TypeRef, structs: &StructRegistry) -> Option<Vec<DebugLeafBinding>> {
+    if struct_name_from_type_ref(type_ref, structs).is_none() && struct_array_name_from_type_ref(type_ref, structs).is_none() {
+        return None;
+    }
+
+    let mut leaf_bindings = flatten_type_ref_leaves(type_ref, structs)
+        .ok()?
+        .into_iter()
+        .map(|(field_path, leaf_type)| DebugLeafBinding {
+            field_path,
+            type_name: type_name_from_ref(&leaf_type),
+            stack_binding: None,
+        })
+        .collect::<Vec<_>>();
+
+    leaf_bindings.sort_by(|left, right| left.field_path.cmp(&right.field_path));
+    Some(leaf_bindings)
+}
+
+fn source_statement_slot_count(statement: &Statement<'_>) -> usize {
+    match statement {
+        Statement::Block { body, .. } => 1 + body.iter().map(source_statement_slot_count).sum::<usize>(),
+        Statement::If { then_branch, else_branch, .. } => {
+            1 + then_branch.iter().map(source_statement_slot_count).sum::<usize>()
+                + else_branch.as_ref().map(|branch| branch.iter().map(source_statement_slot_count).sum::<usize>()).unwrap_or(0)
+        }
+        Statement::For { body, .. } => 1 + body.iter().map(source_statement_slot_count).sum::<usize>(),
+        _ => 1,
+    }
+}
+
 fn collect_structured_binding_specs_from_statements<'i>(
     specs: &mut HashMap<String, StructuredLeafSpec>,
     statements: &[Statement<'i>],
@@ -1238,7 +1297,7 @@ fn flattened_struct_field_name(base: &str, field_path: &[String]) -> String {
 mod tests {
     use super::DebugRecorder;
     use crate::ast::{Expr, parse_contract_ast};
-    use crate::compiler::build_struct_registry;
+    use crate::compiler::{CompileOptions, build_struct_registry};
 
     #[test]
     fn disabled_recorder_returns_no_debug_info() {
@@ -1253,7 +1312,7 @@ mod tests {
         )
         .expect("parse contract");
 
-        let mut recorder = DebugRecorder::new(false);
+        let mut recorder = DebugRecorder::new(CompileOptions::default(), &contract).expect("recorder");
         recorder.record_contract_scope(&contract, &[]);
         assert!(recorder.take_debug_info(Some("contract Demo() {}")).is_none());
     }
@@ -1273,7 +1332,8 @@ mod tests {
         )
         .expect("parse contract");
 
-        let mut recorder = DebugRecorder::new(true);
+        let mut recorder =
+            DebugRecorder::new(CompileOptions { record_debug_infos: true, ..Default::default() }, &contract).expect("recorder");
         recorder.record_contract_scope(&contract, &[Expr::int(7)]);
         let debug_info = recorder.take_debug_info(Some("contract Demo(int seed) {}")).expect("debug info");
 
@@ -1299,7 +1359,8 @@ mod tests {
         let structs = build_struct_registry(&contract).expect("build struct registry");
         let function = contract.functions.first().expect("entrypoint function");
 
-        let mut recorder = DebugRecorder::new(true);
+        let mut recorder =
+            DebugRecorder::new(CompileOptions { record_debug_infos: true, ..Default::default() }, &contract).expect("recorder");
         recorder.record_contract_scope(&contract, &[]);
         recorder.begin_entrypoint(function, &contract.fields, &structs).expect("begin entrypoint");
 
@@ -1327,7 +1388,8 @@ mod tests {
         let structs = build_struct_registry(&contract).expect("build struct registry");
         let function = contract.functions.first().expect("entrypoint function");
 
-        let mut recorder = DebugRecorder::new(true);
+        let mut recorder =
+            DebugRecorder::new(CompileOptions { record_debug_infos: true, ..Default::default() }, &contract).expect("recorder");
         recorder.record_contract_scope(&contract, &[]);
         recorder.begin_entrypoint(function, &contract.fields, &structs).expect("begin entrypoint");
         recorder.finish_entrypoint(12);
