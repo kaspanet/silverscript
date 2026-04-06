@@ -1127,6 +1127,23 @@ fn compile_entrypoint_function<'i>(
     let has_return = function.body.iter().any(contains_return);
 
     let body_len = function.body.len();
+    let mut statement_ctx = CompileStatementContext {
+        assigned_names: &assigned_names,
+        identifier_uses: &identifier_uses,
+        types: &mut types,
+        stack_bindings: &mut stack_bindings,
+        builder: &mut builder,
+        options,
+        contract_fields,
+        contract_field_prefix_len,
+        contract_constants: constants,
+        structs,
+        functions,
+        function_order,
+        function_index,
+        script_size,
+        debug_recorder,
+    };
     for (index, stmt) in function.body.iter().enumerate() {
         if let Statement::Return { exprs, .. } = stmt {
             debug_assert_eq!(index, body_len - 1, "type_check must validate return statements are last");
@@ -1136,27 +1153,7 @@ fn compile_entrypoint_function<'i>(
             continue;
         }
 
-        compile_statement(
-            &mut CompileStatementContext {
-                assigned_names: &assigned_names,
-                identifier_uses: &identifier_uses,
-                types: &mut types,
-                stack_bindings: &mut stack_bindings,
-                builder: &mut builder,
-                options,
-                contract_fields,
-                contract_field_prefix_len,
-                contract_constants: constants,
-                structs,
-                functions,
-                function_order,
-                function_index,
-                script_size,
-                debug_recorder,
-            },
-            stmt,
-        )
-        .map_err(|err| err.with_span(&stmt.span()))?;
+        compile_statement(&mut statement_ctx, stmt).map_err(|err| err.with_span(&stmt.span()))?;
     }
 
     let flattened_returns = if has_return { return_exprs } else { Vec::new() };
@@ -1269,6 +1266,35 @@ struct CompileStatementContext<'a, 'i> {
     function_index: usize,
     script_size: Option<i64>,
     debug_recorder: &'a mut DebugRecorder<'i>,
+}
+
+impl<'a, 'i> CompileStatementContext<'a, 'i> {
+    pub(crate) fn with_types_and_stack_bindings<'b>(
+        &'b mut self,
+        types: &'b mut HashMap<String, String>,
+        stack_bindings: &'b mut StackBindings,
+    ) -> CompileStatementContext<'b, 'i>
+    where
+        'a: 'b,
+    {
+        CompileStatementContext {
+            assigned_names: self.assigned_names,
+            identifier_uses: self.identifier_uses,
+            types,
+            stack_bindings,
+            builder: self.builder,
+            options: self.options,
+            contract_fields: self.contract_fields,
+            contract_field_prefix_len: self.contract_field_prefix_len,
+            contract_constants: self.contract_constants,
+            structs: self.structs,
+            functions: self.functions,
+            function_order: self.function_order,
+            function_index: self.function_index,
+            script_size: self.script_size,
+            debug_recorder: self.debug_recorder,
+        }
+    }
 }
 
 fn compile_variable_definition_statement<'i>(
@@ -2465,53 +2491,13 @@ fn compile_if_statement<'i>(
 
     let mut then_types = (*ctx.types).clone();
     let mut then_stack_bindings = original_stack_bindings.clone();
-    compile_block(
-        &mut CompileStatementContext {
-            assigned_names: ctx.assigned_names,
-            identifier_uses: ctx.identifier_uses,
-            types: &mut then_types,
-            stack_bindings: &mut then_stack_bindings,
-            builder: ctx.builder,
-            options: ctx.options,
-            contract_fields: ctx.contract_fields,
-            contract_field_prefix_len: ctx.contract_field_prefix_len,
-            contract_constants: ctx.contract_constants,
-            structs: ctx.structs,
-            functions: ctx.functions,
-            function_order: ctx.function_order,
-            function_index: ctx.function_index,
-            script_size: ctx.script_size,
-            debug_recorder: ctx.debug_recorder,
-        },
-        then_branch,
-        true,
-    )?;
+    compile_block(&mut ctx.with_types_and_stack_bindings(&mut then_types, &mut then_stack_bindings), then_branch, true)?;
 
     if let Some(else_branch) = else_branch {
         ctx.builder.add_op(OpElse)?;
         let mut else_types = (*ctx.types).clone();
         let mut else_stack_bindings = original_stack_bindings.clone();
-        compile_block(
-            &mut CompileStatementContext {
-                assigned_names: ctx.assigned_names,
-                identifier_uses: ctx.identifier_uses,
-                types: &mut else_types,
-                stack_bindings: &mut else_stack_bindings,
-                builder: ctx.builder,
-                options: ctx.options,
-                contract_fields: ctx.contract_fields,
-                contract_field_prefix_len: ctx.contract_field_prefix_len,
-                contract_constants: ctx.contract_constants,
-                structs: ctx.structs,
-                functions: ctx.functions,
-                function_order: ctx.function_order,
-                function_index: ctx.function_index,
-                script_size: ctx.script_size,
-                debug_recorder: ctx.debug_recorder,
-            },
-            else_branch,
-            true,
-        )?;
+        compile_block(&mut ctx.with_types_and_stack_bindings(&mut else_types, &mut else_stack_bindings), else_branch, true)?;
         else_stack_bindings.emit_stack_reordering(&then_stack_bindings, ctx.builder)?;
         *ctx.stack_bindings = then_stack_bindings;
     } else {
@@ -2570,27 +2556,7 @@ fn compile_block<'i>(
 ) -> Result<(), CompilerError> {
     let mut added_stack_locals = Vec::new();
     for stmt in statements {
-        let added = compile_statement(
-            &mut CompileStatementContext {
-                assigned_names: ctx.assigned_names,
-                identifier_uses: ctx.identifier_uses,
-                types: ctx.types,
-                stack_bindings: ctx.stack_bindings,
-                builder: ctx.builder,
-                options: ctx.options,
-                contract_fields: ctx.contract_fields,
-                contract_field_prefix_len: ctx.contract_field_prefix_len,
-                contract_constants: ctx.contract_constants,
-                structs: ctx.structs,
-                functions: ctx.functions,
-                function_order: ctx.function_order,
-                function_index: ctx.function_index,
-                script_size: ctx.script_size,
-                debug_recorder: ctx.debug_recorder,
-            },
-            stmt,
-        )
-        .map_err(|err| err.with_span(&stmt.span()))?;
+        let added = compile_statement(ctx, stmt).map_err(|err| err.with_span(&stmt.span()))?;
         added_stack_locals.extend(added);
     }
 
