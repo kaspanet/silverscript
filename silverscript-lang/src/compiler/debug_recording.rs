@@ -42,10 +42,6 @@ impl<'i> DebugRecorder<'i> {
         Ok(recorder)
     }
 
-    pub(crate) fn is_enabled(&self) -> bool {
-        self.active.is_some()
-    }
-
     pub(crate) fn record_contract_scope(&mut self, contract: &ContractAst<'i>, constructor_args: &[Expr<'i>]) {
         let Some(active) = self.active.as_mut() else {
             return;
