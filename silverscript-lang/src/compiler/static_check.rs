@@ -148,6 +148,7 @@ fn validate_contract_field_initializers<'i>(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn validate_statement_shapes<'i>(
     statements: &[Statement<'i>],
     env: &mut HashMap<String, Expr<'i>>,

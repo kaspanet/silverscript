@@ -1355,7 +1355,7 @@ mod tests {
             "#,
         )
         .expect("parse contract");
-        let structs = build_struct_registry(&contract).expect("build struct registry");
+        let _structs = build_struct_registry(&contract).expect("build struct registry");
         let function = contract.functions.first().expect("entrypoint function");
 
         let mut recorder =
@@ -1385,7 +1385,7 @@ mod tests {
             "#,
         )
         .expect("parse contract");
-        let structs = build_struct_registry(&contract).expect("build struct registry");
+        let _structs = build_struct_registry(&contract).expect("build struct registry");
         let function = contract.functions.first().expect("entrypoint function");
 
         let mut recorder =
