@@ -76,7 +76,7 @@ where
     let reused_values = SigHashReusedValuesUnsync::new();
     let ctx = EngineCtx::new(&sig_cache).with_reused(&reused_values);
 
-    let flags = EngineFlags { covenants_enabled: true, mass_per_sig_op: 0 };
+    let flags = EngineFlags { covenants_enabled: true, sigop_script_units: 0.into() };
     let engine = debugger_session::session::DebugEngine::new(ctx, flags);
 
     let entry = compiled
@@ -1082,7 +1082,8 @@ contract MissingStructuredSource() {
     let sig_cache = Cache::new(10_000);
     let reused_values = SigHashReusedValuesUnsync::new();
     let ctx = EngineCtx::new(&sig_cache).with_reused(&reused_values);
-    let engine = debugger_session::session::DebugEngine::new(ctx, EngineFlags { covenants_enabled: true, mass_per_sig_op: 0 });
+    let engine =
+        debugger_session::session::DebugEngine::new(ctx, EngineFlags { covenants_enabled: true, sigop_script_units: 0.into() });
     let sigscript = compiled.build_sig_script("inspect", vec![struct_object(vec![("amount", Expr::int(7))])])?;
     let mut session = DebugSession::full(&sigscript, &compiled.script, "", Some(debug_info), engine)?;
 
@@ -1642,7 +1643,7 @@ contract CovLocal() {
         previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([0x44u8; 32]), index: 0 },
         signature_script: sigscript.clone(),
         sequence: 0,
-        mass: TxInputMass::SigopCount(0),
+        mass: TxInputMass::SigopCount(0.into()),
     };
     let output = TransactionOutput { value: 1000, script_public_key: ScriptPublicKey::new(0, vec![OpTrue].into()), covenant: None };
     let tx = Transaction::new(1, vec![input], vec![output], 0, Default::default(), 0, vec![]);
@@ -1664,7 +1665,7 @@ contract CovLocal() {
         0,
         utxo_ref,
         ctx,
-        EngineFlags { covenants_enabled: true, mass_per_sig_op: 0 },
+        EngineFlags { covenants_enabled: true, sigop_script_units: 0.into() },
     );
     let shadow_ctx =
         ShadowTxContext { tx: &populated_tx, input: input_ref, input_index: 0, utxo_entry: utxo_ref, covenants_ctx: &cov_ctx };
@@ -1706,7 +1707,7 @@ contract CovEval() {
         previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([0x44u8; 32]), index: 0 },
         signature_script: sigscript.clone(),
         sequence: 0,
-        mass: TxInputMass::SigopCount(0),
+        mass: TxInputMass::SigopCount(0.into()),
     };
     let output = TransactionOutput { value: 1000, script_public_key: ScriptPublicKey::new(0, vec![OpTrue].into()), covenant: None };
     let tx = Transaction::new(1, vec![input], vec![output], 0, Default::default(), 0, vec![]);
@@ -1728,7 +1729,7 @@ contract CovEval() {
         0,
         utxo_ref,
         ctx,
-        EngineFlags { covenants_enabled: true, mass_per_sig_op: 0 },
+        EngineFlags { covenants_enabled: true, sigop_script_units: 0.into() },
     );
 
     let shadow_ctx =

@@ -1468,19 +1468,19 @@ impl<'a, 'i> DebugSession<'a, 'i> {
                 shadow.input_index,
                 shadow.utxo_entry,
                 ctx,
-                EngineFlags { covenants_enabled: true, mass_per_sig_op: 0 },
+                EngineFlags { covenants_enabled: true, sigop_script_units: 0.into() },
             )
         } else {
             TxScriptEngine::new(
                 EngineCtx::new(&sig_cache).with_reused(&reused_values),
-                EngineFlags { covenants_enabled: true, mass_per_sig_op: 0 },
+                EngineFlags { covenants_enabled: true, sigop_script_units: 0.into() },
             )
         };
         for opcode in parse_script::<DebugTx<'_>, DebugReused>(script) {
             let opcode = opcode.map_err(|err| format!("failed to parse shadow script: {err}"))?;
             engine.execute_opcode(opcode).map_err(|err| format!("failed to execute shadow script: {err}"))?;
         }
-        engine.stacks().dstack.last().cloned().ok_or_else(|| "shadow VM produced an empty stack".to_string())
+        engine.stacks().dstack.last().map(|entry| entry.to_vec()).ok_or_else(|| "shadow VM produced an empty stack".to_string())
     }
 
     fn read_stack_at_index(&self, index: i64) -> Result<Vec<u8>, String> {
@@ -1494,7 +1494,7 @@ impl<'a, 'i> DebugSession<'a, 'i> {
             return Err("stack index out of range".to_string());
         }
         let stack_index = stack.len() - 1 - idx;
-        Ok(stack.get(stack_index).cloned().unwrap_or_default())
+        Ok(stack.get(stack_index).cloned().unwrap_or_default().to_vec())
     }
 
     fn read_stack_value(&self, index: i64, type_name: &str) -> Result<DebugValue, String> {
@@ -2119,11 +2119,10 @@ mod tests {
     ) -> Result<DebugSession<'static, 'static>, kaspa_txscript_errors::TxScriptError> {
         let sig_cache = Box::leak(Box::new(Cache::new(10_000)));
         let reused_values: &'static SigHashReusedValuesUnsync = Box::leak(Box::new(SigHashReusedValuesUnsync::new()));
-        let engine: DebugEngine<'static> =
-            TxScriptEngine::new(
-                EngineCtx::new(sig_cache).with_reused(reused_values),
-                EngineFlags { covenants_enabled: true, mass_per_sig_op: 0 },
-            );
+        let engine: DebugEngine<'static> = TxScriptEngine::new(
+            EngineCtx::new(sig_cache).with_reused(reused_values),
+            EngineFlags { covenants_enabled: true, sigop_script_units: 0.into() },
+        );
         let debug_info = DebugInfo {
             source: String::new(),
             steps,
@@ -2319,11 +2318,10 @@ mod tests {
     fn list_variables_renders_struct_constant_from_recorded_value() {
         let sig_cache = Box::leak(Box::new(Cache::new(10_000)));
         let reused_values: &'static SigHashReusedValuesUnsync = Box::leak(Box::new(SigHashReusedValuesUnsync::new()));
-        let engine: DebugEngine<'static> =
-            TxScriptEngine::new(
-                EngineCtx::new(sig_cache).with_reused(reused_values),
-                EngineFlags { covenants_enabled: true, mass_per_sig_op: 0 },
-            );
+        let engine: DebugEngine<'static> = TxScriptEngine::new(
+            EngineCtx::new(sig_cache).with_reused(reused_values),
+            EngineFlags { covenants_enabled: true, sigop_script_units: 0.into() },
+        );
         let debug_info = DebugInfo {
             source: String::new(),
             steps: vec![],

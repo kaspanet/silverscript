@@ -51,7 +51,7 @@ fn run_script_with_selector(script: Vec<u8>, selector: Option<i64>) -> Result<()
         previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([1u8; 32]), index: 0 },
         signature_script: sigscript,
         sequence: 0,
-        mass: TxInputMass::SigopCount(0),
+        mass: TxInputMass::SigopCount(0.into()),
     };
     let output = TransactionOutput { value: 1000, script_public_key: ScriptPublicKey::new(0, script.clone().into()), covenant: None };
     let tx = Transaction::new(1, vec![input.clone()], vec![output.clone()], 0, Default::default(), 0, vec![]);
@@ -64,7 +64,7 @@ fn run_script_with_selector(script: Vec<u8>, selector: Option<i64>) -> Result<()
         0,
         &utxo_entry,
         EngineCtx::new(&sig_cache).with_reused(&reused_values),
-        EngineFlags { covenants_enabled: true, mass_per_sig_op: 0 },
+        EngineFlags { covenants_enabled: true, sigop_script_units: 0.into() },
     );
     vm.execute()
 }
