@@ -3068,6 +3068,9 @@ fn compile_binary_expr<'i>(
         !matches!(op, BinaryOp::Add) || (left_value_type.as_deref() != Some("byte") && right_value_type.as_deref() != Some("byte")),
         "type_check must reject byte addition"
     );
+    let bool_eq = matches!(op, BinaryOp::Eq | BinaryOp::Ne)
+        && left_value_type.as_deref() == Some("bool")
+        && right_value_type.as_deref() == Some("bool");
     let bytes_eq = matches!(op, BinaryOp::Eq | BinaryOp::Ne)
         && (expr_is_bytes(left, ctx.scope.types) || expr_is_bytes(&coerced_right, ctx.scope.types));
     let bytes_add = matches!(op, BinaryOp::Add) && (expr_is_bytes(left, ctx.scope.types) || expr_is_bytes(right, ctx.scope.types));
@@ -3100,6 +3103,16 @@ fn compile_binary_expr<'i>(
         compile_expr_with_context(ctx, left)?;
         compile_expr_with_context(ctx, &coerced_right)?;
     }
+
+    if bool_eq {
+        // Normalize operands to 0 or 1, so that we can use OpNumEqual and OpNumNotEqual for both equality and inequality.
+        ctx.builder.add_op(OpNot)?;
+        ctx.builder.add_op(OpNot)?;
+        ctx.builder.add_op(OpSwap)?;
+        ctx.builder.add_op(OpNot)?;
+        ctx.builder.add_op(OpNot)?;
+    }
+
     match op {
         BinaryOp::Or => {
             ctx.builder.add_op(OpBoolOr)?;
