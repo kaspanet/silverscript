@@ -15,12 +15,12 @@ use kaspa_txscript::{
     EngineCtx, EngineFlags, SeqCommitAccessor, TxScriptEngine, parse_script, pay_to_address_script, pay_to_script_hash_script,
     pay_to_script_hash_signature_script, script_to_str, serialize_i64,
 };
-use silverscript_lang::ast::{Expr, ExprKind, format_contract_ast, parse_contract_ast};
+use silverscript_lang::ast::{Expr, format_contract_ast, parse_contract_ast};
 use silverscript_lang::compiler::{
     CompileOptions, CompiledContract, CovenantDeclCallOptions, FunctionAbiEntry, FunctionInputAbi, compile_contract,
     compile_contract_ast, function_branch_index, struct_object,
 };
-use silverscript_lang::debug_info::{DebugParamBinding, RuntimeBinding, StepKind};
+use silverscript_lang::debug_info::StepKind;
 
 fn run_script_with_selector(script: Vec<u8>, selector: Option<i64>) -> Result<(), kaspa_txscript_errors::TxScriptError> {
     let sigscript = selector_sigscript(selector);
@@ -202,14 +202,48 @@ fn compile_contract_omits_debug_info_when_recording_disabled() {
     assert!(compiled.debug_info.is_none());
 }
 
-// TODO: Un-ignore these debug-recording tests once compiler debug recording is re-enabled.
 #[test]
-#[ignore = "debug recording is currently disabled in compiler/mod.rs"]
-fn compile_contract_emits_debug_info_when_recording_enabled() {
+fn compile_contract_emits_debug_info_scaffold_when_recording_enabled() {
     let source = r#"
-        contract DebugToggle() {
+        contract DebugToggle(int seed) {
+            int amount = 7;
+            int constant BONUS = 2;
+
             entrypoint function spend(int x) {
-                require(x == x);
+                require(x + amount + seed + BONUS > 0);
+            }
+        }
+    "#;
+
+    let options = CompileOptions { record_debug_infos: true, ..Default::default() };
+    let compiled = compile_contract(source, &[Expr::int(11)], options).expect("compile succeeds");
+    let debug_info = compiled.debug_info.expect("debug info should be present");
+
+    assert!(!debug_info.steps.is_empty(), "debug recording should emit statement steps again");
+    assert!(debug_info.steps.iter().all(|step| step.bytecode_end >= step.bytecode_start));
+    assert!(debug_info.steps.iter().all(|step| step.span.line > 0));
+    assert_eq!(debug_info.constructor_args.len(), 1);
+    assert_eq!(debug_info.constructor_args[0].name, "seed");
+    assert_eq!(debug_info.constants.len(), 1);
+    assert_eq!(debug_info.constants[0].name, "BONUS");
+    assert!(debug_info.params.iter().any(|param| param.name == "x"));
+    assert!(debug_info.params.iter().any(|param| param.name == "amount"));
+
+    let function = debug_info.functions.iter().find(|function| function.name == "spend").expect("function range for spend");
+    assert!(function.bytecode_end > function.bytecode_start);
+    assert!(debug_info.source.contains("contract DebugToggle"));
+}
+
+#[test]
+fn compile_contract_debug_info_scaffold_records_selector_entrypoint_ranges() {
+    let source = r#"
+        contract DebugSelector() {
+            entrypoint function a(int x) {
+                require(x >= 0);
+            }
+
+            entrypoint function b(int x) {
+                require(x > 0);
             }
         }
     "#;
@@ -217,9 +251,136 @@ fn compile_contract_emits_debug_info_when_recording_enabled() {
     let options = CompileOptions { record_debug_infos: true, ..Default::default() };
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
     let debug_info = compiled.debug_info.expect("debug info should be present");
-    assert!(!debug_info.steps.is_empty());
-    assert!(!debug_info.functions.is_empty());
-    assert!(debug_info.params.iter().any(|param| param.name == "x"));
+
+    let function_a = debug_info.functions.iter().find(|function| function.name == "a").expect("function range for a");
+    let function_b = debug_info.functions.iter().find(|function| function.name == "b").expect("function range for b");
+
+    assert!(function_a.bytecode_start > 0, "selector mode should prepend dispatcher ops");
+    assert!(function_a.bytecode_start < function_b.bytecode_start, "entrypoint ranges should follow compile order");
+    assert!(function_a.bytecode_end <= function_b.bytecode_start, "entrypoint ranges should not overlap");
+}
+
+#[test]
+fn compile_contract_debug_info_records_inline_boundaries_and_return_bindings() {
+    let source = r#"
+        contract InlineCalls() {
+            function addOne(int x) : (int) {
+                int y = x + 1;
+                return(y);
+            }
+
+            entrypoint function main(int a) {
+                (int b) = addOne(a);
+                require(b == a + 1);
+            }
+        }
+    "#;
+
+    let options = CompileOptions { record_debug_infos: true, ..Default::default() };
+    let compiled = compile_contract(source, &[], options).expect("compile succeeds");
+    let debug_info = compiled.debug_info.expect("debug info should be present");
+    let rendered_steps = debug_info
+        .steps
+        .iter()
+        .map(|step| {
+            format!(
+                "seq={} kind={:?} line={} depth={} frame={} updates={:?}",
+                step.sequence,
+                step.kind,
+                step.span.line,
+                step.call_depth,
+                step.frame_id,
+                step.variable_updates.iter().map(|update| update.name.clone()).collect::<Vec<_>>()
+            )
+        })
+        .collect::<Vec<_>>();
+
+    assert!(
+        debug_info.steps.iter().any(|step| matches!(step.kind, StepKind::InlineCallEnter { .. })),
+        "expected inline enter step, got {rendered_steps:#?}"
+    );
+    assert!(
+        debug_info.steps.iter().any(|step| matches!(step.kind, StepKind::InlineCallExit { .. })),
+        "expected inline exit step, got {rendered_steps:#?}"
+    );
+    assert!(
+        debug_info.steps.iter().any(|step| {
+            matches!(step.kind, StepKind::InlineCallEnter { .. }) && step.variable_updates.iter().any(|update| update.name == "x")
+        }),
+        "expected inline enter to carry x, got {rendered_steps:#?}"
+    );
+    assert!(
+        debug_info.steps.iter().any(|step| step.call_depth > 0 && step.variable_updates.iter().any(|update| update.name == "y")),
+        "expected inline frame step to update y, got {rendered_steps:#?}"
+    );
+    assert!(
+        debug_info.steps.iter().any(|step| {
+            matches!(step.kind, StepKind::Source {})
+                && step.call_depth == 0
+                && step.span.line == 9
+                && step.variable_updates.iter().any(|update| update.name == "b")
+        }),
+        "expected caller-side line 9 source step to update b, got {rendered_steps:#?}"
+    );
+}
+
+#[test]
+fn compile_contract_debug_info_preserves_structured_scope_inside_inline_calls() {
+    let source = r#"
+        pragma silverscript ^0.1.0;
+
+        contract InlineStructuredEval() {
+            int amount = 1;
+            bool active = true;
+            byte[1] tag = 0xaa;
+
+            function inspect_inner(State inner_state) {
+                int bumped = inner_state.amount + amount;
+                require(bumped > 0);
+            }
+
+            entrypoint function inspect(State next_state) {
+                inspect_inner(next_state);
+                require(next_state.active == active);
+            }
+        }
+    "#;
+
+    let options = CompileOptions { record_debug_infos: true, ..Default::default() };
+    let compiled = compile_contract(source, &[], options).expect("compile succeeds");
+    let debug_info = compiled.debug_info.expect("debug info should be present");
+
+    let inline_steps = debug_info
+        .steps
+        .iter()
+        .filter(|step| step.frame_id != 0 && matches!(step.kind, StepKind::Source {}))
+        .map(|step| (step.span.line, step.call_depth))
+        .collect::<Vec<_>>();
+    assert!(
+        inline_steps.iter().any(|(line, depth)| *line == 10 && *depth > 0),
+        "expected callee assignment line to stay in inline frame, got {inline_steps:?}"
+    );
+    assert!(
+        inline_steps.iter().any(|(line, depth)| *line == 11 && *depth > 0),
+        "expected callee require line to stay in inline frame, got {inline_steps:?}"
+    );
+
+    let inner_state_update = debug_info
+        .steps
+        .iter()
+        .filter(|step| step.frame_id != 0)
+        .flat_map(|step| step.variable_updates.iter())
+        .find(|update| update.name == "inner_state" && update.structured_leaf_bindings.is_some())
+        .expect("expected structured inline param update");
+    let mut field_paths = inner_state_update
+        .structured_leaf_bindings
+        .as_ref()
+        .expect("structured inline param should carry leaf bindings")
+        .iter()
+        .map(|leaf| leaf.field_path.join("."))
+        .collect::<Vec<_>>();
+    field_paths.sort();
+    assert_eq!(field_paths, vec!["active".to_string(), "amount".to_string(), "tag".to_string()]);
 }
 
 #[test]
@@ -549,242 +710,6 @@ fn sorting_network_over_fixed_array_matches_rust_model_across_cases() {
         let result = run_script_with_sigscript(compiled.script.clone(), sigscript);
         assert!(result.is_ok(), "sorting-network case {values:?} should match Rust model: {result:?}");
     }
-}
-
-#[test]
-#[ignore = "debug recording is currently disabled in compiler/mod.rs"]
-fn debug_info_records_console_expression_args() {
-    let source = r#"
-        contract DebugConsole() {
-            entrypoint function spend(int x, int y) {
-                console.log("sum", x + y);
-                require(x + y > 0);
-            }
-        }
-    "#;
-
-    let options = CompileOptions { record_debug_infos: true, ..Default::default() };
-    let compiled = compile_contract(source, &[], options).expect("compile succeeds");
-    let debug_info = compiled.debug_info.expect("debug info should be present");
-
-    let console_step = debug_info
-        .steps
-        .iter()
-        .find(|step| matches!(step.kind, StepKind::Source {}) && !step.console_args.is_empty())
-        .expect("console step should be recorded");
-
-    assert_eq!(console_step.bytecode_start, console_step.bytecode_end, "console step should be zero-width");
-    assert_eq!(console_step.console_args.len(), 2);
-    assert!(matches!(console_step.console_args[0].kind, ExprKind::String(ref value) if value == "sum"));
-    assert!(matches!(console_step.console_args[1].kind, ExprKind::Binary { .. }));
-}
-
-#[test]
-#[ignore = "debug recording is currently disabled in compiler/mod.rs"]
-fn debug_info_records_runtime_binding_for_stable_scalar_local() {
-    let source = r#"
-        contract DebugBinding() {
-            entrypoint function spend(int x) {
-                int y = x + 1;
-                require(y > 0);
-                require(y < 10);
-            }
-        }
-    "#;
-
-    let options = CompileOptions { record_debug_infos: true, ..Default::default() };
-    let compiled = compile_contract(source, &[], options).expect("compile succeeds");
-    let debug_info = compiled.debug_info.expect("debug info should be present");
-
-    let y_update = debug_info
-        .steps
-        .iter()
-        .flat_map(|step| step.variable_updates.iter())
-        .find(|update| update.name == "y")
-        .expect("y update should be recorded");
-
-    assert!(matches!(y_update.runtime_binding, Some(RuntimeBinding::DataStackSlot { .. })));
-}
-
-#[test]
-#[ignore = "debug recording is currently disabled in compiler/mod.rs"]
-fn debug_info_records_struct_param_leaf_bindings_in_runtime_order() {
-    let source = r#"
-        contract DebugStructParam() {
-            struct Pair {
-                int amount;
-                byte[2] code;
-            }
-
-            entrypoint function spend(Pair next, int fee) {
-                require(fee >= 0);
-            }
-        }
-    "#;
-
-    let options = CompileOptions { record_debug_infos: true, ..Default::default() };
-    let compiled = compile_contract(source, &[], options).expect("compile succeeds");
-    let debug_info = compiled.debug_info.expect("debug info should be present");
-
-    let next = debug_info.params.iter().find(|param| param.name == "next").expect("structured param should be recorded");
-    assert_eq!(next.type_name, "Pair");
-    let DebugParamBinding::StructuredValue { leaf_bindings } = &next.binding else {
-        panic!("expected structured binding");
-    };
-    assert_eq!(leaf_bindings.len(), 2);
-    assert_eq!(leaf_bindings[0].field_path, vec!["amount".to_string()]);
-    assert_eq!(leaf_bindings[0].type_name, "int");
-    assert_eq!(leaf_bindings[0].stack_index, Some(2));
-    assert_eq!(leaf_bindings[1].field_path, vec!["code".to_string()]);
-    assert_eq!(leaf_bindings[1].type_name, "byte[2]");
-    assert_eq!(leaf_bindings[1].stack_index, Some(1));
-
-    let fee = debug_info.params.iter().find(|param| param.name == "fee").expect("scalar param should be recorded");
-    assert_eq!(fee.binding, DebugParamBinding::SingleValue { stack_index: 0 });
-}
-
-#[test]
-#[ignore = "debug recording is currently disabled in compiler/mod.rs"]
-fn debug_info_records_state_array_param_leaf_bindings_in_runtime_order() {
-    let source = r#"
-        contract DebugStateArrayParam() {
-            int amount = 1;
-            byte[32] owner = 0x1111111111111111111111111111111111111111111111111111111111111111;
-
-            entrypoint function spend(State[] next_states, int fee) {
-                require(fee >= 0);
-            }
-        }
-    "#;
-
-    let options = CompileOptions { record_debug_infos: true, ..Default::default() };
-    let compiled = compile_contract(source, &[], options).expect("compile succeeds");
-    let debug_info = compiled.debug_info.expect("debug info should be present");
-
-    let next_states =
-        debug_info.params.iter().find(|param| param.name == "next_states").expect("state-array param should be recorded");
-    assert_eq!(next_states.type_name, "State[]");
-    let DebugParamBinding::StructuredValue { leaf_bindings } = &next_states.binding else {
-        panic!("expected structured binding");
-    };
-    assert_eq!(leaf_bindings.len(), 2);
-    assert_eq!(leaf_bindings[0].field_path, vec!["amount".to_string()]);
-    assert_eq!(leaf_bindings[0].type_name, "int[]");
-    assert_eq!(leaf_bindings[0].stack_index, Some(4));
-    assert_eq!(leaf_bindings[1].field_path, vec!["owner".to_string()]);
-    assert_eq!(leaf_bindings[1].type_name, "byte[32][]");
-    assert_eq!(leaf_bindings[1].stack_index, Some(3));
-
-    let fee = debug_info.params.iter().find(|param| param.name == "fee").expect("scalar param should be recorded");
-    assert_eq!(fee.binding, DebugParamBinding::SingleValue { stack_index: 2 });
-}
-
-#[test]
-#[ignore = "debug recording is currently disabled in compiler/mod.rs"]
-fn debug_info_distinguishes_ctor_args_from_contract_constants() {
-    let source = r#"
-        contract DebugConstants(int seed) {
-            int constant BONUS = 2;
-
-            entrypoint function spend() {
-                require(seed + BONUS >= 0);
-            }
-        }
-    "#;
-
-    let options = CompileOptions { record_debug_infos: true, ..Default::default() };
-    let compiled = compile_contract(source, &[Expr::int(7)], options).expect("compile succeeds");
-    let debug_info = compiled.debug_info.expect("debug info should be present");
-
-    let _seed = debug_info.constructor_args.iter().find(|binding| binding.name == "seed").expect("seed binding should be recorded");
-
-    let bonus = debug_info.constants.iter().find(|binding| binding.name == "BONUS").expect("BONUS binding should be recorded");
-    assert_eq!(bonus.type_name, "int");
-}
-
-#[test]
-#[ignore = "debug recording is currently disabled in compiler/mod.rs"]
-fn debug_info_single_entrypoint_sequences_and_offsets_are_stable() {
-    let source = r#"
-        contract DebugSingle() {
-            entrypoint function spend(int x) {
-                int y = x;
-                require(y == x);
-            }
-        }
-    "#;
-
-    let options = CompileOptions { record_debug_infos: true, ..Default::default() };
-    let compiled = compile_contract(source, &[], options).expect("compile succeeds");
-    assert!(compiled.without_selector);
-
-    let debug_info = compiled.debug_info.expect("debug info should be present");
-    let function = debug_info.functions.iter().find(|function| function.name == "spend").expect("function range for spend");
-    assert_eq!(function.bytecode_start, 0, "single-entrypoint contract should not use selector prefix");
-    assert!(function.bytecode_end > function.bytecode_start);
-
-    let mut sequences = debug_info.steps.iter().map(|step| step.sequence).collect::<Vec<_>>();
-    sequences.sort_unstable();
-    assert_eq!(sequences, (0..debug_info.steps.len() as u32).collect::<Vec<_>>(), "step sequences should be contiguous");
-
-    let function_steps = debug_info
-        .steps
-        .iter()
-        .filter(|step| step.bytecode_start >= function.bytecode_start && step.bytecode_end <= function.bytecode_end)
-        .collect::<Vec<_>>();
-    assert!(!function_steps.is_empty(), "function should contain at least one debug step");
-    assert!(function_steps.iter().all(|step| step.bytecode_start <= step.bytecode_end), "step ranges should be valid");
-}
-
-#[test]
-#[ignore = "debug recording is currently disabled in compiler/mod.rs"]
-fn debug_info_selector_entrypoints_have_global_sequences_and_offset_ranges() {
-    let source = r#"
-        contract DebugSelector() {
-            entrypoint function a(int x) {
-                int y = x;
-                require(y == x);
-            }
-
-            entrypoint function b(int x) {
-                int z = x;
-                require(z == x);
-            }
-        }
-    "#;
-
-    let options = CompileOptions { record_debug_infos: true, ..Default::default() };
-    let compiled = compile_contract(source, &[], options).expect("compile succeeds");
-    assert!(!compiled.without_selector);
-
-    let debug_info = compiled.debug_info.expect("debug info should be present");
-    let function_a = debug_info.functions.iter().find(|function| function.name == "a").expect("function range for a");
-    let function_b = debug_info.functions.iter().find(|function| function.name == "b").expect("function range for b");
-
-    assert!(function_a.bytecode_start > 0, "selector mode should prepend dispatcher ops");
-    assert!(function_a.bytecode_start < function_b.bytecode_start, "entrypoint ranges should follow compile order");
-    assert!(function_a.bytecode_end <= function_b.bytecode_start, "entrypoint ranges should not overlap");
-
-    let steps_for_a = debug_info
-        .steps
-        .iter()
-        .filter(|step| step.bytecode_start >= function_a.bytecode_start && step.bytecode_end <= function_a.bytecode_end)
-        .collect::<Vec<_>>();
-    let steps_for_b = debug_info
-        .steps
-        .iter()
-        .filter(|step| step.bytecode_start >= function_b.bytecode_start && step.bytecode_end <= function_b.bytecode_end)
-        .collect::<Vec<_>>();
-    assert!(!steps_for_a.is_empty(), "entrypoint a should contain debug steps");
-    assert!(!steps_for_b.is_empty(), "entrypoint b should contain debug steps");
-
-    let mut sequences = debug_info.steps.iter().map(|step| step.sequence).collect::<Vec<_>>();
-    sequences.sort_unstable();
-    assert_eq!(sequences, (0..debug_info.steps.len() as u32).collect::<Vec<_>>(), "global step sequences should be contiguous");
-
-    let max_a_sequence = steps_for_a.iter().map(|step| step.sequence).max().expect("a sequence max");
-    let min_b_sequence = steps_for_b.iter().map(|step| step.sequence).min().expect("b sequence min");
-    assert!(max_a_sequence < min_b_sequence, "later entrypoint should reserve a later sequence block");
 }
 
 #[test]

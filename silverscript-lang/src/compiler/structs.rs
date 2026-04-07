@@ -130,7 +130,7 @@ pub(crate) fn validate_struct_graph(structs: &StructRegistry) -> Result<(), Comp
     Ok(())
 }
 
-pub(crate) fn flattened_struct_name(base: &str, path: &[String]) -> String {
+pub fn flattened_struct_name(base: &str, path: &[String]) -> String {
     let mut out = format!("__struct_{base}");
     for part in path {
         out.push('_');
@@ -834,11 +834,7 @@ fn scope_type_names(scope: &LoweringScope) -> HashMap<String, String> {
     scope.vars.iter().map(|(name, type_ref)| (name.clone(), type_name_from_ref(type_ref))).collect()
 }
 
-fn flatten_named_type_like<'i>(
-    name: &str,
-    type_ref: &TypeRef,
-    structs: &StructRegistry,
-) -> Result<Vec<(String, TypeRef)>, CompilerError> {
+fn flatten_named_type_like(name: &str, type_ref: &TypeRef, structs: &StructRegistry) -> Result<Vec<(String, TypeRef)>, CompilerError> {
     if struct_name_from_type_ref(type_ref, structs).is_some() || struct_array_name_from_type_ref(type_ref, structs).is_some() {
         Ok(flatten_type_ref_leaves(type_ref, structs)?
             .into_iter()

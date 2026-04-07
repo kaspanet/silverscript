@@ -14,6 +14,7 @@ use crate::span;
 mod array_push;
 mod compile;
 mod covenant_declarations;
+mod debug_recording;
 mod debug_value_types;
 mod r#for;
 mod infer_array;
@@ -27,13 +28,14 @@ use array_push::lower_array_pushes;
 use compile::compile_contract_impl;
 pub(super) use compile::{array_element_type, eval_const_int, is_bytes_type, type_name_from_ref};
 pub use compile::{compile_debug_expr, function_branch_index};
+pub(crate) use debug_recording::DebugRecorder;
 use r#for::lower_for_loops;
 use static_check::{static_check_contract, value_matches_type_ref};
+pub use structs::flattened_struct_name;
 pub(super) use structs::{
     StructFieldSpec, StructRegistry, build_struct_registry, ensure_known_or_builtin_type, flatten_constructor_args_env,
-    flatten_type_ref_leaves, flattened_struct_field_specs_for_type, flattened_struct_name, lower_runtime_expr,
-    lower_runtime_struct_expr, lower_structs_contract, struct_array_name_from_type_ref, struct_name_from_type_ref,
-    validate_struct_graph,
+    flatten_type_ref_leaves, flattened_struct_field_specs_for_type, lower_runtime_expr, lower_runtime_struct_expr,
+    lower_structs_contract, struct_array_name_from_type_ref, struct_name_from_type_ref, validate_struct_graph,
 };
 
 /// Prefix used for synthetic argument bindings during inline function expansion.

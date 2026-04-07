@@ -148,6 +148,7 @@ fn validate_contract_field_initializers<'i>(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn validate_statement_shapes<'i>(
     statements: &[Statement<'i>],
     env: &mut HashMap<String, Expr<'i>>,
@@ -957,7 +958,7 @@ fn initial_function_types<'i>(
     Ok(types)
 }
 
-fn insert_type_binding<'i>(
+fn insert_type_binding(
     types: &mut HashMap<String, String>,
     name: &str,
     type_ref: &TypeRef,

@@ -2,7 +2,7 @@ use crate::ast::Expr;
 use crate::span;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct SourceSpan {
     pub line: u32,
     pub col: u32,
@@ -34,8 +34,13 @@ pub struct DebugInfoRecorder<'i> {
 
 impl<'i> DebugInfoRecorder<'i> {
     /// Appends one recorded step.
-    pub fn record_step(&mut self, step: DebugStep<'i>) {
+    pub fn record_step(&mut self, step: DebugStep<'i>) -> usize {
         self.steps.push(step);
+        self.steps.len().saturating_sub(1)
+    }
+
+    pub fn step_mut(&mut self, index: usize) -> Option<&mut DebugStep<'i>> {
+        self.steps.get_mut(index)
     }
 
     /// Appends one parameter stack mapping.
@@ -119,7 +124,7 @@ pub struct DebugVariableUpdate<'i> {
     pub name: String,
     pub type_name: String,
     #[serde(default)]
-    pub runtime_binding: Option<RuntimeBinding>,
+    pub stack_binding: Option<DebugStackBinding>,
     #[serde(default)]
     pub structured_leaf_bindings: Option<Vec<DebugLeafBinding>>,
     /// Pre-resolved expression for debugger shadow evaluation.
@@ -128,8 +133,10 @@ pub struct DebugVariableUpdate<'i> {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub enum RuntimeBinding {
-    DataStackSlot { from_top: i64 },
+pub struct DebugStackBinding {
+    pub from_top: i64,
+    #[serde(default)]
+    pub stack_height: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -138,7 +145,7 @@ pub struct DebugLeafBinding {
     pub field_path: Vec<String>,
     pub type_name: String,
     #[serde(default)]
-    pub stack_index: Option<i64>,
+    pub stack_binding: Option<DebugStackBinding>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

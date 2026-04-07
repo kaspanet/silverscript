@@ -1,14 +1,19 @@
 use std::collections::HashMap;
 
+use crate::debug_info::SourceSpan;
+
 use super::*;
 
 const INLINE_LOCAL_PREFIX: &str = "__inline";
 
-pub(super) fn lower_inline_functions<'i>(contract: &ContractAst<'i>) -> Result<ContractAst<'i>, CompilerError> {
+pub(super) fn lower_inline_functions<'i>(
+    contract: &ContractAst<'i>,
+    debug_recorder: &mut DebugRecorder<'i>,
+) -> Result<ContractAst<'i>, CompilerError> {
     let functions = contract.functions.iter().cloned().map(|function| (function.name.clone(), function)).collect::<HashMap<_, _>>();
     let function_order =
         contract.functions.iter().enumerate().map(|(index, function)| (function.name.clone(), index)).collect::<HashMap<_, _>>();
-    let mut inliner = Inliner { functions, function_order, fresh_counter: 0 };
+    let mut inliner = Inliner { functions, function_order, fresh_counter: 0, debug_recorder };
 
     let lowered_functions = contract
         .functions
@@ -30,13 +35,14 @@ pub(super) fn lower_inline_functions<'i>(contract: &ContractAst<'i>) -> Result<C
     })
 }
 
-struct Inliner<'i> {
+struct Inliner<'i, 'd> {
     functions: HashMap<String, FunctionAst<'i>>,
     function_order: HashMap<String, usize>,
     fresh_counter: usize,
+    debug_recorder: &'d mut DebugRecorder<'i>,
 }
 
-impl<'i> Inliner<'i> {
+impl<'i, 'd> Inliner<'i, 'd> {
     fn fresh_name(&mut self, base: &str) -> String {
         let name = format!("{}_{}_{}", INLINE_LOCAL_PREFIX, self.fresh_counter, base);
         self.fresh_counter += 1;
@@ -52,8 +58,10 @@ impl<'i> Inliner<'i> {
         for param in &function.params {
             scope.insert(param.name.clone(), param.name.clone());
         }
-
-        Ok(FunctionAst { body: self.lower_block(&function.body, &mut scope, function_index)?, ..function.clone() })
+        self.debug_recorder.begin_source_function(&function.name);
+        let body = self.lower_block(&function.body, &mut scope, function_index)?;
+        self.debug_recorder.finish_source_function();
+        Ok(FunctionAst { body, ..function.clone() })
     }
 
     fn lower_block(
@@ -69,24 +77,35 @@ impl<'i> Inliner<'i> {
         Ok(lowered)
     }
 
+    fn bind_visible_name(&mut self, source_name: &str, scope: &mut HashMap<String, String>) -> String {
+        scope
+            .entry(source_name.to_string())
+            .or_insert_with(|| {
+                let fresh = self.fresh_name(source_name);
+                self.debug_recorder.record_visible_name(&fresh, source_name);
+                fresh
+            })
+            .clone()
+    }
+
     fn predeclare_branch_bindings(&mut self, statements: &[Statement<'i>], scope: &mut HashMap<String, String>) {
         for statement in statements {
             match statement {
                 Statement::VariableDefinition { name, .. } => {
-                    scope.entry(name.clone()).or_insert_with(|| self.fresh_name(name));
+                    self.bind_visible_name(name, scope);
                 }
                 Statement::TupleAssignment { left_name, right_name, .. } => {
-                    scope.entry(left_name.clone()).or_insert_with(|| self.fresh_name(left_name));
-                    scope.entry(right_name.clone()).or_insert_with(|| self.fresh_name(right_name));
+                    self.bind_visible_name(left_name, scope);
+                    self.bind_visible_name(right_name, scope);
                 }
                 Statement::FunctionCallAssign { bindings, .. } => {
                     for binding in bindings {
-                        scope.entry(binding.name.clone()).or_insert_with(|| self.fresh_name(&binding.name));
+                        self.bind_visible_name(&binding.name, scope);
                     }
                 }
                 Statement::StateFunctionCallAssign { bindings, .. } | Statement::StructDestructure { bindings, .. } => {
                     for binding in bindings {
-                        scope.entry(binding.name.clone()).or_insert_with(|| self.fresh_name(&binding.name));
+                        self.bind_visible_name(&binding.name, scope);
                     }
                 }
                 _ => {}
@@ -100,19 +119,24 @@ impl<'i> Inliner<'i> {
         scope: &mut HashMap<String, String>,
         function_index: usize,
     ) -> Result<Vec<Statement<'i>>, CompilerError> {
-        Ok(match statement {
+        let mut lowered = Vec::new();
+        match statement {
             Statement::VariableDefinition { type_ref, modifiers, name, expr, span, type_span, modifier_spans, name_span } => {
-                let fresh = scope.entry(name.clone()).or_insert_with(|| self.fresh_name(name)).clone();
-                vec![Statement::VariableDefinition {
-                    type_ref: type_ref.clone(),
-                    modifiers: modifiers.clone(),
-                    name: fresh,
-                    expr: expr.as_ref().map(|expr| self.rename_expr(expr, scope)).transpose()?,
-                    span: *span,
-                    type_span: *type_span,
-                    modifier_spans: modifier_spans.clone(),
-                    name_span: *name_span,
-                }]
+                let fresh = self.bind_visible_name(name, scope);
+                let renamed_expr = expr.as_ref().map(|expr| self.rename_expr(expr, scope)).transpose()?;
+                self.push_lowered_statement(
+                    &mut lowered,
+                    Statement::VariableDefinition {
+                        type_ref: type_ref.clone(),
+                        modifiers: modifiers.clone(),
+                        name: fresh,
+                        expr: renamed_expr,
+                        span: *span,
+                        type_span: *type_span,
+                        modifier_spans: modifier_spans.clone(),
+                        name_span: *name_span,
+                    },
+                );
             }
             Statement::TupleAssignment {
                 left_type_ref,
@@ -126,42 +150,51 @@ impl<'i> Inliner<'i> {
                 right_type_span,
                 right_name_span,
             } => {
-                let left_fresh = scope.entry(left_name.clone()).or_insert_with(|| self.fresh_name(left_name)).clone();
-                let right_fresh = scope.entry(right_name.clone()).or_insert_with(|| self.fresh_name(right_name)).clone();
-                vec![Statement::TupleAssignment {
-                    left_type_ref: left_type_ref.clone(),
-                    left_name: left_fresh,
-                    right_type_ref: right_type_ref.clone(),
-                    right_name: right_fresh,
-                    expr: self.rename_expr(expr, scope)?,
-                    span: *span,
-                    left_type_span: *left_type_span,
-                    left_name_span: *left_name_span,
-                    right_type_span: *right_type_span,
-                    right_name_span: *right_name_span,
-                }]
+                let left_fresh = self.bind_visible_name(left_name, scope);
+                let right_fresh = self.bind_visible_name(right_name, scope);
+                let renamed_expr = self.rename_expr(expr, scope)?;
+                self.push_lowered_statement(
+                    &mut lowered,
+                    Statement::TupleAssignment {
+                        left_type_ref: left_type_ref.clone(),
+                        left_name: left_fresh,
+                        right_type_ref: right_type_ref.clone(),
+                        right_name: right_fresh,
+                        expr: renamed_expr,
+                        span: *span,
+                        left_type_span: *left_type_span,
+                        left_name_span: *left_name_span,
+                        right_type_span: *right_type_span,
+                        right_name_span: *right_name_span,
+                    },
+                );
             }
-            Statement::ArrayPush { name, expr, span, name_span } => vec![Statement::ArrayPush {
-                name: self.rename_name(name, scope),
-                expr: self.rename_expr(expr, scope)?,
-                span: *span,
-                name_span: *name_span,
-            }],
+            Statement::ArrayPush { name, expr, span, name_span } => {
+                let renamed_expr = self.rename_expr(expr, scope)?;
+                self.push_lowered_statement(
+                    &mut lowered,
+                    Statement::ArrayPush {
+                        name: self.rename_name(name, scope),
+                        expr: renamed_expr,
+                        span: *span,
+                        name_span: *name_span,
+                    },
+                );
+            }
             Statement::Block { body, span } => {
                 let mut block_scope = scope.clone();
                 let lowered_body = self.lower_block(body, &mut block_scope, function_index)?;
-                vec![Statement::Block { body: lowered_body, span: *span }]
+                self.push_lowered_statement(&mut lowered, Statement::Block { body: lowered_body, span: *span });
             }
             Statement::FunctionCall { name, args, span, name_span } => {
                 if let Some(function) = self.inline_target(name) {
-                    self.inline_call(&function, args, None, scope, function_index, *span)?
+                    lowered.extend(self.inline_call(&function, args, None, scope, function_index, *span)?);
                 } else {
-                    vec![Statement::FunctionCall {
-                        name: name.clone(),
-                        args: args.iter().map(|arg| self.rename_expr(arg, scope)).collect::<Result<Vec<_>, _>>()?,
-                        span: *span,
-                        name_span: *name_span,
-                    }]
+                    let renamed_args = args.iter().map(|arg| self.rename_expr(arg, scope)).collect::<Result<Vec<_>, _>>()?;
+                    self.push_lowered_statement(
+                        &mut lowered,
+                        Statement::FunctionCall { name: name.clone(), args: renamed_args, span: *span, name_span: *name_span },
+                    );
                 }
             }
             Statement::FunctionCallAssign { bindings, name, args, span, name_span } => {
@@ -169,72 +202,94 @@ impl<'i> Inliner<'i> {
                     let renamed_bindings = bindings
                         .iter()
                         .map(|binding| {
-                            let fresh = scope.entry(binding.name.clone()).or_insert_with(|| self.fresh_name(&binding.name)).clone();
+                            let fresh = self.bind_visible_name(&binding.name, scope);
                             ParamAst { name: fresh, ..binding.clone() }
                         })
                         .collect::<Vec<_>>();
-                    self.inline_call(&function, args, Some(&renamed_bindings), scope, function_index, *span)?
+                    lowered.extend(self.inline_call(&function, args, Some(&renamed_bindings), scope, function_index, *span)?);
                 } else {
                     let renamed_bindings = bindings
                         .iter()
                         .map(|binding| {
-                            let fresh = scope.entry(binding.name.clone()).or_insert_with(|| self.fresh_name(&binding.name)).clone();
+                            let fresh = self.bind_visible_name(&binding.name, scope);
                             ParamAst { name: fresh, ..binding.clone() }
                         })
                         .collect::<Vec<_>>();
-                    vec![Statement::FunctionCallAssign {
-                        bindings: renamed_bindings,
-                        name: name.clone(),
-                        args: args.iter().map(|arg| self.rename_expr(arg, scope)).collect::<Result<Vec<_>, _>>()?,
-                        span: *span,
-                        name_span: *name_span,
-                    }]
+                    let renamed_args = args.iter().map(|arg| self.rename_expr(arg, scope)).collect::<Result<Vec<_>, _>>()?;
+                    self.push_lowered_statement(
+                        &mut lowered,
+                        Statement::FunctionCallAssign {
+                            bindings: renamed_bindings,
+                            name: name.clone(),
+                            args: renamed_args,
+                            span: *span,
+                            name_span: *name_span,
+                        },
+                    );
                 }
             }
-            Statement::StateFunctionCallAssign { bindings, name, args, span, name_span } => vec![Statement::StateFunctionCallAssign {
-                bindings: bindings
+            Statement::StateFunctionCallAssign { bindings, name, args, span, name_span } => {
+                let renamed_bindings = bindings
                     .iter()
                     .map(|binding| {
-                        let fresh = scope.entry(binding.name.clone()).or_insert_with(|| self.fresh_name(&binding.name)).clone();
+                        let fresh = self.bind_visible_name(&binding.name, scope);
                         StateBindingAst { name: fresh, ..binding.clone() }
                     })
-                    .collect(),
-                name: name.clone(),
-                args: args.iter().map(|arg| self.rename_expr(arg, scope)).collect::<Result<Vec<_>, _>>()?,
-                span: *span,
-                name_span: *name_span,
-            }],
-            Statement::StructDestructure { bindings, expr, span } => vec![Statement::StructDestructure {
-                bindings: bindings
+                    .collect();
+                let renamed_args = args.iter().map(|arg| self.rename_expr(arg, scope)).collect::<Result<Vec<_>, _>>()?;
+                self.push_lowered_statement(
+                    &mut lowered,
+                    Statement::StateFunctionCallAssign {
+                        bindings: renamed_bindings,
+                        name: name.clone(),
+                        args: renamed_args,
+                        span: *span,
+                        name_span: *name_span,
+                    },
+                );
+            }
+            Statement::StructDestructure { bindings, expr, span } => {
+                let renamed_bindings = bindings
                     .iter()
                     .map(|binding| {
-                        let fresh = scope.entry(binding.name.clone()).or_insert_with(|| self.fresh_name(&binding.name)).clone();
+                        let fresh = self.bind_visible_name(&binding.name, scope);
                         StateBindingAst { name: fresh, ..binding.clone() }
                     })
-                    .collect(),
-                expr: self.rename_expr(expr, scope)?,
-                span: *span,
-            }],
-            Statement::Assign { name, expr, span, name_span } => vec![Statement::Assign {
-                name: self.rename_name(name, scope),
-                expr: self.rename_expr(expr, scope)?,
-                span: *span,
-                name_span: *name_span,
-            }],
-            Statement::TimeOp { tx_var, expr, message, span, tx_var_span, message_span } => vec![Statement::TimeOp {
-                tx_var: *tx_var,
-                expr: self.rename_expr(expr, scope)?,
-                message: message.clone(),
-                span: *span,
-                tx_var_span: *tx_var_span,
-                message_span: *message_span,
-            }],
-            Statement::Require { expr, message, span, message_span } => vec![Statement::Require {
-                expr: self.rename_expr(expr, scope)?,
-                message: message.clone(),
-                span: *span,
-                message_span: *message_span,
-            }],
+                    .collect();
+                let renamed_expr = self.rename_expr(expr, scope)?;
+                self.push_lowered_statement(
+                    &mut lowered,
+                    Statement::StructDestructure { bindings: renamed_bindings, expr: renamed_expr, span: *span },
+                );
+            }
+            Statement::Assign { name, expr, span, name_span } => {
+                let renamed_expr = self.rename_expr(expr, scope)?;
+                self.push_lowered_statement(
+                    &mut lowered,
+                    Statement::Assign { name: self.rename_name(name, scope), expr: renamed_expr, span: *span, name_span: *name_span },
+                );
+            }
+            Statement::TimeOp { tx_var, expr, message, span, tx_var_span, message_span } => {
+                let renamed_expr = self.rename_expr(expr, scope)?;
+                self.push_lowered_statement(
+                    &mut lowered,
+                    Statement::TimeOp {
+                        tx_var: *tx_var,
+                        expr: renamed_expr,
+                        message: message.clone(),
+                        span: *span,
+                        tx_var_span: *tx_var_span,
+                        message_span: *message_span,
+                    },
+                );
+            }
+            Statement::Require { expr, message, span, message_span } => {
+                let renamed_expr = self.rename_expr(expr, scope)?;
+                self.push_lowered_statement(
+                    &mut lowered,
+                    Statement::Require { expr: renamed_expr, message: message.clone(), span: *span, message_span: *message_span },
+                );
+            }
             Statement::If { condition, then_branch, else_branch, span, then_span, else_span } => {
                 let renamed_condition = self.rename_expr(condition, scope)?;
                 let mut then_scope = scope.clone();
@@ -248,39 +303,49 @@ impl<'i> Inliner<'i> {
                 } else {
                     None
                 };
-                vec![Statement::If {
-                    condition: renamed_condition,
-                    then_branch: lowered_then,
-                    else_branch: lowered_else,
-                    span: *span,
-                    then_span: *then_span,
-                    else_span: *else_span,
-                }]
+                self.push_lowered_statement(
+                    &mut lowered,
+                    Statement::If {
+                        condition: renamed_condition,
+                        then_branch: lowered_then,
+                        else_branch: lowered_else,
+                        span: *span,
+                        then_span: *then_span,
+                        else_span: *else_span,
+                    },
+                );
             }
             Statement::For { ident, start, end, max_iterations, body, span, ident_span, body_span } => {
                 let mut body_scope = scope.clone();
-                body_scope.insert(ident.clone(), self.fresh_name(ident));
+                let lowered_ident = self.bind_visible_name(ident, &mut body_scope);
                 let lowered_body = self.lower_block(body, &mut body_scope, function_index)?;
-                vec![Statement::For {
-                    ident: body_scope.get(ident).cloned().expect("loop ident inserted"),
-                    start: self.rename_expr(start, scope)?,
-                    end: self.rename_expr(end, scope)?,
-                    max_iterations: self.rename_expr(max_iterations, scope)?,
-                    body: lowered_body,
-                    span: *span,
-                    ident_span: *ident_span,
-                    body_span: *body_span,
-                }]
+                let lowered_start = self.rename_expr(start, scope)?;
+                let lowered_end = self.rename_expr(end, scope)?;
+                let lowered_max_iterations = self.rename_expr(max_iterations, scope)?;
+                self.push_lowered_statement(
+                    &mut lowered,
+                    Statement::For {
+                        ident: lowered_ident,
+                        start: lowered_start,
+                        end: lowered_end,
+                        max_iterations: lowered_max_iterations,
+                        body: lowered_body,
+                        span: *span,
+                        ident_span: *ident_span,
+                        body_span: *body_span,
+                    },
+                );
             }
-            Statement::Return { exprs, span } => vec![Statement::Return {
-                exprs: exprs.iter().map(|expr| self.rename_expr(expr, scope)).collect::<Result<Vec<_>, _>>()?,
-                span: *span,
-            }],
-            Statement::Console { args, span } => vec![Statement::Console {
-                args: args.iter().map(|arg| self.rename_expr(arg, scope)).collect::<Result<Vec<_>, _>>()?,
-                span: *span,
-            }],
-        })
+            Statement::Return { exprs, span } => {
+                let renamed_exprs = exprs.iter().map(|expr| self.rename_expr(expr, scope)).collect::<Result<Vec<_>, _>>()?;
+                self.push_lowered_statement(&mut lowered, Statement::Return { exprs: renamed_exprs, span: *span });
+            }
+            Statement::Console { args, span } => {
+                let renamed_args = args.iter().map(|arg| self.rename_expr(arg, scope)).collect::<Result<Vec<_>, _>>()?;
+                self.push_lowered_statement(&mut lowered, Statement::Console { args: renamed_args, span: *span });
+            }
+        }
+        Ok(lowered)
     }
 
     fn inline_target(&self, name: &str) -> Option<FunctionAst<'i>> {
@@ -314,44 +379,62 @@ impl<'i> Inliner<'i> {
 
         let mut local_scope = HashMap::new();
         let mut lowered = Vec::new();
+        self.debug_recorder.begin_inline_source_call(&function.name, SourceSpan::from(span));
         for (param, arg) in function.params.iter().zip(args.iter()) {
-            let fresh = self.fresh_name(&param.name);
-            local_scope.insert(param.name.clone(), fresh.clone());
-            lowered.push(Statement::VariableDefinition {
-                type_ref: param.type_ref.clone(),
-                modifiers: Vec::new(),
-                name: fresh,
-                expr: Some(self.rename_expr(arg, caller_scope)?),
-                span,
-                type_span: param.type_span,
-                modifier_spans: Vec::new(),
-                name_span: param.name_span,
-            });
+            let fresh = self.bind_visible_name(&param.name, &mut local_scope);
+            let renamed_arg = self.rename_expr(arg, caller_scope)?;
+            self.debug_recorder.record_inline_source_param(&param.name, &param.type_ref, renamed_arg.clone());
+            self.push_lowered_statement(
+                &mut lowered,
+                Statement::VariableDefinition {
+                    type_ref: param.type_ref.clone(),
+                    modifiers: Vec::new(),
+                    name: fresh,
+                    expr: Some(renamed_arg),
+                    span,
+                    type_span: param.type_span,
+                    modifier_spans: Vec::new(),
+                    name_span: param.name_span,
+                },
+            );
         }
 
-        let body_len = function.body.len();
-        for (index, statement) in function.body.iter().enumerate() {
-            if let Statement::Return { exprs, .. } = statement {
-                debug_assert_eq!(index, body_len - 1, "type_check must keep returns last");
-                if let Some(bindings) = bindings {
-                    for (binding, expr) in bindings.iter().zip(exprs.iter()) {
-                        lowered.push(Statement::VariableDefinition {
-                            type_ref: binding.type_ref.clone(),
-                            modifiers: Vec::new(),
-                            name: binding.name.clone(),
-                            expr: Some(self.rename_expr(expr, &local_scope)?),
-                            span: statement.span(),
-                            type_span: binding.type_span,
-                            modifier_spans: Vec::new(),
-                            name_span: binding.name_span,
-                        });
-                    }
-                }
-            } else {
-                lowered.extend(self.lower_statement(statement, &mut local_scope, callee_index)?);
+        let (callee_body, return_exprs) = match function.body.split_last() {
+            Some((Statement::Return { exprs, .. }, body)) => (body, Some(exprs.as_slice())),
+            Some((_last, _body)) => (function.body.as_slice(), None),
+            None => (&[][..], None),
+        };
+
+        for statement in callee_body {
+            lowered.extend(self.lower_statement(statement, &mut local_scope, callee_index)?);
+        }
+        let body_end_statement_index = self.debug_recorder.current_source_statement_index();
+
+        if let (Some(bindings), Some(return_exprs)) = (bindings, return_exprs) {
+            for (binding, expr) in bindings.iter().zip(return_exprs.iter()) {
+                let renamed_expr = self.rename_expr(expr, &local_scope)?;
+                self.push_lowered_statement(
+                    &mut lowered,
+                    Statement::VariableDefinition {
+                        type_ref: binding.type_ref.clone(),
+                        modifiers: Vec::new(),
+                        name: binding.name.clone(),
+                        expr: Some(renamed_expr),
+                        span,
+                        type_span: binding.type_span,
+                        modifier_spans: Vec::new(),
+                        name_span: binding.name_span,
+                    },
+                );
             }
         }
+        self.debug_recorder.finish_inline_source_call(body_end_statement_index);
         Ok(lowered)
+    }
+
+    fn push_lowered_statement(&mut self, lowered: &mut Vec<Statement<'i>>, statement: Statement<'i>) {
+        self.debug_recorder.record_lowered_source_statement(&statement);
+        lowered.push(statement);
     }
 
     fn rename_name(&self, name: &str, scope: &HashMap<String, String>) -> String {
