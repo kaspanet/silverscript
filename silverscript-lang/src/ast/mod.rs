@@ -353,6 +353,11 @@ pub enum Statement<'i> {
         #[serde(skip_deserializing)]
         message_span: Option<Span<'i>>,
     },
+    Block {
+        body: Vec<Statement<'i>>,
+        #[serde(skip_deserializing)]
+        span: Span<'i>,
+    },
     If {
         condition: Expr<'i>,
         then_branch: Vec<Statement<'i>>,
@@ -403,6 +408,7 @@ impl<'i> Statement<'i> {
             | Statement::Return { span, .. }
             | Statement::TimeOp { span, .. }
             | Statement::Require { span, .. }
+            | Statement::Block { span, .. }
             | Statement::If { span, .. }
             | Statement::For { span, .. }
             | Statement::Console { span, .. } => *span,
@@ -812,6 +818,15 @@ impl SourceFormatter {
             Statement::Require { expr, message, .. } => {
                 let message = message.as_ref().map(|message| format!(", {}", format_string_literal(message))).unwrap_or_default();
                 self.line(&format!("require({}{});", format_expr(expr), message));
+            }
+            Statement::Block { body, .. } => {
+                self.line("{");
+                self.indent += 1;
+                for statement in body {
+                    self.write_statement(statement);
+                }
+                self.indent = self.indent.saturating_sub(1);
+                self.line("}");
             }
             Statement::If { condition, then_branch, else_branch, .. } => {
                 self.line(&format!("if ({}) {{", format_expr(condition)));
@@ -1602,6 +1617,10 @@ fn parse_statement<'i>(pair: Pair<'i, Rule>) -> Result<Statement<'i>, CompilerEr
             let (message, message_span) = message.unzip();
             Ok(Statement::Require { expr, message, span, message_span })
         }
+        Rule::braced_block => {
+            let (body, block_span) = parse_block(pair).map_err(|err| err.with_span(&span))?;
+            Ok(Statement::Block { body, span: block_span })
+        }
         Rule::if_statement => {
             let mut inner = pair.into_inner();
             let cond_pair =
@@ -1663,6 +1682,11 @@ fn parse_block<'i>(pair: Pair<'i, Rule>) -> Result<(Vec<Statement<'i>>, Span<'i>
     let span = Span::from(pair.as_span());
     match pair.as_rule() {
         Rule::block => {
+            let inner =
+                pair.into_inner().next().ok_or_else(|| CompilerError::Unsupported("empty block".to_string()).with_span(&span))?;
+            parse_block(inner)
+        }
+        Rule::braced_block => {
             let mut statements = Vec::new();
             let mut block_span: Option<Span<'i>> = None;
             for stmt_pair in pair.into_inner() {

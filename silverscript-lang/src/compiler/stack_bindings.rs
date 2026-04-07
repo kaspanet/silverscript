@@ -134,10 +134,12 @@ impl StackBindings {
         self.stack.get_index_of(name).map(|index| index as i64)
     }
 
+    #[allow(dead_code)]
     pub(crate) fn names(&self) -> impl Iterator<Item = &String> {
         self.stack.iter()
     }
 
+    #[allow(dead_code)]
     pub(crate) fn clone_depths(&self) -> HashMap<String, i64> {
         self.stack.iter().cloned().enumerate().map(|(depth, name)| (name, depth as i64)).collect()
     }
@@ -217,6 +219,17 @@ impl StackBindings {
 
         self.move_binding_to_top(name);
 
+        Ok(())
+    }
+
+    /// Moves an existing binding to the runtime stack top and updates the
+    /// binding model to match. This is useful for in-place updates where the
+    /// old bound value is about to be consumed to compute the new one.
+    #[allow(dead_code)]
+    pub(crate) fn emit_move_binding_to_top(&mut self, name: &str, builder: &mut ScriptBuilder) -> Result<(), CompilerError> {
+        let depth = self.depth(name).expect("binding should exist before moving to top");
+        builder.roll_from_depth(depth)?;
+        self.move_binding_to_top(name);
         Ok(())
     }
 

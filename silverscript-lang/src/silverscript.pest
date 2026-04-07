@@ -24,7 +24,8 @@ parameter_list = { "(" ~ (parameter ~ ("," ~ parameter)* ~ ","?)? ~ ")" }
 parameter = { type_name ~ Identifier }
 return_type_list = { ":" ~ "(" ~ (type_name ~ ("," ~ type_name)* ~ ","?)? ~ ")" }
 
-block = { "{" ~ statement* ~ "}" | statement }
+block = { braced_block | statement }
+braced_block = { "{" ~ statement* ~ "}" }
 
 statement = _{
     variable_definition
@@ -40,6 +41,7 @@ statement = _{
     | require_statement
     | if_statement
     | for_statement
+    | braced_block
     | console_statement
 }
 
