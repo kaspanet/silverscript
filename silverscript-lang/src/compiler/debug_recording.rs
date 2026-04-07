@@ -26,14 +26,12 @@ use super::{
 /// steps without forcing more compiler call sites.
 #[derive(Default)]
 pub(crate) struct DebugRecorder<'i> {
-    source_inline_depth: usize,
     active: Option<ActiveDebugRecorder<'i>>,
 }
 
 impl<'i> DebugRecorder<'i> {
     pub(crate) fn new(options: CompileOptions, contract: &ContractAst<'i>) -> Result<Self, CompilerError> {
-        let mut recorder =
-            Self { source_inline_depth: 0, active: options.record_debug_infos.then_some(ActiveDebugRecorder::default()) };
+        let mut recorder = Self { active: options.record_debug_infos.then_some(ActiveDebugRecorder::default()) };
         if let Some(active) = recorder.active.as_mut() {
             active.source_structs = build_struct_registry(contract)?;
             active.source_params_by_function =
@@ -69,7 +67,6 @@ impl<'i> DebugRecorder<'i> {
     }
 
     pub(super) fn begin_source_function(&mut self, function_name: &str) {
-        self.source_inline_depth = 0;
         let Some(active) = self.active.as_mut() else {
             return;
         };
@@ -81,7 +78,6 @@ impl<'i> DebugRecorder<'i> {
     }
 
     pub(super) fn finish_source_function(&mut self) {
-        self.source_inline_depth = 0;
         let Some(active) = self.active.as_mut() else {
             return;
         };
@@ -110,10 +106,6 @@ impl<'i> DebugRecorder<'i> {
         self.active.as_ref().map_or(0, |active| active.current_source_statement_index)
     }
 
-    pub(super) fn current_inline_depth(&self) -> usize {
-        self.source_inline_depth
-    }
-
     pub(super) fn record_lowered_source_statement(&mut self, statement: &Statement<'i>) {
         let Some(active) = self.active.as_mut() else {
             return;
@@ -123,7 +115,6 @@ impl<'i> DebugRecorder<'i> {
     }
 
     pub(super) fn begin_inline_source_call(&mut self, callee: &str, call_site_span: SourceSpan) {
-        self.source_inline_depth = self.source_inline_depth.saturating_add(1);
         let Some(active) = self.active.as_mut() else {
             return;
         };
@@ -167,7 +158,6 @@ impl<'i> DebugRecorder<'i> {
     }
 
     pub(super) fn finish_inline_source_call(&mut self, body_end_statement_index: usize) {
-        self.source_inline_depth = self.source_inline_depth.saturating_sub(1);
         let Some(active) = self.active.as_mut() else {
             return;
         };

@@ -105,19 +105,19 @@ fn validate_function_signatures<'i>(
         let mut types = initial_function_types(contract, function, structs)?;
         let mut env = constants.clone();
         let mut prefer_env_for_comparison = HashSet::new();
-        let mut ctx = ValidateStatementShapesContext {
-            env: &mut env,
-            prefer_env_for_comparison: &mut prefer_env_for_comparison,
-            types: &mut types,
-            return_types: &function.return_types,
+        validate_statement_shapes(
+            &function.body,
+            &mut env,
+            &mut prefer_env_for_comparison,
+            &mut types,
+            &function.return_types,
             structs,
             constants,
-            functions: &functions,
-            function_order: &function_order,
+            &functions,
+            &function_order,
             function_index,
-            contract_fields: &contract.fields,
-        };
-        validate_statement_shapes(&mut ctx, &function.body)?;
+            &contract.fields,
+        )?;
     }
 
     Ok(())
@@ -149,38 +149,62 @@ fn validate_contract_field_initializers<'i>(
 }
 
 fn validate_statement_shapes<'i>(
-    ctx: &mut ValidateStatementShapesContext<'_, 'i>,
     statements: &[Statement<'i>],
+    env: &mut HashMap<String, Expr<'i>>,
+    prefer_env_for_comparison: &mut HashSet<String>,
+    types: &mut HashMap<String, String>,
+    return_types: &[TypeRef],
+    structs: &StructRegistry,
+    constants: &HashMap<String, Expr<'i>>,
+    functions: &HashMap<String, &FunctionAst<'i>>,
+    function_order: &HashMap<String, usize>,
+    function_index: usize,
+    contract_fields: &[ContractFieldAst<'i>],
 ) -> Result<(), CompilerError> {
+    let mut ctx = ValidateStatementShapesContext {
+        env,
+        prefer_env_for_comparison,
+        types,
+        return_types,
+        structs,
+        constants,
+        functions,
+        function_order,
+        function_index,
+        contract_fields,
+    };
+
     for stmt in statements {
         match stmt {
             Statement::VariableDefinition { type_ref, name, expr, .. } => {
-                validate_variable_definition_statement_shape(ctx, type_ref, name, expr.as_ref())?
+                validate_variable_definition_statement_shape(&mut ctx, type_ref, name, expr.as_ref())?
             }
             Statement::TupleAssignment { left_type_ref, left_name, right_type_ref, right_name, expr, .. } => {
-                validate_tuple_assignment_statement_shape(ctx, left_type_ref, left_name, right_type_ref, right_name, expr)?
+                validate_tuple_assignment_statement_shape(&mut ctx, left_type_ref, left_name, right_type_ref, right_name, expr)?
             }
             Statement::StateFunctionCallAssign { bindings, name, args, .. } => {
-                validate_state_function_call_assign_statement_shape(ctx, bindings, name, args)?
+                validate_state_function_call_assign_statement_shape(&mut ctx, bindings, name, args)?
             }
-            Statement::StructDestructure { bindings, expr, .. } => validate_struct_destructure_statement_shape(ctx, bindings, expr)?,
-            Statement::FunctionCall { name, args, .. } => validate_function_call_statement_shape(ctx, name, args)?,
+            Statement::StructDestructure { bindings, expr, .. } => {
+                validate_struct_destructure_statement_shape(&mut ctx, bindings, expr)?
+            }
+            Statement::FunctionCall { name, args, .. } => validate_function_call_statement_shape(&mut ctx, name, args)?,
             Statement::FunctionCallAssign { bindings, name, args, .. } => {
-                validate_function_call_assign_statement_shape(ctx, bindings, name, args)?
+                validate_function_call_assign_statement_shape(&mut ctx, bindings, name, args)?
             }
-            Statement::Return { exprs, .. } => validate_return_statement_shape(ctx, exprs)?,
-            Statement::Require { expr, .. } => validate_require_statement_shape(ctx, expr)?,
-            Statement::TimeOp { expr, .. } => validate_time_op_statement_shape(ctx, expr)?,
-            Statement::Console { args, .. } => validate_console_statement_shape(ctx, args)?,
-            Statement::Assign { name, expr, .. } => validate_assign_statement_shape(ctx, name, expr)?,
-            Statement::Block { body, .. } => validate_block_statement_shape(ctx, body)?,
+            Statement::Return { exprs, .. } => validate_return_statement_shape(&mut ctx, exprs)?,
+            Statement::Require { expr, .. } => validate_require_statement_shape(&mut ctx, expr)?,
+            Statement::TimeOp { expr, .. } => validate_time_op_statement_shape(&mut ctx, expr)?,
+            Statement::Console { args, .. } => validate_console_statement_shape(&mut ctx, args)?,
+            Statement::Assign { name, expr, .. } => validate_assign_statement_shape(&mut ctx, name, expr)?,
+            Statement::Block { body, .. } => validate_block_statement_shape(&mut ctx, body)?,
             Statement::If { then_branch, else_branch, .. } => {
-                validate_if_statement_shape(ctx, stmt, then_branch, else_branch.as_deref())?
+                validate_if_statement_shape(&mut ctx, stmt, then_branch, else_branch.as_deref())?
             }
             Statement::For { ident, start, end, max_iterations, body, .. } => {
-                validate_for_statement_shape(ctx, ident, start, end, max_iterations, body)?
+                validate_for_statement_shape(&mut ctx, ident, start, end, max_iterations, body)?
             }
-            Statement::ArrayPush { expr, .. } => validate_array_push_statement_shape(ctx, expr)?,
+            Statement::ArrayPush { expr, .. } => validate_array_push_statement_shape(&mut ctx, expr)?,
         }
     }
 
@@ -457,36 +481,36 @@ fn validate_if_statement_shape<'i>(
     let mut then_types = ctx.types.clone();
     let mut then_env = ctx.env.clone();
     let mut then_prefer_env = ctx.prefer_env_for_comparison.clone();
-    let mut then_ctx = ValidateStatementShapesContext {
-        env: &mut then_env,
-        prefer_env_for_comparison: &mut then_prefer_env,
-        types: &mut then_types,
-        return_types: ctx.return_types,
-        structs: ctx.structs,
-        constants: ctx.constants,
-        functions: ctx.functions,
-        function_order: ctx.function_order,
-        function_index: ctx.function_index,
-        contract_fields: ctx.contract_fields,
-    };
-    validate_statement_shapes(&mut then_ctx, then_branch)?;
+    validate_statement_shapes(
+        then_branch,
+        &mut then_env,
+        &mut then_prefer_env,
+        &mut then_types,
+        ctx.return_types,
+        ctx.structs,
+        ctx.constants,
+        ctx.functions,
+        ctx.function_order,
+        ctx.function_index,
+        ctx.contract_fields,
+    )?;
     if let Some(else_branch) = else_branch {
         let mut else_types = ctx.types.clone();
         let mut else_env = ctx.env.clone();
         let mut else_prefer_env = ctx.prefer_env_for_comparison.clone();
-        let mut else_ctx = ValidateStatementShapesContext {
-            env: &mut else_env,
-            prefer_env_for_comparison: &mut else_prefer_env,
-            types: &mut else_types,
-            return_types: ctx.return_types,
-            structs: ctx.structs,
-            constants: ctx.constants,
-            functions: ctx.functions,
-            function_order: ctx.function_order,
-            function_index: ctx.function_index,
-            contract_fields: ctx.contract_fields,
-        };
-        validate_statement_shapes(&mut else_ctx, else_branch)?;
+        validate_statement_shapes(
+            else_branch,
+            &mut else_env,
+            &mut else_prefer_env,
+            &mut else_types,
+            ctx.return_types,
+            ctx.structs,
+            ctx.constants,
+            ctx.functions,
+            ctx.function_order,
+            ctx.function_index,
+            ctx.contract_fields,
+        )?;
     }
     Ok(())
 }
@@ -498,19 +522,19 @@ fn validate_block_statement_shape<'i>(
     let mut block_types = ctx.types.clone();
     let mut block_env = ctx.env.clone();
     let mut block_prefer_env = ctx.prefer_env_for_comparison.clone();
-    let mut block_ctx = ValidateStatementShapesContext {
-        env: &mut block_env,
-        prefer_env_for_comparison: &mut block_prefer_env,
-        types: &mut block_types,
-        return_types: ctx.return_types,
-        structs: ctx.structs,
-        constants: ctx.constants,
-        functions: ctx.functions,
-        function_order: ctx.function_order,
-        function_index: ctx.function_index,
-        contract_fields: ctx.contract_fields,
-    };
-    validate_statement_shapes(&mut block_ctx, body)
+    validate_statement_shapes(
+        body,
+        &mut block_env,
+        &mut block_prefer_env,
+        &mut block_types,
+        ctx.return_types,
+        ctx.structs,
+        ctx.constants,
+        ctx.functions,
+        ctx.function_order,
+        ctx.function_index,
+        ctx.contract_fields,
+    )
 }
 
 fn validate_for_statement_shape<'i>(
@@ -528,19 +552,19 @@ fn validate_for_statement_shape<'i>(
     let mut body_env = ctx.env.clone();
     let mut body_prefer_env = ctx.prefer_env_for_comparison.clone();
     body_types.insert(ident.to_string(), "int".to_string());
-    let mut body_ctx = ValidateStatementShapesContext {
-        env: &mut body_env,
-        prefer_env_for_comparison: &mut body_prefer_env,
-        types: &mut body_types,
-        return_types: ctx.return_types,
-        structs: ctx.structs,
-        constants: ctx.constants,
-        functions: ctx.functions,
-        function_order: ctx.function_order,
-        function_index: ctx.function_index,
-        contract_fields: ctx.contract_fields,
-    };
-    validate_statement_shapes(&mut body_ctx, body)
+    validate_statement_shapes(
+        body,
+        &mut body_env,
+        &mut body_prefer_env,
+        &mut body_types,
+        ctx.return_types,
+        ctx.structs,
+        ctx.constants,
+        ctx.functions,
+        ctx.function_order,
+        ctx.function_index,
+        ctx.contract_fields,
+    )
 }
 
 fn validate_array_push_statement_shape<'i>(

@@ -4032,15 +4032,6 @@ pub fn compile_debug_expr<'i>(
     Ok((builder.drain(), type_name))
 }
 
-#[allow(dead_code)]
-pub(super) fn resolve_expr_for_debug<'i>(
-    expr: Expr<'i>,
-    constants: &HashMap<String, Expr<'i>>,
-    visiting: &mut HashSet<String>,
-) -> Result<Expr<'i>, CompilerError> {
-    resolve_expr(expr, constants, visiting)
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
