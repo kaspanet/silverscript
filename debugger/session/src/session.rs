@@ -143,7 +143,7 @@ pub struct DebugSession<'a, 'i> {
     breakpoints: HashSet<u32>,
     // Source-level step ids that were already visited in this session.
     executed_steps: HashSet<StepId>,
-    inline_scope_snapshots: HashMap<u32, HashMap<String, Variable>>,
+    inline_scope_snapshots: HashMap<u32, ScopeState<'i>>,
     console_output: Vec<String>,
 }
 
@@ -172,6 +172,7 @@ enum ScopeValueSource<'i> {
     Expr(Expr<'i>),
 }
 
+#[derive(Clone)]
 struct ScopeBinding<'i> {
     type_name: String,
     source: ScopeValueSource<'i>,
@@ -819,57 +820,11 @@ impl<'a, 'i> DebugSession<'a, 'i> {
     }
 
     fn freeze_inline_snapshot_bindings(&self, bindings: &mut ScopeState<'i>, frame_id: u32) -> HashSet<String> {
-        let Some(parent_vars) = self.inline_scope_snapshots.get(&frame_id) else {
+        let Some(snapshot) = self.inline_scope_snapshots.get(&frame_id) else {
             return HashSet::new();
         };
-        let mut frozen_names = HashSet::new();
-
-        for (name, variable) in parent_vars {
-            let Some(expr) = debug_value_to_expr(&variable.value) else {
-                continue;
-            };
-
-            let structured_leaf_bindings = bindings.get(name.as_str()).and_then(|existing| match &existing.source {
-                ScopeValueSource::StructuredBinding { leaf_bindings, .. } => Some(leaf_bindings.clone()),
-                _ => None,
-            });
-            if let Some(leaf_bindings) = structured_leaf_bindings {
-                frozen_names.insert(name.clone());
-                for leaf in &leaf_bindings {
-                    let Some(leaf_value) = structured_leaf_value(&variable.value, &leaf.field_path) else {
-                        continue;
-                    };
-                    let Some(leaf_expr) = debug_value_to_expr(&leaf_value) else {
-                        continue;
-                    };
-                    let leaf_name = flattened_struct_name(name, &leaf.field_path);
-                    bindings.insert(
-                        leaf_name.clone(),
-                        ScopeBinding {
-                            type_name: leaf.type_name.clone(),
-                            source: ScopeValueSource::Expr(leaf_expr),
-                            origin: variable.origin,
-                            hidden: true,
-                        },
-                    );
-                    frozen_names.insert(leaf_name);
-                }
-                continue;
-            }
-
-            bindings.insert(
-                name.clone(),
-                ScopeBinding {
-                    type_name: variable.type_name.clone(),
-                    source: ScopeValueSource::Expr(expr),
-                    origin: variable.origin,
-                    hidden: false,
-                },
-            );
-            frozen_names.insert(name.clone());
-        }
-
-        frozen_names
+        bindings.extend(snapshot.clone());
+        snapshot.keys().cloned().collect()
     }
 
     fn collect_variables_map(&self, scope_state: &ScopeState<'i>) -> HashMap<String, Variable> {
@@ -1050,8 +1005,64 @@ impl<'a, 'i> DebugSession<'a, 'i> {
         let Ok(scope_state) = self.scope_state(step_id) else {
             return;
         };
-        let snapshot = self.collect_variables_map(&scope_state);
+        let snapshot = self.freeze_scope_snapshot(&scope_state);
         self.inline_scope_snapshots.insert(step.frame_id, snapshot);
+    }
+
+    fn freeze_scope_snapshot(&self, scope_state: &ScopeState<'i>) -> ScopeState<'i> {
+        let mut snapshot = HashMap::new();
+
+        for (name, binding) in scope_state {
+            let Ok(value) = self.resolve_scope_binding(scope_state, binding) else {
+                continue;
+            };
+            let Some(expr) = debug_value_to_expr(&value) else {
+                continue;
+            };
+
+            if let ScopeValueSource::StructuredBinding { leaf_bindings, .. } = &binding.source {
+                snapshot.insert(
+                    name.clone(),
+                    ScopeBinding {
+                        type_name: binding.type_name.clone(),
+                        source: ScopeValueSource::Expr(expr),
+                        origin: binding.origin,
+                        hidden: binding.hidden,
+                    },
+                );
+
+                for leaf in leaf_bindings {
+                    let Some(leaf_value) = structured_leaf_value(&value, &leaf.field_path) else {
+                        continue;
+                    };
+                    let Some(leaf_expr) = debug_value_to_expr(&leaf_value) else {
+                        continue;
+                    };
+                    snapshot.insert(
+                        flattened_struct_name(name, &leaf.field_path),
+                        ScopeBinding {
+                            type_name: leaf.type_name.clone(),
+                            source: ScopeValueSource::Expr(leaf_expr),
+                            origin: binding.origin,
+                            hidden: true,
+                        },
+                    );
+                }
+                continue;
+            }
+
+            snapshot.insert(
+                name.clone(),
+                ScopeBinding {
+                    type_name: binding.type_name.clone(),
+                    source: ScopeValueSource::Expr(expr),
+                    origin: binding.origin,
+                    hidden: binding.hidden,
+                },
+            );
+        }
+
+        snapshot
     }
 
     fn render_console_messages(&mut self, step: &DebugStep<'i>) {
@@ -1932,6 +1943,40 @@ fn collect_structured_field_access<'i>(expr: &'i Expr<'i>) -> Option<(Structured
     }
 }
 
+fn first_lowered_structured_leaf_name<'i>(scope_state: &ScopeState<'i>, base_name: &str) -> Option<String> {
+    let prefix = format!("__struct_{base_name}_");
+    scope_state.keys().find(|name| name.starts_with(&prefix)).cloned()
+}
+
+fn resolve_structured_leaf_owner<'i>(scope_state: &ScopeState<'i>, base_name: &str, visiting: &mut HashSet<String>) -> Option<String> {
+    if !visiting.insert(base_name.to_string()) {
+        return None;
+    }
+
+    let resolved = if first_lowered_structured_leaf_name(scope_state, base_name).is_some() {
+        Some(base_name.to_string())
+    } else {
+        let binding = scope_state.get(base_name)?;
+        if let ScopeValueSource::Expr(expr) = &binding.source
+            && is_structured_type_name(&binding.type_name)
+            && let ExprKind::Identifier(source_name) = &expr.kind
+        {
+            resolve_structured_leaf_owner(scope_state, source_name, visiting)
+        } else {
+            None
+        }
+    };
+
+    visiting.remove(base_name);
+    resolved
+}
+
+fn resolve_structured_leaf_name<'i>(scope_state: &ScopeState<'i>, base_name: &str, field_path: &[String]) -> Option<String> {
+    let owner_name = resolve_structured_leaf_owner(scope_state, base_name, &mut HashSet::new())?;
+    let leaf_name = flattened_struct_name(&owner_name, field_path);
+    scope_state.contains_key(leaf_name.as_str()).then_some(leaf_name)
+}
+
 fn lower_structured_field_access_for_eval<'i>(expr: &'i Expr<'i>, scope_state: &ScopeState<'i>) -> Result<Option<Expr<'i>>, String> {
     let Some((base, field_path)) = collect_structured_field_access(expr) else {
         return Ok(None);
@@ -1939,17 +1984,10 @@ fn lower_structured_field_access_for_eval<'i>(expr: &'i Expr<'i>, scope_state: &
     let base_name = match &base {
         StructuredFieldAccessBase::Binding(name) | StructuredFieldAccessBase::IndexedBinding(name, _) => name,
     };
-    let Some(binding) = scope_state.get(base_name.as_str()) else {
+    let Some(lowered_leaf_name) = resolve_structured_leaf_name(scope_state, base_name, &field_path) else {
         return Ok(None);
     };
-    let ScopeValueSource::StructuredBinding { leaf_bindings, .. } = &binding.source else {
-        return Ok(None);
-    };
-    if !leaf_bindings.iter().any(|leaf| leaf.field_path == field_path) {
-        return Ok(None);
-    }
-
-    let lowered_leaf = Expr::identifier(flattened_struct_name(base_name, &field_path));
+    let lowered_leaf = Expr::identifier(lowered_leaf_name);
     Ok(Some(match base {
         StructuredFieldAccessBase::Binding(_) => Expr::new(lowered_leaf.kind, expr.span),
         StructuredFieldAccessBase::IndexedBinding(_, index) => Expr::new(
@@ -1973,23 +2011,13 @@ fn lower_structured_length_for_eval<'i>(expr: &Expr<'i>, scope_state: &ScopeStat
     let Some(binding) = scope_state.get(name.as_str()) else {
         return Ok(None);
     };
-    let ScopeValueSource::StructuredBinding { leaf_bindings, .. } = &binding.source else {
-        return Ok(None);
-    };
     if !binding.type_name.ends_with("[]") {
         return Ok(None);
     }
-    let Some(first_leaf) = leaf_bindings.first() else {
-        return Err("structured array must contain fields".to_string());
-    };
-    Ok(Some(Expr::new(
-        ExprKind::UnarySuffix {
-            source: Box::new(Expr::identifier(flattened_struct_name(name, &first_leaf.field_path))),
-            kind: *kind,
-            span: *suffix_span,
-        },
-        span,
-    )))
+    let leaf_name = resolve_structured_leaf_owner(scope_state, name, &mut HashSet::new())
+        .and_then(|owner_name| first_lowered_structured_leaf_name(scope_state, &owner_name))
+        .ok_or_else(|| "structured array must contain fields".to_string())?;
+    Ok(Some(Expr::new(ExprKind::UnarySuffix { source: Box::new(Expr::identifier(leaf_name)), kind: *kind, span: *suffix_span }, span)))
 }
 
 fn lower_expr_for_eval<'i>(expr: &'i Expr<'i>, scope_state: &ScopeState<'i>) -> Result<Expr<'i>, String> {

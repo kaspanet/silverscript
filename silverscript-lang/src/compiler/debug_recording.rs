@@ -40,9 +40,14 @@ impl<'i> DebugRecorder<'i> {
         Ok(recorder)
     }
 
-    pub(crate) fn record_contract_scope(&mut self, contract: &ContractAst<'i>, constructor_args: &[Expr<'i>]) {
+    pub(crate) fn record_contract_scope(
+        &mut self,
+        contract: &ContractAst<'i>,
+        constructor_args: &[Expr<'i>],
+        structs: &StructRegistry,
+    ) -> Result<(), CompilerError> {
         let Some(active) = self.active.as_mut() else {
-            return;
+            return Ok(());
         };
 
         active.reset_iteration();
@@ -64,6 +69,14 @@ impl<'i> DebugRecorder<'i> {
                 value: constant.expr.clone(),
             });
         }
+
+        for function in &contract.functions {
+            let visible_names = active.visible_names_by_function.get(&function.name);
+            let structured_leaf_specs = build_structured_leaf_specs_for_function(function, structs, visible_names)?;
+            active.structured_leaf_specs_by_function.insert(function.name.clone(), structured_leaf_specs);
+        }
+
+        Ok(())
     }
 
     pub(super) fn begin_source_function(&mut self, function_name: &str) {
@@ -274,9 +287,11 @@ impl<'i> DebugRecorder<'i> {
         };
 
         debug_assert!(active.active_entrypoint.is_none(), "begin_entrypoint called while another entrypoint is active");
-        let visible_names = active.visible_names_by_function.get(&function.name);
-        let structured_leaf_specs = build_structured_leaf_specs_for_function(function, structs, visible_names)?;
-        active.structured_leaf_specs_by_function.insert(function.name.clone(), structured_leaf_specs);
+        if !active.structured_leaf_specs_by_function.contains_key(&function.name) {
+            let visible_names = active.visible_names_by_function.get(&function.name);
+            let structured_leaf_specs = build_structured_leaf_specs_for_function(function, structs, visible_names)?;
+            active.structured_leaf_specs_by_function.insert(function.name.clone(), structured_leaf_specs);
+        }
         active.entrypoints.push(StagedEntrypointDebug {
             name: function.name.clone(),
             script_len: 0,
@@ -1092,13 +1107,11 @@ fn inline_param_leaf_bindings(type_ref: &TypeRef, structs: &StructRegistry) -> O
         return None;
     }
 
-    let mut leaf_bindings = flatten_type_ref_leaves(type_ref, structs)
+    let leaf_bindings = flatten_type_ref_leaves(type_ref, structs)
         .ok()?
         .into_iter()
         .map(|(field_path, leaf_type)| DebugLeafBinding { field_path, type_name: type_name_from_ref(&leaf_type), stack_binding: None })
         .collect::<Vec<_>>();
-
-    leaf_bindings.sort_by(|left, right| left.field_path.cmp(&right.field_path));
     Some(leaf_bindings)
 }
 
@@ -1297,7 +1310,8 @@ mod tests {
         .expect("parse contract");
 
         let mut recorder = DebugRecorder::new(CompileOptions::default(), &contract).expect("recorder");
-        recorder.record_contract_scope(&contract, &[]);
+        let structs = build_struct_registry(&contract).expect("structs");
+        recorder.record_contract_scope(&contract, &[], &structs).expect("record contract scope");
         assert!(recorder.take_debug_info(Some("contract Demo() {}")).is_none());
     }
 
@@ -1318,7 +1332,8 @@ mod tests {
 
         let mut recorder =
             DebugRecorder::new(CompileOptions { record_debug_infos: true, ..Default::default() }, &contract).expect("recorder");
-        recorder.record_contract_scope(&contract, &[Expr::int(7)]);
+        let structs = build_struct_registry(&contract).expect("structs");
+        recorder.record_contract_scope(&contract, &[Expr::int(7)], &structs).expect("record contract scope");
         let debug_info = recorder.take_debug_info(Some("contract Demo(int seed) {}")).expect("debug info");
 
         assert_eq!(debug_info.source, "contract Demo(int seed) {}");
@@ -1345,7 +1360,8 @@ mod tests {
 
         let mut recorder =
             DebugRecorder::new(CompileOptions { record_debug_infos: true, ..Default::default() }, &contract).expect("recorder");
-        recorder.record_contract_scope(&contract, &[]);
+        let structs = build_struct_registry(&contract).expect("structs");
+        recorder.record_contract_scope(&contract, &[], &structs).expect("record contract scope");
         recorder.begin_entrypoint(function, &contract.fields, &structs).expect("begin entrypoint");
 
         let active = recorder.active.as_ref().expect("active recorder");
@@ -1374,11 +1390,13 @@ mod tests {
 
         let mut recorder =
             DebugRecorder::new(CompileOptions { record_debug_infos: true, ..Default::default() }, &contract).expect("recorder");
-        recorder.record_contract_scope(&contract, &[]);
+        let structs = build_struct_registry(&contract).expect("structs");
+        recorder.record_contract_scope(&contract, &[], &structs).expect("record contract scope");
         recorder.begin_entrypoint(function, &contract.fields, &structs).expect("begin entrypoint");
         recorder.finish_entrypoint(12);
 
-        recorder.record_contract_scope(&contract, &[]);
+        let structs = build_struct_registry(&contract).expect("structs");
+        recorder.record_contract_scope(&contract, &[], &structs).expect("record contract scope");
 
         let active = recorder.active.as_ref().expect("active recorder");
         assert!(active.entrypoints.is_empty());

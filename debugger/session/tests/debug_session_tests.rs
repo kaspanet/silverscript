@@ -1566,6 +1566,62 @@ fn debug_session_t_sil_step_into_from_line_39_stays_in_walk() -> Result<(), Box<
 }
 
 #[test]
+fn debug_session_t_sil_preserves_structured_locals_in_main_scope() -> Result<(), Box<dyn Error>> {
+    let source = DEBUG_STRESS_SOURCE;
+
+    with_session_for_source(source, vec![], "main", vec![], |session| {
+        session.run_to_first_executed_statement()?;
+        assert!(session.add_breakpoint(80), "expected line 80 breakpoint to be valid");
+        session.continue_to_breakpoint()?.ok_or("expected to stop at line 80 in target/t.sil")?;
+
+        let span = session.current_span().ok_or("missing breakpoint span at line 80")?;
+        assert_eq!(span.line, 80, "expected to stop at line 80");
+
+        let start = session.variable_by_name("start")?;
+        assert_eq!(format_value(&start.type_name, &start.value), "{left: 2, right: 5}");
+
+        let alias = session.variable_by_name("alias")?;
+        assert_eq!(format_value(&alias.type_name, &alias.value), "{left: 2, right: 5}");
+
+        let branch_limit = session.variable_by_name("branch_limit")?;
+        assert_eq!(format_value(&branch_limit.type_name, &branch_limit.value), "5");
+
+        let (type_name, value) = session.evaluate_expression("start")?;
+        assert_eq!(type_name, "Pair");
+        assert_eq!(format_value(&type_name, &value), "{left: 2, right: 5}");
+
+        let (type_name, value) = session.evaluate_expression("alias.left")?;
+        assert_eq!(type_name, "int");
+        assert_eq!(format_value(&type_name, &value), "2");
+
+        Ok(())
+    })
+}
+
+#[test]
+fn debug_session_t_sil_evaluates_structured_inline_param_fields() -> Result<(), Box<dyn Error>> {
+    let source = DEBUG_STRESS_SOURCE;
+
+    with_session_for_source(source, vec![], "main", vec![], |session| {
+        session.run_to_first_executed_statement()?;
+        assert!(session.add_breakpoint(32), "expected line 32 breakpoint to be valid");
+        session.continue_to_breakpoint()?.ok_or("expected to stop at line 32 in target/t.sil")?;
+
+        let span = session.current_span().ok_or("missing breakpoint span at line 32")?;
+        assert_eq!(span.line, 32, "expected to stop at line 32");
+
+        let pair = session.variable_by_name("pair")?;
+        assert_eq!(format_value(&pair.type_name, &pair.value), "{left: 2, right: 5}");
+
+        let (type_name, value) = session.evaluate_expression("pair.left")?;
+        assert_eq!(type_name, "int");
+        assert_eq!(format_value(&type_name, &value), "2");
+
+        Ok(())
+    })
+}
+
+#[test]
 fn debug_session_shadow_eval_uses_tx_context_for_covenant_opcode_locals() -> Result<(), Box<dyn Error>> {
     let source = r#"pragma silverscript ^0.1.0;
 

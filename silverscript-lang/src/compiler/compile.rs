@@ -124,7 +124,7 @@ pub(super) fn compile_contract_impl<'i>(
     let mut script_size = if uses_script_size { Some(100i64) } else { None };
 
     for _ in 0..32 {
-        debug_recorder.record_contract_scope(&covenant_lowered_contract, constructor_args);
+        debug_recorder.record_contract_scope(&inline_lowered_contract, constructor_args, &structs)?;
 
         let (script, state_layout) = compile_contract_script_iteration(
             &lowered_contract,
