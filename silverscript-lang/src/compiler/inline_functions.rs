@@ -4,7 +4,7 @@ use crate::debug_info::SourceSpan;
 
 use super::*;
 
-pub(crate) const INLINE_LOCAL_PREFIX: &str = "__inline";
+const INLINE_LOCAL_PREFIX: &str = "__inline";
 
 pub(super) fn lower_inline_functions<'i>(
     contract: &ContractAst<'i>,
