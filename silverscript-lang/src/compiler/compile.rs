@@ -1213,7 +1213,7 @@ fn compile_statement<'i>(ctx: &mut CompileStatementContext<'_, 'i>, stmt: &State
     let statement_start = ctx.builder.script().len();
     ctx.debug_recorder.begin_statement_at(stmt, statement_start, ctx.types, ctx.stack_bindings);
 
-    let result = match stmt {
+    let added_stack_locals = match stmt {
         Statement::VariableDefinition { type_ref, name, expr, .. } => {
             compile_variable_definition_statement(ctx, type_ref, name, expr.as_ref())
         }
@@ -1241,13 +1241,11 @@ fn compile_statement<'i>(ctx: &mut CompileStatementContext<'_, 'i>, stmt: &State
         }
         Statement::Assign { name, expr, .. } => compile_assign_statement(ctx, name, expr),
         Statement::Console { .. } => compile_console_statement(),
-    };
+    }?;
 
-    if result.is_ok() {
-        ctx.debug_recorder.finish_statement_at(stmt, ctx.builder.script().len(), ctx.types, ctx.stack_bindings);
-    }
+    ctx.debug_recorder.finish_statement_at(stmt, ctx.builder.script().len(), ctx.types, ctx.stack_bindings);
 
-    result
+    Ok(added_stack_locals)
 }
 
 struct CompileStatementContext<'a, 'i> {
