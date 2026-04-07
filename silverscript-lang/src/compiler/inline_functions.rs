@@ -13,7 +13,7 @@ pub(super) fn lower_inline_functions<'i>(
     let functions = contract.functions.iter().cloned().map(|function| (function.name.clone(), function)).collect::<HashMap<_, _>>();
     let function_order =
         contract.functions.iter().enumerate().map(|(index, function)| (function.name.clone(), index)).collect::<HashMap<_, _>>();
-    let mut inliner = Inliner { functions, function_order, fresh_counter: 0, inline_depth: 0, debug_recorder };
+    let mut inliner = Inliner { functions, function_order, fresh_counter: 0, debug_recorder };
 
     let lowered_functions = contract
         .functions
@@ -39,7 +39,6 @@ struct Inliner<'i, 'd> {
     functions: HashMap<String, FunctionAst<'i>>,
     function_order: HashMap<String, usize>,
     fresh_counter: usize,
-    inline_depth: usize,
     debug_recorder: &'d mut DebugRecorder<'i>,
 }
 
@@ -79,19 +78,14 @@ impl<'i, 'd> Inliner<'i, 'd> {
     }
 
     fn bind_visible_name(&mut self, source_name: &str, scope: &mut HashMap<String, String>) -> String {
-        if let Some(existing) = scope.get(source_name) {
-            return existing.clone();
-        }
-
-        let lowered_name = if self.inline_depth == 0 {
-            source_name.to_string()
-        } else {
-            let fresh = self.fresh_name(source_name);
-            self.debug_recorder.record_visible_name(&fresh, source_name);
-            fresh
-        };
-        scope.insert(source_name.to_string(), lowered_name.clone());
-        lowered_name
+        scope
+            .entry(source_name.to_string())
+            .or_insert_with(|| {
+                let fresh = self.fresh_name(source_name);
+                self.debug_recorder.record_visible_name(&fresh, source_name);
+                fresh
+            })
+            .clone()
     }
 
     fn predeclare_branch_bindings(&mut self, statements: &[Statement<'i>], scope: &mut HashMap<String, String>) {
@@ -386,7 +380,6 @@ impl<'i, 'd> Inliner<'i, 'd> {
         let mut local_scope = HashMap::new();
         let mut lowered = Vec::new();
         self.debug_recorder.begin_inline_source_call(&function.name, SourceSpan::from(span));
-        self.inline_depth = self.inline_depth.saturating_add(1);
         for (param, arg) in function.params.iter().zip(args.iter()) {
             let fresh = self.bind_visible_name(&param.name, &mut local_scope);
             let renamed_arg = self.rename_expr(arg, caller_scope)?;
@@ -436,7 +429,6 @@ impl<'i, 'd> Inliner<'i, 'd> {
             }
         }
         self.debug_recorder.finish_inline_source_call(body_end_statement_index);
-        self.inline_depth = self.inline_depth.saturating_sub(1);
         Ok(lowered)
     }
 
