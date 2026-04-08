@@ -6468,6 +6468,51 @@ fn assert_compiled_body(source: &str, body: Vec<u8>) {
 }
 
 #[test]
+fn canonicalizes_bool_comparison_operands_for_equality_and_inequality() {
+    let cases = [(("=="), OpNumEqual), (("!="), OpNumNotEqual)];
+
+    for (operator, compare_op) in cases {
+        let source = format!(
+            r#"
+                contract BoolCompare() {{
+                    entrypoint function main(bool x, bool y) {{
+                        require(x {operator} y);
+                    }}
+                }}
+            "#
+        );
+        let body = ScriptBuilder::new()
+            .add_op(OpOver)
+            .unwrap()
+            .add_op(OpOver)
+            .unwrap()
+            .add_op(OpNot)
+            .unwrap()
+            .add_op(OpNot)
+            .unwrap()
+            .add_op(OpSwap)
+            .unwrap()
+            .add_op(OpNot)
+            .unwrap()
+            .add_op(OpNot)
+            .unwrap()
+            .add_op(compare_op)
+            .unwrap()
+            .add_op(OpVerify)
+            .unwrap()
+            .add_op(OpDrop)
+            .unwrap()
+            .add_op(OpDrop)
+            .unwrap()
+            .add_op(OpTrue)
+            .unwrap()
+            .drain();
+
+        assert_compiled_body(&source, body);
+    }
+}
+
+#[test]
 fn compiles_opcode_builtins() {
     let cases: Vec<(&str, Vec<u8>)> = vec![
         (
@@ -6760,6 +6805,16 @@ fn compiles_opcode_builtins() {
                 .add_op(OpTxInputIsCoinbase)
                 .unwrap()
                 .add_i64(0)
+                .unwrap()
+                .add_op(OpNot)
+                .unwrap()
+                .add_op(OpNot)
+                .unwrap()
+                .add_op(OpSwap)
+                .unwrap()
+                .add_op(OpNot)
+                .unwrap()
+                .add_op(OpNot)
                 .unwrap()
                 .add_op(OpNumEqual)
                 .unwrap()
