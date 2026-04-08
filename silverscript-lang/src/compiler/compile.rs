@@ -339,7 +339,7 @@ fn compile_contract_fields<'i>(
         let mut stack_depth = 0i64;
         if fixed_type_size_with_constants_ref(&field.type_ref, base_constants).is_some() {
             let encoded = encode_fixed_size_value(&resolved, &type_name)?;
-            builder.add_data(&encoded)?;
+            builder.add_data_with_push_opcode(&encoded)?;
         } else {
             compile_expr(
                 &resolved,
@@ -2123,20 +2123,20 @@ fn compile_validate_output_state_statement(
     stack_depth -= 1;
 
     builder.add_op(OpBlake2b)?;
-    builder.add_data(&[0x00, 0x00])?;
+    builder.add_data_with_push_opcode(&[0x00, 0x00])?;
     stack_depth += 1;
-    builder.add_data(&[OpBlake2b])?;
+    builder.add_data_with_push_opcode(&[OpBlake2b])?;
     stack_depth += 1;
     builder.add_op(OpCat)?;
     stack_depth -= 1;
-    builder.add_data(&[0x20])?;
+    builder.add_data_with_push_opcode(&[0x20])?;
     stack_depth += 1;
     builder.add_op(OpCat)?;
     stack_depth -= 1;
     builder.add_op(OpSwap)?;
     builder.add_op(OpCat)?;
     stack_depth -= 1;
-    builder.add_data(&[OpEqual])?;
+    builder.add_data_with_push_opcode(&[OpEqual])?;
     stack_depth += 1;
     builder.add_op(OpCat)?;
     stack_depth -= 1;
@@ -2311,20 +2311,20 @@ fn compile_validate_output_state_with_template_statement(
     stack_depth -= 1;
 
     builder.add_op(OpBlake2b)?;
-    builder.add_data(&[0x00, 0x00])?;
+    builder.add_data_with_push_opcode(&[0x00, 0x00])?;
     stack_depth += 1;
-    builder.add_data(&[OpBlake2b])?;
+    builder.add_data_with_push_opcode(&[OpBlake2b])?;
     stack_depth += 1;
     builder.add_op(OpCat)?;
     stack_depth -= 1;
-    builder.add_data(&[0x20])?;
+    builder.add_data_with_push_opcode(&[0x20])?;
     stack_depth += 1;
     builder.add_op(OpCat)?;
     stack_depth -= 1;
     builder.add_op(OpSwap)?;
     builder.add_op(OpCat)?;
     stack_depth -= 1;
-    builder.add_data(&[OpEqual])?;
+    builder.add_data_with_push_opcode(&[OpEqual])?;
     stack_depth += 1;
     builder.add_op(OpCat)?;
     stack_depth -= 1;
@@ -2416,7 +2416,7 @@ fn compile_encoded_object_with_layout(
             )?;
         }
         let prefix = data_prefix(field_size);
-        builder.add_data(&prefix)?;
+        builder.add_data_with_push_opcode(&prefix)?;
         stack_depth += 1;
         builder.add_op(OpSwap)?;
         builder.add_op(OpCat)?;
@@ -2813,21 +2813,21 @@ fn compile_bool_expr<'i>(ctx: &mut CompileExprContext<'_, 'i>, value: bool) -> R
 }
 
 fn compile_byte_expr<'i>(ctx: &mut CompileExprContext<'_, 'i>, byte: u8) -> Result<(), CompilerError> {
-    ctx.builder.add_data(&[byte])?;
+    ctx.builder.add_data_with_push_opcode(&[byte])?;
     *ctx.stack_depth += 1;
     Ok(())
 }
 
 fn compile_array_expr<'i>(ctx: &mut CompileExprContext<'_, 'i>, values: &[Expr<'i>]) -> Result<(), CompilerError> {
     if values.is_empty() {
-        ctx.builder.add_data(&[])?;
+        ctx.builder.add_data_with_push_opcode(&[])?;
         *ctx.stack_depth += 1;
         return Ok(());
     }
     let inferred_type = infer_fixed_array_runtime_type(values, ctx.scope.constants, ctx.scope.types)
         .ok_or_else(|| CompilerError::Unsupported("array literal type cannot be inferred".to_string()))?;
     if let Ok(encoded) = encode_array_literal(values, &inferred_type) {
-        ctx.builder.add_data(&encoded)?;
+        ctx.builder.add_data_with_push_opcode(&encoded)?;
         *ctx.stack_depth += 1;
         return Ok(());
     }
@@ -2904,7 +2904,7 @@ fn compile_field_access_expr() -> Result<(), CompilerError> {
 }
 
 fn compile_string_expr<'i>(ctx: &mut CompileExprContext<'_, 'i>, value: &str) -> Result<(), CompilerError> {
-    ctx.builder.add_data(value.as_bytes())?;
+    ctx.builder.add_data_with_push_opcode(value.as_bytes())?;
     *ctx.stack_depth += 1;
     Ok(())
 }
@@ -2966,7 +2966,7 @@ fn compile_new_expr<'i>(ctx: &mut CompileExprContext<'_, 'i>, name: &str, args: 
                 return Err(CompilerError::Unsupported("LockingBytecodeNullData expects a single array argument".to_string()));
             }
             let script = build_null_data_script(&args[0])?;
-            ctx.builder.add_data(&script)?;
+            ctx.builder.add_data_with_push_opcode(&script)?;
             *ctx.stack_depth += 1;
             Ok(())
         }
@@ -2975,12 +2975,12 @@ fn compile_new_expr<'i>(ctx: &mut CompileExprContext<'_, 'i>, name: &str, args: 
                 return Err(CompilerError::Unsupported("ScriptPubKeyP2PK expects a single pubkey argument".to_string()));
             }
             compile_expr_with_context(ctx, &args[0])?;
-            ctx.builder.add_data(&[0x00, 0x00, OpData32])?;
+            ctx.builder.add_data_with_push_opcode(&[0x00, 0x00, OpData32])?;
             *ctx.stack_depth += 1;
             ctx.builder.add_op(OpSwap)?;
             ctx.builder.add_op(OpCat)?;
             *ctx.stack_depth -= 1;
-            ctx.builder.add_data(&[OpCheckSig])?;
+            ctx.builder.add_data_with_push_opcode(&[OpCheckSig])?;
             *ctx.stack_depth += 1;
             ctx.builder.add_op(OpCat)?;
             *ctx.stack_depth -= 1;
@@ -2991,20 +2991,20 @@ fn compile_new_expr<'i>(ctx: &mut CompileExprContext<'_, 'i>, name: &str, args: 
                 return Err(CompilerError::Unsupported("ScriptPubKeyP2SH expects a single bytes32 argument".to_string()));
             }
             compile_expr_with_context(ctx, &args[0])?;
-            ctx.builder.add_data(&[0x00, 0x00])?;
+            ctx.builder.add_data_with_push_opcode(&[0x00, 0x00])?;
             *ctx.stack_depth += 1;
-            ctx.builder.add_data(&[OpBlake2b])?;
+            ctx.builder.add_data_with_push_opcode(&[OpBlake2b])?;
             *ctx.stack_depth += 1;
             ctx.builder.add_op(OpCat)?;
             *ctx.stack_depth -= 1;
-            ctx.builder.add_data(&[0x20])?;
+            ctx.builder.add_data_with_push_opcode(&[0x20])?;
             *ctx.stack_depth += 1;
             ctx.builder.add_op(OpCat)?;
             *ctx.stack_depth -= 1;
             ctx.builder.add_op(OpSwap)?;
             ctx.builder.add_op(OpCat)?;
             *ctx.stack_depth -= 1;
-            ctx.builder.add_data(&[OpEqual])?;
+            ctx.builder.add_data_with_push_opcode(&[OpEqual])?;
             *ctx.stack_depth += 1;
             ctx.builder.add_op(OpCat)?;
             *ctx.stack_depth -= 1;
@@ -3018,20 +3018,20 @@ fn compile_new_expr<'i>(ctx: &mut CompileExprContext<'_, 'i>, name: &str, args: 
             }
             compile_expr_with_context(ctx, &args[0])?;
             ctx.builder.add_op(OpBlake2b)?;
-            ctx.builder.add_data(&[0x00, 0x00])?;
+            ctx.builder.add_data_with_push_opcode(&[0x00, 0x00])?;
             *ctx.stack_depth += 1;
-            ctx.builder.add_data(&[OpBlake2b])?;
+            ctx.builder.add_data_with_push_opcode(&[OpBlake2b])?;
             *ctx.stack_depth += 1;
             ctx.builder.add_op(OpCat)?;
             *ctx.stack_depth -= 1;
-            ctx.builder.add_data(&[0x20])?;
+            ctx.builder.add_data_with_push_opcode(&[0x20])?;
             *ctx.stack_depth += 1;
             ctx.builder.add_op(OpCat)?;
             *ctx.stack_depth -= 1;
             ctx.builder.add_op(OpSwap)?;
             ctx.builder.add_op(OpCat)?;
             *ctx.stack_depth -= 1;
-            ctx.builder.add_data(&[OpEqual])?;
+            ctx.builder.add_data_with_push_opcode(&[OpEqual])?;
             *ctx.stack_depth += 1;
             ctx.builder.add_op(OpCat)?;
             *ctx.stack_depth -= 1;
@@ -3282,7 +3282,7 @@ fn compile_nullary_expr<'i>(ctx: &mut CompileExprContext<'_, 'i>, op: NullaryOp)
                 CompilerError::Unsupported("this.scriptSizeDataPrefix requires a non-negative script size".to_string())
             })?;
             let prefix = data_prefix(size);
-            ctx.builder.add_data(&prefix)?;
+            ctx.builder.add_data_with_push_opcode(&prefix)?;
         }
         NullaryOp::TxInputsLength => {
             ctx.builder.add_op(OpTxInputCount)?;
@@ -3679,14 +3679,14 @@ fn compile_bytes_call<'i>(ctx: &mut CompileCallContext<'_, 'i>, args: &[Expr<'i>
     }
     match &args[0].kind {
         ExprKind::String(value) => {
-            ctx.builder.add_data(value.as_bytes())?;
+            ctx.builder.add_data_with_push_opcode(value.as_bytes())?;
             *ctx.stack_depth += 1;
             Ok(())
         }
         ExprKind::Identifier(name) => {
             if let Some(expr) = ctx.scope.constants.get(name) {
                 if let ExprKind::String(value) = &expr.kind {
-                    ctx.builder.add_data(value.as_bytes())?;
+                    ctx.builder.add_data_with_push_opcode(value.as_bytes())?;
                     *ctx.stack_depth += 1;
                     return Ok(());
                 }
@@ -3939,10 +3939,10 @@ fn build_null_data_script<'i>(arg: &Expr<'i>) -> Result<Vec<u8>, CompilerError> 
                     .iter()
                     .filter_map(|value| if let ExprKind::Byte(byte) = &value.kind { Some(*byte) } else { None })
                     .collect();
-                builder.add_data(&bytes)?;
+                builder.add_data_with_push_opcode(&bytes)?;
             }
             ExprKind::String(value) => {
-                builder.add_data(value.as_bytes())?;
+                builder.add_data_with_push_opcode(value.as_bytes())?;
             }
             ExprKind::Call { name, args, .. } if name == "bytes" || name == "byte[]" => {
                 if args.len() != 1 {
@@ -3952,7 +3952,7 @@ fn build_null_data_script<'i>(arg: &Expr<'i>) -> Result<Vec<u8>, CompilerError> 
                 }
                 match &args[0].kind {
                     ExprKind::String(value) => {
-                        builder.add_data(value.as_bytes())?;
+                        builder.add_data_with_push_opcode(value.as_bytes())?;
                     }
                     _ => {
                         return Err(CompilerError::Unsupported(
@@ -3977,7 +3977,7 @@ fn build_null_data_script<'i>(arg: &Expr<'i>) -> Result<Vec<u8>, CompilerError> 
 fn data_prefix(data_len: usize) -> Vec<u8> {
     let dummy_data = vec![0u8; data_len];
     let mut builder = ScriptBuilder::new();
-    builder.add_data(&dummy_data).unwrap();
+    builder.add_data_with_push_opcode(&dummy_data).unwrap();
     let script = builder.drain();
     script[..script.len() - data_len].to_vec()
 }
