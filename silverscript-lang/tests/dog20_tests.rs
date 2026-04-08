@@ -617,6 +617,94 @@ fn dog20_minter_can_split_then_mint_then_burn() {
 
     execute_input_with_covenants(split_tx.clone(), split_entries, 0).expect("Dog20 minter split should succeed");
 
+    let forged_other = compile_dog20_state(&source, other_owner_bytes.clone(), 700, 2, 2);
+    let forged_other_outputs = vec![TransactionOutput {
+        value: 1_000,
+        script_public_key: pay_to_script_hash_script(&forged_other.script),
+        covenant: Some(CovenantBinding { authorizing_input: 0, covenant_id: COV_A }),
+    }];
+    let forged_other_entries =
+        vec![UtxoEntry::new(1_000, pay_to_script_hash_script(&split_other.script), 0, split_tx.is_coinbase(), Some(COV_A))];
+    let forged_other_unsigned_tx = Transaction::new(
+        1,
+        vec![tx_input_from_outpoint_v1(TransactionOutpoint { transaction_id: split_tx.id(), index: 1 }, vec![])],
+        forged_other_outputs.clone(),
+        0,
+        Default::default(),
+        0,
+        vec![],
+    );
+    let forged_other_sig = sign_tx_input(forged_other_unsigned_tx, forged_other_entries.clone(), 0, &other_owner);
+    let forged_other_sigscript = covenant_decl_sigscript(
+        &split_other,
+        "transfer",
+        vec![
+            dog20_state_array_arg_with_minter(vec![(other_owner_bytes.clone(), 700, false)]),
+            sig_array_arg(vec![forged_other_sig]),
+            witness_array_arg(vec![0]),
+        ],
+        true,
+    );
+    let forged_other_tx = Transaction::new(
+        1,
+        vec![tx_input_from_outpoint_v1(TransactionOutpoint { transaction_id: split_tx.id(), index: 1 }, forged_other_sigscript)],
+        forged_other_outputs,
+        0,
+        Default::default(),
+        0,
+        vec![],
+    );
+
+    let err = execute_input_with_covenants(forged_other_tx, forged_other_entries, 0)
+        .expect_err("Dog20 non-minter branch should reject minting more tokens");
+    assert_verify_like_error(err);
+
+    let forged_other_minter = compile_dog20_state_with_minter(&source, other_owner_bytes.clone(), 600, true, 2, 2);
+    let forged_other_minter_outputs = vec![TransactionOutput {
+        value: 1_000,
+        script_public_key: pay_to_script_hash_script(&forged_other_minter.script),
+        covenant: Some(CovenantBinding { authorizing_input: 0, covenant_id: COV_A }),
+    }];
+    let forged_other_minter_entries =
+        vec![UtxoEntry::new(1_000, pay_to_script_hash_script(&split_other.script), 0, split_tx.is_coinbase(), Some(COV_A))];
+    let forged_other_minter_unsigned_tx = Transaction::new(
+        1,
+        vec![tx_input_from_outpoint_v1(TransactionOutpoint { transaction_id: split_tx.id(), index: 1 }, vec![])],
+        forged_other_minter_outputs.clone(),
+        0,
+        Default::default(),
+        0,
+        vec![],
+    );
+    let forged_other_minter_sig =
+        sign_tx_input(forged_other_minter_unsigned_tx, forged_other_minter_entries.clone(), 0, &other_owner);
+    let forged_other_minter_sigscript = covenant_decl_sigscript(
+        &split_other,
+        "transfer",
+        vec![
+            dog20_state_array_arg_with_minter(vec![(other_owner_bytes.clone(), 600, true)]),
+            sig_array_arg(vec![forged_other_minter_sig]),
+            witness_array_arg(vec![0]),
+        ],
+        true,
+    );
+    let forged_other_minter_tx = Transaction::new(
+        1,
+        vec![tx_input_from_outpoint_v1(
+            TransactionOutpoint { transaction_id: split_tx.id(), index: 1 },
+            forged_other_minter_sigscript,
+        )],
+        forged_other_minter_outputs,
+        0,
+        Default::default(),
+        0,
+        vec![],
+    );
+
+    let err = execute_input_with_covenants(forged_other_minter_tx, forged_other_minter_entries, 0)
+        .expect_err("Dog20 non-minter branch should reject setting isMinter=true");
+    assert_verify_like_error(err);
+
     let mint_outputs = vec![TransactionOutput {
         value: 1_000,
         script_public_key: pay_to_script_hash_script(&minted_minter.script),
