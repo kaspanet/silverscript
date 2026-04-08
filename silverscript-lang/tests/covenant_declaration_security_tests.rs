@@ -213,10 +213,7 @@ fn compile_dog20_state<'a>(source: &'a str, owner: Vec<u8>, amount: i64, max_cov
 }
 
 fn sign_tx_input(tx: Transaction, entries: Vec<UtxoEntry>, input_idx: usize, keypair: &Keypair) -> Vec<u8> {
-    let mut tx = MutableTransaction::with_entries(tx, entries);
-    for input in &mut tx.tx.inputs {
-        input.mass = kaspa_consensus_core::tx::TxInputMass::ComputeBudget(100.into());
-    }
+    let tx = MutableTransaction::with_entries(tx, entries);
     let reused_values = SigHashReusedValuesUnsync::new();
     let sig_hash = calc_schnorr_signature_hash(&tx.as_verifiable(), input_idx, SIG_HASH_ALL, &reused_values);
     let msg = secp256k1::Message::from_digest_slice(sig_hash.as_bytes().as_slice()).expect("valid sighash message");
@@ -244,7 +241,7 @@ fn tx_input(index: u32, signature_script: Vec<u8>) -> TransactionInput {
 }
 
 fn tx_input_from_outpoint_v1(previous_outpoint: TransactionOutpoint, signature_script: Vec<u8>) -> TransactionInput {
-    TransactionInput::new_with_compute_budget(previous_outpoint, signature_script, 0, 100)
+    TransactionInput::new_with_compute_budget(previous_outpoint, signature_script, 0, 0)
 }
 
 fn covenant_output(compiled: &CompiledContract<'_>, authorizing_input: u16, covenant_id: Hash) -> TransactionOutput {

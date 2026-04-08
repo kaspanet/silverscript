@@ -42,7 +42,7 @@ contract Dog20(byte[32] genesisPk, int genesisAmount, byte genesisIdentifierType
     function checkMintingTransfer(State[] newStates){
         if(!isMinter){
             for(i, 0, newStates.length, maxCovOuts) {
-                require(newStates[i].isMinter == false);
+                require(!newStates[i].isMinter);
             }
         }
     }
