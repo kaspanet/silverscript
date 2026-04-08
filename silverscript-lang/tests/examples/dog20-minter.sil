@@ -1,0 +1,56 @@
+contract Dog20Minter(pubkey owner, byte[32] initDog20Covid, int initAmount,
+    bool initInitialized, int templatePrefixLen, int templateSuffixLen, byte[32] expectedTemplateHash,
+    byte[] templatePrefix, byte[] templateSuffix) {
+
+    byte[32] dog20Covid = initDog20Covid;
+    int amount = initAmount;
+    bool initialized = initInitialized;
+
+    struct Dog20State {
+        byte[32] ownerIdentifier;
+        byte identifierType;
+        int amount;
+        bool isMinter;
+    }
+
+    function calcInAmount() : (int) {
+        Dog20State dogPrevState = readInputStateWithTemplate(
+            OpCovInputIdx(dog20Covid, 0),
+            templatePrefixLen,
+            templateSuffixLen,
+            expectedTemplateHash
+        );
+        return (dogPrevState.amount);
+    }
+
+    function checkDogNewState(Dog20State dogNewState){
+        validateOutputStateWithTemplate(
+            OpCovOutputIdx(dog20Covid, 0),
+            dogNewState,
+            templatePrefix,
+            templateSuffix,
+            expectedTemplateHash
+        );
+    }
+
+    #[covenant.singleton]
+    function mint(State prevState, State newState, sig s, Dog20State dogNewState) {
+        require(newState.amount >= 0);
+        require(newState.initialized);
+
+        if(!initialized){
+            require(newState.dog20Covid == OpInputCovenantId(0));
+        } else {
+            require(newState.dog20Covid == prevState.dog20Covid);
+        }
+
+        require(OpCovOutputCount(dog20Covid) == 1);
+        require(OpCovInputCount(dog20Covid) == 1);
+        checkDogNewState(dogNewState);
+
+        int inAmount = calcInAmount();
+        int mintedAmount = dogNewState.amount - inAmount;
+        require(newState.amount == amount - mintedAmount);
+        require(checkSig(s, owner));
+    }
+}
