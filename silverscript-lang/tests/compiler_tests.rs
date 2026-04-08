@@ -109,7 +109,7 @@ fn script_op_counts(script: &[u8]) -> (usize, usize) {
 }
 
 fn sigscript_push_script(script: &[u8]) -> Vec<u8> {
-    ScriptBuilder::new().add_data(script).unwrap().drain()
+    ScriptBuilder::new().add_data_with_push_opcode(script).unwrap().drain()
 }
 
 fn test_input(index: u32, signature_script: Vec<u8>) -> TransactionInput {
@@ -792,7 +792,7 @@ fn build_sig_script_builds_expected_script() {
 
     let selector = selector_for(&compiled, "spend");
     let mut builder = ScriptBuilder::new();
-    builder.add_data(&[1u8, 2, 3, 4]).unwrap();
+    builder.add_data_with_push_opcode(&[1u8, 2, 3, 4]).unwrap();
     builder.add_i64(7).unwrap();
     if let Some(selector) = selector {
         builder.add_i64(selector).unwrap();
@@ -815,7 +815,7 @@ fn byte_variable_from_int_literal_uses_raw_byte_push() {
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("byte int literal should compile");
     let expected = ScriptBuilder::new()
-        .add_data(&[5u8])
+        .add_data_with_push_opcode(&[5u8])
         .unwrap()
         .add_op(OpBin2Num)
         .unwrap()
@@ -876,9 +876,9 @@ fn byte_equality_with_rhs_int_literal_uses_raw_byte_push() {
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("byte equality with rhs literal should compile");
     let expected = ScriptBuilder::new()
-        .add_data(&[1u8])
+        .add_data_with_push_opcode(&[1u8])
         .unwrap()
-        .add_data(&[1u8])
+        .add_data_with_push_opcode(&[1u8])
         .unwrap()
         .add_op(OpEqual)
         .unwrap()
@@ -1454,7 +1454,7 @@ fn build_sig_script_omits_selector_without_selector() {
     assert!(compiled.without_selector);
     let sigscript = compiled.build_sig_script("spend", vec![1.into(), vec![2u8; 4].into()]).expect("sigscript builds");
 
-    let expected = ScriptBuilder::new().add_i64(1).unwrap().add_data(&[2u8; 4]).unwrap().drain();
+    let expected = ScriptBuilder::new().add_i64(1).unwrap().add_data_with_push_opcode(&[2u8; 4]).unwrap().drain();
     assert_eq!(sigscript, expected);
 }
 
@@ -1537,7 +1537,7 @@ fn build_sig_script_supports_struct_entrypoint_arguments() {
     let arg = struct_object(vec![("a", Expr::int(0)), ("b", Expr::string("12345"))]);
     let sigscript = compiled.build_sig_script("main", vec![arg]).expect("sigscript builds");
 
-    let expected = ScriptBuilder::new().add_i64(0).unwrap().add_data(b"12345").unwrap().drain();
+    let expected = ScriptBuilder::new().add_i64(0).unwrap().add_data_with_push_opcode(b"12345").unwrap().drain();
     assert_eq!(sigscript, expected);
 }
 
@@ -1559,7 +1559,7 @@ fn build_sig_script_supports_state_entrypoint_arguments() {
     let arg = struct_object(vec![("x", Expr::int(9)), ("y", Expr::bytes(vec![0x34, 0x12]))]);
     let sigscript = compiled.build_sig_script("main", vec![arg]).expect("sigscript builds");
 
-    let expected = ScriptBuilder::new().add_i64(9).unwrap().add_data(&[0x34, 0x12]).unwrap().drain();
+    let expected = ScriptBuilder::new().add_i64(9).unwrap().add_data_with_push_opcode(&[0x34, 0x12]).unwrap().drain();
     assert_eq!(sigscript, expected);
 }
 
@@ -1582,7 +1582,7 @@ fn build_sig_script_supports_sig_array_arguments() {
 
     let mut encoded = sig_a;
     encoded.extend(sig_b);
-    let expected = ScriptBuilder::new().add_data(&encoded).unwrap().drain();
+    let expected = ScriptBuilder::new().add_data_with_push_opcode(&encoded).unwrap().drain();
     assert_eq!(sigscript, expected);
 }
 
@@ -3084,7 +3084,7 @@ fn compiles_int_array_length_to_expected_script() {
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
 
     let expected = ScriptBuilder::new()
-        .add_data(&[])
+        .add_data_with_push_opcode(&[])
         .unwrap()
         .add_op(OpDup)
         .unwrap()
@@ -3132,11 +3132,11 @@ fn compiles_int_array_push_to_expected_script() {
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
 
     let expected = ScriptBuilder::new()
-        .add_data(&[])
+        .add_data_with_push_opcode(&[])
         .unwrap()
         .add_op(OpDup)
         .unwrap()
-        .add_data(&serialize_i64(7, Some(8)).unwrap())
+        .add_data_with_push_opcode(&serialize_i64(7, Some(8)).unwrap())
         .unwrap()
         .add_op(OpCat)
         .unwrap()
@@ -3315,11 +3315,11 @@ fn compiles_int_array_index_to_expected_script() {
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
 
     let expected = ScriptBuilder::new()
-        .add_data(&[])
+        .add_data_with_push_opcode(&[])
         .unwrap()
         .add_op(OpDup)
         .unwrap()
-        .add_data(&serialize_i64(7, Some(8)).unwrap())
+        .add_data_with_push_opcode(&serialize_i64(7, Some(8)).unwrap())
         .unwrap()
         .add_op(OpCat)
         .unwrap()
@@ -3580,11 +3580,11 @@ fn compiles_bytes20_array_push_without_num2bin() {
     let value =
         vec![0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14];
     let expected = ScriptBuilder::new()
-        .add_data(&[])
+        .add_data_with_push_opcode(&[])
         .unwrap()
         .add_op(OpDup)
         .unwrap()
-        .add_data(&value)
+        .add_data_with_push_opcode(&value)
         .unwrap()
         .add_op(OpCat)
         .unwrap()
@@ -3608,7 +3608,7 @@ fn compiles_bytes20_array_push_without_num2bin() {
         .unwrap()
         .add_op(OpVerify)
         .unwrap()
-        .add_data(&[])
+        .add_data_with_push_opcode(&[])
         .unwrap()
         .add_op(OpRoll)
         .unwrap()
@@ -4273,9 +4273,9 @@ fn compiles_contract_fields_as_script_prolog() {
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
     let expected = ScriptBuilder::new()
-        .add_data(&5i64.to_le_bytes())
+        .add_data_with_push_opcode(&5i64.to_le_bytes())
         .unwrap()
-        .add_data(&[0x12, 0x34])
+        .add_data_with_push_opcode(&[0x12, 0x34])
         .unwrap()
         .add_op(OpOver)
         .unwrap()
@@ -4363,10 +4363,10 @@ fn compiles_validate_output_state_to_expected_script() {
 
     let expected = ScriptBuilder::new()
         // <x> as fixed-size int field encoding: <PUSHDATA8><8-byte little-endian>
-        .add_data(&5i64.to_le_bytes())
+        .add_data_with_push_opcode(&5i64.to_le_bytes())
         .unwrap()
         // <y>
-        .add_data(&[1u8, 2u8])
+        .add_data_with_push_opcode(&[1u8, 2u8])
         .unwrap()
 
         // ---- Build new_state.x = x + 1 ----
@@ -4387,7 +4387,7 @@ fn compiles_validate_output_state_to_expected_script() {
         .add_op(OpNum2Bin)
         .unwrap()
         // prepend PUSHDATA8 prefix byte
-        .add_data(&[0x08])
+        .add_data_with_push_opcode(&[0x08])
         .unwrap()
         .add_op(OpSwap)
         .unwrap()
@@ -4395,10 +4395,10 @@ fn compiles_validate_output_state_to_expected_script() {
         .unwrap()
         // ---- Build new_state.y pushdata chunk ----
         // raw y bytes
-        .add_data(&[0x34, 0x12])
+        .add_data_with_push_opcode(&[0x34, 0x12])
         .unwrap()
         // pushdata prefix for 2-byte data is 0x02
-        .add_data(&[0x02])
+        .add_data_with_push_opcode(&[0x02])
         .unwrap()
         // reorder to prefix || data
         .add_op(OpSwap)
@@ -4452,16 +4452,16 @@ fn compiles_validate_output_state_to_expected_script() {
         .add_op(OpBlake2b)
         .unwrap()
         // version bytes
-        .add_data(&[0x00, 0x00])
+        .add_data_with_push_opcode(&[0x00, 0x00])
         .unwrap()
         // locking opcode prefix OP_BLAKE2B
-        .add_data(&[OpBlake2b])
+        .add_data_with_push_opcode(&[OpBlake2b])
         .unwrap()
         // version || OP_BLAKE2B
         .add_op(OpCat)
         .unwrap()
         // pushdata-length byte for 32-byte hash
-        .add_data(&[0x20])
+        .add_data_with_push_opcode(&[0x20])
         .unwrap()
         // version || OP_BLAKE2B || push32
         .add_op(OpCat)
@@ -4473,7 +4473,7 @@ fn compiles_validate_output_state_to_expected_script() {
         .add_op(OpCat)
         .unwrap()
         // trailing OP_EQUAL
-        .add_data(&[OpEqual])
+        .add_data_with_push_opcode(&[OpEqual])
         .unwrap()
         // final expected output scriptPubKey bytes
         .add_op(OpCat)
@@ -5467,9 +5467,8 @@ fn read_input_state_runtime_preserves_supported_field_types_without_selector_dis
     );
 }
 
-// TODO: Fix this bug by using builder.add_data_with_push_opcode instead of builder.add_data after covpp-reset2 is finalized.
 #[test]
-fn read_input_state_scalar_byte_regression_repros_runtime_mismatch() {
+fn read_input_state_scalar_byte_round_trips_at_runtime() {
     let source = r#"
         contract C(byte initByte, pubkey initOwner) {
             byte someByte = initByte;
@@ -5485,8 +5484,8 @@ fn read_input_state_scalar_byte_regression_repros_runtime_mismatch() {
                 // The companion pubkey field proves the state offsets are otherwise correct for this layout.
                 require(x.someOwner == pubkey(0x0202020202020202020202020202020202020202020202020202020202020202));
 
-                // This should succeed once scalar byte fields round-trip through readInputState with
-                // the same semantics as ordinary byte values. Today it still fails at runtime.
+                // Regression coverage: scalar byte fields should round-trip through readInputState
+                // with the same semantics as ordinary byte values.
                 require(x.someByte == 7);
             }
         }
@@ -5503,7 +5502,7 @@ fn read_input_state_scalar_byte_regression_repros_runtime_mismatch() {
     let utxo_entry = UtxoEntry::new(output.value, input_spk, 0, tx.is_coinbase(), None);
 
     let result = execute_input(tx, vec![utxo_entry], 0);
-    assert!(result.is_err(), "scalar byte readInputState regression should currently fail at runtime");
+    assert!(result.is_ok(), "scalar byte readInputState should preserve runtime byte semantics: {result:?}");
 }
 
 #[test]
@@ -5768,10 +5767,10 @@ fn compiles_read_input_state_to_expected_script() {
     let _expected = ScriptBuilder::new()
         // ---- Prolog state on active input: x=5, y=0x0102 ----
         // push x payload (8-byte LE)
-        .add_data(&5i64.to_le_bytes())
+        .add_data_with_push_opcode(&5i64.to_le_bytes())
         .unwrap()
         // push y payload bytes
-        .add_data(&[1u8, 2u8])
+        .add_data_with_push_opcode(&[1u8, 2u8])
         .unwrap()
 
         // ---- in1_x = readInputState(1).x ----
@@ -5885,7 +5884,7 @@ fn compiles_read_input_state_to_expected_script() {
         .add_op(OpTxInputScriptSigSubstr)
         .unwrap()
         // expected y bytes
-        .add_data(&[0x34, 0x12])
+        .add_data_with_push_opcode(&[0x34, 0x12])
         .unwrap()
         // in1_y == 0x3412
         .add_op(OpEqual)
@@ -6524,11 +6523,11 @@ fn compiles_opcode_builtins() {
                 }
             "#,
             ScriptBuilder::new()
-                .add_data(b"msg")
+                .add_data_with_push_opcode(b"msg")
                 .unwrap()
                 .add_op(OpSHA256)
                 .unwrap()
-                .add_data(b"hash")
+                .add_data_with_push_opcode(b"hash")
                 .unwrap()
                 .add_op(OpEqual)
                 .unwrap()
@@ -6549,7 +6548,7 @@ fn compiles_opcode_builtins() {
             ScriptBuilder::new()
                 .add_op(OpTxSubnetId)
                 .unwrap()
-                .add_data(b"subnet")
+                .add_data_with_push_opcode(b"subnet")
                 .unwrap()
                 .add_op(OpEqual)
                 .unwrap()
@@ -6616,7 +6615,7 @@ fn compiles_opcode_builtins() {
                 .unwrap()
                 .add_op(OpTxPayloadSubstr)
                 .unwrap()
-                .add_data(b"ok")
+                .add_data_with_push_opcode(b"ok")
                 .unwrap()
                 .add_op(OpEqual)
                 .unwrap()
@@ -6639,7 +6638,7 @@ fn compiles_opcode_builtins() {
                 .unwrap()
                 .add_op(OpOutpointTxId)
                 .unwrap()
-                .add_data(b"txid")
+                .add_data_with_push_opcode(b"txid")
                 .unwrap()
                 .add_op(OpEqual)
                 .unwrap()
@@ -6712,7 +6711,7 @@ fn compiles_opcode_builtins() {
                 .unwrap()
                 .add_op(OpTxInputScriptSigSubstr)
                 .unwrap()
-                .add_data(b"sig")
+                .add_data_with_push_opcode(b"sig")
                 .unwrap()
                 .add_op(OpEqual)
                 .unwrap()
@@ -6735,7 +6734,7 @@ fn compiles_opcode_builtins() {
                 .unwrap()
                 .add_op(OpTxInputSeq)
                 .unwrap()
-                .add_data(b"seq")
+                .add_data_with_push_opcode(b"seq")
                 .unwrap()
                 .add_op(OpEqual)
                 .unwrap()
@@ -6864,7 +6863,7 @@ fn compiles_opcode_builtins() {
                 .unwrap()
                 .add_op(OpTxInputSpkSubstr)
                 .unwrap()
-                .add_data(b"spk")
+                .add_data_with_push_opcode(b"spk")
                 .unwrap()
                 .add_op(OpEqual)
                 .unwrap()
@@ -6914,7 +6913,7 @@ fn compiles_opcode_builtins() {
                 .unwrap()
                 .add_op(OpTxOutputSpkSubstr)
                 .unwrap()
-                .add_data(b"out")
+                .add_data_with_push_opcode(b"out")
                 .unwrap()
                 .add_op(OpEqual)
                 .unwrap()
@@ -6985,7 +6984,7 @@ fn compiles_opcode_builtins() {
                 .unwrap()
                 .add_op(OpInputCovenantId)
                 .unwrap()
-                .add_data(b"cov")
+                .add_data_with_push_opcode(b"cov")
                 .unwrap()
                 .add_op(OpEqual)
                 .unwrap()
@@ -7004,7 +7003,7 @@ fn compiles_opcode_builtins() {
                 }
             "#,
             ScriptBuilder::new()
-                .add_data(b"c1")
+                .add_data_with_push_opcode(b"c1")
                 .unwrap()
                 .add_op(OpCovInputCount)
                 .unwrap()
@@ -7027,7 +7026,7 @@ fn compiles_opcode_builtins() {
                 }
             "#,
             ScriptBuilder::new()
-                .add_data(b"c1")
+                .add_data_with_push_opcode(b"c1")
                 .unwrap()
                 .add_i64(0)
                 .unwrap()
@@ -7052,7 +7051,7 @@ fn compiles_opcode_builtins() {
                 }
             "#,
             ScriptBuilder::new()
-                .add_data(b"c1")
+                .add_data_with_push_opcode(b"c1")
                 .unwrap()
                 .add_op(OpCovOutputCount)
                 .unwrap()
@@ -7075,7 +7074,7 @@ fn compiles_opcode_builtins() {
                 }
             "#,
             ScriptBuilder::new()
-                .add_data(b"c1")
+                .add_data_with_push_opcode(b"c1")
                 .unwrap()
                 .add_i64(0)
                 .unwrap()
@@ -7106,7 +7105,7 @@ fn compiles_opcode_builtins() {
                 .unwrap()
                 .add_op(OpNum2Bin)
                 .unwrap()
-                .add_data(b"bin")
+                .add_data_with_push_opcode(b"bin")
                 .unwrap()
                 .add_op(OpEqual)
                 .unwrap()
@@ -7125,7 +7124,7 @@ fn compiles_opcode_builtins() {
                 }
             "#,
             ScriptBuilder::new()
-                .add_data(b"a")
+                .add_data_with_push_opcode(b"a")
                 .unwrap()
                 .add_op(OpBin2Num)
                 .unwrap()
@@ -7148,11 +7147,11 @@ fn compiles_opcode_builtins() {
                 }
             "#,
             ScriptBuilder::new()
-                .add_data(b"block")
+                .add_data_with_push_opcode(b"block")
                 .unwrap()
                 .add_op(OpChainblockSeqCommit)
                 .unwrap()
-                .add_data(b"commit")
+                .add_data_with_push_opcode(b"commit")
                 .unwrap()
                 .add_op(OpEqual)
                 .unwrap()
@@ -7645,7 +7644,7 @@ fn compiles_script_size_and_runs_sum_array() {
 fn data_prefix_for_size(data_len: usize) -> Vec<u8> {
     let dummy_data = vec![0u8; data_len];
     let mut builder = ScriptBuilder::new();
-    builder.add_data(&dummy_data).unwrap();
+    builder.add_data_with_push_opcode(&dummy_data).unwrap();
     let script = builder.drain();
     script[..script.len() - data_len].to_vec()
 }
@@ -7983,9 +7982,9 @@ fn empty_array_statement_expr_evaluation_compiles_to_empty_array_data() {
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
 
     let expected = ScriptBuilder::new()
-        .add_data(&[])
+        .add_data_with_push_opcode(&[])
         .unwrap()
-        .add_data(&[])
+        .add_data_with_push_opcode(&[])
         .unwrap()
         .add_op(OpEqual)
         .unwrap()
