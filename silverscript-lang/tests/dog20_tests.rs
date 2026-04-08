@@ -552,7 +552,6 @@ fn dog20_rejects_split_when_amounts_do_not_match() {
 }
 
 #[test]
-#[ignore = "Known regression: genesisIsMinter=true fails on the first split verification"]
 fn dog20_minter_can_split_then_mint_then_burn() {
     let source = load_example_source("dog20.sil");
 
@@ -696,7 +695,6 @@ fn dog20_minter_can_split_then_mint_then_burn() {
 }
 
 #[test]
-#[ignore = "Known regression: genesisIsMinter=true fails even for direct single-input minting"]
 fn dog20_minter_can_mint_in_single_transaction() {
     let source = load_example_source("dog20.sil");
 
@@ -746,37 +744,4 @@ fn dog20_minter_can_mint_in_single_transaction() {
     );
 
     execute_input_with_covenants(mint_tx, mint_entries, 0).expect("Dog20 minter should be able to mint in a single transaction");
-}
-
-#[test]
-#[ignore = "Known regression: Dog20-like cov wrapper rejects validateOutputState when amount changes and isMinter stays true"]
-fn runtime_accepts_dog20_like_state_array_for_generated_cov_wrapper() {
-    const DOG20_LIKE_COV_RUNTIME_SOURCE: &str = r#"
-    contract Token(bool genesis_is_minter) {
-        bool isMinter = genesis_is_minter;
-
-        #[covenant(binding = cov, from = 1, to = 1)]
-        function step(State[] prev_states, State[] new_states) {
-            require(true);
-        }
-    }
-"#;
-
-    fn compile_dog20_like_state(source: &'static str, is_minter: bool) -> CompiledContract<'static> {
-        compile_contract(source, &[Expr::bool(is_minter)], CompileOptions::default()).expect("compile succeeds")
-    }
-
-    fn dog20_like_state_array_arg(values: Vec<bool>) -> Expr<'static> {
-        values.into_iter().map(|is_minter| struct_object(vec![("isMinter", Expr::bool(is_minter))])).collect::<Vec<_>>().into()
-    }
-
-    let active = compile_dog20_like_state(DOG20_LIKE_COV_RUNTIME_SOURCE, true);
-    let out = compile_dog20_like_state(DOG20_LIKE_COV_RUNTIME_SOURCE, true);
-
-    let input0 = tx_input(0, covenant_decl_sigscript(&active, "step", vec![dog20_like_state_array_arg(vec![true])], true));
-    let outputs = vec![covenant_output(&out, 0, COV_A)];
-    let tx = Transaction::new(1, vec![input0], outputs, 0, Default::default(), 0, vec![]);
-    let entries = vec![covenant_utxo(&active, COV_A)];
-
-    execute_input_with_covenants(tx, entries, 0).unwrap();
 }
