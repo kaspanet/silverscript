@@ -4,7 +4,7 @@ use kaspa_consensus_core::hashing::sighash::calc_schnorr_signature_hash;
 use kaspa_consensus_core::hashing::sighash_type::SIG_HASH_ALL;
 use kaspa_consensus_core::tx::{
     CovenantBinding, MutableTransaction, PopulatedTransaction, ScriptPublicKey, Transaction, TransactionId, TransactionInput,
-    TransactionOutpoint, TransactionOutput, TxInputMass, UtxoEntry, VerifiableTransaction,
+    TransactionOutpoint, TransactionOutput, UtxoEntry, VerifiableTransaction,
 };
 use kaspa_txscript::caches::Cache;
 use kaspa_txscript::covenants::CovenantsContext;
@@ -839,12 +839,7 @@ fn dog20_can_split_then_merge_tokens_with_two_way_fanout() {
     )];
     let split_unsigned_tx = Transaction::new(
         1,
-        vec![TransactionInput {
-            previous_outpoint: TransactionOutpoint { transaction_id: handoff_tx.id(), index: 0 },
-            signature_script: vec![],
-            sequence: 0,
-            mass: TxInputMass::SigopCount(1.into()),
-        }],
+        vec![tx_input_from_outpoint_v1(TransactionOutpoint { transaction_id: handoff_tx.id(), index: 0 }, vec![])],
         split_outputs.clone(),
         0,
         Default::default(),
@@ -864,12 +859,7 @@ fn dog20_can_split_then_merge_tokens_with_two_way_fanout() {
     );
     let split_tx = Transaction::new(
         1,
-        vec![TransactionInput {
-            previous_outpoint: TransactionOutpoint { transaction_id: handoff_tx.id(), index: 0 },
-            signature_script: split_sigscript,
-            sequence: 0,
-            mass: TxInputMass::SigopCount(1.into()),
-        }],
+        vec![tx_input_from_outpoint_v1(TransactionOutpoint { transaction_id: handoff_tx.id(), index: 0 }, split_sigscript)],
         split_outputs,
         0,
         Default::default(),
@@ -892,18 +882,8 @@ fn dog20_can_split_then_merge_tokens_with_two_way_fanout() {
     let merge_unsigned_tx = Transaction::new(
         1,
         vec![
-            TransactionInput {
-                previous_outpoint: TransactionOutpoint { transaction_id: split_tx.id(), index: 0 },
-                signature_script: vec![],
-                sequence: 0,
-                mass: TxInputMass::SigopCount(2.into()),
-            },
-            TransactionInput {
-                previous_outpoint: TransactionOutpoint { transaction_id: split_tx.id(), index: 1 },
-                signature_script: vec![],
-                sequence: 0,
-                mass: TxInputMass::SigopCount(0.into()),
-            },
+            tx_input_from_outpoint_v1(TransactionOutpoint { transaction_id: split_tx.id(), index: 0 }, vec![]),
+            tx_input_from_outpoint_v1(TransactionOutpoint { transaction_id: split_tx.id(), index: 1 }, vec![]),
         ],
         merge_outputs.clone(),
         0,
@@ -927,18 +907,8 @@ fn dog20_can_split_then_merge_tokens_with_two_way_fanout() {
     let merge_tx = Transaction::new(
         1,
         vec![
-            TransactionInput {
-                previous_outpoint: TransactionOutpoint { transaction_id: split_tx.id(), index: 0 },
-                signature_script: merge_leader_sigscript,
-                sequence: 0,
-                mass: TxInputMass::SigopCount(2.into()),
-            },
-            TransactionInput {
-                previous_outpoint: TransactionOutpoint { transaction_id: split_tx.id(), index: 1 },
-                signature_script: merge_delegate_sigscript,
-                sequence: 0,
-                mass: TxInputMass::SigopCount(0.into()),
-            },
+            tx_input_from_outpoint_v1(TransactionOutpoint { transaction_id: split_tx.id(), index: 0 }, merge_leader_sigscript),
+            tx_input_from_outpoint_v1(TransactionOutpoint { transaction_id: split_tx.id(), index: 1 }, merge_delegate_sigscript),
         ],
         merge_outputs,
         0,
@@ -1036,12 +1006,7 @@ fn dog20_rejects_merge_when_one_signature_is_wrong() {
     )];
     let split_unsigned_tx = Transaction::new(
         1,
-        vec![TransactionInput {
-            previous_outpoint: TransactionOutpoint { transaction_id: handoff_tx.id(), index: 0 },
-            signature_script: vec![],
-            sequence: 0,
-            mass: TxInputMass::SigopCount(1.into()),
-        }],
+        vec![tx_input_from_outpoint_v1(TransactionOutpoint { transaction_id: handoff_tx.id(), index: 0 }, vec![])],
         split_outputs.clone(),
         0,
         Default::default(),
@@ -1061,12 +1026,7 @@ fn dog20_rejects_merge_when_one_signature_is_wrong() {
     );
     let split_tx = Transaction::new(
         1,
-        vec![TransactionInput {
-            previous_outpoint: TransactionOutpoint { transaction_id: handoff_tx.id(), index: 0 },
-            signature_script: split_sigscript,
-            sequence: 0,
-            mass: TxInputMass::SigopCount(1.into()),
-        }],
+        vec![tx_input_from_outpoint_v1(TransactionOutpoint { transaction_id: handoff_tx.id(), index: 0 }, split_sigscript)],
         split_outputs,
         0,
         Default::default(),
@@ -1088,18 +1048,8 @@ fn dog20_rejects_merge_when_one_signature_is_wrong() {
     let merge_unsigned_tx = Transaction::new(
         1,
         vec![
-            TransactionInput {
-                previous_outpoint: TransactionOutpoint { transaction_id: split_tx.id(), index: 0 },
-                signature_script: vec![],
-                sequence: 0,
-                mass: TxInputMass::SigopCount(2.into()),
-            },
-            TransactionInput {
-                previous_outpoint: TransactionOutpoint { transaction_id: split_tx.id(), index: 1 },
-                signature_script: vec![],
-                sequence: 0,
-                mass: TxInputMass::SigopCount(0.into()),
-            },
+            tx_input_from_outpoint_v1(TransactionOutpoint { transaction_id: split_tx.id(), index: 0 }, vec![]),
+            tx_input_from_outpoint_v1(TransactionOutpoint { transaction_id: split_tx.id(), index: 1 }, vec![]),
         ],
         merge_outputs.clone(),
         0,
@@ -1123,18 +1073,8 @@ fn dog20_rejects_merge_when_one_signature_is_wrong() {
     let merge_tx = Transaction::new(
         1,
         vec![
-            TransactionInput {
-                previous_outpoint: TransactionOutpoint { transaction_id: split_tx.id(), index: 0 },
-                signature_script: merge_leader_sigscript,
-                sequence: 0,
-                mass: TxInputMass::SigopCount(2.into()),
-            },
-            TransactionInput {
-                previous_outpoint: TransactionOutpoint { transaction_id: split_tx.id(), index: 1 },
-                signature_script: merge_delegate_sigscript,
-                sequence: 0,
-                mass: TxInputMass::SigopCount(0.into()),
-            },
+            tx_input_from_outpoint_v1(TransactionOutpoint { transaction_id: split_tx.id(), index: 0 }, merge_leader_sigscript),
+            tx_input_from_outpoint_v1(TransactionOutpoint { transaction_id: split_tx.id(), index: 1 }, merge_delegate_sigscript),
         ],
         merge_outputs,
         0,
@@ -1229,12 +1169,7 @@ fn dog20_rejects_split_when_amounts_do_not_match() {
     )];
     let split_unsigned_tx = Transaction::new(
         1,
-        vec![TransactionInput {
-            previous_outpoint: TransactionOutpoint { transaction_id: handoff_tx.id(), index: 0 },
-            signature_script: vec![],
-            sequence: 0,
-            mass: TxInputMass::SigopCount(1.into()),
-        }],
+        vec![tx_input_from_outpoint_v1(TransactionOutpoint { transaction_id: handoff_tx.id(), index: 0 }, vec![])],
         split_outputs.clone(),
         0,
         Default::default(),
@@ -1254,12 +1189,7 @@ fn dog20_rejects_split_when_amounts_do_not_match() {
     );
     let split_tx = Transaction::new(
         1,
-        vec![TransactionInput {
-            previous_outpoint: TransactionOutpoint { transaction_id: handoff_tx.id(), index: 0 },
-            signature_script: split_sigscript,
-            sequence: 0,
-            mass: TxInputMass::SigopCount(1.into()),
-        }],
+        vec![tx_input_from_outpoint_v1(TransactionOutpoint { transaction_id: handoff_tx.id(), index: 0 }, split_sigscript)],
         split_outputs,
         0,
         Default::default(),
