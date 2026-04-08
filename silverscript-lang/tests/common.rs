@@ -3,7 +3,8 @@
 use kaspa_consensus_core::Hash;
 use kaspa_consensus_core::hashing::sighash::SigHashReusedValuesUnsync;
 use kaspa_consensus_core::tx::{
-    PopulatedTransaction, ScriptPublicKey, Transaction, TransactionInput, TransactionOutput, UtxoEntry, VerifiableTransaction,
+    CovenantBinding, PopulatedTransaction, ScriptPublicKey, Transaction, TransactionId, TransactionInput, TransactionOutpoint,
+    TransactionOutput, UtxoEntry, VerifiableTransaction,
 };
 use kaspa_txscript::caches::Cache;
 use kaspa_txscript::covenants::CovenantsContext;
@@ -66,4 +67,21 @@ pub fn execute_input_with_covenants(tx: Transaction, entries: Vec<UtxoEntry>, in
 
 pub fn assert_verify_like_error(err: TxScriptError) {
     assert!(matches!(err, TxScriptError::VerifyError | TxScriptError::EvalFalse), "expected verify/eval-false, got {err:?}");
+}
+
+pub fn tx_input(index: u32, signature_script: Vec<u8>) -> TransactionInput {
+    TransactionInput::new(
+        TransactionOutpoint { transaction_id: TransactionId::from_bytes([index as u8 + 1; 32]), index },
+        signature_script,
+        0,
+        0,
+    )
+}
+
+pub fn covenant_output(compiled: &CompiledContract<'_>, authorizing_input: u16, covenant_id: Hash) -> TransactionOutput {
+    TransactionOutput {
+        value: 1_000,
+        script_public_key: pay_to_script_hash_script(&compiled.script),
+        covenant: Some(CovenantBinding { authorizing_input, covenant_id }),
+    }
 }

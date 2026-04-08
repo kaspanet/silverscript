@@ -16,6 +16,9 @@ mod common;
 
 use common::{COV_A, assert_verify_like_error, covenant_decl_sigscript, covenant_utxo, execute_input_with_covenants};
 
+use crate::common::covenant_output;
+use crate::common::tx_input;
+
 fn load_example_source(name: &str) -> String {
     let path = format!("{}/tests/examples/{name}", env!("CARGO_MANIFEST_DIR"));
     fs::read_to_string(&path).unwrap_or_else(|err| panic!("failed to read {path}: {err}"))
@@ -34,14 +37,18 @@ fn random_keypair() -> Keypair {
 }
 
 fn dog20_state_array_arg<'i>(values: Vec<(Vec<u8>, i64)>) -> Expr<'i> {
+    dog20_state_array_arg_with_minter(values.into_iter().map(|(owner_identifier, amount)| (owner_identifier, amount, false)).collect())
+}
+
+fn dog20_state_array_arg_with_minter<'i>(values: Vec<(Vec<u8>, i64, bool)>) -> Expr<'i> {
     values
         .into_iter()
-        .map(|(owner_identifier, amount)| {
+        .map(|(owner_identifier, amount, is_minter)| {
             struct_object(vec![
                 ("ownerIdentifier", Expr::bytes(owner_identifier)),
                 ("identifierType", Expr::byte(0)),
                 ("amount", Expr::int(amount)),
-                ("isMinter", Expr::bool(false)),
+                ("isMinter", Expr::bool(is_minter)),
             ])
         })
         .collect::<Vec<_>>()
@@ -57,9 +64,27 @@ fn witness_array_arg<'i>(values: Vec<u8>) -> Expr<'i> {
 }
 
 fn compile_dog20_state<'a>(source: &'a str, owner: Vec<u8>, amount: i64, max_cov_ins: i64, max_cov_outs: i64) -> CompiledContract<'a> {
+    compile_dog20_state_with_minter(source, owner, amount, false, max_cov_ins, max_cov_outs)
+}
+
+fn compile_dog20_state_with_minter<'a>(
+    source: &'a str,
+    owner: Vec<u8>,
+    amount: i64,
+    is_minter: bool,
+    max_cov_ins: i64,
+    max_cov_outs: i64,
+) -> CompiledContract<'a> {
     compile_contract(
         source,
-        &[Expr::bytes(owner), Expr::int(amount), Expr::byte(0), Expr::bool(false), Expr::int(max_cov_ins), Expr::int(max_cov_outs)],
+        &[
+            Expr::bytes(owner),
+            Expr::int(amount),
+            Expr::byte(0),
+            Expr::bool(is_minter),
+            Expr::int(max_cov_ins),
+            Expr::int(max_cov_outs),
+        ],
         CompileOptions::default(),
     )
     .expect("compile succeeds")
@@ -524,4 +549,234 @@ fn dog20_rejects_split_when_amounts_do_not_match() {
     let err = execute_input_with_covenants(split_tx, split_entries, 0)
         .expect_err("Dog20 split should reject when output amounts do not add up to the input amount");
     assert_verify_like_error(err);
+}
+
+#[test]
+#[ignore = "Known regression: genesisIsMinter=true fails on the first split verification"]
+fn dog20_minter_can_split_then_mint_then_burn() {
+    let source = load_example_source("dog20.sil");
+
+    let genesis_owner = random_keypair();
+    let other_owner = random_keypair();
+
+    let genesis_owner_bytes = genesis_owner.x_only_public_key().0.serialize().to_vec();
+    let other_owner_bytes = other_owner.x_only_public_key().0.serialize().to_vec();
+
+    let genesis = compile_dog20_state_with_minter(&source, genesis_owner_bytes.clone(), 1_000, true, 2, 2);
+    let split_genesis = compile_dog20_state_with_minter(&source, genesis_owner_bytes.clone(), 400, true, 2, 2);
+    let split_other = compile_dog20_state(&source, other_owner_bytes.clone(), 600, 2, 2);
+    let minted_genesis = compile_dog20_state_with_minter(&source, genesis_owner_bytes.clone(), 900, true, 2, 2);
+    let burned_genesis = compile_dog20_state_with_minter(&source, genesis_owner_bytes.clone(), 500, true, 2, 2);
+
+    let split_outputs = vec![
+        TransactionOutput {
+            value: 1_000,
+            script_public_key: pay_to_script_hash_script(&split_genesis.script),
+            covenant: Some(CovenantBinding { authorizing_input: 0, covenant_id: COV_A }),
+        },
+        TransactionOutput {
+            value: 1_000,
+            script_public_key: pay_to_script_hash_script(&split_other.script),
+            covenant: Some(CovenantBinding { authorizing_input: 0, covenant_id: COV_A }),
+        },
+    ];
+    let split_entries = vec![covenant_utxo(&genesis, COV_A)];
+    let split_unsigned_tx = Transaction::new(
+        1,
+        vec![tx_input_from_outpoint_v1(TransactionOutpoint { transaction_id: TransactionId::from_bytes([1; 32]), index: 0 }, vec![])],
+        split_outputs.clone(),
+        0,
+        Default::default(),
+        0,
+        vec![],
+    );
+    let split_sig = sign_tx_input(split_unsigned_tx, split_entries.clone(), 0, &genesis_owner);
+    let split_sigscript = covenant_decl_sigscript(
+        &genesis,
+        "transfer",
+        vec![
+            dog20_state_array_arg_with_minter(vec![(genesis_owner_bytes.clone(), 400, true), (other_owner_bytes.clone(), 600, false)]),
+            sig_array_arg(vec![split_sig]),
+            witness_array_arg(vec![0]),
+        ],
+        true,
+    );
+    let split_tx = Transaction::new(
+        1,
+        vec![tx_input_from_outpoint_v1(
+            TransactionOutpoint { transaction_id: TransactionId::from_bytes([1; 32]), index: 0 },
+            split_sigscript,
+        )],
+        split_outputs,
+        0,
+        Default::default(),
+        0,
+        vec![],
+    );
+
+    execute_input_with_covenants(split_tx.clone(), split_entries, 0).expect("Dog20 minter split should succeed");
+
+    let mint_outputs = vec![TransactionOutput {
+        value: 1_000,
+        script_public_key: pay_to_script_hash_script(&minted_genesis.script),
+        covenant: Some(CovenantBinding { authorizing_input: 0, covenant_id: COV_A }),
+    }];
+    let mint_entries =
+        vec![UtxoEntry::new(1_000, pay_to_script_hash_script(&split_genesis.script), 0, split_tx.is_coinbase(), Some(COV_A))];
+    let mint_unsigned_tx = Transaction::new(
+        1,
+        vec![tx_input_from_outpoint_v1(TransactionOutpoint { transaction_id: split_tx.id(), index: 0 }, vec![])],
+        mint_outputs.clone(),
+        0,
+        Default::default(),
+        0,
+        vec![],
+    );
+    let mint_sig = sign_tx_input(mint_unsigned_tx, mint_entries.clone(), 0, &genesis_owner);
+    let mint_sigscript = covenant_decl_sigscript(
+        &split_genesis,
+        "transfer",
+        vec![
+            dog20_state_array_arg_with_minter(vec![(genesis_owner_bytes.clone(), 900, true)]),
+            sig_array_arg(vec![mint_sig]),
+            witness_array_arg(vec![0]),
+        ],
+        true,
+    );
+    let mint_tx = Transaction::new(
+        1,
+        vec![tx_input_from_outpoint_v1(TransactionOutpoint { transaction_id: split_tx.id(), index: 0 }, mint_sigscript)],
+        mint_outputs,
+        0,
+        Default::default(),
+        0,
+        vec![],
+    );
+
+    execute_input_with_covenants(mint_tx.clone(), mint_entries, 0).expect("Dog20 minter should be able to create tokens");
+
+    let burn_outputs = vec![TransactionOutput {
+        value: 1_000,
+        script_public_key: pay_to_script_hash_script(&burned_genesis.script),
+        covenant: Some(CovenantBinding { authorizing_input: 0, covenant_id: COV_A }),
+    }];
+    let burn_entries =
+        vec![UtxoEntry::new(1_000, pay_to_script_hash_script(&minted_genesis.script), 0, mint_tx.is_coinbase(), Some(COV_A))];
+    let burn_unsigned_tx = Transaction::new(
+        1,
+        vec![tx_input_from_outpoint_v1(TransactionOutpoint { transaction_id: mint_tx.id(), index: 0 }, vec![])],
+        burn_outputs.clone(),
+        0,
+        Default::default(),
+        0,
+        vec![],
+    );
+    let burn_sig = sign_tx_input(burn_unsigned_tx, burn_entries.clone(), 0, &genesis_owner);
+    let burn_sigscript = covenant_decl_sigscript(
+        &minted_genesis,
+        "transfer",
+        vec![
+            dog20_state_array_arg_with_minter(vec![(genesis_owner_bytes, 500, true)]),
+            sig_array_arg(vec![burn_sig]),
+            witness_array_arg(vec![0]),
+        ],
+        true,
+    );
+    let burn_tx = Transaction::new(
+        1,
+        vec![tx_input_from_outpoint_v1(TransactionOutpoint { transaction_id: mint_tx.id(), index: 0 }, burn_sigscript)],
+        burn_outputs,
+        0,
+        Default::default(),
+        0,
+        vec![],
+    );
+
+    execute_input_with_covenants(burn_tx, burn_entries, 0).expect("Dog20 minter should be able to burn tokens");
+}
+
+#[test]
+#[ignore = "Known regression: genesisIsMinter=true fails even for direct single-input minting"]
+fn dog20_minter_can_mint_in_single_transaction() {
+    let source = load_example_source("dog20.sil");
+
+    let genesis_owner = random_keypair();
+    let genesis_owner_bytes = genesis_owner.x_only_public_key().0.serialize().to_vec();
+
+    let genesis = compile_dog20_state_with_minter(&source, genesis_owner_bytes.clone(), 1_000, true, 2, 2);
+    let minted = compile_dog20_state_with_minter(&source, genesis_owner_bytes.clone(), 1_500, true, 2, 2);
+
+    let mint_outputs = vec![TransactionOutput {
+        value: 1_000,
+        script_public_key: pay_to_script_hash_script(&minted.script),
+        covenant: Some(CovenantBinding { authorizing_input: 0, covenant_id: COV_A }),
+    }];
+    let mint_entries = vec![covenant_utxo(&genesis, COV_A)];
+    let mint_unsigned_tx = Transaction::new(
+        1,
+        vec![tx_input_from_outpoint_v1(TransactionOutpoint { transaction_id: TransactionId::from_bytes([1; 32]), index: 0 }, vec![])],
+        mint_outputs.clone(),
+        0,
+        Default::default(),
+        0,
+        vec![],
+    );
+    let mint_sig = sign_tx_input(mint_unsigned_tx, mint_entries.clone(), 0, &genesis_owner);
+    let mint_sigscript = covenant_decl_sigscript(
+        &genesis,
+        "transfer",
+        vec![
+            dog20_state_array_arg_with_minter(vec![(genesis_owner_bytes, 1_500, true)]),
+            sig_array_arg(vec![mint_sig]),
+            witness_array_arg(vec![0]),
+        ],
+        true,
+    );
+    let mint_tx = Transaction::new(
+        1,
+        vec![tx_input_from_outpoint_v1(
+            TransactionOutpoint { transaction_id: TransactionId::from_bytes([1; 32]), index: 0 },
+            mint_sigscript,
+        )],
+        mint_outputs,
+        0,
+        Default::default(),
+        0,
+        vec![],
+    );
+
+    execute_input_with_covenants(mint_tx, mint_entries, 0).expect("Dog20 minter should be able to mint in a single transaction");
+}
+
+#[test]
+#[ignore = "Known regression: Dog20-like cov wrapper rejects validateOutputState when amount changes and isMinter stays true"]
+fn runtime_accepts_dog20_like_state_array_for_generated_cov_wrapper() {
+    const DOG20_LIKE_COV_RUNTIME_SOURCE: &str = r#"
+    contract Token(bool genesis_is_minter) {
+        bool isMinter = genesis_is_minter;
+
+        #[covenant(binding = cov, from = 1, to = 1)]
+        function step(State[] prev_states, State[] new_states) {
+            require(true);
+        }
+    }
+"#;
+
+    fn compile_dog20_like_state(source: &'static str, is_minter: bool) -> CompiledContract<'static> {
+        compile_contract(source, &[Expr::bool(is_minter)], CompileOptions::default()).expect("compile succeeds")
+    }
+
+    fn dog20_like_state_array_arg(values: Vec<bool>) -> Expr<'static> {
+        values.into_iter().map(|is_minter| struct_object(vec![("isMinter", Expr::bool(is_minter))])).collect::<Vec<_>>().into()
+    }
+
+    let active = compile_dog20_like_state(DOG20_LIKE_COV_RUNTIME_SOURCE, true);
+    let out = compile_dog20_like_state(DOG20_LIKE_COV_RUNTIME_SOURCE, true);
+
+    let input0 = tx_input(0, covenant_decl_sigscript(&active, "step", vec![dog20_like_state_array_arg(vec![true])], true));
+    let outputs = vec![covenant_output(&out, 0, COV_A)];
+    let tx = Transaction::new(1, vec![input0], outputs, 0, Default::default(), 0, vec![]);
+    let entries = vec![covenant_utxo(&active, COV_A)];
+
+    execute_input_with_covenants(tx, entries, 0).unwrap();
 }

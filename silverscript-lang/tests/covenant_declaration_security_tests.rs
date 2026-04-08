@@ -14,6 +14,8 @@ use common::{
     plain_covenant_output, plain_utxo, push_redeem_script,
 };
 
+use crate::common::{covenant_output, tx_input};
+
 const AUTH_SINGLETON_SOURCE: &str = r#"
     contract Counter(int init_value) {
         int value = init_value;
@@ -150,23 +152,6 @@ fn cov_decl_nm_leader_sigscript(compiled: &CompiledContract<'_>, next_values: Ve
 
 fn redeem_only_sigscript(compiled: &CompiledContract<'_>) -> Vec<u8> {
     push_redeem_script(&compiled.script)
-}
-
-fn tx_input(index: u32, signature_script: Vec<u8>) -> TransactionInput {
-    TransactionInput::new(
-        TransactionOutpoint { transaction_id: TransactionId::from_bytes([index as u8 + 1; 32]), index },
-        signature_script,
-        0,
-        0,
-    )
-}
-
-fn covenant_output(compiled: &CompiledContract<'_>, authorizing_input: u16, covenant_id: Hash) -> TransactionOutput {
-    TransactionOutput {
-        value: 1_000,
-        script_public_key: pay_to_script_hash_script(&compiled.script),
-        covenant: Some(CovenantBinding { authorizing_input, covenant_id }),
-    }
 }
 
 #[test]
