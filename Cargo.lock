@@ -1634,6 +1634,7 @@ dependencies = [
 [[package]]
 name = "kaspa-addresses"
 version = "1.1.0"
+source = "git+https://github.com/someone235/rusty-kaspa?branch=script-pricing#881bd5c946a5375dc83a4db5fd1fb2c636aece07"
 dependencies = [
  "borsh",
  "js-sys",
@@ -1648,6 +1649,7 @@ dependencies = [
 [[package]]
 name = "kaspa-consensus-core"
 version = "1.1.0"
+source = "git+https://github.com/someone235/rusty-kaspa?branch=script-pricing#881bd5c946a5375dc83a4db5fd1fb2c636aece07"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -1684,6 +1686,7 @@ dependencies = [
 [[package]]
 name = "kaspa-core"
 version = "1.1.0"
+source = "git+https://github.com/someone235/rusty-kaspa?branch=script-pricing#881bd5c946a5375dc83a4db5fd1fb2c636aece07"
 dependencies = [
  "anyhow",
  "cfg-if",
@@ -1703,6 +1706,7 @@ dependencies = [
 [[package]]
 name = "kaspa-hashes"
 version = "1.1.0"
+source = "git+https://github.com/someone235/rusty-kaspa?branch=script-pricing#881bd5c946a5375dc83a4db5fd1fb2c636aece07"
 dependencies = [
  "blake2b_simd",
  "blake3",
@@ -1722,6 +1726,7 @@ dependencies = [
 [[package]]
 name = "kaspa-math"
 version = "1.1.0"
+source = "git+https://github.com/someone235/rusty-kaspa?branch=script-pricing#881bd5c946a5375dc83a4db5fd1fb2c636aece07"
 dependencies = [
  "borsh",
  "faster-hex 0.9.0",
@@ -1741,6 +1746,7 @@ dependencies = [
 [[package]]
 name = "kaspa-merkle"
 version = "1.1.0"
+source = "git+https://github.com/someone235/rusty-kaspa?branch=script-pricing#881bd5c946a5375dc83a4db5fd1fb2c636aece07"
 dependencies = [
  "kaspa-hashes",
 ]
@@ -1748,6 +1754,7 @@ dependencies = [
 [[package]]
 name = "kaspa-muhash"
 version = "1.1.0"
+source = "git+https://github.com/someone235/rusty-kaspa?branch=script-pricing#881bd5c946a5375dc83a4db5fd1fb2c636aece07"
 dependencies = [
  "kaspa-hashes",
  "kaspa-math",
@@ -1758,6 +1765,7 @@ dependencies = [
 [[package]]
 name = "kaspa-txscript"
 version = "1.1.0"
+source = "git+https://github.com/someone235/rusty-kaspa?branch=script-pricing#881bd5c946a5375dc83a4db5fd1fb2c636aece07"
 dependencies = [
  "ark-bn254",
  "ark-ec",
@@ -1803,6 +1811,7 @@ dependencies = [
 [[package]]
 name = "kaspa-txscript-errors"
 version = "1.1.0"
+source = "git+https://github.com/someone235/rusty-kaspa?branch=script-pricing#881bd5c946a5375dc83a4db5fd1fb2c636aece07"
 dependencies = [
  "borsh",
  "kaspa-hashes",
@@ -1813,6 +1822,7 @@ dependencies = [
 [[package]]
 name = "kaspa-utils"
 version = "1.1.0"
+source = "git+https://github.com/someone235/rusty-kaspa?branch=script-pricing#881bd5c946a5375dc83a4db5fd1fb2c636aece07"
 dependencies = [
  "arc-swap",
  "async-channel 2.5.0",
@@ -1842,6 +1852,7 @@ dependencies = [
 [[package]]
 name = "kaspa-wasm-core"
 version = "1.1.0"
+source = "git+https://github.com/someone235/rusty-kaspa?branch=script-pricing#881bd5c946a5375dc83a4db5fd1fb2c636aece07"
 dependencies = [
  "faster-hex 0.9.0",
  "hexplay",
@@ -3251,9 +3262,9 @@ dependencies = [
 
 [[package]]
 name = "toml_edit"
-version = "0.25.10+spec-1.1.0"
+version = "0.25.11+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a82418ca169e235e6c399a84e395ab6debeb3bc90edc959bf0f48647c6a32d1b"
+checksum = "0b59c4d22ed448339746c59b905d24568fcbb3ab65a500494f7b8c3e97739f2b"
 dependencies = [
  "indexmap",
  "toml_datetime",
