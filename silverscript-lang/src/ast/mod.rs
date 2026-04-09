@@ -1583,9 +1583,12 @@ fn parse_statement<'i>(pair: Pair<'i, Rule>) -> Result<Statement<'i>, CompilerEr
         }
         Rule::return_statement => {
             let mut inner = pair.into_inner();
-            let list_pair =
+            let value_pair =
                 inner.next().ok_or_else(|| CompilerError::Unsupported("missing return values".to_string()).with_span(&span))?;
-            let exprs = parse_expression_list(list_pair).map_err(|err| err.with_span(&span))?;
+            let exprs = match value_pair.as_rule() {
+                Rule::expression_list => parse_expression_list(value_pair).map_err(|err| err.with_span(&span))?,
+                _ => vec![parse_expression(value_pair).map_err(|err| err.with_span(&span))?],
+            };
             Ok(Statement::Return { exprs, span })
         }
         Rule::time_op_statement => {

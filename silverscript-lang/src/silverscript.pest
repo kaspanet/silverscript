@@ -55,7 +55,7 @@ typed_binding = { type_name ~ Identifier }
 state_typed_binding = { Identifier ~ ":" ~ type_name ~ Identifier }
 call_statement = { function_call ~ ";" }
 assign_statement = { Identifier ~ "=" ~ expression ~ ";" }
-return_statement = { "return" ~ expression_list ~ ";" }
+return_statement = { "return" ~ (expression_list | expression) ~ ";" }
 
 time_op_statement = { "require" ~ "(" ~ TxVar ~ ">=" ~ expression ~ ("," ~ require_message)? ~ ")" ~ ";" }
 require_statement = { "require" ~ "(" ~ expression ~ ("," ~ require_message)? ~ ")" ~ ";" }

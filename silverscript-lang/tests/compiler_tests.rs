@@ -3234,6 +3234,27 @@ fn single_return_signature_without_parentheses_supports_direct_variable_definiti
 }
 
 #[test]
+fn single_return_statement_without_parentheses_compiles_and_runs() {
+    let source = r#"
+        contract C() {
+            function calcInAmount() : int {
+                return 41;
+            }
+
+            entrypoint function main() {
+                int amount = calcInAmount();
+                require(amount == 41);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let selector = selector_for(&compiled, "main");
+    let result = run_script_with_selector(compiled.script, selector);
+    assert!(result.is_ok(), "single bare return statement should execute successfully: {}", result.unwrap_err());
+}
+
+#[test]
 fn compiles_int_array_length_to_expected_script() {
     let source = r#"
         contract Arrays() {
