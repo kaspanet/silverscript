@@ -17,7 +17,10 @@ use std::fs;
 
 mod common;
 
-use common::{COV_A, assert_verify_like_error, compiled_template_parts_and_hash, covenant_decl_sigscript, covenant_utxo, execute_input_with_covenants};
+use common::{
+    COV_A, assert_verify_like_error, compiled_template_parts_and_hash, covenant_decl_sigscript, covenant_utxo,
+    execute_input_with_covenants,
+};
 
 fn load_example_source(name: &str) -> String {
     let path = format!("{}/tests/examples/{name}", env!("CARGO_MANIFEST_DIR"));
@@ -698,8 +701,7 @@ fn dog20_minter_can_split_then_mint_then_burn() {
         0,
         vec![],
     );
-    let forged_other_minter_sig =
-        sign_tx_input(forged_other_minter_unsigned_tx, forged_other_minter_entries.clone(), 0, &other_owner);
+    let forged_other_minter_sig = sign_tx_input(forged_other_minter_unsigned_tx, forged_other_minter_entries.clone(), 0, &other_owner);
     let forged_other_minter_sigscript = covenant_decl_sigscript(
         &split_other,
         "transfer",
@@ -859,7 +861,7 @@ fn dog20_minter_can_mint_in_single_transaction() {
 }
 
 #[test]
-fn dog20_minter_example_regresses_on_helper_call_with_template_parts_from_dog20() {
+fn dog20_minter_with_dog_20_template_layout() {
     let dog20_source = load_example_source("dog20.sil");
     let dog20_minter_source = load_example_source("dog20-minter.sil");
 
@@ -870,7 +872,7 @@ fn dog20_minter_example_regresses_on_helper_call_with_template_parts_from_dog20(
     let dog20 = compile_dog20_state(&dog20_source, owner_bytes.clone(), 1_000, 2, 2);
     let (template_prefix, template_suffix, expected_template_hash) = compiled_template_parts_and_hash(&dog20);
 
-    let result = compile_contract(
+    compile_contract(
         &dog20_minter_source,
         &[
             Expr::bytes(owner_bytes),
@@ -884,13 +886,8 @@ fn dog20_minter_example_regresses_on_helper_call_with_template_parts_from_dog20(
             Expr::bytes(template_suffix),
         ],
         CompileOptions::default(),
-    );
-
-    let err = result.expect_err("regression: dog20-minter.sil currently rejects the calcInAmount() helper when parameterized from dog20.sil");
-    assert!(
-        err.to_string().contains("unknown function call: calcInAmount"),
-        "expected calcInAmount helper regression, got: {err:?}"
-    );
+    )
+    .expect("should compile");
 }
 
 #[test]
@@ -986,28 +983,20 @@ fn dog20_non_minter_can_spend_script_hash_and_covenant_id_owned_outputs() {
             covenant: Some(CovenantBinding { authorizing_input: 0, covenant_id: COV_A }),
         }]
     };
-    let build_spend_tx = |dog20_index: u32,
-                          auxiliary_outpoint: Option<TransactionOutpoint>,
-                          sigscript: Vec<u8>,
-                          outputs: Vec<TransactionOutput>| {
-        let mut inputs = vec![tx_input_from_outpoint_v1(
-            TransactionOutpoint { transaction_id: split_tx.id(), index: dog20_index },
-            sigscript,
-        )];
-        if let Some(outpoint) = auxiliary_outpoint {
-            inputs.push(tx_input_from_outpoint_v1(outpoint, vec![]));
-        }
-        Transaction::new(1, inputs, outputs, 0, Default::default(), 0, vec![])
-    };
+    let build_spend_tx =
+        |dog20_index: u32, auxiliary_outpoint: Option<TransactionOutpoint>, sigscript: Vec<u8>, outputs: Vec<TransactionOutput>| {
+            let mut inputs =
+                vec![tx_input_from_outpoint_v1(TransactionOutpoint { transaction_id: split_tx.id(), index: dog20_index }, sigscript)];
+            if let Some(outpoint) = auxiliary_outpoint {
+                inputs.push(tx_input_from_outpoint_v1(outpoint, vec![]));
+            }
+            Transaction::new(1, inputs, outputs, 0, Default::default(), 0, vec![])
+        };
     let build_dog20_sigscript = |state: &CompiledContract<'_>, destination_owner: Vec<u8>, amount: i64, witness: u8| {
         covenant_decl_sigscript(
             state,
             "transfer",
-            vec![
-                dog20_state_array_arg(vec![(destination_owner, amount)]),
-                sig_array_arg(vec![]),
-                witness_array_arg(vec![witness]),
-            ],
+            vec![dog20_state_array_arg(vec![(destination_owner, amount)]), sig_array_arg(vec![]), witness_array_arg(vec![witness])],
             true,
         )
     };

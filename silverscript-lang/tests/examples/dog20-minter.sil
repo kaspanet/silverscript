@@ -34,10 +34,7 @@ contract Dog20Minter(pubkey owner, byte[32] initDog20Covid, int initAmount,
     }
 
     #[covenant.singleton]
-    function mint(State prevState, State[] newStates, sig s, Dog20State dogNewState) {
-        require(newStates.length == 1);
-        State newState = newStates[0];
-        
+    function mint(State prevState, State newState, sig s, Dog20State dogNewState) {
         require(newState.amount >= 0);
         require(newState.initialized);
 
