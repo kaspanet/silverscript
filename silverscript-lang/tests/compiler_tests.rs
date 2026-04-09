@@ -3255,6 +3255,25 @@ fn single_return_statement_without_parentheses_compiles_and_runs() {
 }
 
 #[test]
+fn rejects_omitting_parentheses_in_tuple_function_call_assignment() {
+    let source = r#"
+        contract Returns() {
+            function pair() : (int, int) {
+                return(1, 2);
+            }
+
+            entrypoint function main() {
+                int a, int b = pair();
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("tuple-returning function should require parenthesized call assignment");
+    let err_msg = err.to_string();
+    assert!(err_msg.contains("tuple assignment only supports split()"), "unexpected error: {err_msg}");
+}
+
+#[test]
 fn compiles_int_array_length_to_expected_script() {
     let source = r#"
         contract Arrays() {
