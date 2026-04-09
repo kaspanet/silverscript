@@ -1,0 +1,29 @@
+contract Counter(int init_value) {
+    int value = init_value;
+
+    #[covenant.singleton]
+    function step(State prev_state, State new_state) {
+        require(new_state.value == prev_state.value + 1);
+    }
+}
+
+// --- lowered ---
+
+contract Counter(int init_value) {
+    int value = init_value;
+
+    function covenant_policy_step(State prev_state, State new_state) {
+        require(new_state.value == prev_state.value + 1);
+    }
+
+    entrypoint function step(State new_state) {
+        int cov_out_count = OpAuthOutputCount(this.activeInputIndex);
+
+        State prev_state = { value: value };
+        covenant_policy_step(prev_state, new_state);
+        require(cov_out_count == 1);
+
+        int cov_out_idx = OpAuthOutputIdx(this.activeInputIndex, 0);
+        validateOutputState(cov_out_idx, new_state);
+    }
+}

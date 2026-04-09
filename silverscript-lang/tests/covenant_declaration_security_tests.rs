@@ -21,9 +21,9 @@ const AUTH_SINGLETON_SOURCE: &str = r#"
         int value = init_value;
 
         #[covenant.singleton]
-        function step(State prev_state, State[] new_states) {
+        function step(State prev_state, State new_state) {
             require(prev_state.value >= 0);
-            require(new_states.length <= 1);
+            require(new_state.value >= 0);
             require(OpAuthOutputIdx(this.activeInputIndex, 0) >= 0);
         }
     }
@@ -102,9 +102,8 @@ const AUTH_SINGLETON_ARRAY_RUNTIME_SOURCE: &str = r#"
         int value = init_value;
 
         #[covenant.singleton]
-        function step(State prev_state, State[] new_states) {
-            require(new_states.length == 1);
-            require(new_states[0].value == prev_state.value + 1);
+        function step(State prev_state, State new_state) {
+            require(new_state.value == prev_state.value + 1);
             require(OpAuthOutputIdx(this.activeInputIndex, 0) >= 0);
         }
     }
@@ -146,6 +145,10 @@ fn state_array_arg(values: Vec<i64>) -> Expr<'static> {
     values.into_iter().map(|value| struct_object(vec![("value", Expr::int(value))])).collect::<Vec<_>>().into()
 }
 
+fn state_arg(value: i64) -> Expr<'static> {
+    struct_object(vec![("value", Expr::int(value))])
+}
+
 fn cov_decl_nm_leader_sigscript(compiled: &CompiledContract<'_>, next_values: Vec<i64>) -> Vec<u8> {
     covenant_decl_sigscript(compiled, "rebalance", vec![state_array_arg(next_values)], true)
 }
@@ -159,7 +162,7 @@ fn singleton_allows_exactly_one_authorized_output() {
     let active = compile_state(AUTH_SINGLETON_SOURCE, 10);
     let out = compile_state(AUTH_SINGLETON_SOURCE, 10);
 
-    let input0 = tx_input(0, covenant_decl_sigscript(&active, "step", vec![state_array_arg(vec![10])], false));
+    let input0 = tx_input(0, covenant_decl_sigscript(&active, "step", vec![state_arg(10)], false));
     let outputs = vec![covenant_output(&out, 0, COV_A)];
     let tx = Transaction::new(1, vec![input0], outputs, 0, Default::default(), 0, vec![]);
     let entries = vec![covenant_utxo(&active, COV_A)];
@@ -174,7 +177,7 @@ fn singleton_rejects_two_authorized_outputs_from_same_input() {
     let out0 = compile_state(AUTH_SINGLETON_SOURCE, 10);
     let out1 = compile_state(AUTH_SINGLETON_SOURCE, 10);
 
-    let input0 = tx_input(0, covenant_decl_sigscript(&active, "step", vec![state_array_arg(vec![10])], false));
+    let input0 = tx_input(0, covenant_decl_sigscript(&active, "step", vec![state_arg(10)], false));
     let outputs = vec![covenant_output(&out0, 0, COV_A), covenant_output(&out1, 0, COV_A)];
     let tx = Transaction::new(1, vec![input0], outputs, 0, Default::default(), 0, vec![]);
     let entries = vec![covenant_utxo(&active, COV_A)];
@@ -288,7 +291,7 @@ fn singleton_transition_termination_allowed_rejects_two_outputs() {
 fn singleton_missing_authorized_output_returns_invalid_auth_index_error() {
     let active = compile_state(AUTH_SINGLETON_SOURCE, 10);
 
-    let input0 = tx_input(0, covenant_decl_sigscript(&active, "step", vec![state_array_arg(vec![])], false));
+    let input0 = tx_input(0, covenant_decl_sigscript(&active, "step", vec![state_arg(10)], false));
     let tx = Transaction::new(1, vec![input0], vec![], 0, Default::default(), 0, vec![]);
     let entries = vec![covenant_utxo(&active, COV_A)];
 
@@ -451,7 +454,7 @@ fn singleton_rejects_authorized_output_with_different_script() {
     let active = compile_state(AUTH_SINGLETON_SOURCE, 10);
     let different = compile_state(AUTH_SINGLETON_SOURCE, 11);
 
-    let input0 = tx_input(0, covenant_decl_sigscript(&active, "step", vec![state_array_arg(vec![10])], false));
+    let input0 = tx_input(0, covenant_decl_sigscript(&active, "step", vec![state_arg(10)], false));
     let tx = Transaction::new(1, vec![input0], vec![covenant_output(&different, 0, COV_A)], 0, Default::default(), 0, vec![]);
     let entries = vec![covenant_utxo(&active, COV_A)];
 
@@ -510,27 +513,27 @@ fn many_to_many_transition_happy_path_succeeds() {
 }
 
 #[test]
-fn runtime_accepts_state_array_entrypoint_argument_for_generated_wrapper() {
+fn runtime_accepts_state_entrypoint_argument_for_generated_wrapper() {
     let active = compile_state(AUTH_SINGLETON_ARRAY_RUNTIME_SOURCE, 10);
     let out = compile_state(AUTH_SINGLETON_ARRAY_RUNTIME_SOURCE, 11);
 
-    let input0 = tx_input(0, covenant_decl_sigscript(&active, "step", vec![state_array_arg(vec![11])], false));
+    let input0 = tx_input(0, covenant_decl_sigscript(&active, "step", vec![state_arg(11)], false));
     let outputs = vec![covenant_output(&out, 0, COV_A)];
     let tx = Transaction::new(1, vec![input0], outputs, 0, Default::default(), 0, vec![]);
     let entries = vec![covenant_utxo(&active, COV_A)];
 
     let result = execute_input_with_covenants(tx, entries, 0);
-    assert!(result.is_ok(), "generated wrapper should accept State[] entrypoint args at runtime: {}", result.unwrap_err());
+    assert!(result.is_ok(), "generated wrapper should accept State entrypoint args at runtime: {}", result.unwrap_err());
 }
 
 #[test]
-fn runtime_passes_state_array_into_generated_policy_function() {
+fn runtime_passes_state_into_generated_policy_function() {
     let active = compile_state(AUTH_SINGLETON_ARRAY_RUNTIME_SOURCE, 10);
     let out = compile_state(AUTH_SINGLETON_ARRAY_RUNTIME_SOURCE, 11);
 
     let wrapper_name = generated_auth_entrypoint_name("step");
     let wrapper_param_types = function_param_type_names(&active, &wrapper_name);
-    assert_eq!(wrapper_param_types, vec!["State[]".to_string()]);
+    assert_eq!(wrapper_param_types, vec!["State".to_string()]);
 
     let policy = active
         .ast
@@ -540,15 +543,15 @@ fn runtime_passes_state_array_into_generated_policy_function() {
         .expect("generated covenant policy exists");
     assert!(!policy.entrypoint, "generated covenant policy must remain non-entrypoint");
     let policy_param_types: Vec<String> = policy.params.iter().map(|param| param.type_ref.type_name()).collect();
-    assert_eq!(policy_param_types, vec!["State".to_string(), "State[]".to_string()]);
+    assert_eq!(policy_param_types, vec!["State".to_string(), "State".to_string()]);
 
-    let input0 = tx_input(0, covenant_decl_sigscript(&active, "step", vec![state_array_arg(vec![12])], false));
+    let input0 = tx_input(0, covenant_decl_sigscript(&active, "step", vec![state_arg(12)], false));
     let outputs = vec![covenant_output(&out, 0, COV_A)];
     let tx = Transaction::new(1, vec![input0], outputs, 0, Default::default(), 0, vec![]);
     let entries = vec![covenant_utxo(&active, COV_A)];
 
     let err = execute_input_with_covenants(tx, entries, 0)
-        .expect_err("generated policy should reject when the State[] argument content is wrong");
+        .expect_err("generated policy should reject when the State argument content is wrong");
     assert_verify_like_error(err);
 }
 
