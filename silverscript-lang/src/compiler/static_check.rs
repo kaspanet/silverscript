@@ -74,10 +74,8 @@ fn validate_function_signatures<'i>(
     options: CompileOptions,
 ) -> Result<(), CompilerError> {
     let functions = contract.functions.iter().map(|function| (function.name.clone(), function)).collect::<HashMap<_, _>>();
-    let function_order =
-        contract.functions.iter().enumerate().map(|(index, function)| (function.name.clone(), index)).collect::<HashMap<_, _>>();
 
-    for (function_index, function) in contract.functions.iter().enumerate() {
+    for function in &contract.functions {
         for param in &function.params {
             ensure_array_elements_have_known_size(&param.type_ref, structs, &type_name_from_ref(&param.type_ref))?;
         }
@@ -114,8 +112,6 @@ fn validate_function_signatures<'i>(
             structs,
             constants,
             &functions,
-            &function_order,
-            function_index,
             &contract.fields,
         )?;
     }
@@ -138,9 +134,9 @@ fn validate_contract_field_initializers<'i>(
 
     for field in &contract.fields {
         let type_name = type_name_from_ref(&field.type_ref);
-        validate_expr_semantics(&field.expr, constants, &HashSet::new(), &types, structs, &contract.fields)?;
+        validate_expr_semantics(&field.expr, constants, &HashSet::new(), &types, structs, &HashMap::new(), &contract.fields)?;
         ensure_array_elements_have_known_size(&field.type_ref, structs, &type_name)?;
-        validate_expr_assignable_to_type(&field.expr, &field.type_ref, &types, structs, constants, &contract.fields)
+        validate_expr_assignable_to_type(&field.expr, &field.type_ref, &types, structs, constants, &HashMap::new(), &contract.fields)
             .map_err(|_| CompilerError::Unsupported(format!("contract field '{}' expects {}", field.name, type_name)))?;
         types.insert(field.name.clone(), type_name);
     }
@@ -158,8 +154,6 @@ fn validate_statement_shapes<'i>(
     structs: &StructRegistry,
     constants: &HashMap<String, Expr<'i>>,
     functions: &HashMap<String, &FunctionAst<'i>>,
-    function_order: &HashMap<String, usize>,
-    function_index: usize,
     contract_fields: &[ContractFieldAst<'i>],
 ) -> Result<(), CompilerError> {
     let mut ctx = ValidateStatementShapesContext {
@@ -170,8 +164,6 @@ fn validate_statement_shapes<'i>(
         structs,
         constants,
         functions,
-        function_order,
-        function_index,
         contract_fields,
     };
 
@@ -220,8 +212,6 @@ struct ValidateStatementShapesContext<'a, 'i> {
     structs: &'a StructRegistry,
     constants: &'a HashMap<String, Expr<'i>>,
     functions: &'a HashMap<String, &'a FunctionAst<'i>>,
-    function_order: &'a HashMap<String, usize>,
-    function_index: usize,
     contract_fields: &'a [ContractFieldAst<'i>],
 }
 
@@ -239,9 +229,17 @@ fn validate_variable_definition_statement_shape<'i>(
         validate_array_initializer(expr, &effective_type_ref, ctx.types, ctx.constants)?;
     }
     if let Some(expr) = expr {
-        validate_expr_semantics(expr, ctx.env, ctx.prefer_env_for_comparison, ctx.types, ctx.structs, ctx.contract_fields)?;
-        validate_expr_assignable_to_type(expr, type_ref, ctx.types, ctx.structs, ctx.constants, ctx.contract_fields).map_err(
-            |err| {
+        validate_expr_semantics(
+            expr,
+            ctx.env,
+            ctx.prefer_env_for_comparison,
+            ctx.types,
+            ctx.structs,
+            ctx.functions,
+            ctx.contract_fields,
+        )?;
+        validate_expr_assignable_to_type(expr, type_ref, ctx.types, ctx.structs, ctx.constants, ctx.functions, ctx.contract_fields)
+            .map_err(|err| {
                 map_declared_type_error(
                     err,
                     "variable",
@@ -253,8 +251,7 @@ fn validate_variable_definition_statement_shape<'i>(
                     ctx.structs,
                     ctx.constants,
                 )
-            },
-        )?;
+            })?;
         ctx.env.insert(name.to_string(), expr.clone());
         ctx.prefer_env_for_comparison.remove(name);
     }
@@ -307,7 +304,7 @@ fn validate_tuple_assignment_statement_shape<'i>(
     right_name: &str,
     expr: &Expr<'i>,
 ) -> Result<(), CompilerError> {
-    validate_expr_semantics(expr, ctx.env, ctx.prefer_env_for_comparison, ctx.types, ctx.structs, ctx.contract_fields)?;
+    validate_expr_semantics(expr, ctx.env, ctx.prefer_env_for_comparison, ctx.types, ctx.structs, ctx.functions, ctx.contract_fields)?;
     ensure_array_elements_have_known_size(left_type_ref, ctx.structs, &type_name_from_ref(left_type_ref))?;
     ensure_array_elements_have_known_size(right_type_ref, ctx.structs, &type_name_from_ref(right_type_ref))?;
     if let ExprKind::Split { source, index, span: split_span, .. } = &expr.kind {
@@ -335,7 +332,15 @@ fn validate_state_function_call_assign_statement_shape<'i>(
     args: &[Expr<'i>],
 ) -> Result<(), CompilerError> {
     for arg in args {
-        validate_expr_semantics(arg, ctx.env, ctx.prefer_env_for_comparison, ctx.types, ctx.structs, ctx.contract_fields)?;
+        validate_expr_semantics(
+            arg,
+            ctx.env,
+            ctx.prefer_env_for_comparison,
+            ctx.types,
+            ctx.structs,
+            ctx.functions,
+            ctx.contract_fields,
+        )?;
     }
     validate_state_function_call_assign(bindings, name, args, ctx.structs, ctx.contract_fields)?;
     for binding in bindings {
@@ -350,7 +355,7 @@ fn validate_struct_destructure_statement_shape<'i>(
     bindings: &[StateBindingAst<'i>],
     expr: &Expr<'i>,
 ) -> Result<(), CompilerError> {
-    validate_expr_semantics(expr, ctx.env, ctx.prefer_env_for_comparison, ctx.types, ctx.structs, ctx.contract_fields)?;
+    validate_expr_semantics(expr, ctx.env, ctx.prefer_env_for_comparison, ctx.types, ctx.structs, ctx.functions, ctx.contract_fields)?;
     validate_struct_destructure_bindings(bindings, expr, ctx.types, ctx.structs, ctx.contract_fields)?;
     for binding in bindings {
         ensure_array_elements_have_known_size(&binding.type_ref, ctx.structs, &type_name_from_ref(&binding.type_ref))?;
@@ -365,20 +370,18 @@ fn validate_function_call_statement_shape<'i>(
     args: &[Expr<'i>],
 ) -> Result<(), CompilerError> {
     for arg in args {
-        validate_expr_semantics(arg, ctx.env, ctx.prefer_env_for_comparison, ctx.types, ctx.structs, ctx.contract_fields)?;
-    }
-    if ctx.functions.contains_key(name) {
-        validate_internal_call(
-            name,
-            args,
+        validate_expr_semantics(
+            arg,
+            ctx.env,
+            ctx.prefer_env_for_comparison,
             ctx.types,
             ctx.structs,
-            ctx.constants,
             ctx.functions,
-            ctx.function_order,
-            ctx.function_index,
             ctx.contract_fields,
         )?;
+    }
+    if ctx.functions.contains_key(name) {
+        validate_internal_call(name, args, ctx.types, ctx.structs, ctx.constants, ctx.functions, ctx.contract_fields)?;
     }
     Ok(())
 }
@@ -390,19 +393,17 @@ fn validate_function_call_assign_statement_shape<'i>(
     args: &[Expr<'i>],
 ) -> Result<(), CompilerError> {
     for arg in args {
-        validate_expr_semantics(arg, ctx.env, ctx.prefer_env_for_comparison, ctx.types, ctx.structs, ctx.contract_fields)?;
+        validate_expr_semantics(
+            arg,
+            ctx.env,
+            ctx.prefer_env_for_comparison,
+            ctx.types,
+            ctx.structs,
+            ctx.functions,
+            ctx.contract_fields,
+        )?;
     }
-    let function = validate_internal_call(
-        name,
-        args,
-        ctx.types,
-        ctx.structs,
-        ctx.constants,
-        ctx.functions,
-        ctx.function_order,
-        ctx.function_index,
-        ctx.contract_fields,
-    )?;
+    let function = validate_internal_call(name, args, ctx.types, ctx.structs, ctx.constants, ctx.functions, ctx.contract_fields)?;
     if bindings.len() != function.return_types.len() {
         return Err(CompilerError::Unsupported("function call assignment return count mismatch".to_string()));
     }
@@ -424,7 +425,15 @@ fn validate_return_statement_shape<'i>(
     exprs: &[Expr<'i>],
 ) -> Result<(), CompilerError> {
     for expr in exprs {
-        validate_expr_semantics(expr, ctx.env, ctx.prefer_env_for_comparison, ctx.types, ctx.structs, ctx.contract_fields)?;
+        validate_expr_semantics(
+            expr,
+            ctx.env,
+            ctx.prefer_env_for_comparison,
+            ctx.types,
+            ctx.structs,
+            ctx.functions,
+            ctx.contract_fields,
+        )?;
     }
     validate_return_types(exprs, ctx.return_types, ctx.types, ctx.structs, ctx.constants)
 }
@@ -433,14 +442,14 @@ fn validate_require_statement_shape<'i>(
     ctx: &mut ValidateStatementShapesContext<'_, 'i>,
     expr: &Expr<'i>,
 ) -> Result<(), CompilerError> {
-    validate_expr_semantics(expr, ctx.env, ctx.prefer_env_for_comparison, ctx.types, ctx.structs, ctx.contract_fields)
+    validate_expr_semantics(expr, ctx.env, ctx.prefer_env_for_comparison, ctx.types, ctx.structs, ctx.functions, ctx.contract_fields)
 }
 
 fn validate_time_op_statement_shape<'i>(
     ctx: &mut ValidateStatementShapesContext<'_, 'i>,
     expr: &Expr<'i>,
 ) -> Result<(), CompilerError> {
-    validate_expr_semantics(expr, ctx.env, ctx.prefer_env_for_comparison, ctx.types, ctx.structs, ctx.contract_fields)
+    validate_expr_semantics(expr, ctx.env, ctx.prefer_env_for_comparison, ctx.types, ctx.structs, ctx.functions, ctx.contract_fields)
 }
 
 fn validate_console_statement_shape<'i>(
@@ -448,7 +457,15 @@ fn validate_console_statement_shape<'i>(
     args: &[Expr<'i>],
 ) -> Result<(), CompilerError> {
     for arg in args {
-        validate_expr_semantics(arg, ctx.env, ctx.prefer_env_for_comparison, ctx.types, ctx.structs, ctx.contract_fields)?;
+        validate_expr_semantics(
+            arg,
+            ctx.env,
+            ctx.prefer_env_for_comparison,
+            ctx.types,
+            ctx.structs,
+            ctx.functions,
+            ctx.contract_fields,
+        )?;
     }
     Ok(())
 }
@@ -458,12 +475,13 @@ fn validate_assign_statement_shape<'i>(
     name: &str,
     expr: &Expr<'i>,
 ) -> Result<(), CompilerError> {
-    validate_expr_semantics(expr, ctx.env, ctx.prefer_env_for_comparison, ctx.types, ctx.structs, ctx.contract_fields)?;
+    validate_expr_semantics(expr, ctx.env, ctx.prefer_env_for_comparison, ctx.types, ctx.structs, ctx.functions, ctx.contract_fields)?;
     if let Some(type_name) = ctx.types.get(name).cloned() {
         let type_ref = parse_type_ref(&type_name)?;
-        validate_expr_assignable_to_type(expr, &type_ref, ctx.types, ctx.structs, ctx.constants, ctx.contract_fields).map_err(
-            |err| map_declared_type_error(err, "variable", name, &type_name, expr, &type_ref, ctx.types, ctx.structs, ctx.constants),
-        )?;
+        validate_expr_assignable_to_type(expr, &type_ref, ctx.types, ctx.structs, ctx.constants, ctx.functions, ctx.contract_fields)
+            .map_err(|err| {
+            map_declared_type_error(err, "variable", name, &type_name, expr, &type_ref, ctx.types, ctx.structs, ctx.constants)
+        })?;
     }
     ctx.env.insert(name.to_string(), expr.clone());
     ctx.prefer_env_for_comparison.remove(name);
@@ -477,7 +495,15 @@ fn validate_if_statement_shape<'i>(
     else_branch: Option<&[Statement<'i>]>,
 ) -> Result<(), CompilerError> {
     if let Statement::If { condition, .. } = stmt {
-        validate_expr_semantics(condition, ctx.env, ctx.prefer_env_for_comparison, ctx.types, ctx.structs, ctx.contract_fields)?;
+        validate_expr_semantics(
+            condition,
+            ctx.env,
+            ctx.prefer_env_for_comparison,
+            ctx.types,
+            ctx.structs,
+            ctx.functions,
+            ctx.contract_fields,
+        )?;
     }
     let mut then_types = ctx.types.clone();
     let mut then_env = ctx.env.clone();
@@ -491,8 +517,6 @@ fn validate_if_statement_shape<'i>(
         ctx.structs,
         ctx.constants,
         ctx.functions,
-        ctx.function_order,
-        ctx.function_index,
         ctx.contract_fields,
     )?;
     if let Some(else_branch) = else_branch {
@@ -508,8 +532,6 @@ fn validate_if_statement_shape<'i>(
             ctx.structs,
             ctx.constants,
             ctx.functions,
-            ctx.function_order,
-            ctx.function_index,
             ctx.contract_fields,
         )?;
     }
@@ -532,8 +554,6 @@ fn validate_block_statement_shape<'i>(
         ctx.structs,
         ctx.constants,
         ctx.functions,
-        ctx.function_order,
-        ctx.function_index,
         ctx.contract_fields,
     )
 }
@@ -546,9 +566,25 @@ fn validate_for_statement_shape<'i>(
     max_iterations: &Expr<'i>,
     body: &[Statement<'i>],
 ) -> Result<(), CompilerError> {
-    validate_expr_semantics(start, ctx.env, ctx.prefer_env_for_comparison, ctx.types, ctx.structs, ctx.contract_fields)?;
-    validate_expr_semantics(end, ctx.env, ctx.prefer_env_for_comparison, ctx.types, ctx.structs, ctx.contract_fields)?;
-    validate_expr_semantics(max_iterations, ctx.env, ctx.prefer_env_for_comparison, ctx.types, ctx.structs, ctx.contract_fields)?;
+    validate_expr_semantics(
+        start,
+        ctx.env,
+        ctx.prefer_env_for_comparison,
+        ctx.types,
+        ctx.structs,
+        ctx.functions,
+        ctx.contract_fields,
+    )?;
+    validate_expr_semantics(end, ctx.env, ctx.prefer_env_for_comparison, ctx.types, ctx.structs, ctx.functions, ctx.contract_fields)?;
+    validate_expr_semantics(
+        max_iterations,
+        ctx.env,
+        ctx.prefer_env_for_comparison,
+        ctx.types,
+        ctx.structs,
+        ctx.functions,
+        ctx.contract_fields,
+    )?;
     let mut body_types = ctx.types.clone();
     let mut body_env = ctx.env.clone();
     let mut body_prefer_env = ctx.prefer_env_for_comparison.clone();
@@ -562,8 +598,6 @@ fn validate_for_statement_shape<'i>(
         ctx.structs,
         ctx.constants,
         ctx.functions,
-        ctx.function_order,
-        ctx.function_index,
         ctx.contract_fields,
     )
 }
@@ -572,7 +606,7 @@ fn validate_array_push_statement_shape<'i>(
     ctx: &mut ValidateStatementShapesContext<'_, 'i>,
     expr: &Expr<'i>,
 ) -> Result<(), CompilerError> {
-    validate_expr_semantics(expr, ctx.env, ctx.prefer_env_for_comparison, ctx.types, ctx.structs, ctx.contract_fields)
+    validate_expr_semantics(expr, ctx.env, ctx.prefer_env_for_comparison, ctx.types, ctx.structs, ctx.functions, ctx.contract_fields)
 }
 
 fn validate_struct_destructure_bindings<'i>(
@@ -705,12 +739,13 @@ fn validate_expr_semantics<'i>(
     prefer_env_for_comparison: &HashSet<String>,
     types: &HashMap<String, String>,
     structs: &StructRegistry,
+    functions: &HashMap<String, &FunctionAst<'i>>,
     contract_fields: &[ContractFieldAst<'i>],
 ) -> Result<(), CompilerError> {
     match &expr.kind {
         ExprKind::Binary { op, left, right } => {
-            validate_expr_semantics(left, env, prefer_env_for_comparison, types, structs, contract_fields)?;
-            validate_expr_semantics(right, env, prefer_env_for_comparison, types, structs, contract_fields)?;
+            validate_expr_semantics(left, env, prefer_env_for_comparison, types, structs, functions, contract_fields)?;
+            validate_expr_semantics(right, env, prefer_env_for_comparison, types, structs, functions, contract_fields)?;
             let left_value_type = super::debug_value_types::infer_debug_expr_value_type(left, env, types, &mut HashSet::new()).ok();
             let right_value_type = super::debug_value_types::infer_debug_expr_value_type(right, env, types, &mut HashSet::new()).ok();
             if matches!(op, BinaryOp::Add)
@@ -719,8 +754,15 @@ fn validate_expr_semantics<'i>(
                 return Err(CompilerError::Unsupported("byte values do not support '+'".to_string()));
             }
             if matches!(op, BinaryOp::Eq | BinaryOp::Ne | BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge) {
-                let left_type =
-                    infer_expr_type_ref_for_comparison_ref(left, env, prefer_env_for_comparison, types, structs, contract_fields);
+                let left_type = infer_expr_type_ref_for_comparison_ref(
+                    left,
+                    env,
+                    prefer_env_for_comparison,
+                    types,
+                    structs,
+                    functions,
+                    contract_fields,
+                );
                 let coerced_right = coerce_rhs_byte_literal_for_comparison_ref(left_type.as_ref(), right);
                 let right_type = infer_expr_type_ref_for_comparison_ref(
                     &coerced_right,
@@ -728,6 +770,7 @@ fn validate_expr_semantics<'i>(
                     prefer_env_for_comparison,
                     types,
                     structs,
+                    functions,
                     contract_fields,
                 );
                 if let (Some(left_type), Some(right_type)) = (left_type, right_type)
@@ -742,48 +785,67 @@ fn validate_expr_semantics<'i>(
             }
             Ok(())
         }
-        ExprKind::Unary { expr, .. } => validate_expr_semantics(expr, env, prefer_env_for_comparison, types, structs, contract_fields),
+        ExprKind::Unary { expr, .. } => {
+            validate_expr_semantics(expr, env, prefer_env_for_comparison, types, structs, functions, contract_fields)
+        }
         ExprKind::IfElse { condition, then_expr, else_expr } => {
-            validate_expr_semantics(condition, env, prefer_env_for_comparison, types, structs, contract_fields)?;
-            validate_expr_semantics(then_expr, env, prefer_env_for_comparison, types, structs, contract_fields)?;
-            validate_expr_semantics(else_expr, env, prefer_env_for_comparison, types, structs, contract_fields)
+            validate_expr_semantics(condition, env, prefer_env_for_comparison, types, structs, functions, contract_fields)?;
+            validate_expr_semantics(then_expr, env, prefer_env_for_comparison, types, structs, functions, contract_fields)?;
+            validate_expr_semantics(else_expr, env, prefer_env_for_comparison, types, structs, functions, contract_fields)
         }
         ExprKind::Array(values) => {
             for value in values {
-                validate_expr_semantics(value, env, prefer_env_for_comparison, types, structs, contract_fields)?;
+                validate_expr_semantics(value, env, prefer_env_for_comparison, types, structs, functions, contract_fields)?;
             }
             Ok(())
         }
-        ExprKind::Call { args, .. } | ExprKind::New { args, .. } => {
+        ExprKind::Call { name, args, .. } => {
             for arg in args {
-                validate_expr_semantics(arg, env, prefer_env_for_comparison, types, structs, contract_fields)?;
+                validate_expr_semantics(arg, env, prefer_env_for_comparison, types, structs, functions, contract_fields)?;
+            }
+            if let Some(function) = functions.get(name) {
+                if function.entrypoint {
+                    return Err(CompilerError::Unsupported(format!("entrypoint function '{}' cannot be called", name)));
+                }
+                if function.return_types.len() != 1 {
+                    return Err(CompilerError::Unsupported(format!(
+                        "function '{}' with multiple return values cannot be used in expressions",
+                        name
+                    )));
+                }
+            }
+            Ok(())
+        }
+        ExprKind::New { args, .. } => {
+            for arg in args {
+                validate_expr_semantics(arg, env, prefer_env_for_comparison, types, structs, functions, contract_fields)?;
             }
             Ok(())
         }
         ExprKind::Split { source, index, .. } => {
-            validate_expr_semantics(source, env, prefer_env_for_comparison, types, structs, contract_fields)?;
-            validate_expr_semantics(index, env, prefer_env_for_comparison, types, structs, contract_fields)
+            validate_expr_semantics(source, env, prefer_env_for_comparison, types, structs, functions, contract_fields)?;
+            validate_expr_semantics(index, env, prefer_env_for_comparison, types, structs, functions, contract_fields)
         }
         ExprKind::Slice { source, start, end, .. } => {
-            validate_expr_semantics(source, env, prefer_env_for_comparison, types, structs, contract_fields)?;
-            validate_expr_semantics(start, env, prefer_env_for_comparison, types, structs, contract_fields)?;
-            validate_expr_semantics(end, env, prefer_env_for_comparison, types, structs, contract_fields)
+            validate_expr_semantics(source, env, prefer_env_for_comparison, types, structs, functions, contract_fields)?;
+            validate_expr_semantics(start, env, prefer_env_for_comparison, types, structs, functions, contract_fields)?;
+            validate_expr_semantics(end, env, prefer_env_for_comparison, types, structs, functions, contract_fields)
         }
         ExprKind::ArrayIndex { source, index } => {
-            validate_expr_semantics(source, env, prefer_env_for_comparison, types, structs, contract_fields)?;
-            validate_expr_semantics(index, env, prefer_env_for_comparison, types, structs, contract_fields)
+            validate_expr_semantics(source, env, prefer_env_for_comparison, types, structs, functions, contract_fields)?;
+            validate_expr_semantics(index, env, prefer_env_for_comparison, types, structs, functions, contract_fields)
         }
         ExprKind::Introspection { index, .. } => {
-            validate_expr_semantics(index, env, prefer_env_for_comparison, types, structs, contract_fields)
+            validate_expr_semantics(index, env, prefer_env_for_comparison, types, structs, functions, contract_fields)
         }
         ExprKind::StateObject(fields) => {
             for field in fields {
-                validate_expr_semantics(&field.expr, env, prefer_env_for_comparison, types, structs, contract_fields)?;
+                validate_expr_semantics(&field.expr, env, prefer_env_for_comparison, types, structs, functions, contract_fields)?;
             }
             Ok(())
         }
         ExprKind::FieldAccess { source, .. } | ExprKind::UnarySuffix { source, .. } => {
-            validate_expr_semantics(source, env, prefer_env_for_comparison, types, structs, contract_fields)
+            validate_expr_semantics(source, env, prefer_env_for_comparison, types, structs, functions, contract_fields)
         }
         ExprKind::Identifier(name) => {
             if types.contains_key(name) || env.contains_key(name) {
@@ -802,6 +864,7 @@ fn infer_expr_type_ref_for_comparison_ref<'i>(
     prefer_env_for_comparison: &HashSet<String>,
     types: &HashMap<String, String>,
     structs: &StructRegistry,
+    functions: &HashMap<String, &FunctionAst<'i>>,
     contract_fields: &[ContractFieldAst<'i>],
 ) -> Option<TypeRef> {
     match &expr.kind {
@@ -816,18 +879,32 @@ fn infer_expr_type_ref_for_comparison_ref<'i>(
             }
         }
         ExprKind::FieldAccess { source, field, .. } => {
-            let source_type =
-                infer_expr_type_ref_for_comparison_ref(source, env, prefer_env_for_comparison, types, structs, contract_fields)?;
+            let source_type = infer_expr_type_ref_for_comparison_ref(
+                source,
+                env,
+                prefer_env_for_comparison,
+                types,
+                structs,
+                functions,
+                contract_fields,
+            )?;
             let struct_name = struct_name_from_type_ref(&source_type, structs)?;
             let struct_ast = structs.get(struct_name)?;
             struct_ast.fields.iter().find(|candidate| candidate.name == *field).map(|candidate| candidate.type_ref.clone())
         }
         ExprKind::ArrayIndex { source, .. } => {
-            infer_expr_type_ref_for_comparison_ref(source, env, prefer_env_for_comparison, types, structs, contract_fields)
+            infer_expr_type_ref_for_comparison_ref(source, env, prefer_env_for_comparison, types, structs, functions, contract_fields)
                 .and_then(|type_ref| type_ref.element_type())
         }
         ExprKind::Call { name, .. } if name == "readInputState" && !contract_fields.is_empty() => {
             Some(TypeRef { base: TypeBase::Custom("State".to_string()), array_dims: Vec::new() })
+        }
+        ExprKind::Call { name, .. } => {
+            let function = functions.get(name)?;
+            if function.entrypoint || function.return_types.len() != 1 {
+                return None;
+            }
+            Some(function.return_types[0].clone())
         }
         _ => {
             let type_name = super::debug_value_types::infer_debug_expr_value_type(expr, env, types, &mut HashSet::new()).ok()?;
@@ -982,21 +1059,13 @@ fn validate_internal_call<'i>(
     structs: &StructRegistry,
     constants: &HashMap<String, Expr<'i>>,
     functions: &'i HashMap<String, &'i FunctionAst<'i>>,
-    function_order: &HashMap<String, usize>,
-    function_index: usize,
     contract_fields: &[ContractFieldAst<'i>],
 ) -> Result<&'i FunctionAst<'i>, CompilerError> {
     let Some(function) = functions.get(name).copied() else {
         return Err(CompilerError::Unsupported(format!("function '{}' not found", name)));
     };
-
-    let callee_index =
-        function_order.get(name).copied().ok_or_else(|| CompilerError::Unsupported(format!("function '{}' not found", name)))?;
-    if callee_index > function_index {
-        return Err(CompilerError::Unsupported("functions may only call earlier-defined functions".to_string()));
-    }
-    if callee_index == function_index {
-        return Err(CompilerError::Unsupported(format!("unknown function '{}'", name)));
+    if function.entrypoint {
+        return Err(CompilerError::Unsupported(format!("entrypoint function '{}' cannot be called", name)));
     }
     if function.params.len() != args.len() {
         return Err(CompilerError::Unsupported(format!("function '{}' expects {} arguments", name, function.params.len())));
@@ -1009,13 +1078,15 @@ fn validate_internal_call<'i>(
             ));
         }
         let param_type_name = type_name_from_ref(&param.type_ref);
-        validate_expr_assignable_to_type(arg, &param.type_ref, types, structs, constants, contract_fields).map_err(|err| {
-            if matches!(&arg.kind, ExprKind::Call { name, .. } if name == "readInputStateWithTemplate") {
-                err
-            } else {
-                CompilerError::Unsupported(format!("function argument '{}' expects {}", param.name, param_type_name))
-            }
-        })?;
+        validate_expr_assignable_to_type(arg, &param.type_ref, types, structs, constants, functions, contract_fields).map_err(
+            |err| {
+                if matches!(&arg.kind, ExprKind::Call { name, .. } if name == "readInputStateWithTemplate") {
+                    err
+                } else {
+                    CompilerError::Unsupported(format!("function argument '{}' expects {}", param.name, param_type_name))
+                }
+            },
+        )?;
     }
 
     Ok(function)
@@ -1027,8 +1098,27 @@ fn validate_expr_assignable_to_type<'i>(
     types: &HashMap<String, String>,
     structs: &StructRegistry,
     constants: &HashMap<String, Expr<'i>>,
+    functions: &HashMap<String, &FunctionAst<'i>>,
     contract_fields: &[ContractFieldAst<'i>],
 ) -> Result<(), CompilerError> {
+    if let ExprKind::Call { name, .. } = &expr.kind
+        && let Some(function) = functions.get(name)
+    {
+        if function.entrypoint {
+            return Err(CompilerError::Unsupported(format!("entrypoint function '{}' cannot be called", name)));
+        }
+        if function.return_types.len() != 1 {
+            return Err(CompilerError::Unsupported(format!(
+                "function '{}' with multiple return values cannot be used in expressions",
+                name
+            )));
+        }
+        if is_type_assignable_ref(&function.return_types[0], type_ref, constants) {
+            return Ok(());
+        }
+        return Err(CompilerError::Unsupported("type mismatch".to_string()));
+    }
+
     if matches!(type_ref.base, TypeBase::Byte)
         && type_ref.array_dims.is_empty()
         && matches!(expr.kind, ExprKind::Int(value) if (0..=255).contains(&value))
@@ -1126,7 +1216,7 @@ fn validate_struct_literal_matches_type<'i>(
         let Some(value) = provided.remove(&field.name) else {
             return Err(CompilerError::Unsupported(format!("struct field '{}' must be initialized", field.name)));
         };
-        validate_expr_assignable_to_type(value, &field.type_ref, types, structs, constants, &[]).map_err(|_| {
+        validate_expr_assignable_to_type(value, &field.type_ref, types, structs, constants, &HashMap::new(), &[]).map_err(|_| {
             CompilerError::Unsupported(format!("struct field '{}' expects {}", field.name, field.type_ref.type_name()))
         })?;
     }
@@ -1466,7 +1556,7 @@ fn expr_matches_return_type_ref_hint<'i>(
     structs: &StructRegistry,
     constants: &HashMap<String, Expr<'i>>,
 ) -> Option<String> {
-    if validate_expr_assignable_to_type(expr, type_ref, types, structs, constants, &[]).is_ok() {
+    if validate_expr_assignable_to_type(expr, type_ref, types, structs, constants, &HashMap::new(), &[]).is_ok() {
         return None;
     }
     match (&expr.kind, &type_ref.base, type_ref.array_dims.is_empty()) {
