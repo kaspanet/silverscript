@@ -82,6 +82,7 @@ macro_rules! fixture_ast_test {
 fixture_ast_test!(lowers_auth_groups_single, [Expr::int(4)]);
 fixture_ast_test!(lowers_cov_to_leader_and_delegate_expected_wrapper_ast, [Expr::int(2), Expr::int(3)]);
 fixture_ast_test!(lowers_singleton_sugar_verification_to_single_state_validation, [Expr::int(7)]);
+fixture_ast_test!(lowers_singleton_sugar_verification_termination_allowed_to_state_array_validation, [Expr::int(7)]);
 fixture_ast_test!(lowers_singleton_transition_uses_returned_state_in_validation, [Expr::int(7)]);
 fixture_ast_test!(lowers_transition_array_return_to_exact_output_count_match, [Expr::int(4), Expr::int(10)]);
 fixture_ast_test!(lowers_singleton_transition_with_termination_allowed_to_array_cardinality_checks, [Expr::int(10)]);

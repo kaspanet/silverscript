@@ -275,9 +275,6 @@ fn parse_covenant_declaration<'i>(
         return Err(CompilerError::Unsupported("binding=cov with groups=multiple is not supported yet".to_string()));
     }
 
-    if args_by_name.contains_key("termination") && mode != CovenantMode::Transition {
-        return Err(CompilerError::Unsupported("termination is only supported in mode=transition".to_string()));
-    }
     if args_by_name.contains_key("termination") && !(from_value == 1 && to_value == 1) {
         return Err(CompilerError::Unsupported("termination is only supported for singleton covenants (from=1, to=1)".to_string()));
     }
@@ -319,7 +316,7 @@ fn validate_covenant_policy_state_shape<'i>(
 
     match (declaration.binding, declaration.mode) {
         (CovenantBinding::Auth, CovenantMode::Verification) => {
-            if declaration.singleton {
+            if declaration.singleton && declaration.termination != CovenantTermination::Allowed {
                 if policy.params.len() < 2
                     || !is_state_type_ref(&policy.params[0].type_ref)
                     || !is_state_type_ref(&policy.params[1].type_ref)
@@ -453,7 +450,7 @@ fn build_auth_wrapper<'i>(
                     state_object_expr_from_contract_fields(contract_fields),
                 ));
                 body.push(call_statement(policy_name, policy.params.iter().map(|param| identifier_expr(&param.name)).collect()));
-                if declaration.singleton {
+                if declaration.singleton && declaration.termination != CovenantTermination::Allowed {
                     let new_state_name = &policy.params[1].name;
                     body.push(require_statement(binary_expr(BinaryOp::Eq, identifier_expr(out_count_name), Expr::int(1))));
                     let out_idx_name = "__cov_out_idx";

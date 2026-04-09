@@ -371,19 +371,20 @@ fn rejects_termination_disallowed_for_non_singleton() {
 }
 
 #[test]
-fn rejects_termination_in_verification_mode() {
+fn allows_termination_in_singleton_verification_mode() {
     let source = r#"
-        contract Decls() {
+        contract Decls(int init_value) {
+            int value = init_value;
+
             #[covenant.singleton(mode = verification, termination = allowed)]
-            function check() {
+            function check(State prev_state, State[] new_states) {
                 require(true);
             }
         }
     "#;
 
-    let err =
-        compile_contract(source, &[], CompileOptions::default()).expect_err("termination should not be allowed in verification mode");
-    assert!(err.to_string().contains("termination is only supported in mode=transition"));
+    let compiled = compile_contract(source, &[Expr::int(3)], CompileOptions::default()).expect("compile succeeds");
+    assert!(compiled.ast.functions.iter().any(|f| f.name == "__check" && f.entrypoint));
 }
 
 #[test]
