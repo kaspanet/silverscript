@@ -2,7 +2,7 @@ contract Matrix(int max_outs, int init_amount, byte[32] init_owner) {
     int amount = init_amount;
     byte[32] owner = init_owner;
 
-    #[covenant(from = 1, to = max_outs, termination = allowed)]
+    #[covenant(from = 1, to = max_outs)]
     function step(State prev_state, State[] new_states) {
         require(new_states.length == new_states.length);
     }
