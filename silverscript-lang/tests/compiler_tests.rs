@@ -2936,7 +2936,7 @@ fn recursive_fibonacci_inlining_behavior() {
 }
 
 #[test]
-fn non_recursive_helper_call_in_expression_position_regresses_to_byte_array_type() {
+fn function_call_in_require_statement() {
     let source = r#"
         contract Calls() {
             function plus_one(int n) : (int) {
@@ -2949,9 +2949,50 @@ fn non_recursive_helper_call_in_expression_position_regresses_to_byte_array_type
         }
     "#;
 
-    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("expression-position helper call should fail");
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("expression-position helper call should compile");
+    let sigscript = compiled.build_sig_script("main", vec![Expr::int(4)]).expect("sigscript builds");
+    let result = run_script_with_sigscript(compiled.script, sigscript);
+    assert!(result.is_ok(), "expression-position helper call should execute successfully: {}", result.unwrap_err());
+}
+
+#[test]
+fn single_return_helper_call_can_participate_in_expression() {
+    let source = r#"
+        contract Calls() {
+            function plus_one(int n) : (int) {
+                return(n + 1);
+            }
+
+            entrypoint function main(int n) {
+                require(plus_one(n) == n + 1);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("single-return helper call should compile");
+    let sigscript = compiled.build_sig_script("main", vec![Expr::int(4)]).expect("sigscript builds");
+    let result = run_script_with_sigscript(compiled.script, sigscript);
+    assert!(result.is_ok(), "single-return helper call should execute successfully: {}", result.unwrap_err());
+}
+
+#[test]
+fn single_return_helper_call_in_expression_respects_type_checking() {
+    let source = r#"
+        contract Calls() {
+            function f() : int {
+                return(5);
+            }
+
+            entrypoint function main() {
+                byte[_] x = 0x1234;
+                require(f() == x);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("type mismatch should be rejected");
     let err_msg = err.to_string();
-    assert!(err_msg.contains("type mismatch: cannot compare byte[] and int"), "unexpected error: {err_msg}");
+    assert!(err_msg.contains("type mismatch: cannot compare int and byte[2]"), "unexpected error: {err_msg}");
 }
 
 #[test]
@@ -3010,6 +3051,48 @@ fn rejects_mutually_recursive_helper_calls() {
     let err = compile_contract(source, &[], CompileOptions::default()).expect_err("mutual recursion should fail");
     let err_msg = err.to_string();
     assert!(err_msg.contains("recursive function call"), "expected recursion error, got: {err_msg}");
+}
+
+#[test]
+fn rejects_multi_return_helper_call_in_expression() {
+    let source = r#"
+        contract Calls() {
+            function pair() : (int, int) {
+                return(6, 7);
+            }
+
+            entrypoint function main() {
+                require(pair() > 5);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default())
+        .expect_err("multi-return helper call should be rejected in expressions");
+    let err_msg = err.to_string();
+    assert!(err_msg.contains("multiple return values cannot be used in expressions"), "unexpected error: {err_msg}");
+}
+
+#[test]
+fn multi_return_helper_call_assignment_remains_valid() {
+    let source = r#"
+        contract Calls() {
+            function pair() : (int, int) {
+                return(6, 7);
+            }
+
+            entrypoint function main() {
+                (int a, int b) = pair();
+                require(a == 6);
+                require(b == 7);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("tuple call assignment should compile");
+    let selector = selector_for(&compiled, "main");
+    let result = run_script_with_selector(compiled.script, selector);
+    assert!(result.is_ok(), "tuple call assignment should execute successfully: {}", result.unwrap_err());
 }
 
 #[test]
@@ -3189,6 +3272,89 @@ fn rejects_return_type_mismatch() {
         }
     "#;
     assert!(compile_contract(source, &[], CompileOptions::default()).is_err());
+}
+
+#[test]
+fn single_return_signature_without_parentheses_compiles_and_runs() {
+    let source = r#"
+        contract C() {
+            function calcInAmount() : int {
+                return(41);
+            }
+
+            entrypoint function main() {
+                (int amount) = calcInAmount();
+                require(amount == 41);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let selector = selector_for(&compiled, "main");
+    let result = run_script_with_selector(compiled.script, selector);
+    assert!(result.is_ok(), "single bare return type should execute successfully: {}", result.unwrap_err());
+}
+
+#[test]
+fn single_return_signature_without_parentheses_supports_direct_variable_definition_assignment() {
+    let source = r#"
+        contract C() {
+            function calcInAmount() : int {
+                return(41);
+            }
+
+            entrypoint function main() {
+                int amount = calcInAmount();
+                require(amount == 41);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let selector = selector_for(&compiled, "main");
+    let result = run_script_with_selector(compiled.script, selector);
+    assert!(result.is_ok(), "direct variable definition assignment should execute successfully: {}", result.unwrap_err());
+}
+
+#[test]
+fn single_return_statement_without_parentheses_compiles_and_runs() {
+    let source = r#"
+        contract C() {
+            function calcInAmount() : int {
+                return 41;
+            }
+
+            entrypoint function main() {
+                int amount = calcInAmount();
+                require(amount == 41);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let selector = selector_for(&compiled, "main");
+    let result = run_script_with_selector(compiled.script, selector);
+    assert!(result.is_ok(), "single bare return statement should execute successfully: {}", result.unwrap_err());
+}
+
+#[test]
+fn rejects_omitting_parentheses_in_tuple_function_call_assignment() {
+    let source = r#"
+        contract Returns() {
+            function pair() : (int, int) {
+                return(1, 2);
+            }
+
+            entrypoint function main() {
+                int a, int b = pair();
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default())
+        .expect_err("tuple-returning function should require parenthesized call assignment");
+    let err_msg = err.to_string();
+    assert!(err_msg.contains("multiple return values cannot be used in expressions"), "unexpected error: {err_msg}");
 }
 
 #[test]

@@ -1583,9 +1583,12 @@ fn parse_statement<'i>(pair: Pair<'i, Rule>) -> Result<Statement<'i>, CompilerEr
         }
         Rule::return_statement => {
             let mut inner = pair.into_inner();
-            let list_pair =
+            let value_pair =
                 inner.next().ok_or_else(|| CompilerError::Unsupported("missing return values".to_string()).with_span(&span))?;
-            let exprs = parse_expression_list(list_pair).map_err(|err| err.with_span(&span))?;
+            let exprs = match value_pair.as_rule() {
+                Rule::expression_list => parse_expression_list(value_pair).map_err(|err| err.with_span(&span))?,
+                _ => vec![parse_expression(value_pair).map_err(|err| err.with_span(&span))?],
+            };
             Ok(Statement::Return { exprs, span })
         }
         Rule::time_op_statement => {
@@ -1934,12 +1937,19 @@ fn parse_return_type_list<'i>(pair: Pair<'i, Rule>) -> Result<(Vec<TypeRef>, Vec
     let mut return_types = Vec::new();
     let mut return_spans = Vec::new();
     for user_type in pair.into_inner() {
-        if user_type.as_rule() != Rule::type_name {
-            continue;
+        match user_type.as_rule() {
+            Rule::type_name => {
+                let type_span = Span::from(user_type.as_span());
+                return_types.push(parse_type_name_pair(user_type)?);
+                return_spans.push(type_span);
+            }
+            Rule::return_type_list => {
+                let (nested_types, nested_spans) = parse_return_type_list(user_type)?;
+                return_types.extend(nested_types);
+                return_spans.extend(nested_spans);
+            }
+            _ => {}
         }
-        let type_span = Span::from(user_type.as_span());
-        return_types.push(parse_type_name_pair(user_type)?);
-        return_spans.push(type_span);
     }
     Ok((return_types, return_spans))
 }

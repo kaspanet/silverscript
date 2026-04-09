@@ -122,7 +122,13 @@ impl<'i, 'd> Inliner<'i, 'd> {
         match statement {
             Statement::VariableDefinition { type_ref, modifiers, name, expr, span, type_span, modifier_spans, name_span } => {
                 let fresh = self.bind_visible_name(name, scope);
-                let renamed_expr = expr.as_ref().map(|expr| self.rename_expr(expr, scope)).transpose()?;
+                let renamed_expr = if let Some(expr) = expr {
+                    let (prelude, renamed_expr) = self.lower_expr(expr, scope, visited_functions)?;
+                    lowered.extend(prelude);
+                    Some(renamed_expr)
+                } else {
+                    None
+                };
                 self.push_lowered_statement(
                     &mut lowered,
                     Statement::VariableDefinition {
@@ -151,7 +157,8 @@ impl<'i, 'd> Inliner<'i, 'd> {
             } => {
                 let left_fresh = self.bind_visible_name(left_name, scope);
                 let right_fresh = self.bind_visible_name(right_name, scope);
-                let renamed_expr = self.rename_expr(expr, scope)?;
+                let (prelude, renamed_expr) = self.lower_expr(expr, scope, visited_functions)?;
+                lowered.extend(prelude);
                 self.push_lowered_statement(
                     &mut lowered,
                     Statement::TupleAssignment {
@@ -169,7 +176,8 @@ impl<'i, 'd> Inliner<'i, 'd> {
                 );
             }
             Statement::ArrayPush { name, expr, span, name_span } => {
-                let renamed_expr = self.rename_expr(expr, scope)?;
+                let (prelude, renamed_expr) = self.lower_expr(expr, scope, visited_functions)?;
+                lowered.extend(prelude);
                 self.push_lowered_statement(
                     &mut lowered,
                     Statement::ArrayPush {
@@ -189,7 +197,8 @@ impl<'i, 'd> Inliner<'i, 'd> {
                 if let Some(function) = self.inline_target(name) {
                     lowered.extend(self.inline_call(&function, args, None, scope, visited_functions, *span)?);
                 } else {
-                    let renamed_args = args.iter().map(|arg| self.rename_expr(arg, scope)).collect::<Result<Vec<_>, _>>()?;
+                    let (prelude, renamed_args) = self.lower_exprs(args, scope, visited_functions)?;
+                    lowered.extend(prelude);
                     self.push_lowered_statement(
                         &mut lowered,
                         Statement::FunctionCall { name: name.clone(), args: renamed_args, span: *span, name_span: *name_span },
@@ -214,7 +223,8 @@ impl<'i, 'd> Inliner<'i, 'd> {
                             ParamAst { name: fresh, ..binding.clone() }
                         })
                         .collect::<Vec<_>>();
-                    let renamed_args = args.iter().map(|arg| self.rename_expr(arg, scope)).collect::<Result<Vec<_>, _>>()?;
+                    let (prelude, renamed_args) = self.lower_exprs(args, scope, visited_functions)?;
+                    lowered.extend(prelude);
                     self.push_lowered_statement(
                         &mut lowered,
                         Statement::FunctionCallAssign {
@@ -235,7 +245,8 @@ impl<'i, 'd> Inliner<'i, 'd> {
                         StateBindingAst { name: fresh, ..binding.clone() }
                     })
                     .collect();
-                let renamed_args = args.iter().map(|arg| self.rename_expr(arg, scope)).collect::<Result<Vec<_>, _>>()?;
+                let (prelude, renamed_args) = self.lower_exprs(args, scope, visited_functions)?;
+                lowered.extend(prelude);
                 self.push_lowered_statement(
                     &mut lowered,
                     Statement::StateFunctionCallAssign {
@@ -255,21 +266,24 @@ impl<'i, 'd> Inliner<'i, 'd> {
                         StateBindingAst { name: fresh, ..binding.clone() }
                     })
                     .collect();
-                let renamed_expr = self.rename_expr(expr, scope)?;
+                let (prelude, renamed_expr) = self.lower_expr(expr, scope, visited_functions)?;
+                lowered.extend(prelude);
                 self.push_lowered_statement(
                     &mut lowered,
                     Statement::StructDestructure { bindings: renamed_bindings, expr: renamed_expr, span: *span },
                 );
             }
             Statement::Assign { name, expr, span, name_span } => {
-                let renamed_expr = self.rename_expr(expr, scope)?;
+                let (prelude, renamed_expr) = self.lower_expr(expr, scope, visited_functions)?;
+                lowered.extend(prelude);
                 self.push_lowered_statement(
                     &mut lowered,
                     Statement::Assign { name: self.rename_name(name, scope), expr: renamed_expr, span: *span, name_span: *name_span },
                 );
             }
             Statement::TimeOp { tx_var, expr, message, span, tx_var_span, message_span } => {
-                let renamed_expr = self.rename_expr(expr, scope)?;
+                let (prelude, renamed_expr) = self.lower_expr(expr, scope, visited_functions)?;
+                lowered.extend(prelude);
                 self.push_lowered_statement(
                     &mut lowered,
                     Statement::TimeOp {
@@ -283,14 +297,16 @@ impl<'i, 'd> Inliner<'i, 'd> {
                 );
             }
             Statement::Require { expr, message, span, message_span } => {
-                let renamed_expr = self.rename_expr(expr, scope)?;
+                let (prelude, renamed_expr) = self.lower_expr(expr, scope, visited_functions)?;
+                lowered.extend(prelude);
                 self.push_lowered_statement(
                     &mut lowered,
                     Statement::Require { expr: renamed_expr, message: message.clone(), span: *span, message_span: *message_span },
                 );
             }
             Statement::If { condition, then_branch, else_branch, span, then_span, else_span } => {
-                let renamed_condition = self.rename_expr(condition, scope)?;
+                let (prelude, renamed_condition) = self.lower_expr(condition, scope, visited_functions)?;
+                lowered.extend(prelude);
                 let mut then_scope = scope.clone();
                 self.predeclare_branch_bindings(then_branch, &mut then_scope);
                 let lowered_then = self.lower_block(then_branch, &mut then_scope, visited_functions)?;
@@ -318,9 +334,12 @@ impl<'i, 'd> Inliner<'i, 'd> {
                 let mut body_scope = scope.clone();
                 let lowered_ident = self.bind_visible_name(ident, &mut body_scope);
                 let lowered_body = self.lower_block(body, &mut body_scope, visited_functions)?;
-                let lowered_start = self.rename_expr(start, scope)?;
-                let lowered_end = self.rename_expr(end, scope)?;
-                let lowered_max_iterations = self.rename_expr(max_iterations, scope)?;
+                let (mut prelude, lowered_start) = self.lower_expr(start, scope, visited_functions)?;
+                let (more_prelude, lowered_end) = self.lower_expr(end, scope, visited_functions)?;
+                prelude.extend(more_prelude);
+                let (more_prelude, lowered_max_iterations) = self.lower_expr(max_iterations, scope, visited_functions)?;
+                prelude.extend(more_prelude);
+                lowered.extend(prelude);
                 self.push_lowered_statement(
                     &mut lowered,
                     Statement::For {
@@ -336,11 +355,13 @@ impl<'i, 'd> Inliner<'i, 'd> {
                 );
             }
             Statement::Return { exprs, span } => {
-                let renamed_exprs = exprs.iter().map(|expr| self.rename_expr(expr, scope)).collect::<Result<Vec<_>, _>>()?;
+                let (prelude, renamed_exprs) = self.lower_exprs(exprs, scope, visited_functions)?;
+                lowered.extend(prelude);
                 self.push_lowered_statement(&mut lowered, Statement::Return { exprs: renamed_exprs, span: *span });
             }
             Statement::Console { args, span } => {
-                let renamed_args = args.iter().map(|arg| self.rename_expr(arg, scope)).collect::<Result<Vec<_>, _>>()?;
+                let (prelude, renamed_args) = self.lower_exprs(args, scope, visited_functions)?;
+                lowered.extend(prelude);
                 self.push_lowered_statement(&mut lowered, Statement::Console { args: renamed_args, span: *span });
             }
         }
@@ -377,7 +398,8 @@ impl<'i, 'd> Inliner<'i, 'd> {
         visited_functions.insert(function.name.clone());
         for (param, arg) in function.params.iter().zip(args.iter()) {
             let fresh = self.bind_visible_name(&param.name, &mut local_scope);
-            let renamed_arg = self.rename_expr(arg, caller_scope)?;
+            let (prelude, renamed_arg) = self.lower_expr(arg, caller_scope, visited_functions)?;
+            lowered.extend(prelude);
             self.debug_recorder.record_inline_source_param(&param.name, &param.type_ref, renamed_arg.clone());
             self.push_lowered_statement(
                 &mut lowered,
@@ -407,7 +429,8 @@ impl<'i, 'd> Inliner<'i, 'd> {
 
             if let (Some(bindings), Some(return_exprs)) = (bindings, return_exprs) {
                 for (binding, expr) in bindings.iter().zip(return_exprs.iter()) {
-                    let renamed_expr = self.rename_expr(expr, &local_scope)?;
+                    let (prelude, renamed_expr) = self.lower_expr(expr, &local_scope, visited_functions)?;
+                    lowered.extend(prelude);
                     self.push_lowered_statement(
                         &mut lowered,
                         Statement::VariableDefinition {
@@ -433,6 +456,167 @@ impl<'i, 'd> Inliner<'i, 'd> {
         Ok(lowered)
     }
 
+    fn lower_exprs(
+        &mut self,
+        exprs: &[Expr<'i>],
+        scope: &HashMap<String, String>,
+        visited_functions: &mut HashSet<String>,
+    ) -> Result<(Vec<Statement<'i>>, Vec<Expr<'i>>), CompilerError> {
+        let mut lowered_statements = Vec::new();
+        let mut lowered_exprs = Vec::with_capacity(exprs.len());
+        for expr in exprs {
+            let (prelude, lowered_expr) = self.lower_expr(expr, scope, visited_functions)?;
+            lowered_statements.extend(prelude);
+            lowered_exprs.push(lowered_expr);
+        }
+        Ok((lowered_statements, lowered_exprs))
+    }
+
+    fn lower_expr(
+        &mut self,
+        expr: &Expr<'i>,
+        scope: &HashMap<String, String>,
+        visited_functions: &mut HashSet<String>,
+    ) -> Result<(Vec<Statement<'i>>, Expr<'i>), CompilerError> {
+        let span = expr.span;
+        match &expr.kind {
+            ExprKind::Int(value) => Ok((Vec::new(), Expr::new(ExprKind::Int(*value), span))),
+            ExprKind::Bool(value) => Ok((Vec::new(), Expr::new(ExprKind::Bool(*value), span))),
+            ExprKind::Byte(value) => Ok((Vec::new(), Expr::new(ExprKind::Byte(*value), span))),
+            ExprKind::String(value) => Ok((Vec::new(), Expr::new(ExprKind::String(value.clone()), span))),
+            ExprKind::DateLiteral(value) => Ok((Vec::new(), Expr::new(ExprKind::DateLiteral(*value), span))),
+            ExprKind::Identifier(name) => Ok((Vec::new(), Expr::new(ExprKind::Identifier(self.rename_name(name, scope)), span))),
+            ExprKind::Array(values) => {
+                let (prelude, values) = self.lower_exprs(values, scope, visited_functions)?;
+                Ok((prelude, Expr::new(ExprKind::Array(values), span)))
+            }
+            ExprKind::Call { name, args, name_span } => {
+                let (mut prelude, args) = self.lower_exprs(args, scope, visited_functions)?;
+                if let Some(function) = self.inline_target(name) {
+                    if function.return_types.len() != 1 {
+                        return Err(CompilerError::Unsupported(format!(
+                            "function '{}' with multiple return values cannot be used in expressions",
+                            function.name
+                        )));
+                    }
+                    let temp_name = self.fresh_name(name);
+                    let binding = ParamAst {
+                        type_ref: function.return_types[0].clone(),
+                        name: temp_name.clone(),
+                        span,
+                        type_span: *name_span,
+                        name_span: *name_span,
+                    };
+                    prelude.extend(self.inline_call(&function, &args, Some(&[binding]), scope, visited_functions, span)?);
+                    Ok((prelude, Expr::identifier(temp_name)))
+                } else {
+                    Ok((prelude, Expr::new(ExprKind::Call { name: name.clone(), args, name_span: *name_span }, span)))
+                }
+            }
+            ExprKind::New { name, args, name_span } => {
+                let (prelude, args) = self.lower_exprs(args, scope, visited_functions)?;
+                Ok((prelude, Expr::new(ExprKind::New { name: name.clone(), args, name_span: *name_span }, span)))
+            }
+            ExprKind::Split { source, index, part, span: split_span } => {
+                let (mut prelude, source) = self.lower_expr(source, scope, visited_functions)?;
+                let (more_prelude, index) = self.lower_expr(index, scope, visited_functions)?;
+                prelude.extend(more_prelude);
+                Ok((
+                    prelude,
+                    Expr::new(
+                        ExprKind::Split { source: Box::new(source), index: Box::new(index), part: *part, span: *split_span },
+                        span,
+                    ),
+                ))
+            }
+            ExprKind::Slice { source, start, end, span: slice_span } => {
+                let (mut prelude, source) = self.lower_expr(source, scope, visited_functions)?;
+                let (more_prelude, start) = self.lower_expr(start, scope, visited_functions)?;
+                prelude.extend(more_prelude);
+                let (more_prelude, end) = self.lower_expr(end, scope, visited_functions)?;
+                prelude.extend(more_prelude);
+                Ok((
+                    prelude,
+                    Expr::new(
+                        ExprKind::Slice { source: Box::new(source), start: Box::new(start), end: Box::new(end), span: *slice_span },
+                        span,
+                    ),
+                ))
+            }
+            ExprKind::ArrayIndex { source, index } => {
+                let (mut prelude, source) = self.lower_expr(source, scope, visited_functions)?;
+                let (more_prelude, index) = self.lower_expr(index, scope, visited_functions)?;
+                prelude.extend(more_prelude);
+                Ok((prelude, Expr::new(ExprKind::ArrayIndex { source: Box::new(source), index: Box::new(index) }, span)))
+            }
+            ExprKind::Unary { op, expr } => {
+                let (prelude, expr) = self.lower_expr(expr, scope, visited_functions)?;
+                Ok((prelude, Expr::new(ExprKind::Unary { op: *op, expr: Box::new(expr) }, span)))
+            }
+            ExprKind::Binary { op, left, right } => {
+                let (mut prelude, left) = self.lower_expr(left, scope, visited_functions)?;
+                let (more_prelude, right) = self.lower_expr(right, scope, visited_functions)?;
+                prelude.extend(more_prelude);
+                Ok((prelude, Expr::new(ExprKind::Binary { op: *op, left: Box::new(left), right: Box::new(right) }, span)))
+            }
+            ExprKind::IfElse { condition, then_expr, else_expr } => {
+                let (mut prelude, condition) = self.lower_expr(condition, scope, visited_functions)?;
+                let (more_prelude, then_expr) = self.lower_expr(then_expr, scope, visited_functions)?;
+                prelude.extend(more_prelude);
+                let (more_prelude, else_expr) = self.lower_expr(else_expr, scope, visited_functions)?;
+                prelude.extend(more_prelude);
+                Ok((
+                    prelude,
+                    Expr::new(
+                        ExprKind::IfElse {
+                            condition: Box::new(condition),
+                            then_expr: Box::new(then_expr),
+                            else_expr: Box::new(else_expr),
+                        },
+                        span,
+                    ),
+                ))
+            }
+            ExprKind::Nullary(op) => Ok((Vec::new(), Expr::new(ExprKind::Nullary(*op), span))),
+            ExprKind::Introspection { kind, index, field_span } => {
+                let (prelude, index) = self.lower_expr(index, scope, visited_functions)?;
+                Ok((
+                    prelude,
+                    Expr::new(ExprKind::Introspection { kind: *kind, index: Box::new(index), field_span: *field_span }, span),
+                ))
+            }
+            ExprKind::StateObject(fields) => {
+                let mut prelude = Vec::new();
+                let mut lowered_fields = Vec::with_capacity(fields.len());
+                for field in fields {
+                    let (field_prelude, expr) = self.lower_expr(&field.expr, scope, visited_functions)?;
+                    prelude.extend(field_prelude);
+                    lowered_fields.push(StateFieldExpr {
+                        name: field.name.clone(),
+                        expr,
+                        span: field.span,
+                        name_span: field.name_span,
+                    });
+                }
+                Ok((prelude, Expr::new(ExprKind::StateObject(lowered_fields), span)))
+            }
+            ExprKind::FieldAccess { source, field, field_span } => {
+                let (prelude, source) = self.lower_expr(source, scope, visited_functions)?;
+                Ok((
+                    prelude,
+                    Expr::new(ExprKind::FieldAccess { source: Box::new(source), field: field.clone(), field_span: *field_span }, span),
+                ))
+            }
+            ExprKind::NumberWithUnit { value, unit } => {
+                Ok((Vec::new(), Expr::new(ExprKind::NumberWithUnit { value: *value, unit: unit.clone() }, span)))
+            }
+            ExprKind::UnarySuffix { source, kind, span: suffix_span } => {
+                let (prelude, source) = self.lower_expr(source, scope, visited_functions)?;
+                Ok((prelude, Expr::new(ExprKind::UnarySuffix { source: Box::new(source), kind: *kind, span: *suffix_span }, span)))
+            }
+        }
+    }
+
     fn push_lowered_statement(&mut self, lowered: &mut Vec<Statement<'i>>, statement: Statement<'i>) {
         self.debug_recorder.record_lowered_source_statement(&statement);
         lowered.push(statement);
@@ -440,86 +624,5 @@ impl<'i, 'd> Inliner<'i, 'd> {
 
     fn rename_name(&self, name: &str, scope: &HashMap<String, String>) -> String {
         scope.get(name).cloned().unwrap_or_else(|| name.to_string())
-    }
-
-    fn rename_expr(&mut self, expr: &Expr<'i>, scope: &HashMap<String, String>) -> Result<Expr<'i>, CompilerError> {
-        let span = expr.span;
-        Ok(Expr::new(
-            match &expr.kind {
-                ExprKind::Int(value) => ExprKind::Int(*value),
-                ExprKind::Bool(value) => ExprKind::Bool(*value),
-                ExprKind::Byte(value) => ExprKind::Byte(*value),
-                ExprKind::String(value) => ExprKind::String(value.clone()),
-                ExprKind::DateLiteral(value) => ExprKind::DateLiteral(*value),
-                ExprKind::Identifier(name) => ExprKind::Identifier(self.rename_name(name, scope)),
-                ExprKind::Array(values) => {
-                    ExprKind::Array(values.iter().map(|value| self.rename_expr(value, scope)).collect::<Result<Vec<_>, _>>()?)
-                }
-                ExprKind::Call { name, args, name_span } => ExprKind::Call {
-                    name: name.clone(),
-                    args: args.iter().map(|arg| self.rename_expr(arg, scope)).collect::<Result<Vec<_>, _>>()?,
-                    name_span: *name_span,
-                },
-                ExprKind::New { name, args, name_span } => ExprKind::New {
-                    name: name.clone(),
-                    args: args.iter().map(|arg| self.rename_expr(arg, scope)).collect::<Result<Vec<_>, _>>()?,
-                    name_span: *name_span,
-                },
-                ExprKind::Split { source, index, part, span } => ExprKind::Split {
-                    source: Box::new(self.rename_expr(source, scope)?),
-                    index: Box::new(self.rename_expr(index, scope)?),
-                    part: *part,
-                    span: *span,
-                },
-                ExprKind::Slice { source, start, end, span } => ExprKind::Slice {
-                    source: Box::new(self.rename_expr(source, scope)?),
-                    start: Box::new(self.rename_expr(start, scope)?),
-                    end: Box::new(self.rename_expr(end, scope)?),
-                    span: *span,
-                },
-                ExprKind::ArrayIndex { source, index } => ExprKind::ArrayIndex {
-                    source: Box::new(self.rename_expr(source, scope)?),
-                    index: Box::new(self.rename_expr(index, scope)?),
-                },
-                ExprKind::Unary { op, expr } => ExprKind::Unary { op: *op, expr: Box::new(self.rename_expr(expr, scope)?) },
-                ExprKind::Binary { op, left, right } => ExprKind::Binary {
-                    op: *op,
-                    left: Box::new(self.rename_expr(left, scope)?),
-                    right: Box::new(self.rename_expr(right, scope)?),
-                },
-                ExprKind::IfElse { condition, then_expr, else_expr } => ExprKind::IfElse {
-                    condition: Box::new(self.rename_expr(condition, scope)?),
-                    then_expr: Box::new(self.rename_expr(then_expr, scope)?),
-                    else_expr: Box::new(self.rename_expr(else_expr, scope)?),
-                },
-                ExprKind::Nullary(op) => ExprKind::Nullary(*op),
-                ExprKind::Introspection { kind, index, field_span } => {
-                    ExprKind::Introspection { kind: *kind, index: Box::new(self.rename_expr(index, scope)?), field_span: *field_span }
-                }
-                ExprKind::StateObject(fields) => ExprKind::StateObject(
-                    fields
-                        .iter()
-                        .map(|field| {
-                            Ok(StateFieldExpr {
-                                name: field.name.clone(),
-                                expr: self.rename_expr(&field.expr, scope)?,
-                                span: field.span,
-                                name_span: field.name_span,
-                            })
-                        })
-                        .collect::<Result<Vec<_>, CompilerError>>()?,
-                ),
-                ExprKind::FieldAccess { source, field, field_span } => ExprKind::FieldAccess {
-                    source: Box::new(self.rename_expr(source, scope)?),
-                    field: field.clone(),
-                    field_span: *field_span,
-                },
-                ExprKind::NumberWithUnit { value, unit } => ExprKind::NumberWithUnit { value: *value, unit: unit.clone() },
-                ExprKind::UnarySuffix { source, kind, span } => {
-                    ExprKind::UnarySuffix { source: Box::new(self.rename_expr(source, scope)?), kind: *kind, span: *span }
-                }
-            },
-            span,
-        ))
     }
 }

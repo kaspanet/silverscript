@@ -219,3 +219,46 @@ fn rejects_invalid_for_arities() {
     "#;
     assert!(parse_source_file(too_few_args).is_err());
 }
+
+#[test]
+fn rejects_omitting_parentheses_in_tuple_return_signature() {
+    let input = r#"
+        contract Returns() {
+            function pair() : int, int {
+                return(1, 2);
+            }
+        }
+    "#;
+
+    assert!(parse_contract_ast(input).is_err());
+}
+
+#[test]
+fn rejects_omitting_parentheses_in_tuple_return_statement() {
+    let input = r#"
+        contract Returns() {
+            function pair() : (int, int) {
+                return 1, 2;
+            }
+        }
+    "#;
+
+    assert!(parse_contract_ast(input).is_err());
+}
+
+#[test]
+fn parses_tuple_variable_declaration_without_parentheses_as_tuple_assignment_syntax() {
+    let input = r#"
+        contract Returns() {
+            function pair() : (int, int) {
+                return(1, 2);
+            }
+
+            entrypoint function main() {
+                int a, int b = pair();
+            }
+        }
+    "#;
+
+    assert!(parse_contract_ast(input).is_ok());
+}
