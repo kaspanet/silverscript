@@ -465,7 +465,11 @@ fn build_auth_wrapper<'i>(
                     ));
                 } else {
                     let new_states_name = &policy.params[1].name;
-                    body.push(require_statement(binary_expr(BinaryOp::Le, identifier_expr(out_count_name), declaration.to_expr.clone())));
+                    body.push(require_statement(binary_expr(
+                        BinaryOp::Le,
+                        identifier_expr(out_count_name),
+                        declaration.to_expr.clone(),
+                    )));
                     body.push(require_statement(binary_expr(
                         BinaryOp::Eq,
                         identifier_expr(out_count_name),

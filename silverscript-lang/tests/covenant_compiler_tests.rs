@@ -188,9 +188,9 @@ fn rejects_canonical_one_to_one_auth_verification_with_scalar_new_state() {
 
     let err = compile_contract(source, &[Expr::int(7)], CompileOptions::default())
         .expect_err("canonical one-to-one auth verification should require State[] new_states");
-    assert!(err
-        .to_string()
-        .contains("mode=verification with binding=auth on function 'step' expects parameters '(State prev_state, State[] new_states, ...)'"));
+    assert!(err.to_string().contains(
+        "mode=verification with binding=auth on function 'step' expects parameters '(State prev_state, State[] new_states, ...)'"
+    ));
 }
 
 #[test]
