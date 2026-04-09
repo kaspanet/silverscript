@@ -3354,7 +3354,7 @@ fn rejects_omitting_parentheses_in_tuple_function_call_assignment() {
     let err = compile_contract(source, &[], CompileOptions::default())
         .expect_err("tuple-returning function should require parenthesized call assignment");
     let err_msg = err.to_string();
-    assert!(err_msg.contains("tuple assignment only supports split()"), "unexpected error: {err_msg}");
+    assert!(err_msg.contains("multiple return values cannot be used in expressions"), "unexpected error: {err_msg}");
 }
 
 #[test]
