@@ -115,9 +115,6 @@ pub(super) fn compile_contract_impl<'i>(
 
     let without_selector = entrypoint_functions.len() == 1;
 
-    let functions_map = lowered_contract.functions.iter().cloned().map(|func| (func.name.clone(), func)).collect::<HashMap<_, _>>();
-    let function_order =
-        lowered_contract.functions.iter().enumerate().map(|(index, func)| (func.name.clone(), index)).collect::<HashMap<_, _>>();
     let function_abi_entries = build_function_abi_entries(&covenant_lowered_contract);
     let uses_script_size = contract_uses_script_size(&lowered_contract);
 
@@ -133,8 +130,6 @@ pub(super) fn compile_contract_impl<'i>(
             script_size,
             without_selector,
             &structs,
-            &functions_map,
-            &function_order,
             &mut debug_recorder,
         )?;
 
@@ -177,8 +172,6 @@ fn compile_contract_script_iteration<'i>(
     script_size: Option<i64>,
     without_selector: bool,
     structs: &StructRegistry,
-    functions_map: &HashMap<String, FunctionAst<'i>>,
-    function_order: &HashMap<String, usize>,
     debug_recorder: &mut DebugRecorder<'i>,
 ) -> Result<(Vec<u8>, CompiledStateLayout), CompilerError> {
     let (_contract_fields, field_prolog_script) =
@@ -193,8 +186,6 @@ fn compile_contract_script_iteration<'i>(
         lowered_constants,
         options,
         structs,
-        functions_map,
-        function_order,
         script_size,
         debug_recorder,
     )?;
@@ -209,21 +200,14 @@ fn compile_entrypoint_scripts<'i>(
     lowered_constants: &HashMap<String, Expr<'i>>,
     options: CompileOptions,
     structs: &StructRegistry,
-    functions_map: &HashMap<String, FunctionAst<'i>>,
-    function_order: &HashMap<String, usize>,
     script_size: Option<i64>,
     debug_recorder: &mut DebugRecorder<'i>,
 ) -> Result<Vec<(String, Vec<u8>)>, CompilerError> {
     let mut compiled_entrypoints = Vec::new();
     for func in &lowered_contract.functions {
         if func.entrypoint {
-            let function_index = function_order
-                .get(&func.name)
-                .copied()
-                .ok_or_else(|| CompilerError::Unsupported(format!("function '{}' not found", func.name)))?;
             let compiled = compile_entrypoint_function(
                 func,
-                function_index,
                 &lowered_contract.params,
                 &lowered_contract.fields,
                 &lowered_contract.constants,
@@ -231,8 +215,6 @@ fn compile_entrypoint_scripts<'i>(
                 lowered_constants,
                 options,
                 structs,
-                functions_map,
-                function_order,
                 script_size,
                 debug_recorder,
             )?;
@@ -1075,7 +1057,6 @@ pub fn function_branch_index<'i>(contract: &ContractAst<'i>, function_name: &str
 #[allow(clippy::too_many_arguments)]
 fn compile_entrypoint_function<'i>(
     function: &FunctionAst<'i>,
-    function_index: usize,
     contract_params: &[ParamAst<'i>],
     contract_fields: &[ContractFieldAst<'i>],
     contract_constants: &[ConstantAst<'i>],
@@ -1083,8 +1064,6 @@ fn compile_entrypoint_function<'i>(
     constants: &HashMap<String, Expr<'i>>,
     options: CompileOptions,
     structs: &StructRegistry,
-    functions: &HashMap<String, FunctionAst<'i>>,
-    function_order: &HashMap<String, usize>,
     script_size: Option<i64>,
     debug_recorder: &mut DebugRecorder<'i>,
 ) -> Result<(String, Vec<u8>), CompilerError> {
@@ -1138,9 +1117,6 @@ fn compile_entrypoint_function<'i>(
         contract_field_prefix_len,
         contract_constants: constants,
         structs,
-        functions,
-        function_order,
-        function_index,
         script_size,
         debug_recorder,
     };
@@ -1259,9 +1235,6 @@ struct CompileStatementContext<'a, 'i> {
     contract_field_prefix_len: usize,
     contract_constants: &'a HashMap<String, Expr<'i>>,
     structs: &'a StructRegistry,
-    functions: &'a HashMap<String, FunctionAst<'i>>,
-    function_order: &'a HashMap<String, usize>,
-    function_index: usize,
     script_size: Option<i64>,
     debug_recorder: &'a mut DebugRecorder<'i>,
 }
@@ -1286,9 +1259,6 @@ impl<'a, 'i> CompileStatementContext<'a, 'i> {
             contract_field_prefix_len: self.contract_field_prefix_len,
             contract_constants: self.contract_constants,
             structs: self.structs,
-            functions: self.functions,
-            function_order: self.function_order,
-            function_index: self.function_index,
             script_size: self.script_size,
             debug_recorder: self.debug_recorder,
         }

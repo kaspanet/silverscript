@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::debug_info::SourceSpan;
 
@@ -10,17 +10,20 @@ pub(super) fn lower_inline_functions<'i>(
     contract: &ContractAst<'i>,
     debug_recorder: &mut DebugRecorder<'i>,
 ) -> Result<ContractAst<'i>, CompilerError> {
-    let functions = contract.functions.iter().cloned().map(|function| (function.name.clone(), function)).collect::<HashMap<_, _>>();
-    let function_order =
-        contract.functions.iter().enumerate().map(|(index, function)| (function.name.clone(), index)).collect::<HashMap<_, _>>();
-    let mut inliner = Inliner { functions, function_order, fresh_counter: 0, debug_recorder };
+    let functions = contract
+        .functions
+        .iter()
+        .filter(|function| !function.entrypoint)
+        .cloned()
+        .map(|function| (function.name.clone(), function))
+        .collect::<HashMap<_, _>>();
+    let mut inliner = Inliner { functions, fresh_counter: 0, debug_recorder };
 
     let lowered_functions = contract
         .functions
         .iter()
-        .enumerate()
-        .filter(|(_, function)| function.entrypoint)
-        .map(|(index, function)| inliner.lower_entrypoint_function(function, index))
+        .filter(|function| function.entrypoint)
+        .map(|function| inliner.lower_entrypoint_function(function))
         .collect::<Result<Vec<_>, _>>()?;
 
     Ok(ContractAst {
@@ -37,7 +40,6 @@ pub(super) fn lower_inline_functions<'i>(
 
 struct Inliner<'i, 'd> {
     functions: HashMap<String, FunctionAst<'i>>,
-    function_order: HashMap<String, usize>,
     fresh_counter: usize,
     debug_recorder: &'d mut DebugRecorder<'i>,
 }
@@ -49,17 +51,14 @@ impl<'i, 'd> Inliner<'i, 'd> {
         name
     }
 
-    fn lower_entrypoint_function(
-        &mut self,
-        function: &FunctionAst<'i>,
-        function_index: usize,
-    ) -> Result<FunctionAst<'i>, CompilerError> {
+    fn lower_entrypoint_function(&mut self, function: &FunctionAst<'i>) -> Result<FunctionAst<'i>, CompilerError> {
         let mut scope = HashMap::new();
         for param in &function.params {
             scope.insert(param.name.clone(), param.name.clone());
         }
         self.debug_recorder.begin_source_function(&function.name);
-        let body = self.lower_block(&function.body, &mut scope, function_index)?;
+        let mut visited_functions = HashSet::new();
+        let body = self.lower_block(&function.body, &mut scope, &mut visited_functions)?;
         self.debug_recorder.finish_source_function();
         Ok(FunctionAst { body, ..function.clone() })
     }
@@ -68,11 +67,11 @@ impl<'i, 'd> Inliner<'i, 'd> {
         &mut self,
         statements: &[Statement<'i>],
         scope: &mut HashMap<String, String>,
-        function_index: usize,
+        visited_functions: &mut HashSet<String>,
     ) -> Result<Vec<Statement<'i>>, CompilerError> {
         let mut lowered = Vec::new();
         for statement in statements {
-            lowered.extend(self.lower_statement(statement, scope, function_index)?);
+            lowered.extend(self.lower_statement(statement, scope, visited_functions)?);
         }
         Ok(lowered)
     }
@@ -117,7 +116,7 @@ impl<'i, 'd> Inliner<'i, 'd> {
         &mut self,
         statement: &Statement<'i>,
         scope: &mut HashMap<String, String>,
-        function_index: usize,
+        visited_functions: &mut HashSet<String>,
     ) -> Result<Vec<Statement<'i>>, CompilerError> {
         let mut lowered = Vec::new();
         match statement {
@@ -183,12 +182,12 @@ impl<'i, 'd> Inliner<'i, 'd> {
             }
             Statement::Block { body, span } => {
                 let mut block_scope = scope.clone();
-                let lowered_body = self.lower_block(body, &mut block_scope, function_index)?;
+                let lowered_body = self.lower_block(body, &mut block_scope, visited_functions)?;
                 self.push_lowered_statement(&mut lowered, Statement::Block { body: lowered_body, span: *span });
             }
             Statement::FunctionCall { name, args, span, name_span } => {
                 if let Some(function) = self.inline_target(name) {
-                    lowered.extend(self.inline_call(&function, args, None, scope, function_index, *span)?);
+                    lowered.extend(self.inline_call(&function, args, None, scope, visited_functions, *span)?);
                 } else {
                     let renamed_args = args.iter().map(|arg| self.rename_expr(arg, scope)).collect::<Result<Vec<_>, _>>()?;
                     self.push_lowered_statement(
@@ -206,7 +205,7 @@ impl<'i, 'd> Inliner<'i, 'd> {
                             ParamAst { name: fresh, ..binding.clone() }
                         })
                         .collect::<Vec<_>>();
-                    lowered.extend(self.inline_call(&function, args, Some(&renamed_bindings), scope, function_index, *span)?);
+                    lowered.extend(self.inline_call(&function, args, Some(&renamed_bindings), scope, visited_functions, *span)?);
                 } else {
                     let renamed_bindings = bindings
                         .iter()
@@ -294,12 +293,12 @@ impl<'i, 'd> Inliner<'i, 'd> {
                 let renamed_condition = self.rename_expr(condition, scope)?;
                 let mut then_scope = scope.clone();
                 self.predeclare_branch_bindings(then_branch, &mut then_scope);
-                let lowered_then = self.lower_block(then_branch, &mut then_scope, function_index)?;
+                let lowered_then = self.lower_block(then_branch, &mut then_scope, visited_functions)?;
 
                 let lowered_else = if let Some(else_branch) = else_branch {
                     let mut else_scope = scope.clone();
                     self.predeclare_branch_bindings(else_branch, &mut else_scope);
-                    Some(self.lower_block(else_branch, &mut else_scope, function_index)?)
+                    Some(self.lower_block(else_branch, &mut else_scope, visited_functions)?)
                 } else {
                     None
                 };
@@ -318,7 +317,7 @@ impl<'i, 'd> Inliner<'i, 'd> {
             Statement::For { ident, start, end, max_iterations, body, span, ident_span, body_span } => {
                 let mut body_scope = scope.clone();
                 let lowered_ident = self.bind_visible_name(ident, &mut body_scope);
-                let lowered_body = self.lower_block(body, &mut body_scope, function_index)?;
+                let lowered_body = self.lower_block(body, &mut body_scope, visited_functions)?;
                 let lowered_start = self.rename_expr(start, scope)?;
                 let lowered_end = self.rename_expr(end, scope)?;
                 let lowered_max_iterations = self.rename_expr(max_iterations, scope)?;
@@ -358,16 +357,11 @@ impl<'i, 'd> Inliner<'i, 'd> {
         args: &[Expr<'i>],
         bindings: Option<&[ParamAst<'i>]>,
         caller_scope: &HashMap<String, String>,
-        caller_index: usize,
+        visited_functions: &mut HashSet<String>,
         span: span::Span<'i>,
     ) -> Result<Vec<Statement<'i>>, CompilerError> {
-        let callee_index = self
-            .function_order
-            .get(&function.name)
-            .copied()
-            .ok_or_else(|| CompilerError::Unsupported(format!("function '{}' not found", function.name)))?;
-        if callee_index >= caller_index {
-            return Err(CompilerError::Unsupported("functions may only call earlier-defined functions".to_string()));
+        if visited_functions.contains(&function.name) {
+            return Err(CompilerError::Unsupported(format!("recursive function call: {}", function.name)));
         }
         if function.params.len() != args.len() {
             return Err(CompilerError::Unsupported(format!(
@@ -380,6 +374,7 @@ impl<'i, 'd> Inliner<'i, 'd> {
         let mut local_scope = HashMap::new();
         let mut lowered = Vec::new();
         self.debug_recorder.begin_inline_source_call(&function.name, SourceSpan::from(span));
+        visited_functions.insert(function.name.clone());
         for (param, arg) in function.params.iter().zip(args.iter()) {
             let fresh = self.bind_visible_name(&param.name, &mut local_scope);
             let renamed_arg = self.rename_expr(arg, caller_scope)?;
@@ -405,29 +400,35 @@ impl<'i, 'd> Inliner<'i, 'd> {
             None => (&[][..], None),
         };
 
-        for statement in callee_body {
-            lowered.extend(self.lower_statement(statement, &mut local_scope, callee_index)?);
-        }
-        let body_end_statement_index = self.debug_recorder.current_source_statement_index();
-
-        if let (Some(bindings), Some(return_exprs)) = (bindings, return_exprs) {
-            for (binding, expr) in bindings.iter().zip(return_exprs.iter()) {
-                let renamed_expr = self.rename_expr(expr, &local_scope)?;
-                self.push_lowered_statement(
-                    &mut lowered,
-                    Statement::VariableDefinition {
-                        type_ref: binding.type_ref.clone(),
-                        modifiers: Vec::new(),
-                        name: binding.name.clone(),
-                        expr: Some(renamed_expr),
-                        span,
-                        type_span: binding.type_span,
-                        modifier_spans: Vec::new(),
-                        name_span: binding.name_span,
-                    },
-                );
+        let lowered_result = (|| -> Result<(), CompilerError> {
+            for statement in callee_body {
+                lowered.extend(self.lower_statement(statement, &mut local_scope, visited_functions)?);
             }
-        }
+
+            if let (Some(bindings), Some(return_exprs)) = (bindings, return_exprs) {
+                for (binding, expr) in bindings.iter().zip(return_exprs.iter()) {
+                    let renamed_expr = self.rename_expr(expr, &local_scope)?;
+                    self.push_lowered_statement(
+                        &mut lowered,
+                        Statement::VariableDefinition {
+                            type_ref: binding.type_ref.clone(),
+                            modifiers: Vec::new(),
+                            name: binding.name.clone(),
+                            expr: Some(renamed_expr),
+                            span,
+                            type_span: binding.type_span,
+                            modifier_spans: Vec::new(),
+                            name_span: binding.name_span,
+                        },
+                    );
+                }
+            }
+
+            Ok(())
+        })();
+        let body_end_statement_index = self.debug_recorder.current_source_statement_index();
+        visited_functions.remove(&function.name);
+        lowered_result?;
         self.debug_recorder.finish_inline_source_call(body_end_statement_index);
         Ok(lowered)
     }
