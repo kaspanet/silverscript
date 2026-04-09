@@ -1934,12 +1934,19 @@ fn parse_return_type_list<'i>(pair: Pair<'i, Rule>) -> Result<(Vec<TypeRef>, Vec
     let mut return_types = Vec::new();
     let mut return_spans = Vec::new();
     for user_type in pair.into_inner() {
-        if user_type.as_rule() != Rule::type_name {
-            continue;
+        match user_type.as_rule() {
+            Rule::type_name => {
+                let type_span = Span::from(user_type.as_span());
+                return_types.push(parse_type_name_pair(user_type)?);
+                return_spans.push(type_span);
+            }
+            Rule::return_type_list => {
+                let (nested_types, nested_spans) = parse_return_type_list(user_type)?;
+                return_types.extend(nested_types);
+                return_spans.extend(nested_spans);
+            }
+            _ => {}
         }
-        let type_span = Span::from(user_type.as_span());
-        return_types.push(parse_type_name_pair(user_type)?);
-        return_spans.push(type_span);
     }
     Ok((return_types, return_spans))
 }

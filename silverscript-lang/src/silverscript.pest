@@ -22,7 +22,7 @@ contract_field_definition = { type_name ~ Identifier ~ "=" ~ expression ~ ";" }
 
 parameter_list = { "(" ~ (parameter ~ ("," ~ parameter)* ~ ","?)? ~ ")" }
 parameter = { type_name ~ Identifier }
-return_type_list = { ":" ~ "(" ~ (type_name ~ ("," ~ type_name)* ~ ","?)? ~ ")" }
+return_type_list = { ":" ~ (type_name | "(" ~ (type_name ~ ("," ~ type_name)* ~ ","?)? ~ ")") }
 
 block = { braced_block | statement }
 braced_block = { "{" ~ statement* ~ "}" }
