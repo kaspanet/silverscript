@@ -358,15 +358,7 @@ fn validate_function_call_statement_shape<'i>(
         validate_expr_semantics(arg, ctx.env, ctx.prefer_env_for_comparison, ctx.types, ctx.structs, ctx.contract_fields)?;
     }
     if ctx.functions.contains_key(name) {
-        validate_internal_call(
-            name,
-            args,
-            ctx.types,
-            ctx.structs,
-            ctx.constants,
-            ctx.functions,
-            ctx.contract_fields,
-        )?;
+        validate_internal_call(name, args, ctx.types, ctx.structs, ctx.constants, ctx.functions, ctx.contract_fields)?;
     }
     Ok(())
 }
@@ -380,15 +372,7 @@ fn validate_function_call_assign_statement_shape<'i>(
     for arg in args {
         validate_expr_semantics(arg, ctx.env, ctx.prefer_env_for_comparison, ctx.types, ctx.structs, ctx.contract_fields)?;
     }
-    let function = validate_internal_call(
-        name,
-        args,
-        ctx.types,
-        ctx.structs,
-        ctx.constants,
-        ctx.functions,
-        ctx.contract_fields,
-    )?;
+    let function = validate_internal_call(name, args, ctx.types, ctx.structs, ctx.constants, ctx.functions, ctx.contract_fields)?;
     if bindings.len() != function.return_types.len() {
         return Err(CompilerError::Unsupported("function call assignment return count mismatch".to_string()));
     }
