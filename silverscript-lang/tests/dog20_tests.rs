@@ -17,7 +17,7 @@ use std::fs;
 
 mod common;
 
-use common::{COV_A, assert_verify_like_error, covenant_decl_sigscript, covenant_utxo, execute_input_with_covenants};
+use common::{COV_A, assert_verify_like_error, compiled_template_parts_and_hash, covenant_decl_sigscript, covenant_utxo, execute_input_with_covenants};
 
 fn load_example_source(name: &str) -> String {
     let path = format!("{}/tests/examples/{name}", env!("CARGO_MANIFEST_DIR"));
@@ -856,6 +856,41 @@ fn dog20_minter_can_mint_in_single_transaction() {
     );
 
     execute_input_with_covenants(mint_tx, mint_entries, 0).expect("Dog20 minter should be able to mint in a single transaction");
+}
+
+#[test]
+fn dog20_minter_example_regresses_on_helper_call_with_template_parts_from_dog20() {
+    let dog20_source = load_example_source("dog20.sil");
+    let dog20_minter_source = load_example_source("dog20-minter.sil");
+
+    let owner = random_keypair();
+    let owner_bytes = owner.x_only_public_key().0.serialize().to_vec();
+    let dog20_covenant_id = Hash::from_bytes(*b"DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD");
+
+    let dog20 = compile_dog20_state(&dog20_source, owner_bytes.clone(), 1_000, 2, 2);
+    let (template_prefix, template_suffix, expected_template_hash) = compiled_template_parts_and_hash(&dog20);
+
+    let result = compile_contract(
+        &dog20_minter_source,
+        &[
+            Expr::bytes(owner_bytes),
+            Expr::bytes(dog20_covenant_id.as_bytes().to_vec()),
+            Expr::int(1_000),
+            Expr::bool(false),
+            Expr::int(template_prefix.len() as i64),
+            Expr::int(template_suffix.len() as i64),
+            Expr::bytes(expected_template_hash),
+            Expr::bytes(template_prefix),
+            Expr::bytes(template_suffix),
+        ],
+        CompileOptions::default(),
+    );
+
+    let err = result.expect_err("regression: dog20-minter.sil currently rejects the calcInAmount() helper when parameterized from dog20.sil");
+    assert!(
+        err.to_string().contains("unknown function call: calcInAmount"),
+        "expected calcInAmount helper regression, got: {err:?}"
+    );
 }
 
 #[test]
