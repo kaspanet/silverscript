@@ -1232,14 +1232,14 @@ fn build_sig_script_for_covenant_decl_routes_to_hidden_auth_entrypoint() {
             int value = init_value;
 
             #[covenant.singleton]
-            function step(State prev_state, State[] new_states) {
-                require(new_states.length <= 1);
+            function step(State prev_state, State new_state) {
+                require(new_state.value >= prev_state.value);
             }
         }
     "#;
 
     let compiled = compile_contract(source, &[Expr::int(7)], CompileOptions::default()).expect("compile succeeds");
-    let args = vec![vec![struct_object(vec![("value", Expr::int(8))])].into()];
+    let args = vec![struct_object(vec![("value", Expr::int(8))])];
 
     let actual = compiled
         .build_sig_script_for_covenant_decl("step", args.clone(), CovenantDeclCallOptions { is_leader: false })

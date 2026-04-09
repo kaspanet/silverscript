@@ -275,9 +275,6 @@ fn parse_covenant_declaration<'i>(
         return Err(CompilerError::Unsupported("binding=cov with groups=multiple is not supported yet".to_string()));
     }
 
-    if args_by_name.contains_key("termination") && mode != CovenantMode::Transition {
-        return Err(CompilerError::Unsupported("termination is only supported in mode=transition".to_string()));
-    }
     if args_by_name.contains_key("termination") && !(from_value == 1 && to_value == 1) {
         return Err(CompilerError::Unsupported("termination is only supported for singleton covenants (from=1, to=1)".to_string()));
     }
@@ -293,7 +290,7 @@ fn parse_covenant_declaration<'i>(
         binding,
         mode,
         groups,
-        singleton: from_value == 1 && to_value == 1,
+        singleton: syntax == CovenantSyntax::Singleton,
         termination,
         from_expr: from_expr.clone(),
         to_expr: to_expr.clone(),
@@ -319,7 +316,17 @@ fn validate_covenant_policy_state_shape<'i>(
 
     match (declaration.binding, declaration.mode) {
         (CovenantBinding::Auth, CovenantMode::Verification) => {
-            if policy.params.len() < 2
+            if declaration.singleton && declaration.termination != CovenantTermination::Allowed {
+                if policy.params.len() < 2
+                    || !is_state_type_ref(&policy.params[0].type_ref)
+                    || !is_state_type_ref(&policy.params[1].type_ref)
+                {
+                    return Err(CompilerError::Unsupported(format!(
+                        "mode=verification with binding=auth on singleton function '{}' expects parameters '(State prev_state, State new_state, ...)'",
+                        policy.name
+                    )));
+                }
+            } else if policy.params.len() < 2
                 || !is_state_type_ref(&policy.params[0].type_ref)
                 || !is_state_array_type_ref(&policy.params[1].type_ref)
             {
@@ -437,26 +444,45 @@ fn build_auth_wrapper<'i>(
             CovenantMode::Verification => {
                 entrypoint_params = policy.params.iter().skip(1).cloned().collect();
                 let prev_state_name = &policy.params[0].name;
-                let new_states_name = &policy.params[1].name;
                 body.push(var_def_statement(
                     state_type_ref(),
                     prev_state_name,
                     state_object_expr_from_contract_fields(contract_fields),
                 ));
                 body.push(call_statement(policy_name, policy.params.iter().map(|param| identifier_expr(&param.name)).collect()));
-                body.push(require_statement(binary_expr(BinaryOp::Le, identifier_expr(out_count_name), declaration.to_expr.clone())));
-                body.push(require_statement(binary_expr(
-                    BinaryOp::Eq,
-                    identifier_expr(out_count_name),
-                    length_expr(identifier_expr(new_states_name)),
-                )));
-                append_auth_output_state_array_checks_from_state_array(
-                    &mut body,
-                    &active_input,
-                    out_count_name,
-                    declaration.to_expr.clone(),
-                    new_states_name,
-                );
+                if declaration.singleton && declaration.termination != CovenantTermination::Allowed {
+                    let new_state_name = &policy.params[1].name;
+                    body.push(require_statement(binary_expr(BinaryOp::Eq, identifier_expr(out_count_name), Expr::int(1))));
+                    let out_idx_name = "__cov_out_idx";
+                    body.push(var_def_statement(
+                        int_type_ref(),
+                        out_idx_name,
+                        Expr::call("OpAuthOutputIdx", vec![active_input.clone(), Expr::int(0)]),
+                    ));
+                    body.push(call_statement(
+                        "validateOutputState",
+                        vec![identifier_expr(out_idx_name), identifier_expr(new_state_name)],
+                    ));
+                } else {
+                    let new_states_name = &policy.params[1].name;
+                    body.push(require_statement(binary_expr(
+                        BinaryOp::Le,
+                        identifier_expr(out_count_name),
+                        declaration.to_expr.clone(),
+                    )));
+                    body.push(require_statement(binary_expr(
+                        BinaryOp::Eq,
+                        identifier_expr(out_count_name),
+                        length_expr(identifier_expr(new_states_name)),
+                    )));
+                    append_auth_output_state_array_checks_from_state_array(
+                        &mut body,
+                        &active_input,
+                        out_count_name,
+                        declaration.to_expr.clone(),
+                        new_states_name,
+                    );
+                }
             }
             CovenantMode::Transition => {
                 entrypoint_params = policy.params.iter().skip(1).cloned().collect();

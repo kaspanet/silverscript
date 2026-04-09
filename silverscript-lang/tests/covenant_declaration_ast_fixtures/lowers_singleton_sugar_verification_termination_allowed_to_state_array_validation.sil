@@ -1,0 +1,32 @@
+contract Counter(int init_value) {
+    int value = init_value;
+
+    #[covenant.singleton(termination = allowed)]
+    function step(State prev_state, State[] new_states) {
+        require(new_states.length <= 1);
+    }
+}
+
+// --- lowered ---
+
+contract Counter(int init_value) {
+    int value = init_value;
+
+    function covenant_policy_step(State prev_state, State[] new_states) {
+        require(new_states.length <= 1);
+    }
+
+    entrypoint function step(State[] new_states) {
+        int cov_out_count = OpAuthOutputCount(this.activeInputIndex);
+
+        State prev_state = { value: value };
+        covenant_policy_step(prev_state, new_states);
+        require(cov_out_count <= 1);
+        require(cov_out_count == new_states.length);
+
+        for(cov_k, 0, cov_out_count, 1) {
+            int cov_out_idx = OpAuthOutputIdx(this.activeInputIndex, cov_k);
+            validateOutputState(cov_out_idx, new_states[cov_k]);
+        }
+    }
+}
