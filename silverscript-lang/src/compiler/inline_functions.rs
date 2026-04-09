@@ -122,20 +122,34 @@ impl<'i, 'd> Inliner<'i, 'd> {
         match statement {
             Statement::VariableDefinition { type_ref, modifiers, name, expr, span, type_span, modifier_spans, name_span } => {
                 let fresh = self.bind_visible_name(name, scope);
-                let renamed_expr = expr.as_ref().map(|expr| self.rename_expr(expr, scope)).transpose()?;
-                self.push_lowered_statement(
-                    &mut lowered,
-                    Statement::VariableDefinition {
+                if let Some(expr) = expr
+                    && let ExprKind::Call { name: call_name, args, .. } = &expr.kind
+                    && let Some(function) = self.inline_target(call_name)
+                {
+                    let binding = ParamAst {
                         type_ref: type_ref.clone(),
-                        modifiers: modifiers.clone(),
                         name: fresh,
-                        expr: renamed_expr,
                         span: *span,
                         type_span: *type_span,
-                        modifier_spans: modifier_spans.clone(),
                         name_span: *name_span,
-                    },
-                );
+                    };
+                    lowered.extend(self.inline_call(&function, args, Some(&[binding]), scope, visited_functions, *span)?);
+                } else {
+                    let renamed_expr = expr.as_ref().map(|expr| self.rename_expr(expr, scope)).transpose()?;
+                    self.push_lowered_statement(
+                        &mut lowered,
+                        Statement::VariableDefinition {
+                            type_ref: type_ref.clone(),
+                            modifiers: modifiers.clone(),
+                            name: fresh,
+                            expr: renamed_expr,
+                            span: *span,
+                            type_span: *type_span,
+                            modifier_spans: modifier_spans.clone(),
+                            name_span: *name_span,
+                        },
+                    );
+                }
             }
             Statement::TupleAssignment {
                 left_type_ref,
