@@ -1042,6 +1042,13 @@ impl<'i> StagedEntrypointDebug<'i> {
 
         for plan in plans {
             let (call_depth, frame_id) = self.parent_frame_context(&plan);
+            let variable_updates = self
+                .steps
+                .iter()
+                .rev()
+                .find(|step| matches!(step.kind, StepKind::Source {}) && step.frame_id == plan.frame_id)
+                .map(|step| step.variable_updates.clone())
+                .unwrap_or_default();
             self.record_step(DebugStep {
                 bytecode_start,
                 bytecode_end: bytecode_start,
@@ -1050,7 +1057,7 @@ impl<'i> StagedEntrypointDebug<'i> {
                 sequence: 0,
                 call_depth,
                 frame_id,
-                variable_updates: Vec::new(),
+                variable_updates,
                 console_args: Vec::new(),
             });
         }
