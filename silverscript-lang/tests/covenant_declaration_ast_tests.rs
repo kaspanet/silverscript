@@ -97,12 +97,12 @@ fixture_ast_test!(
     lowers_inferred_cov_verification_two_field_state,
     [Expr::int(2), Expr::int(4), Expr::int(10), Expr::bytes(vec![7u8; 32])]
 );
-fixture_ast_test!(lowers_termination_allowed_in_verification_non_singleton_mode, [Expr::int(4), Expr::int(10), Expr::bytes(vec![7u8; 32])]);
-fixture_ast_test!(lowers_termination_allowed_in_transition_non_singleton_mode, [Expr::int(4), Expr::int(10)]);
 fixture_ast_test!(
-    lowers_inferred_singleton_transition_two_field_state,
-    [Expr::int(10), Expr::bytes(vec![7u8; 32])]
+    lowers_termination_allowed_in_verification_non_singleton_mode,
+    [Expr::int(4), Expr::int(10), Expr::bytes(vec![7u8; 32])]
 );
+fixture_ast_test!(lowers_termination_allowed_in_transition_non_singleton_mode, [Expr::int(4), Expr::int(10)]);
+fixture_ast_test!(lowers_inferred_singleton_transition_two_field_state, [Expr::int(10), Expr::bytes(vec![7u8; 32])]);
 fixture_ast_test!(lowers_singleton_sugar_transition_two_field_state, [Expr::int(10), Expr::bytes(vec![7u8; 32])]);
 fixture_ast_test!(lowers_singleton_sugar_transition_termination_allowed_two_field_state, [Expr::int(10), Expr::bytes(vec![7u8; 32])]);
 fixture_ast_test!(lowers_fanout_sugar_verification_two_field_state, [Expr::int(4), Expr::int(10), Expr::bytes(vec![7u8; 32])]);
