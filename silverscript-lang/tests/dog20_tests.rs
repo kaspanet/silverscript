@@ -872,7 +872,7 @@ fn dog20_minter_with_dog_20_template_layout() {
     let dog20 = compile_dog20_state(&dog20_source, owner_bytes.clone(), 1_000, 2, 2);
     let (template_prefix, template_suffix, expected_template_hash) = compiled_template_parts_and_hash(&dog20);
 
-    compile_contract(
+    let init_contract = compile_contract(
         &dog20_minter_source,
         &[
             Expr::bytes(owner_bytes),
