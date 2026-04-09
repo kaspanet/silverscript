@@ -74,10 +74,8 @@ fn validate_function_signatures<'i>(
     options: CompileOptions,
 ) -> Result<(), CompilerError> {
     let functions = contract.functions.iter().map(|function| (function.name.clone(), function)).collect::<HashMap<_, _>>();
-    let function_order =
-        contract.functions.iter().enumerate().map(|(index, function)| (function.name.clone(), index)).collect::<HashMap<_, _>>();
 
-    for (function_index, function) in contract.functions.iter().enumerate() {
+    for function in &contract.functions {
         for param in &function.params {
             ensure_array_elements_have_known_size(&param.type_ref, structs, &type_name_from_ref(&param.type_ref))?;
         }
@@ -114,8 +112,6 @@ fn validate_function_signatures<'i>(
             structs,
             constants,
             &functions,
-            &function_order,
-            function_index,
             &contract.fields,
         )?;
     }
@@ -158,8 +154,6 @@ fn validate_statement_shapes<'i>(
     structs: &StructRegistry,
     constants: &HashMap<String, Expr<'i>>,
     functions: &HashMap<String, &FunctionAst<'i>>,
-    function_order: &HashMap<String, usize>,
-    function_index: usize,
     contract_fields: &[ContractFieldAst<'i>],
 ) -> Result<(), CompilerError> {
     let mut ctx = ValidateStatementShapesContext {
@@ -170,8 +164,6 @@ fn validate_statement_shapes<'i>(
         structs,
         constants,
         functions,
-        function_order,
-        function_index,
         contract_fields,
     };
 
@@ -220,8 +212,6 @@ struct ValidateStatementShapesContext<'a, 'i> {
     structs: &'a StructRegistry,
     constants: &'a HashMap<String, Expr<'i>>,
     functions: &'a HashMap<String, &'a FunctionAst<'i>>,
-    function_order: &'a HashMap<String, usize>,
-    function_index: usize,
     contract_fields: &'a [ContractFieldAst<'i>],
 }
 
@@ -375,8 +365,6 @@ fn validate_function_call_statement_shape<'i>(
             ctx.structs,
             ctx.constants,
             ctx.functions,
-            ctx.function_order,
-            ctx.function_index,
             ctx.contract_fields,
         )?;
     }
@@ -399,8 +387,6 @@ fn validate_function_call_assign_statement_shape<'i>(
         ctx.structs,
         ctx.constants,
         ctx.functions,
-        ctx.function_order,
-        ctx.function_index,
         ctx.contract_fields,
     )?;
     if bindings.len() != function.return_types.len() {
@@ -491,8 +477,6 @@ fn validate_if_statement_shape<'i>(
         ctx.structs,
         ctx.constants,
         ctx.functions,
-        ctx.function_order,
-        ctx.function_index,
         ctx.contract_fields,
     )?;
     if let Some(else_branch) = else_branch {
@@ -508,8 +492,6 @@ fn validate_if_statement_shape<'i>(
             ctx.structs,
             ctx.constants,
             ctx.functions,
-            ctx.function_order,
-            ctx.function_index,
             ctx.contract_fields,
         )?;
     }
@@ -532,8 +514,6 @@ fn validate_block_statement_shape<'i>(
         ctx.structs,
         ctx.constants,
         ctx.functions,
-        ctx.function_order,
-        ctx.function_index,
         ctx.contract_fields,
     )
 }
@@ -562,8 +542,6 @@ fn validate_for_statement_shape<'i>(
         ctx.structs,
         ctx.constants,
         ctx.functions,
-        ctx.function_order,
-        ctx.function_index,
         ctx.contract_fields,
     )
 }
@@ -982,21 +960,13 @@ fn validate_internal_call<'i>(
     structs: &StructRegistry,
     constants: &HashMap<String, Expr<'i>>,
     functions: &'i HashMap<String, &'i FunctionAst<'i>>,
-    function_order: &HashMap<String, usize>,
-    function_index: usize,
     contract_fields: &[ContractFieldAst<'i>],
 ) -> Result<&'i FunctionAst<'i>, CompilerError> {
     let Some(function) = functions.get(name).copied() else {
         return Err(CompilerError::Unsupported(format!("function '{}' not found", name)));
     };
-
-    let callee_index =
-        function_order.get(name).copied().ok_or_else(|| CompilerError::Unsupported(format!("function '{}' not found", name)))?;
-    if callee_index > function_index {
-        return Err(CompilerError::Unsupported("functions may only call earlier-defined functions".to_string()));
-    }
-    if callee_index == function_index {
-        return Err(CompilerError::Unsupported(format!("unknown function '{}'", name)));
+    if function.entrypoint {
+        return Err(CompilerError::Unsupported(format!("entrypoint function '{}' cannot be called", name)));
     }
     if function.params.len() != args.len() {
         return Err(CompilerError::Unsupported(format!("function '{}' expects {} arguments", name, function.params.len())));
