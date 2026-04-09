@@ -375,7 +375,7 @@ fn auth_groups_single_rejects_parallel_group_with_same_covenant_id() {
     let active = compile_state(AUTH_SINGLE_GROUP_SOURCE, 10);
     let out = compile_state(AUTH_SINGLE_GROUP_SOURCE, 10);
 
-    let input0 = tx_input(0, covenant_decl_sigscript(&active, "step", vec![state_arg(10)], false));
+    let input0 = tx_input(0, covenant_decl_sigscript(&active, "step", vec![state_array_arg(vec![10])], false));
     let input1 = tx_input(1, vec![]);
     let outputs = vec![covenant_output(&out, 0, COV_A), plain_covenant_output(1, COV_A)];
     let tx = Transaction::new(1, vec![input0, input1], outputs, 0, Default::default(), 0, vec![]);
@@ -522,7 +522,7 @@ fn singleton_rejects_authorized_output_with_different_script() {
     let active = compile_state(AUTH_SINGLETON_SOURCE, 10);
     let different = compile_state(AUTH_SINGLETON_SOURCE, 11);
 
-    let input0 = tx_input(0, covenant_decl_sigscript(&active, "step", vec![state_array_arg(vec![10])], false));
+    let input0 = tx_input(0, covenant_decl_sigscript(&active, "step", vec![state_arg(10)], false));
     let tx = Transaction::new(1, vec![input0], vec![covenant_output(&different, 0, COV_A)], 0, Default::default(), 0, vec![]);
     let entries = vec![covenant_utxo(&active, COV_A)];
 

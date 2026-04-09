@@ -290,7 +290,7 @@ fn parse_covenant_declaration<'i>(
         binding,
         mode,
         groups,
-        singleton: from_value == 1 && to_value == 1,
+        singleton: syntax == CovenantSyntax::Singleton,
         termination,
         from_expr: from_expr.clone(),
         to_expr: to_expr.clone(),
