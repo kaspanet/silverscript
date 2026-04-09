@@ -524,12 +524,7 @@ impl<'i, 'd> Inliner<'i, 'd> {
                 Ok((
                     prelude,
                     Expr::new(
-                        ExprKind::Split {
-                            source: Box::new(source),
-                            index: Box::new(index),
-                            part: *part,
-                            span: *split_span,
-                        },
+                        ExprKind::Split { source: Box::new(source), index: Box::new(index), part: *part, span: *split_span },
                         span,
                     ),
                 ))
@@ -543,12 +538,7 @@ impl<'i, 'd> Inliner<'i, 'd> {
                 Ok((
                     prelude,
                     Expr::new(
-                        ExprKind::Slice {
-                            source: Box::new(source),
-                            start: Box::new(start),
-                            end: Box::new(end),
-                            span: *slice_span,
-                        },
+                        ExprKind::Slice { source: Box::new(source), start: Box::new(start), end: Box::new(end), span: *slice_span },
                         span,
                     ),
                 ))
@@ -567,10 +557,7 @@ impl<'i, 'd> Inliner<'i, 'd> {
                 let (mut prelude, left) = self.lower_expr(left, scope, visited_functions)?;
                 let (more_prelude, right) = self.lower_expr(right, scope, visited_functions)?;
                 prelude.extend(more_prelude);
-                Ok((
-                    prelude,
-                    Expr::new(ExprKind::Binary { op: *op, left: Box::new(left), right: Box::new(right) }, span),
-                ))
+                Ok((prelude, Expr::new(ExprKind::Binary { op: *op, left: Box::new(left), right: Box::new(right) }, span)))
             }
             ExprKind::IfElse { condition, then_expr, else_expr } => {
                 let (mut prelude, condition) = self.lower_expr(condition, scope, visited_functions)?;
@@ -625,13 +612,7 @@ impl<'i, 'd> Inliner<'i, 'd> {
             }
             ExprKind::UnarySuffix { source, kind, span: suffix_span } => {
                 let (prelude, source) = self.lower_expr(source, scope, visited_functions)?;
-                Ok((
-                    prelude,
-                    Expr::new(
-                        ExprKind::UnarySuffix { source: Box::new(source), kind: *kind, span: *suffix_span },
-                        span,
-                    ),
-                ))
+                Ok((prelude, Expr::new(ExprKind::UnarySuffix { source: Box::new(source), kind: *kind, span: *suffix_span }, span)))
             }
         }
     }
