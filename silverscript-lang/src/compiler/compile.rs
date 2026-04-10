@@ -459,6 +459,7 @@ fn infer_expr_type_ref_for_comparison<'i>(
                 | "ScriptPubKeyP2SH"
                 | "ScriptPubKeyP2SHFromRedeemScript"
                 | "OpInputCovenantId"
+                | "OpOutputCovenantId"
                 | "OpTxGas"
                 | "OpTxPayloadLen"
                 | "OpTxInputIndex"
@@ -3423,6 +3424,7 @@ fn expr_is_bytes_inner<'i>(expr: &Expr<'i>, types: &HashMap<String, String>, vis
                     | "OpTxInputSpkSubstr"
                     | "OpTxOutputSpkSubstr"
                     | "OpInputCovenantId"
+                    | "OpOutputCovenantId"
                     | "OpNum2Bin"
                     | "OpChainblockSeqCommit"
             ) || name.starts_with("byte[")
@@ -3559,6 +3561,7 @@ fn compile_call_expr<'i>(
         "OpAuthOutputCount" => compile_opcode_builtin_call(&mut ctx, name, args, 1, OpAuthOutputCount),
         "OpAuthOutputIdx" => compile_opcode_builtin_call(&mut ctx, name, args, 2, OpAuthOutputIdx),
         "OpInputCovenantId" => compile_opcode_builtin_call(&mut ctx, name, args, 1, OpInputCovenantId),
+        "OpOutputCovenantId" => compile_opcode_builtin_call(&mut ctx, name, args, 1, OpOutputCovenantId),
         "OpCovInputCount" => compile_opcode_builtin_call(&mut ctx, name, args, 1, OpCovInputCount),
         "OpCovInputIdx" => compile_opcode_builtin_call(&mut ctx, name, args, 2, OpCovInputIdx),
         "OpCovOutputCount" => compile_opcode_builtin_call(&mut ctx, name, args, 1, OpCovOutputCount),
