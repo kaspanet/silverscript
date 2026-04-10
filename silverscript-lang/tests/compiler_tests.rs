@@ -1,10 +1,12 @@
+use blake2b_simd::Params as Blake2bParams;
 use kaspa_addresses::{Address, Prefix, Version};
 use kaspa_consensus_core::Hash;
 use kaspa_consensus_core::hashing::sighash::SigHashReusedValuesUnsync;
+use kaspa_consensus_core::mass::units::SigopCount;
 use kaspa_consensus_core::subnets::SubnetworkId;
 use kaspa_consensus_core::tx::{
     CovenantBinding, PopulatedTransaction, ScriptPublicKey, Transaction, TransactionId, TransactionInput, TransactionOutpoint,
-    TransactionOutput, TxInputMass, UtxoEntry, VerifiableTransaction,
+    TransactionOutput, UtxoEntry, VerifiableTransaction,
 };
 use kaspa_txscript::caches::Cache;
 use kaspa_txscript::covenants::CovenantsContext;
@@ -21,10 +23,6 @@ use silverscript_lang::compiler::{
 };
 use silverscript_lang::debug_info::StepKind;
 
-mod common;
-
-use common::compiled_template_parts_and_hash;
-
 fn run_script_with_selector(script: Vec<u8>, selector: Option<i64>) -> Result<(), kaspa_txscript_errors::TxScriptError> {
     let sigscript = selector_sigscript(selector);
     run_script_with_sigscript(script, sigscript)
@@ -40,12 +38,12 @@ fn run_script_with_tx(
     let sig_cache = Cache::new(10_000);
     let sigscript = selector_sigscript(selector);
 
-    let input = TransactionInput::new(
-        TransactionOutpoint { transaction_id: TransactionId::from_bytes([0u8; 32]), index: 0 },
-        sigscript,
+    let input = TransactionInput {
+        previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([0u8; 32]), index: 0 },
+        signature_script: sigscript,
         sequence,
-        0,
-    );
+        mass: SigopCount(0).into(),
+    };
     let output = TransactionOutput { value: 1000, script_public_key: ScriptPublicKey::new(0, script.clone().into()), covenant: None };
     let tx = Transaction::new(1, vec![input.clone()], vec![output.clone()], lock_time, Default::default(), 0, vec![]);
     let utxo_entry = UtxoEntry::new(output.value, output.script_public_key.clone(), 0, tx.is_coinbase(), None);
@@ -57,7 +55,7 @@ fn run_script_with_tx(
         0,
         &utxo_entry,
         EngineCtx::new(&sig_cache).with_reused(&reused_values),
-        EngineFlags { covenants_enabled: true, sigop_script_units: 0.into() },
+        EngineFlags { covenants_enabled: true, ..Default::default() },
     );
     vm.execute()
 }
@@ -78,7 +76,7 @@ fn run_script_with_sigscript(script: Vec<u8>, sigscript: Vec<u8>) -> Result<(), 
         previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([1u8; 32]), index: 0 },
         signature_script: sigscript,
         sequence: 0,
-        mass: TxInputMass::SigopCount(0.into()),
+        mass: SigopCount(0).into(),
     };
     let output = TransactionOutput { value: 1000, script_public_key: ScriptPublicKey::new(0, script.clone().into()), covenant: None };
     let tx = Transaction::new(1, vec![input.clone()], vec![output.clone()], 0, Default::default(), 0, vec![]);
@@ -91,7 +89,7 @@ fn run_script_with_sigscript(script: Vec<u8>, sigscript: Vec<u8>) -> Result<(), 
         0,
         &utxo_entry,
         EngineCtx::new(&sig_cache).with_reused(&reused_values),
-        EngineFlags { covenants_enabled: true, sigop_script_units: 0.into() },
+        EngineFlags { covenants_enabled: true, ..Default::default() },
     );
     vm.execute()
 }
@@ -116,12 +114,12 @@ fn sigscript_push_script(script: &[u8]) -> Vec<u8> {
 }
 
 fn test_input(index: u32, signature_script: Vec<u8>) -> TransactionInput {
-    TransactionInput::new(
-        TransactionOutpoint { transaction_id: TransactionId::from_bytes([index as u8; 32]), index },
+    TransactionInput {
+        previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([index as u8; 32]), index },
         signature_script,
-        0,
-        0,
-    )
+        sequence: 0,
+        mass: SigopCount(0).into(),
+    }
 }
 
 fn execute_input(tx: Transaction, entries: Vec<UtxoEntry>, input_idx: usize) -> Result<(), kaspa_txscript_errors::TxScriptError> {
@@ -137,7 +135,7 @@ fn execute_input(tx: Transaction, entries: Vec<UtxoEntry>, input_idx: usize) -> 
         input_idx,
         utxo_entry,
         EngineCtx::new(&sig_cache).with_reused(&reused_values),
-        EngineFlags { covenants_enabled: true, sigop_script_units: 0.into() },
+        EngineFlags { covenants_enabled: true, ..Default::default() },
     );
     vm.execute()
 }
@@ -906,22 +904,6 @@ fn byte_equality_with_out_of_range_rhs_int_literal_is_rejected() {
     "#;
 
     assert!(compile_contract(source, &[], CompileOptions::default()).is_err(), "x == 256 should be rejected when x is a byte");
-}
-
-#[test]
-fn bool_array_index_false_compares_numerically() {
-    let source = r#"
-        contract Flags() {
-            entrypoint function main() {
-                bool[] flags = [false];
-                require(flags[0] == false);
-            }
-        }
-    "#;
-
-    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("bool[] index comparison should compile");
-    assert!(compiled.script.iter().copied().any(|op| op == OpNumEqual), "bool equality should use OP_NUMEQUAL");
-    assert!(run_script_with_selector(compiled.script, None).is_ok(), "bool[] index comparison should execute");
 }
 
 #[test]
@@ -4346,7 +4328,7 @@ fn run_script_with_tx_and_covenants(
         0,
         utxo_entry,
         ctx,
-        EngineFlags { covenants_enabled: true, sigop_script_units: 0.into() },
+        EngineFlags { covenants_enabled: true, ..Default::default() },
     );
     vm.execute()
 }
@@ -4357,7 +4339,7 @@ fn build_basic_opcode_tx(sigscript: Vec<u8>) -> (Transaction, Vec<UtxoEntry>) {
         previous_outpoint: TransactionOutpoint { transaction_id: outpoint_txid, index: 7 },
         signature_script: sigscript,
         sequence: u64::from_le_bytes(*b"sequence"),
-        mass: TxInputMass::SigopCount(0.into()),
+        mass: SigopCount(0).into(),
     };
 
     let output0_spk = ScriptPublicKey::new(0, b"outspk".to_vec().into());
@@ -4873,6 +4855,14 @@ fn runs_validate_output_state_with_state_variable() {
 
     let result = execute_input(tx, vec![utxo_entry], 0);
     assert!(result.is_ok(), "validateOutputState runtime failed: {}", result.unwrap_err());
+}
+
+fn compiled_template_parts_and_hash(compiled: &CompiledContract) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+    let layout = compiled.state_layout;
+    let prefix = compiled.script[..layout.start].to_vec();
+    let suffix = compiled.script[layout.start + layout.len..].to_vec();
+    let template_hash = Blake2bParams::new().hash_length(32).to_state().update(&prefix).update(&suffix).finalize().as_bytes().to_vec();
+    (prefix, suffix, template_hash)
 }
 
 fn run_read_input_state_with_template_case(

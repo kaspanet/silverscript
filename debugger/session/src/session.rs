@@ -1468,19 +1468,25 @@ impl<'a, 'i> DebugSession<'a, 'i> {
                 shadow.input_index,
                 shadow.utxo_entry,
                 ctx,
-                EngineFlags { covenants_enabled: true, sigop_script_units: 0.into() },
+                EngineFlags { covenants_enabled: true, ..Default::default() },
             )
         } else {
             TxScriptEngine::new(
                 EngineCtx::new(&sig_cache).with_reused(&reused_values),
-                EngineFlags { covenants_enabled: true, sigop_script_units: 0.into() },
+                EngineFlags { covenants_enabled: true, ..Default::default() },
             )
         };
         for opcode in parse_script::<DebugTx<'_>, DebugReused>(script) {
             let opcode = opcode.map_err(|err| format!("failed to parse shadow script: {err}"))?;
             engine.execute_opcode(opcode).map_err(|err| format!("failed to execute shadow script: {err}"))?;
         }
-        engine.stacks().dstack.last().map(|entry| entry.to_vec()).ok_or_else(|| "shadow VM produced an empty stack".to_string())
+        engine
+            .stacks()
+            .dstack
+            .last()
+            .cloned()
+            .map(|entry| entry.to_vec())
+            .ok_or_else(|| "shadow VM produced an empty stack".to_string())
     }
 
     fn read_stack_at_index(&self, index: i64) -> Result<Vec<u8>, String> {
@@ -2121,7 +2127,7 @@ mod tests {
         let reused_values: &'static SigHashReusedValuesUnsync = Box::leak(Box::new(SigHashReusedValuesUnsync::new()));
         let engine: DebugEngine<'static> = TxScriptEngine::new(
             EngineCtx::new(sig_cache).with_reused(reused_values),
-            EngineFlags { covenants_enabled: true, sigop_script_units: 0.into() },
+            EngineFlags { covenants_enabled: true, ..Default::default() },
         );
         let debug_info = DebugInfo {
             source: String::new(),
@@ -2320,7 +2326,7 @@ mod tests {
         let reused_values: &'static SigHashReusedValuesUnsync = Box::leak(Box::new(SigHashReusedValuesUnsync::new()));
         let engine: DebugEngine<'static> = TxScriptEngine::new(
             EngineCtx::new(sig_cache).with_reused(reused_values),
-            EngineFlags { covenants_enabled: true, sigop_script_units: 0.into() },
+            EngineFlags { covenants_enabled: true, ..Default::default() },
         );
         let debug_info = DebugInfo {
             source: String::new(),

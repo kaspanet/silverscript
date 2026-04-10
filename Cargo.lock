@@ -689,9 +689,9 @@ dependencies = [
 
 [[package]]
 name = "cc"
-version = "1.2.59"
+version = "1.2.60"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b7a4d3ec6524d28a329fc53654bbadc9bdd7b0431f5d65f1a56ffb28a1ee5283"
+checksum = "43c5703da9466b66a946814e1adf53ea2c90f10063b86290cc9eb67ce3478a20"
 dependencies = [
  "find-msvc-tools",
  "shlex",
@@ -1445,9 +1445,9 @@ dependencies = [
 
 [[package]]
 name = "hashbrown"
-version = "0.16.1"
+version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "841d1cc9bed7f9236f321df977030373f4a4163ae1a7dbfe1a51a2c1a51d9100"
+checksum = "4f467dd6dccf739c208452f8014c75c18bb8301b050ad1cfb27153803edb0f51"
 
 [[package]]
 name = "heapless"
@@ -1540,12 +1540,12 @@ checksum = "3d3067d79b975e8844ca9eb072e16b31c3c1c36928edf9c6789548c524d0d954"
 
 [[package]]
 name = "indexmap"
-version = "2.13.1"
+version = "2.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "45a8a2b9cb3e0b0c1803dbb0758ffac5de2f425b23c28f518faabd9d805342ff"
+checksum = "d466e9454f08e4a911e14806c24e16fba1b4c121d1ea474396f396069cf949d9"
 dependencies = [
  "equivalent",
- "hashbrown 0.16.1",
+ "hashbrown 0.17.0",
  "serde",
  "serde_core",
 ]
@@ -1634,7 +1634,7 @@ dependencies = [
 [[package]]
 name = "kaspa-addresses"
 version = "1.1.0"
-source = "git+https://github.com/someone235/rusty-kaspa?branch=script-pricing#881bd5c946a5375dc83a4db5fd1fb2c636aece07"
+source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset2#a97d238fdadbd986d7397a6a09b328b7038947b9"
 dependencies = [
  "borsh",
  "js-sys",
@@ -1649,7 +1649,7 @@ dependencies = [
 [[package]]
 name = "kaspa-consensus-core"
 version = "1.1.0"
-source = "git+https://github.com/someone235/rusty-kaspa?branch=script-pricing#881bd5c946a5375dc83a4db5fd1fb2c636aece07"
+source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset2#a97d238fdadbd986d7397a6a09b328b7038947b9"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -1686,7 +1686,7 @@ dependencies = [
 [[package]]
 name = "kaspa-core"
 version = "1.1.0"
-source = "git+https://github.com/someone235/rusty-kaspa?branch=script-pricing#881bd5c946a5375dc83a4db5fd1fb2c636aece07"
+source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset2#a97d238fdadbd986d7397a6a09b328b7038947b9"
 dependencies = [
  "anyhow",
  "cfg-if",
@@ -1706,7 +1706,7 @@ dependencies = [
 [[package]]
 name = "kaspa-hashes"
 version = "1.1.0"
-source = "git+https://github.com/someone235/rusty-kaspa?branch=script-pricing#881bd5c946a5375dc83a4db5fd1fb2c636aece07"
+source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset2#a97d238fdadbd986d7397a6a09b328b7038947b9"
 dependencies = [
  "blake2b_simd",
  "blake3",
@@ -1726,7 +1726,7 @@ dependencies = [
 [[package]]
 name = "kaspa-math"
 version = "1.1.0"
-source = "git+https://github.com/someone235/rusty-kaspa?branch=script-pricing#881bd5c946a5375dc83a4db5fd1fb2c636aece07"
+source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset2#a97d238fdadbd986d7397a6a09b328b7038947b9"
 dependencies = [
  "borsh",
  "faster-hex 0.9.0",
@@ -1746,7 +1746,7 @@ dependencies = [
 [[package]]
 name = "kaspa-merkle"
 version = "1.1.0"
-source = "git+https://github.com/someone235/rusty-kaspa?branch=script-pricing#881bd5c946a5375dc83a4db5fd1fb2c636aece07"
+source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset2#a97d238fdadbd986d7397a6a09b328b7038947b9"
 dependencies = [
  "kaspa-hashes",
 ]
@@ -1754,7 +1754,7 @@ dependencies = [
 [[package]]
 name = "kaspa-muhash"
 version = "1.1.0"
-source = "git+https://github.com/someone235/rusty-kaspa?branch=script-pricing#881bd5c946a5375dc83a4db5fd1fb2c636aece07"
+source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset2#a97d238fdadbd986d7397a6a09b328b7038947b9"
 dependencies = [
  "kaspa-hashes",
  "kaspa-math",
@@ -1765,7 +1765,7 @@ dependencies = [
 [[package]]
 name = "kaspa-txscript"
 version = "1.1.0"
-source = "git+https://github.com/someone235/rusty-kaspa?branch=script-pricing#881bd5c946a5375dc83a4db5fd1fb2c636aece07"
+source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset2#a97d238fdadbd986d7397a6a09b328b7038947b9"
 dependencies = [
  "ark-bn254",
  "ark-ec",
@@ -1774,6 +1774,7 @@ dependencies = [
  "ark-serialize",
  "ark-snark",
  "blake2b_simd",
+ "blake3",
  "borsh",
  "bytemuck",
  "cc",
@@ -1811,7 +1812,7 @@ dependencies = [
 [[package]]
 name = "kaspa-txscript-errors"
 version = "1.1.0"
-source = "git+https://github.com/someone235/rusty-kaspa?branch=script-pricing#881bd5c946a5375dc83a4db5fd1fb2c636aece07"
+source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset2#a97d238fdadbd986d7397a6a09b328b7038947b9"
 dependencies = [
  "borsh",
  "kaspa-hashes",
@@ -1822,7 +1823,7 @@ dependencies = [
 [[package]]
 name = "kaspa-utils"
 version = "1.1.0"
-source = "git+https://github.com/someone235/rusty-kaspa?branch=script-pricing#881bd5c946a5375dc83a4db5fd1fb2c636aece07"
+source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset2#a97d238fdadbd986d7397a6a09b328b7038947b9"
 dependencies = [
  "arc-swap",
  "async-channel 2.5.0",
@@ -1852,7 +1853,7 @@ dependencies = [
 [[package]]
 name = "kaspa-wasm-core"
 version = "1.1.0"
-source = "git+https://github.com/someone235/rusty-kaspa?branch=script-pricing#881bd5c946a5375dc83a4db5fd1fb2c636aece07"
+source = "git+https://github.com/kaspanet/rusty-kaspa?branch=covpp-reset2#a97d238fdadbd986d7397a6a09b328b7038947b9"
 dependencies = [
  "faster-hex 0.9.0",
  "hexplay",
@@ -1908,9 +1909,9 @@ checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
 
 [[package]]
 name = "libredox"
-version = "0.1.15"
+version = "0.1.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7ddbf48fd451246b1f8c2610bd3b4ac0cc6e149d89832867093ab69a17194f08"
+checksum = "e02f3bb43d335493c96bf3fd3a321600bf6bd07ed34bc64118e9293bdffea46c"
 dependencies = [
  "libc",
 ]
@@ -3231,9 +3232,9 @@ checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 
 [[package]]
 name = "tokio"
-version = "1.51.0"
+version = "1.51.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2bd1c4c0fc4a7ab90fc15ef6daaa3ec3b893f004f915f2392557ed23237820cd"
+checksum = "f66bf9585cda4b724d3e78ab34b73fb2bbaba9011b9bfdf69dc836382ea13b8c"
 dependencies = [
  "bytes",
  "pin-project-lite",

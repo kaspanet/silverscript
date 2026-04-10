@@ -7,9 +7,10 @@ use blake2b_simd::Params as Blake2bParams;
 use kaspa_consensus_core::Hash;
 use kaspa_consensus_core::hashing::sighash::{SigHashReusedValuesUnsync, calc_schnorr_signature_hash};
 use kaspa_consensus_core::hashing::sighash_type::SIG_HASH_ALL;
+use kaspa_consensus_core::mass::units::SigopCount;
 use kaspa_consensus_core::tx::{
     CovenantBinding, PopulatedTransaction, Transaction, TransactionId, TransactionInput, TransactionOutpoint, TransactionOutput,
-    TxInputMass, UtxoEntry, VerifiableTransaction,
+    UtxoEntry, VerifiableTransaction,
 };
 use kaspa_txscript::caches::Cache;
 use kaspa_txscript::covenants::CovenantsContext;
@@ -446,7 +447,7 @@ fn tx_input(index: u32, signature_script: Vec<u8>, sig_op_count: u8) -> Transact
         previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([index as u8 + 1; 32]), index },
         signature_script,
         sequence: 0,
-        mass: TxInputMass::SigopCount(sig_op_count.into()),
+        mass: SigopCount(sig_op_count).into(),
     }
 }
 
@@ -488,7 +489,7 @@ fn execute_input_with_covenants(tx: Transaction, entries: Vec<UtxoEntry>, input_
         input_idx,
         utxo,
         EngineCtx::new(&sig_cache).with_reused(&reused_values).with_covenants_ctx(&cov_ctx),
-        EngineFlags { covenants_enabled: true, sigop_script_units: 0.into() },
+        EngineFlags { covenants_enabled: true, ..Default::default() },
     );
     vm.execute()
 }
@@ -881,7 +882,7 @@ fn league_register_player_runtime_matches_expected_output_state() {
         previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([0xabu8; 32]), index: 7 },
         signature_script: vec![],
         sequence: 0,
-        mass: TxInputMass::SigopCount(1.into()),
+        mass: SigopCount(1).into(),
     };
 
     let player_id = blake2b_bytes(&[player_id_domain.as_slice(), &[0xabu8; 32], &7u32.to_le_bytes()].concat());

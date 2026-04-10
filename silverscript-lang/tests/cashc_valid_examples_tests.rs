@@ -2,9 +2,10 @@ use blake2b_simd::Params;
 use kaspa_consensus_core::hashing::sighash::SigHashReusedValuesUnsync;
 use kaspa_consensus_core::hashing::sighash::calc_schnorr_signature_hash;
 use kaspa_consensus_core::hashing::sighash_type::SIG_HASH_ALL;
+use kaspa_consensus_core::mass::units::SigopCount;
 use kaspa_consensus_core::tx::{
     MutableTransaction, ScriptPublicKey, Transaction, TransactionId, TransactionInput, TransactionOutpoint, TransactionOutput,
-    TxInputMass, UtxoEntry, VerifiableTransaction,
+    UtxoEntry, VerifiableTransaction,
 };
 use kaspa_txscript::caches::Cache;
 use kaspa_txscript::script_builder::ScriptBuilder;
@@ -149,7 +150,7 @@ fn build_tx_context(
         previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([9u8; 32]), index: 0 },
         signature_script: vec![],
         sequence: 0,
-        mass: TxInputMass::SigopCount(1.into()),
+        mass: SigopCount(1).into(),
     };
     let tx_outputs = outputs
         .into_iter()
@@ -189,7 +190,7 @@ fn execute_tx(
         0,
         &utxo_entry,
         EngineCtx::new(&sig_cache).with_reused(&reused_values),
-        EngineFlags { covenants_enabled: true, sigop_script_units: 0.into() },
+        EngineFlags { covenants_enabled: true, ..Default::default() },
     );
     vm.execute()
 }

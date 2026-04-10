@@ -448,7 +448,7 @@ mod tests {
             &script,
             &reused_values,
             &sig_cache,
-            EngineFlags { covenants_enabled: true, sigop_script_units: 0.into() },
+            EngineFlags { covenants_enabled: true, ..Default::default() },
         )
         .execute_and_return_stacks()
         .expect("script executes");
