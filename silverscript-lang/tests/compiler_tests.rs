@@ -4322,8 +4322,14 @@ fn run_script_with_tx_and_covenants(
     }
 
     let utxo_entry = populated.utxo(0).expect("utxo entry for input 0");
-    let mut vm =
-        TxScriptEngine::from_transaction_input(&populated, &tx.inputs[0], 0, utxo_entry, ctx, EngineFlags { covenants_enabled: true, ..Default::default() });
+    let mut vm = TxScriptEngine::from_transaction_input(
+        &populated,
+        &tx.inputs[0],
+        0,
+        utxo_entry,
+        ctx,
+        EngineFlags { covenants_enabled: true, ..Default::default() },
+    );
     vm.execute()
 }
 
