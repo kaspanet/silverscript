@@ -13,6 +13,7 @@ use debugger_session::test_runner::{
 use debugger_session::{format_failure_report, format_value};
 use kaspa_consensus_core::Hash;
 use kaspa_consensus_core::hashing::sighash::SigHashReusedValuesUnsync;
+use kaspa_consensus_core::mass::units::SigopCount;
 use kaspa_consensus_core::tx::{
     CovenantBinding, PopulatedTransaction, ScriptPublicKey, Transaction, TransactionId, TransactionInput, TransactionOutpoint,
     TransactionOutput, UtxoEntry, VerifiableTransaction,
@@ -524,7 +525,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             previous_outpoint: TransactionOutpoint { transaction_id: prev_txid, index: input.prev_index },
             signature_script,
             sequence: input.sequence,
-            sig_op_count: input.sig_op_count,
+            mass: SigopCount(input.sig_op_count).into(),
         });
         utxo_specs.push((input.utxo_value, utxo_spk, covenant_id));
     }
@@ -559,7 +560,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let sig_cache = Cache::new(10_000);
     let reused_values = SigHashReusedValuesUnsync::new();
-    let flags = EngineFlags { covenants_enabled: true };
+    let flags = EngineFlags { covenants_enabled: true, ..Default::default() };
 
     let utxos = utxo_specs
         .into_iter()
