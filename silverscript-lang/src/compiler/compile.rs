@@ -920,6 +920,7 @@ fn encode_fixed_size_value<'i>(value: &Expr<'i>, type_name: &str) -> Result<Vec<
                 _ => return Err(CompilerError::Unsupported("array literal element type mismatch".to_string())),
             };
             serialize_i64(number, Some(8usize))
+                .map(|bytes| bytes.to_vec())
                 .map_err(|err| CompilerError::Unsupported(format!("failed to serialize int literal {}: {err}", number)))
         }
         "bool" => {
