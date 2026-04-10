@@ -7279,6 +7279,29 @@ fn compiles_opcode_builtins() {
             r#"
                 contract Test() {
                     entrypoint function main() {
+                        require(byte[](OpOutputCovenantId(0)) == bytes("cov"));
+                    }
+                }
+            "#,
+            ScriptBuilder::new()
+                .add_i64(0)
+                .unwrap()
+                .add_op(OpOutputCovenantId)
+                .unwrap()
+                .add_data_with_push_opcode(b"cov")
+                .unwrap()
+                .add_op(OpEqual)
+                .unwrap()
+                .add_op(OpVerify)
+                .unwrap()
+                .add_op(OpTrue)
+                .unwrap()
+                .drain(),
+        ),
+        (
+            r#"
+                contract Test() {
+                    entrypoint function main() {
                         require(OpCovInputCount(bytes("c1")) >= 0);
                     }
                 }
@@ -7644,6 +7667,8 @@ fn executes_opcode_builtins_covenants() {
                 require(OpAuthOutputCount(0) == 2);
                 require(OpAuthOutputIdx(0, 1) == 2);
                 require(byte[](OpInputCovenantId(0)) == bytes("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"));
+                require(byte[](OpOutputCovenantId(0)) == bytes("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"));
+                require(byte[](OpOutputCovenantId(1)) == bytes("BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"));
                 require(OpCovInputCount(bytes("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")) == 2);
                 require(OpCovInputIdx(bytes("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"), 1) == 2);
                 require(OpCovOutputCount(bytes("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")) == 2);
