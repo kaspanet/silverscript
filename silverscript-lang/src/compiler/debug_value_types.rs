@@ -70,7 +70,7 @@ fn builtin_call_value_type(name: &str) -> &'static str {
         | "ScriptPubKeyP2PK"
         | "ScriptPubKeyP2SH"
         | "ScriptPubKeyP2SHFromRedeemScript" => "byte[]",
-        "OpInputCovenantId" => "byte[32]",
+        "OpInputCovenantId" | "OpOutputCovenantId" => "byte[32]",
         _ => "byte[]",
     }
 }
@@ -232,7 +232,7 @@ mod tests {
 
     #[test]
     fn infers_known_builtin_and_unknown_call_value_types() {
-        let covenant_id = Expr::new(
+        let input_covenant_id = Expr::new(
             ExprKind::Call {
                 name: "OpInputCovenantId".to_string(),
                 args: vec![Expr::identifier("idx")],
@@ -242,7 +242,17 @@ mod tests {
         );
         let mut types = HashMap::new();
         types.insert("idx".to_string(), "int".to_string());
-        assert_eq!(infer(covenant_id, HashMap::new(), types), "byte[32]");
+        assert_eq!(infer(input_covenant_id, HashMap::new(), types.clone()), "byte[32]");
+
+        let output_covenant_id = Expr::new(
+            ExprKind::Call {
+                name: "OpOutputCovenantId".to_string(),
+                args: vec![Expr::identifier("idx")],
+                name_span: span::Span::default(),
+            },
+            span::Span::default(),
+        );
+        assert_eq!(infer(output_covenant_id, HashMap::new(), types), "byte[32]");
 
         let unknown = Expr::new(
             ExprKind::Call { name: "someUserFn".to_string(), args: vec![Expr::int(1)], name_span: span::Span::default() },
