@@ -1,8 +1,4 @@
-use kaspa_consensus_core::Hash;
-use kaspa_consensus_core::tx::{
-    CovenantBinding, Transaction, TransactionId, TransactionInput, TransactionOutpoint, TransactionOutput, UtxoEntry,
-};
-use kaspa_txscript::pay_to_script_hash_script;
+use kaspa_consensus_core::tx::{Transaction, TransactionOutput, UtxoEntry};
 use kaspa_txscript_errors::TxScriptError;
 use silverscript_lang::ast::Expr;
 use silverscript_lang::compiler::{CompileOptions, CompiledContract, CovenantDeclCallOptions, compile_contract, struct_object};

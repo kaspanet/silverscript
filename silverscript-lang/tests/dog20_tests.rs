@@ -908,8 +908,15 @@ fn dog20_covenant_minter() {
     let placeholder_dog20_covid = Hash::from_bytes([0; 32]);
     let minter_cov_id = Hash::from_bytes(*b"11111111111111111111111111111111");
 
-    let dog20 =
-        compile_dog20_state_full(&dog20_source, minter_cov_id.as_bytes().to_vec(), 0, IDENTIFIER_COVENANT_ID, true, MAX_COV_INS, MAX_COV_OUTS);
+    let dog20 = compile_dog20_state_full(
+        &dog20_source,
+        minter_cov_id.as_bytes().to_vec(),
+        0,
+        IDENTIFIER_COVENANT_ID,
+        true,
+        MAX_COV_INS,
+        MAX_COV_OUTS,
+    );
     let (template_prefix, template_suffix, expected_template_hash) = compiled_template_parts_and_hash(&dog20);
     let compile_minter = |dog20_covid: Hash, amount: i64, initialized: bool| {
         compile_contract(
@@ -946,71 +953,75 @@ fn dog20_covenant_minter() {
     let pre_init = compile_minter(placeholder_dog20_covid, MINTER_AMOUNT, false);
 
     let pre_init_utxo = covenant_utxo(&pre_init, minter_cov_id);
-    let genesis =
-        compile_dog20_state_full(&dog20_source, minter_cov_id.as_bytes().to_vec(), 0, IDENTIFIER_COVENANT_ID, true, MAX_COV_INS, MAX_COV_OUTS);
+    let genesis = compile_dog20_state_full(
+        &dog20_source,
+        minter_cov_id.as_bytes().to_vec(),
+        0,
+        IDENTIFIER_COVENANT_ID,
+        true,
+        MAX_COV_INS,
+        MAX_COV_OUTS,
+    );
     let tx1_outpoint = TransactionOutpoint { transaction_id: TransactionId::from_bytes([1; 32]), index: 0 };
     let dog20_genesis_output = covenant_output(&genesis, 0, Hash::from_bytes([0; 32]));
     let dog20_covenant_id =
         kaspa_consensus_core::hashing::covenant_id::covenant_id(tx1_outpoint, std::iter::once((0, &dog20_genesis_output)));
-    let build_mint_tx =
-        |prev_tx: &TestTx,
-         prev_dog20: &CompiledContract<'_>,
-         prev_minter: &CompiledContract<'_>,
-         next_dog20: &CompiledContract<'_>,
-         next_minter: &CompiledContract<'_>,
-         next_dog20_amount: i64,
-         next_minter_amount: i64| {
-            let outputs =
-                vec![covenant_output(next_dog20, 0, dog20_covenant_id), covenant_output(next_minter, 1, minter_cov_id)];
-            let entries = vec![
-                output_utxo(&prev_tx.tx.outputs[0], &prev_tx.tx, dog20_covenant_id),
-                output_utxo(&prev_tx.tx.outputs[1], &prev_tx.tx, minter_cov_id),
-            ];
-            let unsigned = build_tx(
-                vec![
-                    tx_input_from_outpoint_v1(TransactionOutpoint { transaction_id: prev_tx.tx.id(), index: 0 }, vec![]),
-                    tx_input_from_outpoint_v1(TransactionOutpoint { transaction_id: prev_tx.tx.id(), index: 1 }, vec![]),
-                ],
-                outputs.clone(),
-                entries.clone(),
-            );
-            let minter_sig = sign_tx_input(unsigned.tx.clone(), unsigned.entries.clone(), 1, &owner);
-            let dog20_sigscript = covenant_decl_sigscript(
-                prev_dog20,
-                "transfer",
-                vec![
-                    dog20_state_array_arg_full(vec![
-                        (minter_cov_id.as_bytes().to_vec(), IDENTIFIER_COVENANT_ID, next_dog20_amount, true),
-                    ]), // newStates
-                    sig_array_arg(vec![]), // sigs
-                    witness_array_arg(vec![1]), // witnesses
-                ],
-                true,
-            );
-            let minter_sigscript = covenant_decl_sigscript(
-                prev_minter,
-                "mint",
-                vec![
-                    dog20_minter_state_arg(dog20_covenant_id.as_bytes().to_vec(), next_minter_amount, true), // newState
-                    Expr::bytes(minter_sig), // s
-                    dog20_state_arg(minter_cov_id.as_bytes().to_vec(), IDENTIFIER_COVENANT_ID, next_dog20_amount, true), // dogNewState
-                ],
-                true,
-            );
-            build_tx(
-                vec![
-                    tx_input_from_outpoint_v1(TransactionOutpoint { transaction_id: prev_tx.tx.id(), index: 0 }, dog20_sigscript),
-                    tx_input_from_outpoint_v1(TransactionOutpoint { transaction_id: prev_tx.tx.id(), index: 1 }, minter_sigscript),
-                ],
-                outputs,
-                entries,
-            )
-        };
-        
+    let build_mint_tx = |prev_tx: &TestTx,
+                         prev_dog20: &CompiledContract<'_>,
+                         prev_minter: &CompiledContract<'_>,
+                         next_dog20: &CompiledContract<'_>,
+                         next_minter: &CompiledContract<'_>,
+                         next_dog20_amount: i64,
+                         next_minter_amount: i64| {
+        let outputs = vec![covenant_output(next_dog20, 0, dog20_covenant_id), covenant_output(next_minter, 1, minter_cov_id)];
+        let entries = vec![
+            output_utxo(&prev_tx.tx.outputs[0], &prev_tx.tx, dog20_covenant_id),
+            output_utxo(&prev_tx.tx.outputs[1], &prev_tx.tx, minter_cov_id),
+        ];
+        let unsigned = build_tx(
+            vec![
+                tx_input_from_outpoint_v1(TransactionOutpoint { transaction_id: prev_tx.tx.id(), index: 0 }, vec![]),
+                tx_input_from_outpoint_v1(TransactionOutpoint { transaction_id: prev_tx.tx.id(), index: 1 }, vec![]),
+            ],
+            outputs.clone(),
+            entries.clone(),
+        );
+        let minter_sig = sign_tx_input(unsigned.tx.clone(), unsigned.entries.clone(), 1, &owner);
+        let dog20_sigscript = covenant_decl_sigscript(
+            prev_dog20,
+            "transfer",
+            vec![
+                dog20_state_array_arg_full(vec![(minter_cov_id.as_bytes().to_vec(), IDENTIFIER_COVENANT_ID, next_dog20_amount, true)]), // newStates
+                sig_array_arg(vec![]),      // sigs
+                witness_array_arg(vec![1]), // witnesses
+            ],
+            true,
+        );
+        let minter_sigscript = covenant_decl_sigscript(
+            prev_minter,
+            "mint",
+            vec![
+                dog20_minter_state_arg(dog20_covenant_id.as_bytes().to_vec(), next_minter_amount, true), // newState
+                Expr::bytes(minter_sig),                                                                 // s
+                dog20_state_arg(minter_cov_id.as_bytes().to_vec(), IDENTIFIER_COVENANT_ID, next_dog20_amount, true), // dogNewState
+            ],
+            true,
+        );
+        build_tx(
+            vec![
+                tx_input_from_outpoint_v1(TransactionOutpoint { transaction_id: prev_tx.tx.id(), index: 0 }, dog20_sigscript),
+                tx_input_from_outpoint_v1(TransactionOutpoint { transaction_id: prev_tx.tx.id(), index: 1 }, minter_sigscript),
+            ],
+            outputs,
+            entries,
+        )
+    };
+
     let minter_post_init = compile_minter(dog20_covenant_id, MINTER_AMOUNT, true);
 
     let tx1_outputs = vec![covenant_output(&genesis, 0, dog20_covenant_id), covenant_output(&minter_post_init, 0, minter_cov_id)];
-    let tx1_unsigned = build_tx(vec![tx_input_from_outpoint_v1(tx1_outpoint, vec![])], tx1_outputs.clone(), vec![pre_init_utxo.clone()]);
+    let tx1_unsigned =
+        build_tx(vec![tx_input_from_outpoint_v1(tx1_outpoint, vec![])], tx1_outputs.clone(), vec![pre_init_utxo.clone()]);
     let tx1_sig = sign_tx_input(tx1_unsigned.tx.clone(), tx1_unsigned.entries.clone(), 0, &owner);
     let tx1_sigscript = covenant_decl_sigscript(
         &pre_init,
@@ -1021,11 +1032,7 @@ fn dog20_covenant_minter() {
         ],
         true,
     );
-    let tx1 = build_tx(
-        vec![tx_input_from_outpoint_v1(tx1_outpoint, tx1_sigscript)],
-        tx1_outputs.clone(),
-        vec![pre_init_utxo.clone()],
-    );
+    let tx1 = build_tx(vec![tx_input_from_outpoint_v1(tx1_outpoint, tx1_sigscript)], tx1_outputs.clone(), vec![pre_init_utxo.clone()]);
 
     let dog20_after_tx2 = compile_dog20_state_full(
         &dog20_source,
@@ -1129,7 +1136,7 @@ fn dog20_non_minter_can_spend_script_hash_and_covenant_id_owned_outputs() {
     let covenant_owner_bytes = covenant_owner.as_bytes().to_vec();
 
     let genesis = compile_dog20_state(&source, genesis_owner_bytes.clone(), 1_000, 2, 2);
-    let split_states = vec![
+    let split_states = [
         compile_dog20_state_full(&source, multisig_script_hash.clone(), 400, IDENTIFIER_SCRIPT_HASH, false, 2, 2),
         compile_dog20_state_full(&source, covenant_owner_bytes.clone(), 600, IDENTIFIER_COVENANT_ID, false, 2, 2),
     ];
