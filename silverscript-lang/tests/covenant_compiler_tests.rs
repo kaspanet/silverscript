@@ -174,6 +174,26 @@ fn rejects_old_per_field_covenant_state_syntax() {
 }
 
 #[test]
+fn rejects_canonical_one_to_one_auth_verification_with_scalar_new_state() {
+    let source = r#"
+        contract Decls(int init_value) {
+            int value = init_value;
+
+            #[covenant(binding = auth, from = 1, to = 1, groups = single)]
+            function step(State prev_state, State new_state) {
+                require(new_state.value >= prev_state.value);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[Expr::int(7)], CompileOptions::default())
+        .expect_err("canonical one-to-one auth verification should require State[] new_states");
+    assert!(err.to_string().contains(
+        "mode=verification with binding=auth on function 'step' expects parameters '(State prev_state, State[] new_states, ...)'"
+    ));
+}
+
+#[test]
 fn lowers_singleton_sugar_to_auth_one_to_one_defaults() {
     let source = r#"
         contract Decls() {
@@ -371,19 +391,20 @@ fn rejects_termination_disallowed_for_non_singleton() {
 }
 
 #[test]
-fn rejects_termination_in_verification_mode() {
+fn allows_termination_in_singleton_verification_mode() {
     let source = r#"
-        contract Decls() {
+        contract Decls(int init_value) {
+            int value = init_value;
+
             #[covenant.singleton(mode = verification, termination = allowed)]
-            function check() {
+            function check(State prev_state, State[] new_states) {
                 require(true);
             }
         }
     "#;
 
-    let err =
-        compile_contract(source, &[], CompileOptions::default()).expect_err("termination should not be allowed in verification mode");
-    assert!(err.to_string().contains("termination is only supported in mode=transition"));
+    let compiled = compile_contract(source, &[Expr::int(3)], CompileOptions::default()).expect("compile succeeds");
+    assert!(compiled.ast.functions.iter().any(|f| f.name == "__check" && f.entrypoint));
 }
 
 #[test]
