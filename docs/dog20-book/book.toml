@@ -6,3 +6,6 @@ src = "src"
 
 [build]
 build-dir = "book"
+
+[output.html]
+site-url = "/dog20-book/"
