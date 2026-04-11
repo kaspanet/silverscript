@@ -1,4 +1,4 @@
-use blake2b_simd::Params as Blake2bParams;
+mod common;
 use kaspa_addresses::{Address, Prefix, Version};
 use kaspa_consensus_core::Hash;
 use kaspa_consensus_core::hashing::sighash::SigHashReusedValuesUnsync;
@@ -22,6 +22,8 @@ use silverscript_lang::compiler::{
     compile_contract_ast, function_branch_index, struct_object,
 };
 use silverscript_lang::debug_info::StepKind;
+
+use crate::common::compiled_template_parts_and_hash;
 
 fn run_script_with_selector(script: Vec<u8>, selector: Option<i64>) -> Result<(), kaspa_txscript_errors::TxScriptError> {
     let sigscript = selector_sigscript(selector);
@@ -4855,14 +4857,6 @@ fn runs_validate_output_state_with_state_variable() {
 
     let result = execute_input(tx, vec![utxo_entry], 0);
     assert!(result.is_ok(), "validateOutputState runtime failed: {}", result.unwrap_err());
-}
-
-fn compiled_template_parts_and_hash(compiled: &CompiledContract) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
-    let layout = compiled.state_layout;
-    let prefix = compiled.script[..layout.start].to_vec();
-    let suffix = compiled.script[layout.start + layout.len..].to_vec();
-    let template_hash = Blake2bParams::new().hash_length(32).to_state().update(&prefix).update(&suffix).finalize().as_bytes().to_vec();
-    (prefix, suffix, template_hash)
 }
 
 fn run_read_input_state_with_template_case(
