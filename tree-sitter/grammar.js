@@ -28,6 +28,11 @@ export default grammar({
 
   word: ($) => $.identifier,
 
+  conflicts: ($) => [
+    [$.function_call, $.base_type],
+    [$.primary, $.base_type],
+  ],
+
   rules: {
     source_file: ($) => seq(repeat($.pragma_directive), $.contract_definition),
 
@@ -57,11 +62,25 @@ export default grammar({
       choice(
         $.constant_definition,
         $.contract_field_definition,
+        $.struct_definition,
         $.function_definition,
       ),
 
+    struct_definition: ($) =>
+      seq(
+        "struct",
+        field("name", $.identifier),
+        "{",
+        repeat($.struct_field_definition),
+        "}",
+      ),
+
+    struct_field_definition: ($) =>
+      seq($.type_name, field("name", $.identifier), ";"),
+
     function_definition: ($) =>
       seq(
+        repeat($.attribute),
         optional("entrypoint"),
         "function",
         field("name", $.identifier),
@@ -271,6 +290,7 @@ export default grammar({
     postfix_op: ($) =>
       choice(
         $.tuple_index,
+        $.member_access,
         $.unary_suffix,
         $.split_call,
         $.slice_call,
@@ -278,6 +298,8 @@ export default grammar({
       ),
 
     tuple_index: ($) => seq("[", $.expression, "]"),
+
+    member_access: ($) => seq(".", field("name", $.identifier)),
 
     unary_suffix: (_) => ".length",
 
@@ -363,8 +385,10 @@ export default grammar({
 
     type_name: ($) => seq($.base_type, repeat($.array_suffix)),
 
-    base_type: (_) =>
-      choice("int", "bool", "string", "pubkey", "sig", "datasig", "byte"),
+    base_type: ($) =>
+      choice("int", "bool", "string", "pubkey", "sig", "datasig", "byte", $.identifier),
+
+    attribute: (_) => token(seq("#[", /[^\]\n]+/, "]")),
 
     array_suffix: ($) => seq("[", optional($.array_size), "]"),
 
