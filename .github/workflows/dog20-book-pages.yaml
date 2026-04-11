@@ -1,0 +1,73 @@
+name: Publish Dog20 Book
+
+on:
+  push:
+    branches:
+      - covpp-reset2
+    paths:
+      - ".github/workflows/dog20-book-pages.yaml"
+      - "docs/dog20-book/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: dog20-book-pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build mdBook
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v6
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Install stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: silverscript-v1
+          shared-key: dog20-book-pages
+          cache-on-failure: "false"
+          cache-bin: "false"
+          cache-all-crates: "false"
+          cache-workspace-crates: "false"
+
+      - name: Install mdBook
+        uses: taiki-e/install-action@v2
+        with:
+          tool: mdbook
+
+      - name: Build book
+        run: mdbook build docs/dog20-book
+
+      - name: Prepare Pages artifact
+        run: |
+          mkdir -p dist/dog20-book
+          cp -R docs/dog20-book/book/. dist/dog20-book/
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: dist
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy Pages site
+        id: deployment
+        uses: actions/deploy-pages@v4
