@@ -100,6 +100,9 @@ This is critical because it means the minter is validating a real Dog20 state tr
 The Dog20Minter flow walks through several minting steps and shows that:
 
 - each successful mint reduces remaining allowance
+- each successful mint keeps a zero-amount Dog20 minter branch alive for the next mint
+- each successful mint creates a separate ordinary Dog20 recipient output for the newly minted amount
+- those recipient outputs can later be spent like ordinary Dog20 branches
 - minting continues to work while allowance remains
 - minting fails when the requested increase would overspend the budget
 

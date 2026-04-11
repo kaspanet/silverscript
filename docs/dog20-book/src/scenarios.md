@@ -2,6 +2,8 @@
 
 This chapter explains each Dog20 example flow by first showing the test that exercises it, then summarizing what that flow is meant to demonstrate at a high level.
 
+All of the attached test code in this chapter comes from `silverscript-lang/tests/dog20_tests.rs`. If you want to inspect the source directly in the repository, that is the file to open.
+
 ## `dog20_can_split_then_merge_tokens_with_two_way_fanout`
 
 ```rust
@@ -869,9 +871,11 @@ fn dog20_covenant_minter() {
     const TX4_MINTER_REMAINING_AMOUNT: i64 = TX3_MINTER_REMAINING_AMOUNT - TX4_MINTED_AMOUNT;
 
     let owner = random_keypair();
+    let alternate_owner = random_keypair();
     let owner_bytes = owner.x_only_public_key().0.serialize().to_vec();
+    let alternate_owner_bytes = alternate_owner.x_only_public_key().0.serialize().to_vec();
     let placeholder_dog20_covid = Hash::from_bytes([0; 32]);
-    let minter_cov_id = Hash::from_bytes(*b"11111111111111111111111111111111");
+    let minter_cov_id = Hash::from_bytes(owner.x_only_public_key().0.serialize());
 
     let dog20 = compile_dog20_state_full(
         &dog20_source,
@@ -934,14 +938,19 @@ fn dog20_covenant_minter() {
     let build_mint_tx = |prev_tx: &TestTx,
                          prev_dog20: &CompiledContract<'_>,
                          prev_minter: &CompiledContract<'_>,
-                         next_dog20: &CompiledContract<'_>,
+                         next_minter_dog20: &CompiledContract<'_>,
+                         next_recipient_dog20: &CompiledContract<'_>,
                          next_minter: &CompiledContract<'_>,
-                         next_dog20_amount: i64,
+                         minted_amount: i64,
                          next_minter_amount: i64| {
-        let outputs = vec![covenant_output(next_dog20, 0, dog20_covenant_id), covenant_output(next_minter, 1, minter_cov_id)];
+        let outputs = vec![
+            covenant_output(next_minter_dog20, 0, dog20_covenant_id),
+            covenant_output(next_recipient_dog20, 0, dog20_covenant_id),
+            covenant_output(next_minter, 1, minter_cov_id),
+        ];
         let entries = vec![
             output_utxo(&prev_tx.tx.outputs[0], &prev_tx.tx, dog20_covenant_id),
-            output_utxo(&prev_tx.tx.outputs[1], &prev_tx.tx, minter_cov_id),
+            output_utxo(prev_tx.tx.outputs.last().expect("previous tx has minter output"), &prev_tx.tx, minter_cov_id),
         ];
         let unsigned = build_tx(
             vec![
@@ -956,7 +965,10 @@ fn dog20_covenant_minter() {
             prev_dog20,
             "transfer",
             vec![
-                dog20_state_array_arg_full(vec![(minter_cov_id.as_bytes().to_vec(), IDENTIFIER_COVENANT_ID, next_dog20_amount, true)]),
+                dog20_state_array_arg_full(vec![
+                    (owner_bytes.clone(), IDENTIFIER_COVENANT_ID, 0, true),
+                    (owner_bytes.clone(), 0, minted_amount, false),
+                ]),
                 sig_array_arg(vec![]),
                 witness_array_arg(vec![1]),
             ],
@@ -968,7 +980,8 @@ fn dog20_covenant_minter() {
             vec![
                 dog20_minter_state_arg(dog20_covenant_id.as_bytes().to_vec(), next_minter_amount, true),
                 Expr::bytes(minter_sig),
-                dog20_state_arg(minter_cov_id.as_bytes().to_vec(), IDENTIFIER_COVENANT_ID, next_dog20_amount, true),
+                dog20_state_arg(owner_bytes.clone(), IDENTIFIER_COVENANT_ID, 0, true),
+                dog20_state_arg(owner_bytes.clone(), 0, minted_amount, false),
             ],
             true,
         );
@@ -999,71 +1012,104 @@ fn dog20_covenant_minter() {
     );
     let tx1 = build_tx(vec![tx_input_from_outpoint_v1(tx1_outpoint, tx1_sigscript)], tx1_outputs.clone(), vec![pre_init_utxo.clone()]);
 
-    let dog20_after_tx2 = compile_dog20_state_full(
+    let dog20_minter_after_tx2 = compile_dog20_state_full(
         &dog20_source,
-        minter_cov_id.as_bytes().to_vec(),
-        TX2_MINTED_AMOUNT,
+        owner_bytes.clone(),
+        0,
         IDENTIFIER_COVENANT_ID,
         true,
         MAX_COV_INS,
         MAX_COV_OUTS,
     );
+    let dog20_recipient_after_tx2 = compile_dog20_state(&dog20_source, owner_bytes.clone(), TX2_MINTED_AMOUNT, MAX_COV_INS, MAX_COV_OUTS);
     let minter_after_tx2 = compile_minter(dog20_covenant_id, TX2_MINTER_REMAINING_AMOUNT, true);
     let tx2 = build_mint_tx(
         &tx1,
         &genesis,
         &minter_post_init,
-        &dog20_after_tx2,
+        &dog20_minter_after_tx2,
+        &dog20_recipient_after_tx2,
         &minter_after_tx2,
         TX2_MINTED_AMOUNT,
         TX2_MINTER_REMAINING_AMOUNT,
     );
 
-    let dog20_after_tx3 = compile_dog20_state_full(
+    let dog20_recipient_after_tx4 =
+        compile_dog20_state(&dog20_source, alternate_owner_bytes.clone(), TX2_MINTED_AMOUNT, MAX_COV_INS, MAX_COV_OUTS);
+    let tx4_outputs = vec![covenant_output(&dog20_recipient_after_tx4, 0, dog20_covenant_id)];
+    let tx4_entries = vec![output_utxo(&tx2.tx.outputs[1], &tx2.tx, dog20_covenant_id)];
+    let tx4_unsigned = build_tx(
+        vec![tx_input_from_outpoint_v1(TransactionOutpoint { transaction_id: tx2.tx.id(), index: 1 }, vec![])],
+        tx4_outputs.clone(),
+        tx4_entries.clone(),
+    );
+    let tx4_sig = sign_tx_input(tx4_unsigned.tx.clone(), tx4_unsigned.entries.clone(), 0, &owner);
+    let tx4_sigscript = covenant_decl_sigscript(
+        &dog20_recipient_after_tx2,
+        "transfer",
+        vec![
+            dog20_state_array_arg(vec![(alternate_owner_bytes.clone(), TX2_MINTED_AMOUNT)]),
+            sig_array_arg(vec![tx4_sig]),
+            witness_array_arg(vec![0]),
+        ],
+        true,
+    );
+    let tx4 = build_tx(
+        vec![tx_input_from_outpoint_v1(TransactionOutpoint { transaction_id: tx2.tx.id(), index: 1 }, tx4_sigscript)],
+        tx4_outputs,
+        tx4_entries,
+    );
+
+    let dog20_minter_after_tx3 = compile_dog20_state_full(
         &dog20_source,
-        minter_cov_id.as_bytes().to_vec(),
-        TX2_MINTED_AMOUNT + TX3_MINTED_AMOUNT,
+        owner_bytes.clone(),
+        0,
         IDENTIFIER_COVENANT_ID,
         true,
         MAX_COV_INS,
         MAX_COV_OUTS,
     );
+    let dog20_recipient_after_tx3 = compile_dog20_state(&dog20_source, owner_bytes.clone(), TX3_MINTED_AMOUNT, MAX_COV_INS, MAX_COV_OUTS);
     let minter_after_tx3 = compile_minter(dog20_covenant_id, TX3_MINTER_REMAINING_AMOUNT, true);
     let tx3 = build_mint_tx(
         &tx2,
-        &dog20_after_tx2,
+        &dog20_minter_after_tx2,
         &minter_after_tx2,
-        &dog20_after_tx3,
+        &dog20_minter_after_tx3,
+        &dog20_recipient_after_tx3,
         &minter_after_tx3,
-        TX2_MINTED_AMOUNT + TX3_MINTED_AMOUNT,
+        TX3_MINTED_AMOUNT,
         TX3_MINTER_REMAINING_AMOUNT,
     );
 
-    let dog20_after_tx4 = compile_dog20_state_full(
+    let dog20_minter_after_tx5 = compile_dog20_state_full(
         &dog20_source,
-        minter_cov_id.as_bytes().to_vec(),
-        TX2_MINTED_AMOUNT + TX3_MINTED_AMOUNT + TX4_MINTED_AMOUNT,
+        owner_bytes.clone(),
+        0,
         IDENTIFIER_COVENANT_ID,
         true,
         MAX_COV_INS,
         MAX_COV_OUTS,
     );
-    let minter_after_tx4 = compile_minter(dog20_covenant_id, TX4_MINTER_REMAINING_AMOUNT, true);
-    let tx4 = build_mint_tx(
+    let dog20_recipient_after_tx5 = compile_dog20_state(&dog20_source, vec![0; 32], TX4_MINTED_AMOUNT, MAX_COV_INS, MAX_COV_OUTS);
+    let minter_after_tx5 = compile_minter(dog20_covenant_id, TX4_MINTER_REMAINING_AMOUNT, true);
+    let tx5 = build_mint_tx(
         &tx3,
-        &dog20_after_tx3,
+        &dog20_minter_after_tx3,
         &minter_after_tx3,
-        &dog20_after_tx4,
-        &minter_after_tx4,
-        TX2_MINTED_AMOUNT + TX3_MINTED_AMOUNT + TX4_MINTED_AMOUNT,
+        &dog20_minter_after_tx5,
+        &dog20_recipient_after_tx5,
+        &minter_after_tx5,
+        TX4_MINTED_AMOUNT,
         TX4_MINTER_REMAINING_AMOUNT,
     );
 
     execute_all_inputs("tx1", tx1.populated());
     execute_all_inputs("tx2", tx2.populated());
+    execute_all_inputs("tx4", tx4.populated());
     execute_all_inputs("tx3", tx3.populated());
 
-    let err = execute_input_with_covenants(tx4.tx.clone(), tx4.entries.clone(), 1).expect_err("over-mint should fail");
+    let err = execute_input_with_covenants(tx5.tx.clone(), tx5.entries.clone(), 1).expect_err("over-mint should fail");
     assert_verify_like_error(err);
 }
 ```
@@ -1072,9 +1118,10 @@ This is the full two-contract story:
 
 1. an uninitialized `Dog20Minter` is created with a placeholder Dog20 covenant ID
 2. `init` binds it to a newly created Dog20 covenant instance
-3. later transactions spend Dog20 and Dog20Minter together
-4. each successful mint increases Dog20 amount and decreases minter allowance
-5. once the requested mint exceeds the remaining allowance, the mint is rejected
+3. each mint spends the Dog20 minter branch and the Dog20Minter together
+4. every successful mint recreates a zero-amount Dog20 minter branch and also creates a separate recipient Dog20 output with the newly minted amount
+5. the first recipient output is then spent like an ordinary Dog20 branch to a different pubkey owner
+6. once the requested mint exceeds the remaining allowance, the mint is rejected
 
 At a high level, this is the example that shows covenant composition: one covenant carries the token state, while another covenant governs issuance policy for that token.
 
@@ -1082,19 +1129,24 @@ At a high level, this is the example that shows covenant composition: one covena
 tx1: init
   Dog20Minter(uninitialized)
       ->
-  Dog20(genesis) + Dog20Minter(bound, allowance 1000)
+  Dog20(minter branch, 0) + Dog20Minter(bound, allowance 1000)
 
 tx2: mint
-  Dog20(0) + Minter(1000)
+  Dog20(minter 0) + Minter(1000)
       ->
-  Dog20(200) + Minter(800)
+  Dog20(minter 0) + Dog20(recipient 200) + Minter(800)
 
 tx3: mint
-  Dog20(200) + Minter(800)
+  Dog20(minter 0) + Minter(800)
       ->
-  Dog20(500) + Minter(500)
+  Dog20(minter 0) + Dog20(recipient 300) + Minter(500)
 
-tx4: over-mint
+tx4: ordinary spend
+  spend the tx2 recipient output
+      ->
+  Dog20(alternate pubkey owner, 200)
+
+tx5: over-mint
   request exceeds remaining allowance
       ->
   reject

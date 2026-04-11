@@ -20,6 +20,8 @@ contract Dog20Minter(pubkey owner, byte[32] initDog20Covid, int initAmount,
         bool isMinter;
     }
 
+    byte constant IDENTIFIER_COVENANT_ID = 0x02;
+
     function calcInAmount() : (int) {
         Dog20State dogPrevState = readInputStateWithTemplate(
             OpCovInputIdx(dog20Covid, 0),
@@ -30,10 +32,25 @@ contract Dog20Minter(pubkey owner, byte[32] initDog20Covid, int initAmount,
         return (dogPrevState.amount);
     }
 
-    function checkDogNewState(Dog20State dogNewState){
+    function checkMinterDogNewState(Dog20State minterDogNewState){
+        require(minterDogNewState.ownerIdentifier == byte[32](owner)); // We do not allow the minter to delegate minting authority to another party.
+        require(minterDogNewState.identifierType == IDENTIFIER_COVENANT_ID);
+        require(minterDogNewState.isMinter); // The minter cannot stop being a minter.
+
         validateOutputStateWithTemplate(
             OpCovOutputIdx(dog20Covid, 0),
-            dogNewState,
+            minterDogNewState,
+            templatePrefix,
+            templateSuffix,
+            expectedTemplateHash
+        );
+    }
+
+    function checkRecipientDogNewState(Dog20State recipientDogNewState){
+        require(!recipientDogNewState.isMinter); // We do not allow the minter to designate another minter.
+        validateOutputStateWithTemplate(
+            OpCovOutputIdx(dog20Covid, 1),
+            recipientDogNewState,
             templatePrefix,
             templateSuffix,
             expectedTemplateHash
@@ -51,18 +68,21 @@ contract Dog20Minter(pubkey owner, byte[32] initDog20Covid, int initAmount,
     }
 
     #[covenant.singleton]
-    function mint(State prevState, State newState, sig s, Dog20State dogNewState) {
+    function mint(State prevState, State newState, sig s, Dog20State minterDogNewState, Dog20State recipientDogNewState) {
         require(initialized);
         require(newState.amount >= 0);
         require(newState.initialized);
         require(newState.dog20Covid == prevState.dog20Covid);
 
-        require(OpCovOutputCount(dog20Covid) == 1);
+        // We focus on the simple case 1-2 minting transfer.
+        require(OpCovOutputCount(dog20Covid) == 2);
         require(OpCovInputCount(dog20Covid) == 1);
-        checkDogNewState(dogNewState);
+
+        checkMinterDogNewState(minterDogNewState);
+        checkRecipientDogNewState(recipientDogNewState);
 
         int inAmount = calcInAmount();
-        int mintedAmount = dogNewState.amount - inAmount;
+        int mintedAmount = minterDogNewState.amount + recipientDogNewState.amount - inAmount;
         require(newState.amount == amount - mintedAmount);
         require(checkSig(s, owner));
     }
@@ -152,18 +172,26 @@ That means:
 
 This is how the minter learns the old token supply before minting.
 
-## `checkDogNewState`
+## `checkMinterDogNewState`
 
 ```sil
-function checkDogNewState(Dog20State dogNewState)
+function checkMinterDogNewState(Dog20State minterDogNewState)
 ```
 
-This validates the new Dog20 output with:
+This validates the continuing minter-owned Dog20 branch.
+
+It enforces three things:
+
+- the branch must remain owned by the minter's `owner` value encoded as `byte[32]`
+- the branch must remain covenant-ID owned
+- the branch must remain marked as a minter
+
+Then it validates the actual output with:
 
 ```sil
 validateOutputStateWithTemplate(
     OpCovOutputIdx(dog20Covid, 0),
-    dogNewState,
+    minterDogNewState,
     templatePrefix,
     templateSuffix,
     expectedTemplateHash
@@ -172,10 +200,25 @@ validateOutputStateWithTemplate(
 
 This does two jobs:
 
-- it selects the first output for the governed Dog20 covenant ID
+- it selects the first Dog20 output for the governed covenant ID
 - it ensures that output matches the expected Dog20 template and state payload
 
 This is much safer than trusting an arbitrary output index or script shape.
+
+## `checkRecipientDogNewState`
+
+```sil
+function checkRecipientDogNewState(Dog20State recipientDogNewState)
+```
+
+This validates the newly minted recipient output.
+
+It enforces that the recipient output is not itself a minter branch, and then checks that the second Dog20 output in the transaction matches the supplied state.
+
+That means each mint transaction has a fixed shape:
+
+- output 0 is the continuing minter Dog20 branch
+- output 1 is the freshly minted recipient Dog20 branch
 
 ## `init`
 
@@ -228,7 +271,7 @@ The second entrypoint is:
 
 ```sil
 #[covenant.singleton]
-function mint(State prevState, State newState, sig s, Dog20State dogNewState)
+function mint(State prevState, State newState, sig s, Dog20State minterDogNewState, Dog20State recipientDogNewState)
 ```
 
 This is the issuance step.
@@ -249,32 +292,34 @@ The minter must stay initialized, cannot go negative, and cannot switch to a dif
 ### Dog20 cardinality
 
 ```sil
-require(OpCovOutputCount(dog20Covid) == 1);
+require(OpCovOutputCount(dog20Covid) == 2);
 require(OpCovInputCount(dog20Covid) == 1);
 ```
 
-The example only allows minting when exactly one Dog20 covenant input and one Dog20 covenant output are involved. That keeps the accounting simple.
+The example only allows minting when exactly one Dog20 covenant input and two Dog20 covenant outputs are involved. That keeps the accounting simple and makes the split between the persistent minter branch and the recipient branch explicit.
 
 ### Dog20 template validation
 
 ```sil
-checkDogNewState(dogNewState);
+checkMinterDogNewState(minterDogNewState);
+checkRecipientDogNewState(recipientDogNewState);
 ```
 
-This ensures the supplied `dogNewState` matches the actual Dog20 output in the transaction.
+This ensures both supplied Dog20 successor states match the actual outputs in the transaction.
 
 ### Issuance accounting
 
 ```sil
 int inAmount = calcInAmount();
-int mintedAmount = dogNewState.amount - inAmount;
+int mintedAmount = minterDogNewState.amount + recipientDogNewState.amount - inAmount;
 require(newState.amount == amount - mintedAmount);
 ```
 
 This means:
 
 - compute previous Dog20 amount
-- compute how much was added in the new Dog20 state
+- compute the total amount in the two new Dog20 outputs
+- subtract the old amount to get the newly minted quantity
 - decrement the minter's remaining allowance by exactly that amount
 
 If someone tries to mint more than the allowance permits, the minter state cannot satisfy the final equality and the transaction fails.
@@ -282,10 +327,25 @@ If someone tries to mint more than the allowance permits, the minter state canno
 ## Mint Accounting Diagram
 
 ```text
-mintedAmount = new Dog20 amount - previous Dog20 amount
+mintedAmount
+  = (new minter-branch amount + new recipient amount)
+    - previous minter-branch amount
 
 new minter allowance
   = old minter allowance - mintedAmount
+```
+
+## Mint Shape Diagram
+
+```text
+before mint:
+  Dog20 minter branch amount = old amount
+  Dog20Minter allowance = remaining budget
+
+after mint:
+  Dog20 minter branch amount = 0
+  Dog20 recipient branch amount = minted tokens for this transaction
+  Dog20Minter allowance = reduced by minted amount
 ```
 
 ## Why A Separate Minter Covenant Matters

@@ -91,14 +91,18 @@ The intended lifecycle is:
 1. Create an uninitialized `Dog20Minter`.
 2. Spend it through `init`.
 3. In the same transaction, create:
-   - a Dog20 genesis output
+   - a Dog20 minter branch with amount `0`
    - a new initialized minter output
 4. `init` stores the newly created Dog20 covenant ID in the minter state.
 5. Later, spend both contracts together:
-   - the Dog20 token output
+   - the Dog20 minter branch
    - the Dog20Minter output
-6. Dog20 authorizes the token transition.
-7. Dog20Minter verifies the minting rule and decrements its remaining allowance.
+6. In each mint transaction, create:
+   - a fresh zero-amount Dog20 minter branch
+   - a separate Dog20 recipient output holding the newly minted amount
+   - the next Dog20Minter output with reduced allowance
+7. Dog20 authorizes the token transition.
+8. Dog20Minter verifies the minting rule and decrements its remaining allowance.
 
 This means the token contract and the minter contract do not collapse into one script with one giant policy. They stay separate, and each one verifies the part of the transaction it is responsible for.
 
@@ -129,10 +133,14 @@ uninitialized minter
         v
 init transaction
         |
-        +--> creates Dog20 genesis output
+        +--> creates zero-amount Dog20 minter branch
         |
         +--> creates initialized minter output bound to that Dog20
         |
         v
 later mint transactions spend both together
+        |
+        +--> recreate zero-amount minter branch
+        |
+        +--> create separate recipient token output
 ```
