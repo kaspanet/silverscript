@@ -24,6 +24,8 @@ contract Dog20Minter(pubkey owner, byte[32] initDog20Covid, int initAmount,
     }
 
     function checkDogNewState(Dog20State dogNewState){
+        require(OpCovOutputCount(dog20Covid) == 1);
+        require(OpCovInputCount(dog20Covid) == 1);
         validateOutputStateWithTemplate(
             OpCovOutputIdx(dog20Covid, 0),
             dogNewState,
@@ -50,8 +52,6 @@ contract Dog20Minter(pubkey owner, byte[32] initDog20Covid, int initAmount,
         require(newState.initialized);
         require(newState.dog20Covid == prevState.dog20Covid);
 
-        require(OpCovOutputCount(dog20Covid) == 1);
-        require(OpCovInputCount(dog20Covid) == 1);
         checkDogNewState(dogNewState);
 
         int inAmount = calcInAmount();
