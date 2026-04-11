@@ -1,152 +1,12 @@
-use blake2b_simd::Params as Blake2bParams;
-use kaspa_consensus_core::Hash;
-use kaspa_consensus_core::hashing::sighash::SigHashReusedValuesUnsync;
-use kaspa_consensus_core::hashing::sighash::calc_schnorr_signature_hash;
-use kaspa_consensus_core::hashing::sighash_type::SIG_HASH_ALL;
-use kaspa_consensus_core::tx::{
-    CovenantBinding, MutableTransaction, PopulatedTransaction, Transaction, TransactionId, TransactionInput, TransactionOutpoint,
-    TransactionOutput, UtxoEntry,
-};
-use kaspa_txscript::pay_to_script_hash_script;
-use kaspa_txscript::standard::multisig_redeem_script;
-use rand::{RngCore, thread_rng};
-use secp256k1::{Keypair, Secp256k1, SecretKey};
-use silverscript_lang::ast::Expr;
-use silverscript_lang::compiler::{CompileOptions, CompiledContract, compile_contract, struct_object};
-use std::fs;
+# Example Walkthroughs
 
-mod common;
+This chapter explains each Dog20 example flow by first showing the test that exercises it, then summarizing what that flow is meant to demonstrate at a high level.
 
-use common::{
-    COV_A, assert_verify_like_error, compiled_template_parts_and_hash, covenant_decl_sigscript, covenant_output, covenant_utxo,
-    execute_input_with_covenants,
-};
+All of the attached test code in this chapter comes from `silverscript-lang/tests/dog20_tests.rs`. If you want to inspect the source directly in the repository, that is the file to open.
 
-fn load_example_source(name: &str) -> String {
-    let path = format!("{}/tests/examples/{name}", env!("CARGO_MANIFEST_DIR"));
-    fs::read_to_string(&path).unwrap_or_else(|err| panic!("failed to read {path}: {err}"))
-}
+## `dog20_can_split_then_merge_tokens_with_two_way_fanout`
 
-fn random_keypair() -> Keypair {
-    let secp = Secp256k1::new();
-    let mut rng = thread_rng();
-    let mut sk_bytes = [0u8; 32];
-    loop {
-        rng.fill_bytes(&mut sk_bytes);
-        if let Ok(secret_key) = SecretKey::from_slice(&sk_bytes) {
-            return Keypair::from_secret_key(&secp, &secret_key);
-        }
-    }
-}
-
-fn dog20_state_array_arg<'i>(values: Vec<(Vec<u8>, i64)>) -> Expr<'i> {
-    dog20_state_array_arg_with_minter(values.into_iter().map(|(owner_identifier, amount)| (owner_identifier, amount, false)).collect())
-}
-
-fn dog20_state_array_arg_full<'i>(values: Vec<(Vec<u8>, u8, i64, bool)>) -> Expr<'i> {
-    values
-        .into_iter()
-        .map(|(owner_identifier, identifier_type, amount, is_minter)| {
-            struct_object(vec![
-                ("ownerIdentifier", Expr::bytes(owner_identifier)),
-                ("identifierType", Expr::byte(identifier_type)),
-                ("amount", Expr::int(amount)),
-                ("isMinter", Expr::bool(is_minter)),
-            ])
-        })
-        .collect::<Vec<_>>()
-        .into()
-}
-
-fn dog20_state_array_arg_with_minter<'i>(values: Vec<(Vec<u8>, i64, bool)>) -> Expr<'i> {
-    dog20_state_array_arg_full(
-        values.into_iter().map(|(owner_identifier, amount, is_minter)| (owner_identifier, 0, amount, is_minter)).collect(),
-    )
-}
-
-fn sig_array_arg<'i>(values: Vec<Vec<u8>>) -> Expr<'i> {
-    values.into_iter().map(Expr::bytes).collect::<Vec<_>>().into()
-}
-
-fn witness_array_arg<'i>(values: Vec<u8>) -> Expr<'i> {
-    Expr::bytes(values)
-}
-
-fn dog20_state_arg<'i>(owner_identifier: Vec<u8>, identifier_type: u8, amount: i64, is_minter: bool) -> Expr<'i> {
-    struct_object(vec![
-        ("ownerIdentifier", Expr::bytes(owner_identifier)),
-        ("identifierType", Expr::byte(identifier_type)),
-        ("amount", Expr::int(amount)),
-        ("isMinter", Expr::bool(is_minter)),
-    ])
-}
-
-fn dog20_minter_state_arg<'i>(dog20_covid: Vec<u8>, amount: i64, initialized: bool) -> Expr<'i> {
-    struct_object(vec![
-        ("dog20Covid", Expr::bytes(dog20_covid)),
-        ("amount", Expr::int(amount)),
-        ("initialized", Expr::bool(initialized)),
-    ])
-}
-
-fn compile_dog20_state<'a>(source: &'a str, owner: Vec<u8>, amount: i64, max_cov_ins: i64, max_cov_outs: i64) -> CompiledContract<'a> {
-    compile_dog20_state_with_minter(source, owner, amount, false, max_cov_ins, max_cov_outs)
-}
-
-fn compile_dog20_state_full<'a>(
-    source: &'a str,
-    owner: Vec<u8>,
-    amount: i64,
-    identifier_type: u8,
-    is_minter: bool,
-    max_cov_ins: i64,
-    max_cov_outs: i64,
-) -> CompiledContract<'a> {
-    compile_contract(
-        source,
-        &[
-            Expr::bytes(owner),
-            Expr::int(amount),
-            Expr::byte(identifier_type),
-            Expr::bool(is_minter),
-            Expr::int(max_cov_ins),
-            Expr::int(max_cov_outs),
-        ],
-        CompileOptions::default(),
-    )
-    .expect("compile succeeds")
-}
-
-fn compile_dog20_state_with_minter<'a>(
-    source: &'a str,
-    owner: Vec<u8>,
-    amount: i64,
-    is_minter: bool,
-    max_cov_ins: i64,
-    max_cov_outs: i64,
-) -> CompiledContract<'a> {
-    compile_dog20_state_full(source, owner, amount, 0, is_minter, max_cov_ins, max_cov_outs)
-}
-
-fn sign_tx_input(tx: Transaction, entries: Vec<UtxoEntry>, input_idx: usize, keypair: &Keypair) -> Vec<u8> {
-    let tx = MutableTransaction::with_entries(tx, entries);
-    let reused_values = SigHashReusedValuesUnsync::new();
-    let sig_hash = calc_schnorr_signature_hash(&tx.as_verifiable(), input_idx, SIG_HASH_ALL, &reused_values);
-    let msg = secp256k1::Message::from_digest_slice(sig_hash.as_bytes().as_slice()).expect("valid sighash message");
-    let sig = keypair.sign_schnorr(msg);
-    let mut signature = sig.as_ref().to_vec();
-    signature.push(SIG_HASH_ALL.to_u8());
-    signature
-}
-
-fn tx_input_from_outpoint_v1(previous_outpoint: TransactionOutpoint, signature_script: Vec<u8>) -> TransactionInput {
-    TransactionInput::new_with_compute_budget(previous_outpoint, signature_script, 0, 0)
-}
-
-fn blake2b32(data: &[u8]) -> Vec<u8> {
-    Blake2bParams::new().hash_length(32).to_state().update(data).finalize().as_bytes().to_vec()
-}
-
+```rust
 #[test]
 fn dog20_can_split_then_merge_tokens_with_two_way_fanout() {
     let source = load_example_source("dog20.sil");
@@ -311,7 +171,32 @@ fn dog20_can_split_then_merge_tokens_with_two_way_fanout() {
     execute_input_with_covenants(merge_tx.clone(), merge_entries.clone(), 0).expect("Dog20 merge leader should succeed");
     execute_input_with_covenants(merge_tx, merge_entries, 1).expect("Dog20 merge delegate should succeed");
 }
+```
 
+This flow has three stages:
+
+1. a full balance is handed off from one owner to another
+2. that balance is split into two branches
+3. those two branches are merged back into one
+
+At a high level, this checks that ordinary Dog20 state behaves like a fungible asset with valid fan-out and fan-in transitions, while still preserving total supply.
+
+```text
+start:   1000
+           |
+           v
+handoff: 1000
+           |
+           v
+split:  400 + 600
+           |
+           v
+merge:   1000
+```
+
+## `dog20_rejects_merge_when_one_signature_is_wrong`
+
+```rust
 #[test]
 fn dog20_rejects_merge_when_one_signature_is_wrong() {
     let source = load_example_source("dog20.sil");
@@ -478,7 +363,23 @@ fn dog20_rejects_merge_when_one_signature_is_wrong() {
         .expect_err("Dog20 merge should reject when one signature does not match the previous owner");
     assert_verify_like_error(err);
 }
+```
 
+This flow is the same basic handoff, split, and merge pattern as the previous one, but one side of the merge is deliberately authorized with the wrong key.
+
+At a high level, it checks that multi-input merges do not weaken ownership rules. Even when the structural shape of the transition is correct, Dog20 still rejects the merge if one of the previous owners was not properly authorized.
+
+```text
+400 + 600
+   |
+   | one signature is wrong
+   v
+ reject
+```
+
+## `dog20_rejects_split_when_amounts_do_not_match`
+
+```rust
 #[test]
 fn dog20_rejects_split_when_amounts_do_not_match() {
     let source = load_example_source("dog20.sil");
@@ -592,7 +493,25 @@ fn dog20_rejects_split_when_amounts_do_not_match() {
         .expect_err("Dog20 split should reject when output amounts do not add up to the input amount");
     assert_verify_like_error(err);
 }
+```
 
+This flow starts from a valid handoff, then tries to split `1000` tokens into outputs totaling only `900`.
+
+At a high level, it checks the simplest supply rule in the contract: an ordinary non-minter branch must preserve total amount across the transition.
+
+```text
+input:   1000
+outputs: 400 + 500
+
+1000 != 900
+   |
+   v
+ reject
+```
+
+## `dog20_minter_can_split_then_mint_then_burn`
+
+```rust
 #[test]
 fn dog20_minter_can_split_then_mint_then_burn() {
     let source = load_example_source("dog20.sil");
@@ -824,7 +743,39 @@ fn dog20_minter_can_split_then_mint_then_burn() {
 
     execute_input_with_covenants(burn_tx, burn_entries, 0).expect("Dog20 minter should be able to burn tokens");
 }
+```
 
+This flow first splits a minter-capable Dog20 branch into:
+
+- one minter branch
+- one ordinary branch
+
+It then checks four high-level properties:
+
+1. the ordinary branch cannot mint extra amount
+2. the ordinary branch cannot promote itself into a minter
+3. the minter branch can increase supply
+4. the minter branch can also decrease supply
+
+The point of the example is to show that mint privilege is attached to the branch's state and is enforced consistently across successor states.
+
+```text
+minter branch
+   |
+   +--> split into minter + ordinary
+   |
+   +--> ordinary tries to mint        -> reject
+   |
+   +--> ordinary tries to become minter -> reject
+   |
+   +--> minter mints                  -> accept
+   |
+   +--> minter burns                  -> accept
+```
+
+## `dog20_minter_can_mint_in_single_transaction`
+
+```rust
 #[test]
 fn dog20_minter_can_mint_in_single_transaction() {
     let source = load_example_source("dog20.sil");
@@ -876,7 +827,23 @@ fn dog20_minter_can_mint_in_single_transaction() {
 
     execute_input_with_covenants(mint_tx, mint_entries, 0).expect("Dog20 minter should be able to mint in a single transaction");
 }
+```
 
+This is the smallest possible minting example. It starts from one minter-marked branch and moves directly to a larger successor amount in one transition.
+
+At a high level, it isolates the core rule that a minter branch may expand supply, without the extra complexity of splitting, burning, or cross-contract coordination.
+
+```text
+minter branch amount
+
+1000 -> 1500
+
+result: accept
+```
+
+## `dog20_covenant_minter`
+
+```rust
 #[test]
 fn dog20_covenant_minter() {
     struct TestTx {
@@ -924,15 +891,15 @@ fn dog20_covenant_minter() {
         compile_contract(
             &dog20_minter_source,
             &[
-                Expr::bytes(owner_bytes.clone()),             // owner
-                Expr::bytes(dog20_covid.as_bytes().to_vec()), // initDog20Covid
-                Expr::int(amount),                            // initAmount
-                Expr::bool(initialized),                      // initInitialized
-                Expr::int(template_prefix.len() as i64),      // templatePrefixLen
-                Expr::int(template_suffix.len() as i64),      // templateSuffixLen
-                Expr::bytes(expected_template_hash.clone()),  // expectedTemplateHash
-                Expr::bytes(template_prefix.clone()),         // templatePrefix
-                Expr::bytes(template_suffix.clone()),         // templateSuffix
+                Expr::bytes(owner_bytes.clone()),
+                Expr::bytes(dog20_covid.as_bytes().to_vec()),
+                Expr::int(amount),
+                Expr::bool(initialized),
+                Expr::int(template_prefix.len() as i64),
+                Expr::int(template_suffix.len() as i64),
+                Expr::bytes(expected_template_hash.clone()),
+                Expr::bytes(template_prefix.clone()),
+                Expr::bytes(template_suffix.clone()),
             ],
             CompileOptions::default(),
         )
@@ -1038,17 +1005,23 @@ fn dog20_covenant_minter() {
         &pre_init,
         "init",
         vec![
-            dog20_minter_state_arg(dog20_covenant_id.as_bytes().to_vec(), MINTER_AMOUNT, true), // newState
-            Expr::bytes(tx1_sig),                                                               // s
+            dog20_minter_state_arg(dog20_covenant_id.as_bytes().to_vec(), MINTER_AMOUNT, true),
+            Expr::bytes(tx1_sig),
         ],
         true,
     );
     let tx1 = build_tx(vec![tx_input_from_outpoint_v1(tx1_outpoint, tx1_sigscript)], tx1_outputs.clone(), vec![pre_init_utxo.clone()]);
 
-    let dog20_minter_after_tx2 =
-        compile_dog20_state_full(&dog20_source, owner_bytes.clone(), 0, IDENTIFIER_COVENANT_ID, true, MAX_COV_INS, MAX_COV_OUTS);
-    let dog20_recipient_after_tx2 =
-        compile_dog20_state(&dog20_source, owner_bytes.clone(), TX2_MINTED_AMOUNT, MAX_COV_INS, MAX_COV_OUTS);
+    let dog20_minter_after_tx2 = compile_dog20_state_full(
+        &dog20_source,
+        owner_bytes.clone(),
+        0,
+        IDENTIFIER_COVENANT_ID,
+        true,
+        MAX_COV_INS,
+        MAX_COV_OUTS,
+    );
+    let dog20_recipient_after_tx2 = compile_dog20_state(&dog20_source, owner_bytes.clone(), TX2_MINTED_AMOUNT, MAX_COV_INS, MAX_COV_OUTS);
     let minter_after_tx2 = compile_minter(dog20_covenant_id, TX2_MINTER_REMAINING_AMOUNT, true);
     let tx2 = build_mint_tx(
         &tx1,
@@ -1087,10 +1060,16 @@ fn dog20_covenant_minter() {
         tx4_entries,
     );
 
-    let dog20_minter_after_tx3 =
-        compile_dog20_state_full(&dog20_source, owner_bytes.clone(), 0, IDENTIFIER_COVENANT_ID, true, MAX_COV_INS, MAX_COV_OUTS);
-    let dog20_recipient_after_tx3 =
-        compile_dog20_state(&dog20_source, owner_bytes.clone(), TX3_MINTED_AMOUNT, MAX_COV_INS, MAX_COV_OUTS);
+    let dog20_minter_after_tx3 = compile_dog20_state_full(
+        &dog20_source,
+        owner_bytes.clone(),
+        0,
+        IDENTIFIER_COVENANT_ID,
+        true,
+        MAX_COV_INS,
+        MAX_COV_OUTS,
+    );
+    let dog20_recipient_after_tx3 = compile_dog20_state(&dog20_source, owner_bytes.clone(), TX3_MINTED_AMOUNT, MAX_COV_INS, MAX_COV_OUTS);
     let minter_after_tx3 = compile_minter(dog20_covenant_id, TX3_MINTER_REMAINING_AMOUNT, true);
     let tx3 = build_mint_tx(
         &tx2,
@@ -1103,8 +1082,15 @@ fn dog20_covenant_minter() {
         TX3_MINTER_REMAINING_AMOUNT,
     );
 
-    let dog20_minter_after_tx5 =
-        compile_dog20_state_full(&dog20_source, owner_bytes.clone(), 0, IDENTIFIER_COVENANT_ID, true, MAX_COV_INS, MAX_COV_OUTS);
+    let dog20_minter_after_tx5 = compile_dog20_state_full(
+        &dog20_source,
+        owner_bytes.clone(),
+        0,
+        IDENTIFIER_COVENANT_ID,
+        true,
+        MAX_COV_INS,
+        MAX_COV_OUTS,
+    );
     let dog20_recipient_after_tx5 = compile_dog20_state(&dog20_source, vec![0; 32], TX4_MINTED_AMOUNT, MAX_COV_INS, MAX_COV_OUTS);
     let minter_after_tx5 = compile_minter(dog20_covenant_id, TX4_MINTER_REMAINING_AMOUNT, true);
     let tx5 = build_mint_tx(
@@ -1120,21 +1106,61 @@ fn dog20_covenant_minter() {
 
     execute_all_inputs("tx1", tx1.populated());
     execute_all_inputs("tx2", tx2.populated());
-    execute_all_inputs("tx3", tx3.populated());
     execute_all_inputs("tx4", tx4.populated());
+    execute_all_inputs("tx3", tx3.populated());
 
     let err = execute_input_with_covenants(tx5.tx.clone(), tx5.entries.clone(), 1).expect_err("over-mint should fail");
     assert_verify_like_error(err);
 }
+```
 
+This is the full two-contract story:
+
+1. an uninitialized `Dog20Minter` is created with a placeholder Dog20 covenant ID
+2. `init` binds it to a newly created Dog20 covenant instance
+3. each mint spends the Dog20 minter branch and the Dog20Minter together
+4. every successful mint recreates a zero-amount Dog20 minter branch and also creates a separate recipient Dog20 output with the newly minted amount
+5. the first recipient output is then spent like an ordinary Dog20 branch to a different pubkey owner
+6. once the requested mint exceeds the remaining allowance, the mint is rejected
+
+At a high level, this is the example that shows covenant composition: one covenant carries the token state, while another covenant governs issuance policy for that token.
+
+```text
+tx1: init
+  Dog20Minter(uninitialized)
+      ->
+  Dog20(minter branch, 0) + Dog20Minter(bound, allowance 1000)
+
+tx2: mint
+  Dog20(minter 0) + Minter(1000)
+      ->
+  Dog20(minter 0) + Dog20(recipient 200) + Minter(800)
+
+tx3: mint
+  Dog20(minter 0) + Minter(800)
+      ->
+  Dog20(minter 0) + Dog20(recipient 300) + Minter(500)
+
+tx4: ordinary spend
+  spend the tx2 recipient output
+      ->
+  Dog20(alternate pubkey owner, 200)
+
+tx5: over-mint
+  request exceeds remaining allowance
+      ->
+  reject
+```
+
+## `dog20_non_minter_can_spend_script_hash_and_covenant_id_owned_outputs`
+
+```rust
 #[test]
 fn dog20_non_minter_can_spend_script_hash_and_covenant_id_owned_outputs() {
     let source = load_example_source("dog20.sil");
     const IDENTIFIER_SCRIPT_HASH: u8 = 0x01;
     const IDENTIFIER_COVENANT_ID: u8 = 0x02;
 
-    // Setup: create the special owners and split the genesis allocation into one
-    // script-hash-owned branch and one covenant-id-owned branch.
     let genesis_owner = random_keypair();
     let multisig_spend_destination_owner = random_keypair();
     let covenant_spend_destination_owner = random_keypair();
@@ -1246,7 +1272,6 @@ fn dog20_non_minter_can_spend_script_hash_and_covenant_id_owned_outputs() {
     ];
     let script_hash_auxiliary_outpoint = TransactionOutpoint { transaction_id: TransactionId::from_bytes([2; 32]), index: 0 };
 
-    // Wrong witness: the Dog20 input points at itself instead of the attached multisig input.
     {
         let script_hash_wrong_witness_tx = build_spend_tx(
             0,
@@ -1259,7 +1284,6 @@ fn dog20_non_minter_can_spend_script_hash_and_covenant_id_owned_outputs() {
         assert_verify_like_error(err);
     }
 
-    // Missing input: no multisig-controlled auxiliary input is attached at all.
     {
         let script_hash_missing_extra_tx = build_spend_tx(
             0,
@@ -1272,7 +1296,6 @@ fn dog20_non_minter_can_spend_script_hash_and_covenant_id_owned_outputs() {
         assert_verify_like_error(err);
     }
 
-    // Wrong owner type: a covenant-owned auxiliary input cannot authorize the multisig-owned branch.
     {
         let script_hash_wrong_owner_entries = vec![
             script_hash_spend_entries[0].clone(),
@@ -1289,7 +1312,6 @@ fn dog20_non_minter_can_spend_script_hash_and_covenant_id_owned_outputs() {
         assert_verify_like_error(err);
     }
 
-    // Happy path: the witness points at the attached multisig-controlled input.
     {
         let script_hash_spend_tx = build_spend_tx(
             0,
@@ -1309,7 +1331,6 @@ fn dog20_non_minter_can_spend_script_hash_and_covenant_id_owned_outputs() {
     ];
     let covenant_id_auxiliary_outpoint = TransactionOutpoint { transaction_id: TransactionId::from_bytes([3; 32]), index: 0 };
 
-    // Wrong witness: the Dog20 input points at itself instead of the attached covenant-owned input.
     {
         let covenant_id_wrong_witness_tx = build_spend_tx(
             1,
@@ -1322,7 +1343,6 @@ fn dog20_non_minter_can_spend_script_hash_and_covenant_id_owned_outputs() {
         assert_verify_like_error(err);
     }
 
-    // Missing input: no covenant-owned auxiliary input is attached at all.
     {
         let covenant_id_missing_extra_tx = build_spend_tx(
             1,
@@ -1335,7 +1355,6 @@ fn dog20_non_minter_can_spend_script_hash_and_covenant_id_owned_outputs() {
         assert_verify_like_error(err);
     }
 
-    // Wrong owner type: a multisig-controlled auxiliary input cannot authorize the covenant-id-owned branch.
     {
         let covenant_id_wrong_owner_entries = vec![
             covenant_id_spend_entries[0].clone(),
@@ -1352,7 +1371,6 @@ fn dog20_non_minter_can_spend_script_hash_and_covenant_id_owned_outputs() {
         assert_verify_like_error(err);
     }
 
-    // Happy path: the witness points at the attached covenant-owned input.
     {
         let covenant_id_spend_tx = build_spend_tx(
             1,
@@ -1364,3 +1382,29 @@ fn dog20_non_minter_can_spend_script_hash_and_covenant_id_owned_outputs() {
             .expect("Dog20 covenant-id-owned tokens should spend when the matching covenant input is present");
     }
 }
+```
+
+This example explores the two non-pubkey ownership modes in Dog20.
+
+It first creates one script-hash-owned branch and one covenant-ID-owned branch. It then checks, for each mode:
+
+- the wrong witness input is rejected
+- a missing matching input is rejected
+- the wrong kind of owner input is rejected
+- the correct matching input is accepted
+
+At a high level, this shows that Dog20 ownership is programmable: a branch can be controlled either by another script or by another covenant, not just by a key.
+
+```text
+script-hash-owned branch:
+  wrong witness      -> reject
+  missing script     -> reject
+  wrong owner kind   -> reject
+  matching script    -> accept
+
+covenant-ID-owned branch:
+  wrong witness      -> reject
+  missing covenant   -> reject
+  wrong owner kind   -> reject
+  matching covenant  -> accept
+```

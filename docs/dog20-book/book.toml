@@ -1,0 +1,8 @@
+[book]
+title = "Dog20 and Dog20Minter"
+authors = ["OpenAI Codex"]
+language = "en"
+src = "src"
+
+[build]
+build-dir = "book"

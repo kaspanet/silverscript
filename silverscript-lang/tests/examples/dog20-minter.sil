@@ -13,6 +13,8 @@ contract Dog20Minter(pubkey owner, byte[32] initDog20Covid, int initAmount,
         bool isMinter;
     }
 
+    byte constant IDENTIFIER_COVENANT_ID = 0x02;
+
     function calcInAmount() : (int) {
         Dog20State dogPrevState = readInputStateWithTemplate(
             OpCovInputIdx(dog20Covid, 0),
@@ -23,10 +25,25 @@ contract Dog20Minter(pubkey owner, byte[32] initDog20Covid, int initAmount,
         return (dogPrevState.amount);
     }
 
-    function checkDogNewState(Dog20State dogNewState){
+    function checkMinterDogNewState(Dog20State minterDogNewState){
+        require(minterDogNewState.ownerIdentifier == byte[32](owner)); // We do not allow the minter to delegate minting authority to another party.
+        require(minterDogNewState.identifierType == IDENTIFIER_COVENANT_ID);
+        require(minterDogNewState.isMinter); // The minter cannot stop being a minter.
+
         validateOutputStateWithTemplate(
             OpCovOutputIdx(dog20Covid, 0),
-            dogNewState,
+            minterDogNewState,
+            templatePrefix,
+            templateSuffix,
+            expectedTemplateHash
+        );
+    }
+
+    function checkRecipientDogNewState(Dog20State recipientDogNewState){
+        require(!recipientDogNewState.isMinter); // We do not allow the minter to designate another minter.
+        validateOutputStateWithTemplate(
+            OpCovOutputIdx(dog20Covid, 1),
+            recipientDogNewState,
             templatePrefix,
             templateSuffix,
             expectedTemplateHash
@@ -44,18 +61,21 @@ contract Dog20Minter(pubkey owner, byte[32] initDog20Covid, int initAmount,
     }
 
     #[covenant.singleton]
-    function mint(State prevState, State newState, sig s, Dog20State dogNewState) {
+    function mint(State prevState, State newState, sig s, Dog20State minterDogNewState, Dog20State recipientDogNewState) {
         require(initialized);
         require(newState.amount >= 0);
         require(newState.initialized);
         require(newState.dog20Covid == prevState.dog20Covid);
 
-        require(OpCovOutputCount(dog20Covid) == 1);
+        // We focus on the simple case 1-2 minting transfer.
+        require(OpCovOutputCount(dog20Covid) == 2);
         require(OpCovInputCount(dog20Covid) == 1);
-        checkDogNewState(dogNewState);
+
+        checkMinterDogNewState(minterDogNewState);
+        checkRecipientDogNewState(recipientDogNewState);
 
         int inAmount = calcInAmount();
-        int mintedAmount = dogNewState.amount - inAmount;
+        int mintedAmount = minterDogNewState.amount + recipientDogNewState.amount - inAmount;
         require(newState.amount == amount - mintedAmount);
         require(checkSig(s, owner));
     }
