@@ -1,11 +1,11 @@
-# The Dog20 Contract
+# The KCC20 Contract
 
-Source: `silverscript-lang/tests/examples/dog20.sil`
+Source: `silverscript-lang/tests/examples/kcc20.sil`
 
 ## Full Source
 
 ```sil
-contract Dog20(byte[32] genesisPk, int genesisAmount, byte genesisIdentifierType, bool genesisIsMinter, int maxCovIns, int maxCovOuts) {
+contract KCC20(byte[32] genesisPk, int genesisAmount, byte genesisIdentifierType, bool genesisIsMinter, int maxCovIns, int maxCovOuts) {
     byte constant IDENTIFIER_PUBKEY = 0x00;
     byte constant IDENTIFIER_SCRIPT_HASH = 0x01;
     byte constant IDENTIFIER_COVENANT_ID = 0x02;
@@ -68,7 +68,7 @@ contract Dog20(byte[32] genesisPk, int genesisAmount, byte genesisIdentifierType
 The contract constructor is:
 
 ```sil
-contract Dog20(
+contract KCC20(
     byte[32] genesisPk,
     int genesisAmount,
     byte genesisIdentifierType,
@@ -101,7 +101,7 @@ Every covenant transition reads and writes these fields as `State`.
 
 ## Ownership Modes
 
-Dog20 defines three constants:
+KCC20 defines three constants:
 
 ```sil
 byte constant IDENTIFIER_PUBKEY = 0x00;
@@ -126,7 +126,7 @@ byte[] spk = new ScriptPubKeyP2SH(prevStates[i].ownerIdentifier);
 require(tx.inputs[witnesses[i]].scriptPubKey == spk);
 ```
 
-Here Dog20 does not validate signatures itself. Instead it requires that the transaction include an input whose scriptPubKey corresponds to the owner script hash. In other words, the script-hash-owned Dog20 branch is authorized by the presence of a matching P2SH-controlled input.
+Here KCC20 does not validate signatures itself. Instead it requires that the transaction include an input whose scriptPubKey corresponds to the owner script hash. In other words, the script-hash-owned KCC20 branch is authorized by the presence of a matching P2SH-controlled input.
 
 ### Covenant-ID ownership
 
@@ -134,7 +134,7 @@ Here Dog20 does not validate signatures itself. Instead it requires that the tra
 require(OpInputCovenantId(witnesses[i]) == prevStates[i].ownerIdentifier);
 ```
 
-This lets a Dog20 branch be owned by another covenant. Spending it requires a witness input whose covenant ID matches the owner identifier.
+This lets a KCC20 branch be owned by another covenant. Spending it requires a witness input whose covenant ID matches the owner identifier.
 
 ## Ownership Diagram
 
@@ -162,9 +162,9 @@ Important details:
 - `witnesses` exists so the contract can jump directly to the relevant transaction inputs instead of scanning all inputs to discover which one should authorize each previous state.
 - the loop upper bound is controlled by `maxCovIns`
 
-This function is the core of Dog20's flexible ownership model.
+This function is the core of KCC20's flexible ownership model.
 
-For the non-pubkey ownership case, see the [Inter-Covenant Communication](./dog20-overview.md#inter-covenant-communication) explanation in the overview chapter.
+For the non-pubkey ownership case, see the [Inter-Covenant Communication](./kcc20-overview.md#inter-covenant-communication) explanation in the overview chapter.
 
 ## `checkAmounts`
 
@@ -183,7 +183,7 @@ if(!isMinter) {
 }
 ```
 
-So Dog20 has two distinct modes:
+So KCC20 has two distinct modes:
 
 - `isMinter == false`: token supply must be preserved across the transition
 - `isMinter == true`: the branch may increase or decrease `amount`
@@ -218,11 +218,11 @@ if(!isMinter) {
 }
 ```
 
-This matters because otherwise an ordinary Dog20 branch could escape the supply rules simply by setting `isMinter = true` in a child state.
+This matters because otherwise an ordinary KCC20 branch could escape the supply rules simply by setting `isMinter = true` in a child state.
 
 ## The Covenant Entrypoint
 
-Dog20 exposes one covenant declaration:
+KCC20 exposes one covenant declaration:
 
 ```sil
 #[covenant(binding = cov, from = maxCovIns, to = maxCovOuts)]

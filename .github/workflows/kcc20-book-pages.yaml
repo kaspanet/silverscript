@@ -1,12 +1,12 @@
-name: Publish Dog20 Book
+name: Publish KCC20 Book
 
 on:
   push:
     branches:
       - covpp-reset2
     paths:
-      - ".github/workflows/dog20-book-pages.yaml"
-      - "docs/dog20-book/**"
+      - ".github/workflows/kcc20-book-pages.yaml"
+      - "docs/kcc20-book/**"
   workflow_dispatch:
 
 permissions:
@@ -15,7 +15,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: dog20-book-pages
+  group: kcc20-book-pages
   cancel-in-progress: true
 
 jobs:
@@ -36,7 +36,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           prefix-key: silverscript-v1
-          shared-key: dog20-book-pages
+          shared-key: kcc20-book-pages
           cache-on-failure: "false"
           cache-bin: "false"
           cache-all-crates: "false"
@@ -48,12 +48,12 @@ jobs:
           tool: mdbook
 
       - name: Build book
-        run: mdbook build docs/dog20-book
+        run: mdbook build docs/kcc20-book
 
       - name: Prepare Pages artifact
         run: |
-          mkdir -p dist/dog20-book
-          cp -R docs/dog20-book/book/. dist/dog20-book/
+          mkdir -p dist/kcc20-book
+          cp -R docs/kcc20-book/book/. dist/kcc20-book/
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v4

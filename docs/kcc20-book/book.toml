@@ -1,5 +1,5 @@
 [book]
-title = "Dog20 and Dog20Minter"
+title = "KCC20 and KCC20Minter"
 authors = ["OpenAI Codex"]
 language = "en"
 src = "src"
@@ -8,4 +8,4 @@ src = "src"
 build-dir = "book"
 
 [output.html]
-site-url = "/dog20-book/"
+site-url = "/kcc20-book/"

@@ -2,8 +2,8 @@
 
 This book explains two SilverScript examples together:
 
-- `silverscript-lang/tests/examples/dog20.sil`
-- `silverscript-lang/tests/examples/dog20-minter.sil`
+- `silverscript-lang/tests/examples/kcc20.sil`
+- `silverscript-lang/tests/examples/kcc20-minter.sil`
 
 Together they form a worked example of a covenant-controlled fungible token system in SilverScript.
 
@@ -21,9 +21,9 @@ The contracts are examples, not a production token standard. Their value is that
 
 The rest of this book is organized as follows:
 
-- `Dog20 At A Glance` describes the system as a whole.
-- `The Dog20 Contract` explains the token covenant itself.
-- `The Dog20Minter Contract` explains the companion issuance controller.
+- `KCC20 At A Glance` describes the system as a whole.
+- `The KCC20 Contract` explains the token covenant itself.
+- `The KCC20Minter Contract` explains the companion issuance controller.
 - `How The Examples Are Used` explains the kinds of situations these examples are meant to model.
 - `Example Walkthroughs` explains the main flows and failure cases.
 - `What The Examples Demonstrate` summarizes the larger ideas these contracts are designed to show.

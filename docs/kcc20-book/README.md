@@ -1,19 +1,19 @@
-# Dog20 Book
+# KCC20 Book
 
-This directory contains an `mdBook` explaining the `Dog20` and `Dog20Minter` SilverScript examples.
+This directory contains an `mdBook` explaining the `KCC20` and `KCC20Minter` SilverScript examples.
 
 ## Build
 
 From the repository root:
 
 ```bash
-mdbook build docs/dog20-book
+mdbook build docs/kcc20-book
 ```
 
 The rendered HTML book will be written to:
 
 ```text
-docs/dog20-book/book
+docs/kcc20-book/book
 ```
 
 ## Open
@@ -21,7 +21,7 @@ docs/dog20-book/book
 After building, open:
 
 ```text
-docs/dog20-book/book/index.html
+docs/kcc20-book/book/index.html
 ```
 
 ## Serve Locally
@@ -29,7 +29,7 @@ docs/dog20-book/book/index.html
 To preview the book with a local web server:
 
 ```bash
-mdbook serve docs/dog20-book
+mdbook serve docs/kcc20-book
 ```
 
 By default, `mdbook serve` prints the local address to open in a browser.

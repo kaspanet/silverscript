@@ -1,19 +1,19 @@
-# The Dog20Minter Contract
+# The KCC20Minter Contract
 
-Source: `silverscript-lang/tests/examples/dog20-minter.sil`
+Source: `silverscript-lang/tests/examples/kcc20-minter.sil`
 
 ## Full Source
 
 ```sil
-contract Dog20Minter(pubkey owner, byte[32] initDog20Covid, int initAmount,
+contract KCC20Minter(pubkey owner, byte[32] initKCC20Covid, int initAmount,
     bool initInitialized, int templatePrefixLen, int templateSuffixLen, byte[32] expectedTemplateHash,
     byte[] templatePrefix, byte[] templateSuffix) {
 
-    byte[32] dog20Covid = initDog20Covid;
+    byte[32] kcc20Covid = initKCC20Covid;
     int amount = initAmount;
     bool initialized = initInitialized;
 
-    struct Dog20State {
+    struct KCC20State {
         byte[32] ownerIdentifier;
         byte identifierType;
         int amount;
@@ -23,8 +23,8 @@ contract Dog20Minter(pubkey owner, byte[32] initDog20Covid, int initAmount,
     byte constant IDENTIFIER_COVENANT_ID = 0x02;
 
     function calcInAmount() : (int) {
-        Dog20State dogPrevState = readInputStateWithTemplate(
-            OpCovInputIdx(dog20Covid, 0),
+        KCC20State dogPrevState = readInputStateWithTemplate(
+            OpCovInputIdx(kcc20Covid, 0),
             templatePrefixLen,
             templateSuffixLen,
             expectedTemplateHash
@@ -32,13 +32,13 @@ contract Dog20Minter(pubkey owner, byte[32] initDog20Covid, int initAmount,
         return (dogPrevState.amount);
     }
 
-    function checkMinterDogNewState(Dog20State minterDogNewState){
+    function checkMinterDogNewState(KCC20State minterDogNewState){
         require(minterDogNewState.ownerIdentifier == byte[32](owner)); // We do not allow the minter to delegate minting authority to another party.
         require(minterDogNewState.identifierType == IDENTIFIER_COVENANT_ID);
         require(minterDogNewState.isMinter); // The minter cannot stop being a minter.
 
         validateOutputStateWithTemplate(
-            OpCovOutputIdx(dog20Covid, 0),
+            OpCovOutputIdx(kcc20Covid, 0),
             minterDogNewState,
             templatePrefix,
             templateSuffix,
@@ -46,10 +46,10 @@ contract Dog20Minter(pubkey owner, byte[32] initDog20Covid, int initAmount,
         );
     }
 
-    function checkRecipientDogNewState(Dog20State recipientDogNewState){
+    function checkRecipientDogNewState(KCC20State recipientDogNewState){
         require(!recipientDogNewState.isMinter); // We do not allow the minter to designate another minter.
         validateOutputStateWithTemplate(
-            OpCovOutputIdx(dog20Covid, 1),
+            OpCovOutputIdx(kcc20Covid, 1),
             recipientDogNewState,
             templatePrefix,
             templateSuffix,
@@ -60,7 +60,7 @@ contract Dog20Minter(pubkey owner, byte[32] initDog20Covid, int initAmount,
     #[covenant.singleton]
     function init(State prevState, State newState, sig s) {
         require(!initialized);
-        require(newState.dog20Covid == OpOutputCovenantId(0));
+        require(newState.kcc20Covid == OpOutputCovenantId(0));
         require(newState.amount == prevState.amount);
         require(newState.initialized);
         require(checkSig(s, owner));
@@ -68,15 +68,15 @@ contract Dog20Minter(pubkey owner, byte[32] initDog20Covid, int initAmount,
     }
 
     #[covenant.singleton]
-    function mint(State prevState, State newState, sig s, Dog20State minterDogNewState, Dog20State recipientDogNewState) {
+    function mint(State prevState, State newState, sig s, KCC20State minterDogNewState, KCC20State recipientDogNewState) {
         require(initialized);
         require(newState.amount >= 0);
         require(newState.initialized);
-        require(newState.dog20Covid == prevState.dog20Covid);
+        require(newState.kcc20Covid == prevState.kcc20Covid);
 
         // We focus on the simple case 1-2 minting transfer.
-        require(OpCovOutputCount(dog20Covid) == 2);
-        require(OpCovInputCount(dog20Covid) == 1);
+        require(OpCovOutputCount(kcc20Covid) == 2);
+        require(OpCovInputCount(kcc20Covid) == 1);
 
         checkMinterDogNewState(minterDogNewState);
         checkRecipientDogNewState(recipientDogNewState);
@@ -91,11 +91,11 @@ contract Dog20Minter(pubkey owner, byte[32] initDog20Covid, int initAmount,
 
 ## Purpose
 
-`Dog20Minter` is a companion covenant that controls minting for one Dog20 covenant instance.
+`KCC20Minter` is a companion covenant that controls minting for one KCC20 covenant instance.
 
-The key idea is that mint policy is not embedded directly into Dog20's constructor or entrypoint arguments. Instead a separate covenant holds:
+The key idea is that mint policy is not embedded directly into KCC20's constructor or entrypoint arguments. Instead a separate covenant holds:
 
-- which Dog20 covenant it governs
+- which KCC20 covenant it governs
 - how much issuance remains
 - whether the cross-contract binding has already been initialized
 
@@ -104,7 +104,7 @@ The key idea is that mint policy is not embedded directly into Dog20's construct
 The constructor takes:
 
 - `owner`
-- `initDog20Covid`
+- `initKCC20Covid`
 - `initAmount`
 - `initInitialized`
 - `templatePrefixLen`
@@ -116,19 +116,19 @@ The constructor takes:
 The state fields derived from those constructor args are:
 
 ```sil
-byte[32] dog20Covid = initDog20Covid;
+byte[32] kcc20Covid = initKCC20Covid;
 int amount = initAmount;
 bool initialized = initInitialized;
 ```
 
 The template-related constructor fields are not mutable state. They are contract parameters baked into the script instance.
 
-## Embedded `Dog20State`
+## Embedded `KCC20State`
 
 The minter declares:
 
 ```sil
-struct Dog20State {
+struct KCC20State {
     byte[32] ownerIdentifier;
     byte identifierType;
     int amount;
@@ -136,11 +136,11 @@ struct Dog20State {
 }
 ```
 
-This local struct gives the minter an explicit schema for reading and validating Dog20 state.
+This local struct gives the minter an explicit schema for reading and validating KCC20 state.
 
 ## Why Template Metadata Exists
 
-The minter needs to reason about a Dog20 output. It cannot safely trust "some output at index X has the right fields". It must ensure that the output really belongs to the intended Dog20 template.
+The minter needs to reason about a KCC20 output. It cannot safely trust "some output at index X has the right fields". It must ensure that the output really belongs to the intended KCC20 template.
 
 That is why the contract stores:
 
@@ -150,7 +150,7 @@ That is why the contract stores:
 - the actual prefix bytes
 - the actual suffix bytes
 
-These values come from the Dog20 script with its encoded state region removed. Conceptually, they identify the fixed template around the mutable Dog20 state payload.
+These values come from the KCC20 script with its encoded state region removed. Conceptually, they identify the fixed template around the mutable KCC20 state payload.
 
 ## `calcInAmount`
 
@@ -158,15 +158,15 @@ These values come from the Dog20 script with its encoded state region removed. C
 function calcInAmount() : (int)
 ```
 
-This function reads the previous Dog20 state from the covenant input selected by:
+This function reads the previous KCC20 state from the covenant input selected by:
 
 ```sil
-OpCovInputIdx(dog20Covid, 0)
+OpCovInputIdx(kcc20Covid, 0)
 ```
 
 That means:
 
-- find the first covenant input whose covenant ID equals `dog20Covid`
+- find the first covenant input whose covenant ID equals `kcc20Covid`
 - parse it using the expected template metadata
 - return its `amount`
 
@@ -175,10 +175,10 @@ This is how the minter learns the old token supply before minting.
 ## `checkMinterDogNewState`
 
 ```sil
-function checkMinterDogNewState(Dog20State minterDogNewState)
+function checkMinterDogNewState(KCC20State minterDogNewState)
 ```
 
-This validates the continuing minter-owned Dog20 branch.
+This validates the continuing minter-owned KCC20 branch.
 
 It enforces three things:
 
@@ -190,7 +190,7 @@ Then it validates the actual output with:
 
 ```sil
 validateOutputStateWithTemplate(
-    OpCovOutputIdx(dog20Covid, 0),
+    OpCovOutputIdx(kcc20Covid, 0),
     minterDogNewState,
     templatePrefix,
     templateSuffix,
@@ -200,25 +200,25 @@ validateOutputStateWithTemplate(
 
 This does two jobs:
 
-- it selects the first Dog20 output for the governed covenant ID
-- it ensures that output matches the expected Dog20 template and state payload
+- it selects the first KCC20 output for the governed covenant ID
+- it ensures that output matches the expected KCC20 template and state payload
 
 This is much safer than trusting an arbitrary output index or script shape.
 
 ## `checkRecipientDogNewState`
 
 ```sil
-function checkRecipientDogNewState(Dog20State recipientDogNewState)
+function checkRecipientDogNewState(KCC20State recipientDogNewState)
 ```
 
 This validates the newly minted recipient output.
 
-It enforces that the recipient output is not itself a minter branch, and then checks that the second Dog20 output in the transaction matches the supplied state.
+It enforces that the recipient output is not itself a minter branch, and then checks that the second KCC20 output in the transaction matches the supplied state.
 
 That means each mint transaction has a fixed shape:
 
-- output 0 is the continuing minter Dog20 branch
-- output 1 is the freshly minted recipient Dog20 branch
+- output 0 is the continuing minter KCC20 branch
+- output 1 is the freshly minted recipient KCC20 branch
 
 ## `init`
 
@@ -229,13 +229,13 @@ The first entrypoint is:
 function init(State prevState, State newState, sig s)
 ```
 
-This binds a previously uninitialized minter to a freshly created Dog20 covenant.
+This binds a previously uninitialized minter to a freshly created KCC20 covenant.
 
 Its key checks are:
 
 ```sil
 require(!initialized);
-require(newState.dog20Covid == OpOutputCovenantId(0));
+require(newState.kcc20Covid == OpOutputCovenantId(0));
 require(newState.amount == prevState.amount);
 require(newState.initialized);
 require(checkSig(s, owner));
@@ -249,20 +249,20 @@ Interpretation:
 - the new state flips `initialized` to true
 - the owner authorizes the operation
 
-The critical piece is `OpOutputCovenantId(0)`. That lets the minter learn the covenant ID of the Dog20 output created in the same transaction.
+The critical piece is `OpOutputCovenantId(0)`. That lets the minter learn the covenant ID of the KCC20 output created in the same transaction.
 
-Without that step there would be no secure way for the minter to bind itself to the exact Dog20 covenant instance it just created.
+Without that step there would be no secure way for the minter to bind itself to the exact KCC20 covenant instance it just created.
 
 ## Initialization Diagram
 
 ```text
 before init:
   initialized = false
-  dog20Covid = placeholder
+  kcc20Covid = placeholder
 
 after init:
   initialized = true
-  dog20Covid = covenant ID of the newly created Dog20 output
+  kcc20Covid = covenant ID of the newly created KCC20 output
 ```
 
 ## `mint`
@@ -271,7 +271,7 @@ The second entrypoint is:
 
 ```sil
 #[covenant.singleton]
-function mint(State prevState, State newState, sig s, Dog20State minterDogNewState, Dog20State recipientDogNewState)
+function mint(State prevState, State newState, sig s, KCC20State minterDogNewState, KCC20State recipientDogNewState)
 ```
 
 This is the issuance step.
@@ -284,28 +284,28 @@ The checks break down into four groups.
 require(initialized);
 require(newState.amount >= 0);
 require(newState.initialized);
-require(newState.dog20Covid == prevState.dog20Covid);
+require(newState.kcc20Covid == prevState.kcc20Covid);
 ```
 
-The minter must stay initialized, cannot go negative, and cannot switch to a different Dog20 covenant.
+The minter must stay initialized, cannot go negative, and cannot switch to a different KCC20 covenant.
 
-### Dog20 cardinality
+### KCC20 cardinality
 
 ```sil
-require(OpCovOutputCount(dog20Covid) == 2);
-require(OpCovInputCount(dog20Covid) == 1);
+require(OpCovOutputCount(kcc20Covid) == 2);
+require(OpCovInputCount(kcc20Covid) == 1);
 ```
 
-The example only allows minting when exactly one Dog20 covenant input and two Dog20 covenant outputs are involved. That keeps the accounting simple and makes the split between the persistent minter branch and the recipient branch explicit.
+The example only allows minting when exactly one KCC20 covenant input and two KCC20 covenant outputs are involved. That keeps the accounting simple and makes the split between the persistent minter branch and the recipient branch explicit.
 
-### Dog20 template validation
+### KCC20 template validation
 
 ```sil
 checkMinterDogNewState(minterDogNewState);
 checkRecipientDogNewState(recipientDogNewState);
 ```
 
-This ensures both supplied Dog20 successor states match the actual outputs in the transaction.
+This ensures both supplied KCC20 successor states match the actual outputs in the transaction.
 
 ### Issuance accounting
 
@@ -317,8 +317,8 @@ require(newState.amount == amount - mintedAmount);
 
 This means:
 
-- compute previous Dog20 amount
-- compute the total amount in the two new Dog20 outputs
+- compute previous KCC20 amount
+- compute the total amount in the two new KCC20 outputs
 - subtract the old amount to get the newly minted quantity
 - decrement the minter's remaining allowance by exactly that amount
 
@@ -339,20 +339,20 @@ new minter allowance
 
 ```text
 before mint:
-  Dog20 minter branch amount = old amount
-  Dog20Minter allowance = remaining budget
+  KCC20 minter branch amount = old amount
+  KCC20Minter allowance = remaining budget
 
 after mint:
-  Dog20 minter branch amount = 0
-  Dog20 recipient branch amount = minted tokens for this transaction
-  Dog20Minter allowance = reduced by minted amount
+  KCC20 minter branch amount = 0
+  KCC20 recipient branch amount = minted tokens for this transaction
+  KCC20Minter allowance = reduced by minted amount
 ```
 
 ## Why A Separate Minter Covenant Matters
 
 This design cleanly demonstrates covenant composition.
 
-- Dog20 knows how to authorize token state transitions.
-- Dog20Minter knows how to constrain issuance.
+- KCC20 knows how to authorize token state transitions.
+- KCC20Minter knows how to constrain issuance.
 
-Dog20 can be reused with different issuance policies because mint control is externalized into another covenant rather than welded into the token contract itself.
+KCC20 can be reused with different issuance policies because mint control is externalized into another covenant rather than welded into the token contract itself.

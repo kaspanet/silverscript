@@ -1,12 +1,12 @@
-contract Dog20Minter(pubkey owner, byte[32] initDog20Covid, int initAmount,
+contract KCC20Minter(pubkey owner, byte[32] initKCC20Covid, int initAmount,
     bool initInitialized, int templatePrefixLen, int templateSuffixLen, byte[32] expectedTemplateHash,
     byte[] templatePrefix, byte[] templateSuffix) {
 
-    byte[32] dog20Covid = initDog20Covid;
+    byte[32] kcc20Covid = initKCC20Covid;
     int amount = initAmount;
     bool initialized = initInitialized;
 
-    struct Dog20State {
+    struct KCC20State {
         byte[32] ownerIdentifier;
         byte identifierType;
         int amount;
@@ -16,8 +16,8 @@ contract Dog20Minter(pubkey owner, byte[32] initDog20Covid, int initAmount,
     byte constant IDENTIFIER_COVENANT_ID = 0x02;
 
     function calcInAmount() : (int) {
-        Dog20State dogPrevState = readInputStateWithTemplate(
-            OpCovInputIdx(dog20Covid, 0),
+        KCC20State dogPrevState = readInputStateWithTemplate(
+            OpCovInputIdx(kcc20Covid, 0),
             templatePrefixLen,
             templateSuffixLen,
             expectedTemplateHash
@@ -25,13 +25,13 @@ contract Dog20Minter(pubkey owner, byte[32] initDog20Covid, int initAmount,
         return (dogPrevState.amount);
     }
 
-    function checkMinterDogNewState(Dog20State minterDogNewState){
+    function checkMinterDogNewState(KCC20State minterDogNewState){
         require(minterDogNewState.ownerIdentifier == byte[32](owner)); // We do not allow the minter to delegate minting authority to another party.
         require(minterDogNewState.identifierType == IDENTIFIER_COVENANT_ID);
         require(minterDogNewState.isMinter); // The minter cannot stop being a minter.
 
         validateOutputStateWithTemplate(
-            OpCovOutputIdx(dog20Covid, 0),
+            OpCovOutputIdx(kcc20Covid, 0),
             minterDogNewState,
             templatePrefix,
             templateSuffix,
@@ -39,10 +39,10 @@ contract Dog20Minter(pubkey owner, byte[32] initDog20Covid, int initAmount,
         );
     }
 
-    function checkRecipientDogNewState(Dog20State recipientDogNewState){
+    function checkRecipientDogNewState(KCC20State recipientDogNewState){
         require(!recipientDogNewState.isMinter); // We do not allow the minter to designate another minter.
         validateOutputStateWithTemplate(
-            OpCovOutputIdx(dog20Covid, 1),
+            OpCovOutputIdx(kcc20Covid, 1),
             recipientDogNewState,
             templatePrefix,
             templateSuffix,
@@ -53,7 +53,7 @@ contract Dog20Minter(pubkey owner, byte[32] initDog20Covid, int initAmount,
     #[covenant.singleton]
     function init(State prevState, State newState, sig s) {
         require(!initialized);
-        require(newState.dog20Covid == OpOutputCovenantId(0));
+        require(newState.kcc20Covid == OpOutputCovenantId(0));
         require(newState.amount == prevState.amount);
         require(newState.initialized);
         require(checkSig(s, owner));
@@ -61,15 +61,15 @@ contract Dog20Minter(pubkey owner, byte[32] initDog20Covid, int initAmount,
     }
 
     #[covenant.singleton]
-    function mint(State prevState, State newState, sig s, Dog20State minterDogNewState, Dog20State recipientDogNewState) {
+    function mint(State prevState, State newState, sig s, KCC20State minterDogNewState, KCC20State recipientDogNewState) {
         require(initialized);
         require(newState.amount >= 0);
         require(newState.initialized);
-        require(newState.dog20Covid == prevState.dog20Covid);
+        require(newState.kcc20Covid == prevState.kcc20Covid);
 
         // We focus on the simple case 1-2 minting transfer.
-        require(OpCovOutputCount(dog20Covid) == 2);
-        require(OpCovInputCount(dog20Covid) == 1);
+        require(OpCovOutputCount(kcc20Covid) == 2);
+        require(OpCovInputCount(kcc20Covid) == 1);
 
         checkMinterDogNewState(minterDogNewState);
         checkRecipientDogNewState(recipientDogNewState);
