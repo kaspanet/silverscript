@@ -2,8 +2,8 @@
 
 This book explains two SilverScript examples together:
 
-- `silverscript-lang/tests/examples/kcc20.sil`
-- `silverscript-lang/tests/examples/kcc20-minter.sil`
+- `silverscript-lang/tests/examples/kcc20.sil` [[Link]](https://github.com/kaspanet/silverscript/blob/cd3857d93e53c320d2a8b8eebb391773a12b38f4/silverscript-lang/tests/examples/kcc20.sil)
+- `silverscript-lang/tests/examples/kcc20-minter.sil` [[Link]](https://github.com/kaspanet/silverscript/blob/cd3857d93e53c320d2a8b8eebb391773a12b38f4/silverscript-lang/tests/examples/kcc20-minter.sil)
 
 Together they form a worked example of a covenant-controlled fungible token system in SilverScript.
 

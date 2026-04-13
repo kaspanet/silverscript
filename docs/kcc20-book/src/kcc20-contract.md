@@ -1,6 +1,6 @@
 # The KCC20 Contract
 
-Source: `silverscript-lang/tests/examples/kcc20.sil`
+Source: `silverscript-lang/tests/examples/kcc20.sil` [[Link]](https://github.com/kaspanet/silverscript/blob/cd3857d93e53c320d2a8b8eebb391773a12b38f4/silverscript-lang/tests/examples/kcc20.sil)
 
 ## Full Source
 

@@ -2,7 +2,7 @@
 
 This chapter explains each KCC20 example flow by first showing the test that exercises it, then summarizing what that flow is meant to demonstrate at a high level.
 
-All of the attached test code in this chapter comes from `silverscript-lang/tests/kcc20_tests.rs`. If you want to inspect the source directly in the repository, that is the file to open.
+All of the attached test code in this chapter comes from `silverscript-lang/tests/kcc20_tests.rs` [[Link]](https://github.com/kaspanet/silverscript/blob/cd3857d93e53c320d2a8b8eebb391773a12b38f4/silverscript-lang/tests/kcc20_tests.rs). If you want to inspect the source directly in the repository, that is the file to open.
 
 ## `kcc20_can_split_then_merge_tokens_with_two_way_fanout`
 
