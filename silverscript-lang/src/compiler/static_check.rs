@@ -1328,7 +1328,7 @@ fn statement_contains_return(stmt: &Statement<'_>) -> bool {
     }
 }
 
-pub(super) fn expr_matches_declared_type_ref<'i>(expr: &Expr<'i>, type_ref: &TypeRef, structs: &StructRegistry) -> bool {
+pub(crate) fn expr_matches_declared_type_ref<'i>(expr: &Expr<'i>, type_ref: &TypeRef, structs: &StructRegistry) -> bool {
     if let Some(struct_name) = struct_name_from_type_ref(type_ref, structs) {
         let Some(item) = structs.get(struct_name) else {
             return false;

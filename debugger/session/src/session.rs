@@ -9,7 +9,8 @@ use kaspa_txscript::{DynOpcodeImplementation, EngineCtx, EngineFlags, TxScriptEn
 use serde::{Deserialize, Serialize};
 
 use silverscript_lang::ast::{
-    Expr, ExprKind, StateFieldExpr, TypeBase, UnarySuffixKind, parse_contract_ast, parse_expression_ast, parse_type_ref,
+    ContractAst, Expr, ExprKind, StateFieldExpr, TypeBase, TypeRef, UnarySuffixKind, parse_contract_ast, parse_expression_ast,
+    parse_type_ref,
 };
 use silverscript_lang::compiler::{compile_debug_expr, flattened_struct_name};
 use silverscript_lang::debug_info::{
@@ -18,6 +19,7 @@ use silverscript_lang::debug_info::{
 };
 use silverscript_lang::span;
 
+use crate::covenant::{CovenantBinding, ResolvedCovenantCallTarget};
 pub use crate::presentation::{SourceContext, SourceContextLine};
 use crate::presentation::{build_source_context, format_value as format_debug_value};
 use crate::util::{decode_i64, encode_hex, fixed_array_element_size};
@@ -136,7 +138,10 @@ pub struct DebugSession<'a, 'i> {
     script_len: usize,
     pc: usize,
     debug_info: DebugInfo<'i>,
+    contract_ast: Option<ContractAst<'i>>,
     function_param_counts: HashMap<String, usize>,
+    active_covenant_call: Option<ResolvedCovenantCallTarget>,
+    covenant_param_value: Option<DebugValue>,
     step_order: Vec<usize>,
     current_step_index: Option<usize>,
     source_lines: Vec<String>,
@@ -153,15 +158,15 @@ struct ShadowBindingValue {
     value: Vec<u8>,
 }
 
-struct VariableContext<'a> {
-    function_name: &'a str,
+struct VariableContext {
+    function_name: String,
     function_start: usize,
     function_end: usize,
     step_id: StepId,
 }
 
-struct VisibleScope<'a, 'i> {
-    context: VariableContext<'a>,
+struct VisibleScope<'i> {
+    context: VariableContext,
     updates: HashMap<String, DebugVariableUpdate<'i>>,
 }
 
@@ -170,6 +175,7 @@ enum ScopeValueSource<'i> {
     RuntimeSlot { from_top: i64 },
     StructuredBinding { base_name: String, leaf_bindings: Vec<DebugLeafBinding> },
     Expr(Expr<'i>),
+    Unavailable { message: String },
 }
 
 #[derive(Clone)]
@@ -195,7 +201,7 @@ impl<'a, 'i> DebugSession<'a, 'i> {
     pub fn full(
         sigscript: &[u8],
         lockscript: &[u8],
-        source: &str,
+        source: &'i str,
         debug_info: Option<DebugInfo<'i>>,
         mut engine: DebugEngine<'a>,
     ) -> Result<Self, kaspa_txscript_errors::TxScriptError> {
@@ -206,14 +212,15 @@ impl<'a, 'i> DebugSession<'a, 'i> {
     /// Internal constructor: parses script, prepares opcodes, extracts statement steps.
     pub fn from_scripts(
         script: &[u8],
-        source: &str,
+        source: &'i str,
         debug_info: Option<DebugInfo<'i>>,
         engine: DebugEngine<'a>,
     ) -> Result<Self, kaspa_txscript_errors::TxScriptError> {
         let debug_info = debug_info.unwrap_or_else(DebugInfo::empty);
-        let function_param_counts = parse_contract_ast(source)
-            .ok()
-            .map(|contract| contract.functions.into_iter().map(|function| (function.name, function.params.len())).collect())
+        let contract_ast = parse_contract_ast(source).ok();
+        let function_param_counts = contract_ast
+            .as_ref()
+            .map(|contract| contract.functions.iter().map(|function| (function.name.clone(), function.params.len())).collect())
             .unwrap_or_default();
         let opcodes = parse_script::<DebugTx<'a>, DebugReused>(script).collect::<Result<Vec<_>, _>>()?;
         let op_displays = opcodes.iter().map(|op| format!("{op:?}")).collect();
@@ -238,7 +245,10 @@ impl<'a, 'i> DebugSession<'a, 'i> {
             script_len,
             pc: 0,
             debug_info,
+            contract_ast,
             function_param_counts,
+            active_covenant_call: None,
+            covenant_param_value: None,
             step_order,
             current_step_index: None,
             source_lines,
@@ -264,6 +274,12 @@ impl<'a, 'i> DebugSession<'a, 'i> {
 
     pub fn with_shadow_tx_context(mut self, shadow_tx_context: ShadowTxContext<'a>) -> Self {
         self.shadow_tx_context = Some(shadow_tx_context);
+        self
+    }
+
+    pub fn with_covenant_mode(mut self, param_value: Option<DebugValue>, active_call: Option<ResolvedCovenantCallTarget>) -> Self {
+        self.covenant_param_value = param_value;
+        self.active_covenant_call = active_call;
         self
     }
 
@@ -396,7 +412,7 @@ impl<'a, 'i> DebugSession<'a, 'i> {
             }
             let offset = self.current_byte_offset();
             if self.engine.is_executing() {
-                if let Some(index) = self.steppable_step_index_for_offset(offset, None) {
+                if let Some(index) = self.initial_step_index_for_offset(offset, None) {
                     self.mark_step_executed(index);
                     return Ok(Some(self.state()));
                 }
@@ -557,7 +573,7 @@ impl<'a, 'i> DebugSession<'a, 'i> {
         let mut stack = Vec::new();
         for step in self.active_steps() {
             match &step.kind {
-                StepKind::InlineCallEnter { callee } => stack.push(callee.clone()),
+                StepKind::InlineCallEnter { callee } => stack.push(self.display_function_name(callee)),
                 StepKind::InlineCallExit { .. } => {
                     stack.pop();
                 }
@@ -573,7 +589,7 @@ impl<'a, 'i> DebugSession<'a, 'i> {
         for step in self.active_steps() {
             match &step.kind {
                 StepKind::InlineCallEnter { callee } => stack.push(CallStackEntry {
-                    callee_name: callee.clone(),
+                    callee_name: self.display_function_name(callee),
                     call_site_span: Some(step.span),
                     sequence: step.sequence,
                     frame_id: step.frame_id,
@@ -588,28 +604,95 @@ impl<'a, 'i> DebugSession<'a, 'i> {
     }
 
     /// Returns the name of the function currently being executed.
-    pub fn current_function_name(&self) -> Option<&str> {
-        self.active_inline_callee_name().or_else(|| self.current_function_range().map(|range| range.name.as_str()))
+    pub fn current_function_name(&self) -> Option<String> {
+        self.current_compiled_function_name().map(|function_name| self.display_function_name(&function_name))
     }
 
-    fn active_inline_callee_name(&self) -> Option<&str> {
-        let mut active: Option<&str> = None;
-        for step in self.active_steps() {
-            match &step.kind {
-                StepKind::InlineCallEnter { callee } => active = Some(callee.as_str()),
-                StepKind::InlineCallExit { .. } => active = None,
-                _ => {}
+    fn current_compiled_function_name(&self) -> Option<String> {
+        self.compiled_function_name_for_step(self.current_scope_step_id())
+    }
+
+    fn function_range_for_step(&self, step_id: StepId) -> Option<&DebugFunctionRange> {
+        let offset = self
+            .debug_info
+            .steps
+            .iter()
+            .find(|step| step.id() == step_id)
+            .map(|step| step.bytecode_start)
+            .unwrap_or_else(|| self.current_byte_offset());
+        let mut best: Option<&DebugFunctionRange> = None;
+        let mut best_len = usize::MAX;
+        for function in &self.debug_info.functions {
+            if !range_matches_offset(function.bytecode_start, function.bytecode_end, offset) {
+                continue;
+            }
+            let len = function.bytecode_end.saturating_sub(function.bytecode_start);
+            if len < best_len {
+                best = Some(function);
+                best_len = len;
             }
         }
-        active
+        best
     }
 
-    fn current_function_range(&self) -> Option<&DebugFunctionRange> {
-        let offset = self.current_byte_offset();
-        self.debug_info.functions.iter().find(|function| offset >= function.bytecode_start && offset < function.bytecode_end)
+    fn compiled_function_name_for_step(&self, step_id: StepId) -> Option<String> {
+        let entrypoint = self.function_range_for_step(step_id)?;
+        if step_id.frame_id == 0 {
+            return Some(entrypoint.name.clone());
+        }
+
+        let mut active_calls = Vec::new();
+        let mut steps = self
+            .debug_info
+            .steps
+            .iter()
+            .filter(|step| {
+                step.sequence <= step_id.sequence
+                    && range_matches_offset(entrypoint.bytecode_start, entrypoint.bytecode_end, step.bytecode_start)
+            })
+            .collect::<Vec<_>>();
+        steps.sort_by_key(|step| step.sequence);
+
+        for step in steps {
+            match &step.kind {
+                StepKind::InlineCallEnter { callee } => active_calls.push((step.frame_id, callee.clone())),
+                StepKind::InlineCallExit { .. } => {
+                    active_calls.pop();
+                }
+                StepKind::Source {} => {}
+            }
+        }
+
+        active_calls
+            .into_iter()
+            .rev()
+            .find_map(|(frame_id, callee)| (frame_id == step_id.frame_id).then_some(callee))
+            .or_else(|| Some(entrypoint.name.clone()))
     }
 
-    fn current_variable_updates(&self, context: &VariableContext<'_>) -> HashMap<String, DebugVariableUpdate<'i>> {
+    fn active_covenant_call(&self) -> Option<&ResolvedCovenantCallTarget> {
+        self.active_covenant_call.as_ref()
+    }
+
+    fn display_function_name(&self, function_name: &str) -> String {
+        if self
+            .active_covenant_call()
+            .is_some_and(|call| call.policy_function_name == function_name || call.matches_generated_name(function_name))
+        {
+            return self
+                .active_covenant_call()
+                .map(ResolvedCovenantCallTarget::display_name)
+                .unwrap_or_else(|| function_name.to_string());
+        }
+        function_name.to_string()
+    }
+
+    fn is_hidden_debug_name(&self, name: &str) -> bool {
+        is_inline_synthetic_name(name)
+            || self.active_covenant_call().is_some_and(|_| name.starts_with("__cov_") || name.starts_with("__covenant_policy_"))
+    }
+
+    fn current_variable_updates(&self, context: &VariableContext) -> HashMap<String, DebugVariableUpdate<'i>> {
         let mut latest_by_name: HashMap<String, (u32, DebugVariableUpdate<'i>)> = HashMap::new();
         for step in self.debug_info.steps.iter().filter(|step| self.step_updates_are_visible(step, context)) {
             for update in &step.variable_updates {
@@ -636,14 +719,17 @@ impl<'a, 'i> DebugSession<'a, 'i> {
         latest_by_name.into_iter().map(|(name, (_, update))| (name, update)).collect()
     }
 
-    fn current_variable_context(&self, step_id: StepId) -> Result<VariableContext<'_>, String> {
-        let function = self.current_function_range().ok_or_else(|| "No function context available".to_string())?;
-        Ok(VariableContext {
-            function_name: function.name.as_str(),
-            function_start: function.bytecode_start,
-            function_end: function.bytecode_end,
-            step_id,
-        })
+    fn current_variable_context(&self, step_id: StepId) -> Result<VariableContext, String> {
+        let function_name =
+            self.compiled_function_name_for_step(step_id).ok_or_else(|| "No function context available".to_string())?;
+        let function = self
+            .debug_info
+            .functions
+            .iter()
+            .find(|function| function.name == function_name)
+            .or_else(|| self.function_range_for_step(step_id))
+            .ok_or_else(|| "No function context available".to_string())?;
+        Ok(VariableContext { function_name, function_start: function.bytecode_start, function_end: function.bytecode_end, step_id })
     }
 
     fn scope_state(&self, step_id: StepId) -> Result<ScopeState<'i>, String> {
@@ -652,12 +738,13 @@ impl<'a, 'i> DebugSession<'a, 'i> {
         Ok(self.scope_state_from_visible(&scope))
     }
 
-    fn scope_state_from_visible(&self, scope: &VisibleScope<'_, 'i>) -> ScopeState<'i> {
+    fn scope_state_from_visible(&self, scope: &VisibleScope<'i>) -> ScopeState<'i> {
         let mut bindings = HashMap::new();
         let current_stack_len = self.engine.stacks().dstack.len();
         let function_params: Vec<_> =
             self.debug_info.params.iter().filter(|param| param.function == scope.context.function_name).collect();
-        let source_param_count = self.function_param_counts.get(scope.context.function_name).copied().unwrap_or(function_params.len());
+        let source_param_count =
+            self.function_param_counts.get(scope.context.function_name.as_str()).copied().unwrap_or(function_params.len());
         let root_param_slot_count = function_params
             .iter()
             .map(|param| match &param.binding {
@@ -770,13 +857,13 @@ impl<'a, 'i> DebugSession<'a, 'i> {
                 .and_modify(|binding| {
                     binding.type_name = update.type_name.clone();
                     binding.source = source.clone();
-                    binding.hidden = is_inline_synthetic_name(name);
+                    binding.hidden = self.is_hidden_debug_name(name);
                 })
                 .or_insert_with(|| ScopeBinding {
                     type_name: update.type_name.clone(),
                     source,
                     origin: VariableOrigin::Local,
-                    hidden: is_inline_synthetic_name(name),
+                    hidden: self.is_hidden_debug_name(name),
                 });
 
             if let Some(leaf_bindings) = &update.structured_leaf_bindings
@@ -816,6 +903,7 @@ impl<'a, 'i> DebugSession<'a, 'i> {
             }
         }
 
+        self.inject_covenant_overlay_bindings(scope, &mut bindings);
         bindings
     }
 
@@ -825,6 +913,105 @@ impl<'a, 'i> DebugSession<'a, 'i> {
         };
         bindings.extend(snapshot.clone());
         snapshot.keys().cloned().collect()
+    }
+
+    fn inject_covenant_overlay_bindings(&self, scope: &VisibleScope<'i>, bindings: &mut ScopeState<'i>) {
+        let Some(binding_spec) = self.active_covenant_call().filter(|call| {
+            call.generated_entrypoint_name == scope.context.function_name
+                || call.policy_function_name == scope.context.function_name
+                || call.matches_generated_name(scope.context.function_name.as_str())
+        }) else {
+            return;
+        };
+        let Some(source_binding) = binding_spec.source_binding.as_ref() else {
+            return;
+        };
+        let state_param_type = match parse_type_ref(&source_binding.param_type_name) {
+            Ok(type_ref) => type_ref,
+            Err(_) => {
+                bindings.insert(
+                    source_binding.param_name.clone(),
+                    ScopeBinding {
+                        type_name: source_binding.param_type_name.clone(),
+                        source: ScopeValueSource::Unavailable {
+                            message: format!("failed to parse covenant state parameter type '{}'", source_binding.param_type_name),
+                        },
+                        origin: VariableOrigin::Param,
+                        hidden: false,
+                    },
+                );
+                return;
+            }
+        };
+
+        if let Some(value) = self.covenant_param_value.as_ref()
+            && self
+                .inject_debug_value_binding(bindings, &source_binding.param_name, &state_param_type, value, VariableOrigin::Param)
+                .is_some()
+        {
+            return;
+        }
+
+        let message = match binding_spec.binding {
+            CovenantBinding::Auth => "prev_state is unavailable".to_string(),
+            CovenantBinding::Cov => "prev_states is unavailable".to_string(),
+        };
+        bindings.insert(
+            source_binding.param_name.clone(),
+            ScopeBinding {
+                type_name: source_binding.param_type_name.clone(),
+                source: ScopeValueSource::Unavailable { message },
+                origin: VariableOrigin::Param,
+                hidden: false,
+            },
+        );
+    }
+
+    fn inject_debug_value_binding(
+        &self,
+        bindings: &mut ScopeState<'i>,
+        name: &str,
+        type_ref: &TypeRef,
+        value: &DebugValue,
+        origin: VariableOrigin,
+    ) -> Option<()> {
+        let type_name = type_ref.type_name();
+        let leaf_specs = flatten_contract_type_leaves(self.contract_ast.as_ref()?, type_ref).ok()?;
+        if leaf_specs.is_empty() {
+            let expr = debug_value_to_expr(value)?;
+            bindings.insert(name.to_string(), ScopeBinding { type_name, source: ScopeValueSource::Expr(expr), origin, hidden: false });
+            return Some(());
+        }
+
+        let leaf_bindings = leaf_specs
+            .iter()
+            .map(|(field_path, leaf_type)| DebugLeafBinding {
+                field_path: field_path.clone(),
+                type_name: leaf_type.type_name(),
+                stack_binding: None,
+            })
+            .collect::<Vec<_>>();
+
+        bindings.insert(
+            name.to_string(),
+            ScopeBinding {
+                type_name,
+                source: ScopeValueSource::StructuredBinding { base_name: name.to_string(), leaf_bindings: leaf_bindings.clone() },
+                origin,
+                hidden: false,
+            },
+        );
+
+        for (field_path, leaf_type) in leaf_specs {
+            let leaf_value = structured_leaf_value(value, &field_path)?;
+            let leaf_expr = debug_value_to_expr(&leaf_value)?;
+            let leaf_name = flattened_struct_name(name, &field_path);
+            bindings.insert(
+                leaf_name,
+                ScopeBinding { type_name: leaf_type.type_name(), source: ScopeValueSource::Expr(leaf_expr), origin, hidden: true },
+            );
+        }
+        Some(())
     }
 
     fn collect_variables_map(&self, scope_state: &ScopeState<'i>) -> HashMap<String, Variable> {
@@ -844,7 +1031,7 @@ impl<'a, 'i> DebugSession<'a, 'i> {
         variables
     }
 
-    fn step_updates_are_visible(&self, step: &DebugStep<'i>, context: &VariableContext<'_>) -> bool {
+    fn step_updates_are_visible(&self, step: &DebugStep<'i>, context: &VariableContext) -> bool {
         if step.bytecode_start < context.function_start || step.bytecode_start >= context.function_end {
             return false;
         }
@@ -856,7 +1043,7 @@ impl<'a, 'i> DebugSession<'a, 'i> {
             && step_id.sequence < context.step_id.sequence
     }
 
-    fn should_include_current_step_updates(&self, step: &DebugStep<'i>, context: &VariableContext<'_>) -> bool {
+    fn should_include_current_step_updates(&self, step: &DebugStep<'i>, context: &VariableContext) -> bool {
         matches!(step.kind, StepKind::Source {})
             && step.id() == context.step_id
             && self.current_step_index.is_some_and(|current_index| {
@@ -874,7 +1061,7 @@ impl<'a, 'i> DebugSession<'a, 'i> {
         &self,
         name: &str,
         max_sequence: u32,
-        context: &VariableContext<'_>,
+        context: &VariableContext,
         current_stack_height: usize,
     ) -> Option<DebugVariableUpdate<'i>> {
         let mut best: Option<(u32, DebugVariableUpdate<'i>)> = None;
@@ -1001,7 +1188,17 @@ impl<'a, 'i> DebugSession<'a, 'i> {
             return;
         }
 
-        let step_id = self.current_scope_step_id();
+        let step_id = self
+            .current_step_index
+            .map(|index| {
+                let parent_frame_id = if index == 0 {
+                    0
+                } else {
+                    self.step_at_order(index.saturating_sub(1)).map(|previous| previous.frame_id).unwrap_or(0)
+                };
+                StepId::new(step.sequence, parent_frame_id)
+            })
+            .unwrap_or_else(|| self.current_scope_step_id());
         let Ok(scope_state) = self.scope_state(step_id) else {
             return;
         };
@@ -1109,7 +1306,11 @@ impl<'a, 'i> DebugSession<'a, 'i> {
         // InlineCallEnter is steppable so `step_into` can land on a call
         // boundary and build call-stack transitions. InlineCallExit is not
         // steppable to avoid synthetic extra stops while unwinding.
-        matches!(&step.kind, StepKind::Source {} | StepKind::InlineCallEnter { .. })
+        match &step.kind {
+            StepKind::Source {} => self.active_covenant_call().is_none() || !is_synthetic_default_span(step.span),
+            StepKind::InlineCallEnter { .. } => true,
+            StepKind::InlineCallExit { .. } => false,
+        }
     }
 
     fn steppable_step_index_for_offset(&self, offset: usize, min_sequence: Option<u32>) -> Option<usize> {
@@ -1131,6 +1332,32 @@ impl<'a, 'i> DebugSession<'a, 'i> {
             range_matches_offset(step.bytecode_start, step.bytecode_end, offset)
                 && min_sequence.is_none_or(|min_sequence| step.sequence >= min_sequence)
         })
+    }
+
+    fn initial_step_index_for_offset(&self, offset: usize, min_sequence: Option<u32>) -> Option<usize> {
+        if self.active_covenant_call().is_none() {
+            return self.steppable_step_index_for_offset(offset, min_sequence);
+        }
+
+        let mut best: Option<(usize, u32, u32)> = None;
+        for (order_index, &step_index) in self.step_order.iter().enumerate() {
+            let Some(step) = self.debug_info.steps.get(step_index) else {
+                continue;
+            };
+            if !self.is_steppable_step(step)
+                || is_synthetic_default_span(step.span)
+                || !range_matches_offset(step.bytecode_start, step.bytecode_end, offset)
+                || min_sequence.is_some_and(|min_sequence| step.sequence < min_sequence)
+            {
+                continue;
+            }
+
+            match best {
+                Some((_, best_depth, best_sequence)) if (best_depth, best_sequence) <= (step.call_depth, step.sequence) => {}
+                _ => best = Some((order_index, step.call_depth, step.sequence)),
+            }
+        }
+        best.map(|(order_index, _, _)| order_index)
     }
 
     fn find_steppable_step_index(&self, predicate: impl Fn(&DebugStep<'i>) -> bool) -> Option<usize> {
@@ -1343,14 +1570,14 @@ impl<'a, 'i> DebugSession<'a, 'i> {
     pub fn build_failure_report(&self, error: &kaspa_txscript_errors::TxScriptError) -> FailureReport {
         let failure_span = self.current_span();
         let call_stack = self.call_stack_with_spans();
-        let innermost_function = self.current_function_name().unwrap_or("<unknown>").to_string();
+        let innermost_function = self.current_function_name().unwrap_or_else(|| "<unknown>".to_string());
         let innermost_vars: Vec<Variable> =
             self.list_variables().unwrap_or_default().into_iter().filter(|v| v.origin != VariableOrigin::Constant).collect();
 
         let mut frames =
             vec![FailureFrame { function_name: innermost_function.clone(), span: failure_span, variables: innermost_vars }];
 
-        let entry_name = self.current_function_name().unwrap_or("<entry>").to_string();
+        let entry_name = self.current_function_name().unwrap_or_else(|| "<entry>".to_string());
         for idx in (0..call_stack.len()).rev() {
             let entry = &call_stack[idx];
             let caller_vars: Vec<Variable> = self
@@ -1377,6 +1604,7 @@ impl<'a, 'i> DebugSession<'a, 'i> {
                 self.read_structured_binding_value(scope_state, base_name, &binding.type_name, leaf_bindings)
             }
             ScopeValueSource::Expr(expr) => self.evaluate_scope_expr_as(scope_state, expr, &binding.type_name),
+            ScopeValueSource::Unavailable { message } => Err(message.clone()),
         }
     }
 
@@ -1435,6 +1663,7 @@ impl<'a, 'i> DebugSession<'a, 'i> {
                 ScopeValueSource::Expr(expr) => {
                     env.insert(name.clone(), expr.clone());
                 }
+                ScopeValueSource::Unavailable { .. } => {}
             }
         }
 
@@ -1560,6 +1789,7 @@ impl<'a, 'i> DebugSession<'a, 'i> {
                 self.read_structured_binding_value(scope_state, base_name, &binding.type_name, leaf_bindings).ok()
             }
             ScopeValueSource::Expr(expr) => self.try_resolve_expr_value(scope_state, expr, visiting),
+            ScopeValueSource::Unavailable { .. } => None,
         }
     }
 
@@ -1802,6 +2032,55 @@ fn debug_value_to_expr<'i>(value: &DebugValue) -> Option<Expr<'i>> {
     }
 }
 
+fn flatten_contract_type_leaves<'i>(contract: &ContractAst<'i>, type_ref: &TypeRef) -> Result<Vec<(Vec<String>, TypeRef)>, String> {
+    if type_ref.is_array() {
+        let Some(element_type) = type_ref.element_type() else {
+            return Ok(Vec::new());
+        };
+        let nested = flatten_contract_type_leaves(contract, &element_type)?;
+        return Ok(nested
+            .into_iter()
+            .map(|(path, leaf_type)| {
+                let mut array_leaf = leaf_type;
+                array_leaf.array_dims.insert(0, type_ref.array_dims[0].clone());
+                (path, array_leaf)
+            })
+            .collect());
+    }
+
+    let struct_name = match &type_ref.base {
+        TypeBase::Custom(name) => name,
+        _ => return Ok(Vec::new()),
+    };
+    let fields = if struct_name == "State" {
+        contract.fields.iter().map(|field| (field.name.clone(), field.type_ref.clone())).collect::<Vec<_>>()
+    } else {
+        contract
+            .structs
+            .iter()
+            .find(|item| item.name == *struct_name)
+            .ok_or_else(|| format!("unknown struct type '{struct_name}'"))?
+            .fields
+            .iter()
+            .map(|field| (field.name.clone(), field.type_ref.clone()))
+            .collect::<Vec<_>>()
+    };
+
+    let mut leaves = Vec::new();
+    for (field_name, field_type) in fields {
+        let nested = flatten_contract_type_leaves(contract, &field_type)?;
+        if nested.is_empty() {
+            leaves.push((vec![field_name], field_type));
+            continue;
+        }
+        for (mut path, leaf_type) in nested {
+            path.insert(0, field_name.clone());
+            leaves.push((path, leaf_type));
+        }
+    }
+    Ok(leaves)
+}
+
 /// Executes sigscript to seed the stack before debugging lockscript.
 fn seed_engine_with_sigscript(engine: &mut DebugEngine<'_>, sigscript: &[u8]) -> Result<(), kaspa_txscript_errors::TxScriptError> {
     for opcode in parse_script::<DebugTx<'_>, DebugReused>(sigscript) {
@@ -1832,6 +2111,10 @@ fn step_kind_order(kind: &StepKind) -> u8 {
 
 fn range_matches_offset(bytecode_start: usize, bytecode_end: usize, offset: usize) -> bool {
     if bytecode_start == bytecode_end { offset == bytecode_start } else { offset >= bytecode_start && offset < bytecode_end }
+}
+
+fn is_synthetic_default_span(span: SourceSpan) -> bool {
+    span.line == 1 && span.col == 1 && span.end_line == 1 && span.end_col == 1
 }
 
 fn map_expr_children_for_eval<'i, F>(expr: &'i Expr<'i>, map_child: &mut F) -> Result<Expr<'i>, String>

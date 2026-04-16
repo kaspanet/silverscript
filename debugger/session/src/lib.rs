@@ -1,4 +1,5 @@
 pub mod args;
+pub mod covenant;
 pub mod presentation;
 pub mod session;
 pub mod test_runner;

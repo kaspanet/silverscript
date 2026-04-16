@@ -265,6 +265,171 @@ contract StructuredCtor(Pair seed) {
     )
 }
 
+fn write_covenant_debug_fixture() -> (std::path::PathBuf, std::path::PathBuf) {
+    write_fixture_files(
+        "cov_debug_demo.sil",
+        "cov_debug_demo.test.json",
+        r#"pragma silverscript ^0.1.0;
+
+contract CovDebugDemo(int initial_value) {
+    int value = initial_value;
+
+    #[covenant(binding = cov, from = 2, to = 2, mode = verification)]
+    function rebalance(State[] prev_states, State[] new_states) {
+        require(prev_states.length == 2);
+        require(prev_states[0].value == 10);
+        require(prev_states[1].value == 20);
+        require(new_states.length == 2);
+    }
+}
+"#,
+        r#"{
+  "tests": [
+    {
+      "name": "source_leader",
+      "function": "rebalance",
+      "expect": "pass",
+      "tx": {
+        "active_input_index": 0,
+        "inputs": [
+          {
+            "utxo_value": 5000,
+            "covenant_id": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "constructor_args": [10]
+          },
+          {
+            "utxo_value": 5000,
+            "covenant_id": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "constructor_args": [20]
+          }
+        ],
+        "outputs": [
+          {
+            "value": 5000,
+            "covenant_id": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "authorizing_input": 0,
+            "constructor_args": [30]
+          },
+          {
+            "value": 5000,
+            "covenant_id": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "authorizing_input": 0,
+            "constructor_args": [40]
+          }
+        ]
+      }
+    },
+    {
+      "name": "source_delegate",
+      "function": "rebalance",
+      "expect": "pass",
+      "tx": {
+        "active_input_index": 1,
+        "inputs": [
+          {
+            "utxo_value": 5000,
+            "covenant_id": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "constructor_args": [10]
+          },
+          {
+            "utxo_value": 5000,
+            "covenant_id": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "constructor_args": [20]
+          }
+        ],
+        "outputs": [
+          {
+            "value": 5000,
+            "covenant_id": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "authorizing_input": 0,
+            "constructor_args": [30]
+          },
+          {
+            "value": 5000,
+            "covenant_id": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "authorizing_input": 0,
+            "constructor_args": [40]
+          }
+        ]
+      }
+    }
+  ]
+}
+"#,
+    )
+}
+
+fn write_state_first_auth_transition_fixture() -> (std::path::PathBuf, std::path::PathBuf) {
+    write_fixture_files(
+        "state_first_transition.sil",
+        "state_first_transition.test.json",
+        r#"pragma silverscript ^0.1.0;
+
+contract CovDebugDemo(int initial_value) {
+    int value = initial_value;
+
+    #[covenant(binding = auth, from = 1, to = 1, mode = transition)]
+    function rebalance(State prev_state, int delta) : (State) {
+        return({ value: prev_state.value + delta });
+    }
+}
+"#,
+        r#"{
+  "tests": [
+    {
+      "name": "state_first_pass",
+      "function": "rebalance",
+      "constructor_args": [10],
+      "args": [5],
+      "expect": "pass",
+      "tx": {
+        "inputs": [
+          {
+            "utxo_value": 5000,
+            "covenant_id": "0x0000000000000000000000000000000000000000000000000000000000000001",
+            "state": { "value": 10 }
+          }
+        ],
+        "outputs": [
+          {
+            "value": 5000,
+            "covenant_id": "0x0000000000000000000000000000000000000000000000000000000000000001",
+            "authorizing_input": 0,
+            "state": { "value": 15 }
+          }
+        ]
+      }
+    },
+    {
+      "name": "state_first_fail",
+      "function": "rebalance",
+      "constructor_args": [10],
+      "args": [5],
+      "expect": "fail",
+      "tx": {
+        "inputs": [
+          {
+            "utxo_value": 5000,
+            "covenant_id": "0x0000000000000000000000000000000000000000000000000000000000000001",
+            "state": { "value": 10 }
+          }
+        ],
+        "outputs": [
+          {
+            "value": 5000,
+            "covenant_id": "0x0000000000000000000000000000000000000000000000000000000000000001",
+            "authorizing_input": 0,
+            "state": { "value": 16 }
+          }
+        ]
+      }
+    }
+  ]
+}
+"#,
+    )
+}
+
 #[test]
 fn cli_debugger_repl_all_commands_smoke() {
     let tmp = std::env::temp_dir().join("cli_test_if_statement.sil");
@@ -368,7 +533,41 @@ fn cli_debugger_eval_command_reports_results_and_errors() {
 }
 
 #[test]
-fn cli_debugger_interactive_prints_console_logs_automatically() {
+fn cli_debugger_interactive_defers_console_logs_until_after_stepping_past_log_statement() {
+    let (script_path, _test_file_path) = write_logging_test_fixture();
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_cli-debugger"))
+        .arg(&script_path)
+        .arg("--function")
+        .arg("check")
+        .arg("--ctor-arg")
+        .arg("5")
+        .arg("--arg")
+        .arg("4")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn cli-debugger");
+
+    child.stdin.as_mut().expect("stdin available").write_all(b"n\nq\n").expect("write stdin");
+
+    let output = child.wait_with_output().expect("wait for cli-debugger");
+    assert!(output.status.success(), "cli-debugger exited with status {:?}", output.status.code());
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let second_log_line = "→    6 |         console.log(\"sum\", seed + a);";
+
+    assert!(stderr.is_empty(), "unexpected stderr: {stderr}");
+    let line_index = stdout.find(second_log_line).expect("missing second console.log stop");
+    let seed_index = stdout.find("seed 5").expect("missing first console log after stepping");
+    assert!(line_index < seed_index, "console output should render after stepping past its source line: {stdout}");
+    assert!(!stdout.contains("sum 9"), "second console log should stay deferred until the next stop: {stdout}");
+}
+
+#[test]
+fn cli_debugger_interactive_does_not_print_console_output_before_stepping() {
     let (script_path, _test_file_path) = write_logging_test_fixture();
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_cli-debugger"))
@@ -394,7 +593,8 @@ fn cli_debugger_interactive_prints_console_logs_automatically() {
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     assert!(stderr.is_empty(), "unexpected stderr: {stderr}");
-    assert!(stdout.contains("seed 5"), "missing first console log: {stdout}");
+    assert!(!stdout.contains("seed 5"), "startup should not print deferred console output: {stdout}");
+    assert!(!stdout.contains("Console:"), "console section should not render without output: {stdout}");
 }
 
 #[test]
@@ -413,7 +613,7 @@ fn cli_debugger_interactive_does_not_duplicate_startup_console_logs_for_structur
         .spawn()
         .expect("failed to spawn cli-debugger");
 
-    child.stdin.as_mut().expect("stdin available").write_all(b"q\n").expect("write stdin");
+    child.stdin.as_mut().expect("stdin available").write_all(b"n\nq\n").expect("write stdin");
 
     let output = child.wait_with_output().expect("wait for cli-debugger");
     assert!(output.status.success(), "cli-debugger exited with status {:?}", output.status.code());
@@ -550,6 +750,43 @@ fn cli_debugger_evals_structured_state_expressions() {
     assert!(stdout.contains("next_state = (State) {amount: 5, active: true, tag: 0xaa}"), "missing state eval output: {stdout}");
     assert!(stdout.contains("next_state.amount = (int) 5"), "missing state field eval output: {stdout}");
     assert!(stdout.contains("next_state.amount + amount = (int) 6"), "missing state arithmetic eval output: {stdout}");
+}
+
+#[test]
+fn cli_debugger_vars_split_constructor_args_from_constants() {
+    let script_path = write_debug_state_fixture();
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_cli-debugger"))
+        .arg(&script_path)
+        .arg("--function")
+        .arg("inspect_state")
+        .arg("--ctor-arg")
+        .arg("4")
+        .arg("--arg")
+        .arg(r#"{"amount":5,"active":true,"tag":"0xaa"}"#)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn cli-debugger");
+
+    let input = b"vars\nq\n";
+    child.stdin.as_mut().expect("stdin available").write_all(input).expect("write stdin");
+
+    let output = child.wait_with_output().expect("wait for cli-debugger");
+    assert!(output.status.success(), "cli-debugger exited with status {:?}", output.status.code());
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(stderr.is_empty(), "unexpected stderr: {stderr}");
+    assert!(stdout.contains("Constructor Args:"), "missing constructor args section: {stdout}");
+    assert!(stdout.contains("ctor_x (int) = 4"), "missing constructor arg value: {stdout}");
+    assert!(stdout.contains("Constants:"), "missing constants section: {stdout}");
+    assert!(stdout.contains("const_y (int) = 5"), "missing constant value: {stdout}");
+    assert!(stdout.contains("Contract State:"), "missing contract state section: {stdout}");
+    assert!(stdout.contains("Call Arguments:"), "missing call arguments section: {stdout}");
+    assert!(!stdout.contains("Contract Constants:"), "legacy merged section should not appear: {stdout}");
 }
 
 #[test]
@@ -826,4 +1063,103 @@ fn cli_debugger_test_name_requires_script_path_or_test_file() {
     assert!(!output.status.success(), "expected failure when neither script path nor test file is provided");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("--test-name requires --test-file or SCRIPT_PATH"), "unexpected stderr: {stderr}");
+}
+
+#[test]
+fn cli_debugger_runs_source_level_covenant_tests() {
+    let (script_path, test_file_path) = write_covenant_debug_fixture();
+
+    for test_name in ["source_leader", "source_delegate"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_cli-debugger"))
+            .arg(&script_path)
+            .arg("--run")
+            .arg("--test-file")
+            .arg(&test_file_path)
+            .arg("--test-name")
+            .arg(test_name)
+            .output()
+            .expect("run covenant debug test");
+
+        assert!(
+            output.status.success(),
+            "expected success for {test_name}, status={:?}, stderr={}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("PASS"), "missing PASS output for {test_name}: {stdout}");
+    }
+}
+
+#[test]
+fn cli_debugger_interactive_covenant_session_uses_source_level_prev_states() {
+    let (script_path, test_file_path) = write_covenant_debug_fixture();
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_cli-debugger"))
+        .arg(&script_path)
+        .arg("--test-file")
+        .arg(&test_file_path)
+        .arg("--test-name")
+        .arg("source_leader")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn cli-debugger");
+
+    let input = br#"b 10
+c
+vars
+p prev_states
+eval prev_states[0].value
+q
+"#;
+    child.stdin.as_mut().expect("stdin available").write_all(input).expect("write stdin");
+
+    let output = child.wait_with_output().expect("wait for cli-debugger");
+    assert!(output.status.success(), "cli-debugger exited with status {:?}", output.status.code());
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(stderr.is_empty(), "unexpected stderr: {stderr}");
+    assert!(stdout.contains("→    8 |         require(prev_states.length == 2);"), "missing first real source line: {stdout}");
+    assert!(stdout.contains("Breakpoint set at line 10"), "missing covenant breakpoint feedback: {stdout}");
+    assert!(stdout.contains("→   10 |         require(prev_states[1].value == 20);"), "missing covenant breakpoint stop: {stdout}");
+    assert!(stdout.contains("prev_states (State[]) = [{value: 10}, {value: 20}]"), "missing prev_states value: {stdout}");
+    assert!(stdout.contains("prev_states[0].value = (int) 10"), "missing prev_states eval output: {stdout}");
+    assert!(stdout.contains("new_states (State[]) = [{value: 30}, {value: 40}]"), "missing new_states value: {stdout}");
+    assert!(stdout.contains("Constructor Args:"), "missing constructor args section: {stdout}");
+    assert!(stdout.contains("Call Arguments:"), "missing call arguments section: {stdout}");
+    assert!(stdout.contains("value (int) = 10"), "missing contract field value: {stdout}");
+    assert!(!stdout.contains("__cov_id"), "synthetic covenant locals should stay hidden from vars: {stdout}");
+}
+
+#[test]
+fn cli_debugger_supports_state_first_auth_transition_fixtures() {
+    let (script_path, test_file_path) = write_state_first_auth_transition_fixture();
+
+    let pass = Command::new(env!("CARGO_BIN_EXE_cli-debugger"))
+        .arg(&script_path)
+        .arg("--run")
+        .arg("--test-file")
+        .arg(&test_file_path)
+        .arg("--test-name")
+        .arg("state_first_pass")
+        .output()
+        .expect("run state_first_pass");
+    assert!(pass.status.success(), "expected pass fixture to succeed: {}", String::from_utf8_lossy(&pass.stderr));
+
+    let fail = Command::new(env!("CARGO_BIN_EXE_cli-debugger"))
+        .arg(&script_path)
+        .arg("--run")
+        .arg("--test-file")
+        .arg(&test_file_path)
+        .arg("--test-name")
+        .arg("state_first_fail")
+        .output()
+        .expect("run state_first_fail");
+    assert!(fail.status.success(), "expected fail fixture to be treated as passing test: {}", String::from_utf8_lossy(&fail.stderr));
+    let stdout = String::from_utf8_lossy(&fail.stdout);
+    assert!(stdout.contains("PASS (expected failure)"), "missing expected-failure marker: {stdout}");
 }
