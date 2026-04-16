@@ -913,7 +913,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
 
         tx_inputs.push(TransactionInput {
-            previous_outpoint: input_prev_outpoints[input_idx].clone(),
+            previous_outpoint: input_prev_outpoints[input_idx],
             signature_script,
             sequence: input_sequences[input_idx],
             sig_op_count: input_sig_op_counts[input_idx],
