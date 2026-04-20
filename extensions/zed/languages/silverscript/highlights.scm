@@ -12,6 +12,12 @@
 
 (type_name) @type
 
+(struct_definition
+  name: (identifier) @type)
+
+(struct_field_definition
+  name: (identifier) @property)
+
 (instantiation
   (identifier) @type.builtin
   (#match? @type.builtin
@@ -25,6 +31,13 @@
 
 (function_definition
   name: (identifier) @function)
+
+(builtin_function_declaration
+  name: (identifier) @function.builtin)
+
+(function_attribute
+  (attribute_path
+    (identifier) @attribute))
 
 (constant_definition
   name: (identifier) @constant)
@@ -69,10 +82,14 @@
   (type_name)
   (identifier) @variable)
 
+(field_access
+  "." @operator
+  name: (identifier) @property)
+
 (function_call
   (identifier) @function.builtin
   (#match? @function.builtin
-    "^(readInputState|readInputStateWithTemplate|validateOutputState|validateOutputStateWithTemplate|verifyOutputState|verifyOutputStates|OpSha256|sha256|OpTxSubnetId|OpTxGas|OpTxPayloadLen|OpTxPayloadSubstr|OpOutpointTxId|OpOutpointIndex|OpTxInputScriptSigLen|OpTxInputScriptSigSubstr|OpTxInputSeq|OpTxInputIsCoinbase|OpTxInputSpkLen|OpTxInputSpkSubstr|OpTxOutputSpkLen|OpTxOutputSpkSubstr|OpAuthOutputCount|OpAuthOutputIdx|OpInputCovenantId|OpOutputCovenantId|OpCovInputCount|OpCovInputIdx|OpCovOutputCount|OpCovOutputIdx|OpNum2Bin|OpBin2Num|OpChainblockSeqCommit|checkDataSig|checkSig|checkMultiSig|blake2b)$"))
+    "^(readInputState|readInputStateWithTemplate|validateOutputState|validateOutputStateWithTemplate|verifyOutputState|verifyOutputStates|OpSha256|sha256|OpTxSubnetId|OpTxGas|OpTxPayloadLen|OpTxPayloadSubstr|OpOutpointTxId|OpOutpointIndex|OpTxInputScriptSigLen|OpTxInputScriptSigSubstr|OpTxInputSeq|OpTxInputDaaScore|OpTxInputIsCoinbase|OpTxInputSpkLen|OpTxInputSpkSubstr|OpTxOutputSpkLen|OpTxOutputSpkSubstr|OpAuthOutputCount|OpAuthOutputIdx|OpInputCovenantId|OpOutputCovenantId|OpCovInputCount|OpCovInputIdx|OpCovOutputCount|OpCovOutputIdx|OpNum2Bin|OpBin2Num|OpChainblockSeqCommit|bytes|length|checkDataSig|checkSig|checkMultiSig|blake2b)$"))
 
 (unary_suffix) @property
 
@@ -91,6 +108,7 @@
   "pragma"
   "silverscript"
   "contract"
+  "struct"
   "entrypoint"
   "function"
   "constant"
