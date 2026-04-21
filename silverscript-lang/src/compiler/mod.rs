@@ -11,7 +11,7 @@ use crate::ast::{
 use crate::debug_info::DebugInfo;
 pub use crate::errors::{CompilerError, ErrorSpan};
 use crate::span;
-mod array_push;
+mod array_append;
 mod compile;
 mod covenant_declarations;
 mod debug_recording;
@@ -24,7 +24,6 @@ mod stack_bindings;
 mod static_check;
 mod structs;
 
-use array_push::lower_array_pushes;
 use compile::compile_contract_impl;
 pub(super) use compile::{array_element_type, eval_const_int, is_bytes_type, type_name_from_ref};
 pub use compile::{compile_debug_expr, function_branch_index};

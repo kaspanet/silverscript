@@ -570,7 +570,7 @@ Format: `YYYY-MM-DDThh:mm:ss`
 
 ### Arrays
 
-SilverScript supports both direct array initialization and dynamic building with `.push()`:
+SilverScript supports both direct array initialization and dynamic building with `.append()`:
 
 ```javascript
 // Direct initialization (size inferred from literals)
@@ -581,18 +581,14 @@ byte[] data = 0x1234abcd;         // inferred as byte[4]
 int[4] fixedNums = [1, 2, 3, 4];
 byte[4] tag = 0x01020304;
 
-// Dynamic building with push
+// Dynamic building with append
 int[] numbers;
-numbers.push(1);
-numbers.push(2);
-numbers.push(3);
-numbers.push(4);
-numbers.push(5);
+numbers = numbers.append(1, 2, 3, 4, 5);
 
 // Build byte[32] array dynamically
 byte[32][] hashes;
-hashes.push(0x1111111111111111111111111111111111111111111111111111111111111111);
-hashes.push(0x2222222222222222222222222222222222222222222222222222222222222222);
+hashes = hashes.append(0x1111111111111111111111111111111111111111111111111111111111111111);
+hashes = hashes.append(0x2222222222222222222222222222222222222222222222222222222222222222);
 
 // Access array elements
 int first = numbers[0];

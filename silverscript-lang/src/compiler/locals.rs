@@ -85,15 +85,6 @@ fn lower_statements<'i>(
                     right_name_span: *right_name_span,
                 });
             }
-            Statement::ArrayPush { name, expr, span, name_span } => {
-                local_aliases.remove(name);
-                lowered.push(Statement::ArrayPush {
-                    name: name.clone(),
-                    expr: substitute_expr(expr, &local_aliases)?,
-                    span: *span,
-                    name_span: *name_span,
-                });
-            }
             Statement::FunctionCall { name, args, span, name_span } => lowered.push(Statement::FunctionCall {
                 name: name.clone(),
                 args: args.iter().map(|arg| substitute_expr(arg, &local_aliases)).collect::<Result<Vec<_>, _>>()?,
@@ -301,6 +292,14 @@ fn substitute_expr<'i>(expr: &Expr<'i>, aliases: &HashMap<String, Expr<'i>>) -> 
             },
             span,
         ),
+        ExprKind::Append { source, args, span: append_span } => Expr::new(
+            ExprKind::Append {
+                source: Box::new(substitute_expr(&source, aliases)?),
+                args: args.iter().map(|arg| substitute_expr(arg, aliases)).collect::<Result<Vec<_>, _>>()?,
+                span: append_span,
+            },
+            span,
+        ),
         other => Expr::new(other, span),
     })
 }
@@ -340,7 +339,6 @@ fn collect_statement_identifier_uses<'i>(stmt: &Statement<'i>, uses: &mut HashMa
                 collect_statement_identifier_uses(stmt, uses);
             }
         }
-        Statement::ArrayPush { expr, .. } => collect_expr_identifier_uses(expr, uses),
         Statement::FunctionCall { args, .. }
         | Statement::FunctionCallAssign { args, .. }
         | Statement::StateFunctionCallAssign { args, .. } => {
@@ -388,6 +386,12 @@ fn collect_expr_identifier_uses<'i>(expr: &Expr<'i>, uses: &mut HashMap<String, 
             collect_expr_identifier_uses(left, uses);
             collect_expr_identifier_uses(right, uses);
         }
+        ExprKind::Append { source, args, .. } => {
+            collect_expr_identifier_uses(source, uses);
+            for arg in args {
+                collect_expr_identifier_uses(arg, uses);
+            }
+        }
         ExprKind::IfElse { condition, then_expr, else_expr } => {
             collect_expr_identifier_uses(condition, uses);
             collect_expr_identifier_uses(then_expr, uses);
@@ -434,6 +438,9 @@ fn expr_references_any(expr: &Expr<'_>, names: &HashSet<String>) -> bool {
         ExprKind::Identifier(name) => names.contains(name),
         ExprKind::Unary { expr, .. } => expr_references_any(expr, names),
         ExprKind::Binary { left, right, .. } => expr_references_any(left, names) || expr_references_any(right, names),
+        ExprKind::Append { source, args, .. } => {
+            expr_references_any(source, names) || args.iter().any(|arg| expr_references_any(arg, names))
+        }
         ExprKind::IfElse { condition, then_expr, else_expr } => {
             expr_references_any(condition, names) || expr_references_any(then_expr, names) || expr_references_any(else_expr, names)
         }
@@ -461,7 +468,7 @@ fn expr_references_any(expr: &Expr<'_>, names: &HashSet<String>) -> bool {
 fn collect_assigned_names_into<'i>(statements: &[Statement<'i>], assigned: &mut HashSet<String>) {
     for stmt in statements {
         match stmt {
-            Statement::Assign { name, .. } | Statement::ArrayPush { name, .. } => {
+            Statement::Assign { name, .. } => {
                 assigned.insert(name.clone());
             }
             Statement::Block { body, .. } => collect_assigned_names_into(body, assigned),

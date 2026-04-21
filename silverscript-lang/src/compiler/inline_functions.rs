@@ -175,19 +175,6 @@ impl<'i, 'd> Inliner<'i, 'd> {
                     },
                 );
             }
-            Statement::ArrayPush { name, expr, span, name_span } => {
-                let (prelude, renamed_expr) = self.lower_expr(expr, scope, visited_functions)?;
-                lowered.extend(prelude);
-                self.push_lowered_statement(
-                    &mut lowered,
-                    Statement::ArrayPush {
-                        name: self.rename_name(name, scope),
-                        expr: renamed_expr,
-                        span: *span,
-                        name_span: *name_span,
-                    },
-                );
-            }
             Statement::Block { body, span } => {
                 let mut block_scope = scope.clone();
                 let lowered_body = self.lower_block(body, &mut block_scope, visited_functions)?;
@@ -558,6 +545,12 @@ impl<'i, 'd> Inliner<'i, 'd> {
                 let (more_prelude, right) = self.lower_expr(right, scope, visited_functions)?;
                 prelude.extend(more_prelude);
                 Ok((prelude, Expr::new(ExprKind::Binary { op: *op, left: Box::new(left), right: Box::new(right) }, span)))
+            }
+            ExprKind::Append { source, args, span: append_span } => {
+                let (mut prelude, source) = self.lower_expr(source, scope, visited_functions)?;
+                let (more_prelude, args) = self.lower_exprs(args, scope, visited_functions)?;
+                prelude.extend(more_prelude);
+                Ok((prelude, Expr::new(ExprKind::Append { source: Box::new(source), args, span: *append_span }, span)))
             }
             ExprKind::IfElse { condition, then_expr, else_expr } => {
                 let (mut prelude, condition) = self.lower_expr(condition, scope, visited_functions)?;

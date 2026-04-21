@@ -3408,12 +3408,12 @@ fn compiles_int_array_length_to_expected_script() {
 }
 
 #[test]
-fn compiles_int_array_push_to_expected_script() {
+fn compiles_int_array_append_to_expected_script() {
     let source = r#"
         contract Arrays() {
             entrypoint function main() {
                 int[] x;
-                x.push(7);
+                x = x.append(7);
                 require(x.length == 1);
             }
         }
@@ -3596,7 +3596,7 @@ fn compiles_int_array_index_to_expected_script() {
         contract Arrays() {
             entrypoint function main() {
                 int[] x;
-                x.push(7);
+                x = x.append(7);
                 require(x[0] == 7);
             }
         }
@@ -3651,16 +3651,18 @@ fn compiles_int_array_index_to_expected_script() {
 }
 
 #[test]
-fn runs_array_runtime_examples() {
+fn runs_array_append_runtime_examples() {
     let source = r#"
         contract Arrays() {
             entrypoint function main() {
                 int[] x;
-                x.push(7);
-                x.push(9);
-                require(x.length == 2);
-                require(x[0] == 7);
-                require(x[1] == 9);
+                int[] y = x.append(7, 9, 11);
+                require(x.append(1).length > 0);
+                require(x.length == 0);
+                require(y.length == 3);
+                require(y[0] == 7);
+                require(y[1] == 9);
+                require(y[2] == 11);
             }
         }
     "#;
@@ -3668,16 +3670,16 @@ fn runs_array_runtime_examples() {
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
     let sigscript = ScriptBuilder::new().drain();
     let result = run_script_with_sigscript(compiled.script, sigscript);
-    assert!(result.is_ok(), "array runtime example failed: {}", result.unwrap_err());
+    assert!(result.is_ok(), "array append runtime example failed: {}", result.unwrap_err());
 }
 
 #[test]
-fn runs_int_array_push_length_runtime_example() {
+fn runs_int_array_append_length_runtime_example() {
     let source = r#"
         contract Arrays() {
             entrypoint function main() {
                 int[] x = [1, 2, 3];
-                x.push(4);
+                x = x.append(4);
                 require(x.length == 4);
             }
         }
@@ -3686,7 +3688,7 @@ fn runs_int_array_push_length_runtime_example() {
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
     let sigscript = ScriptBuilder::new().drain();
     let result = run_script_with_sigscript(compiled.script, sigscript);
-    assert!(result.is_ok(), "int[] push length runtime example failed: {}", result.unwrap_err());
+    assert!(result.is_ok(), "int[] append length runtime example failed: {}", result.unwrap_err());
 }
 
 #[test]
@@ -3854,12 +3856,12 @@ fn allows_concat_of_pubkey_arrays_with_plus() {
 }
 
 #[test]
-fn compiles_bytes20_array_push_without_num2bin() {
+fn compiles_bytes20_array_append_without_num2bin() {
     let source = r#"
         contract Arrays() {
             entrypoint function main() {
                 byte[20][] x;
-                x.push(0x0102030405060708090a0b0c0d0e0f1011121314);
+                x = x.append(0x0102030405060708090a0b0c0d0e0f1011121314);
                 require(x.length == 1);
             }
         }
@@ -3917,8 +3919,8 @@ fn runs_bytes20_array_runtime_example() {
         contract Arrays() {
             entrypoint function main() {
                 byte[20][] x;
-                x.push(0x0102030405060708090a0b0c0d0e0f1011121314);
-                x.push(0x1111111111111111111111111111111111111111);
+                x = x.append(0x0102030405060708090a0b0c0d0e0f1011121314);
+                x = x.append(0x1111111111111111111111111111111111111111);
                 require(x.length == 2);
                 require(x[0] == 0x0102030405060708090a0b0c0d0e0f1011121314);
                 require(x[1] == 0x1111111111111111111111111111111111111111);
@@ -3939,8 +3941,8 @@ fn allows_array_equality_comparison() {
             entrypoint function main() {
                 byte[20][] x;
                 byte[20][] y;
-                x.push(0x0102030405060708090a0b0c0d0e0f1011121314);
-                y.push(0x0102030405060708090a0b0c0d0e0f1011121314);
+                x = x.append(0x0102030405060708090a0b0c0d0e0f1011121314);
+                y = y.append(0x0102030405060708090a0b0c0d0e0f1011121314);
                 require(x == y);
             }
         }
@@ -3959,8 +3961,8 @@ fn fails_array_equality_comparison() {
             entrypoint function main() {
                 byte[20][] x;
                 byte[20][] y;
-                x.push(0x0102030405060708090a0b0c0d0e0f1011121314);
-                y.push(0x2222222222222222222222222222222222222222);
+                x = x.append(0x0102030405060708090a0b0c0d0e0f1011121314);
+                y = y.append(0x2222222222222222222222222222222222222222);
                 require(x == y);
             }
         }
@@ -3979,9 +3981,9 @@ fn allows_array_inequality_with_different_sizes() {
             entrypoint function main() {
                 byte[20][] x;
                 byte[20][] y;
-                x.push(0x0102030405060708090a0b0c0d0e0f1011121314);
-                y.push(0x0102030405060708090a0b0c0d0e0f1011121314);
-                y.push(0x2222222222222222222222222222222222222222);
+                x = x.append(0x0102030405060708090a0b0c0d0e0f1011121314);
+                y = y.append(0x0102030405060708090a0b0c0d0e0f1011121314);
+                y = y.append(0x2222222222222222222222222222222222222222);
                 require(x != y);
             }
         }
@@ -3999,9 +4001,9 @@ fn runs_array_for_loop_example() {
         contract Arrays() {
             entrypoint function main() {
                 int[] x;
-                x.push(1);
-                x.push(2);
-                x.push(3);
+                x = x.append(1);
+                x = x.append(2);
+                x = x.append(3);
                 for (i, 0, 3, 3) {
                     require(x[i] == i + 1);
                 }
@@ -4054,9 +4056,9 @@ fn runs_array_loop_and_function_calls_example() {
 
             entrypoint function main() {
                 int[] x;
-                x.push(1);
-                x.push(2);
-                x.push(3);
+                x = x.append(1);
+                x = x.append(2);
+                x = x.append(3);
                 (int total) = sumArray(x);
                 require(total == 6);
             }
@@ -4067,6 +4069,31 @@ fn runs_array_loop_and_function_calls_example() {
     let selector = selector_for(&compiled, "main");
     let result = run_script_with_selector(compiled.script, selector);
     assert!(result.is_ok(), "array/loop/function-call example failed: {}", result.unwrap_err());
+}
+
+#[test]
+fn rejects_array_append_elements_with_wrong_type() {
+    let cases = [
+        "require(x.append(true, 2, 3).length > 0);",
+        "require(x.append(1, true, 3).length > 0);",
+        "require(x.append(1, 2, true).length > 0);",
+    ];
+
+    for append_statement in cases {
+        let source = format!(
+            r#"
+                contract Arrays() {{
+                    entrypoint function main() {{
+                        int[] x;
+                        {append_statement}
+                    }}
+                }}
+            "#
+        );
+
+        let err = compile_contract(&source, &[], CompileOptions::default()).expect_err("compile should fail");
+        assert!(err.to_string().contains("array append element type mismatch"), "unexpected error: {err}");
+    }
 }
 
 #[test]
@@ -5626,7 +5653,7 @@ fn read_input_state_runtime_preserves_supported_field_types_across_contract_shap
                     require(x.somePubkey == pubkey(0x0202020202020202020202020202020202020202020202020202020202020202));
 
                     byte[] owner = byte[](x.somePubkey);
-                    owner.push(byte(3));
+                    owner = owner.append(byte(3));
                     require(owner.length == 33);
                 }
             }
@@ -5649,7 +5676,7 @@ fn read_input_state_runtime_preserves_supported_field_types_across_contract_shap
                     require(x.someSig == sig(0x1111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111));
 
                     byte[] sigBytes = byte[](x.someSig);
-                    sigBytes.push(byte(0x42));
+                    sigBytes = sigBytes.append(byte(0x42));
                     require(sigBytes.length == 66);
                 }
             }
@@ -5672,7 +5699,7 @@ fn read_input_state_runtime_preserves_supported_field_types_across_contract_shap
                     require(x.someDatasig == datasig(0x22222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222));
 
                     byte[] datasigBytes = byte[](x.someDatasig);
-                    datasigBytes.push(byte(0x24));
+                    datasigBytes = datasigBytes.append(byte(0x24));
                     require(datasigBytes.length == 65);
                 }
             }
@@ -5739,7 +5766,7 @@ fn read_input_state_runtime_preserves_supported_field_types_without_selector_dis
                     require(x.somePubkey == pubkey(0x0202020202020202020202020202020202020202020202020202020202020202));
 
                     byte[] owner = byte[](x.somePubkey);
-                    owner.push(byte(3));
+                    owner = owner.append(byte(3));
                     require(owner.length == 33);
                 }
             }
@@ -7931,9 +7958,9 @@ fn compiles_script_size_and_runs_sum_array() {
             entrypoint function main(int expected_script_size) {
                 require(expected_script_size == this.scriptSize);
                 int[] x;
-                x.push(1);
-                x.push(2);
-                x.push(3);
+                x = x.append(1);
+                x = x.append(2);
+                x = x.append(3);
                 (int total) = sumArray(x);
                 require(total == 6);
             }
