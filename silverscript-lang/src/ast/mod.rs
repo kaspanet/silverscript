@@ -286,14 +286,6 @@ pub enum Statement<'i> {
         #[serde(skip_deserializing)]
         right_name_span: Span<'i>,
     },
-    ArrayPush {
-        name: String,
-        expr: Expr<'i>,
-        #[serde(skip_deserializing)]
-        span: Span<'i>,
-        #[serde(skip_deserializing)]
-        name_span: Span<'i>,
-    },
     FunctionCall {
         name: String,
         args: Vec<Expr<'i>>,
@@ -399,7 +391,6 @@ impl<'i> Statement<'i> {
         match self {
             Statement::VariableDefinition { span, .. }
             | Statement::TupleAssignment { span, .. }
-            | Statement::ArrayPush { span, .. }
             | Statement::FunctionCall { span, .. }
             | Statement::FunctionCallAssign { span, .. }
             | Statement::StateFunctionCallAssign { span, .. }
@@ -551,6 +542,12 @@ pub enum ExprKind<'i> {
         source: Box<Expr<'i>>,
         start: Box<Expr<'i>>,
         end: Box<Expr<'i>>,
+        #[serde(skip_deserializing)]
+        span: Span<'i>,
+    },
+    Append {
+        source: Box<Expr<'i>>,
+        args: Vec<Expr<'i>>,
         #[serde(skip_deserializing)]
         span: Span<'i>,
     },
@@ -793,9 +790,6 @@ impl SourceFormatter {
                     format_expr(expr)
                 ));
             }
-            Statement::ArrayPush { name, expr, .. } => {
-                self.line(&format!("{}.push({});", name, format_expr(expr)));
-            }
             Statement::FunctionCall { name, args, .. } => {
                 self.line(&format!("{}({});", name, format_expr_list(args)));
             }
@@ -963,6 +957,9 @@ fn format_expr_with_prec(expr: &Expr<'_>, parent_prec: u8, right_child: bool) ->
         ExprKind::Slice { source, start, end, .. } => {
             format!("{}.slice({}, {})", format_expr_with_prec(source, PREC_POSTFIX, false), format_expr(start), format_expr(end))
         }
+        ExprKind::Append { source, args, .. } => {
+            format!("{}.append({})", format_expr_with_prec(source, PREC_POSTFIX, false), format_expr_list(args))
+        }
         ExprKind::ArrayIndex { source, index } => {
             format!("{}[{}]", format_expr_with_prec(source, PREC_POSTFIX, false), format_expr(index))
         }
@@ -1049,6 +1046,7 @@ fn expr_precedence(kind: &ExprKind<'_>) -> u8 {
         | ExprKind::New { .. }
         | ExprKind::Split { .. }
         | ExprKind::Slice { .. }
+        | ExprKind::Append { .. }
         | ExprKind::ArrayIndex { .. }
         | ExprKind::FieldAccess { .. }
         | ExprKind::UnarySuffix { .. }
@@ -1505,15 +1503,6 @@ fn parse_statement<'i>(pair: Pair<'i, Rule>) -> Result<Statement<'i>, CompilerEr
                 right_name_span,
             })
         }
-        Rule::push_statement => {
-            let mut inner = pair.into_inner();
-            let ident = inner.next().ok_or_else(|| CompilerError::Unsupported("missing push target".to_string()).with_span(&span))?;
-            let expr_pair =
-                inner.next().ok_or_else(|| CompilerError::Unsupported("missing push expression".to_string()).with_span(&span))?;
-            let Identifier { name, span: name_span } = parse_identifier(ident).map_err(|err| err.with_span(&span))?;
-            let expr = parse_expression(expr_pair).map_err(|err| err.with_span(&span))?;
-            Ok(Statement::ArrayPush { name, expr, span, name_span })
-        }
         Rule::function_call_assignment => {
             let mut inner = pair.into_inner();
             let mut bindings = Vec::new();
@@ -1791,6 +1780,7 @@ fn parse_expression<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError>
         Rule::cast => parse_cast(pair),
         Rule::state_object => parse_state_object(pair),
         Rule::field_access
+        | Rule::append_call
         | Rule::split_call
         | Rule::slice_call
         | Rule::tuple_index
@@ -1850,6 +1840,19 @@ fn parse_postfix<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {
                 let span = expr.span.join(&postfix_span);
                 expr = Expr::new(ExprKind::Slice { source: Box::new(expr), start, end, span: postfix_span }, span);
             }
+            Rule::append_call => {
+                let mut append_inner = postfix.into_inner();
+                let list_pair =
+                    append_inner.next().ok_or_else(|| CompilerError::Unsupported("missing append expressions".to_string()))?;
+                let args = parse_expression_list(list_pair)?;
+                if args.is_empty() {
+                    return Err(
+                        CompilerError::Unsupported("append requires at least one expression".to_string()).with_span(&postfix_span)
+                    );
+                }
+                let span = expr.span.join(&postfix_span);
+                expr = Expr::new(ExprKind::Append { source: Box::new(expr), args, span: postfix_span }, span);
+            }
             Rule::tuple_index => {
                 let mut index_inner = postfix.into_inner();
                 let index_pair = index_inner.next().ok_or_else(|| CompilerError::Unsupported("missing tuple index".to_string()))?;
@@ -1903,6 +1906,7 @@ fn expr_root_identifier(expr: &Expr<'_>) -> Option<String> {
     match &expr.kind {
         ExprKind::Identifier(name) => Some(name.clone()),
         ExprKind::FieldAccess { source, .. }
+        | ExprKind::Append { source, .. }
         | ExprKind::ArrayIndex { source, .. }
         | ExprKind::UnarySuffix { source, .. }
         | ExprKind::Split { source, .. }

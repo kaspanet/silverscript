@@ -131,6 +131,10 @@ pub(super) fn infer_debug_expr_value_type<'i>(
                     Ok(left_type)
                 } else if is_bytes_type(&right_type) {
                     Ok(right_type)
+                } else if array_element_type(&left_type).is_some() {
+                    Ok(left_type)
+                } else if array_element_type(&right_type).is_some() {
+                    Ok(right_type)
                 } else {
                     Ok("int".to_string())
                 }
@@ -159,6 +163,7 @@ pub(super) fn infer_debug_expr_value_type<'i>(
             }
         }
         ExprKind::Split { .. } | ExprKind::Slice { .. } | ExprKind::New { .. } => Ok("byte[]".to_string()),
+        ExprKind::Append { source, .. } => infer_debug_expr_value_type(source, env, types, visiting),
         ExprKind::ArrayIndex { source, .. } => {
             let source_type = infer_debug_expr_value_type(source, env, types, visiting)?;
             Ok(array_element_type(&source_type).unwrap_or_else(|| "byte[]".to_string()))

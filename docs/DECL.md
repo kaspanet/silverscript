@@ -286,7 +286,7 @@ contract VaultNM(
                 round: int p_round
             } = readInputState(in_idx);
 
-            prev_states.push({
+            prev_states = prev_states.append({
                 amount: p_amount,
                 owner: p_owner,
                 round: p_round

@@ -246,6 +246,11 @@ impl<'i> DebugRecorder<'i> {
                 left: Box::new(self.rewrite_debug_expr(*left)),
                 right: Box::new(self.rewrite_debug_expr(*right)),
             },
+            ExprKind::Append { source, args, span } => ExprKind::Append {
+                source: Box::new(self.rewrite_debug_expr(*source)),
+                args: args.into_iter().map(|arg| self.rewrite_debug_expr(arg)).collect(),
+                span,
+            },
             ExprKind::IfElse { condition, then_expr, else_expr } => ExprKind::IfElse {
                 condition: Box::new(self.rewrite_debug_expr(*condition)),
                 then_expr: Box::new(self.rewrite_debug_expr(*then_expr)),
@@ -560,6 +565,14 @@ fn rewrite_debug_expr_with_function<'i>(
             op,
             left: Box::new(rewrite_debug_expr_with_function(*left, function_name, visible_names_by_function)),
             right: Box::new(rewrite_debug_expr_with_function(*right, function_name, visible_names_by_function)),
+        },
+        ExprKind::Append { source, args, span } => ExprKind::Append {
+            source: Box::new(rewrite_debug_expr_with_function(*source, function_name, visible_names_by_function)),
+            args: args
+                .into_iter()
+                .map(|arg| rewrite_debug_expr_with_function(arg, function_name, visible_names_by_function))
+                .collect(),
+            span,
         },
         ExprKind::IfElse { condition, then_expr, else_expr } => ExprKind::IfElse {
             condition: Box::new(rewrite_debug_expr_with_function(*condition, function_name, visible_names_by_function)),
