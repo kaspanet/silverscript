@@ -1248,7 +1248,7 @@ fn build_param_mappings<'i>(
     };
 
     let mut params = Vec::with_capacity(params_source.len() + contract_fields.len());
-    for (param, spec) in params_source.iter().zip(param_specs.into_iter()) {
+    for (param, spec) in params_source.iter().zip(param_specs) {
         let binding = match spec {
             ParamBindingSpec::Scalar => DebugParamBinding::SingleValue { stack_index: next_stack_index() },
             ParamBindingSpec::Structured(leaf_specs) => DebugParamBinding::StructuredValue {
