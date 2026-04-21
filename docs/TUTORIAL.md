@@ -217,20 +217,13 @@ contract MyContract(int param1, byte[32] param2) {
 
 ### Pragma Directives
 
-Every contract should start with a pragma directive specifying the SilverScript version:
+Every contract should start with a pragma directive specifying the SilverScript version requirement:
 
 ```javascript
-pragma silverscript ^0.1.0;
+pragma silverscript ^0.1.2;
 ```
 
-Version operators:
-- `^0.1.0` - Compatible with 0.1.x
-- `~0.1.0` - Compatible with 0.1.0 only
-- `>=0.1.0` - Greater than or equal
-- `>0.1.0` - Greater than
-- `<0.2.0` - Less than
-- `<=0.1.5` - Less than or equal
-- `=0.1.0` - Exactly this version
+Pragma values use standard semver requirements. See [semver.org](https://semver.org/) for more details.
 
 ### Data Types
 

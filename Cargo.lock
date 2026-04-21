@@ -3027,6 +3027,7 @@ dependencies = [
  "pest_derive",
  "rand 0.8.5",
  "secp256k1",
+ "semver",
  "serde",
  "serde_json",
  "thiserror 1.0.69",

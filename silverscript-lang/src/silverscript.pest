@@ -1,10 +1,8 @@
-source_file = { SOI ~ pragma_directive* ~ contract_definition ~ EOI }
+source_file = { SOI ~ pragma_directive? ~ contract_definition ~ EOI }
 
 pragma_directive = { "pragma" ~ pragma_name ~ pragma_value ~ ";" }
 pragma_name = { "silverscript" }
-pragma_value = { version_constraint ~ version_constraint? }
-version_constraint = { version_operator? ~ VersionLiteral }
-version_operator = { "^" | "~" | ">=" | ">" | "<" | "<=" | "=" }
+pragma_value = @{ (!";" ~ ANY)+ }
 
 contract_definition = { "contract" ~ Identifier ~ parameter_list ~ "{" ~ contract_item* ~ "}" }
 contract_item = { struct_definition | constant_definition | contract_field_definition | function_definition }

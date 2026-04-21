@@ -142,6 +142,90 @@ fn execute_input(tx: Transaction, entries: Vec<UtxoEntry>, input_idx: usize) -> 
     vm.execute()
 }
 
+fn pragma_source(pragma: Option<&str>) -> String {
+    let pragma = pragma.map(|pragma| format!("{pragma}\n")).unwrap_or_default();
+    format!(
+        r#"
+            {pragma}
+            contract Versioned() {{
+                entrypoint function main() {{
+                    require(true);
+                }}
+            }}
+        "#
+    )
+}
+
+#[test]
+fn accepts_compatible_pragma_versions() {
+    let pragmas = [
+        "pragma silverscript ^0.1.0;",
+        "pragma silverscript ~0.1.0;",
+        "pragma silverscript >=0.1.0;",
+        "pragma silverscript >0.0.9;",
+        "pragma silverscript <0.2.0;",
+        "pragma silverscript <=0.1.5;",
+        "pragma silverscript =0.1.0;",
+        "pragma silverscript 0.1.0;",
+        "pragma silverscript >=0.1.0, <0.2.0;",
+        "pragma silverscript 0.1.*;",
+    ];
+
+    for pragma in pragmas {
+        let source = pragma_source(Some(pragma));
+        compile_contract(&source, &[], CompileOptions::default()).unwrap_or_else(|err| panic!("{pragma} should compile: {err}"));
+    }
+}
+
+#[test]
+fn accepts_missing_pragma_without_version_check() {
+    let source = pragma_source(None);
+    compile_contract(&source, &[], CompileOptions::default()).expect("contract without pragma should still compile");
+}
+
+#[test]
+fn rejects_incompatible_pragma_versions() {
+    let pragmas = [
+        "pragma silverscript ^0.2.0;",
+        "pragma silverscript ~0.1.1;",
+        "pragma silverscript >=0.1.1;",
+        "pragma silverscript >0.1.0;",
+        "pragma silverscript <0.1.0;",
+        "pragma silverscript <=0.0.9;",
+        "pragma silverscript =0.1.1;",
+        "pragma silverscript >=0.1.0, <0.1.0;",
+    ];
+
+    for pragma in pragmas {
+        let source = pragma_source(Some(pragma));
+        let err = compile_contract(&source, &[], CompileOptions::default()).expect_err("incompatible pragma should fail");
+        assert!(err.to_string().contains("does not satisfy pragma"), "{pragma} produced unexpected error: {err}");
+    }
+}
+
+#[test]
+fn rejects_invalid_semver_pragma_requirements() {
+    let source = pragma_source(Some("pragma silverscript >=0.1.0 <0.2.0;"));
+    let err = compile_contract(&source, &[], CompileOptions::default()).expect_err("invalid semver requirement should fail");
+    assert!(err.to_string().contains("invalid SilverScript version requirement"), "unexpected error: {err}");
+}
+
+#[test]
+fn rejects_multiple_pragma_directives() {
+    let source = r#"
+        pragma silverscript ^0.1.0;
+        pragma silverscript >=0.1.0, <0.2.0;
+
+        contract Versioned() {
+            entrypoint function main() {
+                require(true);
+            }
+        }
+    "#;
+    let err = parse_contract_ast(source).expect_err("second pragma should fail");
+    assert!(err.to_string().contains("parse error"), "unexpected error: {err}");
+}
+
 #[test]
 fn accepts_constructor_args_with_matching_types() {
     let source = r#"

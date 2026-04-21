@@ -1639,6 +1639,7 @@ pub(crate) fn lower_structs_contract<'i>(
     }
 
     Ok(ContractAst {
+        pragma: contract.pragma.clone(),
         name: contract.name.clone(),
         params: lowered_params,
         structs: Vec::new(),
