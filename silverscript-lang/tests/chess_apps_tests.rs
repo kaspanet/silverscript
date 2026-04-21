@@ -7,6 +7,7 @@ use blake2b_simd::Params as Blake2bParams;
 use kaspa_consensus_core::Hash;
 use kaspa_consensus_core::hashing::sighash::{SigHashReusedValuesUnsync, calc_schnorr_signature_hash};
 use kaspa_consensus_core::hashing::sighash_type::SIG_HASH_ALL;
+use kaspa_consensus_core::mass::units::SigopCount;
 use kaspa_consensus_core::tx::{
     CovenantBinding, PopulatedTransaction, Transaction, TransactionId, TransactionInput, TransactionOutpoint, TransactionOutput,
     UtxoEntry, VerifiableTransaction,
@@ -446,7 +447,7 @@ fn tx_input(index: u32, signature_script: Vec<u8>, sig_op_count: u8) -> Transact
         previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([index as u8 + 1; 32]), index },
         signature_script,
         sequence: 0,
-        sig_op_count,
+        mass: SigopCount(sig_op_count).into(),
     }
 }
 
@@ -488,7 +489,7 @@ fn execute_input_with_covenants(tx: Transaction, entries: Vec<UtxoEntry>, input_
         input_idx,
         utxo,
         EngineCtx::new(&sig_cache).with_reused(&reused_values).with_covenants_ctx(&cov_ctx),
-        EngineFlags { covenants_enabled: true },
+        EngineFlags { covenants_enabled: true, ..Default::default() },
     );
     vm.execute()
 }
@@ -650,84 +651,84 @@ fn size_snapshots() -> Vec<SizeSnapshot> {
         SizeSnapshot {
             name: "league.sil",
             ctor: league_constructor_args,
-            expected_script_len: 462,
+            expected_script_len: 468,
             expected_instruction_count: 269,
             expected_charged_op_count: 199,
         },
         SizeSnapshot {
             name: "player.sil",
             ctor: player_constructor_args,
-            expected_script_len: 3360,
+            expected_script_len: 3382,
             expected_instruction_count: 2482,
             expected_charged_op_count: 1618,
         },
         SizeSnapshot {
             name: "chess_mux.sil",
             ctor: mux_constructor_args,
-            expected_script_len: 1632,
+            expected_script_len: 1644,
             expected_instruction_count: 986,
             expected_charged_op_count: 666,
         },
         SizeSnapshot {
             name: "chess_settle.sil",
             ctor: settle_constructor_args,
-            expected_script_len: 2579,
+            expected_script_len: 2591,
             expected_instruction_count: 2007,
             expected_charged_op_count: 1307,
         },
         SizeSnapshot {
             name: "chess_pawn.sil",
             ctor: pawn_constructor_args,
-            expected_script_len: 1895,
+            expected_script_len: 1906,
             expected_instruction_count: 1272,
             expected_charged_op_count: 830,
         },
         SizeSnapshot {
             name: "chess_knight.sil",
             ctor: pawn_constructor_args,
-            expected_script_len: 1419,
+            expected_script_len: 1430,
             expected_instruction_count: 831,
             expected_charged_op_count: 552,
         },
         SizeSnapshot {
             name: "chess_vert.sil",
             ctor: pawn_constructor_args,
-            expected_script_len: 2027,
+            expected_script_len: 2038,
             expected_instruction_count: 1409,
             expected_charged_op_count: 969,
         },
         SizeSnapshot {
             name: "chess_horiz.sil",
             ctor: pawn_constructor_args,
-            expected_script_len: 2027,
+            expected_script_len: 2038,
             expected_instruction_count: 1409,
             expected_charged_op_count: 969,
         },
         SizeSnapshot {
             name: "chess_diag.sil",
             ctor: pawn_constructor_args,
-            expected_script_len: 1994,
+            expected_script_len: 2005,
             expected_instruction_count: 1383,
             expected_charged_op_count: 951,
         },
         SizeSnapshot {
             name: "chess_king.sil",
             ctor: pawn_constructor_args,
-            expected_script_len: 1505,
+            expected_script_len: 1516,
             expected_instruction_count: 898,
             expected_charged_op_count: 595,
         },
         SizeSnapshot {
             name: "chess_castle.sil",
             ctor: pawn_constructor_args,
-            expected_script_len: 1551,
+            expected_script_len: 1564,
             expected_instruction_count: 959,
             expected_charged_op_count: 628,
         },
         SizeSnapshot {
             name: "chess_castle_challenge.sil",
             ctor: pawn_constructor_args,
-            expected_script_len: 1648,
+            expected_script_len: 1663,
             expected_instruction_count: 1060,
             expected_charged_op_count: 691,
         },
@@ -881,7 +882,7 @@ fn league_register_player_runtime_matches_expected_output_state() {
         previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([0xabu8; 32]), index: 7 },
         signature_script: vec![],
         sequence: 0,
-        sig_op_count: 1,
+        mass: SigopCount(1).into(),
     };
 
     let player_id = blake2b_bytes(&[player_id_domain.as_slice(), &[0xabu8; 32], &7u32.to_le_bytes()].concat());

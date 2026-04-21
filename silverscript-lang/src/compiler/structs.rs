@@ -249,6 +249,14 @@ fn lower_expr<'i>(expr: &Expr<'i>, scope: &LoweringScope, structs: &StructRegist
             },
             span,
         )),
+        ExprKind::Append { source, args, span: append_span } => Ok(Expr::new(
+            ExprKind::Append {
+                source: Box::new(lower_expr(source, scope, structs)?),
+                args: args.iter().map(|arg| lower_expr(arg, scope, structs)).collect::<Result<Vec<_>, _>>()?,
+                span: *append_span,
+            },
+            span,
+        )),
         ExprKind::IfElse { condition, then_expr, else_expr } => Ok(Expr::new(
             ExprKind::IfElse {
                 condition: Box::new(lower_expr(condition, scope, structs)?),
@@ -797,6 +805,36 @@ fn lower_struct_array_value_expr<'i>(
             }
             Ok(grouped.into_iter().map(|entries| Expr::new(ExprKind::Array(entries), span::Span::default())).collect())
         }
+        ExprKind::Append { source, args, .. } => {
+            let left = lower_struct_array_value_expr(
+                source,
+                expected_type,
+                scope,
+                structs,
+                contract_fields,
+                contract_constants,
+                contract_field_prefix_len,
+            )?;
+            let right = lower_struct_array_value_expr(
+                &Expr::new(ExprKind::Array(args.clone()), span::Span::default()),
+                expected_type,
+                scope,
+                structs,
+                contract_fields,
+                contract_constants,
+                contract_field_prefix_len,
+            )?;
+            Ok(left
+                .into_iter()
+                .zip(right)
+                .map(|(left, right)| {
+                    Expr::new(
+                        ExprKind::Binary { op: BinaryOp::Add, left: Box::new(left), right: Box::new(right) },
+                        span::Span::default(),
+                    )
+                })
+                .collect())
+        }
         _ => Err(CompilerError::Unsupported(format!("expression expects struct {}", expected_type.type_name()))),
     }
 }
@@ -1124,82 +1162,6 @@ fn lower_statements<'i>(
                     right_name_span: *right_name_span,
                 });
             }
-            Statement::ArrayPush { name, expr, span, name_span } => {
-                let Some(type_ref) = scope.vars.get(name).cloned() else {
-                    lowered.push(stmt.clone());
-                    continue;
-                };
-                if struct_array_name_from_type_ref(&type_ref, structs).is_some() {
-                    let element_type = type_ref
-                        .element_type()
-                        .ok_or_else(|| CompilerError::Unsupported("array element type not supported".to_string()))?;
-                    if let ExprKind::Call { name: builtin_name, args, .. } = &expr.kind
-                        && matches!(builtin_name.as_str(), "readInputState" | "readInputStateWithTemplate")
-                    {
-                        let temp_base = format!("push_{}_{}", name, lowered.len());
-                        let leaf_bindings = flatten_type_ref_leaves(&element_type, structs)?;
-                        let state_bindings = leaf_bindings
-                            .iter()
-                            .map(|(path, leaf_type)| StateBindingAst {
-                                field_name: path.last().cloned().unwrap_or_default(),
-                                type_ref: leaf_type.clone(),
-                                name: flattened_struct_name(&temp_base, path),
-                                span: *span,
-                                field_span: *name_span,
-                                type_span: *name_span,
-                                name_span: *name_span,
-                            })
-                            .collect::<Vec<_>>();
-                        lowered.push(Statement::StateFunctionCallAssign {
-                            bindings: state_bindings.clone(),
-                            name: builtin_name.clone(),
-                            args: args.iter().map(|arg| lower_runtime_expr(arg, &scope_type_names(scope), structs)).collect::<Result<
-                                Vec<_>,
-                                _,
-                            >>(
-                            )?,
-                            span: *span,
-                            name_span: *name_span,
-                        });
-                        for ((path, leaf_type), binding) in leaf_bindings.into_iter().zip(state_bindings.into_iter()) {
-                            scope.vars.insert(binding.name.clone(), leaf_type);
-                            lowered.push(Statement::ArrayPush {
-                                name: flattened_struct_name(name, &path),
-                                expr: Expr::identifier(binding.name),
-                                span: *span,
-                                name_span: *name_span,
-                            });
-                        }
-                        continue;
-                    }
-                    for ((path, leaf_type), leaf_expr) in
-                        flatten_type_ref_leaves(&element_type, structs)?.into_iter().zip(lower_runtime_struct_expr(
-                            expr,
-                            &element_type,
-                            &scope_type_names(scope),
-                            structs,
-                            contract_fields,
-                            contract_constants,
-                            contract_field_prefix_len,
-                        )?)
-                    {
-                        lowered.push(Statement::ArrayPush {
-                            name: flattened_struct_name(name, &path),
-                            expr: leaf_expr,
-                            span: *span,
-                            name_span: *name_span,
-                        });
-                        let _ = leaf_type;
-                    }
-                } else {
-                    lowered.push(Statement::ArrayPush {
-                        name: name.clone(),
-                        expr: lower_runtime_expr(expr, &scope_type_names(scope), structs)?,
-                        span: *span,
-                        name_span: *name_span,
-                    });
-                }
-            }
             Statement::FunctionCall { name, args, span, name_span } => {
                 lowered.push(Statement::FunctionCall {
                     name: name.clone(),
@@ -1295,6 +1257,89 @@ fn lower_statements<'i>(
                 if struct_name_from_type_ref(&type_ref, structs).is_some()
                     || struct_array_name_from_type_ref(&type_ref, structs).is_some()
                 {
+                    if struct_array_name_from_type_ref(&type_ref, structs).is_some()
+                        && let ExprKind::Append { source, args, .. } = &expr.kind
+                        && matches!(&source.kind, ExprKind::Identifier(source_name) if source_name == name)
+                    {
+                        let element_type = type_ref
+                            .element_type()
+                            .ok_or_else(|| CompilerError::Unsupported("array element type not supported".to_string()))?;
+                        for arg in args {
+                            if let ExprKind::Call { name: builtin_name, args: call_args, .. } = &arg.kind
+                                && matches!(builtin_name.as_str(), "readInputState" | "readInputStateWithTemplate")
+                            {
+                                let temp_base = format!("append_{}_{}", name, lowered.len());
+                                let leaf_bindings = flatten_type_ref_leaves(&element_type, structs)?;
+                                let state_bindings = leaf_bindings
+                                    .iter()
+                                    .map(|(path, leaf_type)| StateBindingAst {
+                                        field_name: path.last().cloned().unwrap_or_default(),
+                                        type_ref: leaf_type.clone(),
+                                        name: flattened_struct_name(&temp_base, path),
+                                        span: *span,
+                                        field_span: *name_span,
+                                        type_span: *name_span,
+                                        name_span: *name_span,
+                                    })
+                                    .collect::<Vec<_>>();
+                                lowered.push(Statement::StateFunctionCallAssign {
+                                    bindings: state_bindings.clone(),
+                                    name: builtin_name.clone(),
+                                    args: call_args
+                                        .iter()
+                                        .map(|arg| lower_runtime_expr(arg, &scope_type_names(scope), structs))
+                                        .collect::<Result<Vec<_>, _>>()?,
+                                    span: *span,
+                                    name_span: *name_span,
+                                });
+                                for ((path, leaf_type), binding) in leaf_bindings.into_iter().zip(state_bindings) {
+                                    scope.vars.insert(binding.name.clone(), leaf_type);
+                                    let leaf_name = flattened_struct_name(name, &path);
+                                    lowered.push(Statement::Assign {
+                                        name: leaf_name.clone(),
+                                        expr: Expr::new(
+                                            ExprKind::Append {
+                                                source: Box::new(Expr::identifier(&leaf_name)),
+                                                args: vec![Expr::identifier(binding.name)],
+                                                span: span::Span::default(),
+                                            },
+                                            *span,
+                                        ),
+                                        span: *span,
+                                        name_span: *name_span,
+                                    });
+                                }
+                            } else {
+                                for ((path, _leaf_type), leaf_expr) in
+                                    flatten_type_ref_leaves(&element_type, structs)?.into_iter().zip(lower_runtime_struct_expr(
+                                        arg,
+                                        &element_type,
+                                        &scope_type_names(scope),
+                                        structs,
+                                        contract_fields,
+                                        contract_constants,
+                                        contract_field_prefix_len,
+                                    )?)
+                                {
+                                    let leaf_name = flattened_struct_name(name, &path);
+                                    lowered.push(Statement::Assign {
+                                        name: leaf_name.clone(),
+                                        expr: Expr::new(
+                                            ExprKind::Append {
+                                                source: Box::new(Expr::identifier(&leaf_name)),
+                                                args: vec![leaf_expr],
+                                                span: span::Span::default(),
+                                            },
+                                            *span,
+                                        ),
+                                        span: *span,
+                                        name_span: *name_span,
+                                    });
+                                }
+                            }
+                        }
+                        continue;
+                    }
                     for (leaf_name, _leaf_type, leaf_expr) in lower_value_for_named_type(
                         name,
                         &type_ref,

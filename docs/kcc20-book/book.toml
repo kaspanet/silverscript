@@ -1,0 +1,11 @@
+[book]
+title = "KCC20 and KCC20Minter"
+authors = ["OpenAI Codex"]
+language = "en"
+src = "src"
+
+[build]
+build-dir = "book"
+
+[output.html]
+site-url = "/kcc20-book/"

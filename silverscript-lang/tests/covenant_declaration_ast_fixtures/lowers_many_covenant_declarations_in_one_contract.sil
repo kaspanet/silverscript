@@ -153,7 +153,7 @@ contract Matrix(int max_ins, int max_outs, int init_amount, byte[32] init_owner)
         State[] prev_states;
 
         for(cov_in_k, 0, cov_in_count, max_ins) {
-            prev_states.push(readInputState(OpCovInputIdx(cov_id, cov_in_k)));
+            prev_states = prev_states.append(readInputState(OpCovInputIdx(cov_id, cov_in_k)));
         }
 
         covenant_policy_cov_verification(prev_states, new_states, nonce);
@@ -188,7 +188,7 @@ contract Matrix(int max_ins, int max_outs, int init_amount, byte[32] init_owner)
         int cov_out_count = OpCovOutputCount(cov_id);
         State[] prev_states;
         for(cov_in_k, 0, cov_in_count, max_ins) {
-            prev_states.push(readInputState(OpCovInputIdx(cov_id, cov_in_k)));
+            prev_states = prev_states.append(readInputState(OpCovInputIdx(cov_id, cov_in_k)));
         }
         (State[] cov_new_states) = covenant_policy_cov_transition(prev_states, fee);
         require(cov_out_count <= max_outs);
@@ -240,7 +240,7 @@ contract Matrix(int max_ins, int max_outs, int init_amount, byte[32] init_owner)
         State[] prev_states;
 
         for(cov_in_k, 0, cov_in_count, max_ins) {
-            prev_states.push(readInputState(OpCovInputIdx(cov_id, cov_in_k)));
+            prev_states = prev_states.append(readInputState(OpCovInputIdx(cov_id, cov_in_k)));
         }
 
         covenant_policy_inferred_cov(prev_states, new_states);

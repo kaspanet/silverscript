@@ -17,7 +17,7 @@ kaspa-txscript.workspace = true
 kaspa-txscript-errors.workspace = true
 blake2b_simd.workspace = true
 indexmap.workspace = true
-chrono = "0.4"
+chrono = { version = "0.4", default-features = false, features = ["std"] }
 pest = "2.7"
 pest_derive = "2.7"
 rand.workspace = true

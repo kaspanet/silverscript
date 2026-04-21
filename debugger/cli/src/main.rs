@@ -16,7 +16,7 @@ use kaspa_consensus_core::Hash;
 use kaspa_consensus_core::hashing::sighash::SigHashReusedValuesUnsync;
 use kaspa_consensus_core::tx::{
     CovenantBinding, PopulatedTransaction, ScriptPublicKey, Transaction, TransactionId, TransactionInput, TransactionOutpoint,
-    TransactionOutput, UtxoEntry, VerifiableTransaction,
+    TransactionOutput, TxInputMass, UtxoEntry, VerifiableTransaction,
 };
 use kaspa_txscript::caches::Cache;
 use kaspa_txscript::covenants::CovenantsContext;
@@ -916,7 +916,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             previous_outpoint: input_prev_outpoints[input_idx],
             signature_script,
             sequence: input_sequences[input_idx],
-            sig_op_count: input_sig_op_counts[input_idx],
+            mass: TxInputMass::SigopCount(input_sig_op_counts[input_idx].into()),
         });
     }
 
@@ -924,7 +924,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let sig_cache = Cache::new(10_000);
     let reused_values = SigHashReusedValuesUnsync::new();
-    let flags = EngineFlags { covenants_enabled: true };
+    let flags = EngineFlags { covenants_enabled: true, ..Default::default() };
 
     let utxos = utxo_specs
         .into_iter()

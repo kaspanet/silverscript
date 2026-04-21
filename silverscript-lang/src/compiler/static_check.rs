@@ -197,7 +197,6 @@ fn validate_statement_shapes<'i>(
             Statement::For { ident, start, end, max_iterations, body, .. } => {
                 validate_for_statement_shape(&mut ctx, ident, start, end, max_iterations, body)?
             }
-            Statement::ArrayPush { expr, .. } => validate_array_push_statement_shape(&mut ctx, expr)?,
         }
     }
 
@@ -602,13 +601,6 @@ fn validate_for_statement_shape<'i>(
     )
 }
 
-fn validate_array_push_statement_shape<'i>(
-    ctx: &mut ValidateStatementShapesContext<'_, 'i>,
-    expr: &Expr<'i>,
-) -> Result<(), CompilerError> {
-    validate_expr_semantics(expr, ctx.env, ctx.prefer_env_for_comparison, ctx.types, ctx.structs, ctx.functions, ctx.contract_fields)
-}
-
 fn validate_struct_destructure_bindings<'i>(
     bindings: &[StateBindingAst<'i>],
     expr: &Expr<'i>,
@@ -831,6 +823,33 @@ fn validate_expr_semantics<'i>(
             validate_expr_semantics(start, env, prefer_env_for_comparison, types, structs, functions, contract_fields)?;
             validate_expr_semantics(end, env, prefer_env_for_comparison, types, structs, functions, contract_fields)
         }
+        ExprKind::Append { source, args, .. } => {
+            validate_expr_semantics(source, env, prefer_env_for_comparison, types, structs, functions, contract_fields)?;
+            let source_type = infer_expr_type_ref_for_comparison_ref(
+                source,
+                env,
+                prefer_env_for_comparison,
+                types,
+                structs,
+                functions,
+                contract_fields,
+            )
+            .ok_or_else(|| CompilerError::Unsupported("append target must be an array".to_string()))?;
+            let Some(element_type) = source_type.element_type() else {
+                return Err(CompilerError::Unsupported("append target must be an array".to_string()));
+            };
+            for arg in args {
+                validate_expr_semantics(arg, env, prefer_env_for_comparison, types, structs, functions, contract_fields)?;
+                validate_expr_assignable_to_type(arg, &element_type, types, structs, &HashMap::new(), functions, contract_fields)
+                    .map_err(|_| {
+                        CompilerError::Unsupported(format!(
+                            "array append element type mismatch: expected {}",
+                            type_name_from_ref(&element_type)
+                        ))
+                    })?;
+            }
+            Ok(())
+        }
         ExprKind::ArrayIndex { source, index } => {
             validate_expr_semantics(source, env, prefer_env_for_comparison, types, structs, functions, contract_fields)?;
             validate_expr_semantics(index, env, prefer_env_for_comparison, types, structs, functions, contract_fields)
@@ -895,6 +914,9 @@ fn infer_expr_type_ref_for_comparison_ref<'i>(
         ExprKind::ArrayIndex { source, .. } => {
             infer_expr_type_ref_for_comparison_ref(source, env, prefer_env_for_comparison, types, structs, functions, contract_fields)
                 .and_then(|type_ref| type_ref.element_type())
+        }
+        ExprKind::Append { source, .. } => {
+            infer_expr_type_ref_for_comparison_ref(source, env, prefer_env_for_comparison, types, structs, functions, contract_fields)
         }
         ExprKind::Call { name, .. } if name == "readInputState" && !contract_fields.is_empty() => {
             Some(TypeRef { base: TypeBase::Custom("State".to_string()), array_dims: Vec::new() })
