@@ -1709,13 +1709,7 @@ impl<'a, 'i> DebugSession<'a, 'i> {
             let opcode = opcode.map_err(|err| format!("failed to parse shadow script: {err}"))?;
             engine.execute_opcode(opcode).map_err(|err| format!("failed to execute shadow script: {err}"))?;
         }
-        engine
-            .stacks()
-            .dstack
-            .last()
-            .cloned()
-            .map(|entry| entry.to_vec())
-            .ok_or_else(|| "shadow VM produced an empty stack".to_string())
+        engine.stacks().dstack.last().cloned().map(|item| item.to_vec()).ok_or_else(|| "shadow VM produced an empty stack".to_string())
     }
 
     fn read_stack_at_index(&self, index: i64) -> Result<Vec<u8>, String> {
