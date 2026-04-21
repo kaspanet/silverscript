@@ -18,6 +18,8 @@ struct Identifier<'i> {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContractAst<'i> {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pragma: Option<PragmaDirectiveAst<'i>>,
     pub name: String,
     pub params: Vec<ParamAst<'i>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -30,6 +32,18 @@ pub struct ContractAst<'i> {
     pub span: Span<'i>,
     #[serde(skip_deserializing)]
     pub name_span: Span<'i>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PragmaDirectiveAst<'i> {
+    pub name: String,
+    pub value: String,
+    #[serde(skip_deserializing)]
+    pub span: Span<'i>,
+    #[serde(skip_deserializing)]
+    pub name_span: Span<'i>,
+    #[serde(skip_deserializing)]
+    pub value_span: Span<'i>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -709,6 +723,11 @@ impl SourceFormatter {
     }
 
     fn write_contract(&mut self, contract: &ContractAst<'_>) {
+        if let Some(pragma) = &contract.pragma {
+            self.line(&format!("pragma {} {};", pragma.name, pragma.value));
+            self.out.push('\n');
+        }
+
         self.line(&format!("contract {}({}) {{", contract.name, format_params(&contract.params)));
         self.indent += 1;
 
@@ -1195,11 +1214,22 @@ fn parse_type_name_pair(pair: Pair<'_, Rule>) -> Result<TypeRef, CompilerError> 
 pub fn parse_contract_ast<'i>(source: &'i str) -> Result<ContractAst<'i>, CompilerError> {
     let mut pairs = parse_source_file(source)?;
     let source_pair = pairs.next().ok_or_else(|| CompilerError::Unsupported("empty source".to_string()))?;
+    let mut pragma = None;
     let mut contract = None;
 
     for pair in source_pair.into_inner() {
-        if pair.as_rule() == Rule::contract_definition {
-            contract = Some(parse_contract_definition(pair)?);
+        match pair.as_rule() {
+            Rule::pragma_directive => {
+                if pragma.is_some() {
+                    let span = Span::from(pair.as_span());
+                    return Err(
+                        CompilerError::Unsupported("multiple pragma directives are not supported".to_string()).with_span(&span)
+                    );
+                }
+                pragma = Some(parse_pragma_directive(pair)?);
+            }
+            Rule::contract_definition => contract = Some(parse_contract_definition(pair, pragma.clone())?),
+            _ => {}
         }
     }
 
@@ -1216,7 +1246,23 @@ pub fn parse_expression_ast<'i>(source: &'i str) -> Result<Expr<'i>, CompilerErr
     parse_expression(expr_pair)
 }
 
-fn parse_contract_definition<'i>(pair: Pair<'i, Rule>) -> Result<ContractAst<'i>, CompilerError> {
+fn parse_pragma_directive<'i>(pair: Pair<'i, Rule>) -> Result<PragmaDirectiveAst<'i>, CompilerError> {
+    let span = Span::from(pair.as_span());
+    let mut inner = pair.into_inner();
+    let name_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing pragma name".to_string()))?;
+    let name_span = Span::from(name_pair.as_span());
+    let name = name_pair.as_str().to_string();
+    let value_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing pragma value".to_string()))?;
+    let value_span = Span::from(value_pair.as_span());
+    let value = value_pair.as_str().trim().to_string();
+
+    Ok(PragmaDirectiveAst { name, value, span, name_span, value_span })
+}
+
+fn parse_contract_definition<'i>(
+    pair: Pair<'i, Rule>,
+    pragma: Option<PragmaDirectiveAst<'i>>,
+) -> Result<ContractAst<'i>, CompilerError> {
     let span = Span::from(pair.as_span());
 
     let mut inner = pair.into_inner();
@@ -1247,7 +1293,7 @@ fn parse_contract_definition<'i>(pair: Pair<'i, Rule>) -> Result<ContractAst<'i>
         }
     }
 
-    Ok(ContractAst { name, params, structs, fields, constants, functions, span, name_span })
+    Ok(ContractAst { pragma, name, params, structs, fields, constants, functions, span, name_span })
 }
 
 fn parse_struct_definition<'i>(pair: Pair<'i, Rule>) -> Result<StructAst<'i>, CompilerError> {

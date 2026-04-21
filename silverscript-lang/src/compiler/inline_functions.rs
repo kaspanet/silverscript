@@ -27,6 +27,7 @@ pub(super) fn lower_inline_functions<'i>(
         .collect::<Result<Vec<_>, _>>()?;
 
     Ok(ContractAst {
+        pragma: contract.pragma.clone(),
         name: contract.name.clone(),
         params: contract.params.clone(),
         structs: contract.structs.clone(),

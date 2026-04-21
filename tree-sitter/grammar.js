@@ -34,19 +34,11 @@ export default grammar({
   ],
 
   rules: {
-    source_file: ($) => seq(repeat($.pragma_directive), $.contract_definition),
+    source_file: ($) => seq(optional($.pragma_directive), $.contract_definition),
 
     pragma_directive: ($) => seq("pragma", "silverscript", $.pragma_value, ";"),
 
-    pragma_value: ($) =>
-      seq($.version_constraint, optional($.version_constraint)),
-
-    version_constraint: ($) =>
-      seq(optional($.version_operator), $.version_literal),
-
-    version_operator: (_) => choice("^", "~", ">=", ">", "<=", "<", "="),
-
-    version_literal: (_) => token(/\d+\.\d+\.\d+/),
+    pragma_value: (_) => token(/[^;]+/),
 
     contract_definition: ($) =>
       seq(

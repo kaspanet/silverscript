@@ -1,4 +1,5 @@
 use super::*;
+use semver::{Version, VersionReq};
 use std::collections::{HashMap, HashSet};
 
 pub(super) fn static_check_contract<'i>(
@@ -6,6 +7,8 @@ pub(super) fn static_check_contract<'i>(
     constructor_args: &[Expr<'i>],
     options: CompileOptions,
 ) -> Result<(), CompilerError> {
+    validate_pragma_versions(contract)?;
+
     if contract.functions.is_empty() {
         return Err(CompilerError::Unsupported("contract has no functions".to_string()));
     }
@@ -26,6 +29,31 @@ pub(super) fn static_check_contract<'i>(
         if !expr_matches_declared_type_ref(value, &param.type_ref, &structs) {
             return Err(CompilerError::Unsupported(format!("constructor argument '{}' expects {}", param.name, param_type_name)));
         }
+    }
+
+    Ok(())
+}
+
+fn validate_pragma_versions<'i>(contract: &ContractAst<'i>) -> Result<(), CompilerError> {
+    let Some(pragma) = &contract.pragma else {
+        return Ok(());
+    };
+
+    let compiler_version = Version::parse(COMPILER_VERSION)
+        .map_err(|err| CompilerError::Unsupported(format!("invalid SilverScript compiler version '{COMPILER_VERSION}': {err}")))?;
+    if pragma.name != "silverscript" {
+        return Err(CompilerError::Unsupported(format!("unknown pragma '{}'", pragma.name)).with_span(&pragma.name_span));
+    }
+    let req = VersionReq::parse(&pragma.value).map_err(|err| {
+        CompilerError::Unsupported(format!("invalid SilverScript version requirement '{}': {err}", pragma.value))
+            .with_span(&pragma.value_span)
+    })?;
+    if !req.matches(&compiler_version) {
+        return Err(CompilerError::Unsupported(format!(
+            "SilverScript compiler version {COMPILER_VERSION} does not satisfy pragma {}",
+            pragma.value
+        ))
+        .with_span(&pragma.value_span));
     }
 
     Ok(())

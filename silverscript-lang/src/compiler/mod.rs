@@ -41,6 +41,7 @@ pub(super) use structs::{
 
 /// Prefix used for synthetic argument bindings during inline function expansion.
 pub const SYNTHETIC_ARG_PREFIX: &str = "__arg";
+pub const COMPILER_VERSION: &str = "0.1.0";
 const COVENANT_POLICY_PREFIX: &str = "__covenant_policy";
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

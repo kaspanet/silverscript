@@ -7,11 +7,16 @@
       "type": "SEQ",
       "members": [
         {
-          "type": "REPEAT",
-          "content": {
-            "type": "SYMBOL",
-            "name": "pragma_directive"
-          }
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "SYMBOL",
+              "name": "pragma_directive"
+            },
+            {
+              "type": "BLANK"
+            }
+          ]
         },
         {
           "type": "SYMBOL",
@@ -41,85 +46,10 @@
       ]
     },
     "pragma_value": {
-      "type": "SEQ",
-      "members": [
-        {
-          "type": "SYMBOL",
-          "name": "version_constraint"
-        },
-        {
-          "type": "CHOICE",
-          "members": [
-            {
-              "type": "SYMBOL",
-              "name": "version_constraint"
-            },
-            {
-              "type": "BLANK"
-            }
-          ]
-        }
-      ]
-    },
-    "version_constraint": {
-      "type": "SEQ",
-      "members": [
-        {
-          "type": "CHOICE",
-          "members": [
-            {
-              "type": "SYMBOL",
-              "name": "version_operator"
-            },
-            {
-              "type": "BLANK"
-            }
-          ]
-        },
-        {
-          "type": "SYMBOL",
-          "name": "version_literal"
-        }
-      ]
-    },
-    "version_operator": {
-      "type": "CHOICE",
-      "members": [
-        {
-          "type": "STRING",
-          "value": "^"
-        },
-        {
-          "type": "STRING",
-          "value": "~"
-        },
-        {
-          "type": "STRING",
-          "value": ">="
-        },
-        {
-          "type": "STRING",
-          "value": ">"
-        },
-        {
-          "type": "STRING",
-          "value": "<="
-        },
-        {
-          "type": "STRING",
-          "value": "<"
-        },
-        {
-          "type": "STRING",
-          "value": "="
-        }
-      ]
-    },
-    "version_literal": {
       "type": "TOKEN",
       "content": {
         "type": "PATTERN",
-        "value": "\\d+\\.\\d+\\.\\d+"
+        "value": "[^;]+"
       }
     },
     "contract_definition": {

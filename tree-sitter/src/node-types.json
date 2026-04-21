@@ -928,21 +928,6 @@
     }
   },
   {
-    "type": "pragma_value",
-    "named": true,
-    "fields": {},
-    "children": {
-      "multiple": true,
-      "required": true,
-      "types": [
-        {
-          "type": "version_constraint",
-          "named": true
-        }
-      ]
-    }
-  },
-  {
     "type": "primary",
     "named": true,
     "fields": {},
@@ -1479,30 +1464,6 @@
     }
   },
   {
-    "type": "version_constraint",
-    "named": true,
-    "fields": {},
-    "children": {
-      "multiple": true,
-      "required": true,
-      "types": [
-        {
-          "type": "version_literal",
-          "named": true
-        },
-        {
-          "type": "version_operator",
-          "named": true
-        }
-      ]
-    }
-  },
-  {
-    "type": "version_operator",
-    "named": true,
-    "fields": {}
-  },
-  {
     "type": "!",
     "named": false
   },
@@ -1744,6 +1705,10 @@
     "named": false
   },
   {
+    "type": "pragma_value",
+    "named": true
+  },
+  {
     "type": "pubkey",
     "named": false
   },
@@ -1840,10 +1805,6 @@
     "named": false
   },
   {
-    "type": "version_literal",
-    "named": true
-  },
-  {
     "type": "weeks",
     "named": false
   },
@@ -1861,10 +1822,6 @@
   },
   {
     "type": "}",
-    "named": false
-  },
-  {
-    "type": "~",
     "named": false
   }
 ]
