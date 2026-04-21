@@ -1439,7 +1439,7 @@ impl<'a, 'i> DebugSession<'a, 'i> {
         }
 
         let mut shadow_bindings = shadow_by_name.into_values().collect::<Vec<_>>();
-        shadow_bindings.sort_by(|left, right| right.stack_index.cmp(&left.stack_index));
+        shadow_bindings.sort_by_key(|binding| std::cmp::Reverse(binding.stack_index));
         let stack_bindings = shadow_bindings
             .iter()
             .enumerate()

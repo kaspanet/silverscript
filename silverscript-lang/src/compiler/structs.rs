@@ -1161,7 +1161,7 @@ fn lower_statements<'i>(
                             span: *span,
                             name_span: *name_span,
                         });
-                        for ((path, leaf_type), binding) in leaf_bindings.into_iter().zip(state_bindings.into_iter()) {
+                        for ((path, leaf_type), binding) in leaf_bindings.into_iter().zip(state_bindings) {
                             scope.vars.insert(binding.name.clone(), leaf_type);
                             lowered.push(Statement::ArrayPush {
                                 name: flattened_struct_name(name, &path),
