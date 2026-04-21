@@ -2584,7 +2584,7 @@ pub(crate) fn eval_const_int<'i>(expr: &Expr<'i>, constants: &HashMap<String, Ex
     }
 }
 
-fn resolve_expr<'i>(
+pub(crate) fn resolve_expr<'i>(
     expr: Expr<'i>,
     constants: &HashMap<String, Expr<'i>>,
     visiting: &mut HashSet<String>,

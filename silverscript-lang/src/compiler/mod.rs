@@ -8,7 +8,7 @@ use crate::ast::{
     ParamAst, SplitPart, StateBindingAst, StateFieldExpr, Statement, TimeVar, TypeBase, TypeRef, UnaryOp, UnarySuffixKind,
     parse_contract_ast, parse_type_ref,
 };
-use crate::debug_info::DebugInfo;
+use crate::debug_info::{DebugInfo, DebugNamedValue};
 pub use crate::errors::{CompilerError, ErrorSpan};
 use crate::span;
 mod array_append;
@@ -25,10 +25,12 @@ mod static_check;
 mod structs;
 
 use compile::compile_contract_impl;
+pub(crate) use compile::resolve_expr;
 pub(super) use compile::{array_element_type, eval_const_int, is_bytes_type, type_name_from_ref};
 pub use compile::{compile_debug_expr, function_branch_index};
 pub(crate) use debug_recording::DebugRecorder;
 use r#for::lower_for_loops;
+pub(crate) use static_check::expr_matches_declared_type_ref;
 use static_check::{static_check_contract, value_matches_type_ref};
 pub use structs::flattened_struct_name;
 pub(super) use structs::{
@@ -114,6 +116,45 @@ pub fn compile_contract_ast<'i>(
 ) -> Result<CompiledContract<'i>, CompilerError> {
     static_check_contract(contract, constructor_args, options)?;
     compile_contract_impl(contract, constructor_args, options, None)
+}
+
+impl<'i> ContractAst<'i> {
+    // Computes the concrete state values for a contract instance.
+    pub fn resolve_contract_state_values(&self, constructor_args: &[Expr<'i>]) -> Result<Vec<DebugNamedValue<'i>>, CompilerError> {
+        if self.params.len() != constructor_args.len() {
+            return Err(CompilerError::Unsupported("constructor argument count mismatch".to_string()));
+        }
+
+        let structs = build_struct_registry(self)?;
+        let mut env: HashMap<String, Expr<'i>> =
+            self.constants.iter().map(|constant| (constant.name.clone(), constant.expr.clone())).collect();
+
+        for (param, value) in self.params.iter().zip(constructor_args.iter()) {
+            let type_name = type_name_from_ref(&param.type_ref);
+            if !expr_matches_declared_type_ref(value, &param.type_ref, &structs) {
+                return Err(CompilerError::Unsupported(format!("constructor argument '{}' expects {}", param.name, type_name)));
+            }
+            env.insert(param.name.clone(), value.clone());
+        }
+
+        let mut resolved_fields = Vec::with_capacity(self.fields.len());
+        for field in &self.fields {
+            if env.contains_key(&field.name) {
+                return Err(CompilerError::Unsupported(format!("duplicate contract field name: {}", field.name)));
+            }
+
+            let type_name = field.type_ref.type_name();
+            let resolved = resolve_expr(field.expr.clone(), &env, &mut std::collections::HashSet::new())?;
+            if !expr_matches_declared_type_ref(&resolved, &field.type_ref, &structs) {
+                return Err(CompilerError::Unsupported(format!("contract field '{}' expects {}", field.name, type_name)));
+            }
+
+            env.insert(field.name.clone(), resolved.clone());
+            resolved_fields.push(DebugNamedValue { name: field.name.clone(), type_name, value: resolved });
+        }
+
+        Ok(resolved_fields)
+    }
 }
 
 pub fn struct_object<'i>(fields: Vec<(&str, Expr<'i>)>) -> Expr<'i> {
