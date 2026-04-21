@@ -120,6 +120,7 @@ pub fn compile_contract_ast<'i>(
 }
 
 impl<'i> ContractAst<'i> {
+    // Computes the concrete state values for a contract instance.
     pub fn resolve_contract_state_values(&self, constructor_args: &[Expr<'i>]) -> Result<Vec<DebugNamedValue<'i>>, CompilerError> {
         if self.params.len() != constructor_args.len() {
             return Err(CompilerError::Unsupported("constructor argument count mismatch".to_string()));

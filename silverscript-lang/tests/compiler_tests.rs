@@ -15,7 +15,7 @@ use kaspa_txscript::{
     EngineCtx, EngineFlags, SeqCommitAccessor, TxScriptEngine, parse_script, pay_to_address_script, pay_to_script_hash_script,
     pay_to_script_hash_signature_script, script_to_str, serialize_i64,
 };
-use silverscript_lang::ast::{Expr, format_contract_ast, parse_contract_ast};
+use silverscript_lang::ast::{Expr, ExprKind, format_contract_ast, parse_contract_ast};
 use silverscript_lang::compiler::{
     CompileOptions, CompiledContract, CovenantDeclCallOptions, FunctionAbiEntry, FunctionInputAbi, compile_contract,
     compile_contract_ast, function_branch_index, struct_object,
@@ -186,6 +186,120 @@ fn supports_struct_contract_params_fields_and_constants() {
     let selector = selector_for(&compiled, "main");
     let result = run_script_with_selector(compiled.script, selector);
     assert!(result.is_ok(), "top-level struct param/field/constant contract should run: {result:?}");
+}
+
+#[test]
+fn resolve_contract_state_values_resolves_constructor_args_constants_and_prior_fields() {
+    let source = r#"
+        contract ResolveState(int initAmount, byte[2] initTag) {
+            int constant DEFAULT_COUNT = 9;
+
+            int amount = initAmount;
+            byte[2] tag = initTag;
+            int count = DEFAULT_COUNT;
+            int mirrored = amount;
+
+            entrypoint function spend() {
+                require(true);
+            }
+        }
+    "#;
+
+    let contract = parse_contract_ast(source).expect("contract parses");
+    let state_fields =
+        contract.resolve_contract_state_values(&[Expr::int(42), Expr::bytes(vec![0xab, 0xcd])]).expect("state values resolve");
+
+    assert_eq!(state_fields.len(), 4);
+    assert_eq!(state_fields[0].name, "amount");
+    assert_eq!(state_fields[0].type_name, "int");
+    assert_int_expr(&state_fields[0].value, 42);
+
+    assert_eq!(state_fields[1].name, "tag");
+    assert_eq!(state_fields[1].type_name, "byte[2]");
+    assert_byte_array_expr(&state_fields[1].value, &[0xab, 0xcd]);
+
+    assert_eq!(state_fields[2].name, "count");
+    assert_eq!(state_fields[2].type_name, "int");
+    assert_int_expr(&state_fields[2].value, 9);
+
+    assert_eq!(state_fields[3].name, "mirrored");
+    assert_eq!(state_fields[3].type_name, "int");
+    assert_int_expr(&state_fields[3].value, 42);
+}
+
+#[test]
+fn resolve_contract_state_values_rejects_constructor_arg_count_mismatch() {
+    let source = r#"
+        contract ResolveState(int initAmount) {
+            int amount = initAmount;
+
+            entrypoint function spend() {
+                require(true);
+            }
+        }
+    "#;
+
+    let contract = parse_contract_ast(source).expect("contract parses");
+    let err = contract.resolve_contract_state_values(&[]).expect_err("missing constructor arg should fail");
+
+    assert!(err.to_string().contains("constructor argument count mismatch"), "unexpected error: {err}");
+}
+
+#[test]
+fn resolve_contract_state_values_rejects_constructor_arg_type_mismatch() {
+    let source = r#"
+        contract ResolveState(int initAmount) {
+            int amount = initAmount;
+
+            entrypoint function spend() {
+                require(true);
+            }
+        }
+    "#;
+
+    let contract = parse_contract_ast(source).expect("contract parses");
+    let err = contract.resolve_contract_state_values(&[Expr::bool(true)]).expect_err("wrong constructor arg type should fail");
+
+    assert!(err.to_string().contains("constructor argument 'initAmount' expects int"), "unexpected error: {err}");
+}
+
+#[test]
+fn resolve_contract_state_values_rejects_resolved_field_type_mismatch() {
+    let source = r#"
+        contract ResolveState(byte[2] initTag) {
+            int amount = initTag;
+
+            entrypoint function spend() {
+                require(true);
+            }
+        }
+    "#;
+
+    let contract = parse_contract_ast(source).expect("contract parses");
+    let err = contract
+        .resolve_contract_state_values(&[Expr::bytes(vec![0xab, 0xcd])])
+        .expect_err("field resolving to wrong type should fail");
+
+    assert!(err.to_string().contains("contract field 'amount' expects int"), "unexpected error: {err}");
+}
+
+fn assert_int_expr(expr: &Expr<'_>, expected: i64) {
+    assert!(matches!(&expr.kind, ExprKind::Int(value) if *value == expected), "expected int {expected}, got {expr:?}");
+}
+
+fn assert_byte_array_expr(expr: &Expr<'_>, expected: &[u8]) {
+    let ExprKind::Array(values) = &expr.kind else {
+        panic!("expected byte array {expected:?}, got {expr:?}");
+    };
+
+    let actual = values
+        .iter()
+        .map(|value| match &value.kind {
+            ExprKind::Byte(byte) => *byte,
+            _ => panic!("expected byte array {expected:?}, got {expr:?}"),
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(actual, expected);
 }
 
 #[test]
