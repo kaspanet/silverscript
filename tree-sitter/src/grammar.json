@@ -736,10 +736,6 @@
         },
         {
           "type": "SYMBOL",
-          "name": "push_statement"
-        },
-        {
-          "type": "SYMBOL",
           "name": "state_function_call_assignment"
         },
         {
@@ -871,39 +867,6 @@
         {
           "type": "SYMBOL",
           "name": "expression"
-        },
-        {
-          "type": "STRING",
-          "value": ";"
-        }
-      ]
-    },
-    "push_statement": {
-      "type": "SEQ",
-      "members": [
-        {
-          "type": "FIELD",
-          "name": "name",
-          "content": {
-            "type": "SYMBOL",
-            "name": "identifier"
-          }
-        },
-        {
-          "type": "STRING",
-          "value": ".push"
-        },
-        {
-          "type": "STRING",
-          "value": "("
-        },
-        {
-          "type": "SYMBOL",
-          "name": "expression"
-        },
-        {
-          "type": "STRING",
-          "value": ")"
         },
         {
           "type": "STRING",
@@ -1938,6 +1901,10 @@
         },
         {
           "type": "SYMBOL",
+          "name": "append_call"
+        },
+        {
+          "type": "SYMBOL",
           "name": "reverse_call"
         },
         {
@@ -2014,6 +1981,19 @@
         {
           "type": "STRING",
           "value": ")"
+        }
+      ]
+    },
+    "append_call": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "STRING",
+          "value": ".append"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "expression_list"
         }
       ]
     },

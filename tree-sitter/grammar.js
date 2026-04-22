@@ -146,7 +146,6 @@ export default grammar({
       choice(
         $.variable_definition,
         $.tuple_assignment,
-        $.push_statement,
         $.state_function_call_assignment,
         $.struct_destructure_assignment,
         $.function_call_assignment,
@@ -181,9 +180,6 @@ export default grammar({
         $.expression,
         ";",
       ),
-
-    push_statement: ($) =>
-      seq(field("name", $.identifier), ".push", "(", $.expression, ")", ";"),
 
     function_call_assignment: ($) =>
       seq("(", commaSep($.typed_binding), ")", "=", $.function_call, ";"),
@@ -343,6 +339,7 @@ export default grammar({
         $.unary_suffix,
         $.split_call,
         $.slice_call,
+        $.append_call,
         $.reverse_call,
         $.field_access,
       ),
@@ -354,6 +351,8 @@ export default grammar({
     split_call: ($) => seq(".split", "(", $.expression, ")"),
 
     slice_call: ($) => seq(".slice", "(", $.expression, ",", $.expression, ")"),
+
+    append_call: ($) => seq(".append", $.expression_list),
 
     reverse_call: (_) => seq(".reverse", "(", ")"),
 

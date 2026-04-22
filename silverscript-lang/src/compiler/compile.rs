@@ -1,3 +1,4 @@
+use super::array_append::lower_array_appends;
 use super::covenant_declarations::lower_covenant_declarations;
 use super::debug_value_types::infer_debug_expr_value_type;
 use super::infer_array::lower_inferred_array_sizes;
@@ -101,8 +102,8 @@ pub(super) fn compile_contract_impl<'i>(
     let inline_lowered_contract = lower_inline_functions(&covenant_lowered_contract, &mut debug_recorder)?;
     let structs = build_struct_registry(&inline_lowered_contract)?;
     let struct_lowered_contract = lower_structs_contract(&inline_lowered_contract, &structs, &constants)?;
-    let array_push_lowered_contract = lower_array_pushes(&struct_lowered_contract)?;
-    let for_lowered_contract = lower_for_loops(&array_push_lowered_contract, &constants)?;
+    let append_lowered_contract = lower_array_appends(&struct_lowered_contract)?;
+    let for_lowered_contract = lower_for_loops(&append_lowered_contract, &constants)?;
     let lowered_contract = lower_inferred_array_sizes(&for_lowered_contract, &constants)?;
     let lowered_contract = if options.record_debug_infos { lowered_contract } else { lower_local_aliases(&lowered_contract)? };
     let mut lowered_constants = flatten_constructor_args_env(&covenant_lowered_contract.params, constructor_args, &structs)?;
@@ -348,7 +349,6 @@ fn statement_uses_script_size(stmt: &Statement<'_>) -> bool {
     match stmt {
         Statement::VariableDefinition { expr, .. } => expr.as_ref().is_some_and(expr_uses_script_size),
         Statement::TupleAssignment { expr, .. } => expr_uses_script_size(expr),
-        Statement::ArrayPush { expr, .. } => expr_uses_script_size(expr),
         Statement::FunctionCall { name, args, .. } => {
             name == "validateOutputState" || name == "validateOutputStateWithTemplate" || args.iter().any(expr_uses_script_size)
         }
@@ -381,6 +381,7 @@ fn expr_uses_script_size<'i>(expr: &Expr<'i>) -> bool {
         ExprKind::Nullary(NullaryOp::ThisScriptSizeDataPrefix) => true,
         ExprKind::Unary { expr, .. } => expr_uses_script_size(expr),
         ExprKind::Binary { left, right, .. } => expr_uses_script_size(left) || expr_uses_script_size(right),
+        ExprKind::Append { source, args, .. } => expr_uses_script_size(source) || args.iter().any(expr_uses_script_size),
         ExprKind::IfElse { condition, then_expr, else_expr } => {
             expr_uses_script_size(condition) || expr_uses_script_size(then_expr) || expr_uses_script_size(else_expr)
         }
@@ -661,7 +662,6 @@ fn collect_statement_identifier_uses<'i>(stmt: &Statement<'i>, uses: &mut HashMa
                 collect_statement_identifier_uses(stmt, uses);
             }
         }
-        Statement::ArrayPush { expr, .. } => collect_expr_identifier_uses(expr, uses),
         Statement::FunctionCall { args, .. }
         | Statement::FunctionCallAssign { args, .. }
         | Statement::StateFunctionCallAssign { args, .. } => {
@@ -709,6 +709,12 @@ fn collect_expr_identifier_uses<'i>(expr: &Expr<'i>, uses: &mut HashMap<String, 
             collect_expr_identifier_uses(left, uses);
             collect_expr_identifier_uses(right, uses);
         }
+        ExprKind::Append { source, args, .. } => {
+            collect_expr_identifier_uses(source, uses);
+            for arg in args {
+                collect_expr_identifier_uses(arg, uses);
+            }
+        }
         ExprKind::IfElse { condition, then_expr, else_expr } => {
             collect_expr_identifier_uses(condition, uses);
             collect_expr_identifier_uses(then_expr, uses);
@@ -753,7 +759,7 @@ fn collect_expr_identifier_uses<'i>(expr: &Expr<'i>, uses: &mut HashMap<String, 
 fn collect_assigned_names_into<'i>(statements: &[Statement<'i>], assigned: &mut HashSet<String>) {
     for stmt in statements {
         match stmt {
-            Statement::Assign { name, .. } | Statement::ArrayPush { name, .. } => {
+            Statement::Assign { name, .. } => {
                 assigned.insert(name.clone());
             }
             Statement::Block { body, .. } => {
@@ -1195,7 +1201,6 @@ fn compile_statement<'i>(ctx: &mut CompileStatementContext<'_, 'i>, stmt: &State
         Statement::VariableDefinition { type_ref, name, expr, .. } => {
             compile_variable_definition_statement(ctx, type_ref, name, expr.as_ref())
         }
-        Statement::ArrayPush { name, expr, .. } => compile_array_push_statement(ctx, name, expr),
         Statement::Require { expr, .. } => compile_require_statement(ctx, expr),
         Statement::TimeOp { tx_var, expr, .. } => compile_time_branch_statement(ctx, tx_var, expr),
         Statement::Block { body, .. } => compile_block_statement(ctx, body).map(|_| Vec::new()),
@@ -1369,14 +1374,6 @@ fn compile_stack_variable_definition<'i>(
     )?;
     ctx.stack_bindings.push_binding(name);
     Ok(vec![name.to_string()])
-}
-
-fn compile_array_push_statement<'i>(
-    _ctx: &mut CompileStatementContext<'_, 'i>,
-    _name: &str,
-    _expr: &Expr<'i>,
-) -> Result<Vec<String>, CompilerError> {
-    unreachable!("lower_array_pushes must remove array push statements before codegen")
 }
 
 fn compile_require_statement<'i>(ctx: &mut CompileStatementContext<'_, 'i>, expr: &Expr<'i>) -> Result<Vec<String>, CompilerError> {
@@ -2587,7 +2584,7 @@ pub(crate) fn eval_const_int<'i>(expr: &Expr<'i>, constants: &HashMap<String, Ex
     }
 }
 
-fn resolve_expr<'i>(
+pub(crate) fn resolve_expr<'i>(
     expr: Expr<'i>,
     constants: &HashMap<String, Expr<'i>>,
     visiting: &mut HashSet<String>,
@@ -2617,6 +2614,14 @@ fn resolve_expr<'i>(
                 op,
                 left: Box::new(resolve_expr(*left, constants, visiting)?),
                 right: Box::new(resolve_expr(*right, constants, visiting)?),
+            },
+            span,
+        )),
+        ExprKind::Append { source, args, span: append_span } => Ok(Expr::new(
+            ExprKind::Append {
+                source: Box::new(resolve_expr(*source, constants, visiting)?),
+                args: args.into_iter().map(|arg| resolve_expr(arg, constants, visiting)).collect::<Result<Vec<_>, _>>()?,
+                span: append_span,
             },
             span,
         )),
@@ -2736,6 +2741,10 @@ pub(super) fn compile_expr<'i>(
         ExprKind::New { name, args, .. } => compile_new_expr(&mut ctx, name, args),
         ExprKind::Unary { op, expr } => compile_unary_expr(&mut ctx, *op, expr),
         ExprKind::Binary { op, left, right } => compile_binary_expr(&mut ctx, *op, left, right),
+        ExprKind::Append { source, args, .. } => {
+            let appended = Expr::new(ExprKind::Array(args.clone()), span::Span::default());
+            compile_binary_expr(&mut ctx, BinaryOp::Add, source, &appended)
+        }
         ExprKind::Split { source, index, part, .. } => compile_split_expr(&mut ctx, source, index, *part),
         ExprKind::UnarySuffix { source, kind, .. } => compile_unary_suffix_expr(&mut ctx, source, *kind),
         ExprKind::ArrayIndex { source, index } => compile_array_index_expr(&mut ctx, source, index),

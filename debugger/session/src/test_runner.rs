@@ -56,6 +56,8 @@ pub struct TestTxInputScenario {
     #[serde(default)]
     pub constructor_args: Option<Vec<Value>>,
     #[serde(default)]
+    pub state: Option<Value>,
+    #[serde(default)]
     pub signature_script_hex: Option<String>,
     #[serde(default)]
     pub utxo_script_hex: Option<String>,
@@ -70,6 +72,8 @@ pub struct TestTxOutputScenario {
     pub authorizing_input: Option<u16>,
     #[serde(default)]
     pub constructor_args: Option<Vec<Value>>,
+    #[serde(default)]
+    pub state: Option<Value>,
     #[serde(default)]
     pub script_hex: Option<String>,
     #[serde(default)]
@@ -111,6 +115,7 @@ pub struct TestTxInputScenarioResolved {
     pub utxo_value: u64,
     pub covenant_id: Option<String>,
     pub constructor_args: Option<Vec<String>>,
+    pub state: Option<String>,
     pub signature_script_hex: Option<String>,
     pub utxo_script_hex: Option<String>,
 }
@@ -121,6 +126,7 @@ pub struct TestTxOutputScenarioResolved {
     pub covenant_id: Option<String>,
     pub authorizing_input: Option<u16>,
     pub constructor_args: Option<Vec<String>>,
+    pub state: Option<String>,
     pub script_hex: Option<String>,
     pub p2pk_pubkey: Option<String>,
 }
@@ -208,6 +214,7 @@ pub fn resolve_tx_scenario(tx: TestTxScenario) -> Result<TestTxScenarioResolved,
             utxo_value: input.utxo_value,
             covenant_id: input.covenant_id,
             constructor_args: input.constructor_args.as_ref().map(|values| values_to_args(values)).transpose()?,
+            state: input.state.as_ref().map(value_to_arg).transpose()?,
             signature_script_hex: input.signature_script_hex,
             utxo_script_hex: input.utxo_script_hex,
         });
@@ -220,6 +227,7 @@ pub fn resolve_tx_scenario(tx: TestTxScenario) -> Result<TestTxScenarioResolved,
             covenant_id: output.covenant_id,
             authorizing_input: output.authorizing_input,
             constructor_args: output.constructor_args.as_ref().map(|values| values_to_args(values)).transpose()?,
+            state: output.state.as_ref().map(value_to_arg).transpose()?,
             script_hex: output.script_hex,
             p2pk_pubkey: output.p2pk_pubkey,
         });
@@ -245,5 +253,70 @@ fn value_to_arg(value: &Value) -> Result<String, String> {
         Value::Bool(raw) => Ok(raw.to_string()),
         Value::Null => Ok("null".to_string()),
         Value::Array(_) | Value::Object(_) => serde_json::to_string(value).map_err(|err| format!("invalid arg value: {err}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use super::resolve_contract_test;
+
+    #[test]
+    fn resolve_contract_test_accepts_covenant_state_fields() {
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).expect("clock").as_nanos();
+        let dir = std::env::temp_dir().join(format!("debugger_test_runner_{nonce}"));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+
+        let script_path = dir.join("cov.sil");
+        let test_path = dir.join("cov.test.json");
+        std::fs::write(
+            &script_path,
+            "pragma silverscript ^0.1.0;\ncontract Cov(int initial_value) { int value = initial_value; entrypoint function spend() { require(true); } }\n",
+        )
+        .expect("write script");
+        std::fs::write(
+            &test_path,
+            r#"{
+  "tests": [
+    {
+      "name": "source_leader",
+      "function": "rebalance",
+      "constructor_args": [10],
+      "args": [5],
+      "expect": "pass",
+      "tx": {
+        "inputs": [
+          {
+            "utxo_value": 5000,
+            "covenant_id": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "state": { "value": 10 }
+          }
+        ],
+        "outputs": [
+          {
+            "value": 5000,
+            "covenant_id": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "authorizing_input": 0,
+            "state": { "value": 15 }
+          }
+        ]
+      }
+    }
+  ]
+}"#,
+        )
+        .expect("write test file");
+
+        let resolved = resolve_contract_test(&test_path, "source_leader", Some(&script_path)).expect("resolve test");
+        assert_eq!(resolved.test.function, "rebalance");
+        assert_eq!(resolved.test.constructor_args, vec!["10"]);
+        assert_eq!(resolved.test.args, vec!["5"]);
+
+        let tx = resolved.test.tx.expect("tx");
+        assert_eq!(tx.inputs[0].covenant_id.as_deref(), Some("0x1111111111111111111111111111111111111111111111111111111111111111"));
+        assert_eq!(tx.outputs[0].covenant_id.as_deref(), Some("0x1111111111111111111111111111111111111111111111111111111111111111"));
+        assert_eq!(tx.inputs[0].state.as_deref(), Some(r#"{"value":10}"#));
+        assert_eq!(tx.outputs[0].state.as_deref(), Some(r#"{"value":15}"#));
     }
 }

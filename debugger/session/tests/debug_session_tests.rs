@@ -3,17 +3,18 @@ use std::error::Error;
 
 use kaspa_consensus_core::Hash;
 use kaspa_consensus_core::hashing::sighash::SigHashReusedValuesUnsync;
-use kaspa_consensus_core::mass::units::SigopCount;
 use kaspa_consensus_core::tx::{
-    PopulatedTransaction, ScriptPublicKey, Transaction, TransactionId, TransactionInput, TransactionOutpoint, TransactionOutput,
-    UtxoEntry, VerifiableTransaction,
+    CovenantBinding, PopulatedTransaction, ScriptPublicKey, Transaction, TransactionId, TransactionInput, TransactionOutpoint,
+    TransactionOutput, TxInputMass, UtxoEntry, VerifiableTransaction,
 };
 use kaspa_txscript::caches::Cache;
 use kaspa_txscript::covenants::CovenantsContext;
 use kaspa_txscript::opcodes::codes::OpTrue;
-use kaspa_txscript::{EngineCtx, EngineFlags};
+use kaspa_txscript::script_builder::ScriptBuilder;
+use kaspa_txscript::{EngineCtx, EngineFlags, pay_to_script_hash_script};
 
 use debugger_session::{
+    covenant::resolve_covenant_call_target,
     format_value,
     session::{DebugSession, DebugValue, ShadowTxContext},
 };
@@ -1643,7 +1644,7 @@ contract CovLocal() {
         previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([0x44u8; 32]), index: 0 },
         signature_script: sigscript.clone(),
         sequence: 0,
-        mass: SigopCount(0).into(),
+        mass: TxInputMass::SigopCount(0.into()),
     };
     let output = TransactionOutput { value: 1000, script_public_key: ScriptPublicKey::new(0, vec![OpTrue].into()), covenant: None };
     let tx = Transaction::new(1, vec![input], vec![output], 0, Default::default(), 0, vec![]);
@@ -1707,7 +1708,7 @@ contract CovEval() {
         previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([0x44u8; 32]), index: 0 },
         signature_script: sigscript.clone(),
         sequence: 0,
-        mass: SigopCount(0).into(),
+        mass: TxInputMass::SigopCount(0.into()),
     };
     let output = TransactionOutput { value: 1000, script_public_key: ScriptPublicKey::new(0, vec![OpTrue].into()), covenant: None };
     let tx = Transaction::new(1, vec![input], vec![output], 0, Default::default(), 0, vec![]);
@@ -1742,4 +1743,135 @@ contract CovEval() {
     assert_eq!(type_name, "byte[32]");
     assert_eq!(format_value(&type_name, &value), format!("0x{}", "22".repeat(32)));
     Ok(())
+}
+
+fn covenant_debug_value(value: i64) -> DebugValue {
+    DebugValue::Object(vec![("value".to_string(), DebugValue::Int(value))])
+}
+
+fn push_redeem_script(script: &[u8]) -> Vec<u8> {
+    ScriptBuilder::new().add_data(script).expect("push redeem script").drain()
+}
+
+fn with_cov_rebalance_session<F>(mut f: F) -> Result<(), Box<dyn Error>>
+where
+    F: FnMut(&mut DebugSession<'_, '_>) -> Result<(), Box<dyn Error>>,
+{
+    let source = r#"pragma silverscript ^0.1.0;
+
+contract CovDebugDemo(int initial_value) {
+    int value = initial_value;
+
+    #[covenant(binding = cov, from = 2, to = 2, mode = verification)]
+    function rebalance(State[] prev_states, State[] new_states) {
+        require(prev_states.length == 2);
+        require(prev_states[0].value == 10);
+        require(prev_states[1].value == 20);
+        require(new_states.length == 2);
+    }
+}
+"#;
+
+    let parsed_contract = parse_contract_ast(source)?;
+    let compile_opts = CompileOptions { record_debug_infos: true, ..Default::default() };
+    let compiled0 = compile_contract(source, &[Expr::int(10)], compile_opts)?;
+    let compiled1 = compile_contract(source, &[Expr::int(20)], compile_opts)?;
+    let leader_args = vec![Expr::new(
+        ExprKind::Array(vec![struct_object(vec![("value", Expr::int(30))]), struct_object(vec![("value", Expr::int(40))])]),
+        Default::default(),
+    )];
+    let leader_target =
+        resolve_covenant_call_target(&parsed_contract, &compiled0, "rebalance").ok_or("missing covenant call target")?;
+    let leader_sigscript = compiled0.build_sig_script(&leader_target.generated_entrypoint_name, leader_args)?;
+    let mut leader_input_sigscript = leader_sigscript.clone();
+    leader_input_sigscript.extend_from_slice(&push_redeem_script(&compiled0.script));
+    let delegate_sigscript = compiled1.build_sig_script(&leader_target.generated_entrypoint_name_for(false), vec![])?;
+    let mut delegate_input_sigscript = delegate_sigscript.clone();
+    delegate_input_sigscript.extend_from_slice(&push_redeem_script(&compiled1.script));
+
+    let covenant_id = Hash::from_bytes([0x33u8; 32]);
+    let inputs = vec![
+        TransactionInput {
+            previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([0x44u8; 32]), index: 0 },
+            signature_script: leader_input_sigscript,
+            sequence: 0,
+            mass: TxInputMass::SigopCount(0.into()),
+        },
+        TransactionInput {
+            previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([0x55u8; 32]), index: 0 },
+            signature_script: delegate_input_sigscript,
+            sequence: 0,
+            mass: TxInputMass::SigopCount(0.into()),
+        },
+    ];
+    let next0 = compile_contract(source, &[Expr::int(30)], compile_opts)?;
+    let next1 = compile_contract(source, &[Expr::int(40)], compile_opts)?;
+    let outputs = vec![
+        TransactionOutput {
+            value: 1000,
+            script_public_key: pay_to_script_hash_script(&next0.script),
+            covenant: Some(CovenantBinding { authorizing_input: 0, covenant_id }),
+        },
+        TransactionOutput {
+            value: 1000,
+            script_public_key: pay_to_script_hash_script(&next1.script),
+            covenant: Some(CovenantBinding { authorizing_input: 0, covenant_id }),
+        },
+    ];
+    let tx = Transaction::new(1, inputs, outputs, 0, Default::default(), 0, vec![]);
+
+    let utxos = vec![
+        UtxoEntry::new(1000, pay_to_script_hash_script(&compiled0.script), 0, tx.is_coinbase(), Some(covenant_id)),
+        UtxoEntry::new(1000, pay_to_script_hash_script(&compiled1.script), 0, tx.is_coinbase(), Some(covenant_id)),
+    ];
+    let populated_tx = PopulatedTransaction::new(&tx, utxos);
+    let cov_ctx = CovenantsContext::from_tx(&populated_tx)?;
+
+    let sig_cache = Cache::new(10_000);
+    let reused_values = SigHashReusedValuesUnsync::new();
+    let ctx = EngineCtx::new(&sig_cache).with_reused(&reused_values).with_covenants_ctx(&cov_ctx);
+    let input_ref = &tx.inputs[0];
+    let utxo_ref = populated_tx.utxo(0).ok_or("missing active utxo")?;
+    let engine = debugger_session::session::DebugEngine::from_transaction_input(
+        &populated_tx,
+        input_ref,
+        0,
+        utxo_ref,
+        ctx,
+        EngineFlags { covenants_enabled: true, ..Default::default() },
+    );
+
+    let shadow_ctx =
+        ShadowTxContext { tx: &populated_tx, input: input_ref, input_index: 0, utxo_entry: utxo_ref, covenants_ctx: &cov_ctx };
+
+    let mut session = DebugSession::full(&leader_sigscript, &compiled0.script, source, compiled0.debug_info.clone(), engine)?
+        .with_shadow_tx_context(shadow_ctx)
+        .with_covenant_mode(Some(DebugValue::Array(vec![covenant_debug_value(10), covenant_debug_value(20)])), Some(leader_target));
+
+    f(&mut session)
+}
+
+#[test]
+fn debug_session_covenant_leader_uses_source_level_prev_states() -> Result<(), Box<dyn Error>> {
+    with_cov_rebalance_session(|session| {
+        session.run_to_first_executed_statement()?;
+
+        assert_eq!(session.current_function_name().as_deref(), Some("rebalance"));
+        assert_eq!(session.current_span().map(|span| span.line), Some(8));
+
+        let vars = session.list_variables()?;
+        let names = vars.iter().map(|var| var.name.as_str()).collect::<HashSet<_>>();
+        assert!(names.contains("prev_states"), "expected prev_states in scope");
+        assert!(names.contains("new_states"), "expected new_states in scope");
+        assert!(names.contains("value"), "expected contract field in scope");
+        assert!(!names.contains("__cov_id"), "synthetic covenant locals should stay hidden");
+
+        let prev_states = session.variable_by_name("prev_states")?;
+        assert_eq!(format_value(&prev_states.type_name, &prev_states.value), "[{value: 10}, {value: 20}]");
+
+        let (type_name, value) = session.evaluate_expression("prev_states[0].value")?;
+        assert_eq!(type_name, "int");
+        assert_eq!(format_value(&type_name, &value), "10");
+        Ok(())
+    })
 }

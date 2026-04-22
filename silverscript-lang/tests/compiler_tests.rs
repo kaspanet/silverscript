@@ -16,7 +16,7 @@ use kaspa_txscript::{
     EngineCtx, EngineFlags, SeqCommitAccessor, TxScriptEngine, parse_script, pay_to_address_script, pay_to_script_hash_script,
     pay_to_script_hash_signature_script, script_to_str, serialize_i64,
 };
-use silverscript_lang::ast::{Expr, format_contract_ast, parse_contract_ast};
+use silverscript_lang::ast::{Expr, ExprKind, format_contract_ast, parse_contract_ast};
 use silverscript_lang::compiler::{
     CompileOptions, CompiledContract, CovenantDeclCallOptions, FunctionAbiEntry, FunctionInputAbi, compile_contract,
     compile_contract_ast, function_branch_index, struct_object,
@@ -142,6 +142,90 @@ fn execute_input(tx: Transaction, entries: Vec<UtxoEntry>, input_idx: usize) -> 
     vm.execute()
 }
 
+fn pragma_source(pragma: Option<&str>) -> String {
+    let pragma = pragma.map(|pragma| format!("{pragma}\n")).unwrap_or_default();
+    format!(
+        r#"
+            {pragma}
+            contract Versioned() {{
+                entrypoint function main() {{
+                    require(true);
+                }}
+            }}
+        "#
+    )
+}
+
+#[test]
+fn accepts_compatible_pragma_versions() {
+    let pragmas = [
+        "pragma silverscript ^0.1.0;",
+        "pragma silverscript ~0.1.0;",
+        "pragma silverscript >=0.1.0;",
+        "pragma silverscript >0.0.9;",
+        "pragma silverscript <0.2.0;",
+        "pragma silverscript <=0.1.5;",
+        "pragma silverscript =0.1.0;",
+        "pragma silverscript 0.1.0;",
+        "pragma silverscript >=0.1.0, <0.2.0;",
+        "pragma silverscript 0.1.*;",
+    ];
+
+    for pragma in pragmas {
+        let source = pragma_source(Some(pragma));
+        compile_contract(&source, &[], CompileOptions::default()).unwrap_or_else(|err| panic!("{pragma} should compile: {err}"));
+    }
+}
+
+#[test]
+fn accepts_missing_pragma_without_version_check() {
+    let source = pragma_source(None);
+    compile_contract(&source, &[], CompileOptions::default()).expect("contract without pragma should still compile");
+}
+
+#[test]
+fn rejects_incompatible_pragma_versions() {
+    let pragmas = [
+        "pragma silverscript ^0.2.0;",
+        "pragma silverscript ~0.1.1;",
+        "pragma silverscript >=0.1.1;",
+        "pragma silverscript >0.1.0;",
+        "pragma silverscript <0.1.0;",
+        "pragma silverscript <=0.0.9;",
+        "pragma silverscript =0.1.1;",
+        "pragma silverscript >=0.1.0, <0.1.0;",
+    ];
+
+    for pragma in pragmas {
+        let source = pragma_source(Some(pragma));
+        let err = compile_contract(&source, &[], CompileOptions::default()).expect_err("incompatible pragma should fail");
+        assert!(err.to_string().contains("does not satisfy pragma"), "{pragma} produced unexpected error: {err}");
+    }
+}
+
+#[test]
+fn rejects_invalid_semver_pragma_requirements() {
+    let source = pragma_source(Some("pragma silverscript >=0.1.0 <0.2.0;"));
+    let err = compile_contract(&source, &[], CompileOptions::default()).expect_err("invalid semver requirement should fail");
+    assert!(err.to_string().contains("invalid SilverScript version requirement"), "unexpected error: {err}");
+}
+
+#[test]
+fn rejects_multiple_pragma_directives() {
+    let source = r#"
+        pragma silverscript ^0.1.0;
+        pragma silverscript >=0.1.0, <0.2.0;
+
+        contract Versioned() {
+            entrypoint function main() {
+                require(true);
+            }
+        }
+    "#;
+    let err = parse_contract_ast(source).expect_err("second pragma should fail");
+    assert!(err.to_string().contains("parse error"), "unexpected error: {err}");
+}
+
 #[test]
 fn accepts_constructor_args_with_matching_types() {
     let source = r#"
@@ -189,6 +273,120 @@ fn supports_struct_contract_params_fields_and_constants() {
     let selector = selector_for(&compiled, "main");
     let result = run_script_with_selector(compiled.script, selector);
     assert!(result.is_ok(), "top-level struct param/field/constant contract should run: {result:?}");
+}
+
+#[test]
+fn resolve_contract_state_values_resolves_constructor_args_constants_and_prior_fields() {
+    let source = r#"
+        contract ResolveState(int initAmount, byte[2] initTag) {
+            int constant DEFAULT_COUNT = 9;
+
+            int amount = initAmount;
+            byte[2] tag = initTag;
+            int count = DEFAULT_COUNT;
+            int mirrored = amount;
+
+            entrypoint function spend() {
+                require(true);
+            }
+        }
+    "#;
+
+    let contract = parse_contract_ast(source).expect("contract parses");
+    let state_fields =
+        contract.resolve_contract_state_values(&[Expr::int(42), Expr::bytes(vec![0xab, 0xcd])]).expect("state values resolve");
+
+    assert_eq!(state_fields.len(), 4);
+    assert_eq!(state_fields[0].name, "amount");
+    assert_eq!(state_fields[0].type_name, "int");
+    assert_int_expr(&state_fields[0].value, 42);
+
+    assert_eq!(state_fields[1].name, "tag");
+    assert_eq!(state_fields[1].type_name, "byte[2]");
+    assert_byte_array_expr(&state_fields[1].value, &[0xab, 0xcd]);
+
+    assert_eq!(state_fields[2].name, "count");
+    assert_eq!(state_fields[2].type_name, "int");
+    assert_int_expr(&state_fields[2].value, 9);
+
+    assert_eq!(state_fields[3].name, "mirrored");
+    assert_eq!(state_fields[3].type_name, "int");
+    assert_int_expr(&state_fields[3].value, 42);
+}
+
+#[test]
+fn resolve_contract_state_values_rejects_constructor_arg_count_mismatch() {
+    let source = r#"
+        contract ResolveState(int initAmount) {
+            int amount = initAmount;
+
+            entrypoint function spend() {
+                require(true);
+            }
+        }
+    "#;
+
+    let contract = parse_contract_ast(source).expect("contract parses");
+    let err = contract.resolve_contract_state_values(&[]).expect_err("missing constructor arg should fail");
+
+    assert!(err.to_string().contains("constructor argument count mismatch"), "unexpected error: {err}");
+}
+
+#[test]
+fn resolve_contract_state_values_rejects_constructor_arg_type_mismatch() {
+    let source = r#"
+        contract ResolveState(int initAmount) {
+            int amount = initAmount;
+
+            entrypoint function spend() {
+                require(true);
+            }
+        }
+    "#;
+
+    let contract = parse_contract_ast(source).expect("contract parses");
+    let err = contract.resolve_contract_state_values(&[Expr::bool(true)]).expect_err("wrong constructor arg type should fail");
+
+    assert!(err.to_string().contains("constructor argument 'initAmount' expects int"), "unexpected error: {err}");
+}
+
+#[test]
+fn resolve_contract_state_values_rejects_resolved_field_type_mismatch() {
+    let source = r#"
+        contract ResolveState(byte[2] initTag) {
+            int amount = initTag;
+
+            entrypoint function spend() {
+                require(true);
+            }
+        }
+    "#;
+
+    let contract = parse_contract_ast(source).expect("contract parses");
+    let err = contract
+        .resolve_contract_state_values(&[Expr::bytes(vec![0xab, 0xcd])])
+        .expect_err("field resolving to wrong type should fail");
+
+    assert!(err.to_string().contains("contract field 'amount' expects int"), "unexpected error: {err}");
+}
+
+fn assert_int_expr(expr: &Expr<'_>, expected: i64) {
+    assert!(matches!(&expr.kind, ExprKind::Int(value) if *value == expected), "expected int {expected}, got {expr:?}");
+}
+
+fn assert_byte_array_expr(expr: &Expr<'_>, expected: &[u8]) {
+    let ExprKind::Array(values) = &expr.kind else {
+        panic!("expected byte array {expected:?}, got {expr:?}");
+    };
+
+    let actual = values
+        .iter()
+        .map(|value| match &value.kind {
+            ExprKind::Byte(byte) => *byte,
+            _ => panic!("expected byte array {expected:?}, got {expr:?}"),
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(actual, expected);
 }
 
 #[test]
@@ -3408,12 +3606,12 @@ fn compiles_int_array_length_to_expected_script() {
 }
 
 #[test]
-fn compiles_int_array_push_to_expected_script() {
+fn compiles_int_array_append_to_expected_script() {
     let source = r#"
         contract Arrays() {
             entrypoint function main() {
                 int[] x;
-                x.push(7);
+                x = x.append(7);
                 require(x.length == 1);
             }
         }
@@ -3596,7 +3794,7 @@ fn compiles_int_array_index_to_expected_script() {
         contract Arrays() {
             entrypoint function main() {
                 int[] x;
-                x.push(7);
+                x = x.append(7);
                 require(x[0] == 7);
             }
         }
@@ -3651,16 +3849,18 @@ fn compiles_int_array_index_to_expected_script() {
 }
 
 #[test]
-fn runs_array_runtime_examples() {
+fn runs_array_append_runtime_examples() {
     let source = r#"
         contract Arrays() {
             entrypoint function main() {
                 int[] x;
-                x.push(7);
-                x.push(9);
-                require(x.length == 2);
-                require(x[0] == 7);
-                require(x[1] == 9);
+                int[] y = x.append(7, 9, 11);
+                require(x.append(1).length > 0);
+                require(x.length == 0);
+                require(y.length == 3);
+                require(y[0] == 7);
+                require(y[1] == 9);
+                require(y[2] == 11);
             }
         }
     "#;
@@ -3668,16 +3868,16 @@ fn runs_array_runtime_examples() {
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
     let sigscript = ScriptBuilder::new().drain();
     let result = run_script_with_sigscript(compiled.script, sigscript);
-    assert!(result.is_ok(), "array runtime example failed: {}", result.unwrap_err());
+    assert!(result.is_ok(), "array append runtime example failed: {}", result.unwrap_err());
 }
 
 #[test]
-fn runs_int_array_push_length_runtime_example() {
+fn runs_int_array_append_length_runtime_example() {
     let source = r#"
         contract Arrays() {
             entrypoint function main() {
                 int[] x = [1, 2, 3];
-                x.push(4);
+                x = x.append(4);
                 require(x.length == 4);
             }
         }
@@ -3686,7 +3886,7 @@ fn runs_int_array_push_length_runtime_example() {
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
     let sigscript = ScriptBuilder::new().drain();
     let result = run_script_with_sigscript(compiled.script, sigscript);
-    assert!(result.is_ok(), "int[] push length runtime example failed: {}", result.unwrap_err());
+    assert!(result.is_ok(), "int[] append length runtime example failed: {}", result.unwrap_err());
 }
 
 #[test]
@@ -3854,12 +4054,12 @@ fn allows_concat_of_pubkey_arrays_with_plus() {
 }
 
 #[test]
-fn compiles_bytes20_array_push_without_num2bin() {
+fn compiles_bytes20_array_append_without_num2bin() {
     let source = r#"
         contract Arrays() {
             entrypoint function main() {
                 byte[20][] x;
-                x.push(0x0102030405060708090a0b0c0d0e0f1011121314);
+                x = x.append(0x0102030405060708090a0b0c0d0e0f1011121314);
                 require(x.length == 1);
             }
         }
@@ -3917,8 +4117,8 @@ fn runs_bytes20_array_runtime_example() {
         contract Arrays() {
             entrypoint function main() {
                 byte[20][] x;
-                x.push(0x0102030405060708090a0b0c0d0e0f1011121314);
-                x.push(0x1111111111111111111111111111111111111111);
+                x = x.append(0x0102030405060708090a0b0c0d0e0f1011121314);
+                x = x.append(0x1111111111111111111111111111111111111111);
                 require(x.length == 2);
                 require(x[0] == 0x0102030405060708090a0b0c0d0e0f1011121314);
                 require(x[1] == 0x1111111111111111111111111111111111111111);
@@ -3939,8 +4139,8 @@ fn allows_array_equality_comparison() {
             entrypoint function main() {
                 byte[20][] x;
                 byte[20][] y;
-                x.push(0x0102030405060708090a0b0c0d0e0f1011121314);
-                y.push(0x0102030405060708090a0b0c0d0e0f1011121314);
+                x = x.append(0x0102030405060708090a0b0c0d0e0f1011121314);
+                y = y.append(0x0102030405060708090a0b0c0d0e0f1011121314);
                 require(x == y);
             }
         }
@@ -3959,8 +4159,8 @@ fn fails_array_equality_comparison() {
             entrypoint function main() {
                 byte[20][] x;
                 byte[20][] y;
-                x.push(0x0102030405060708090a0b0c0d0e0f1011121314);
-                y.push(0x2222222222222222222222222222222222222222);
+                x = x.append(0x0102030405060708090a0b0c0d0e0f1011121314);
+                y = y.append(0x2222222222222222222222222222222222222222);
                 require(x == y);
             }
         }
@@ -3979,9 +4179,9 @@ fn allows_array_inequality_with_different_sizes() {
             entrypoint function main() {
                 byte[20][] x;
                 byte[20][] y;
-                x.push(0x0102030405060708090a0b0c0d0e0f1011121314);
-                y.push(0x0102030405060708090a0b0c0d0e0f1011121314);
-                y.push(0x2222222222222222222222222222222222222222);
+                x = x.append(0x0102030405060708090a0b0c0d0e0f1011121314);
+                y = y.append(0x0102030405060708090a0b0c0d0e0f1011121314);
+                y = y.append(0x2222222222222222222222222222222222222222);
                 require(x != y);
             }
         }
@@ -3999,9 +4199,9 @@ fn runs_array_for_loop_example() {
         contract Arrays() {
             entrypoint function main() {
                 int[] x;
-                x.push(1);
-                x.push(2);
-                x.push(3);
+                x = x.append(1);
+                x = x.append(2);
+                x = x.append(3);
                 for (i, 0, 3, 3) {
                     require(x[i] == i + 1);
                 }
@@ -4054,9 +4254,9 @@ fn runs_array_loop_and_function_calls_example() {
 
             entrypoint function main() {
                 int[] x;
-                x.push(1);
-                x.push(2);
-                x.push(3);
+                x = x.append(1);
+                x = x.append(2);
+                x = x.append(3);
                 (int total) = sumArray(x);
                 require(total == 6);
             }
@@ -4067,6 +4267,31 @@ fn runs_array_loop_and_function_calls_example() {
     let selector = selector_for(&compiled, "main");
     let result = run_script_with_selector(compiled.script, selector);
     assert!(result.is_ok(), "array/loop/function-call example failed: {}", result.unwrap_err());
+}
+
+#[test]
+fn rejects_array_append_elements_with_wrong_type() {
+    let cases = [
+        "require(x.append(true, 2, 3).length > 0);",
+        "require(x.append(1, true, 3).length > 0);",
+        "require(x.append(1, 2, true).length > 0);",
+    ];
+
+    for append_statement in cases {
+        let source = format!(
+            r#"
+                contract Arrays() {{
+                    entrypoint function main() {{
+                        int[] x;
+                        {append_statement}
+                    }}
+                }}
+            "#
+        );
+
+        let err = compile_contract(&source, &[], CompileOptions::default()).expect_err("compile should fail");
+        assert!(err.to_string().contains("array append element type mismatch"), "unexpected error: {err}");
+    }
 }
 
 #[test]
@@ -5626,7 +5851,7 @@ fn read_input_state_runtime_preserves_supported_field_types_across_contract_shap
                     require(x.somePubkey == pubkey(0x0202020202020202020202020202020202020202020202020202020202020202));
 
                     byte[] owner = byte[](x.somePubkey);
-                    owner.push(byte(3));
+                    owner = owner.append(byte(3));
                     require(owner.length == 33);
                 }
             }
@@ -5649,7 +5874,7 @@ fn read_input_state_runtime_preserves_supported_field_types_across_contract_shap
                     require(x.someSig == sig(0x1111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111));
 
                     byte[] sigBytes = byte[](x.someSig);
-                    sigBytes.push(byte(0x42));
+                    sigBytes = sigBytes.append(byte(0x42));
                     require(sigBytes.length == 66);
                 }
             }
@@ -5672,7 +5897,7 @@ fn read_input_state_runtime_preserves_supported_field_types_across_contract_shap
                     require(x.someDatasig == datasig(0x22222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222));
 
                     byte[] datasigBytes = byte[](x.someDatasig);
-                    datasigBytes.push(byte(0x24));
+                    datasigBytes = datasigBytes.append(byte(0x24));
                     require(datasigBytes.length == 65);
                 }
             }
@@ -5739,7 +5964,7 @@ fn read_input_state_runtime_preserves_supported_field_types_without_selector_dis
                     require(x.somePubkey == pubkey(0x0202020202020202020202020202020202020202020202020202020202020202));
 
                     byte[] owner = byte[](x.somePubkey);
-                    owner.push(byte(3));
+                    owner = owner.append(byte(3));
                     require(owner.length == 33);
                 }
             }
@@ -7931,9 +8156,9 @@ fn compiles_script_size_and_runs_sum_array() {
             entrypoint function main(int expected_script_size) {
                 require(expected_script_size == this.scriptSize);
                 int[] x;
-                x.push(1);
-                x.push(2);
-                x.push(3);
+                x = x.append(1);
+                x = x.append(2);
+                x = x.append(3);
                 (int total) = sumArray(x);
                 require(total == 6);
             }

@@ -194,12 +194,6 @@ pub fn walk_statement_mut<'i, V: AstVisitorMut<'i> + ?Sized>(visitor: &mut V, st
             visitor.visit_name(right_name, NameKind::AssignmentTarget);
             visitor.visit_expr(expr);
         }
-        Statement::ArrayPush { name, expr, span, name_span } => {
-            visitor.visit_span(span);
-            visitor.visit_span(name_span);
-            visitor.visit_name(name, NameKind::AssignmentTarget);
-            visitor.visit_expr(expr);
-        }
         Statement::FunctionCall { name, args, span, name_span } => {
             visitor.visit_span(span);
             visitor.visit_span(name_span);
@@ -337,6 +331,13 @@ pub fn walk_expr_mut<'i, V: AstVisitorMut<'i> + ?Sized>(visitor: &mut V, expr: &
             visitor.visit_expr(source);
             visitor.visit_expr(start);
             visitor.visit_expr(end);
+        }
+        ExprKind::Append { source, args, span } => {
+            visitor.visit_span(span);
+            visitor.visit_expr(source);
+            for arg in args {
+                visitor.visit_expr(arg);
+            }
         }
         ExprKind::Unary { expr, .. } => {
             visitor.visit_expr(expr);

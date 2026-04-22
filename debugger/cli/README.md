@@ -51,7 +51,7 @@ Stepping through 42 bytes of script
 (sdb) n
 →    6 |         require(doubled > threshold);
 (sdb) vars
-Contract Constants:
+Constructor Args:
   threshold (int) = 10
 Call Arguments:
   value (int) = 7
@@ -81,38 +81,11 @@ Done.
 | `h` / `?` (`help`) | **Help**: Show the command summary |
 | `q` (`quit`) | **Quit**: Exit the debugger |
 
-### Inspection
-
-Use `vars` to inspect the current source-level scope and `eval` to check expressions in that scope. This works for scalars, `State`, `State[]`, and custom `struct` values.
-
-```bash
-cli-debugger examples/debug_struct_state_matrix.sil --function inspect_state \
-  --ctor-arg '{"amount":3,"code":"0x1234"}' \
-  --arg '{"amount":5,"active":true,"tag":"0xaa"}'
-```
-
-```text
-(sdb) vars
-Contract Constants:
-  seed_pair (Pair) = {amount: 3, code: 0x1234}
-Contract State:
-  amount (int) = 1
-  active (bool) = true
-  tag (byte[1]) = 0xaa
-Call Arguments:
-  next_state (State) = {amount: 5, active: true, tag: 0xaa}
-
-(sdb) eval next_state.amount + amount
-next_state.amount + amount = (int) 6
-```
-
-If the contract executes a source-level `console.log(...)`, its output appears under `Console:` while stepping. The same `vars` and `eval` flow also works for custom structs such as `Pair`.
-
 ---
 
 ## Testing
 
-Run `.test.json` suites non-interactively to verify logic in bulk. If you pass a contract path without `--test-file`, the debugger will infer `name.test.json` from `name.sil`. If you pass `--test-file`, that exact file is used. Each test case defines the entrypoint, constructor arguments, call arguments, and expected result:
+Run `.test.json` suites non-interactively to verify logic in bulk. If you pass a contract path without `--test-file`, the debugger will infer `name.test.json` from `name.sil`. If you pass `--test-file`, that exact file is used. Each test case defines the function, constructor arguments, call arguments, and expected result:
 
 ```json
 {
@@ -150,6 +123,58 @@ Structured args use the same JSON object and object-array form inside `.test.jso
   ]
 }
 ```
+
+For covenant tests, add a `tx` section to describe the spend:
+- `active_input_index` chooses which input you want to debug
+- `covenant_id` links related covenant inputs and outputs
+- each input or output state can be described with either `constructor_args` or an explicit `state` object
+
+For covenant verification functions, you usually do not need to pass state values in `args`:
+- `prev_state` / `prev_states` come from the spent inputs
+- `new_state` / `new_states` come from the outputs
+
+So `args` only needs the remaining non-state function arguments. If there are none, you can leave `args` out.
+
+```json
+{
+  "tests": [
+    {
+      "name": "source_leader",
+      "function": "step",
+      "expect": "pass",
+      "tx": {
+        "active_input_index": 0,
+        "inputs": [
+          {
+            "utxo_value": 1000,
+            "covenant_id": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "state": { "value": 7 }
+          },
+          {
+            "utxo_value": 1000,
+            "covenant_id": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "state": { "value": 9 }
+          }
+        ],
+        "outputs": [
+          {
+            "value": 1000,
+            "covenant_id": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "state": { "value": 11 }
+          },
+          {
+            "value": 1000,
+            "covenant_id": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "state": { "value": 13 }
+          }
+        ]
+      }
+    }
+  ]
+}
+```
+
+If an output is authorized by a different input, set `authorizing_input` on that output explicitly.
 
 ### Test Commands
 

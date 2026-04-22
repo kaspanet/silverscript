@@ -99,6 +99,9 @@
 (slice_call
   ".slice" @function.method)
 
+(append_call
+  ".append" @function.method)
+
 (reverse_call
   ".reverse" @function.method)
 
