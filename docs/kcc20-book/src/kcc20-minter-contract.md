@@ -23,34 +23,34 @@ contract KCC20Minter(pubkey owner, byte[32] initKCC20Covid, int initAmount,
     byte constant IDENTIFIER_COVENANT_ID = 0x02;
 
     function calcInAmount() : (int) {
-        KCC20State dogPrevState = readInputStateWithTemplate(
+        KCC20State kcc20PrevState = readInputStateWithTemplate(
             OpCovInputIdx(kcc20Covid, 0),
             templatePrefixLen,
             templateSuffixLen,
             expectedTemplateHash
         );
-        return (dogPrevState.amount);
+        return (kcc20PrevState.amount);
     }
 
-    function checkMinterDogNewState(KCC20State minterDogNewState){
-        require(minterDogNewState.ownerIdentifier == byte[32](owner)); // We do not allow the minter to delegate minting authority to another party.
-        require(minterDogNewState.identifierType == IDENTIFIER_COVENANT_ID);
-        require(minterDogNewState.isMinter); // The minter cannot stop being a minter.
+    function checkMinterKcc20NewState(KCC20State minterKcc20NewState){
+        require(minterKcc20NewState.ownerIdentifier == byte[32](owner)); // We do not allow the minter to delegate minting authority to another party.
+        require(minterKcc20NewState.identifierType == IDENTIFIER_COVENANT_ID);
+        require(minterKcc20NewState.isMinter); // The minter cannot stop being a minter.
 
         validateOutputStateWithTemplate(
             OpCovOutputIdx(kcc20Covid, 0),
-            minterDogNewState,
+            minterKcc20NewState,
             templatePrefix,
             templateSuffix,
             expectedTemplateHash
         );
     }
 
-    function checkRecipientDogNewState(KCC20State recipientDogNewState){
-        require(!recipientDogNewState.isMinter); // We do not allow the minter to designate another minter.
+    function checkRecipientKcc20NewState(KCC20State recipientKcc20NewState){
+        require(!recipientKcc20NewState.isMinter); // We do not allow the minter to designate another minter.
         validateOutputStateWithTemplate(
             OpCovOutputIdx(kcc20Covid, 1),
-            recipientDogNewState,
+            recipientKcc20NewState,
             templatePrefix,
             templateSuffix,
             expectedTemplateHash
@@ -68,7 +68,7 @@ contract KCC20Minter(pubkey owner, byte[32] initKCC20Covid, int initAmount,
     }
 
     #[covenant.singleton]
-    function mint(State prevState, State newState, sig s, KCC20State minterDogNewState, KCC20State recipientDogNewState) {
+    function mint(State prevState, State newState, sig s, KCC20State minterKcc20NewState, KCC20State recipientKcc20NewState) {
         require(initialized);
         require(newState.amount >= 0);
         require(newState.initialized);
@@ -78,11 +78,11 @@ contract KCC20Minter(pubkey owner, byte[32] initKCC20Covid, int initAmount,
         require(OpCovOutputCount(kcc20Covid) == 2);
         require(OpCovInputCount(kcc20Covid) == 1);
 
-        checkMinterDogNewState(minterDogNewState);
-        checkRecipientDogNewState(recipientDogNewState);
+        checkMinterKcc20NewState(minterKcc20NewState);
+        checkRecipientKcc20NewState(recipientKcc20NewState);
 
         int inAmount = calcInAmount();
-        int mintedAmount = minterDogNewState.amount + recipientDogNewState.amount - inAmount;
+        int mintedAmount = minterKcc20NewState.amount + recipientKcc20NewState.amount - inAmount;
         require(newState.amount == amount - mintedAmount);
         require(checkSig(s, owner));
     }
@@ -172,10 +172,10 @@ That means:
 
 This is how the minter learns the old token supply before minting.
 
-## `checkMinterDogNewState`
+## `checkMinterKcc20NewState`
 
 ```sil
-function checkMinterDogNewState(KCC20State minterDogNewState)
+function checkMinterKcc20NewState(KCC20State minterKcc20NewState)
 ```
 
 This validates the continuing minter-owned KCC20 branch.
@@ -191,7 +191,7 @@ Then it validates the actual output with:
 ```sil
 validateOutputStateWithTemplate(
     OpCovOutputIdx(kcc20Covid, 0),
-    minterDogNewState,
+    minterKcc20NewState,
     templatePrefix,
     templateSuffix,
     expectedTemplateHash
@@ -205,10 +205,10 @@ This does two jobs:
 
 This is much safer than trusting an arbitrary output index or script shape.
 
-## `checkRecipientDogNewState`
+## `checkRecipientKcc20NewState`
 
 ```sil
-function checkRecipientDogNewState(KCC20State recipientDogNewState)
+function checkRecipientKcc20NewState(KCC20State recipientKcc20NewState)
 ```
 
 This validates the newly minted recipient output.
@@ -271,7 +271,7 @@ The second entrypoint is:
 
 ```sil
 #[covenant.singleton]
-function mint(State prevState, State newState, sig s, KCC20State minterDogNewState, KCC20State recipientDogNewState)
+function mint(State prevState, State newState, sig s, KCC20State minterKcc20NewState, KCC20State recipientKcc20NewState)
 ```
 
 This is the issuance step.
@@ -301,8 +301,8 @@ The example only allows minting when exactly one KCC20 covenant input and two KC
 ### KCC20 template validation
 
 ```sil
-checkMinterDogNewState(minterDogNewState);
-checkRecipientDogNewState(recipientDogNewState);
+checkMinterKcc20NewState(minterKcc20NewState);
+checkRecipientKcc20NewState(recipientKcc20NewState);
 ```
 
 This ensures both supplied KCC20 successor states match the actual outputs in the transaction.
@@ -311,7 +311,7 @@ This ensures both supplied KCC20 successor states match the actual outputs in th
 
 ```sil
 int inAmount = calcInAmount();
-int mintedAmount = minterDogNewState.amount + recipientDogNewState.amount - inAmount;
+int mintedAmount = minterKcc20NewState.amount + recipientKcc20NewState.amount - inAmount;
 require(newState.amount == amount - mintedAmount);
 ```
 
