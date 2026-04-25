@@ -102,6 +102,25 @@ impl<'a, 'i> ForLowerer<'a, 'i> {
             name_span: ident_span,
         }];
 
+        // This is a sanity check to prevent situations where end-start > max_iterations.
+        // TODO: Consider moving check to debug-mode compilation.
+        lowered.push(Statement::Require {
+            expr: Expr::new(
+                ExprKind::Binary {
+                    op: BinaryOp::Le,
+                    left: Box::new(Expr::new(
+                        ExprKind::Binary { op: BinaryOp::Sub, left: Box::new(end.clone()), right: Box::new(start.clone()) },
+                        span,
+                    )),
+                    right: Box::new(Expr::int(max_iterations)),
+                },
+                span,
+            ),
+            message: None,
+            span,
+            message_span: None,
+        });
+
         for _ in 0..(max_iterations as usize) {
             let condition = Expr::new(
                 ExprKind::Binary {
@@ -147,6 +166,10 @@ impl<'a, 'i> ForLowerer<'a, 'i> {
         span: span::Span<'i>,
         ident_span: span::Span<'i>,
     ) -> Result<Vec<Statement<'i>>, CompilerError> {
+        if i128::from(end) - i128::from(start) > max_iterations as i128 {
+            return Err(CompilerError::Unsupported("for loop range must not exceed max iterations".to_string()));
+        }
+
         let lowered_body = self.lower_block(body)?;
         let loop_var_type_ref = TypeRef { base: TypeBase::Int, array_dims: Vec::new() };
         let mut lowered = Vec::new();

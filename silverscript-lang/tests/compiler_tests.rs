@@ -4311,6 +4311,22 @@ fn rejects_non_constant_for_loop_max_iterations() {
 }
 
 #[test]
+fn rejects_constant_for_loop_range_above_max_iterations() {
+    let source = r#"
+        contract Loops() {
+            entrypoint function main() {
+                for (i, 0, 4, 3) {
+                    require(i >= 0);
+                }
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("compile should fail");
+    assert!(err.to_string().contains("for loop range must not exceed max iterations"), "unexpected error: {err}");
+}
+
+#[test]
 fn rejects_overflow_in_constant_for_loop_bounds() {
     let cases = [
         ("9223372036854775807 + 1", "constant integer overflow: 9223372036854775807 + 1"),
@@ -4365,13 +4381,31 @@ fn runs_runtime_bounded_for_loop_example() {
     let result = run_script_with_sigscript(compiled.script.clone(), sigscript);
     assert!(result.is_ok(), "runtime-bounded for-loop should honor end-exclusive bounds: {}", result.unwrap_err());
 
-    let sigscript = compiled.build_sig_script("main", vec![5.into(), 20.into(), 3.into(), 7.into()]).expect("sigscript builds");
+    let sigscript = compiled.build_sig_script("main", vec![5.into(), 8.into(), 3.into(), 7.into()]).expect("sigscript builds");
     let result = run_script_with_sigscript(compiled.script.clone(), sigscript);
-    assert!(result.is_ok(), "runtime-bounded for-loop should stop after max iterations: {}", result.unwrap_err());
+    assert!(result.is_ok(), "runtime-bounded for-loop should allow ranges up to max iterations: {}", result.unwrap_err());
 
     let sigscript = compiled.build_sig_script("main", vec![4.into(), 2.into(), 0.into(), (-1).into()]).expect("sigscript builds");
     let result = run_script_with_sigscript(compiled.script, sigscript);
     assert!(result.is_ok(), "runtime-bounded for-loop should skip iterations when start >= end: {}", result.unwrap_err());
+}
+
+#[test]
+fn rejects_runtime_for_loop_range_above_max_iterations() {
+    let source = r#"
+        contract RuntimeLoop() {
+            entrypoint function main(int start, int end) {
+                for (i, start, end, 3) {
+                    require(i >= start);
+                }
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let sigscript = compiled.build_sig_script("main", vec![2.into(), 6.into()]).expect("sigscript builds");
+    let result = run_script_with_sigscript(compiled.script, sigscript);
+    assert!(result.is_err(), "runtime-bounded for-loop should fail when end - start exceeds max iterations");
 }
 
 #[test]
