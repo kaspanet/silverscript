@@ -2040,12 +2040,13 @@ fn flatten_contract_type_leaves<'i>(contract: &ContractAst<'i>, type_ref: &TypeR
         let Some(element_type) = type_ref.element_type() else {
             return Ok(Vec::new());
         };
+        let outer_dim = type_ref.array_size().cloned().ok_or_else(|| "array type missing outer dimension".to_string())?;
         let nested = flatten_contract_type_leaves(contract, &element_type)?;
         return Ok(nested
             .into_iter()
             .map(|(path, leaf_type)| {
                 let mut array_leaf = leaf_type;
-                array_leaf.array_dims.insert(0, type_ref.array_dims[0].clone());
+                array_leaf.array_dims.push(outer_dim.clone());
                 (path, array_leaf)
             })
             .collect());
