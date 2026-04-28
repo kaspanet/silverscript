@@ -470,7 +470,33 @@ contract ForLoop() {
 }
 ```
 
-The loop variable `i` takes values from `start` to `end - 1` (exclusive end), but the compiler emits exactly `MAX_ITERATIONS` guarded iterations.
+The loop variable `i` takes values from `start` to `end - 1` (exclusive end). The range length must not exceed the compile-time unroll bound, so `end - start <= MAX_ITERATIONS` must hold. If the compiler can prove that a constant range exceeds the bound, compilation fails. For runtime bounds, the generated script checks the same condition before entering the loop and fails if the provided range is too large.
+
+If `start >= end`, the loop performs no iterations. Otherwise, the compiler emits exactly `MAX_ITERATIONS` guarded iterations, and each guarded iteration runs only while the current loop variable is still below `end`.
+
+This fails during compilation because the constant range has 4 values, but the unroll bound is only 3:
+
+```javascript
+contract CompileTimeLoopFailure() {
+    entrypoint function check() {
+        for(i, 0, 4, 3) {
+            require(i >= 0);
+        }
+    }
+}
+```
+
+This compiles because the range bounds are provided at runtime, but calling `check(2, 6)` fails during execution because `6 - 2` is greater than the unroll bound of 3:
+
+```javascript
+contract RuntimeLoopFailure() {
+    entrypoint function check(int start, int end) {
+        for(i, start, end, 3) {
+            require(i >= start);
+        }
+    }
+}
+```
 
 ---
 
