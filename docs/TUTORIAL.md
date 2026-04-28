@@ -470,7 +470,7 @@ contract ForLoop() {
 }
 ```
 
-The loop variable `i` takes values from `start` to `end - 1` (exclusive end). The range length must not exceed the compile-time unroll bound, so `end - start <= MAX_ITERATIONS` must hold. If the compiler can prove that a constant range exceeds the bound, compilation fails. For runtime bounds, the generated script checks the same condition before entering the loop and fails if the provided range is too large.
+The loop variable `i` takes values from `start` to `end - 1` (exclusive end). The range length must not exceed the compile-time unroll bound, so `end - start <= MAX_ITERATIONS` must hold. If the compiler can prove that a constant range exceeds the bound, compilation fails. For runtime bounds, the generated script currently checks the same condition before entering the loop and fails if the provided range is too large.
 
 If `start >= end`, the loop performs no iterations. Otherwise, the compiler emits exactly `MAX_ITERATIONS` guarded iterations, and each guarded iteration runs only while the current loop variable is still below `end`.
 
@@ -497,6 +497,8 @@ contract RuntimeLoopFailure() {
     }
 }
 ```
+
+**Warning:** The runtime assertion is a current compiler behavior and may be removed in a later version. Do not rely on its existence as a stable validation mechanism; validate runtime loop bounds explicitly when the contract depends on that validation.
 
 ---
 
