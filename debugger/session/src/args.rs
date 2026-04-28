@@ -275,9 +275,63 @@ pub fn parse_call_args(contract: &ContractAst<'_>, function_name: &str, raw_args
     parse_params(&function.params, &shapes, raw_args)
 }
 
+pub fn parse_call_args_with_prefix(
+    contract: &ContractAst<'_>,
+    function_name: &str,
+    prefix_args: Vec<Expr<'static>>,
+    raw_args: &[String],
+) -> Result<Vec<Expr<'static>>, String> {
+    let function = contract
+        .functions
+        .iter()
+        .find(|function| function.name == function_name)
+        .ok_or_else(|| format!("function '{function_name}' not found"))?;
+    if prefix_args.len() > function.params.len() {
+        return Err(format!(
+            "function '{function_name}' expects {} arguments, got at least {} synthesized arguments",
+            function.params.len(),
+            prefix_args.len()
+        ));
+    }
+
+    let shapes = StructShapeRegistry::from_contract(contract);
+    let mut typed_args = prefix_args;
+    typed_args.extend(parse_params(&function.params[typed_args.len()..], &shapes, raw_args)?);
+    Ok(typed_args)
+}
+
+pub fn parse_state_value(contract: &ContractAst<'_>, raw_state: &str) -> Result<Expr<'static>, String> {
+    let value = serde_json::from_str::<Value>(raw_state).map_err(|err| format!("invalid State value '{raw_state}': {err}"))?;
+    let Value::Object(entries) = value else {
+        return Err("State value must be a JSON object".to_string());
+    };
+
+    let shapes = StructShapeRegistry::from_contract(contract);
+    let declared_fields = contract
+        .fields
+        .iter()
+        .map(|field| StructShapeField { name: field.name.clone(), type_ref: field.type_ref.clone() })
+        .collect::<Vec<_>>();
+    parse_struct_arg(&entries, &declared_fields, &shapes)
+}
+
+pub fn values_to_args(values: &[Value]) -> Result<Vec<String>, String> {
+    values.iter().map(value_to_arg).collect()
+}
+
+fn value_to_arg(value: &Value) -> Result<String, String> {
+    match value {
+        Value::String(raw) => Ok(raw.clone()),
+        Value::Number(raw) => Ok(raw.to_string()),
+        Value::Bool(raw) => Ok(raw.to_string()),
+        Value::Null => Ok("null".to_string()),
+        Value::Array(_) | Value::Object(_) => serde_json::to_string(value).map_err(|err| format!("invalid arg value: {err}")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{parse_call_args, parse_ctor_args};
+    use super::{parse_call_args, parse_ctor_args, parse_state_value};
     use silverscript_lang::ast::{ExprKind, parse_contract_ast};
 
     fn debug_shapes_contract() -> silverscript_lang::ast::ContractAst<'static> {
@@ -384,5 +438,18 @@ mod tests {
         let error =
             parse_call_args(&contract, "inspect_state_array", &[r#"[{]"#.to_string()]).expect_err("malformed JSON should fail");
         assert!(error.contains("invalid array arg"));
+    }
+
+    #[test]
+    fn parses_explicit_state_value() {
+        let contract = debug_shapes_contract();
+        let value = parse_state_value(&contract, r#"{"amount":9,"active":false,"tag":"0xcc"}"#).expect("parse State value");
+        let ExprKind::StateObject(fields) = value.kind else {
+            panic!("expected state object");
+        };
+        assert_eq!(fields.len(), 3);
+        assert!(fields.iter().any(|field| field.name == "amount"));
+        assert!(fields.iter().any(|field| field.name == "active"));
+        assert!(fields.iter().any(|field| field.name == "tag"));
     }
 }

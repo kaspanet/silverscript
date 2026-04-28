@@ -1,17 +1,15 @@
 use kaspa_consensus_core::Hash;
-use kaspa_consensus_core::hashing::sighash::SigHashReusedValuesUnsync;
-use kaspa_consensus_core::tx::{
-    CovenantBinding, PopulatedTransaction, ScriptPublicKey, Transaction, TransactionId, TransactionInput, TransactionOutpoint,
-    TransactionOutput, UtxoEntry, VerifiableTransaction,
-};
-use kaspa_txscript::caches::Cache;
-use kaspa_txscript::covenants::CovenantsContext;
-use kaspa_txscript::opcodes::codes::OpTrue;
-use kaspa_txscript::script_builder::ScriptBuilder;
-use kaspa_txscript::{EngineCtx, EngineFlags, TxScriptEngine, pay_to_script_hash_script};
+use kaspa_consensus_core::tx::{Transaction, TransactionOutput, UtxoEntry};
 use kaspa_txscript_errors::TxScriptError;
 use silverscript_lang::ast::Expr;
 use silverscript_lang::compiler::{CompileOptions, CompiledContract, CovenantDeclCallOptions, compile_contract, struct_object};
+
+mod common;
+
+use common::{
+    assert_verify_like_error, covenant_decl_sigscript, covenant_output, covenant_utxo, execute_input_with_covenants,
+    plain_covenant_output, plain_utxo, push_redeem_script, tx_input,
+};
 
 const COV_A: Hash = Hash::from_bytes(*b"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
 const COV_B: Hash = Hash::from_bytes(*b"BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB");
@@ -137,20 +135,8 @@ fn function_param_type_names(compiled: &CompiledContract<'_>, function_name: &st
         .collect()
 }
 
-fn push_redeem_script(script: &[u8]) -> Vec<u8> {
-    ScriptBuilder::new().add_data(script).expect("push redeem script").drain()
-}
-
 fn generated_auth_entrypoint_name(function_name: &str) -> String {
     format!("__{function_name}")
-}
-
-fn covenant_decl_sigscript(compiled: &CompiledContract<'_>, function_name: &str, args: Vec<Expr<'_>>, is_leader: bool) -> Vec<u8> {
-    let mut sigscript = compiled
-        .build_sig_script_for_covenant_decl(function_name, args, CovenantDeclCallOptions { is_leader })
-        .expect("build covenant declaration sigscript");
-    sigscript.extend_from_slice(&push_redeem_script(&compiled.script));
-    sigscript
 }
 
 fn state_array_arg(values: Vec<i64>) -> Expr<'static> {
@@ -167,62 +153,6 @@ fn cov_decl_nm_leader_sigscript(compiled: &CompiledContract<'_>, next_values: Ve
 
 fn redeem_only_sigscript(compiled: &CompiledContract<'_>) -> Vec<u8> {
     push_redeem_script(&compiled.script)
-}
-
-fn tx_input(index: u32, signature_script: Vec<u8>) -> TransactionInput {
-    TransactionInput {
-        previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([index as u8 + 1; 32]), index },
-        signature_script,
-        sequence: 0,
-        sig_op_count: 0,
-    }
-}
-
-fn covenant_output(compiled: &CompiledContract<'_>, authorizing_input: u16, covenant_id: Hash) -> TransactionOutput {
-    TransactionOutput {
-        value: 1_000,
-        script_public_key: pay_to_script_hash_script(&compiled.script),
-        covenant: Some(CovenantBinding { authorizing_input, covenant_id }),
-    }
-}
-
-fn plain_covenant_output(authorizing_input: u16, covenant_id: Hash) -> TransactionOutput {
-    TransactionOutput {
-        value: 1_000,
-        script_public_key: ScriptPublicKey::new(0, vec![OpTrue].into()),
-        covenant: Some(CovenantBinding { authorizing_input, covenant_id }),
-    }
-}
-
-fn covenant_utxo(compiled: &CompiledContract<'_>, covenant_id: Hash) -> UtxoEntry {
-    UtxoEntry::new(1_500, pay_to_script_hash_script(&compiled.script), 0, false, Some(covenant_id))
-}
-
-fn plain_utxo(covenant_id: Hash) -> UtxoEntry {
-    UtxoEntry::new(1_500, ScriptPublicKey::new(0, vec![OpTrue].into()), 0, false, Some(covenant_id))
-}
-
-fn execute_input_with_covenants(tx: Transaction, entries: Vec<UtxoEntry>, input_idx: usize) -> Result<(), TxScriptError> {
-    let reused_values = SigHashReusedValuesUnsync::new();
-    let sig_cache = Cache::new(10_000);
-    let input = tx.inputs[input_idx].clone();
-    let populated = PopulatedTransaction::new(&tx, entries);
-    let cov_ctx = CovenantsContext::from_tx(&populated).map_err(TxScriptError::from)?;
-    let utxo = populated.utxo(input_idx).expect("selected input utxo");
-
-    let mut vm = TxScriptEngine::from_transaction_input(
-        &populated,
-        &input,
-        input_idx,
-        utxo,
-        EngineCtx::new(&sig_cache).with_reused(&reused_values).with_covenants_ctx(&cov_ctx),
-        EngineFlags { covenants_enabled: true },
-    );
-    vm.execute()
-}
-
-fn assert_verify_like_error(err: TxScriptError) {
-    assert!(matches!(err, TxScriptError::VerifyError | TxScriptError::EvalFalse), "expected verify/eval-false, got {err:?}");
 }
 
 #[test]

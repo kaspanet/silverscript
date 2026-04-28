@@ -217,20 +217,13 @@ contract MyContract(int param1, byte[32] param2) {
 
 ### Pragma Directives
 
-Every contract should start with a pragma directive specifying the SilverScript version:
+Every contract should start with a pragma directive specifying the SilverScript version requirement:
 
 ```javascript
-pragma silverscript ^0.1.0;
+pragma silverscript ^0.1.2;
 ```
 
-Version operators:
-- `^0.1.0` - Compatible with 0.1.x
-- `~0.1.0` - Compatible with 0.1.0 only
-- `>=0.1.0` - Greater than or equal
-- `>0.1.0` - Greater than
-- `<0.2.0` - Less than
-- `<=0.1.5` - Less than or equal
-- `=0.1.0` - Exactly this version
+Pragma values use standard semver requirements. See [semver.org](https://semver.org/) for more details.
 
 ### Data Types
 
@@ -570,7 +563,7 @@ Format: `YYYY-MM-DDThh:mm:ss`
 
 ### Arrays
 
-SilverScript supports both direct array initialization and dynamic building with `.push()`:
+SilverScript supports both direct array initialization and dynamic building with `.append()`:
 
 ```javascript
 // Direct initialization (size inferred from literals)
@@ -581,18 +574,14 @@ byte[] data = 0x1234abcd;         // inferred as byte[4]
 int[4] fixedNums = [1, 2, 3, 4];
 byte[4] tag = 0x01020304;
 
-// Dynamic building with push
+// Dynamic building with append
 int[] numbers;
-numbers.push(1);
-numbers.push(2);
-numbers.push(3);
-numbers.push(4);
-numbers.push(5);
+numbers = numbers.append(1, 2, 3, 4, 5);
 
 // Build byte[32] array dynamically
 byte[32][] hashes;
-hashes.push(0x1111111111111111111111111111111111111111111111111111111111111111);
-hashes.push(0x2222222222222222222222222222222222222222222222222222222222222222);
+hashes = hashes.append(0x1111111111111111111111111111111111111111111111111111111111111111);
+hashes = hashes.append(0x2222222222222222222222222222222222222222222222222222222222222222);
 
 // Access array elements
 int first = numbers[0];

@@ -28,20 +28,17 @@ export default grammar({
 
   word: ($) => $.identifier,
 
+  conflicts: ($) => [
+    [$.function_call, $.base_type],
+    [$.primary, $.base_type],
+  ],
+
   rules: {
-    source_file: ($) => seq(repeat($.pragma_directive), $.contract_definition),
+    source_file: ($) => seq(optional($.pragma_directive), $.contract_definition),
 
     pragma_directive: ($) => seq("pragma", "silverscript", $.pragma_value, ";"),
 
-    pragma_value: ($) =>
-      seq($.version_constraint, optional($.version_constraint)),
-
-    version_constraint: ($) =>
-      seq(optional($.version_operator), $.version_literal),
-
-    version_operator: (_) => choice("^", "~", ">=", ">", "<=", "<", "="),
-
-    version_literal: (_) => token(/\d+\.\d+\.\d+/),
+    pragma_value: (_) => token(/[^;]+/),
 
     contract_definition: ($) =>
       seq(
@@ -57,11 +54,25 @@ export default grammar({
       choice(
         $.constant_definition,
         $.contract_field_definition,
+        $.struct_definition,
         $.function_definition,
       ),
 
+    struct_definition: ($) =>
+      seq(
+        "struct",
+        field("name", $.identifier),
+        "{",
+        repeat($.struct_field_definition),
+        "}",
+      ),
+
+    struct_field_definition: ($) =>
+      seq($.type_name, field("name", $.identifier), ";"),
+
     function_definition: ($) =>
       seq(
+        repeat($.attribute),
         optional("entrypoint"),
         "function",
         field("name", $.identifier),
@@ -104,7 +115,6 @@ export default grammar({
       choice(
         $.variable_definition,
         $.tuple_assignment,
-        $.push_statement,
         $.state_function_call_assignment,
         $.function_call_assignment,
         $.call_statement,
@@ -137,9 +147,6 @@ export default grammar({
         $.expression,
         ";",
       ),
-
-    push_statement: ($) =>
-      seq(field("name", $.identifier), ".push", "(", $.expression, ")", ";"),
 
     function_call_assignment: ($) =>
       seq("(", commaSep($.typed_binding), ")", "=", $.function_call, ";"),
@@ -271,19 +278,25 @@ export default grammar({
     postfix_op: ($) =>
       choice(
         $.tuple_index,
+        $.member_access,
         $.unary_suffix,
         $.split_call,
         $.slice_call,
+        $.append_call,
         $.reverse_call,
       ),
 
     tuple_index: ($) => seq("[", $.expression, "]"),
+
+    member_access: ($) => seq(".", field("name", $.identifier)),
 
     unary_suffix: (_) => ".length",
 
     split_call: ($) => seq(".split", "(", $.expression, ")"),
 
     slice_call: ($) => seq(".slice", "(", $.expression, ",", $.expression, ")"),
+
+    append_call: ($) => seq(".append", $.expression_list),
 
     reverse_call: (_) => seq(".reverse", "(", ")"),
 
@@ -363,8 +376,10 @@ export default grammar({
 
     type_name: ($) => seq($.base_type, repeat($.array_suffix)),
 
-    base_type: (_) =>
-      choice("int", "bool", "string", "pubkey", "sig", "datasig", "byte"),
+    base_type: ($) =>
+      choice("int", "bool", "string", "pubkey", "sig", "datasig", "byte", $.identifier),
+
+    attribute: (_) => token(seq("#[", /[^\]\n]+/, "]")),
 
     array_suffix: ($) => seq("[", optional($.array_size), "]"),
 

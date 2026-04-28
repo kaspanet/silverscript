@@ -28,7 +28,7 @@ contract Pair(int max_ins, int max_outs, int init_value) {
 
         State[] prev_states;
         for(cov_in_k, 0, cov_in_count, max_ins) {
-            prev_states.push(readInputState(OpCovInputIdx(cov_id, cov_in_k)));
+            prev_states = prev_states.append(readInputState(OpCovInputIdx(cov_id, cov_in_k)));
         }
 
         (State[] cov_new_states) = covenant_policy_carry_forward(prev_states);

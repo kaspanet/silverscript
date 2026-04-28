@@ -883,8 +883,16 @@ fn function_call_assign_statement<'i>(bindings: Vec<crate::ast::ParamAst<'i>>, n
     }
 }
 
-fn array_push_statement<'i>(name: &str, expr: Expr<'i>) -> Statement<'i> {
-    Statement::ArrayPush { name: name.to_string(), expr, span: span::Span::default(), name_span: span::Span::default() }
+fn array_append_statement<'i>(name: &str, expr: Expr<'i>) -> Statement<'i> {
+    Statement::Assign {
+        name: name.to_string(),
+        expr: Expr::new(
+            ExprKind::Append { source: Box::new(Expr::identifier(name)), args: vec![expr], span: span::Span::default() },
+            span::Span::default(),
+        ),
+        span: span::Span::default(),
+        name_span: span::Span::default(),
+    }
 }
 
 fn typed_binding<'i>(type_ref: TypeRef, name: &str) -> crate::ast::ParamAst<'i> {
@@ -1163,7 +1171,7 @@ fn append_cov_input_state_reads_into_state_array<'i>(
 ) {
     let loop_var = "__cov_in_k";
     body.push(var_decl_statement(state_array_type_ref(), prev_states_name));
-    let then_branch = vec![array_push_statement(
+    let then_branch = vec![array_append_statement(
         prev_states_name,
         Expr::call("readInputState", vec![Expr::call("OpCovInputIdx", vec![identifier_expr(cov_id_name), identifier_expr(loop_var)])]),
     )];

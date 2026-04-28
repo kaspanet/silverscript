@@ -1,4 +1,5 @@
 use super::*;
+use semver::{Version, VersionReq};
 use std::collections::{HashMap, HashSet};
 
 pub(super) fn static_check_contract<'i>(
@@ -6,6 +7,8 @@ pub(super) fn static_check_contract<'i>(
     constructor_args: &[Expr<'i>],
     options: CompileOptions,
 ) -> Result<(), CompilerError> {
+    validate_pragma_versions(contract)?;
+
     if contract.functions.is_empty() {
         return Err(CompilerError::Unsupported("contract has no functions".to_string()));
     }
@@ -26,6 +29,31 @@ pub(super) fn static_check_contract<'i>(
         if !expr_matches_declared_type_ref(value, &param.type_ref, &structs) {
             return Err(CompilerError::Unsupported(format!("constructor argument '{}' expects {}", param.name, param_type_name)));
         }
+    }
+
+    Ok(())
+}
+
+fn validate_pragma_versions<'i>(contract: &ContractAst<'i>) -> Result<(), CompilerError> {
+    let Some(pragma) = &contract.pragma else {
+        return Ok(());
+    };
+
+    let compiler_version = Version::parse(COMPILER_VERSION)
+        .map_err(|err| CompilerError::Unsupported(format!("invalid SilverScript compiler version '{COMPILER_VERSION}': {err}")))?;
+    if pragma.name != "silverscript" {
+        return Err(CompilerError::Unsupported(format!("unknown pragma '{}'", pragma.name)).with_span(&pragma.name_span));
+    }
+    let req = VersionReq::parse(&pragma.value).map_err(|err| {
+        CompilerError::Unsupported(format!("invalid SilverScript version requirement '{}': {err}", pragma.value))
+            .with_span(&pragma.value_span)
+    })?;
+    if !req.matches(&compiler_version) {
+        return Err(CompilerError::Unsupported(format!(
+            "SilverScript compiler version {COMPILER_VERSION} does not satisfy pragma {}",
+            pragma.value
+        ))
+        .with_span(&pragma.value_span));
     }
 
     Ok(())
@@ -197,7 +225,6 @@ fn validate_statement_shapes<'i>(
             Statement::For { ident, start, end, max_iterations, body, .. } => {
                 validate_for_statement_shape(&mut ctx, ident, start, end, max_iterations, body)?
             }
-            Statement::ArrayPush { expr, .. } => validate_array_push_statement_shape(&mut ctx, expr)?,
         }
     }
 
@@ -602,13 +629,6 @@ fn validate_for_statement_shape<'i>(
     )
 }
 
-fn validate_array_push_statement_shape<'i>(
-    ctx: &mut ValidateStatementShapesContext<'_, 'i>,
-    expr: &Expr<'i>,
-) -> Result<(), CompilerError> {
-    validate_expr_semantics(expr, ctx.env, ctx.prefer_env_for_comparison, ctx.types, ctx.structs, ctx.functions, ctx.contract_fields)
-}
-
 fn validate_struct_destructure_bindings<'i>(
     bindings: &[StateBindingAst<'i>],
     expr: &Expr<'i>,
@@ -831,6 +851,33 @@ fn validate_expr_semantics<'i>(
             validate_expr_semantics(start, env, prefer_env_for_comparison, types, structs, functions, contract_fields)?;
             validate_expr_semantics(end, env, prefer_env_for_comparison, types, structs, functions, contract_fields)
         }
+        ExprKind::Append { source, args, .. } => {
+            validate_expr_semantics(source, env, prefer_env_for_comparison, types, structs, functions, contract_fields)?;
+            let source_type = infer_expr_type_ref_for_comparison_ref(
+                source,
+                env,
+                prefer_env_for_comparison,
+                types,
+                structs,
+                functions,
+                contract_fields,
+            )
+            .ok_or_else(|| CompilerError::Unsupported("append target must be an array".to_string()))?;
+            let Some(element_type) = source_type.element_type() else {
+                return Err(CompilerError::Unsupported("append target must be an array".to_string()));
+            };
+            for arg in args {
+                validate_expr_semantics(arg, env, prefer_env_for_comparison, types, structs, functions, contract_fields)?;
+                validate_expr_assignable_to_type(arg, &element_type, types, structs, &HashMap::new(), functions, contract_fields)
+                    .map_err(|_| {
+                        CompilerError::Unsupported(format!(
+                            "array append element type mismatch: expected {}",
+                            type_name_from_ref(&element_type)
+                        ))
+                    })?;
+            }
+            Ok(())
+        }
         ExprKind::ArrayIndex { source, index } => {
             validate_expr_semantics(source, env, prefer_env_for_comparison, types, structs, functions, contract_fields)?;
             validate_expr_semantics(index, env, prefer_env_for_comparison, types, structs, functions, contract_fields)
@@ -895,6 +942,9 @@ fn infer_expr_type_ref_for_comparison_ref<'i>(
         ExprKind::ArrayIndex { source, .. } => {
             infer_expr_type_ref_for_comparison_ref(source, env, prefer_env_for_comparison, types, structs, functions, contract_fields)
                 .and_then(|type_ref| type_ref.element_type())
+        }
+        ExprKind::Append { source, .. } => {
+            infer_expr_type_ref_for_comparison_ref(source, env, prefer_env_for_comparison, types, structs, functions, contract_fields)
         }
         ExprKind::Call { name, .. } if name == "readInputState" && !contract_fields.is_empty() => {
             Some(TypeRef { base: TypeBase::Custom("State".to_string()), array_dims: Vec::new() })
@@ -1328,7 +1378,7 @@ fn statement_contains_return(stmt: &Statement<'_>) -> bool {
     }
 }
 
-pub(super) fn expr_matches_declared_type_ref<'i>(expr: &Expr<'i>, type_ref: &TypeRef, structs: &StructRegistry) -> bool {
+pub(crate) fn expr_matches_declared_type_ref<'i>(expr: &Expr<'i>, type_ref: &TypeRef, structs: &StructRegistry) -> bool {
     if let Some(struct_name) = struct_name_from_type_ref(type_ref, structs) {
         let Some(item) = structs.get(struct_name) else {
             return false;

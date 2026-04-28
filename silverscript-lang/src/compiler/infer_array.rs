@@ -30,6 +30,7 @@ pub(super) fn lower_inferred_array_sizes<'i>(
         .collect::<Result<Vec<_>, _>>()?;
 
     Ok(ContractAst {
+        pragma: contract.pragma.clone(),
         name: contract.name.clone(),
         params: contract.params.clone(),
         structs: contract.structs.clone(),

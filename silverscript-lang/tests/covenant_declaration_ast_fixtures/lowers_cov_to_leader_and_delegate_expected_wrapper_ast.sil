@@ -28,7 +28,7 @@ contract Decls(int max_ins, int max_outs) {
         State[] prev_states;
 
         for(cov_in_k, 0, cov_in_count, max_ins) {
-            prev_states.push(readInputState(OpCovInputIdx(cov_id, cov_in_k)));
+            prev_states = prev_states.append(readInputState(OpCovInputIdx(cov_id, cov_in_k)));
         }
 
         covenant_policy_transition_ok(prev_states, new_states, delta);

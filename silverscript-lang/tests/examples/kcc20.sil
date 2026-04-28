@@ -1,0 +1,56 @@
+contract KCC20(byte[32] genesisPk, int genesisAmount, byte genesisIdentifierType, bool genesisIsMinter, int maxCovIns, int maxCovOuts) {
+    byte constant IDENTIFIER_PUBKEY = 0x00;
+    byte constant IDENTIFIER_SCRIPT_HASH = 0x01;
+    byte constant IDENTIFIER_COVENANT_ID = 0x02;
+    
+    byte[32] ownerIdentifier = genesisPk;
+    byte identifierType = genesisIdentifierType;
+    int amount = genesisAmount;
+    bool isMinter = genesisIsMinter;
+
+    function checkSigs(State[] prevStates, sig[] sigs, byte[] witnesses) {
+        for(i, 0, prevStates.length, maxCovIns) {
+            if(prevStates[i].identifierType == IDENTIFIER_PUBKEY){
+                require(checkSig(sigs[i], prevStates[i].ownerIdentifier));
+            } else if(prevStates[i].identifierType == IDENTIFIER_SCRIPT_HASH){
+                byte[] spk = new ScriptPubKeyP2SH(prevStates[i].ownerIdentifier);
+                require(tx.inputs[witnesses[i]].scriptPubKey == spk);
+            } else if(prevStates[i].identifierType == IDENTIFIER_COVENANT_ID){
+                require(OpInputCovenantId(witnesses[i]) == prevStates[i].ownerIdentifier);
+            } else {
+                require(false);
+            }
+        }
+    }
+
+    function checkAmounts(State[] prevStates, State[] newStates) {
+        if(!isMinter){
+            int totalIn = 0;
+            for(i, 0, prevStates.length, maxCovIns) {
+                totalIn = totalIn + prevStates[i].amount;
+            }
+
+            int totalOut = 0;
+            for(i, 0, newStates.length, maxCovOuts) {
+                totalOut = totalOut + newStates[i].amount;
+            }
+
+            require(totalIn == totalOut);
+        }
+    }
+
+    function checkMintingTransfer(State[] newStates){
+        if(!isMinter){
+            for(i, 0, newStates.length, maxCovOuts) {
+                require(!newStates[i].isMinter);
+            }
+        }
+    }
+
+    #[covenant(binding = cov, from = maxCovIns, to = maxCovOuts)]
+    function transfer(State[] prevStates, State[] newStates, sig[] sigs, byte[] witnesses) {
+        checkSigs(prevStates, sigs, witnesses);
+        checkAmounts(prevStates, newStates);
+        checkMintingTransfer(newStates);
+    }
+}

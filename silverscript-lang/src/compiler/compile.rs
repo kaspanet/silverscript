@@ -1,3 +1,4 @@
+use super::array_append::lower_array_appends;
 use super::covenant_declarations::lower_covenant_declarations;
 use super::debug_value_types::infer_debug_expr_value_type;
 use super::infer_array::lower_inferred_array_sizes;
@@ -101,8 +102,8 @@ pub(super) fn compile_contract_impl<'i>(
     let inline_lowered_contract = lower_inline_functions(&covenant_lowered_contract, &mut debug_recorder)?;
     let structs = build_struct_registry(&inline_lowered_contract)?;
     let struct_lowered_contract = lower_structs_contract(&inline_lowered_contract, &structs, &constants)?;
-    let array_push_lowered_contract = lower_array_pushes(&struct_lowered_contract)?;
-    let for_lowered_contract = lower_for_loops(&array_push_lowered_contract, &constants)?;
+    let append_lowered_contract = lower_array_appends(&struct_lowered_contract)?;
+    let for_lowered_contract = lower_for_loops(&append_lowered_contract, &constants)?;
     let lowered_contract = lower_inferred_array_sizes(&for_lowered_contract, &constants)?;
     let lowered_contract = if options.record_debug_infos { lowered_contract } else { lower_local_aliases(&lowered_contract)? };
     let mut lowered_constants = flatten_constructor_args_env(&covenant_lowered_contract.params, constructor_args, &structs)?;
@@ -321,7 +322,7 @@ fn compile_contract_fields<'i>(
         let mut stack_depth = 0i64;
         if fixed_type_size_with_constants_ref(&field.type_ref, base_constants).is_some() {
             let encoded = encode_fixed_size_value(&resolved, &type_name)?;
-            builder.add_data(&encoded)?;
+            builder.add_data_with_push_opcode(&encoded)?;
         } else {
             compile_expr(
                 &resolved,
@@ -348,7 +349,6 @@ fn statement_uses_script_size(stmt: &Statement<'_>) -> bool {
     match stmt {
         Statement::VariableDefinition { expr, .. } => expr.as_ref().is_some_and(expr_uses_script_size),
         Statement::TupleAssignment { expr, .. } => expr_uses_script_size(expr),
-        Statement::ArrayPush { expr, .. } => expr_uses_script_size(expr),
         Statement::FunctionCall { name, args, .. } => {
             name == "validateOutputState" || name == "validateOutputStateWithTemplate" || args.iter().any(expr_uses_script_size)
         }
@@ -381,6 +381,7 @@ fn expr_uses_script_size<'i>(expr: &Expr<'i>) -> bool {
         ExprKind::Nullary(NullaryOp::ThisScriptSizeDataPrefix) => true,
         ExprKind::Unary { expr, .. } => expr_uses_script_size(expr),
         ExprKind::Binary { left, right, .. } => expr_uses_script_size(left) || expr_uses_script_size(right),
+        ExprKind::Append { source, args, .. } => expr_uses_script_size(source) || args.iter().any(expr_uses_script_size),
         ExprKind::IfElse { condition, then_expr, else_expr } => {
             expr_uses_script_size(condition) || expr_uses_script_size(then_expr) || expr_uses_script_size(else_expr)
         }
@@ -459,6 +460,7 @@ fn infer_expr_type_ref_for_comparison<'i>(
                 | "ScriptPubKeyP2SH"
                 | "ScriptPubKeyP2SHFromRedeemScript"
                 | "OpInputCovenantId"
+                | "OpOutputCovenantId"
                 | "OpTxGas"
                 | "OpTxPayloadLen"
                 | "OpTxInputIndex"
@@ -660,7 +662,6 @@ fn collect_statement_identifier_uses<'i>(stmt: &Statement<'i>, uses: &mut HashMa
                 collect_statement_identifier_uses(stmt, uses);
             }
         }
-        Statement::ArrayPush { expr, .. } => collect_expr_identifier_uses(expr, uses),
         Statement::FunctionCall { args, .. }
         | Statement::FunctionCallAssign { args, .. }
         | Statement::StateFunctionCallAssign { args, .. } => {
@@ -708,6 +709,12 @@ fn collect_expr_identifier_uses<'i>(expr: &Expr<'i>, uses: &mut HashMap<String, 
             collect_expr_identifier_uses(left, uses);
             collect_expr_identifier_uses(right, uses);
         }
+        ExprKind::Append { source, args, .. } => {
+            collect_expr_identifier_uses(source, uses);
+            for arg in args {
+                collect_expr_identifier_uses(arg, uses);
+            }
+        }
         ExprKind::IfElse { condition, then_expr, else_expr } => {
             collect_expr_identifier_uses(condition, uses);
             collect_expr_identifier_uses(then_expr, uses);
@@ -752,7 +759,7 @@ fn collect_expr_identifier_uses<'i>(expr: &Expr<'i>, uses: &mut HashMap<String, 
 fn collect_assigned_names_into<'i>(statements: &[Statement<'i>], assigned: &mut HashSet<String>) {
     for stmt in statements {
         match stmt {
-            Statement::Assign { name, .. } | Statement::ArrayPush { name, .. } => {
+            Statement::Assign { name, .. } => {
                 assigned.insert(name.clone());
             }
             Statement::Block { body, .. } => {
@@ -919,6 +926,7 @@ fn encode_fixed_size_value<'i>(value: &Expr<'i>, type_name: &str) -> Result<Vec<
                 _ => return Err(CompilerError::Unsupported("array literal element type mismatch".to_string())),
             };
             serialize_i64(number, Some(8usize))
+                .map(|bytes| bytes.to_vec())
                 .map_err(|err| CompilerError::Unsupported(format!("failed to serialize int literal {}: {err}", number)))
         }
         "bool" => {
@@ -1193,7 +1201,6 @@ fn compile_statement<'i>(ctx: &mut CompileStatementContext<'_, 'i>, stmt: &State
         Statement::VariableDefinition { type_ref, name, expr, .. } => {
             compile_variable_definition_statement(ctx, type_ref, name, expr.as_ref())
         }
-        Statement::ArrayPush { name, expr, .. } => compile_array_push_statement(ctx, name, expr),
         Statement::Require { expr, .. } => compile_require_statement(ctx, expr),
         Statement::TimeOp { tx_var, expr, .. } => compile_time_branch_statement(ctx, tx_var, expr),
         Statement::Block { body, .. } => compile_block_statement(ctx, body).map(|_| Vec::new()),
@@ -1367,14 +1374,6 @@ fn compile_stack_variable_definition<'i>(
     )?;
     ctx.stack_bindings.push_binding(name);
     Ok(vec![name.to_string()])
-}
-
-fn compile_array_push_statement<'i>(
-    _ctx: &mut CompileStatementContext<'_, 'i>,
-    _name: &str,
-    _expr: &Expr<'i>,
-) -> Result<Vec<String>, CompilerError> {
-    unreachable!("lower_array_pushes must remove array push statements before codegen")
 }
 
 fn compile_require_statement<'i>(ctx: &mut CompileStatementContext<'_, 'i>, expr: &Expr<'i>) -> Result<Vec<String>, CompilerError> {
@@ -2093,20 +2092,20 @@ fn compile_validate_output_state_statement(
     stack_depth -= 1;
 
     builder.add_op(OpBlake2b)?;
-    builder.add_data(&[0x00, 0x00])?;
+    builder.add_data_with_push_opcode(&[0x00, 0x00])?;
     stack_depth += 1;
-    builder.add_data(&[OpBlake2b])?;
+    builder.add_data_with_push_opcode(&[OpBlake2b])?;
     stack_depth += 1;
     builder.add_op(OpCat)?;
     stack_depth -= 1;
-    builder.add_data(&[0x20])?;
+    builder.add_data_with_push_opcode(&[0x20])?;
     stack_depth += 1;
     builder.add_op(OpCat)?;
     stack_depth -= 1;
     builder.add_op(OpSwap)?;
     builder.add_op(OpCat)?;
     stack_depth -= 1;
-    builder.add_data(&[OpEqual])?;
+    builder.add_data_with_push_opcode(&[OpEqual])?;
     stack_depth += 1;
     builder.add_op(OpCat)?;
     stack_depth -= 1;
@@ -2281,20 +2280,20 @@ fn compile_validate_output_state_with_template_statement(
     stack_depth -= 1;
 
     builder.add_op(OpBlake2b)?;
-    builder.add_data(&[0x00, 0x00])?;
+    builder.add_data_with_push_opcode(&[0x00, 0x00])?;
     stack_depth += 1;
-    builder.add_data(&[OpBlake2b])?;
+    builder.add_data_with_push_opcode(&[OpBlake2b])?;
     stack_depth += 1;
     builder.add_op(OpCat)?;
     stack_depth -= 1;
-    builder.add_data(&[0x20])?;
+    builder.add_data_with_push_opcode(&[0x20])?;
     stack_depth += 1;
     builder.add_op(OpCat)?;
     stack_depth -= 1;
     builder.add_op(OpSwap)?;
     builder.add_op(OpCat)?;
     stack_depth -= 1;
-    builder.add_data(&[OpEqual])?;
+    builder.add_data_with_push_opcode(&[OpEqual])?;
     stack_depth += 1;
     builder.add_op(OpCat)?;
     stack_depth -= 1;
@@ -2386,7 +2385,7 @@ fn compile_encoded_object_with_layout(
             )?;
         }
         let prefix = data_prefix(field_size);
-        builder.add_data(&prefix)?;
+        builder.add_data_with_push_opcode(&prefix)?;
         stack_depth += 1;
         builder.add_op(OpSwap)?;
         builder.add_op(OpCat)?;
@@ -2585,7 +2584,7 @@ pub(crate) fn eval_const_int<'i>(expr: &Expr<'i>, constants: &HashMap<String, Ex
     }
 }
 
-fn resolve_expr<'i>(
+pub(crate) fn resolve_expr<'i>(
     expr: Expr<'i>,
     constants: &HashMap<String, Expr<'i>>,
     visiting: &mut HashSet<String>,
@@ -2615,6 +2614,14 @@ fn resolve_expr<'i>(
                 op,
                 left: Box::new(resolve_expr(*left, constants, visiting)?),
                 right: Box::new(resolve_expr(*right, constants, visiting)?),
+            },
+            span,
+        )),
+        ExprKind::Append { source, args, span: append_span } => Ok(Expr::new(
+            ExprKind::Append {
+                source: Box::new(resolve_expr(*source, constants, visiting)?),
+                args: args.into_iter().map(|arg| resolve_expr(arg, constants, visiting)).collect::<Result<Vec<_>, _>>()?,
+                span: append_span,
             },
             span,
         )),
@@ -2734,6 +2741,10 @@ pub(super) fn compile_expr<'i>(
         ExprKind::New { name, args, .. } => compile_new_expr(&mut ctx, name, args),
         ExprKind::Unary { op, expr } => compile_unary_expr(&mut ctx, *op, expr),
         ExprKind::Binary { op, left, right } => compile_binary_expr(&mut ctx, *op, left, right),
+        ExprKind::Append { source, args, .. } => {
+            let appended = Expr::new(ExprKind::Array(args.clone()), span::Span::default());
+            compile_binary_expr(&mut ctx, BinaryOp::Add, source, &appended)
+        }
         ExprKind::Split { source, index, part, .. } => compile_split_expr(&mut ctx, source, index, *part),
         ExprKind::UnarySuffix { source, kind, .. } => compile_unary_suffix_expr(&mut ctx, source, *kind),
         ExprKind::ArrayIndex { source, index } => compile_array_index_expr(&mut ctx, source, index),
@@ -2783,21 +2794,21 @@ fn compile_bool_expr<'i>(ctx: &mut CompileExprContext<'_, 'i>, value: bool) -> R
 }
 
 fn compile_byte_expr<'i>(ctx: &mut CompileExprContext<'_, 'i>, byte: u8) -> Result<(), CompilerError> {
-    ctx.builder.add_data(&[byte])?;
+    ctx.builder.add_data_with_push_opcode(&[byte])?;
     *ctx.stack_depth += 1;
     Ok(())
 }
 
 fn compile_array_expr<'i>(ctx: &mut CompileExprContext<'_, 'i>, values: &[Expr<'i>]) -> Result<(), CompilerError> {
     if values.is_empty() {
-        ctx.builder.add_data(&[])?;
+        ctx.builder.add_data_with_push_opcode(&[])?;
         *ctx.stack_depth += 1;
         return Ok(());
     }
     let inferred_type = infer_fixed_array_runtime_type(values, ctx.scope.constants, ctx.scope.types)
         .ok_or_else(|| CompilerError::Unsupported("array literal type cannot be inferred".to_string()))?;
     if let Ok(encoded) = encode_array_literal(values, &inferred_type) {
-        ctx.builder.add_data(&encoded)?;
+        ctx.builder.add_data_with_push_opcode(&encoded)?;
         *ctx.stack_depth += 1;
         return Ok(());
     }
@@ -2874,7 +2885,7 @@ fn compile_field_access_expr() -> Result<(), CompilerError> {
 }
 
 fn compile_string_expr<'i>(ctx: &mut CompileExprContext<'_, 'i>, value: &str) -> Result<(), CompilerError> {
-    ctx.builder.add_data(value.as_bytes())?;
+    ctx.builder.add_data_with_push_opcode(value.as_bytes())?;
     *ctx.stack_depth += 1;
     Ok(())
 }
@@ -2936,7 +2947,7 @@ fn compile_new_expr<'i>(ctx: &mut CompileExprContext<'_, 'i>, name: &str, args: 
                 return Err(CompilerError::Unsupported("LockingBytecodeNullData expects a single array argument".to_string()));
             }
             let script = build_null_data_script(&args[0])?;
-            ctx.builder.add_data(&script)?;
+            ctx.builder.add_data_with_push_opcode(&script)?;
             *ctx.stack_depth += 1;
             Ok(())
         }
@@ -2945,12 +2956,12 @@ fn compile_new_expr<'i>(ctx: &mut CompileExprContext<'_, 'i>, name: &str, args: 
                 return Err(CompilerError::Unsupported("ScriptPubKeyP2PK expects a single pubkey argument".to_string()));
             }
             compile_expr_with_context(ctx, &args[0])?;
-            ctx.builder.add_data(&[0x00, 0x00, OpData32])?;
+            ctx.builder.add_data_with_push_opcode(&[0x00, 0x00, OpData32])?;
             *ctx.stack_depth += 1;
             ctx.builder.add_op(OpSwap)?;
             ctx.builder.add_op(OpCat)?;
             *ctx.stack_depth -= 1;
-            ctx.builder.add_data(&[OpCheckSig])?;
+            ctx.builder.add_data_with_push_opcode(&[OpCheckSig])?;
             *ctx.stack_depth += 1;
             ctx.builder.add_op(OpCat)?;
             *ctx.stack_depth -= 1;
@@ -2961,20 +2972,20 @@ fn compile_new_expr<'i>(ctx: &mut CompileExprContext<'_, 'i>, name: &str, args: 
                 return Err(CompilerError::Unsupported("ScriptPubKeyP2SH expects a single bytes32 argument".to_string()));
             }
             compile_expr_with_context(ctx, &args[0])?;
-            ctx.builder.add_data(&[0x00, 0x00])?;
+            ctx.builder.add_data_with_push_opcode(&[0x00, 0x00])?;
             *ctx.stack_depth += 1;
-            ctx.builder.add_data(&[OpBlake2b])?;
+            ctx.builder.add_data_with_push_opcode(&[OpBlake2b])?;
             *ctx.stack_depth += 1;
             ctx.builder.add_op(OpCat)?;
             *ctx.stack_depth -= 1;
-            ctx.builder.add_data(&[0x20])?;
+            ctx.builder.add_data_with_push_opcode(&[0x20])?;
             *ctx.stack_depth += 1;
             ctx.builder.add_op(OpCat)?;
             *ctx.stack_depth -= 1;
             ctx.builder.add_op(OpSwap)?;
             ctx.builder.add_op(OpCat)?;
             *ctx.stack_depth -= 1;
-            ctx.builder.add_data(&[OpEqual])?;
+            ctx.builder.add_data_with_push_opcode(&[OpEqual])?;
             *ctx.stack_depth += 1;
             ctx.builder.add_op(OpCat)?;
             *ctx.stack_depth -= 1;
@@ -2988,20 +2999,20 @@ fn compile_new_expr<'i>(ctx: &mut CompileExprContext<'_, 'i>, name: &str, args: 
             }
             compile_expr_with_context(ctx, &args[0])?;
             ctx.builder.add_op(OpBlake2b)?;
-            ctx.builder.add_data(&[0x00, 0x00])?;
+            ctx.builder.add_data_with_push_opcode(&[0x00, 0x00])?;
             *ctx.stack_depth += 1;
-            ctx.builder.add_data(&[OpBlake2b])?;
+            ctx.builder.add_data_with_push_opcode(&[OpBlake2b])?;
             *ctx.stack_depth += 1;
             ctx.builder.add_op(OpCat)?;
             *ctx.stack_depth -= 1;
-            ctx.builder.add_data(&[0x20])?;
+            ctx.builder.add_data_with_push_opcode(&[0x20])?;
             *ctx.stack_depth += 1;
             ctx.builder.add_op(OpCat)?;
             *ctx.stack_depth -= 1;
             ctx.builder.add_op(OpSwap)?;
             ctx.builder.add_op(OpCat)?;
             *ctx.stack_depth -= 1;
-            ctx.builder.add_data(&[OpEqual])?;
+            ctx.builder.add_data_with_push_opcode(&[OpEqual])?;
             *ctx.stack_depth += 1;
             ctx.builder.add_op(OpCat)?;
             *ctx.stack_depth -= 1;
@@ -3252,7 +3263,7 @@ fn compile_nullary_expr<'i>(ctx: &mut CompileExprContext<'_, 'i>, op: NullaryOp)
                 CompilerError::Unsupported("this.scriptSizeDataPrefix requires a non-negative script size".to_string())
             })?;
             let prefix = data_prefix(size);
-            ctx.builder.add_data(&prefix)?;
+            ctx.builder.add_data_with_push_opcode(&prefix)?;
         }
         NullaryOp::TxInputsLength => {
             ctx.builder.add_op(OpTxInputCount)?;
@@ -3423,6 +3434,7 @@ fn expr_is_bytes_inner<'i>(expr: &Expr<'i>, types: &HashMap<String, String>, vis
                     | "OpTxInputSpkSubstr"
                     | "OpTxOutputSpkSubstr"
                     | "OpInputCovenantId"
+                    | "OpOutputCovenantId"
                     | "OpNum2Bin"
                     | "OpChainblockSeqCommit"
             ) || name.starts_with("byte[")
@@ -3559,6 +3571,7 @@ fn compile_call_expr<'i>(
         "OpAuthOutputCount" => compile_opcode_builtin_call(&mut ctx, name, args, 1, OpAuthOutputCount),
         "OpAuthOutputIdx" => compile_opcode_builtin_call(&mut ctx, name, args, 2, OpAuthOutputIdx),
         "OpInputCovenantId" => compile_opcode_builtin_call(&mut ctx, name, args, 1, OpInputCovenantId),
+        "OpOutputCovenantId" => compile_opcode_builtin_call(&mut ctx, name, args, 1, OpOutputCovenantId),
         "OpCovInputCount" => compile_opcode_builtin_call(&mut ctx, name, args, 1, OpCovInputCount),
         "OpCovInputIdx" => compile_opcode_builtin_call(&mut ctx, name, args, 2, OpCovInputIdx),
         "OpCovOutputCount" => compile_opcode_builtin_call(&mut ctx, name, args, 1, OpCovOutputCount),
@@ -3649,14 +3662,14 @@ fn compile_bytes_call<'i>(ctx: &mut CompileCallContext<'_, 'i>, args: &[Expr<'i>
     }
     match &args[0].kind {
         ExprKind::String(value) => {
-            ctx.builder.add_data(value.as_bytes())?;
+            ctx.builder.add_data_with_push_opcode(value.as_bytes())?;
             *ctx.stack_depth += 1;
             Ok(())
         }
         ExprKind::Identifier(name) => {
             if let Some(expr) = ctx.scope.constants.get(name) {
                 if let ExprKind::String(value) = &expr.kind {
-                    ctx.builder.add_data(value.as_bytes())?;
+                    ctx.builder.add_data_with_push_opcode(value.as_bytes())?;
                     *ctx.stack_depth += 1;
                     return Ok(());
                 }
@@ -3909,10 +3922,10 @@ fn build_null_data_script<'i>(arg: &Expr<'i>) -> Result<Vec<u8>, CompilerError> 
                     .iter()
                     .filter_map(|value| if let ExprKind::Byte(byte) = &value.kind { Some(*byte) } else { None })
                     .collect();
-                builder.add_data(&bytes)?;
+                builder.add_data_with_push_opcode(&bytes)?;
             }
             ExprKind::String(value) => {
-                builder.add_data(value.as_bytes())?;
+                builder.add_data_with_push_opcode(value.as_bytes())?;
             }
             ExprKind::Call { name, args, .. } if name == "bytes" || name == "byte[]" => {
                 if args.len() != 1 {
@@ -3922,7 +3935,7 @@ fn build_null_data_script<'i>(arg: &Expr<'i>) -> Result<Vec<u8>, CompilerError> 
                 }
                 match &args[0].kind {
                     ExprKind::String(value) => {
-                        builder.add_data(value.as_bytes())?;
+                        builder.add_data_with_push_opcode(value.as_bytes())?;
                     }
                     _ => {
                         return Err(CompilerError::Unsupported(
@@ -3947,7 +3960,7 @@ fn build_null_data_script<'i>(arg: &Expr<'i>) -> Result<Vec<u8>, CompilerError> 
 fn data_prefix(data_len: usize) -> Vec<u8> {
     let dummy_data = vec![0u8; data_len];
     let mut builder = ScriptBuilder::new();
-    builder.add_data(&dummy_data).unwrap();
+    builder.add_data_with_push_opcode(&dummy_data).unwrap();
     let script = builder.drain();
     script[..script.len() - data_len].to_vec()
 }

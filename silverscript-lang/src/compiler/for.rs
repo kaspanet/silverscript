@@ -10,6 +10,7 @@ pub(super) fn lower_for_loops<'i>(
     let functions = contract.functions.iter().map(|function| lowerer.lower_function(function)).collect::<Result<Vec<_>, _>>()?;
 
     Ok(ContractAst {
+        pragma: contract.pragma.clone(),
         name: contract.name.clone(),
         params: contract.params.clone(),
         structs: contract.structs.clone(),
