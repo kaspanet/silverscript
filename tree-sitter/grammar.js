@@ -28,17 +28,26 @@ export default grammar({
 
   word: ($) => $.identifier,
 
-  conflicts: ($) => [
-    [$.function_call, $.base_type],
-    [$.primary, $.base_type],
-  ],
-
   rules: {
-    source_file: ($) => seq(optional($.pragma_directive), $.contract_definition),
+    source_file: ($) =>
+      choice($.contract_source_file, $.declaration_source_file),
+
+    contract_source_file: ($) =>
+      seq(repeat($.pragma_directive), $.contract_definition),
+
+    declaration_source_file: ($) => repeat1($.builtin_function_declaration),
 
     pragma_directive: ($) => seq("pragma", "silverscript", $.pragma_value, ";"),
 
-    pragma_value: (_) => token(/[^;]+/),
+    pragma_value: ($) =>
+      seq($.version_constraint, optional($.version_constraint)),
+
+    version_constraint: ($) =>
+      seq(optional($.version_operator), $.version_literal),
+
+    version_operator: (_) => choice("^", "~", ">=", ">", "<=", "<", "="),
+
+    version_literal: (_) => token(/\d+\.\d+\.\d+/),
 
     contract_definition: ($) =>
       seq(
@@ -52,9 +61,9 @@ export default grammar({
 
     contract_item: ($) =>
       choice(
+        $.struct_definition,
         $.constant_definition,
         $.contract_field_definition,
-        $.struct_definition,
         $.function_definition,
       ),
 
@@ -72,16 +81,33 @@ export default grammar({
 
     function_definition: ($) =>
       seq(
-        repeat($.attribute),
+        repeat($.function_attribute),
         optional("entrypoint"),
         "function",
         field("name", $.identifier),
         $.parameter_list,
         optional($.return_type_list),
-        "{",
-        repeat($.statement),
-        "}",
+        $.braced_block,
       ),
+
+    builtin_function_declaration: ($) =>
+      seq(
+        "function",
+        field("name", $.identifier),
+        $.parameter_list,
+        optional($.return_type_list),
+        ";",
+      ),
+
+    function_attribute: ($) =>
+      seq("#[", $.attribute_path, optional($.attribute_args), "]"),
+
+    attribute_path: ($) => seq($.identifier, repeat(seq(".", $.identifier))),
+
+    attribute_args: ($) => seq("(", optional(commaSep($.attribute_arg)), ")"),
+
+    attribute_arg: ($) =>
+      seq(field("name", $.identifier), "=", field("value", $.expression)),
 
     constant_definition: ($) =>
       seq(
@@ -107,15 +133,21 @@ export default grammar({
     parameter: ($) => seq($.type_name, $.identifier),
 
     return_type_list: ($) =>
-      seq(":", "(", optional(commaSep($.type_name)), ")"),
+      seq(
+        ":",
+        choice($.type_name, seq("(", optional(commaSep($.type_name)), ")")),
+      ),
 
-    block: ($) => choice(seq("{", repeat($.statement), "}"), $.statement),
+    block: ($) => $.statement,
+
+    braced_block: ($) => seq("{", repeat($.statement), "}"),
 
     statement: ($) =>
       choice(
         $.variable_definition,
         $.tuple_assignment,
         $.state_function_call_assignment,
+        $.struct_destructure_assignment,
         $.function_call_assignment,
         $.call_statement,
         $.return_statement,
@@ -124,6 +156,7 @@ export default grammar({
         $.require_statement,
         $.if_statement,
         $.for_statement,
+        $.braced_block,
         $.console_statement,
       ),
 
@@ -152,7 +185,20 @@ export default grammar({
       seq("(", commaSep($.typed_binding), ")", "=", $.function_call, ";"),
 
     state_function_call_assignment: ($) =>
-      seq("{", commaSep($.state_typed_binding), "}", "=", $.function_call, ";"),
+      prec(
+        1,
+        seq(
+          "{",
+          commaSep($.state_typed_binding),
+          "}",
+          "=",
+          $.function_call,
+          ";",
+        ),
+      ),
+
+    struct_destructure_assignment: ($) =>
+      seq("{", commaSep($.state_typed_binding), "}", "=", $.expression, ";"),
 
     typed_binding: ($) => seq($.type_name, $.identifier),
 
@@ -161,7 +207,19 @@ export default grammar({
 
     call_statement: ($) => seq($.function_call, ";"),
 
-    return_statement: ($) => seq("return", $.expression_list, ";"),
+    return_statement: ($) =>
+      seq("return", choice($.return_expression_list, $.expression), ";"),
+
+    return_expression_list: ($) =>
+      seq(
+        "(",
+        $.expression,
+        ",",
+        optional(
+          seq($.expression, repeat(seq(",", $.expression)), optional(",")),
+        ),
+        ")",
+      ),
 
     assign_statement: ($) =>
       seq(field("name", $.identifier), "=", field("value", $.expression), ";"),
@@ -197,8 +255,8 @@ export default grammar({
           "(",
           $.expression,
           ")",
-          $.block,
-          optional(seq("else", $.block)),
+          $.statement,
+          optional(seq("else", $.statement)),
         ),
       ),
 
@@ -214,7 +272,7 @@ export default grammar({
         ",",
         $.expression,
         ")",
-        $.block,
+        $.statement,
       ),
 
     console_statement: ($) => seq("console.log", $.console_parameter_list, ";"),
@@ -222,7 +280,7 @@ export default grammar({
     console_parameter_list: ($) =>
       seq("(", optional(commaSep($.console_parameter)), ")"),
 
-    console_parameter: ($) => choice($.identifier, $.literal),
+    console_parameter: ($) => $.expression,
 
     expression: ($) => $.logical_or,
 
@@ -278,17 +336,15 @@ export default grammar({
     postfix_op: ($) =>
       choice(
         $.tuple_index,
-        $.member_access,
         $.unary_suffix,
         $.split_call,
         $.slice_call,
         $.append_call,
         $.reverse_call,
+        $.field_access,
       ),
 
     tuple_index: ($) => seq("[", $.expression, "]"),
-
-    member_access: ($) => seq(".", field("name", $.identifier)),
 
     unary_suffix: (_) => ".length",
 
@@ -299,6 +355,8 @@ export default grammar({
     append_call: ($) => seq(".append", $.expression_list),
 
     reverse_call: (_) => seq(".reverse", "(", ")"),
+
+    field_access: ($) => seq(".", field("name", $.identifier)),
 
     primary: ($) =>
       choice(
@@ -319,13 +377,15 @@ export default grammar({
     // type_name("(" expression ("," expression)? ","? ")"
     cast: ($) =>
       seq(
-        $.type_name,
+        $.cast_type_name,
         "(",
         $.expression,
         optional(seq(",", $.expression)),
         optional(","),
         ")",
       ),
+
+    cast_type_name: ($) => seq($.builtin_type, repeat($.array_suffix)),
 
     function_call: ($) => seq($.identifier, $.expression_list),
 
@@ -376,14 +436,14 @@ export default grammar({
 
     type_name: ($) => seq($.base_type, repeat($.array_suffix)),
 
-    base_type: ($) =>
-      choice("int", "bool", "string", "pubkey", "sig", "datasig", "byte", $.identifier),
+    base_type: ($) => choice($.builtin_type, $.identifier),
 
-    attribute: (_) => token(seq("#[", /[^\]\n]+/, "]")),
+    builtin_type: (_) =>
+      choice("int", "bool", "string", "pubkey", "sig", "datasig", "byte"),
 
     array_suffix: ($) => seq("[", optional($.array_size), "]"),
 
-    array_size: ($) => choice($.identifier, $.array_bound),
+    array_size: ($) => choice("_", $.identifier, $.array_bound),
 
     array_bound: (_) => token(/[1-9][0-9]*/),
 
