@@ -2,17 +2,11 @@
   "name": "silverscript",
   "publisher": "IzioDev",
   "displayName": "SilverScript",
-  "description": "SilverScript language support and contract debugging for VS Code",
+  "description": "Kaspa SilverScript",
   "version": "0.1.3",
-  "preview": true,
   "repository": {
-    "type": "git",
     "url": "https://github.com/kaspanet/silverscript",
     "directory": "extensions/vscode"
-  },
-  "homepage": "https://github.com/kaspanet/silverscript/tree/main/extensions/vscode",
-  "bugs": {
-    "url": "https://github.com/kaspanet/silverscript/issues"
   },
   "license": "ISC",
   "author": {
@@ -21,124 +15,14 @@
   "engines": {
     "vscode": "^1.108.0"
   },
-  "extensionKind": [
-    "workspace"
-  ],
-  "capabilities": {
-    "untrustedWorkspaces": {
-      "supported": "limited"
-    },
-    "virtualWorkspaces": {
-      "supported": false
-    }
-  },
   "categories": [
-    "Programming Languages",
-    "Debuggers"
-  ],
-  "keywords": [
-    "silverscript",
-    "kaspa",
-    "smart contracts",
-    "debugger"
+    "Other"
   ],
   "activationEvents": [
-    "onLanguage:silverscript",
-    "onDebug:silverscript"
+    "onLanguage:silverscript"
   ],
   "main": "./dist/extension.js",
   "contributes": {
-    "commands": [
-      {
-        "command": "silverscript.debug.configureLaunch",
-        "category": "SilverScript",
-        "title": "SilverScript: Run / Debug Contract"
-      }
-    ],
-    "keybindings": [
-      {
-        "command": "silverscript.debug.f5",
-        "key": "f5",
-        "when": "!inDebugMode && (editorLangId == silverscript || webviewId == 'silverscriptRunner')"
-      }
-    ],
-    "debuggers": [
-      {
-        "type": "silverscript",
-        "label": "SilverScript Debug",
-        "languages": [
-          "silverscript"
-        ],
-        "breakpoints": [
-          {
-            "language": "silverscript"
-          }
-        ],
-        "configurationAttributes": {
-          "launch": {
-            "properties": {
-              "scriptPath": {
-                "type": "string",
-                "description": "Path to SilverScript source file"
-              },
-              "function": {
-                "type": "string",
-                "description": "Entrypoint function name"
-              },
-              "constructorArgs": {
-                "oneOf": [
-                  {
-                    "type": "array",
-                    "items": {
-                      "type": "string"
-                    }
-                  },
-                  {
-                    "type": "object"
-                  }
-                ],
-                "default": []
-              },
-              "args": {
-                "oneOf": [
-                  {
-                    "type": "array",
-                    "items": {
-                      "type": "string"
-                    }
-                  },
-                  {
-                    "type": "object"
-                  }
-                ],
-                "default": []
-              },
-              "tx": {
-                "type": "object",
-                "description": "Optional advanced transaction context override used by the Rust debugger runtime"
-              },
-              "noDebug": {
-                "type": "boolean",
-                "default": false
-              },
-              "stopOnEntry": {
-                "type": "boolean",
-                "default": true
-              }
-            }
-          }
-        },
-        "initialConfigurations": [
-          {
-            "type": "silverscript",
-            "request": "launch",
-            "name": "SilverScript: Debug Contract",
-            "scriptPath": "${file}",
-            "stopOnEntry": true
-          }
-        ]
-      }
-    ],
     "languages": [
       {
         "id": "silverscript",
@@ -152,11 +36,6 @@
         "configuration": "./language-configuration.json"
       }
     ],
-    "breakpoints": [
-      {
-        "language": "silverscript"
-      }
-    ],
     "configuration": {
       "type": "object",
       "title": "SilverScript",
@@ -165,6 +44,11 @@
           "type": "boolean",
           "default": true,
           "description": "Enable covenants-only opcodes."
+        },
+        "silverscript.withoutSelector": {
+          "type": "boolean",
+          "default": false,
+          "description": "Compile without function selector (single entrypoint)."
         },
         "silverscript.maxDiagnostics": {
           "type": "number",
@@ -175,36 +59,17 @@
           "type": "boolean",
           "default": true,
           "description": "Enable semantic tokens from the LSP."
-        },
-        "silverscript.debugAdapterPath": {
-          "type": "string",
-          "default": "",
-          "scope": "machine",
-          "markdownDescription": "Optional path to a custom `debugger-dap` binary. When set, SilverScript uses it instead of the bundled adapter."
-        },
-        "silverscript.autoBuildDebuggerAdapter": {
-          "type": "boolean",
-          "default": true,
-          "description": "When running from a SilverScript repo checkout, build the Rust debug adapter automatically if no compatible binary is available."
-        },
-        "silverscript.debuggerTrace": {
-          "type": "boolean",
-          "default": false,
-          "description": "Enable verbose SilverScript debugger adapter lifecycle logging in the output channel."
         }
       }
     }
   },
   "scripts": {
-    "vscode:prepublish": "npm run prepare-release",
-    "bundle:adapter": "node scripts/prepare-adapter.mjs",
+    "vscode:prepublish": "npm run package",
     "compile": "npm run check-types && npm run lint && node esbuild.js",
     "watch": "npm-run-all -p watch:*",
     "watch:esbuild": "node esbuild.js --watch",
     "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
     "package": "npm run check-types && npm run lint && node esbuild.js --production",
-    "prepare-release": "npm run bundle:adapter && npm run package",
-    "package:vsix": "npm exec vsce package -- --pre-release",
     "compile-tests": "tsc -p . --outDir out",
     "watch-tests": "tsc -p . -w --outDir out",
     "pretest": "npm run compile-tests && npm run compile && npm run lint",

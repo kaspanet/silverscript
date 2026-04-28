@@ -1,7 +1,7 @@
 use std::io::{BufReader, BufWriter};
 
 use dap::prelude::Server;
-use debugger_session::format_failure_report;
+use debugger_session::{format_failure_report, format_value};
 use serde_json::Value;
 
 mod adapter;
@@ -66,7 +66,7 @@ fn run_config_json(raw: &str) -> Result<(), Box<dyn std::error::Error>> {
         }
         Err(err) => {
             let report = session.build_failure_report(&err);
-            let formatted = format_failure_report(&report, &|type_name, value| session.format_value(type_name, value));
+            let formatted = format_failure_report(&report, &format_value);
             eprintln!("{formatted}");
             std::process::exit(1);
         }

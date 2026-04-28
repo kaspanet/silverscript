@@ -7,5 +7,3 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 ## [Unreleased]
 
 - Initial release
-- Added DAP-based contract debugging and a quick launch panel.
-- Bundle the native debug adapter into platform-specific VSIX packages.

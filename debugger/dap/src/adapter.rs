@@ -11,8 +11,8 @@ use dap::types::{
     Breakpoint, Capabilities, OutputEventCategory, Scope, ScopePresentationhint, Source, StackFrame, StoppedEventReason, Thread,
     Variable,
 };
-use debugger_session::format_failure_report;
 use debugger_session::session::{DebugSession, VariableOrigin};
+use debugger_session::{format_failure_report, format_value};
 
 use crate::launch_config::LaunchConfig;
 use crate::refs::{RefAllocator, RefTarget, ScopeKind};
@@ -185,9 +185,7 @@ impl DapAdapter {
                         Ok(()) => vec![self.output_stdout("Execution completed successfully."), Event::Terminated(None)],
                         Err(err) => {
                             let report = runtime.runtime.session().build_failure_report(&err);
-                            let formatted = format_failure_report(&report, &|type_name, value| {
-                                runtime.runtime.session().format_value(type_name, value)
-                            });
+                            let formatted = format_failure_report(&report, &format_value);
                             vec![self.output_stderr(formatted), Event::Terminated(None)]
                         }
                     }
@@ -199,9 +197,7 @@ impl DapAdapter {
                         Ok(None) => vec![self.output_stdout("Execution completed successfully."), Event::Terminated(None)],
                         Err(err) => {
                             let report = runtime.runtime.session().build_failure_report(&err);
-                            let formatted = format_failure_report(&report, &|type_name, value| {
-                                runtime.runtime.session().format_value(type_name, value)
-                            });
+                            let formatted = format_failure_report(&report, &format_value);
                             if runtime.no_debug {
                                 vec![self.output_stderr(formatted), Event::Terminated(None)]
                             } else {
@@ -233,12 +229,8 @@ impl DapAdapter {
                         path: Some(runtime.source_path.to_string_lossy().to_string()),
                         ..Default::default()
                     };
-                    let current_function_name = runtime
-                        .runtime
-                        .session()
-                        .current_function_name()
-                        .map(ToOwned::to_owned)
-                        .unwrap_or_else(|| "<entry>".to_string());
+                    let current_function_name =
+                        runtime.runtime.session().current_function_name().unwrap_or_else(|| "<entry>".to_string());
                     let call_stack = runtime.runtime.session().call_stack_with_spans();
                     (span, current_step, source, current_function_name, call_stack)
                 };
@@ -362,8 +354,10 @@ impl DapAdapter {
                         let mut bindings = vars;
                         bindings.sort_by_key(|item| {
                             let rank = match item.origin {
-                                VariableOrigin::Param | VariableOrigin::Local => 0,
-                                VariableOrigin::Constant => 1,
+                                VariableOrigin::Param => 0,
+                                VariableOrigin::Local => 1,
+                                VariableOrigin::ContractField | VariableOrigin::ConstructorArg => 2,
+                                VariableOrigin::Constant => 3,
                             };
                             (rank, item.name.clone())
                         });
@@ -371,7 +365,7 @@ impl DapAdapter {
                             .into_iter()
                             .map(|item| Variable {
                                 name: binding_name(&item),
-                                value: runtime.runtime.session().format_value(&item.type_name, &item.value),
+                                value: format_value(&item.type_name, &item.value),
                                 type_field: Some(item.type_name),
                                 evaluate_name: Some(item.name),
                                 variables_reference: 0,
@@ -410,9 +404,7 @@ impl DapAdapter {
                     }
                     Err(err) => {
                         let report = runtime.runtime.session().build_failure_report(&err);
-                        let formatted = format_failure_report(&report, &|type_name, value| {
-                            runtime.runtime.session().format_value(type_name, value)
-                        });
+                        let formatted = format_failure_report(&report, &format_value);
                         events.push(self.output_stderr(formatted.clone()));
                         if no_debug {
                             events.push(Event::Terminated(None));
@@ -475,8 +467,7 @@ impl DapAdapter {
             }
             Err(err) => {
                 let report = runtime.runtime.session().build_failure_report(&err);
-                let formatted =
-                    format_failure_report(&report, &|type_name, value| runtime.runtime.session().format_value(type_name, value));
+                let formatted = format_failure_report(&report, &format_value);
                 events.push(self.output_stderr(formatted.clone()));
                 events.push(self.make_stopped_event(StoppedEventReason::Exception, Some(formatted)));
             }
@@ -547,7 +538,8 @@ fn scope_target(kind: ScopeKind, frame_meta: &FrameMeta) -> RefTarget {
 
 fn binding_name(variable: &debugger_session::session::Variable) -> String {
     match variable.origin {
-        VariableOrigin::Param | VariableOrigin::Local => variable.name.clone(),
+        VariableOrigin::Param | VariableOrigin::Local | VariableOrigin::ContractField => variable.name.clone(),
+        VariableOrigin::ConstructorArg => format!("{} (ctor)", variable.name),
         VariableOrigin::Constant => format!("{} (const)", variable.name),
     }
 }

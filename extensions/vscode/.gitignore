@@ -1,5 +1,2 @@
 node_modules
 dist
-bin/*
-!bin/.gitignore
-*.vsix

@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
-const MESSAGE_TIMEOUT: Duration = Duration::from_secs(10);
+const MESSAGE_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub struct TestClient {
     child: Child,

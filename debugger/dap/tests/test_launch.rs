@@ -523,6 +523,48 @@ fn run_config_json_accepts_identity_tokens() {
 }
 
 #[test]
+fn run_config_json_executes_kcc20_flow_fixtures() {
+    let fixture_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../fixtures/kcc20-flow");
+    let fixture_names = [
+        "01-init-kcc20-minter-branch.json",
+        "02-create-tokens-from-minter.json",
+        "03-burn-tokens-from-minter.json",
+        "04-transfer-created-tokens.json",
+    ];
+
+    for fixture_name in fixture_names {
+        let fixture_path = fixture_dir.join(fixture_name);
+        let raw = fs::read_to_string(&fixture_path).unwrap_or_else(|err| panic!("failed to read {}: {err}", fixture_path.display()));
+        let mut config = serde_json::from_str::<serde_json::Value>(&raw).expect("fixture JSON parses");
+        config["scriptPath"] = serde_json::Value::String(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../silverscript-lang/tests/examples/kcc20.sil")
+                .to_string_lossy()
+                .to_string(),
+        );
+        let output = std::process::Command::new(harness::resolve_debugger_dap_binary())
+            .arg("--run-config-json")
+            .arg(config.to_string())
+            .output()
+            .unwrap_or_else(|err| panic!("failed to run debugger-dap for {}: {err}", fixture_path.display()));
+
+        assert!(
+            output.status.success(),
+            "KCC20 fixture {} failed: stdout={}, stderr={}",
+            fixture_name,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("Execution completed successfully."),
+            "unexpected stdout for {}: {}",
+            fixture_name,
+            String::from_utf8_lossy(&output.stdout)
+        );
+    }
+}
+
+#[test]
 fn run_config_json_rejects_invalid_identity_tokens() {
     let script = TempScript::new(CHECKSIG_SCRIPT);
     let config = json!({
@@ -888,7 +930,7 @@ contract ScopeTest(int threshold) {
         .into_iter()
         .filter_map(|item| item.get("name").and_then(|value| value.as_str()).map(ToOwned::to_owned))
         .collect::<Vec<_>>();
-    assert_eq!(variable_names, vec!["a".to_string(), "b".to_string(), "local".to_string(), "threshold (const)".to_string()]);
+    assert_eq!(variable_names, vec!["a".to_string(), "b".to_string(), "local".to_string(), "threshold (ctor)".to_string()]);
 
     client.send_request("variables", json!({"variablesReference": dstack_ref}));
     let dstack = client.expect_response_success("variables");
