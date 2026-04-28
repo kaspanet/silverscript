@@ -17,4 +17,5 @@ silverscript-lang = { path = "../../silverscript-lang" }
 kaspa-consensus-core.workspace = true
 kaspa-txscript.workspace = true
 kaspa-txscript-errors.workspace = true
+secp256k1.workspace = true
 clap = { version = "4.5.60", features = ["derive"] }
