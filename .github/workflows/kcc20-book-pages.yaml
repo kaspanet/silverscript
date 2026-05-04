@@ -3,7 +3,7 @@ name: Publish KCC20 Book
 on:
   push:
     branches:
-      - covpp-reset2
+      - master
     paths:
       - ".github/workflows/kcc20-book-pages.yaml"
       - "docs/kcc20-book/**"
