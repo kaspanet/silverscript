@@ -33,7 +33,8 @@ contract KCC20Minter(pubkey owner, byte[32] initKCC20Covid, int initAmount,
     }
 
     function checkMinterKcc20NewState(KCC20State minterKcc20NewState){
-        require(minterKcc20NewState.ownerIdentifier == byte[32](owner)); // We do not allow the minter to delegate minting authority to another party.
+        byte[32] controllerId = OpInputCovenantId(this.activeInputIndex);
+        require(minterKcc20NewState.ownerIdentifier == controllerId); // We do not allow the minter to delegate minting authority to another party.
         require(minterKcc20NewState.identifierType == IDENTIFIER_COVENANT_ID);
         require(minterKcc20NewState.isMinter); // The minter cannot stop being a minter.
 
@@ -178,13 +179,27 @@ This is how the minter learns the old token supply before minting.
 function checkMinterKcc20NewState(KCC20State minterKcc20NewState)
 ```
 
-This validates the continuing minter-owned KCC20 branch.
+This validates the continuing controller-owned KCC20 minter branch.
 
 It enforces three things:
 
-- the branch must remain owned by the minter's `owner` value encoded as `byte[32]`
+- the branch must remain owned by the current `KCC20Minter` covenant ID
 - the branch must remain covenant-ID owned
 - the branch must remain marked as a minter
+
+The first check deliberately uses the active input's covenant ID:
+
+```sil
+byte[32] controllerId = OpInputCovenantId(this.activeInputIndex);
+require(minterKcc20NewState.ownerIdentifier == controllerId);
+```
+
+This separates two identities:
+
+- `owner` is the admin key that signs minter actions
+- `controllerId` is the covenant ID that owns the KCC20 minter branch
+
+So the admin key authorizes the controller, but the KCC20 branch remains owned by the controller covenant.
 
 Then it validates the actual output with:
 

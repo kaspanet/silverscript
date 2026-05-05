@@ -26,7 +26,8 @@ contract KCC20Minter(pubkey owner, byte[32] initKCC20Covid, int initAmount,
     }
 
     function checkMinterKcc20NewState(KCC20State minterKcc20NewState){
-        require(minterKcc20NewState.ownerIdentifier == byte[32](owner)); // We do not allow the minter to delegate minting authority to another party.
+        byte[32] controllerId = OpInputCovenantId(this.activeInputIndex);
+        require(minterKcc20NewState.ownerIdentifier == controllerId); // We do not allow the minter to delegate minting authority to another party.
         require(minterKcc20NewState.identifierType == IDENTIFIER_COVENANT_ID);
         require(minterKcc20NewState.isMinter); // The minter cannot stop being a minter.
 

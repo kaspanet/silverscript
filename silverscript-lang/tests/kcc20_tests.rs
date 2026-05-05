@@ -908,7 +908,7 @@ fn kcc20_covenant_minter() {
     let owner_bytes = owner.x_only_public_key().0.serialize().to_vec();
     let alternate_owner_bytes = alternate_owner.x_only_public_key().0.serialize().to_vec();
     let placeholder_kcc20_covid = Hash::from_bytes([0; 32]);
-    let minter_cov_id = Hash::from_bytes(owner.x_only_public_key().0.serialize());
+    let minter_cov_id = Hash::from_bytes([0x4d; 32]);
 
     let kcc20 = compile_kcc20_state_full(
         &kcc20_source,
@@ -999,7 +999,7 @@ fn kcc20_covenant_minter() {
             "transfer",
             vec![
                 kcc20_state_array_arg_full(vec![
-                    (owner_bytes.clone(), IDENTIFIER_COVENANT_ID, 0, true),
+                    (minter_cov_id.as_bytes().to_vec(), IDENTIFIER_COVENANT_ID, 0, true),
                     (owner_bytes.clone(), 0, minted_amount, false),
                 ]),
                 sig_array_arg(vec![]),
@@ -1013,7 +1013,7 @@ fn kcc20_covenant_minter() {
             vec![
                 kcc20_minter_state_arg(kcc20_covenant_id.as_bytes().to_vec(), next_minter_amount, true),
                 Expr::bytes(minter_sig),
-                kcc20_state_arg(owner_bytes.clone(), IDENTIFIER_COVENANT_ID, 0, true),
+                kcc20_state_arg(minter_cov_id.as_bytes().to_vec(), IDENTIFIER_COVENANT_ID, 0, true),
                 kcc20_state_arg(owner_bytes.clone(), 0, minted_amount, false),
             ],
             true,
@@ -1045,8 +1045,15 @@ fn kcc20_covenant_minter() {
     );
     let tx1 = build_tx(vec![tx_input_from_outpoint_v1(tx1_outpoint, tx1_sigscript)], tx1_outputs.clone(), vec![pre_init_utxo.clone()]);
 
-    let kcc20_minter_after_tx2 =
-        compile_kcc20_state_full(&kcc20_source, owner_bytes.clone(), 0, IDENTIFIER_COVENANT_ID, true, MAX_COV_INS, MAX_COV_OUTS);
+    let kcc20_minter_after_tx2 = compile_kcc20_state_full(
+        &kcc20_source,
+        minter_cov_id.as_bytes().to_vec(),
+        0,
+        IDENTIFIER_COVENANT_ID,
+        true,
+        MAX_COV_INS,
+        MAX_COV_OUTS,
+    );
     let kcc20_recipient_after_tx2 =
         compile_kcc20_state(&kcc20_source, owner_bytes.clone(), TX2_MINTED_AMOUNT, MAX_COV_INS, MAX_COV_OUTS);
     let minter_after_tx2 = compile_minter(kcc20_covenant_id, TX2_MINTER_REMAINING_AMOUNT, true);
@@ -1087,8 +1094,15 @@ fn kcc20_covenant_minter() {
         tx4_entries,
     );
 
-    let kcc20_minter_after_tx3 =
-        compile_kcc20_state_full(&kcc20_source, owner_bytes.clone(), 0, IDENTIFIER_COVENANT_ID, true, MAX_COV_INS, MAX_COV_OUTS);
+    let kcc20_minter_after_tx3 = compile_kcc20_state_full(
+        &kcc20_source,
+        minter_cov_id.as_bytes().to_vec(),
+        0,
+        IDENTIFIER_COVENANT_ID,
+        true,
+        MAX_COV_INS,
+        MAX_COV_OUTS,
+    );
     let kcc20_recipient_after_tx3 =
         compile_kcc20_state(&kcc20_source, owner_bytes.clone(), TX3_MINTED_AMOUNT, MAX_COV_INS, MAX_COV_OUTS);
     let minter_after_tx3 = compile_minter(kcc20_covenant_id, TX3_MINTER_REMAINING_AMOUNT, true);
@@ -1103,8 +1117,15 @@ fn kcc20_covenant_minter() {
         TX3_MINTER_REMAINING_AMOUNT,
     );
 
-    let kcc20_minter_after_tx5 =
-        compile_kcc20_state_full(&kcc20_source, owner_bytes.clone(), 0, IDENTIFIER_COVENANT_ID, true, MAX_COV_INS, MAX_COV_OUTS);
+    let kcc20_minter_after_tx5 = compile_kcc20_state_full(
+        &kcc20_source,
+        minter_cov_id.as_bytes().to_vec(),
+        0,
+        IDENTIFIER_COVENANT_ID,
+        true,
+        MAX_COV_INS,
+        MAX_COV_OUTS,
+    );
     let kcc20_recipient_after_tx5 = compile_kcc20_state(&kcc20_source, vec![0; 32], TX4_MINTED_AMOUNT, MAX_COV_INS, MAX_COV_OUTS);
     let minter_after_tx5 = compile_minter(kcc20_covenant_id, TX4_MINTER_REMAINING_AMOUNT, true);
     let tx5 = build_mint_tx(
