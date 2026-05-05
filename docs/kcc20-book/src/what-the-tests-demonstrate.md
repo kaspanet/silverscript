@@ -13,7 +13,7 @@ These examples are easiest to understand as a small set of recurring stories:
 - non-minter branches must conserve supply
 - minter branches can expand or shrink supply
 - ownership can belong to a key, a script hash, or another covenant
-- a separate covenant can bind itself to a token covenant and control future minting
+- a separate covenant can bind itself to a token covenant and control future issuance
 
 ## 1. KCC20 Behaves Like A Fungible Token State Machine
 
@@ -62,7 +62,7 @@ That is much more expressive than a token model that only understands pubkeys.
 
 ## 5. Another Covenant Can Own KCC20
 
-A KCC20 branch can be owned by a covenant ID, and that ownership mode is what allows KCC20Minter to control minting.
+A KCC20 branch can be owned by a covenant ID, and that ownership mode is what allows KCC20Minter to control issuance.
 
 This is the bridge from "programmable ownership" to "cross-contract policy".
 
@@ -109,14 +109,14 @@ This is critical because it means the minter is validating a real KCC20 state tr
 
 ## 9. The Issuance Budget Is Enforced Across Transactions
 
-The KCC20Minter flow walks through several minting steps and shows that:
+The KCC20Minter flow walks through several mint transactions and shows that:
 
-- each successful mint reduces remaining allowance
+- each successful mint reduces remaining issuance allowance
 - each successful mint keeps a zero-amount KCC20 minter branch alive for the next mint
 - each successful mint creates a separate ordinary KCC20 recipient output for the newly minted amount
 - those recipient outputs can later be spent like ordinary KCC20 branches
-- minting continues to work while allowance remains
-- minting fails when the requested increase would overspend the budget
+- mint transactions continue to work while issuance allowance remains
+- mint transactions fail when the requested increase would overspend the budget
 
 This is the clearest statement of what KCC20Minter is for.
 

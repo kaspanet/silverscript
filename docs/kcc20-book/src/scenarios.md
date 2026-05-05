@@ -1194,7 +1194,7 @@ This is the full two-contract story:
 4. each mint spends the KCC20 minter branch and the KCC20Minter together
 5. every successful mint recreates a zero-amount KCC20 minter branch and also creates a separate recipient KCC20 output with the newly minted amount
 6. the first recipient output is then spent like an ordinary KCC20 branch to a different pubkey owner
-7. once the requested mint exceeds the remaining allowance, the mint is rejected
+7. once the requested mint exceeds the remaining issuance allowance, the mint is rejected
 
 At a high level, this is the example that shows covenant composition: one covenant carries the token state, while another covenant governs issuance policy for that token.
 
@@ -1207,7 +1207,7 @@ minter_genesis_tx
 asset_genesis_tx
   KCC20Minter(C, uninitialized)
       ->
-  KCC20(A, minter branch, owner C, 0) + KCC20Minter(C, bound to A, allowance 1000)
+  KCC20(A, minter branch, owner C, 0) + KCC20Minter(C, bound to A, issuance allowance 1000)
 
 first_mint_tx
   KCC20(minter 0) + Minter(1000)
@@ -1225,7 +1225,7 @@ recipient_transfer_tx
   KCC20(alternate pubkey owner, 200)
 
 over_mint_tx
-  request exceeds remaining allowance
+  request exceeds remaining issuance allowance
       ->
   reject
 ```

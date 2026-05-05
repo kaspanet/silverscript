@@ -94,10 +94,10 @@ contract KCC20Minter(pubkey owner, byte[32] initKCC20Covid, int initAmount,
 
 `KCC20Minter` is the example controller covenant for one KCC20 covenant instance.
 
-The key idea is that mint policy is not embedded directly into KCC20's constructor or entrypoint arguments. Instead a separate controller covenant holds:
+The key idea is that issuance policy is not embedded directly into KCC20's constructor or entrypoint arguments. Instead a separate controller covenant holds:
 
 - which KCC20 covenant it governs
-- how much issuance remains
+- how much issuance allowance remains
 - whether the cross-contract binding has already been initialized
 
 ## Constructor And State
@@ -262,7 +262,7 @@ Interpretation:
 
 - the minter must not already be initialized
 - the new minter state must point at the covenant ID of output 0
-- the mint allowance is preserved during initialization
+- the issuance allowance is preserved during initialization
 - the new state flips `initialized` to true
 - the owner authorizes the operation
 
@@ -300,7 +300,7 @@ The second entrypoint is:
 function mint(State prevState, State newState, sig s, KCC20State minterKcc20NewState, KCC20State recipientKcc20NewState)
 ```
 
-This is the issuance step.
+This is the transaction-level minting step that enforces the issuance policy.
 
 The checks break down into four groups.
 
@@ -346,9 +346,9 @@ This means:
 - compute previous KCC20 amount
 - compute the total amount in the two new KCC20 outputs
 - subtract the old amount to get the newly minted quantity
-- decrement the minter's remaining allowance by exactly that amount
+- decrement the minter's remaining issuance allowance by exactly that amount
 
-If someone tries to mint more than the allowance permits, the minter state cannot satisfy the final equality and the transaction fails.
+If someone tries to mint more than the issuance allowance permits, the minter state cannot satisfy the final equality and the transaction fails.
 
 ## Mint Accounting Diagram
 
@@ -357,8 +357,8 @@ mintedAmount
   = (new minter-branch amount + new recipient amount)
     - previous minter-branch amount
 
-new minter allowance
-  = old minter allowance - mintedAmount
+new issuance allowance
+  = old issuance allowance - mintedAmount
 ```
 
 ## Mint Shape Diagram
@@ -366,12 +366,12 @@ new minter allowance
 ```text
 before mint:
   KCC20 minter branch amount = old amount
-  KCC20Minter allowance = remaining budget
+  KCC20Minter issuance allowance = remaining budget
 
 after mint:
   KCC20 minter branch amount = 0
   KCC20 recipient branch amount = minted tokens for this transaction
-  KCC20Minter allowance = reduced by minted amount
+  KCC20Minter issuance allowance = reduced by minted amount
 ```
 
 ## Why A Separate Minter Covenant Matters
@@ -381,4 +381,4 @@ This design cleanly demonstrates covenant composition.
 - KCC20 knows how to authorize token state transitions.
 - KCC20Minter knows how to constrain issuance.
 
-KCC20 can be reused with different issuance policies because mint control is externalized into another covenant rather than welded into the token contract itself.
+KCC20 can be reused with different issuance policies because issuance control is externalized into another covenant rather than welded into the token contract itself.

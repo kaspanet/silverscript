@@ -52,6 +52,8 @@ That metadata lets the minter read and validate KCC20 state by template rather t
 
 This book uses **controller covenant** for the external policy covenant whose covenant ID owns a privileged KCC20 minter branch.
 
+In this book, **issuance** means the policy governing when new token supply may be created; **minting** means the concrete transaction-level act of creating that supply.
+
 In this example:
 
 - `A` is the KCC20 asset covenant ID
@@ -116,9 +118,9 @@ The intended lifecycle is:
 8. In each mint transaction, create:
    - a fresh zero-amount KCC20 minter branch
    - a separate KCC20 recipient output holding the newly minted amount
-   - the next KCC20Minter output with reduced allowance
+   - the next KCC20Minter output with reduced issuance allowance
 9. KCC20 authorizes the token transition.
-10. KCC20Minter verifies the minting rule and decrements its remaining allowance.
+10. KCC20Minter verifies the issuance rule and decrements its remaining issuance allowance.
 
 This means the token contract and the minter contract do not collapse into one script with one giant policy. They stay separate, and each one verifies the part of the transaction it is responsible for.
 
