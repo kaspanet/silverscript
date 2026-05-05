@@ -47,6 +47,9 @@ jobs:
         with:
           tool: mdbook
 
+      - name: Install mdBook Mermaid
+        run: cargo install mdbook-mermaid
+
       - name: Build book
         run: mdbook build docs/kcc20-book
 

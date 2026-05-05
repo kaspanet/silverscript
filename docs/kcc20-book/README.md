@@ -10,6 +10,12 @@ From the repository root:
 mdbook build docs/kcc20-book
 ```
 
+The book uses Mermaid diagrams, so local builds also need `mdbook-mermaid`:
+
+```bash
+cargo install mdbook-mermaid
+```
+
 The rendered HTML book will be written to:
 
 ```text
