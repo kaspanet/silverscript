@@ -795,6 +795,7 @@ dependencies = [
  "kaspa-consensus-core",
  "kaspa-txscript",
  "kaspa-txscript-errors",
+ "secp256k1",
  "silverscript-lang",
 ]
 

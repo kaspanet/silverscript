@@ -13,7 +13,8 @@ use debugger_session::test_runner::{
 };
 use debugger_session::{format_failure_report, format_value};
 use kaspa_consensus_core::Hash;
-use kaspa_consensus_core::hashing::sighash::SigHashReusedValuesUnsync;
+use kaspa_consensus_core::hashing::sighash::{SigHashReusedValuesUnsync, calc_schnorr_signature_hash};
+use kaspa_consensus_core::hashing::sighash_type::SIG_HASH_ALL;
 use kaspa_consensus_core::tx::{
     CovenantBinding, PopulatedTransaction, ScriptPublicKey, Transaction, TransactionId, TransactionInput, TransactionOutpoint,
     TransactionOutput, TxInputMass, UtxoEntry, VerifiableTransaction,
@@ -22,6 +23,7 @@ use kaspa_txscript::caches::Cache;
 use kaspa_txscript::covenants::CovenantsContext;
 use kaspa_txscript::script_builder::ScriptBuilder;
 use kaspa_txscript::{EngineCtx, EngineFlags, pay_to_script_hash_script};
+use secp256k1::{Keypair, Message, SecretKey, Secp256k1};
 use silverscript_lang::ast::{ContractAst, Expr, ExprKind, StateFieldExpr, TypeBase, TypeRef, parse_contract_ast};
 use silverscript_lang::compiler::{CompileOptions, CompiledContract, compile_contract, compile_contract_ast};
 
@@ -332,6 +334,46 @@ fn build_p2pk_script(pubkey: &[u8]) -> Vec<u8> {
 
 fn sigscript_push_script(script: &[u8]) -> Vec<u8> {
     ScriptBuilder::new().add_data(script).expect("push script data").drain()
+}
+
+fn materialize_auto_sig_args(
+    ast: &ContractAst<'_>,
+    function_name: &str,
+    raw_args: &mut [String],
+    tx: &Transaction,
+    utxos: &[UtxoEntry],
+    input_idx: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let Some(function) = ast.functions.iter().find(|function| function.name == function_name) else {
+        return Ok(());
+    };
+    let populated = PopulatedTransaction::new(tx, utxos.to_vec());
+    let reused_values = SigHashReusedValuesUnsync::new();
+    let sig_hash = calc_schnorr_signature_hash(&populated, input_idx, SIG_HASH_ALL, &reused_values);
+    let msg = Message::from_digest_slice(sig_hash.as_bytes().as_slice())?;
+    let secp = Secp256k1::new();
+    let raw_arg_offset = function.params.len().saturating_sub(raw_args.len());
+    for (idx, param) in function.params.iter().enumerate() {
+        if !matches!(param.type_ref.base, TypeBase::Sig | TypeBase::Datasig) || idx < raw_arg_offset {
+            continue;
+        }
+        let raw_idx = idx - raw_arg_offset;
+        if raw_idx >= raw_args.len() {
+            continue;
+        }
+        let bytes = parse_hex_bytes(&raw_args[raw_idx])?;
+        if bytes.len() != 32 {
+            continue;
+        }
+        let secret = SecretKey::from_slice(&bytes)?;
+        let keypair = Keypair::from_secret_key(&secp, &secret);
+        let sig = keypair.sign_schnorr(msg);
+        let mut signature = Vec::with_capacity(65);
+        signature.extend_from_slice(sig.as_ref());
+        signature.push(SIG_HASH_ALL.to_u8());
+        raw_args[raw_idx] = signature.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+    }
+    Ok(())
 }
 
 fn combine_action_and_redeem(action: &[u8], redeem_script: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
@@ -649,7 +691,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         None
     };
-    let (script_path, mut raw_ctor_args, selected_name, raw_args, tx_scenario, expect) =
+    let (script_path, mut raw_ctor_args, selected_name, mut raw_args, tx_scenario, expect) =
         if let Some(test_file) = inferred_test_file.as_deref() {
             let test_name = cli.test_name.as_deref().ok_or("--test-name requires --test-file or SCRIPT_PATH")?;
             let script_override = cli.script_path.as_deref().map(Path::new);
@@ -859,6 +901,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             })
             .collect::<Option<Vec<_>>>()
     });
+    let provisional_inputs = tx
+        .inputs
+        .iter()
+        .enumerate()
+        .map(|(input_idx, _)| TransactionInput {
+            previous_outpoint: input_prev_outpoints[input_idx],
+            signature_script: explicit_input_sigs[input_idx].clone().unwrap_or_default(),
+            sequence: input_sequences[input_idx],
+            mass: TxInputMass::SigopCount(input_sig_op_counts[input_idx].into()),
+        })
+        .collect::<Vec<_>>();
+    let provisional_tx = Transaction::new(tx.version, provisional_inputs, tx_outputs.clone(), tx.lock_time, Default::default(), 0, vec![]);
+    let provisional_utxos = utxo_specs
+        .iter()
+        .map(|(value, spk, covenant_id)| UtxoEntry::new(*value, spk.clone(), 0, provisional_tx.is_coinbase(), *covenant_id))
+        .collect::<Vec<_>>();
+    materialize_auto_sig_args(&parsed_contract, &selected_name, &mut raw_args, &provisional_tx, &provisional_utxos, tx.active_input_index)?;
+
     let active_input_ctor_raw = tx.inputs[tx.active_input_index].constructor_args.clone().unwrap_or_else(|| raw_ctor_args.clone());
     let active_compiled = compile_contract_for_raw_ctor_args(&source, &parsed_contract, &active_input_ctor_raw)?;
     let active_is_cov_leader = companion_leader_index.map(|index| index == tx.active_input_index).unwrap_or(true);
