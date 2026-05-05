@@ -92,9 +92,9 @@ contract KCC20Minter(pubkey owner, byte[32] initKCC20Covid, int initAmount,
 
 ## Purpose
 
-`KCC20Minter` is a companion covenant that controls minting for one KCC20 covenant instance.
+`KCC20Minter` is the example controller covenant for one KCC20 covenant instance.
 
-The key idea is that mint policy is not embedded directly into KCC20's constructor or entrypoint arguments. Instead a separate covenant holds:
+The key idea is that mint policy is not embedded directly into KCC20's constructor or entrypoint arguments. Instead a separate controller covenant holds:
 
 - which KCC20 covenant it governs
 - how much issuance remains
@@ -244,9 +244,9 @@ The first entrypoint is:
 function init(State prevState, State newState, sig s)
 ```
 
-This binds a previously uninitialized minter covenant to a freshly created KCC20 covenant.
+This binds a previously uninitialized controller covenant to a freshly created KCC20 covenant.
 
-The minter covenant already has its own covenant ID before this entrypoint runs. In the bootstrap flow, a plain funding UTXO first creates the uninitialized minter covenant `C`. Then the asset genesis transaction spends `C` through `init`, creates the KCC20 asset covenant `A`, and recreates `C` as initialized and bound to `A`.
+The controller covenant already has its own covenant ID before this entrypoint runs. In the bootstrap flow, a plain funding UTXO first creates the uninitialized controller covenant `C`. Then the asset genesis transaction spends `C` through `init`, creates the KCC20 asset covenant `A`, and recreates `C` as initialized and bound to `A`.
 
 Its key checks are:
 

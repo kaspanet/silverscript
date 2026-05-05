@@ -12,7 +12,7 @@ The example is interesting because it is not just "a token owned by a pubkey". I
 - token state carried in covenant state
 - ownership by pubkey, by script hash, or by covenant ID
 - mint-capable and non-mint-capable token branches
-- a separate minter covenant that controls issuance
+- a separate controller covenant that controls issuance
 - cross-contract linkage through covenant IDs
 - template-based validation of another contract's state shape
 - covenant declaration flows for initialization, transfer, and minting

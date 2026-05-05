@@ -73,7 +73,7 @@ The two-contract example shows a clean split:
 - KCC20 defines token semantics
 - KCC20Minter defines issuance policy
 
-This matters because it keeps the token contract reusable. Different issuance policies could be modeled by different companion covenants.
+This matters because it keeps the token contract reusable. Different issuance policies could be modeled by different controller covenants.
 
 ## 7. Initialization Can Bind Contracts Together
 

@@ -28,7 +28,7 @@ So the same token contract supports multiple ownership modes without changing th
 
 ## KCC20Minter
 
-`KCC20Minter` is a separate covenant that controls issuance against a particular KCC20 covenant instance.
+`KCC20Minter` is the controller covenant used by this example. It controls issuance against a particular KCC20 covenant instance.
 
 Its state is:
 
@@ -48,13 +48,26 @@ The field name `kcc20Covid` is just the name used in the example source. Functio
 
 That metadata lets the minter read and validate KCC20 state by template rather than blindly trusting that some output "looks like" a KCC20 output.
 
+## Controller Covenant Terminology
+
+This book uses **controller covenant** for the external policy covenant whose covenant ID owns a privileged KCC20 minter branch.
+
+In this example:
+
+- `A` is the KCC20 asset covenant ID
+- `C` is the controller covenant ID
+- `KCC20Minter` is one concrete controller covenant implementation
+- `owner` is the admin pubkey that signs controller actions
+
+The distinction matters. The KCC20 minter branch is not owned by the admin pubkey directly. It is owned by covenant ID `C`. The admin key authorizes the `KCC20Minter` script, and that script decides how its authority over asset `A` may be used.
+
 ## How They Fit Together
 
 The two contracts are meant to be read as one system.
 
 KCC20 is the asset contract. It defines what a token state looks like, how ownership works, and when supply may or may not change.
 
-KCC20Minter is the policy contract. It does not redefine what a KCC20 token is. Instead, it binds itself to one KCC20 covenant instance and restricts how that particular KCC20 branch may be expanded over time.
+KCC20Minter is the controller covenant. It does not redefine what a KCC20 token is. Instead, it binds itself to one KCC20 covenant instance and restricts how that particular KCC20 branch may be expanded over time.
 
 So the relationship is:
 
