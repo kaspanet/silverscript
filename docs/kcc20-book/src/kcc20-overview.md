@@ -81,28 +81,31 @@ That is why covenant-ID ownership is so important in this example. It gives a co
 
 ### Lifecycle
 
-At a high level, the system is meant to work in two phases:
+At a high level, the system is meant to work in three phases:
 
-- a binding phase, where the minter learns which KCC20 covenant it controls
+- a minter genesis phase, where the controller covenant is created and receives covenant ID `C`
+- an asset genesis phase, where the KCC20 asset covenant is created with covenant ID `A`, while `C` binds itself to `A`
 - an issuance phase, where KCC20 and KCC20Minter are spent together and each checks its side of the rules
 
 The intended lifecycle is:
 
-1. Create an uninitialized `KCC20Minter`.
-2. Spend it through `init`.
-3. In the same transaction, create:
+1. Spend a plain funding UTXO into an uninitialized `KCC20Minter`.
+2. The minter genesis transaction creates the controller covenant ID `C` using normal covenant genesis hashing.
+3. Spend `C` through `init`.
+4. In the same asset genesis transaction, create:
    - a KCC20 minter branch with amount `0`
    - a new initialized minter output
-4. `init` stores the newly created KCC20 covenant ID in the minter state.
-5. Later, spend both contracts together:
+5. The KCC20 minter branch is owned by `C`.
+6. `init` stores the newly created KCC20 covenant ID `A` in the minter state.
+7. Later, spend both contracts together:
    - the KCC20 minter branch
    - the KCC20Minter output
-6. In each mint transaction, create:
+8. In each mint transaction, create:
    - a fresh zero-amount KCC20 minter branch
    - a separate KCC20 recipient output holding the newly minted amount
    - the next KCC20Minter output with reduced allowance
-7. KCC20 authorizes the token transition.
-8. KCC20Minter verifies the minting rule and decrements its remaining allowance.
+9. KCC20 authorizes the token transition.
+10. KCC20Minter verifies the minting rule and decrements its remaining allowance.
 
 This means the token contract and the minter contract do not collapse into one script with one giant policy. They stay separate, and each one verifies the part of the transaction it is responsible for.
 
@@ -128,10 +131,13 @@ KCC20
 ## Lifecycle Diagram
 
 ```text
-uninitialized minter
+plain funding utxo
         |
         v
-init transaction
+[minter genesis tx] -> C covenant id
+        |
+        v
+[asset genesis tx] -> A covenant id + C binds to A
         |
         +--> creates zero-amount KCC20 minter branch
         |

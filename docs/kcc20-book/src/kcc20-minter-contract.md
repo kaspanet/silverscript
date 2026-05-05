@@ -244,7 +244,9 @@ The first entrypoint is:
 function init(State prevState, State newState, sig s)
 ```
 
-This binds a previously uninitialized minter to a freshly created KCC20 covenant.
+This binds a previously uninitialized minter covenant to a freshly created KCC20 covenant.
+
+The minter covenant already has its own covenant ID before this entrypoint runs. In the bootstrap flow, a plain funding UTXO first creates the uninitialized minter covenant `C`. Then the asset genesis transaction spends `C` through `init`, creates the KCC20 asset covenant `A`, and recreates `C` as initialized and bound to `A`.
 
 Its key checks are:
 
@@ -266,18 +268,27 @@ Interpretation:
 
 The critical piece is `OpOutputCovenantId(0)`. That lets the minter learn the covenant ID of the KCC20 output created in the same transaction.
 
-Without that step there would be no secure way for the minter to bind itself to the exact KCC20 covenant instance it just created.
+Without this check, this single transaction would not prove that the initialized minter bound itself to the exact KCC20 covenant output created beside it.
 
 ## Initialization Diagram
 
 ```text
-before init:
-  initialized = false
-  kcc20Covid = placeholder
+plain funding utxo
+    |
+    v
+[minter genesis tx] -> C covenant id
+    |
+    v
+[asset genesis/init tx] -> A covenant id + C binds to A
 
-after init:
-  initialized = true
-  kcc20Covid = covenant ID of the newly created KCC20 output
+before asset genesis/init:
+  C.initialized = false
+  C.kcc20Covid = placeholder
+
+after asset genesis/init:
+  C.initialized = true
+  C.kcc20Covid = A
+  A.ownerIdentifier = C
 ```
 
 ## `mint`

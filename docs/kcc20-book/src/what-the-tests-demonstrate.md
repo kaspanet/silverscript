@@ -77,13 +77,25 @@ This matters because it keeps the token contract reusable. Different issuance po
 
 ## 7. Initialization Can Bind Contracts Together
 
-One of the most important properties proven by the examples is that a contract can initialize itself against another covenant created in the same transaction.
+One of the most important properties proven by the examples is that a controller covenant can be created first, then initialize itself against an asset covenant created in the next transaction.
 
 That is what `init` in KCC20Minter does when it records:
 
 - the covenant ID of the newly created KCC20 output
 
-This is the mechanism that binds the minter to one specific KCC20 instance.
+The important shape is:
+
+```text
+plain funding utxo
+    |
+    v
+[minter genesis tx] -> C covenant id
+    |
+    v
+[asset genesis/init tx] -> A covenant id + C binds to A
+```
+
+This is the mechanism that binds the minter to one specific KCC20 instance while preserving a concrete genesis preimage for both covenant IDs.
 
 ## 8. Template Validation Makes Cross-Contract Checks Safer
 
