@@ -898,12 +898,12 @@ fn kcc20_covenant_minter() {
     const MAX_COV_INS: i64 = 2;
     const MAX_COV_OUTS: i64 = 2;
     const MINTER_AMOUNT: i64 = 1_000;
-    const TX2_MINTED_AMOUNT: i64 = 200;
-    const TX3_MINTED_AMOUNT: i64 = 300;
-    const TX4_MINTED_AMOUNT: i64 = 700;
-    const TX2_MINTER_REMAINING_AMOUNT: i64 = MINTER_AMOUNT - TX2_MINTED_AMOUNT;
-    const TX3_MINTER_REMAINING_AMOUNT: i64 = TX2_MINTER_REMAINING_AMOUNT - TX3_MINTED_AMOUNT;
-    const TX4_MINTER_REMAINING_AMOUNT: i64 = TX3_MINTER_REMAINING_AMOUNT - TX4_MINTED_AMOUNT;
+    const FIRST_MINTED_AMOUNT: i64 = 200;
+    const SECOND_MINTED_AMOUNT: i64 = 300;
+    const OVER_MINTED_AMOUNT: i64 = 700;
+    const FIRST_MINTER_REMAINING_AMOUNT: i64 = MINTER_AMOUNT - FIRST_MINTED_AMOUNT;
+    const SECOND_MINTER_REMAINING_AMOUNT: i64 = FIRST_MINTER_REMAINING_AMOUNT - SECOND_MINTED_AMOUNT;
+    const OVER_MINT_MINTER_REMAINING_AMOUNT: i64 = SECOND_MINTER_REMAINING_AMOUNT - OVER_MINTED_AMOUNT;
 
     let owner = random_keypair();
     let alternate_owner = random_keypair();
@@ -912,6 +912,9 @@ fn kcc20_covenant_minter() {
     let placeholder_kcc20_covid = Hash::from_bytes([0; 32]);
     let funding_spk = ScriptPublicKey::new(0, vec![OpTrue].into());
 
+    // ============================================================
+    // shared contract templates
+    // ============================================================
     let kcc20_template_probe =
         compile_kcc20_state_full(&kcc20_source, vec![0; 32], 0, IDENTIFIER_COVENANT_ID, true, MAX_COV_INS, MAX_COV_OUTS);
     let (template_prefix, template_suffix, expected_template_hash) = compiled_template_parts_and_hash(&kcc20_template_probe);
@@ -937,7 +940,9 @@ fn kcc20_covenant_minter() {
         tx: Transaction::new(1, inputs, outputs, 0, Default::default(), 0, vec![]),
         entries,
     };
-    // Bootstrap sequence:
+    // ============================================================
+    // bootstrap shape
+    // ============================================================
     //
     // plain funding utxo
     //     |
@@ -946,6 +951,10 @@ fn kcc20_covenant_minter() {
     //     |
     //     v
     // [asset genesis/init tx] -> A covenant id + C binds to A
+
+    // ============================================================
+    // minter genesis tx: create C
+    // ============================================================
     let pre_init = compile_minter(placeholder_kcc20_covid, MINTER_AMOUNT, false);
     let minter_genesis_outpoint = TransactionOutpoint { transaction_id: TransactionId::from_bytes([0x4d; 32]), index: 0 };
     let minter_genesis_input = tx_input_from_outpoint_v1(minter_genesis_outpoint, vec![]);
@@ -958,7 +967,7 @@ fn kcc20_covenant_minter() {
         covenant: Some(CovenantBinding { authorizing_input: 0, covenant_id: minter_cov_id }),
         ..minter_genesis_output_without_covenant
     }];
-    let minter_genesis = build_tx(vec![minter_genesis_input], minter_genesis_outputs, vec![minter_genesis_utxo]);
+    let minter_genesis_tx = build_tx(vec![minter_genesis_input], minter_genesis_outputs, vec![minter_genesis_utxo]);
     let output_utxo = |output: &TransactionOutput, tx: &Transaction, covenant_id: Hash| {
         UtxoEntry::new(output.value, output.script_public_key.clone(), 0, tx.is_coinbase(), Some(covenant_id))
     };
@@ -969,7 +978,10 @@ fn kcc20_covenant_minter() {
         }
     };
 
-    let pre_init_utxo = output_utxo(&minter_genesis.tx.outputs[0], &minter_genesis.tx, minter_cov_id);
+    // ============================================================
+    // asset genesis preimage: compute A
+    // ============================================================
+    let pre_init_utxo = output_utxo(&minter_genesis_tx.tx.outputs[0], &minter_genesis_tx.tx, minter_cov_id);
     let genesis = compile_kcc20_state_full(
         &kcc20_source,
         minter_cov_id.as_bytes().to_vec(),
@@ -983,9 +995,13 @@ fn kcc20_covenant_minter() {
         compiled_template_parts_and_hash(&genesis),
         (template_prefix.clone(), template_suffix.clone(), expected_template_hash.clone())
     );
-    let tx1_outpoint = TransactionOutpoint { transaction_id: minter_genesis.tx.id(), index: 0 };
+    let asset_genesis_outpoint = TransactionOutpoint { transaction_id: minter_genesis_tx.tx.id(), index: 0 };
     let kcc20_genesis_output = covenant_output(&genesis, 0, Hash::from_bytes([0; 32]));
-    let kcc20_covenant_id = hashing::covenant_id::covenant_id(tx1_outpoint, std::iter::once((0, &kcc20_genesis_output)));
+    let kcc20_covenant_id = hashing::covenant_id::covenant_id(asset_genesis_outpoint, std::iter::once((0, &kcc20_genesis_output)));
+
+    // ============================================================
+    // mint tx builder: spend A and C together
+    // ============================================================
     let build_mint_tx = |prev_tx: &TestTx,
                          prev_kcc20: &CompiledContract<'_>,
                          prev_minter: &CompiledContract<'_>,
@@ -1048,22 +1064,36 @@ fn kcc20_covenant_minter() {
 
     let minter_post_init = compile_minter(kcc20_covenant_id, MINTER_AMOUNT, true);
 
-    let tx1_outputs = vec![covenant_output(&genesis, 0, kcc20_covenant_id), covenant_output(&minter_post_init, 0, minter_cov_id)];
-    let tx1_unsigned =
-        build_tx(vec![tx_input_from_outpoint_v1(tx1_outpoint, vec![])], tx1_outputs.clone(), vec![pre_init_utxo.clone()]);
-    let tx1_sig = sign_tx_input(tx1_unsigned.tx.clone(), tx1_unsigned.entries.clone(), 0, &owner);
-    let tx1_sigscript = covenant_decl_sigscript(
+    // ============================================================
+    // asset genesis tx: create A and bind C to A
+    // ============================================================
+    let asset_genesis_outputs =
+        vec![covenant_output(&genesis, 0, kcc20_covenant_id), covenant_output(&minter_post_init, 0, minter_cov_id)];
+    let asset_genesis_unsigned = build_tx(
+        vec![tx_input_from_outpoint_v1(asset_genesis_outpoint, vec![])],
+        asset_genesis_outputs.clone(),
+        vec![pre_init_utxo.clone()],
+    );
+    let asset_genesis_sig = sign_tx_input(asset_genesis_unsigned.tx.clone(), asset_genesis_unsigned.entries.clone(), 0, &owner);
+    let asset_genesis_sigscript = covenant_decl_sigscript(
         &pre_init,
         "init",
         vec![
             kcc20_minter_state_arg(kcc20_covenant_id.as_bytes().to_vec(), MINTER_AMOUNT, true), // newState
-            Expr::bytes(tx1_sig),                                                               // s
+            Expr::bytes(asset_genesis_sig),                                                     // s
         ],
         true,
     );
-    let tx1 = build_tx(vec![tx_input_from_outpoint_v1(tx1_outpoint, tx1_sigscript)], tx1_outputs.clone(), vec![pre_init_utxo.clone()]);
+    let asset_genesis_tx = build_tx(
+        vec![tx_input_from_outpoint_v1(asset_genesis_outpoint, asset_genesis_sigscript)],
+        asset_genesis_outputs.clone(),
+        vec![pre_init_utxo.clone()],
+    );
 
-    let kcc20_minter_after_tx2 = compile_kcc20_state_full(
+    // ============================================================
+    // first mint tx: issue spendable supply
+    // ============================================================
+    let kcc20_minter_after_first_mint = compile_kcc20_state_full(
         &kcc20_source,
         minter_cov_id.as_bytes().to_vec(),
         0,
@@ -1072,47 +1102,57 @@ fn kcc20_covenant_minter() {
         MAX_COV_INS,
         MAX_COV_OUTS,
     );
-    let kcc20_recipient_after_tx2 =
-        compile_kcc20_state(&kcc20_source, owner_bytes.clone(), TX2_MINTED_AMOUNT, MAX_COV_INS, MAX_COV_OUTS);
-    let minter_after_tx2 = compile_minter(kcc20_covenant_id, TX2_MINTER_REMAINING_AMOUNT, true);
-    let tx2 = build_mint_tx(
-        &tx1,
+    let kcc20_recipient_after_first_mint =
+        compile_kcc20_state(&kcc20_source, owner_bytes.clone(), FIRST_MINTED_AMOUNT, MAX_COV_INS, MAX_COV_OUTS);
+    let minter_after_first_mint = compile_minter(kcc20_covenant_id, FIRST_MINTER_REMAINING_AMOUNT, true);
+    let first_mint_tx = build_mint_tx(
+        &asset_genesis_tx,
         &genesis,
         &minter_post_init,
-        &kcc20_minter_after_tx2,
-        &kcc20_recipient_after_tx2,
-        &minter_after_tx2,
-        TX2_MINTED_AMOUNT,
-        TX2_MINTER_REMAINING_AMOUNT,
+        &kcc20_minter_after_first_mint,
+        &kcc20_recipient_after_first_mint,
+        &minter_after_first_mint,
+        FIRST_MINTED_AMOUNT,
+        FIRST_MINTER_REMAINING_AMOUNT,
     );
 
-    let kcc20_recipient_after_tx4 =
-        compile_kcc20_state(&kcc20_source, alternate_owner_bytes.clone(), TX2_MINTED_AMOUNT, MAX_COV_INS, MAX_COV_OUTS);
-    let tx4_outputs = vec![covenant_output(&kcc20_recipient_after_tx4, 0, kcc20_covenant_id)];
-    let tx4_entries = vec![output_utxo(&tx2.tx.outputs[1], &tx2.tx, kcc20_covenant_id)];
-    let tx4_unsigned = build_tx(
-        vec![tx_input_from_outpoint_v1(TransactionOutpoint { transaction_id: tx2.tx.id(), index: 1 }, vec![])],
-        tx4_outputs.clone(),
-        tx4_entries.clone(),
+    // ============================================================
+    // recipient transfer tx: prove minted tokens remain transferable
+    // ============================================================
+    let kcc20_recipient_after_transfer =
+        compile_kcc20_state(&kcc20_source, alternate_owner_bytes.clone(), FIRST_MINTED_AMOUNT, MAX_COV_INS, MAX_COV_OUTS);
+    let recipient_transfer_outputs = vec![covenant_output(&kcc20_recipient_after_transfer, 0, kcc20_covenant_id)];
+    let recipient_transfer_entries = vec![output_utxo(&first_mint_tx.tx.outputs[1], &first_mint_tx.tx, kcc20_covenant_id)];
+    let recipient_transfer_unsigned = build_tx(
+        vec![tx_input_from_outpoint_v1(TransactionOutpoint { transaction_id: first_mint_tx.tx.id(), index: 1 }, vec![])],
+        recipient_transfer_outputs.clone(),
+        recipient_transfer_entries.clone(),
     );
-    let tx4_sig = sign_tx_input(tx4_unsigned.tx.clone(), tx4_unsigned.entries.clone(), 0, &owner);
-    let tx4_sigscript = covenant_decl_sigscript(
-        &kcc20_recipient_after_tx2,
+    let recipient_transfer_sig =
+        sign_tx_input(recipient_transfer_unsigned.tx.clone(), recipient_transfer_unsigned.entries.clone(), 0, &owner);
+    let recipient_transfer_sigscript = covenant_decl_sigscript(
+        &kcc20_recipient_after_first_mint,
         "transfer",
         vec![
-            kcc20_state_array_arg(vec![(alternate_owner_bytes.clone(), TX2_MINTED_AMOUNT)]),
-            sig_array_arg(vec![tx4_sig]),
+            kcc20_state_array_arg(vec![(alternate_owner_bytes.clone(), FIRST_MINTED_AMOUNT)]),
+            sig_array_arg(vec![recipient_transfer_sig]),
             witness_array_arg(vec![0]),
         ],
         true,
     );
-    let tx4 = build_tx(
-        vec![tx_input_from_outpoint_v1(TransactionOutpoint { transaction_id: tx2.tx.id(), index: 1 }, tx4_sigscript)],
-        tx4_outputs,
-        tx4_entries,
+    let recipient_transfer_tx = build_tx(
+        vec![tx_input_from_outpoint_v1(
+            TransactionOutpoint { transaction_id: first_mint_tx.tx.id(), index: 1 },
+            recipient_transfer_sigscript,
+        )],
+        recipient_transfer_outputs,
+        recipient_transfer_entries,
     );
 
-    let kcc20_minter_after_tx3 = compile_kcc20_state_full(
+    // ============================================================
+    // second mint tx: continue from the minter branch
+    // ============================================================
+    let kcc20_minter_after_second_mint = compile_kcc20_state_full(
         &kcc20_source,
         minter_cov_id.as_bytes().to_vec(),
         0,
@@ -1121,21 +1161,24 @@ fn kcc20_covenant_minter() {
         MAX_COV_INS,
         MAX_COV_OUTS,
     );
-    let kcc20_recipient_after_tx3 =
-        compile_kcc20_state(&kcc20_source, owner_bytes.clone(), TX3_MINTED_AMOUNT, MAX_COV_INS, MAX_COV_OUTS);
-    let minter_after_tx3 = compile_minter(kcc20_covenant_id, TX3_MINTER_REMAINING_AMOUNT, true);
-    let tx3 = build_mint_tx(
-        &tx2,
-        &kcc20_minter_after_tx2,
-        &minter_after_tx2,
-        &kcc20_minter_after_tx3,
-        &kcc20_recipient_after_tx3,
-        &minter_after_tx3,
-        TX3_MINTED_AMOUNT,
-        TX3_MINTER_REMAINING_AMOUNT,
+    let kcc20_recipient_after_second_mint =
+        compile_kcc20_state(&kcc20_source, owner_bytes.clone(), SECOND_MINTED_AMOUNT, MAX_COV_INS, MAX_COV_OUTS);
+    let minter_after_second_mint = compile_minter(kcc20_covenant_id, SECOND_MINTER_REMAINING_AMOUNT, true);
+    let second_mint_tx = build_mint_tx(
+        &first_mint_tx,
+        &kcc20_minter_after_first_mint,
+        &minter_after_first_mint,
+        &kcc20_minter_after_second_mint,
+        &kcc20_recipient_after_second_mint,
+        &minter_after_second_mint,
+        SECOND_MINTED_AMOUNT,
+        SECOND_MINTER_REMAINING_AMOUNT,
     );
 
-    let kcc20_minter_after_tx5 = compile_kcc20_state_full(
+    // ============================================================
+    // over-mint tx: construct an invalid mint past remaining supply
+    // ============================================================
+    let kcc20_minter_after_over_mint = compile_kcc20_state_full(
         &kcc20_source,
         minter_cov_id.as_bytes().to_vec(),
         0,
@@ -1144,26 +1187,34 @@ fn kcc20_covenant_minter() {
         MAX_COV_INS,
         MAX_COV_OUTS,
     );
-    let kcc20_recipient_after_tx5 = compile_kcc20_state(&kcc20_source, vec![0; 32], TX4_MINTED_AMOUNT, MAX_COV_INS, MAX_COV_OUTS);
-    let minter_after_tx5 = compile_minter(kcc20_covenant_id, TX4_MINTER_REMAINING_AMOUNT, true);
-    let tx5 = build_mint_tx(
-        &tx3,
-        &kcc20_minter_after_tx3,
-        &minter_after_tx3,
-        &kcc20_minter_after_tx5,
-        &kcc20_recipient_after_tx5,
-        &minter_after_tx5,
-        TX4_MINTED_AMOUNT,
-        TX4_MINTER_REMAINING_AMOUNT,
+    let kcc20_recipient_after_over_mint =
+        compile_kcc20_state(&kcc20_source, vec![0; 32], OVER_MINTED_AMOUNT, MAX_COV_INS, MAX_COV_OUTS);
+    let minter_after_over_mint = compile_minter(kcc20_covenant_id, OVER_MINT_MINTER_REMAINING_AMOUNT, true);
+    let over_mint_tx = build_mint_tx(
+        &second_mint_tx,
+        &kcc20_minter_after_second_mint,
+        &minter_after_second_mint,
+        &kcc20_minter_after_over_mint,
+        &kcc20_recipient_after_over_mint,
+        &minter_after_over_mint,
+        OVER_MINTED_AMOUNT,
+        OVER_MINT_MINTER_REMAINING_AMOUNT,
     );
 
-    execute_all_inputs("minter_genesis", minter_genesis.populated());
-    execute_all_inputs("tx1", tx1.populated());
-    execute_all_inputs("tx2", tx2.populated());
-    execute_all_inputs("tx3", tx3.populated());
-    execute_all_inputs("tx4", tx4.populated());
+    // ============================================================
+    // accept valid chain
+    // ============================================================
+    execute_all_inputs(stringify!(minter_genesis_tx), minter_genesis_tx.populated());
+    execute_all_inputs(stringify!(asset_genesis_tx), asset_genesis_tx.populated());
+    execute_all_inputs(stringify!(first_mint_tx), first_mint_tx.populated());
+    execute_all_inputs(stringify!(recipient_transfer_tx), recipient_transfer_tx.populated());
+    execute_all_inputs(stringify!(second_mint_tx), second_mint_tx.populated());
 
-    let err = execute_input_with_covenants(tx5.tx.clone(), tx5.entries.clone(), 1).expect_err("over-mint should fail");
+    // ============================================================
+    // reject invalid continuation
+    // ============================================================
+    let err =
+        execute_input_with_covenants(over_mint_tx.tx.clone(), over_mint_tx.entries.clone(), 1).expect_err("over-mint should fail");
     assert_verify_like_error(err);
 }
 
