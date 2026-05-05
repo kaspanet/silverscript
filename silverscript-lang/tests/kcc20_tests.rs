@@ -1,12 +1,14 @@
 use blake2b_simd::Params as Blake2bParams;
 use kaspa_consensus_core::Hash;
+use kaspa_consensus_core::hashing;
 use kaspa_consensus_core::hashing::sighash::SigHashReusedValuesUnsync;
 use kaspa_consensus_core::hashing::sighash::calc_schnorr_signature_hash;
 use kaspa_consensus_core::hashing::sighash_type::SIG_HASH_ALL;
 use kaspa_consensus_core::tx::{
-    CovenantBinding, MutableTransaction, PopulatedTransaction, Transaction, TransactionId, TransactionInput, TransactionOutpoint,
-    TransactionOutput, UtxoEntry,
+    CovenantBinding, MutableTransaction, PopulatedTransaction, ScriptPublicKey, Transaction, TransactionId, TransactionInput,
+    TransactionOutpoint, TransactionOutput, UtxoEntry,
 };
+use kaspa_txscript::opcodes::codes::OpTrue;
 use kaspa_txscript::pay_to_script_hash_script;
 use kaspa_txscript::standard::multisig_redeem_script;
 use rand::{RngCore, thread_rng};
@@ -908,18 +910,11 @@ fn kcc20_covenant_minter() {
     let owner_bytes = owner.x_only_public_key().0.serialize().to_vec();
     let alternate_owner_bytes = alternate_owner.x_only_public_key().0.serialize().to_vec();
     let placeholder_kcc20_covid = Hash::from_bytes([0; 32]);
-    let minter_cov_id = Hash::from_bytes([0x4d; 32]);
+    let funding_spk = ScriptPublicKey::new(0, vec![OpTrue].into());
 
-    let kcc20 = compile_kcc20_state_full(
-        &kcc20_source,
-        minter_cov_id.as_bytes().to_vec(),
-        0,
-        IDENTIFIER_COVENANT_ID,
-        true,
-        MAX_COV_INS,
-        MAX_COV_OUTS,
-    );
-    let (template_prefix, template_suffix, expected_template_hash) = compiled_template_parts_and_hash(&kcc20);
+    let kcc20_template_probe =
+        compile_kcc20_state_full(&kcc20_source, vec![0; 32], 0, IDENTIFIER_COVENANT_ID, true, MAX_COV_INS, MAX_COV_OUTS);
+    let (template_prefix, template_suffix, expected_template_hash) = compiled_template_parts_and_hash(&kcc20_template_probe);
     let compile_minter = |kcc20_covid: Hash, amount: i64, initialized: bool| {
         compile_contract(
             &kcc20_minter_source,
@@ -938,12 +933,34 @@ fn kcc20_covenant_minter() {
         )
         .expect("should compile")
     };
-    let output_utxo = |output: &TransactionOutput, tx: &Transaction, covenant_id: Hash| {
-        UtxoEntry::new(output.value, output.script_public_key.clone(), 0, tx.is_coinbase(), Some(covenant_id))
-    };
     let build_tx = |inputs: Vec<TransactionInput>, outputs: Vec<TransactionOutput>, entries: Vec<UtxoEntry>| TestTx {
         tx: Transaction::new(1, inputs, outputs, 0, Default::default(), 0, vec![]),
         entries,
+    };
+    // Bootstrap sequence:
+    //
+    // plain funding utxo
+    //     |
+    //     v
+    // [minter genesis tx] -> C covenant id
+    //     |
+    //     v
+    // [asset genesis/init tx] -> A covenant id + C binds to A
+    let pre_init = compile_minter(placeholder_kcc20_covid, MINTER_AMOUNT, false);
+    let minter_genesis_outpoint = TransactionOutpoint { transaction_id: TransactionId::from_bytes([0x4d; 32]), index: 0 };
+    let minter_genesis_input = tx_input_from_outpoint_v1(minter_genesis_outpoint, vec![]);
+    let minter_genesis_utxo = UtxoEntry::new(1_500, funding_spk.clone(), 0, false, None);
+    let minter_genesis_output_without_covenant =
+        TransactionOutput { value: 1_000, script_public_key: pay_to_script_hash_script(&pre_init.script), covenant: None };
+    let minter_cov_id =
+        hashing::covenant_id::covenant_id(minter_genesis_outpoint, std::iter::once((0, &minter_genesis_output_without_covenant)));
+    let minter_genesis_outputs = vec![TransactionOutput {
+        covenant: Some(CovenantBinding { authorizing_input: 0, covenant_id: minter_cov_id }),
+        ..minter_genesis_output_without_covenant
+    }];
+    let minter_genesis = build_tx(vec![minter_genesis_input], minter_genesis_outputs, vec![minter_genesis_utxo]);
+    let output_utxo = |output: &TransactionOutput, tx: &Transaction, covenant_id: Hash| {
+        UtxoEntry::new(output.value, output.script_public_key.clone(), 0, tx.is_coinbase(), Some(covenant_id))
     };
     let execute_all_inputs = |label: &str, populated: PopulatedTransaction<'_>| {
         for input_idx in 0..populated.tx.inputs.len() {
@@ -952,9 +969,7 @@ fn kcc20_covenant_minter() {
         }
     };
 
-    let pre_init = compile_minter(placeholder_kcc20_covid, MINTER_AMOUNT, false);
-
-    let pre_init_utxo = covenant_utxo(&pre_init, minter_cov_id);
+    let pre_init_utxo = output_utxo(&minter_genesis.tx.outputs[0], &minter_genesis.tx, minter_cov_id);
     let genesis = compile_kcc20_state_full(
         &kcc20_source,
         minter_cov_id.as_bytes().to_vec(),
@@ -964,10 +979,13 @@ fn kcc20_covenant_minter() {
         MAX_COV_INS,
         MAX_COV_OUTS,
     );
-    let tx1_outpoint = TransactionOutpoint { transaction_id: TransactionId::from_bytes([1; 32]), index: 0 };
+    assert_eq!(
+        compiled_template_parts_and_hash(&genesis),
+        (template_prefix.clone(), template_suffix.clone(), expected_template_hash.clone())
+    );
+    let tx1_outpoint = TransactionOutpoint { transaction_id: minter_genesis.tx.id(), index: 0 };
     let kcc20_genesis_output = covenant_output(&genesis, 0, Hash::from_bytes([0; 32]));
-    let kcc20_covenant_id =
-        kaspa_consensus_core::hashing::covenant_id::covenant_id(tx1_outpoint, std::iter::once((0, &kcc20_genesis_output)));
+    let kcc20_covenant_id = hashing::covenant_id::covenant_id(tx1_outpoint, std::iter::once((0, &kcc20_genesis_output)));
     let build_mint_tx = |prev_tx: &TestTx,
                          prev_kcc20: &CompiledContract<'_>,
                          prev_minter: &CompiledContract<'_>,
@@ -1139,6 +1157,7 @@ fn kcc20_covenant_minter() {
         TX4_MINTER_REMAINING_AMOUNT,
     );
 
+    execute_all_inputs("minter_genesis", minter_genesis.populated());
     execute_all_inputs("tx1", tx1.populated());
     execute_all_inputs("tx2", tx2.populated());
     execute_all_inputs("tx3", tx3.populated());
