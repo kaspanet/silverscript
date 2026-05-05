@@ -915,9 +915,11 @@ fn kcc20_covenant_minter() {
     // ============================================================
     // shared contract templates
     // ============================================================
-    let kcc20_template_probe =
-        compile_kcc20_state_full(&kcc20_source, vec![0; 32], 0, IDENTIFIER_COVENANT_ID, true, MAX_COV_INS, MAX_COV_OUTS);
-    let (template_prefix, template_suffix, expected_template_hash) = compiled_template_parts_and_hash(&kcc20_template_probe);
+    let (template_prefix, template_suffix, expected_template_hash) = {
+        let kcc20_template_probe =
+            compile_kcc20_state_full(&kcc20_source, vec![0; 32], 0, IDENTIFIER_COVENANT_ID, true, MAX_COV_INS, MAX_COV_OUTS);
+        compiled_template_parts_and_hash(&kcc20_template_probe)
+    };
     let compile_minter = |kcc20_covid: Hash, amount: i64, initialized: bool| {
         compile_contract(
             &kcc20_minter_source,
