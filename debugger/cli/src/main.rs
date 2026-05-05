@@ -844,9 +844,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let active_authorized_output_states = tx
         .outputs
         .iter()
+        .zip(output_covenant_ids.iter())
         .zip(output_covenant_states.iter())
-        .filter_map(|(output, output_state)| {
-            (output.authorizing_input.unwrap_or(tx.active_input_index as u16) == tx.active_input_index as u16)
+        .filter_map(|((output, output_covenant_id), output_state)| {
+            (output_covenant_id.is_some()
+                && output.authorizing_input.unwrap_or(tx.active_input_index as u16) == tx.active_input_index as u16)
                 .then_some(output_state.clone())
         })
         .collect::<Option<Vec<_>>>();

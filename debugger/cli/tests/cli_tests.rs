@@ -1136,6 +1136,69 @@ q
 }
 
 #[test]
+fn cli_debugger_supports_singleton_terminal_transition_to_plain_p2pk_output() {
+    let (script_path, test_file_path) = write_fixture_files(
+        "terminal-singleton.sil",
+        "terminal-singleton.test.json",
+        r#"pragma silverscript ^0.1.0;
+
+contract TerminalSingleton(int initial_amount) {
+    int amount = initial_amount;
+
+    #[covenant.singleton(mode = transition, termination = allowed)]
+    function release(State prev_state, State[] next_states) : (State[]) {
+        require(prev_state.amount == amount);
+        require(next_states.length == 0);
+        return(next_states);
+    }
+}
+"#,
+        r#"{
+  "tests": [
+    {
+      "name": "terminal_release_to_plain_p2pk_output",
+      "function": "release",
+      "constructor_args": [100000],
+      "args": [],
+      "expect": "pass",
+      "tx": {
+        "active_input_index": 0,
+        "inputs": [
+          {
+            "utxo_value": 100000,
+            "covenant_id": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "state": { "amount": 100000 }
+          }
+        ],
+        "outputs": [
+          {
+            "value": 99000,
+            "p2pk_pubkey": "0x79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+          }
+        ]
+      }
+    }
+  ]
+}
+"#,
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cli-debugger"))
+        .arg(&script_path)
+        .arg("--run")
+        .arg("--test-file")
+        .arg(&test_file_path)
+        .arg("--test-name")
+        .arg("terminal_release_to_plain_p2pk_output")
+        .output()
+        .expect("run terminal singleton fixture");
+
+    assert!(output.status.success(), "expected terminal singleton fixture to pass: {}", String::from_utf8_lossy(&output.stderr));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("PASS"), "missing PASS output: {stdout}");
+}
+
+#[test]
 fn cli_debugger_supports_state_first_auth_transition_fixtures() {
     let (script_path, test_file_path) = write_state_first_auth_transition_fixture();
 
