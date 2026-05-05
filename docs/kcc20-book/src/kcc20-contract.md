@@ -4,7 +4,7 @@ Source: `silverscript-lang/tests/examples/kcc20.sil` [[Link]](https://github.com
 
 ## Full Source
 
-```sil
+```js
 contract KCC20(byte[32] genesisPk, int genesisAmount, byte genesisIdentifierType, bool genesisIsMinter, int maxCovIns, int maxCovOuts) {
     byte constant IDENTIFIER_PUBKEY = 0x00;
     byte constant IDENTIFIER_SCRIPT_HASH = 0x01;
@@ -67,7 +67,7 @@ contract KCC20(byte[32] genesisPk, int genesisAmount, byte genesisIdentifierType
 
 The contract constructor is:
 
-```sil
+```js
 contract KCC20(
     byte[32] genesisPk,
     int genesisAmount,
@@ -90,7 +90,7 @@ These constructor values become the initial state and loop bounds.
 
 The contract state is encoded as contract fields:
 
-```sil
+```js
 byte[32] ownerIdentifier = genesisPk;
 byte identifierType = genesisIdentifierType;
 int amount = genesisAmount;
@@ -103,7 +103,7 @@ Every covenant transition reads and writes these fields as `State`.
 
 KCC20 defines three constants:
 
-```sil
+```js
 byte constant IDENTIFIER_PUBKEY = 0x00;
 byte constant IDENTIFIER_SCRIPT_HASH = 0x01;
 byte constant IDENTIFIER_COVENANT_ID = 0x02;
@@ -113,7 +113,7 @@ These constants drive `checkSigs`.
 
 ### Pubkey ownership
 
-```sil
+```js
 require(checkSig(sigs[i], prevStates[i].ownerIdentifier));
 ```
 
@@ -121,7 +121,7 @@ The spender must supply a signature matching the previous state's pubkey.
 
 ### Script-hash ownership
 
-```sil
+```js
 byte[] spk = new ScriptPubKeyP2SH(prevStates[i].ownerIdentifier);
 require(tx.inputs[witnesses[i]].scriptPubKey == spk);
 ```
@@ -130,7 +130,7 @@ Here KCC20 does not validate signatures itself. Instead it requires that the tra
 
 ### Covenant-ID ownership
 
-```sil
+```js
 require(OpInputCovenantId(witnesses[i]) == prevStates[i].ownerIdentifier);
 ```
 
@@ -148,7 +148,7 @@ identifierType = 0x02  -> covenant-ID ownership
 
 The first major function is:
 
-```sil
+```js
 function checkSigs(State[] prevStates, sig[] sigs, byte[] witnesses)
 ```
 
@@ -170,13 +170,13 @@ For the non-pubkey ownership case, see the [Inter-Covenant Communication](./kcc2
 
 The supply rule lives in:
 
-```sil
+```js
 function checkAmounts(State[] prevStates, State[] newStates)
 ```
 
 It only enforces conservation when the active branch is not a minter:
 
-```sil
+```js
 if(!isMinter) {
     ...
     require(totalIn == totalOut);
@@ -204,13 +204,13 @@ minter branch:
 
 The third function is:
 
-```sil
+```js
 function checkMintingTransfer(State[] newStates)
 ```
 
 It prevents non-minter branches from creating minter-marked outputs:
 
-```sil
+```js
 if(!isMinter) {
     for(i, 0, newStates.length, maxCovOuts) {
         require(!newStates[i].isMinter);
@@ -224,7 +224,7 @@ This matters because otherwise an ordinary KCC20 branch could escape the supply 
 
 KCC20 exposes one covenant declaration:
 
-```sil
+```js
 #[covenant(binding = cov, from = maxCovIns, to = maxCovOuts)]
 function transfer(State[] prevStates, State[] newStates, sig[] sigs, byte[] witnesses)
 ```
@@ -237,7 +237,7 @@ The important parts are:
 
 The body is intentionally small:
 
-```sil
+```js
 checkSigs(prevStates, sigs, witnesses);
 checkAmounts(prevStates, newStates);
 checkMintingTransfer(newStates);

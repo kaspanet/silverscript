@@ -4,7 +4,7 @@ Source: `silverscript-lang/tests/examples/kcc20-minter.sil` [[Link]](https://git
 
 ## Full Source
 
-```sil
+```js
 contract KCC20Minter(pubkey owner, byte[32] initKCC20Covid, int initAmount,
     bool initInitialized, int templatePrefixLen, int templateSuffixLen, byte[32] expectedTemplateHash,
     byte[] templatePrefix, byte[] templateSuffix) {
@@ -116,7 +116,7 @@ The constructor takes:
 
 The state fields derived from those constructor args are:
 
-```sil
+```js
 byte[32] kcc20Covid = initKCC20Covid;
 int amount = initAmount;
 bool initialized = initInitialized;
@@ -128,7 +128,7 @@ The template-related constructor fields are not mutable state. They are contract
 
 The minter declares:
 
-```sil
+```js
 struct KCC20State {
     byte[32] ownerIdentifier;
     byte identifierType;
@@ -155,13 +155,13 @@ These values come from the KCC20 script with its encoded state region removed. C
 
 ## `calcInAmount`
 
-```sil
+```js
 function calcInAmount() : (int)
 ```
 
 This function reads the previous KCC20 state from the covenant input selected by:
 
-```sil
+```js
 OpCovInputIdx(kcc20Covid, 0)
 ```
 
@@ -175,7 +175,7 @@ This is how the minter learns the old token supply before minting.
 
 ## `checkMinterKcc20NewState`
 
-```sil
+```js
 function checkMinterKcc20NewState(KCC20State minterKcc20NewState)
 ```
 
@@ -189,7 +189,7 @@ It enforces three things:
 
 The first check deliberately uses the active input's covenant ID:
 
-```sil
+```js
 byte[32] controllerId = OpInputCovenantId(this.activeInputIndex);
 require(minterKcc20NewState.ownerIdentifier == controllerId);
 ```
@@ -203,7 +203,7 @@ So the admin key authorizes the controller, but the KCC20 branch remains owned b
 
 Then it validates the actual output with:
 
-```sil
+```js
 validateOutputStateWithTemplate(
     OpCovOutputIdx(kcc20Covid, 0),
     minterKcc20NewState,
@@ -222,7 +222,7 @@ This is much safer than trusting an arbitrary output index or script shape.
 
 ## `checkRecipientKcc20NewState`
 
-```sil
+```js
 function checkRecipientKcc20NewState(KCC20State recipientKcc20NewState)
 ```
 
@@ -239,7 +239,7 @@ That means each mint transaction has a fixed shape:
 
 The first entrypoint is:
 
-```sil
+```js
 #[covenant.singleton]
 function init(State prevState, State newState, sig s)
 ```
@@ -250,7 +250,7 @@ The controller covenant already has its own covenant ID before this entrypoint r
 
 Its key checks are:
 
-```sil
+```js
 require(!initialized);
 require(newState.kcc20Covid == OpOutputCovenantId(0));
 require(newState.amount == prevState.amount);
@@ -295,7 +295,7 @@ after asset genesis/init:
 
 The second entrypoint is:
 
-```sil
+```js
 #[covenant.singleton]
 function mint(State prevState, State newState, sig s, KCC20State minterKcc20NewState, KCC20State recipientKcc20NewState)
 ```
@@ -306,7 +306,7 @@ The checks break down into four groups.
 
 ### Minter state invariants
 
-```sil
+```js
 require(initialized);
 require(newState.amount >= 0);
 require(newState.initialized);
@@ -317,7 +317,7 @@ The minter must stay initialized, cannot go negative, and cannot switch to a dif
 
 ### KCC20 cardinality
 
-```sil
+```js
 require(OpCovOutputCount(kcc20Covid) == 2);
 require(OpCovInputCount(kcc20Covid) == 1);
 ```
@@ -326,7 +326,7 @@ The example only allows minting when exactly one KCC20 covenant input and two KC
 
 ### KCC20 template validation
 
-```sil
+```js
 checkMinterKcc20NewState(minterKcc20NewState);
 checkRecipientKcc20NewState(recipientKcc20NewState);
 ```
@@ -335,7 +335,7 @@ This ensures both supplied KCC20 successor states match the actual outputs in th
 
 ### Issuance accounting
 
-```sil
+```js
 int inAmount = calcInAmount();
 int mintedAmount = minterKcc20NewState.amount + recipientKcc20NewState.amount - inAmount;
 require(newState.amount == amount - mintedAmount);
