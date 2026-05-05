@@ -145,23 +145,28 @@ KCC20
 
 ## Lifecycle Diagram
 
-```text
-plain funding utxo
-        |
-        v
-[minter genesis tx] -> C covenant id
-        |
-        v
-[asset genesis tx] -> A covenant id + C binds to A
-        |
-        +--> creates zero-amount KCC20 minter branch
-        |
-        +--> creates initialized minter output bound to that KCC20
-        |
-        v
-later mint transactions spend both together
-        |
-        +--> recreate zero-amount minter branch
-        |
-        +--> create separate recipient token output
+```mermaid
+flowchart TD
+    F[Plain funding UTXO]
+
+    MG[minter_genesis_tx<br/>creates controller covenant C]
+    C0[C: KCC20Minter<br/>initialized = false<br/>kcc20Covid = placeholder]
+
+    AG[asset_genesis_tx<br/>spends C through init]
+    A0[A: KCC20 minter branch<br/>ownerIdentifier = C<br/>amount = 0]
+    C1[C: KCC20Minter<br/>initialized = true<br/>kcc20Covid = A]
+
+    MT[later mint transactions<br/>spend A and C together]
+    A1[A: recreated minter branch<br/>amount = 0]
+    R[KCC20 recipient branch<br/>newly minted amount]
+    C2[C: KCC20Minter<br/>reduced issuance allowance]
+
+    F --> MG --> C0 --> AG
+    AG --> A0
+    AG --> C1
+    A0 --> MT
+    C1 --> MT
+    MT --> A1
+    MT --> R
+    MT --> C2
 ```

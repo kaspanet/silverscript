@@ -9,3 +9,9 @@ build-dir = "book"
 
 [output.html]
 site-url = "/kcc20-book/"
+additional-js = ["mermaid.min.js", "mermaid-init.js"]
+
+[preprocessor]
+
+[preprocessor.mermaid]
+command = "mdbook-mermaid"
