@@ -357,7 +357,7 @@ impl<'i, 'd> Inliner<'i, 'd> {
     }
 
     fn inline_target(&self, name: &str) -> Option<FunctionAst<'i>> {
-        self.functions.get(name).cloned().filter(|function| !function.entrypoint)
+        self.functions.get(name).cloned().filter(|function| !function.entrypoint) // TODO: Store this information in a separate set for efficiency
     }
 
     fn inline_call(
@@ -410,36 +410,32 @@ impl<'i, 'd> Inliner<'i, 'd> {
             None => (&[][..], None),
         };
 
-        let lowered_result = (|| -> Result<(), CompilerError> {
-            for statement in callee_body {
-                lowered.extend(self.lower_statement(statement, &mut local_scope, visited_functions)?);
-            }
+        for statement in callee_body {
+            lowered.extend(self.lower_statement(statement, &mut local_scope, visited_functions)?);
+        }
 
-            if let (Some(bindings), Some(return_exprs)) = (bindings, return_exprs) {
-                for (binding, expr) in bindings.iter().zip(return_exprs.iter()) {
-                    let (prelude, renamed_expr) = self.lower_expr(expr, &local_scope, visited_functions)?;
-                    lowered.extend(prelude);
-                    self.push_lowered_statement(
-                        &mut lowered,
-                        Statement::VariableDefinition {
-                            type_ref: binding.type_ref.clone(),
-                            modifiers: Vec::new(),
-                            name: binding.name.clone(),
-                            expr: Some(renamed_expr),
-                            span,
-                            type_span: binding.type_span,
-                            modifier_spans: Vec::new(),
-                            name_span: binding.name_span,
-                        },
-                    );
-                }
+        if let (Some(bindings), Some(return_exprs)) = (bindings, return_exprs) {
+            for (binding, expr) in bindings.iter().zip(return_exprs.iter()) {
+                let (prelude, renamed_expr) = self.lower_expr(expr, &local_scope, visited_functions)?;
+                lowered.extend(prelude);
+                self.push_lowered_statement(
+                    &mut lowered,
+                    Statement::VariableDefinition {
+                        type_ref: binding.type_ref.clone(),
+                        modifiers: Vec::new(),
+                        name: binding.name.clone(),
+                        expr: Some(renamed_expr),
+                        span,
+                        type_span: binding.type_span,
+                        modifier_spans: Vec::new(),
+                        name_span: binding.name_span,
+                    },
+                );
             }
+        }
 
-            Ok(())
-        })();
         let body_end_statement_index = self.debug_recorder.current_source_statement_index();
         visited_functions.remove(&function.name);
-        lowered_result?;
         self.debug_recorder.finish_inline_source_call(body_end_statement_index);
         Ok(lowered)
     }
