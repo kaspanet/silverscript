@@ -21,6 +21,7 @@
    - [Comparison Operators](#comparison-operators)
    - [Logical Operators](#logical-operators)
    - [Bitwise Operators](#bitwise-operators)
+   - [Ternary Operator](#ternary-operator)
 6. [Control Flow](#control-flow)
    - [If Statements](#if-statements)
    - [Require Statements](#require-statements)
@@ -401,6 +402,23 @@ int y = 0xF0;  // 11110000
 int bitAnd = x & y;  // 0x00 (bitwise AND)
 int bitOr = x | y;   // 0xFF (bitwise OR)
 int bitXor = x ^ y;  // 0xFF (bitwise XOR)
+```
+
+### Ternary Operator
+
+Use the ternary operator to choose between two expressions:
+
+```javascript
+int value = condition ? thenValue : elseValue;
+```
+
+The condition must evaluate to `bool`, and both result branches must have the same type. The ternary expression's result must also match the declared type where it is assigned or returned:
+
+```javascript
+entrypoint function example(int amount, bool useBonus) {
+    int payout = useBonus ? amount + 100 : amount;
+    require(payout >= amount);
+}
 ```
 
 ---
