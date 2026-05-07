@@ -5,6 +5,7 @@ use super::infer_array::lower_inferred_array_sizes;
 use super::inline_functions::lower_inline_functions;
 use super::locals::lower_local_aliases;
 use super::stack_bindings::StackBindings;
+use super::static_check::static_check_contract;
 use super::*;
 use kaspa_txscript::opcodes::codes::*;
 use kaspa_txscript::script_builder::ScriptBuilder;
@@ -98,14 +99,15 @@ pub(super) fn compile_contract_impl<'i>(
     }
 
     let mut debug_recorder = DebugRecorder::new(options, contract)?;
-    let covenant_lowered_contract = lower_covenant_declarations(contract, &constants)?;
+    let inferred_lowered_contract = lower_inferred_array_sizes(contract, &constants)?;
+    static_check_contract(&inferred_lowered_contract, constructor_args, options)?;
+    let covenant_lowered_contract = lower_covenant_declarations(&inferred_lowered_contract, &constants)?;
     let inline_lowered_contract = lower_inline_functions(&covenant_lowered_contract, &mut debug_recorder)?;
     let structs = build_struct_registry(&inline_lowered_contract)?;
     let struct_lowered_contract = lower_structs_contract(&inline_lowered_contract, &structs, &constants)?;
     let append_lowered_contract = lower_array_appends(&struct_lowered_contract)?;
     let for_lowered_contract = lower_for_loops(&append_lowered_contract, &constants)?;
-    let lowered_contract = lower_inferred_array_sizes(&for_lowered_contract, &constants)?;
-    let lowered_contract = if options.record_debug_infos { lowered_contract } else { lower_local_aliases(&lowered_contract)? };
+    let lowered_contract = if options.record_debug_infos { for_lowered_contract } else { lower_local_aliases(&for_lowered_contract)? };
     let mut lowered_constants = flatten_constructor_args_env(&covenant_lowered_contract.params, constructor_args, &structs)?;
     lowered_constants.extend(lowered_contract.constants.iter().map(|constant| (constant.name.clone(), constant.expr.clone())));
 

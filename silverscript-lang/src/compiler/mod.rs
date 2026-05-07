@@ -31,7 +31,7 @@ pub use compile::{compile_debug_expr, function_branch_index};
 pub(crate) use debug_recording::DebugRecorder;
 use r#for::lower_for_loops;
 pub(crate) use static_check::expr_matches_declared_type_ref;
-use static_check::{static_check_contract, value_matches_type_ref};
+use static_check::value_matches_type_ref;
 pub use structs::flattened_struct_name;
 pub(super) use structs::{
     StructFieldSpec, StructRegistry, build_struct_registry, ensure_known_or_builtin_type, flatten_constructor_args_env,
@@ -106,7 +106,6 @@ pub fn compile_contract<'i>(
     options: CompileOptions,
 ) -> Result<CompiledContract<'i>, CompilerError> {
     let contract = parse_contract_ast(source)?;
-    static_check_contract(&contract, constructor_args, options)?;
     compile_contract_impl(&contract, constructor_args, options, Some(source))
 }
 
@@ -115,7 +114,6 @@ pub fn compile_contract_ast<'i>(
     constructor_args: &[Expr<'i>],
     options: CompileOptions,
 ) -> Result<CompiledContract<'i>, CompilerError> {
-    static_check_contract(contract, constructor_args, options)?;
     compile_contract_impl(contract, constructor_args, options, None)
 }
 
