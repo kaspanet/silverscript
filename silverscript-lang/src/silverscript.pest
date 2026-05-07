@@ -68,8 +68,9 @@ console_parameter_list = { "(" ~ (expression ~ ("," ~ expression)* ~ ","?)? ~ ")
 function_call = { Identifier ~ expression_list }
 expression_list = { "(" ~ (expression ~ ("," ~ expression)* ~ ","?)? ~ ")" }
 
-expression = _{ logical_or }
+expression = _{ conditional }
 
+conditional = { logical_or ~ ("?" ~ expression ~ ":" ~ conditional)? }
 logical_or = { logical_and ~ (logical_or_op ~ logical_and)* }
 logical_and = { bit_or ~ (logical_and_op ~ bit_or)* }
 bit_or = { bit_xor ~ (bit_or_op ~ bit_xor)* }

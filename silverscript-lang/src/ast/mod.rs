@@ -989,9 +989,12 @@ fn format_expr_with_prec(expr: &Expr<'_>, parent_prec: u8, right_child: bool) ->
             binary_op_str(*op),
             format_expr_with_prec(right, binary_precedence(*op), true)
         ),
-        ExprKind::IfElse { condition, then_expr, else_expr } => {
-            format!("ifElse({}, {}, {})", format_expr(condition), format_expr(then_expr), format_expr(else_expr))
-        }
+        ExprKind::IfElse { condition, then_expr, else_expr } => format!(
+            "{} ? {} : {}",
+            format_expr_with_prec(condition, binary_precedence(BinaryOp::Or), false),
+            format_expr(then_expr),
+            format_expr_with_prec(else_expr, expr_precedence(&expr.kind), false)
+        ),
         ExprKind::Nullary(op) => nullary_op_str(*op).to_string(),
         ExprKind::Introspection { kind, index, .. } => {
             format!("{}[{}]{}", introspection_root(*kind), format_expr(index), introspection_field(*kind))
@@ -1796,6 +1799,7 @@ fn parse_state_typed_binding<'i>(pair: Pair<'i, Rule>) -> Result<StateBindingAst
 fn parse_expression<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {
     match pair.as_rule() {
         Rule::expression => parse_expression(single_inner(pair)?),
+        Rule::conditional => parse_conditional(pair),
         Rule::logical_or => parse_infix(pair, parse_expression, map_logical_or),
         Rule::logical_and => parse_infix(pair, parse_expression, map_logical_and),
         Rule::bit_or => parse_infix(pair, parse_expression, map_bit_or),
@@ -1837,6 +1841,23 @@ fn parse_expression<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError>
         | Rule::state_entry => Err(CompilerError::Unsupported(format!("expression not supported: {:?}", pair.as_rule()))),
         _ => Err(CompilerError::Unsupported(format!("unexpected expression: {:?}", pair.as_rule()))),
     }
+}
+
+fn parse_conditional<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {
+    let span = Span::from(pair.as_span());
+    let mut inner = pair.into_inner();
+    let condition_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing conditional condition".to_string()))?;
+    let condition = parse_expression(condition_pair)?;
+    let Some(then_pair) = inner.next() else {
+        return Ok(condition);
+    };
+    let then_expr = parse_expression(then_pair)?;
+    let else_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing conditional else expression".to_string()))?;
+    let else_expr = parse_expression(else_pair)?;
+    Ok(Expr::new(
+        ExprKind::IfElse { condition: Box::new(condition), then_expr: Box::new(then_expr), else_expr: Box::new(else_expr) },
+        span,
+    ))
 }
 
 fn parse_unary<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {

@@ -811,7 +811,35 @@ fn validate_expr_semantics<'i>(
         ExprKind::IfElse { condition, then_expr, else_expr } => {
             validate_expr_semantics(condition, env, prefer_env_for_comparison, types, structs, functions, contract_fields)?;
             validate_expr_semantics(then_expr, env, prefer_env_for_comparison, types, structs, functions, contract_fields)?;
-            validate_expr_semantics(else_expr, env, prefer_env_for_comparison, types, structs, functions, contract_fields)
+            validate_expr_semantics(else_expr, env, prefer_env_for_comparison, types, structs, functions, contract_fields)?;
+            let then_type = infer_expr_type_ref_for_comparison_ref(
+                then_expr,
+                env,
+                prefer_env_for_comparison,
+                types,
+                structs,
+                functions,
+                contract_fields,
+            );
+            let else_type = infer_expr_type_ref_for_comparison_ref(
+                else_expr,
+                env,
+                prefer_env_for_comparison,
+                types,
+                structs,
+                functions,
+                contract_fields,
+            );
+            if let (Some(then_type), Some(else_type)) = (then_type, else_type)
+                && then_type != else_type
+            {
+                return Err(CompilerError::Unsupported(format!(
+                    "ternary branch type mismatch: then expression is {}, else expression is {}",
+                    type_name_from_ref(&then_type),
+                    type_name_from_ref(&else_type)
+                )));
+            }
+            Ok(())
         }
         ExprKind::Array(values) => {
             for value in values {
@@ -945,6 +973,27 @@ fn infer_expr_type_ref_for_comparison_ref<'i>(
         }
         ExprKind::Append { source, .. } => {
             infer_expr_type_ref_for_comparison_ref(source, env, prefer_env_for_comparison, types, structs, functions, contract_fields)
+        }
+        ExprKind::IfElse { then_expr, else_expr, .. } => {
+            let then_type = infer_expr_type_ref_for_comparison_ref(
+                then_expr,
+                env,
+                prefer_env_for_comparison,
+                types,
+                structs,
+                functions,
+                contract_fields,
+            )?;
+            let else_type = infer_expr_type_ref_for_comparison_ref(
+                else_expr,
+                env,
+                prefer_env_for_comparison,
+                types,
+                structs,
+                functions,
+                contract_fields,
+            )?;
+            (then_type == else_type).then_some(then_type)
         }
         ExprKind::Call { name, .. } if name == "readInputState" && !contract_fields.is_empty() => {
             Some(TypeRef { base: TypeBase::Custom("State".to_string()), array_dims: Vec::new() })
@@ -1174,6 +1223,17 @@ fn validate_expr_assignable_to_type<'i>(
         && matches!(expr.kind, ExprKind::Int(value) if (0..=255).contains(&value))
     {
         return Ok(());
+    }
+
+    if let ExprKind::IfElse { .. } = &expr.kind
+        && let Some(actual_type) =
+            infer_expr_type_ref_for_comparison_ref(expr, &HashMap::new(), &HashSet::new(), types, structs, functions, contract_fields)
+    {
+        return if is_type_assignable_ref(&actual_type, type_ref, constants) {
+            Ok(())
+        } else {
+            Err(CompilerError::Unsupported("type mismatch".to_string()))
+        };
     }
 
     if type_ref.is_array()
@@ -1451,6 +1511,15 @@ pub(super) fn expr_matches_return_type_ref<'i>(
     }
 
     match &expr.kind {
+        ExprKind::IfElse { .. } => {
+            if let Ok(actual_type_name) =
+                super::debug_value_types::infer_debug_expr_value_type(expr, &HashMap::new(), types, &mut HashSet::new())
+                && let Ok(actual_type) = parse_type_ref(&actual_type_name)
+            {
+                return is_type_assignable_ref(&actual_type, type_ref, constants);
+            }
+            false
+        }
         ExprKind::Array(values) => {
             expr_matches_declared_type_ref(expr, type_ref, structs)
                 || (is_array_type_ref(type_ref) && array_literal_matches_type_ref(values, type_ref))

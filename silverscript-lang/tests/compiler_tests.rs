@@ -16,7 +16,7 @@ use kaspa_txscript::{
     EngineCtx, EngineFlags, SeqCommitAccessor, TxScriptEngine, parse_script, pay_to_address_script, pay_to_script_hash_script,
     pay_to_script_hash_signature_script, script_to_str, serialize_i64,
 };
-use silverscript_lang::ast::{Expr, ExprKind, format_contract_ast, parse_contract_ast};
+use silverscript_lang::ast::{Expr, ExprKind, Statement, format_contract_ast, parse_contract_ast};
 use silverscript_lang::compiler::{
     CompileOptions, CompiledContract, CovenantDeclCallOptions, FunctionAbiEntry, FunctionInputAbi, compile_contract,
     compile_contract_ast, function_branch_index, struct_object,
@@ -8588,6 +8588,99 @@ fn function_param_shadows_constructor_constant_with_same_name() {
     let sigscript_wrong = compiled.build_sig_script("main", vec![Expr::int(2)]).expect("sigscript builds");
     let result_wrong = run_script_with_sigscript(compiled.script, sigscript_wrong);
     assert!(result_wrong.is_err(), "require(3==4) should fail, proving the param value matters");
+}
+
+#[test]
+fn ternary_syntax_lowers_to_if_else_expr() {
+    let source = r#"
+        contract TernaryAst() {
+            entrypoint function main(bool flag) {
+                int value = flag ? 7 : 11;
+                require(value > 0);
+            }
+        }
+    "#;
+
+    let contract = parse_contract_ast(source).expect("contract parses");
+    let Statement::VariableDefinition { expr: Some(expr), .. } = &contract.functions[0].body[0] else {
+        panic!("expected variable definition");
+    };
+    assert!(matches!(&expr.kind, ExprKind::IfElse { .. }), "ternary should lower to ExprKind::IfElse: {expr:?}");
+}
+
+#[test]
+fn ternary_expression_executes_selected_branch() {
+    let source = r#"
+        contract TernaryRuntime() {
+            entrypoint function main(int selector, int expected) {
+                int value = selector > 0 ? 7 : 11;
+                require(value == expected);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("ternary contract should compile");
+
+    let sigscript_then = compiled.build_sig_script("main", vec![Expr::int(1), Expr::int(7)]).expect("sigscript builds");
+    let result_then = run_script_with_sigscript(compiled.script.clone(), sigscript_then);
+    assert!(result_then.is_ok(), "then branch should execute successfully: {}", result_then.unwrap_err());
+
+    let sigscript_else = compiled.build_sig_script("main", vec![Expr::int(0), Expr::int(11)]).expect("sigscript builds");
+    let result_else = run_script_with_sigscript(compiled.script.clone(), sigscript_else);
+    assert!(result_else.is_ok(), "else branch should execute successfully: {}", result_else.unwrap_err());
+
+    let sigscript_wrong = compiled.build_sig_script("main", vec![Expr::int(0), Expr::int(7)]).expect("sigscript builds");
+    let result_wrong = run_script_with_sigscript(compiled.script, sigscript_wrong);
+    assert!(result_wrong.is_err(), "else branch should not produce the then value");
+}
+
+#[test]
+fn ternary_expression_rejects_mismatched_branch_types() {
+    let source = r#"
+        contract TernaryTypes() {
+            entrypoint function main(bool flag) {
+                int value = flag ? 7 : false;
+                require(value > 0);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("mismatched ternary branches should fail");
+    assert!(err.to_string().contains("ternary branch type mismatch"), "unexpected error: {err}");
+}
+
+#[test]
+fn ternary_expression_rejects_branch_type_that_does_not_match_declared_variable_type() {
+    let source = r#"
+        contract TernaryDeclaredType() {
+            entrypoint function main(bool cond, bool y, bool z) {
+                int x = cond ? y : z;
+                require(x > 0);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("ternary result type should match declared type");
+    assert!(err.to_string().contains("variable 'x' expects int"), "unexpected error: {err}");
+}
+
+#[test]
+fn ternary_expression_rejects_branch_type_that_does_not_match_function_return_type() {
+    let source = r#"
+        contract TernaryReturnType() {
+            function choose(bool cond, bool y, bool z): int {
+                return cond ? y : z;
+            }
+
+            entrypoint function main(bool cond, bool y, bool z) {
+                int value = choose(cond, y, z);
+                require(value > 0);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("ternary result type should match return type");
+    assert!(err.to_string().contains("return value expects int"), "unexpected error: {err}");
 }
 
 #[test]
