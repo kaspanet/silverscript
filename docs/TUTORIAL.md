@@ -409,6 +409,9 @@ int bitXor = x ^ y;  // 0xFF (bitwise XOR)
 Use the ternary operator to choose between two expressions:
 
 ```javascript
+bool condition = true;
+int thenValue = 100;
+int elseValue = 50;
 int value = condition ? thenValue : elseValue;
 ```
 
