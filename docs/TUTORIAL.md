@@ -330,24 +330,46 @@ A contract must have at least one entrypoint function. Contracts with multiple e
 
 ### Function Parameters and Return Types
 
-Functions can have multiple parameters and return values:
+Functions can have multiple parameters. A function with one plain return value writes the
+type directly after `:`:
 
 ```javascript
-// Function with return type
-function add(int a, int b): (int) {
-    return (a + b);
-}
-
-// Multiple return values
-function split(byte[32] data): (byte[16], byte[16]) {
-    (byte[16] left, byte[16] right) = data.split(16);
-    return (left, right);
+function add(int a, int b): int {
+    return a + b;
 }
 
 // Using the return value
 entrypoint function example() {
     int result = add(5, 10);
     require(result == 15);
+}
+```
+
+Tuple return types are written in parentheses. A tuple with more than one value
+can be destructured into typed bindings:
+
+```javascript
+function getPair(): (int, int) {
+    return (10, 20);
+}
+
+entrypoint function example() {
+    (int left, int right) = getPair();
+    require(left + right == 30);
+}
+```
+
+A parenthesized single return type is a one-element tuple, not the same as a
+plain scalar return:
+
+```javascript
+function getWrapped(): (int) {
+    return (7);
+}
+
+entrypoint function example() {
+    int value = getWrapped().0;
+    require(value == 7);
 }
 ```
 
@@ -726,12 +748,20 @@ byte[] combined = a + b;  // 0x12345678
 
 **Split:**
 
-Split byte[] at a specific index:
+`split(int)` divides a byte array at a specific index and returns a two-value
+tuple `(byte[], byte[])`. Use `.0` for the left part and `.1` for the right part:
 
 ```javascript
 byte[] data = 0x1234567890abcdef;
 byte[] left = data.split(4).0;   // 0x12345678
 byte[] right = data.split(4).1;  // 0x90abcdef
+```
+
+You can also destructure both parts at once:
+
+```javascript
+byte[] data = 0x1234567890abcdef;
+(byte[4] left, byte[4] right) = data.split(4);
 ```
 
 **Slice:**
@@ -1109,27 +1139,43 @@ entrypoint function example() {
 
 ### Tuple Unpacking
 
-Unpack multiple values from function returns or split operations:
+Unpack multiple values from tuple-returning functions or tuple-returning
+built-ins such as `split(int)`:
 
 ```javascript
-// Function with multiple returns
 function getPair(): (int, int) {
     return (10, 20);
 }
 
-// Unpack split results and function results
 entrypoint function example(byte[32] data) {
     (byte[16] left, byte[16] right) = data.split(16);
     (int x, int y) = getPair();
 }
 ```
 
-**In Function Parameters:**
+Tuple fields can also be accessed directly with numeric field access:
 
 ```javascript
-entrypoint function example(byte[32] data) {
-    (byte[16] x, byte[16] y) = data.split(16);
-    require(x == y);
+function getPair(): (int, int) {
+    return (10, 20);
+}
+
+entrypoint function example() {
+    int first = getPair().0;
+    int second = getPair().1;
+    require(first + second == 30);
+}
+```
+
+A one-element tuple uses the same field access:
+
+```javascript
+function getOnly(): (int) {
+    return (5);
+}
+
+entrypoint function example() {
+    require(getOnly().0 == 5);
 }
 ```
 
@@ -1137,7 +1183,9 @@ entrypoint function example(byte[32] data) {
 
 **Split:**
 
-Divide byte[] into two parts at a given index:
+Divide `byte[]` into two parts at a given index. The built-in has the shape
+`split(int): (byte[], byte[])`, so the result is accessed like other tuple
+returns:
 
 ```javascript
 byte[] data = 0x1122334455667788;
@@ -1146,7 +1194,7 @@ byte[] data = 0x1122334455667788;
 byte[] left = data.split(4).0;   // 0x11223344
 byte[] right = data.split(4).1;  // 0x55667788
 
-// Direct tuple unpacking with types
+// Destructure both parts with types
 (byte[4] a, byte[4] b) = data.split(4);
 ```
 
