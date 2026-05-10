@@ -15,14 +15,14 @@ contract KCC20Minter(pubkey owner, byte[32] initKCC20Covid, int initAmount,
 
     byte constant IDENTIFIER_COVENANT_ID = 0x02;
 
-    function calcInAmount() : (int) {
+    function calcInAmount() : int {
         KCC20State kcc20PrevState = readInputStateWithTemplate(
             OpCovInputIdx(kcc20Covid, 0),
             templatePrefixLen,
             templateSuffixLen,
             expectedTemplateHash
         );
-        return (kcc20PrevState.amount);
+        return kcc20PrevState.amount;
     }
 
     function checkMinterKcc20NewState(KCC20State minterKcc20NewState){

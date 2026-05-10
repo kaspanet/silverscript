@@ -855,6 +855,12 @@ fn validate_expr_semantics<'i>(
                 if function.entrypoint {
                     return Err(CompilerError::Unsupported(format!("entrypoint function '{}' cannot be called", name)));
                 }
+                if function.returns_tuple {
+                    return Err(CompilerError::Unsupported(format!(
+                        "function '{}' returns a tuple and cannot be used directly in expressions; access a tuple field instead",
+                        name
+                    )));
+                }
                 if function.return_types.len() != 1 {
                     return Err(CompilerError::Unsupported(format!(
                         "function '{}' with multiple return values cannot be used in expressions",
@@ -1018,7 +1024,7 @@ fn infer_expr_type_ref_for_comparison_ref<'i>(
         }
         ExprKind::Call { name, .. } => {
             let function = functions.get(name)?;
-            if function.entrypoint || function.return_types.len() != 1 {
+            if function.entrypoint || function.returns_tuple || function.return_types.len() != 1 {
                 return None;
             }
             Some(function.return_types[0].clone())
@@ -1275,6 +1281,12 @@ fn validate_expr_assignable_to_type<'i>(
     {
         if function.entrypoint {
             return Err(CompilerError::Unsupported(format!("entrypoint function '{}' cannot be called", name)));
+        }
+        if function.returns_tuple {
+            return Err(CompilerError::Unsupported(format!(
+                "function '{}' returns a tuple and cannot be used directly in expressions; access a tuple field instead",
+                name
+            )));
         }
         if function.return_types.len() != 1 {
             return Err(CompilerError::Unsupported(format!(

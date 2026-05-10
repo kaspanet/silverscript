@@ -3265,8 +3265,8 @@ fn recursive_fibonacci_inlining_behavior() {
 fn function_call_in_require_statement() {
     let source = r#"
         contract Calls() {
-            function plus_one(int n) : (int) {
-                return(n + 1);
+            function plus_one(int n) : int {
+                return n + 1;
             }
 
             entrypoint function main(int n) {
@@ -3285,8 +3285,8 @@ fn function_call_in_require_statement() {
 fn single_return_helper_call_can_participate_in_expression() {
     let source = r#"
         contract Calls() {
-            function plus_one(int n) : (int) {
-                return(n + 1);
+            function plus_one(int n) : int {
+                return n + 1;
             }
 
             entrypoint function main(int n) {
@@ -3396,7 +3396,7 @@ fn rejects_multi_return_helper_call_in_expression() {
     let err = compile_contract(source, &[], CompileOptions::default())
         .expect_err("multi-return helper call should be rejected in expressions");
     let err_msg = err.to_string();
-    assert!(err_msg.contains("multiple return values cannot be used in expressions"), "unexpected error: {err_msg}");
+    assert!(err_msg.contains("returns a tuple and cannot be used directly in expressions"), "unexpected error: {err_msg}");
 }
 
 #[test]
@@ -3480,6 +3480,23 @@ fn tuple_return_field_access_allows_parenthesized_single_return_type() {
     let selector = selector_for(&compiled, "main");
     let result = run_script_with_selector(compiled.script, selector);
     assert!(result.is_ok(), "single-element tuple field access should execute successfully: {}", result.unwrap_err());
+}
+
+#[test]
+fn tuple_return_field_access_rejects_direct_single_tuple_value_use_as_scalar() {
+    let source = r#"
+        contract Calls() {
+            function f() : (int) {
+                return(7);
+            }
+
+            entrypoint function main() {
+                require(f() == 7);
+            }
+        }
+    "#;
+
+    compile_contract(source, &[], CompileOptions::default()).expect_err("f() : (int) should require f().0 for scalar use");
 }
 
 #[test]
@@ -3777,7 +3794,7 @@ fn rejects_omitting_parentheses_in_tuple_function_call_assignment() {
     let err = compile_contract(source, &[], CompileOptions::default())
         .expect_err("tuple-returning function should require parenthesized call assignment");
     let err_msg = err.to_string();
-    assert!(err_msg.contains("multiple return values cannot be used in expressions"), "unexpected error: {err_msg}");
+    assert!(err_msg.contains("returns a tuple and cannot be used directly in expressions"), "unexpected error: {err_msg}");
 }
 
 #[test]
