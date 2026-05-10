@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use super::compile::{array_literal_matches_type_with_env_ref, type_name_from_ref};
+use super::compile::type_name_from_ref;
 use super::*;
 use crate::ast::{ArrayDim, ConstantAst, ContractAst, ContractFieldAst, FunctionAst, ParamAst, Statement, TypeRef};
 
@@ -59,7 +59,7 @@ pub(super) fn infer_fixed_array_type_from_initializer_ref<'i>(
         ExprKind::Array(values) => {
             let mut inferred = element_type.clone();
             inferred.array_dims.push(ArrayDim::Fixed(values.len()));
-            if array_literal_matches_type_with_env_ref(values, &inferred, types, constants) { Some(inferred) } else { None }
+            Some(inferred)
         }
         ExprKind::Identifier(name) => {
             let other_type = parse_type_ref(types.get(name)?).ok()?;

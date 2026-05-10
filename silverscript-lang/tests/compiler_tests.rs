@@ -1296,12 +1296,14 @@ fn rejects_inferred_array_size_when_initializer_cannot_provide_matching_fixed_ar
             r#"
                 int[_] x = [1, true];
             "#,
+            "array element type mismatch",
         ),
         (
             "identifier is unknown",
             r#"
                 int[_] x = y;
             "#,
+            "cannot infer fixed array size from variable 'x'",
         ),
         (
             "identifier is not an array",
@@ -1309,6 +1311,7 @@ fn rejects_inferred_array_size_when_initializer_cannot_provide_matching_fixed_ar
                 int y = 1;
                 int[_] x = y;
             "#,
+            "cannot infer fixed array size from variable 'x'",
         ),
         (
             "identifier has a different array element type",
@@ -1316,6 +1319,7 @@ fn rejects_inferred_array_size_when_initializer_cannot_provide_matching_fixed_ar
                 bool[2] y = [true, false];
                 int[_] x = y;
             "#,
+            "cannot infer fixed array size from variable 'x'",
         ),
         (
             "identifier has a dynamic array size",
@@ -1323,10 +1327,11 @@ fn rejects_inferred_array_size_when_initializer_cannot_provide_matching_fixed_ar
                 int[] y = [1, 2];
                 int[_] x = y;
             "#,
+            "cannot infer fixed array size from variable 'x'",
         ),
     ];
 
-    for (name, body) in cases {
+    for (name, body, expected_error) in cases {
         let source = format!(
             r#"
                 contract Arrays() {{
@@ -1339,7 +1344,7 @@ fn rejects_inferred_array_size_when_initializer_cannot_provide_matching_fixed_ar
         );
 
         let err = compile_contract(&source, &[], CompileOptions::default()).expect_err(&format!("{name} should fail"));
-        assert!(err.to_string().contains("cannot infer fixed array size from variable 'x'"), "{name}: unexpected error: {err}");
+        assert!(err.to_string().contains(expected_error), "{name}: expected error containing '{expected_error}', got: {err}");
     }
 }
 
