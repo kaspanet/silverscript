@@ -27,10 +27,10 @@ braced_block = { "{" ~ statement* ~ "}" }
 
 statement = _{
     variable_definition
-    | tuple_assignment
     | state_function_call_assignment
     | struct_destructure_assignment
     | function_call_assignment
+    | tuple_assignment
     | call_statement
     | return_statement
     | assign_statement
@@ -43,7 +43,7 @@ statement = _{
 }
 
 variable_definition = { type_name ~ modifier* ~ Identifier ~ ("=" ~ expression)? ~ ";" }
-tuple_assignment = { type_name ~ Identifier ~ "," ~ type_name ~ Identifier ~ "=" ~ expression ~ ";" }
+tuple_assignment = { ("(" ~ type_name ~ Identifier ~ "," ~ type_name ~ Identifier ~ ","? ~ ")" | type_name ~ Identifier ~ "," ~ type_name ~ Identifier) ~ "=" ~ expression ~ ";" }
 function_call_assignment = { "(" ~ typed_binding ~ ("," ~ typed_binding)* ~ ","? ~ ")" ~ "=" ~ function_call ~ ";" }
 state_function_call_assignment = { "{" ~ state_typed_binding ~ ("," ~ state_typed_binding)* ~ ","? ~ "}" ~ "=" ~ function_call ~ ";" }
 struct_destructure_assignment = { "{" ~ state_typed_binding ~ ("," ~ state_typed_binding)* ~ ","? ~ "}" ~ "=" ~ expression ~ ";" }

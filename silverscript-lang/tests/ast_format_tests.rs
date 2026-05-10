@@ -81,7 +81,7 @@ contract Advanced(int limit, pubkey owner) {
         }
         balance = current;
         require(this.age >= 10, "age");
-        return(tail.split(1)[1]);
+        return(tail.split(1).1);
     }
 }
 "#;
@@ -94,7 +94,7 @@ contract Advanced(int limit, pubkey owner) {
     assert_eq!(reformatted, formatted);
     assert!(formatted.contains("{balance: int current} = readState();"));
     assert!(formatted.contains("byte[] tail = this.activeScriptPubKey.slice(1, this.activeScriptPubKey.length);"));
-    assert!(formatted.contains("return(tail.split(1)[1]);"));
+    assert!(formatted.contains("return(tail.split(1).1);"));
 }
 
 #[test]
@@ -132,7 +132,7 @@ fn compiled_formatted_contract_preserves_exact_ast_with_state_and_return() {
         byte[] tail = this.activeScriptPubKey.slice(1, this.activeScriptPubKey.length);
         validateOutputState(0, {amount: current});
         require(this.age >= 10, "age");
-        return(tail.split(1)[1]);
+        return(tail.split(1).1);
     }
 }
 "#;

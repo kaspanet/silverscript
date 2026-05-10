@@ -808,7 +808,7 @@ impl SourceFormatter {
             }
             Statement::TupleAssignment { left_type_ref, left_name, right_type_ref, right_name, expr, .. } => {
                 self.line(&format!(
-                    "{} {}, {} {} = {};",
+                    "({} {}, {} {}) = {};",
                     left_type_ref.type_name(),
                     left_name,
                     right_type_ref.type_name(),
@@ -971,7 +971,7 @@ fn format_expr_with_prec(expr: &Expr<'_>, parent_prec: u8, right_child: bool) ->
         ExprKind::New { name, args, .. } => format!("new {}({})", name, format_expr_list(args)),
         ExprKind::Split { source, index, part, .. } => {
             format!(
-                "{}.split({})[{}]",
+                "{}.split({}).{}",
                 format_expr_with_prec(source, PREC_POSTFIX, false),
                 format_expr(index),
                 match part {
@@ -1945,23 +1945,12 @@ fn parse_postfix<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {
                 let mut index_inner = postfix.into_inner();
                 let index_pair = index_inner.next().ok_or_else(|| CompilerError::Unsupported("missing tuple index".to_string()))?;
                 let index_expr = parse_expression(index_pair)?;
-                let index_span = index_expr.span;
                 let span = expr.span.join(&postfix_span);
-                if let ExprKind::Split { source, index: split_index, span: split_span, .. } = &expr.kind {
-                    let part = match index_expr.kind {
-                        ExprKind::Int(0) => SplitPart::Left,
-                        ExprKind::Int(1) => SplitPart::Right,
-                        _ => {
-                            return Err(CompilerError::Unsupported("split() index must be 0 or 1".to_string()).with_span(&index_span));
-                        }
-                    };
-                    expr = Expr::new(
-                        ExprKind::Split { source: source.clone(), index: split_index.clone(), part, span: *split_span },
-                        span,
-                    );
-                } else {
-                    expr = Expr::new(ExprKind::ArrayIndex { source: Box::new(expr), index: Box::new(index_expr) }, span);
+                if matches!(&expr.kind, ExprKind::Split { .. }) {
+                    return Err(CompilerError::Unsupported("split() results must be accessed with .0 or .1".to_string())
+                        .with_span(&postfix_span));
                 }
+                expr = Expr::new(ExprKind::ArrayIndex { source: Box::new(expr), index: Box::new(index_expr) }, span);
             }
             Rule::unary_suffix => {
                 let kind = match postfix.as_str() {
@@ -1978,10 +1967,26 @@ fn parse_postfix<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {
                     .parse::<usize>()
                     .map_err(|_| CompilerError::Unsupported(format!("invalid tuple field index '{raw}'")).with_span(&postfix_span))?;
                 let span = expr.span.join(&postfix_span);
-                expr = Expr::new(
-                    ExprKind::FieldAccess { source: Box::new(expr), field: index.to_string(), field_span: postfix_span },
-                    span,
-                );
+                if let ExprKind::Split { source, index: split_index, span: split_span, .. } = &expr.kind {
+                    let part = match index {
+                        0 => SplitPart::Left,
+                        1 => SplitPart::Right,
+                        _ => {
+                            return Err(
+                                CompilerError::Unsupported("split() index must be 0 or 1".to_string()).with_span(&postfix_span)
+                            );
+                        }
+                    };
+                    expr = Expr::new(
+                        ExprKind::Split { source: source.clone(), index: split_index.clone(), part, span: *split_span },
+                        span,
+                    );
+                } else {
+                    expr = Expr::new(
+                        ExprKind::FieldAccess { source: Box::new(expr), field: index.to_string(), field_span: postfix_span },
+                        span,
+                    );
+                }
             }
             Rule::field_access => {
                 if matches!(&expr.kind, ExprKind::Introspection { .. }) || expr_root_identifier(&expr).as_deref() == Some("tx") {

@@ -340,7 +340,7 @@ function add(int a, int b): (int) {
 
 // Multiple return values
 function split(byte[32] data): (byte[16], byte[16]) {
-    byte[16] left, byte[16] right = data.split(16);
+    (byte[16] left, byte[16] right) = data.split(16);
     return (left, right);
 }
 
@@ -730,8 +730,8 @@ Split byte[] at a specific index:
 
 ```javascript
 byte[] data = 0x1234567890abcdef;
-byte[] left = data.split(4)[0];   // 0x12345678
-byte[] right = data.split(4)[1];  // 0x90abcdef
+byte[] left = data.split(4).0;   // 0x12345678
+byte[] right = data.split(4).1;  // 0x90abcdef
 ```
 
 **Slice:**
@@ -1119,7 +1119,7 @@ function getPair(): (int, int) {
 
 // Unpack split results and function results
 entrypoint function example(byte[32] data) {
-    byte[16] left, byte[16] right = data.split(16);
+    (byte[16] left, byte[16] right) = data.split(16);
     (int x, int y) = getPair();
 }
 ```
@@ -1128,7 +1128,7 @@ entrypoint function example(byte[32] data) {
 
 ```javascript
 entrypoint function example(byte[32] data) {
-    byte[16] x, byte[16] y = data.split(16);
+    (byte[16] x, byte[16] y) = data.split(16);
     require(x == y);
 }
 ```
@@ -1143,11 +1143,11 @@ Divide byte[] into two parts at a given index:
 byte[] data = 0x1122334455667788;
 
 // Split at byte 4
-byte[] left = data.split(4)[0];   // 0x11223344
-byte[] right = data.split(4)[1];  // 0x55667788
+byte[] left = data.split(4).0;   // 0x11223344
+byte[] right = data.split(4).1;  // 0x55667788
 
 // Direct tuple unpacking with types
-byte[4] a, byte[4] b = data.split(4);
+(byte[4] a, byte[4] b) = data.split(4);
 ```
 
 **Slice:**
