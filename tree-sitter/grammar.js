@@ -31,6 +31,8 @@ export default grammar({
   conflicts: ($) => [
     [$.function_call, $.base_type],
     [$.primary, $.base_type],
+    [$.tuple_assignment, $.typed_binding],
+    [$.parenthesized, $.expression_list],
   ],
 
   rules: {
@@ -107,16 +109,19 @@ export default grammar({
     parameter: ($) => seq($.type_name, $.identifier),
 
     return_type_list: ($) =>
-      seq(":", "(", optional(commaSep($.type_name)), ")"),
+      seq(
+        ":",
+        choice($.type_name, seq("(", optional(commaSep($.type_name)), ")")),
+      ),
 
     block: ($) => choice(seq("{", repeat($.statement), "}"), $.statement),
 
     statement: ($) =>
       choice(
         $.variable_definition,
-        $.tuple_assignment,
         $.state_function_call_assignment,
         $.function_call_assignment,
+        $.tuple_assignment,
         $.call_statement,
         $.return_statement,
         $.assign_statement,
@@ -138,11 +143,19 @@ export default grammar({
 
     tuple_assignment: ($) =>
       seq(
-        $.type_name,
-        $.identifier,
-        ",",
-        $.type_name,
-        $.identifier,
+        choice(
+          seq(
+            "(",
+            $.type_name,
+            $.identifier,
+            ",",
+            $.type_name,
+            $.identifier,
+            optional(","),
+            ")",
+          ),
+          seq($.type_name, $.identifier, ",", $.type_name, $.identifier),
+        ),
         "=",
         $.expression,
         ";",
@@ -161,7 +174,7 @@ export default grammar({
 
     call_statement: ($) => seq($.function_call, ";"),
 
-    return_statement: ($) => seq("return", $.expression_list, ";"),
+    return_statement: ($) => seq("return", choice($.expression_list, $.expression), ";"),
 
     assign_statement: ($) =>
       seq(field("name", $.identifier), "=", field("value", $.expression), ";"),
@@ -279,6 +292,7 @@ export default grammar({
       choice(
         $.tuple_index,
         $.member_access,
+        $.tuple_field_access,
         $.unary_suffix,
         $.split_call,
         $.slice_call,
@@ -289,6 +303,8 @@ export default grammar({
     tuple_index: ($) => seq("[", $.expression, "]"),
 
     member_access: ($) => seq(".", field("name", $.identifier)),
+
+    tuple_field_access: (_) => token(seq(".", /[0-9]+/)),
 
     unary_suffix: (_) => ".length",
 

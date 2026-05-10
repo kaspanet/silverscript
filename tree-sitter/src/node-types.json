@@ -902,6 +902,10 @@
           "named": true
         },
         {
+          "type": "tuple_field_access",
+          "named": true
+        },
+        {
           "type": "tuple_index",
           "named": true
         },
@@ -1020,6 +1024,10 @@
       "multiple": false,
       "required": true,
       "types": [
+        {
+          "type": "expression",
+          "named": true
+        },
         {
           "type": "expression_list",
           "named": true
@@ -1775,6 +1783,10 @@
   {
     "type": "true",
     "named": false
+  },
+  {
+    "type": "tuple_field_access",
+    "named": true
   },
   {
     "type": "tx.inputs.length",
