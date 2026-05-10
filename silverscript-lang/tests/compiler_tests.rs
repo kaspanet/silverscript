@@ -1379,6 +1379,71 @@ fn infers_fixed_sizes_for_multiple_array_element_types() {
 }
 
 #[test]
+fn infers_fixed_array_size_from_function_call_initializer_expression() {
+    let source = r#"
+        contract Arrays() {
+            function makeArray(): int[3] {
+                return [1, 2, 3];
+            }
+
+            entrypoint function main() {
+                int[_] x = makeArray();
+                require(x.length == 3);
+            }
+        }
+    "#;
+
+    compile_contract(source, &[], CompileOptions::default()).expect("int[_] x should infer from function call returning int[3]");
+}
+
+#[test]
+fn infers_fixed_array_size_from_array_concat_initializer_expression() {
+    let source = r#"
+        contract Arrays() {
+            entrypoint function main() {
+                int[2] left = [1, 2];
+                int[1] right = [3];
+                int[_] x = left + right;
+                require(x.length == 3);
+            }
+        }
+    "#;
+
+    compile_contract(source, &[], CompileOptions::default()).expect("int[_] x should infer from int[2] + int[1]");
+}
+
+#[test]
+fn infers_fixed_array_size_from_ternary_initializer_expression() {
+    let source = r#"
+        contract Arrays() {
+            entrypoint function main(bool flag) {
+                int[3] left = [1, 2, 3];
+                int[3] right = [4, 5, 6];
+                int[_] x = flag ? left : right;
+                require(x.length == 3);
+            }
+        }
+    "#;
+
+    compile_contract(source, &[], CompileOptions::default()).expect("int[_] x should infer from ternary branches typed int[3]");
+}
+
+#[test]
+fn recursively_infers_fixed_array_size_from_inferred_array_identifier() {
+    let source = r#"
+        contract Arrays() {
+            entrypoint function main() {
+                int[_] x = [1, 2, 3];
+                int[_] y = x;
+                require(y.length == 3);
+            }
+        }
+    "#;
+
+    compile_contract(source, &[], CompileOptions::default()).expect("int[_] y should infer from previously inferred int[_] x");
+}
+
+#[test]
 fn rejects_comparing_dynamic_and_fixed_arrays_without_cast_in_function_scope() {
     let source = r#"
         contract Arrays() {
