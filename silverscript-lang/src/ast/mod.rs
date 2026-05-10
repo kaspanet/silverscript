@@ -103,6 +103,8 @@ pub struct FunctionAst<'i> {
     pub entrypoint: bool,
     #[serde(default)]
     pub return_types: Vec<TypeRef>,
+    #[serde(default)]
+    pub returns_tuple: bool,
     pub body: Vec<Statement<'i>>,
     #[serde(skip_deserializing)]
     pub return_type_spans: Vec<Span<'i>>,
@@ -777,9 +779,14 @@ impl SourceFormatter {
         signature.push_str(&format_params(&function.params));
         signature.push(')');
         if !function.return_types.is_empty() {
-            signature.push_str(": (");
-            signature.push_str(&function.return_types.iter().map(TypeRef::type_name).collect::<Vec<_>>().join(", "));
-            signature.push(')');
+            if function.returns_tuple {
+                signature.push_str(": (");
+                signature.push_str(&function.return_types.iter().map(TypeRef::type_name).collect::<Vec<_>>().join(", "));
+                signature.push(')');
+            } else {
+                signature.push_str(": ");
+                signature.push_str(&function.return_types[0].type_name());
+            }
         }
         signature.push_str(" {");
 
@@ -1352,10 +1359,12 @@ fn parse_function_definition<'i>(pair: Pair<'i, Rule>) -> Result<FunctionAst<'i>
     let params = parse_typed_parameter_list(params_pair)?;
 
     let mut return_types = Vec::new();
+    let mut returns_tuple = false;
     let mut return_type_spans = Vec::new();
     if let Some(next) = inner.peek() {
         if next.as_rule() == Rule::return_type_list {
             let return_pair = inner.next().expect("checked");
+            returns_tuple = return_pair.as_str().trim_start_matches(':').trim_start().starts_with('(');
             let (types, spans) = parse_return_type_list(return_pair)?;
             return_types = types;
             return_type_spans = spans;
@@ -1377,7 +1386,19 @@ fn parse_function_definition<'i>(pair: Pair<'i, Rule>) -> Result<FunctionAst<'i>
     }
     let body_span = body_span.unwrap_or(span);
 
-    Ok(FunctionAst { name, attributes, entrypoint, params, return_types, return_type_spans, body, span, name_span, body_span })
+    Ok(FunctionAst {
+        name,
+        attributes,
+        entrypoint,
+        params,
+        return_types,
+        returns_tuple,
+        return_type_spans,
+        body,
+        span,
+        name_span,
+        body_span,
+    })
 }
 
 fn parse_function_attribute<'i>(pair: Pair<'i, Rule>) -> Result<FunctionAttributeAst<'i>, CompilerError> {
@@ -1950,6 +1971,17 @@ fn parse_postfix<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {
                 };
                 let span = expr.span.join(&postfix_span);
                 expr = Expr::new(ExprKind::UnarySuffix { source: Box::new(expr), kind, span: postfix_span }, span);
+            }
+            Rule::tuple_field_access => {
+                let raw = postfix.as_str().trim().trim_start_matches('.');
+                let index = raw
+                    .parse::<usize>()
+                    .map_err(|_| CompilerError::Unsupported(format!("invalid tuple field index '{raw}'")).with_span(&postfix_span))?;
+                let span = expr.span.join(&postfix_span);
+                expr = Expr::new(
+                    ExprKind::FieldAccess { source: Box::new(expr), field: index.to_string(), field_span: postfix_span },
+                    span,
+                );
             }
             Rule::field_access => {
                 if matches!(&expr.kind, ExprKind::Introspection { .. }) || expr_root_identifier(&expr).as_deref() == Some("tx") {

@@ -3422,6 +3422,103 @@ fn multi_return_helper_call_assignment_remains_valid() {
 }
 
 #[test]
+fn tuple_return_field_access_can_initialize_variable_and_run() {
+    let source = r#"
+        contract Calls() {
+            function f() : (int, int, int, int) {
+                return(2, 3, 4, 5);
+            }
+
+            entrypoint function main() {
+                int x = f().2;
+                require(x == 4);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("tuple field access should compile");
+    let selector = selector_for(&compiled, "main");
+    let result = run_script_with_selector(compiled.script, selector);
+    assert!(result.is_ok(), "tuple field access variable initializer should execute successfully: {}", result.unwrap_err());
+}
+
+#[test]
+fn tuple_return_field_access_can_be_used_in_require_and_run() {
+    let source = r#"
+        contract Calls() {
+            function f() : (int, int, int, int) {
+                return(2, 3, 4, 5);
+            }
+
+            entrypoint function main() {
+                require(f().3 == 5);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("tuple field access in require should compile");
+    let selector = selector_for(&compiled, "main");
+    let result = run_script_with_selector(compiled.script, selector);
+    assert!(result.is_ok(), "tuple field access in require should execute successfully: {}", result.unwrap_err());
+}
+
+#[test]
+fn tuple_return_field_access_allows_parenthesized_single_return_type() {
+    let source = r#"
+        contract Calls() {
+            function f() : (int) {
+                return(5);
+            }
+
+            entrypoint function main() {
+                require(f().0 == 5);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("f() : (int) should allow f().0");
+    let selector = selector_for(&compiled, "main");
+    let result = run_script_with_selector(compiled.script, selector);
+    assert!(result.is_ok(), "single-element tuple field access should execute successfully: {}", result.unwrap_err());
+}
+
+#[test]
+fn tuple_return_field_access_rejects_scalar_single_return_type() {
+    let source = r#"
+        contract Calls() {
+            function f() : int {
+                return 5;
+            }
+
+            entrypoint function main() {
+                require(f().0 == 5);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("f() : int should reject f().0");
+    assert!(err.to_string().contains("does not return a tuple"), "unexpected error: {err}");
+}
+
+#[test]
+fn tuple_return_field_access_rejects_out_of_bounds_index() {
+    let source = r#"
+        contract Calls() {
+            function f() : (int, int, int) {
+                return(1, 2, 3);
+            }
+
+            entrypoint function main() {
+                require(f().3 == 3);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("f().10 should be out of bounds");
+    assert!(err.to_string().contains("tuple index 3 out of bounds"), "unexpected error: {err}");
+}
+
+#[test]
 fn allows_call_chain_with_earlier_defined_functions() {
     let source = r#"
         contract Calls() {

@@ -1630,6 +1630,7 @@ pub(crate) fn lower_structs_contract<'i>(
             params: lowered_function_params,
             entrypoint: function.entrypoint,
             return_types: lowered_return_types,
+            returns_tuple: function.returns_tuple,
             body: lowered_body,
             return_type_spans: function.return_type_spans.clone(),
             span: function.span,

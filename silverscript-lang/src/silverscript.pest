@@ -95,13 +95,14 @@ unary = { unary_op* ~ postfix }
 unary_op = { "!" | "-" }
 
 postfix = { primary ~ postfix_op* }
-postfix_op = _{ tuple_index | unary_suffix | split_call | slice_call | append_call | field_access }
+postfix_op = _{ tuple_index | unary_suffix | split_call | slice_call | append_call | tuple_field_access | field_access }
 
 tuple_index = { "[" ~ expression ~ "]" }
 unary_suffix = { "." ~ "length" }
 split_call = { ".split" ~ "(" ~ expression ~ ")" }
 slice_call = { ".slice" ~ "(" ~ expression ~ "," ~ expression ~ ")" }
 append_call = { ".append" ~ expression_list }
+tuple_field_access = { "." ~ ASCII_DIGIT+ }
 field_access = { "." ~ Identifier }
 
 primary = _{

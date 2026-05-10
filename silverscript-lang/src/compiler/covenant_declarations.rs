@@ -799,6 +799,7 @@ fn generated_entrypoint<'i>(
         params,
         entrypoint: true,
         return_types: Vec::new(),
+        returns_tuple: false,
         body,
         return_type_spans: Vec::new(),
         span: policy.span,

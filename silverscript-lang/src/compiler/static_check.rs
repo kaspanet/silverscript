@@ -919,7 +919,22 @@ fn validate_expr_semantics<'i>(
             }
             Ok(())
         }
-        ExprKind::FieldAccess { source, .. } | ExprKind::UnarySuffix { source, .. } => {
+        ExprKind::FieldAccess { source, field, .. } => {
+            if tuple_field_index(field).is_some() {
+                return validate_tuple_field_access(
+                    source,
+                    field,
+                    env,
+                    prefer_env_for_comparison,
+                    types,
+                    structs,
+                    functions,
+                    contract_fields,
+                );
+            }
+            validate_expr_semantics(source, env, prefer_env_for_comparison, types, structs, functions, contract_fields)
+        }
+        ExprKind::UnarySuffix { source, .. } => {
             validate_expr_semantics(source, env, prefer_env_for_comparison, types, structs, functions, contract_fields)
         }
         ExprKind::Identifier(name) => {
@@ -952,6 +967,9 @@ fn infer_expr_type_ref_for_comparison_ref<'i>(
             } else {
                 types.get(name).and_then(|type_name| parse_type_ref(type_name).ok())
             }
+        }
+        ExprKind::FieldAccess { source, field, .. } if tuple_field_index(field).is_some() => {
+            infer_tuple_field_access_type(source, field, functions)
         }
         ExprKind::FieldAccess { source, field, .. } => {
             let source_type = infer_expr_type_ref_for_comparison_ref(
@@ -1010,6 +1028,58 @@ fn infer_expr_type_ref_for_comparison_ref<'i>(
             parse_type_ref(&type_name).ok()
         }
     }
+}
+
+fn tuple_field_index(field: &str) -> Option<usize> {
+    (!field.is_empty() && field.chars().all(|ch| ch.is_ascii_digit())).then(|| field.parse().ok()).flatten()
+}
+
+fn infer_tuple_field_access_type<'i>(
+    source: &Expr<'i>,
+    field: &str,
+    functions: &HashMap<String, &FunctionAst<'i>>,
+) -> Option<TypeRef> {
+    let ExprKind::Call { name, .. } = &source.kind else {
+        return None;
+    };
+    let function = functions.get(name)?;
+    let index = tuple_field_index(field)?;
+    if function.entrypoint || !function.returns_tuple {
+        return None;
+    }
+    function.return_types.get(index).cloned()
+}
+
+fn validate_tuple_field_access<'i>(
+    source: &Expr<'i>,
+    field: &str,
+    env: &HashMap<String, Expr<'i>>,
+    prefer_env_for_comparison: &HashSet<String>,
+    types: &HashMap<String, String>,
+    structs: &StructRegistry,
+    functions: &HashMap<String, &FunctionAst<'i>>,
+    contract_fields: &[ContractFieldAst<'i>],
+) -> Result<(), CompilerError> {
+    let ExprKind::Call { name, args, .. } = &source.kind else {
+        return Err(CompilerError::Unsupported("tuple field access requires a tuple-returning function call".to_string()));
+    };
+    for arg in args {
+        validate_expr_semantics(arg, env, prefer_env_for_comparison, types, structs, functions, contract_fields)?;
+    }
+    let Some(function) = functions.get(name) else {
+        return Err(CompilerError::Unsupported(format!("function '{}' not found", name)));
+    };
+    if function.entrypoint {
+        return Err(CompilerError::Unsupported(format!("entrypoint function '{}' cannot be called", name)));
+    }
+    if !function.returns_tuple {
+        return Err(CompilerError::Unsupported(format!("function '{}' does not return a tuple", name)));
+    }
+    let index = tuple_field_index(field).expect("checked");
+    if index >= function.return_types.len() {
+        return Err(CompilerError::Unsupported(format!("tuple index {index} out of bounds for function '{}'", name)));
+    }
+    Ok(())
 }
 
 fn coerce_rhs_byte_literal_for_comparison_ref<'i>(left_type: Option<&TypeRef>, right: &Expr<'i>) -> Expr<'i> {
@@ -1223,6 +1293,18 @@ fn validate_expr_assignable_to_type<'i>(
         && matches!(expr.kind, ExprKind::Int(value) if (0..=255).contains(&value))
     {
         return Ok(());
+    }
+
+    if let ExprKind::FieldAccess { field, .. } = &expr.kind
+        && tuple_field_index(field).is_some()
+        && let Some(actual_type) =
+            infer_expr_type_ref_for_comparison_ref(expr, &HashMap::new(), &HashSet::new(), types, structs, functions, contract_fields)
+    {
+        return if is_type_assignable_ref(&actual_type, type_ref, constants) {
+            Ok(())
+        } else {
+            Err(CompilerError::Unsupported("type mismatch".to_string()))
+        };
     }
 
     if let ExprKind::IfElse { .. } = &expr.kind
