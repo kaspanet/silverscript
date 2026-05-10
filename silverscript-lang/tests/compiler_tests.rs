@@ -1289,6 +1289,61 @@ fn rejects_comparing_inferred_and_fixed_byte_arrays_when_sizes_differ() {
 }
 
 #[test]
+fn rejects_inferred_array_size_when_initializer_cannot_provide_matching_fixed_array_type() {
+    let cases = [
+        (
+            "literal values do not match declared element type",
+            r#"
+                int[_] x = [1, true];
+            "#,
+        ),
+        (
+            "identifier is unknown",
+            r#"
+                int[_] x = y;
+            "#,
+        ),
+        (
+            "identifier is not an array",
+            r#"
+                int y = 1;
+                int[_] x = y;
+            "#,
+        ),
+        (
+            "identifier has a different array element type",
+            r#"
+                bool[2] y = [true, false];
+                int[_] x = y;
+            "#,
+        ),
+        (
+            "identifier has a dynamic array size",
+            r#"
+                int[] y = [1, 2];
+                int[_] x = y;
+            "#,
+        ),
+    ];
+
+    for (name, body) in cases {
+        let source = format!(
+            r#"
+                contract Arrays() {{
+                    entrypoint function main() {{
+                        {body}
+                        require(true);
+                    }}
+                }}
+            "#
+        );
+
+        let err = compile_contract(&source, &[], CompileOptions::default()).expect_err(&format!("{name} should fail"));
+        assert!(err.to_string().contains("cannot infer fixed array size from variable 'x'"), "{name}: unexpected error: {err}");
+    }
+}
+
+#[test]
 fn infers_fixed_sizes_for_multiple_array_element_types() {
     let source = r#"
         contract Arrays() {
