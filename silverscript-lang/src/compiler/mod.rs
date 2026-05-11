@@ -43,6 +43,7 @@ pub(super) use structs::{
 pub const SYNTHETIC_ARG_PREFIX: &str = "__arg";
 pub const COMPILER_VERSION: &str = "0.1.0";
 const COVENANT_POLICY_PREFIX: &str = "__covenant_policy";
+pub const COVENANT_ENTRYPOINT_AUTH_PREFIX: &str = "__covenant_entrypoint_auth";
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CovenantDeclCallOptions {
@@ -53,15 +54,15 @@ fn generated_covenant_policy_name(function_name: &str) -> String {
     format!("{COVENANT_POLICY_PREFIX}_{function_name}")
 }
 
-fn generated_covenant_entrypoint_name(function_name: &str) -> String {
-    format!("__{function_name}")
+pub fn generated_covenant_auth_entrypoint_name(function_name: &str) -> String {
+    format!("{COVENANT_ENTRYPOINT_AUTH_PREFIX}_{function_name}")
 }
 
-fn generated_covenant_leader_entrypoint_name(function_name: &str) -> String {
+pub fn generated_covenant_leader_entrypoint_name(function_name: &str) -> String {
     format!("__leader_{function_name}")
 }
 
-fn generated_covenant_delegate_entrypoint_name(function_name: &str) -> String {
+pub fn generated_covenant_delegate_entrypoint_name(function_name: &str) -> String {
     format!("__delegate_{function_name}")
 }
 
@@ -210,7 +211,7 @@ impl<'i> CompiledContract<'i> {
         args: Vec<Expr<'i>>,
         options: CovenantDeclCallOptions,
     ) -> Result<Vec<u8>, CompilerError> {
-        let auth_entrypoint = generated_covenant_entrypoint_name(function_name);
+        let auth_entrypoint = generated_covenant_auth_entrypoint_name(function_name);
         if self.abi.iter().any(|entry| entry.name == auth_entrypoint) {
             return self.build_sig_script(&auth_entrypoint, args);
         }

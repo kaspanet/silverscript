@@ -1,7 +1,10 @@
 use std::collections::HashSet;
 
 use silverscript_lang::ast::{ContractAst, FunctionAst};
-use silverscript_lang::compiler::CompiledContract;
+use silverscript_lang::compiler::{
+    CompiledContract, generated_covenant_auth_entrypoint_name, generated_covenant_delegate_entrypoint_name,
+    generated_covenant_leader_entrypoint_name,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CovenantBinding {
@@ -43,7 +46,7 @@ impl ResolvedCovenantCallTarget {
 
     pub fn generated_entrypoint_name_for(&self, is_leader: bool) -> String {
         match self.binding {
-            CovenantBinding::Auth => generated_covenant_entrypoint_name(&self.source_name),
+            CovenantBinding::Auth => generated_covenant_auth_entrypoint_name(&self.source_name),
             CovenantBinding::Cov => {
                 if is_leader {
                     generated_covenant_leader_entrypoint_name(&self.source_name)
@@ -63,7 +66,7 @@ pub fn resolve_covenant_call_target<'i>(
     let function =
         contract.functions.iter().find(|function| function.name == function_name && is_covenant_source_function(function))?;
 
-    let auth_entrypoint_name = generated_covenant_entrypoint_name(function_name);
+    let auth_entrypoint_name = generated_covenant_auth_entrypoint_name(function_name);
     let leader_entrypoint_name = generated_covenant_leader_entrypoint_name(function_name);
     let has_auth_entrypoint = abi_contains_function(compiled, &auth_entrypoint_name);
     let has_leader_entrypoint = abi_contains_function(compiled, &leader_entrypoint_name);
@@ -118,16 +121,4 @@ fn is_covenant_source_function(function: &FunctionAst<'_>) -> bool {
 
 fn generated_covenant_policy_name(function_name: &str) -> String {
     format!("__covenant_policy_{function_name}")
-}
-
-fn generated_covenant_entrypoint_name(function_name: &str) -> String {
-    format!("__{function_name}")
-}
-
-fn generated_covenant_leader_entrypoint_name(function_name: &str) -> String {
-    format!("__leader_{function_name}")
-}
-
-fn generated_covenant_delegate_entrypoint_name(function_name: &str) -> String {
-    format!("__delegate_{function_name}")
 }

@@ -71,7 +71,7 @@ pub(super) fn lower_covenant_declarations<'i>(
 
         match declaration.binding {
             CovenantBinding::Auth => {
-                let entrypoint_name = generated_covenant_entrypoint_name(&function.name);
+                let entrypoint_name = generated_covenant_auth_entrypoint_name(&function.name);
                 let mut wrapper = build_auth_wrapper(&policy, &policy_name, declaration.clone(), entrypoint_name, &contract.fields)?;
                 wrapper.params = preserved_entrypoint_params(function, declaration, true, &contract.fields);
                 lowered.push(wrapper);

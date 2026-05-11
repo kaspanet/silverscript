@@ -19,7 +19,7 @@ use kaspa_txscript::{
 use silverscript_lang::ast::{Expr, ExprKind, Statement, format_contract_ast, parse_contract_ast};
 use silverscript_lang::compiler::{
     CompileOptions, CompiledContract, CovenantDeclCallOptions, FunctionAbiEntry, FunctionInputAbi, compile_contract,
-    compile_contract_ast, function_branch_index, struct_object,
+    compile_contract_ast, function_branch_index, generated_covenant_auth_entrypoint_name, struct_object,
 };
 use silverscript_lang::debug_info::StepKind;
 
@@ -1570,7 +1570,8 @@ fn build_sig_script_for_covenant_decl_routes_to_hidden_auth_entrypoint() {
     let actual = compiled
         .build_sig_script_for_covenant_decl("step", args.clone(), CovenantDeclCallOptions { is_leader: false })
         .expect("covenant sigscript builds");
-    let expected = compiled.build_sig_script("__step", args).expect("hidden entrypoint sigscript builds");
+    let expected =
+        compiled.build_sig_script(&generated_covenant_auth_entrypoint_name("step"), args).expect("hidden entrypoint sigscript builds");
 
     assert_eq!(actual, expected);
 }
@@ -2488,9 +2489,15 @@ fn build_sig_script_for_covenant_decl_supports_all_covenant_ast_examples() {
         let sigscript = compiled
             .build_sig_script_for_covenant_decl(case.function_name, case.args.clone(), case.options)
             .expect("covenant declaration sigscript builds");
-        let expected = compiled
-            .build_sig_script(case.generated_covenant_entrypoint_name, case.args)
-            .expect("generated entrypoint sigscript builds");
+        let generated_entrypoint_name = if case.generated_covenant_entrypoint_name.starts_with("__leader_")
+            || case.generated_covenant_entrypoint_name.starts_with("__delegate_")
+        {
+            case.generated_covenant_entrypoint_name.to_string()
+        } else {
+            generated_covenant_auth_entrypoint_name(case.function_name)
+        };
+        let expected =
+            compiled.build_sig_script(&generated_entrypoint_name, case.args).expect("generated entrypoint sigscript builds");
         assert_eq!(sigscript, expected, "covenant declaration sigscript should match generated entrypoint for {}", case.function_name);
     }
 }

@@ -1,6 +1,6 @@
 use kaspa_txscript::opcodes::codes::{OpAuthOutputCount, OpCovInputCount, OpCovInputIdx, OpCovOutputCount, OpInputCovenantId};
 use silverscript_lang::ast::Expr;
-use silverscript_lang::compiler::{CompileOptions, compile_contract};
+use silverscript_lang::compiler::{CompileOptions, compile_contract, generated_covenant_auth_entrypoint_name};
 
 #[test]
 fn lowers_auth_covenant_declaration_to_hidden_entrypoint_name() {
@@ -16,9 +16,9 @@ fn lowers_auth_covenant_declaration_to_hidden_entrypoint_name() {
     let compiled = compile_contract(source, &[Expr::int(3)], CompileOptions::default()).expect("compile succeeds");
     assert!(compiled.without_selector);
     assert_eq!(compiled.abi.len(), 1);
-    assert_eq!(compiled.abi[0].name, "__spend");
+    assert_eq!(compiled.abi[0].name, generated_covenant_auth_entrypoint_name("spend"));
     assert!(compiled.ast.functions.iter().any(|f| f.name == "__covenant_policy_spend" && !f.entrypoint));
-    assert!(compiled.ast.functions.iter().any(|f| f.name == "__spend" && f.entrypoint));
+    assert!(compiled.ast.functions.iter().any(|f| f.name == generated_covenant_auth_entrypoint_name("spend") && f.entrypoint));
     assert!(compiled.script.contains(&OpAuthOutputCount));
 }
 
@@ -36,9 +36,9 @@ fn infers_auth_binding_from_from_equal_one_when_binding_omitted() {
     let compiled = compile_contract(source, &[Expr::int(3)], CompileOptions::default()).expect("compile succeeds");
     assert!(compiled.without_selector);
     assert_eq!(compiled.abi.len(), 1);
-    assert_eq!(compiled.abi[0].name, "__spend");
+    assert_eq!(compiled.abi[0].name, generated_covenant_auth_entrypoint_name("spend"));
     assert!(compiled.ast.functions.iter().any(|f| f.name == "__covenant_policy_spend" && !f.entrypoint));
-    assert!(compiled.ast.functions.iter().any(|f| f.name == "__spend" && f.entrypoint));
+    assert!(compiled.ast.functions.iter().any(|f| f.name == generated_covenant_auth_entrypoint_name("spend") && f.entrypoint));
     assert!(compiled.script.contains(&OpAuthOutputCount));
 }
 
@@ -206,7 +206,7 @@ fn lowers_singleton_sugar_to_auth_one_to_one_defaults() {
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
     assert!(compiled.without_selector);
-    assert_eq!(compiled.abi[0].name, "__spend");
+    assert_eq!(compiled.abi[0].name, generated_covenant_auth_entrypoint_name("spend"));
     assert!(compiled.script.contains(&OpAuthOutputCount));
 }
 
@@ -223,7 +223,7 @@ fn lowers_fanout_sugar_to_auth_with_to_bound() {
 
     let compiled = compile_contract(source, &[Expr::int(3)], CompileOptions::default()).expect("compile succeeds");
     assert!(compiled.without_selector);
-    assert_eq!(compiled.abi[0].name, "__split");
+    assert_eq!(compiled.abi[0].name, generated_covenant_auth_entrypoint_name("split"));
     assert!(compiled.script.contains(&OpAuthOutputCount));
 }
 
@@ -299,7 +299,7 @@ fn infers_verification_mode_when_mode_omitted_and_no_returns() {
     "#;
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
-    assert!(compiled.ast.functions.iter().any(|f| f.name == "__check" && f.entrypoint));
+    assert!(compiled.ast.functions.iter().any(|f| f.name == generated_covenant_auth_entrypoint_name("check") && f.entrypoint));
 }
 
 #[test]
@@ -316,7 +316,7 @@ fn infers_transition_mode_when_mode_omitted_and_has_returns() {
     "#;
 
     let compiled = compile_contract(source, &[Expr::int(3)], CompileOptions::default()).expect("compile succeeds");
-    assert!(compiled.ast.functions.iter().any(|f| f.name == "__roll" && f.entrypoint));
+    assert!(compiled.ast.functions.iter().any(|f| f.name == generated_covenant_auth_entrypoint_name("roll") && f.entrypoint));
 }
 
 #[test]
@@ -351,7 +351,7 @@ fn allows_singleton_transition_array_returns_with_termination_allowed() {
     "#;
 
     let compiled = compile_contract(source, &[Expr::int(3)], CompileOptions::default()).expect("compile succeeds");
-    assert!(compiled.ast.functions.iter().any(|f| f.name == "__roll" && f.entrypoint));
+    assert!(compiled.ast.functions.iter().any(|f| f.name == generated_covenant_auth_entrypoint_name("roll") && f.entrypoint));
 }
 
 #[test]
@@ -404,7 +404,7 @@ fn allows_termination_in_singleton_verification_mode() {
     "#;
 
     let compiled = compile_contract(source, &[Expr::int(3)], CompileOptions::default()).expect("compile succeeds");
-    assert!(compiled.ast.functions.iter().any(|f| f.name == "__check" && f.entrypoint));
+    assert!(compiled.ast.functions.iter().any(|f| f.name == generated_covenant_auth_entrypoint_name("check") && f.entrypoint));
 }
 
 #[test]

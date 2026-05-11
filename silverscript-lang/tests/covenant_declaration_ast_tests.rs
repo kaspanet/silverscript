@@ -1,12 +1,15 @@
 use silverscript_lang::ast::visit::{AstVisitorMut, NameKind, visit_contract_mut};
 use silverscript_lang::ast::{ContractAst, Expr, FunctionAst, parse_contract_ast};
-use silverscript_lang::compiler::{CompileOptions, compile_contract};
+use silverscript_lang::compiler::{COVENANT_ENTRYPOINT_AUTH_PREFIX, CompileOptions, compile_contract};
 use silverscript_lang::span::Span;
 use std::collections::HashSet;
 
 fn canonicalize_generated_name(name: &str) -> String {
     if let Some(rest) = name.strip_prefix("__covenant_policy_") {
         return format!("covenant_policy_{rest}");
+    }
+    if let Some(rest) = name.strip_prefix(&format!("{COVENANT_ENTRYPOINT_AUTH_PREFIX}_")) {
+        return rest.to_string();
     }
     if let Some(rest) = name.strip_prefix("__cov_") {
         return format!("cov_{rest}");

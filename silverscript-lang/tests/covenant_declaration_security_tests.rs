@@ -2,7 +2,10 @@ use kaspa_consensus_core::Hash;
 use kaspa_consensus_core::tx::{Transaction, TransactionOutput, UtxoEntry};
 use kaspa_txscript_errors::TxScriptError;
 use silverscript_lang::ast::Expr;
-use silverscript_lang::compiler::{CompileOptions, CompiledContract, CovenantDeclCallOptions, compile_contract, struct_object};
+use silverscript_lang::compiler::{
+    CompileOptions, CompiledContract, CovenantDeclCallOptions, compile_contract, generated_covenant_auth_entrypoint_name,
+    struct_object,
+};
 
 mod common;
 
@@ -133,10 +136,6 @@ fn function_param_type_names(compiled: &CompiledContract<'_>, function_name: &st
         .iter()
         .map(|param| param.type_ref.type_name())
         .collect()
-}
-
-fn generated_auth_entrypoint_name(function_name: &str) -> String {
-    format!("__{function_name}")
 }
 
 fn state_array_arg(values: Vec<i64>) -> Expr<'static> {
@@ -529,7 +528,7 @@ fn runtime_passes_state_into_generated_policy_function() {
     let active = compile_state(AUTH_SINGLETON_ARRAY_RUNTIME_SOURCE, 10);
     let out = compile_state(AUTH_SINGLETON_ARRAY_RUNTIME_SOURCE, 11);
 
-    let wrapper_name = generated_auth_entrypoint_name("step");
+    let wrapper_name = generated_covenant_auth_entrypoint_name("step");
     let wrapper_param_types = function_param_type_names(&active, &wrapper_name);
     assert_eq!(wrapper_param_types, vec!["State".to_string()]);
 
