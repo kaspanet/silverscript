@@ -41,9 +41,8 @@ fn lower_statements<'i>(
                 && identifier_uses.get(name).copied().unwrap_or(0) <= 1
                 && !expr_references_any(expr, assigned_names) =>
             {
-                let lowered_expr = coerce_expr_for_declared_scalar_type(substitute_expr(expr, &local_aliases)?, type_ref);
+                let lowered_expr = coerce_expr_for_declared_scalar_type(substitute_expr(expr, &local_aliases)?, type_ref)?;
                 local_aliases.insert(name.clone(), lowered_expr);
-                let _ = (type_ref, modifiers, span, type_span, modifier_spans, name_span);
             }
             Statement::VariableDefinition { type_ref, modifiers, name, expr, span, type_span, modifier_spans, name_span } => {
                 local_aliases.remove(name);
@@ -190,15 +189,16 @@ fn lower_statements<'i>(
     Ok(lowered)
 }
 
-fn coerce_expr_for_declared_scalar_type<'i>(expr: Expr<'i>, type_ref: &TypeRef) -> Expr<'i> {
+fn coerce_expr_for_declared_scalar_type<'i>(expr: Expr<'i>, type_ref: &TypeRef) -> Result<Expr<'i>, CompilerError> {
     if matches!(type_ref.base, TypeBase::Byte)
         && type_ref.array_dims.is_empty()
         && let ExprKind::Int(value) = expr.kind
-        && (0..=255).contains(&value)
     {
-        return Expr::new(ExprKind::Byte(value as u8), expr.span);
+        let byte_value =
+            value.try_into().map_err(|_| CompilerError::Unsupported(format!("integer literal {value} is out of range for byte")))?;
+        return Ok(Expr::new(ExprKind::Byte(byte_value), expr.span));
     }
-    expr
+    Ok(expr)
 }
 
 fn substitute_expr<'i>(expr: &Expr<'i>, aliases: &HashMap<String, Expr<'i>>) -> Result<Expr<'i>, CompilerError> {
