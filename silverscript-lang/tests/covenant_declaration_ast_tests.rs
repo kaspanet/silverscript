@@ -91,7 +91,7 @@ fixture_ast_test!(lowers_transition_array_return_to_exact_output_count_match, [E
 fixture_ast_test!(lowers_singleton_transition_with_termination_allowed_to_array_cardinality_checks, [Expr::int(10)]);
 fixture_ast_test!(lowers_auth_verification_groups_multiple_two_field_state, [Expr::int(4), Expr::int(10), Expr::bytes(vec![7u8; 32])]);
 fixture_ast_test!(lowers_auth_verification_groups_single_two_field_state, [Expr::int(4), Expr::int(10), Expr::bytes(vec![7u8; 32])]);
-fixture_ast_test!(lowers_auth_transition_two_field_state, [Expr::int(4), Expr::int(10), Expr::bytes(vec![7u8; 32])]);
+fixture_ast_test!(lowers_auth_transition_two_field_state, [Expr::int(10), Expr::bytes(vec![7u8; 32])]);
 fixture_ast_test!(lowers_cov_verification_two_field_state, [Expr::int(2), Expr::int(4), Expr::int(10), Expr::bytes(vec![7u8; 32])]);
 fixture_ast_test!(lowers_cov_transition_two_field_state, [Expr::int(2), Expr::int(4), Expr::int(10), Expr::bytes(vec![7u8; 32])]);
 fixture_ast_test!(lowers_cov_transition_single_field_state, [Expr::int(2), Expr::int(2), Expr::int(10)]);
@@ -135,7 +135,7 @@ fn covers_attribute_config_combinations_with_two_field_state() {
                 require(new_states.length == new_states.length);
             }
 
-            #[covenant(binding = auth, from = 1, to = max_outs, mode = transition)]
+            #[covenant(binding = auth, from = 1, to = 1, mode = transition)]
             function auth_transition(State prev_state, int fee) : (State) {
                 return({ amount: prev_state.amount - fee, owner: prev_state.owner });
             }

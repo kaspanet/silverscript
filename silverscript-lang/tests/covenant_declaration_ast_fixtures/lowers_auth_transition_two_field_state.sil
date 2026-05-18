@@ -1,8 +1,8 @@
-contract Matrix(int max_outs, int init_amount, byte[32] init_owner) {
+contract Matrix(int init_amount, byte[32] init_owner) {
     int amount = init_amount;
     byte[32] owner = init_owner;
 
-    #[covenant(binding = auth, from = 1, to = max_outs, mode = transition)]
+    #[covenant(binding = auth, from = 1, mode = transition)]
     function step(State prev_state, int fee) : (State) {
         return({
             amount: prev_state.amount - fee,
@@ -13,7 +13,7 @@ contract Matrix(int max_outs, int init_amount, byte[32] init_owner) {
 
 // --- lowered ---
 
-contract Matrix(int max_outs, int init_amount, byte[32] init_owner) {
+contract Matrix(int init_amount, byte[32] init_owner) {
     int amount = init_amount;
     byte[32] owner = init_owner;
 

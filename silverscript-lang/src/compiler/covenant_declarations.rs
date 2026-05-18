@@ -152,12 +152,7 @@ fn parse_covenant_declaration<'i>(
                 .copied()
                 .ok_or_else(|| CompilerError::Unsupported("missing covenant attribute argument 'from'".to_string()))?
                 .clone();
-            let to_expr = args_by_name
-                .get("to")
-                .copied()
-                .ok_or_else(|| CompilerError::Unsupported("missing covenant attribute argument 'to'".to_string()))?
-                .clone();
-            (from_expr, to_expr)
+            (from_expr, args_by_name.get("to").copied().cloned())
         }
         CovenantSyntax::Singleton => {
             if args_by_name.contains_key("from") || args_by_name.contains_key("to") {
@@ -165,7 +160,7 @@ fn parse_covenant_declaration<'i>(
                     "covenant.singleton is sugar and does not accept 'from' or 'to' arguments".to_string(),
                 ));
             }
-            (Expr::int(1), Expr::int(1))
+            (Expr::int(1), Some(Expr::int(1)))
         }
         CovenantSyntax::Fanout => {
             if args_by_name.contains_key("from") {
@@ -178,19 +173,14 @@ fn parse_covenant_declaration<'i>(
                 .copied()
                 .ok_or_else(|| CompilerError::Unsupported("missing covenant attribute argument 'to'".to_string()))?
                 .clone();
-            (Expr::int(1), to_expr)
+            (Expr::int(1), Some(to_expr))
         }
     };
 
     let from_value = eval_const_int(&from_expr, constants)
         .map_err(|_| CompilerError::Unsupported("covenant 'from' must be a compile-time integer".to_string()))?;
-    let to_value = eval_const_int(&to_expr, constants)
-        .map_err(|_| CompilerError::Unsupported("covenant 'to' must be a compile-time integer".to_string()))?;
     if from_value < 1 {
         return Err(CompilerError::Unsupported("covenant 'from' must be >= 1".to_string()));
-    }
-    if to_value < 1 {
-        return Err(CompilerError::Unsupported("covenant 'to' must be >= 1".to_string()));
     }
 
     let default_binding = if from_value == 1 { CovenantBinding::Auth } else { CovenantBinding::Cov };
@@ -275,15 +265,28 @@ fn parse_covenant_declaration<'i>(
         return Err(CompilerError::Unsupported("binding=cov with groups=multiple is not supported yet".to_string()));
     }
 
-    if args_by_name.contains_key("termination") && !(from_value == 1 && to_value == 1) {
-        return Err(CompilerError::Unsupported("termination is only supported for singleton covenants (from=1, to=1)".to_string()));
-    }
-
     if mode == CovenantMode::Verification && !function.return_types.is_empty() {
         return Err(CompilerError::Unsupported("verification mode policy functions must not declare return values".to_string()));
     }
     if mode == CovenantMode::Transition && function.return_types.is_empty() {
         return Err(CompilerError::Unsupported("transition mode policy functions must declare return values".to_string()));
+    }
+
+    let infers_single_state_transition_to_one =
+        mode == CovenantMode::Transition && function.return_types.len() == 1 && is_state_type_ref(&function.return_types[0]);
+    let to_expr = match to_expr {
+        Some(to_expr) => to_expr,
+        None if infers_single_state_transition_to_one => Expr::int(1),
+        None => return Err(CompilerError::Unsupported("missing covenant attribute argument 'to'".to_string())),
+    };
+    let to_value = eval_const_int(&to_expr, constants)
+        .map_err(|_| CompilerError::Unsupported("covenant 'to' must be a compile-time integer".to_string()))?;
+    if to_value < 1 {
+        return Err(CompilerError::Unsupported("covenant 'to' must be >= 1".to_string()));
+    }
+
+    if args_by_name.contains_key("termination") && !(from_value == 1 && to_value == 1) {
+        return Err(CompilerError::Unsupported("termination is only supported for singleton covenants (from=1, to=1)".to_string()));
     }
 
     Ok(CovenantDeclaration {
@@ -384,6 +387,13 @@ fn validate_covenant_policy_state_shape<'i>(
         if declaration.singleton && is_state_array_type_ref(return_type) && declaration.termination != CovenantTermination::Allowed {
             return Err(CompilerError::Unsupported(format!(
                 "transition mode singleton policy function '{}' must return a single State (arrays are not allowed unless termination=allowed)",
+                policy.name
+            )));
+        }
+
+        if is_state_type_ref(return_type) && !is_literal_int(&declaration.to_expr, 1) {
+            return Err(CompilerError::Unsupported(format!(
+                "mode=transition on function '{}' may return a single State only when 'to' is the literal 1 or omitted",
                 policy.name
             )));
         }
@@ -1026,6 +1036,10 @@ fn is_state_type_ref(type_ref: &TypeRef) -> bool {
 
 fn is_state_array_type_ref(type_ref: &TypeRef) -> bool {
     !type_ref.array_dims.is_empty() && matches!(&type_ref.base, TypeBase::Custom(name) if name == "State")
+}
+
+fn is_literal_int(expr: &Expr<'_>, expected: i64) -> bool {
+    matches!(expr.kind, ExprKind::Int(value) if value == expected)
 }
 
 fn append_policy_call_and_capture_next_state<'i>(

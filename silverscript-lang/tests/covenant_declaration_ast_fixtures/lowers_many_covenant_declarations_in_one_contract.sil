@@ -16,7 +16,7 @@ contract Matrix(int max_ins, int max_outs, int init_amount, byte[32] init_owner)
         require(new_states.length == new_states.length);
     }
 
-    #[covenant(binding = auth, from = 1, to = max_outs, mode = transition)]
+    #[covenant(binding = auth, from = 1, mode = transition)]
     function auth_transition(State prev_state, int fee) : (State) {
         return({ amount: prev_state.amount - fee, owner: prev_state.owner });
     }

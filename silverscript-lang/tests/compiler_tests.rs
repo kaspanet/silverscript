@@ -1994,7 +1994,7 @@ fn build_sig_script_for_covenant_decl_supports_all_covenant_ast_examples() {
                 require(new_states.length == new_states.length);
             }
 
-            #[covenant(binding = auth, from = 1, to = max_outs, mode = transition)]
+            #[covenant(binding = auth, from = 1, to = 1, mode = transition)]
             function auth_transition(State prev_state, int fee) : (State) {
                 return({ amount: prev_state.amount - fee, owner: prev_state.owner });
             }
@@ -2188,7 +2188,7 @@ fn build_sig_script_for_covenant_decl_supports_all_covenant_ast_examples() {
                     int amount = init_amount;
                     byte[32] owner = init_owner;
 
-                    #[covenant(binding = auth, from = 1, to = max_outs, mode = transition)]
+                    #[covenant(binding = auth, from = 1, to = 1, mode = transition)]
                     function step(State prev_state, int fee) : (State) {
                         return({ amount: prev_state.amount - fee, owner: prev_state.owner });
                     }
