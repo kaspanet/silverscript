@@ -255,7 +255,7 @@ fn parse_covenant_declaration<'i>(
     if binding == CovenantBinding::Auth && from_value != 1 {
         return Err(CompilerError::Unsupported("binding=auth requires from = 1".to_string()));
     }
-    if binding == CovenantBinding::Cov && from_value == 1 && args_by_name.contains_key("binding") {
+    if binding == CovenantBinding::Cov && is_literal_int(&from_expr, 1) && args_by_name.contains_key("binding") {
         eprintln!(
             "warning: #[covenant(...)] on function '{}' uses binding=cov with from=1; binding=auth is usually a better default",
             function.name
