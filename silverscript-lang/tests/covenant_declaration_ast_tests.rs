@@ -94,6 +94,7 @@ fixture_ast_test!(lowers_auth_verification_groups_single_two_field_state, [Expr:
 fixture_ast_test!(lowers_auth_transition_two_field_state, [Expr::int(10), Expr::bytes(vec![7u8; 32])]);
 fixture_ast_test!(lowers_cov_verification_two_field_state, [Expr::int(2), Expr::int(4), Expr::int(10), Expr::bytes(vec![7u8; 32])]);
 fixture_ast_test!(lowers_cov_transition_two_field_state, [Expr::int(2), Expr::int(4), Expr::int(10), Expr::bytes(vec![7u8; 32])]);
+fixture_ast_test!(lowers_cov_transition_single_state_return, [Expr::int(2), Expr::int(10), Expr::bytes(vec![7u8; 32])]);
 fixture_ast_test!(lowers_cov_transition_single_field_state, [Expr::int(2), Expr::int(2), Expr::int(10)]);
 fixture_ast_test!(lowers_inferred_auth_verification_two_field_state, [Expr::int(4), Expr::int(10), Expr::bytes(vec![7u8; 32])]);
 fixture_ast_test!(

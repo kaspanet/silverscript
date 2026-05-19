@@ -436,7 +436,11 @@ fn build_auth_wrapper<'i>(
             cov_shared_out_count_name,
             Expr::call("OpCovOutputCount", vec![identifier_expr(cov_id_name)]),
         ));
-        body.push(require_statement(binary_expr(BinaryOp::Eq, identifier_expr(cov_shared_out_count_name), identifier_expr(auth_out_count_name))));
+        body.push(require_statement(binary_expr(
+            BinaryOp::Eq,
+            identifier_expr(cov_shared_out_count_name),
+            identifier_expr(auth_out_count_name),
+        )));
     }
 
     if !contract_fields.is_empty() {
@@ -675,7 +679,13 @@ fn build_cov_wrapper<'i>(
                 }
             }
         } else {
-            append_cov_input_state_reads(&mut body, cov_id_name, in_count_name, declaration.from_expr.clone(), contract_fields);
+            append_cov_input_state_reads_without_assign(
+                &mut body,
+                cov_id_name,
+                in_count_name,
+                declaration.from_expr.clone(),
+                contract_fields,
+            );
             let call_args = policy.params.iter().map(|param| identifier_expr(&param.name)).collect();
 
             match declaration.mode {
@@ -889,7 +899,7 @@ fn is_literal_int(expr: &Expr<'_>, expected: i64) -> bool {
     matches!(expr.kind, ExprKind::Int(value) if value == expected)
 }
 
-fn append_cov_input_state_reads<'i>(
+fn append_cov_input_state_reads_without_assign<'i>(
     body: &mut Vec<Statement<'i>>,
     cov_id_name: &str,
     in_count_name: &str,
@@ -901,8 +911,8 @@ fn append_cov_input_state_reads<'i>(
     }
     let loop_var = "__cov_in_k";
     let in_idx_name = "__cov_in_idx";
-    let mut then_branch = Vec::new();
-    then_branch.push(var_def_statement(
+    let mut for_body = Vec::new();
+    for_body.push(var_def_statement(
         int_type_ref(),
         in_idx_name,
         Expr::call("OpCovInputIdx", vec![identifier_expr(cov_id_name), identifier_expr(loop_var)]),
@@ -911,8 +921,8 @@ fn append_cov_input_state_reads<'i>(
         .iter()
         .map(|field| state_binding(&field.name, field.type_ref.clone(), &format!("__cov_prev_{}", field.name)))
         .collect();
-    then_branch.push(state_call_assign_statement(bindings, "readInputState", vec![identifier_expr(in_idx_name)]));
-    body.push(for_statement(loop_var, Expr::int(0), identifier_expr(in_count_name), from_expr, then_branch));
+    for_body.push(state_call_assign_statement(bindings, "readInputState", vec![identifier_expr(in_idx_name)]));
+    body.push(for_statement(loop_var, Expr::int(0), identifier_expr(in_count_name), from_expr, for_body));
 }
 
 fn append_cov_input_state_reads_into_state_array<'i>(
@@ -924,11 +934,11 @@ fn append_cov_input_state_reads_into_state_array<'i>(
 ) {
     let loop_var = "__cov_in_k";
     body.push(var_decl_statement(state_array_type_ref(), prev_states_name));
-    let then_branch = vec![array_append_statement(
+    let for_body = vec![array_append_statement(
         prev_states_name,
         Expr::call("readInputState", vec![Expr::call("OpCovInputIdx", vec![identifier_expr(cov_id_name), identifier_expr(loop_var)])]),
     )];
-    body.push(for_statement(loop_var, Expr::int(0), identifier_expr(in_count_name), from_expr, then_branch));
+    body.push(for_statement(loop_var, Expr::int(0), identifier_expr(in_count_name), from_expr, for_body));
 }
 
 fn append_auth_output_state_array_checks_from_state_array<'i>(
@@ -940,7 +950,7 @@ fn append_auth_output_state_array_checks_from_state_array<'i>(
 ) {
     let loop_var = "__cov_k";
     let out_idx_name = "__cov_out_idx";
-    let then_branch = vec![
+    let for_body = vec![
         var_def_statement(
             int_type_ref(),
             out_idx_name,
@@ -951,7 +961,7 @@ fn append_auth_output_state_array_checks_from_state_array<'i>(
             vec![identifier_expr(out_idx_name), array_index_expr(state_array_name, identifier_expr(loop_var))],
         ),
     ];
-    body.push(for_statement(loop_var, Expr::int(0), identifier_expr(out_count_name), to_expr, then_branch));
+    body.push(for_statement(loop_var, Expr::int(0), identifier_expr(out_count_name), to_expr, for_body));
 }
 
 fn append_cov_output_state_array_checks_from_state_array<'i>(
@@ -963,7 +973,7 @@ fn append_cov_output_state_array_checks_from_state_array<'i>(
 ) {
     let loop_var = "__cov_k";
     let out_idx_name = "__cov_out_idx";
-    let then_branch = vec![
+    let for_body = vec![
         var_def_statement(
             int_type_ref(),
             out_idx_name,
@@ -974,5 +984,5 @@ fn append_cov_output_state_array_checks_from_state_array<'i>(
             vec![identifier_expr(out_idx_name), array_index_expr(state_array_name, identifier_expr(loop_var))],
         ),
     ];
-    body.push(for_statement(loop_var, Expr::int(0), identifier_expr(out_count_name), to_expr, then_branch));
+    body.push(for_statement(loop_var, Expr::int(0), identifier_expr(out_count_name), to_expr, for_body));
 }
