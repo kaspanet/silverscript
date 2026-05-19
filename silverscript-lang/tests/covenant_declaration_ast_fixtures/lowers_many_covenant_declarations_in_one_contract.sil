@@ -83,14 +83,14 @@ contract Matrix(int max_ins, int max_outs, int init_amount, byte[32] init_owner)
     }
 
     entrypoint function auth_verification_multi(State[] new_states, int nonce) {
-        int cov_out_count = OpAuthOutputCount(this.activeInputIndex);
+        int auth_out_count = OpAuthOutputCount(this.activeInputIndex);
 
         State prev_state = { amount: amount, owner: owner };
         covenant_policy_auth_verification_multi(prev_state, new_states, nonce);
-        require(cov_out_count <= max_outs);
-        require(cov_out_count == new_states.length);
+        require(auth_out_count <= max_outs);
+        require(auth_out_count == new_states.length);
 
-        for(cov_k, 0, cov_out_count, max_outs) {
+        for(cov_k, 0, auth_out_count, max_outs) {
             int cov_out_idx = OpAuthOutputIdx(this.activeInputIndex, cov_k);
             validateOutputState(cov_out_idx, new_states[cov_k]);
         }
@@ -101,18 +101,18 @@ contract Matrix(int max_ins, int max_outs, int init_amount, byte[32] init_owner)
     }
 
     entrypoint function auth_verification_single(State[] new_states) {
-        int cov_out_count = OpAuthOutputCount(this.activeInputIndex);
+        int auth_out_count = OpAuthOutputCount(this.activeInputIndex);
 
         byte[32] cov_id = OpInputCovenantId(this.activeInputIndex);
         int cov_shared_out_count = OpCovOutputCount(cov_id);
-        require(cov_shared_out_count == cov_out_count);
+        require(cov_shared_out_count == auth_out_count);
 
         State prev_state = { amount: amount, owner: owner };
         covenant_policy_auth_verification_single(prev_state, new_states);
-        require(cov_out_count <= max_outs);
-        require(cov_out_count == new_states.length);
+        require(auth_out_count <= max_outs);
+        require(auth_out_count == new_states.length);
 
-        for(cov_k, 0, cov_out_count, max_outs) {
+        for(cov_k, 0, auth_out_count, max_outs) {
             int cov_out_idx = OpAuthOutputIdx(this.activeInputIndex, cov_k);
             validateOutputState(cov_out_idx, new_states[cov_k]);
         }
@@ -123,11 +123,11 @@ contract Matrix(int max_ins, int max_outs, int init_amount, byte[32] init_owner)
     }
 
     entrypoint function auth_transition(int fee) {
-        int cov_out_count = OpAuthOutputCount(this.activeInputIndex);
+        int auth_out_count = OpAuthOutputCount(this.activeInputIndex);
 
         State prev_state = { amount: amount, owner: owner };
         (State cov_new_state) = covenant_policy_auth_transition(prev_state, fee);
-        require(cov_out_count == 1);
+        require(auth_out_count == 1);
 
         int cov_out_idx = OpAuthOutputIdx(this.activeInputIndex, 0);
         validateOutputState(cov_out_idx, cov_new_state);
@@ -211,14 +211,14 @@ contract Matrix(int max_ins, int max_outs, int init_amount, byte[32] init_owner)
     }
 
     entrypoint function inferred_auth(State[] new_states) {
-        int cov_out_count = OpAuthOutputCount(this.activeInputIndex);
+        int auth_out_count = OpAuthOutputCount(this.activeInputIndex);
 
         State prev_state = { amount: amount, owner: owner };
         covenant_policy_inferred_auth(prev_state, new_states);
-        require(cov_out_count <= max_outs);
-        require(cov_out_count == new_states.length);
+        require(auth_out_count <= max_outs);
+        require(auth_out_count == new_states.length);
 
-        for(cov_k, 0, cov_out_count, max_outs) {
+        for(cov_k, 0, auth_out_count, max_outs) {
             int cov_out_idx = OpAuthOutputIdx(this.activeInputIndex, cov_k);
             validateOutputState(cov_out_idx, new_states[cov_k]);
         }
@@ -264,11 +264,11 @@ contract Matrix(int max_ins, int max_outs, int init_amount, byte[32] init_owner)
     }
 
     entrypoint function inferred_transition(int delta) {
-        int cov_out_count = OpAuthOutputCount(this.activeInputIndex);
+        int auth_out_count = OpAuthOutputCount(this.activeInputIndex);
 
         State prev_state = { amount: amount, owner: owner };
         (State cov_new_state) = covenant_policy_inferred_transition(prev_state, delta);
-        require(cov_out_count == 1);
+        require(auth_out_count == 1);
 
         int cov_out_idx = OpAuthOutputIdx(this.activeInputIndex, 0);
         validateOutputState(cov_out_idx, cov_new_state);
@@ -279,11 +279,11 @@ contract Matrix(int max_ins, int max_outs, int init_amount, byte[32] init_owner)
     }
 
     entrypoint function singleton_transition(int delta) {
-        int cov_out_count = OpAuthOutputCount(this.activeInputIndex);
+        int auth_out_count = OpAuthOutputCount(this.activeInputIndex);
 
         State prev_state = { amount: amount, owner: owner };
         (State cov_new_state) = covenant_policy_singleton_transition(prev_state, delta);
-        require(cov_out_count == 1);
+        require(auth_out_count == 1);
 
         int cov_out_idx = OpAuthOutputIdx(this.activeInputIndex, 0);
         validateOutputState(cov_out_idx, cov_new_state);
@@ -295,14 +295,14 @@ contract Matrix(int max_ins, int max_outs, int init_amount, byte[32] init_owner)
     }
 
     entrypoint function singleton_terminate(State[] next_states) {
-        int cov_out_count = OpAuthOutputCount(this.activeInputIndex);
+        int auth_out_count = OpAuthOutputCount(this.activeInputIndex);
 
         State prev_state = { amount: amount, owner: owner };
         (State[] cov_new_states) = covenant_policy_singleton_terminate(prev_state, next_states);
-        require(cov_out_count <= 1);
-        require(cov_out_count == cov_new_states.length);
+        require(auth_out_count <= 1);
+        require(auth_out_count == cov_new_states.length);
 
-        for(cov_k, 0, cov_out_count, 1) {
+        for(cov_k, 0, auth_out_count, 1) {
             int cov_out_idx = OpAuthOutputIdx(this.activeInputIndex, cov_k);
             validateOutputState(cov_out_idx, cov_new_states[cov_k]);
         }
@@ -313,14 +313,14 @@ contract Matrix(int max_ins, int max_outs, int init_amount, byte[32] init_owner)
     }
 
     entrypoint function fanout_verification(State[] new_states) {
-        int cov_out_count = OpAuthOutputCount(this.activeInputIndex);
+        int auth_out_count = OpAuthOutputCount(this.activeInputIndex);
 
         State prev_state = { amount: amount, owner: owner };
         covenant_policy_fanout_verification(prev_state, new_states);
-        require(cov_out_count <= max_outs);
-        require(cov_out_count == new_states.length);
+        require(auth_out_count <= max_outs);
+        require(auth_out_count == new_states.length);
 
-        for(cov_k, 0, cov_out_count, max_outs) {
+        for(cov_k, 0, auth_out_count, max_outs) {
             int cov_out_idx = OpAuthOutputIdx(this.activeInputIndex, cov_k);
             validateOutputState(cov_out_idx, new_states[cov_k]);
         }

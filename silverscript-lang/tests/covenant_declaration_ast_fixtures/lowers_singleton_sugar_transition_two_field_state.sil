@@ -19,11 +19,11 @@ contract Matrix(int init_amount, byte[32] init_owner) {
     }
 
     entrypoint function step(int delta) {
-        int cov_out_count = OpAuthOutputCount(this.activeInputIndex);
+        int auth_out_count = OpAuthOutputCount(this.activeInputIndex);
 
         State prev_state = { amount: amount, owner: owner };
         (State cov_new_state) = covenant_policy_step(prev_state, delta);
-        require(cov_out_count == 1);
+        require(auth_out_count == 1);
 
         int cov_out_idx = OpAuthOutputIdx(this.activeInputIndex, 0);
         validateOutputState(cov_out_idx, cov_new_state);

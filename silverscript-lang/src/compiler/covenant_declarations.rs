@@ -424,19 +424,19 @@ fn build_auth_wrapper<'i>(
     let mut entrypoint_params = policy.params.clone();
 
     let active_input = active_input_index_expr();
-    let out_count_name = "__cov_out_count";
-    body.push(var_def_statement(int_type_ref(), out_count_name, Expr::call("OpAuthOutputCount", vec![active_input.clone()])));
+    let auth_out_count_name = "__auth_out_count";
+    body.push(var_def_statement(int_type_ref(), auth_out_count_name, Expr::call("OpAuthOutputCount", vec![active_input.clone()])));
 
     if declaration.groups == CovenantGroups::Single {
         let cov_id_name = "__cov_id";
         body.push(var_def_statement(bytes32_type_ref(), cov_id_name, Expr::call("OpInputCovenantId", vec![active_input.clone()])));
-        let cov_out_count_name = "__cov_shared_out_count";
+        let cov_shared_out_count_name = "__cov_shared_out_count";
         body.push(var_def_statement(
             int_type_ref(),
-            cov_out_count_name,
+            cov_shared_out_count_name,
             Expr::call("OpCovOutputCount", vec![identifier_expr(cov_id_name)]),
         ));
-        body.push(require_statement(binary_expr(BinaryOp::Eq, identifier_expr(cov_out_count_name), identifier_expr(out_count_name))));
+        body.push(require_statement(binary_expr(BinaryOp::Eq, identifier_expr(cov_shared_out_count_name), identifier_expr(auth_out_count_name))));
     }
 
     if !contract_fields.is_empty() {
@@ -452,7 +452,7 @@ fn build_auth_wrapper<'i>(
                 body.push(call_statement(policy_name, policy.params.iter().map(|param| identifier_expr(&param.name)).collect()));
                 if declaration.singleton && declaration.termination != CovenantTermination::Allowed {
                     let new_state_name = &policy.params[1].name;
-                    body.push(require_statement(binary_expr(BinaryOp::Eq, identifier_expr(out_count_name), Expr::int(1))));
+                    body.push(require_statement(binary_expr(BinaryOp::Eq, identifier_expr(auth_out_count_name), Expr::int(1))));
                     let out_idx_name = "__cov_out_idx";
                     body.push(var_def_statement(
                         int_type_ref(),
@@ -467,18 +467,18 @@ fn build_auth_wrapper<'i>(
                     let new_states_name = &policy.params[1].name;
                     body.push(require_statement(binary_expr(
                         BinaryOp::Le,
-                        identifier_expr(out_count_name),
+                        identifier_expr(auth_out_count_name),
                         declaration.to_expr.clone(),
                     )));
                     body.push(require_statement(binary_expr(
                         BinaryOp::Eq,
-                        identifier_expr(out_count_name),
+                        identifier_expr(auth_out_count_name),
                         length_expr(identifier_expr(new_states_name)),
                     )));
                     append_auth_output_state_array_checks_from_state_array(
                         &mut body,
                         &active_input,
-                        out_count_name,
+                        auth_out_count_name,
                         declaration.to_expr.clone(),
                         new_states_name,
                     );
@@ -500,7 +500,7 @@ fn build_auth_wrapper<'i>(
                         policy_name,
                         call_args,
                     ));
-                    body.push(require_statement(binary_expr(BinaryOp::Eq, identifier_expr(out_count_name), Expr::int(1))));
+                    body.push(require_statement(binary_expr(BinaryOp::Eq, identifier_expr(auth_out_count_name), Expr::int(1))));
                     let out_idx_name = "__cov_out_idx";
                     body.push(var_def_statement(
                         int_type_ref(),
@@ -520,18 +520,18 @@ fn build_auth_wrapper<'i>(
                     ));
                     body.push(require_statement(binary_expr(
                         BinaryOp::Le,
-                        identifier_expr(out_count_name),
+                        identifier_expr(auth_out_count_name),
                         declaration.to_expr.clone(),
                     )));
                     body.push(require_statement(binary_expr(
                         BinaryOp::Eq,
-                        identifier_expr(out_count_name),
+                        identifier_expr(auth_out_count_name),
                         length_expr(identifier_expr(next_states_name)),
                     )));
                     append_auth_output_state_array_checks_from_state_array(
                         &mut body,
                         &active_input,
-                        out_count_name,
+                        auth_out_count_name,
                         declaration.to_expr.clone(),
                         next_states_name,
                     );
@@ -550,7 +550,7 @@ fn build_auth_wrapper<'i>(
             }
         }
 
-        body.push(require_statement(binary_expr(BinaryOp::Le, identifier_expr(out_count_name), declaration.to_expr.clone())));
+        body.push(require_statement(binary_expr(BinaryOp::Le, identifier_expr(auth_out_count_name), declaration.to_expr.clone())));
     }
 
     Ok(generated_entrypoint(policy, entrypoint_name, entrypoint_params, body))

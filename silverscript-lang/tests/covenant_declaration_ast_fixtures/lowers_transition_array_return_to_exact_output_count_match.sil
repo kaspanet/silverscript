@@ -17,14 +17,14 @@ contract Decls(int max_outs, int init_value) {
     }
 
     entrypoint function fanout(State[] next_states) {
-        int cov_out_count = OpAuthOutputCount(this.activeInputIndex);
+        int auth_out_count = OpAuthOutputCount(this.activeInputIndex);
 
         State prev_state = { value: value };
         (State[] cov_new_states) = covenant_policy_fanout(prev_state, next_states);
-        require(cov_out_count <= max_outs);
-        require(cov_out_count == cov_new_states.length);
+        require(auth_out_count <= max_outs);
+        require(auth_out_count == cov_new_states.length);
 
-        for(cov_k, 0, cov_out_count, max_outs) {
+        for(cov_k, 0, auth_out_count, max_outs) {
             int cov_out_idx = OpAuthOutputIdx(this.activeInputIndex, cov_k);
             validateOutputState(cov_out_idx, cov_new_states[cov_k]);
         }
