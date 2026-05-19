@@ -155,6 +155,38 @@ fn rejects_auth_transition_without_prev_state_shape() {
 }
 
 #[test]
+fn rejects_auth_transition_when_contract_state_is_empty() {
+    let source = r#"
+        contract Decls() {
+            #[covenant(binding = auth, from = 1, to = 1, mode = transition)]
+            function roll(int nonce) : (int) {
+                return(nonce);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default())
+        .expect_err("auth transition should be unsupported when contract state is empty");
+    assert!(err.to_string().contains("mode=tranisition is not supported when contract state is empty"));
+}
+
+#[test]
+fn rejects_cov_transition_when_contract_state_is_empty() {
+    let source = r#"
+        contract Decls() {
+            #[covenant(binding = cov, from = 2, to = 2, mode = transition)]
+            function roll(int nonce) : (int) {
+                return(nonce);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default())
+        .expect_err("cov transition should be unsupported when contract state is empty");
+    assert!(err.to_string().contains("mode=tranisition is not supported when contract state is empty"));
+}
+
+#[test]
 fn rejects_old_per_field_covenant_state_syntax() {
     let source = r#"
         contract Decls() {

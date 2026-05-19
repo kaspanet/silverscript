@@ -540,16 +540,16 @@ fn build_auth_wrapper<'i>(
         }
     } else {
         let call_args: Vec<Expr<'i>> = policy.params.iter().map(|param| identifier_expr(&param.name)).collect();
-        append_policy_call_and_capture_next_state(
-            &mut body,
-            policy,
-            policy_name,
-            declaration.mode,
-            declaration.singleton,
-            declaration.termination,
-            contract_fields,
-            call_args,
-        )?;
+
+        match declaration.mode {
+            CovenantMode::Verification => {
+                body.push(call_statement(policy_name, call_args));
+            }
+            CovenantMode::Transition => {
+                return Err(CompilerError::Unsupported("mode=tranisition is not supported when contract state is empty".to_string()));
+            }
+        }
+
         body.push(require_statement(binary_expr(BinaryOp::Le, identifier_expr(out_count_name), declaration.to_expr.clone())));
     }
 
@@ -677,16 +677,18 @@ fn build_cov_wrapper<'i>(
         } else {
             append_cov_input_state_reads(&mut body, cov_id_name, in_count_name, declaration.from_expr.clone(), contract_fields);
             let call_args = policy.params.iter().map(|param| identifier_expr(&param.name)).collect();
-            append_policy_call_and_capture_next_state(
-                &mut body,
-                policy,
-                policy_name,
-                declaration.mode,
-                declaration.singleton,
-                declaration.termination,
-                contract_fields,
-                call_args,
-            )?;
+
+            match declaration.mode {
+                CovenantMode::Verification => {
+                    body.push(call_statement(policy_name, call_args));
+                }
+                CovenantMode::Transition => {
+                    return Err(CompilerError::Unsupported(
+                        "mode=tranisition is not supported when contract state is empty".to_string(),
+                    ));
+                }
+            }
+
             body.push(require_statement(binary_expr(BinaryOp::Le, identifier_expr(out_count_name), declaration.to_expr.clone())));
         }
     }
@@ -875,12 +877,6 @@ fn length_expr<'i>(expr: Expr<'i>) -> Expr<'i> {
     )
 }
 
-fn return_type_is_per_output_array(return_type: &TypeRef, field_type: &TypeRef) -> bool {
-    return_type.base == field_type.base
-        && return_type.array_dims.len() == field_type.array_dims.len() + 1
-        && return_type.array_dims[..field_type.array_dims.len()] == field_type.array_dims[..]
-}
-
 fn is_state_type_ref(type_ref: &TypeRef) -> bool {
     type_ref.array_dims.is_empty() && matches!(&type_ref.base, TypeBase::Custom(name) if name == "State")
 }
@@ -891,84 +887,6 @@ fn is_state_array_type_ref(type_ref: &TypeRef) -> bool {
 
 fn is_literal_int(expr: &Expr<'_>, expected: i64) -> bool {
     matches!(expr.kind, ExprKind::Int(value) if value == expected)
-}
-
-fn append_policy_call_and_capture_next_state<'i>(
-    body: &mut Vec<Statement<'i>>,
-    policy: &FunctionAst<'i>,
-    policy_name: &str,
-    mode: CovenantMode,
-    singleton: bool,
-    termination: CovenantTermination,
-    contract_fields: &[ContractFieldAst<'i>],
-    call_args: Vec<Expr<'i>>,
-) -> Result<(), CompilerError> {
-    match mode {
-        CovenantMode::Verification => {
-            body.push(call_statement(policy_name, call_args));
-            Ok(())
-        }
-        CovenantMode::Transition => {
-            if policy.return_types.len() != contract_fields.len() {
-                return Err(CompilerError::Unsupported(format!(
-                    "transition mode policy function '{}' must return exactly {} values (one per contract field)",
-                    policy.name,
-                    contract_fields.len()
-                )));
-            }
-
-            let mut shape_is_single = true;
-            let mut shape_is_per_output_arrays = true;
-            for (field, return_type) in contract_fields.iter().zip(policy.return_types.iter()) {
-                shape_is_single &= type_name_from_ref(return_type) == type_name_from_ref(&field.type_ref);
-                shape_is_per_output_arrays &= return_type_is_per_output_array(return_type, &field.type_ref);
-            }
-            if !shape_is_single && !shape_is_per_output_arrays {
-                return Err(CompilerError::Unsupported(format!(
-                    "transition mode policy function '{}' returns must be either exactly State fields or per-field arrays",
-                    policy.name
-                )));
-            }
-            if singleton && shape_is_per_output_arrays && termination != CovenantTermination::Allowed {
-                return Err(CompilerError::Unsupported(format!(
-                    "transition mode singleton policy function '{}' must return a single State (arrays are not allowed unless termination=allowed)",
-                    policy.name
-                )));
-            }
-
-            let mut bindings = Vec::new();
-            let mut binding_by_field = HashMap::new();
-            for (field, return_type) in contract_fields.iter().zip(policy.return_types.iter()) {
-                let binding_name = format!("__cov_new_{}", field.name);
-                bindings.push(typed_binding(return_type.clone(), &binding_name));
-                binding_by_field.insert(field.name.clone(), binding_name);
-            }
-
-            body.push(function_call_assign_statement(bindings, policy_name, call_args));
-            if shape_is_single {
-                Ok(())
-            } else {
-                let first_field = &contract_fields[0].name;
-                let first_array_name = binding_by_field
-                    .get(first_field)
-                    .cloned()
-                    .unwrap_or_else(|| panic!("missing transition binding for field '{}'", first_field));
-                let expected_len_expr = length_expr(identifier_expr(&first_array_name));
-                for field in contract_fields.iter().skip(1) {
-                    let array_name = binding_by_field
-                        .get(&field.name)
-                        .cloned()
-                        .unwrap_or_else(|| panic!("missing transition binding for field '{}'", field.name));
-                    body.push(require_statement(binary_expr(
-                        BinaryOp::Eq,
-                        length_expr(identifier_expr(&array_name)),
-                        expected_len_expr.clone(),
-                    )));
-                }
-                Ok(())
-            }
-        }
-    }
 }
 
 fn append_cov_input_state_reads<'i>(
