@@ -101,6 +101,7 @@ The `args.json` file should contain an array of constructor argument expressions
 
 The compiled JSON output includes:
 - `contract_name`: The name of the contract
+- `compiler_version`: The SilverScript compiler version that produced the artifact
 - `script`: The compiled bytecode (as an array of bytes)
 - `ast`: The abstract syntax tree of the parsed contract
 - `abi`: An array of entrypoint functions with their parameter types
@@ -132,6 +133,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let compiled = compile_contract(source, &constructor_args, options)?;
     
     println!("Contract name: {}", compiled.contract_name);
+    println!("Compiler version: {}", compiled.compiler_version);
     println!("Script length: {} bytes", compiled.script.len());
     println!("ABI: {:?}", compiled.abi);
     

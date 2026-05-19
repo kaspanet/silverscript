@@ -18,7 +18,7 @@ use kaspa_txscript::{
 };
 use silverscript_lang::ast::{Expr, ExprKind, Statement, format_contract_ast, parse_contract_ast};
 use silverscript_lang::compiler::{
-    CompileOptions, CompiledContract, CovenantDeclCallOptions, FunctionAbiEntry, FunctionInputAbi, compile_contract,
+    COMPILER_VERSION, CompileOptions, CompiledContract, CovenantDeclCallOptions, FunctionAbiEntry, FunctionInputAbi, compile_contract,
     compile_contract_ast, function_branch_index, generated_covenant_auth_entrypoint_name, struct_object,
 };
 use silverscript_lang::debug_info::StepKind;
@@ -181,6 +181,13 @@ fn accepts_compatible_pragma_versions() {
 fn accepts_missing_pragma_without_version_check() {
     let source = pragma_source(None);
     compile_contract(&source, &[], CompileOptions::default()).expect("contract without pragma should still compile");
+}
+
+#[test]
+fn compiled_contract_includes_compiler_version() {
+    let source = pragma_source(None);
+    let compiled = compile_contract(&source, &[], CompileOptions::default()).expect("compile succeeds");
+    assert_eq!(compiled.compiler_version, COMPILER_VERSION);
 }
 
 #[test]

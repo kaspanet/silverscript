@@ -284,6 +284,7 @@ fn build_compiled_contract<'i>(
 ) -> CompiledContract<'i> {
     CompiledContract {
         contract_name: lowered_contract.name.clone(),
+        compiler_version: COMPILER_VERSION.to_string(),
         script,
         ast: covenant_lowered_contract.clone(),
         abi: function_abi_entries,

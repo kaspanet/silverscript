@@ -13,7 +13,7 @@ use kaspa_txscript::script_builder::ScriptBuilder;
 use kaspa_txscript::{EngineCtx, EngineFlags, TxScriptEngine};
 use rand::RngCore;
 use silverscript_lang::ast::ContractAst;
-use silverscript_lang::compiler::{CompiledContract, function_branch_index};
+use silverscript_lang::compiler::{COMPILER_VERSION, CompiledContract, function_branch_index};
 
 fn contract_fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join("silverc-test-files").join(name)
@@ -83,6 +83,7 @@ fn silverc_defaults_output_path_and_empty_ctor_args() {
     let json = fs::read_to_string(&out_path).expect("read output");
     let compiled: CompiledContract = serde_json::from_str(&json).expect("parse compiled contract");
     assert_eq!(compiled.contract_name, "Basic");
+    assert_eq!(compiled.compiler_version, COMPILER_VERSION);
 }
 
 #[test]
@@ -122,6 +123,7 @@ fn silverc_accepts_constructor_args_and_output_flag() {
     let json = fs::read_to_string(&out_path).expect("read output");
     let compiled: CompiledContract = serde_json::from_str(&json).expect("parse compiled contract");
     assert_eq!(compiled.contract_name, "WithCtor");
+    assert_eq!(compiled.compiler_version, COMPILER_VERSION);
     let selector =
         if compiled.without_selector { None } else { Some(function_branch_index(&compiled.ast, "main").expect("selector resolved")) };
     assert!(run_script_with_selector(compiled.script, selector).is_ok());

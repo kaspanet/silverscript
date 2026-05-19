@@ -93,6 +93,7 @@ pub struct CompiledStateLayout {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CompiledContract<'i> {
     pub contract_name: String,
+    pub compiler_version: String,
     pub script: Vec<u8>,
     pub ast: ContractAst<'i>,
     pub abi: Vec<FunctionAbiEntry>,
