@@ -1020,7 +1020,7 @@ fn infer_expr_type_ref_for_comparison_ref<'i>(
             (then_type == else_type).then_some(then_type)
         }
         ExprKind::Call { name, .. } if name == "readInputState" && !contract_fields.is_empty() => {
-            Some(TypeRef { base: TypeBase::Custom("State".to_string()), array_dims: Vec::new() })
+            Some(TypeRef { base: TypeBase::Custom(STATE_TYPE_NAME.to_string()), array_dims: Vec::new() })
         }
         ExprKind::Call { name, .. } => {
             let function = functions.get(name)?;
@@ -1178,7 +1178,7 @@ fn infer_struct_destructure_expr_type<'i>(
             if contract_fields.is_empty() {
                 return Err(CompilerError::Unsupported("readInputState requires contract fields".to_string()));
             }
-            Ok(TypeRef { base: TypeBase::Custom("State".to_string()), array_dims: Vec::new() })
+            Ok(TypeRef { base: TypeBase::Custom(STATE_TYPE_NAME.to_string()), array_dims: Vec::new() })
         }
         ExprKind::Call { name, .. } if name == "readInputStateWithTemplate" => Err(CompilerError::Unsupported(
             "readInputStateWithTemplate must be assigned to a struct variable or destructured directly".to_string(),
@@ -1347,7 +1347,7 @@ fn validate_expr_assignable_to_type<'i>(
     if struct_name_from_type_ref(type_ref, structs).is_some() {
         if let ExprKind::Call { name, args, .. } = &expr.kind
             && name == "readInputState"
-            && struct_name_from_type_ref(type_ref, structs) == Some("State")
+            && struct_name_from_type_ref(type_ref, structs) == Some(STATE_TYPE_NAME)
             && !contract_fields.is_empty()
             && args.len() == 1
         {

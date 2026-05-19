@@ -10,6 +10,8 @@ pub use crate::span::{Span, SpanUtils};
 
 pub mod visit;
 
+pub const STATE_TYPE_NAME: &str = "State";
+
 #[derive(Debug, Clone)]
 struct Identifier<'i> {
     name: String,
@@ -1311,8 +1313,8 @@ fn parse_struct_definition<'i>(pair: Pair<'i, Rule>) -> Result<StructAst<'i>, Co
     let mut inner = pair.into_inner();
     let name_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing struct name".to_string()))?;
     let Identifier { name, span: name_span } = parse_identifier(name_pair)?;
-    if name == "State" {
-        return Err(CompilerError::Unsupported("'State' is a reserved struct name".to_string()).with_span(&span));
+    if name == STATE_TYPE_NAME {
+        return Err(CompilerError::Unsupported(format!("'{}' is a reserved struct name", STATE_TYPE_NAME)).with_span(&span));
     }
     let mut fields = Vec::new();
     for field_pair in inner {

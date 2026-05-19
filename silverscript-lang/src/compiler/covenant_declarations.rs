@@ -726,11 +726,11 @@ fn int_type_ref() -> TypeRef {
 }
 
 fn state_type_ref() -> TypeRef {
-    TypeRef { base: TypeBase::Custom("State".to_string()), array_dims: Vec::new() }
+    TypeRef { base: TypeBase::Custom(STATE_TYPE_NAME.to_string()), array_dims: Vec::new() }
 }
 
 fn state_array_type_ref() -> TypeRef {
-    TypeRef { base: TypeBase::Custom("State".to_string()), array_dims: vec![ArrayDim::Dynamic] }
+    TypeRef { base: TypeBase::Custom(STATE_TYPE_NAME.to_string()), array_dims: vec![ArrayDim::Dynamic] }
 }
 
 fn bytes32_type_ref() -> TypeRef {
@@ -859,11 +859,11 @@ fn length_expr<'i>(expr: Expr<'i>) -> Expr<'i> {
 }
 
 fn is_state_type_ref(type_ref: &TypeRef) -> bool {
-    type_ref.array_dims.is_empty() && matches!(&type_ref.base, TypeBase::Custom(name) if name == "State")
+    type_ref.array_dims.is_empty() && matches!(&type_ref.base, TypeBase::Custom(name) if name == STATE_TYPE_NAME)
 }
 
 fn is_state_array_type_ref(type_ref: &TypeRef) -> bool {
-    !type_ref.array_dims.is_empty() && matches!(&type_ref.base, TypeBase::Custom(name) if name == "State")
+    !type_ref.array_dims.is_empty() && matches!(&type_ref.base, TypeBase::Custom(name) if name == STATE_TYPE_NAME)
 }
 
 fn is_literal_int(expr: &Expr<'_>, expected: i64) -> bool {

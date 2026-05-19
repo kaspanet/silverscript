@@ -5,7 +5,7 @@ use super::debug_value_types::infer_debug_expr_value_type;
 use super::*;
 use crate::ast::{
     ConstantAst, ContractAst, ContractFieldAst, Expr, ExprKind, FunctionAst, ParamAst, StateBindingAst, StateFieldExpr, Statement,
-    TypeBase, TypeRef, parse_type_ref,
+    TypeBase, TypeRef, STATE_TYPE_NAME, parse_type_ref,
 };
 use crate::span;
 
@@ -30,8 +30,8 @@ pub(crate) type StructRegistry = HashMap<String, StructSpec>;
 pub(crate) fn build_struct_registry<'i>(contract: &ContractAst<'i>) -> Result<StructRegistry, CompilerError> {
     let mut registry = HashMap::new();
     for item in &contract.structs {
-        if item.name == "State" {
-            return Err(CompilerError::Unsupported("'State' is a reserved struct name".to_string()));
+        if item.name == STATE_TYPE_NAME {
+            return Err(CompilerError::Unsupported(format!("'{}' is a reserved struct name", STATE_TYPE_NAME)));
         }
         let mut names = HashSet::new();
         let fields = item
@@ -60,7 +60,7 @@ pub(crate) fn build_struct_registry<'i>(contract: &ContractAst<'i>) -> Result<St
             Ok(StructFieldSpec { name: field.name.clone(), type_ref: field.type_ref.clone() })
         })
         .collect::<Result<Vec<_>, CompilerError>>()?;
-    registry.insert("State".to_string(), StructSpec { fields: state_fields });
+    registry.insert(STATE_TYPE_NAME.to_string(), StructSpec { fields: state_fields });
 
     Ok(registry)
 }
@@ -373,7 +373,7 @@ pub(crate) fn lower_struct_value_to_state_object_expr<'i>(
         .into_iter()
         .zip(lowered_values)
         .map(|((path, _), value)| StateFieldExpr {
-            name: if expected_struct_name == Some("State") {
+            name: if expected_struct_name == Some(STATE_TYPE_NAME) {
                 match path.as_slice() {
                     [root] => root.clone(),
                     [root, rest @ ..] => flattened_struct_name(root, rest),
@@ -403,8 +403,8 @@ pub(crate) fn lower_struct_value_expr<'i>(
         .ok_or_else(|| CompilerError::Unsupported(format!("expected struct type '{}'", expected_type.type_name())))?;
     match &expr.kind {
         ExprKind::Call { name, args, .. } if name == "readInputState" => {
-            if expected_struct_name != "State" {
-                return Err(CompilerError::Unsupported("readInputState returns State".to_string()));
+            if expected_struct_name != STATE_TYPE_NAME {
+                return Err(CompilerError::Unsupported(format!("readInputState returns {}", STATE_TYPE_NAME)));
             }
             if args.len() != 1 {
                 return Err(CompilerError::Unsupported("readInputState(input_idx) expects 1 argument".to_string()));
@@ -548,7 +548,7 @@ pub(crate) fn infer_struct_expr_type<'i>(
             if contract_fields.is_empty() {
                 return Err(CompilerError::Unsupported("readInputState requires contract fields".to_string()));
             }
-            Ok(TypeRef { base: TypeBase::Custom("State".to_string()), array_dims: Vec::new() })
+            Ok(TypeRef { base: TypeBase::Custom(STATE_TYPE_NAME.to_string()), array_dims: Vec::new() })
         }
         ExprKind::Call { name, .. } if name == "readInputStateWithTemplate" => Err(CompilerError::Unsupported(
             "readInputStateWithTemplate must be assigned to a struct variable or destructured directly".to_string(),
@@ -943,7 +943,7 @@ fn lower_call_args<'i>(
                     lowered.push(Expr::new(ExprKind::StateObject(lowered_fields), arg.span));
                 } else {
                     let state_type = if name == "validateOutputState" {
-                        TypeRef { base: TypeBase::Custom("State".to_string()), array_dims: Vec::new() }
+                        TypeRef { base: TypeBase::Custom(STATE_TYPE_NAME.to_string()), array_dims: Vec::new() }
                     } else {
                         infer_struct_expr_type(arg, scope, structs, contract_fields)?
                     };
