@@ -5,9 +5,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::ast::{
     ArrayDim, BinaryOp, ConstantAst, ContractAst, ContractFieldAst, Expr, ExprKind, FunctionAst, IntrospectionKind, NullaryOp,
-    ParamAst, SplitPart, StateBindingAst, StateFieldExpr, Statement, TimeVar, TypeBase, TypeRef, UnaryOp, UnarySuffixKind,
-    STATE_TYPE_NAME,
-    parse_contract_ast, parse_type_ref,
+    ParamAst, STATE_TYPE_NAME, SplitPart, StateBindingAst, StateFieldExpr, Statement, TimeVar, TypeBase, TypeRef, UnaryOp,
+    UnarySuffixKind, parse_contract_ast, parse_type_ref,
 };
 use crate::debug_info::{DebugInfo, DebugNamedValue};
 pub use crate::errors::{CompilerError, ErrorSpan};

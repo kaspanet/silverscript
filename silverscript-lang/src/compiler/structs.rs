@@ -4,8 +4,8 @@ use super::compile::{byte_sequence_cast_size, read_input_state_field_expr_symbol
 use super::debug_value_types::infer_debug_expr_value_type;
 use super::*;
 use crate::ast::{
-    ConstantAst, ContractAst, ContractFieldAst, Expr, ExprKind, FunctionAst, ParamAst, StateBindingAst, StateFieldExpr, Statement,
-    TypeBase, TypeRef, STATE_TYPE_NAME, parse_type_ref,
+    ConstantAst, ContractAst, ContractFieldAst, Expr, ExprKind, FunctionAst, ParamAst, STATE_TYPE_NAME, StateBindingAst,
+    StateFieldExpr, Statement, TypeBase, TypeRef, parse_type_ref,
 };
 use crate::span;
 
