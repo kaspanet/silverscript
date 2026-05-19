@@ -2,8 +2,8 @@ contract Decls(int init_value) {
     int value = init_value;
 
     #[covenant.singleton(mode = transition)]
-    function bump(State prev_state, int delta) : (State) {
-        return({ value: prev_state.value + delta });
+    function bump(State prev_state, int delta) : State {
+        return { value: prev_state.value + delta };
     }
 }
 
@@ -12,8 +12,8 @@ contract Decls(int init_value) {
 contract Decls(int init_value) {
     int value = init_value;
 
-    function covenant_policy_bump(State prev_state, int delta) : (State) {
-        return({ value: prev_state.value + delta });
+    function covenant_policy_bump(State prev_state, int delta) : State {
+        return { value: prev_state.value + delta };
     }
 
     entrypoint function bump(int delta) {
