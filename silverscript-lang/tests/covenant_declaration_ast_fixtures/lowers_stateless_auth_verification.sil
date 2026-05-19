@@ -1,0 +1,21 @@
+contract Decls(int max_outs) {
+    #[covenant(binding = auth, from = 1, to = max_outs, mode = verification)]
+    function check(int nonce) {
+        require(nonce >= 0);
+    }
+}
+
+// --- lowered ---
+
+contract Decls(int max_outs) {
+    function covenant_policy_check(int nonce) {
+        require(nonce >= 0);
+    }
+
+    entrypoint function check(int nonce) {
+        int auth_out_count = OpAuthOutputCount(this.activeInputIndex);
+
+        covenant_policy_check(nonce);
+        require(auth_out_count <= max_outs);
+    }
+}

@@ -1,0 +1,33 @@
+contract Decls(int max_ins, int max_outs) {
+    #[covenant(binding = cov, from = max_ins, to = max_outs, mode = verification)]
+    function check(int nonce) {
+        require(nonce >= 0);
+    }
+}
+
+// --- lowered ---
+
+contract Decls(int max_ins, int max_outs) {
+    function covenant_policy_check(int nonce) {
+        require(nonce >= 0);
+    }
+
+    entrypoint function leader_check(int nonce) {
+        byte[32] cov_id = OpInputCovenantId(this.activeInputIndex);
+
+        require(OpCovInputIdx(cov_id, 0) == this.activeInputIndex);
+
+        int cov_in_count = OpCovInputCount(cov_id);
+        require(cov_in_count <= max_ins);
+
+        int cov_out_count = OpCovOutputCount(cov_id);
+        covenant_policy_check(nonce);
+        require(cov_out_count <= max_outs);
+    }
+
+    entrypoint function delegate_check() {
+        byte[32] cov_id = OpInputCovenantId(this.activeInputIndex);
+
+        require(OpCovInputIdx(cov_id, 0) != this.activeInputIndex);
+    }
+}

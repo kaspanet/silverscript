@@ -838,28 +838,6 @@ fn for_statement<'i>(
     }
 }
 
-fn state_binding<'i>(field_name: &str, type_ref: TypeRef, name: &str) -> StateBindingAst<'i> {
-    StateBindingAst {
-        field_name: field_name.to_string(),
-        type_ref,
-        name: name.to_string(),
-        span: span::Span::default(),
-        field_span: span::Span::default(),
-        type_span: span::Span::default(),
-        name_span: span::Span::default(),
-    }
-}
-
-fn state_call_assign_statement<'i>(bindings: Vec<StateBindingAst<'i>>, name: &str, args: Vec<Expr<'i>>) -> Statement<'i> {
-    Statement::StateFunctionCallAssign {
-        bindings,
-        name: name.to_string(),
-        args,
-        span: span::Span::default(),
-        name_span: span::Span::default(),
-    }
-}
-
 fn state_object_expr_from_contract_fields<'i>(contract_fields: &[ContractFieldAst<'i>]) -> Expr<'i> {
     let fields = contract_fields
         .iter()
