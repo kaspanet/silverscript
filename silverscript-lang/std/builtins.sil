@@ -137,3 +137,36 @@ function readInputStateWithTemplate(
     int templateSuffixLen,
     byte[32] expectedTemplateHash
 ) : (object);
+
+/**
+ * Role:
+ *      Verify a ZK proof via the KIP-16 precompile dispatcher.
+ *
+ * Definition:
+ *      The KIP-16 OpZkPrecompile opcode (0xa6) reads a tag byte from the
+ *      stack top, dispatches to the corresponding verifier
+ *      (0x20 = Groth16, 0x21 = RISC0-Succinct), and pushes `true` if the
+ *      proof verifies. Tag-specific operands are consumed from the stack
+ *      in the order documented per precompile.
+ *
+ * Stack shape (Groth16, tag 0x20, top-to-bottom):
+ *   [..., public_input_{n-1}, ..., public_input_0,
+ *         n_public_inputs (i32),
+ *         proof_bytes,
+ *         uncompressed_verifying_key,
+ *         tag (0x20)]
+ *
+ * Stack shape (RISC0-Succinct, tag 0x21, top-to-bottom):
+ *   [claim, control_index, control_digests, seal, journal,
+ *    image_id, control_id, hashfn, tag (0x21)]
+ *
+ * Security notes:
+ *   - Verifying key, image_id, and any other identity-binding inputs
+ *     should come from contract state or a verified protocol
+ *     commitment, never from caller witness. Same trusted-source rule as
+ *     `expectedTemplateHash` in `validateOutputStateWithTemplate`.
+ *   - Failure surfaces as `TxScriptError::ZkIntegrity(String)`.
+ *     SilverScript cannot discriminate "verify failed" from
+ *     "operand deserialise failed".
+ *   - Both precompiles are gated on `vm.flags.covenants_enabled`. They
+ *     activate with the rest of Toccata; pre-activation calls fail with

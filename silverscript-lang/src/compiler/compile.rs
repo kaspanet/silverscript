@@ -3582,6 +3582,7 @@ fn compile_call_expr<'i>(
         "OpNum2Bin" => compile_opcode_builtin_call(&mut ctx, name, args, 2, OpNum2Bin),
         "OpBin2Num" => compile_opcode_builtin_call(&mut ctx, name, args, 1, OpBin2Num),
         "OpChainblockSeqCommit" => compile_opcode_builtin_call(&mut ctx, name, args, 1, OpChainblockSeqCommit),
+        "OpZkPrecompile" => compile_opcode_builtin_call(&mut ctx, name, args, 0, OpZkPrecompile),
         "bytes" => compile_bytes_call(&mut ctx, args),
         "length" => compile_length_call(&mut ctx, args),
         "int" | "byte" | "bool" | "string" | "sig" | "pubkey" | "datasig" => compile_passthrough_cast_call(&mut ctx, name, args),

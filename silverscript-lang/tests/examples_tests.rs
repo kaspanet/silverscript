@@ -1532,3 +1532,13 @@ fn compiles_many_assignments_example_under_500_bytes() {
     // variable should be stored on the stack once and reused by later steps.
     assert!(compiled.script.len() < 500, "long.sil should compile to less than 500 bytes, got {}", compiled.script.len());
 }
+
+#[test]
+fn compiles_zk_minimal_example() {
+    let source = load_example_source("zk_minimal.sil");
+
+    let compiled = compile_contract(&source, &[], CompileOptions::default()).expect("zk_minimal should compile");
+    compiled.build_sig_script("verify", vec![]).expect("sigscript builds");
+
+    assert!(!compiled.script.is_empty(), "compiled script should not be empty");
+}

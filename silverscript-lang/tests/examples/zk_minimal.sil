@@ -1,0 +1,7 @@
+pragma silverscript ^0.1.0;
+
+contract ZkMinimal() {
+    entrypoint function verify() {
+        require(OpZkPrecompile());
+    }
+}
