@@ -70,7 +70,7 @@ fn builtin_call_value_type(name: &str) -> &'static str {
         | "ScriptPubKeyP2PK"
         | "ScriptPubKeyP2SH"
         | "ScriptPubKeyP2SHFromRedeemScript" => "byte[]",
-        "OpZkPrecompile" => "bool",
+        "OpZkPrecompile" | "OpGroth16Verify" => "bool",
         "OpInputCovenantId" | "OpOutputCovenantId" => "byte[32]",
         _ => "byte[]",
     }

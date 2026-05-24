@@ -170,3 +170,23 @@ function readInputStateWithTemplate(
  *     "operand deserialise failed".
  *   - Both precompiles are gated on `vm.flags.covenants_enabled`. They
  *     activate with the rest of Toccata; pre-activation calls fail with
+ *     `TxScriptError::ZkPrecompileDisabled`.
+ */
+function OpZkPrecompile() : bool;
+
+/**
+ * Role:
+ *      Groth16-specific helper surface over `OpZkPrecompile`.
+ *
+ * Definition:
+ *      `OpGroth16Verify(verifyingKey, proofBytes, [a, b, c])` custom-lowers
+ *      the third argument's array-literal elements into separate public-input
+ *      stack items, then appends `n_public_inputs`, `proofBytes`,
+ *      `verifyingKey`, and the fixed Groth16 tag (`0x20`) before emitting
+ *      `OpZkPrecompile`.
+ *
+ * Current prototype constraint:
+ *   - `publicInputs` must be written as an array literal so the front-end can
+ *     flatten its elements during lowering (for example `[a, b, c]`).
+ */
+function OpGroth16Verify(byte[] verifyingKey, byte[] proofBytes, byte[32][] publicInputs) : bool;

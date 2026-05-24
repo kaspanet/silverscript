@@ -1542,3 +1542,10 @@ fn compiles_zk_minimal_example() {
 
     assert!(!compiled.script.is_empty(), "compiled script should not be empty");
 }
+
+#[test]
+fn compiles_zk_groth16_helper_example() {
+    let source = load_example_source("zk_groth16_helper.sil");
+    let compiled = compile_contract(&source, &[], CompileOptions::default()).expect("Groth16 helper example should compile");
+    assert!(!compiled.script.is_empty(), "compiled script should not be empty");
+}

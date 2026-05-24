@@ -458,6 +458,7 @@ fn infer_expr_type_ref_for_comparison<'i>(
                 | "OpNum2Bin"
                 | "OpBin2Num"
                 | "OpChainblockSeqCommit"
+                | "OpGroth16Verify"
                 | "LockingBytecodeNullData"
                 | "ScriptPubKeyP2PK"
                 | "ScriptPubKeyP2SH"
@@ -3582,6 +3583,7 @@ fn compile_call_expr<'i>(
         "OpNum2Bin" => compile_opcode_builtin_call(&mut ctx, name, args, 2, OpNum2Bin),
         "OpBin2Num" => compile_opcode_builtin_call(&mut ctx, name, args, 1, OpBin2Num),
         "OpChainblockSeqCommit" => compile_opcode_builtin_call(&mut ctx, name, args, 1, OpChainblockSeqCommit),
+        "OpGroth16Verify" => compile_groth16_verify_call(&mut ctx, args),
         "OpZkPrecompile" => compile_opcode_builtin_call(&mut ctx, name, args, 0, OpZkPrecompile),
         "bytes" => compile_bytes_call(&mut ctx, args),
         "length" => compile_length_call(&mut ctx, args),
@@ -3789,6 +3791,33 @@ fn compile_blake2b_call<'i>(ctx: &mut CompileCallContext<'_, 'i>, args: &[Expr<'
     }
     compile_call_arg_with_context(ctx, &args[0])?;
     ctx.builder.add_op(OpBlake2b)?;
+    Ok(())
+}
+
+fn compile_groth16_verify_call<'i>(ctx: &mut CompileCallContext<'_, 'i>, args: &[Expr<'i>]) -> Result<(), CompilerError> {
+    if args.len() != 3 {
+        return Err(CompilerError::Unsupported("OpGroth16Verify() expects 3 arguments: verifying_key, proof, public_inputs".to_string()));
+    }
+    let ExprKind::Array(public_inputs) = &args[2].kind else {
+        return Err(CompilerError::Unsupported(
+            "OpGroth16Verify() expects the third argument to be an array literal like [a, b, c]".to_string(),
+        ));
+    };
+    if public_inputs.is_empty() {
+        return Err(CompilerError::Unsupported("OpGroth16Verify() expects at least one public input".to_string()));
+    }
+
+    for public_input in public_inputs {
+        compile_call_arg_with_context(ctx, public_input)?;
+    }
+    ctx.builder.add_i64(public_inputs.len() as i64)?;
+    *ctx.stack_depth += 1;
+    compile_call_arg_with_context(ctx, &args[1])?;
+    compile_call_arg_with_context(ctx, &args[0])?;
+    ctx.builder.add_data_with_push_opcode(&[0x20])?;
+    *ctx.stack_depth += 1;
+    ctx.builder.add_op(OpZkPrecompile)?;
+    *ctx.stack_depth += 1 - (public_inputs.len() as i64 + 4);
     Ok(())
 }
 

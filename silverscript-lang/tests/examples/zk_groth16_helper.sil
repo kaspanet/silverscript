@@ -1,0 +1,13 @@
+contract ZkGroth16Helper() {
+    entrypoint function verify(
+        byte[32] a,
+        byte[32] b,
+        byte[32] c,
+        byte[32] d,
+        byte[32] e,
+        byte[] proof,
+        byte[] vk
+    ) {
+        require(OpGroth16Verify(vk, proof, [a, b, c, d, e]));
+    }
+}
