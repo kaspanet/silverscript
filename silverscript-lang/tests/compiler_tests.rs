@@ -5311,6 +5311,77 @@ fn compiles_validate_output_state_to_expected_script() {
 }
 
 #[test]
+fn compiled_contract_emits_state_tracking_marker_for_validate_output_state() {
+    let source = r#"
+        contract C(int initX, byte[2] initY) {
+            int x = initX;
+            byte[2] y = initY;
+
+            entrypoint function main() {
+                validateOutputState(0,{x:x+1,y:0x3412});
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[5.into(), vec![1u8, 2u8].into()], CompileOptions::default()).expect("compile succeeds");
+
+    let marker = compiled.state_tracking.validation_markers.first().expect("validateOutputState marker exists");
+    assert_eq!(compiled.state_tracking.validation_markers.len(), 1);
+    assert_eq!(marker.template_hash_offset, None);
+    assert_eq!(marker.template_prefix_offset, None);
+    assert_eq!(marker.template_suffix_offset, None);
+    assert!(marker.state_offset < compiled.script.len());
+    assert!(marker.output_index_offset < compiled.script.len());
+
+    let json = serde_json::to_value(marker).expect("serialize marker");
+    assert!(json.get("stateOffset").is_some());
+    assert!(json.get("outputIndexOffset").is_some());
+    assert!(json.get("templateHashOffset").is_none());
+    assert!(json.get("templatePrefixOffset").is_none());
+    assert!(json.get("templateSuffixOffset").is_none());
+    let tracking_json = serde_json::to_value(&compiled.state_tracking).expect("serialize state tracking");
+    assert!(tracking_json.get("validationMarkers").is_some());
+}
+
+#[test]
+fn compiled_contract_emits_state_tracking_marker_for_validate_output_state_with_template() {
+    let source = r#"
+        contract M(int initX, byte[2] initY) {
+            int x = initX;
+            byte[2] y = initY;
+
+            entrypoint function route(byte[] prefix, byte[] suffix, byte[32] templateHash) {
+                validateOutputStateWithTemplate(
+                    0,
+                    {y:0x3412,x:x+1},
+                    prefix,
+                    suffix,
+                    templateHash
+                );
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[5.into(), vec![1u8, 2u8].into()], CompileOptions::default()).expect("compile succeeds");
+
+    let marker = compiled.state_tracking.validation_markers.first().expect("validateOutputStateWithTemplate marker exists");
+    assert_eq!(compiled.state_tracking.validation_markers.len(), 1);
+    assert!(marker.template_hash_offset.is_some());
+    assert!(marker.template_prefix_offset.is_some());
+    assert!(marker.template_suffix_offset.is_some());
+    assert!(marker.template_hash_offset.unwrap() < compiled.script.len());
+    assert!(marker.template_prefix_offset.unwrap() < compiled.script.len());
+    assert!(marker.template_suffix_offset.unwrap() < compiled.script.len());
+    assert!(marker.state_offset < compiled.script.len());
+    assert!(marker.output_index_offset < compiled.script.len());
+
+    let json = serde_json::to_value(marker).expect("serialize marker");
+    assert!(json.get("templateHashOffset").is_some());
+    assert!(json.get("templatePrefixOffset").is_some());
+    assert!(json.get("templateSuffixOffset").is_some());
+}
+
+#[test]
 fn runs_validate_output_state() {
     let source = r#"
         contract C(int initX, byte[2] initY) {

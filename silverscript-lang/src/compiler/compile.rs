@@ -126,7 +126,7 @@ pub(super) fn compile_contract_impl<'i>(
     for _ in 0..32 {
         debug_recorder.record_contract_scope(&inline_lowered_contract, constructor_args, &structs)?;
 
-        let (script, state_layout) = compile_contract_script_iteration(
+        let (script, state_layout, state_tracking) = compile_contract_script_iteration(
             &lowered_contract,
             &lowered_constants,
             options,
@@ -145,6 +145,7 @@ pub(super) fn compile_contract_impl<'i>(
                 without_selector,
                 script,
                 state_layout,
+                state_tracking,
                 debug_info,
             ));
         }
@@ -158,6 +159,7 @@ pub(super) fn compile_contract_impl<'i>(
                 without_selector,
                 script,
                 state_layout,
+                state_tracking,
                 debug_info,
             ));
         }
@@ -165,6 +167,31 @@ pub(super) fn compile_contract_impl<'i>(
     }
 
     Err(CompilerError::Unsupported("script size did not stabilize".to_string()))
+}
+
+struct PendingStateValidationMarker {
+    entrypoint_name: String,
+    marker: PendingStateValidationMarkerData,
+}
+
+struct PendingStateValidationMarkerData {
+    state_offset: usize,
+    output_index_offset: usize,
+    template_hash_offset: Option<usize>,
+    template_prefix_offset: Option<usize>,
+    template_suffix_offset: Option<usize>,
+}
+
+impl PendingStateValidationMarker {
+    fn into_final(self, entrypoint_start: usize) -> StateValidationMarker {
+        StateValidationMarker {
+            state_offset: entrypoint_start + self.marker.state_offset,
+            output_index_offset: entrypoint_start + self.marker.output_index_offset,
+            template_hash_offset: self.marker.template_hash_offset.map(|offset| entrypoint_start + offset),
+            template_prefix_offset: self.marker.template_prefix_offset.map(|offset| entrypoint_start + offset),
+            template_suffix_offset: self.marker.template_suffix_offset.map(|offset| entrypoint_start + offset),
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -176,13 +203,14 @@ fn compile_contract_script_iteration<'i>(
     without_selector: bool,
     structs: &StructRegistry,
     debug_recorder: &mut DebugRecorder<'i>,
-) -> Result<(Vec<u8>, CompiledStateLayout), CompilerError> {
+) -> Result<(Vec<u8>, CompiledStateLayout, StateTrackingMetadata), CompilerError> {
     let (_contract_fields, field_prolog_script) =
         compile_contract_fields(&lowered_contract.fields, lowered_constants, options, script_size)?;
 
     let selector_prefix_len = if without_selector { 0 } else { 1 };
     let contract_field_prefix_len = selector_prefix_len + field_prolog_script.len();
     let state_layout = CompiledStateLayout { start: selector_prefix_len, len: field_prolog_script.len() };
+    let mut pending_state_markers = Vec::new();
     let compiled_entrypoints = compile_entrypoint_scripts(
         lowered_contract,
         contract_field_prefix_len,
@@ -191,9 +219,21 @@ fn compile_contract_script_iteration<'i>(
         structs,
         script_size,
         debug_recorder,
+        &mut pending_state_markers,
     )?;
-    let script = build_contract_script(debug_recorder, without_selector, &field_prolog_script, &compiled_entrypoints)?;
-    Ok((script, state_layout))
+    let (script, entrypoint_starts) =
+        build_contract_script(debug_recorder, without_selector, &field_prolog_script, &compiled_entrypoints)?;
+    let validation_markers = pending_state_markers
+        .into_iter()
+        .map(|pending| {
+            let start = entrypoint_starts
+                .get(&pending.entrypoint_name)
+                .copied()
+                .ok_or_else(|| CompilerError::Unsupported(format!("missing entrypoint offset for '{}'", pending.entrypoint_name)))?;
+            Ok(pending.into_final(start))
+        })
+        .collect::<Result<Vec<_>, CompilerError>>()?;
+    Ok((script, state_layout, StateTrackingMetadata { validation_markers }))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -205,6 +245,7 @@ fn compile_entrypoint_scripts<'i>(
     structs: &StructRegistry,
     script_size: Option<i64>,
     debug_recorder: &mut DebugRecorder<'i>,
+    pending_state_markers: &mut Vec<PendingStateValidationMarker>,
 ) -> Result<Vec<(String, Vec<u8>)>, CompilerError> {
     let mut compiled_entrypoints = Vec::new();
     for func in &lowered_contract.functions {
@@ -220,6 +261,7 @@ fn compile_entrypoint_scripts<'i>(
                 structs,
                 script_size,
                 debug_recorder,
+                pending_state_markers,
             )?;
             compiled_entrypoints.push(compiled);
         }
@@ -232,15 +274,17 @@ fn build_contract_script(
     without_selector: bool,
     field_prolog_script: &[u8],
     compiled_entrypoints: &[(String, Vec<u8>)],
-) -> Result<Vec<u8>, CompilerError> {
+) -> Result<(Vec<u8>, HashMap<String, usize>), CompilerError> {
+    let mut entrypoint_starts = HashMap::new();
     if without_selector {
         let (_name, entrypoint_script) = compiled_entrypoints
             .first()
             .ok_or_else(|| CompilerError::Unsupported("contract has no entrypoint functions".to_string()))?;
         debug_recorder.set_entrypoint_start(_name, field_prolog_script.len());
+        entrypoint_starts.insert(_name.clone(), field_prolog_script.len());
         let mut script = field_prolog_script.to_vec();
         script.extend(entrypoint_script.clone());
-        return Ok(script);
+        return Ok((script, entrypoint_starts));
     }
 
     // Preserve the selector while encoding contract state once so
@@ -257,6 +301,7 @@ fn build_contract_script(
         builder.add_op(OpIf)?;
         builder.add_op(OpDrop)?;
         debug_recorder.set_entrypoint_start(_name, builder.script().len());
+        entrypoint_starts.insert(_name.clone(), builder.script().len());
         builder.add_ops(script)?;
         builder.add_op(OpElse)?;
         if entrypoint_index == total - 1 {
@@ -270,7 +315,7 @@ fn build_contract_script(
         builder.add_op(OpEndIf)?;
     }
 
-    Ok(builder.drain())
+    Ok((builder.drain(), entrypoint_starts))
 }
 
 fn build_compiled_contract<'i>(
@@ -280,6 +325,7 @@ fn build_compiled_contract<'i>(
     without_selector: bool,
     script: Vec<u8>,
     state_layout: CompiledStateLayout,
+    state_tracking: StateTrackingMetadata,
     debug_info: Option<DebugInfo<'i>>,
 ) -> CompiledContract<'i> {
     CompiledContract {
@@ -290,6 +336,7 @@ fn build_compiled_contract<'i>(
         abi: function_abi_entries,
         without_selector,
         state_layout,
+        state_tracking,
         debug_info,
     }
 }
@@ -1077,6 +1124,7 @@ fn compile_entrypoint_function<'i>(
     structs: &StructRegistry,
     script_size: Option<i64>,
     debug_recorder: &mut DebugRecorder<'i>,
+    pending_state_markers: &mut Vec<PendingStateValidationMarker>,
 ) -> Result<(String, Vec<u8>), CompilerError> {
     debug_recorder.begin_entrypoint(function, contract_fields, structs)?;
     let contract_field_count = contract_fields.len();
@@ -1117,6 +1165,7 @@ fn compile_entrypoint_function<'i>(
     let has_return = function.body.iter().any(contains_return);
 
     let body_len = function.body.len();
+    let mut entrypoint_state_markers = Vec::new();
     let mut statement_ctx = CompileStatementContext {
         assigned_names: &assigned_names,
         identifier_uses: &identifier_uses,
@@ -1130,6 +1179,7 @@ fn compile_entrypoint_function<'i>(
         structs,
         script_size,
         debug_recorder,
+        pending_state_markers: &mut entrypoint_state_markers,
     };
     for (index, stmt) in function.body.iter().enumerate() {
         if let Statement::Return { exprs, .. } = stmt {
@@ -1144,6 +1194,11 @@ fn compile_entrypoint_function<'i>(
     }
 
     let flattened_returns = if has_return { return_exprs } else { Vec::new() };
+    pending_state_markers.extend(
+        entrypoint_state_markers
+            .into_iter()
+            .map(|marker| PendingStateValidationMarker { entrypoint_name: function.name.clone(), marker }),
+    );
 
     let return_count = flattened_returns.len();
     if return_count == 0 {
@@ -1247,6 +1302,7 @@ struct CompileStatementContext<'a, 'i> {
     structs: &'a StructRegistry,
     script_size: Option<i64>,
     debug_recorder: &'a mut DebugRecorder<'i>,
+    pending_state_markers: &'a mut Vec<PendingStateValidationMarkerData>,
 }
 
 impl<'a, 'i> CompileStatementContext<'a, 'i> {
@@ -1271,6 +1327,7 @@ impl<'a, 'i> CompileStatementContext<'a, 'i> {
             structs: self.structs,
             script_size: self.script_size,
             debug_recorder: self.debug_recorder,
+            pending_state_markers: self.pending_state_markers,
         }
     }
 }
@@ -1451,7 +1508,7 @@ fn compile_function_call_statement<'i>(
     args: &[Expr<'i>],
 ) -> Result<Vec<String>, CompilerError> {
     if name == "validateOutputState" {
-        return compile_validate_output_state_statement(
+        let marker = compile_validate_output_state_statement(
             args,
             ctx.contract_constants,
             ctx.stack_bindings,
@@ -1462,8 +1519,9 @@ fn compile_function_call_statement<'i>(
             ctx.contract_field_prefix_len,
             ctx.script_size,
             ctx.contract_constants,
-        )
-        .map(|_| Vec::new());
+        )?;
+        ctx.pending_state_markers.push(marker);
+        return Ok(Vec::new());
     }
     if name == "validateOutputStateWithTemplate" {
         let state_arg = args.get(1).ok_or_else(|| {
@@ -1473,7 +1531,7 @@ fn compile_function_call_statement<'i>(
             )
         })?;
         let layout_fields = layout_fields_for_state_object_expr(state_arg, ctx.contract_fields, ctx.structs)?;
-        return compile_validate_output_state_with_template_statement(
+        let marker = compile_validate_output_state_with_template_statement(
             args,
             ctx.contract_constants,
             ctx.stack_bindings,
@@ -1483,8 +1541,9 @@ fn compile_function_call_statement<'i>(
             &layout_fields,
             ctx.script_size,
             ctx.contract_constants,
-        )
-        .map(|_| Vec::new());
+        )?;
+        ctx.pending_state_markers.push(marker);
+        return Ok(Vec::new());
     }
     Err(CompilerError::Unsupported(format!(
         "inline lowering must eliminate internal function calls before compilation, found '{}()'",
@@ -2010,7 +2069,7 @@ fn compile_validate_output_state_statement(
     contract_field_prefix_len: usize,
     script_size: Option<i64>,
     contract_constants: &HashMap<String, Expr<'_>>,
-) -> Result<(), CompilerError> {
+) -> Result<PendingStateValidationMarkerData, CompilerError> {
     let Ok([output_idx, state_expr]): Result<&[Expr<'_>; 2], _> = args.try_into() else {
         return Err(CompilerError::Unsupported("validateOutputState(output_idx, new_state) expects 2 arguments".to_string()));
     };
@@ -2030,6 +2089,7 @@ fn compile_validate_output_state_statement(
         contract_constants,
         "validateOutputState",
     )?;
+    let state_offset = builder.script().len();
 
     let total_state_len = encoded_state_len(contract_fields, contract_constants)?;
     let state_start_offset = contract_field_prefix_len.checked_sub(total_state_len).ok_or_else(|| {
@@ -2125,11 +2185,18 @@ fn compile_validate_output_state_statement(
         Some(script_size_value),
         contract_constants,
     )?;
+    let output_index_offset = builder.script().len();
     builder.add_op(OpTxOutputSpk)?;
     builder.add_op(OpEqual)?;
     builder.add_op(OpVerify)?;
 
-    Ok(())
+    Ok(PendingStateValidationMarkerData {
+        state_offset,
+        output_index_offset,
+        template_hash_offset: None,
+        template_prefix_offset: None,
+        template_suffix_offset: None,
+    })
 }
 
 fn layout_fields_for_state_object_expr<'i>(
@@ -2181,7 +2248,7 @@ fn compile_validate_output_state_with_template_statement(
     layout_fields: &[StructFieldSpec],
     script_size: Option<i64>,
     contract_constants: &HashMap<String, Expr<'_>>,
-) -> Result<(), CompilerError> {
+) -> Result<PendingStateValidationMarkerData, CompilerError> {
     let Ok([output_idx, state_expr, template_prefix, template_suffix, expected_template_hash]): Result<&[Expr<'_>; 5], _> =
         args.try_into()
     else {
@@ -2234,6 +2301,7 @@ fn compile_validate_output_state_with_template_statement(
         script_size,
         contract_constants,
     )?;
+    let template_hash_offset = builder.script().len();
     builder.add_op(OpSwap)?;
     builder.add_op(OpBlake2b)?;
     builder.add_op(OpEqual)?;
@@ -2250,6 +2318,7 @@ fn compile_validate_output_state_with_template_statement(
         contract_constants,
         "validateOutputStateWithTemplate",
     )?;
+    let state_offset = builder.script().len();
 
     compile_expr(
         template_prefix,
@@ -2263,6 +2332,7 @@ fn compile_validate_output_state_with_template_statement(
         script_size,
         contract_constants,
     )?;
+    let template_prefix_offset = builder.script().len();
     builder.add_op(OpSwap)?;
     builder.add_op(OpCat)?;
     stack_depth -= 1;
@@ -2279,6 +2349,7 @@ fn compile_validate_output_state_with_template_statement(
         script_size,
         contract_constants,
     )?;
+    let template_suffix_offset = builder.script().len();
     builder.add_op(OpCat)?;
     stack_depth -= 1;
 
@@ -2313,11 +2384,18 @@ fn compile_validate_output_state_with_template_statement(
         script_size,
         contract_constants,
     )?;
+    let output_index_offset = builder.script().len();
     builder.add_op(OpTxOutputSpk)?;
     builder.add_op(OpEqual)?;
     builder.add_op(OpVerify)?;
 
-    Ok(())
+    Ok(PendingStateValidationMarkerData {
+        state_offset,
+        output_index_offset,
+        template_hash_offset: Some(template_hash_offset),
+        template_prefix_offset: Some(template_prefix_offset),
+        template_suffix_offset: Some(template_suffix_offset),
+    })
 }
 
 fn compile_encoded_object_with_layout(

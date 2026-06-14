@@ -90,6 +90,25 @@ pub struct CompiledStateLayout {
     pub len: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct StateTrackingMetadata {
+    pub validation_markers: Vec<StateValidationMarker>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StateValidationMarker {
+    pub state_offset: usize,
+    pub output_index_offset: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub template_hash_offset: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub template_prefix_offset: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub template_suffix_offset: Option<usize>,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CompiledContract<'i> {
     pub contract_name: String,
@@ -99,6 +118,8 @@ pub struct CompiledContract<'i> {
     pub abi: Vec<FunctionAbiEntry>,
     pub without_selector: bool,
     pub state_layout: CompiledStateLayout,
+    #[serde(default)]
+    pub state_tracking: StateTrackingMetadata,
     pub debug_info: Option<DebugInfo<'i>>,
 }
 
