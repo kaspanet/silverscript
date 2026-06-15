@@ -1,10 +1,8 @@
 use std::collections::HashMap;
 
-use super::structs::{
-    flatten_type_ref_leaves, flattened_struct_name, resolve_struct_access, struct_array_name_from_type_ref, struct_name_from_type_ref,
-};
+use super::structs::{flatten_type_ref_leaves, resolve_struct_access, struct_name_from_type_ref};
 use super::*;
-use crate::ast::{ContractAst, Expr, ExprKind, FunctionAst, STATE_TYPE_NAME, StateFieldExpr, Statement, TypeBase, TypeRef};
+use crate::ast::{ContractAst, Expr, ExprKind, FunctionAst, STATE_TYPE_NAME, Statement, TypeBase, TypeRef};
 use crate::span;
 
 pub(super) const VALIDATE_OUTPUT_STATE_INNER: &str = "__validateOutputStateInner";
@@ -72,9 +70,6 @@ fn lower_statement<'i>(
             let state_expr = if matches!(state_expr.kind, ExprKind::Identifier(_)) {
                 state_expr.clone()
             } else {
-                if matches!(state_expr.kind, ExprKind::StateObject(_)) {
-                    flatten_state_expr(state_expr, scope, structs)?;
-                }
                 let temp_name = unique_state_temp_name(scope);
                 let state_type = state_type_ref();
                 scope.vars.insert(temp_name.clone(), state_type.clone());
