@@ -9896,3 +9896,42 @@ contract StructCounterLoop(int BOUND) {
     assert!(d2 <= d1 * 2, "unexpected superlinear growth: lens={lens:?} d1={d1} d2={d2}");
     assert!(lens[2] < 10_000, "unexpected script size: lens={lens:?}");
 }
+
+#[test]
+fn validate_output_state_with_template_preserves_nested_struct_field_paths() {
+    let source = r#"
+        contract M() {
+            struct Left {
+                int id;
+            }
+
+            struct Right {
+                int id;
+            }
+
+            struct Pair {
+                Left left;
+                Right right;
+                byte[32] targetHash;
+            }
+
+            entrypoint function route(byte[32] targetHash) {
+                Pair next = {
+                    left: {id: 1},
+                    right: {id: 2},
+                    targetHash: targetHash
+                };
+                validateOutputStateWithTemplate(
+                    0,
+                    next,
+                    0x51,
+                    0x52,
+                    0x0000000000000000000000000000000000000000000000000000000000000000
+                );
+            }
+        }
+    "#;
+
+    let result = compile_contract(source, &[], CompileOptions::default());
+    assert!(result.is_ok(), "nested struct fields with the same leaf name should remain distinct by path: {result:?}");
+}
