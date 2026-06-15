@@ -6,6 +6,7 @@ use crate::ast::{ContractAst, Expr, ExprKind, FunctionAst, STATE_TYPE_NAME, Stat
 use crate::span;
 
 pub(super) const VALIDATE_OUTPUT_STATE_INNER: &str = "__validateOutputStateInner";
+pub(super) const VALIDATE_OUTPUT_STATE_WITH_TEMPLATE_INNER: &str = "__validateOutputStateWithTemplateInner";
 
 #[derive(Clone, Default)]
 struct ValidationScope {
@@ -90,6 +91,47 @@ fn lower_statement<'i>(
             lowered_args.extend(flatten_state_expr(&state_expr, scope, structs)?);
             lowered.push(Statement::FunctionCall {
                 name: VALIDATE_OUTPUT_STATE_INNER.to_string(),
+                args: lowered_args,
+                span: *span,
+                name_span: *name_span,
+            });
+            Ok(lowered)
+        }
+        Statement::FunctionCall { name, args, span, name_span } if name == "validateOutputStateWithTemplate" => {
+            let Ok([output_idx, state_expr, template_prefix, template_suffix, expected_template_hash]): Result<&[Expr<'i>; 5], _> =
+                args.as_slice().try_into()
+            else {
+                return Err(CompilerError::Unsupported(
+                    "validateOutputStateWithTemplate(output_idx, new_state, template_prefix, template_suffix, expected_template_hash) expects 5 arguments"
+                        .to_string(),
+                ));
+            };
+
+            let mut lowered = Vec::new();
+            let state_type = infer_template_state_type(state_expr, scope, structs)?;
+            let state_expr = if matches!(state_expr.kind, ExprKind::Identifier(_)) {
+                state_expr.clone()
+            } else {
+                let temp_name = unique_state_temp_name(scope);
+                scope.vars.insert(temp_name.clone(), state_type.clone());
+                lowered.push(Statement::VariableDefinition {
+                    type_ref: state_type.clone(),
+                    modifiers: Vec::new(),
+                    name: temp_name.clone(),
+                    expr: Some(state_expr.clone()),
+                    span: *span,
+                    type_span: span::Span::default(),
+                    modifier_spans: Vec::new(),
+                    name_span: span::Span::default(),
+                });
+                Expr::identifier(temp_name)
+            };
+
+            let mut lowered_args = vec![output_idx.clone()];
+            lowered_args.extend(flatten_struct_expr(&state_expr, &state_type, scope, structs)?);
+            lowered_args.extend([template_prefix.clone(), template_suffix.clone(), expected_template_hash.clone()]);
+            lowered.push(Statement::FunctionCall {
+                name: VALIDATE_OUTPUT_STATE_WITH_TEMPLATE_INNER.to_string(),
                 args: lowered_args,
                 span: *span,
                 name_span: *name_span,
@@ -223,6 +265,32 @@ fn unique_state_temp_name(scope: &mut ValidationScope) -> String {
         if !scope.vars.contains_key(&name) {
             return name;
         }
+    }
+}
+
+fn infer_template_state_type(expr: &Expr<'_>, scope: &ValidationScope, structs: &StructRegistry) -> Result<TypeRef, CompilerError> {
+    let struct_scope = super::structs::LoweringScope { vars: scope.vars.clone() };
+    match &expr.kind {
+        ExprKind::Identifier(_) | ExprKind::FieldAccess { .. } => {
+            let (_, _, type_ref) = resolve_struct_access(expr, &struct_scope, structs)?;
+            Ok(type_ref)
+        }
+        ExprKind::ArrayIndex { source, .. } => {
+            let ExprKind::Identifier(name) = &source.kind else {
+                return Err(CompilerError::Unsupported("validateOutputStateWithTemplate requires a struct value".to_string()));
+            };
+            scope
+                .vars
+                .get(name)
+                .cloned()
+                .ok_or_else(|| CompilerError::UndefinedIdentifier(name.clone()))?
+                .element_type()
+                .ok_or_else(|| CompilerError::Unsupported("validateOutputStateWithTemplate requires a struct value".to_string()))
+        }
+        ExprKind::StateObject(_) => Err(CompilerError::Unsupported(
+            "validateOutputStateWithTemplate does not support inline state objects; use a struct variable instead".to_string(),
+        )),
+        _ => Err(CompilerError::Unsupported("validateOutputStateWithTemplate requires a struct value".to_string())),
     }
 }
 
