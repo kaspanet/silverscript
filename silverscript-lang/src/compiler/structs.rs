@@ -158,6 +158,9 @@ fn flatten_struct_fields(
     Ok(())
 }
 
+/// Resolves a struct field-access chain into the base variable, accessed field path,
+/// and final type. For example, `box.top_left.x` resolves to `("box",
+/// ["top_left", "x"], int)`, which callers can then lower to a flattened name.
 pub(crate) fn resolve_struct_access<'i>(
     expr: &Expr<'i>,
     scope: &LoweringScope,
