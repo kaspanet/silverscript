@@ -104,7 +104,8 @@ pub(super) fn compile_contract_impl<'i>(
     let covenant_lowered_contract = lower_covenant_declarations(&inferred_lowered_contract, &constants)?;
     let inline_lowered_contract = lower_inline_functions(&covenant_lowered_contract, &mut debug_recorder)?;
     let structs = build_struct_registry(&inline_lowered_contract)?;
-    let struct_lowered_contract = lower_structs_contract(&inline_lowered_contract, &structs, &constants)?;
+    let validate_output_state_lowered_contract = lower_validate_output_state(&inline_lowered_contract, &structs)?;
+    let struct_lowered_contract = lower_structs_contract(&validate_output_state_lowered_contract, &structs, &constants)?;
     let append_lowered_contract = lower_array_appends(&struct_lowered_contract)?;
     let for_lowered_contract = lower_for_loops(&append_lowered_contract, &constants)?;
     let lowered_contract = if options.record_debug_infos { for_lowered_contract } else { lower_local_aliases(&for_lowered_contract)? };
@@ -353,7 +354,11 @@ fn statement_uses_script_size(stmt: &Statement<'_>) -> bool {
         Statement::VariableDefinition { expr, .. } => expr.as_ref().is_some_and(expr_uses_script_size),
         Statement::TupleAssignment { expr, .. } => expr_uses_script_size(expr),
         Statement::FunctionCall { name, args, .. } => {
-            name == "validateOutputState" || name == "validateOutputStateWithTemplate" || args.iter().any(expr_uses_script_size)
+            name == "validateOutputState"
+                || name == super::validate_output_state::VALIDATE_OUTPUT_STATE_INNER
+                || name == "validateOutputStateWithTemplate"
+                || name == super::validate_output_state::VALIDATE_OUTPUT_STATE_WITH_TEMPLATE_INNER
+                || args.iter().any(expr_uses_script_size)
         }
         Statement::FunctionCallAssign { args, .. } => args.iter().any(expr_uses_script_size),
         Statement::StateFunctionCallAssign { name, args, .. } => name == "readInputState" || args.iter().any(expr_uses_script_size),
@@ -1450,8 +1455,8 @@ fn compile_function_call_statement<'i>(
     name: &str,
     args: &[Expr<'i>],
 ) -> Result<Vec<String>, CompilerError> {
-    if name == "validateOutputState" {
-        return compile_validate_output_state_statement(
+    if name == super::validate_output_state::VALIDATE_OUTPUT_STATE_INNER {
+        return compile_validate_output_state_inner_statement(
             args,
             ctx.contract_constants,
             ctx.stack_bindings,
@@ -1465,22 +1470,14 @@ fn compile_function_call_statement<'i>(
         )
         .map(|_| Vec::new());
     }
-    if name == "validateOutputStateWithTemplate" {
-        let state_arg = args.get(1).ok_or_else(|| {
-            CompilerError::Unsupported(
-                "validateOutputStateWithTemplate(output_idx, new_state, template_prefix, template_suffix, expected_template_hash) expects 5 arguments"
-                    .to_string(),
-            )
-        })?;
-        let layout_fields = layout_fields_for_state_object_expr(state_arg, ctx.contract_fields, ctx.structs)?;
-        return compile_validate_output_state_with_template_statement(
+    if name == super::validate_output_state::VALIDATE_OUTPUT_STATE_WITH_TEMPLATE_INNER {
+        return compile_validate_output_state_with_template_inner_statement(
             args,
             ctx.contract_constants,
             ctx.stack_bindings,
             ctx.types,
             ctx.builder,
             ctx.options,
-            &layout_fields,
             ctx.script_size,
             ctx.contract_constants,
         )
@@ -1590,7 +1587,7 @@ fn encoded_state_len<'i>(
 }
 
 fn encoded_state_len_for_layout_fields<'i>(
-    layout_fields: &[StructFieldSpec],
+    layout_fields: &[StructLeafSpec],
     contract_constants: &HashMap<String, Expr<'i>>,
 ) -> Result<usize, CompilerError> {
     layout_fields
@@ -1612,7 +1609,7 @@ fn state_start_offset<'i>(
 fn templated_input_script_size_expr<'i>(
     template_prefix_len: &Expr<'i>,
     template_suffix_len: &Expr<'i>,
-    layout_fields: &[StructFieldSpec],
+    layout_fields: &[StructLeafSpec],
     contract_constants: &HashMap<String, Expr<'i>>,
 ) -> Result<Expr<'i>, CompilerError> {
     let total_state_len = encoded_state_len_for_layout_fields(layout_fields, contract_constants)?;
@@ -1896,7 +1893,7 @@ fn compile_read_input_state_with_template_validation(
     types: &HashMap<String, String>,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
-    layout_fields: &[StructFieldSpec],
+    layout_fields: &[StructLeafSpec],
     current_script_size: Option<i64>,
     contract_constants: &HashMap<String, Expr<'_>>,
 ) -> Result<(), CompilerError> {
@@ -1999,7 +1996,7 @@ fn compile_read_input_state_with_template_validation(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn compile_validate_output_state_statement(
+fn compile_validate_output_state_inner_statement(
     args: &[Expr<'_>],
     constants: &HashMap<String, Expr<'_>>,
     stack_bindings: &StackBindings,
@@ -2011,21 +2008,37 @@ fn compile_validate_output_state_statement(
     script_size: Option<i64>,
     contract_constants: &HashMap<String, Expr<'_>>,
 ) -> Result<(), CompilerError> {
-    let Ok([output_idx, state_expr]): Result<&[Expr<'_>; 2], _> = args.try_into() else {
-        return Err(CompilerError::Unsupported("validateOutputState(output_idx, new_state) expects 2 arguments".to_string()));
-    };
+    if args.len() != contract_fields.len() + 1 {
+        return Err(CompilerError::Unsupported(format!(
+            "{}(output_idx, ..state_fields) expects {} state field argument(s)",
+            super::validate_output_state::VALIDATE_OUTPUT_STATE_INNER,
+            contract_fields.len()
+        )));
+    }
+    let output_idx = args
+        .first()
+        .ok_or_else(|| CompilerError::Unsupported("validateOutputState(output_idx, new_state) expects 2 arguments".to_string()))?;
+    let state_fields = contract_fields
+        .iter()
+        .zip(args.iter().skip(1))
+        .map(|(field, expr)| StateFieldExpr {
+            name: field.name.clone(),
+            expr: expr.clone(),
+            span: expr.span,
+            name_span: span::Span::default(),
+        })
+        .collect::<Vec<_>>();
     if contract_fields.is_empty() {
         return Err(CompilerError::Unsupported("validateOutputState requires contract fields".to_string()));
     }
 
     let mut stack_depth = compile_encoded_state_object(
-        state_expr,
+        &state_fields,
         constants,
         stack_bindings,
         types,
         builder,
         options,
-        contract_fields,
         script_size,
         contract_constants,
         "validateOutputState",
@@ -2132,65 +2145,28 @@ fn compile_validate_output_state_statement(
     Ok(())
 }
 
-fn layout_fields_for_state_object_expr<'i>(
-    state_expr: &Expr<'i>,
-    contract_fields: &[ContractFieldAst<'i>],
-    structs: &StructRegistry,
-) -> Result<Vec<StructFieldSpec>, CompilerError> {
-    let ExprKind::StateObject(state_entries) = &state_expr.kind else {
-        return Err(CompilerError::Unsupported("state object layout inference requires an object literal".to_string()));
-    };
-
-    let entry_names = state_entries.iter().map(|entry| entry.name.as_str()).collect::<HashSet<_>>();
-    let local_layout = contract_fields
-        .iter()
-        .map(|field| StructFieldSpec { name: field.name.clone(), type_ref: field.type_ref.clone() })
-        .collect::<Vec<_>>();
-    let local_names = local_layout.iter().map(|field| field.name.as_str()).collect::<HashSet<_>>();
-    if entry_names.len() == local_names.len() && entry_names == local_names {
-        return Ok(local_layout);
-    }
-
-    let matches = structs
-        .keys()
-        .filter_map(|name| {
-            let layout = flattened_struct_field_specs_for_type(
-                &TypeRef { base: TypeBase::Custom(name.clone()), array_dims: Vec::new() },
-                structs,
-            )
-            .ok()?;
-            let layout_names = layout.iter().map(|field| field.name.as_str()).collect::<HashSet<_>>();
-            (layout_names.len() == entry_names.len() && layout_names == entry_names).then_some(layout)
-        })
-        .collect::<Vec<_>>();
-
-    match matches.as_slice() {
-        [layout] => Ok(layout.clone()),
-        [] => Err(CompilerError::Unsupported("new_state must include all contract fields exactly once".to_string())),
-        _ => Err(CompilerError::Unsupported("state object layout is ambiguous".to_string())),
-    }
-}
-
-fn compile_validate_output_state_with_template_statement(
+fn compile_validate_output_state_with_template_inner_statement(
     args: &[Expr<'_>],
     constants: &HashMap<String, Expr<'_>>,
     stack_bindings: &StackBindings,
     types: &HashMap<String, String>,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
-    layout_fields: &[StructFieldSpec],
     script_size: Option<i64>,
     contract_constants: &HashMap<String, Expr<'_>>,
 ) -> Result<(), CompilerError> {
-    let Ok([output_idx, state_expr, template_prefix, template_suffix, expected_template_hash]): Result<&[Expr<'_>; 5], _> =
-        args.try_into()
-    else {
+    if args.len() < 5 {
         return Err(CompilerError::Unsupported(
-            "validateOutputStateWithTemplate(output_idx, new_state, template_prefix, template_suffix, expected_template_hash) expects 5 arguments"
+            "__validateOutputStateWithTemplateInner(output_idx, ..state_fields, template_prefix, template_suffix, expected_template_hash) expects at least 5 arguments"
                 .to_string(),
         ));
-    };
-    if layout_fields.is_empty() {
+    }
+    let output_idx = &args[0];
+    let state_fields = &args[1..args.len() - 3];
+    let template_prefix = &args[args.len() - 3];
+    let template_suffix = &args[args.len() - 2];
+    let expected_template_hash = &args[args.len() - 1];
+    if state_fields.is_empty() {
         return Err(CompilerError::Unsupported("validateOutputStateWithTemplate requires contract fields".to_string()));
     }
 
@@ -2238,14 +2214,13 @@ fn compile_validate_output_state_with_template_statement(
     builder.add_op(OpBlake2b)?;
     builder.add_op(OpEqual)?;
     builder.add_op(OpVerify)?;
-    stack_depth = compile_encoded_object_with_layout(
-        state_expr,
+    stack_depth = compile_encoded_flat_state_fields(
+        state_fields,
         constants,
         stack_bindings,
         types,
         builder,
         options,
-        layout_fields,
         script_size,
         contract_constants,
         "validateOutputStateWithTemplate",
@@ -2320,43 +2295,27 @@ fn compile_validate_output_state_with_template_statement(
     Ok(())
 }
 
-fn compile_encoded_object_with_layout(
-    state_expr: &Expr<'_>,
+fn compile_encoded_state_object(
+    state_entries: &[StateFieldExpr<'_>],
     constants: &HashMap<String, Expr<'_>>,
     stack_bindings: &StackBindings,
     types: &HashMap<String, String>,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
-    layout_fields: &[StructFieldSpec],
     script_size: Option<i64>,
     contract_constants: &HashMap<String, Expr<'_>>,
     builtin_name: &str,
 ) -> Result<i64, CompilerError> {
-    let ExprKind::StateObject(state_entries) = &state_expr.kind else {
-        return Err(CompilerError::Unsupported(format!("{builtin_name} second argument must be an object literal")));
-    };
-
-    let mut provided = HashMap::new();
-    for entry in state_entries {
-        if provided.insert(entry.name.as_str(), &entry.expr).is_some() {
-            return Err(CompilerError::Unsupported(format!("duplicate state field '{}'", entry.name)));
-        }
-    }
-    if provided.len() != layout_fields.len() {
-        return Err(CompilerError::Unsupported("new_state must include all contract fields exactly once".to_string()));
-    }
-
     let mut stack_depth = 0i64;
-    for field in layout_fields {
-        let Some(new_value) = provided.remove(field.name.as_str()) else {
-            return Err(CompilerError::Unsupported(format!("missing state field '{}'", field.name)));
-        };
-
-        let field_size = fixed_state_field_payload_len_for_type_ref(&field.type_ref, contract_constants).map_err(|_| {
-            CompilerError::Unsupported(format!("{builtin_name} does not support field type {}", type_name_from_ref(&field.type_ref)))
+    for entry in state_entries {
+        let new_value = &entry.expr;
+        let type_name = infer_debug_expr_value_type(new_value, constants, types, &mut HashSet::new())?;
+        let type_ref = parse_type_ref(&type_name)?;
+        let field_size = fixed_state_field_payload_len_for_type_ref(&type_ref, contract_constants).map_err(|_| {
+            CompilerError::Unsupported(format!("{builtin_name} does not support field type {}", type_name_from_ref(&type_ref)))
         })?;
 
-        if field.type_ref.array_dims.is_empty() && matches!(field.type_ref.base, TypeBase::Int | TypeBase::Bool) {
+        if type_ref.array_dims.is_empty() && matches!(type_ref.base, TypeBase::Int | TypeBase::Bool) {
             compile_expr(
                 new_value,
                 constants,
@@ -2395,7 +2354,7 @@ fn compile_encoded_object_with_layout(
         stack_depth -= 1;
     }
 
-    for _ in 1..layout_fields.len() {
+    for _ in 1..state_entries.len() {
         builder.add_op(OpCat)?;
         stack_depth -= 1;
     }
@@ -2403,34 +2362,69 @@ fn compile_encoded_object_with_layout(
     Ok(stack_depth)
 }
 
-fn compile_encoded_state_object(
-    state_expr: &Expr<'_>,
+fn compile_encoded_flat_state_fields(
+    state_fields: &[Expr<'_>],
     constants: &HashMap<String, Expr<'_>>,
     stack_bindings: &StackBindings,
     types: &HashMap<String, String>,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
-    contract_fields: &[ContractFieldAst<'_>],
     script_size: Option<i64>,
     contract_constants: &HashMap<String, Expr<'_>>,
     builtin_name: &str,
 ) -> Result<i64, CompilerError> {
-    let layout_fields = contract_fields
-        .iter()
-        .map(|field| StructFieldSpec { name: field.name.clone(), type_ref: field.type_ref.clone() })
-        .collect::<Vec<_>>();
-    compile_encoded_object_with_layout(
-        state_expr,
-        constants,
-        stack_bindings,
-        types,
-        builder,
-        options,
-        &layout_fields,
-        script_size,
-        contract_constants,
-        builtin_name,
-    )
+    let mut stack_depth = 0i64;
+    for new_value in state_fields {
+        let type_name = infer_debug_expr_value_type(new_value, constants, types, &mut HashSet::new())?;
+        let type_ref = parse_type_ref(&type_name)?;
+        let field_size = fixed_state_field_payload_len_for_type_ref(&type_ref, contract_constants).map_err(|_| {
+            CompilerError::Unsupported(format!("{builtin_name} does not support field type {}", type_name_from_ref(&type_ref)))
+        })?;
+
+        if type_ref.array_dims.is_empty() && matches!(type_ref.base, TypeBase::Int | TypeBase::Bool) {
+            compile_expr(
+                new_value,
+                constants,
+                stack_bindings,
+                types,
+                builder,
+                options,
+                &mut HashSet::new(),
+                &mut stack_depth,
+                script_size,
+                contract_constants,
+            )?;
+            builder.add_i64(field_size as i64)?;
+            stack_depth += 1;
+            builder.add_op(OpNum2Bin)?;
+            stack_depth -= 1;
+        } else {
+            compile_expr(
+                new_value,
+                constants,
+                stack_bindings,
+                types,
+                builder,
+                options,
+                &mut HashSet::new(),
+                &mut stack_depth,
+                script_size,
+                contract_constants,
+            )?;
+        }
+        let prefix = data_prefix(field_size);
+        builder.add_data_with_push_opcode(&prefix)?;
+        stack_depth += 1;
+        builder.add_op(OpSwap)?;
+        builder.add_op(OpCat)?;
+        stack_depth -= 1;
+    }
+
+    for _ in 1..state_fields.len() {
+        builder.add_op(OpCat)?;
+        stack_depth -= 1;
+    }
+    Ok(stack_depth)
 }
 
 fn compile_if_statement<'i>(
