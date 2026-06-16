@@ -23,6 +23,7 @@ mod locals;
 mod stack_bindings;
 mod static_check;
 mod structs;
+mod validate_output_state;
 
 use compile::compile_contract_impl;
 pub(crate) use compile::resolve_expr;
@@ -34,10 +35,11 @@ pub(crate) use static_check::expr_matches_declared_type_ref;
 use static_check::value_matches_type_ref;
 pub use structs::flattened_struct_name;
 pub(super) use structs::{
-    StructFieldSpec, StructRegistry, build_struct_registry, ensure_known_or_builtin_type, flatten_constructor_args_env,
-    flatten_type_ref_leaves, flattened_struct_field_specs_for_type, lower_runtime_expr, lower_runtime_struct_expr,
-    lower_structs_contract, struct_array_name_from_type_ref, struct_name_from_type_ref, validate_struct_graph,
+    StructRegistry, build_struct_registry, ensure_known_or_builtin_type, flatten_constructor_args_env, flatten_type_ref_leaves,
+    flattened_struct_field_specs_for_type, lower_runtime_expr, lower_runtime_struct_expr, lower_structs_contract,
+    struct_array_name_from_type_ref, struct_name_from_type_ref, validate_struct_graph,
 };
+use validate_output_state::lower_validate_output_state;
 
 /// Prefix used for synthetic argument bindings during inline function expansion.
 pub const SYNTHETIC_ARG_PREFIX: &str = "__arg";

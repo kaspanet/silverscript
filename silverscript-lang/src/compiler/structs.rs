@@ -4,8 +4,8 @@ use super::compile::{byte_sequence_cast_size, read_input_state_field_expr_symbol
 use super::debug_value_types::infer_debug_expr_value_type;
 use super::*;
 use crate::ast::{
-    ConstantAst, ContractAst, ContractFieldAst, Expr, ExprKind, FunctionAst, ParamAst, STATE_TYPE_NAME, StateBindingAst,
-    StateFieldExpr, Statement, TypeBase, TypeRef, parse_type_ref,
+    ConstantAst, ContractAst, ContractFieldAst, Expr, ExprKind, FunctionAst, ParamAst, STATE_TYPE_NAME, StateBindingAst, Statement,
+    TypeBase, TypeRef, parse_type_ref,
 };
 use crate::span;
 
@@ -193,13 +193,10 @@ pub(crate) fn resolve_struct_access<'i>(
 pub(crate) fn flattened_struct_field_specs_for_type(
     type_ref: &TypeRef,
     structs: &StructRegistry,
-) -> Result<Vec<StructFieldSpec>, CompilerError> {
+) -> Result<Vec<TypeRef>, CompilerError> {
     let mut leaves = Vec::new();
     flatten_struct_fields(type_ref, structs, &mut Vec::new(), &mut leaves)?;
-    Ok(leaves
-        .into_iter()
-        .map(|(path, type_ref)| StructFieldSpec { name: path.last().cloned().unwrap_or_default(), type_ref })
-        .collect())
+    Ok(leaves.into_iter().map(|(_, type_ref)| type_ref).collect())
 }
 
 fn lower_expr<'i>(expr: &Expr<'i>, scope: &LoweringScope, structs: &StructRegistry) -> Result<Expr<'i>, CompilerError> {
@@ -356,41 +353,6 @@ fn lower_expr<'i>(expr: &Expr<'i>, scope: &LoweringScope, structs: &StructRegist
         }
         _ => Ok(expr.clone()),
     }
-}
-
-pub(crate) fn lower_struct_value_to_state_object_expr<'i>(
-    expr: &Expr<'i>,
-    expected_type: &TypeRef,
-    scope: &LoweringScope,
-    structs: &StructRegistry,
-    contract_fields: &[ContractFieldAst<'i>],
-    contract_constants: &HashMap<String, Expr<'i>>,
-    contract_field_prefix_len: usize,
-) -> Result<Expr<'i>, CompilerError> {
-    let lowered_values =
-        lower_struct_value_expr(expr, expected_type, scope, structs, contract_fields, contract_constants, contract_field_prefix_len)?;
-    let mut paths = Vec::new();
-    flatten_struct_fields(expected_type, structs, &mut Vec::new(), &mut paths)?;
-    let expected_struct_name = struct_name_from_type_ref(expected_type, structs);
-    let fields = paths
-        .into_iter()
-        .zip(lowered_values)
-        .map(|((path, _), value)| StateFieldExpr {
-            name: if expected_struct_name == Some(STATE_TYPE_NAME) {
-                match path.as_slice() {
-                    [root] => root.clone(),
-                    [root, rest @ ..] => flattened_struct_name(root, rest),
-                    [] => String::new(),
-                }
-            } else {
-                path.last().cloned().unwrap_or_default()
-            },
-            expr: value,
-            span: expr.span,
-            name_span: span::Span::default(),
-        })
-        .collect();
-    Ok(Expr::new(ExprKind::StateObject(fields), expr.span))
 }
 
 pub(crate) fn lower_struct_value_expr<'i>(
@@ -927,46 +889,6 @@ fn lower_call_args<'i>(
     contract_constants: &HashMap<String, Expr<'i>>,
     contract_field_prefix_len: usize,
 ) -> Result<Vec<Expr<'i>>, CompilerError> {
-    if name == "validateOutputState" || name == "validateOutputStateWithTemplate" {
-        let mut lowered = Vec::with_capacity(args.len());
-        for (index, arg) in args.iter().enumerate() {
-            if index == 1 {
-                if let ExprKind::StateObject(fields) = &arg.kind {
-                    let lowered_fields = fields
-                        .iter()
-                        .map(|field| {
-                            Ok(StateFieldExpr {
-                                name: field.name.clone(),
-                                expr: lower_runtime_expr(&field.expr, &scope_type_names(scope), structs)?,
-                                span: field.span,
-                                name_span: field.name_span,
-                            })
-                        })
-                        .collect::<Result<Vec<_>, CompilerError>>()?;
-                    lowered.push(Expr::new(ExprKind::StateObject(lowered_fields), arg.span));
-                } else {
-                    let state_type = if name == "validateOutputState" {
-                        TypeRef { base: TypeBase::Custom(STATE_TYPE_NAME.to_string()), array_dims: Vec::new() }
-                    } else {
-                        infer_struct_expr_type(arg, scope, structs, contract_fields)?
-                    };
-                    lowered.push(lower_struct_value_to_state_object_expr(
-                        arg,
-                        &state_type,
-                        scope,
-                        structs,
-                        contract_fields,
-                        contract_constants,
-                        contract_field_prefix_len,
-                    )?);
-                }
-            } else {
-                lowered.push(lower_runtime_expr(arg, &scope_type_names(scope), structs)?);
-            }
-        }
-        return Ok(lowered);
-    }
-
     let Some(function) = functions.get(name) else {
         return args.iter().map(|arg| lower_runtime_expr(arg, &scope_type_names(scope), structs)).collect();
     };

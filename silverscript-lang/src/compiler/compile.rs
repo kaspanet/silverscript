@@ -61,27 +61,27 @@ pub(super) fn read_input_state_with_template_values<'i>(
         ));
     };
 
-    let layout_fields = flattened_struct_field_specs_for_type(expected_type, structs)?;
-    if layout_fields.is_empty() {
+    let layout_field_types = flattened_struct_field_specs_for_type(expected_type, structs)?;
+    if layout_field_types.is_empty() {
         return Err(CompilerError::Unsupported("readInputStateWithTemplate requires a struct type".to_string()));
     }
 
     let script_size_expr =
-        templated_input_script_size_expr(template_prefix_len, template_suffix_len, &layout_fields, contract_constants)?;
+        templated_input_script_size_expr(template_prefix_len, template_suffix_len, &layout_field_types, contract_constants)?;
     let state_start_offset_expr = template_prefix_len.clone();
     let mut field_chunk_offset = 0usize;
-    let mut lowered = Vec::with_capacity(layout_fields.len());
-    for field in &layout_fields {
+    let mut lowered = Vec::with_capacity(layout_field_types.len());
+    for type_ref in &layout_field_types {
         lowered.push(read_input_state_field_expr_with_type(
             input_idx,
-            &field.type_ref,
+            type_ref,
             state_start_offset_expr.clone(),
             field_chunk_offset,
             script_size_expr.clone(),
             contract_constants,
             "readInputStateWithTemplate",
         )?);
-        field_chunk_offset += encoded_field_chunk_size_for_type_ref(&field.type_ref, contract_constants)?;
+        field_chunk_offset += encoded_field_chunk_size_for_type_ref(type_ref, contract_constants)?;
     }
     Ok(lowered)
 }
@@ -1586,13 +1586,13 @@ fn encoded_state_len<'i>(
     contract_fields.iter().try_fold(0usize, |acc, field| Ok(acc + encoded_field_chunk_size(field, contract_constants)?))
 }
 
-fn encoded_state_len_for_layout_fields<'i>(
-    layout_fields: &[StructLeafSpec],
+fn encoded_state_len_for_layout_field_types<'i>(
+    layout_field_types: &[TypeRef],
     contract_constants: &HashMap<String, Expr<'i>>,
 ) -> Result<usize, CompilerError> {
-    layout_fields
+    layout_field_types
         .iter()
-        .try_fold(0usize, |acc, field| Ok(acc + encoded_field_chunk_size_for_type_ref(&field.type_ref, contract_constants)?))
+        .try_fold(0usize, |acc, type_ref| Ok(acc + encoded_field_chunk_size_for_type_ref(type_ref, contract_constants)?))
 }
 
 fn state_start_offset<'i>(
@@ -1609,10 +1609,10 @@ fn state_start_offset<'i>(
 fn templated_input_script_size_expr<'i>(
     template_prefix_len: &Expr<'i>,
     template_suffix_len: &Expr<'i>,
-    layout_fields: &[StructLeafSpec],
+    layout_field_types: &[TypeRef],
     contract_constants: &HashMap<String, Expr<'i>>,
 ) -> Result<Expr<'i>, CompilerError> {
-    let total_state_len = encoded_state_len_for_layout_fields(layout_fields, contract_constants)?;
+    let total_state_len = encoded_state_len_for_layout_field_types(layout_field_types, contract_constants)?;
     Ok(binary_expr(
         BinaryOp::Add,
         binary_expr(BinaryOp::Add, template_prefix_len.clone(), Expr::int(total_state_len as i64)),
@@ -1772,7 +1772,7 @@ fn compile_read_input_state_statement<'i>(
                 ));
             }
 
-            let layout_fields = flattened_struct_field_specs_for_type(
+            let layout_field_types = flattened_struct_field_specs_for_type(
                 &TypeRef { base: TypeBase::Custom(struct_name.clone()), array_dims: Vec::new() },
                 structs,
             )?;
@@ -1782,15 +1782,19 @@ fn compile_read_input_state_statement<'i>(
                 ctx.types,
                 ctx.builder,
                 ctx.options,
-                &layout_fields,
+                &layout_field_types,
                 ctx.script_size,
                 ctx.contract_constants,
             )?;
 
             let input_idx = input_idx.clone();
             let state_start_offset_expr = template_prefix_len.clone();
-            let script_size_expr =
-                templated_input_script_size_expr(template_prefix_len, template_suffix_len, &layout_fields, ctx.contract_constants)?;
+            let script_size_expr = templated_input_script_size_expr(
+                template_prefix_len,
+                template_suffix_len,
+                &layout_field_types,
+                ctx.contract_constants,
+            )?;
             let mut field_chunk_offset = 0usize;
 
             for field in &struct_spec.fields {
@@ -1866,13 +1870,13 @@ fn struct_name_for_state_bindings<'i>(bindings: &[StateBindingAst<'i>], structs:
 ///   args = (input_idx, template_prefix_len, template_suffix_len, expected_template_hash)
 ///   require target state layout is a non-empty flattened struct
 ///
-///   script_size = template_prefix_len + encoded_state_len(layout_fields) + template_suffix_len
+///   script_size = template_prefix_len + encoded_state_len(layout_field_types) + template_suffix_len
 ///   script_base = input_sigscript_len(input_idx) - script_size
 ///
 ///   actual_redeem_script = input_sigscript[script_base .. script_base + script_size]
 ///   prefix = input_sigscript[script_base .. script_base + template_prefix_len]
 ///   suffix = input_sigscript[
-///       script_base + template_prefix_len + encoded_state_len(layout_fields)
+///       script_base + template_prefix_len + encoded_state_len(layout_field_types)
 ///       ..
 ///       script_base + script_size
 ///   ]
@@ -1893,7 +1897,7 @@ fn compile_read_input_state_with_template_validation(
     types: &HashMap<String, String>,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
-    layout_fields: &[StructLeafSpec],
+    layout_field_types: &[TypeRef],
     current_script_size: Option<i64>,
     contract_constants: &HashMap<String, Expr<'_>>,
 ) -> Result<(), CompilerError> {
@@ -1904,18 +1908,18 @@ fn compile_read_input_state_with_template_validation(
                 .to_string(),
         ));
     };
-    if layout_fields.is_empty() {
+    if layout_field_types.is_empty() {
         return Err(CompilerError::Unsupported("readInputStateWithTemplate requires a struct type".to_string()));
     }
 
     let script_size_expr =
-        templated_input_script_size_expr(template_prefix_len, template_suffix_len, layout_fields, contract_constants)?;
+        templated_input_script_size_expr(template_prefix_len, template_suffix_len, layout_field_types, contract_constants)?;
     let prefix_len_expr = template_prefix_len.clone();
     let suffix_len_expr = template_suffix_len.clone();
     let script_base_expr = input_sigscript_base_expr(input_idx, script_size_expr.clone());
     let prefix_end_expr = binary_expr(BinaryOp::Add, script_base_expr.clone(), prefix_len_expr.clone());
     let script_end_expr = binary_expr(BinaryOp::Add, script_base_expr.clone(), script_size_expr.clone());
-    let state_len = encoded_state_len_for_layout_fields(layout_fields, contract_constants)?;
+    let state_len = encoded_state_len_for_layout_field_types(layout_field_types, contract_constants)?;
     let suffix_start_expr = binary_expr(BinaryOp::Add, prefix_end_expr.clone(), Expr::int(state_len as i64));
     let suffix_end_expr = binary_expr(BinaryOp::Add, suffix_start_expr.clone(), suffix_len_expr);
 
