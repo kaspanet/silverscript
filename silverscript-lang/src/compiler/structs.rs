@@ -202,36 +202,34 @@ pub(crate) fn flattened_struct_field_specs_for_type(
 fn lower_expr<'i>(expr: &Expr<'i>, scope: &LoweringScope, structs: &StructRegistry) -> Result<Expr<'i>, CompilerError> {
     let span = expr.span;
     match &expr.kind {
-        ExprKind::FieldAccess { .. } => {
-            if let ExprKind::FieldAccess { source, field, .. } = &expr.kind {
-                if let ExprKind::ArrayIndex { source: array_source, index } = &source.as_ref().kind {
-                    let (base, mut path, array_type) = resolve_struct_access(array_source, scope, structs)?;
-                    let struct_name = struct_array_name_from_type_ref(&array_type, structs)
-                        .ok_or_else(|| CompilerError::Unsupported("field access requires a struct value".to_string()))?;
-                    let item = structs
-                        .get(&struct_name)
-                        .ok_or_else(|| CompilerError::Unsupported(format!("unknown struct '{struct_name}'")))?;
-                    let field_type = item
-                        .fields
-                        .iter()
-                        .find(|candidate| candidate.name == *field)
-                        .map(|candidate| candidate.type_ref.clone())
-                        .ok_or_else(|| CompilerError::Unsupported(format!("struct '{}' has no field '{}'", struct_name, field)))?;
-                    if struct_name_from_type_ref(&field_type, structs).is_some()
-                        || struct_array_name_from_type_ref(&field_type, structs).is_some()
-                    {
-                        return Err(CompilerError::Unsupported("nested struct array field access is not supported".to_string()));
-                    }
-                    path.push(field.clone());
-                    return Ok(Expr::new(
-                        ExprKind::ArrayIndex {
-                            source: Box::new(Expr::identifier(flattened_struct_name(&base, &path))),
-                            index: Box::new(lower_expr(index, scope, structs)?),
-                        },
-                        span,
-                    ));
+        ExprKind::FieldAccess { source, field, .. } => {
+            if let ExprKind::ArrayIndex { source: array_source, index } = &source.as_ref().kind {
+                let (base, mut path, array_type) = resolve_struct_access(array_source, scope, structs)?;
+                let struct_name = struct_array_name_from_type_ref(&array_type, structs)
+                    .ok_or_else(|| CompilerError::Unsupported("field access requires a struct value".to_string()))?;
+                let item =
+                    structs.get(&struct_name).ok_or_else(|| CompilerError::Unsupported(format!("unknown struct '{struct_name}'")))?;
+                let field_type = item
+                    .fields
+                    .iter()
+                    .find(|candidate| candidate.name == *field)
+                    .map(|candidate| candidate.type_ref.clone())
+                    .ok_or_else(|| CompilerError::Unsupported(format!("struct '{}' has no field '{}'", struct_name, field)))?;
+                if struct_name_from_type_ref(&field_type, structs).is_some()
+                    || struct_array_name_from_type_ref(&field_type, structs).is_some()
+                {
+                    return Err(CompilerError::Unsupported("nested struct array field access is not supported".to_string()));
                 }
+                path.push(field.clone());
+                return Ok(Expr::new(
+                    ExprKind::ArrayIndex {
+                        source: Box::new(Expr::identifier(flattened_struct_name(&base, &path))),
+                        index: Box::new(lower_expr(index, scope, structs)?),
+                    },
+                    span,
+                ));
             }
+
             let (base, path, type_ref) = resolve_struct_access(expr, scope, structs)?;
             if struct_name_from_type_ref(&type_ref, structs).is_some() {
                 return Err(CompilerError::Unsupported("struct value must be used in a struct-typed position".to_string()));
