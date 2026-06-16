@@ -5422,9 +5422,10 @@ fn run_validate_output_state_with_template_case(
             byte[2] y = initY;
 
             entrypoint function routeToA() {{
+                State s = {{muxHash: muxHash, aHash: aHash, x: x + 1, y: 0x3412}};
                 validateOutputStateWithTemplate(
                     0,
-                    {{muxHash: muxHash, aHash: aHash, x: x + 1, y: 0x3412}},
+                    s,
                     0x{},
                     0x{},
                     0x{}
@@ -5501,9 +5502,10 @@ fn runs_validate_output_state_with_template() {
             byte[2] y = initY;
 
             entrypoint function routeToA() {{
+                State s = {{muxHash: muxHash, aHash: aHash, x: x + 1, y: 0x3412}};
                 validateOutputStateWithTemplate(
                     0,
-                    {{muxHash: muxHash, aHash: aHash, x: x + 1, y: 0x3412}},
+                    s,
                     0x{a_prefix_hex},
                     0x{a_suffix_hex},
                     0x{a_template_hash_hex}
@@ -7077,6 +7079,73 @@ fn rejects_validate_output_state_with_incorrect_state_variable_type() {
 }
 
 #[test]
+fn validate_output_state_lowers_nested_state_literal_in_state_field_order() {
+    let source = r#"
+        contract C(int initA, int initC, int initD) {
+            struct S2 {
+                int c;
+                int d;
+            }
+
+            int a = initA;
+            S2 b = {c: initC, d: initD};
+
+            entrypoint function main() {
+                validateOutputState(0, {b: {d: 8, c: 7}, a: 6});
+            }
+        }
+    "#;
+
+    let input_compiled =
+        compile_contract(source, &[5.into(), 3.into(), 4.into()], CompileOptions::default()).expect("compile succeeds");
+    let output_compiled =
+        compile_contract(source, &[6.into(), 7.into(), 8.into()], CompileOptions::default()).expect("compile succeeds");
+    let input = test_input(0, sigscript_push_script(&input_compiled.script));
+    let input_spk = pay_to_script_hash_script(&input_compiled.script);
+    let output_spk = pay_to_script_hash_script(&output_compiled.script);
+    let output = TransactionOutput { value: 1000, script_public_key: output_spk, covenant: None };
+    let tx = Transaction::new(1, vec![input], vec![output.clone()], 0, Default::default(), 0, vec![]);
+    let utxo_entry = UtxoEntry::new(output.value, input_spk, 0, tx.is_coinbase(), None);
+
+    let result = execute_input(tx, vec![utxo_entry], 0);
+    assert!(result.is_ok(), "nested state literal should validate in declared state field order: {result:?}");
+}
+
+#[test]
+fn validate_output_state_with_state_identifier() {
+    let source = r#"
+        contract C(int initA, int initC, int initD) {
+            struct S2 {
+                int c;
+                int d;
+            }
+
+            int a = initA;
+            S2 b = {c: initC, d: initD};
+
+            entrypoint function main() {
+                State next = {b: {d: 8, c: 7}, a: 6};
+                validateOutputState(0, next);
+            }
+        }
+    "#;
+
+    let input_compiled =
+        compile_contract(source, &[5.into(), 3.into(), 4.into()], CompileOptions::default()).expect("compile succeeds");
+    let output_compiled =
+        compile_contract(source, &[6.into(), 7.into(), 8.into()], CompileOptions::default()).expect("compile succeeds");
+    let input = test_input(0, sigscript_push_script(&input_compiled.script));
+    let input_spk = pay_to_script_hash_script(&input_compiled.script);
+    let output_spk = pay_to_script_hash_script(&output_compiled.script);
+    let output = TransactionOutput { value: 1000, script_public_key: output_spk, covenant: None };
+    let tx = Transaction::new(1, vec![input], vec![output.clone()], 0, Default::default(), 0, vec![]);
+    let utxo_entry = UtxoEntry::new(output.value, input_spk, 0, tx.is_coinbase(), None);
+
+    let result = execute_input(tx, vec![utxo_entry], 0);
+    assert!(result.is_ok(), "local State value should lower to validateOutputStateInner leaves: {result:?}");
+}
+
+#[test]
 fn validate_output_state_with_template_uses_passed_struct_layout_not_local_state_layout() {
     let source = r#"
         contract M(int initX, byte[2] initY) {
@@ -7214,7 +7283,7 @@ fn rejects_validate_output_state_with_malformed_state_object() {
 
     let err = compile_contract(source, &[5.into(), vec![1u8, 2u8].into()], CompileOptions::default())
         .expect_err("state object missing fields should fail");
-    assert!(err.to_string().contains("new_state must include all contract fields exactly once"), "unexpected error: {err}");
+    assert!(err.to_string().contains("struct field 'y' must be initialized"), "unexpected error: {err}");
 }
 
 #[test]
@@ -7232,7 +7301,7 @@ fn rejects_validate_output_state_with_duplicate_state_field() {
 
     let err = compile_contract(source, &[5.into(), vec![1u8, 2u8].into()], CompileOptions::default())
         .expect_err("state object duplicate fields should fail");
-    assert!(err.to_string().contains("duplicate state field 'x'"), "unexpected error: {err}");
+    assert!(err.to_string().contains("duplicate struct field 'x'"), "unexpected error: {err}");
 }
 
 #[test]
@@ -7250,7 +7319,7 @@ fn rejects_validate_output_state_with_unknown_state_field() {
 
     let err = compile_contract(source, &[5.into(), vec![1u8, 2u8].into()], CompileOptions::default())
         .expect_err("state object with unknown field should fail");
-    assert!(err.to_string().contains("new_state must include all contract fields exactly once"), "unexpected error: {err}");
+    assert!(err.to_string().contains("unknown struct field 'z'"), "unexpected error: {err}");
 }
 
 fn assert_compiled_body(source: &str, body: Vec<u8>) {
@@ -9898,9 +9967,9 @@ contract StructCounterLoop(int BOUND) {
 }
 
 #[test]
-fn validate_output_state_with_template_preserves_nested_struct_field_paths() {
+fn validate_output_state_preserves_nested_struct_field_paths() {
     let source = r#"
-        contract M() {
+        contract M(int initLeft, int initRight) {
             struct Left {
                 int id;
             }
@@ -9909,29 +9978,117 @@ fn validate_output_state_with_template_preserves_nested_struct_field_paths() {
                 int id;
             }
 
-            struct Pair {
-                Left left;
-                Right right;
-                byte[32] targetHash;
-            }
+            Left left = {id: initLeft};
+            Right right = {id: initRight};
 
-            entrypoint function route(byte[32] targetHash) {
-                Pair next = {
-                    left: {id: 1},
-                    right: {id: 2},
-                    targetHash: targetHash
+            entrypoint function route() {
+                State next = {
+                    left: {id: 3},
+                    right: {id: 4}
                 };
-                validateOutputStateWithTemplate(
-                    0,
-                    next,
-                    0x51,
-                    0x52,
-                    0x0000000000000000000000000000000000000000000000000000000000000000
-                );
+                validateOutputState(0, next);
             }
         }
     "#;
 
-    let result = compile_contract(source, &[], CompileOptions::default());
+    let input_compiled = compile_contract(source, &[1.into(), 2.into()], CompileOptions::default()).expect("compile succeeds");
+    let output_compiled = compile_contract(source, &[3.into(), 4.into()], CompileOptions::default()).expect("compile succeeds");
+    let input = test_input(0, sigscript_push_script(&input_compiled.script));
+    let input_spk = pay_to_script_hash_script(&input_compiled.script);
+    let output_spk = pay_to_script_hash_script(&output_compiled.script);
+    let output = TransactionOutput { value: 1000, script_public_key: output_spk, covenant: None };
+    let tx = Transaction::new(1, vec![input], vec![output.clone()], 0, Default::default(), 0, vec![]);
+    let utxo_entry = UtxoEntry::new(output.value, input_spk, 0, tx.is_coinbase(), None);
+
+    let result = execute_input(tx, vec![utxo_entry], 0);
+    assert!(result.is_ok(), "nested state fields with the same leaf name should remain distinct by path: {result:?}");
+}
+
+#[test]
+fn validate_output_state_with_template_preserves_nested_struct_field_paths() {
+    let target_hash = vec![0x44u8; 32];
+    let target_hash_hex = target_hash.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+    let target_source = format!(
+        r#"
+        contract Target(byte[32] initTargetHash, int initLeft, int initRight) {{
+            struct Left {{
+                int id;
+            }}
+
+            struct Right {{
+                int id;
+            }}
+
+            Left left = {{id: initLeft}};
+            Right right = {{id: initRight}};
+            byte[32] targetHash = initTargetHash;
+
+            entrypoint function noop() {{
+                require(left.id == 1);
+                require(right.id == 2);
+                require(targetHash == 0x{target_hash_hex});
+            }}
+        }}
+    "#
+    );
+
+    let target_template_compiled =
+        compile_contract(&target_source, &[vec![0x33u8; 32].into(), 0.into(), 0.into()], CompileOptions::default())
+            .expect("compile target template succeeds");
+    let (template_prefix, template_suffix, template_hash) = compiled_template_parts_and_hash(&target_template_compiled);
+    let template_prefix_hex = template_prefix.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+    let template_suffix_hex = template_suffix.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+    let template_hash_hex = template_hash.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+
+    let target_output_compiled =
+        compile_contract(&target_source, &[target_hash.clone().into(), 1.into(), 2.into()], CompileOptions::default())
+            .expect("compile target output succeeds");
+
+    let source = format!(
+        r#"
+        contract M() {{
+            struct Left {{
+                int id;
+            }}
+
+            struct Right {{
+                int id;
+            }}
+
+            struct Pair {{
+                Left left;
+                Right right;
+                byte[32] targetHash;
+            }}
+
+            entrypoint function route(byte[32] targetHash) {{
+                Pair next = {{
+                    left: {{id: 1}},
+                    right: {{id: 2}},
+                    targetHash: targetHash
+                }};
+                validateOutputStateWithTemplate(
+                    0,
+                    next,
+                    0x{template_prefix_hex},
+                    0x{template_suffix_hex},
+                    0x{template_hash_hex}
+                );
+            }}
+        }}
+    "#
+    );
+
+    let input_compiled = compile_contract(&source, &[], CompileOptions::default()).expect("compile router succeeds");
+    let sigscript = input_compiled.build_sig_script("route", vec![target_hash.into()]).expect("sigscript builds");
+    let sigscript = pay_to_script_hash_signature_script(input_compiled.script.clone(), sigscript).unwrap();
+    let input = test_input(0, sigscript);
+    let input_spk = pay_to_script_hash_script(&input_compiled.script);
+    let output_spk = pay_to_script_hash_script(&target_output_compiled.script);
+    let output = TransactionOutput { value: 1000, script_public_key: output_spk, covenant: None };
+    let tx = Transaction::new(1, vec![input], vec![output.clone()], 0, Default::default(), 0, vec![]);
+    let utxo_entry = UtxoEntry::new(output.value, input_spk, 0, tx.is_coinbase(), None);
+
+    let result = execute_input(tx, vec![utxo_entry], 0);
     assert!(result.is_ok(), "nested struct fields with the same leaf name should remain distinct by path: {result:?}");
 }
