@@ -255,7 +255,7 @@ impl TypeRef {
         !self.array_dims.is_empty()
     }
 
-    pub fn element_type(&self) -> Option<Self> {
+    pub fn array_element_type(&self) -> Option<Self> {
         if self.array_dims.is_empty() {
             return None;
         }

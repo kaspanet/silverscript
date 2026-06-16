@@ -239,7 +239,7 @@ fn push_typed_sigscript_arg<'i>(
     type_ref: &TypeRef,
     structs: &StructRegistry,
 ) -> Result<(), CompilerError> {
-    if let Some(element_type) = type_ref.element_type() {
+    if let Some(element_type) = type_ref.array_element_type() {
         if let Some(struct_name) = struct_name_from_type_ref(&element_type, structs) {
             let item =
                 structs.get(struct_name).ok_or_else(|| CompilerError::Unsupported(format!("unknown struct '{struct_name}'")))?;

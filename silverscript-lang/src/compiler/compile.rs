@@ -542,7 +542,7 @@ fn is_array_type_ref(type_ref: &TypeRef) -> bool {
 }
 
 fn array_element_type_ref(type_ref: &TypeRef) -> Option<TypeRef> {
-    type_ref.element_type()
+    type_ref.array_element_type()
 }
 
 fn array_size_ref(type_ref: &TypeRef) -> Option<usize> {

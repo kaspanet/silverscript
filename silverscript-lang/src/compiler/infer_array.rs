@@ -55,11 +55,11 @@ fn infer_fixed_array_type_from_initializer_ref<'i>(
         return None;
     }
 
-    let element_type = declared_type.element_type()?;
+    let element_type = declared_type.array_element_type()?;
     let init = initializer?;
     let init_type = infer_expr_type_ref(init, types, constants, functions, Some(&element_type))?;
 
-    if !init_type.is_array() || init_type.element_type() != Some(element_type.clone()) {
+    if !init_type.is_array() || init_type.array_element_type() != Some(element_type.clone()) {
         return None;
     }
 
@@ -254,8 +254,8 @@ fn infer_expr_type_ref<'i>(
         ExprKind::Binary { op: BinaryOp::Add, left, right } => {
             let left_type = infer_expr_type_ref(left, types, constants, functions, None)?;
             let right_type = infer_expr_type_ref(right, types, constants, functions, None)?;
-            let left_element = left_type.element_type()?;
-            if right_type.element_type() != Some(left_element.clone()) {
+            let left_element = left_type.array_element_type()?;
+            if right_type.array_element_type() != Some(left_element.clone()) {
                 return None;
             }
             let left_size = array_size_with_constants_ref(&left_type, constants)?;
@@ -271,7 +271,7 @@ fn infer_expr_type_ref<'i>(
         }
         ExprKind::Append { source, args, .. } => {
             let source_type = infer_expr_type_ref(source, types, constants, functions, None)?;
-            let element_type = source_type.element_type()?;
+            let element_type = source_type.array_element_type()?;
             let source_size = array_size_with_constants_ref(&source_type, constants)?;
             let mut inferred = element_type;
             inferred.array_dims.push(ArrayDim::Fixed(source_size.checked_add(args.len())?));

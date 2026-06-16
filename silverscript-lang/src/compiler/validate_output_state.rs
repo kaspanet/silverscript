@@ -284,7 +284,7 @@ fn infer_template_state_type(expr: &Expr<'_>, scope: &ValidationScope, structs: 
                 .get(name)
                 .cloned()
                 .ok_or_else(|| CompilerError::UndefinedIdentifier(name.clone()))?
-                .element_type()
+                .array_element_type()
                 .ok_or_else(|| CompilerError::Unsupported("validateOutputStateWithTemplate requires a struct value".to_string()))
         }
         ExprKind::StateObject(_) => Err(CompilerError::Unsupported(

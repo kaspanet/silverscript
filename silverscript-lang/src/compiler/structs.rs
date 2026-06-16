@@ -66,18 +66,27 @@ pub(crate) fn build_struct_registry<'i>(contract: &ContractAst<'i>) -> Result<St
 }
 
 pub(crate) fn struct_name_from_type_ref<'a>(type_ref: &'a TypeRef, structs: &'a StructRegistry) -> Option<&'a str> {
-    if !type_ref.array_dims.is_empty() {
+    if type_ref.is_array() {
         return None;
     }
+
     match &type_ref.base {
         TypeBase::Custom(name) if structs.contains_key(name) => Some(name.as_str()),
         _ => None,
     }
 }
 
+fn is_struct(type_ref: &TypeRef, structs: &StructRegistry) -> bool {
+    struct_name_from_type_ref(type_ref, structs).is_some()
+}
+
 pub(crate) fn struct_array_name_from_type_ref(type_ref: &TypeRef, structs: &StructRegistry) -> Option<String> {
-    let element_type = type_ref.element_type()?;
+    let element_type = type_ref.array_element_type()?;
     struct_name_from_type_ref(&element_type, structs).map(ToOwned::to_owned)
+}
+
+fn is_struct_array(type_ref: &TypeRef, structs: &StructRegistry) -> bool {
+    struct_array_name_from_type_ref(type_ref, structs).is_some()
 }
 
 pub(crate) fn ensure_known_or_builtin_type(type_ref: &TypeRef, structs: &StructRegistry, context: &str) -> Result<(), CompilerError> {
@@ -503,7 +512,7 @@ pub(crate) fn infer_struct_expr_type<'i>(
                 .get(name)
                 .cloned()
                 .ok_or_else(|| CompilerError::Unsupported(format!("undefined identifier '{}'", name)))?
-                .element_type()
+                .array_element_type()
                 .ok_or_else(|| CompilerError::Unsupported("struct destructuring requires a struct value".to_string())),
             _ => Err(CompilerError::Unsupported("struct destructuring requires a struct value".to_string())),
         },
@@ -748,7 +757,7 @@ fn lower_struct_array_value_expr<'i>(
         }
         ExprKind::Array(values) => {
             let element_type = expected_type
-                .element_type()
+                .array_element_type()
                 .ok_or_else(|| CompilerError::Unsupported(format!("expected struct type '{}'", expected_type.type_name())))?;
             let leaf_specs = flatten_type_ref_leaves(&element_type, structs)?;
             let mut grouped: Vec<Vec<Expr<'i>>> = vec![Vec::with_capacity(values.len()); leaf_specs.len()];
@@ -1185,7 +1194,7 @@ fn lower_statements<'i>(
                         && matches!(&source.kind, ExprKind::Identifier(source_name) if source_name == name)
                     {
                         let element_type = type_ref
-                            .element_type()
+                            .array_element_type()
                             .ok_or_else(|| CompilerError::Unsupported("array element type not supported".to_string()))?;
                         for arg in args {
                             if let ExprKind::Call { name: builtin_name, args: call_args, .. } = &arg.kind

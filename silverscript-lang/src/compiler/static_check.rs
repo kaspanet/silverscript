@@ -897,7 +897,7 @@ fn validate_expr_semantics<'i>(
                 contract_fields,
             )
             .ok_or_else(|| CompilerError::Unsupported("append target must be an array".to_string()))?;
-            let Some(element_type) = source_type.element_type() else {
+            let Some(element_type) = source_type.array_element_type() else {
                 return Err(CompilerError::Unsupported("append target must be an array".to_string()));
             };
             for arg in args {
@@ -993,7 +993,7 @@ fn infer_expr_type_ref_for_comparison_ref<'i>(
         }
         ExprKind::ArrayIndex { source, .. } => {
             infer_expr_type_ref_for_comparison_ref(source, env, prefer_env_for_comparison, types, structs, functions, contract_fields)
-                .and_then(|type_ref| type_ref.element_type())
+                .and_then(|type_ref| type_ref.array_element_type())
         }
         ExprKind::Append { source, .. } => {
             infer_expr_type_ref_for_comparison_ref(source, env, prefer_env_for_comparison, types, structs, functions, contract_fields)
@@ -1169,7 +1169,7 @@ fn infer_struct_destructure_expr_type<'i>(
                 .and_then(|type_name| parse_type_ref(type_name))
                 .and_then(|type_ref| {
                     type_ref
-                        .element_type()
+                        .array_element_type()
                         .ok_or_else(|| CompilerError::Unsupported("struct destructuring requires a struct value".to_string()))
                 }),
             _ => Err(CompilerError::Unsupported("struct destructuring requires a struct value".to_string())),
@@ -1453,7 +1453,7 @@ fn map_declared_type_error<'i>(
 }
 
 fn ensure_array_elements_have_known_size(type_ref: &TypeRef, structs: &StructRegistry, type_name: &str) -> Result<(), CompilerError> {
-    if !type_ref.array_dims.is_empty() && fixed_type_size_ref(type_ref.element_type().as_ref().unwrap_or(type_ref), structs).is_none()
+    if !type_ref.array_dims.is_empty() && fixed_type_size_ref(type_ref.array_element_type().as_ref().unwrap_or(type_ref), structs).is_none()
     {
         return Err(CompilerError::Unsupported(format!("array element type must have known size: {type_name}")));
     }
@@ -1470,7 +1470,7 @@ fn infer_fixed_array_type_from_initializer_type_check<'i>(
         return None;
     }
 
-    let element_type = declared_type.element_type()?;
+    let element_type = declared_type.array_element_type()?;
     let init = initializer?;
 
     match &init.kind {
@@ -1554,7 +1554,7 @@ pub(crate) fn expr_matches_declared_type_ref<'i>(expr: &Expr<'i>, type_ref: &Typ
         return true;
     }
 
-    if let Some(element_type) = type_ref.element_type() {
+    if let Some(element_type) = type_ref.array_element_type() {
         if struct_name_from_type_ref(&element_type, structs).is_some() {
             return matches!(&expr.kind, ExprKind::Array(values) if values.iter().all(|value| expr_matches_declared_type_ref(value, &element_type, structs)));
         }
@@ -1598,7 +1598,7 @@ pub(super) fn expr_matches_return_type_ref<'i>(
         return true;
     }
 
-    if let Some(element_type) = type_ref.element_type()
+    if let Some(element_type) = type_ref.array_element_type()
         && struct_name_from_type_ref(&element_type, structs).is_some()
     {
         return matches!(&expr.kind, ExprKind::Array(values) if values.iter().all(|value| expr_matches_return_type_ref(value, &element_type, types, structs, constants)));
@@ -1628,7 +1628,7 @@ pub(super) fn expr_matches_return_type_ref<'i>(
 pub(super) fn expr_matches_type_ref<'i>(expr: &Expr<'i>, type_ref: &TypeRef) -> bool {
     if !type_ref.array_dims.is_empty() {
         if let Some(size) = fixed_array_size(type_ref) {
-            if let Some(element_type) = type_ref.element_type() {
+            if let Some(element_type) = type_ref.array_element_type() {
                 if element_type.base == TypeBase::Byte {
                     return byte_array_len(expr) == Some(size);
                 }
@@ -1636,7 +1636,7 @@ pub(super) fn expr_matches_type_ref<'i>(expr: &Expr<'i>, type_ref: &TypeRef) -> 
             }
         }
         return byte_array_len(expr).is_some()
-            || matches!(&expr.kind, ExprKind::Array(values) if type_ref.element_type().is_some_and(|element_type| values.iter().all(|value| expr_matches_type_ref(value, &element_type))));
+            || matches!(&expr.kind, ExprKind::Array(values) if type_ref.array_element_type().is_some_and(|element_type| values.iter().all(|value| expr_matches_type_ref(value, &element_type))));
     }
 
     match type_ref.base {
@@ -1678,7 +1678,7 @@ fn is_array_type_ref(type_ref: &TypeRef) -> bool {
 }
 
 fn array_element_type_ref(type_ref: &TypeRef) -> Option<TypeRef> {
-    type_ref.element_type()
+    type_ref.array_element_type()
 }
 
 pub(super) fn array_literal_matches_type_ref<'i>(values: &[Expr<'i>], type_ref: &TypeRef) -> bool {
