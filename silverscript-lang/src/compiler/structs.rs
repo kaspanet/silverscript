@@ -1,7 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use super::compile::{byte_sequence_cast_size, read_input_state_field_expr_symbolic};
-use super::debug_value_types::infer_debug_expr_value_type;
+use super::compile::read_input_state_field_expr_symbolic;
 use super::*;
 use crate::ast::{
     ConstantAst, ContractAst, ContractFieldAst, Expr, ExprKind, FunctionAst, ParamAst, STATE_TYPE_NAME, StateBindingAst, Statement,
@@ -279,20 +278,6 @@ fn lower_expr<'i>(expr: &Expr<'i>, scope: &LoweringScope, structs: &StructRegist
         }
         ExprKind::Call { name, args, name_span } => {
             let lowered_args = args.iter().map(|arg| lower_expr(arg, scope, structs)).collect::<Result<Vec<_>, _>>()?;
-            if name.starts_with("byte[") && name.ends_with(']') {
-                let size_part = &name[5..name.len() - 1];
-                if !size_part.is_empty() && lowered_args.len() == 1 {
-                    let size =
-                        size_part.parse::<i64>().map_err(|_| CompilerError::Unsupported(format!("{name}() is not supported")))?;
-                    if let Some(source_type) = infer_lowered_expr_type_name(&lowered_args[0], scope)
-                        && let Some(source_size) = byte_sequence_cast_size(&source_type)
-                        && let Some(source_size) = source_size
-                        && source_size != size
-                    {
-                        return Err(CompilerError::Unsupported(format!("cannot cast {source_type} to {name}")));
-                    }
-                }
-            }
             Ok(Expr::new(ExprKind::Call { name: name.clone(), args: lowered_args, name_span: *name_span }, span))
         }
         ExprKind::New { name, args, name_span } => Ok(Expr::new(
@@ -682,12 +667,6 @@ pub(crate) fn lower_runtime_expr<'i>(
     let scope = lowering_scope_from_types(types)?;
     lower_expr(expr, &scope, structs)
 }
-
-fn infer_lowered_expr_type_name<'i>(expr: &Expr<'i>, scope: &LoweringScope) -> Option<String> {
-    let types = scope.vars.iter().map(|(name, type_ref)| (name.clone(), type_name_from_ref(type_ref))).collect::<HashMap<_, _>>();
-    infer_debug_expr_value_type(expr, &HashMap::new(), &types, &mut HashSet::new()).ok()
-}
-
 pub(crate) fn lower_runtime_struct_expr<'i>(
     expr: &Expr<'i>,
     expected_type: &TypeRef,

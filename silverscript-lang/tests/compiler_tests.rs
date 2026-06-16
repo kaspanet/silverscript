@@ -1531,6 +1531,27 @@ fn rejects_cast_from_smaller_fixed_byte_array_to_larger_fixed_byte_array() {
 }
 
 #[test]
+fn rejects_fixed_byte_array_size_mismatch_inside_struct_literal() {
+    let source = r#"
+        contract Arrays() {
+            struct Wrapped {
+                byte[32] hash;
+            }
+
+            entrypoint function main() {
+                byte[31] hash = 0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e;
+                Wrapped wrapped = {hash: byte[32](hash)};
+                require(wrapped.hash.length == 32);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default())
+        .expect_err("byte[31] to byte[32] cast inside struct literal should be rejected");
+    assert!(err.to_string().contains("cannot cast byte[31] to byte[32]"), "unexpected error: {err}");
+}
+
+#[test]
 fn build_sig_script_rejects_wrong_argument_count() {
     let source = r#"
         contract C() {
