@@ -36,8 +36,8 @@ use static_check::value_matches_type_ref;
 pub use structs::flattened_struct_name;
 pub(super) use structs::{
     StructRegistry, build_struct_registry, ensure_known_or_builtin_type, flatten_constructor_args_env, flatten_type_ref_leaves,
-    flattened_struct_field_specs_for_type, lower_runtime_expr, lower_runtime_struct_expr, lower_structs_contract,
-    struct_array_name_from_type_ref, struct_name_from_type_ref, validate_struct_graph,
+    flattened_struct_field_specs_for_type, is_struct, is_struct_array, lower_runtime_expr, lower_runtime_struct_expr,
+    lower_structs_contract, struct_name_from_type_ref, validate_struct_graph,
 };
 use validate_output_state::lower_validate_output_state;
 

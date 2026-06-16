@@ -191,7 +191,7 @@ fn lower_statements<'i>(
 
 fn coerce_expr_for_declared_scalar_type<'i>(expr: Expr<'i>, type_ref: &TypeRef) -> Result<Expr<'i>, CompilerError> {
     if matches!(type_ref.base, TypeBase::Byte)
-        && type_ref.array_dims.is_empty()
+        && !type_ref.is_array()
         && let ExprKind::Int(value) = expr.kind
     {
         let byte_value =

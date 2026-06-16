@@ -859,11 +859,11 @@ fn length_expr<'i>(expr: Expr<'i>) -> Expr<'i> {
 }
 
 fn is_state_type_ref(type_ref: &TypeRef) -> bool {
-    type_ref.array_dims.is_empty() && matches!(&type_ref.base, TypeBase::Custom(name) if name == STATE_TYPE_NAME)
+    !type_ref.is_array() && matches!(&type_ref.base, TypeBase::Custom(name) if name == STATE_TYPE_NAME)
 }
 
 fn is_state_array_type_ref(type_ref: &TypeRef) -> bool {
-    !type_ref.array_dims.is_empty() && matches!(&type_ref.base, TypeBase::Custom(name) if name == STATE_TYPE_NAME)
+    type_ref.is_array() && matches!(&type_ref.base, TypeBase::Custom(name) if name == STATE_TYPE_NAME)
 }
 
 fn is_literal_int(expr: &Expr<'_>, expected: i64) -> bool {

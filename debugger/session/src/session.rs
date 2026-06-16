@@ -2037,7 +2037,7 @@ fn debug_value_to_expr<'i>(value: &DebugValue) -> Option<Expr<'i>> {
 
 fn flatten_contract_type_leaves<'i>(contract: &ContractAst<'i>, type_ref: &TypeRef) -> Result<Vec<(Vec<String>, TypeRef)>, String> {
     if type_ref.is_array() {
-        let Some(element_type) = type_ref.element_type() else {
+        let Some(element_type) = type_ref.array_element_type() else {
             return Ok(Vec::new());
         };
         let outer_dim = type_ref.array_size().cloned().ok_or_else(|| "array type missing outer dimension".to_string())?;
@@ -2339,14 +2339,15 @@ fn direct_expr_type_name<'i>(scope_state: &ScopeState<'i>, expr: &Expr<'i>) -> O
         ExprKind::ArrayIndex { source, .. } => {
             let source_type = direct_expr_type_name(scope_state, source)?;
             let type_ref = parse_type_ref(&source_type).ok()?;
-            Some(type_ref.element_type()?.type_name())
+            Some(type_ref.array_element_type()?.type_name())
         }
         _ => None,
     }
 }
 
 fn is_structured_type_ref(type_ref: &silverscript_lang::ast::TypeRef) -> bool {
-    matches!(&type_ref.base, TypeBase::Custom(_)) || type_ref.element_type().is_some_and(|element| is_structured_type_ref(&element))
+    matches!(&type_ref.base, TypeBase::Custom(_))
+        || type_ref.array_element_type().is_some_and(|element| is_structured_type_ref(&element))
 }
 
 fn record_debug_named_values<'i>(bindings: &mut ScopeState<'i>, values: &[DebugNamedValue<'i>], origin: VariableOrigin) {

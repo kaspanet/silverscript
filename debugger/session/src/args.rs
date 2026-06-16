@@ -170,7 +170,7 @@ fn parse_struct_arg(
 
 fn parse_array_arg(values: &[Value], type_ref: &TypeRef, shapes: &StructShapeRegistry) -> Result<Expr<'static>, String> {
     validate_array_len(type_ref, values.len())?;
-    let element_type = type_ref.element_type().ok_or_else(|| format!("unsupported arg type '{}'", type_ref.type_name()))?;
+    let element_type = type_ref.array_element_type().ok_or_else(|| format!("unsupported arg type '{}'", type_ref.type_name()))?;
     values
         .iter()
         .map(|value| parse_json_value_for_type(value, &element_type, shapes))

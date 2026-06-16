@@ -76,7 +76,7 @@ pub(crate) fn struct_name_from_type_ref<'a>(type_ref: &'a TypeRef, structs: &'a 
     }
 }
 
-fn is_struct(type_ref: &TypeRef, structs: &StructRegistry) -> bool {
+pub fn is_struct(type_ref: &TypeRef, structs: &StructRegistry) -> bool {
     struct_name_from_type_ref(type_ref, structs).is_some()
 }
 
@@ -85,12 +85,12 @@ pub(crate) fn struct_array_name_from_type_ref(type_ref: &TypeRef, structs: &Stru
     struct_name_from_type_ref(&element_type, structs).map(ToOwned::to_owned)
 }
 
-fn is_struct_array(type_ref: &TypeRef, structs: &StructRegistry) -> bool {
+pub fn is_struct_array(type_ref: &TypeRef, structs: &StructRegistry) -> bool {
     struct_array_name_from_type_ref(type_ref, structs).is_some()
 }
 
 pub(crate) fn ensure_known_or_builtin_type(type_ref: &TypeRef, structs: &StructRegistry, context: &str) -> Result<(), CompilerError> {
-    if type_ref.array_dims.is_empty() {
+    if !type_ref.is_array() {
         match &type_ref.base {
             TypeBase::Custom(name) if !structs.contains_key(name) => {
                 return Err(CompilerError::Unsupported(format!("unknown type '{}' in {context}", name)));
@@ -224,9 +224,7 @@ fn lower_expr<'i>(expr: &Expr<'i>, scope: &LoweringScope, structs: &StructRegist
                     .find(|candidate| candidate.name == *field)
                     .map(|candidate| candidate.type_ref.clone())
                     .ok_or_else(|| CompilerError::Unsupported(format!("struct '{}' has no field '{}'", struct_name, field)))?;
-                if struct_name_from_type_ref(&field_type, structs).is_some()
-                    || struct_array_name_from_type_ref(&field_type, structs).is_some()
-                {
+                if is_struct(&field_type, structs) || is_struct_array(&field_type, structs) {
                     return Err(CompilerError::Unsupported("nested struct array field access is not supported".to_string()));
                 }
                 path.push(field.clone());
@@ -240,7 +238,7 @@ fn lower_expr<'i>(expr: &Expr<'i>, scope: &LoweringScope, structs: &StructRegist
             }
 
             let (base, path, type_ref) = resolve_struct_access(expr, scope, structs)?;
-            if struct_name_from_type_ref(&type_ref, structs).is_some() {
+            if is_struct(&type_ref, structs) {
                 return Err(CompilerError::Unsupported("struct value must be used in a struct-typed position".to_string()));
             }
             Ok(Expr::new(ExprKind::Identifier(flattened_struct_name(&base, &path)), span))
@@ -338,7 +336,7 @@ fn lower_expr<'i>(expr: &Expr<'i>, scope: &LoweringScope, structs: &StructRegist
             if matches!(kind, crate::ast::UnarySuffixKind::Length)
                 && let ExprKind::Identifier(name) = &source.kind
                 && let Some(type_ref) = scope.vars.get(name)
-                && struct_array_name_from_type_ref(type_ref, structs).is_some()
+                && is_struct_array(type_ref, structs)
             {
                 let first_leaf = flatten_type_ref_leaves(type_ref, structs)?
                     .into_iter()
@@ -472,7 +470,7 @@ pub(crate) fn lower_struct_value_expr<'i>(
                 let field_expr = provided
                     .remove(&field.name)
                     .ok_or_else(|| CompilerError::Unsupported(format!("struct field '{}' must be initialized", field.name)))?;
-                if struct_name_from_type_ref(&field.type_ref, structs).is_some() {
+                if is_struct(&field.type_ref, structs) {
                     lowered.extend(lower_struct_value_expr(
                         field_expr,
                         &field.type_ref,
@@ -577,7 +575,7 @@ pub(crate) fn lower_struct_destructure_statement<'i>(
 
         if let Some(field_expr) = direct_field_values.as_ref().and_then(|fields| fields.get(&field.name)) {
             debug_assert!(
-                struct_name_from_type_ref(&binding.type_ref, structs).is_none(),
+                !is_struct(&binding.type_ref, structs),
                 "type_check must reject nested struct destructuring from readInputState"
             );
             scope.vars.insert(binding.name.clone(), binding.type_ref.clone());
@@ -597,7 +595,7 @@ pub(crate) fn lower_struct_destructure_statement<'i>(
                 span,
             );
 
-            if struct_name_from_type_ref(&binding.type_ref, structs).is_some() {
+            if is_struct(&binding.type_ref, structs) {
                 let lowered_values = lower_struct_value_expr(
                     &projected_expr,
                     &binding.type_ref,
@@ -700,7 +698,7 @@ pub(crate) fn lower_runtime_struct_expr<'i>(
     contract_field_prefix_len: usize,
 ) -> Result<Vec<Expr<'i>>, CompilerError> {
     let scope = lowering_scope_from_types(types)?;
-    if struct_name_from_type_ref(expected_type, structs).is_some() {
+    if is_struct(expected_type, structs) {
         return lower_struct_value_expr(
             expr,
             expected_type,
@@ -711,7 +709,7 @@ pub(crate) fn lower_runtime_struct_expr<'i>(
             contract_field_prefix_len,
         );
     }
-    if struct_array_name_from_type_ref(expected_type, structs).is_some() {
+    if is_struct_array(expected_type, structs) {
         return lower_struct_array_value_expr(
             expr,
             expected_type,
@@ -822,8 +820,7 @@ pub(crate) fn flatten_runtime_return_exprs<'i>(
 ) -> Result<Vec<Expr<'i>>, CompilerError> {
     let mut flattened = Vec::new();
     for (expr, return_type) in exprs.iter().zip(return_types.iter()) {
-        if struct_name_from_type_ref(return_type, structs).is_some() || struct_array_name_from_type_ref(return_type, structs).is_some()
-        {
+        if is_struct(return_type, structs) || is_struct_array(return_type, structs) {
             flattened.extend(lower_runtime_struct_expr(
                 expr,
                 return_type,
@@ -845,7 +842,7 @@ fn scope_type_names(scope: &LoweringScope) -> HashMap<String, String> {
 }
 
 fn flatten_named_type_like(name: &str, type_ref: &TypeRef, structs: &StructRegistry) -> Result<Vec<(String, TypeRef)>, CompilerError> {
-    if struct_name_from_type_ref(type_ref, structs).is_some() || struct_array_name_from_type_ref(type_ref, structs).is_some() {
+    if is_struct(type_ref, structs) || is_struct_array(type_ref, structs) {
         Ok(flatten_type_ref_leaves(type_ref, structs)?
             .into_iter()
             .map(|(path, leaf_type)| (flattened_struct_name(name, &path), leaf_type))
@@ -866,7 +863,7 @@ fn lower_value_for_named_type<'i>(
     contract_field_prefix_len: usize,
 ) -> Result<Vec<(String, TypeRef, Expr<'i>)>, CompilerError> {
     let scope_types = scope_type_names(scope);
-    if struct_name_from_type_ref(type_ref, structs).is_some() || struct_array_name_from_type_ref(type_ref, structs).is_some() {
+    if is_struct(type_ref, structs) || is_struct_array(type_ref, structs) {
         let lowered = lower_runtime_struct_expr(
             expr,
             type_ref,
@@ -902,9 +899,7 @@ fn lower_call_args<'i>(
 
     let mut lowered = Vec::new();
     for (arg, param) in args.iter().zip(function.params.iter()) {
-        if struct_name_from_type_ref(&param.type_ref, structs).is_some()
-            || struct_array_name_from_type_ref(&param.type_ref, structs).is_some()
-        {
+        if is_struct(&param.type_ref, structs) || is_struct_array(&param.type_ref, structs) {
             lowered.extend(lower_runtime_struct_expr(
                 arg,
                 &param.type_ref,
@@ -928,8 +923,7 @@ fn lower_function_call_bindings<'i>(
 ) -> Result<Vec<ParamAst<'i>>, CompilerError> {
     let mut lowered = Vec::new();
     for (binding, return_type) in bindings.iter().zip(callee_return_types.iter()) {
-        if struct_name_from_type_ref(return_type, structs).is_some() || struct_array_name_from_type_ref(return_type, structs).is_some()
-        {
+        if is_struct(return_type, structs) || is_struct_array(return_type, structs) {
             for (path, leaf_type) in flatten_type_ref_leaves(return_type, structs)? {
                 lowered.push(ParamAst {
                     type_ref: leaf_type,
@@ -981,17 +975,15 @@ fn lower_statements<'i>(
             }
             Statement::VariableDefinition { type_ref, modifiers, name, expr, span, type_span, modifier_spans, name_span } => {
                 scope.vars.insert(name.clone(), type_ref.clone());
-                if struct_name_from_type_ref(type_ref, structs).is_some()
-                    || struct_array_name_from_type_ref(type_ref, structs).is_some()
-                {
+                if is_struct(type_ref, structs) || is_struct_array(type_ref, structs) {
                     if let Some(Expr { kind: ExprKind::Call { name: builtin_name, args, .. }, .. }) = expr
                         && matches!(builtin_name.as_str(), "readInputState" | "readInputStateWithTemplate")
                         && let Some(struct_name) = struct_name_from_type_ref(type_ref, structs)
                         && let Some(item) = structs.get(struct_name)
-                        && item.fields.iter().all(|field| {
-                            struct_name_from_type_ref(&field.type_ref, structs).is_none()
-                                && struct_array_name_from_type_ref(&field.type_ref, structs).is_none()
-                        })
+                        && item
+                            .fields
+                            .iter()
+                            .all(|field| !is_struct(&field.type_ref, structs) && !is_struct_array(&field.type_ref, structs))
                     {
                         lowered.push(Statement::StateFunctionCallAssign {
                             bindings: item
@@ -1113,10 +1105,8 @@ fn lower_statements<'i>(
             }
             Statement::FunctionCallAssign { bindings, name, args, span, name_span } => {
                 let lowered_bindings = if let Some(function) = functions.get(name) {
-                    if function.return_types.iter().any(|type_ref| {
-                        struct_name_from_type_ref(type_ref, structs).is_some()
-                            || struct_array_name_from_type_ref(type_ref, structs).is_some()
-                    }) {
+                    if function.return_types.iter().any(|type_ref| is_struct(type_ref, structs) || is_struct_array(type_ref, structs))
+                    {
                         lower_function_call_bindings(bindings, &function.return_types, structs)?
                     } else {
                         bindings.clone()
@@ -1186,10 +1176,8 @@ fn lower_statements<'i>(
                     });
                     continue;
                 };
-                if struct_name_from_type_ref(&type_ref, structs).is_some()
-                    || struct_array_name_from_type_ref(&type_ref, structs).is_some()
-                {
-                    if struct_array_name_from_type_ref(&type_ref, structs).is_some()
+                if is_struct(&type_ref, structs) || is_struct_array(&type_ref, structs) {
+                    if is_struct_array(&type_ref, structs)
                         && let ExprKind::Append { source, args, .. } = &expr.kind
                         && matches!(&source.kind, ExprKind::Identifier(source_name) if source_name == name)
                     {
@@ -1445,9 +1433,7 @@ pub(crate) fn lower_structs_contract<'i>(
     let mut lowered_constants = Vec::new();
     for constant in &contract.constants {
         scope.vars.insert(constant.name.clone(), constant.type_ref.clone());
-        if struct_name_from_type_ref(&constant.type_ref, structs).is_some()
-            || struct_array_name_from_type_ref(&constant.type_ref, structs).is_some()
-        {
+        if is_struct(&constant.type_ref, structs) || is_struct_array(&constant.type_ref, structs) {
             for (name, type_ref, expr) in lower_value_for_named_type(
                 &constant.name,
                 &constant.type_ref,
@@ -1482,9 +1468,7 @@ pub(crate) fn lower_structs_contract<'i>(
     let mut lowered_fields = Vec::new();
     for field in &contract.fields {
         scope.vars.insert(field.name.clone(), field.type_ref.clone());
-        if struct_name_from_type_ref(&field.type_ref, structs).is_some()
-            || struct_array_name_from_type_ref(&field.type_ref, structs).is_some()
-        {
+        if is_struct(&field.type_ref, structs) || is_struct_array(&field.type_ref, structs) {
             for (name, type_ref, expr) in lower_value_for_named_type(
                 &field.name,
                 &field.type_ref,

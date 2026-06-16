@@ -568,12 +568,12 @@ fn array_size_with_constants_ref<'i>(type_ref: &TypeRef, constants: &HashMap<Str
 }
 
 fn fixed_type_size_ref(type_ref: &TypeRef) -> Option<i64> {
-    if !type_ref.array_dims.is_empty() {
+    if type_ref.is_array() {
         if let (Some(elem_type), Some(size)) = (array_element_type_ref(type_ref), array_size_ref(type_ref)) {
-            if elem_type.base == TypeBase::Byte && elem_type.array_dims.is_empty() {
+            if elem_type.base == TypeBase::Byte && !elem_type.is_array() {
                 return Some(size as i64);
             }
-            if elem_type.base == TypeBase::Int && elem_type.array_dims.is_empty() {
+            if elem_type.base == TypeBase::Int && !elem_type.is_array() {
                 return Some((size * 8) as i64);
             }
         }
@@ -593,7 +593,7 @@ fn fixed_type_size_ref(type_ref: &TypeRef) -> Option<i64> {
 }
 
 fn fixed_type_size_with_constants_ref<'i>(type_ref: &TypeRef, constants: &HashMap<String, Expr<'i>>) -> Option<usize> {
-    if type_ref.array_dims.is_empty() {
+    if !type_ref.is_array() {
         return fixed_type_size_ref(type_ref).map(|size| size as usize);
     }
 
@@ -834,7 +834,7 @@ fn coerce_expr_for_declared_scalar_type<'i>(expr: Expr<'i>, type_name: &str) -> 
 }
 
 fn coerce_rhs_byte_literal_for_comparison<'i>(left_type: Option<&TypeRef>, right: &Expr<'i>) -> Expr<'i> {
-    if left_type.is_some_and(|type_ref| matches!(type_ref.base, TypeBase::Byte) && type_ref.array_dims.is_empty())
+    if left_type.is_some_and(|type_ref| matches!(type_ref.base, TypeBase::Byte) && !type_ref.is_array())
         && let ExprKind::Int(value) = right.kind
         && (0..=255).contains(&value)
     {
@@ -2319,7 +2319,7 @@ fn compile_encoded_state_object(
             CompilerError::Unsupported(format!("{builtin_name} does not support field type {}", type_name_from_ref(&type_ref)))
         })?;
 
-        if type_ref.array_dims.is_empty() && matches!(type_ref.base, TypeBase::Int | TypeBase::Bool) {
+        if !type_ref.is_array() && matches!(type_ref.base, TypeBase::Int | TypeBase::Bool) {
             compile_expr(
                 new_value,
                 constants,
@@ -2385,7 +2385,7 @@ fn compile_encoded_flat_state_fields(
             CompilerError::Unsupported(format!("{builtin_name} does not support field type {}", type_name_from_ref(&type_ref)))
         })?;
 
-        if type_ref.array_dims.is_empty() && matches!(type_ref.base, TypeBase::Int | TypeBase::Bool) {
+        if !type_ref.is_array() && matches!(type_ref.base, TypeBase::Int | TypeBase::Bool) {
             compile_expr(
                 new_value,
                 constants,

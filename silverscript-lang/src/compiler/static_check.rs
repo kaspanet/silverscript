@@ -669,7 +669,7 @@ fn validate_struct_destructure_bindings<'i>(
                 type_name_from_ref(&field.type_ref)
             )));
         }
-        if direct_read_input_state && struct_name_from_type_ref(&binding.type_ref, structs).is_some() {
+        if direct_read_input_state && is_struct(&binding.type_ref, structs) {
             return Err(CompilerError::Unsupported("readInputState does not support nested struct fields".to_string()));
         }
     }
@@ -734,7 +734,7 @@ fn validate_state_function_call_assign<'i>(
                         "readInputStateWithTemplate bindings must include all target fields exactly once".to_string(),
                     ));
                 };
-                if struct_name_from_type_ref(&field.type_ref, structs).is_some() {
+                if is_struct(&field.type_ref, structs) {
                     return Err(CompilerError::Unsupported(
                         "readInputStateWithTemplate does not support nested struct fields in destructuring".to_string(),
                     ));
@@ -1089,7 +1089,7 @@ fn validate_tuple_field_access<'i>(
 }
 
 fn coerce_rhs_byte_literal_for_comparison_ref<'i>(left_type: Option<&TypeRef>, right: &Expr<'i>) -> Expr<'i> {
-    if left_type.is_some_and(|type_ref| matches!(type_ref.base, TypeBase::Byte) && type_ref.array_dims.is_empty())
+    if left_type.is_some_and(|type_ref| matches!(type_ref.base, TypeBase::Byte) && !type_ref.is_array())
         && let ExprKind::Int(value) = right.kind
         && (0..=255).contains(&value)
     {
@@ -1217,7 +1217,7 @@ fn insert_type_binding(
     structs: &StructRegistry,
 ) -> Result<(), CompilerError> {
     types.insert(name.to_string(), type_name_from_ref(type_ref));
-    if (struct_name_from_type_ref(type_ref, structs).is_some() || struct_array_name_from_type_ref(type_ref, structs).is_some())
+    if (is_struct(type_ref, structs) || is_struct_array(type_ref, structs))
         && let Ok(leaves) = flatten_type_ref_leaves(type_ref, structs)
     {
         for (path, leaf_type) in leaves {
@@ -1301,7 +1301,7 @@ fn validate_expr_assignable_to_type<'i>(
     }
 
     if matches!(type_ref.base, TypeBase::Byte)
-        && type_ref.array_dims.is_empty()
+        && !type_ref.is_array()
         && matches!(expr.kind, ExprKind::Int(value) if (0..=255).contains(&value))
     {
         return Ok(());
@@ -1344,7 +1344,7 @@ fn validate_expr_assignable_to_type<'i>(
         return Ok(());
     }
 
-    if struct_name_from_type_ref(type_ref, structs).is_some() {
+    if is_struct(type_ref, structs) {
         if let ExprKind::Call { name, args, .. } = &expr.kind
             && name == "readInputState"
             && struct_name_from_type_ref(type_ref, structs) == Some(STATE_TYPE_NAME)
@@ -1362,7 +1362,7 @@ fn validate_expr_assignable_to_type<'i>(
             return validate_struct_literal_matches_type(expr, type_ref, types, structs, constants);
         }
         lower_runtime_struct_expr(expr, type_ref, types, structs, contract_fields, constants, 0).map(|_| ())
-    } else if struct_array_name_from_type_ref(type_ref, structs).is_some() {
+    } else if is_struct_array(type_ref, structs) {
         if let ExprKind::Call { name, .. } = &expr.kind
             && name == "readInputStateWithTemplate"
         {
@@ -1453,7 +1453,7 @@ fn map_declared_type_error<'i>(
 }
 
 fn ensure_array_elements_have_known_size(type_ref: &TypeRef, structs: &StructRegistry, type_name: &str) -> Result<(), CompilerError> {
-    if !type_ref.array_dims.is_empty() && fixed_type_size_ref(type_ref.array_element_type().as_ref().unwrap_or(type_ref), structs).is_none()
+    if type_ref.is_array() && fixed_type_size_ref(type_ref.array_element_type().as_ref().unwrap_or(type_ref), structs).is_none()
     {
         return Err(CompilerError::Unsupported(format!("array element type must have known size: {type_name}")));
     }
@@ -1501,7 +1501,7 @@ fn fixed_type_size_ref(type_ref: &TypeRef, structs: &StructRegistry) -> Option<i
         TypeBase::Sig => Some(65),
         TypeBase::Datasig => Some(64),
         TypeBase::String => None,
-        TypeBase::Custom(name) if type_ref.array_dims.is_empty() => {
+        TypeBase::Custom(name) if !type_ref.is_array() => {
             let struct_spec = structs.get(name)?;
             let mut total = 0i64;
             for field in &struct_spec.fields {
@@ -1555,7 +1555,7 @@ pub(crate) fn expr_matches_declared_type_ref<'i>(expr: &Expr<'i>, type_ref: &Typ
     }
 
     if let Some(element_type) = type_ref.array_element_type() {
-        if struct_name_from_type_ref(&element_type, structs).is_some() {
+        if is_struct(&element_type, structs) {
             return matches!(&expr.kind, ExprKind::Array(values) if values.iter().all(|value| expr_matches_declared_type_ref(value, &element_type, structs)));
         }
     }
@@ -1599,7 +1599,7 @@ pub(super) fn expr_matches_return_type_ref<'i>(
     }
 
     if let Some(element_type) = type_ref.array_element_type()
-        && struct_name_from_type_ref(&element_type, structs).is_some()
+        && is_struct(&element_type, structs)
     {
         return matches!(&expr.kind, ExprKind::Array(values) if values.iter().all(|value| expr_matches_return_type_ref(value, &element_type, types, structs, constants)));
     }
@@ -1626,7 +1626,7 @@ pub(super) fn expr_matches_return_type_ref<'i>(
 }
 
 pub(super) fn expr_matches_type_ref<'i>(expr: &Expr<'i>, type_ref: &TypeRef) -> bool {
-    if !type_ref.array_dims.is_empty() {
+    if type_ref.is_array() {
         if let Some(size) = fixed_array_size(type_ref) {
             if let Some(element_type) = type_ref.array_element_type() {
                 if element_type.base == TypeBase::Byte {
@@ -1674,7 +1674,7 @@ fn fixed_array_size(type_ref: &TypeRef) -> Option<usize> {
 }
 
 fn is_array_type_ref(type_ref: &TypeRef) -> bool {
-    !type_ref.array_dims.is_empty()
+    type_ref.is_array()
 }
 
 fn array_element_type_ref(type_ref: &TypeRef) -> Option<TypeRef> {
@@ -1772,7 +1772,7 @@ fn expr_matches_return_type_ref_hint<'i>(
     if validate_expr_assignable_to_type(expr, type_ref, types, structs, constants, &HashMap::new(), &[]).is_ok() {
         return None;
     }
-    match (&expr.kind, &type_ref.base, type_ref.array_dims.is_empty()) {
+    match (&expr.kind, &type_ref.base, !type_ref.is_array()) {
         (ExprKind::Array(values), TypeBase::Byte, true) if values.len() == 1 => match values[0].kind {
             ExprKind::Byte(byte) => {
                 Some(format!("hex literals are byte arrays; use byte({byte:#04x}) to cast a one-byte hex literal to byte"))
