@@ -1826,7 +1826,7 @@ impl<'a, 'i> DebugSession<'a, 'i> {
                     Some(DebugValue::Array(items))
                 }
             }
-            ExprKind::StateObject(fields) => {
+            ExprKind::StructLiteral(fields) => {
                 let mut values = Vec::with_capacity(fields.len());
                 for field in fields {
                     let value = self.try_resolve_expr_value(scope_state, &field.expr, visiting)?;
@@ -2016,7 +2016,7 @@ fn debug_value_to_expr<'i>(value: &DebugValue) -> Option<Expr<'i>> {
             Some(Expr::new(ExprKind::Array(items.iter().map(debug_value_to_expr).collect::<Option<Vec<_>>>()?), span::Span::default()))
         }
         DebugValue::Object(fields) => Some(Expr::new(
-            ExprKind::StateObject(
+            ExprKind::StructLiteral(
                 fields
                     .iter()
                     .map(|(name, value)| {
@@ -2142,8 +2142,8 @@ where
         ExprKind::Array(values) => {
             Ok(Expr::new(ExprKind::Array(values.iter().map(&mut *map_child).collect::<Result<Vec<_>, _>>()?), span))
         }
-        ExprKind::StateObject(fields) => Ok(Expr::new(
-            ExprKind::StateObject(
+        ExprKind::StructLiteral(fields) => Ok(Expr::new(
+            ExprKind::StructLiteral(
                 fields
                     .iter()
                     .map(|field| {
@@ -2617,7 +2617,7 @@ mod tests {
                 name: "DEFAULT_PAIR".to_string(),
                 type_name: "Pair".to_string(),
                 value: Expr::new(
-                    ExprKind::StateObject(vec![
+                    ExprKind::StructLiteral(vec![
                         StateFieldExpr {
                             name: "amount".to_string(),
                             expr: Expr::int(7),

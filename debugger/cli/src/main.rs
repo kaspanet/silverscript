@@ -93,7 +93,7 @@ fn expr_to_debug_value(expr: &Expr<'_>) -> Result<DebugValue, String> {
             }
             Ok(DebugValue::Array(values.iter().map(expr_to_debug_value).collect::<Result<Vec<_>, _>>()?))
         }
-        ExprKind::StateObject(fields) => Ok(DebugValue::Object(
+        ExprKind::StructLiteral(fields) => Ok(DebugValue::Object(
             fields
                 .iter()
                 .map(|field| Ok((field.name.clone(), expr_to_debug_value(&field.expr)?)))
@@ -116,7 +116,7 @@ fn debug_value_to_expr(value: &DebugValue) -> Option<Expr<'static>> {
             Expr::new(ExprKind::Array(values.iter().map(debug_value_to_expr).collect::<Option<Vec<_>>>()?), Default::default())
         }
         DebugValue::Object(fields) => Expr::new(
-            ExprKind::StateObject(
+            ExprKind::StructLiteral(
                 fields
                     .iter()
                     .map(|(name, value)| {
@@ -284,7 +284,7 @@ fn materialize_script_for_explicit_state(
 }
 
 fn contract_with_explicit_state<'i>(contract: &ContractAst<'i>, state: &Expr<'i>) -> Result<ContractAst<'i>, String> {
-    let ExprKind::StateObject(entries) = &state.kind else {
+    let ExprKind::StructLiteral(entries) = &state.kind else {
         return Err("State value must be an object literal".to_string());
     };
 

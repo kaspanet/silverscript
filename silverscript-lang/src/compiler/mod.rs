@@ -162,7 +162,7 @@ impl<'i> ContractAst<'i> {
 
 pub fn struct_object<'i>(fields: Vec<(&str, Expr<'i>)>) -> Expr<'i> {
     Expr::new(
-        ExprKind::StateObject(
+        ExprKind::StructLiteral(
             fields
                 .into_iter()
                 .map(|(name, expr)| StateFieldExpr {
@@ -250,7 +250,7 @@ fn push_typed_sigscript_arg<'i>(
             for field in &item.fields {
                 let mut field_values = Vec::with_capacity(values.len());
                 for value in &values {
-                    let ExprKind::StateObject(entries) = &value.kind else {
+                    let ExprKind::StructLiteral(entries) = &value.kind else {
                         return Err(CompilerError::Unsupported(
                             "signature script struct array arguments must contain object literals".to_string(),
                         ));
@@ -291,7 +291,7 @@ fn push_typed_sigscript_arg<'i>(
 
     if let Some(struct_name) = struct_name_from_type_ref(type_ref, structs) {
         let item = structs.get(struct_name).ok_or_else(|| CompilerError::Unsupported(format!("unknown struct '{struct_name}'")))?;
-        let ExprKind::StateObject(fields) = arg.kind else {
+        let ExprKind::StructLiteral(fields) = arg.kind else {
             return Err(CompilerError::Unsupported("signature script struct arguments must be object literals".to_string()));
         };
         let mut provided = HashMap::new();

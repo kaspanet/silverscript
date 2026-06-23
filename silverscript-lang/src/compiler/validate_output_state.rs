@@ -287,7 +287,7 @@ fn infer_template_state_type(expr: &Expr<'_>, scope: &ValidationScope, structs: 
                 .array_element_type()
                 .ok_or_else(|| CompilerError::Unsupported("validateOutputStateWithTemplate requires a struct value".to_string()))
         }
-        ExprKind::StateObject(_) => Err(CompilerError::Unsupported(
+        ExprKind::StructLiteral(_) => Err(CompilerError::Unsupported(
             "validateOutputStateWithTemplate does not support inline state objects; use a struct variable instead".to_string(),
         )),
         _ => Err(CompilerError::Unsupported("validateOutputStateWithTemplate requires a struct value".to_string())),

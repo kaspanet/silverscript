@@ -919,7 +919,7 @@ fn validate_expr_semantics<'i>(
         ExprKind::Introspection { index, .. } => {
             validate_expr_semantics(index, env, prefer_env_for_comparison, types, structs, functions, contract_fields)
         }
-        ExprKind::StateObject(fields) => {
+        ExprKind::StructLiteral(fields) => {
             for field in fields {
                 validate_expr_semantics(&field.expr, env, prefer_env_for_comparison, types, structs, functions, contract_fields)?;
             }
@@ -1358,7 +1358,7 @@ fn validate_expr_assignable_to_type<'i>(
         {
             return compile::read_input_state_with_template_values(args, type_ref, structs, constants).map(|_| ());
         }
-        if matches!(expr.kind, ExprKind::StateObject(_)) {
+        if matches!(expr.kind, ExprKind::StructLiteral(_)) {
             return validate_struct_literal_matches_type(expr, type_ref, types, structs, constants);
         }
         lower_runtime_struct_expr(expr, type_ref, types, structs, contract_fields, constants, 0).map(|_| ())
@@ -1407,7 +1407,7 @@ fn validate_struct_literal_matches_type<'i>(
         return Err(CompilerError::Unsupported("type mismatch".to_string()));
     };
     let item = structs.get(struct_name).ok_or_else(|| CompilerError::Unsupported(format!("unknown struct '{struct_name}'")))?;
-    let ExprKind::StateObject(fields) = &expr.kind else {
+    let ExprKind::StructLiteral(fields) = &expr.kind else {
         return Err(CompilerError::Unsupported("type mismatch".to_string()));
     };
     let mut provided = HashMap::new();
@@ -1453,8 +1453,7 @@ fn map_declared_type_error<'i>(
 }
 
 fn ensure_array_elements_have_known_size(type_ref: &TypeRef, structs: &StructRegistry, type_name: &str) -> Result<(), CompilerError> {
-    if type_ref.is_array() && fixed_type_size_ref(type_ref.array_element_type().as_ref().unwrap_or(type_ref), structs).is_none()
-    {
+    if type_ref.is_array() && fixed_type_size_ref(type_ref.array_element_type().as_ref().unwrap_or(type_ref), structs).is_none() {
         return Err(CompilerError::Unsupported(format!("array element type must have known size: {type_name}")));
     }
     Ok(())
@@ -1537,7 +1536,7 @@ pub(crate) fn expr_matches_declared_type_ref<'i>(expr: &Expr<'i>, type_ref: &Typ
         let Some(item) = structs.get(struct_name) else {
             return false;
         };
-        let ExprKind::StateObject(fields) = &expr.kind else {
+        let ExprKind::StructLiteral(fields) = &expr.kind else {
             return false;
         };
         if fields.len() != item.fields.len() {
@@ -1581,7 +1580,7 @@ pub(super) fn expr_matches_return_type_ref<'i>(
         let Some(item) = structs.get(struct_name) else {
             return false;
         };
-        let ExprKind::StateObject(fields) = &expr.kind else {
+        let ExprKind::StructLiteral(fields) = &expr.kind else {
             return false;
         };
         if fields.len() != item.fields.len() {

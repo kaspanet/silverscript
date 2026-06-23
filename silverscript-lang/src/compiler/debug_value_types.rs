@@ -184,7 +184,7 @@ pub(super) fn infer_debug_expr_value_type<'i>(
         ExprKind::FieldAccess { .. } => {
             Err(CompilerError::Unsupported("struct field access should be lowered before compilation".to_string()))
         }
-        ExprKind::StateObject(_) => Err(CompilerError::Unsupported(
+        ExprKind::StructLiteral(_) => Err(CompilerError::Unsupported(
             "state object literals are only supported in validateOutputState-style builtins".to_string(),
         )),
     }

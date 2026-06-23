@@ -359,7 +359,7 @@ pub fn walk_expr_mut<'i, V: AstVisitorMut<'i> + ?Sized>(visitor: &mut V, expr: &
             visitor.visit_span(field_span);
             visitor.visit_expr(index);
         }
-        ExprKind::StateObject(fields) => {
+        ExprKind::StructLiteral(fields) => {
             for field in fields {
                 visitor.visit_name(&mut field.name, NameKind::StateField);
                 visitor.visit_span(&mut field.span);

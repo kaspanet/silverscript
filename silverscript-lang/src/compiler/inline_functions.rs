@@ -585,7 +585,7 @@ impl<'i, 'd> Inliner<'i, 'd> {
                     Expr::new(ExprKind::Introspection { kind: *kind, index: Box::new(index), field_span: *field_span }, span),
                 ))
             }
-            ExprKind::StateObject(fields) => {
+            ExprKind::StructLiteral(fields) => {
                 let mut prelude = Vec::new();
                 let mut lowered_fields = Vec::with_capacity(fields.len());
                 for field in fields {
@@ -598,7 +598,7 @@ impl<'i, 'd> Inliner<'i, 'd> {
                         name_span: field.name_span,
                     });
                 }
-                Ok((prelude, Expr::new(ExprKind::StateObject(lowered_fields), span)))
+                Ok((prelude, Expr::new(ExprKind::StructLiteral(lowered_fields), span)))
             }
             ExprKind::FieldAccess { source, field, field_span } => {
                 if let Some(index) = Self::tuple_field_index(field)

@@ -848,7 +848,7 @@ fn state_object_expr_from_contract_fields<'i>(contract_fields: &[ContractFieldAs
             name_span: span::Span::default(),
         })
         .collect();
-    Expr::new(ExprKind::StateObject(fields), span::Span::default())
+    Expr::new(ExprKind::StructLiteral(fields), span::Span::default())
 }
 
 fn length_expr<'i>(expr: Expr<'i>) -> Expr<'i> {

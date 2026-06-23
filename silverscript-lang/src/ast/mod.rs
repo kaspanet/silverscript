@@ -594,7 +594,7 @@ pub enum ExprKind<'i> {
         #[serde(skip_deserializing)]
         field_span: Span<'i>,
     },
-    StateObject(Vec<StateFieldExpr<'i>>),
+    StructLiteral(Vec<StateFieldExpr<'i>>),
     FieldAccess {
         source: Box<Expr<'i>>,
         field: String,
@@ -1008,7 +1008,7 @@ fn format_expr_with_prec(expr: &Expr<'_>, parent_prec: u8, right_child: bool) ->
         ExprKind::Introspection { kind, index, .. } => {
             format!("{}[{}]{}", introspection_root(*kind), format_expr(index), introspection_field(*kind))
         }
-        ExprKind::StateObject(fields) => format_state_object(fields),
+        ExprKind::StructLiteral(fields) => format_state_object(fields),
         ExprKind::FieldAccess { source, field, .. } => {
             format!("{}.{}", format_expr_with_prec(source, PREC_POSTFIX, false), field)
         }
@@ -2099,7 +2099,7 @@ fn parse_state_object<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerErro
         let expr = parse_expression(expr_pair)?;
         fields.push(StateFieldExpr { name, expr, span: field_span, name_span });
     }
-    Ok(Expr::new(ExprKind::StateObject(fields), span))
+    Ok(Expr::new(ExprKind::StructLiteral(fields), span))
 }
 
 fn parse_literal<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {

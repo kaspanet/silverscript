@@ -259,7 +259,7 @@ impl<'i> DebugRecorder<'i> {
             ExprKind::Introspection { kind, index, field_span } => {
                 ExprKind::Introspection { kind, index: Box::new(self.rewrite_debug_expr(*index)), field_span }
             }
-            ExprKind::StateObject(fields) => ExprKind::StateObject(
+            ExprKind::StructLiteral(fields) => ExprKind::StructLiteral(
                 fields
                     .into_iter()
                     .map(|field| StateFieldExpr {
@@ -584,7 +584,7 @@ fn rewrite_debug_expr_with_function<'i>(
             index: Box::new(rewrite_debug_expr_with_function(*index, function_name, visible_names_by_function)),
             field_span,
         },
-        ExprKind::StateObject(fields) => ExprKind::StateObject(
+        ExprKind::StructLiteral(fields) => ExprKind::StructLiteral(
             fields
                 .into_iter()
                 .map(|field| StateFieldExpr {

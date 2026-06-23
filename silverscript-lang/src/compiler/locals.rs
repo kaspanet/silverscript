@@ -226,8 +226,8 @@ fn substitute_expr<'i>(expr: &Expr<'i>, aliases: &HashMap<String, Expr<'i>>) -> 
             ExprKind::Array(values.iter().map(|value| substitute_expr(value, aliases)).collect::<Result<Vec<_>, _>>()?),
             span,
         ),
-        ExprKind::StateObject(fields) => Expr::new(
-            ExprKind::StateObject(
+        ExprKind::StructLiteral(fields) => Expr::new(
+            ExprKind::StructLiteral(
                 fields
                     .into_iter()
                     .map(|field| {
@@ -402,7 +402,7 @@ fn collect_expr_identifier_uses<'i>(expr: &Expr<'i>, uses: &mut HashMap<String, 
                 collect_expr_identifier_uses(value, uses);
             }
         }
-        ExprKind::StateObject(fields) => {
+        ExprKind::StructLiteral(fields) => {
             for field in fields {
                 collect_expr_identifier_uses(&field.expr, uses);
             }
@@ -445,7 +445,7 @@ fn expr_references_any(expr: &Expr<'_>, names: &HashSet<String>) -> bool {
             expr_references_any(condition, names) || expr_references_any(then_expr, names) || expr_references_any(else_expr, names)
         }
         ExprKind::Array(values) => values.iter().any(|value| expr_references_any(value, names)),
-        ExprKind::StateObject(fields) => fields.iter().any(|field| expr_references_any(&field.expr, names)),
+        ExprKind::StructLiteral(fields) => fields.iter().any(|field| expr_references_any(&field.expr, names)),
         ExprKind::Call { args, .. } | ExprKind::New { args, .. } => args.iter().any(|arg| expr_references_any(arg, names)),
         ExprKind::Split { source, index, .. } | ExprKind::ArrayIndex { source, index } => {
             expr_references_any(source, names) || expr_references_any(index, names)

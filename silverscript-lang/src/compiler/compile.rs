@@ -394,7 +394,7 @@ fn expr_uses_script_size<'i>(expr: &Expr<'i>) -> bool {
             expr_uses_script_size(condition) || expr_uses_script_size(then_expr) || expr_uses_script_size(else_expr)
         }
         ExprKind::Array(values) => values.iter().any(expr_uses_script_size),
-        ExprKind::StateObject(fields) => fields.iter().any(|field| expr_uses_script_size(&field.expr)),
+        ExprKind::StructLiteral(fields) => fields.iter().any(|field| expr_uses_script_size(&field.expr)),
         ExprKind::Call { name, args, .. } => name == "readInputState" || args.iter().any(expr_uses_script_size),
         ExprKind::New { args, .. } => args.iter().any(expr_uses_script_size),
         ExprKind::Split { source, index, .. } => expr_uses_script_size(source) || expr_uses_script_size(index),
@@ -733,7 +733,7 @@ fn collect_expr_identifier_uses<'i>(expr: &Expr<'i>, uses: &mut HashMap<String, 
                 collect_expr_identifier_uses(value, uses);
             }
         }
-        ExprKind::StateObject(fields) => {
+        ExprKind::StructLiteral(fields) => {
             for field in fields {
                 collect_expr_identifier_uses(&field.expr, uses);
             }
@@ -2641,7 +2641,7 @@ pub(crate) fn resolve_expr<'i>(
             }
             Ok(Expr::new(ExprKind::Array(resolved), span))
         }
-        ExprKind::StateObject(fields) => {
+        ExprKind::StructLiteral(fields) => {
             let mut resolved_fields = Vec::with_capacity(fields.len());
             for field in fields {
                 resolved_fields.push(StateFieldExpr {
@@ -2651,7 +2651,7 @@ pub(crate) fn resolve_expr<'i>(
                     name_span: field.name_span,
                 });
             }
-            Ok(Expr::new(ExprKind::StateObject(resolved_fields), span))
+            Ok(Expr::new(ExprKind::StructLiteral(resolved_fields), span))
         }
         ExprKind::FieldAccess { source, field, field_span } => Ok(Expr::new(
             ExprKind::FieldAccess { source: Box::new(resolve_expr(*source, constants, visiting)?), field, field_span },
@@ -2733,7 +2733,7 @@ pub(super) fn compile_expr<'i>(
         ExprKind::Bool(value) => compile_bool_expr(&mut ctx, *value),
         ExprKind::Byte(byte) => compile_byte_expr(&mut ctx, *byte),
         ExprKind::Array(values) => compile_array_expr(&mut ctx, values),
-        ExprKind::StateObject(_) => compile_state_object_expr(),
+        ExprKind::StructLiteral(_) => compile_state_object_expr(),
         ExprKind::FieldAccess { .. } => compile_field_access_expr(),
         ExprKind::String(value) => compile_string_expr(&mut ctx, value),
         ExprKind::Identifier(name) => compile_identifier_expr(&mut ctx, name),

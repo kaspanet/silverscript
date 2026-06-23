@@ -194,8 +194,8 @@ fn lower_expr<'i>(expr: &Expr<'i>) -> Result<Expr<'i>, CompilerError> {
         ExprKind::Introspection { kind, index, field_span } => {
             Ok(Expr::new(ExprKind::Introspection { kind: *kind, index: Box::new(lower_expr(index)?), field_span: *field_span }, span))
         }
-        ExprKind::StateObject(fields) => Ok(Expr::new(
-            ExprKind::StateObject(
+        ExprKind::StructLiteral(fields) => Ok(Expr::new(
+            ExprKind::StructLiteral(
                 fields
                     .iter()
                     .map(|field| {
