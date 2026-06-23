@@ -7330,6 +7330,44 @@ fn assert_compiled_body(source: &str, body: Vec<u8>) {
 }
 
 #[test]
+fn checkdatasig_lowers_to_checksigfromstack_over_sha256_message() {
+    let source = r#"
+        contract DataSig(datasig signature, byte[] message, pubkey publicKey) {
+            entrypoint function main() {
+                require(checkDataSig(signature, message, publicKey));
+            }
+        }
+    "#;
+    let signature = vec![0x11; 64];
+    let message = b"authorize".to_vec();
+    let public_key = vec![0x22; 32];
+    let compiled = compile_contract(
+        source,
+        &[signature.clone().into(), message.clone().into(), public_key.clone().into()],
+        CompileOptions::default(),
+    )
+    .expect("compile succeeds");
+
+    let expected = ScriptBuilder::new()
+        .add_data_with_push_opcode(&signature)
+        .unwrap()
+        .add_data_with_push_opcode(&message)
+        .unwrap()
+        .add_op(OpSHA256)
+        .unwrap()
+        .add_data_with_push_opcode(&public_key)
+        .unwrap()
+        .add_op(OpCheckSigFromStack)
+        .unwrap()
+        .add_op(OpVerify)
+        .unwrap()
+        .add_op(OpTrue)
+        .unwrap()
+        .drain();
+    assert_eq!(compiled.script, expected);
+}
+
+#[test]
 fn canonicalizes_bool_comparison_operands_for_equality_and_inequality() {
     let cases = [(("=="), OpNumEqual), (("!="), OpNumNotEqual)];
 

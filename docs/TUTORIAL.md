@@ -848,6 +848,16 @@ Verify a signature against a public key:
 require(checkSig(s, pk));
 ```
 
+**`checkDataSig(datasig signature, byte[] message, pubkey publicKey): bool`**
+
+Verify a 64-byte Schnorr data signature against a public key. The signature is
+checked over `sha256(message)`, so off-chain signers must sign the SHA-256 hash
+of the message bytes supplied to the contract:
+
+```javascript
+require(checkDataSig(oracleSig, oracleMessage, oraclePk));
+```
+
 ### Type Conversion Functions
 
 **`byte[](value): bytes`**

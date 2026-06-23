@@ -3801,15 +3801,15 @@ fn compile_checksig_call<'i>(ctx: &mut CompileCallContext<'_, 'i>, args: &[Expr<
 }
 
 fn compile_checkdatasig_call<'i>(ctx: &mut CompileCallContext<'_, 'i>, args: &[Expr<'i>]) -> Result<(), CompilerError> {
-    for arg in args {
-        compile_call_arg_with_context(ctx, arg)?;
+    if args.len() != 3 {
+        return Err(CompilerError::Unsupported("checkDataSig() expects 3 arguments (signature, message, publicKey)".to_string()));
     }
-    for _ in 0..args.len() {
-        ctx.builder.add_op(OpDrop)?;
-        *ctx.stack_depth -= 1;
-    }
-    ctx.builder.add_op(OpTrue)?;
-    *ctx.stack_depth += 1;
+    compile_call_arg_with_context(ctx, &args[0])?;
+    compile_call_arg_with_context(ctx, &args[1])?;
+    ctx.builder.add_op(OpSHA256)?;
+    compile_call_arg_with_context(ctx, &args[2])?;
+    ctx.builder.add_op(OpCheckSigFromStack)?;
+    *ctx.stack_depth -= 2;
     Ok(())
 }
 

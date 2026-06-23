@@ -484,7 +484,9 @@ fn compiles_hodl_vault_example_and_verifies() {
     let block_height = 1000u32;
     let price = 20u32;
     let oracle_message = [block_height.to_le_bytes(), price.to_le_bytes()].concat();
-    let oracle_sig = vec![0u8; 64];
+    let oracle_message_hash = <sha2::Sha256 as sha2::Digest>::digest(&oracle_message);
+    let oracle_signed = secp256k1::Message::from_digest_slice(&oracle_message_hash).unwrap();
+    let oracle_sig = oracle.sign_schnorr(oracle_signed).as_ref().to_vec();
 
     let constructor_args = vec![owner_pk.to_vec().into(), oracle_pk.to_vec().into(), min_block.into(), price_target.into()];
     let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
