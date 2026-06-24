@@ -469,6 +469,8 @@ fn infer_expr_type_ref_for_comparison<'i>(
                 | "ScriptPubKeyP2SHFromRedeemScript"
                 | "OpInputCovenantId"
                 | "OpOutputCovenantId"
+                | "CheckSigFromStack"
+                | "CheckSigFromStackECDSA"
                 | "OpTxGas"
                 | "OpTxPayloadLen"
                 | "OpTxInputIndex"
@@ -3589,7 +3591,8 @@ fn compile_call_expr<'i>(
         }
         "blake2b" => compile_blake2b_call(&mut ctx, args),
         "checkSig" => compile_checksig_call(&mut ctx, args),
-        "checkDataSig" => compile_checkdatasig_call(&mut ctx, args),
+        "CheckSigFromStack" => compile_checksigfromstack_call(&mut ctx, name, args, OpCheckSigFromStack),
+        "CheckSigFromStackECDSA" => compile_checksigfromstack_call(&mut ctx, name, args, OpCheckSigFromStackECDSA),
         _ => compile_unknown_function_call(name),
     }
 }
@@ -3800,15 +3803,19 @@ fn compile_checksig_call<'i>(ctx: &mut CompileCallContext<'_, 'i>, args: &[Expr<
     Ok(())
 }
 
-fn compile_checkdatasig_call<'i>(ctx: &mut CompileCallContext<'_, 'i>, args: &[Expr<'i>]) -> Result<(), CompilerError> {
+fn compile_checksigfromstack_call<'i>(
+    ctx: &mut CompileCallContext<'_, 'i>,
+    name: &str,
+    args: &[Expr<'i>],
+    opcode: u8,
+) -> Result<(), CompilerError> {
     if args.len() != 3 {
-        return Err(CompilerError::Unsupported("checkDataSig() expects 3 arguments (signature, message, publicKey)".to_string()));
+        return Err(CompilerError::Unsupported(format!("{name}() expects 3 arguments (signature, digest, publicKey)")));
     }
     compile_call_arg_with_context(ctx, &args[0])?;
     compile_call_arg_with_context(ctx, &args[1])?;
-    ctx.builder.add_op(OpSHA256)?;
     compile_call_arg_with_context(ctx, &args[2])?;
-    ctx.builder.add_op(OpCheckSigFromStack)?;
+    ctx.builder.add_op(opcode)?;
     *ctx.stack_depth -= 2;
     Ok(())
 }

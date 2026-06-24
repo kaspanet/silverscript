@@ -228,7 +228,8 @@ fn runs_cashc_valid_examples() {
         "p2pkh_with_cast.sil",
         "reassignment.sil",
         "simple_cast.sil",
-        "simple_checkdatasig.sil",
+        "simple_checksigfromstack.sil",
+        "simple_checksigfromstack_ecdsa.sil",
         "simple_constant.sil",
         "simple_covenant.sil",
         "simple_functions.sil",
@@ -699,7 +700,7 @@ fn runs_cashc_valid_examples() {
                 let result = execute_tx(tx, utxo, reused);
                 assert!(result.is_err(), "{example} should fail");
             }
-            "simple_checkdatasig.sil" => {
+            "simple_checksigfromstack.sil" => {
                 use sha2::{Digest, Sha256};
 
                 let keypair = random_keypair();
@@ -730,6 +731,38 @@ fn runs_cashc_valid_examples() {
                 let mut forged_sig = valid_sig;
                 forged_sig[0] ^= 0x01;
                 assert!(run(forged_sig).is_err(), "{example}: forged data signature should fail");
+            }
+            "simple_checksigfromstack_ecdsa.sil" => {
+                use sha2::{Digest, Sha256};
+
+                let keypair = random_keypair();
+                let pubkey_bytes = keypair.public_key().serialize().to_vec();
+                let message = b"data".to_vec();
+                let message_hash = Sha256::digest(&message);
+                let signed = Message::from_digest_slice(&message_hash).expect("sha256 digest is 32 bytes");
+                let valid_sig = keypair.secret_key().sign_ecdsa(signed).serialize_compact().to_vec();
+                assert_eq!(valid_sig.len(), 64, "datasig is a compact ECDSA signature");
+
+                let run = |signature: Vec<u8>| {
+                    let constructor_args = vec![signature.into(), pubkey_bytes.clone().into()];
+                    let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
+                    let selector = selector_for_compiled(&compiled, "cds");
+                    let sigscript = build_sigscript(&[ArgValue::Bytes(message.clone())], selector);
+                    let (mut tx, utxo, reused) = build_tx_context(
+                        compiled.script.clone(),
+                        vec![(1_000, compiled.script.clone()), (1_000, compiled.script.clone())],
+                        2_000,
+                        0,
+                        1,
+                    );
+                    tx.tx.inputs[0].signature_script = sigscript;
+                    execute_tx(tx, utxo, reused)
+                };
+
+                assert!(run(valid_sig.clone()).is_ok(), "{example}: valid ECDSA data signature should pass");
+                let mut forged_sig = valid_sig;
+                forged_sig[0] ^= 0x01;
+                assert!(run(forged_sig).is_err(), "{example}: forged ECDSA data signature should fail");
             }
             "simple_constant.sil" => {
                 let constructor_args = vec![];
@@ -1093,7 +1126,8 @@ fn compiles_cashc_valid_examples() {
         "p2pkh_with_cast.sil",
         "reassignment.sil",
         "simple_cast.sil",
-        "simple_checkdatasig.sil",
+        "simple_checksigfromstack.sil",
+        "simple_checksigfromstack_ecdsa.sil",
         "simple_constant.sil",
         "simple_covenant.sil",
         "simple_functions.sil",
