@@ -469,8 +469,8 @@ fn infer_expr_type_ref_for_comparison<'i>(
                 | "ScriptPubKeyP2SHFromRedeemScript"
                 | "OpInputCovenantId"
                 | "OpOutputCovenantId"
-                | "CheckSigFromStack"
-                | "CheckSigFromStackECDSA"
+                | "checkSigFromStack"
+                | "checkSigFromStackECDSA"
                 | "OpTxGas"
                 | "OpTxPayloadLen"
                 | "OpTxInputIndex"
@@ -3591,8 +3591,8 @@ fn compile_call_expr<'i>(
         }
         "blake2b" => compile_blake2b_call(&mut ctx, args),
         "checkSig" => compile_checksig_call(&mut ctx, args),
-        "CheckSigFromStack" => compile_checksigfromstack_call(&mut ctx, name, args, OpCheckSigFromStack),
-        "CheckSigFromStackECDSA" => compile_checksigfromstack_call(&mut ctx, name, args, OpCheckSigFromStackECDSA),
+        "checkSigFromStack" => compile_checksigfromstack_call(&mut ctx, name, args, OpCheckSigFromStack),
+        "checkSigFromStackECDSA" => compile_checksigfromstack_call(&mut ctx, name, args, OpCheckSigFromStackECDSA),
         _ => compile_unknown_function_call(name),
     }
 }

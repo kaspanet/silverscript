@@ -7347,7 +7347,7 @@ fn checksigfromstack_lowers_to_matching_opcode() {
     let source = r#"
         contract DataSig(datasig signature, byte[32] digest, pubkey publicKey) {
             entrypoint function main() {
-                require(CheckSigFromStack(signature, digest, publicKey));
+                require(checkSigFromStack(signature, digest, publicKey));
             }
         }
     "#;
@@ -7383,7 +7383,7 @@ fn checksigfromstackecdsa_lowers_to_matching_opcode() {
     let source = r#"
         contract DataSig(datasig signature, byte[32] digest, byte[33] publicKey) {
             entrypoint function main() {
-                require(CheckSigFromStackECDSA(signature, digest, publicKey));
+                require(checkSigFromStackECDSA(signature, digest, publicKey));
             }
         }
     "#;
@@ -7419,7 +7419,7 @@ fn checksigfromstack_requires_datasig_and_32_byte_digest_types() {
     let raw_message = r#"
         contract DataSig(datasig signature, byte[] message, pubkey publicKey) {
             entrypoint function main() {
-                require(CheckSigFromStack(signature, message, publicKey));
+                require(checkSigFromStack(signature, message, publicKey));
             }
         }
     "#;
@@ -7436,7 +7436,7 @@ fn checksigfromstack_requires_datasig_and_32_byte_digest_types() {
             entrypoint function main() {
                 int N = 32;
                 byte[N] digest = 0x010203;
-                require(CheckSigFromStack(signature, digest, publicKey));
+                require(checkSigFromStack(signature, digest, publicKey));
             }
         }
     "#;
@@ -7453,7 +7453,7 @@ fn checksigfromstack_requires_datasig_and_32_byte_digest_types() {
             int constant N = 32;
 
             entrypoint function main(byte[N] digest) {
-                require(CheckSigFromStack(signature, digest, publicKey));
+                require(checkSigFromStack(signature, digest, publicKey));
             }
         }
     "#;
@@ -7467,7 +7467,7 @@ fn checksigfromstack_requires_datasig_and_32_byte_digest_types() {
         r#"
         contract DataSig() {{
             entrypoint function main() {{
-                require(CheckSigFromStack({signature_literal}, {digest_literal}, {public_key_literal}));
+                require(checkSigFromStack({signature_literal}, {digest_literal}, {public_key_literal}));
             }}
         }}
     "#
@@ -7480,7 +7480,7 @@ fn checksigfromstack_requires_datasig_and_32_byte_digest_types() {
             entrypoint function main() {{
                 byte[32] digest = {digest_literal};
                 byte[32] publicKey = {public_key_literal};
-                require(CheckSigFromStack(signature, digest, publicKey));
+                require(checkSigFromStack(signature, digest, publicKey));
             }}
         }}
     "#
@@ -7495,7 +7495,7 @@ fn checksigfromstack_requires_datasig_and_32_byte_digest_types() {
     let tx_signature = r#"
         contract DataSig(sig signature, byte[32] digest, pubkey publicKey) {
             entrypoint function main() {
-                require(CheckSigFromStack(signature, digest, publicKey));
+                require(checkSigFromStack(signature, digest, publicKey));
             }
         }
     "#;
@@ -7510,7 +7510,7 @@ fn checksigfromstack_requires_datasig_and_32_byte_digest_types() {
     let schnorr_pubkey_for_ecdsa = r#"
         contract DataSig(datasig signature, byte[32] digest, pubkey publicKey) {
             entrypoint function main() {
-                require(CheckSigFromStackECDSA(signature, digest, publicKey));
+                require(checkSigFromStackECDSA(signature, digest, publicKey));
             }
         }
     "#;
@@ -7531,7 +7531,7 @@ fn checksigfromstack_result_is_checked_as_bool() {
     let bool_assignment = r#"
         contract DataSig(datasig signature, byte[32] digest, pubkey publicKey) {
             entrypoint function main() {
-                bool ok = CheckSigFromStack(signature, digest, publicKey);
+                bool ok = checkSigFromStack(signature, digest, publicKey);
                 require(ok);
             }
         }
@@ -7546,7 +7546,7 @@ fn checksigfromstack_result_is_checked_as_bool() {
     let byte_assignment = r#"
         contract DataSig(datasig signature, byte[32] digest, pubkey publicKey) {
             entrypoint function main() {
-                byte[32] ok = CheckSigFromStack(signature, digest, publicKey);
+                byte[32] ok = checkSigFromStack(signature, digest, publicKey);
                 require(true);
             }
         }
@@ -7562,7 +7562,7 @@ fn checksigfromstack_result_is_checked_as_bool() {
     let bool_return = r#"
         contract DataSig(datasig signature, byte[32] digest, pubkey publicKey) {
             function ok() : bool {
-                return CheckSigFromStack(signature, digest, publicKey);
+                return checkSigFromStack(signature, digest, publicKey);
             }
 
             entrypoint function main() {
@@ -7580,7 +7580,7 @@ fn checksigfromstack_result_is_checked_as_bool() {
     let byte_return = r#"
         contract DataSig(datasig signature, byte[32] digest, pubkey publicKey) {
             function bad() : byte[32] {
-                return CheckSigFromStack(signature, digest, publicKey);
+                return checkSigFromStack(signature, digest, publicKey);
             }
 
             entrypoint function main() {
@@ -7602,7 +7602,7 @@ fn checksigfromstack_executes_schnorr_signature_verification() {
     let source = r#"
         contract DataSig(datasig signature, byte[32] digest, pubkey publicKey) {
             entrypoint function main() {
-                require(CheckSigFromStack(signature, digest, publicKey));
+                require(checkSigFromStack(signature, digest, publicKey));
             }
         }
     "#;
@@ -7634,7 +7634,7 @@ fn checksigfromstackecdsa_executes_ecdsa_signature_verification() {
     let source = r#"
         contract DataSig(datasig signature, byte[32] digest, byte[33] publicKey) {
             entrypoint function main() {
-                require(CheckSigFromStackECDSA(signature, digest, publicKey));
+                require(checkSigFromStackECDSA(signature, digest, publicKey));
             }
         }
     "#;

@@ -1378,8 +1378,8 @@ fn validate_builtin_call<'i>(
     contract_fields: &[ContractFieldAst<'i>],
 ) -> Result<(), CompilerError> {
     let expected_args = match name {
-        "CheckSigFromStack" => [("signature", "datasig"), ("digest", "byte[32]"), ("publicKey", "pubkey")],
-        "CheckSigFromStackECDSA" => [("signature", "datasig"), ("digest", "byte[32]"), ("publicKey", "byte[33]")],
+        "checkSigFromStack" => [("signature", "datasig"), ("digest", "byte[32]"), ("publicKey", "pubkey")],
+        "checkSigFromStackECDSA" => [("signature", "datasig"), ("digest", "byte[32]"), ("publicKey", "byte[33]")],
         _ => return Ok(()),
     };
     if args.len() != expected_args.len() {
@@ -1404,7 +1404,7 @@ fn validate_builtin_call<'i>(
 
 fn typed_builtin_return_type_ref(name: &str) -> Option<TypeRef> {
     match name {
-        "CheckSigFromStack" | "CheckSigFromStackECDSA" => parse_type_ref("bool").ok(),
+        "checkSigFromStack" | "checkSigFromStackECDSA" => parse_type_ref("bool").ok(),
         _ => None,
     }
 }
