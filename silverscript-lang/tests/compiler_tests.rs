@@ -7630,6 +7630,35 @@ fn checksigfromstack_executes_schnorr_signature_verification() {
 }
 
 #[test]
+fn checksigfromstack_false_result_can_be_asserted() {
+    let source = r#"
+        contract DataSig() {
+            entrypoint function main(datasig signature, byte[32] digest, pubkey publicKey) {
+                require(!checkSigFromStack(signature, digest, publicKey));
+            }
+        }
+    "#;
+    let keypair = secp256k1::Keypair::from_seckey_slice(secp256k1::SECP256K1, &[7u8; 32]).unwrap();
+    let public_key = keypair.x_only_public_key().0.serialize().to_vec();
+    let digest = Hash::from_bytes([3u8; 32]);
+    let message = secp256k1::Message::from_digest(digest.into());
+    let valid_signature = keypair.sign_schnorr(message).as_ref().to_vec();
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+
+    let run = |signature: Vec<u8>| {
+        let sigscript = compiled
+            .build_sig_script("main", vec![signature.into(), digest.as_bytes().to_vec().into(), public_key.clone().into()])
+            .expect("sigscript builds");
+        run_script_with_sigscript(compiled.script.clone(), sigscript)
+    };
+
+    let valid_result = run(valid_signature);
+    assert!(valid_result.is_err(), "valid Schnorr data signature should fail the negated assertion");
+    let zero_sig_result = run(vec![0u8; 64]);
+    assert!(zero_sig_result.is_ok(), "zero Schnorr data signature should pass the negated assertion: {zero_sig_result:?}");
+}
+
+#[test]
 fn checksigfromstackecdsa_executes_ecdsa_signature_verification() {
     let source = r#"
         contract DataSig(datasig signature, byte[32] digest, byte[33] publicKey) {

@@ -1378,6 +1378,7 @@ fn validate_builtin_call<'i>(
     contract_fields: &[ContractFieldAst<'i>],
 ) -> Result<(), CompilerError> {
     let expected_args = match name {
+        // TODO: Use constants for all builtins
         "checkSigFromStack" => [("signature", "datasig"), ("digest", "byte[32]"), ("publicKey", "pubkey")],
         "checkSigFromStackECDSA" => [("signature", "datasig"), ("digest", "byte[32]"), ("publicKey", "byte[33]")],
         _ => return Ok(()),
