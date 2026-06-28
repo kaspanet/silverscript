@@ -16,11 +16,12 @@ repository = ""
 rust-version = "1.85.0"
 
 [workspace.dependencies]
-kaspa-consensus-core = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "tn12" }
-kaspa-addresses = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "tn12" }
-kaspa-hashes = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "tn12" }
-kaspa-txscript = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "tn12" }
-kaspa-txscript-errors = { git = "https://github.com/kaspanet/rusty-kaspa", branch = "tn12" }
+kaspa-consensus-core = { git = "https://github.com/kaspanet/rusty-kaspa", tag = "v2.0.1" }
+kaspa-addresses = { git = "https://github.com/kaspanet/rusty-kaspa", tag = "v2.0.1" }
+kaspa-hashes = { git = "https://github.com/kaspanet/rusty-kaspa", tag = "v2.0.1" }
+kaspa-txscript = { git = "https://github.com/kaspanet/rusty-kaspa", tag = "v2.0.1" }
+kaspa-txscript-zk-sdk = { git = "https://github.com/kaspanet/rusty-kaspa", tag = "v2.0.1" }
+kaspa-txscript-errors = { git = "https://github.com/kaspanet/rusty-kaspa", tag = "v2.0.1" }
 blake2b_simd = "1.0.2"
 indexmap = "2.7.0"
 rand = "0.8.5"

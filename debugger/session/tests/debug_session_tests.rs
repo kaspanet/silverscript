@@ -3,9 +3,10 @@ use std::error::Error;
 
 use kaspa_consensus_core::Hash;
 use kaspa_consensus_core::hashing::sighash::SigHashReusedValuesUnsync;
+use kaspa_consensus_core::mass::units::SigopCount;
 use kaspa_consensus_core::tx::{
     CovenantBinding, PopulatedTransaction, ScriptPublicKey, Transaction, TransactionId, TransactionInput, TransactionOutpoint,
-    TransactionOutput, TxInputMass, UtxoEntry, VerifiableTransaction,
+    TransactionOutput, UtxoEntry, VerifiableTransaction,
 };
 use kaspa_txscript::caches::Cache;
 use kaspa_txscript::covenants::CovenantsContext;
@@ -1644,7 +1645,7 @@ contract CovLocal() {
         previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([0x44u8; 32]), index: 0 },
         signature_script: sigscript.clone(),
         sequence: 0,
-        mass: TxInputMass::SigopCount(0.into()),
+        compute_commit: SigopCount(0).into(),
     };
     let output = TransactionOutput { value: 1000, script_public_key: ScriptPublicKey::new(0, vec![OpTrue].into()), covenant: None };
     let tx = Transaction::new(1, vec![input], vec![output], 0, Default::default(), 0, vec![]);
@@ -1708,7 +1709,7 @@ contract CovEval() {
         previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([0x44u8; 32]), index: 0 },
         signature_script: sigscript.clone(),
         sequence: 0,
-        mass: TxInputMass::SigopCount(0.into()),
+        compute_commit: SigopCount(0).into(),
     };
     let output = TransactionOutput { value: 1000, script_public_key: ScriptPublicKey::new(0, vec![OpTrue].into()), covenant: None };
     let tx = Transaction::new(1, vec![input], vec![output], 0, Default::default(), 0, vec![]);
@@ -1795,13 +1796,13 @@ contract CovDebugDemo(int initial_value) {
             previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([0x44u8; 32]), index: 0 },
             signature_script: leader_input_sigscript,
             sequence: 0,
-            mass: TxInputMass::SigopCount(0.into()),
+            compute_commit: SigopCount(0).into(),
         },
         TransactionInput {
             previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([0x55u8; 32]), index: 0 },
             signature_script: delegate_input_sigscript,
             sequence: 0,
-            mass: TxInputMass::SigopCount(0.into()),
+            compute_commit: SigopCount(0).into(),
         },
     ];
     let next0 = compile_contract(source, &[Expr::int(30)], compile_opts)?;

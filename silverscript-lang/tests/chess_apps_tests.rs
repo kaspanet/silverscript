@@ -15,7 +15,9 @@ use kaspa_consensus_core::tx::{
 use kaspa_txscript::caches::Cache;
 use kaspa_txscript::covenants::CovenantsContext;
 use kaspa_txscript::parse_script;
-use kaspa_txscript::{EngineCtx, EngineFlags, TxScriptEngine, pay_to_script_hash_script, pay_to_script_hash_signature_script};
+use kaspa_txscript::{
+    EngineCtx, EngineFlags, TxScriptEngine, pay_to_script_hash_script, pay_to_script_hash_signature_script_with_flags,
+};
 use kaspa_txscript_errors::TxScriptError;
 use secp256k1::{Keypair, Message, Secp256k1, SecretKey};
 use silverscript_lang::ast::Expr;
@@ -439,7 +441,12 @@ fn player_template_hash(fix: &MuxChessFixture) -> Hash {
 
 fn entry_sigscript(compiled: &CompiledContract<'_>, function: &str, args: Vec<Expr<'_>>) -> Vec<u8> {
     let sigscript = compiled.build_sig_script(function, args).expect("sigscript builds");
-    pay_to_script_hash_signature_script(compiled.script.clone(), sigscript).expect("wrap p2sh sigscript")
+    pay_to_script_hash_signature_script_with_flags(
+        compiled.script.clone(),
+        sigscript,
+        EngineFlags { covenants_enabled: true, ..Default::default() },
+    )
+    .expect("wrap p2sh sigscript")
 }
 
 fn tx_input(index: u32, signature_script: Vec<u8>, sig_op_count: u8) -> TransactionInput {
@@ -447,7 +454,7 @@ fn tx_input(index: u32, signature_script: Vec<u8>, sig_op_count: u8) -> Transact
         previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([index as u8 + 1; 32]), index },
         signature_script,
         sequence: 0,
-        mass: SigopCount(sig_op_count).into(),
+        compute_commit: SigopCount(sig_op_count).into(),
     }
 }
 
@@ -882,7 +889,7 @@ fn league_register_player_runtime_matches_expected_output_state() {
         previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([0xabu8; 32]), index: 7 },
         signature_script: vec![],
         sequence: 0,
-        mass: SigopCount(1).into(),
+        compute_commit: SigopCount(1).into(),
     };
 
     let player_id = blake2b_bytes(&[player_id_domain.as_slice(), &[0xabu8; 32], &7u32.to_le_bytes()].concat());

@@ -7,10 +7,15 @@ use super::locals::lower_local_aliases;
 use super::stack_bindings::StackBindings;
 use super::static_check::static_check_contract;
 use super::*;
+use kaspa_txscript::EngineFlags;
 use kaspa_txscript::opcodes::codes::*;
 use kaspa_txscript::script_builder::ScriptBuilder;
 use kaspa_txscript::serialize_i64;
 use std::collections::{HashMap, HashSet};
+
+fn script_builder() -> ScriptBuilder {
+    ScriptBuilder::with_flags(EngineFlags { covenants_enabled: true, ..Default::default() })
+}
 
 pub(super) fn read_input_state_field_expr_symbolic<'i>(
     input_idx: &Expr<'i>,
@@ -246,7 +251,7 @@ fn build_contract_script(
 
     // Preserve the selector while encoding contract state once so
     // reflection helpers can rewrite a single contiguous state segment.
-    let mut builder = ScriptBuilder::new();
+    let mut builder = script_builder();
     builder.add_op(OpToAltStack)?;
     builder.add_ops(field_prolog_script)?;
     builder.add_op(OpFromAltStack)?;
@@ -313,7 +318,7 @@ fn compile_contract_fields<'i>(
 ) -> Result<(HashMap<String, Expr<'i>>, Vec<u8>), CompilerError> {
     let mut field_values = HashMap::new();
     let mut field_types = HashMap::new();
-    let mut builder = ScriptBuilder::new();
+    let mut builder = script_builder();
     let stack_bindings = StackBindings::default();
 
     for field in fields {
@@ -1117,7 +1122,7 @@ fn compile_entrypoint_function<'i>(
     for field in contract_fields {
         types.insert(field.name.clone(), type_name_from_ref(&field.type_ref));
     }
-    let mut builder = ScriptBuilder::new();
+    let mut builder = script_builder();
     let mut return_exprs: Vec<Expr> = Vec::new();
     let assigned_names = collect_assigned_names(&function.body);
     let identifier_uses = collect_identifier_uses(&function.body);
@@ -3915,7 +3920,7 @@ fn build_null_data_script<'i>(arg: &Expr<'i>) -> Result<Vec<u8>, CompilerError> 
         _ => return Err(CompilerError::Unsupported("LockingBytecodeNullData expects an array literal".to_string())),
     };
 
-    let mut builder = ScriptBuilder::new();
+    let mut builder = script_builder();
     builder.add_op(OpReturn)?;
     for item in elements {
         match &item.kind {
@@ -3967,7 +3972,7 @@ fn build_null_data_script<'i>(arg: &Expr<'i>) -> Result<Vec<u8>, CompilerError> 
 
 fn data_prefix(data_len: usize) -> Vec<u8> {
     let dummy_data = vec![0u8; data_len];
-    let mut builder = ScriptBuilder::new();
+    let mut builder = script_builder();
     builder.add_data_with_push_opcode(&dummy_data).unwrap();
     let script = builder.drain();
     script[..script.len() - data_len].to_vec()
@@ -3981,7 +3986,7 @@ pub fn compile_debug_expr<'i>(
     types: &HashMap<String, String>,
 ) -> Result<(Vec<u8>, String), CompilerError> {
     let empty_constants = HashMap::new();
-    let mut builder = ScriptBuilder::new();
+    let mut builder = script_builder();
     let mut stack_depth = 0i64;
     let type_name = infer_debug_expr_value_type(expr, constants, types, &mut HashSet::new())?;
     let stack_bindings = StackBindings::from_depths(stack_bindings.clone());
