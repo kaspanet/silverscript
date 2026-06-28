@@ -1,0 +1,7 @@
+pragma silverscript ^0.1.0;
+
+contract R0Succinct(byte[32] image_id, byte[32] control_id) {
+    entrypoint function verify(byte[] claim, byte[] control_index, byte[] control_digests, byte[] seal, byte[] journal) {
+        require(r0.succinct.verify(claim, control_index, control_digests, seal, journal, image_id, control_id));
+    }
+}

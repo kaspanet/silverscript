@@ -436,7 +436,7 @@ fn player_template_hash(fix: &MuxChessFixture) -> Hash {
         },
     );
     let layout = compiled.state_layout;
-    blake2b_bytes(&[compiled.script[..layout.start].as_ref(), compiled.script[layout.start + layout.len..].as_ref()].concat())
+    blake2b_bytes(&[&compiled.script[..layout.start], &compiled.script[layout.start + layout.len..]].concat())
 }
 
 fn entry_sigscript(compiled: &CompiledContract<'_>, function: &str, args: Vec<Expr<'_>>) -> Vec<u8> {
@@ -969,11 +969,7 @@ fn player_start_game_runtime_matches_expected_output_states() {
     );
     let player_layout = player_contract.state_layout;
     let player_template = blake2b_bytes(
-        &[
-            player_contract.script[..player_layout.start].as_ref(),
-            player_contract.script[player_layout.start + player_layout.len..].as_ref(),
-        ]
-        .concat(),
+        &[&player_contract.script[..player_layout.start], &player_contract.script[player_layout.start + player_layout.len..]].concat(),
     );
     let player_prefix_len = player_layout.start as i64;
     let player_suffix_len = (player_contract.script.len() - (player_layout.start + player_layout.len)) as i64;
@@ -1637,11 +1633,7 @@ fn settle_runtime_matches_expected_output_states() {
     );
     let player_layout = player_contract.state_layout;
     let player_template = blake2b_bytes(
-        &[
-            player_contract.script[..player_layout.start].as_ref(),
-            player_contract.script[player_layout.start + player_layout.len..].as_ref(),
-        ]
-        .concat(),
+        &[&player_contract.script[..player_layout.start], &player_contract.script[player_layout.start + player_layout.len..]].concat(),
     );
     let white_player = compile_player_state(
         player_source(),

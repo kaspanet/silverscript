@@ -2,7 +2,6 @@ mod common;
 use kaspa_addresses::{Address, Prefix, Version};
 use kaspa_consensus_core::Hash;
 use kaspa_consensus_core::hashing::sighash::SigHashReusedValuesUnsync;
-use kaspa_consensus_core::mass::units::SigopCount;
 use kaspa_consensus_core::subnets::SubnetworkId;
 use kaspa_consensus_core::tx::{
     CovenantBinding, PopulatedTransaction, ScriptPublicKey, Transaction, TransactionId, TransactionInput, TransactionOutpoint,
@@ -55,12 +54,12 @@ fn run_script_with_tx(
     let sig_cache = Cache::new(10_000);
     let sigscript = selector_sigscript(selector);
 
-    let input = TransactionInput {
-        previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([0u8; 32]), index: 0 },
-        signature_script: sigscript,
+    let input = TransactionInput::new(
+        TransactionOutpoint { transaction_id: TransactionId::from_bytes([0u8; 32]), index: 0 },
+        sigscript,
         sequence,
-        compute_commit: SigopCount(0).into(),
-    };
+        0,
+    );
     let output = TransactionOutput { value: 1000, script_public_key: ScriptPublicKey::new(0, script.clone().into()), covenant: None };
     let tx = Transaction::new(1, vec![input.clone()], vec![output.clone()], lock_time, Default::default(), 0, vec![]);
     let utxo_entry = UtxoEntry::new(output.value, output.script_public_key.clone(), 0, tx.is_coinbase(), None);
@@ -89,12 +88,8 @@ fn run_script_with_sigscript(script: Vec<u8>, sigscript: Vec<u8>) -> Result<(), 
     let reused_values = SigHashReusedValuesUnsync::new();
     let sig_cache = Cache::new(10_000);
 
-    let input = TransactionInput {
-        previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([1u8; 32]), index: 0 },
-        signature_script: sigscript,
-        sequence: 0,
-        compute_commit: SigopCount(0).into(),
-    };
+    let input =
+        TransactionInput::new(TransactionOutpoint { transaction_id: TransactionId::from_bytes([1u8; 32]), index: 0 }, sigscript, 0, 0);
     let output = TransactionOutput { value: 1000, script_public_key: ScriptPublicKey::new(0, script.clone().into()), covenant: None };
     let tx = Transaction::new(1, vec![input.clone()], vec![output.clone()], 0, Default::default(), 0, vec![]);
     let utxo_entry = UtxoEntry::new(output.value, output.script_public_key.clone(), 0, tx.is_coinbase(), None);
@@ -131,12 +126,12 @@ fn sigscript_push_script(script: &[u8]) -> Vec<u8> {
 }
 
 fn test_input(index: u32, signature_script: Vec<u8>) -> TransactionInput {
-    TransactionInput {
-        previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([index as u8; 32]), index },
+    TransactionInput::new(
+        TransactionOutpoint { transaction_id: TransactionId::from_bytes([index as u8; 32]), index },
         signature_script,
-        sequence: 0,
-        compute_commit: SigopCount(0).into(),
-    }
+        0,
+        0,
+    )
 }
 
 fn execute_input(tx: Transaction, entries: Vec<UtxoEntry>, input_idx: usize) -> Result<(), kaspa_txscript_errors::TxScriptError> {
@@ -4864,12 +4859,12 @@ fn run_script_with_tx_and_covenants(
 
 fn build_basic_opcode_tx(sigscript: Vec<u8>) -> (Transaction, Vec<UtxoEntry>) {
     let outpoint_txid = TransactionId::from_bytes(*b"0123456789abcdef0123456789abcdef");
-    let input = TransactionInput {
-        previous_outpoint: TransactionOutpoint { transaction_id: outpoint_txid, index: 7 },
-        signature_script: sigscript,
-        sequence: u64::from_le_bytes(*b"sequence"),
-        compute_commit: SigopCount(0).into(),
-    };
+    let input = TransactionInput::new(
+        TransactionOutpoint { transaction_id: outpoint_txid, index: 7 },
+        sigscript,
+        u64::from_le_bytes(*b"sequence"),
+        0,
+    );
 
     let output0_spk = ScriptPublicKey::new(0, b"outspk".to_vec().into());
     let output1_spk = ScriptPublicKey::new(0, b"extra".to_vec().into());
@@ -7539,6 +7534,342 @@ fn checksigfromstack_requires_datasig_and_32_byte_digest_types() {
         schnorr_pubkey_err.to_string().contains("argument 'publicKey' expects byte[33]"),
         "unexpected error: {schnorr_pubkey_err}"
     );
+}
+
+#[test]
+fn r0_succinct_verify_lowers_hash_aliases_to_zk_precompile() {
+    let cases = ["r0.succinct.poseidon2.verify", "r0.succinct.verify"];
+
+    for call_name in cases {
+        let source = format!(
+            r#"
+                contract R0(
+                    byte[32] image_id,
+                    byte[32] control_id,
+                    byte[] claim,
+                    byte[] control_index,
+                    byte[] control_digests,
+                    byte[] seal,
+                    byte[] journal
+                ) {{
+                    entrypoint function main() {{
+                        require({call_name}(claim, control_index, control_digests, seal, journal, image_id, control_id));
+                    }}
+                }}
+            "#
+        );
+        let image_id = vec![0x11u8; 32];
+        let control_id = vec![0x22u8; 32];
+        let claim = vec![0x33u8];
+        let control_index = vec![0x44u8];
+        let control_digests = vec![0x55u8];
+        let seal = vec![0x66u8];
+        let journal = vec![0x77u8];
+        let compiled = compile_contract(
+            &source,
+            &[
+                image_id.clone().into(),
+                control_id.clone().into(),
+                claim.clone().into(),
+                control_index.clone().into(),
+                control_digests.clone().into(),
+                seal.clone().into(),
+                journal.clone().into(),
+            ],
+            CompileOptions::default(),
+        )
+        .expect("compile succeeds");
+
+        let expected = ScriptBuilder::with_flags(EngineFlags { covenants_enabled: true, ..Default::default() })
+            .add_data_with_push_opcode(&claim)
+            .unwrap()
+            .add_data_with_push_opcode(&control_index)
+            .unwrap()
+            .add_data_with_push_opcode(&control_digests)
+            .unwrap()
+            .add_data_with_push_opcode(&seal)
+            .unwrap()
+            .add_data_with_push_opcode(&journal)
+            .unwrap()
+            .add_data_with_push_opcode(&image_id)
+            .unwrap()
+            .add_data_with_push_opcode(&control_id)
+            .unwrap()
+            .add_data_with_push_opcode(&[1u8])
+            .unwrap()
+            .add_data_with_push_opcode(&[kaspa_txscript::zk_precompiles::tags::ZkTag::R0Succinct as u8])
+            .unwrap()
+            .add_op(OpZkPrecompile)
+            .unwrap()
+            .add_op(OpVerify)
+            .unwrap()
+            .add_op(OpTrue)
+            .unwrap()
+            .drain();
+        assert_eq!(compiled.script, expected, "{call_name} lowered unexpectedly");
+    }
+}
+
+#[test]
+fn r0_succinct_verify_rejects_reserved_non_poseidon_hashes() {
+    let b32_a = format!("0x{}", "11".repeat(32));
+    let b32_b = format!("0x{}", "22".repeat(32));
+
+    for call_name in ["r0.succinct.blake2b.verify", "r0.succinct.sha256.verify"] {
+        let source = format!(
+            r#"
+                contract R0() {{
+                    entrypoint function main() {{
+                        require({call_name}(bytes("claim"), bytes("control_index"), bytes("control_digests"), bytes("seal"), bytes("journal"), {b32_a}, {b32_b}));
+                    }}
+                }}
+            "#
+        );
+        let err = compile_contract(&source, &[], CompileOptions::default()).expect_err("reserved R0 hash should fail");
+        assert!(
+            err.to_string().contains("reserved for future use; only Poseidon2 R0 Succinct verification is currently supported"),
+            "unexpected error for {call_name}: {err}"
+        );
+    }
+}
+
+#[test]
+fn r0_g16_verify_lowers_with_sdk_verifier_fragment() {
+    let source = r#"
+        contract R0(byte[32] journal_hash, byte[] proof, byte[32] image_id) {
+            entrypoint function main() {
+                require(r0.g16.verify(journal_hash, proof, image_id));
+            }
+        }
+    "#;
+    let journal_hash = vec![0x11u8; 32];
+    let proof = vec![0x22u8; 128];
+    let image_id = [0x33u8; 32];
+    let compiled = compile_contract(
+        source,
+        &[journal_hash.clone().into(), proof.clone().into(), image_id.to_vec().into()],
+        CompileOptions::default(),
+    )
+    .expect("compile succeeds");
+
+    let mut expected_builder = ScriptBuilder::with_flags(EngineFlags { covenants_enabled: true, ..Default::default() });
+    expected_builder.add_data_with_push_opcode(&journal_hash).unwrap();
+    expected_builder.add_data_with_push_opcode(&proof).unwrap();
+    expected_builder.add_data_with_push_opcode(&image_id).unwrap();
+    kaspa_txscript_zk_sdk::append_r0_groth16_verifier_dynamic_image_id(&mut expected_builder).unwrap();
+    expected_builder.add_op(OpVerify).unwrap();
+    expected_builder.add_op(OpTrue).unwrap();
+
+    assert_eq!(compiled.script, expected_builder.drain());
+}
+
+fn assert_r0_type_error(source: &str, expected: &str) {
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("incorrect R0 builtin argument type should fail");
+    assert!(err.to_string().contains(expected), "expected error containing '{expected}', got: {err}");
+}
+
+#[test]
+fn r0_verify_builtins_reject_incorrect_argument_types() {
+    let b32_a = format!("0x{}", "11".repeat(32));
+    let b32_b = format!("0x{}", "22".repeat(32));
+
+    let g16_cases = [
+        (
+            format!(
+                r#"
+                    contract R0() {{
+                        entrypoint function main() {{
+                            require(r0.g16.verify(1, bytes("proof"), {b32_a}));
+                        }}
+                    }}
+                "#
+            ),
+            "argument 'journal_hash' expects byte[32]",
+        ),
+        (
+            format!(
+                r#"
+                    contract R0() {{
+                        entrypoint function main() {{
+                            require(r0.g16.verify({b32_a}, 1, {b32_b}));
+                        }}
+                    }}
+                "#
+            ),
+            "argument 'proof' expects byte[]",
+        ),
+        (
+            format!(
+                r#"
+                    contract R0() {{
+                        entrypoint function main() {{
+                            require(r0.g16.verify({b32_a}, bytes("proof"), bytes("image")));
+                        }}
+                    }}
+                "#
+            ),
+            "argument 'image_id' expects byte[32]",
+        ),
+    ];
+    for (source, expected) in g16_cases {
+        assert_r0_type_error(&source, expected);
+    }
+
+    let succinct_calls = ["r0.succinct.poseidon2.verify", "r0.succinct.verify"];
+    for call_name in succinct_calls {
+        let source = format!(
+            r#"
+                contract R0() {{
+                    entrypoint function main() {{
+                        require({call_name}(1, bytes("control_index"), bytes("control_digests"), bytes("seal"), bytes("journal"), {b32_a}, {b32_b}));
+                    }}
+                }}
+            "#
+        );
+        assert_r0_type_error(&source, "argument 'claim' expects byte[]");
+    }
+
+    let succinct_arg_cases = [
+        (
+            format!(
+                r#"
+                    contract R0() {{
+                        entrypoint function main() {{
+                            require(r0.succinct.verify(bytes("claim"), 1, bytes("control_digests"), bytes("seal"), bytes("journal"), {b32_a}, {b32_b}));
+                        }}
+                    }}
+                "#
+            ),
+            "argument 'control_index' expects byte[]",
+        ),
+        (
+            format!(
+                r#"
+                    contract R0() {{
+                        entrypoint function main() {{
+                            require(r0.succinct.verify(bytes("claim"), bytes("control_index"), 1, bytes("seal"), bytes("journal"), {b32_a}, {b32_b}));
+                        }}
+                    }}
+                "#
+            ),
+            "argument 'control_digests' expects byte[]",
+        ),
+        (
+            format!(
+                r#"
+                    contract R0() {{
+                        entrypoint function main() {{
+                            require(r0.succinct.verify(bytes("claim"), bytes("control_index"), bytes("control_digests"), 1, bytes("journal"), {b32_a}, {b32_b}));
+                        }}
+                    }}
+                "#
+            ),
+            "argument 'seal' expects byte[]",
+        ),
+        (
+            format!(
+                r#"
+                    contract R0() {{
+                        entrypoint function main() {{
+                            require(r0.succinct.verify(bytes("claim"), bytes("control_index"), bytes("control_digests"), bytes("seal"), 1, {b32_a}, {b32_b}));
+                        }}
+                    }}
+                "#
+            ),
+            "argument 'journal' expects byte[]",
+        ),
+        (
+            format!(
+                r#"
+                    contract R0() {{
+                        entrypoint function main() {{
+                            require(r0.succinct.verify(bytes("claim"), bytes("control_index"), bytes("control_digests"), bytes("seal"), bytes("journal"), bytes("image"), {b32_b}));
+                        }}
+                    }}
+                "#
+            ),
+            "argument 'image_id' expects byte[32]",
+        ),
+        (
+            format!(
+                r#"
+                    contract R0() {{
+                        entrypoint function main() {{
+                            require(r0.succinct.verify(bytes("claim"), bytes("control_index"), bytes("control_digests"), bytes("seal"), bytes("journal"), {b32_a}, bytes("control")));
+                        }}
+                    }}
+                "#
+            ),
+            "argument 'control_id' expects byte[32]",
+        ),
+    ];
+    for (source, expected) in succinct_arg_cases {
+        assert_r0_type_error(&source, expected);
+    }
+}
+
+#[test]
+fn r0_succinct_verify_runtime_checks_each_hash_with_fixture() {
+    let (control_id, seal, claim, hashfn, control_index, control_digests, journal, image_id) =
+        kaspa_txscript::zk_precompiles::tests::helpers::load_stark_fields();
+    assert_eq!(hashfn, vec![1u8], "fixture should use Poseidon2 hash function id");
+
+    let cases = ["r0.succinct.poseidon2.verify", "r0.succinct.verify"];
+    for call_name in cases {
+        let source = format!(
+            r#"
+                contract R0(byte[32] image_id, byte[32] control_id) {{
+                    entrypoint function main(byte[] claim, byte[] control_index, byte[] control_digests, byte[] seal, byte[] journal) {{
+                        require({call_name}(claim, control_index, control_digests, seal, journal, image_id, control_id));
+                    }}
+                }}
+            "#
+        );
+        let compiled = compile_contract(&source, &[image_id.clone().into(), control_id.clone().into()], CompileOptions::default())
+            .expect("compile succeeds");
+
+        let sigscript = compiled
+            .build_sig_script(
+                "main",
+                vec![
+                    claim.clone().into(),
+                    control_index.clone().into(),
+                    control_digests.clone().into(),
+                    seal.clone().into(),
+                    journal.clone().into(),
+                ],
+            )
+            .expect("sigscript builds");
+        let result = run_script_with_sigscript(compiled.script, sigscript);
+        assert!(result.is_ok(), "{call_name} should execute successfully: {result:?}");
+    }
+}
+
+#[test]
+fn r0_g16_verify_executes_with_fixture() {
+    // Fixture values are copied from rusty-kaspa's
+    // crypto/txscript/zk-sdk/tests/r0_script_builder.rs::load_groth_fixture.
+    // The receipt hex is vendored from
+    // crypto/txscript/zk-sdk/tests/data/zk_builder_tests/groth.rcpt.hex.
+    let journal_hash = kaspa_txscript::hex::decode("5df6e0e2761359d30a8275058e299fcc0381534545f55cf43e41983f5d4c9456").unwrap();
+    let image_id = kaspa_txscript::hex::decode("75641a540ee2ad9ee5902bcdcdb8b55c0bef4a28287309b858f97b1356c6c2e0").unwrap();
+    let receipt_bytes = kaspa_txscript::hex::decode(include_str!("fixtures/r0_groth16.rcpt.hex").trim()).unwrap();
+    let receipt: risc0_zkvm::Groth16Receipt<risc0_zkvm::ReceiptClaim> = borsh::from_slice(&receipt_bytes).unwrap();
+    let proof = kaspa_txscript_zk_sdk::prepare_r0_groth16_proof(&receipt).unwrap();
+
+    let source = r#"
+        contract R0() {
+            entrypoint function main(byte[32] journal_hash, byte[] proof, byte[32] image_id) {
+                require(r0.g16.verify(journal_hash, proof, image_id));
+            }
+        }
+    "#;
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let sigscript =
+        compiled.build_sig_script("main", vec![journal_hash.into(), proof.into(), image_id.into()]).expect("sigscript builds");
+
+    let result = run_script_with_sigscript(compiled.script, sigscript);
+    assert!(result.is_ok(), "R0 Groth16 verifier should execute successfully: {result:?}");
 }
 
 #[test]

@@ -153,6 +153,19 @@ fn sigscript_push_script(script: &[u8]) -> Vec<u8> {
     ScriptBuilder::new().add_data(script).unwrap().drain()
 }
 
+fn r0_groth16_fixture() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+    // Fixture values are copied from rusty-kaspa's
+    // crypto/txscript/zk-sdk/tests/r0_script_builder.rs::load_groth_fixture.
+    // The receipt hex is vendored from
+    // crypto/txscript/zk-sdk/tests/data/zk_builder_tests/groth.rcpt.hex.
+    let journal_hash = kaspa_txscript::hex::decode("5df6e0e2761359d30a8275058e299fcc0381534545f55cf43e41983f5d4c9456").unwrap();
+    let image_id = kaspa_txscript::hex::decode("75641a540ee2ad9ee5902bcdcdb8b55c0bef4a28287309b858f97b1356c6c2e0").unwrap();
+    let receipt_bytes = kaspa_txscript::hex::decode(include_str!("fixtures/r0_groth16.rcpt.hex").trim()).unwrap();
+    let receipt: risc0_zkvm::Groth16Receipt<risc0_zkvm::ReceiptClaim> = borsh::from_slice(&receipt_bytes).unwrap();
+    let proof = kaspa_txscript_zk_sdk::prepare_r0_groth16_proof(&receipt).unwrap();
+    (journal_hash, proof, image_id)
+}
+
 #[test]
 fn compiles_announcement_example_and_verifies() {
     let source = load_example_source("announcement.sil");
@@ -338,6 +351,49 @@ fn compiles_return_loop_example_file_and_verifies() {
     let sigscript = compiled.build_sig_script("main", vec![]).expect("sigscript builds");
     let result = run_contract_with_tx(script, output0_script, output1_script, 2000, 500, 500, sigscript, 0);
     assert!(result.is_ok(), "return loop failed: {}", result.unwrap_err());
+}
+
+#[test]
+fn compiles_r0_g16_example_and_verifies() {
+    let source = load_example_source("r0_g16.sil");
+    let (journal_hash, proof, image_id) = r0_groth16_fixture();
+    let compiled = compile_contract(&source, &[image_id.into()], CompileOptions::default()).expect("compile succeeds");
+    let sigscript = compiled.build_sig_script("verify", vec![journal_hash.into(), proof.into()]).expect("sigscript builds");
+
+    let result =
+        run_contract_with_tx(compiled.script.clone(), compiled.script.clone(), compiled.script.clone(), 2000, 500, 500, sigscript, 0);
+    assert!(result.is_ok(), "R0 Groth16 example failed: {}", result.unwrap_err());
+}
+
+#[test]
+fn compiles_r0_succinct_example_and_verifies() {
+    let source = load_example_source("r0_succinct.sil");
+    let (control_id, seal, claim, hashfn, control_index, control_digests, journal, image_id) =
+        kaspa_txscript::zk_precompiles::tests::helpers::load_stark_fields();
+    assert_eq!(hashfn, vec![1u8], "fixture should use Poseidon2 hash function id");
+    let compiled =
+        compile_contract(&source, &[image_id.into(), control_id.into()], CompileOptions::default()).expect("compile succeeds");
+    let sigscript = compiled
+        .build_sig_script("verify", vec![claim.into(), control_index.into(), control_digests.into(), seal.into(), journal.into()])
+        .expect("sigscript builds");
+
+    let result =
+        run_contract_with_tx(compiled.script.clone(), compiled.script.clone(), compiled.script.clone(), 2000, 500, 500, sigscript, 0);
+    assert!(result.is_ok(), "R0 Succinct example failed: {}", result.unwrap_err());
+}
+
+#[test]
+fn r0_succinct_sha256_example_is_reserved_for_future_use() {
+    let source = load_example_source("r0_succinct_sha256.sil");
+    let image_id = vec![0x11u8; 32];
+    let control_id = vec![0x22u8; 32];
+
+    let err =
+        compile_contract(&source, &[image_id.into(), control_id.into()], CompileOptions::default()).expect_err("compile should fail");
+    assert!(
+        err.to_string().contains("reserved for future use; only Poseidon2 R0 Succinct verification is currently supported"),
+        "unexpected error: {err}"
+    );
 }
 
 #[test]

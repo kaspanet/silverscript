@@ -7,10 +7,11 @@ use super::locals::lower_local_aliases;
 use super::stack_bindings::StackBindings;
 use super::static_check::static_check_contract;
 use super::*;
-use kaspa_txscript::EngineFlags;
 use kaspa_txscript::opcodes::codes::*;
 use kaspa_txscript::script_builder::ScriptBuilder;
-use kaspa_txscript::serialize_i64;
+use kaspa_txscript::zk_precompiles::tags::ZkTag;
+use kaspa_txscript::{EngineFlags, serialize_i64};
+use kaspa_txscript_zk_sdk::append_r0_groth16_verifier_dynamic_image_id;
 use std::collections::{HashMap, HashSet};
 
 fn script_builder() -> ScriptBuilder {
@@ -1489,6 +1490,23 @@ fn compile_function_call_statement<'i>(
             ctx.contract_constants,
         )
         .map(|_| Vec::new());
+    }
+    if is_zk_verify_builtin(name) {
+        let scope = CompilationScope { constants: ctx.contract_constants, stack_bindings: ctx.stack_bindings, types: ctx.types };
+        let mut stack_depth = 0i64;
+        compile_call_expr(
+            name,
+            args,
+            &scope,
+            ctx.builder,
+            ctx.options,
+            &mut HashSet::new(),
+            &mut stack_depth,
+            ctx.script_size,
+            ctx.contract_constants,
+        )?;
+        ctx.builder.add_op(OpVerify)?;
+        return Ok(Vec::new());
     }
     Err(CompilerError::Unsupported(format!(
         "inline lowering must eliminate internal function calls before compilation, found '{}()'",
@@ -3598,6 +3616,10 @@ fn compile_call_expr<'i>(
         "checkSig" => compile_checksig_call(&mut ctx, args),
         "checkSigFromStack" => compile_checksigfromstack_call(&mut ctx, name, args, OpCheckSigFromStack),
         "checkSigFromStackECDSA" => compile_checksigfromstack_call(&mut ctx, name, args, OpCheckSigFromStackECDSA),
+        "r0.g16.verify" => compile_r0_groth16_verify_call(&mut ctx, args),
+        "r0.succinct.verify" | "r0.succinct.blake2b.verify" | "r0.succinct.poseidon2.verify" | "r0.succinct.sha256.verify" => {
+            compile_r0_succinct_verify_call(&mut ctx, name, args)
+        }
         _ => compile_unknown_function_call(name),
     }
 }
@@ -3823,6 +3845,63 @@ fn compile_checksigfromstack_call<'i>(
     ctx.builder.add_op(opcode)?;
     *ctx.stack_depth -= 2;
     Ok(())
+}
+
+fn compile_r0_groth16_verify_call<'i>(ctx: &mut CompileCallContext<'_, 'i>, args: &[Expr<'i>]) -> Result<(), CompilerError> {
+    if args.len() != 3 {
+        return Err(CompilerError::Unsupported("r0.g16.verify() expects 3 arguments (journal_hash, proof, image_id)".to_string()));
+    }
+    compile_call_arg_with_context(ctx, &args[0])?;
+    compile_call_arg_with_context(ctx, &args[1])?;
+    compile_call_arg_with_context(ctx, &args[2])?;
+    append_r0_groth16_verifier_dynamic_image_id(ctx.builder)
+        .map_err(|err| CompilerError::Unsupported(format!("failed to append r0 Groth16 verifier: {err}")))?;
+    *ctx.stack_depth -= 2;
+    Ok(())
+}
+
+fn compile_r0_succinct_verify_call<'i>(
+    ctx: &mut CompileCallContext<'_, 'i>,
+    name: &str,
+    args: &[Expr<'i>],
+) -> Result<(), CompilerError> {
+    if args.len() != 7 {
+        return Err(CompilerError::Unsupported(format!(
+            "{name}() expects 7 arguments (claim, control_index, control_digests, seal, journal, image_id, control_id)"
+        )));
+    }
+    let hash_fn_id = r0_succinct_hash_fn_id(name)?;
+    for arg in args {
+        compile_call_arg_with_context(ctx, arg)?;
+    }
+    ctx.builder.add_data_with_push_opcode([hash_fn_id].as_slice())?;
+    *ctx.stack_depth += 1;
+    ctx.builder.add_data_with_push_opcode(&[ZkTag::R0Succinct as u8])?;
+    *ctx.stack_depth += 1;
+    ctx.builder.add_op(OpZkPrecompile)?;
+    *ctx.stack_depth -= 8;
+    Ok(())
+}
+
+fn r0_succinct_hash_fn_id(name: &str) -> Result<u8, CompilerError> {
+    match name {
+        "r0.succinct.blake2b.verify" | "r0.succinct.sha256.verify" => Err(CompilerError::Unsupported(format!(
+            "{name}() is reserved for future use; only Poseidon2 R0 Succinct verification is currently supported"
+        ))),
+        "r0.succinct.verify" | "r0.succinct.poseidon2.verify" => Ok(1),
+        _ => Err(CompilerError::Unsupported(format!("unknown R0 Succinct verifier '{name}'"))),
+    }
+}
+
+fn is_zk_verify_builtin(name: &str) -> bool {
+    matches!(
+        name,
+        "r0.g16.verify"
+            | "r0.succinct.verify"
+            | "r0.succinct.blake2b.verify"
+            | "r0.succinct.poseidon2.verify"
+            | "r0.succinct.sha256.verify"
+    )
 }
 
 fn compile_unknown_function_call(name: &str) -> Result<(), CompilerError> {

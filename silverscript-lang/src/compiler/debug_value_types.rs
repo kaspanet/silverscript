@@ -54,7 +54,15 @@ fn builtin_call_value_type(name: &str) -> &'static str {
         | "OpCovInputIdx"
         | "OpCovOutputCount"
         | "OpCovOutputIdx" => "int",
-        "OpTxInputIsCoinbase" | "checkSig" | "checkSigFromStack" | "checkSigFromStackECDSA" => "bool",
+        "OpTxInputIsCoinbase"
+        | "checkSig"
+        | "checkSigFromStack"
+        | "checkSigFromStackECDSA"
+        | "r0.g16.verify"
+        | "r0.succinct.verify"
+        | "r0.succinct.blake2b.verify"
+        | "r0.succinct.poseidon2.verify"
+        | "r0.succinct.sha256.verify" => "bool",
         "blake2b" | "sha256" | "OpSha256" => "byte[32]",
         "bytes"
         | "OpTxSubnetId"

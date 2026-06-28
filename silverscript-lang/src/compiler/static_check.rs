@@ -1377,17 +1377,33 @@ fn validate_builtin_call<'i>(
     functions: &HashMap<String, &FunctionAst<'i>>,
     contract_fields: &[ContractFieldAst<'i>],
 ) -> Result<(), CompilerError> {
-    let expected_args = match name {
+    if matches!(name, "r0.succinct.blake2b.verify" | "r0.succinct.sha256.verify") {
+        return Err(CompilerError::Unsupported(format!(
+            "{name}() is reserved for future use; only Poseidon2 R0 Succinct verification is currently supported"
+        )));
+    }
+
+    let expected_args: &[(&str, &str)] = match name {
         // TODO: Use constants for all builtins
-        "checkSigFromStack" => [("signature", "datasig"), ("digest", "byte[32]"), ("publicKey", "pubkey")],
-        "checkSigFromStackECDSA" => [("signature", "datasig"), ("digest", "byte[32]"), ("publicKey", "byte[33]")],
+        "checkSigFromStack" => &[("signature", "datasig"), ("digest", "byte[32]"), ("publicKey", "pubkey")],
+        "checkSigFromStackECDSA" => &[("signature", "datasig"), ("digest", "byte[32]"), ("publicKey", "byte[33]")],
+        "r0.g16.verify" => &[("journal_hash", "byte[32]"), ("proof", "byte[]"), ("image_id", "byte[32]")],
+        "r0.succinct.verify" | "r0.succinct.blake2b.verify" | "r0.succinct.poseidon2.verify" | "r0.succinct.sha256.verify" => &[
+            ("claim", "byte[]"),
+            ("control_index", "byte[]"),
+            ("control_digests", "byte[]"),
+            ("seal", "byte[]"),
+            ("journal", "byte[]"),
+            ("image_id", "byte[32]"),
+            ("control_id", "byte[32]"),
+        ],
         _ => return Ok(()),
     };
     if args.len() != expected_args.len() {
         return Err(CompilerError::Unsupported(format!("{name}() expects {} arguments", expected_args.len())));
     }
 
-    for (arg, (arg_name, expected_type_name)) in args.iter().zip(expected_args) {
+    for (arg, (arg_name, expected_type_name)) in args.iter().zip(expected_args.iter().copied()) {
         let expected_type = parse_type_ref(expected_type_name)?;
         let actual_type =
             infer_expr_type_ref_for_comparison_ref(arg, env, prefer_env_for_comparison, types, structs, functions, contract_fields)
@@ -1406,6 +1422,11 @@ fn validate_builtin_call<'i>(
 fn typed_builtin_return_type_ref(name: &str) -> Option<TypeRef> {
     match name {
         "checkSigFromStack" | "checkSigFromStackECDSA" => parse_type_ref("bool").ok(),
+        "r0.g16.verify"
+        | "r0.succinct.verify"
+        | "r0.succinct.blake2b.verify"
+        | "r0.succinct.poseidon2.verify"
+        | "r0.succinct.sha256.verify" => parse_type_ref("bool").ok(),
         _ => None,
     }
 }
