@@ -1573,6 +1573,10 @@
         },
         {
           "type": "SYMBOL",
+          "name": "call_suffix"
+        },
+        {
+          "type": "SYMBOL",
           "name": "unary_suffix"
         },
         {
@@ -1842,6 +1846,10 @@
           "value": ")"
         }
       ]
+    },
+    "call_suffix": {
+      "type": "SYMBOL",
+      "name": "expression_list"
     },
     "function_call": {
       "type": "SEQ",
@@ -2566,6 +2574,7 @@
   ],
   "conflicts": [
     [
+      "primary",
       "function_call",
       "base_type"
     ],

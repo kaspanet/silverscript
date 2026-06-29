@@ -29,7 +29,7 @@ export default grammar({
   word: ($) => $.identifier,
 
   conflicts: ($) => [
-    [$.function_call, $.base_type],
+    [$.primary, $.function_call, $.base_type],
     [$.primary, $.base_type],
     [$.tuple_assignment, $.typed_binding],
     [$.parenthesized, $.expression_list],
@@ -293,6 +293,7 @@ export default grammar({
         $.tuple_index,
         $.member_access,
         $.tuple_field_access,
+        $.call_suffix,
         $.unary_suffix,
         $.split_call,
         $.slice_call,
@@ -342,6 +343,8 @@ export default grammar({
         optional(","),
         ")",
       ),
+
+    call_suffix: ($) => $.expression_list,
 
     function_call: ($) => seq($.identifier, $.expression_list),
 

@@ -185,6 +185,21 @@
     }
   },
   {
+    "type": "call_suffix",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": false,
+      "required": true,
+      "types": [
+        {
+          "type": "expression_list",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
     "type": "cast",
     "named": true,
     "fields": {},
@@ -883,6 +898,10 @@
       "types": [
         {
           "type": "append_call",
+          "named": true
+        },
+        {
+          "type": "call_suffix",
           "named": true
         },
         {
