@@ -5,7 +5,7 @@ Silverscript is a CashScript-inspired language and compiler that targets Kaspa s
 
 **Status:** Experimental — the project is unstable and may introduce breaking changes without notice. Use with caution and expect language syntax, APIs and output formats to change.
 
-**Note:** The compiled scripts produced by this repository are valid only on Kaspa Testnet 12. Do not assume compatibility with other Kaspa networks or mainnet.
+**Note:** It is recommended to only use the bytecode artifact on `testnet-10` for now, at least until first stable release (v1).
 
 ## Workspace
 
