@@ -136,12 +136,12 @@ fn compile_contract_bytecode_iteration<'i>(
     structs: &StructRegistry,
     debug_recorder: &mut DebugRecorder<'i>,
 ) -> Result<(Vec<u8>, CompiledStateLayout), CompilerError> {
-    let (_contract_fields, field_prolog_bytecode) =
-        compile_contract_fields(&lowered_contract.fields, lowered_constants, bytecode_size)?;
+    let (_contract_fields, state_push_bytecode) = compile_contract_fields(&lowered_contract.fields, lowered_constants, bytecode_size)?;
 
     let dispatch_prefix_len = 1;
-    let contract_fields_end_offset = dispatch_prefix_len + field_prolog_bytecode.len();
-    let state_layout = CompiledStateLayout { start: dispatch_prefix_len, len: field_prolog_bytecode.len() };
+    let contract_fields_end_offset = dispatch_prefix_len + state_push_bytecode.len();
+    let state_start = if state_push_bytecode.is_empty() { 0 } else { dispatch_prefix_len };
+    let state_layout = CompiledStateLayout { start: state_start, len: state_push_bytecode.len() };
     let compiled_entrypoints = compile_entrypoint_bytecodes(
         lowered_contract,
         contract_fields_end_offset,
@@ -150,7 +150,7 @@ fn compile_contract_bytecode_iteration<'i>(
         bytecode_size,
         debug_recorder,
     )?;
-    let bytecode = build_contract_bytecode(debug_recorder, &field_prolog_bytecode, &compiled_entrypoints, function_abi_entries)?;
+    let bytecode = build_contract_bytecode(debug_recorder, &state_push_bytecode, &compiled_entrypoints, function_abi_entries)?;
     Ok((bytecode, state_layout))
 }
 
@@ -184,16 +184,18 @@ fn compile_entrypoint_bytecodes<'i>(
 
 fn build_contract_bytecode(
     debug_recorder: &mut DebugRecorder<'_>,
-    field_prolog_bytecode: &[u8],
+    state_push_bytecode: &[u8],
     compiled_entrypoints: &[(String, Vec<u8>)],
     function_abi_entries: &[FunctionAbiEntry],
 ) -> Result<Vec<u8>, CompilerError> {
-    // Preserve the dispatch tag while encoding contract state once so
-    // reflection helpers can rewrite a single contiguous state segment.
     let mut builder = script_builder();
-    builder.add_op(OpToAltStack)?;
-    builder.add_ops(field_prolog_bytecode)?;
-    builder.add_op(OpFromAltStack)?;
+    if !state_push_bytecode.is_empty() {
+        // Preserve the dispatch tag while encoding contract state once so
+        // reflection helpers can rewrite a single contiguous state segment.
+        builder.add_op(OpToAltStack)?;
+        builder.add_ops(state_push_bytecode)?;
+        builder.add_op(OpFromAltStack)?;
+    }
     let total = compiled_entrypoints.len();
 
     let dispatch_tag_by_entry_name =
