@@ -1888,7 +1888,7 @@ fn struct_name_for_state_bindings<'i>(bindings: &[StateBindingAst<'i>], structs:
 ///       script_base + script_size
 ///   ]
 ///
-///   actual_template = prefix || suffix
+///   actual_template = i64le(prefix.length) || prefix || i64le(suffix.length) || suffix
 ///   require blake2b(actual_template) == expected_template_hash
 ///
 ///   expected_input_spk = ScriptPubKeyP2SHFromRedeemScript(actual_redeem_script)
@@ -1928,12 +1928,18 @@ fn compile_read_input_state_with_template_validation(
     let script_end_expr = binary_expr(BinaryOp::Add, script_base_expr.clone(), script_size_expr.clone());
     let state_len = encoded_state_len_for_layout_field_types(layout_field_types, contract_constants)?;
     let suffix_start_expr = binary_expr(BinaryOp::Add, prefix_end_expr.clone(), Expr::int(state_len as i64));
-    let suffix_end_expr = binary_expr(BinaryOp::Add, suffix_start_expr.clone(), suffix_len_expr);
+    let suffix_end_expr = binary_expr(BinaryOp::Add, suffix_start_expr.clone(), suffix_len_expr.clone());
 
     let actual_redeem_script_expr = input_sigscript_substr_expr(input_idx, script_base_expr.clone(), script_end_expr);
     let actual_prefix_expr = input_sigscript_substr_expr(input_idx, script_base_expr, prefix_end_expr);
     let actual_suffix_expr = input_sigscript_substr_expr(input_idx, suffix_start_expr, suffix_end_expr);
-    let actual_template_expr = binary_expr(BinaryOp::Add, actual_prefix_expr, actual_suffix_expr);
+    let encoded_prefix_len_expr = Expr::call("bytes", vec![prefix_len_expr, Expr::int(8)]);
+    let encoded_suffix_len_expr = Expr::call("bytes", vec![suffix_len_expr, Expr::int(8)]);
+    let actual_template_expr = binary_expr(
+        BinaryOp::Add,
+        binary_expr(BinaryOp::Add, encoded_prefix_len_expr, actual_prefix_expr),
+        binary_expr(BinaryOp::Add, encoded_suffix_len_expr, actual_suffix_expr),
+    );
     let expected_input_spk_expr = Expr::new(
         ExprKind::New {
             name: "ScriptPubKeyP2SHFromRedeemScript".to_string(),
@@ -2183,8 +2189,15 @@ fn compile_validate_output_state_with_template_inner_statement(
 
     let mut stack_depth = 0i64;
 
+    let encoded_prefix_len = Expr::call("bytes", vec![Expr::call("length", vec![template_prefix.clone()]), Expr::int(8)]);
+    let encoded_suffix_len = Expr::call("bytes", vec![Expr::call("length", vec![template_suffix.clone()]), Expr::int(8)]);
+    let template_preimage = binary_expr(
+        BinaryOp::Add,
+        binary_expr(BinaryOp::Add, encoded_prefix_len, template_prefix.clone()),
+        binary_expr(BinaryOp::Add, encoded_suffix_len, template_suffix.clone()),
+    );
     compile_expr(
-        template_prefix,
+        &template_preimage,
         constants,
         stack_bindings,
         types,
@@ -2195,20 +2208,6 @@ fn compile_validate_output_state_with_template_inner_statement(
         script_size,
         contract_constants,
     )?;
-    compile_expr(
-        template_suffix,
-        constants,
-        stack_bindings,
-        types,
-        builder,
-        options,
-        &mut HashSet::new(),
-        &mut stack_depth,
-        script_size,
-        contract_constants,
-    )?;
-    builder.add_op(OpCat)?;
-    stack_depth -= 1;
     compile_expr(
         expected_template_hash,
         constants,
