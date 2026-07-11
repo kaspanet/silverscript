@@ -22,7 +22,7 @@
  * Pseudo logic:
  *   1. Encode `newState` using this contract's own `State` layout.
  *   2. Keep the current contract's non-state prefix and suffix.
- *   3. Rebuild the redeem script as `prefix || encoded_state || suffix`.
+ *   3. Rebuild the redeem script as `prefix || encodedState || suffix`.
  *   4. Require `tx.outputs[outputIndex]` to use the matching P2SH `scriptPubKey`.
  *
  * Security notes:
@@ -42,14 +42,14 @@ function validateOutputState(int outputIndex, object newState);
  *
  * Example:
  * ```js
- * Receipt receipt = { order_id: order_id, buyer: buyer, amount: amount };
- * validateOutputStateWithTemplate(1, receipt, receipt_prefix, receipt_suffix, receipt_hash);
+ * Receipt receipt = { orderId: orderId, buyer: buyer, amount: amount };
+ * validateOutputStateWithTemplate(1, receipt, receiptPrefix, receiptSuffix, receiptHash);
  * ```
  *
  * Pseudo logic:
- *   1. Check that `blake2b(templatePrefix || templateSuffix)` matches `expectedTemplateHash`.
+ *   1. Check that `templateHash(templatePrefix, templateSuffix)` matches `expectedTemplateHash`.
  *   2. Encode `newState` using its static struct layout.
- *   3. Rebuild the foreign redeem script as `templatePrefix || encoded_state || templateSuffix`.
+ *   3. Rebuild the foreign redeem script as `templatePrefix || encodedState || templateSuffix`.
  *   4. Require `tx.outputs[outputIndex]` to use the matching P2SH `scriptPubKey`.
  *
  * Security notes:
@@ -75,8 +75,8 @@ function validateOutputStateWithTemplate(
  *
  * Example:
  * ```js
- * {x: int in_x, y: byte[2] in_y} = readInputState(1);
- * require(in_x > 7);
+ * {x: int inX, y: byte[2] inY} = readInputState(1);
+ * require(inX > 7);
  * ```
  *
  * Pseudo logic:
@@ -112,19 +112,19 @@ function readInputState(int inputIndex) : (State);
  *
  * Example:
  * ```js
- * Receipt receipt = readInputStateWithTemplate(2, receipt_prefix_len, receipt_suffix_len, receipt_hash);
- * require(receipt.amount == expected_amount);
+ * Receipt receipt = readInputStateWithTemplate(2, receiptPrefixLen, receiptSuffixLen, receiptHash);
+ * require(receipt.amount == expectedAmount);
  * ```
  *
  * Pseudo logic:
  *   1. Determine the encoded byte size of the struct layout you want to read.
  *   2. Use `templatePrefixLen`, that state size, and `templateSuffixLen` to
  *      slice a claimed redeem script out of the foreign input sigscript.
- *   3. Split the claimed redeem script into `claimed_prefix`, `claimed_state`, and `claimed_suffix`.
- *   4. Check that `blake2b(claimed_prefix || claimed_suffix)` matches `expectedTemplateHash`.
+ *   3. Split the claimed redeem script into `claimedPrefix`, `claimedState`, and `claimedSuffix`.
+ *   4. Check that `templateHash(claimedPrefix, claimedSuffix)` matches `expectedTemplateHash`.
  *   5. Require the claimed redeem script to match the foreign input's actual
  *      P2SH `scriptPubKey`.
- *   6. Decode `claimed_state` using the passed struct layout and return the result.
+ *   6. Decode `claimedState` using the passed struct layout and return the result.
  *
  * Security notes:
  *   - `expectedTemplateHash` should be trusted protocol data.
@@ -137,3 +137,30 @@ function readInputStateWithTemplate(
     int templateSuffixLen,
     byte[32] expectedTemplateHash
 ) : (object);
+
+/**
+ * Role:
+ *      Calculate the canonical hash of a contract template.
+ *
+ * Definition:
+ *      Hash a redeem script's non-state prefix and suffix while committing to
+ *      their exact lengths. Each length is encoded as an eight-byte Script
+ *      integer before its corresponding template part.
+ *
+ * Example:
+ * ```js
+ * byte[32] receiptHash = templateHash(receiptPrefix, receiptSuffix);
+ * ```
+ *
+ * Pseudo logic:
+ *   1. Encode `templatePrefix.length` and `templateSuffix.length` with
+ *      `bytes(length, 8)`.
+ *   2. Build `prefixLen || templatePrefix || suffixLen || templateSuffix`.
+ *   3. Return `blake2b` of that preimage.
+ *
+ * Security notes:
+ *   - The encoded lengths bind the location where state is inserted.
+ *   - `blake2b(templatePrefix || templateSuffix)` is not a valid template hash
+ *     because it does not commit to the prefix/suffix boundary.
+ */
+function templateHash(byte[] templatePrefix, byte[] templateSuffix) : (byte[32]);

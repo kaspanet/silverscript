@@ -456,6 +456,7 @@ fn infer_expr_type_ref_for_comparison<'i>(
                 | "datasig"
                 | "bytes"
                 | "blake2b"
+                | "templateHash"
                 | "sha256"
                 | "OpSha256"
                 | "OpTxSubnetId"
@@ -3431,6 +3432,7 @@ fn expr_is_bytes_inner<'i>(expr: &Expr<'i>, types: &HashMap<String, String>, vis
                 name,
                 "bytes"
                     | "blake2b"
+                    | "templateHash"
                     | "sha256"
                     | "OpSha256"
                     | "OpTxSubnetId"
@@ -3594,6 +3596,7 @@ fn compile_call_expr<'i>(
             compile_array_cast_call(&mut ctx, name, args)
         }
         "blake2b" => compile_blake2b_call(&mut ctx, args),
+        "templateHash" => compile_template_hash_call(&mut ctx, args),
         "checkSig" => compile_checksig_call(&mut ctx, args),
         "checkSigFromStack" => compile_checksigfromstack_call(&mut ctx, name, args, OpCheckSigFromStack),
         "checkSigFromStackECDSA" => compile_checksigfromstack_call(&mut ctx, name, args, OpCheckSigFromStackECDSA),
@@ -3792,6 +3795,23 @@ fn compile_blake2b_call<'i>(ctx: &mut CompileCallContext<'_, 'i>, args: &[Expr<'
         return Err(CompilerError::Unsupported("blake2b() expects a single argument".to_string()));
     }
     compile_call_arg_with_context(ctx, &args[0])?;
+    ctx.builder.add_op(OpBlake2b)?;
+    Ok(())
+}
+
+fn compile_template_hash_call<'i>(ctx: &mut CompileCallContext<'_, 'i>, args: &[Expr<'i>]) -> Result<(), CompilerError> {
+    let Ok([prefix, suffix]): Result<&[Expr<'i>; 2], _> = args.try_into() else {
+        return Err(CompilerError::Unsupported("templateHash() expects 2 arguments".to_string()));
+    };
+
+    let encoded_prefix_len = Expr::call("bytes", vec![Expr::call("length", vec![prefix.clone()]), Expr::int(8)]);
+    let encoded_suffix_len = Expr::call("bytes", vec![Expr::call("length", vec![suffix.clone()]), Expr::int(8)]);
+    let preimage = binary_expr(
+        BinaryOp::Add,
+        binary_expr(BinaryOp::Add, encoded_prefix_len, prefix.clone()),
+        binary_expr(BinaryOp::Add, encoded_suffix_len, suffix.clone()),
+    );
+    compile_call_arg_with_context(ctx, &preimage)?;
     ctx.builder.add_op(OpBlake2b)?;
     Ok(())
 }

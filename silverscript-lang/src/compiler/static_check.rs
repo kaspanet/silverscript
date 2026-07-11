@@ -1406,6 +1406,7 @@ fn validate_builtin_call<'i>(
 fn typed_builtin_return_type_ref(name: &str) -> Option<TypeRef> {
     match name {
         "checkSigFromStack" | "checkSigFromStackECDSA" => parse_type_ref("bool").ok(),
+        "templateHash" => parse_type_ref("byte[32]").ok(),
         _ => None,
     }
 }

@@ -8618,6 +8618,22 @@ fn executes_opcode_builtins_basic() {
 }
 
 #[test]
+fn template_hash_binds_prefix_suffix_boundary() {
+    let source = r#"
+        contract Test() {
+            entrypoint function main() {
+                require(templateHash(bytes("a"), bytes("bc")) == templateHash(bytes("a"), bytes("bc")));
+                require(templateHash(bytes("a"), bytes("bc")) != templateHash(bytes("ab"), bytes("c")));
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("templateHash should compile");
+    let result = run_script_with_selector(compiled.script, None);
+    assert!(result.is_ok(), "templateHash should commit to the prefix/suffix boundary: {result:?}");
+}
+
+#[test]
 fn executes_opcode_builtins_covenants() {
     let source = r#"
         contract Test() {
