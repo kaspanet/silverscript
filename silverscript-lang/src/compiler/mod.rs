@@ -179,6 +179,12 @@ pub fn struct_object<'i>(fields: Vec<(&str, Expr<'i>)>) -> Expr<'i> {
 }
 
 impl<'i> CompiledContract<'i> {
+    /// Calculate the canonical hash of this contract's state template.
+    pub fn template_hash(&self) -> [u8; 32] {
+        let state_end = self.state_layout.start + self.state_layout.len;
+        crate::template::template_hash(&self.script[..self.state_layout.start], &self.script[state_end..])
+    }
+
     pub fn build_sig_script(&self, function_name: &str, args: Vec<Expr<'i>>) -> Result<Vec<u8>, CompilerError> {
         let structs = build_struct_registry(&self.ast)?;
         let function = self

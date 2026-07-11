@@ -318,7 +318,7 @@ fn template_fixture(source: &'static str, ctor: &[Expr<'static>]) -> TemplateFix
     let layout = compiled.state_layout;
     let prefix = compiled.script[..layout.start].to_vec();
     let suffix = compiled.script[layout.start + layout.len..].to_vec();
-    let hash = blake2b_bytes(&[prefix.as_slice(), suffix.as_slice()].concat());
+    let hash = Hash::from_bytes(compiled.template_hash());
     TemplateFixture { source, prefix, suffix, hash }
 }
 
@@ -435,8 +435,7 @@ fn player_template_hash(fix: &MuxChessFixture) -> Hash {
             losses: 0,
         },
     );
-    let layout = compiled.state_layout;
-    blake2b_bytes(&[compiled.script[..layout.start].as_ref(), compiled.script[layout.start + layout.len..].as_ref()].concat())
+    Hash::from_bytes(compiled.template_hash())
 }
 
 fn entry_sigscript(compiled: &CompiledContract<'_>, function: &str, args: Vec<Expr<'_>>) -> Vec<u8> {
@@ -658,86 +657,86 @@ fn size_snapshots() -> Vec<SizeSnapshot> {
         SizeSnapshot {
             name: "league.sil",
             ctor: league_constructor_args,
-            expected_script_len: 468,
-            expected_instruction_count: 269,
-            expected_charged_op_count: 199,
+            expected_script_len: 488,
+            expected_instruction_count: 289,
+            expected_charged_op_count: 213,
         },
         SizeSnapshot {
             name: "player.sil",
             ctor: player_constructor_args,
-            expected_script_len: 3382,
-            expected_instruction_count: 2482,
-            expected_charged_op_count: 1618,
+            expected_script_len: 3444,
+            expected_instruction_count: 2538,
+            expected_charged_op_count: 1650,
         },
         SizeSnapshot {
             name: "chess_mux.sil",
             ctor: mux_constructor_args,
-            expected_script_len: 1644,
-            expected_instruction_count: 986,
-            expected_charged_op_count: 666,
+            expected_script_len: 1754,
+            expected_instruction_count: 1086,
+            expected_charged_op_count: 736,
         },
         SizeSnapshot {
             name: "chess_settle.sil",
             ctor: settle_constructor_args,
-            expected_script_len: 2591,
-            expected_instruction_count: 2007,
-            expected_charged_op_count: 1307,
+            expected_script_len: 2656,
+            expected_instruction_count: 2068,
+            expected_charged_op_count: 1347,
         },
         SizeSnapshot {
             name: "chess_pawn.sil",
             ctor: pawn_constructor_args,
-            expected_script_len: 1906,
-            expected_instruction_count: 1272,
-            expected_charged_op_count: 830,
+            expected_script_len: 1972,
+            expected_instruction_count: 1332,
+            expected_charged_op_count: 872,
         },
         SizeSnapshot {
             name: "chess_knight.sil",
             ctor: pawn_constructor_args,
-            expected_script_len: 1430,
-            expected_instruction_count: 831,
-            expected_charged_op_count: 552,
+            expected_script_len: 1496,
+            expected_instruction_count: 891,
+            expected_charged_op_count: 594,
         },
         SizeSnapshot {
             name: "chess_vert.sil",
             ctor: pawn_constructor_args,
-            expected_script_len: 2038,
-            expected_instruction_count: 1409,
-            expected_charged_op_count: 969,
+            expected_script_len: 2104,
+            expected_instruction_count: 1469,
+            expected_charged_op_count: 1011,
         },
         SizeSnapshot {
             name: "chess_horiz.sil",
             ctor: pawn_constructor_args,
-            expected_script_len: 2038,
-            expected_instruction_count: 1409,
-            expected_charged_op_count: 969,
+            expected_script_len: 2104,
+            expected_instruction_count: 1469,
+            expected_charged_op_count: 1011,
         },
         SizeSnapshot {
             name: "chess_diag.sil",
             ctor: pawn_constructor_args,
-            expected_script_len: 2005,
-            expected_instruction_count: 1383,
-            expected_charged_op_count: 951,
+            expected_script_len: 2071,
+            expected_instruction_count: 1443,
+            expected_charged_op_count: 993,
         },
         SizeSnapshot {
             name: "chess_king.sil",
             ctor: pawn_constructor_args,
-            expected_script_len: 1516,
-            expected_instruction_count: 898,
-            expected_charged_op_count: 595,
+            expected_script_len: 1582,
+            expected_instruction_count: 958,
+            expected_charged_op_count: 637,
         },
         SizeSnapshot {
             name: "chess_castle.sil",
             ctor: pawn_constructor_args,
-            expected_script_len: 1564,
-            expected_instruction_count: 959,
-            expected_charged_op_count: 628,
+            expected_script_len: 1630,
+            expected_instruction_count: 1019,
+            expected_charged_op_count: 670,
         },
         SizeSnapshot {
             name: "chess_castle_challenge.sil",
             ctor: pawn_constructor_args,
-            expected_script_len: 1663,
-            expected_instruction_count: 1060,
-            expected_charged_op_count: 691,
+            expected_script_len: 1729,
+            expected_instruction_count: 1120,
+            expected_charged_op_count: 733,
         },
     ]
 }
@@ -873,7 +872,7 @@ fn league_register_player_runtime_matches_expected_output_state() {
     let layout = player_template_contract.state_layout;
     let player_prefix = player_template_contract.script[..layout.start].to_vec();
     let player_suffix = player_template_contract.script[layout.start + layout.len..].to_vec();
-    let player_template = blake2b_bytes(&[player_prefix.as_slice(), player_suffix.as_slice()].concat());
+    let player_template = Hash::from_bytes(player_template_contract.template_hash());
 
     let league_ctor = vec![
         hash_expr(league_template),
@@ -968,13 +967,7 @@ fn player_start_game_runtime_matches_expected_output_states() {
         },
     );
     let player_layout = player_contract.state_layout;
-    let player_template = blake2b_bytes(
-        &[
-            player_contract.script[..player_layout.start].as_ref(),
-            player_contract.script[player_layout.start + player_layout.len..].as_ref(),
-        ]
-        .concat(),
-    );
+    let player_template = Hash::from_bytes(player_contract.template_hash());
     let player_prefix_len = player_layout.start as i64;
     let player_suffix_len = (player_contract.script.len() - (player_layout.start + player_layout.len)) as i64;
 
@@ -1636,13 +1629,7 @@ fn settle_runtime_matches_expected_output_states() {
         },
     );
     let player_layout = player_contract.state_layout;
-    let player_template = blake2b_bytes(
-        &[
-            player_contract.script[..player_layout.start].as_ref(),
-            player_contract.script[player_layout.start + player_layout.len..].as_ref(),
-        ]
-        .concat(),
-    );
+    let player_template = Hash::from_bytes(player_contract.template_hash());
     let white_player = compile_player_state(
         player_source(),
         PlayerStateArgs {
