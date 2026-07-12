@@ -29,6 +29,8 @@ struct SizeSnapshot {
     name: &'static str,
     ctor: fn() -> Vec<Expr<'static>>,
     expected_script_len: usize,
+    // Total complete P2SH sigscript bytes in the runtime-tested transaction.
+    expected_sigscript_len: usize,
     expected_instruction_count: usize,
     expected_charged_op_count: usize,
 }
@@ -562,6 +564,7 @@ fn run_route(
             Expr::bytes(target.suffix.clone()),
         ],
     );
+    assert_sigscript_size("chess_mux.sil", &tx);
     let result = execute_input_with_covenants(tx, entries, 0);
     assert!(result.is_ok(), "route should succeed: {:?}", result.unwrap_err());
 }
@@ -577,6 +580,7 @@ fn run_worker_apply(
     let outputs = vec![covenant_output(next, 0, covenant_id)];
     let entries = vec![covenant_utxo(active, covenant_id)];
     let tx = Transaction::new(1, vec![tx_input(0, sigscript, 0)], outputs, 0, Default::default(), 0, vec![]);
+    assert_sigscript_size(&format!("chess_{label}.sil"), &tx);
     let result = execute_input_with_covenants(tx, entries, 0);
     assert!(result.is_ok(), "{label} worker apply should succeed: {:?}", result.unwrap_err());
 }
@@ -592,6 +596,7 @@ fn run_prep_apply(
     let outputs = vec![covenant_output(next, 0, covenant_id)];
     let entries = vec![covenant_utxo(active, covenant_id)];
     let tx = Transaction::new(1, vec![tx_input(0, sigscript, 0)], outputs, 0, Default::default(), 0, vec![]);
+    assert_sigscript_size(&format!("chess_{label}.sil"), &tx);
     let result = execute_input_with_covenants(tx, entries, 0);
     assert!(result.is_ok(), "{label} prep apply should succeed: {:?}", result.unwrap_err());
 }
@@ -658,6 +663,7 @@ fn size_snapshots() -> Vec<SizeSnapshot> {
             name: "league.sil",
             ctor: league_constructor_args,
             expected_script_len: 471,
+            expected_sigscript_len: 3658,
             expected_instruction_count: 272,
             expected_charged_op_count: 198,
         },
@@ -665,6 +671,7 @@ fn size_snapshots() -> Vec<SizeSnapshot> {
             name: "player.sil",
             ctor: player_constructor_args,
             expected_script_len: 3332,
+            expected_sigscript_len: 8317,
             expected_instruction_count: 2428,
             expected_charged_op_count: 1576,
         },
@@ -672,6 +679,7 @@ fn size_snapshots() -> Vec<SizeSnapshot> {
             name: "chess_mux.sil",
             ctor: mux_constructor_args,
             expected_script_len: 1678,
+            expected_sigscript_len: 3111,
             expected_instruction_count: 1004,
             expected_charged_op_count: 683,
         },
@@ -679,6 +687,7 @@ fn size_snapshots() -> Vec<SizeSnapshot> {
             name: "chess_settle.sil",
             ctor: settle_constructor_args,
             expected_script_len: 2525,
+            expected_sigscript_len: 12940,
             expected_instruction_count: 1930,
             expected_charged_op_count: 1264,
         },
@@ -686,6 +695,7 @@ fn size_snapshots() -> Vec<SizeSnapshot> {
             name: "chess_pawn.sil",
             ctor: pawn_constructor_args,
             expected_script_len: 1827,
+            expected_sigscript_len: 2972,
             expected_instruction_count: 1187,
             expected_charged_op_count: 789,
         },
@@ -693,6 +703,7 @@ fn size_snapshots() -> Vec<SizeSnapshot> {
             name: "chess_knight.sil",
             ctor: pawn_constructor_args,
             expected_script_len: 1413,
+            expected_sigscript_len: 2558,
             expected_instruction_count: 808,
             expected_charged_op_count: 542,
         },
@@ -700,6 +711,7 @@ fn size_snapshots() -> Vec<SizeSnapshot> {
             name: "chess_vert.sil",
             ctor: pawn_constructor_args,
             expected_script_len: 2001,
+            expected_sigscript_len: 3146,
             expected_instruction_count: 1366,
             expected_charged_op_count: 949,
         },
@@ -707,6 +719,7 @@ fn size_snapshots() -> Vec<SizeSnapshot> {
             name: "chess_horiz.sil",
             ctor: pawn_constructor_args,
             expected_script_len: 2001,
+            expected_sigscript_len: 3146,
             expected_instruction_count: 1366,
             expected_charged_op_count: 949,
         },
@@ -714,6 +727,7 @@ fn size_snapshots() -> Vec<SizeSnapshot> {
             name: "chess_diag.sil",
             ctor: pawn_constructor_args,
             expected_script_len: 1968,
+            expected_sigscript_len: 3113,
             expected_instruction_count: 1340,
             expected_charged_op_count: 931,
         },
@@ -721,6 +735,7 @@ fn size_snapshots() -> Vec<SizeSnapshot> {
             name: "chess_king.sil",
             ctor: pawn_constructor_args,
             expected_script_len: 1483,
+            expected_sigscript_len: 2628,
             expected_instruction_count: 859,
             expected_charged_op_count: 577,
         },
@@ -728,6 +743,7 @@ fn size_snapshots() -> Vec<SizeSnapshot> {
             name: "chess_castle.sil",
             ctor: pawn_constructor_args,
             expected_script_len: 1529,
+            expected_sigscript_len: 2674,
             expected_instruction_count: 918,
             expected_charged_op_count: 609,
         },
@@ -735,10 +751,21 @@ fn size_snapshots() -> Vec<SizeSnapshot> {
             name: "chess_castle_challenge.sil",
             ctor: pawn_constructor_args,
             expected_script_len: 1623,
+            expected_sigscript_len: 2917,
             expected_instruction_count: 1013,
             expected_charged_op_count: 669,
         },
     ]
+}
+
+fn assert_sigscript_size(name: &str, tx: &Transaction) {
+    let expected = size_snapshots()
+        .into_iter()
+        .find(|snapshot| snapshot.name == name)
+        .unwrap_or_else(|| panic!("missing size snapshot for {name}"))
+        .expected_sigscript_len;
+    let actual = tx.inputs.iter().map(|input| input.signature_script.len()).sum();
+    assert_size_within_noise(&format!("{name} sigscript_len"), actual, expected);
 }
 
 fn pawn_constructor_args() -> Vec<Expr<'static>> {
@@ -827,7 +854,7 @@ fn chess_apps_compile_and_probe_sizes_within_noise() {
     }
 
     for (name, script_len, instruction_count, charged_op_count) in &actual_sizes {
-        println!("{name} {script_len} / {instruction_count} / {charged_op_count}");
+        println!("{name} script={script_len} instructions={instruction_count} charged_ops={charged_op_count}");
     }
 
     for (snapshot, (_, script_len, instruction_count, charged_op_count)) in size_snapshots().into_iter().zip(actual_sizes) {
@@ -933,6 +960,7 @@ fn league_register_player_runtime_matches_expected_output_state() {
         vec![Expr::bytes(sig), Expr::bytes(owner.pubkey_bytes), Expr::bytes(player_prefix), Expr::bytes(player_suffix)],
     );
 
+    assert_sigscript_size("league.sil", &tx);
     let result = execute_input_with_covenants(tx, entries, 0);
     assert!(result.is_ok(), "league register_player runtime failed: {}", result.unwrap_err());
 }
@@ -1131,6 +1159,7 @@ fn player_start_game_runtime_matches_expected_output_states() {
         ],
     );
 
+    assert_sigscript_size("player.sil", &tx);
     let leader_result = execute_input_with_covenants(tx.clone(), entries.clone(), 0);
     assert!(leader_result.is_ok(), "player start_game leader runtime failed: {}", leader_result.unwrap_err());
 
@@ -1949,6 +1978,7 @@ fn settle_runtime_matches_expected_output_states() {
         vec![],
     );
 
+    assert_sigscript_size("chess_settle.sil", &tx);
     let leader_result = execute_input_with_covenants(tx.clone(), entries.clone(), 0);
     assert!(leader_result.is_ok(), "settle leader runtime failed: {}", leader_result.unwrap_err());
 
