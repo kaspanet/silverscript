@@ -251,7 +251,7 @@ contract ChessCastleChallengePrep(
             next_status = 1 /*WWIN*/;
         }
 
-        byte[32] settle_template = blake2b(settle_prefix + settle_suffix);
+        byte[32] settle_template = templateHash(settle_prefix, settle_suffix);
         require(blake2b(settle_template + player_template) == byte[32](route_templates.slice(256, 288)));
 
         SettleState next_state = {

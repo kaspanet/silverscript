@@ -22,6 +22,7 @@ use silverscript_lang::compiler::{
     compile_contract_ast, function_branch_index, generated_covenant_auth_entrypoint_name, struct_object,
 };
 use silverscript_lang::debug_info::StepKind;
+use silverscript_lang::template::template_hash;
 
 use crate::common::compiled_template_parts_and_hash;
 
@@ -5552,6 +5553,76 @@ fn runs_validate_output_state_with_template() {
 }
 
 #[test]
+fn template_hash_matches_both_with_template_builtins() {
+    let target_source = r#"
+        contract Target(int initX) {
+            int x = initX;
+
+            entrypoint function noop() {
+                require(true);
+            }
+        }
+    "#;
+    let target_input = compile_contract(target_source, &[7.into()], CompileOptions::default()).expect("compile target input succeeds");
+    let target_output =
+        compile_contract(target_source, &[8.into()], CompileOptions::default()).expect("compile target output succeeds");
+    let layout = target_input.state_layout;
+    let prefix = &target_input.script[..layout.start];
+    let suffix = &target_input.script[layout.start + layout.len..];
+    let prefix_hex = prefix.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+    let suffix_hex = suffix.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+
+    let verifier_source = format!(
+        r#"
+        contract Verifier() {{
+            struct RemoteState {{
+                int x;
+            }}
+
+            entrypoint function main() {{
+                byte[] templatePrefix = 0x{prefix_hex};
+                byte[] templateSuffix = 0x{suffix_hex};
+                byte[32] expectedTemplateHash = templateHash(templatePrefix, templateSuffix);
+
+                RemoteState prev = readInputStateWithTemplate(
+                    1,
+                    {},
+                    {},
+                    expectedTemplateHash
+                );
+                require(prev.x == 7);
+
+                RemoteState next = {{x: 8}};
+                validateOutputStateWithTemplate(
+                    0,
+                    next,
+                    templatePrefix,
+                    templateSuffix,
+                    expectedTemplateHash
+                );
+            }}
+        }}
+    "#,
+        prefix.len(),
+        suffix.len(),
+    );
+    let verifier = compile_contract(&verifier_source, &[], CompileOptions::default()).expect("compile verifier succeeds");
+    let verifier_sigscript = verifier.build_sig_script("main", vec![]).expect("verifier sigscript builds");
+    let verifier_sigscript = pay_to_script_hash_signature_script(verifier.script.clone(), verifier_sigscript).unwrap();
+
+    let verifier_input = test_input(0, verifier_sigscript);
+    let target_input_tx = test_input(1, sigscript_push_script(&target_input.script));
+    let output =
+        TransactionOutput { value: 1000, script_public_key: pay_to_script_hash_script(&target_output.script), covenant: None };
+    let tx = Transaction::new(1, vec![verifier_input, target_input_tx], vec![output.clone()], 0, Default::default(), 0, vec![]);
+    let verifier_utxo = UtxoEntry::new(1000, pay_to_script_hash_script(&verifier.script), 0, tx.is_coinbase(), None);
+    let target_utxo = UtxoEntry::new(1000, pay_to_script_hash_script(&target_input.script), 0, tx.is_coinbase(), None);
+
+    let result = execute_input(tx, vec![verifier_utxo, target_utxo], 0);
+    assert!(result.is_ok(), "templateHash should match both state template builtins: {}", result.unwrap_err());
+}
+
+#[test]
 fn runs_validate_output_state_with_template_using_passed_struct_layout() {
     let target_hash_value = vec![0x44u8; 32];
     let target_hash_hex = target_hash_value.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
@@ -8615,6 +8686,61 @@ fn executes_opcode_builtins_basic() {
         let result = run_script_with_tx_and_covenants(compiled.script, tx, entries, None);
         assert!(result.is_ok(), "opcode builtin {name} failed: {}", result.unwrap_err());
     }
+}
+
+#[test]
+fn template_hash_matches_canonical_rust_and_sil_vectors() {
+    let cases: &[(&[u8], &[u8], &str)] = &[
+        (b"", b"", "94c1c088cc9453996779630ad3af45cbd92814828dd784cf2aa12df95d1b8afe"),
+        (b"a", b"bc", "77bbcab7072b897c548327378f11776f4853104c71bdb95a12ded5d2783523bf"),
+        (b"ab", b"c", "20263e794775e4edf2b306c0f306af9e50175c831c857604b481e847f790bf95"),
+        (&[0x00, 0xff], &[0x10, 0x00, 0x80], "81485678b557bcd4a836c2db54ee268e1dc08549f1b8e4d8d67960321b765f25"),
+    ];
+
+    let sil_bytes = |bytes: &[u8]| {
+        if bytes.is_empty() {
+            "bytes(\"\")".to_string()
+        } else {
+            format!("0x{}", bytes.iter().map(|byte| format!("{byte:02x}")).collect::<String>())
+        }
+    };
+
+    for (prefix, suffix, expected_hex) in cases {
+        let mut expected = [0u8; 32];
+        faster_hex::hex_decode(expected_hex.as_bytes(), &mut expected).unwrap();
+        assert_eq!(template_hash(prefix, suffix), expected);
+
+        let prefix = sil_bytes(prefix);
+        let suffix = sil_bytes(suffix);
+        let source = format!(
+            r#"
+            contract Test() {{
+                entrypoint function main() {{
+                    require(templateHash({prefix}, {suffix}) == 0x{expected_hex});
+                }}
+            }}
+        "#
+        );
+
+        let compiled = compile_contract(&source, &[], CompileOptions::default()).expect("templateHash should compile");
+        let result = run_script_with_selector(compiled.script, None);
+        assert!(result.is_ok(), "templateHash should match canonical vector {expected_hex}: {result:?}");
+    }
+}
+
+#[test]
+fn template_hash_binds_prefix_suffix_boundary() {
+    let source = r#"
+        contract Test() {
+            entrypoint function main() {
+                require(templateHash(bytes("a"), bytes("bc")) != templateHash(bytes("ab"), bytes("c")));
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("templateHash should compile");
+    let result = run_script_with_selector(compiled.script, None);
+    assert!(result.is_ok(), "templateHash should commit to the prefix/suffix boundary: {result:?}");
 }
 
 #[test]
