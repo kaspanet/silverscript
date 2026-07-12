@@ -69,7 +69,7 @@ pub(super) fn encoded_state_len<'i>(
     contract_fields.iter().try_fold(0usize, |acc, field| Ok(acc + encoded_type_chunk_size(&field.type_ref, contract_constants)?))
 }
 
-pub(super) fn encoded_state_len_for_layout_field_types<'i>(
+pub(in crate::compiler) fn encoded_state_len_for_layout_field_types<'i>(
     layout_field_types: &[TypeRef],
     contract_constants: &HashMap<String, Expr<'i>>,
 ) -> Result<usize, CompilerError> {

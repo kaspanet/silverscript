@@ -5772,7 +5772,7 @@ fn runs_validate_output_state_with_template() {
 }
 
 #[test]
-fn template_hash_matches_both_with_template_builtins() {
+fn template_hash_matches_all_template_builtins() {
     let target_source = r#"
         contract Target(int initX) {
             int x = initX;
@@ -5819,9 +5819,19 @@ fn template_hash_matches_both_with_template_builtins() {
                     templateSuffix,
                     expectedTemplateHash
                 );
+                validateOutputStateWithInputTemplate(
+                    0,
+                    next,
+                    1,
+                    {},
+                    {},
+                    expectedTemplateHash
+                );
             }}
         }}
     "#,
+        prefix.len(),
+        suffix.len(),
         prefix.len(),
         suffix.len(),
     );
@@ -5838,7 +5848,44 @@ fn template_hash_matches_both_with_template_builtins() {
     let target_utxo = UtxoEntry::new(1000, pay_to_script_hash_script(&target_input.script), 0, tx.is_coinbase(), None);
 
     let result = execute_input(tx, vec![verifier_utxo, target_utxo], 0);
-    assert!(result.is_ok(), "templateHash should match both state template builtins: {}", result.unwrap_err());
+    assert!(result.is_ok(), "templateHash should match all state template builtins: {}", result.unwrap_err());
+
+    let invalid_verifier_source = format!(
+        r#"
+        contract Verifier() {{
+            struct RemoteState {{
+                int x;
+            }}
+
+            entrypoint function main() {{
+                RemoteState next = {{x: 8}};
+                validateOutputStateWithInputTemplate(
+                    0,
+                    next,
+                    1,
+                    {},
+                    {},
+                    templateHash(0x{prefix_hex}, 0x{suffix_hex})
+                );
+            }}
+        }}
+    "#,
+        prefix.len() + 1,
+        suffix.len(),
+    );
+    let invalid_verifier =
+        compile_contract(&invalid_verifier_source, &[], CompileOptions::default()).expect("compile invalid verifier succeeds");
+    let invalid_sigscript = invalid_verifier.build_sig_script("main", vec![]).expect("invalid verifier sigscript builds");
+    let invalid_sigscript = pay_to_script_hash_signature_script(invalid_verifier.script.clone(), invalid_sigscript).unwrap();
+    let invalid_input = test_input(0, invalid_sigscript);
+    let target_input_tx = test_input(1, sigscript_push_script(&target_input.script));
+    let output =
+        TransactionOutput { value: 1000, script_public_key: pay_to_script_hash_script(&target_output.script), covenant: None };
+    let tx = Transaction::new(1, vec![invalid_input, target_input_tx], vec![output.clone()], 0, Default::default(), 0, vec![]);
+    let invalid_verifier_utxo = UtxoEntry::new(1000, pay_to_script_hash_script(&invalid_verifier.script), 0, tx.is_coinbase(), None);
+    let target_utxo = UtxoEntry::new(1000, pay_to_script_hash_script(&target_input.script), 0, tx.is_coinbase(), None);
+
+    assert!(execute_input(tx, vec![invalid_verifier_utxo, target_utxo], 0).is_err(), "incorrect template lengths must fail");
 }
 
 #[test]
@@ -11329,22 +11376,35 @@ fn validate_output_state_with_template_preserves_nested_struct_field_paths() {
                     0x{template_suffix_hex},
                     0x{template_hash_hex}
                 );
+                validateOutputStateWithInputTemplate(
+                    0,
+                    next,
+                    1,
+                    {},
+                    {},
+                    0x{template_hash_hex}
+                );
             }}
         }}
-    "#
+    "#,
+        template_prefix.len(),
+        template_suffix.len(),
     );
 
     let input_compiled = compile_contract(&source, &[], CompileOptions::default()).expect("compile router succeeds");
     let sigscript = input_compiled.build_sig_script("route", vec![target_hash.into()]).expect("sigscript builds");
     let sigscript = pay_to_script_hash_signature_script(input_compiled.script.clone(), sigscript).unwrap();
     let input = test_input(0, sigscript);
+    let template_input = test_input(1, sigscript_push_script(&target_template_compiled.script));
     let input_spk = pay_to_script_hash_script(&input_compiled.script);
     let output_spk = pay_to_script_hash_script(&target_output_compiled.script);
     let output = TransactionOutput { value: 1000, script_public_key: output_spk, covenant: None };
-    let tx = Transaction::new(1, vec![input], vec![output.clone()], 0, Default::default(), 0, vec![]);
+    let tx = Transaction::new(1, vec![input, template_input], vec![output.clone()], 0, Default::default(), 0, vec![]);
     let utxo_entry = UtxoEntry::new(output.value, input_spk, 0, tx.is_coinbase(), None);
+    let template_utxo =
+        UtxoEntry::new(output.value, pay_to_script_hash_script(&target_template_compiled.script), 0, tx.is_coinbase(), None);
 
-    let result = execute_input(tx, vec![utxo_entry], 0);
+    let result = execute_input(tx, vec![utxo_entry, template_utxo], 0);
     assert!(result.is_ok(), "nested struct fields with the same leaf name should remain distinct by path: {result:?}");
 }
 

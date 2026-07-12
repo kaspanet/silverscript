@@ -27,7 +27,7 @@ use expression::*;
 pub(super) use helpers::encode_array_literal;
 use helpers::*;
 use state::*;
-pub(super) use state::{encoded_type_chunk_size, read_input_state_field_expr_symbolic};
+pub(super) use state::{encoded_state_len_for_layout_field_types, encoded_type_chunk_size, read_input_state_field_expr_symbolic};
 use statement::*;
 
 fn script_builder() -> ScriptBuilder {
@@ -53,7 +53,7 @@ pub(super) fn compile_contract_impl<'i>(
     let read_input_state_lowered_contract = lower_read_input_state_calls(&covenant_lowered_contract)?;
     let inline_lowered_contract = lower_inline_functions(&read_input_state_lowered_contract, &mut debug_recorder)?;
     let structs = build_struct_registry(&inline_lowered_contract)?;
-    let validate_output_state_lowered_contract = lower_validate_output_state(&inline_lowered_contract, &structs)?;
+    let validate_output_state_lowered_contract = lower_validate_output_state(&inline_lowered_contract, &structs, &constants)?;
     let struct_lowered_contract = lower_structs_contract(&validate_output_state_lowered_contract, &structs, &constants)?;
     let append_lowered_contract = lower_array_appends(&struct_lowered_contract)?;
     let for_lowered_contract = lower_for_loops(&append_lowered_contract, &constants)?;
