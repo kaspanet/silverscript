@@ -1,6 +1,5 @@
 contract KCC20Minter(pubkey owner, byte[32] initKCC20Covid, int initAmount,
-    bool initInitialized, int templatePrefixLen, int templateSuffixLen, byte[32] expectedTemplateHash,
-    byte[] templatePrefix, byte[] templateSuffix) {
+    bool initInitialized, int templatePrefixLen, int templateSuffixLen, byte[32] expectedTemplateHash) {
 
     byte[32] kcc20Covid = initKCC20Covid;
     int amount = initAmount;
@@ -15,9 +14,9 @@ contract KCC20Minter(pubkey owner, byte[32] initKCC20Covid, int initAmount,
 
     byte constant IDENTIFIER_COVENANT_ID = 0x02;
 
-    function calcInAmount() : int {
+    function calcInAmount(int kcc20InputIdx) : int {
         KCC20State kcc20PrevState = readInputStateWithTemplate(
-            OpCovInputIdx(kcc20Covid, 0),
+            kcc20InputIdx,
             templatePrefixLen,
             templateSuffixLen,
             expectedTemplateHash
@@ -25,28 +24,30 @@ contract KCC20Minter(pubkey owner, byte[32] initKCC20Covid, int initAmount,
         return kcc20PrevState.amount;
     }
 
-    function checkMinterKcc20NewState(KCC20State minterKcc20NewState){
+    function checkMinterKcc20NewState(KCC20State minterKcc20NewState, int kcc20InputIdx){
         byte[32] controllerId = OpInputCovenantId(this.activeInputIndex);
         require(minterKcc20NewState.ownerIdentifier == controllerId); // We do not allow the minter to delegate minting authority to another party.
         require(minterKcc20NewState.identifierType == IDENTIFIER_COVENANT_ID);
         require(minterKcc20NewState.isMinter); // The minter cannot stop being a minter.
 
-        validateOutputStateWithTemplate(
+        validateOutputStateWithInputTemplate(
             OpCovOutputIdx(kcc20Covid, 0),
             minterKcc20NewState,
-            templatePrefix,
-            templateSuffix,
+            kcc20InputIdx,
+            templatePrefixLen,
+            templateSuffixLen,
             expectedTemplateHash
         );
     }
 
-    function checkRecipientKcc20NewState(KCC20State recipientKcc20NewState){
+    function checkRecipientKcc20NewState(KCC20State recipientKcc20NewState, int kcc20InputIdx){
         require(!recipientKcc20NewState.isMinter); // We do not allow the minter to designate another minter.
-        validateOutputStateWithTemplate(
+        validateOutputStateWithInputTemplate(
             OpCovOutputIdx(kcc20Covid, 1),
             recipientKcc20NewState,
-            templatePrefix,
-            templateSuffix,
+            kcc20InputIdx,
+            templatePrefixLen,
+            templateSuffixLen,
             expectedTemplateHash
         );
     }
@@ -71,11 +72,12 @@ contract KCC20Minter(pubkey owner, byte[32] initKCC20Covid, int initAmount,
         // We focus on the simple case 1-2 minting transfer.
         require(OpCovOutputCount(kcc20Covid) == 2);
         require(OpCovInputCount(kcc20Covid) == 1);
+        int kcc20InputIdx = OpCovInputIdx(kcc20Covid, 0);
 
-        checkMinterKcc20NewState(minterKcc20NewState);
-        checkRecipientKcc20NewState(recipientKcc20NewState);
+        checkMinterKcc20NewState(minterKcc20NewState, kcc20InputIdx);
+        checkRecipientKcc20NewState(recipientKcc20NewState, kcc20InputIdx);
 
-        int inAmount = calcInAmount();
+        int inAmount = calcInAmount(kcc20InputIdx);
         int mintedAmount = minterKcc20NewState.amount + recipientKcc20NewState.amount - inAmount;
         require(newState.amount == amount - mintedAmount);
         require(checkSig(s, owner));
