@@ -5,9 +5,9 @@ use kaspa_txscript::script_builder::ScriptBuilder;
 use serde::{Deserialize, Serialize};
 
 use crate::ast::{
-    ArrayDim, BinaryOp, ConstantAst, ContractAst, ContractFieldAst, Expr, ExprKind, FunctionAst, IntrospectionKind, NullaryOp,
-    ParamAst, STATE_TYPE_NAME, SplitPart, StateBindingAst, StateFieldExpr, Statement, TimeVar, TypeBase, TypeRef, UnaryOp,
-    UnarySuffixKind, parse_contract_ast, parse_type_ref,
+    ArrayDim, BinaryOp, ConstantAst, ContractAst, ContractFieldAst, DestructureBindingAst, Expr, ExprKind, FunctionAst,
+    IntrospectionKind, NullaryOp, ParamAst, STATE_TYPE_NAME, SplitPart, StateFieldExpr, Statement, TimeVar, TypeBase, TypeRef,
+    UnaryOp, UnarySuffixKind, parse_contract_ast, parse_type_ref,
 };
 use crate::debug_info::{DebugInfo, DebugNamedValue};
 pub use crate::errors::{CompilerError, ErrorSpan};

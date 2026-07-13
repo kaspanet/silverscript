@@ -230,7 +230,7 @@ impl<'i, 'd> Inliner<'i, 'd> {
                     .iter()
                     .map(|binding| {
                         let fresh = self.bind_visible_name(&binding.name, scope);
-                        StateBindingAst { name: fresh, ..binding.clone() }
+                        DestructureBindingAst { name: fresh, ..binding.clone() }
                     })
                     .collect();
                 let (prelude, renamed_args) = self.lower_exprs(args, scope, visited_functions)?;
@@ -251,7 +251,7 @@ impl<'i, 'd> Inliner<'i, 'd> {
                     .iter()
                     .map(|binding| {
                         let fresh = self.bind_visible_name(&binding.name, scope);
-                        StateBindingAst { name: fresh, ..binding.clone() }
+                        DestructureBindingAst { name: fresh, ..binding.clone() }
                     })
                     .collect();
                 let (prelude, renamed_expr) = self.lower_expr(expr, scope, visited_functions)?;

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::ast::{
-    ContractAst, ContractFieldAst, Expr, ExprKind, FunctionAst, ParamAst, StateBindingAst, StateFieldExpr, Statement, TypeRef,
+    ContractAst, ContractFieldAst, Expr, ExprKind, FunctionAst, ParamAst, DestructureBindingAst, StateFieldExpr, Statement, TypeRef,
 };
 use crate::debug_info::{
     DebugFunctionRange, DebugInfo, DebugInfoRecorder, DebugLeafBinding, DebugNamedValue, DebugParamBinding, DebugParamMapping,
@@ -1185,7 +1185,7 @@ fn collect_structured_binding_specs_from_statements<'i>(
 
 fn record_structured_state_binding_spec(
     specs: &mut HashMap<String, StructuredLeafSpec>,
-    binding: &StateBindingAst<'_>,
+    binding: &DestructureBindingAst<'_>,
     visible_names: Option<&HashMap<String, String>>,
     structs: &StructRegistry,
 ) -> Result<(), CompilerError> {
