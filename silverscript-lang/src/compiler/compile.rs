@@ -1499,7 +1499,7 @@ fn compile_function_call_statement<'i>(
 
 fn compile_state_function_call_assign_statement<'i>(
     ctx: &mut CompileStatementContext<'_, 'i>,
-    bindings: &[DestructureBindingAst<'i>],
+    bindings: &[StructBindingAst<'i>],
     name: &str,
     args: &[Expr<'i>],
 ) -> Result<Vec<String>, CompilerError> {
@@ -1695,7 +1695,7 @@ fn cast_read_input_state_expr<'i>(substr: Expr<'i>, type_ref: &TypeRef) -> Resul
 #[allow(clippy::too_many_arguments)]
 fn compile_read_input_state_statement<'i>(
     ctx: &mut CompileStatementContext<'_, 'i>,
-    bindings: &[DestructureBindingAst<'i>],
+    bindings: &[StructBindingAst<'i>],
     name: &str,
     args: &[Expr<'i>],
     contract_fields: &[ContractFieldAst<'i>],
@@ -1703,7 +1703,7 @@ fn compile_read_input_state_statement<'i>(
     structs: &StructRegistry,
 ) -> Result<Vec<String>, CompilerError> {
     let mut added_stack_locals = Vec::new();
-    let mut bindings_by_field: HashMap<&str, &DestructureBindingAst<'i>> = HashMap::new();
+    let mut bindings_by_field: HashMap<&str, &StructBindingAst<'i>> = HashMap::new();
     for binding in bindings {
         if bindings_by_field.insert(binding.field_name.as_str(), binding).is_some() {
             return Err(CompilerError::Unsupported(format!("duplicate state field '{}'", binding.field_name)));
@@ -1841,10 +1841,7 @@ fn compile_read_input_state_statement<'i>(
     }
 }
 
-fn struct_name_for_state_bindings<'i>(
-    bindings: &[DestructureBindingAst<'i>],
-    structs: &StructRegistry,
-) -> Result<String, CompilerError> {
+fn struct_name_for_state_bindings<'i>(bindings: &[StructBindingAst<'i>], structs: &StructRegistry) -> Result<String, CompilerError> {
     let matches = structs
         .iter()
         .filter_map(|(name, spec)| {

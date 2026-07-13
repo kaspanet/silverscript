@@ -373,7 +373,7 @@ fn validate_tuple_assignment_statement_shape<'i>(
 
 fn validate_state_function_call_assign_statement_shape<'i>(
     ctx: &mut ValidateStatementShapesContext<'_, 'i>,
-    bindings: &[DestructureBindingAst<'i>],
+    bindings: &[StructBindingAst<'i>],
     name: &str,
     args: &[Expr<'i>],
 ) -> Result<(), CompilerError> {
@@ -399,7 +399,7 @@ fn validate_state_function_call_assign_statement_shape<'i>(
 
 fn validate_struct_destructure_statement_shape<'i>(
     ctx: &mut ValidateStatementShapesContext<'_, 'i>,
-    bindings: &[DestructureBindingAst<'i>],
+    bindings: &[StructBindingAst<'i>],
     expr: &Expr<'i>,
 ) -> Result<(), CompilerError> {
     validate_expr_semantics(
@@ -713,7 +713,7 @@ fn validate_for_statement_shape<'i>(
 }
 
 fn validate_struct_destructure_bindings<'i>(
-    bindings: &[DestructureBindingAst<'i>],
+    bindings: &[StructBindingAst<'i>],
     expr: &Expr<'i>,
     types: &HashMap<String, String>,
     structs: &StructRegistry,
@@ -761,7 +761,7 @@ fn validate_struct_destructure_bindings<'i>(
 }
 
 fn validate_state_function_call_assign<'i>(
-    bindings: &[DestructureBindingAst<'i>],
+    bindings: &[StructBindingAst<'i>],
     name: &str,
     args: &[Expr<'i>],
     structs: &StructRegistry,
@@ -1208,7 +1208,7 @@ fn comparison_types_compatible_ref(left_type: &TypeRef, right_type: &TypeRef) ->
 }
 
 fn struct_name_for_state_bindings_ref<'i>(
-    bindings: &[DestructureBindingAst<'i>],
+    bindings: &[StructBindingAst<'i>],
     structs: &StructRegistry,
 ) -> Result<String, CompilerError> {
     let matches = structs

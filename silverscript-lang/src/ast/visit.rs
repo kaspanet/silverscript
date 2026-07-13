@@ -1,6 +1,6 @@
 use super::{
     ConstantAst, ContractAst, ContractFieldAst, Expr, ExprKind, FunctionAst, FunctionAttributeArgAst, FunctionAttributeAst, ParamAst,
-    DestructureBindingAst, Statement,
+    StructBindingAst, Statement,
 };
 use crate::span::Span;
 
@@ -54,7 +54,7 @@ pub trait AstVisitorMut<'i> {
         walk_param_mut(self, param);
     }
 
-    fn visit_state_binding(&mut self, binding: &mut DestructureBindingAst<'i>) {
+    fn visit_state_binding(&mut self, binding: &mut StructBindingAst<'i>) {
         walk_state_binding_mut(self, binding);
     }
 
@@ -151,7 +151,7 @@ pub fn walk_param_mut<'i, V: AstVisitorMut<'i> + ?Sized>(visitor: &mut V, param:
     visitor.visit_span(&mut param.name_span);
 }
 
-pub fn walk_state_binding_mut<'i, V: AstVisitorMut<'i> + ?Sized>(visitor: &mut V, binding: &mut DestructureBindingAst<'i>) {
+pub fn walk_state_binding_mut<'i, V: AstVisitorMut<'i> + ?Sized>(visitor: &mut V, binding: &mut StructBindingAst<'i>) {
     visitor.visit_name(&mut binding.field_name, NameKind::StateField);
     visitor.visit_name(&mut binding.name, NameKind::StateBinding);
     visitor.visit_span(&mut binding.span);

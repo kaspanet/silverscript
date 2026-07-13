@@ -152,7 +152,7 @@ pub struct ParamAst<'i> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DestructureBindingAst<'i> {
+pub struct StructBindingAst<'i> {
     pub field_name: String,
     pub type_ref: TypeRef,
     pub name: String,
@@ -328,7 +328,7 @@ pub enum Statement<'i> {
         name_span: Span<'i>,
     },
     StateFunctionCallAssign {
-        bindings: Vec<DestructureBindingAst<'i>>,
+        bindings: Vec<StructBindingAst<'i>>,
         name: String,
         args: Vec<Expr<'i>>,
         #[serde(skip_deserializing)]
@@ -337,7 +337,7 @@ pub enum Statement<'i> {
         name_span: Span<'i>,
     },
     StructDestructure {
-        bindings: Vec<DestructureBindingAst<'i>>,
+        bindings: Vec<StructBindingAst<'i>>,
         expr: Expr<'i>,
         #[serde(skip_deserializing)]
         span: Span<'i>,
@@ -945,7 +945,7 @@ fn format_params(params: &[ParamAst<'_>]) -> String {
     params.iter().map(|param| format!("{} {}", param.type_ref.type_name(), param.name)).collect::<Vec<_>>().join(", ")
 }
 
-fn format_state_bindings(bindings: &[DestructureBindingAst<'_>]) -> String {
+fn format_state_bindings(bindings: &[StructBindingAst<'_>]) -> String {
     bindings
         .iter()
         .map(|binding| format!("{}: {} {}", binding.field_name, binding.type_ref.type_name(), binding.name))
@@ -1809,7 +1809,7 @@ fn parse_require_message<'i>(pair: Pair<'i, Rule>) -> Result<(String, Span<'i>),
     }
 }
 
-fn parse_state_typed_binding<'i>(pair: Pair<'i, Rule>) -> Result<DestructureBindingAst<'i>, CompilerError> {
+fn parse_state_typed_binding<'i>(pair: Pair<'i, Rule>) -> Result<StructBindingAst<'i>, CompilerError> {
     let span = Span::from(pair.as_span());
     let mut inner = pair.into_inner();
 
@@ -1822,7 +1822,7 @@ fn parse_state_typed_binding<'i>(pair: Pair<'i, Rule>) -> Result<DestructureBind
     let type_ref = parse_type_name_pair(type_pair)?;
     let Identifier { name, span: name_span } = parse_identifier(ident_pair)?;
 
-    Ok(DestructureBindingAst { field_name, type_ref, name, span, field_span, type_span, name_span })
+    Ok(StructBindingAst { field_name, type_ref, name, span, field_span, type_span, name_span })
 }
 
 fn parse_expression<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {

@@ -3,8 +3,8 @@ use std::collections::{HashMap, HashSet};
 use super::compile::read_input_state_field_expr_symbolic;
 use super::*;
 use crate::ast::{
-    ConstantAst, ContractAst, ContractFieldAst, DestructureBindingAst, Expr, ExprKind, FunctionAst, ParamAst, STATE_TYPE_NAME,
-    Statement, TypeBase, TypeRef, parse_type_ref,
+    ConstantAst, ContractAst, ContractFieldAst, Expr, ExprKind, FunctionAst, ParamAst, STATE_TYPE_NAME, Statement, StructBindingAst,
+    TypeBase, TypeRef, parse_type_ref,
 };
 use crate::span;
 
@@ -513,7 +513,7 @@ pub(crate) fn infer_struct_expr_type<'i>(
 }
 
 pub(crate) fn lower_struct_destructure_statement<'i>(
-    bindings: &[DestructureBindingAst<'i>],
+    bindings: &[StructBindingAst<'i>],
     expr: &Expr<'i>,
     span: crate::span::Span<'i>,
     scope: &mut LoweringScope,
@@ -957,7 +957,7 @@ fn lower_statements<'i>(
                             bindings: item
                                 .fields
                                 .iter()
-                                .map(|field| DestructureBindingAst {
+                                .map(|field| StructBindingAst {
                                     field_name: field.name.clone(),
                                     type_ref: field.type_ref.clone(),
                                     name: flattened_struct_name(name, std::slice::from_ref(&field.name)),
@@ -1160,7 +1160,7 @@ fn lower_statements<'i>(
                                 let leaf_bindings = flatten_type_ref_leaves(&element_type, structs)?;
                                 let state_bindings = leaf_bindings
                                     .iter()
-                                    .map(|(path, leaf_type)| DestructureBindingAst {
+                                    .map(|(path, leaf_type)| StructBindingAst {
                                         field_name: path.last().cloned().unwrap_or_default(),
                                         type_ref: leaf_type.clone(),
                                         name: flattened_struct_name(&temp_base, path),
