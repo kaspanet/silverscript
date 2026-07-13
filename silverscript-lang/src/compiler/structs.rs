@@ -3,8 +3,8 @@ use std::collections::{HashMap, HashSet};
 use super::compile::read_input_state_field_expr_symbolic;
 use super::*;
 use crate::ast::{
-    ConstantAst, ContractAst, ContractFieldAst, Expr, ExprKind, FunctionAst, ParamAst, STATE_TYPE_NAME, DestructureBindingAst, Statement,
-    TypeBase, TypeRef, parse_type_ref,
+    ConstantAst, ContractAst, ContractFieldAst, DestructureBindingAst, Expr, ExprKind, FunctionAst, ParamAst, STATE_TYPE_NAME,
+    Statement, TypeBase, TypeRef, parse_type_ref,
 };
 use crate::span;
 
@@ -627,6 +627,7 @@ pub(crate) fn lower_struct_destructure_statement<'i>(
     Ok(lowered)
 }
 
+// TODO: Make a dedicated type for the flattened struct field spec, which includes the path and type_ref.
 pub(crate) fn flatten_type_ref_leaves(
     type_ref: &TypeRef,
     structs: &StructRegistry,
@@ -667,6 +668,7 @@ pub(crate) fn lower_runtime_expr<'i>(
     let scope = lowering_scope_from_types(types)?;
     lower_expr(expr, &scope, structs)
 }
+
 pub(crate) fn lower_runtime_struct_expr<'i>(
     expr: &Expr<'i>,
     expected_type: &TypeRef,
@@ -711,21 +713,8 @@ fn lower_struct_array_value_expr<'i>(
     contract_constants: &HashMap<String, Expr<'i>>,
     contract_field_prefix_len: usize,
 ) -> Result<Vec<Expr<'i>>, CompilerError> {
-    let Some(struct_name) = struct_array_name_from_type_ref(expected_type, structs) else {
-        return Err(CompilerError::Unsupported(format!("expected struct type '{}'", expected_type.type_name())));
-    };
-
     match &expr.kind {
         ExprKind::Identifier(name) => {
-            let actual_type =
-                scope.vars.get(name).ok_or_else(|| CompilerError::Unsupported(format!("undefined identifier '{}'", name)))?;
-            let actual_struct_name = struct_array_name_from_type_ref(actual_type, structs)
-                .ok_or_else(|| CompilerError::Unsupported(format!("expression expects struct {}", expected_type.type_name())))?;
-            if actual_struct_name != struct_name
-                || !super::compile::is_type_assignable_ref(actual_type, expected_type, contract_constants)
-            {
-                return Err(CompilerError::Unsupported(format!("expression expects struct {}", expected_type.type_name())));
-            }
             let leaves = flatten_type_ref_leaves(expected_type, structs)?;
             Ok(leaves
                 .into_iter()
