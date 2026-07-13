@@ -1529,6 +1529,30 @@ fn validate_expr_assignable_to_type<'i>(
                 .get(name)
                 .and_then(|type_name| parse_type_ref(type_name).ok())
                 .is_some_and(|actual_type| is_type_assignable_ref(&actual_type, type_ref, constants)),
+            ExprKind::Append { source, args, .. } => infer_expr_type_ref_for_comparison_ref(
+                source,
+                &HashMap::new(),
+                &HashSet::new(),
+                types,
+                structs,
+                functions,
+                contract_fields,
+            )
+            .is_some_and(|source_type| {
+                if source_type.array_element_type() != type_ref.array_element_type() {
+                    return false;
+                }
+                if !has_explicit_array_size_ref(type_ref) {
+                    return true;
+                }
+                match (
+                    array_size_with_constants_ref(&source_type, constants),
+                    array_size_with_constants_ref(type_ref, constants),
+                ) {
+                    (Some(source_size), Some(expected_size)) => source_size.checked_add(args.len()) == Some(expected_size),
+                    _ => false,
+                }
+            }),
             _ => expr_matches_declared_type_ref(expr, type_ref, structs),
         };
         if matches { Ok(()) } else { Err(CompilerError::Unsupported("type mismatch".to_string())) }

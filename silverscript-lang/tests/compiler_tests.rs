@@ -2686,6 +2686,39 @@ fn runtime_supports_direct_struct_array_entrypoint_signature() {
 }
 
 #[test]
+fn runtime_supports_struct_array_append_value_expression() {
+    let source = r#"
+        contract C() {
+            struct S {
+                int a;
+                byte[2] b;
+            }
+
+            entrypoint function main(S[] source) {
+                S[] result = source.append({a: 9, b: 0x0304}, {a: 11, b: 0x0506});
+
+                require(source.length == 1);
+                require(result.length == 3);
+                require(result[0].a == 7);
+                require(result[1].a == 9);
+                require(result[2].a == 11);
+                require(result[0].b == 0x0102);
+                require(result[1].b == 0x0304);
+                require(result[2].b == 0x0506);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let sigscript = compiled
+        .build_sig_script("main", vec![struct_array_arg(vec![(7, vec![0x01, 0x02])])])
+        .expect("sigscript builds");
+    let result = run_script_with_sigscript(compiled.script, sigscript);
+
+    assert!(result.is_ok(), "struct[] append value expression should execute successfully: {result:?}");
+}
+
+#[test]
 fn runtime_rejects_regular_struct_array_non_entrypoint_arguments_without_struct_signature() {
     let source = r#"
         contract C() {
