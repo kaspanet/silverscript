@@ -78,7 +78,7 @@ fn run_contract_with_tx_sequence(
         previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([9u8; 32]), index: 0 },
         signature_script: sigscript,
         sequence,
-        mass: SigopCount(0).into(),
+        compute_commit: SigopCount(0).into(),
     };
     let output0 =
         TransactionOutput { value: output0_value, script_public_key: ScriptPublicKey::new(0, output0_script.into()), covenant: None };
@@ -115,7 +115,7 @@ fn run_contract_with_outputs(
         previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([9u8; 32]), index: 0 },
         signature_script: sigscript,
         sequence: 0,
-        mass: SigopCount(0).into(),
+        compute_commit: SigopCount(0).into(),
     };
 
     let tx_outputs = outputs
@@ -381,7 +381,7 @@ fn runs_everything_example_and_verifies() {
         previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([23u8; 32]), index: 0 },
         signature_script: vec![],
         sequence: 500,
-        mass: SigopCount(1).into(),
+        compute_commit: SigopCount(1).into(),
     };
     let output =
         TransactionOutput { value: 5_000, script_public_key: ScriptPublicKey::new(0, compiled.script.clone().into()), covenant: None };
@@ -484,7 +484,9 @@ fn compiles_hodl_vault_example_and_verifies() {
     let block_height = 1000u32;
     let price = 20u32;
     let oracle_message = [block_height.to_le_bytes(), price.to_le_bytes()].concat();
-    let oracle_sig = vec![0u8; 64];
+    let oracle_message_hash = <sha2::Sha256 as sha2::Digest>::digest(&oracle_message);
+    let oracle_signed = secp256k1::Message::from_digest_slice(&oracle_message_hash).unwrap();
+    let oracle_sig = oracle.sign_schnorr(oracle_signed).as_ref().to_vec();
 
     let constructor_args = vec![owner_pk.to_vec().into(), oracle_pk.to_vec().into(), min_block.into(), price_target.into()];
     let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
@@ -493,7 +495,7 @@ fn compiles_hodl_vault_example_and_verifies() {
         previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([7u8; 32]), index: 0 },
         signature_script: vec![],
         sequence: 0,
-        mass: SigopCount(1).into(),
+        compute_commit: SigopCount(1).into(),
     };
     let output =
         TransactionOutput { value: 5000, script_public_key: ScriptPublicKey::new(0, compiled.script.clone().into()), covenant: None };
@@ -588,7 +590,7 @@ fn compiles_mecenas_example_and_verifies() {
         previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([15u8; 32]), index: 0 },
         signature_script: vec![],
         sequence: 0,
-        mass: SigopCount(1).into(),
+        compute_commit: SigopCount(1).into(),
     };
     let output =
         TransactionOutput { value: 5000, script_public_key: ScriptPublicKey::new(0, compiled.script.clone().into()), covenant: None };
@@ -699,7 +701,7 @@ fn compiles_mecenas_locktime_example_and_verifies() {
         previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([16u8; 32]), index: 0 },
         signature_script: vec![],
         sequence: 0,
-        mass: SigopCount(1).into(),
+        compute_commit: SigopCount(1).into(),
     };
     let output =
         TransactionOutput { value: 6000, script_public_key: ScriptPublicKey::new(0, compiled.script.clone().into()), covenant: None };
@@ -751,7 +753,7 @@ fn compiles_p2pkh_example_and_verifies() {
         previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([5u8; 32]), index: 0 },
         signature_script: vec![],
         sequence: 0,
-        mass: SigopCount(1).into(),
+        compute_commit: SigopCount(1).into(),
     };
     let output =
         TransactionOutput { value: 7000, script_public_key: ScriptPublicKey::new(0, compiled.script.clone().into()), covenant: None };
@@ -805,7 +807,7 @@ fn compiles_transfer_with_timeout_and_verifies() {
         previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([6u8; 32]), index: 0 },
         signature_script: vec![],
         sequence: 0,
-        mass: SigopCount(1).into(),
+        compute_commit: SigopCount(1).into(),
     };
     let output =
         TransactionOutput { value: 8_000, script_public_key: ScriptPublicKey::new(0, compiled.script.clone().into()), covenant: None };
@@ -845,7 +847,7 @@ fn compiles_transfer_with_timeout_and_verifies() {
         previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([8u8; 32]), index: 0 },
         signature_script: vec![],
         sequence: 0,
-        mass: SigopCount(1).into(),
+        compute_commit: SigopCount(1).into(),
     };
     let output =
         TransactionOutput { value: 9_000, script_public_key: ScriptPublicKey::new(0, compiled.script.clone().into()), covenant: None };
@@ -903,7 +905,7 @@ fn compiles_covenant_escrow_example_and_verifies() {
         previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([10u8; 32]), index: 0 },
         signature_script: vec![],
         sequence: 0,
-        mass: SigopCount(1).into(),
+        compute_commit: SigopCount(1).into(),
     };
     let output0 =
         TransactionOutput { value: output0_value, script_public_key: ScriptPublicKey::new(0, output0_script.into()), covenant: None };
@@ -963,7 +965,7 @@ fn compiles_covenant_last_will_and_verifies() {
         previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([12u8; 32]), index: 0 },
         signature_script: vec![],
         sequence: 180,
-        mass: SigopCount(1).into(),
+        compute_commit: SigopCount(1).into(),
     };
     let output =
         TransactionOutput { value: 5_000, script_public_key: ScriptPublicKey::new(0, compiled.script.clone().into()), covenant: None };
@@ -1003,7 +1005,7 @@ fn compiles_covenant_last_will_and_verifies() {
         previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([13u8; 32]), index: 0 },
         signature_script: vec![],
         sequence: 0,
-        mass: SigopCount(1).into(),
+        compute_commit: SigopCount(1).into(),
     };
     let output =
         TransactionOutput { value: 4_000, script_public_key: ScriptPublicKey::new(0, compiled.script.clone().into()), covenant: None };
@@ -1046,7 +1048,7 @@ fn compiles_covenant_last_will_and_verifies() {
         previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([14u8; 32]), index: 0 },
         signature_script: vec![],
         sequence: 0,
-        mass: SigopCount(1).into(),
+        compute_commit: SigopCount(1).into(),
     };
     let output0 = TransactionOutput {
         value: output0_value,
@@ -1146,7 +1148,7 @@ fn compiles_covenant_mecenas_example_and_verifies() {
         previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([17u8; 32]), index: 0 },
         signature_script: vec![],
         sequence: 0,
-        mass: SigopCount(1).into(),
+        compute_commit: SigopCount(1).into(),
     };
     let output =
         TransactionOutput { value: 7_000, script_public_key: ScriptPublicKey::new(0, compiled.script.clone().into()), covenant: None };
@@ -1213,19 +1215,19 @@ fn compiles_covenant_id_example_and_verifies() {
             previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([24u8; 32]), index: 0 },
             signature_script: active_sigscript,
             sequence: 0,
-            mass: SigopCount(0).into(),
+            compute_commit: SigopCount(0).into(),
         };
         let input1 = TransactionInput {
             previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([25u8; 32]), index: 1 },
             signature_script: sigscript_push_script(&input1_compiled.script),
             sequence: 0,
-            mass: SigopCount(0).into(),
+            compute_commit: SigopCount(0).into(),
         };
         let input2 = TransactionInput {
             previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([26u8; 32]), index: 2 },
             signature_script: vec![],
             sequence: 0,
-            mass: SigopCount(0).into(),
+            compute_commit: SigopCount(0).into(),
         };
 
         let output0 = TransactionOutput {
@@ -1299,7 +1301,7 @@ fn compiles_bar_example_and_verifies() {
         previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([18u8; 32]), index: 0 },
         signature_script: vec![],
         sequence: 0,
-        mass: SigopCount(1).into(),
+        compute_commit: SigopCount(1).into(),
     };
     let output =
         TransactionOutput { value: 7_000, script_public_key: ScriptPublicKey::new(0, compiled.script.clone().into()), covenant: None };
@@ -1350,7 +1352,7 @@ fn compiles_foo_example_and_verifies() {
         previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([19u8; 32]), index: 0 },
         signature_script: vec![],
         sequence: 0,
-        mass: SigopCount(1).into(),
+        compute_commit: SigopCount(1).into(),
     };
     let output =
         TransactionOutput { value: 7_000, script_public_key: ScriptPublicKey::new(0, compiled.script.clone().into()), covenant: None };
@@ -1417,7 +1419,7 @@ fn compiles_p2pkh_invalid_example_and_fails() {
         previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([20u8; 32]), index: 0 },
         signature_script: vec![],
         sequence: 0,
-        mass: SigopCount(1).into(),
+        compute_commit: SigopCount(1).into(),
     };
     let output =
         TransactionOutput { value: 7_000, script_public_key: ScriptPublicKey::new(0, compiled.script.clone().into()), covenant: None };
@@ -1469,13 +1471,13 @@ fn compiles_sibling_introspection_example_and_verifies() {
         previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([21u8; 32]), index: 0 },
         signature_script: sigscript,
         sequence: 0,
-        mass: SigopCount(0).into(),
+        compute_commit: SigopCount(0).into(),
     };
     let input1 = TransactionInput {
         previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([22u8; 32]), index: 1 },
         signature_script: vec![],
         sequence: 0,
-        mass: SigopCount(0).into(),
+        compute_commit: SigopCount(0).into(),
     };
 
     let output0 =

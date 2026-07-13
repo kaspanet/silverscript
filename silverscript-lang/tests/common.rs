@@ -19,7 +19,10 @@ pub const COV_A: Hash = Hash::from_bytes(*b"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
 pub const COV_B: Hash = Hash::from_bytes(*b"BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB");
 
 pub fn push_redeem_script(script: &[u8]) -> Vec<u8> {
-    ScriptBuilder::new().add_data(script).expect("push redeem script").drain()
+    ScriptBuilder::with_flags(EngineFlags { covenants_enabled: true, ..Default::default() })
+        .add_data(script)
+        .expect("push redeem script")
+        .drain()
 }
 
 pub fn covenant_decl_sigscript(compiled: &CompiledContract<'_>, function_name: &str, args: Vec<Expr<'_>>, is_leader: bool) -> Vec<u8> {
@@ -90,7 +93,6 @@ pub fn compiled_template_parts_and_hash(compiled: &CompiledContract) -> (Vec<u8>
     let layout = compiled.state_layout;
     let prefix = compiled.script[..layout.start].to_vec();
     let suffix = compiled.script[layout.start + layout.len..].to_vec();
-    let template_hash =
-        blake2b_simd::Params::new().hash_length(32).to_state().update(&prefix).update(&suffix).finalize().as_bytes().to_vec();
+    let template_hash = compiled.template_hash().to_vec();
     (prefix, suffix, template_hash)
 }

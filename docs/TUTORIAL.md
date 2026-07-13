@@ -848,6 +848,25 @@ Verify a signature against a public key:
 require(checkSig(s, pk));
 ```
 
+**`checkSigFromStack(datasig signature, byte[32] digest, pubkey publicKey): bool`**
+
+Verify a 64-byte Schnorr signature against a 32-byte digest supplied by the
+contract. Hash the message explicitly with the hash function required by your
+protocol:
+
+```javascript
+require(checkSigFromStack(oracleSig, sha256(oracleMessage), oraclePk));
+```
+
+**`checkSigFromStackECDSA(datasig signature, byte[32] digest, byte[33] publicKey): bool`**
+
+Verify a compact 64-byte ECDSA signature against a 32-byte digest and compressed
+33-byte ECDSA public key:
+
+```javascript
+require(checkSigFromStackECDSA(oracleSig, sha256(oracleMessage), oraclePk));
+```
+
 ### Type Conversion Functions
 
 **`byte[](value): bytes`**

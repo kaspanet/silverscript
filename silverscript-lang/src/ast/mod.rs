@@ -255,6 +255,12 @@ impl TypeRef {
         !self.array_dims.is_empty()
     }
 
+    // This returns the type of the array elements, or None if this is not an array type.
+    // e.g.
+    // int       → None
+    // int[]     → Some(int)
+    // int[][]   → Some(int[])
+    // byte[32]  → Some(byte)
     pub fn array_element_type(&self) -> Option<Self> {
         if self.array_dims.is_empty() {
             return None;

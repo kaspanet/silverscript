@@ -5,3 +5,4 @@ pub mod diagnostic;
 pub mod errors;
 pub mod parser;
 pub mod span;
+pub mod template;

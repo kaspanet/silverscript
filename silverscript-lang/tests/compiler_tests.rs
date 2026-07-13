@@ -14,7 +14,7 @@ use kaspa_txscript::opcodes::codes::*;
 use kaspa_txscript::script_builder::ScriptBuilder;
 use kaspa_txscript::{
     EngineCtx, EngineFlags, SeqCommitAccessor, TxScriptEngine, parse_script, pay_to_address_script, pay_to_script_hash_script,
-    pay_to_script_hash_signature_script, script_to_str, serialize_i64,
+    pay_to_script_hash_signature_script_with_flags, script_to_str, serialize_i64,
 };
 use silverscript_lang::ast::{Expr, ExprKind, Statement, format_contract_ast, parse_contract_ast};
 use silverscript_lang::compiler::{
@@ -22,8 +22,24 @@ use silverscript_lang::compiler::{
     compile_contract_ast, function_branch_index, generated_covenant_auth_entrypoint_name, struct_object,
 };
 use silverscript_lang::debug_info::StepKind;
+use silverscript_lang::template::template_hash;
 
 use crate::common::compiled_template_parts_and_hash;
+
+fn script_builder() -> ScriptBuilder {
+    ScriptBuilder::with_flags(EngineFlags { covenants_enabled: true, ..Default::default() })
+}
+
+fn pay_to_script_hash_signature_script(
+    redeem_script: Vec<u8>,
+    signature_script: Vec<u8>,
+) -> Result<Vec<u8>, kaspa_txscript::script_builder::ScriptBuilderError> {
+    pay_to_script_hash_signature_script_with_flags(
+        redeem_script,
+        signature_script,
+        EngineFlags { covenants_enabled: true, ..Default::default() },
+    )
+}
 
 fn run_script_with_selector(script: Vec<u8>, selector: Option<i64>) -> Result<(), kaspa_txscript_errors::TxScriptError> {
     let sigscript = selector_sigscript(selector);
@@ -44,7 +60,7 @@ fn run_script_with_tx(
         previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([0u8; 32]), index: 0 },
         signature_script: sigscript,
         sequence,
-        mass: SigopCount(0).into(),
+        compute_commit: SigopCount(0).into(),
     };
     let output = TransactionOutput { value: 1000, script_public_key: ScriptPublicKey::new(0, script.clone().into()), covenant: None };
     let tx = Transaction::new(1, vec![input.clone()], vec![output.clone()], lock_time, Default::default(), 0, vec![]);
@@ -63,7 +79,7 @@ fn run_script_with_tx(
 }
 
 fn selector_sigscript(selector: Option<i64>) -> Vec<u8> {
-    let mut builder = ScriptBuilder::new();
+    let mut builder = script_builder();
     if let Some(selector) = selector {
         builder.add_i64(selector).unwrap();
     }
@@ -78,7 +94,7 @@ fn run_script_with_sigscript(script: Vec<u8>, sigscript: Vec<u8>) -> Result<(), 
         previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([1u8; 32]), index: 0 },
         signature_script: sigscript,
         sequence: 0,
-        mass: SigopCount(0).into(),
+        compute_commit: SigopCount(0).into(),
     };
     let output = TransactionOutput { value: 1000, script_public_key: ScriptPublicKey::new(0, script.clone().into()), covenant: None };
     let tx = Transaction::new(1, vec![input.clone()], vec![output.clone()], 0, Default::default(), 0, vec![]);
@@ -112,7 +128,7 @@ fn script_op_counts(script: &[u8]) -> (usize, usize) {
 }
 
 fn sigscript_push_script(script: &[u8]) -> Vec<u8> {
-    ScriptBuilder::new().add_data_with_push_opcode(script).unwrap().drain()
+    script_builder().add_data_with_push_opcode(script).unwrap().drain()
 }
 
 fn test_input(index: u32, signature_script: Vec<u8>) -> TransactionInput {
@@ -120,7 +136,7 @@ fn test_input(index: u32, signature_script: Vec<u8>) -> TransactionInput {
         previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([index as u8; 32]), index },
         signature_script,
         sequence: 0,
-        mass: SigopCount(0).into(),
+        compute_commit: SigopCount(0).into(),
     }
 }
 
@@ -999,7 +1015,7 @@ fn build_sig_script_builds_expected_script() {
     let sigscript = compiled.build_sig_script("spend", args).expect("sigscript builds");
 
     let selector = selector_for(&compiled, "spend");
-    let mut builder = ScriptBuilder::new();
+    let mut builder = script_builder();
     builder.add_data_with_push_opcode(&[1u8, 2, 3, 4]).unwrap();
     builder.add_i64(7).unwrap();
     if let Some(selector) = selector {
@@ -1022,7 +1038,7 @@ fn byte_variable_from_int_literal_uses_raw_byte_push() {
     "#;
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("byte int literal should compile");
-    let expected = ScriptBuilder::new()
+    let expected = script_builder()
         .add_data_with_push_opcode(&[5u8])
         .unwrap()
         .add_op(OpBin2Num)
@@ -1083,7 +1099,7 @@ fn byte_equality_with_rhs_int_literal_uses_raw_byte_push() {
     "#;
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("byte equality with rhs literal should compile");
-    let expected = ScriptBuilder::new()
+    let expected = script_builder()
         .add_data_with_push_opcode(&[1u8])
         .unwrap()
         .add_data_with_push_opcode(&[1u8])
@@ -1793,7 +1809,7 @@ fn build_sig_script_omits_selector_without_selector() {
     assert!(compiled.without_selector);
     let sigscript = compiled.build_sig_script("spend", vec![1.into(), vec![2u8; 4].into()]).expect("sigscript builds");
 
-    let expected = ScriptBuilder::new().add_i64(1).unwrap().add_data_with_push_opcode(&[2u8; 4]).unwrap().drain();
+    let expected = script_builder().add_i64(1).unwrap().add_data_with_push_opcode(&[2u8; 4]).unwrap().drain();
     assert_eq!(sigscript, expected);
 }
 
@@ -1876,7 +1892,7 @@ fn build_sig_script_supports_struct_entrypoint_arguments() {
     let arg = struct_object(vec![("a", Expr::int(0)), ("b", Expr::string("12345"))]);
     let sigscript = compiled.build_sig_script("main", vec![arg]).expect("sigscript builds");
 
-    let expected = ScriptBuilder::new().add_i64(0).unwrap().add_data_with_push_opcode(b"12345").unwrap().drain();
+    let expected = script_builder().add_i64(0).unwrap().add_data_with_push_opcode(b"12345").unwrap().drain();
     assert_eq!(sigscript, expected);
 }
 
@@ -1898,7 +1914,7 @@ fn build_sig_script_supports_state_entrypoint_arguments() {
     let arg = struct_object(vec![("x", Expr::int(9)), ("y", Expr::bytes(vec![0x34, 0x12]))]);
     let sigscript = compiled.build_sig_script("main", vec![arg]).expect("sigscript builds");
 
-    let expected = ScriptBuilder::new().add_i64(9).unwrap().add_data_with_push_opcode(&[0x34, 0x12]).unwrap().drain();
+    let expected = script_builder().add_i64(9).unwrap().add_data_with_push_opcode(&[0x34, 0x12]).unwrap().drain();
     assert_eq!(sigscript, expected);
 }
 
@@ -1921,7 +1937,7 @@ fn build_sig_script_supports_sig_array_arguments() {
 
     let mut encoded = sig_a;
     encoded.extend(sig_b);
-    let expected = ScriptBuilder::new().add_data_with_push_opcode(&encoded).unwrap().drain();
+    let expected = script_builder().add_data_with_push_opcode(&encoded).unwrap().drain();
     assert_eq!(sigscript, expected);
 }
 
@@ -3845,7 +3861,7 @@ fn compiles_int_array_length_to_expected_script() {
     let options = CompileOptions::default();
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
 
-    let expected = ScriptBuilder::new()
+    let expected = script_builder()
         .add_data_with_push_opcode(&[])
         .unwrap()
         .add_op(OpDup)
@@ -3893,7 +3909,7 @@ fn compiles_int_array_append_to_expected_script() {
     let options = CompileOptions::default();
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
 
-    let expected = ScriptBuilder::new()
+    let expected = script_builder()
         .add_data_with_push_opcode(&[])
         .unwrap()
         .add_op(OpDup)
@@ -4076,7 +4092,7 @@ fn compiles_int_array_index_to_expected_script() {
     let options = CompileOptions::default();
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
 
-    let expected = ScriptBuilder::new()
+    let expected = script_builder()
         .add_data_with_push_opcode(&[])
         .unwrap()
         .add_op(OpDup)
@@ -4140,7 +4156,7 @@ fn runs_array_append_runtime_examples() {
     "#;
     let options = CompileOptions::default();
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
-    let sigscript = ScriptBuilder::new().drain();
+    let sigscript = script_builder().drain();
     let result = run_script_with_sigscript(compiled.script, sigscript);
     assert!(result.is_ok(), "array append runtime example failed: {}", result.unwrap_err());
 }
@@ -4158,7 +4174,7 @@ fn runs_int_array_append_length_runtime_example() {
     "#;
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
-    let sigscript = ScriptBuilder::new().drain();
+    let sigscript = script_builder().drain();
     let result = run_script_with_sigscript(compiled.script, sigscript);
     assert!(result.is_ok(), "int[] append length runtime example failed: {}", result.unwrap_err());
 }
@@ -4176,7 +4192,7 @@ fn runs_slice_with_explicit_end_bounds() {
         }
     "#;
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
-    let sigscript = ScriptBuilder::new().drain();
+    let sigscript = script_builder().drain();
     let result = run_script_with_sigscript(compiled.script, sigscript);
     assert!(result.is_ok(), "slice runtime should succeed: {}", result.unwrap_err());
 }
@@ -4200,7 +4216,7 @@ fn runs_slice_reconstruction_and_compare_runtime_example() {
     "#;
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
-    let sigscript = ScriptBuilder::new().drain();
+    let sigscript = script_builder().drain();
     let result = run_script_with_sigscript(compiled.script, sigscript);
     assert!(result.is_ok(), "slice reconstruction runtime should succeed: {}", result.unwrap_err());
 }
@@ -4225,7 +4241,7 @@ fn allows_concat_of_int_arrays_with_plus() {
 
     let options = CompileOptions::default();
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
-    let sigscript = ScriptBuilder::new().drain();
+    let sigscript = script_builder().drain();
     let result = run_script_with_sigscript(compiled.script, sigscript);
     assert!(result.is_ok(), "int[] concatenation runtime failed: {}", result.unwrap_err());
 }
@@ -4247,7 +4263,7 @@ fn allows_concat_of_byte_arrays_with_plus() {
 
     let options = CompileOptions::default();
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
-    let sigscript = ScriptBuilder::new().drain();
+    let sigscript = script_builder().drain();
     let result = run_script_with_sigscript(compiled.script, sigscript);
     assert!(result.is_ok(), "byte[] concatenation runtime failed: {}", result.unwrap_err());
 }
@@ -4271,7 +4287,7 @@ fn allows_concat_of_fixed_size_byte_array_elements_with_plus() {
 
     let options = CompileOptions::default();
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
-    let sigscript = ScriptBuilder::new().drain();
+    let sigscript = script_builder().drain();
     let result = run_script_with_sigscript(compiled.script, sigscript);
     assert!(result.is_ok(), "byte[N][] concatenation runtime failed: {}", result.unwrap_err());
 }
@@ -4296,7 +4312,7 @@ fn allows_concat_of_bool_arrays_with_plus() {
 
     let options = CompileOptions::default();
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
-    let sigscript = ScriptBuilder::new().drain();
+    let sigscript = script_builder().drain();
     let result = run_script_with_sigscript(compiled.script, sigscript);
     assert!(result.is_ok(), "bool[] concatenation runtime failed: {}", result.unwrap_err());
 }
@@ -4322,7 +4338,7 @@ fn allows_concat_of_pubkey_arrays_with_plus() {
 
     let options = CompileOptions::default();
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
-    let sigscript = ScriptBuilder::new().drain();
+    let sigscript = script_builder().drain();
     let result = run_script_with_sigscript(compiled.script, sigscript);
     assert!(result.is_ok(), "pubkey[] concatenation runtime failed: {}", result.unwrap_err());
 }
@@ -4343,7 +4359,7 @@ fn compiles_bytes20_array_append_without_num2bin() {
 
     let value =
         vec![0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14];
-    let expected = ScriptBuilder::new()
+    let expected = script_builder()
         .add_data_with_push_opcode(&[])
         .unwrap()
         .add_op(OpDup)
@@ -4401,7 +4417,7 @@ fn runs_bytes20_array_runtime_example() {
     "#;
     let options = CompileOptions::default();
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
-    let sigscript = ScriptBuilder::new().drain();
+    let sigscript = script_builder().drain();
     let result = run_script_with_sigscript(compiled.script, sigscript);
     assert!(result.is_ok(), "byte[20] array runtime example failed: {}", result.unwrap_err());
 }
@@ -4421,7 +4437,7 @@ fn allows_array_equality_comparison() {
     "#;
     let options = CompileOptions::default();
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
-    let sigscript = ScriptBuilder::new().drain();
+    let sigscript = script_builder().drain();
     let result = run_script_with_sigscript(compiled.script, sigscript);
     assert!(result.is_ok(), "array equality runtime failed: {}", result.unwrap_err());
 }
@@ -4441,7 +4457,7 @@ fn fails_array_equality_comparison() {
     "#;
     let options = CompileOptions::default();
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
-    let sigscript = ScriptBuilder::new().drain();
+    let sigscript = script_builder().drain();
     let result = run_script_with_sigscript(compiled.script, sigscript);
     assert!(result.is_err());
 }
@@ -4462,7 +4478,7 @@ fn allows_array_inequality_with_different_sizes() {
     "#;
     let options = CompileOptions::default();
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
-    let sigscript = ScriptBuilder::new().drain();
+    let sigscript = script_builder().drain();
     let result = run_script_with_sigscript(compiled.script, sigscript);
     assert!(result.is_ok(), "array inequality runtime failed: {}", result.unwrap_err());
 }
@@ -4484,7 +4500,7 @@ fn runs_array_for_loop_example() {
     "#;
     let options = CompileOptions::default();
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
-    let sigscript = ScriptBuilder::new().drain();
+    let sigscript = script_builder().drain();
     let result = run_script_with_sigscript(compiled.script, sigscript);
     assert!(result.is_ok(), "array for-loop runtime failed: {}", result.unwrap_err());
 }
@@ -4696,7 +4712,7 @@ fn allows_array_assignment_with_compatible_types() {
     "#;
     let options = CompileOptions::default();
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
-    let sigscript = ScriptBuilder::new().drain();
+    let sigscript = script_builder().drain();
     let result = run_script_with_sigscript(compiled.script, sigscript);
     assert!(result.is_ok(), "array assignment runtime failed: {}", result.unwrap_err());
 }
@@ -4874,7 +4890,7 @@ fn build_basic_opcode_tx(sigscript: Vec<u8>) -> (Transaction, Vec<UtxoEntry>) {
         previous_outpoint: TransactionOutpoint { transaction_id: outpoint_txid, index: 7 },
         signature_script: sigscript,
         sequence: u64::from_le_bytes(*b"sequence"),
-        mass: SigopCount(0).into(),
+        compute_commit: SigopCount(0).into(),
     };
 
     let output0_spk = ScriptPublicKey::new(0, b"outspk".to_vec().into());
@@ -4941,7 +4957,7 @@ fn selector_for(compiled: &CompiledContract<'_>, function_name: &str) -> Option<
 
 fn wrap_with_dispatch(body: Vec<u8>, selector: Option<i64>) -> Vec<u8> {
     if let Some(selector) = selector {
-        let mut builder = ScriptBuilder::new();
+        let mut builder = script_builder();
         builder.add_op(OpDup).unwrap();
         builder.add_i64(selector).unwrap();
         builder.add_op(OpNumEqual).unwrap();
@@ -4973,7 +4989,7 @@ fn compiles_without_selector_single_function() {
     let compiled = compile_contract_ast(&contract, &[], CompileOptions::default()).expect("compile succeeds");
     assert!(compiled.without_selector);
 
-    let expected = ScriptBuilder::new()
+    let expected = script_builder()
         .add_i64(1)
         .unwrap()
         .add_i64(2)
@@ -5007,7 +5023,7 @@ fn compiles_with_selector_multiple_entrypoints() {
     assert!(!compiled.without_selector);
     let selector = function_branch_index(&compiled.ast, "a").expect("selector resolved");
     let sigscript = compiled.build_sig_script("a", vec![]).expect("sigscript builds");
-    let expected = ScriptBuilder::new().add_i64(selector).unwrap().drain();
+    let expected = script_builder().add_i64(selector).unwrap().drain();
     assert_eq!(sigscript, expected);
 }
 
@@ -5024,7 +5040,7 @@ fn compiles_basic_arithmetic_and_verifies() {
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
     let selector = selector_for(&compiled, "main");
 
-    let body = ScriptBuilder::new()
+    let body = script_builder()
         .add_i64(1)
         .unwrap()
         .add_i64(2)
@@ -5062,7 +5078,7 @@ fn compiles_contract_constants_and_verifies() {
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
     let selector = selector_for(&compiled, "main");
 
-    let body = ScriptBuilder::new()
+    let body = script_builder()
         .add_i64(1_000_000)
         .unwrap()
         .add_i64(1_000_000)
@@ -5095,7 +5111,7 @@ fn compiles_contract_fields_as_script_prolog() {
     "#;
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
-    let expected = ScriptBuilder::new()
+    let expected = script_builder()
         .add_data_with_push_opcode(&5i64.to_le_bytes())
         .unwrap()
         .add_data_with_push_opcode(&[0x12, 0x34])
@@ -5184,7 +5200,7 @@ fn compiles_validate_output_state_to_expected_script() {
 
     let compiled = compile_contract(source, &[5.into(), vec![1u8, 2u8].into()], CompileOptions::default()).expect("compile succeeds");
 
-    let expected = ScriptBuilder::new()
+    let expected = script_builder()
         // <x> as fixed-size int field encoding: <PUSHDATA8><8-byte little-endian>
         .add_data_with_push_opcode(&5i64.to_le_bytes())
         .unwrap()
@@ -5555,6 +5571,76 @@ fn runs_validate_output_state_with_template() {
 
     let result = execute_input(tx, vec![utxo_entry], 0);
     assert!(result.is_ok(), "validateOutputStateWithTemplate runtime failed: {}", result.unwrap_err());
+}
+
+#[test]
+fn template_hash_matches_both_with_template_builtins() {
+    let target_source = r#"
+        contract Target(int initX) {
+            int x = initX;
+
+            entrypoint function noop() {
+                require(true);
+            }
+        }
+    "#;
+    let target_input = compile_contract(target_source, &[7.into()], CompileOptions::default()).expect("compile target input succeeds");
+    let target_output =
+        compile_contract(target_source, &[8.into()], CompileOptions::default()).expect("compile target output succeeds");
+    let layout = target_input.state_layout;
+    let prefix = &target_input.script[..layout.start];
+    let suffix = &target_input.script[layout.start + layout.len..];
+    let prefix_hex = prefix.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+    let suffix_hex = suffix.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+
+    let verifier_source = format!(
+        r#"
+        contract Verifier() {{
+            struct RemoteState {{
+                int x;
+            }}
+
+            entrypoint function main() {{
+                byte[] templatePrefix = 0x{prefix_hex};
+                byte[] templateSuffix = 0x{suffix_hex};
+                byte[32] expectedTemplateHash = templateHash(templatePrefix, templateSuffix);
+
+                RemoteState prev = readInputStateWithTemplate(
+                    1,
+                    {},
+                    {},
+                    expectedTemplateHash
+                );
+                require(prev.x == 7);
+
+                RemoteState next = {{x: 8}};
+                validateOutputStateWithTemplate(
+                    0,
+                    next,
+                    templatePrefix,
+                    templateSuffix,
+                    expectedTemplateHash
+                );
+            }}
+        }}
+    "#,
+        prefix.len(),
+        suffix.len(),
+    );
+    let verifier = compile_contract(&verifier_source, &[], CompileOptions::default()).expect("compile verifier succeeds");
+    let verifier_sigscript = verifier.build_sig_script("main", vec![]).expect("verifier sigscript builds");
+    let verifier_sigscript = pay_to_script_hash_signature_script(verifier.script.clone(), verifier_sigscript).unwrap();
+
+    let verifier_input = test_input(0, verifier_sigscript);
+    let target_input_tx = test_input(1, sigscript_push_script(&target_input.script));
+    let output =
+        TransactionOutput { value: 1000, script_public_key: pay_to_script_hash_script(&target_output.script), covenant: None };
+    let tx = Transaction::new(1, vec![verifier_input, target_input_tx], vec![output.clone()], 0, Default::default(), 0, vec![]);
+    let verifier_utxo = UtxoEntry::new(1000, pay_to_script_hash_script(&verifier.script), 0, tx.is_coinbase(), None);
+    let target_utxo = UtxoEntry::new(1000, pay_to_script_hash_script(&target_input.script), 0, tx.is_coinbase(), None);
+
+    let result = execute_input(tx, vec![verifier_utxo, target_utxo], 0);
+    assert!(result.is_ok(), "templateHash should match both state template builtins: {}", result.unwrap_err());
 }
 
 #[test]
@@ -6581,7 +6667,7 @@ fn compiles_read_input_state_to_expected_script() {
 
     let compiled = compile_contract(source, &[5.into(), vec![1u8, 2u8].into()], CompileOptions::default()).expect("compile succeeds");
 
-    let _expected = ScriptBuilder::new()
+    let _expected = script_builder()
         // ---- Prolog state on active input: x=5, y=0x0102 ----
         // push x payload (8-byte LE)
         .add_data_with_push_opcode(&5i64.to_le_bytes())
@@ -7351,6 +7437,367 @@ fn assert_compiled_body(source: &str, body: Vec<u8>) {
 }
 
 #[test]
+fn checksig_result_can_be_used_in_bool_comparisons() {
+    let source = r#"
+        contract P2PK(sig signature, pubkey publicKey) {
+            entrypoint function main() {
+                require(checkSig(signature, publicKey) == true);
+            }
+        }
+    "#;
+    compile_contract(source, &[vec![0x11u8; 65].into(), vec![0x22u8; 32].into()], CompileOptions::default())
+        .expect("checkSig bool comparison should compile");
+}
+
+#[test]
+fn checksigfromstack_lowers_to_matching_opcode() {
+    let source = r#"
+        contract DataSig(datasig signature, byte[32] digest, pubkey publicKey) {
+            entrypoint function main() {
+                require(checkSigFromStack(signature, digest, publicKey));
+            }
+        }
+    "#;
+    let signature = vec![0x11; 64];
+    let digest = vec![0x33; 32];
+    let public_key = vec![0x22; 32];
+    let compiled = compile_contract(
+        source,
+        &[signature.clone().into(), digest.clone().into(), public_key.clone().into()],
+        CompileOptions::default(),
+    )
+    .expect("compile succeeds");
+
+    let expected = script_builder()
+        .add_data_with_push_opcode(&signature)
+        .unwrap()
+        .add_data_with_push_opcode(&digest)
+        .unwrap()
+        .add_data_with_push_opcode(&public_key)
+        .unwrap()
+        .add_op(OpCheckSigFromStack)
+        .unwrap()
+        .add_op(OpVerify)
+        .unwrap()
+        .add_op(OpTrue)
+        .unwrap()
+        .drain();
+    assert_eq!(compiled.script, expected);
+}
+
+#[test]
+fn checksigfromstackecdsa_lowers_to_matching_opcode() {
+    let source = r#"
+        contract DataSig(datasig signature, byte[32] digest, byte[33] publicKey) {
+            entrypoint function main() {
+                require(checkSigFromStackECDSA(signature, digest, publicKey));
+            }
+        }
+    "#;
+    let signature = vec![0x11; 64];
+    let digest = vec![0x33; 32];
+    let public_key = vec![0x22; 33];
+    let compiled = compile_contract(
+        source,
+        &[signature.clone().into(), digest.clone().into(), public_key.clone().into()],
+        CompileOptions::default(),
+    )
+    .expect("compile succeeds");
+
+    let expected = script_builder()
+        .add_data_with_push_opcode(&signature)
+        .unwrap()
+        .add_data_with_push_opcode(&digest)
+        .unwrap()
+        .add_data_with_push_opcode(&public_key)
+        .unwrap()
+        .add_op(OpCheckSigFromStackECDSA)
+        .unwrap()
+        .add_op(OpVerify)
+        .unwrap()
+        .add_op(OpTrue)
+        .unwrap()
+        .drain();
+    assert_eq!(compiled.script, expected);
+}
+
+#[test]
+fn checksigfromstack_requires_datasig_and_32_byte_digest_types() {
+    let raw_message = r#"
+        contract DataSig(datasig signature, byte[] message, pubkey publicKey) {
+            entrypoint function main() {
+                require(checkSigFromStack(signature, message, publicKey));
+            }
+        }
+    "#;
+    let raw_message_err = compile_contract(
+        raw_message,
+        &[vec![0x11u8; 64].into(), b"authorize".to_vec().into(), vec![0x22u8; 32].into()],
+        CompileOptions::default(),
+    )
+    .expect_err("raw byte[] message should fail");
+    assert!(raw_message_err.to_string().contains("argument 'digest' expects byte[32]"), "unexpected error: {raw_message_err}");
+
+    let local_size_identifier = r#"
+        contract DataSig(datasig signature, pubkey publicKey) {
+            entrypoint function main() {
+                int N = 32;
+                byte[N] digest = 0x010203;
+                require(checkSigFromStack(signature, digest, publicKey));
+            }
+        }
+    "#;
+    let local_size_identifier_err =
+        compile_contract(local_size_identifier, &[vec![0x11u8; 64].into(), vec![0x22u8; 32].into()], CompileOptions::default())
+            .expect_err("local runtime size identifier should not satisfy byte[32]");
+    assert!(
+        local_size_identifier_err.to_string().contains("argument 'digest' expects byte[32]"),
+        "unexpected error: {local_size_identifier_err}"
+    );
+
+    let contract_constant_size = r#"
+        contract DataSig(datasig signature, pubkey publicKey) {
+            int constant N = 32;
+
+            entrypoint function main(byte[N] digest) {
+                require(checkSigFromStack(signature, digest, publicKey));
+            }
+        }
+    "#;
+    compile_contract(contract_constant_size, &[vec![0x11u8; 64].into(), vec![0x22u8; 32].into()], CompileOptions::default())
+        .expect("contract constants should satisfy byte[32]");
+
+    let signature_literal = format!("0x{}", "11".repeat(64));
+    let digest_literal = format!("0x{}", "33".repeat(32));
+    let public_key_literal = format!("0x{}", "22".repeat(32));
+    let literal_args = format!(
+        r#"
+        contract DataSig() {{
+            entrypoint function main() {{
+                require(checkSigFromStack({signature_literal}, {digest_literal}, {public_key_literal}));
+            }}
+        }}
+    "#
+    );
+    compile_contract(&literal_args, &[], CompileOptions::default()).expect("literal datasig, digest, and pubkey args should compile");
+
+    let byte_pubkey_variable = format!(
+        r#"
+        contract DataSig(datasig signature) {{
+            entrypoint function main() {{
+                byte[32] digest = {digest_literal};
+                byte[32] publicKey = {public_key_literal};
+                require(checkSigFromStack(signature, digest, publicKey));
+            }}
+        }}
+    "#
+    );
+    let byte_pubkey_variable_err = compile_contract(&byte_pubkey_variable, &[vec![0x11u8; 64].into()], CompileOptions::default())
+        .expect_err("byte[32] variable should not be promoted to pubkey");
+    assert!(
+        byte_pubkey_variable_err.to_string().contains("argument 'publicKey' expects pubkey"),
+        "unexpected error: {byte_pubkey_variable_err}"
+    );
+
+    let tx_signature = r#"
+        contract DataSig(sig signature, byte[32] digest, pubkey publicKey) {
+            entrypoint function main() {
+                require(checkSigFromStack(signature, digest, publicKey));
+            }
+        }
+    "#;
+    let tx_signature_err = compile_contract(
+        tx_signature,
+        &[vec![0x11u8; 65].into(), vec![0x33u8; 32].into(), vec![0x22u8; 32].into()],
+        CompileOptions::default(),
+    )
+    .expect_err("65-byte sig should fail");
+    assert!(tx_signature_err.to_string().contains("argument 'signature' expects datasig"), "unexpected error: {tx_signature_err}");
+
+    let schnorr_pubkey_for_ecdsa = r#"
+        contract DataSig(datasig signature, byte[32] digest, pubkey publicKey) {
+            entrypoint function main() {
+                require(checkSigFromStackECDSA(signature, digest, publicKey));
+            }
+        }
+    "#;
+    let schnorr_pubkey_err = compile_contract(
+        schnorr_pubkey_for_ecdsa,
+        &[vec![0x11u8; 64].into(), vec![0x33u8; 32].into(), vec![0x22u8; 32].into()],
+        CompileOptions::default(),
+    )
+    .expect_err("32-byte Schnorr pubkey should fail for ECDSA");
+    assert!(
+        schnorr_pubkey_err.to_string().contains("argument 'publicKey' expects byte[33]"),
+        "unexpected error: {schnorr_pubkey_err}"
+    );
+}
+
+#[test]
+fn checksigfromstack_result_is_checked_as_bool() {
+    let bool_assignment = r#"
+        contract DataSig(datasig signature, byte[32] digest, pubkey publicKey) {
+            entrypoint function main() {
+                bool ok = checkSigFromStack(signature, digest, publicKey);
+                require(ok);
+            }
+        }
+    "#;
+    compile_contract(
+        bool_assignment,
+        &[vec![0x11u8; 64].into(), vec![0x33u8; 32].into(), vec![0x22u8; 32].into()],
+        CompileOptions::default(),
+    )
+    .expect("bool assignment should compile");
+
+    let byte_assignment = r#"
+        contract DataSig(datasig signature, byte[32] digest, pubkey publicKey) {
+            entrypoint function main() {
+                byte[32] ok = checkSigFromStack(signature, digest, publicKey);
+                require(true);
+            }
+        }
+    "#;
+    let byte_assignment_err = compile_contract(
+        byte_assignment,
+        &[vec![0x11u8; 64].into(), vec![0x33u8; 32].into(), vec![0x22u8; 32].into()],
+        CompileOptions::default(),
+    )
+    .expect_err("builtin bool result should not assign to byte[32]");
+    assert!(byte_assignment_err.to_string().contains("variable 'ok' expects byte[32]"), "unexpected error: {byte_assignment_err}");
+
+    let bool_return = r#"
+        contract DataSig(datasig signature, byte[32] digest, pubkey publicKey) {
+            function ok() : bool {
+                return checkSigFromStack(signature, digest, publicKey);
+            }
+
+            entrypoint function main() {
+                require(ok());
+            }
+        }
+    "#;
+    compile_contract(
+        bool_return,
+        &[vec![0x11u8; 64].into(), vec![0x33u8; 32].into(), vec![0x22u8; 32].into()],
+        CompileOptions::default(),
+    )
+    .expect("bool return should compile");
+
+    let byte_return = r#"
+        contract DataSig(datasig signature, byte[32] digest, pubkey publicKey) {
+            function bad() : byte[32] {
+                return checkSigFromStack(signature, digest, publicKey);
+            }
+
+            entrypoint function main() {
+                require(true);
+            }
+        }
+    "#;
+    let byte_return_err = compile_contract(
+        byte_return,
+        &[vec![0x11u8; 64].into(), vec![0x33u8; 32].into(), vec![0x22u8; 32].into()],
+        CompileOptions::default(),
+    )
+    .expect_err("builtin bool result should not return byte[32]");
+    assert!(byte_return_err.to_string().contains("return value expects byte[32]"), "unexpected error: {byte_return_err}");
+}
+
+#[test]
+fn checksigfromstack_executes_schnorr_signature_verification() {
+    let source = r#"
+        contract DataSig(datasig signature, byte[32] digest, pubkey publicKey) {
+            entrypoint function main() {
+                require(checkSigFromStack(signature, digest, publicKey));
+            }
+        }
+    "#;
+    let keypair = secp256k1::Keypair::from_seckey_slice(secp256k1::SECP256K1, &[7u8; 32]).unwrap();
+    let public_key = keypair.x_only_public_key().0.serialize().to_vec();
+    let digest = Hash::from_bytes([3u8; 32]);
+    let message = secp256k1::Message::from_digest(digest.into());
+    let valid_signature = keypair.sign_schnorr(message).as_ref().to_vec();
+
+    let run = |signature: Vec<u8>| {
+        let compiled = compile_contract(
+            source,
+            &[signature.into(), digest.as_bytes().to_vec().into(), public_key.clone().into()],
+            CompileOptions::default(),
+        )
+        .expect("compile succeeds");
+        let selector = selector_for(&compiled, "main");
+        run_script_with_selector(compiled.script, selector)
+    };
+
+    assert!(run(valid_signature.clone()).is_ok(), "valid Schnorr data signature should pass");
+    let mut forged_signature = valid_signature;
+    forged_signature[0] ^= 0x01;
+    assert!(run(forged_signature).is_err(), "forged Schnorr data signature should fail");
+}
+
+#[test]
+fn checksigfromstack_false_result_can_be_asserted() {
+    let source = r#"
+        contract DataSig() {
+            entrypoint function main(datasig signature, byte[32] digest, pubkey publicKey) {
+                require(!checkSigFromStack(signature, digest, publicKey));
+            }
+        }
+    "#;
+    let keypair = secp256k1::Keypair::from_seckey_slice(secp256k1::SECP256K1, &[7u8; 32]).unwrap();
+    let public_key = keypair.x_only_public_key().0.serialize().to_vec();
+    let digest = Hash::from_bytes([3u8; 32]);
+    let message = secp256k1::Message::from_digest(digest.into());
+    let valid_signature = keypair.sign_schnorr(message).as_ref().to_vec();
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+
+    let run = |signature: Vec<u8>| {
+        let sigscript = compiled
+            .build_sig_script("main", vec![signature.into(), digest.as_bytes().to_vec().into(), public_key.clone().into()])
+            .expect("sigscript builds");
+        run_script_with_sigscript(compiled.script.clone(), sigscript)
+    };
+
+    let valid_result = run(valid_signature);
+    assert!(valid_result.is_err(), "valid Schnorr data signature should fail the negated assertion");
+    let zero_sig_result = run(vec![0u8; 64]);
+    assert!(zero_sig_result.is_ok(), "zero Schnorr data signature should pass the negated assertion: {zero_sig_result:?}");
+}
+
+#[test]
+fn checksigfromstackecdsa_executes_ecdsa_signature_verification() {
+    let source = r#"
+        contract DataSig(datasig signature, byte[32] digest, byte[33] publicKey) {
+            entrypoint function main() {
+                require(checkSigFromStackECDSA(signature, digest, publicKey));
+            }
+        }
+    "#;
+    let keypair = secp256k1::Keypair::from_seckey_slice(secp256k1::SECP256K1, &[9u8; 32]).unwrap();
+    let public_key = keypair.public_key().serialize().to_vec();
+    let digest = Hash::from_bytes([5u8; 32]);
+    let message = secp256k1::Message::from_digest(digest.into());
+    let valid_signature = keypair.secret_key().sign_ecdsa(message).serialize_compact().to_vec();
+
+    let run = |signature: Vec<u8>| {
+        let compiled = compile_contract(
+            source,
+            &[signature.into(), digest.as_bytes().to_vec().into(), public_key.clone().into()],
+            CompileOptions::default(),
+        )
+        .expect("compile succeeds");
+        let selector = selector_for(&compiled, "main");
+        run_script_with_selector(compiled.script, selector)
+    };
+
+    assert!(run(valid_signature.clone()).is_ok(), "valid ECDSA data signature should pass");
+    let mut forged_signature = valid_signature;
+    forged_signature[0] ^= 0x01;
+    assert!(run(forged_signature).is_err(), "forged ECDSA data signature should fail");
+}
+
+#[test]
 fn canonicalizes_bool_comparison_operands_for_equality_and_inequality() {
     let cases = [(("=="), OpNumEqual), (("!="), OpNumNotEqual)];
 
@@ -7364,7 +7811,7 @@ fn canonicalizes_bool_comparison_operands_for_equality_and_inequality() {
                 }}
             "#
         );
-        let body = ScriptBuilder::new()
+        let body = script_builder()
             .add_op(OpOver)
             .unwrap()
             .add_op(OpOver)
@@ -7406,7 +7853,7 @@ fn compiles_opcode_builtins() {
                     }
                 }
             "#,
-            ScriptBuilder::new()
+            script_builder()
                 .add_data_with_push_opcode(b"msg")
                 .unwrap()
                 .add_op(OpSHA256)
@@ -7429,7 +7876,7 @@ fn compiles_opcode_builtins() {
                     }
                 }
             "#,
-            ScriptBuilder::new()
+            script_builder()
                 .add_op(OpTxSubnetId)
                 .unwrap()
                 .add_data_with_push_opcode(b"subnet")
@@ -7450,7 +7897,7 @@ fn compiles_opcode_builtins() {
                     }
                 }
             "#,
-            ScriptBuilder::new()
+            script_builder()
                 .add_op(OpTxGas)
                 .unwrap()
                 .add_i64(0)
@@ -7471,7 +7918,7 @@ fn compiles_opcode_builtins() {
                     }
                 }
             "#,
-            ScriptBuilder::new()
+            script_builder()
                 .add_op(OpTxPayloadLen)
                 .unwrap()
                 .add_i64(0)
@@ -7492,7 +7939,7 @@ fn compiles_opcode_builtins() {
                     }
                 }
             "#,
-            ScriptBuilder::new()
+            script_builder()
                 .add_i64(1)
                 .unwrap()
                 .add_i64(3)
@@ -7517,7 +7964,7 @@ fn compiles_opcode_builtins() {
                     }
                 }
             "#,
-            ScriptBuilder::new()
+            script_builder()
                 .add_i64(0)
                 .unwrap()
                 .add_op(OpOutpointTxId)
@@ -7540,7 +7987,7 @@ fn compiles_opcode_builtins() {
                     }
                 }
             "#,
-            ScriptBuilder::new()
+            script_builder()
                 .add_i64(0)
                 .unwrap()
                 .add_op(OpOutpointIndex)
@@ -7563,7 +8010,7 @@ fn compiles_opcode_builtins() {
                     }
                 }
             "#,
-            ScriptBuilder::new()
+            script_builder()
                 .add_i64(0)
                 .unwrap()
                 .add_op(OpTxInputScriptSigLen)
@@ -7586,7 +8033,7 @@ fn compiles_opcode_builtins() {
                     }
                 }
             "#,
-            ScriptBuilder::new()
+            script_builder()
                 .add_i64(0)
                 .unwrap()
                 .add_i64(0)
@@ -7613,7 +8060,7 @@ fn compiles_opcode_builtins() {
                     }
                 }
             "#,
-            ScriptBuilder::new()
+            script_builder()
                 .add_i64(0)
                 .unwrap()
                 .add_op(OpTxInputSeq)
@@ -7636,7 +8083,7 @@ fn compiles_opcode_builtins() {
                     }
                 }
             "#,
-            ScriptBuilder::new()
+            script_builder()
                 .add_i64(0)
                 .unwrap()
                 .add_op(OpTxInputDaaScore)
@@ -7659,7 +8106,7 @@ fn compiles_opcode_builtins() {
                     }
                 }
             "#,
-            ScriptBuilder::new()
+            script_builder()
                 .add_i64(0)
                 .unwrap()
                 .add_op(OpTxInputDaaScore)
@@ -7682,7 +8129,7 @@ fn compiles_opcode_builtins() {
                     }
                 }
             "#,
-            ScriptBuilder::new()
+            script_builder()
                 .add_i64(0)
                 .unwrap()
                 .add_op(OpTxInputIsCoinbase)
@@ -7715,7 +8162,7 @@ fn compiles_opcode_builtins() {
                     }
                 }
             "#,
-            ScriptBuilder::new()
+            script_builder()
                 .add_i64(0)
                 .unwrap()
                 .add_op(OpTxInputSpkLen)
@@ -7738,7 +8185,7 @@ fn compiles_opcode_builtins() {
                     }
                 }
             "#,
-            ScriptBuilder::new()
+            script_builder()
                 .add_i64(0)
                 .unwrap()
                 .add_i64(0)
@@ -7765,7 +8212,7 @@ fn compiles_opcode_builtins() {
                     }
                 }
             "#,
-            ScriptBuilder::new()
+            script_builder()
                 .add_i64(0)
                 .unwrap()
                 .add_op(OpTxOutputSpkLen)
@@ -7788,7 +8235,7 @@ fn compiles_opcode_builtins() {
                     }
                 }
             "#,
-            ScriptBuilder::new()
+            script_builder()
                 .add_i64(0)
                 .unwrap()
                 .add_i64(0)
@@ -7815,7 +8262,7 @@ fn compiles_opcode_builtins() {
                     }
                 }
             "#,
-            ScriptBuilder::new()
+            script_builder()
                 .add_i64(0)
                 .unwrap()
                 .add_op(OpAuthOutputCount)
@@ -7838,7 +8285,7 @@ fn compiles_opcode_builtins() {
                     }
                 }
             "#,
-            ScriptBuilder::new()
+            script_builder()
                 .add_i64(0)
                 .unwrap()
                 .add_i64(0)
@@ -7863,7 +8310,7 @@ fn compiles_opcode_builtins() {
                     }
                 }
             "#,
-            ScriptBuilder::new()
+            script_builder()
                 .add_i64(0)
                 .unwrap()
                 .add_op(OpInputCovenantId)
@@ -7886,7 +8333,7 @@ fn compiles_opcode_builtins() {
                     }
                 }
             "#,
-            ScriptBuilder::new()
+            script_builder()
                 .add_i64(0)
                 .unwrap()
                 .add_op(OpOutputCovenantId)
@@ -7909,7 +8356,7 @@ fn compiles_opcode_builtins() {
                     }
                 }
             "#,
-            ScriptBuilder::new()
+            script_builder()
                 .add_data_with_push_opcode(b"c1")
                 .unwrap()
                 .add_op(OpCovInputCount)
@@ -7932,7 +8379,7 @@ fn compiles_opcode_builtins() {
                     }
                 }
             "#,
-            ScriptBuilder::new()
+            script_builder()
                 .add_data_with_push_opcode(b"c1")
                 .unwrap()
                 .add_i64(0)
@@ -7957,7 +8404,7 @@ fn compiles_opcode_builtins() {
                     }
                 }
             "#,
-            ScriptBuilder::new()
+            script_builder()
                 .add_data_with_push_opcode(b"c1")
                 .unwrap()
                 .add_op(OpCovOutputCount)
@@ -7980,7 +8427,7 @@ fn compiles_opcode_builtins() {
                     }
                 }
             "#,
-            ScriptBuilder::new()
+            script_builder()
                 .add_data_with_push_opcode(b"c1")
                 .unwrap()
                 .add_i64(0)
@@ -8005,7 +8452,7 @@ fn compiles_opcode_builtins() {
                     }
                 }
             "#,
-            ScriptBuilder::new()
+            script_builder()
                 .add_i64(5)
                 .unwrap()
                 .add_i64(2)
@@ -8030,7 +8477,7 @@ fn compiles_opcode_builtins() {
                     }
                 }
             "#,
-            ScriptBuilder::new()
+            script_builder()
                 .add_data_with_push_opcode(b"a")
                 .unwrap()
                 .add_op(OpBin2Num)
@@ -8053,7 +8500,7 @@ fn compiles_opcode_builtins() {
                     }
                 }
             "#,
-            ScriptBuilder::new()
+            script_builder()
                 .add_data_with_push_opcode(b"block")
                 .unwrap()
                 .add_op(OpChainblockSeqCommit)
@@ -8263,6 +8710,61 @@ fn executes_opcode_builtins_basic() {
 }
 
 #[test]
+fn template_hash_matches_canonical_rust_and_sil_vectors() {
+    let cases: &[(&[u8], &[u8], &str)] = &[
+        (b"", b"", "94c1c088cc9453996779630ad3af45cbd92814828dd784cf2aa12df95d1b8afe"),
+        (b"a", b"bc", "77bbcab7072b897c548327378f11776f4853104c71bdb95a12ded5d2783523bf"),
+        (b"ab", b"c", "20263e794775e4edf2b306c0f306af9e50175c831c857604b481e847f790bf95"),
+        (&[0x00, 0xff], &[0x10, 0x00, 0x80], "81485678b557bcd4a836c2db54ee268e1dc08549f1b8e4d8d67960321b765f25"),
+    ];
+
+    let sil_bytes = |bytes: &[u8]| {
+        if bytes.is_empty() {
+            "bytes(\"\")".to_string()
+        } else {
+            format!("0x{}", bytes.iter().map(|byte| format!("{byte:02x}")).collect::<String>())
+        }
+    };
+
+    for (prefix, suffix, expected_hex) in cases {
+        let mut expected = [0u8; 32];
+        faster_hex::hex_decode(expected_hex.as_bytes(), &mut expected).unwrap();
+        assert_eq!(template_hash(prefix, suffix), expected);
+
+        let prefix = sil_bytes(prefix);
+        let suffix = sil_bytes(suffix);
+        let source = format!(
+            r#"
+            contract Test() {{
+                entrypoint function main() {{
+                    require(templateHash({prefix}, {suffix}) == 0x{expected_hex});
+                }}
+            }}
+        "#
+        );
+
+        let compiled = compile_contract(&source, &[], CompileOptions::default()).expect("templateHash should compile");
+        let result = run_script_with_selector(compiled.script, None);
+        assert!(result.is_ok(), "templateHash should match canonical vector {expected_hex}: {result:?}");
+    }
+}
+
+#[test]
+fn template_hash_binds_prefix_suffix_boundary() {
+    let source = r#"
+        contract Test() {
+            entrypoint function main() {
+                require(templateHash(bytes("a"), bytes("bc")) != templateHash(bytes("ab"), bytes("c")));
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("templateHash should compile");
+    let result = run_script_with_selector(compiled.script, None);
+    assert!(result.is_ok(), "templateHash should commit to the prefix/suffix boundary: {result:?}");
+}
+
+#[test]
 fn executes_opcode_builtins_covenants() {
     let source = r#"
         contract Test() {
@@ -8345,7 +8847,7 @@ fn compiles_if_else_and_verifies() {
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
     let selector = selector_for(&compiled, "main");
 
-    let body = ScriptBuilder::new()
+    let body = script_builder()
         .add_i64(1)
         .unwrap()
         .add_i64(2)
@@ -8389,7 +8891,7 @@ fn compiles_time_op_csv_and_verifies() {
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
     let selector = selector_for(&compiled, "main");
 
-    let body = ScriptBuilder::new().add_i64(10).unwrap().add_op(OpCheckSequenceVerify).unwrap().add_op(OpTrue).unwrap().drain();
+    let body = script_builder().add_i64(10).unwrap().add_op(OpCheckSequenceVerify).unwrap().add_op(OpTrue).unwrap().drain();
     let expected = wrap_with_dispatch(body, selector);
 
     assert_eq!(compiled.script, expected);
@@ -8411,7 +8913,7 @@ fn compiles_reused_variables_and_verifies() {
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
     let selector = selector_for(&compiled, "main");
 
-    let body = ScriptBuilder::new()
+    let body = script_builder()
         .add_i64(2)
         .unwrap()
         .add_i64(3)
@@ -8464,7 +8966,7 @@ fn return_reused_local_is_stored_once_and_reused() {
     let compiled = compile_contract(source, &[], CompileOptions { allow_entrypoint_return: true, ..CompileOptions::default() })
         .expect("compile succeeds");
 
-    let expected = ScriptBuilder::new()
+    let expected = script_builder()
         .add_i64(2)
         .unwrap()
         .add_i64(3)
@@ -8504,7 +9006,7 @@ fn compiles_sigscript_inputs_and_verifies() {
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
     let selector = selector_for(&compiled, "main");
-    let mut builder = ScriptBuilder::new();
+    let mut builder = script_builder();
     builder.add_i64(3).unwrap();
     builder.add_i64(4).unwrap();
     if let Some(selector) = selector {
@@ -8552,7 +9054,7 @@ fn compiles_script_size_and_runs_sum_array() {
 
 fn data_prefix_for_size(data_len: usize) -> Vec<u8> {
     let dummy_data = vec![0u8; data_len];
-    let mut builder = ScriptBuilder::new();
+    let mut builder = script_builder();
     builder.add_data_with_push_opcode(&dummy_data).unwrap();
     let script = builder.drain();
     script[..script.len() - data_len].to_vec()
@@ -8631,7 +9133,7 @@ fn compiles_sigscript_reused_inputs_and_verifies() {
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
     let selector = selector_for(&compiled, "main");
-    let mut builder = ScriptBuilder::new();
+    let mut builder = script_builder();
     builder.add_i64(3).unwrap();
     if let Some(selector) = selector {
         builder.add_i64(selector).unwrap();
@@ -8654,7 +9156,7 @@ fn compiles_sigscript_inputs_and_fails_on_wrong_sum() {
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
     let selector = selector_for(&compiled, "main");
-    let mut builder = ScriptBuilder::new();
+    let mut builder = script_builder();
     builder.add_i64(2).unwrap();
     builder.add_i64(4).unwrap();
     if let Some(selector) = selector {
@@ -8678,7 +9180,7 @@ fn compiles_sigscript_reused_inputs_and_fails_on_wrong_value() {
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
     let selector = selector_for(&compiled, "main");
-    let mut builder = ScriptBuilder::new();
+    let mut builder = script_builder();
     builder.add_i64(4).unwrap();
     if let Some(selector) = selector {
         builder.add_i64(selector).unwrap();
@@ -8890,7 +9392,7 @@ fn empty_array_statement_expr_evaluation_compiles_to_empty_array_data() {
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
 
-    let expected = ScriptBuilder::new()
+    let expected = script_builder()
         .add_data_with_push_opcode(&[])
         .unwrap()
         .add_data_with_push_opcode(&[])
@@ -9148,7 +9650,7 @@ fn inline_argument_alias_reuses_existing_local_without_extra_snapshot() {
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("inline alias reuse should compile");
     let selector = selector_for(&compiled, "main");
 
-    let body = ScriptBuilder::new()
+    let body = script_builder()
         .add_op(OpDup)
         .unwrap()
         .add_op(OpOver)
@@ -9222,7 +9724,7 @@ fn inline_argument_alias_snapshots_entrypoint_param_once_per_inlined_call() {
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("inline param alias reuse should compile");
     let selector = selector_for(&compiled, "main");
 
-    let body = ScriptBuilder::new()
+    let body = script_builder()
         .add_op(OpDup)
         .unwrap()
         .add_i64(1)
@@ -9278,7 +9780,7 @@ fn local_alias_snapshots_existing_stack_value_once() {
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("local alias reuse should compile");
     let selector = selector_for(&compiled, "main");
 
-    let body = ScriptBuilder::new()
+    let body = script_builder()
         .add_op(OpDup)
         .unwrap()
         .add_op(OpOver)

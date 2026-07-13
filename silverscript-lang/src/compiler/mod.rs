@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use kaspa_txscript::EngineFlags;
 use kaspa_txscript::script_builder::ScriptBuilder;
 use serde::{Deserialize, Serialize};
 
@@ -178,6 +179,12 @@ pub fn struct_object<'i>(fields: Vec<(&str, Expr<'i>)>) -> Expr<'i> {
 }
 
 impl<'i> CompiledContract<'i> {
+    /// Calculate the canonical hash of this contract's state template.
+    pub fn template_hash(&self) -> [u8; 32] {
+        let state_end = self.state_layout.start + self.state_layout.len;
+        crate::template::template_hash(&self.script[..self.state_layout.start], &self.script[state_end..])
+    }
+
     pub fn build_sig_script(&self, function_name: &str, args: Vec<Expr<'i>>) -> Result<Vec<u8>, CompilerError> {
         let structs = build_struct_registry(&self.ast)?;
         let function = self
@@ -194,7 +201,7 @@ impl<'i> CompiledContract<'i> {
             )));
         }
 
-        let mut builder = ScriptBuilder::new();
+        let mut builder = ScriptBuilder::with_flags(EngineFlags { covenants_enabled: true, ..Default::default() });
         for (input, arg) in function.inputs.iter().zip(args) {
             let type_ref = parse_type_ref(&input.type_name)?;
             push_typed_sigscript_arg(&mut builder, arg, &type_ref, &structs).map_err(|err| {

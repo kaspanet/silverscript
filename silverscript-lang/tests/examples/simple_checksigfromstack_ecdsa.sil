@@ -1,0 +1,7 @@
+pragma silverscript ^0.1.0;
+
+contract Test(datasig s, byte[33] pk) {
+    entrypoint function cds(byte[] data) {
+        require(checkSigFromStackECDSA(s, sha256(data), pk));
+    }
+}

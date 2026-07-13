@@ -15,7 +15,7 @@ contract HodlVault(
         require(tx.time >= blockHeight);
         require(price >= priceTarget);
 
-        require(checkDataSig(oracleSig, oracleMessage, oraclePk));
+        require(checkSigFromStack(oracleSig, sha256(oracleMessage), oraclePk));
         require(checkSig(ownerSig, ownerPk));
     }
 }

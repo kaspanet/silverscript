@@ -14,9 +14,10 @@ use debugger_session::test_runner::{
 use debugger_session::{format_failure_report, format_value};
 use kaspa_consensus_core::Hash;
 use kaspa_consensus_core::hashing::sighash::SigHashReusedValuesUnsync;
+use kaspa_consensus_core::mass::units::SigopCount;
 use kaspa_consensus_core::tx::{
     CovenantBinding, PopulatedTransaction, ScriptPublicKey, Transaction, TransactionId, TransactionInput, TransactionOutpoint,
-    TransactionOutput, TxInputMass, UtxoEntry, VerifiableTransaction,
+    TransactionOutput, UtxoEntry, VerifiableTransaction,
 };
 use kaspa_txscript::caches::Cache;
 use kaspa_txscript::covenants::CovenantsContext;
@@ -322,7 +323,7 @@ fn parse_txid32(raw: &str) -> Result<TransactionId, Box<dyn std::error::Error>> 
 }
 
 fn build_p2pk_script(pubkey: &[u8]) -> Vec<u8> {
-    ScriptBuilder::new()
+    ScriptBuilder::with_flags(EngineFlags { covenants_enabled: true, ..Default::default() })
         .add_data(pubkey)
         .expect("push pubkey")
         .add_op(kaspa_txscript::opcodes::codes::OpCheckSig)
@@ -331,11 +332,14 @@ fn build_p2pk_script(pubkey: &[u8]) -> Vec<u8> {
 }
 
 fn sigscript_push_script(script: &[u8]) -> Vec<u8> {
-    ScriptBuilder::new().add_data(script).expect("push script data").drain()
+    ScriptBuilder::with_flags(EngineFlags { covenants_enabled: true, ..Default::default() })
+        .add_data(script)
+        .expect("push script data")
+        .drain()
 }
 
 fn combine_action_and_redeem(action: &[u8], redeem_script: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    let mut builder = ScriptBuilder::new();
+    let mut builder = ScriptBuilder::with_flags(EngineFlags { covenants_enabled: true, ..Default::default() });
     builder.add_ops(action)?;
     builder.add_data(redeem_script)?;
     Ok(builder.drain())
@@ -916,7 +920,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             previous_outpoint: input_prev_outpoints[input_idx],
             signature_script,
             sequence: input_sequences[input_idx],
-            mass: TxInputMass::SigopCount(input_sig_op_counts[input_idx].into()),
+            compute_commit: SigopCount(input_sig_op_counts[input_idx]).into(),
         });
     }
 

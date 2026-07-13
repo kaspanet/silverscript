@@ -150,7 +150,7 @@ fn build_tx_context(
         previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([9u8; 32]), index: 0 },
         signature_script: vec![],
         sequence: 0,
-        mass: SigopCount(1).into(),
+        compute_commit: SigopCount(1).into(),
     };
     let tx_outputs = outputs
         .into_iter()
@@ -228,7 +228,8 @@ fn runs_cashc_valid_examples() {
         "p2pkh_with_cast.sil",
         "reassignment.sil",
         "simple_cast.sil",
-        "simple_checkdatasig.sil",
+        "simple_checksigfromstack.sil",
+        "simple_checksigfromstack_ecdsa.sil",
         "simple_constant.sil",
         "simple_covenant.sil",
         "simple_functions.sil",
@@ -699,21 +700,69 @@ fn runs_cashc_valid_examples() {
                 let result = execute_tx(tx, utxo, reused);
                 assert!(result.is_err(), "{example} should fail");
             }
-            "simple_checkdatasig.sil" => {
-                let constructor_args = vec![vec![0u8; 64].into(), vec![1u8; 32].into()];
-                let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
-                let selector = selector_for_compiled(&compiled, "cds");
-                let sigscript = build_sigscript(&[ArgValue::Bytes(b"data".to_vec())], selector);
-                let (mut tx, utxo, reused) = build_tx_context(
-                    compiled.script.clone(),
-                    vec![(1_000, compiled.script.clone()), (1_000, compiled.script.clone())],
-                    2_000,
-                    0,
-                    1,
-                );
-                tx.tx.inputs[0].signature_script = sigscript;
-                let result = execute_tx(tx, utxo, reused);
-                assert!(result.is_ok(), "{example} failed: {}", result.unwrap_err());
+            "simple_checksigfromstack.sil" => {
+                use sha2::{Digest, Sha256};
+
+                let keypair = random_keypair();
+                let pubkey_bytes = keypair.x_only_public_key().0.serialize().to_vec();
+                let message = b"data".to_vec();
+                let message_hash = Sha256::digest(&message);
+                let signed = Message::from_digest_slice(&message_hash).expect("sha256 digest is 32 bytes");
+                let valid_sig = keypair.sign_schnorr(signed).as_ref().to_vec();
+                assert_eq!(valid_sig.len(), 64, "datasig is a bare schnorr signature");
+
+                let run = |signature: Vec<u8>| {
+                    let constructor_args = vec![signature.into(), pubkey_bytes.clone().into()];
+                    let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
+                    let selector = selector_for_compiled(&compiled, "cds");
+                    let sigscript = build_sigscript(&[ArgValue::Bytes(message.clone())], selector);
+                    let (mut tx, utxo, reused) = build_tx_context(
+                        compiled.script.clone(),
+                        vec![(1_000, compiled.script.clone()), (1_000, compiled.script.clone())],
+                        2_000,
+                        0,
+                        1,
+                    );
+                    tx.tx.inputs[0].signature_script = sigscript;
+                    execute_tx(tx, utxo, reused)
+                };
+
+                assert!(run(valid_sig.clone()).is_ok(), "{example}: valid data signature should pass");
+                let mut forged_sig = valid_sig;
+                forged_sig[0] ^= 0x01;
+                assert!(run(forged_sig).is_err(), "{example}: forged data signature should fail");
+            }
+            "simple_checksigfromstack_ecdsa.sil" => {
+                use sha2::{Digest, Sha256};
+
+                let keypair = random_keypair();
+                let pubkey_bytes = keypair.public_key().serialize().to_vec();
+                let message = b"data".to_vec();
+                let message_hash = Sha256::digest(&message);
+                let signed = Message::from_digest_slice(&message_hash).expect("sha256 digest is 32 bytes");
+                let valid_sig = keypair.secret_key().sign_ecdsa(signed).serialize_compact().to_vec();
+                assert_eq!(valid_sig.len(), 64, "datasig is a compact ECDSA signature");
+
+                let run = |signature: Vec<u8>| {
+                    let constructor_args = vec![signature.into(), pubkey_bytes.clone().into()];
+                    let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
+                    let selector = selector_for_compiled(&compiled, "cds");
+                    let sigscript = build_sigscript(&[ArgValue::Bytes(message.clone())], selector);
+                    let (mut tx, utxo, reused) = build_tx_context(
+                        compiled.script.clone(),
+                        vec![(1_000, compiled.script.clone()), (1_000, compiled.script.clone())],
+                        2_000,
+                        0,
+                        1,
+                    );
+                    tx.tx.inputs[0].signature_script = sigscript;
+                    execute_tx(tx, utxo, reused)
+                };
+
+                assert!(run(valid_sig.clone()).is_ok(), "{example}: valid ECDSA data signature should pass");
+                let mut forged_sig = valid_sig;
+                forged_sig[0] ^= 0x01;
+                assert!(run(forged_sig).is_err(), "{example}: forged ECDSA data signature should fail");
             }
             "simple_constant.sil" => {
                 let constructor_args = vec![];
@@ -1077,7 +1126,8 @@ fn compiles_cashc_valid_examples() {
         "p2pkh_with_cast.sil",
         "reassignment.sil",
         "simple_cast.sil",
-        "simple_checkdatasig.sil",
+        "simple_checksigfromstack.sil",
+        "simple_checksigfromstack_ecdsa.sil",
         "simple_constant.sil",
         "simple_covenant.sil",
         "simple_functions.sil",
