@@ -10037,6 +10037,305 @@ fn rejects_using_branch_local_outside_its_scope() {
 }
 
 #[test]
+fn runs_branch_local_shadowing_and_preserves_outer_scope() {
+    let source = r#"
+        contract BranchShadowing() {
+            entrypoint function main(bool cond) {
+                int x = 3;
+                if (cond) {
+                    int x = 1;
+                    require(x == 1);
+                } else {
+                    int x = 2;
+                    require(x == 2);
+                }
+                require(x == 3);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("branch-local shadowing should compile");
+
+    for cond in [true, false] {
+        let sigscript = compiled.build_sig_script("main", vec![Expr::bool(cond)]).expect("sigscript builds");
+        let result = run_script_with_sigscript(compiled.script.clone(), sigscript);
+        assert!(result.is_ok(), "branch-local shadowing should execute successfully for cond={cond}: {}", result.unwrap_err());
+    }
+}
+
+#[test]
+fn runs_for_loop_local_shadowing_and_preserves_outer_scope() {
+    let source = r#"
+        contract LoopShadowing() {
+            entrypoint function main() {
+                int x = 10;
+                for (i, 0, 2, 2) {
+                    int x = i + 1;
+                    require(x == i + 1);
+                }
+                require(x == 10);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("loop-local shadowing should compile");
+    let selector = selector_for(&compiled, "main");
+    let result = run_script_with_selector(compiled.script, selector);
+    assert!(result.is_ok(), "loop-local shadowing should execute successfully: {}", result.unwrap_err());
+}
+
+#[test]
+fn runs_standalone_block_local_shadowing_and_preserves_outer_scope() {
+    let source = r#"
+        contract BlockShadowing() {
+            entrypoint function main() {
+                int x = 3;
+                {
+                    int x = 1;
+                    require(x == 1);
+                }
+                require(x == 3);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("block-local shadowing should compile");
+    let selector = selector_for(&compiled, "main");
+    let result = run_script_with_selector(compiled.script, selector);
+    assert!(result.is_ok(), "block-local shadowing should execute successfully: {}", result.unwrap_err());
+}
+
+#[test]
+fn runs_function_parameter_shadowing() {
+    let source = r#"
+        contract ParameterShadowing() {
+            entrypoint function main(int x) {
+                int x = 1;
+                require(x == 1);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("parameter shadowing should compile");
+    let sigscript = compiled.build_sig_script("main", vec![Expr::int(9)]).expect("sigscript builds");
+    let result = run_script_with_sigscript(compiled.script, sigscript);
+    assert!(result.is_ok(), "parameter shadowing should execute successfully: {}", result.unwrap_err());
+}
+
+#[test]
+fn runs_inlined_function_parameter_shadowing() {
+    let source = r#"
+        contract InlineParameterShadowing() {
+            function check(int x) {
+                int x = 1;
+                require(x == 1);
+            }
+
+            entrypoint function main() {
+                check(9);
+            }
+        }
+    "#;
+
+    let compiled =
+        compile_contract(source, &[], CompileOptions::default()).expect("inlined function parameter shadowing should compile");
+    let selector = selector_for(&compiled, "main");
+    let result = run_script_with_selector(compiled.script, selector);
+    assert!(result.is_ok(), "inlined function parameter shadowing should execute successfully: {}", result.unwrap_err());
+}
+
+#[test]
+fn runs_standalone_block_tuple_binding_shadowing() {
+    let source = r#"
+        contract TupleBlockShadowing() {
+            entrypoint function main() {
+                byte[] left = 0xaa;
+                byte[] source = 0x0102;
+                {
+                    (byte[] left, byte[] right) = source.split(1);
+                    require(left == byte[](0x01));
+                    require(right == byte[](0x02));
+                }
+                require(left == byte[](0xaa));
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("tuple binding shadowing should compile");
+    let selector = selector_for(&compiled, "main");
+    let result = run_script_with_selector(compiled.script, selector);
+    assert!(result.is_ok(), "tuple binding shadowing should execute successfully: {}", result.unwrap_err());
+}
+
+#[test]
+fn runs_standalone_block_function_result_binding_shadowing() {
+    let source = r#"
+        contract FunctionResultBlockShadowing() {
+            function pair() : (int, int) {
+                return(1, 2);
+            }
+
+            entrypoint function main() {
+                int x = 3;
+                {
+                    (int x, int y) = pair();
+                    require(x == 1);
+                    require(y == 2);
+                }
+                require(x == 3);
+            }
+        }
+    "#;
+
+    let compiled =
+        compile_contract(source, &[], CompileOptions::default()).expect("function result binding shadowing should compile");
+    let selector = selector_for(&compiled, "main");
+    let result = run_script_with_selector(compiled.script, selector);
+    assert!(result.is_ok(), "function result binding shadowing should execute successfully: {}", result.unwrap_err());
+}
+
+#[test]
+fn runs_standalone_block_state_binding_shadowing() {
+    let source = r#"
+        contract StateBindingBlockShadowing(int initialValue) {
+            int value = initialValue;
+
+            entrypoint function main() {
+                int x = 3;
+                {
+                    {value: int x} = readInputState(this.activeInputIndex);
+                    require(x == 7);
+                }
+                require(x == 3);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[Expr::int(7)], CompileOptions::default())
+        .expect("state binding shadowing should compile");
+    let selector = selector_for(&compiled, "main");
+    let result = run_script_with_selector(compiled.script, selector);
+    assert!(result.is_ok(), "state binding shadowing should execute successfully: {}", result.unwrap_err());
+}
+
+#[test]
+fn runs_standalone_block_struct_destructure_binding_shadowing() {
+    let source = r#"
+        contract StructBindingBlockShadowing() {
+            struct S {
+                int value;
+            }
+
+            entrypoint function main() {
+                int x = 3;
+                S s = {value: 1};
+                {
+                    {value: int x} = s;
+                    require(x == 1);
+                }
+                require(x == 3);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default())
+        .expect("struct destructure binding shadowing should compile");
+    let selector = selector_for(&compiled, "main");
+    let result = run_script_with_selector(compiled.script, selector);
+    assert!(result.is_ok(), "struct destructure binding shadowing should execute successfully: {}", result.unwrap_err());
+}
+
+#[test]
+fn branch_shadowing_initializer_reads_outer_binding() {
+    let source = r#"
+        contract BranchInitializerShadowing() {
+            entrypoint function main(bool cond) {
+                int x = 3;
+                if (cond) {
+                    int x = x + 1;
+                    require(x == 4);
+                }
+                require(x == 3);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default())
+        .expect("branch shadowing initializer should read the outer binding");
+    let sigscript = compiled.build_sig_script("main", vec![Expr::bool(true)]).expect("sigscript builds");
+    let result = run_script_with_sigscript(compiled.script, sigscript);
+    assert!(result.is_ok(), "branch shadowing initializer should execute successfully: {}", result.unwrap_err());
+}
+
+#[test]
+fn branch_reference_before_shadowing_declaration_reads_outer_binding() {
+    let source = r#"
+        contract BranchReferenceBeforeShadowing() {
+            entrypoint function main(bool cond) {
+                int x = 3;
+                if (cond) {
+                    require(x == 3);
+                    int x = 1;
+                    require(x == 1);
+                }
+                require(x == 3);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default())
+        .expect("a branch reference before a shadowing declaration should read the outer binding");
+    let sigscript = compiled.build_sig_script("main", vec![Expr::bool(true)]).expect("sigscript builds");
+    let result = run_script_with_sigscript(compiled.script, sigscript);
+    assert!(result.is_ok(), "branch reference before shadowing should execute successfully: {}", result.unwrap_err());
+}
+
+#[test]
+fn for_loop_shadowing_initializer_reads_outer_binding() {
+    let source = r#"
+        contract LoopInitializerShadowing() {
+            entrypoint function main() {
+                int x = 3;
+                for (i, 0, 2, 2) {
+                    int x = x + i;
+                    require(x == 3 + i);
+                }
+                require(x == 3);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default())
+        .expect("loop shadowing initializer should read the outer binding");
+    let selector = selector_for(&compiled, "main");
+    let result = run_script_with_selector(compiled.script, selector);
+    assert!(result.is_ok(), "loop shadowing initializer should execute successfully: {}", result.unwrap_err());
+}
+
+#[test]
+fn for_loop_reference_before_shadowing_declaration_reads_outer_binding() {
+    let source = r#"
+        contract LoopReferenceBeforeShadowing() {
+            entrypoint function main() {
+                int x = 3;
+                for (i, 0, 2, 2) {
+                    require(x == 3);
+                    int x = i + 1;
+                    require(x == i + 1);
+                }
+                require(x == 3);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default())
+        .expect("a loop reference before a shadowing declaration should read the outer binding");
+    let selector = selector_for(&compiled, "main");
+    let result = run_script_with_selector(compiled.script, selector);
+    assert!(result.is_ok(), "loop reference before shadowing should execute successfully: {}", result.unwrap_err());
+}
+
+#[test]
 fn rejects_using_block_local_outside_its_scope() {
     let source = r#"
         contract BlockScope() {
