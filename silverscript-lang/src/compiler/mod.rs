@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::ast::{
     ArrayDim, BinaryOp, ConstantAst, ContractAst, ContractFieldAst, Expr, ExprKind, FunctionAst, IntrospectionKind, NullaryOp,
-    ParamAst, STATE_TYPE_NAME, SplitPart, StateBindingAst, StateFieldExpr, Statement, TimeVar, TypeBase, TypeRef, UnaryOp,
+    ParamAst, STATE_TYPE_NAME, SplitPart, StateFieldExpr, Statement, StructBindingAst, TimeVar, TypeBase, TypeRef, UnaryOp,
     UnarySuffixKind, parse_contract_ast, parse_type_ref,
 };
 use crate::debug_info::{DebugInfo, DebugNamedValue};
@@ -21,6 +21,7 @@ mod r#for;
 mod infer_array;
 mod inline_functions;
 mod locals;
+mod read_input_state;
 mod stack_bindings;
 mod static_check;
 mod structs;
@@ -32,13 +33,14 @@ pub(super) use compile::{array_element_type, eval_const_int, is_bytes_type, type
 pub use compile::{compile_debug_expr, function_branch_index};
 pub(crate) use debug_recording::DebugRecorder;
 use r#for::lower_for_loops;
+use read_input_state::lower_read_input_state_calls;
 pub(crate) use static_check::expr_matches_declared_type_ref;
 use static_check::value_matches_type_ref;
 pub use structs::flattened_struct_name;
 pub(super) use structs::{
     StructRegistry, build_struct_registry, ensure_known_or_builtin_type, flatten_constructor_args_env, flatten_type_ref_leaves,
-    flattened_struct_field_specs_for_type, lower_runtime_expr, lower_runtime_struct_expr, lower_structs_contract,
-    struct_array_name_from_type_ref, struct_name_from_type_ref, validate_struct_graph,
+    flattened_struct_field_specs_for_type, is_struct, is_struct_array, lower_runtime_expr, lower_runtime_struct_expr,
+    lower_structs_contract, struct_name_from_type_ref, validate_struct_graph,
 };
 use validate_output_state::lower_validate_output_state;
 
@@ -163,7 +165,7 @@ impl<'i> ContractAst<'i> {
 
 pub fn struct_object<'i>(fields: Vec<(&str, Expr<'i>)>) -> Expr<'i> {
     Expr::new(
-        ExprKind::StateObject(
+        ExprKind::StructLiteral(
             fields
                 .into_iter()
                 .map(|(name, expr)| StateFieldExpr {
@@ -246,7 +248,7 @@ fn push_typed_sigscript_arg<'i>(
     type_ref: &TypeRef,
     structs: &StructRegistry,
 ) -> Result<(), CompilerError> {
-    if let Some(element_type) = type_ref.element_type() {
+    if let Some(element_type) = type_ref.array_element_type() {
         if let Some(struct_name) = struct_name_from_type_ref(&element_type, structs) {
             let item =
                 structs.get(struct_name).ok_or_else(|| CompilerError::Unsupported(format!("unknown struct '{struct_name}'")))?;
@@ -257,7 +259,7 @@ fn push_typed_sigscript_arg<'i>(
             for field in &item.fields {
                 let mut field_values = Vec::with_capacity(values.len());
                 for value in &values {
-                    let ExprKind::StateObject(entries) = &value.kind else {
+                    let ExprKind::StructLiteral(entries) = &value.kind else {
                         return Err(CompilerError::Unsupported(
                             "signature script struct array arguments must contain object literals".to_string(),
                         ));
@@ -298,7 +300,7 @@ fn push_typed_sigscript_arg<'i>(
 
     if let Some(struct_name) = struct_name_from_type_ref(type_ref, structs) {
         let item = structs.get(struct_name).ok_or_else(|| CompilerError::Unsupported(format!("unknown struct '{struct_name}'")))?;
-        let ExprKind::StateObject(fields) = arg.kind else {
+        let ExprKind::StructLiteral(fields) = arg.kind else {
             return Err(CompilerError::Unsupported("signature script struct arguments must be object literals".to_string()));
         };
         let mut provided = HashMap::new();

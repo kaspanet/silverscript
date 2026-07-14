@@ -152,7 +152,7 @@ pub struct ParamAst<'i> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StateBindingAst<'i> {
+pub struct StructBindingAst<'i> {
     pub field_name: String,
     pub type_ref: TypeRef,
     pub name: String,
@@ -255,7 +255,13 @@ impl TypeRef {
         !self.array_dims.is_empty()
     }
 
-    pub fn element_type(&self) -> Option<Self> {
+    // This returns the type of the array elements, or None if this is not an array type.
+    // e.g.
+    // int       → None
+    // int[]     → Some(int)
+    // int[][]   → Some(int[])
+    // byte[32]  → Some(byte)
+    pub fn array_element_type(&self) -> Option<Self> {
         if self.array_dims.is_empty() {
             return None;
         }
@@ -322,7 +328,7 @@ pub enum Statement<'i> {
         name_span: Span<'i>,
     },
     StateFunctionCallAssign {
-        bindings: Vec<StateBindingAst<'i>>,
+        bindings: Vec<StructBindingAst<'i>>,
         name: String,
         args: Vec<Expr<'i>>,
         #[serde(skip_deserializing)]
@@ -331,7 +337,7 @@ pub enum Statement<'i> {
         name_span: Span<'i>,
     },
     StructDestructure {
-        bindings: Vec<StateBindingAst<'i>>,
+        bindings: Vec<StructBindingAst<'i>>,
         expr: Expr<'i>,
         #[serde(skip_deserializing)]
         span: Span<'i>,
@@ -594,7 +600,7 @@ pub enum ExprKind<'i> {
         #[serde(skip_deserializing)]
         field_span: Span<'i>,
     },
-    StateObject(Vec<StateFieldExpr<'i>>),
+    StructLiteral(Vec<StateFieldExpr<'i>>),
     FieldAccess {
         source: Box<Expr<'i>>,
         field: String,
@@ -939,7 +945,7 @@ fn format_params(params: &[ParamAst<'_>]) -> String {
     params.iter().map(|param| format!("{} {}", param.type_ref.type_name(), param.name)).collect::<Vec<_>>().join(", ")
 }
 
-fn format_state_bindings(bindings: &[StateBindingAst<'_>]) -> String {
+fn format_state_bindings(bindings: &[StructBindingAst<'_>]) -> String {
     bindings
         .iter()
         .map(|binding| format!("{}: {} {}", binding.field_name, binding.type_ref.type_name(), binding.name))
@@ -1008,7 +1014,7 @@ fn format_expr_with_prec(expr: &Expr<'_>, parent_prec: u8, right_child: bool) ->
         ExprKind::Introspection { kind, index, .. } => {
             format!("{}[{}]{}", introspection_root(*kind), format_expr(index), introspection_field(*kind))
         }
-        ExprKind::StateObject(fields) => format_state_object(fields),
+        ExprKind::StructLiteral(fields) => format_state_object(fields),
         ExprKind::FieldAccess { source, field, .. } => {
             format!("{}.{}", format_expr_with_prec(source, PREC_POSTFIX, false), field)
         }
@@ -1803,7 +1809,7 @@ fn parse_require_message<'i>(pair: Pair<'i, Rule>) -> Result<(String, Span<'i>),
     }
 }
 
-fn parse_state_typed_binding<'i>(pair: Pair<'i, Rule>) -> Result<StateBindingAst<'i>, CompilerError> {
+fn parse_state_typed_binding<'i>(pair: Pair<'i, Rule>) -> Result<StructBindingAst<'i>, CompilerError> {
     let span = Span::from(pair.as_span());
     let mut inner = pair.into_inner();
 
@@ -1816,7 +1822,7 @@ fn parse_state_typed_binding<'i>(pair: Pair<'i, Rule>) -> Result<StateBindingAst
     let type_ref = parse_type_name_pair(type_pair)?;
     let Identifier { name, span: name_span } = parse_identifier(ident_pair)?;
 
-    Ok(StateBindingAst { field_name, type_ref, name, span, field_span, type_span, name_span })
+    Ok(StructBindingAst { field_name, type_ref, name, span, field_span, type_span, name_span })
 }
 
 fn parse_expression<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {
@@ -2099,7 +2105,7 @@ fn parse_state_object<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerErro
         let expr = parse_expression(expr_pair)?;
         fields.push(StateFieldExpr { name, expr, span: field_span, name_span });
     }
-    Ok(Expr::new(ExprKind::StateObject(fields), span))
+    Ok(Expr::new(ExprKind::StructLiteral(fields), span))
 }
 
 fn parse_literal<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {

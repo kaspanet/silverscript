@@ -165,12 +165,12 @@ fn parse_struct_arg(
         return Err(format!("unknown struct field '{}'", extra));
     }
 
-    Ok(Expr::new(ExprKind::StateObject(out), span::Span::default()))
+    Ok(Expr::new(ExprKind::StructLiteral(out), span::Span::default()))
 }
 
 fn parse_array_arg(values: &[Value], type_ref: &TypeRef, shapes: &StructShapeRegistry) -> Result<Expr<'static>, String> {
     validate_array_len(type_ref, values.len())?;
-    let element_type = type_ref.element_type().ok_or_else(|| format!("unsupported arg type '{}'", type_ref.type_name()))?;
+    let element_type = type_ref.array_element_type().ok_or_else(|| format!("unsupported arg type '{}'", type_ref.type_name()))?;
     values
         .iter()
         .map(|value| parse_json_value_for_type(value, &element_type, shapes))
@@ -351,7 +351,7 @@ mod tests {
         let contract = debug_shapes_contract();
         let args = parse_call_args(&contract, "inspect_state", &[r#"{"amount":5,"active":true,"tag":"0xaa"}"#.to_string()])
             .expect("parse State arg");
-        let ExprKind::StateObject(fields) = &args[0].kind else {
+        let ExprKind::StructLiteral(fields) = &args[0].kind else {
             panic!("expected state object");
         };
         assert_eq!(fields.len(), 3);
@@ -372,7 +372,7 @@ mod tests {
             panic!("expected array expr");
         };
         assert_eq!(values.len(), 2);
-        assert!(matches!(values[0].kind, ExprKind::StateObject(_)));
+        assert!(matches!(values[0].kind, ExprKind::StructLiteral(_)));
     }
 
     #[test]
@@ -380,7 +380,7 @@ mod tests {
         let contract = debug_shapes_contract();
         let args = parse_ctor_args(&contract, &[r#"{"amount":7,"tag":"0xaa"}"#.to_string()]).expect("parse ctor args");
         assert_eq!(args.len(), 1);
-        let ExprKind::StateObject(fields) = &args[0].kind else {
+        let ExprKind::StructLiteral(fields) = &args[0].kind else {
             panic!("expected struct object");
         };
         let tag = fields.iter().find(|field| field.name == "tag").expect("tag field");
@@ -430,7 +430,7 @@ mod tests {
     fn parses_explicit_state_value() {
         let contract = debug_shapes_contract();
         let value = parse_state_value(&contract, r#"{"amount":9,"active":false,"tag":"0xcc"}"#).expect("parse State value");
-        let ExprKind::StateObject(fields) = value.kind else {
+        let ExprKind::StructLiteral(fields) = value.kind else {
             panic!("expected state object");
         };
         assert_eq!(fields.len(), 3);

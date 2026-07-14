@@ -107,7 +107,8 @@ pub(super) fn compile_contract_impl<'i>(
     let inferred_lowered_contract = lower_inferred_array_sizes(contract, &constants)?;
     static_check_contract(&inferred_lowered_contract, constructor_args, options)?;
     let covenant_lowered_contract = lower_covenant_declarations(&inferred_lowered_contract, &constants)?;
-    let inline_lowered_contract = lower_inline_functions(&covenant_lowered_contract, &mut debug_recorder)?;
+    let read_input_state_lowered_contract = lower_read_input_state_calls(&covenant_lowered_contract)?;
+    let inline_lowered_contract = lower_inline_functions(&read_input_state_lowered_contract, &mut debug_recorder)?;
     let structs = build_struct_registry(&inline_lowered_contract)?;
     let validate_output_state_lowered_contract = lower_validate_output_state(&inline_lowered_contract, &structs)?;
     let struct_lowered_contract = lower_structs_contract(&validate_output_state_lowered_contract, &structs, &constants)?;
@@ -399,7 +400,7 @@ fn expr_uses_script_size<'i>(expr: &Expr<'i>) -> bool {
             expr_uses_script_size(condition) || expr_uses_script_size(then_expr) || expr_uses_script_size(else_expr)
         }
         ExprKind::Array(values) => values.iter().any(expr_uses_script_size),
-        ExprKind::StateObject(fields) => fields.iter().any(|field| expr_uses_script_size(&field.expr)),
+        ExprKind::StructLiteral(fields) => fields.iter().any(|field| expr_uses_script_size(&field.expr)),
         ExprKind::Call { name, args, .. } => name == "readInputState" || args.iter().any(expr_uses_script_size),
         ExprKind::New { args, .. } => args.iter().any(expr_uses_script_size),
         ExprKind::Split { source, index, .. } => expr_uses_script_size(source) || expr_uses_script_size(index),
@@ -550,7 +551,7 @@ fn is_array_type_ref(type_ref: &TypeRef) -> bool {
 }
 
 fn array_element_type_ref(type_ref: &TypeRef) -> Option<TypeRef> {
-    type_ref.element_type()
+    type_ref.array_element_type()
 }
 
 fn array_size_ref(type_ref: &TypeRef) -> Option<usize> {
@@ -576,12 +577,12 @@ fn array_size_with_constants_ref<'i>(type_ref: &TypeRef, constants: &HashMap<Str
 }
 
 fn fixed_type_size_ref(type_ref: &TypeRef) -> Option<i64> {
-    if !type_ref.array_dims.is_empty() {
+    if type_ref.is_array() {
         if let (Some(elem_type), Some(size)) = (array_element_type_ref(type_ref), array_size_ref(type_ref)) {
-            if elem_type.base == TypeBase::Byte && elem_type.array_dims.is_empty() {
+            if elem_type.base == TypeBase::Byte && !elem_type.is_array() {
                 return Some(size as i64);
             }
-            if elem_type.base == TypeBase::Int && elem_type.array_dims.is_empty() {
+            if elem_type.base == TypeBase::Int && !elem_type.is_array() {
                 return Some((size * 8) as i64);
             }
         }
@@ -601,7 +602,7 @@ fn fixed_type_size_ref(type_ref: &TypeRef) -> Option<i64> {
 }
 
 fn fixed_type_size_with_constants_ref<'i>(type_ref: &TypeRef, constants: &HashMap<String, Expr<'i>>) -> Option<usize> {
-    if type_ref.array_dims.is_empty() {
+    if !type_ref.is_array() {
         return fixed_type_size_ref(type_ref).map(|size| size as usize);
     }
 
@@ -741,7 +742,7 @@ fn collect_expr_identifier_uses<'i>(expr: &Expr<'i>, uses: &mut HashMap<String, 
                 collect_expr_identifier_uses(value, uses);
             }
         }
-        ExprKind::StateObject(fields) => {
+        ExprKind::StructLiteral(fields) => {
             for field in fields {
                 collect_expr_identifier_uses(&field.expr, uses);
             }
@@ -842,7 +843,7 @@ fn coerce_expr_for_declared_scalar_type<'i>(expr: Expr<'i>, type_name: &str) -> 
 }
 
 fn coerce_rhs_byte_literal_for_comparison<'i>(left_type: Option<&TypeRef>, right: &Expr<'i>) -> Expr<'i> {
-    if left_type.is_some_and(|type_ref| matches!(type_ref.base, TypeBase::Byte) && type_ref.array_dims.is_empty())
+    if left_type.is_some_and(|type_ref| matches!(type_ref.base, TypeBase::Byte) && !type_ref.is_array())
         && let ExprKind::Int(value) = right.kind
         && (0..=255).contains(&value)
     {
@@ -1499,7 +1500,7 @@ fn compile_function_call_statement<'i>(
 
 fn compile_state_function_call_assign_statement<'i>(
     ctx: &mut CompileStatementContext<'_, 'i>,
-    bindings: &[StateBindingAst<'i>],
+    bindings: &[StructBindingAst<'i>],
     name: &str,
     args: &[Expr<'i>],
 ) -> Result<Vec<String>, CompilerError> {
@@ -1695,7 +1696,7 @@ fn cast_read_input_state_expr<'i>(substr: Expr<'i>, type_ref: &TypeRef) -> Resul
 #[allow(clippy::too_many_arguments)]
 fn compile_read_input_state_statement<'i>(
     ctx: &mut CompileStatementContext<'_, 'i>,
-    bindings: &[StateBindingAst<'i>],
+    bindings: &[StructBindingAst<'i>],
     name: &str,
     args: &[Expr<'i>],
     contract_fields: &[ContractFieldAst<'i>],
@@ -1703,7 +1704,7 @@ fn compile_read_input_state_statement<'i>(
     structs: &StructRegistry,
 ) -> Result<Vec<String>, CompilerError> {
     let mut added_stack_locals = Vec::new();
-    let mut bindings_by_field: HashMap<&str, &StateBindingAst<'i>> = HashMap::new();
+    let mut bindings_by_field: HashMap<&str, &StructBindingAst<'i>> = HashMap::new();
     for binding in bindings {
         if bindings_by_field.insert(binding.field_name.as_str(), binding).is_some() {
             return Err(CompilerError::Unsupported(format!("duplicate state field '{}'", binding.field_name)));
@@ -1841,7 +1842,7 @@ fn compile_read_input_state_statement<'i>(
     }
 }
 
-fn struct_name_for_state_bindings<'i>(bindings: &[StateBindingAst<'i>], structs: &StructRegistry) -> Result<String, CompilerError> {
+fn struct_name_for_state_bindings<'i>(bindings: &[StructBindingAst<'i>], structs: &StructRegistry) -> Result<String, CompilerError> {
     let matches = structs
         .iter()
         .filter_map(|(name, spec)| {
@@ -2326,7 +2327,7 @@ fn compile_encoded_state_object(
             CompilerError::Unsupported(format!("{builtin_name} does not support field type {}", type_name_from_ref(&type_ref)))
         })?;
 
-        if type_ref.array_dims.is_empty() && matches!(type_ref.base, TypeBase::Int | TypeBase::Bool) {
+        if !type_ref.is_array() && matches!(type_ref.base, TypeBase::Int | TypeBase::Bool) {
             compile_expr(
                 new_value,
                 constants,
@@ -2392,7 +2393,7 @@ fn compile_encoded_flat_state_fields(
             CompilerError::Unsupported(format!("{builtin_name} does not support field type {}", type_name_from_ref(&type_ref)))
         })?;
 
-        if type_ref.array_dims.is_empty() && matches!(type_ref.base, TypeBase::Int | TypeBase::Bool) {
+        if !type_ref.is_array() && matches!(type_ref.base, TypeBase::Int | TypeBase::Bool) {
             compile_expr(
                 new_value,
                 constants,
@@ -2648,7 +2649,7 @@ pub(crate) fn resolve_expr<'i>(
             }
             Ok(Expr::new(ExprKind::Array(resolved), span))
         }
-        ExprKind::StateObject(fields) => {
+        ExprKind::StructLiteral(fields) => {
             let mut resolved_fields = Vec::with_capacity(fields.len());
             for field in fields {
                 resolved_fields.push(StateFieldExpr {
@@ -2658,7 +2659,7 @@ pub(crate) fn resolve_expr<'i>(
                     name_span: field.name_span,
                 });
             }
-            Ok(Expr::new(ExprKind::StateObject(resolved_fields), span))
+            Ok(Expr::new(ExprKind::StructLiteral(resolved_fields), span))
         }
         ExprKind::FieldAccess { source, field, field_span } => Ok(Expr::new(
             ExprKind::FieldAccess { source: Box::new(resolve_expr(*source, constants, visiting)?), field, field_span },
@@ -2740,7 +2741,7 @@ pub(super) fn compile_expr<'i>(
         ExprKind::Bool(value) => compile_bool_expr(&mut ctx, *value),
         ExprKind::Byte(byte) => compile_byte_expr(&mut ctx, *byte),
         ExprKind::Array(values) => compile_array_expr(&mut ctx, values),
-        ExprKind::StateObject(_) => compile_state_object_expr(),
+        ExprKind::StructLiteral(_) => compile_state_object_expr(),
         ExprKind::FieldAccess { .. } => compile_field_access_expr(),
         ExprKind::String(value) => compile_string_expr(&mut ctx, value),
         ExprKind::Identifier(name) => compile_identifier_expr(&mut ctx, name),

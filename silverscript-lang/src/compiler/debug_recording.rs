@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::ast::{
-    ContractAst, ContractFieldAst, Expr, ExprKind, FunctionAst, ParamAst, StateBindingAst, StateFieldExpr, Statement, TypeRef,
+    ContractAst, ContractFieldAst, Expr, ExprKind, FunctionAst, ParamAst, StateFieldExpr, Statement, StructBindingAst, TypeRef,
 };
 use crate::debug_info::{
     DebugFunctionRange, DebugInfo, DebugInfoRecorder, DebugLeafBinding, DebugNamedValue, DebugParamBinding, DebugParamMapping,
@@ -10,8 +10,8 @@ use crate::debug_info::{
 
 use super::stack_bindings::StackBindings;
 use super::{
-    CompileOptions, CompilerError, StructRegistry, build_struct_registry, flatten_type_ref_leaves, struct_array_name_from_type_ref,
-    struct_name_from_type_ref, type_name_from_ref,
+    CompileOptions, CompilerError, StructRegistry, build_struct_registry, flatten_type_ref_leaves, is_struct, is_struct_array,
+    type_name_from_ref,
 };
 
 /// High-level compiler/debug bridge.
@@ -259,7 +259,7 @@ impl<'i> DebugRecorder<'i> {
             ExprKind::Introspection { kind, index, field_span } => {
                 ExprKind::Introspection { kind, index: Box::new(self.rewrite_debug_expr(*index)), field_span }
             }
-            ExprKind::StateObject(fields) => ExprKind::StateObject(
+            ExprKind::StructLiteral(fields) => ExprKind::StructLiteral(
                 fields
                     .into_iter()
                     .map(|field| StateFieldExpr {
@@ -584,7 +584,7 @@ fn rewrite_debug_expr_with_function<'i>(
             index: Box::new(rewrite_debug_expr_with_function(*index, function_name, visible_names_by_function)),
             field_span,
         },
-        ExprKind::StateObject(fields) => ExprKind::StateObject(
+        ExprKind::StructLiteral(fields) => ExprKind::StructLiteral(
             fields
                 .into_iter()
                 .map(|field| StateFieldExpr {
@@ -1123,7 +1123,7 @@ fn build_structured_leaf_specs_for_function<'i>(
 }
 
 fn inline_param_leaf_bindings(type_ref: &TypeRef, structs: &StructRegistry) -> Option<Vec<DebugLeafBinding>> {
-    if struct_name_from_type_ref(type_ref, structs).is_none() && struct_array_name_from_type_ref(type_ref, structs).is_none() {
+    if !is_struct(type_ref, structs) && !is_struct_array(type_ref, structs) {
         return None;
     }
 
@@ -1185,7 +1185,7 @@ fn collect_structured_binding_specs_from_statements<'i>(
 
 fn record_structured_state_binding_spec(
     specs: &mut HashMap<String, StructuredLeafSpec>,
-    binding: &StateBindingAst<'_>,
+    binding: &StructBindingAst<'_>,
     visible_names: Option<&HashMap<String, String>>,
     structs: &StructRegistry,
 ) -> Result<(), CompilerError> {
@@ -1199,7 +1199,7 @@ fn record_structured_binding_spec(
     visible_names: Option<&HashMap<String, String>>,
     structs: &StructRegistry,
 ) -> Result<(), CompilerError> {
-    if struct_name_from_type_ref(type_ref, structs).is_none() && struct_array_name_from_type_ref(type_ref, structs).is_none() {
+    if !is_struct(type_ref, structs) && !is_struct_array(type_ref, structs) {
         return Ok(());
     }
 
@@ -1235,9 +1235,7 @@ fn build_param_mappings<'i>(
     let mut flattened_param_names = Vec::new();
 
     for param in params_source {
-        if struct_name_from_type_ref(&param.type_ref, structs).is_some()
-            || struct_array_name_from_type_ref(&param.type_ref, structs).is_some()
-        {
+        if is_struct(&param.type_ref, structs) || is_struct_array(&param.type_ref, structs) {
             let leaf_specs = flatten_type_ref_leaves(&param.type_ref, structs)?
                 .into_iter()
                 .map(|(field_path, leaf_type)| (field_path, type_name_from_ref(&leaf_type)))
