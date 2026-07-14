@@ -174,16 +174,13 @@ fn lower_statement<'i>(
         Statement::If { condition, then_branch, else_branch, span, then_span, else_span } => {
             let mut then_types = types.clone();
             let lowered_then = lower_block(then_branch, &mut then_types, constants, functions)?;
-            let (lowered_else, merged_types) = if let Some(else_branch) = else_branch {
+            let lowered_else = if let Some(else_branch) = else_branch {
                 let mut else_types = types.clone();
                 let lowered_else = lower_block(else_branch, &mut else_types, constants, functions)?;
-                let mut merged = then_types;
-                merged.extend(else_types);
-                (Some(lowered_else), merged)
+                Some(lowered_else)
             } else {
-                (None, then_types)
+                None
             };
-            *types = merged_types;
             Ok(Statement::If {
                 condition: condition.clone(),
                 then_branch: lowered_then,
