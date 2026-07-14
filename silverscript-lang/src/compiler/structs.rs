@@ -862,7 +862,7 @@ fn lower_call_args<'i>(
     contract_field_prefix_len: usize,
 ) -> Result<Vec<Expr<'i>>, CompilerError> {
     let Some(function) = functions.get(name) else {
-        return args.iter().map(|arg| lower_runtime_expr(arg, &scope_type_names(scope), structs)).collect();
+        return args.iter().map(|arg| lower_expr(arg, scope, structs)).collect();
     };
 
     let mut lowered = Vec::new();
@@ -878,7 +878,7 @@ fn lower_call_args<'i>(
                 contract_field_prefix_len,
             )?);
         } else {
-            lowered.push(lower_runtime_expr(arg, &scope_type_names(scope), structs)?);
+            lowered.push(lower_expr(arg, scope, structs)?);
         }
     }
     Ok(lowered)
@@ -968,11 +968,7 @@ fn lower_statements<'i>(
                                 })
                                 .collect(),
                             name: builtin_name.clone(),
-                            args: args.iter().map(|arg| lower_runtime_expr(arg, &scope_type_names(scope), structs)).collect::<Result<
-                                Vec<_>,
-                                _,
-                            >>(
-                            )?,
+                            args: args.iter().map(|arg| lower_expr(arg, scope, structs)).collect::<Result<Vec<_>, _>>()?,
                             span: *span,
                             name_span: *name_span,
                         });
@@ -1019,7 +1015,7 @@ fn lower_statements<'i>(
                         type_ref: type_ref.clone(),
                         modifiers: modifiers.clone(),
                         name: name.clone(),
-                        expr: expr.as_ref().map(|expr| lower_runtime_expr(expr, &scope_type_names(scope), structs)).transpose()?,
+                        expr: expr.as_ref().map(|expr| lower_expr(expr, scope, structs)).transpose()?,
                         span: *span,
                         type_span: *type_span,
                         modifier_spans: modifier_spans.clone(),
@@ -1046,7 +1042,7 @@ fn lower_statements<'i>(
                     left_name: left_name.clone(),
                     right_type_ref: right_type_ref.clone(),
                     right_name: right_name.clone(),
-                    expr: lower_runtime_expr(expr, &scope_type_names(scope), structs)?,
+                    expr: lower_expr(expr, scope, structs)?,
                     span: *span,
                     left_type_span: *left_type_span,
                     left_name_span: *left_name_span,
@@ -1109,10 +1105,7 @@ fn lower_statements<'i>(
                 lowered.push(Statement::StateFunctionCallAssign {
                     bindings: bindings.clone(),
                     name: name.clone(),
-                    args: args
-                        .iter()
-                        .map(|arg| lower_runtime_expr(arg, &scope_type_names(scope), structs))
-                        .collect::<Result<Vec<_>, _>>()?,
+                    args: args.iter().map(|arg| lower_expr(arg, scope, structs)).collect::<Result<Vec<_>, _>>()?,
                     span: *span,
                     name_span: *name_span,
                 });
@@ -1138,7 +1131,7 @@ fn lower_statements<'i>(
                 let Some(type_ref) = scope.vars.get(name).cloned() else {
                     lowered.push(Statement::Assign {
                         name: name.clone(),
-                        expr: lower_runtime_expr(expr, &scope_type_names(scope), structs)?,
+                        expr: lower_expr(expr, scope, structs)?,
                         span: *span,
                         name_span: *name_span,
                     });
@@ -1153,6 +1146,9 @@ fn lower_statements<'i>(
                             .array_element_type()
                             .ok_or_else(|| CompilerError::Unsupported("array element type not supported".to_string()))?;
                         for arg in args {
+                            // TODO: To simplify the code we should probably have an earlier lowering stage where
+                            // `append(readInputState(...))` becomes `State tmp = readInputState(...); append(tmp)`.
+                            // Then we can remove this special case here and just treat it as a normal struct array append.
                             if let ExprKind::Call { name: builtin_name, args: call_args, .. } = &arg.kind
                                 && matches!(builtin_name.as_str(), "readInputState" | "readInputStateWithTemplate")
                             {
@@ -1175,7 +1171,7 @@ fn lower_statements<'i>(
                                     name: builtin_name.clone(),
                                     args: call_args
                                         .iter()
-                                        .map(|arg| lower_runtime_expr(arg, &scope_type_names(scope), structs))
+                                        .map(|arg| lower_expr(arg, scope, structs))
                                         .collect::<Result<Vec<_>, _>>()?,
                                     span: *span,
                                     name_span: *name_span,
@@ -1243,7 +1239,7 @@ fn lower_statements<'i>(
                 } else {
                     lowered.push(Statement::Assign {
                         name: name.clone(),
-                        expr: lower_runtime_expr(expr, &scope_type_names(scope), structs)?,
+                        expr: lower_expr(expr, scope, structs)?,
                         span: *span,
                         name_span: *name_span,
                     });
@@ -1251,14 +1247,14 @@ fn lower_statements<'i>(
             }
             Statement::TimeOp { tx_var, expr, message, span, tx_var_span, message_span } => lowered.push(Statement::TimeOp {
                 tx_var: *tx_var,
-                expr: lower_runtime_expr(expr, &scope_type_names(scope), structs)?,
+                expr: lower_expr(expr, scope, structs)?,
                 message: message.clone(),
                 span: *span,
                 tx_var_span: *tx_var_span,
                 message_span: *message_span,
             }),
             Statement::Require { expr, message, span, message_span } => lowered.push(Statement::Require {
-                expr: lower_runtime_expr(expr, &scope_type_names(scope), structs)?,
+                expr: lower_expr(expr, scope, structs)?,
                 message: message.clone(),
                 span: *span,
                 message_span: *message_span,
@@ -1296,7 +1292,7 @@ fn lower_statements<'i>(
                     merge_scopes(scope, else_scope);
                 }
                 lowered.push(Statement::If {
-                    condition: lower_runtime_expr(condition, &scope_type_names(scope), structs)?,
+                    condition: lower_expr(condition, scope, structs)?,
                     then_branch: lowered_then,
                     else_branch: lowered_else,
                     span: *span,
@@ -1320,9 +1316,9 @@ fn lower_statements<'i>(
                 merge_scopes(scope, &body_scope);
                 lowered.push(Statement::For {
                     ident: ident.clone(),
-                    start: lower_runtime_expr(start, &scope_type_names(scope), structs)?,
-                    end: lower_runtime_expr(end, &scope_type_names(scope), structs)?,
-                    max_iterations: lower_runtime_expr(max_iterations, &scope_type_names(scope), structs)?,
+                    start: lower_expr(start, scope, structs)?,
+                    end: lower_expr(end, scope, structs)?,
+                    max_iterations: lower_expr(max_iterations, scope, structs)?,
                     body: lowered_body,
                     span: *span,
                     ident_span: *ident_span,
@@ -1342,10 +1338,7 @@ fn lower_statements<'i>(
                 span: *span,
             }),
             Statement::Console { args, span } => lowered.push(Statement::Console {
-                args: args
-                    .iter()
-                    .map(|arg| lower_runtime_expr(arg, &scope_type_names(scope), structs))
-                    .collect::<Result<Vec<_>, _>>()?,
+                args: args.iter().map(|arg| lower_expr(arg, scope, structs)).collect::<Result<Vec<_>, _>>()?,
                 span: *span,
             }),
         }
