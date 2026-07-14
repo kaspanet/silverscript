@@ -1467,6 +1467,27 @@ fn recursively_infers_fixed_array_size_from_inferred_array_identifier() {
 }
 
 #[test]
+fn inferred_array_in_branch_does_not_shadow_outer_inference_scope() {
+    let source = r#"
+        contract Arrays() {
+            entrypoint function main(bool condition) {
+                int[_] values = [1, 2];
+                if (condition) {
+                    bool[_] values = [true];
+                    require(values.length == 1);
+                }
+
+                int[_] copy = values;
+                require(copy.length == 2);
+            }
+        }
+    "#;
+
+    compile_contract(source, &[], CompileOptions::default())
+        .expect("branch-local inferred arrays should not affect the outer inference scope");
+}
+
+#[test]
 fn rejects_comparing_dynamic_and_fixed_arrays_without_cast_in_function_scope() {
     let source = r#"
         contract Arrays() {
