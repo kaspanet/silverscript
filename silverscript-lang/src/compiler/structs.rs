@@ -1145,6 +1145,8 @@ fn lower_statements<'i>(
                         let element_type = type_ref
                             .array_element_type()
                             .ok_or_else(|| CompilerError::Unsupported("array element type not supported".to_string()))?;
+                        // TODO: Instead of appending each leaf of each element individually, we should probably
+                        // group them by leaf and append them in one go, to avoid multiple appends for the same leaf.
                         for arg in args {
                             for ((path, _leaf_type), leaf_expr) in
                                 flatten_type_ref_leaves(&element_type, structs)?.into_iter().zip(lower_runtime_struct_expr(
@@ -1175,6 +1177,7 @@ fn lower_statements<'i>(
                         }
                         continue;
                     }
+
                     for (leaf_name, _leaf_type, leaf_expr) in lower_value_for_named_type(
                         name,
                         &type_ref,

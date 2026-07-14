@@ -10211,10 +10211,17 @@ fn runs_standalone_block_state_binding_shadowing() {
         }
     "#;
 
-    let compiled = compile_contract(source, &[Expr::int(7)], CompileOptions::default())
+    let input_compiled = compile_contract(source, &[Expr::int(7)], CompileOptions::default())
         .expect("state binding shadowing should compile");
-    let selector = selector_for(&compiled, "main");
-    let result = run_script_with_selector(compiled.script, selector);
+    let sigscript = input_compiled.build_sig_script("main", vec![]).expect("sigscript builds");
+    let sigscript = pay_to_script_hash_signature_script(input_compiled.script.clone(), sigscript).unwrap();
+    let input = test_input(0, sigscript);
+    let input_spk = pay_to_script_hash_script(&input_compiled.script);
+    let output = TransactionOutput { value: 1000, script_public_key: input_spk.clone(), covenant: None };
+    let tx = Transaction::new(1, vec![input], vec![output.clone()], 0, Default::default(), 0, vec![]);
+    let utxo_entry = UtxoEntry::new(output.value, input_spk, 0, tx.is_coinbase(), None);
+
+    let result = execute_input(tx, vec![utxo_entry], 0);
     assert!(result.is_ok(), "state binding shadowing should execute successfully: {}", result.unwrap_err());
 }
 
