@@ -908,12 +908,6 @@ fn lower_function_call_bindings<'i>(
     Ok(lowered)
 }
 
-fn merge_scopes(target: &mut LoweringScope, source: &LoweringScope) {
-    for (name, type_ref) in &source.vars {
-        target.vars.entry(name.clone()).or_insert_with(|| type_ref.clone());
-    }
-}
-
 fn lower_statements<'i>(
     statements: &[Statement<'i>],
     scope: &mut LoweringScope,
@@ -1125,7 +1119,6 @@ fn lower_statements<'i>(
                     contract_constants,
                     contract_field_prefix_len,
                 )?);
-                merge_scopes(scope, &destruct_scope);
             }
             Statement::Assign { name, expr, span, name_span } => {
                 let Some(type_ref) = scope.vars.get(name).cloned() else {
@@ -1225,7 +1218,7 @@ fn lower_statements<'i>(
                     contract_constants,
                     contract_field_prefix_len,
                 )?;
-                let (lowered_else, else_scope) = if let Some(else_branch) = else_branch {
+                let lowered_else = if let Some(else_branch) = else_branch {
                     let mut else_scope = scope.clone();
                     let lowered_else = lower_statements(
                         else_branch,
@@ -1237,14 +1230,10 @@ fn lower_statements<'i>(
                         contract_constants,
                         contract_field_prefix_len,
                     )?;
-                    (Some(lowered_else), Some(else_scope))
+                    Some(lowered_else)
                 } else {
-                    (None, None)
+                    None
                 };
-                merge_scopes(scope, &then_scope);
-                if let Some(else_scope) = &else_scope {
-                    merge_scopes(scope, else_scope);
-                }
                 lowered.push(Statement::If {
                     condition: lower_expr(condition, scope, structs)?,
                     then_branch: lowered_then,
@@ -1267,7 +1256,6 @@ fn lower_statements<'i>(
                     contract_constants,
                     contract_field_prefix_len,
                 )?;
-                merge_scopes(scope, &body_scope);
                 lowered.push(Statement::For {
                     ident: ident.clone(),
                     start: lower_expr(start, scope, structs)?,
