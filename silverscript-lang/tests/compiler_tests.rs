@@ -10208,8 +10208,7 @@ fn runs_standalone_block_function_result_binding_shadowing() {
         }
     "#;
 
-    let compiled =
-        compile_contract(source, &[], CompileOptions::default()).expect("function result binding shadowing should compile");
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("function result binding shadowing should compile");
     let selector = selector_for(&compiled, "main");
     let result = run_script_with_selector(compiled.script, selector);
     assert!(result.is_ok(), "function result binding shadowing should execute successfully: {}", result.unwrap_err());
@@ -10232,8 +10231,8 @@ fn runs_standalone_block_state_binding_shadowing() {
         }
     "#;
 
-    let input_compiled = compile_contract(source, &[Expr::int(7)], CompileOptions::default())
-        .expect("state binding shadowing should compile");
+    let input_compiled =
+        compile_contract(source, &[Expr::int(7)], CompileOptions::default()).expect("state binding shadowing should compile");
     let sigscript = input_compiled.build_sig_script("main", vec![]).expect("sigscript builds");
     let sigscript = pay_to_script_hash_signature_script(input_compiled.script.clone(), sigscript).unwrap();
     let input = test_input(0, sigscript);
@@ -10266,8 +10265,8 @@ fn runs_standalone_block_struct_destructure_binding_shadowing() {
         }
     "#;
 
-    let compiled = compile_contract(source, &[], CompileOptions::default())
-        .expect("struct destructure binding shadowing should compile");
+    let compiled =
+        compile_contract(source, &[], CompileOptions::default()).expect("struct destructure binding shadowing should compile");
     let selector = selector_for(&compiled, "main");
     let result = run_script_with_selector(compiled.script, selector);
     assert!(result.is_ok(), "struct destructure binding shadowing should execute successfully: {}", result.unwrap_err());
@@ -10288,8 +10287,8 @@ fn branch_shadowing_initializer_reads_outer_binding() {
         }
     "#;
 
-    let compiled = compile_contract(source, &[], CompileOptions::default())
-        .expect("branch shadowing initializer should read the outer binding");
+    let compiled =
+        compile_contract(source, &[], CompileOptions::default()).expect("branch shadowing initializer should read the outer binding");
     let sigscript = compiled.build_sig_script("main", vec![Expr::bool(true)]).expect("sigscript builds");
     let result = run_script_with_sigscript(compiled.script, sigscript);
     assert!(result.is_ok(), "branch shadowing initializer should execute successfully: {}", result.unwrap_err());
@@ -10333,8 +10332,8 @@ fn for_loop_shadowing_initializer_reads_outer_binding() {
         }
     "#;
 
-    let compiled = compile_contract(source, &[], CompileOptions::default())
-        .expect("loop shadowing initializer should read the outer binding");
+    let compiled =
+        compile_contract(source, &[], CompileOptions::default()).expect("loop shadowing initializer should read the outer binding");
     let selector = selector_for(&compiled, "main");
     let result = run_script_with_selector(compiled.script, selector);
     assert!(result.is_ok(), "loop shadowing initializer should execute successfully: {}", result.unwrap_err());
