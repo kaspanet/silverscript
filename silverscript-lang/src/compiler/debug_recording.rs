@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::ast::{
-    ContractAst, ContractFieldAst, Expr, ExprKind, FunctionAst, ParamAst, StructBindingAst, StateFieldExpr, Statement, TypeRef,
+    ContractAst, ContractFieldAst, Expr, ExprKind, FunctionAst, ParamAst, StateFieldExpr, Statement, StructBindingAst, TypeRef,
 };
 use crate::debug_info::{
     DebugFunctionRange, DebugInfo, DebugInfoRecorder, DebugLeafBinding, DebugNamedValue, DebugParamBinding, DebugParamMapping,

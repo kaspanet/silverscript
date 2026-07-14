@@ -1,6 +1,6 @@
 use super::{
     ConstantAst, ContractAst, ContractFieldAst, Expr, ExprKind, FunctionAst, FunctionAttributeArgAst, FunctionAttributeAst, ParamAst,
-    StructBindingAst, Statement,
+    Statement, StructBindingAst,
 };
 use crate::span::Span;
 

@@ -425,6 +425,7 @@ fn validate_function_call_statement_shape<'i>(
     name: &str,
     args: &[Expr<'i>],
 ) -> Result<(), CompilerError> {
+    reject_read_input_state_with_template_call_args(args)?;
     for arg in args {
         validate_expr_semantics(
             arg,
@@ -460,6 +461,7 @@ fn validate_function_call_assign_statement_shape<'i>(
     name: &str,
     args: &[Expr<'i>],
 ) -> Result<(), CompilerError> {
+    reject_read_input_state_with_template_call_args(args)?;
     for arg in args {
         validate_expr_semantics(
             arg,
@@ -932,6 +934,7 @@ fn validate_expr_semantics<'i>(
             Ok(())
         }
         ExprKind::Call { name, args, .. } => {
+            reject_read_input_state_with_template_call_args(args)?;
             for arg in args {
                 validate_expr_semantics(arg, env, prefer_env_for_comparison, types, structs, constants, functions, contract_fields)?;
             }
@@ -971,6 +974,7 @@ fn validate_expr_semantics<'i>(
             validate_expr_semantics(end, env, prefer_env_for_comparison, types, structs, constants, functions, contract_fields)
         }
         ExprKind::Append { source, args, .. } => {
+            reject_read_input_state_with_template_call_args(args)?;
             validate_expr_semantics(source, env, prefer_env_for_comparison, types, structs, constants, functions, contract_fields)?;
             let source_type = infer_expr_type_ref_for_comparison_ref(
                 source,
@@ -1047,6 +1051,15 @@ fn validate_expr_semantics<'i>(
         }
         _ => Ok(()),
     }
+}
+
+fn reject_read_input_state_with_template_call_args(args: &[Expr<'_>]) -> Result<(), CompilerError> {
+    if args.iter().any(|arg| matches!(&arg.kind, ExprKind::Call { name, .. } if name == "readInputStateWithTemplate")) {
+        return Err(CompilerError::Unsupported(
+            "readInputStateWithTemplate must be assigned to a struct variable or destructured directly".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn infer_expr_type_ref_for_comparison_ref<'i>(
@@ -1346,11 +1359,6 @@ fn validate_internal_call<'i>(
     }
 
     for (param, arg) in function.params.iter().zip(args.iter()) {
-        if matches!(&arg.kind, ExprKind::Call { name, .. } if name == "readInputStateWithTemplate") {
-            return Err(CompilerError::Unsupported(
-                "readInputStateWithTemplate must be assigned to a struct variable or destructured directly".to_string(),
-            ));
-        }
         let param_type_name = type_name_from_ref(&param.type_ref);
         validate_expr_assignable_to_type(arg, &param.type_ref, types, structs, constants, functions, contract_fields).map_err(
             |err| {
@@ -1545,10 +1553,7 @@ fn validate_expr_assignable_to_type<'i>(
                 if !has_explicit_array_size_ref(type_ref) {
                     return true;
                 }
-                match (
-                    array_size_with_constants_ref(&source_type, constants),
-                    array_size_with_constants_ref(type_ref, constants),
-                ) {
+                match (array_size_with_constants_ref(&source_type, constants), array_size_with_constants_ref(type_ref, constants)) {
                     (Some(source_size), Some(expected_size)) => source_size.checked_add(args.len()) == Some(expected_size),
                     _ => false,
                 }

@@ -21,6 +21,7 @@ mod r#for;
 mod infer_array;
 mod inline_functions;
 mod locals;
+mod read_input_state;
 mod stack_bindings;
 mod static_check;
 mod structs;
@@ -32,6 +33,7 @@ pub(super) use compile::{array_element_type, eval_const_int, is_bytes_type, type
 pub use compile::{compile_debug_expr, function_branch_index};
 pub(crate) use debug_recording::DebugRecorder;
 use r#for::lower_for_loops;
+use read_input_state::lower_read_input_state_calls;
 pub(crate) use static_check::expr_matches_declared_type_ref;
 use static_check::value_matches_type_ref;
 pub use structs::flattened_struct_name;

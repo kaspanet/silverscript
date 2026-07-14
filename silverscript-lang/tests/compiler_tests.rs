@@ -2710,9 +2710,7 @@ fn runtime_supports_struct_array_append_value_expression() {
     "#;
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
-    let sigscript = compiled
-        .build_sig_script("main", vec![struct_array_arg(vec![(7, vec![0x01, 0x02])])])
-        .expect("sigscript builds");
+    let sigscript = compiled.build_sig_script("main", vec![struct_array_arg(vec![(7, vec![0x01, 0x02])])]).expect("sigscript builds");
     let result = run_script_with_sigscript(compiled.script, sigscript);
 
     assert!(result.is_ok(), "struct[] append value expression should execute successfully: {result:?}");
@@ -6918,6 +6916,44 @@ fn runs_read_input_state_into_state_variable() {
 }
 
 #[test]
+fn runs_read_input_state_as_internal_function_argument() {
+    let source = r#"
+        contract C(int initX, byte[2] initY) {
+            int x = initX;
+            byte[2] y = initY;
+
+            function check(State remote) {
+                require(remote.x > 7);
+                require(remote.y == 0x3412);
+            }
+
+            entrypoint function main() {
+                check(readInputState(1));
+            }
+        }
+    "#;
+
+    let active_compiled =
+        compile_contract(source, &[5.into(), vec![1u8, 2u8].into()], CompileOptions::default()).expect("compile succeeds");
+    let input1_compiled =
+        compile_contract(source, &[8.into(), vec![0x34u8, 0x12u8].into()], CompileOptions::default()).expect("compile succeeds");
+
+    let input0 = test_input(0, vec![]);
+    let input1 = test_input(1, sigscript_push_script(&input1_compiled.script));
+    let output = TransactionOutput {
+        value: 1000,
+        script_public_key: ScriptPublicKey::new(0, active_compiled.script.clone().into()),
+        covenant: None,
+    };
+    let tx = Transaction::new(1, vec![input0, input1], vec![output.clone()], 0, Default::default(), 0, vec![]);
+    let utxo0 = UtxoEntry::new(output.value, output.script_public_key.clone(), 0, tx.is_coinbase(), None);
+    let utxo1 = UtxoEntry::new(1000, ScriptPublicKey::new(0, vec![OpTrue].into()), 0, tx.is_coinbase(), None);
+
+    let result = execute_input(tx, vec![utxo0, utxo1], 0);
+    assert!(result.is_ok(), "readInputState call argument failed at runtime: {}", result.unwrap_err());
+}
+
+#[test]
 fn runs_read_input_state_with_template_into_typed_struct_variable() {
     let target_hash_value = vec![0x44u8; 32];
     let target_hash_hex = target_hash_value.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
@@ -7192,6 +7228,32 @@ fn rejects_read_input_state_with_template_outside_direct_binding() {
 
     let err = compile_contract(source, &[], CompileOptions::default())
         .expect_err("readInputStateWithTemplate should be rejected outside direct struct bindings");
+    assert!(err.to_string().contains("must be assigned to a struct variable or destructured directly"), "unexpected error: {err}");
+}
+
+#[test]
+fn rejects_read_input_state_with_template_as_expression_call_argument() {
+    let source = r#"
+        contract Reader() {
+            struct RemoteState {
+                int x;
+            }
+
+            function identity(RemoteState remote) : RemoteState {
+                return remote;
+            }
+
+            entrypoint function main(int prefixLen, int suffixLen, byte[32] templateHash) {
+                RemoteState remote = identity(
+                    readInputStateWithTemplate(1, prefixLen, suffixLen, templateHash)
+                );
+                require(remote.x > 0);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default())
+        .expect_err("readInputStateWithTemplate should be rejected as an expression call argument");
     assert!(err.to_string().contains("must be assigned to a struct variable or destructured directly"), "unexpected error: {err}");
 }
 
