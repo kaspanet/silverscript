@@ -1108,12 +1108,11 @@ fn lower_statements<'i>(
                 for binding in bindings {
                     scope.vars.insert(binding.name.clone(), binding.type_ref.clone());
                 }
-                let mut destruct_scope = scope.clone();
                 lowered.extend(lower_struct_destructure_statement(
                     bindings,
                     expr,
                     *span,
-                    &mut destruct_scope,
+                    scope,
                     structs,
                     contract_fields,
                     contract_constants,
@@ -1395,7 +1394,7 @@ pub(crate) fn lower_structs_contract<'i>(
             lowered_fields.push(ContractFieldAst {
                 type_ref: field.type_ref.clone(),
                 name: field.name.clone(),
-                expr: lower_runtime_expr(&field.expr, &scope_type_names(&scope), structs)?,
+                expr: lower_expr(&field.expr, &scope, structs)?,
                 span: field.span,
                 type_span: field.type_span,
                 name_span: field.name_span,
