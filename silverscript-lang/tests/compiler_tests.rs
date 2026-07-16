@@ -11036,3 +11036,87 @@ fn validate_output_state_with_template_preserves_nested_struct_field_paths() {
     let result = execute_input(tx, vec![utxo_entry], 0);
     assert!(result.is_ok(), "nested struct fields with the same leaf name should remain distinct by path: {result:?}");
 }
+
+#[test]
+fn blake2b_builtins_lower_and_execute_correctly() {
+    let data = b"genesis covenant";
+    let key = b"CovenantID";
+    let expected = blake2b_simd::Params::new().hash_length(32).hash(data);
+    let expected_keyed = blake2b_simd::Params::new().hash_length(32).key(key).hash(data);
+    let expected_hex = expected.as_bytes().iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+    let expected_keyed_hex = expected_keyed.as_bytes().iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+    let source = format!(
+        r#"
+        contract Blake2bHashes() {{
+            entrypoint function main() {{
+                require(blake2b(bytes("genesis covenant")) == 0x{expected_hex});
+                require(blake2bWithKey(bytes("genesis covenant"), bytes("CovenantID")) == 0x{expected_keyed_hex});
+            }}
+        }}
+        "#
+    );
+
+    let compiled = compile_contract(&source, &[], CompileOptions::default()).expect("Blake2b builtins compile");
+    assert!(compiled.script.contains(&OpBlake2b));
+    assert!(compiled.script.contains(&OpBlake2bWithKey));
+    let result = run_script_with_selector(compiled.script, None);
+    assert!(result.is_ok(), "Blake2b builtins should execute correctly: {result:?}");
+}
+
+#[test]
+fn blake3_builtins_lower_and_execute_correctly() {
+    let data = b"genesis covenant";
+    let key = std::array::from_fn(|i| i as u8);
+    let expected = blake3::hash(data);
+    let expected_keyed = blake3::keyed_hash(&key, data);
+    let key_hex = key.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+    let expected_hex = expected.to_hex();
+    let expected_keyed_hex = expected_keyed.to_hex();
+    let source = format!(
+        r#"
+        contract Blake3Hashes() {{
+            entrypoint function main() {{
+                require(blake3(bytes("genesis covenant")) == 0x{expected_hex});
+                require(blake3WithKey(bytes("genesis covenant"), 0x{key_hex}) == 0x{expected_keyed_hex});
+            }}
+        }}
+        "#
+    );
+
+    let compiled = compile_contract(&source, &[], CompileOptions::default()).expect("Blake3 builtins compile");
+    assert!(compiled.script.contains(&OpBlake3));
+    assert!(compiled.script.contains(&OpBlake3WithKey));
+    let result = run_script_with_selector(compiled.script, None);
+    assert!(result.is_ok(), "Blake3 builtins should call the engine correctly: {result:?}");
+}
+
+#[test]
+fn blake3_with_key_requires_a_fixed_32_byte_key() {
+    let dynamic_key = r#"
+        contract Blake3Hash() {
+            entrypoint function main(byte[] key) {
+                require(blake3WithKey(bytes("data"), key).length == 32);
+            }
+        }
+    "#;
+    let err = compile_contract(dynamic_key, &[], CompileOptions::default()).expect_err("dynamic Blake3 key should be rejected");
+    assert!(err.to_string().contains("argument 'key' expects byte[32]"), "unexpected error: {err}");
+
+    let explicit_cast = r#"
+        contract Blake3Hash() {
+            entrypoint function main(byte[] key) {
+                require(blake3WithKey(bytes("data"), byte[32](key)).length == 32);
+            }
+        }
+    "#;
+    compile_contract(explicit_cast, &[], CompileOptions::default()).expect("explicit byte[32] key cast should compile");
+
+    let numeric_data = r#"
+        contract Blake3Hash() {
+            entrypoint function main(byte[32] key) {
+                require(blake3WithKey(5, key).length == 32);
+            }
+        }
+    "#;
+    compile_contract(numeric_data, &[], CompileOptions::default()).expect("key validation should not constrain hash data");
+}

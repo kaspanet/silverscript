@@ -1385,17 +1385,24 @@ fn validate_builtin_call<'i>(
     functions: &HashMap<String, &FunctionAst<'i>>,
     contract_fields: &[ContractFieldAst<'i>],
 ) -> Result<(), CompilerError> {
-    let expected_args = match name {
+    let expected_args: &[(&str, &str)] = match name {
         // TODO: Use constants for all builtins
-        "checkSigFromStack" => [("signature", "datasig"), ("digest", "byte[32]"), ("publicKey", "pubkey")],
-        "checkSigFromStackECDSA" => [("signature", "datasig"), ("digest", "byte[32]"), ("publicKey", "byte[33]")],
+        "checkSigFromStack" => &[("signature", "datasig"), ("digest", "byte[32]"), ("publicKey", "pubkey")],
+        "checkSigFromStackECDSA" => &[("signature", "datasig"), ("digest", "byte[32]"), ("publicKey", "byte[33]")],
+        // TODO: Consider requiring byte[] data for all hash builtins so callers
+        // must make their serialization choices explicit; numeric values currently
+        // hash their minimally encoded Script-number bytes.
+        "blake3WithKey" => &[("data", "*"), ("key", "byte[32]")],
         _ => return Ok(()),
     };
     if args.len() != expected_args.len() {
         return Err(CompilerError::Unsupported(format!("{name}() expects {} arguments", expected_args.len())));
     }
 
-    for (arg, (arg_name, expected_type_name)) in args.iter().zip(expected_args) {
+    for (arg, &(arg_name, expected_type_name)) in args.iter().zip(expected_args) {
+        if expected_type_name == "*" {
+            continue;
+        }
         let expected_type = parse_type_ref(expected_type_name)?;
         let actual_type =
             infer_expr_type_ref_for_comparison_ref(arg, env, prefer_env_for_comparison, types, structs, functions, contract_fields)
