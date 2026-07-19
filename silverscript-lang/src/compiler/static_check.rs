@@ -173,7 +173,7 @@ fn validate_contract_field_initializers<'i>(
             &contract.fields,
         )?;
         ensure_array_elements_have_known_size(&field.type_ref, structs, &type_name)?;
-        validate_expr_assignable_to_type(&field.expr, &field.type_ref, &types, structs, constants, &HashMap::new(), &contract.fields)
+        validate_expr_matches_type(&field.expr, &field.type_ref, &types, structs, constants, &HashMap::new(), &contract.fields)
             .map_err(|_| CompilerError::Unsupported(format!("contract field '{}' expects {}", field.name, type_name)))?;
         types.insert(field.name.clone(), type_name);
     }
@@ -275,7 +275,7 @@ fn validate_variable_definition_statement_shape<'i>(
             ctx.functions,
             ctx.contract_fields,
         )?;
-        validate_expr_assignable_to_type(expr, type_ref, ctx.types, ctx.structs, ctx.constants, ctx.functions, ctx.contract_fields)
+        validate_expr_matches_type(expr, type_ref, ctx.types, ctx.structs, ctx.constants, ctx.functions, ctx.contract_fields)
             .map_err(|err| {
                 map_declared_type_error(
                     err,
@@ -305,9 +305,9 @@ fn validate_array_initializer<'i>(
     match expr {
         Some(Expr { kind: ExprKind::Identifier(other), .. }) => match types.get(other) {
             Some(other_type) => match parse_type_ref(other_type) {
-                Ok(other_type_ref) if is_type_assignable_ref(&other_type_ref, type_ref, constants) => Ok(()),
-                Ok(_) => Err(CompilerError::Unsupported("array assignment requires compatible array types".to_string())),
-                Err(_) => Err(CompilerError::Unsupported("array assignment requires compatible array types".to_string())),
+                Ok(other_type_ref) if type_refs_equal(&other_type_ref, type_ref, constants) => Ok(()),
+                Ok(_) => Err(CompilerError::Unsupported("array assignment requires identical array types".to_string())),
+                Err(_) => Err(CompilerError::Unsupported("array assignment requires identical array types".to_string())),
             },
             None => Err(CompilerError::UndefinedIdentifier(other.clone())),
         },
@@ -578,10 +578,10 @@ fn validate_assign_statement_shape<'i>(
     )?;
     if let Some(type_name) = ctx.types.get(name).cloned() {
         let type_ref = parse_type_ref(&type_name)?;
-        validate_expr_assignable_to_type(expr, &type_ref, ctx.types, ctx.structs, ctx.constants, ctx.functions, ctx.contract_fields)
+        validate_expr_matches_type(expr, &type_ref, ctx.types, ctx.structs, ctx.constants, ctx.functions, ctx.contract_fields)
             .map_err(|err| {
-            map_declared_type_error(err, "variable", name, &type_name, expr, &type_ref, ctx.types, ctx.structs, ctx.constants)
-        })?;
+                map_declared_type_error(err, "variable", name, &type_name, expr, &type_ref, ctx.types, ctx.structs, ctx.constants)
+            })?;
     }
     ctx.env.insert(name.to_string(), expr.clone());
     ctx.prefer_env_for_comparison.remove(name);
@@ -991,13 +991,14 @@ fn validate_expr_semantics<'i>(
             };
             for arg in args {
                 validate_expr_semantics(arg, env, prefer_env_for_comparison, types, structs, constants, functions, contract_fields)?;
-                validate_expr_assignable_to_type(arg, &element_type, types, structs, &HashMap::new(), functions, contract_fields)
-                    .map_err(|_| {
+                validate_expr_matches_type(arg, &element_type, types, structs, &HashMap::new(), functions, contract_fields).map_err(
+                    |_| {
                         CompilerError::Unsupported(format!(
                             "array append element type mismatch: expected {}",
                             type_name_from_ref(&element_type)
                         ))
-                    })?;
+                    },
+                )?;
             }
             Ok(())
         }
@@ -1360,15 +1361,13 @@ fn validate_internal_call<'i>(
 
     for (param, arg) in function.params.iter().zip(args.iter()) {
         let param_type_name = type_name_from_ref(&param.type_ref);
-        validate_expr_assignable_to_type(arg, &param.type_ref, types, structs, constants, functions, contract_fields).map_err(
-            |err| {
-                if matches!(&arg.kind, ExprKind::Call { name, .. } if name == "readInputStateWithTemplate") {
-                    err
-                } else {
-                    CompilerError::Unsupported(format!("function argument '{}' expects {}", param.name, param_type_name))
-                }
-            },
-        )?;
+        validate_expr_matches_type(arg, &param.type_ref, types, structs, constants, functions, contract_fields).map_err(|err| {
+            if matches!(&arg.kind, ExprKind::Call { name, .. } if name == "readInputStateWithTemplate") {
+                err
+            } else {
+                CompilerError::Unsupported(format!("function argument '{}' expects {}", param.name, param_type_name))
+            }
+        })?;
     }
 
     Ok(function)
@@ -1401,7 +1400,7 @@ fn validate_builtin_call<'i>(
         let actual_type =
             infer_expr_type_ref_for_comparison_ref(arg, env, prefer_env_for_comparison, types, structs, functions, contract_fields)
                 .ok_or_else(|| CompilerError::Unsupported(format!("{name}() argument '{arg_name}' expects {expected_type_name}")))?;
-        if !is_type_assignable_ref(&actual_type, &expected_type, constants) && !expr_matches_type_ref(arg, &expected_type) {
+        if !type_refs_equal(&actual_type, &expected_type, constants) && !expr_matches_type_ref(arg, &expected_type) {
             return Err(CompilerError::Unsupported(format!(
                 "{name}() argument '{arg_name}' expects {expected_type_name}, got {}",
                 type_name_from_ref(&actual_type)
@@ -1420,7 +1419,7 @@ fn typed_builtin_return_type_ref(name: &str) -> Option<TypeRef> {
     }
 }
 
-fn validate_expr_assignable_to_type<'i>(
+fn validate_expr_matches_type<'i>(
     expr: &Expr<'i>,
     type_ref: &TypeRef,
     types: &HashMap<String, String>,
@@ -1447,7 +1446,7 @@ fn validate_expr_assignable_to_type<'i>(
                 name
             )));
         }
-        if is_type_assignable_ref(&function.return_types[0], type_ref, constants) {
+        if type_refs_equal(&function.return_types[0], type_ref, constants) {
             return Ok(());
         }
         return Err(CompilerError::Unsupported("type mismatch".to_string()));
@@ -1456,7 +1455,7 @@ fn validate_expr_assignable_to_type<'i>(
     if let ExprKind::Call { name, .. } = &expr.kind
         && let Some(actual_type) = typed_builtin_return_type_ref(name)
     {
-        return if is_type_assignable_ref(&actual_type, type_ref, constants) {
+        return if type_refs_equal(&actual_type, type_ref, constants) {
             Ok(())
         } else {
             Err(CompilerError::Unsupported("type mismatch".to_string()))
@@ -1475,7 +1474,7 @@ fn validate_expr_assignable_to_type<'i>(
         && let Some(actual_type) =
             infer_expr_type_ref_for_comparison_ref(expr, &HashMap::new(), &HashSet::new(), types, structs, functions, contract_fields)
     {
-        return if is_type_assignable_ref(&actual_type, type_ref, constants) {
+        return if type_refs_equal(&actual_type, type_ref, constants) {
             Ok(())
         } else {
             Err(CompilerError::Unsupported("type mismatch".to_string()))
@@ -1486,7 +1485,7 @@ fn validate_expr_assignable_to_type<'i>(
         && let Some(actual_type) =
             infer_expr_type_ref_for_comparison_ref(expr, &HashMap::new(), &HashSet::new(), types, structs, functions, contract_fields)
     {
-        return if is_type_assignable_ref(&actual_type, type_ref, constants) {
+        return if type_refs_equal(&actual_type, type_ref, constants) {
             Ok(())
         } else {
             Err(CompilerError::Unsupported("type mismatch".to_string()))
@@ -1537,7 +1536,7 @@ fn validate_expr_assignable_to_type<'i>(
             ExprKind::Identifier(name) => types
                 .get(name)
                 .and_then(|type_name| parse_type_ref(type_name).ok())
-                .is_some_and(|actual_type| is_type_assignable_ref(&actual_type, type_ref, constants)),
+                .is_some_and(|actual_type| type_refs_equal(&actual_type, type_ref, constants)),
             ExprKind::Append { source, args, .. } => infer_expr_type_ref_for_comparison_ref(
                 source,
                 &HashMap::new(),
@@ -1547,18 +1546,8 @@ fn validate_expr_assignable_to_type<'i>(
                 functions,
                 contract_fields,
             )
-            .is_some_and(|source_type| {
-                if source_type.array_element_type() != type_ref.array_element_type() {
-                    return false;
-                }
-                if !has_explicit_array_size_ref(type_ref) {
-                    return true;
-                }
-                match (array_size_with_constants_ref(&source_type, constants), array_size_with_constants_ref(type_ref, constants)) {
-                    (Some(source_size), Some(expected_size)) => source_size.checked_add(args.len()) == Some(expected_size),
-                    _ => false,
-                }
-            }),
+            .and_then(|source_type| type_after_append(&source_type, args.len(), constants))
+            .is_some_and(|actual_type| type_refs_equal(&actual_type, type_ref, constants)),
             _ => expr_matches_declared_type_ref(expr, type_ref, structs),
         };
         if matches { Ok(()) } else { Err(CompilerError::Unsupported("type mismatch".to_string())) }
@@ -1567,7 +1556,7 @@ fn validate_expr_assignable_to_type<'i>(
             && let Ok(actual_type_name) =
                 super::debug_value_types::infer_debug_expr_value_type(expr, &HashMap::new(), types, &mut HashSet::new())
             && let Ok(actual_type) = parse_type_ref(&actual_type_name)
-            && is_type_assignable_ref(&actual_type, type_ref, constants)
+            && type_refs_equal(&actual_type, type_ref, constants)
         {
             return Ok(());
         }
@@ -1604,7 +1593,7 @@ fn validate_struct_literal_matches_type<'i>(
         let Some(value) = provided.remove(&field.name) else {
             return Err(CompilerError::Unsupported(format!("struct field '{}' must be initialized", field.name)));
         };
-        validate_expr_assignable_to_type(value, &field.type_ref, types, structs, constants, &HashMap::new(), &[]).map_err(|_| {
+        validate_expr_matches_type(value, &field.type_ref, types, structs, constants, &HashMap::new(), &[]).map_err(|_| {
             CompilerError::Unsupported(format!("struct field '{}' expects {}", field.name, field.type_ref.type_name()))
         })?;
     }
@@ -1757,7 +1746,7 @@ pub(super) fn expr_matches_return_type_ref<'i>(
         return types
             .get(name)
             .and_then(|type_name| parse_type_ref(type_name).ok())
-            .is_some_and(|actual| is_type_assignable_ref(&actual, type_ref, constants));
+            .is_some_and(|actual| type_refs_equal(&actual, type_ref, constants));
     }
 
     if let Some(struct_name) = struct_name_from_type_ref(type_ref, structs) {
@@ -1793,7 +1782,7 @@ pub(super) fn expr_matches_return_type_ref<'i>(
                 super::debug_value_types::infer_debug_expr_value_type(expr, &HashMap::new(), types, &mut HashSet::new())
                 && let Ok(actual_type) = parse_type_ref(&actual_type_name)
             {
-                return is_type_assignable_ref(&actual_type, type_ref, constants);
+                return type_refs_equal(&actual_type, type_ref, constants);
             }
             false
         }
@@ -1804,9 +1793,9 @@ pub(super) fn expr_matches_return_type_ref<'i>(
         ExprKind::Int(_) | ExprKind::DateLiteral(_) | ExprKind::Bool(_) | ExprKind::Byte(_) | ExprKind::String(_) => {
             expr_matches_type_ref(expr, type_ref)
         }
-        ExprKind::Call { name, .. } => typed_builtin_return_type_ref(name)
-            .map(|actual_type| is_type_assignable_ref(&actual_type, type_ref, constants))
-            .unwrap_or(true),
+        ExprKind::Call { name, .. } => {
+            typed_builtin_return_type_ref(name).map(|actual_type| type_refs_equal(&actual_type, type_ref, constants)).unwrap_or(true)
+        }
         _ => true,
     }
 }
@@ -1901,13 +1890,9 @@ fn array_literal_matches_type_with_env_ref<'i>(
         ExprKind::Identifier(name) => types
             .get(name)
             .and_then(|value_type| parse_type_ref(value_type).ok())
-            .is_some_and(|value_type| is_type_assignable_ref(&value_type, &element_type, constants)),
+            .is_some_and(|value_type| type_refs_equal(&value_type, &element_type, constants)),
         _ => expr_matches_type_ref(value, &element_type),
     })
-}
-
-fn has_explicit_array_size_ref(type_ref: &TypeRef) -> bool {
-    !matches!(type_ref.array_size(), Some(ArrayDim::Dynamic | ArrayDim::Inferred) | None)
 }
 
 fn array_size_with_constants_ref<'i>(type_ref: &TypeRef, constants: &HashMap<String, Expr<'i>>) -> Option<usize> {
@@ -1921,31 +1906,47 @@ fn array_size_with_constants_ref<'i>(type_ref: &TypeRef, constants: &HashMap<Str
     }
 }
 
-fn is_array_type_assignable_ref<'i>(actual: &TypeRef, expected: &TypeRef, constants: &HashMap<String, Expr<'i>>) -> bool {
-    if actual == expected {
-        return true;
-    }
+fn type_refs_equal<'i>(left: &TypeRef, right: &TypeRef, constants: &HashMap<String, Expr<'i>>) -> bool {
+    left.base == right.base
+        && left.array_dims.len() == right.array_dims.len()
+        && left.array_dims.iter().zip(&right.array_dims).all(|(left, right)| array_dims_equal(left, right, constants))
+}
 
-    if !is_array_type_ref(actual) || !is_array_type_ref(expected) {
-        return false;
+fn type_after_append<'i>(source: &TypeRef, appended: usize, constants: &HashMap<String, Expr<'i>>) -> Option<TypeRef> {
+    let mut result = source.clone();
+    let dimension = result.array_dims.last_mut()?;
+    match dimension {
+        ArrayDim::Fixed(size) => *size = size.checked_add(appended)?,
+        ArrayDim::Constant(name) => {
+            let size = usize::try_from(const_array_dim_value(name, constants)?).ok()?;
+            *dimension = ArrayDim::Fixed(size.checked_add(appended)?);
+        }
+        ArrayDim::Dynamic => {}
+        ArrayDim::Inferred => return None,
     }
+    Some(result)
+}
 
-    if array_element_type_ref(actual) != array_element_type_ref(expected) {
-        return false;
-    }
-
-    if !has_explicit_array_size_ref(expected) {
-        return true;
-    }
-
-    match (array_size_with_constants_ref(actual, constants), array_size_with_constants_ref(expected, constants)) {
-        (Some(actual_size), Some(expected_size)) => actual_size == expected_size,
-        _ => actual == expected,
+fn array_dims_equal<'i>(left: &ArrayDim, right: &ArrayDim, constants: &HashMap<String, Expr<'i>>) -> bool {
+    match (left, right) {
+        (ArrayDim::Fixed(left), ArrayDim::Fixed(right)) => left == right,
+        (ArrayDim::Constant(left), ArrayDim::Constant(right)) => {
+            match (const_array_dim_value(left, constants), const_array_dim_value(right, constants)) {
+                (Some(left), Some(right)) => left == right,
+                _ => false,
+            }
+        }
+        (ArrayDim::Fixed(left), ArrayDim::Constant(right)) | (ArrayDim::Constant(right), ArrayDim::Fixed(left)) => {
+            i64::try_from(*left).ok() == const_array_dim_value(right, constants)
+        }
+        (ArrayDim::Dynamic, ArrayDim::Dynamic) | (ArrayDim::Inferred, ArrayDim::Inferred) => true,
+        _ => false,
     }
 }
 
-fn is_type_assignable_ref<'i>(actual: &TypeRef, expected: &TypeRef, constants: &HashMap<String, Expr<'i>>) -> bool {
-    actual == expected || is_array_type_assignable_ref(actual, expected, constants)
+fn const_array_dim_value<'i>(name: &str, constants: &HashMap<String, Expr<'i>>) -> Option<i64> {
+    let expr = constants.get(name)?;
+    eval_const_int(expr, constants).ok().filter(|value| *value >= 0)
 }
 
 fn expr_matches_return_type_ref_hint<'i>(
@@ -1955,7 +1956,7 @@ fn expr_matches_return_type_ref_hint<'i>(
     structs: &StructRegistry,
     constants: &HashMap<String, Expr<'i>>,
 ) -> Option<String> {
-    if validate_expr_assignable_to_type(expr, type_ref, types, structs, constants, &HashMap::new(), &[]).is_ok() {
+    if validate_expr_matches_type(expr, type_ref, types, structs, constants, &HashMap::new(), &[]).is_ok() {
         return None;
     }
     match (&expr.kind, &type_ref.base, !type_ref.is_array()) {

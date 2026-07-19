@@ -9468,6 +9468,42 @@ fn accepts_byte_array_with_constant_size() {
 }
 
 #[test]
+fn constant_array_dimension_expressions_compare_by_value() {
+    let source = r#"
+        contract Test() {
+            int constant HALF_SIZE = 16;
+            int constant HASH_SIZE = HALF_SIZE * 2;
+
+            function consume(byte[32] hash) {
+                require(hash.length == 32);
+            }
+
+            entrypoint function test(byte[HASH_SIZE] hash) {
+                consume(hash);
+            }
+        }
+    "#;
+    compile_contract(source, &[], CompileOptions::default()).expect("equal compiled array dimensions should match");
+}
+
+#[test]
+fn fixed_and_dynamic_array_types_are_not_identical() {
+    let source = r#"
+        contract Test() {
+            function consume(byte[] hash) {
+                require(hash.length == 32);
+            }
+
+            entrypoint function test(byte[32] hash) {
+                consume(hash);
+            }
+        }
+    "#;
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("fixed and dynamic array types should differ");
+    assert!(err.to_string().contains("function argument 'hash' expects byte[]"), "unexpected error: {err}");
+}
+
+#[test]
 fn blake2b_int_and_byte_cast_forms_compile_to_identical_script() {
     let source_plain = r#"
         contract Test() {
