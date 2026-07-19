@@ -1568,6 +1568,39 @@ fn rejects_cast_from_smaller_fixed_byte_array_to_larger_fixed_byte_array() {
 }
 
 #[test]
+fn allows_array_concat_to_matching_size() {
+    let source = r#"
+        contract Arrays() {
+            entrypoint function main() {
+                byte[2] left = 0x0102;
+                byte[2] right = 0x0304;
+                byte[4] combined = left + right;
+                require(combined == 0x01020304);
+            }
+        }
+    "#;
+
+    compile_contract(source, &[], CompileOptions::default()).expect("byte[2] + byte[2] should cast to byte[4]");
+}
+
+#[test]
+fn rejects_cast_from_fixed_byte_array_concat_to_wrong_size() {
+    let source = r#"
+        contract Arrays() {
+            entrypoint function main() {
+                byte[2] left = 0x0102;
+                byte[2] right = 0x0304;
+                byte[5] combined = byte[5](left + right);
+                require(combined.length == 5);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("byte[2] + byte[2] should not cast to byte[5]");
+    assert!(err.to_string().contains("cannot cast byte[4] to byte[5]"), "unexpected error: {err}");
+}
+
+#[test]
 fn rejects_fixed_byte_array_size_mismatch_inside_struct_literal() {
     let source = r#"
         contract Arrays() {
@@ -4083,7 +4116,9 @@ fn branchy_three_slot_splice_repro_matches_current_codegen_shape() {
                 byte[] middle_xy = prev_dyn.slice(x + 1, y);
                 byte[] middle_yz = prev_dyn.slice(y + 1, z);
                 byte[] suffix = prev_dyn.slice(z + 1, 64);
-                byte[64] next_board = prefix + byte[1](vx) + middle_xy + byte[1](vy) + middle_yz + byte[1](vz) + suffix;
+                byte[64] next_board = byte[64](
+                    prefix + byte[1](vx) + middle_xy + byte[1](vy) + middle_yz + byte[1](vz) + suffix
+                );
 
                 require(next_board[10] == 1);
                 require(next_board[20] == 2);
@@ -4280,7 +4315,7 @@ fn allows_concat_of_int_arrays_with_plus() {
             entrypoint function main() {
                 int[] a = [1, 2];
                 int[] b = [3, 4];
-                int[4] c = a + b;
+                int[4] c = int[4](a + b);
 
                 require(c.length == 4);
                 require(c[0] == 1);
@@ -4305,7 +4340,7 @@ fn allows_concat_of_byte_arrays_with_plus() {
             entrypoint function main() {
                 byte[] a = 0x0102;
                 byte[] b = 0x0304;
-                byte[4] c = a + b;
+                byte[4] c = byte[4](a + b);
 
                 require(c.length == 4);
                 require(c == 0x01020304);
@@ -4327,7 +4362,7 @@ fn allows_concat_of_fixed_size_byte_array_elements_with_plus() {
             entrypoint function main() {
                 byte[2][] a = [0x0102, 0x0304];
                 byte[2][] b = [0x0506];
-                byte[2][3] c = a + b;
+                byte[2][3] c = byte[2][3](a + b);
 
                 require(c.length == 3);
                 require(c[0] == 0x0102);
@@ -4351,7 +4386,7 @@ fn allows_concat_of_bool_arrays_with_plus() {
             entrypoint function main() {
                 bool[] a = [true, false];
                 bool[] b = [true, false];
-                bool[4] c = a + b;
+                bool[4] c = bool[4](a + b);
 
                 require(c.length == 4);
                 require(c[0]);
@@ -4379,7 +4414,7 @@ fn allows_concat_of_pubkey_arrays_with_plus() {
 
                 pubkey[] a = [p1];
                 pubkey[] b = [p2];
-                pubkey[2] c = a + b;
+                pubkey[2] c = pubkey[2](a + b);
 
                 require(c.length == 2);
                 require(c[0] == p1);
@@ -4840,7 +4875,7 @@ fn locking_bytecode_p2pk_matches_pay_to_address_script() {
     let source = r#"
         contract Test() {
             entrypoint function main(pubkey pk, byte[] expected) {
-                byte[] spk = new ScriptPubKeyP2PK(pk);
+                byte[] spk = byte[](new ScriptPubKeyP2PK(pk));
                 require(spk == expected);
             }
         }
@@ -4864,7 +4899,7 @@ fn locking_bytecode_p2sh_matches_pay_to_address_script() {
     let source = r#"
         contract Test() {
             entrypoint function main(byte[32] hash, byte[] expected) {
-                byte[] spk = new ScriptPubKeyP2SH(hash);
+                byte[] spk = byte[](new ScriptPubKeyP2SH(hash));
                 require(spk == expected);
             }
         }
@@ -4888,7 +4923,7 @@ fn locking_bytecode_p2sh_from_redeem_script_matches_pay_to_script_hash_script() 
     let source = r#"
         contract Test() {
             entrypoint function main(byte[] redeem_script, byte[] expected) {
-                byte[] spk = new ScriptPubKeyP2SHFromRedeemScript(redeem_script);
+                byte[] spk = byte[](new ScriptPubKeyP2SHFromRedeemScript(redeem_script));
                 require(spk == expected);
             }
         }

@@ -130,7 +130,7 @@ contract ChessKing(
         byte[] prefix = prev_dyn.slice(0, low_idx);
         byte[] middle = prev_dyn.slice(low_idx + 1, high_idx);
         byte[] suffix = prev_dyn.slice(high_idx + 1, 64);
-        byte[64] next_board = prefix + byte[1](first_slot) + middle + byte[1](second_slot) + suffix;
+        byte[64] next_board = byte[64](prefix + byte[1](first_slot) + middle + byte[1](second_slot) + suffix);
 
         // Capturing the enemy king is the on-chain terminal condition.
         // Off-chain clients may enforce stricter classical no-self-check rules,

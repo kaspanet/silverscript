@@ -57,7 +57,7 @@ fn infer_fixed_array_type_from_initializer_ref<'i>(
 
     let element_type = declared_type.array_element_type()?;
     let init = initializer?;
-    let init_type = infer_expr_type_ref(init, types, constants, functions, Some(&element_type))?;
+    let init_type = infer_expr_type_ref_with_hint(init, types, constants, functions, Some(&element_type))?;
 
     if !init_type.is_array() || init_type.array_element_type() != Some(element_type.clone()) {
         return None;
@@ -223,7 +223,16 @@ fn infer_type_ref<'i>(
     }
 }
 
-fn infer_expr_type_ref<'i>(
+pub(super) fn infer_expr_type_ref<'i>(
+    expr: &Expr<'i>,
+    types: &HashMap<String, String>,
+    constants: &HashMap<String, Expr<'i>>,
+    functions: &HashMap<String, &FunctionAst<'i>>,
+) -> Option<TypeRef> {
+    infer_expr_type_ref_with_hint(expr, types, constants, functions, None)
+}
+
+fn infer_expr_type_ref_with_hint<'i>(
     expr: &Expr<'i>,
     types: &HashMap<String, String>,
     constants: &HashMap<String, Expr<'i>>,
@@ -231,6 +240,10 @@ fn infer_expr_type_ref<'i>(
     array_literal_element_type: Option<&TypeRef>,
 ) -> Option<TypeRef> {
     match &expr.kind {
+        ExprKind::Int(_) | ExprKind::DateLiteral(_) => parse_type_ref("int").ok(),
+        ExprKind::Bool(_) => parse_type_ref("bool").ok(),
+        ExprKind::String(_) => parse_type_ref("string").ok(),
+        ExprKind::Byte(_) => parse_type_ref("byte").ok(),
         ExprKind::Identifier(name) => parse_type_ref(types.get(name)?).ok(),
         ExprKind::Array(values) => {
             let mut inferred = array_literal_element_type
@@ -248,26 +261,39 @@ fn infer_expr_type_ref<'i>(
             }
             parse_type_ref(name).ok()
         }
+        ExprKind::New { name, .. } => match name.as_str() {
+            "ScriptPubKeyP2PK" => parse_type_ref("byte[34]").ok(),
+            "ScriptPubKeyP2SH" | "ScriptPubKeyP2SHFromRedeemScript" => parse_type_ref("byte[35]").ok(),
+            _ => None,
+        },
         ExprKind::Binary { op: BinaryOp::Add, left, right } => {
-            let left_type = infer_expr_type_ref(left, types, constants, functions, None)?;
-            let right_type = infer_expr_type_ref(right, types, constants, functions, None)?;
+            let left_type = infer_expr_type_ref_with_hint(left, types, constants, functions, None)?;
+            let right_type = infer_expr_type_ref_with_hint(right, types, constants, functions, None)?;
             let left_element = left_type.array_element_type()?;
             if right_type.array_element_type() != Some(left_element.clone()) {
                 return None;
             }
-            let left_size = array_size_with_constants_ref(&left_type, constants)?;
-            let right_size = array_size_with_constants_ref(&right_type, constants)?;
             let mut inferred = left_element;
-            inferred.array_dims.push(ArrayDim::Fixed(left_size.checked_add(right_size)?));
+            match (array_size_with_constants_ref(&left_type, constants), array_size_with_constants_ref(&right_type, constants)) {
+                (Some(left_size), Some(right_size)) => {
+                    inferred.array_dims.push(ArrayDim::Fixed(left_size.checked_add(right_size)?));
+                }
+                _ if matches!(left_type.array_size(), Some(ArrayDim::Dynamic))
+                    || matches!(right_type.array_size(), Some(ArrayDim::Dynamic)) =>
+                {
+                    inferred.array_dims.push(ArrayDim::Dynamic);
+                }
+                _ => return None,
+            }
             Some(inferred)
         }
         ExprKind::IfElse { then_expr, else_expr, .. } => {
-            let then_type = infer_expr_type_ref(then_expr, types, constants, functions, None)?;
-            let else_type = infer_expr_type_ref(else_expr, types, constants, functions, None)?;
+            let then_type = infer_expr_type_ref_with_hint(then_expr, types, constants, functions, None)?;
+            let else_type = infer_expr_type_ref_with_hint(else_expr, types, constants, functions, None)?;
             (then_type == else_type).then_some(then_type)
         }
         ExprKind::Append { source, args, .. } => {
-            let source_type = infer_expr_type_ref(source, types, constants, functions, None)?;
+            let source_type = infer_expr_type_ref_with_hint(source, types, constants, functions, None)?;
             let element_type = source_type.array_element_type()?;
             let source_size = array_size_with_constants_ref(&source_type, constants)?;
             let mut inferred = element_type;
@@ -275,7 +301,7 @@ fn infer_expr_type_ref<'i>(
             Some(inferred)
         }
         ExprKind::UnarySuffix { source, kind: UnarySuffixKind::Reverse, .. } => {
-            infer_expr_type_ref(source, types, constants, functions, None)
+            infer_expr_type_ref_with_hint(source, types, constants, functions, None)
         }
         _ => None,
     }
@@ -287,8 +313,12 @@ fn infer_array_literal_element_type<'i>(
     constants: &HashMap<String, Expr<'i>>,
     functions: &HashMap<String, &FunctionAst<'i>>,
 ) -> Option<TypeRef> {
-    let first_type = infer_expr_type_ref(values.first()?, types, constants, functions, None)?;
-    if values.iter().skip(1).all(|value| infer_expr_type_ref(value, types, constants, functions, None).as_ref() == Some(&first_type)) {
+    let first_type = infer_expr_type_ref_with_hint(values.first()?, types, constants, functions, None)?;
+    if values
+        .iter()
+        .skip(1)
+        .all(|value| infer_expr_type_ref_with_hint(value, types, constants, functions, None).as_ref() == Some(&first_type))
+    {
         Some(first_type)
     } else {
         None

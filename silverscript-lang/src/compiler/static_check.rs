@@ -26,7 +26,9 @@ pub(super) fn static_check_contract<'i>(
 
     for (param, value) in contract.params.iter().zip(constructor_args.iter()) {
         let param_type_name = type_name_from_ref(&param.type_ref);
-        if !expr_matches_declared_type_ref(value, &param.type_ref, &structs) {
+        if validate_expr_matches_type(value, &param.type_ref, &HashMap::new(), &structs, &constants, &HashMap::new(), &contract.fields)
+            .is_err()
+        {
             return Err(CompilerError::Unsupported(format!("constructor argument '{}' expects {}", param.name, param_type_name)));
         }
     }
@@ -65,6 +67,8 @@ pub(crate) fn validate_return_types<'i>(
     types: &HashMap<String, String>,
     structs: &StructRegistry,
     constants: &HashMap<String, Expr<'i>>,
+    functions: &HashMap<String, &FunctionAst<'i>>,
+    contract_fields: &[ContractFieldAst<'i>],
 ) -> Result<(), CompilerError> {
     if return_types.is_empty() {
         return Err(CompilerError::Unsupported("return requires function return types".to_string()));
@@ -73,7 +77,7 @@ pub(crate) fn validate_return_types<'i>(
         return Err(CompilerError::Unsupported("return values count must match function return types".to_string()));
     }
     for (expr, return_type) in exprs.iter().zip(return_types.iter()) {
-        if !expr_matches_return_type_ref(expr, return_type, types, structs, constants) {
+        if validate_expr_matches_type(expr, return_type, types, structs, constants, functions, contract_fields).is_err() {
             let type_name = type_name_from_ref(return_type);
             return Err(CompilerError::Unsupported(format!("return value expects {type_name}")));
         }
@@ -277,6 +281,12 @@ fn validate_variable_definition_statement_shape<'i>(
         )?;
         validate_expr_matches_type(expr, type_ref, ctx.types, ctx.structs, ctx.constants, ctx.functions, ctx.contract_fields)
             .map_err(|err| {
+                if type_ref.is_array()
+                    && matches!(expr.kind, ExprKind::Array(_))
+                    && !matches!(&err, CompilerError::Unsupported(message) if message == "size mismatch")
+                {
+                    return CompilerError::Unsupported(format!("array element type mismatch for type {type_name}"));
+                }
                 map_declared_type_error(
                     err,
                     "variable",
@@ -321,9 +331,6 @@ fn validate_array_initializer<'i>(
                     type_name,
                     values.len()
                 )));
-            }
-            if !array_literal_matches_type_with_env_ref(values, type_ref, types, constants) {
-                return Err(CompilerError::Unsupported(format!("array element type mismatch for type {}", type_name)));
             }
             Ok(())
         }
@@ -389,7 +396,7 @@ fn validate_state_function_call_assign_statement_shape<'i>(
             ctx.contract_fields,
         )?;
     }
-    validate_state_function_call_assign(bindings, name, args, ctx.structs, ctx.contract_fields)?;
+    validate_state_function_call_assign(bindings, name, args, ctx.structs, ctx.constants, ctx.contract_fields)?;
     for binding in bindings {
         ensure_array_elements_have_known_size(&binding.type_ref, ctx.structs, &type_name_from_ref(&binding.type_ref))?;
         insert_type_binding(ctx.types, &binding.name, &binding.type_ref, ctx.structs)?;
@@ -412,7 +419,7 @@ fn validate_struct_destructure_statement_shape<'i>(
         ctx.functions,
         ctx.contract_fields,
     )?;
-    validate_struct_destructure_bindings(bindings, expr, ctx.types, ctx.structs, ctx.contract_fields)?;
+    validate_struct_destructure_bindings(bindings, expr, ctx.types, ctx.structs, ctx.constants, ctx.contract_fields)?;
     for binding in bindings {
         ensure_array_elements_have_known_size(&binding.type_ref, ctx.structs, &type_name_from_ref(&binding.type_ref))?;
         insert_type_binding(ctx.types, &binding.name, &binding.type_ref, ctx.structs)?;
@@ -479,7 +486,7 @@ fn validate_function_call_assign_statement_shape<'i>(
         return Err(CompilerError::Unsupported("function call assignment return count mismatch".to_string()));
     }
     for (binding, return_type) in bindings.iter().zip(function.return_types.iter()) {
-        if binding.type_ref != *return_type {
+        if !type_refs_equal(&binding.type_ref, return_type, ctx.constants) {
             return Err(CompilerError::Unsupported(format!(
                 "function return binding '{}' expects {}",
                 binding.name,
@@ -507,7 +514,7 @@ fn validate_return_statement_shape<'i>(
             ctx.contract_fields,
         )?;
     }
-    validate_return_types(exprs, ctx.return_types, ctx.types, ctx.structs, ctx.constants)
+    validate_return_types(exprs, ctx.return_types, ctx.types, ctx.structs, ctx.constants, ctx.functions, ctx.contract_fields)
 }
 
 fn validate_require_statement_shape<'i>(
@@ -719,6 +726,7 @@ fn validate_struct_destructure_bindings<'i>(
     expr: &Expr<'i>,
     types: &HashMap<String, String>,
     structs: &StructRegistry,
+    constants: &HashMap<String, Expr<'i>>,
     contract_fields: &[ContractFieldAst<'i>],
 ) -> Result<(), CompilerError> {
     let expr_type = infer_struct_destructure_expr_type(expr, types, structs, contract_fields)?;
@@ -747,7 +755,7 @@ fn validate_struct_destructure_bindings<'i>(
         let Some(binding) = bindings.iter().find(|binding| binding.field_name == field.name) else {
             return Err(CompilerError::Unsupported("struct destructuring must bind all fields exactly once".to_string()));
         };
-        if binding.type_ref != field.type_ref {
+        if !type_refs_equal(&binding.type_ref, &field.type_ref, constants) {
             return Err(CompilerError::Unsupported(format!(
                 "struct field '{}' expects {}",
                 field.name,
@@ -767,6 +775,7 @@ fn validate_state_function_call_assign<'i>(
     name: &str,
     args: &[Expr<'i>],
     structs: &StructRegistry,
+    constants: &HashMap<String, Expr<'i>>,
     contract_fields: &[ContractFieldAst<'i>],
 ) -> Result<(), CompilerError> {
     match name {
@@ -788,7 +797,7 @@ fn validate_state_function_call_assign<'i>(
                         "readInputState bindings must include all contract fields exactly once".to_string(),
                     ));
                 };
-                if binding.type_ref != field.type_ref {
+                if !type_refs_equal(&binding.type_ref, &field.type_ref, constants) {
                     return Err(CompilerError::Unsupported(format!(
                         "readInputState binding '{}' expects {}",
                         binding.name,
@@ -805,7 +814,7 @@ fn validate_state_function_call_assign<'i>(
                         .to_string(),
                 ));
             };
-            let struct_name = struct_name_for_state_bindings_ref(bindings, structs)?;
+            let struct_name = struct_name_for_state_bindings_ref(bindings, structs, constants)?;
             let struct_spec =
                 structs.get(&struct_name).ok_or_else(|| CompilerError::Unsupported(format!("unknown struct '{struct_name}'")))?;
             if bindings.len() != struct_spec.fields.len() {
@@ -824,7 +833,7 @@ fn validate_state_function_call_assign<'i>(
                         "readInputStateWithTemplate does not support nested struct fields in destructuring".to_string(),
                     ));
                 }
-                if binding.type_ref != field.type_ref {
+                if !type_refs_equal(&binding.type_ref, &field.type_ref, constants) {
                     return Err(CompilerError::Unsupported(format!(
                         "readInputStateWithTemplate binding '{}' expects {}",
                         binding.name,
@@ -880,7 +889,7 @@ fn validate_expr_semantics<'i>(
                     contract_fields,
                 );
                 if let (Some(left_type), Some(right_type)) = (left_type, right_type)
-                    && !comparison_types_compatible_ref(&left_type, &right_type)
+                    && !type_refs_equal(&left_type, &right_type, constants)
                 {
                     return Err(CompilerError::Unsupported(format!(
                         "type mismatch: cannot compare {} and {}",
@@ -917,7 +926,7 @@ fn validate_expr_semantics<'i>(
                 contract_fields,
             );
             if let (Some(then_type), Some(else_type)) = (then_type, else_type)
-                && then_type != else_type
+                && !type_refs_equal(&then_type, &else_type, constants)
             {
                 return Err(CompilerError::Unsupported(format!(
                     "ternary branch type mismatch: then expression is {}, else expression is {}",
@@ -1128,6 +1137,7 @@ fn infer_expr_type_ref_for_comparison_ref<'i>(
             )?;
             (then_type == else_type).then_some(then_type)
         }
+        ExprKind::New { name, .. } => typed_constructor_return_type_ref(name),
         ExprKind::Call { name, .. } if name == "readInputState" && !contract_fields.is_empty() => {
             Some(TypeRef { base: TypeBase::Custom(STATE_TYPE_NAME.to_string()), array_dims: Vec::new() })
         }
@@ -1211,19 +1221,10 @@ fn coerce_rhs_byte_literal_for_comparison_ref<'i>(left_type: Option<&TypeRef>, r
     right.clone()
 }
 
-fn comparison_types_compatible_ref(left_type: &TypeRef, right_type: &TypeRef) -> bool {
-    if left_type == right_type {
-        return true;
-    }
-    matches!(
-        (&left_type.base, left_type.array_dims.as_slice(), &right_type.base, right_type.array_dims.as_slice()),
-        (TypeBase::Byte, [], TypeBase::Byte, [ArrayDim::Fixed(1)]) | (TypeBase::Byte, [ArrayDim::Fixed(1)], TypeBase::Byte, [])
-    )
-}
-
 fn struct_name_for_state_bindings_ref<'i>(
     bindings: &[StructBindingAst<'i>],
     structs: &StructRegistry,
+    constants: &HashMap<String, Expr<'i>>,
 ) -> Result<String, CompilerError> {
     let matches = structs
         .iter()
@@ -1235,7 +1236,7 @@ fn struct_name_for_state_bindings_ref<'i>(
                 bindings
                     .iter()
                     .find(|binding| binding.field_name == field.name)
-                    .is_some_and(|binding| binding.type_ref == field.type_ref)
+                    .is_some_and(|binding| type_refs_equal(&binding.type_ref, &field.type_ref, constants))
             });
             all_match.then(|| name.clone())
         })
@@ -1397,13 +1398,19 @@ fn validate_builtin_call<'i>(
 
     for (arg, &(arg_name, expected_type_name)) in args.iter().zip(expected_args) {
         let expected_type = parse_type_ref(expected_type_name)?;
-        let actual_type =
-            infer_expr_type_ref_for_comparison_ref(arg, env, prefer_env_for_comparison, types, structs, functions, contract_fields)
-                .ok_or_else(|| CompilerError::Unsupported(format!("{name}() argument '{arg_name}' expects {expected_type_name}")))?;
-        if !type_refs_equal(&actual_type, &expected_type, constants) && !expr_matches_type_ref(arg, &expected_type) {
+        if validate_expr_matches_type(arg, &expected_type, types, structs, constants, functions, contract_fields).is_err() {
+            let actual_type = infer_expr_type_ref_for_comparison_ref(
+                arg,
+                env,
+                prefer_env_for_comparison,
+                types,
+                structs,
+                functions,
+                contract_fields,
+            );
+            let actual_type = actual_type.as_ref().map(type_name_from_ref).unwrap_or_else(|| "unknown".to_string());
             return Err(CompilerError::Unsupported(format!(
-                "{name}() argument '{arg_name}' expects {expected_type_name}, got {}",
-                type_name_from_ref(&actual_type)
+                "{name}() argument '{arg_name}' expects {expected_type_name}, got {actual_type}"
             )));
         }
     }
@@ -1415,11 +1422,20 @@ fn typed_builtin_return_type_ref(name: &str) -> Option<TypeRef> {
     match name {
         "checkSigFromStack" | "checkSigFromStackECDSA" => parse_type_ref("bool").ok(),
         "templateHash" => parse_type_ref("byte[32]").ok(),
+        "int" | "bool" | "byte" | "string" | "pubkey" | "sig" | "datasig" | "byte[]" => parse_type_ref(name).ok(),
         _ => None,
     }
 }
 
-fn validate_expr_matches_type<'i>(
+fn typed_constructor_return_type_ref(name: &str) -> Option<TypeRef> {
+    match name {
+        "ScriptPubKeyP2PK" => parse_type_ref("byte[34]").ok(),
+        "ScriptPubKeyP2SH" | "ScriptPubKeyP2SHFromRedeemScript" => parse_type_ref("byte[35]").ok(),
+        _ => None,
+    }
+}
+
+pub(crate) fn validate_expr_matches_type<'i>(
     expr: &Expr<'i>,
     type_ref: &TypeRef,
     types: &HashMap<String, String>,
@@ -1428,6 +1444,18 @@ fn validate_expr_matches_type<'i>(
     functions: &HashMap<String, &FunctionAst<'i>>,
     contract_fields: &[ContractFieldAst<'i>],
 ) -> Result<(), CompilerError> {
+    if let ExprKind::Call { name, name_span, .. } = &expr.kind
+        && name == "byte[1]"
+        && name_span.as_str() == "byte"
+    {
+        let scalar_byte = parse_type_ref("byte")?;
+        return if type_refs_equal(&scalar_byte, type_ref, constants) {
+            Ok(())
+        } else {
+            Err(CompilerError::Unsupported("type mismatch".to_string()))
+        };
+    }
+
     if let ExprKind::Call { name, .. } = &expr.kind
         && let Some(function) = functions.get(name)
     {
@@ -1500,8 +1528,9 @@ fn validate_expr_matches_type<'i>(
         {
             return Err(CompilerError::Unsupported("size mismatch".to_string()));
         }
-        if !array_literal_matches_type_with_env_ref(values, type_ref, types, constants) {
-            return Err(CompilerError::Unsupported("type mismatch".to_string()));
+        let element_type = type_ref.array_element_type().expect("array type has an element type");
+        for value in values {
+            validate_expr_matches_type(value, &element_type, types, structs, constants, functions, contract_fields)?;
         }
         return Ok(());
     }
@@ -1521,7 +1550,7 @@ fn validate_expr_matches_type<'i>(
             return compile::read_input_state_with_template_values(args, type_ref, structs, constants).map(|_| ());
         }
         if matches!(expr.kind, ExprKind::StructLiteral(_)) {
-            return validate_struct_literal_matches_type(expr, type_ref, types, structs, constants);
+            return validate_struct_literal_matches_type(expr, type_ref, types, structs, constants, functions, contract_fields);
         }
         lower_runtime_struct_expr(expr, type_ref, types, structs, contract_fields, constants, 0).map(|_| ())
     } else if is_struct_array(type_ref, structs) {
@@ -1548,20 +1577,30 @@ fn validate_expr_matches_type<'i>(
             )
             .and_then(|source_type| type_after_append(&source_type, args.len(), constants))
             .is_some_and(|actual_type| type_refs_equal(&actual_type, type_ref, constants)),
-            _ => expr_matches_declared_type_ref(expr, type_ref, structs),
+            _ => false,
         };
         if matches { Ok(()) } else { Err(CompilerError::Unsupported("type mismatch".to_string())) }
     } else {
-        if type_ref.is_array()
-            && let Ok(actual_type_name) =
-                super::debug_value_types::infer_debug_expr_value_type(expr, &HashMap::new(), types, &mut HashSet::new())
-            && let Ok(actual_type) = parse_type_ref(&actual_type_name)
+        if let Some(actual_type) =
+            infer_expr_type_ref_for_comparison_ref(expr, &HashMap::new(), &HashSet::new(), types, structs, functions, contract_fields)
+            && type_refs_equal(&actual_type, type_ref, constants)
+        {
+            return Ok(());
+        }
+        if let Some(actual_type) = super::infer_array::infer_expr_type_ref(expr, types, constants, functions)
             && type_refs_equal(&actual_type, type_ref, constants)
         {
             return Ok(());
         }
         let lowered = lower_runtime_expr(expr, types, structs)?;
-        if expr_matches_return_type_ref(&lowered, type_ref, types, structs, constants) {
+        if value_matches_type_ref(&lowered, type_ref) {
+            return Ok(());
+        }
+        let actual_type_name =
+            super::debug_value_types::infer_debug_expr_value_type(&lowered, &HashMap::new(), types, &mut HashSet::new())
+                .map_err(|_| CompilerError::Unsupported("type mismatch".to_string()))?;
+        let actual_type = parse_type_ref(&actual_type_name)?;
+        if type_refs_equal(&actual_type, type_ref, constants) {
             Ok(())
         } else {
             Err(CompilerError::Unsupported("type mismatch".to_string()))
@@ -1575,6 +1614,8 @@ fn validate_struct_literal_matches_type<'i>(
     types: &HashMap<String, String>,
     structs: &StructRegistry,
     constants: &HashMap<String, Expr<'i>>,
+    functions: &HashMap<String, &FunctionAst<'i>>,
+    contract_fields: &[ContractFieldAst<'i>],
 ) -> Result<(), CompilerError> {
     let Some(struct_name) = struct_name_from_type_ref(type_ref, structs) else {
         return Err(CompilerError::Unsupported("type mismatch".to_string()));
@@ -1593,7 +1634,7 @@ fn validate_struct_literal_matches_type<'i>(
         let Some(value) = provided.remove(&field.name) else {
             return Err(CompilerError::Unsupported(format!("struct field '{}' must be initialized", field.name)));
         };
-        validate_expr_matches_type(value, &field.type_ref, types, structs, constants, &HashMap::new(), &[]).map_err(|_| {
+        validate_expr_matches_type(value, &field.type_ref, types, structs, constants, functions, contract_fields).map_err(|_| {
             CompilerError::Unsupported(format!("struct field '{}' expects {}", field.name, field.type_ref.type_name()))
         })?;
     }
@@ -1649,11 +1690,11 @@ fn infer_fixed_array_type_from_initializer_type_check<'i>(
         ExprKind::Array(values) => {
             let mut inferred = element_type.clone();
             inferred.array_dims.push(ArrayDim::Fixed(values.len()));
-            if array_literal_matches_type_with_env_ref(values, &inferred, types, constants) { Some(inferred) } else { None }
+            Some(inferred)
         }
         ExprKind::Identifier(name) => {
             let other_type = parse_type_ref(types.get(name)?).ok()?;
-            if !is_array_type_ref(&other_type) || array_element_type_ref(&other_type) != Some(element_type.clone()) {
+            if !other_type.is_array() || array_element_type_ref(&other_type) != Some(element_type.clone()) {
                 return None;
             }
             let size = array_size_with_constants_ref(&other_type, constants)?;
@@ -1704,114 +1745,18 @@ fn statement_contains_return(stmt: &Statement<'_>) -> bool {
     }
 }
 
-pub(crate) fn expr_matches_declared_type_ref<'i>(expr: &Expr<'i>, type_ref: &TypeRef, structs: &StructRegistry) -> bool {
-    if let Some(struct_name) = struct_name_from_type_ref(type_ref, structs) {
-        let Some(item) = structs.get(struct_name) else {
-            return false;
-        };
-        let ExprKind::StructLiteral(fields) = &expr.kind else {
-            return false;
-        };
-        if fields.len() != item.fields.len() {
-            return false;
-        }
-        for field in &item.fields {
-            let Some(value) = fields.iter().find(|entry| entry.name == field.name).map(|entry| &entry.expr) else {
-                return false;
-            };
-            if !expr_matches_declared_type_ref(value, &field.type_ref, structs) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    if let Some(element_type) = type_ref.array_element_type() {
-        if is_struct(&element_type, structs) {
-            return matches!(&expr.kind, ExprKind::Array(values) if values.iter().all(|value| expr_matches_declared_type_ref(value, &element_type, structs)));
-        }
-    }
-
-    expr_matches_type_ref(expr, type_ref)
-}
-
-pub(super) fn expr_matches_return_type_ref<'i>(
-    expr: &Expr<'i>,
-    type_ref: &TypeRef,
-    types: &HashMap<String, String>,
-    structs: &StructRegistry,
-    constants: &HashMap<String, Expr<'i>>,
-) -> bool {
-    if let ExprKind::Identifier(name) = &expr.kind {
-        return types
-            .get(name)
-            .and_then(|type_name| parse_type_ref(type_name).ok())
-            .is_some_and(|actual| type_refs_equal(&actual, type_ref, constants));
-    }
-
-    if let Some(struct_name) = struct_name_from_type_ref(type_ref, structs) {
-        let Some(item) = structs.get(struct_name) else {
-            return false;
-        };
-        let ExprKind::StructLiteral(fields) = &expr.kind else {
-            return false;
-        };
-        if fields.len() != item.fields.len() {
-            return false;
-        }
-        for field in &item.fields {
-            let Some(value) = fields.iter().find(|entry| entry.name == field.name).map(|entry| &entry.expr) else {
-                return false;
-            };
-            if !expr_matches_return_type_ref(value, &field.type_ref, types, structs, constants) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    if let Some(element_type) = type_ref.array_element_type()
-        && is_struct(&element_type, structs)
-    {
-        return matches!(&expr.kind, ExprKind::Array(values) if values.iter().all(|value| expr_matches_return_type_ref(value, &element_type, types, structs, constants)));
-    }
-
-    match &expr.kind {
-        ExprKind::IfElse { .. } => {
-            if let Ok(actual_type_name) =
-                super::debug_value_types::infer_debug_expr_value_type(expr, &HashMap::new(), types, &mut HashSet::new())
-                && let Ok(actual_type) = parse_type_ref(&actual_type_name)
-            {
-                return type_refs_equal(&actual_type, type_ref, constants);
-            }
-            false
-        }
-        ExprKind::Array(values) => {
-            expr_matches_declared_type_ref(expr, type_ref, structs)
-                || (is_array_type_ref(type_ref) && array_literal_matches_type_ref(values, type_ref))
-        }
-        ExprKind::Int(_) | ExprKind::DateLiteral(_) | ExprKind::Bool(_) | ExprKind::Byte(_) | ExprKind::String(_) => {
-            expr_matches_type_ref(expr, type_ref)
-        }
-        ExprKind::Call { name, .. } => {
-            typed_builtin_return_type_ref(name).map(|actual_type| type_refs_equal(&actual_type, type_ref, constants)).unwrap_or(true)
-        }
-        _ => true,
-    }
-}
-
-pub(super) fn expr_matches_type_ref<'i>(expr: &Expr<'i>, type_ref: &TypeRef) -> bool {
+pub(super) fn value_matches_type_ref<'i>(expr: &Expr<'i>, type_ref: &TypeRef) -> bool {
     if type_ref.is_array() {
         if let Some(size) = fixed_array_size(type_ref) {
             if let Some(element_type) = type_ref.array_element_type() {
                 if element_type.base == TypeBase::Byte {
                     return byte_array_len(expr) == Some(size);
                 }
-                return matches!(&expr.kind, ExprKind::Array(values) if values.len() == size && values.iter().all(|value| expr_matches_type_ref(value, &element_type)));
+                return matches!(&expr.kind, ExprKind::Array(values) if values.len() == size && values.iter().all(|value| value_matches_type_ref(value, &element_type)));
             }
         }
         return byte_array_len(expr).is_some()
-            || matches!(&expr.kind, ExprKind::Array(values) if type_ref.array_element_type().is_some_and(|element_type| values.iter().all(|value| expr_matches_type_ref(value, &element_type))));
+            || matches!(&expr.kind, ExprKind::Array(values) if type_ref.array_element_type().is_some_and(|element_type| values.iter().all(|value| value_matches_type_ref(value, &element_type))));
     }
 
     match type_ref.base {
@@ -1824,10 +1769,6 @@ pub(super) fn expr_matches_type_ref<'i>(expr: &Expr<'i>, type_ref: &TypeRef) -> 
         TypeBase::Datasig => byte_array_len(expr) == Some(64),
         TypeBase::Custom(_) => false,
     }
-}
-
-pub(super) fn value_matches_type_ref<'i>(expr: &Expr<'i>, type_ref: &TypeRef) -> bool {
-    expr_matches_type_ref(expr, type_ref)
 }
 
 fn type_name_from_ref(type_ref: &TypeRef) -> String {
@@ -1848,51 +1789,8 @@ fn fixed_array_size(type_ref: &TypeRef) -> Option<usize> {
     }
 }
 
-fn is_array_type_ref(type_ref: &TypeRef) -> bool {
-    type_ref.is_array()
-}
-
 fn array_element_type_ref(type_ref: &TypeRef) -> Option<TypeRef> {
     type_ref.array_element_type()
-}
-
-pub(super) fn array_literal_matches_type_ref<'i>(values: &[Expr<'i>], type_ref: &TypeRef) -> bool {
-    let Some(element_type) = array_element_type_ref(type_ref) else {
-        return false;
-    };
-
-    if let Some(expected_size) = fixed_array_size(type_ref)
-        && values.len() != expected_size
-    {
-        return false;
-    }
-
-    values.iter().all(|value| expr_matches_type_ref(value, &element_type))
-}
-
-fn array_literal_matches_type_with_env_ref<'i>(
-    values: &[Expr<'i>],
-    type_ref: &TypeRef,
-    types: &HashMap<String, String>,
-    constants: &HashMap<String, Expr<'i>>,
-) -> bool {
-    let Some(element_type) = array_element_type_ref(type_ref) else {
-        return false;
-    };
-
-    if let Some(expected_size) = array_size_with_constants_ref(type_ref, constants)
-        && values.len() != expected_size
-    {
-        return false;
-    }
-
-    values.iter().all(|value| match &value.kind {
-        ExprKind::Identifier(name) => types
-            .get(name)
-            .and_then(|value_type| parse_type_ref(value_type).ok())
-            .is_some_and(|value_type| type_refs_equal(&value_type, &element_type, constants)),
-        _ => expr_matches_type_ref(value, &element_type),
-    })
 }
 
 fn array_size_with_constants_ref<'i>(type_ref: &TypeRef, constants: &HashMap<String, Expr<'i>>) -> Option<usize> {

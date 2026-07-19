@@ -1,7 +1,7 @@
 use super::array_append::lower_array_appends;
 use super::covenant_declarations::lower_covenant_declarations;
 use super::debug_value_types::infer_debug_expr_value_type;
-use super::infer_array::lower_inferred_array_sizes;
+use super::infer_array::{infer_expr_type_ref, lower_inferred_array_sizes};
 use super::inline_functions::lower_inline_functions;
 use super::locals::lower_local_aliases;
 use super::stack_bindings::StackBindings;
@@ -3598,7 +3598,11 @@ fn compile_call_expr<'i>(
         "bytes" => compile_bytes_call(&mut ctx, args),
         "length" => compile_length_call(&mut ctx, args),
         "int" | "byte" | "bool" | "string" | "sig" | "pubkey" | "datasig" => compile_passthrough_cast_call(&mut ctx, name, args),
-        name if name.starts_with("byte[") && name.ends_with(']') => compile_byte_sequence_cast_call(&mut ctx, name, args),
+        name if parse_type_ref(name)
+            .is_ok_and(|type_ref| matches!(type_ref.base, TypeBase::Byte) && type_ref.array_dims.len() == 1) =>
+        {
+            compile_byte_sequence_cast_call(&mut ctx, name, args)
+        }
         name if parse_type_ref(name).is_ok_and(|type_ref| is_array_type_ref(&type_ref)) => {
             compile_array_cast_call(&mut ctx, name, args)
         }
@@ -3774,7 +3778,10 @@ fn compile_byte_sequence_cast_call<'i>(
     if args.len() != 1 {
         return Err(CompilerError::Unsupported(format!("{name}() expects a single argument")));
     }
-    let source_type = infer_debug_expr_value_type(&args[0], ctx.scope.constants, ctx.scope.types, &mut HashSet::new()).ok();
+    let source_type = infer_expr_type_ref(&args[0], ctx.scope.types, ctx.scope.constants, &HashMap::new())
+        .map(|type_ref| type_name_from_ref(&type_ref))
+        .filter(|type_name| byte_sequence_cast_size(type_name).is_some())
+        .or_else(|| infer_debug_expr_value_type(&args[0], ctx.scope.constants, ctx.scope.types, &mut HashSet::new()).ok());
     if let Some(source_type) = source_type.as_deref() {
         if let Some(source_size) = byte_sequence_cast_size(source_type) {
             if let Some(source_size) = source_size {
@@ -3960,7 +3967,8 @@ pub(crate) fn is_bytes_type(type_name: &str) -> bool {
     is_array_type(type_name)
 }
 
-pub(super) fn byte_sequence_cast_size(type_name: &str) -> Option<Option<i64>> {
+// TODO: Make it depend on the actual type instead of the name.
+fn byte_sequence_cast_size(type_name: &str) -> Option<Option<i64>> {
     match type_name {
         "bytes" | "byte[]" | "string" => Some(None),
         "byte" => Some(Some(1)),

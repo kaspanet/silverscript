@@ -34,8 +34,7 @@ pub use compile::{compile_debug_expr, function_branch_index};
 pub(crate) use debug_recording::DebugRecorder;
 use r#for::lower_for_loops;
 use read_input_state::lower_read_input_state_calls;
-pub(crate) use static_check::expr_matches_declared_type_ref;
-use static_check::value_matches_type_ref;
+use static_check::{validate_expr_matches_type, value_matches_type_ref};
 pub use structs::flattened_struct_name;
 pub(super) use structs::{
     StructRegistry, build_struct_registry, ensure_known_or_builtin_type, flatten_constructor_args_env, flatten_type_ref_leaves,
@@ -132,12 +131,15 @@ impl<'i> ContractAst<'i> {
         }
 
         let structs = build_struct_registry(self)?;
-        let mut env: HashMap<String, Expr<'i>> =
+        let constants: HashMap<String, Expr<'i>> =
             self.constants.iter().map(|constant| (constant.name.clone(), constant.expr.clone())).collect();
+        let mut env = constants.clone();
 
         for (param, value) in self.params.iter().zip(constructor_args.iter()) {
             let type_name = type_name_from_ref(&param.type_ref);
-            if !expr_matches_declared_type_ref(value, &param.type_ref, &structs) {
+            if validate_expr_matches_type(value, &param.type_ref, &HashMap::new(), &structs, &constants, &HashMap::new(), &self.fields)
+                .is_err()
+            {
                 return Err(CompilerError::Unsupported(format!("constructor argument '{}' expects {}", param.name, type_name)));
             }
             env.insert(param.name.clone(), value.clone());
@@ -151,7 +153,17 @@ impl<'i> ContractAst<'i> {
 
             let type_name = field.type_ref.type_name();
             let resolved = resolve_expr(field.expr.clone(), &env, &mut std::collections::HashSet::new())?;
-            if !expr_matches_declared_type_ref(&resolved, &field.type_ref, &structs) {
+            if validate_expr_matches_type(
+                &resolved,
+                &field.type_ref,
+                &HashMap::new(),
+                &structs,
+                &constants,
+                &HashMap::new(),
+                &self.fields,
+            )
+            .is_err()
+            {
                 return Err(CompilerError::Unsupported(format!("contract field '{}' expects {}", field.name, type_name)));
             }
 
