@@ -30,5 +30,6 @@ faster-hex = "0.10"
 semver = "1.0"
 
 [dev-dependencies]
+blake3 = "1.8.5"
 kaspa-addresses.workspace = true
 sha2 = "0.10"

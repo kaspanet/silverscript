@@ -2942,6 +2942,7 @@ name = "silverscript-lang"
 version = "0.1.0"
 dependencies = [
  "blake2b_simd",
+ "blake3",
  "chrono",
  "clap",
  "faster-hex 0.10.0",

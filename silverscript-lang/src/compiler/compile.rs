@@ -457,6 +457,9 @@ fn infer_expr_type_ref_for_comparison<'i>(
                 | "datasig"
                 | "bytes"
                 | "blake2b"
+                | "blake2bWithKey"
+                | "blake3"
+                | "blake3WithKey"
                 | "templateHash"
                 | "sha256"
                 | "OpSha256"
@@ -3433,6 +3436,9 @@ fn expr_is_bytes_inner<'i>(expr: &Expr<'i>, types: &HashMap<String, String>, vis
                 name,
                 "bytes"
                     | "blake2b"
+                    | "blake2bWithKey"
+                    | "blake3"
+                    | "blake3WithKey"
                     | "templateHash"
                     | "sha256"
                     | "OpSha256"
@@ -3597,6 +3603,9 @@ fn compile_call_expr<'i>(
             compile_array_cast_call(&mut ctx, name, args)
         }
         "blake2b" => compile_blake2b_call(&mut ctx, args),
+        "blake2bWithKey" => compile_blake2b_with_key_call(&mut ctx, args),
+        "blake3" => compile_blake3_call(&mut ctx, args),
+        "blake3WithKey" => compile_blake3_with_key_call(&mut ctx, args),
         "templateHash" => compile_template_hash_call(&mut ctx, args),
         "checkSig" => compile_checksig_call(&mut ctx, args),
         "checkSigFromStack" => compile_checksigfromstack_call(&mut ctx, name, args, OpCheckSigFromStack),
@@ -3797,6 +3806,37 @@ fn compile_blake2b_call<'i>(ctx: &mut CompileCallContext<'_, 'i>, args: &[Expr<'
     }
     compile_call_arg_with_context(ctx, &args[0])?;
     ctx.builder.add_op(OpBlake2b)?;
+    Ok(())
+}
+
+fn compile_blake2b_with_key_call<'i>(ctx: &mut CompileCallContext<'_, 'i>, args: &[Expr<'i>]) -> Result<(), CompilerError> {
+    let Ok([data, key]): Result<&[Expr<'i>; 2], _> = args.try_into() else {
+        return Err(CompilerError::Unsupported("blake2bWithKey() expects 2 arguments".to_string()));
+    };
+    compile_call_arg_with_context(ctx, data)?;
+    compile_call_arg_with_context(ctx, key)?;
+    ctx.builder.add_op(OpBlake2bWithKey)?;
+    *ctx.stack_depth -= 1;
+    Ok(())
+}
+
+fn compile_blake3_call<'i>(ctx: &mut CompileCallContext<'_, 'i>, args: &[Expr<'i>]) -> Result<(), CompilerError> {
+    if args.len() != 1 {
+        return Err(CompilerError::Unsupported("blake3() expects a single argument".to_string()));
+    }
+    compile_call_arg_with_context(ctx, &args[0])?;
+    ctx.builder.add_op(OpBlake3)?;
+    Ok(())
+}
+
+fn compile_blake3_with_key_call<'i>(ctx: &mut CompileCallContext<'_, 'i>, args: &[Expr<'i>]) -> Result<(), CompilerError> {
+    let Ok([data, key]): Result<&[Expr<'i>; 2], _> = args.try_into() else {
+        return Err(CompilerError::Unsupported("blake3WithKey() expects 2 arguments".to_string()));
+    };
+    compile_call_arg_with_context(ctx, data)?;
+    compile_call_arg_with_context(ctx, key)?;
+    ctx.builder.add_op(OpBlake3WithKey)?;
+    *ctx.stack_depth -= 1;
     Ok(())
 }
 
