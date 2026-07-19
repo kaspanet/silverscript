@@ -11118,5 +11118,6 @@ fn blake3_with_key_requires_a_fixed_32_byte_key() {
             }
         }
     "#;
-    compile_contract(numeric_data, &[], CompileOptions::default()).expect("key validation should not constrain hash data");
+    let err = compile_contract(numeric_data, &[], CompileOptions::default()).expect_err("numeric Blake3 data should be rejected");
+    assert!(err.to_string().contains("argument 'data' expects byte[], got int"), "unexpected error: {err}");
 }
