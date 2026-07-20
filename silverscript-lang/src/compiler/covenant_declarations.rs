@@ -1,6 +1,8 @@
 use super::*;
 use std::collections::HashSet;
 
+const MANUAL_ENTRYPOINT_IN_LEADER_CONTRACT: &str = "manual_entrypoint_in_leader_contract";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CovenantBinding {
     Auth,
@@ -41,9 +43,22 @@ pub(super) fn lower_covenant_declarations<'i>(
     constants: &HashMap<String, Expr<'i>>,
 ) -> Result<ContractAst<'i>, CompilerError> {
     let mut lowered = Vec::new();
+    let mut cov_declaration = None;
+    let mut auth_declaration = None;
+    let mut manual_entrypoint = None;
 
     for function in &contract.functions {
+        if allows_manual_entrypoint_in_leader_contract(function)? {
+            let mut lowered_function = function.clone();
+            lowered_function.attributes.clear();
+            lowered.push(lowered_function);
+            continue;
+        }
+
         if function.attributes.is_empty() {
+            if function.entrypoint && manual_entrypoint.is_none() {
+                manual_entrypoint = Some(function.name.clone());
+            }
             lowered.push(function.clone());
             continue;
         }
@@ -61,12 +76,14 @@ pub(super) fn lower_covenant_declarations<'i>(
 
         match declaration.binding {
             CovenantBinding::Auth => {
+                auth_declaration.get_or_insert_with(|| function.name.clone());
                 let entrypoint_name = generated_covenant_auth_entrypoint_name(&function.name);
                 let mut wrapper = build_auth_wrapper(&policy, &policy_name, declaration.clone(), entrypoint_name, &contract.fields)?;
                 wrapper.params = preserved_entrypoint_params(function, declaration, true, &contract.fields);
                 lowered.push(wrapper);
             }
             CovenantBinding::Cov => {
+                cov_declaration.get_or_insert_with(|| function.name.clone());
                 let leader_name = generated_covenant_leader_entrypoint_name(&function.name);
                 let mut leader_wrapper =
                     build_cov_wrapper(&policy, &policy_name, declaration.clone(), leader_name, true, &contract.fields)?;
@@ -82,9 +99,57 @@ pub(super) fn lower_covenant_declarations<'i>(
         }
     }
 
+    if let Some(cov_declaration) = cov_declaration {
+        if let Some(auth_declaration) = auth_declaration {
+            return Err(CompilerError::Unsupported(format!(
+                "contract '{}' uses binding=cov on covenant declaration '{}', which generates delegate entrypoints, so covenant declaration '{}' cannot use binding=auth",
+                contract.name, cov_declaration, auth_declaration
+            )));
+        }
+        if let Some(manual_entrypoint) = manual_entrypoint {
+            return Err(CompilerError::Unsupported(format!(
+                "manual entrypoint '{}' belongs to leader contract '{}' and may participate in a same-covenant input group; use a cov-bound declaration or acknowledge manual covenant-group checks with #[covenant.allow(rule = {})]",
+                manual_entrypoint, contract.name, MANUAL_ENTRYPOINT_IN_LEADER_CONTRACT
+            )));
+        }
+    }
+
     let mut lowered_contract = contract.clone();
     lowered_contract.functions = lowered;
     Ok(lowered_contract)
+}
+
+fn allows_manual_entrypoint_in_leader_contract(function: &FunctionAst<'_>) -> Result<bool, CompilerError> {
+    let Some(attribute) = function
+        .attributes
+        .iter()
+        .find(|attribute| matches!(attribute.path.as_slice(), [head, tail] if head == "covenant" && tail == "allow"))
+    else {
+        return Ok(false);
+    };
+
+    if function.attributes.len() != 1 {
+        return Err(CompilerError::Unsupported(
+            "#[covenant.allow(...)] must be the only attribute on a manual entrypoint".to_string(),
+        ));
+    }
+    if !function.entrypoint {
+        return Err(CompilerError::Unsupported("#[covenant.allow(...)] may be applied only to a manual entrypoint".to_string()));
+    }
+    if attribute.args.len() != 1 || attribute.args[0].name != "rule" {
+        return Err(CompilerError::Unsupported(format!(
+            "#[covenant.allow(...)] expects exactly `rule = {MANUAL_ENTRYPOINT_IN_LEADER_CONTRACT}`"
+        )));
+    }
+
+    let rule = parse_attr_ident_arg("rule", Some(&attribute.args[0].expr))?;
+    if rule != MANUAL_ENTRYPOINT_IN_LEADER_CONTRACT {
+        return Err(CompilerError::Unsupported(format!(
+            "unsupported covenant allow rule '{rule}'; expected '{MANUAL_ENTRYPOINT_IN_LEADER_CONTRACT}'"
+        )));
+    }
+
+    Ok(true)
 }
 
 fn parse_covenant_declaration<'i>(

@@ -2104,7 +2104,7 @@ fn build_sig_script_for_covenant_decl_supports_all_covenant_ast_examples() {
             }
         }
     "#;
-    let matrix_all_source = r#"
+    let matrix_auth_source = r#"
         contract Matrix(int max_ins, int max_outs, int init_amount, byte[32] init_owner) {
             int amount = init_amount;
             byte[32] owner = init_owner;
@@ -2124,24 +2124,8 @@ fn build_sig_script_for_covenant_decl_supports_all_covenant_ast_examples() {
                 return({ amount: prev_state.amount - fee, owner: prev_state.owner });
             }
 
-            #[covenant(binding = cov, from = max_ins, to = max_outs, mode = verification)]
-            function cov_verification(State[] prev_states, State[] new_states, int nonce) {
-                require(nonce >= 0);
-            }
-
-            #[covenant(binding = cov, from = max_ins, to = max_outs, mode = transition)]
-            function cov_transition(State[] prev_states, int fee) : (State[]) {
-                require(fee >= 0);
-                return(prev_states);
-            }
-
             #[covenant(from = 1, to = max_outs)]
             function inferred_auth(State prev_state, State[] new_states) {
-                require(new_states.length == new_states.length);
-            }
-
-            #[covenant(from = max_ins, to = max_outs)]
-            function inferred_cov(State[] prev_states, State[] new_states) {
                 require(new_states.length == new_states.length);
             }
 
@@ -2163,6 +2147,28 @@ fn build_sig_script_for_covenant_decl_supports_all_covenant_ast_examples() {
 
             #[covenant.fanout(to = max_outs, mode = verification)]
             function fanout_verification(State prev_state, State[] new_states) {
+                require(new_states.length == new_states.length);
+            }
+        }
+    "#;
+    let matrix_cov_source = r#"
+        contract Matrix(int max_ins, int max_outs, int init_amount, byte[32] init_owner) {
+            int amount = init_amount;
+            byte[32] owner = init_owner;
+
+            #[covenant(binding = cov, from = max_ins, to = max_outs, mode = verification)]
+            function cov_verification(State[] prev_states, State[] new_states, int nonce) {
+                require(nonce >= 0);
+            }
+
+            #[covenant(binding = cov, from = max_ins, to = max_outs, mode = transition)]
+            function cov_transition(State[] prev_states, int fee) : (State[]) {
+                require(fee >= 0);
+                return(prev_states);
+            }
+
+            #[covenant(from = max_ins, to = max_outs)]
+            function inferred_cov(State[] prev_states, State[] new_states) {
                 require(new_states.length == new_states.length);
             }
         }
@@ -2496,7 +2502,7 @@ fn build_sig_script_for_covenant_decl_supports_all_covenant_ast_examples() {
             generated_covenant_entrypoint_name: "__step",
         },
         Case {
-            source: matrix_all_source,
+            source: matrix_auth_source,
             constructor_args: vec![Expr::int(2), Expr::int(4), Expr::int(10), Expr::bytes(owner.clone())],
             function_name: "auth_verification_multi",
             args: vec![matrix_state_array_arg(vec![(11, next_owner.clone())]), Expr::int(0)],
@@ -2504,7 +2510,7 @@ fn build_sig_script_for_covenant_decl_supports_all_covenant_ast_examples() {
             generated_covenant_entrypoint_name: "__auth_verification_multi",
         },
         Case {
-            source: matrix_all_source,
+            source: matrix_auth_source,
             constructor_args: vec![Expr::int(2), Expr::int(4), Expr::int(10), Expr::bytes(owner.clone())],
             function_name: "auth_verification_single",
             args: vec![matrix_state_array_arg(vec![(11, next_owner.clone())])],
@@ -2512,7 +2518,7 @@ fn build_sig_script_for_covenant_decl_supports_all_covenant_ast_examples() {
             generated_covenant_entrypoint_name: "__auth_verification_single",
         },
         Case {
-            source: matrix_all_source,
+            source: matrix_auth_source,
             constructor_args: vec![Expr::int(2), Expr::int(4), Expr::int(10), Expr::bytes(owner.clone())],
             function_name: "auth_transition",
             args: vec![Expr::int(1)],
@@ -2520,7 +2526,7 @@ fn build_sig_script_for_covenant_decl_supports_all_covenant_ast_examples() {
             generated_covenant_entrypoint_name: "__auth_transition",
         },
         Case {
-            source: matrix_all_source,
+            source: matrix_cov_source,
             constructor_args: vec![Expr::int(2), Expr::int(4), Expr::int(10), Expr::bytes(owner.clone())],
             function_name: "cov_verification",
             args: vec![matrix_state_array_arg(vec![(11, next_owner.clone())]), Expr::int(0)],
@@ -2528,7 +2534,7 @@ fn build_sig_script_for_covenant_decl_supports_all_covenant_ast_examples() {
             generated_covenant_entrypoint_name: "__leader_cov_verification",
         },
         Case {
-            source: matrix_all_source,
+            source: matrix_cov_source,
             constructor_args: vec![Expr::int(2), Expr::int(4), Expr::int(10), Expr::bytes(owner.clone())],
             function_name: "cov_verification",
             args: vec![],
@@ -2536,7 +2542,7 @@ fn build_sig_script_for_covenant_decl_supports_all_covenant_ast_examples() {
             generated_covenant_entrypoint_name: "__delegate_cov_verification",
         },
         Case {
-            source: matrix_all_source,
+            source: matrix_cov_source,
             constructor_args: vec![Expr::int(2), Expr::int(4), Expr::int(10), Expr::bytes(owner.clone())],
             function_name: "cov_transition",
             args: vec![Expr::int(1)],
@@ -2544,7 +2550,7 @@ fn build_sig_script_for_covenant_decl_supports_all_covenant_ast_examples() {
             generated_covenant_entrypoint_name: "__leader_cov_transition",
         },
         Case {
-            source: matrix_all_source,
+            source: matrix_cov_source,
             constructor_args: vec![Expr::int(2), Expr::int(4), Expr::int(10), Expr::bytes(owner.clone())],
             function_name: "cov_transition",
             args: vec![],
@@ -2552,7 +2558,7 @@ fn build_sig_script_for_covenant_decl_supports_all_covenant_ast_examples() {
             generated_covenant_entrypoint_name: "__delegate_cov_transition",
         },
         Case {
-            source: matrix_all_source,
+            source: matrix_auth_source,
             constructor_args: vec![Expr::int(2), Expr::int(4), Expr::int(10), Expr::bytes(owner.clone())],
             function_name: "inferred_auth",
             args: vec![matrix_state_array_arg(vec![(11, next_owner.clone())])],
@@ -2560,7 +2566,7 @@ fn build_sig_script_for_covenant_decl_supports_all_covenant_ast_examples() {
             generated_covenant_entrypoint_name: "__inferred_auth",
         },
         Case {
-            source: matrix_all_source,
+            source: matrix_cov_source,
             constructor_args: vec![Expr::int(2), Expr::int(4), Expr::int(10), Expr::bytes(owner.clone())],
             function_name: "inferred_cov",
             args: vec![matrix_state_array_arg(vec![(11, next_owner.clone())])],
@@ -2568,7 +2574,7 @@ fn build_sig_script_for_covenant_decl_supports_all_covenant_ast_examples() {
             generated_covenant_entrypoint_name: "__leader_inferred_cov",
         },
         Case {
-            source: matrix_all_source,
+            source: matrix_cov_source,
             constructor_args: vec![Expr::int(2), Expr::int(4), Expr::int(10), Expr::bytes(owner.clone())],
             function_name: "inferred_cov",
             args: vec![],
@@ -2576,7 +2582,7 @@ fn build_sig_script_for_covenant_decl_supports_all_covenant_ast_examples() {
             generated_covenant_entrypoint_name: "__delegate_inferred_cov",
         },
         Case {
-            source: matrix_all_source,
+            source: matrix_auth_source,
             constructor_args: vec![Expr::int(2), Expr::int(4), Expr::int(10), Expr::bytes(owner.clone())],
             function_name: "inferred_transition",
             args: vec![Expr::int(1)],
@@ -2584,7 +2590,7 @@ fn build_sig_script_for_covenant_decl_supports_all_covenant_ast_examples() {
             generated_covenant_entrypoint_name: "__inferred_transition",
         },
         Case {
-            source: matrix_all_source,
+            source: matrix_auth_source,
             constructor_args: vec![Expr::int(2), Expr::int(4), Expr::int(10), Expr::bytes(owner.clone())],
             function_name: "singleton_transition",
             args: vec![Expr::int(1)],
@@ -2592,7 +2598,7 @@ fn build_sig_script_for_covenant_decl_supports_all_covenant_ast_examples() {
             generated_covenant_entrypoint_name: "__singleton_transition",
         },
         Case {
-            source: matrix_all_source,
+            source: matrix_auth_source,
             constructor_args: vec![Expr::int(2), Expr::int(4), Expr::int(10), Expr::bytes(owner.clone())],
             function_name: "singleton_terminate",
             args: vec![matrix_state_array_arg(vec![(11, next_owner.clone())])],
@@ -2600,7 +2606,7 @@ fn build_sig_script_for_covenant_decl_supports_all_covenant_ast_examples() {
             generated_covenant_entrypoint_name: "__singleton_terminate",
         },
         Case {
-            source: matrix_all_source,
+            source: matrix_auth_source,
             constructor_args: vec![Expr::int(2), Expr::int(4), Expr::int(10), Expr::bytes(owner.clone())],
             function_name: "fanout_verification",
             args: vec![matrix_state_array_arg(vec![(11, next_owner.clone())])],
