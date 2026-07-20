@@ -9678,7 +9678,7 @@ fn ternary_expression_rejects_mismatched_branch_types() {
     "#;
 
     let err = compile_contract(source, &[], CompileOptions::default()).expect_err("mismatched ternary branches should fail");
-    assert!(err.to_string().contains("ternary branch type mismatch"), "unexpected error: {err}");
+    assert!(err.to_string().contains("variable 'value' expects int"), "unexpected error: {err}");
 }
 
 #[test]

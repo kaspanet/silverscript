@@ -13,6 +13,7 @@ use crate::debug_info::{DebugInfo, DebugNamedValue};
 pub use crate::errors::{CompilerError, ErrorSpan};
 use crate::span;
 mod array_append;
+mod builtin_types;
 mod compile;
 mod covenant_declarations;
 mod debug_recording;
@@ -25,6 +26,8 @@ mod read_input_state;
 mod stack_bindings;
 mod static_check;
 mod structs;
+mod type_check;
+mod type_system;
 mod validate_output_state;
 
 use compile::compile_contract_impl;
@@ -34,13 +37,14 @@ pub use compile::{compile_debug_expr, function_branch_index};
 pub(crate) use debug_recording::DebugRecorder;
 use r#for::lower_for_loops;
 use read_input_state::lower_read_input_state_calls;
-use static_check::{validate_expr_matches_type, value_matches_type_ref};
+use static_check::validate_expr_matches_type;
 pub use structs::flattened_struct_name;
 pub(super) use structs::{
     StructRegistry, build_struct_registry, ensure_known_or_builtin_type, flatten_constructor_args_env, flatten_type_ref_leaves,
-    flattened_struct_field_specs_for_type, is_struct, is_struct_array, lower_runtime_expr, lower_runtime_struct_expr,
-    lower_structs_contract, struct_name_from_type_ref, validate_struct_graph,
+    flattened_struct_field_specs_for_type, is_struct, is_struct_array, lower_structs_contract, struct_name_from_type_ref,
+    validate_struct_graph,
 };
+pub(super) use type_system::{append_type, array_size as array_type_size, concat_types, type_refs_equal};
 use validate_output_state::lower_validate_output_state;
 
 /// Prefix used for synthetic argument bindings during inline function expansion.
@@ -333,7 +337,12 @@ fn push_typed_sigscript_arg<'i>(
         return Ok(());
     }
 
-    if !value_matches_type_ref(&arg, type_ref) {
+    let types = HashMap::new();
+    let constants = HashMap::new();
+    let functions = HashMap::new();
+    let type_context =
+        type_check::TypeCheckContext { types: &types, structs, constants: &constants, functions: &functions, contract_fields: &[] };
+    if type_check::check_expr(&arg, Some(type_ref), &type_context).is_err() {
         return Err(CompilerError::Unsupported("signature script arguments must match the declared type".to_string()));
     }
 

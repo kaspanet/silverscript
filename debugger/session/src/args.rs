@@ -139,7 +139,7 @@ fn parse_scalar_arg(type_ref: &TypeRef, raw: &str) -> Result<Expr<'static>, Stri
             }
             Ok(bytes_expr(bytes))
         }
-        TypeBase::Custom(_) => Err(format!("unsupported arg type '{}'", type_ref.type_name())),
+        TypeBase::Tuple(_) | TypeBase::Custom(_) => Err(format!("unsupported arg type '{}'", type_ref.type_name())),
     }
 }
 

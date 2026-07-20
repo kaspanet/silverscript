@@ -1,79 +1,10 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::ast::{ArrayDim, BinaryOp, Expr, ExprKind, IntrospectionKind, NullaryOp, TypeBase, UnaryOp, UnarySuffixKind};
+use crate::ast::{BinaryOp, Expr, ExprKind, TypeBase, UnaryOp, UnarySuffixKind};
 use crate::errors::CompilerError;
 
-use super::{array_element_type, is_bytes_type, parse_type_ref};
-
-fn nullary_value_type(op: NullaryOp) -> &'static str {
-    match op {
-        NullaryOp::ActiveScriptPubKey | NullaryOp::ThisScriptSizeDataPrefix => "byte[]",
-        NullaryOp::ActiveInputIndex
-        | NullaryOp::ThisScriptSize
-        | NullaryOp::TxInputsLength
-        | NullaryOp::TxOutputsLength
-        | NullaryOp::TxVersion
-        | NullaryOp::TxLockTime => "int",
-    }
-}
-
-fn introspection_value_type(kind: IntrospectionKind) -> &'static str {
-    match kind {
-        IntrospectionKind::InputScriptPubKey
-        | IntrospectionKind::InputSigScript
-        | IntrospectionKind::InputOutpointTransactionHash
-        | IntrospectionKind::OutputScriptPubKey => "byte[]",
-        IntrospectionKind::InputValue
-        | IntrospectionKind::InputOutpointIndex
-        | IntrospectionKind::InputSequenceNumber
-        | IntrospectionKind::OutputValue => "int",
-    }
-}
-
-fn builtin_call_value_type(name: &str) -> &'static str {
-    match name {
-        "int" => "int",
-        "bool" => "bool",
-        "byte" => "byte",
-        "string" => "string",
-        "pubkey" => "pubkey",
-        "sig" => "sig",
-        "datasig" => "datasig",
-        "OpBin2Num"
-        | "OpTxInputDaaScore"
-        | "OpTxGas"
-        | "OpTxPayloadLen"
-        | "OpTxInputIndex"
-        | "OpTxInputScriptSigLen"
-        | "OpTxInputSpkLen"
-        | "OpOutpointIndex"
-        | "OpTxOutputSpkLen"
-        | "OpAuthOutputCount"
-        | "OpAuthOutputIdx"
-        | "OpCovInputCount"
-        | "OpCovInputIdx"
-        | "OpCovOutputCount"
-        | "OpCovOutputIdx" => "int",
-        "OpTxInputIsCoinbase" | "checkSig" | "checkSigFromStack" | "checkSigFromStackECDSA" => "bool",
-        "blake2b" | "blake2bWithKey" | "blake3" | "blake3WithKey" | "templateHash" | "sha256" | "OpSha256" => "byte[32]",
-        "bytes"
-        | "OpTxSubnetId"
-        | "OpTxPayloadSubstr"
-        | "OpOutpointTxId"
-        | "OpTxInputScriptSigSubstr"
-        | "OpTxInputSeq"
-        | "OpTxInputSpkSubstr"
-        | "OpTxOutputSpkSubstr"
-        | "OpNum2Bin"
-        | "OpChainblockSeqCommit"
-        | "LockingBytecodeNullData"
-        | "ScriptPubKeyP2PK"
-        | "ScriptPubKeyP2SH"
-        | "ScriptPubKeyP2SHFromRedeemScript" => "byte[]",
-        "OpInputCovenantId" | "OpOutputCovenantId" => "byte[32]",
-        _ => "byte[]",
-    }
-}
+use super::builtin_types::{builtin_return_type, constructor_return_type, introspection_type, nullary_type};
+use super::{array_element_type, concat_types, is_bytes_type, parse_type_ref};
 
 fn is_builtin_cast_type_name(name: &str) -> bool {
     if matches!(name, "int" | "bool" | "byte" | "string" | "pubkey" | "sig" | "datasig") {
@@ -89,22 +20,10 @@ fn is_builtin_cast_type_name(name: &str) -> bool {
     !matches!(type_ref.base, TypeBase::Custom(_))
 }
 
-fn concatenated_array_type(left: &str, right: &str) -> Option<String> {
+fn concatenated_array_type<'i>(left: &str, right: &str, constants: &HashMap<String, Expr<'i>>) -> Option<String> {
     let left = parse_type_ref(left).ok()?;
     let right = parse_type_ref(right).ok()?;
-    let left_element = left.array_element_type()?;
-    if right.array_element_type()? != left_element {
-        return None;
-    }
-
-    let dimension = match (left.array_size()?, right.array_size()?) {
-        (ArrayDim::Dynamic, _) | (_, ArrayDim::Dynamic) => ArrayDim::Dynamic,
-        (ArrayDim::Fixed(left), ArrayDim::Fixed(right)) => ArrayDim::Fixed(left.checked_add(*right)?),
-        _ => return None,
-    };
-    let mut result = left_element;
-    result.array_dims.push(dimension);
-    Some(result.type_name())
+    concat_types(&left, &right, constants).map(|type_ref| type_ref.type_name())
 }
 
 pub(super) fn infer_debug_expr_value_type<'i>(
@@ -145,7 +64,7 @@ pub(super) fn infer_debug_expr_value_type<'i>(
                     Ok("string".to_string())
                 } else if left_type == "byte" || right_type == "byte" {
                     Ok("int".to_string())
-                } else if let Some(concatenated) = concatenated_array_type(&left_type, &right_type) {
+                } else if let Some(concatenated) = concatenated_array_type(&left_type, &right_type, env) {
                     Ok(concatenated)
                 } else if is_bytes_type(&left_type) {
                     Ok(left_type)
@@ -183,23 +102,19 @@ pub(super) fn infer_debug_expr_value_type<'i>(
             }
         }
         ExprKind::Split { .. } | ExprKind::Slice { .. } => Ok("byte[]".to_string()),
-        ExprKind::New { name, .. } => match name.as_str() {
-            "ScriptPubKeyP2PK" => Ok("byte[34]".to_string()),
-            "ScriptPubKeyP2SH" | "ScriptPubKeyP2SHFromRedeemScript" => Ok("byte[35]".to_string()),
-            _ => Ok("byte[]".to_string()),
-        },
+        ExprKind::New { name, .. } => Ok(constructor_return_type(name).map_or_else(|| "byte[]".to_string(), |ty| ty.type_name())),
         ExprKind::Append { source, .. } => infer_debug_expr_value_type(source, env, types, visiting),
         ExprKind::ArrayIndex { source, .. } => {
             let source_type = infer_debug_expr_value_type(source, env, types, visiting)?;
             Ok(array_element_type(&source_type).unwrap_or_else(|| "byte[]".to_string()))
         }
-        ExprKind::Nullary(kind) => Ok(nullary_value_type(*kind).to_string()),
-        ExprKind::Introspection { kind, .. } => Ok(introspection_value_type(*kind).to_string()),
+        ExprKind::Nullary(kind) => Ok(nullary_type(*kind).type_name()),
+        ExprKind::Introspection { kind, .. } => Ok(introspection_type(*kind).type_name()),
         ExprKind::Call { name, .. } => {
             if is_builtin_cast_type_name(name) {
                 Ok(name.clone())
             } else {
-                Ok(builtin_call_value_type(name).to_string())
+                Ok(builtin_return_type(name).map_or_else(|| "byte[]".to_string(), |ty| ty.type_name()))
             }
         }
         ExprKind::UnarySuffix { source, kind, .. } => match kind {

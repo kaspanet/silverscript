@@ -444,59 +444,8 @@ fn infer_expr_type_ref_for_comparison<'i>(
         }
     }
     if let ExprKind::Call { name, .. } = &expr.kind {
-        let is_builtin_cast = matches!(name.as_str(), "int" | "bool" | "byte" | "string" | "pubkey" | "sig" | "datasig")
-            || (name.contains('[') && parse_type_ref(name).ok().is_some_and(|type_ref| !matches!(type_ref.base, TypeBase::Custom(_))));
-        let is_known_builtin = matches!(
-            name.as_str(),
-            "int"
-                | "bool"
-                | "byte"
-                | "string"
-                | "pubkey"
-                | "sig"
-                | "datasig"
-                | "bytes"
-                | "blake2b"
-                | "blake2bWithKey"
-                | "blake3"
-                | "blake3WithKey"
-                | "templateHash"
-                | "sha256"
-                | "OpSha256"
-                | "OpTxSubnetId"
-                | "OpTxPayloadSubstr"
-                | "OpOutpointTxId"
-                | "OpTxInputScriptSigSubstr"
-                | "OpTxInputSeq"
-                | "OpTxInputSpkSubstr"
-                | "OpTxOutputSpkSubstr"
-                | "OpNum2Bin"
-                | "OpBin2Num"
-                | "OpChainblockSeqCommit"
-                | "LockingBytecodeNullData"
-                | "ScriptPubKeyP2PK"
-                | "ScriptPubKeyP2SH"
-                | "ScriptPubKeyP2SHFromRedeemScript"
-                | "OpInputCovenantId"
-                | "OpOutputCovenantId"
-                | "checkSigFromStack"
-                | "checkSigFromStackECDSA"
-                | "OpTxGas"
-                | "OpTxPayloadLen"
-                | "OpTxInputIndex"
-                | "OpTxInputIsCoinbase"
-                | "OpTxInputScriptSigLen"
-                | "OpTxInputSpkLen"
-                | "OpOutpointIndex"
-                | "OpTxOutputSpkLen"
-                | "OpAuthOutputCount"
-                | "OpAuthOutputIdx"
-                | "OpCovInputCount"
-                | "OpCovInputIdx"
-                | "OpCovOutputCount"
-                | "OpCovOutputIdx"
-        );
-        if !is_builtin_cast && !is_known_builtin {
+        let known_cast = parse_type_ref(name).is_ok_and(|type_ref| !matches!(type_ref.base, TypeBase::Custom(_)));
+        if !known_cast && builtin_types::builtin_return_type(name).is_none() {
             return None;
         }
     }
@@ -520,13 +469,11 @@ pub(super) fn array_literal_matches_type_with_env_ref<'i>(
         }
     }
 
-    values.iter().all(|value| match &value.kind {
-        ExprKind::Identifier(name) => types
-            .get(name)
-            .and_then(|value_type| parse_type_ref(value_type).ok())
-            .is_some_and(|value_type| is_type_assignable_ref(&value_type, &element_type, constants)),
-        _ => super::static_check::value_matches_type_ref(value, &element_type),
-    })
+    let structs = StructRegistry::new();
+    let functions = HashMap::new();
+    let type_context =
+        super::type_check::TypeCheckContext { types, structs: &structs, constants, functions: &functions, contract_fields: &[] };
+    values.iter().all(|value| super::type_check::check_expr(value, Some(&element_type), &type_context).is_ok())
 }
 
 fn build_function_abi_entries<'i>(contract: &ContractAst<'i>) -> Vec<FunctionAbiEntry> {
@@ -600,7 +547,7 @@ fn fixed_type_size_ref(type_ref: &TypeRef) -> Option<i64> {
         TypeBase::Sig => Some(65),
         TypeBase::Datasig => Some(64),
         TypeBase::String => None,
-        TypeBase::Custom(_) => None,
+        TypeBase::Tuple(_) | TypeBase::Custom(_) => None,
     }
 }
 
@@ -800,39 +747,8 @@ fn collect_assigned_names_into<'i>(statements: &[Statement<'i>], assigned: &mut 
     }
 }
 
-fn has_explicit_array_size_ref(type_ref: &TypeRef) -> bool {
-    !matches!(type_ref.array_size(), Some(ArrayDim::Dynamic | ArrayDim::Inferred) | None)
-}
-
 fn has_inferred_array_size_ref(type_ref: &TypeRef) -> bool {
     matches!(type_ref.array_size(), Some(ArrayDim::Inferred))
-}
-
-fn is_array_type_assignable_ref<'i>(actual: &TypeRef, expected: &TypeRef, constants: &HashMap<String, Expr<'i>>) -> bool {
-    if actual == expected {
-        return true;
-    }
-
-    if !is_array_type_ref(actual) || !is_array_type_ref(expected) {
-        return false;
-    }
-
-    if array_element_type_ref(actual) != array_element_type_ref(expected) {
-        return false;
-    }
-
-    if !has_explicit_array_size_ref(expected) {
-        return true;
-    }
-
-    match (array_size_with_constants_ref(actual, constants), array_size_with_constants_ref(expected, constants)) {
-        (Some(actual_size), Some(expected_size)) => actual_size == expected_size,
-        _ => actual == expected,
-    }
-}
-
-pub(super) fn is_type_assignable_ref<'i>(actual: &TypeRef, expected: &TypeRef, constants: &HashMap<String, Expr<'i>>) -> bool {
-    actual == expected || is_array_type_assignable_ref(actual, expected, constants)
 }
 
 fn coerce_expr_for_declared_scalar_type<'i>(expr: Expr<'i>, type_name: &str) -> Expr<'i> {
@@ -876,7 +792,7 @@ fn infer_fixed_array_type_from_initializer_ref<'i>(
         }
         ExprKind::Identifier(name) => {
             let other_type = parse_type_ref(types.get(name)?).ok()?;
-            if !is_array_type_ref(&other_type) || array_element_type_ref(&other_type) != Some(element_type.clone()) {
+            if !is_array_type_ref(&other_type) || !type_refs_equal(&array_element_type_ref(&other_type)?, &element_type, constants) {
                 return None;
             }
             let size = array_size_with_constants_ref(&other_type, constants)?;
@@ -918,14 +834,14 @@ fn array_element_size(type_name: &str) -> Option<i64> {
     array_element_size_ref(&type_ref)
 }
 
-fn is_type_assignable<'i>(actual: &str, expected: &str, constants: &HashMap<String, Expr<'i>>) -> bool {
+fn type_names_equal<'i>(actual: &str, expected: &str, constants: &HashMap<String, Expr<'i>>) -> bool {
     let Ok(actual_type) = parse_type_ref(actual) else {
         return false;
     };
     let Ok(expected_type) = parse_type_ref(expected) else {
         return false;
     };
-    is_type_assignable_ref(&actual_type, &expected_type, constants)
+    type_refs_equal(&actual_type, &expected_type, constants)
 }
 
 fn infer_fixed_array_type_from_initializer<'i>(
@@ -1329,10 +1245,10 @@ fn array_initializer_expr<'i>(
 ) -> Result<Expr<'i>, CompilerError> {
     match expr {
         Some(Expr { kind: ExprKind::Identifier(other), .. }) => match types.get(other) {
-            Some(other_type) if is_type_assignable(other_type, type_name, contract_constants) => {
+            Some(other_type) if type_names_equal(other_type, type_name, contract_constants) => {
                 Ok(Expr::new(ExprKind::Identifier(other.clone()), span::Span::default()))
             }
-            Some(_) => Err(CompilerError::Unsupported("array assignment requires compatible array types".to_string())),
+            Some(_) => Err(CompilerError::Unsupported("array assignment requires identical array types".to_string())),
             None => Err(CompilerError::UndefinedIdentifier(other.clone())),
         },
         Some(expr) => Ok(expr.clone()),
@@ -3780,7 +3696,6 @@ fn compile_byte_sequence_cast_call<'i>(
     }
     let source_type = infer_expr_type_ref(&args[0], ctx.scope.types, ctx.scope.constants, &HashMap::new())
         .map(|type_ref| type_name_from_ref(&type_ref))
-        .filter(|type_name| byte_sequence_cast_size(type_name).is_some())
         .or_else(|| infer_debug_expr_value_type(&args[0], ctx.scope.constants, ctx.scope.types, &mut HashSet::new()).ok());
     if let Some(source_type) = source_type.as_deref() {
         if let Some(source_size) = byte_sequence_cast_size(source_type) {

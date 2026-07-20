@@ -14,9 +14,9 @@ contract KCC20(byte[32] genesisPk, int genesisAmount, byte genesisIdentifierType
                 require(checkSig(sigs[i], prevStates[i].ownerIdentifier));
             } else if(prevStates[i].identifierType == IDENTIFIER_SCRIPT_HASH){
                 byte[] spk = byte[](new ScriptPubKeyP2SH(prevStates[i].ownerIdentifier));
-                require(tx.inputs[witnesses[i]].scriptPubKey == spk);
+                require(tx.inputs[int(witnesses[i])].scriptPubKey == spk);
             } else if(prevStates[i].identifierType == IDENTIFIER_COVENANT_ID){
-                require(OpInputCovenantId(witnesses[i]) == prevStates[i].ownerIdentifier);
+                require(OpInputCovenantId(int(witnesses[i])) == prevStates[i].ownerIdentifier);
             } else {
                 require(false);
             }
