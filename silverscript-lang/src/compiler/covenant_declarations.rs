@@ -90,6 +90,9 @@ pub(super) fn lower_covenant_declarations<'i>(
                 leader_wrapper.params = preserved_entrypoint_params(function, declaration.clone(), true, &contract.fields);
                 lowered.push(leader_wrapper);
 
+                // TODO: Generate one shared delegate entrypoint per leader
+                // contract instead of duplicating the same delegate wrapper for
+                // every cov-bound declaration.
                 let delegate_name = generated_covenant_delegate_entrypoint_name(&function.name);
                 let mut delegate_wrapper =
                     build_cov_wrapper(&policy, &policy_name, declaration.clone(), delegate_name, false, &contract.fields)?;
