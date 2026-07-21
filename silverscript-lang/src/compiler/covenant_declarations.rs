@@ -855,25 +855,6 @@ fn is_state_array_type(type_ref: &TypeRef) -> bool {
         && matches!(type_ref.array_dims.as_slice(), [ArrayDim::Dynamic])
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn state_array_type_requires_one_dynamic_dimension() {
-        assert!(is_state_array_type(&state_array_type()));
-        assert!(!is_state_array_type(&state_type()));
-        assert!(!is_state_array_type(&TypeRef {
-            base: TypeBase::Custom(STATE_TYPE_NAME.to_string()),
-            array_dims: vec![ArrayDim::Fixed(2)],
-        }));
-        assert!(!is_state_array_type(&TypeRef {
-            base: TypeBase::Custom(STATE_TYPE_NAME.to_string()),
-            array_dims: vec![ArrayDim::Dynamic, ArrayDim::Dynamic],
-        }));
-    }
-}
-
 fn is_literal_int(expr: &Expr<'_>, expected: i64) -> bool {
     matches!(expr.kind, ExprKind::Int(value) if value == expected)
 }
@@ -938,4 +919,23 @@ fn append_cov_output_state_array_checks_from_state_array<'i>(
         ),
     ];
     body.push(for_statement(loop_var, Expr::int(0), identifier_expr(out_count_name), to_expr, for_body));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn state_array_type_requires_one_dynamic_dimension() {
+        assert!(is_state_array_type(&state_array_type()));
+        assert!(!is_state_array_type(&state_type()));
+        assert!(!is_state_array_type(&TypeRef {
+            base: TypeBase::Custom(STATE_TYPE_NAME.to_string()),
+            array_dims: vec![ArrayDim::Fixed(2)],
+        }));
+        assert!(!is_state_array_type(&TypeRef {
+            base: TypeBase::Custom(STATE_TYPE_NAME.to_string()),
+            array_dims: vec![ArrayDim::Dynamic, ArrayDim::Dynamic],
+        }));
+    }
 }

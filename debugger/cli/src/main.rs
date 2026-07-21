@@ -145,21 +145,6 @@ fn is_state_array_type(type_ref: &TypeRef) -> bool {
         && matches!(type_ref.array_dims.as_slice(), [ArrayDim::Dynamic])
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn state_array_type_requires_one_dynamic_dimension() {
-        let state = || TypeBase::Custom("State".to_string());
-
-        assert!(is_state_array_type(&TypeRef { base: state(), array_dims: vec![ArrayDim::Dynamic] }));
-        assert!(!is_state_array_type(&TypeRef { base: state(), array_dims: Vec::new() }));
-        assert!(!is_state_array_type(&TypeRef { base: state(), array_dims: vec![ArrayDim::Fixed(2)] }));
-        assert!(!is_state_array_type(&TypeRef { base: state(), array_dims: vec![ArrayDim::Dynamic, ArrayDim::Dynamic] }));
-    }
-}
-
 fn synthesized_covenant_prefix_args(
     compiled: &CompiledContract<'_>,
     entrypoint_name: &str,
@@ -1019,5 +1004,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         show_step_view(&session, &console_output);
         run_repl(&mut session, &mut pending_console_output)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn state_array_type_requires_one_dynamic_dimension() {
+        let state = || TypeBase::Custom("State".to_string());
+
+        assert!(is_state_array_type(&TypeRef { base: state(), array_dims: vec![ArrayDim::Dynamic] }));
+        assert!(!is_state_array_type(&TypeRef { base: state(), array_dims: Vec::new() }));
+        assert!(!is_state_array_type(&TypeRef { base: state(), array_dims: vec![ArrayDim::Fixed(2)] }));
+        assert!(!is_state_array_type(&TypeRef { base: state(), array_dims: vec![ArrayDim::Dynamic, ArrayDim::Dynamic] }));
     }
 }
