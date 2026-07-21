@@ -664,9 +664,9 @@ fn size_snapshots() -> Vec<SizeSnapshot> {
         SizeSnapshot {
             name: "player.sil",
             ctor: player_constructor_args,
-            expected_script_len: 3444,
-            expected_instruction_count: 2538,
-            expected_charged_op_count: 1650,
+            expected_script_len: 3456,
+            expected_instruction_count: 2550,
+            expected_charged_op_count: 1660,
         },
         SizeSnapshot {
             name: "chess_mux.sil",
@@ -1136,6 +1136,206 @@ fn player_start_game_runtime_matches_expected_output_states() {
 
     let delegate_result = execute_input_with_covenants(tx, entries, 1);
     assert!(delegate_result.is_ok(), "player delegate_start_game runtime failed: {}", delegate_result.unwrap_err());
+}
+
+#[test]
+fn player_rebalance_requires_a_standalone_covenant_input() {
+    let fix = fixture();
+    let owner = player_from_seed(3);
+    let delegate_owner = player_from_seed(5);
+    let covenant_id = Hash::from_bytes([0x68u8; 32]);
+    let player_template = player_template_hash(fix);
+    let route_templates = packed_route_templates(fix);
+    let routes_commitment = routes_commitment(&route_templates);
+    let player = compile_player_state(
+        player_source(),
+        PlayerStateArgs {
+            league_template: &repeated_hash(0x11),
+            player_template: &player_template,
+            mux_template: &fix.mux.hash,
+            routes_commitment: &routes_commitment,
+            owner_hash: &owner.owner_hash,
+            player_id: &owner.player_id,
+            open_games: 0,
+            rating: 1200,
+            games: 0,
+            wins: 0,
+            draws: 0,
+            losses: 0,
+        },
+    );
+    let delegate = compile_player_state(
+        player_source(),
+        PlayerStateArgs {
+            league_template: &repeated_hash(0x11),
+            player_template: &player_template,
+            mux_template: &fix.mux.hash,
+            routes_commitment: &routes_commitment,
+            owner_hash: &delegate_owner.owner_hash,
+            player_id: &delegate_owner.player_id,
+            open_games: 0,
+            rating: 1200,
+            games: 0,
+            wins: 0,
+            draws: 0,
+            losses: 0,
+        },
+    );
+    let player_layout = player.state_layout;
+    let player_prefix_len = player_layout.start as i64;
+    let player_suffix_len = (player.script.len() - player_layout.start - player_layout.len) as i64;
+
+    let placeholder = entry_sigscript(&player, "rebalance", vec![Expr::bytes(vec![0u8; 65]), Expr::bytes(owner.pubkey_bytes.clone())]);
+    let entries = vec![covenant_utxo(&player, covenant_id)];
+    let outputs = vec![covenant_output(&player, 0, covenant_id)];
+    let mut standalone_tx = Transaction::new(1, vec![tx_input(0, placeholder, 1)], outputs, 0, Default::default(), 0, vec![]);
+    let signature = sign_tx_input_schnorr(&standalone_tx, &entries, 0, &owner);
+    standalone_tx.inputs[0].signature_script =
+        entry_sigscript(&player, "rebalance", vec![Expr::bytes(signature), Expr::bytes(owner.pubkey_bytes.clone())]);
+    let standalone_result = execute_input_with_covenants(standalone_tx, entries, 0);
+    assert!(standalone_result.is_ok(), "standalone player rebalance failed: {}", standalone_result.unwrap_err());
+
+    let placeholder = entry_sigscript(&player, "rebalance", vec![Expr::bytes(vec![0u8; 65]), Expr::bytes(owner.pubkey_bytes.clone())]);
+    let delegate_placeholder = entry_sigscript(
+        &delegate,
+        "delegate_start_game",
+        vec![
+            Expr::bytes(vec![0u8; 65]),
+            Expr::bytes(delegate_owner.pubkey_bytes.clone()),
+            Expr::int(DEFAULT_MOVE_TIMEOUT),
+            Expr::int(player_prefix_len),
+            Expr::int(player_suffix_len),
+        ],
+    );
+    let entries = vec![covenant_utxo(&player, covenant_id), covenant_utxo(&delegate, covenant_id)];
+    let outputs = vec![covenant_output(&player, 0, covenant_id)];
+    let mut shared_tx = Transaction::new(
+        1,
+        vec![tx_input(0, placeholder, 1), tx_input(1, delegate_placeholder, 1)],
+        outputs,
+        0,
+        Default::default(),
+        0,
+        vec![],
+    );
+    let signature = sign_tx_input_schnorr(&shared_tx, &entries, 0, &owner);
+    let delegate_signature = sign_tx_input_schnorr(&shared_tx, &entries, 1, &delegate_owner);
+    shared_tx.inputs[0].signature_script =
+        entry_sigscript(&player, "rebalance", vec![Expr::bytes(signature), Expr::bytes(owner.pubkey_bytes)]);
+    shared_tx.inputs[1].signature_script = entry_sigscript(
+        &delegate,
+        "delegate_start_game",
+        vec![
+            Expr::bytes(delegate_signature),
+            Expr::bytes(delegate_owner.pubkey_bytes),
+            Expr::int(DEFAULT_MOVE_TIMEOUT),
+            Expr::int(player_prefix_len),
+            Expr::int(player_suffix_len),
+        ],
+    );
+    let delegate_result = execute_input_with_covenants(shared_tx.clone(), entries.clone(), 1);
+    assert!(delegate_result.is_ok(), "delegate side of shared rebalance unexpectedly failed: {}", delegate_result.unwrap_err());
+    let shared_result = execute_input_with_covenants(shared_tx, entries, 0);
+    assert!(shared_result.is_err(), "player rebalance must not lead a shared covenant input group");
+}
+
+#[test]
+fn player_retire_requires_a_standalone_covenant_input() {
+    let fix = fixture();
+    let owner = player_from_seed(4);
+    let delegate_owner = player_from_seed(6);
+    let covenant_id = Hash::from_bytes([0x69u8; 32]);
+    let player_template = player_template_hash(fix);
+    let route_templates = packed_route_templates(fix);
+    let routes_commitment = routes_commitment(&route_templates);
+    let player = compile_player_state(
+        player_source(),
+        PlayerStateArgs {
+            league_template: &repeated_hash(0x11),
+            player_template: &player_template,
+            mux_template: &fix.mux.hash,
+            routes_commitment: &routes_commitment,
+            owner_hash: &owner.owner_hash,
+            player_id: &owner.player_id,
+            open_games: 0,
+            rating: 1200,
+            games: 0,
+            wins: 0,
+            draws: 0,
+            losses: 0,
+        },
+    );
+    let delegate = compile_player_state(
+        player_source(),
+        PlayerStateArgs {
+            league_template: &repeated_hash(0x11),
+            player_template: &player_template,
+            mux_template: &fix.mux.hash,
+            routes_commitment: &routes_commitment,
+            owner_hash: &delegate_owner.owner_hash,
+            player_id: &delegate_owner.player_id,
+            open_games: 0,
+            rating: 1200,
+            games: 0,
+            wins: 0,
+            draws: 0,
+            losses: 0,
+        },
+    );
+    let player_layout = player.state_layout;
+    let player_prefix_len = player_layout.start as i64;
+    let player_suffix_len = (player.script.len() - player_layout.start - player_layout.len) as i64;
+
+    let placeholder = entry_sigscript(&player, "retire", vec![Expr::bytes(vec![0u8; 65]), Expr::bytes(owner.pubkey_bytes.clone())]);
+    let entries = vec![covenant_utxo(&player, covenant_id)];
+    let mut standalone_tx = Transaction::new(1, vec![tx_input(0, placeholder, 1)], vec![], 0, Default::default(), 0, vec![]);
+    let signature = sign_tx_input_schnorr(&standalone_tx, &entries, 0, &owner);
+    standalone_tx.inputs[0].signature_script =
+        entry_sigscript(&player, "retire", vec![Expr::bytes(signature), Expr::bytes(owner.pubkey_bytes.clone())]);
+    let standalone_result = execute_input_with_covenants(standalone_tx, entries, 0);
+    assert!(standalone_result.is_ok(), "standalone player retirement failed: {}", standalone_result.unwrap_err());
+
+    let placeholder = entry_sigscript(&player, "retire", vec![Expr::bytes(vec![0u8; 65]), Expr::bytes(owner.pubkey_bytes.clone())]);
+    let delegate_placeholder = entry_sigscript(
+        &delegate,
+        "delegate_start_game",
+        vec![
+            Expr::bytes(vec![0u8; 65]),
+            Expr::bytes(delegate_owner.pubkey_bytes.clone()),
+            Expr::int(DEFAULT_MOVE_TIMEOUT),
+            Expr::int(player_prefix_len),
+            Expr::int(player_suffix_len),
+        ],
+    );
+    let entries = vec![covenant_utxo(&player, covenant_id), covenant_utxo(&delegate, covenant_id)];
+    let mut shared_tx = Transaction::new(
+        1,
+        vec![tx_input(0, placeholder, 1), tx_input(1, delegate_placeholder, 1)],
+        vec![],
+        0,
+        Default::default(),
+        0,
+        vec![],
+    );
+    let signature = sign_tx_input_schnorr(&shared_tx, &entries, 0, &owner);
+    let delegate_signature = sign_tx_input_schnorr(&shared_tx, &entries, 1, &delegate_owner);
+    shared_tx.inputs[0].signature_script =
+        entry_sigscript(&player, "retire", vec![Expr::bytes(signature), Expr::bytes(owner.pubkey_bytes)]);
+    shared_tx.inputs[1].signature_script = entry_sigscript(
+        &delegate,
+        "delegate_start_game",
+        vec![
+            Expr::bytes(delegate_signature),
+            Expr::bytes(delegate_owner.pubkey_bytes),
+            Expr::int(DEFAULT_MOVE_TIMEOUT),
+            Expr::int(player_prefix_len),
+            Expr::int(player_suffix_len),
+        ],
+    );
+    let delegate_result = execute_input_with_covenants(shared_tx.clone(), entries.clone(), 1);
+    assert!(delegate_result.is_ok(), "delegate side of shared retirement unexpectedly failed: {}", delegate_result.unwrap_err());
+    let shared_result = execute_input_with_covenants(shared_tx, entries, 0);
+    assert!(shared_result.is_err(), "player retirement must not lead a shared covenant input group");
 }
 
 #[test]

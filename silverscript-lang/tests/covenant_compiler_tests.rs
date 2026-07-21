@@ -579,3 +579,117 @@ fn auth_covenant_groups_single_injects_shared_count_check() {
     assert!(compiled.script.contains(&OpCovOutputCount));
     assert!(compiled.script.contains(&OpAuthOutputCount));
 }
+
+#[test]
+fn rejects_mixed_auth_and_cov_covenant_declarations() {
+    let source = r#"
+        contract Decls(int max_ins, int max_outs) {
+            #[covenant(binding = cov, from = max_ins, to = max_outs)]
+            function merge(int nonce) {
+                require(nonce >= 0);
+            }
+
+            #[covenant(binding = auth, from = 1, to = max_outs)]
+            function split(int nonce) {
+                require(nonce >= 0);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[Expr::int(2), Expr::int(4)], CompileOptions::default())
+        .expect_err("auth-bound declarations must not coexist with generated delegates");
+    let message = err.to_string();
+    assert!(message.contains("binding=cov"), "unexpected error: {message}");
+    assert!(message.contains("merge"), "unexpected error: {message}");
+    assert!(message.contains("split"), "unexpected error: {message}");
+    assert!(message.contains("binding=auth"), "unexpected error: {message}");
+}
+
+#[test]
+fn rejects_mixed_inferred_auth_and_cov_covenant_declarations() {
+    let source = r#"
+        contract Decls(int max_ins, int max_outs) {
+            #[covenant(from = max_ins, to = max_outs)]
+            function merge(int nonce) {
+                require(nonce >= 0);
+            }
+
+            #[covenant(from = 1, to = max_outs)]
+            function split(int nonce) {
+                require(nonce >= 0);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[Expr::int(2), Expr::int(4)], CompileOptions::default())
+        .expect_err("inferred auth and cov declarations must not coexist");
+    assert!(err.to_string().contains("cannot use binding=auth"), "unexpected error: {err}");
+}
+
+#[test]
+fn leader_contract_rejects_unacknowledged_manual_entrypoint() {
+    let source = r#"
+        contract Decls(int max_ins, int max_outs) {
+            #[covenant(binding = cov, from = max_ins, to = max_outs)]
+            function merge(int nonce) {
+                require(nonce >= 0);
+            }
+
+            entrypoint function recover() {
+                require(true);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[Expr::int(2), Expr::int(4)], CompileOptions::default())
+        .expect_err("manual entrypoints in leader contracts require acknowledgment");
+    let message = err.to_string();
+    assert!(message.contains("manual entrypoint 'recover'"), "unexpected error: {message}");
+    assert!(message.contains("manual_entrypoint_in_leader_contract"), "unexpected error: {message}");
+}
+
+#[test]
+fn leader_contract_allows_acknowledged_manual_entrypoint() {
+    let source = r#"
+        contract Decls(int max_ins, int max_outs) {
+            #[covenant(binding = cov, from = max_ins, to = max_outs)]
+            function merge(int nonce) {
+                require(nonce >= 0);
+            }
+
+            #[covenant.allow(rule = manual_entrypoint_in_leader_contract)]
+            entrypoint function recover() {
+                byte[32] cov_id = OpInputCovenantId(this.activeInputIndex);
+                require(OpCovInputCount(cov_id) == 1);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[Expr::int(2), Expr::int(4)], CompileOptions::default())
+        .expect("acknowledged manual entrypoint compiles");
+    assert!(compiled.abi.iter().any(|entry| entry.name == "recover"));
+    let recover = compiled.ast.functions.iter().find(|function| function.name == "recover").expect("recover remains an entrypoint");
+    assert!(recover.attributes.is_empty(), "allow acknowledgment must not survive lowering");
+}
+
+#[test]
+fn allows_multiple_cov_covenant_declarations() {
+    let source = r#"
+        contract Decls(int max_ins, int max_outs) {
+            #[covenant(binding = cov, from = max_ins, to = max_outs)]
+            function merge(int nonce) {
+                require(nonce >= 0);
+            }
+
+            #[covenant(binding = cov, from = max_ins, to = max_outs)]
+            function rebalance(int nonce) {
+                require(nonce >= 0);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[Expr::int(2), Expr::int(4)], CompileOptions::default())
+        .expect("multiple cov-bound declarations compile");
+    let abi_names: Vec<&str> = compiled.abi.iter().map(|entry| entry.name.as_str()).collect();
+    assert_eq!(abi_names, vec!["__leader_merge", "__delegate_merge", "__leader_rebalance", "__delegate_rebalance"]);
+}

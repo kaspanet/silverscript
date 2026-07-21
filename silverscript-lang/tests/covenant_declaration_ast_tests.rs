@@ -113,15 +113,11 @@ fixture_ast_test!(lowers_inferred_singleton_transition_two_field_state, [Expr::i
 fixture_ast_test!(lowers_singleton_sugar_transition_two_field_state, [Expr::int(10), Expr::bytes(vec![7u8; 32])]);
 fixture_ast_test!(lowers_singleton_sugar_transition_termination_allowed_two_field_state, [Expr::int(10), Expr::bytes(vec![7u8; 32])]);
 fixture_ast_test!(lowers_fanout_sugar_verification_two_field_state, [Expr::int(4), Expr::int(10), Expr::bytes(vec![7u8; 32])]);
-fixture_ast_test!(
-    lowers_many_covenant_declarations_in_one_contract,
-    [Expr::int(2), Expr::int(4), Expr::int(10), Expr::bytes(vec![7u8; 32])]
-);
 
 #[test]
-fn covers_attribute_config_combinations_with_two_field_state() {
+fn covers_auth_attribute_config_combinations_with_two_field_state() {
     let source = r#"
-        contract Matrix(int max_ins, int max_outs, int init_amount, byte[32] init_owner) {
+        contract Matrix(int max_outs, int init_amount, byte[32] init_owner) {
             int amount = init_amount;
             byte[32] owner = init_owner;
 
@@ -144,28 +140,8 @@ fn covers_attribute_config_combinations_with_two_field_state() {
                 return({ amount: prev_state.amount - fee, owner: prev_state.owner });
             }
 
-            #[covenant(binding = cov, from = max_ins, to = max_outs, mode = verification)]
-            function cov_verification(
-                State[] prev_states,
-                State[] new_states,
-                int nonce
-            ) {
-                require(nonce >= 0);
-            }
-
-            #[covenant(binding = cov, from = max_ins, to = max_outs, mode = transition)]
-            function cov_transition(State[] prev_states, int fee) : (State[]) {
-                require(fee >= 0);
-                return(prev_states);
-            }
-
             #[covenant(from = 1, to = max_outs)]
             function inferred_auth(State prev_state, State[] new_states) {
-                require(new_states.length == new_states.length);
-            }
-
-            #[covenant(from = max_ins, to = max_outs)]
-            function inferred_cov(State[] prev_states, State[] new_states) {
                 require(new_states.length == new_states.length);
             }
 
@@ -192,20 +168,14 @@ fn covers_attribute_config_combinations_with_two_field_state() {
         }
     "#;
 
-    let contract = compile_and_normalize_contract(source, &[Expr::int(2), Expr::int(4), Expr::int(10), Expr::bytes(vec![7u8; 32])]);
+    let contract = compile_and_normalize_contract(source, &[Expr::int(4), Expr::int(10), Expr::bytes(vec![7u8; 32])]);
     let functions = &contract.functions;
 
     let expected_entrypoints: HashSet<&str> = vec![
         "auth_verification_multi",
         "auth_verification_single",
         "auth_transition",
-        "leader_cov_verification",
-        "delegate_cov_verification",
-        "leader_cov_transition",
-        "delegate_cov_transition",
         "inferred_auth",
-        "leader_inferred_cov",
-        "delegate_inferred_cov",
         "inferred_transition",
         "singleton_transition",
         "singleton_terminate",
@@ -221,10 +191,7 @@ fn covers_attribute_config_combinations_with_two_field_state() {
         "covenant_policy_auth_verification_multi",
         "covenant_policy_auth_verification_single",
         "covenant_policy_auth_transition",
-        "covenant_policy_cov_verification",
-        "covenant_policy_cov_transition",
         "covenant_policy_inferred_auth",
-        "covenant_policy_inferred_cov",
         "covenant_policy_inferred_transition",
         "covenant_policy_singleton_transition",
         "covenant_policy_singleton_terminate",
@@ -237,15 +204,68 @@ fn covers_attribute_config_combinations_with_two_field_state() {
     assert_param_names(function_by_name(functions, "auth_verification_multi"), &["new_states", "nonce"]);
     assert_param_names(function_by_name(functions, "auth_verification_single"), &["new_states"]);
     assert_param_names(function_by_name(functions, "auth_transition"), &["fee"]);
-    assert_param_names(function_by_name(functions, "leader_cov_verification"), &["new_states", "nonce"]);
-    assert_param_names(function_by_name(functions, "delegate_cov_verification"), &[]);
-    assert_param_names(function_by_name(functions, "leader_cov_transition"), &["fee"]);
-    assert_param_names(function_by_name(functions, "delegate_cov_transition"), &[]);
     assert_param_names(function_by_name(functions, "inferred_auth"), &["new_states"]);
-    assert_param_names(function_by_name(functions, "leader_inferred_cov"), &["new_states"]);
-    assert_param_names(function_by_name(functions, "delegate_inferred_cov"), &[]);
     assert_param_names(function_by_name(functions, "inferred_transition"), &["delta"]);
     assert_param_names(function_by_name(functions, "singleton_transition"), &["delta"]);
     assert_param_names(function_by_name(functions, "singleton_terminate"), &["next_states"]);
     assert_param_names(function_by_name(functions, "fanout_verification"), &["new_states"]);
+}
+
+#[test]
+fn covers_cov_attribute_config_combinations_with_two_field_state() {
+    let source = r#"
+        contract Matrix(int max_ins, int max_outs, int init_amount, byte[32] init_owner) {
+            int amount = init_amount;
+            byte[32] owner = init_owner;
+
+            #[covenant(binding = cov, from = max_ins, to = max_outs, mode = verification)]
+            function cov_verification(
+                State[] prev_states,
+                State[] new_states,
+                int nonce
+            ) {
+                require(nonce >= 0);
+            }
+
+            #[covenant(binding = cov, from = max_ins, to = max_outs, mode = transition)]
+            function cov_transition(State[] prev_states, int fee) : (State[]) {
+                require(fee >= 0);
+                return(prev_states);
+            }
+
+            #[covenant(from = max_ins, to = max_outs)]
+            function inferred_cov(State[] prev_states, State[] new_states) {
+                require(new_states.length == new_states.length);
+            }
+        }
+    "#;
+
+    let contract = compile_and_normalize_contract(source, &[Expr::int(2), Expr::int(4), Expr::int(10), Expr::bytes(vec![7u8; 32])]);
+    let functions = &contract.functions;
+
+    let expected_entrypoints: HashSet<&str> = vec![
+        "leader_cov_verification",
+        "delegate_cov_verification",
+        "leader_cov_transition",
+        "delegate_cov_transition",
+        "leader_inferred_cov",
+        "delegate_inferred_cov",
+    ]
+    .into_iter()
+    .collect();
+    let actual_entrypoints: HashSet<&str> =
+        functions.iter().filter(|function| function.entrypoint).map(|function| function.name.as_str()).collect();
+    assert_eq!(actual_entrypoints, expected_entrypoints);
+
+    for policy_name in ["covenant_policy_cov_verification", "covenant_policy_cov_transition", "covenant_policy_inferred_cov"] {
+        let policy = function_by_name(functions, policy_name);
+        assert!(!policy.entrypoint, "policy '{}' must not be an entrypoint", policy_name);
+    }
+
+    assert_param_names(function_by_name(functions, "leader_cov_verification"), &["new_states", "nonce"]);
+    assert_param_names(function_by_name(functions, "delegate_cov_verification"), &[]);
+    assert_param_names(function_by_name(functions, "leader_cov_transition"), &["fee"]);
+    assert_param_names(function_by_name(functions, "delegate_cov_transition"), &[]);
+    assert_param_names(function_by_name(functions, "leader_inferred_cov"), &["new_states"]);
+    assert_param_names(function_by_name(functions, "delegate_inferred_cov"), &[]);
 }

@@ -39,6 +39,15 @@ Sugar (aliases over `from/to`):
 #[covenant.fanout(to = Y)] // == #[covenant(from = 1, to = Y)]
 ```
 
+Manual-entrypoint acknowledgment in a leader contract:
+
+```js
+#[covenant.allow(rule = manual_entrypoint_in_leader_contract)]
+entrypoint function recover(...) {
+    // Manual covenant-group checks.
+}
+```
+
 Rules:
 
 1. `binding = auth` means auth-context lowering (`OpAuth*`).
@@ -51,6 +60,10 @@ Rules:
 8. `binding = cov` with `from = 1` is allowed but emits a compiler warning recommending `binding = auth`.
 9. `binding = cov` with `groups = multiple` is a compile error.
 10. `termination` is valid only for singleton transition (`from = 1, to = 1, mode = transition`); there it defaults to `disallowed`, and using it elsewhere is a compile error.
+11. A contract with any `binding = cov` declaration is a *leader contract*. Its
+    other covenant declarations must also use `binding = cov`.
+12. A handwritten entrypoint in a leader contract is rejected unless it carries
+    `#[covenant.allow(rule = manual_entrypoint_in_leader_contract)]`.
 
 ### 1:N verification
 
@@ -202,6 +215,38 @@ Given policy function `f`:
     * `__delegate_f`
 
 `__delegate_f` does not call policy. It enforces delegation-path invariants only.
+
+## Leader contracts
+
+A `binding = cov` declaration generates both leader and delegate entrypoints.
+The leader runs at covenant input zero and validates the shared covenant
+transition. A delegate runs at another covenant input and relies on input zero
+to perform that validation.
+
+This makes delegation a contract-wide property. A generated delegate
+authenticates the contract at input zero, but cannot determine which entrypoint
+that input selected. If the same contract also exposed an auth-bound declaration,
+that auth entrypoint could occupy input zero without validating the complete
+covenant input group. Silverscript therefore rejects contracts that mix
+auth-bound and cov-bound covenant declarations.
+
+Handwritten entrypoints remain available as a low-level escape hatch. In a
+leader contract they must explicitly choose one of these roles:
+
+1. reject shared execution by requiring `OpCovInputCount(cov_id) == 1`;
+2. act as a delegate by rejecting covenant input zero; or
+3. act as a leader by requiring covenant input zero and validating the complete
+   covenant input/output group.
+
+After implementing the corresponding checks, the author must acknowledge the
+manual proof with:
+
+```js
+#[covenant.allow(rule = manual_entrypoint_in_leader_contract)]
+```
+
+This attribute suppresses the compiler error and generates no checks. The
+compiler does not verify the handwritten covenant-group logic.
 
 ## Complex example
 
