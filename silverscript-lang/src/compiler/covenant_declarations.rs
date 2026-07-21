@@ -263,7 +263,7 @@ fn parse_covenant_declaration<'i>(
     }
 
     let infers_single_state_transition_to_one =
-        mode == CovenantMode::Transition && function.return_types.len() == 1 && is_state_type_ref(&function.return_types[0]);
+        mode == CovenantMode::Transition && function.return_types.len() == 1 && is_state_type(&function.return_types[0]);
     let to_expr = match to_expr {
         Some(to_expr) => to_expr,
         None if infers_single_state_transition_to_one => Expr::int(1),
@@ -310,9 +310,7 @@ fn validate_covenant_policy_state_shape<'i>(
     match (declaration.binding, declaration.mode) {
         (CovenantBinding::Auth, CovenantMode::Verification) => {
             if declaration.singleton && declaration.termination != CovenantTermination::Allowed {
-                if policy.params.len() < 2
-                    || !is_state_type_ref(&policy.params[0].type_ref)
-                    || !is_state_type_ref(&policy.params[1].type_ref)
+                if policy.params.len() < 2 || !is_state_type(&policy.params[0].type_ref) || !is_state_type(&policy.params[1].type_ref)
                 {
                     return Err(CompilerError::Unsupported(format!(
                         "mode=verification with binding=auth on singleton function '{}' expects parameters '(State prev_state, State new_state, ...)'",
@@ -320,8 +318,8 @@ fn validate_covenant_policy_state_shape<'i>(
                     )));
                 }
             } else if policy.params.len() < 2
-                || !is_state_type_ref(&policy.params[0].type_ref)
-                || !is_state_array_type_ref(&policy.params[1].type_ref)
+                || !is_state_type(&policy.params[0].type_ref)
+                || !is_state_array_type(&policy.params[1].type_ref)
             {
                 return Err(CompilerError::Unsupported(format!(
                     "mode=verification with binding=auth on function '{}' expects parameters '(State prev_state, State[] new_states, ...)'",
@@ -331,8 +329,8 @@ fn validate_covenant_policy_state_shape<'i>(
         }
         (CovenantBinding::Cov, CovenantMode::Verification) => {
             if policy.params.len() < 2
-                || !is_state_array_type_ref(&policy.params[0].type_ref)
-                || !is_state_array_type_ref(&policy.params[1].type_ref)
+                || !is_state_array_type(&policy.params[0].type_ref)
+                || !is_state_array_type(&policy.params[1].type_ref)
             {
                 return Err(CompilerError::Unsupported(format!(
                     "mode=verification with binding=cov on function '{}' expects parameters '(State[] prev_states, State[] new_states, ...)'",
@@ -341,7 +339,7 @@ fn validate_covenant_policy_state_shape<'i>(
             }
         }
         (CovenantBinding::Auth, CovenantMode::Transition) => {
-            if policy.params.is_empty() || !is_state_type_ref(&policy.params[0].type_ref) {
+            if policy.params.is_empty() || !is_state_type(&policy.params[0].type_ref) {
                 return Err(CompilerError::Unsupported(format!(
                     "mode=transition with binding=auth on function '{}' expects parameters '(State prev_state, ...)'",
                     policy.name
@@ -349,7 +347,7 @@ fn validate_covenant_policy_state_shape<'i>(
             }
         }
         (CovenantBinding::Cov, CovenantMode::Transition) => {
-            if policy.params.is_empty() || !is_state_array_type_ref(&policy.params[0].type_ref) {
+            if policy.params.is_empty() || !is_state_array_type(&policy.params[0].type_ref) {
                 return Err(CompilerError::Unsupported(format!(
                     "mode=transition with binding=cov on function '{}' expects parameters '(State[] prev_states, ...)'",
                     policy.name
@@ -367,21 +365,21 @@ fn validate_covenant_policy_state_shape<'i>(
         }
 
         let return_type = &policy.return_types[0];
-        if !is_state_type_ref(return_type) && !is_state_array_type_ref(return_type) {
+        if !is_state_type(return_type) && !is_state_array_type(return_type) {
             return Err(CompilerError::Unsupported(format!(
                 "mode=transition on function '{}' with contract state expects return type 'State' or 'State[]'",
                 policy.name
             )));
         }
 
-        if declaration.singleton && is_state_array_type_ref(return_type) && declaration.termination != CovenantTermination::Allowed {
+        if declaration.singleton && is_state_array_type(return_type) && declaration.termination != CovenantTermination::Allowed {
             return Err(CompilerError::Unsupported(format!(
                 "transition mode singleton policy function '{}' must return a single State (arrays are not allowed unless termination=allowed)",
                 policy.name
             )));
         }
 
-        if is_state_type_ref(return_type) && !is_literal_int(&declaration.to_expr, 1) {
+        if is_state_type(return_type) && !is_literal_int(&declaration.to_expr, 1) {
             return Err(CompilerError::Unsupported(format!(
                 "mode=transition on function '{}' may return a single State only when 'to' is the literal 1 or omitted",
                 policy.name
@@ -425,14 +423,14 @@ fn build_auth_wrapper<'i>(
 
     let active_input = active_input_index_expr();
     let auth_out_count_name = "__auth_out_count";
-    body.push(var_def_statement(int_type_ref(), auth_out_count_name, Expr::call("OpAuthOutputCount", vec![active_input.clone()])));
+    body.push(var_def_statement(int_type(), auth_out_count_name, Expr::call("OpAuthOutputCount", vec![active_input.clone()])));
 
     if declaration.groups == CovenantGroups::Single {
         let cov_id_name = "__cov_id";
-        body.push(var_def_statement(bytes32_type_ref(), cov_id_name, Expr::call("OpInputCovenantId", vec![active_input.clone()])));
+        body.push(var_def_statement(bytes32_type(), cov_id_name, Expr::call("OpInputCovenantId", vec![active_input.clone()])));
         let cov_shared_out_count_name = "__cov_shared_out_count";
         body.push(var_def_statement(
-            int_type_ref(),
+            int_type(),
             cov_shared_out_count_name,
             Expr::call("OpCovOutputCount", vec![identifier_expr(cov_id_name)]),
         ));
@@ -448,18 +446,14 @@ fn build_auth_wrapper<'i>(
             CovenantMode::Verification => {
                 entrypoint_params = policy.params.iter().skip(1).cloned().collect();
                 let prev_state_name = &policy.params[0].name;
-                body.push(var_def_statement(
-                    state_type_ref(),
-                    prev_state_name,
-                    state_object_expr_from_contract_fields(contract_fields),
-                ));
+                body.push(var_def_statement(state_type(), prev_state_name, state_object_expr_from_contract_fields(contract_fields)));
                 body.push(call_statement(policy_name, policy.params.iter().map(|param| identifier_expr(&param.name)).collect()));
                 if declaration.singleton && declaration.termination != CovenantTermination::Allowed {
                     let new_state_name = &policy.params[1].name;
                     body.push(require_statement(binary_expr(BinaryOp::Eq, identifier_expr(auth_out_count_name), Expr::int(1))));
                     let out_idx_name = "__cov_out_idx";
                     body.push(var_def_statement(
-                        int_type_ref(),
+                        int_type(),
                         out_idx_name,
                         Expr::call("OpAuthOutputIdx", vec![active_input.clone(), Expr::int(0)]),
                     ));
@@ -491,23 +485,19 @@ fn build_auth_wrapper<'i>(
             CovenantMode::Transition => {
                 entrypoint_params = policy.params.iter().skip(1).cloned().collect();
                 let prev_state_name = &policy.params[0].name;
-                body.push(var_def_statement(
-                    state_type_ref(),
-                    prev_state_name,
-                    state_object_expr_from_contract_fields(contract_fields),
-                ));
+                body.push(var_def_statement(state_type(), prev_state_name, state_object_expr_from_contract_fields(contract_fields)));
                 let call_args = policy.params.iter().map(|param| identifier_expr(&param.name)).collect();
-                if is_state_type_ref(&policy.return_types[0]) {
+                if is_state_type(&policy.return_types[0]) {
                     let next_state_name = "__cov_new_state";
                     body.push(function_call_assign_statement(
-                        vec![typed_binding(state_type_ref(), next_state_name)],
+                        vec![typed_binding(state_type(), next_state_name)],
                         policy_name,
                         call_args,
                     ));
                     body.push(require_statement(binary_expr(BinaryOp::Eq, identifier_expr(auth_out_count_name), Expr::int(1))));
                     let out_idx_name = "__cov_out_idx";
                     body.push(var_def_statement(
-                        int_type_ref(),
+                        int_type(),
                         out_idx_name,
                         Expr::call("OpAuthOutputIdx", vec![active_input.clone(), Expr::int(0)]),
                     ));
@@ -518,7 +508,7 @@ fn build_auth_wrapper<'i>(
                 } else {
                     let next_states_name = "__cov_new_states";
                     body.push(function_call_assign_statement(
-                        vec![typed_binding(state_array_type_ref(), next_states_name)],
+                        vec![typed_binding(state_array_type(), next_states_name)],
                         policy_name,
                         call_args,
                     ));
@@ -573,22 +563,18 @@ fn build_cov_wrapper<'i>(
 
     let active_input = active_input_index_expr();
     let cov_id_name = "__cov_id";
-    body.push(var_def_statement(bytes32_type_ref(), cov_id_name, Expr::call("OpInputCovenantId", vec![active_input.clone()])));
+    body.push(var_def_statement(bytes32_type(), cov_id_name, Expr::call("OpInputCovenantId", vec![active_input.clone()])));
 
     let leader_idx_expr = Expr::call("OpCovInputIdx", vec![identifier_expr(cov_id_name), Expr::int(0)]);
     body.push(require_statement(binary_expr(if leader { BinaryOp::Eq } else { BinaryOp::Ne }, leader_idx_expr, active_input)));
 
     if leader {
         let in_count_name = "__cov_in_count";
-        body.push(var_def_statement(int_type_ref(), in_count_name, Expr::call("OpCovInputCount", vec![identifier_expr(cov_id_name)])));
+        body.push(var_def_statement(int_type(), in_count_name, Expr::call("OpCovInputCount", vec![identifier_expr(cov_id_name)])));
         body.push(require_statement(binary_expr(BinaryOp::Le, identifier_expr(in_count_name), declaration.from_expr.clone())));
 
         let out_count_name = "__cov_out_count";
-        body.push(var_def_statement(
-            int_type_ref(),
-            out_count_name,
-            Expr::call("OpCovOutputCount", vec![identifier_expr(cov_id_name)]),
-        ));
+        body.push(var_def_statement(int_type(), out_count_name, Expr::call("OpCovOutputCount", vec![identifier_expr(cov_id_name)])));
 
         if !contract_fields.is_empty() {
             match declaration.mode {
@@ -633,17 +619,17 @@ fn build_cov_wrapper<'i>(
                         prev_states_name,
                     );
                     let call_args = policy.params.iter().map(|param| identifier_expr(&param.name)).collect();
-                    if is_state_type_ref(&policy.return_types[0]) {
+                    if is_state_type(&policy.return_types[0]) {
                         let next_state_name = "__cov_new_state";
                         body.push(function_call_assign_statement(
-                            vec![typed_binding(state_type_ref(), next_state_name)],
+                            vec![typed_binding(state_type(), next_state_name)],
                             policy_name,
                             call_args,
                         ));
                         body.push(require_statement(binary_expr(BinaryOp::Eq, identifier_expr(out_count_name), Expr::int(1))));
                         let out_idx_name = "__cov_out_idx";
                         body.push(var_def_statement(
-                            int_type_ref(),
+                            int_type(),
                             out_idx_name,
                             Expr::call("OpCovOutputIdx", vec![identifier_expr(cov_id_name), Expr::int(0)]),
                         ));
@@ -654,7 +640,7 @@ fn build_cov_wrapper<'i>(
                     } else {
                         let next_states_name = "__cov_new_states";
                         body.push(function_call_assign_statement(
-                            vec![typed_binding(state_array_type_ref(), next_states_name)],
+                            vec![typed_binding(state_array_type(), next_states_name)],
                             policy_name,
                             call_args,
                         ));
@@ -721,19 +707,20 @@ fn generated_entrypoint<'i>(
     }
 }
 
-fn int_type_ref() -> TypeRef {
+// TODO: Define these constructor functions in a more central location.
+fn int_type() -> TypeRef {
     TypeRef { base: TypeBase::Int, array_dims: Vec::new() }
 }
 
-fn state_type_ref() -> TypeRef {
+fn state_type() -> TypeRef {
     TypeRef { base: TypeBase::Custom(STATE_TYPE_NAME.to_string()), array_dims: Vec::new() }
 }
 
-fn state_array_type_ref() -> TypeRef {
+fn state_array_type() -> TypeRef {
     TypeRef { base: TypeBase::Custom(STATE_TYPE_NAME.to_string()), array_dims: vec![ArrayDim::Dynamic] }
 }
 
-fn bytes32_type_ref() -> TypeRef {
+fn bytes32_type() -> TypeRef {
     TypeRef { base: TypeBase::Byte, array_dims: vec![ArrayDim::Fixed(32)] }
 }
 
@@ -858,12 +845,33 @@ fn length_expr<'i>(expr: Expr<'i>) -> Expr<'i> {
     )
 }
 
-fn is_state_type_ref(type_ref: &TypeRef) -> bool {
-    !type_ref.is_array() && matches!(&type_ref.base, TypeBase::Custom(name) if name == STATE_TYPE_NAME)
+// TODO: Define `is_state_type` and `is_state_array_type` in one central place.
+fn is_state_type(type_ref: &TypeRef) -> bool {
+    type_ref.is_custom() && matches!(&type_ref.base, TypeBase::Custom(name) if name == STATE_TYPE_NAME)
 }
 
-fn is_state_array_type_ref(type_ref: &TypeRef) -> bool {
-    type_ref.is_array() && matches!(&type_ref.base, TypeBase::Custom(name) if name == STATE_TYPE_NAME)
+fn is_state_array_type(type_ref: &TypeRef) -> bool {
+    matches!(&type_ref.base, TypeBase::Custom(name) if name == STATE_TYPE_NAME)
+        && matches!(type_ref.array_dims.as_slice(), [ArrayDim::Dynamic])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn state_array_type_requires_one_dynamic_dimension() {
+        assert!(is_state_array_type(&state_array_type()));
+        assert!(!is_state_array_type(&state_type()));
+        assert!(!is_state_array_type(&TypeRef {
+            base: TypeBase::Custom(STATE_TYPE_NAME.to_string()),
+            array_dims: vec![ArrayDim::Fixed(2)],
+        }));
+        assert!(!is_state_array_type(&TypeRef {
+            base: TypeBase::Custom(STATE_TYPE_NAME.to_string()),
+            array_dims: vec![ArrayDim::Dynamic, ArrayDim::Dynamic],
+        }));
+    }
 }
 
 fn is_literal_int(expr: &Expr<'_>, expected: i64) -> bool {
@@ -878,7 +886,7 @@ fn append_cov_input_state_reads_into_state_array<'i>(
     prev_states_name: &str,
 ) {
     let loop_var = "__cov_in_k";
-    body.push(var_decl_statement(state_array_type_ref(), prev_states_name));
+    body.push(var_decl_statement(state_array_type(), prev_states_name));
     let for_body = vec![array_append_statement(
         prev_states_name,
         Expr::call("readInputState", vec![Expr::call("OpCovInputIdx", vec![identifier_expr(cov_id_name), identifier_expr(loop_var)])]),
@@ -897,7 +905,7 @@ fn append_auth_output_state_array_checks_from_state_array<'i>(
     let out_idx_name = "__cov_out_idx";
     let for_body = vec![
         var_def_statement(
-            int_type_ref(),
+            int_type(),
             out_idx_name,
             Expr::call("OpAuthOutputIdx", vec![active_input.clone(), identifier_expr(loop_var)]),
         ),
@@ -920,7 +928,7 @@ fn append_cov_output_state_array_checks_from_state_array<'i>(
     let out_idx_name = "__cov_out_idx";
     let for_body = vec![
         var_def_statement(
-            int_type_ref(),
+            int_type(),
             out_idx_name,
             Expr::call("OpCovOutputIdx", vec![identifier_expr(cov_id_name), identifier_expr(loop_var)]),
         ),

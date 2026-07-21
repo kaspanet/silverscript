@@ -119,7 +119,7 @@ pub struct FunctionAst<'i> {
 }
 
 impl FunctionAst<'_> {
-    pub fn return_type_ref(&self) -> Option<TypeRef> {
+    pub fn return_type(&self) -> Option<TypeRef> {
         match self.return_types.as_slice() {
             [] => None,
             [single] if !self.returns_tuple => Some(single.clone()),
@@ -196,7 +196,20 @@ pub enum TypeBase {
     Custom(String),
 }
 
+pub const PUBKEY_BYTE_LEN: usize = 32;
+pub const SIG_BYTE_LEN: usize = 65;
+pub const DATASIG_BYTE_LEN: usize = 64;
+
 impl TypeBase {
+    pub fn fixed_byte_sequence_len(&self) -> Option<usize> {
+        match self {
+            TypeBase::Pubkey => Some(PUBKEY_BYTE_LEN),
+            TypeBase::Sig => Some(SIG_BYTE_LEN),
+            TypeBase::Datasig => Some(DATASIG_BYTE_LEN),
+            _ => None,
+        }
+    }
+
     pub fn type_name(&self) -> String {
         match self {
             TypeBase::Int => "int".to_string(),
@@ -253,6 +266,42 @@ pub enum ArrayDim {
 }
 
 impl TypeRef {
+    pub fn is_int(&self) -> bool {
+        self.array_dims.is_empty() && matches!(self.base, TypeBase::Int)
+    }
+
+    pub fn is_bool(&self) -> bool {
+        self.array_dims.is_empty() && matches!(self.base, TypeBase::Bool)
+    }
+
+    pub fn is_string(&self) -> bool {
+        self.array_dims.is_empty() && matches!(self.base, TypeBase::String)
+    }
+
+    pub fn is_pubkey(&self) -> bool {
+        self.array_dims.is_empty() && matches!(self.base, TypeBase::Pubkey)
+    }
+
+    pub fn is_sig(&self) -> bool {
+        self.array_dims.is_empty() && matches!(self.base, TypeBase::Sig)
+    }
+
+    pub fn is_datasig(&self) -> bool {
+        self.array_dims.is_empty() && matches!(self.base, TypeBase::Datasig)
+    }
+
+    pub fn is_byte(&self) -> bool {
+        self.array_dims.is_empty() && matches!(self.base, TypeBase::Byte)
+    }
+
+    pub fn is_tuple(&self) -> bool {
+        self.array_dims.is_empty() && matches!(self.base, TypeBase::Tuple(_))
+    }
+
+    pub fn is_custom(&self) -> bool {
+        self.array_dims.is_empty() && matches!(self.base, TypeBase::Custom(_))
+    }
+
     pub fn type_name(&self) -> String {
         let mut out = self.base.type_name();
         for dim in &self.array_dims {

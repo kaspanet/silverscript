@@ -25,7 +25,7 @@ pub(super) fn static_check_contract<'i>(
     validate_function_signatures(contract, &structs, &constants, options)?;
 
     for (param, value) in contract.params.iter().zip(constructor_args.iter()) {
-        let param_type_name = type_name_from_ref(&param.type_ref);
+        let param_type_name = param.type_ref.type_name();
         if validate_expr_matches_type(value, &param.type_ref, &HashMap::new(), &structs, &constants, &HashMap::new(), &contract.fields)
             .is_err()
         {
@@ -64,7 +64,7 @@ fn validate_pragma_versions<'i>(contract: &ContractAst<'i>) -> Result<(), Compil
 pub(crate) fn validate_return_types<'i>(
     exprs: &[Expr<'i>],
     return_types: &[TypeRef],
-    types: &HashMap<String, String>,
+    types: &TypeMap,
     structs: &StructRegistry,
     constants: &HashMap<String, Expr<'i>>,
     functions: &HashMap<String, &FunctionAst<'i>>,
@@ -78,7 +78,7 @@ pub(crate) fn validate_return_types<'i>(
     }
     for (expr, return_type) in exprs.iter().zip(return_types.iter()) {
         if validate_expr_matches_type(expr, return_type, types, structs, constants, functions, contract_fields).is_err() {
-            let type_name = type_name_from_ref(return_type);
+            let type_name = return_type.type_name();
             return Err(CompilerError::Unsupported(format!("return value expects {type_name}")));
         }
     }
@@ -109,10 +109,10 @@ fn validate_function_signatures<'i>(
 
     for function in &contract.functions {
         for param in &function.params {
-            ensure_array_elements_have_known_size(&param.type_ref, structs, &type_name_from_ref(&param.type_ref))?;
+            ensure_array_elements_have_known_size(&param.type_ref, structs, &param.type_ref.type_name())?;
         }
         for return_type in &function.return_types {
-            ensure_array_elements_have_known_size(return_type, structs, &type_name_from_ref(return_type))?;
+            ensure_array_elements_have_known_size(return_type, structs, &return_type.type_name())?;
         }
 
         if function.entrypoint && !options.allow_entrypoint_return && !function.return_types.is_empty() {
@@ -154,18 +154,18 @@ fn validate_contract_field_initializers<'i>(
 ) -> Result<(), CompilerError> {
     let mut types = HashMap::new();
     for param in &contract.params {
-        types.insert(param.name.clone(), type_name_from_ref(&param.type_ref));
+        types.insert(param.name.clone(), param.type_ref.clone());
     }
     for constant in &contract.constants {
-        types.insert(constant.name.clone(), type_name_from_ref(&constant.type_ref));
+        types.insert(constant.name.clone(), constant.type_ref.clone());
     }
 
     for field in &contract.fields {
-        let type_name = type_name_from_ref(&field.type_ref);
+        let type_name = field.type_ref.type_name();
         ensure_array_elements_have_known_size(&field.type_ref, structs, &type_name)?;
         validate_expr_matches_type(&field.expr, &field.type_ref, &types, structs, constants, &HashMap::new(), &contract.fields)
             .map_err(|_| CompilerError::Unsupported(format!("contract field '{}' expects {}", field.name, type_name)))?;
-        types.insert(field.name.clone(), type_name);
+        types.insert(field.name.clone(), field.type_ref.clone());
     }
 
     Ok(())
@@ -174,7 +174,7 @@ fn validate_contract_field_initializers<'i>(
 #[allow(clippy::too_many_arguments)]
 fn validate_statement_shapes<'i>(
     statements: &[Statement<'i>],
-    types: &mut HashMap<String, String>,
+    types: &mut TypeMap,
     return_types: &[TypeRef],
     structs: &StructRegistry,
     constants: &HashMap<String, Expr<'i>>,
@@ -220,7 +220,7 @@ fn validate_statement_shapes<'i>(
 }
 
 struct ValidateStatementShapesContext<'a, 'i> {
-    types: &'a mut HashMap<String, String>,
+    types: &'a mut TypeMap,
     return_types: &'a [TypeRef],
     structs: &'a StructRegistry,
     constants: &'a HashMap<String, Expr<'i>>,
@@ -254,7 +254,7 @@ fn validate_variable_definition_statement_shape<'i>(
     name: &str,
     expr: Option<&Expr<'i>>,
 ) -> Result<(), CompilerError> {
-    let type_name = type_name_from_ref(type_ref);
+    let type_name = type_ref.type_name();
     ensure_array_elements_have_known_size(type_ref, ctx.structs, &type_name)?;
     if expr.is_none() && type_ref.is_array() && array_type_size(type_ref, ctx.constants).is_some() {
         return Err(CompilerError::Unsupported("variable definition requires initializer".to_string()));
@@ -271,7 +271,7 @@ fn validate_variable_definition_statement_shape<'i>(
                 err,
                 "variable",
                 name,
-                &type_name_from_ref(type_ref),
+                &type_ref.type_name(),
                 expr,
                 type_ref,
                 ctx.types,
@@ -293,8 +293,8 @@ fn validate_tuple_assignment_statement_shape<'i>(
     expr: &Expr<'i>,
 ) -> Result<(), CompilerError> {
     ctx.check_expr(expr, None)?;
-    ensure_array_elements_have_known_size(left_type_ref, ctx.structs, &type_name_from_ref(left_type_ref))?;
-    ensure_array_elements_have_known_size(right_type_ref, ctx.structs, &type_name_from_ref(right_type_ref))?;
+    ensure_array_elements_have_known_size(left_type_ref, ctx.structs, &left_type_ref.type_name())?;
+    ensure_array_elements_have_known_size(right_type_ref, ctx.structs, &right_type_ref.type_name())?;
     insert_type_binding(ctx.types, left_name, left_type_ref);
     insert_type_binding(ctx.types, right_name, right_type_ref);
     Ok(())
@@ -311,7 +311,7 @@ fn validate_state_function_call_assign_statement_shape<'i>(
             ctx.check_call(name, args, None)?;
         }
         "readInputStateWithTemplate" => {
-            let struct_name = struct_name_for_state_bindings_ref(bindings, ctx.structs, ctx.constants)?;
+            let struct_name = struct_name_for_state_bindings(bindings, ctx.structs, ctx.constants)?;
             let expected = TypeRef { base: TypeBase::Custom(struct_name), array_dims: Vec::new() };
             ctx.check_call(name, args, Some(&expected))?;
         }
@@ -323,7 +323,7 @@ fn validate_state_function_call_assign_statement_shape<'i>(
     }
     validate_state_function_call_assign(bindings, name, args, ctx.structs, ctx.constants, ctx.contract_fields)?;
     for binding in bindings {
-        ensure_array_elements_have_known_size(&binding.type_ref, ctx.structs, &type_name_from_ref(&binding.type_ref))?;
+        ensure_array_elements_have_known_size(&binding.type_ref, ctx.structs, &binding.type_ref.type_name())?;
         insert_type_binding(ctx.types, &binding.name, &binding.type_ref);
     }
     Ok(())
@@ -338,7 +338,7 @@ fn validate_struct_destructure_statement_shape<'i>(
     let direct_read_input_state = matches!(&expr.kind, ExprKind::Call { name, .. } if name == "readInputState");
     validate_struct_destructure_bindings(bindings, &expr_type, direct_read_input_state, ctx.structs, ctx.constants)?;
     for binding in bindings {
-        ensure_array_elements_have_known_size(&binding.type_ref, ctx.structs, &type_name_from_ref(&binding.type_ref))?;
+        ensure_array_elements_have_known_size(&binding.type_ref, ctx.structs, &binding.type_ref.type_name())?;
         insert_type_binding(ctx.types, &binding.name, &binding.type_ref);
     }
     Ok(())
@@ -360,7 +360,7 @@ fn validate_output_state_call<'i>(
     name: &str,
     args: &[Expr<'i>],
 ) -> Result<(), CompilerError> {
-    let int_type = parse_type_ref("int")?;
+    let int_type = TypeRef { base: TypeBase::Int, array_dims: Vec::new() };
     match (name, args) {
         ("validateOutputState", [output_index, state]) => {
             let state_type = TypeRef { base: TypeBase::Custom(STATE_TYPE_NAME.to_string()), array_dims: Vec::new() };
@@ -419,7 +419,7 @@ fn validate_function_call_assign_statement_shape<'i>(
             return Err(CompilerError::Unsupported(format!(
                 "function return binding '{}' expects {}",
                 binding.name,
-                type_name_from_ref(return_type)
+                return_type.type_name()
             )));
         }
         insert_type_binding(ctx.types, &binding.name, &binding.type_ref);
@@ -438,14 +438,14 @@ fn validate_require_statement_shape<'i>(
     ctx: &mut ValidateStatementShapesContext<'_, 'i>,
     expr: &Expr<'i>,
 ) -> Result<(), CompilerError> {
-    ctx.check_expr(expr, Some(&parse_type_ref("bool")?)).map(|_| ())
+    ctx.check_expr(expr, Some(&TypeRef { base: TypeBase::Bool, array_dims: Vec::new() })).map(|_| ())
 }
 
 fn validate_time_op_statement_shape<'i>(
     ctx: &mut ValidateStatementShapesContext<'_, 'i>,
     expr: &Expr<'i>,
 ) -> Result<(), CompilerError> {
-    ctx.check_expr(expr, Some(&parse_type_ref("int")?)).map(|_| ())
+    ctx.check_expr(expr, Some(&TypeRef { base: TypeBase::Int, array_dims: Vec::new() })).map(|_| ())
 }
 
 fn validate_console_statement_shape<'i>(
@@ -463,8 +463,8 @@ fn validate_assign_statement_shape<'i>(
     name: &str,
     expr: &Expr<'i>,
 ) -> Result<(), CompilerError> {
-    if let Some(type_name) = ctx.types.get(name).cloned() {
-        let type_ref = parse_type_ref(&type_name)?;
+    if let Some(type_ref) = ctx.types.get(name).cloned() {
+        let type_name = type_ref.type_name();
         ctx.check_expr(expr, Some(&type_ref)).map_err(|err| {
             map_declared_type_error(err, "variable", name, &type_name, expr, &type_ref, ctx.types, ctx.structs, ctx.constants)
         })?;
@@ -478,7 +478,7 @@ fn validate_if_statement_shape<'i>(
     then_branch: &[Statement<'i>],
     else_branch: Option<&[Statement<'i>]>,
 ) -> Result<(), CompilerError> {
-    ctx.check_expr(condition, Some(&parse_type_ref("bool")?))?;
+    ctx.check_expr(condition, Some(&TypeRef { base: TypeBase::Bool, array_dims: Vec::new() }))?;
     let mut then_types = ctx.types.clone();
     validate_statement_shapes(
         then_branch,
@@ -520,12 +520,12 @@ fn validate_for_statement_shape<'i>(
     max_iterations: &Expr<'i>,
     body: &[Statement<'i>],
 ) -> Result<(), CompilerError> {
-    let int_type = parse_type_ref("int")?;
+    let int_type = TypeRef { base: TypeBase::Int, array_dims: Vec::new() };
     ctx.check_expr(start, Some(&int_type))?;
     ctx.check_expr(end, Some(&int_type))?;
     ctx.check_expr(max_iterations, Some(&int_type))?;
     let mut body_types = ctx.types.clone();
-    body_types.insert(ident.to_string(), "int".to_string());
+    body_types.insert(ident.to_string(), int_type);
     validate_statement_shapes(body, &mut body_types, ctx.return_types, ctx.structs, ctx.constants, ctx.functions, ctx.contract_fields)
 }
 
@@ -536,7 +536,7 @@ fn validate_struct_destructure_bindings<'i>(
     structs: &StructRegistry,
     constants: &HashMap<String, Expr<'i>>,
 ) -> Result<(), CompilerError> {
-    let struct_name = struct_name_from_type_ref(expr_type, structs)
+    let struct_name = struct_name(expr_type, structs)
         .ok_or_else(|| CompilerError::Unsupported("struct destructuring requires a struct value".to_string()))?;
     let struct_ast = structs.get(struct_name).ok_or_else(|| CompilerError::Unsupported(format!("unknown struct '{struct_name}'")))?;
     let mut seen_fields = HashSet::new();
@@ -561,11 +561,7 @@ fn validate_struct_destructure_bindings<'i>(
             return Err(CompilerError::Unsupported("struct destructuring must bind all fields exactly once".to_string()));
         };
         if !type_refs_equal(&binding.type_ref, &field.type_ref, constants) {
-            return Err(CompilerError::Unsupported(format!(
-                "struct field '{}' expects {}",
-                field.name,
-                type_name_from_ref(&field.type_ref)
-            )));
+            return Err(CompilerError::Unsupported(format!("struct field '{}' expects {}", field.name, field.type_ref.type_name())));
         }
         if direct_read_input_state && is_struct(&binding.type_ref, structs) {
             return Err(CompilerError::Unsupported("readInputState does not support nested struct fields".to_string()));
@@ -607,7 +603,7 @@ fn validate_state_function_call_assign<'i>(
                     return Err(CompilerError::Unsupported(format!(
                         "readInputState binding '{}' expects {}",
                         binding.name,
-                        type_name_from_ref(&field.type_ref)
+                        field.type_ref.type_name()
                     )));
                 }
             }
@@ -620,7 +616,7 @@ fn validate_state_function_call_assign<'i>(
                         .to_string(),
                 ));
             };
-            let struct_name = struct_name_for_state_bindings_ref(bindings, structs, constants)?;
+            let struct_name = struct_name_for_state_bindings(bindings, structs, constants)?;
             let struct_spec =
                 structs.get(&struct_name).ok_or_else(|| CompilerError::Unsupported(format!("unknown struct '{struct_name}'")))?;
             if bindings.len() != struct_spec.fields.len() {
@@ -643,7 +639,7 @@ fn validate_state_function_call_assign<'i>(
                     return Err(CompilerError::Unsupported(format!(
                         "readInputStateWithTemplate binding '{}' expects {}",
                         binding.name,
-                        type_name_from_ref(&field.type_ref)
+                        field.type_ref.type_name()
                     )));
                 }
             }
@@ -653,7 +649,7 @@ fn validate_state_function_call_assign<'i>(
     }
 }
 
-fn struct_name_for_state_bindings_ref<'i>(
+fn struct_name_for_state_bindings<'i>(
     bindings: &[StructBindingAst<'i>],
     structs: &StructRegistry,
     constants: &HashMap<String, Expr<'i>>,
@@ -684,10 +680,7 @@ fn struct_name_for_state_bindings_ref<'i>(
     }
 }
 
-fn initial_function_types<'i>(
-    contract: &ContractAst<'i>,
-    function: &FunctionAst<'i>,
-) -> Result<HashMap<String, String>, CompilerError> {
+fn initial_function_types<'i>(contract: &ContractAst<'i>, function: &FunctionAst<'i>) -> Result<TypeMap, CompilerError> {
     let mut types = HashMap::new();
 
     for param in &contract.params {
@@ -706,14 +699,14 @@ fn initial_function_types<'i>(
     Ok(types)
 }
 
-fn insert_type_binding(types: &mut HashMap<String, String>, name: &str, type_ref: &TypeRef) {
-    types.insert(name.to_string(), type_name_from_ref(type_ref));
+fn insert_type_binding(types: &mut TypeMap, name: &str, type_ref: &TypeRef) {
+    types.insert(name.to_string(), type_ref.clone());
 }
 
 pub(crate) fn validate_expr_matches_type<'i>(
     expr: &Expr<'i>,
     type_ref: &TypeRef,
-    types: &HashMap<String, String>,
+    types: &TypeMap,
     structs: &StructRegistry,
     constants: &HashMap<String, Expr<'i>>,
     functions: &HashMap<String, &FunctionAst<'i>>,
@@ -730,13 +723,13 @@ fn map_declared_type_error<'i>(
     type_name: &str,
     expr: &Expr<'i>,
     type_ref: &TypeRef,
-    types: &HashMap<String, String>,
+    types: &TypeMap,
     structs: &StructRegistry,
     constants: &HashMap<String, Expr<'i>>,
 ) -> CompilerError {
     match err {
         CompilerError::Unsupported(message) if message == "type mismatch" => {
-            let hint = expr_matches_return_type_ref_hint(expr, type_ref, types, structs, constants)
+            let hint = expr_matches_return_type_hint(expr, type_ref, types, structs, constants)
                 .map(|hint| format!("; {hint}"))
                 .unwrap_or_default();
             CompilerError::Unsupported(format!("{kind} '{}' expects {}{}", name, type_name, hint))
@@ -746,25 +739,23 @@ fn map_declared_type_error<'i>(
 }
 
 fn ensure_array_elements_have_known_size(type_ref: &TypeRef, structs: &StructRegistry, type_name: &str) -> Result<(), CompilerError> {
-    if type_ref.is_array() && fixed_type_size_ref(type_ref.array_element_type().as_ref().unwrap_or(type_ref), structs).is_none() {
+    if type_ref.is_array() && fixed_type_size(type_ref.array_element_type().as_ref().unwrap_or(type_ref), structs).is_none() {
         return Err(CompilerError::Unsupported(format!("array element type must have known size: {type_name}")));
     }
     Ok(())
 }
 
-fn fixed_type_size_ref(type_ref: &TypeRef, structs: &StructRegistry) -> Option<i64> {
+fn fixed_type_size(type_ref: &TypeRef, structs: &StructRegistry) -> Option<i64> {
     match &type_ref.base {
         TypeBase::Int => Some(8),
         TypeBase::Bool | TypeBase::Byte => Some(1),
-        TypeBase::Pubkey => Some(32),
-        TypeBase::Sig => Some(65),
-        TypeBase::Datasig => Some(64),
+        TypeBase::Pubkey | TypeBase::Sig | TypeBase::Datasig => type_ref.base.fixed_byte_sequence_len().map(|size| size as i64),
         TypeBase::String => None,
         TypeBase::Custom(name) if !type_ref.is_array() => {
             let struct_spec = structs.get(name)?;
             let mut total = 0i64;
             for field in &struct_spec.fields {
-                total += fixed_type_size_ref(&field.type_ref, structs)?;
+                total += fixed_type_size(&field.type_ref, structs)?;
             }
             Some(total)
         }
@@ -791,14 +782,10 @@ fn statement_contains_return(stmt: &Statement<'_>) -> bool {
     }
 }
 
-fn type_name_from_ref(type_ref: &TypeRef) -> String {
-    type_ref.type_name()
-}
-
-fn expr_matches_return_type_ref_hint<'i>(
+fn expr_matches_return_type_hint<'i>(
     expr: &Expr<'i>,
     type_ref: &TypeRef,
-    types: &HashMap<String, String>,
+    types: &TypeMap,
     structs: &StructRegistry,
     constants: &HashMap<String, Expr<'i>>,
 ) -> Option<String> {

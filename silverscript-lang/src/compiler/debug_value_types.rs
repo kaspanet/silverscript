@@ -1,42 +1,45 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::ast::{BinaryOp, Expr, ExprKind, TypeBase, UnaryOp, UnarySuffixKind};
+use crate::ast::{ArrayDim, BinaryOp, Expr, ExprKind, TypeBase, TypeRef, UnaryOp, UnarySuffixKind};
 use crate::errors::CompilerError;
 
 use super::builtin_types::{builtin_return_type, constructor_return_type, introspection_type, nullary_type};
-use super::{array_element_type, concat_types, is_bytes_type, parse_type_ref};
+use super::{TypeMap, concat_types, parse_type_ref};
 
-fn is_builtin_cast_type_name(name: &str) -> bool {
-    if matches!(name, "int" | "bool" | "byte" | "string" | "pubkey" | "sig" | "datasig") {
-        return true;
-    }
-    if !name.contains('[') {
-        return false;
-    }
-    let Ok(type_ref) = parse_type_ref(name) else {
-        return false;
-    };
-
-    !matches!(type_ref.base, TypeBase::Custom(_))
+// TODO: Define these constructor functions in a more central location.
+fn scalar(base: TypeBase) -> TypeRef {
+    TypeRef { base, array_dims: Vec::new() }
 }
 
-fn concatenated_array_type<'i>(left: &str, right: &str, constants: &HashMap<String, Expr<'i>>) -> Option<String> {
-    let left = parse_type_ref(left).ok()?;
-    let right = parse_type_ref(right).ok()?;
-    concat_types(&left, &right, constants).map(|type_ref| type_ref.type_name())
+fn dynamic_bytes() -> TypeRef {
+    TypeRef { base: TypeBase::Byte, array_dims: vec![ArrayDim::Dynamic] }
+}
+
+fn builtin_cast_type(name: &str) -> Option<TypeRef> {
+    let type_ref = parse_type_ref(name).ok()?;
+    (!matches!(type_ref.base, TypeBase::Custom(_))).then_some(type_ref)
+}
+
+fn is_bytes_type(type_ref: &TypeRef) -> bool {
+    type_ref.is_array()
+        || type_ref.is_byte()
+        || type_ref.is_string()
+        || type_ref.is_pubkey()
+        || type_ref.is_sig()
+        || type_ref.is_datasig()
 }
 
 pub(super) fn infer_debug_expr_value_type<'i>(
     expr: &Expr<'i>,
     env: &HashMap<String, Expr<'i>>,
-    types: &HashMap<String, String>,
+    types: &TypeMap,
     visiting: &mut HashSet<String>,
-) -> Result<String, CompilerError> {
+) -> Result<TypeRef, CompilerError> {
     match &expr.kind {
-        ExprKind::Int(_) | ExprKind::DateLiteral(_) | ExprKind::NumberWithUnit { .. } => Ok("int".to_string()),
-        ExprKind::Bool(_) => Ok("bool".to_string()),
-        ExprKind::Byte(_) => Ok("byte".to_string()),
-        ExprKind::String(_) => Ok("string".to_string()),
+        ExprKind::Int(_) | ExprKind::DateLiteral(_) | ExprKind::NumberWithUnit { .. } => Ok(scalar(TypeBase::Int)),
+        ExprKind::Bool(_) => Ok(scalar(TypeBase::Bool)),
+        ExprKind::Byte(_) => Ok(scalar(TypeBase::Byte)),
+        ExprKind::String(_) => Ok(scalar(TypeBase::String)),
         ExprKind::Identifier(name) => {
             if !visiting.insert(name.clone()) {
                 return Err(CompilerError::CyclicIdentifier(name.clone()));
@@ -51,39 +54,39 @@ pub(super) fn infer_debug_expr_value_type<'i>(
             visiting.remove(name);
             result
         }
-        ExprKind::Unary { op: UnaryOp::Not, .. } => Ok("bool".to_string()),
-        ExprKind::Unary { op: UnaryOp::Neg, .. } => Ok("int".to_string()),
+        ExprKind::Unary { op: UnaryOp::Not, .. } => Ok(scalar(TypeBase::Bool)),
+        ExprKind::Unary { op: UnaryOp::Neg, .. } => Ok(scalar(TypeBase::Int)),
         ExprKind::Binary { op, left, right } => match op {
             BinaryOp::Or | BinaryOp::And | BinaryOp::Eq | BinaryOp::Ne | BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge => {
-                Ok("bool".to_string())
+                Ok(scalar(TypeBase::Bool))
             }
             BinaryOp::Add => {
                 let left_type = infer_debug_expr_value_type(left, env, types, visiting)?;
                 let right_type = infer_debug_expr_value_type(right, env, types, visiting)?;
-                if left_type == "string" || right_type == "string" {
-                    Ok("string".to_string())
-                } else if left_type == "byte" || right_type == "byte" {
-                    Ok("int".to_string())
-                } else if let Some(concatenated) = concatenated_array_type(&left_type, &right_type, env) {
+                if left_type.is_string() || right_type.is_string() {
+                    Ok(scalar(TypeBase::String))
+                } else if left_type.is_byte() || right_type.is_byte() {
+                    Ok(scalar(TypeBase::Int))
+                } else if let Some(concatenated) = concat_types(&left_type, &right_type, env) {
                     Ok(concatenated)
                 } else if is_bytes_type(&left_type) {
                     Ok(left_type)
                 } else if is_bytes_type(&right_type) {
                     Ok(right_type)
-                } else if array_element_type(&left_type).is_some() {
+                } else if left_type.is_array() {
                     Ok(left_type)
-                } else if array_element_type(&right_type).is_some() {
+                } else if right_type.is_array() {
                     Ok(right_type)
                 } else {
-                    Ok("int".to_string())
+                    Ok(scalar(TypeBase::Int))
                 }
             }
             BinaryOp::BitOr | BinaryOp::BitXor | BinaryOp::BitAnd => {
                 let left_type = infer_debug_expr_value_type(left, env, types, visiting)?;
                 let right_type = infer_debug_expr_value_type(right, env, types, visiting)?;
-                if left_type == right_type && is_bytes_type(&left_type) { Ok(left_type) } else { Ok("int".to_string()) }
+                if left_type == right_type && is_bytes_type(&left_type) { Ok(left_type) } else { Ok(scalar(TypeBase::Int)) }
             }
-            BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Mod => Ok("int".to_string()),
+            BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Mod => Ok(scalar(TypeBase::Int)),
         },
         ExprKind::IfElse { then_expr, else_expr, .. } => {
             let then_type = infer_debug_expr_value_type(then_expr, env, types, visiting)?;
@@ -91,34 +94,34 @@ pub(super) fn infer_debug_expr_value_type<'i>(
             if then_type == else_type || (is_bytes_type(&then_type) && is_bytes_type(&else_type)) {
                 Ok(then_type)
             } else {
-                Ok("byte[]".to_string())
+                Ok(dynamic_bytes())
             }
         }
         ExprKind::Array(values) => {
             if values.iter().all(|value| matches!(value.kind, ExprKind::Byte(_))) {
-                Ok(format!("byte[{}]", values.len()))
+                Ok(TypeRef { base: TypeBase::Byte, array_dims: vec![ArrayDim::Fixed(values.len())] })
             } else {
-                Ok("byte[]".to_string())
+                Ok(dynamic_bytes())
             }
         }
-        ExprKind::Split { .. } | ExprKind::Slice { .. } => Ok("byte[]".to_string()),
-        ExprKind::New { name, .. } => Ok(constructor_return_type(name).map_or_else(|| "byte[]".to_string(), |ty| ty.type_name())),
+        ExprKind::Split { .. } | ExprKind::Slice { .. } => Ok(dynamic_bytes()),
+        ExprKind::New { name, .. } => Ok(constructor_return_type(name).unwrap_or_else(dynamic_bytes)),
         ExprKind::Append { source, .. } => infer_debug_expr_value_type(source, env, types, visiting),
         ExprKind::ArrayIndex { source, .. } => {
             let source_type = infer_debug_expr_value_type(source, env, types, visiting)?;
-            Ok(array_element_type(&source_type).unwrap_or_else(|| "byte[]".to_string()))
+            Ok(source_type.array_element_type().unwrap_or_else(dynamic_bytes))
         }
-        ExprKind::Nullary(kind) => Ok(nullary_type(*kind).type_name()),
-        ExprKind::Introspection { kind, .. } => Ok(introspection_type(*kind).type_name()),
+        ExprKind::Nullary(kind) => Ok(nullary_type(*kind)),
+        ExprKind::Introspection { kind, .. } => Ok(introspection_type(*kind)),
         ExprKind::Call { name, .. } => {
-            if is_builtin_cast_type_name(name) {
-                Ok(name.clone())
+            if let Some(type_ref) = builtin_cast_type(name) {
+                Ok(type_ref)
             } else {
-                Ok(builtin_return_type(name).map_or_else(|| "byte[]".to_string(), |ty| ty.type_name()))
+                Ok(builtin_return_type(name).unwrap_or_else(dynamic_bytes))
             }
         }
         ExprKind::UnarySuffix { source, kind, .. } => match kind {
-            UnarySuffixKind::Length => Ok("int".to_string()),
+            UnarySuffixKind::Length => Ok(scalar(TypeBase::Int)),
             UnarySuffixKind::Reverse => infer_debug_expr_value_type(source, env, types, visiting),
         },
         ExprKind::FieldAccess { .. } => {
@@ -134,13 +137,14 @@ pub(super) fn infer_debug_expr_value_type<'i>(
 mod tests {
     use std::collections::{HashMap, HashSet};
 
-    use crate::ast::{BinaryOp, Expr, ExprKind, IntrospectionKind, NullaryOp, UnarySuffixKind};
+    use crate::ast::{BinaryOp, Expr, ExprKind, IntrospectionKind, NullaryOp, UnarySuffixKind, parse_type_ref};
     use crate::span;
 
     use super::infer_debug_expr_value_type;
 
     fn infer(expr: Expr<'static>, env: HashMap<String, Expr<'static>>, types: HashMap<String, String>) -> String {
-        infer_debug_expr_value_type(&expr, &env, &types, &mut HashSet::new()).expect("infer type")
+        let types = types.into_iter().map(|(name, type_name)| (name, parse_type_ref(&type_name).expect("valid test type"))).collect();
+        infer_debug_expr_value_type(&expr, &env, &types, &mut HashSet::new()).expect("infer type").type_name()
     }
 
     #[test]

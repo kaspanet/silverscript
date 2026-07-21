@@ -2,13 +2,15 @@ use std::collections::HashMap;
 
 use crate::ast::{ArrayDim, BinaryOp, ContractFieldAst, Expr, ExprKind, FunctionAst, TypeBase, TypeRef, UnaryOp, UnarySuffixKind};
 
-use super::builtin_types::{builtin_parameters, builtin_return_type, constructor_return_type, introspection_type, nullary_type};
+use super::builtin_types::{
+    builtin_parameters, builtin_return_type, constructor_parameters, constructor_return_type, introspection_type, nullary_type,
+};
 use super::compile;
-use super::structs::{StructRegistry, is_struct, struct_name_from_type_ref};
-use super::{CompilerError, STATE_TYPE_NAME, append_type, array_type_size, concat_types, parse_type_ref, type_refs_equal};
+use super::structs::{StructRegistry, is_struct, struct_name};
+use super::{CompilerError, STATE_TYPE_NAME, TypeMap, append_type, array_type_size, concat_types, parse_type_ref, type_refs_equal};
 
 pub(super) struct TypeCheckContext<'a, 'i> {
-    pub types: &'a HashMap<String, String>,
+    pub types: &'a TypeMap,
     pub structs: &'a StructRegistry,
     pub constants: &'a HashMap<String, Expr<'i>>,
     pub functions: &'a HashMap<String, &'a FunctionAst<'i>>,
@@ -21,41 +23,24 @@ pub(super) fn check_expr<'i>(
     ctx: &TypeCheckContext<'_, 'i>,
 ) -> Result<TypeRef, CompilerError> {
     let actual = match &expr.kind {
-        ExprKind::Int(value) if expected.is_some_and(is_scalar_byte) && (0..=255).contains(value) => scalar_type("byte")?,
-        ExprKind::Int(_) | ExprKind::DateLiteral(_) | ExprKind::NumberWithUnit { .. } => scalar_type("int")?,
-        ExprKind::Bool(_) => scalar_type("bool")?,
-        ExprKind::Byte(_) => scalar_type("byte")?,
-        ExprKind::String(_) => scalar_type("string")?,
-        ExprKind::Identifier(name) => ctx
-            .types
-            .get(name)
-            .ok_or_else(|| CompilerError::UndefinedIdentifier(name.clone()))
-            .and_then(|name| parse_type_ref(name))?,
+        ExprKind::Int(value) if expected.is_some_and(TypeRef::is_byte) && (0..=255).contains(value) => scalar_type(TypeBase::Byte),
+        ExprKind::Int(_) | ExprKind::DateLiteral(_) | ExprKind::NumberWithUnit { .. } => scalar_type(TypeBase::Int),
+        ExprKind::Bool(_) => scalar_type(TypeBase::Bool),
+        ExprKind::Byte(_) => scalar_type(TypeBase::Byte),
+        ExprKind::String(_) => scalar_type(TypeBase::String),
+        ExprKind::Identifier(name) => ctx.types.get(name).cloned().ok_or_else(|| CompilerError::UndefinedIdentifier(name.clone()))?,
         ExprKind::Array(values) => check_array_literal(values, expected, ctx)?,
         ExprKind::Call { name, args, name_span } => check_call(name, name_span.as_str(), args, expected, ctx)?
             .ok_or_else(|| CompilerError::Unsupported(format!("function '{name}' does not return a value")))?,
-        ExprKind::New { name, args, .. } => {
-            if name == "LockingBytecodeNullData" {
-                for arg in args {
-                    if let ExprKind::Array(values) = &arg.kind {
-                        check_all(values, ctx)?;
-                    } else {
-                        check_expr(arg, None, ctx)?;
-                    }
-                }
-            } else {
-                check_all(args, ctx)?;
-            }
-            constructor_return_type(name).ok_or_else(|| CompilerError::Unsupported(format!("unknown constructor '{name}'")))?
-        }
+        ExprKind::New { name, args, .. } => check_constructor(name, args, ctx)?,
         ExprKind::Split { source, index, .. } => {
             let source_type = check_expr(source, None, ctx)?;
-            check_expr(index, Some(&scalar_type("int")?), ctx)?;
+            check_expr(index, Some(&scalar_type(TypeBase::Int)), ctx)?;
             sequence_part_type(&source_type, "split")?
         }
         ExprKind::Slice { source, start, end, .. } => {
             let source_type = check_expr(source, None, ctx)?;
-            let int_type = scalar_type("int")?;
+            let int_type = scalar_type(TypeBase::Int);
             check_expr(start, Some(&int_type), ctx)?;
             check_expr(end, Some(&int_type), ctx)?;
             sequence_part_type(&source_type, "slice")?
@@ -75,26 +60,26 @@ pub(super) fn check_expr<'i>(
         }
         ExprKind::ArrayIndex { source, index } => {
             let source_type = check_expr(source, None, ctx)?;
-            check_expr(index, Some(&scalar_type("int")?), ctx)?;
+            check_expr(index, Some(&scalar_type(TypeBase::Int)), ctx)?;
             source_type
                 .array_element_type()
                 .ok_or_else(|| CompilerError::Unsupported("array index source must be an array".to_string()))?
         }
         ExprKind::Unary { op, expr } => match op {
             UnaryOp::Not => {
-                let bool_type = scalar_type("bool")?;
+                let bool_type = scalar_type(TypeBase::Bool);
                 check_expr(expr, Some(&bool_type), ctx)?;
                 bool_type
             }
             UnaryOp::Neg => {
-                let int_type = scalar_type("int")?;
+                let int_type = scalar_type(TypeBase::Int);
                 check_expr(expr, Some(&int_type), ctx)?;
                 int_type
             }
         },
         ExprKind::Binary { op, left, right } => check_binary(*op, left, right, ctx)?,
         ExprKind::IfElse { condition, then_expr, else_expr } => {
-            check_expr(condition, Some(&scalar_type("bool")?), ctx)?;
+            check_expr(condition, Some(&scalar_type(TypeBase::Bool)), ctx)?;
             if let Some(expected) = expected {
                 check_expr(then_expr, Some(expected), ctx)?;
                 check_expr(else_expr, Some(expected), ctx)?;
@@ -114,7 +99,7 @@ pub(super) fn check_expr<'i>(
         }
         ExprKind::Nullary(kind) => nullary_type(*kind),
         ExprKind::Introspection { kind, index, .. } => {
-            check_expr(index, Some(&scalar_type("int")?), ctx)?;
+            check_expr(index, Some(&scalar_type(TypeBase::Int)), ctx)?;
             introspection_type(*kind)
         }
         ExprKind::StructLiteral(_) => check_struct_literal(expr, expected, ctx)?,
@@ -127,7 +112,7 @@ pub(super) fn check_expr<'i>(
                 if field.chars().all(|character| character.is_ascii_digit()) {
                     return Err(CompilerError::Unsupported("function does not return a tuple".to_string()));
                 }
-                let struct_name = struct_name_from_type_ref(&source_type, ctx.structs)
+                let struct_name = struct_name(&source_type, ctx.structs)
                     .ok_or_else(|| CompilerError::Unsupported("field access requires a struct or tuple value".to_string()))?;
                 ctx.structs
                     .get(struct_name)
@@ -139,7 +124,7 @@ pub(super) fn check_expr<'i>(
         ExprKind::UnarySuffix { source, kind, .. } => {
             let source_type = check_expr(source, None, ctx)?;
             match kind {
-                UnarySuffixKind::Length if is_sequence_type(&source_type) => scalar_type("int")?,
+                UnarySuffixKind::Length if is_sequence_type(&source_type) => scalar_type(TypeBase::Int),
                 UnarySuffixKind::Reverse if is_sequence_type(&source_type) => source_type,
                 UnarySuffixKind::Length => {
                     return Err(CompilerError::Unsupported("length requires an array or string".to_string()));
@@ -162,12 +147,7 @@ fn check_array_literal<'i>(
 ) -> Result<TypeRef, CompilerError> {
     if let Some(expected) = expected {
         if !expected.is_array() {
-            let fixed_bytes = match expected.base {
-                TypeBase::Pubkey => Some(32),
-                TypeBase::Sig => Some(65),
-                TypeBase::Datasig => Some(64),
-                _ => None,
-            };
+            let fixed_bytes = expected.base.fixed_byte_sequence_len();
             if fixed_bytes == Some(values.len()) && values.iter().all(|value| matches!(value.kind, ExprKind::Byte(_))) {
                 return Ok(expected.clone());
             }
@@ -210,11 +190,11 @@ pub(super) fn check_call<'i>(
     if name == "byte[1]" && source_name == "byte" {
         check_arity(name, args, 1)?;
         check_expr(&args[0], None, ctx)?;
-        return scalar_type("byte").map(Some);
+        return Ok(Some(scalar_type(TypeBase::Byte)));
     }
     if name == "readInputState" && !ctx.contract_fields.is_empty() {
         check_arity(name, args, 1)?;
-        check_expr(&args[0], Some(&scalar_type("int")?), ctx)?;
+        check_expr(&args[0], Some(&scalar_type(TypeBase::Int)), ctx)?;
         return Ok(Some(TypeRef { base: TypeBase::Custom(STATE_TYPE_NAME.to_string()), array_dims: Vec::new() }));
     }
     if name == "readInputStateWithTemplate" {
@@ -245,7 +225,7 @@ pub(super) fn check_call<'i>(
                 CompilerError::Unsupported(format!("function argument '{}' expects {}", param.name, param.type_ref.type_name()))
             })?;
         }
-        return Ok(function.return_type_ref());
+        return Ok(function.return_type());
     }
     if let Ok(cast_type) = parse_type_ref(name)
         && !matches!(cast_type.base, TypeBase::Custom(_))
@@ -259,7 +239,7 @@ pub(super) fn check_call<'i>(
                 }
                 [value, size] => {
                     check_expr(value, None, ctx)?;
-                    check_expr(size, Some(&scalar_type("int")?), ctx)?;
+                    check_expr(size, Some(&scalar_type(TypeBase::Int)), ctx)?;
                 }
                 _ => return Err(CompilerError::Unsupported(format!("{name}() expects 1 or 2 arguments"))),
             }
@@ -273,11 +253,13 @@ pub(super) fn check_call<'i>(
         if parameters.len() != args.len() {
             return Err(CompilerError::Unsupported(format!("{name}() expects {} arguments", parameters.len())));
         }
-        for (arg, &(parameter, expected)) in args.iter().zip(parameters) {
-            let expected_type = parse_type_ref(expected)?;
-            if check_expr(arg, Some(&expected_type), ctx).is_err() {
+        for (arg, (parameter, expected)) in args.iter().zip(parameters) {
+            if check_expr(arg, Some(&expected), ctx).is_err() {
                 let actual = check_expr(arg, None, ctx).map(|type_ref| type_ref.type_name()).unwrap_or_else(|_| "unknown".to_string());
-                return Err(CompilerError::Unsupported(format!("{name}() argument '{parameter}' expects {expected}, got {actual}")));
+                return Err(CompilerError::Unsupported(format!(
+                    "{name}() argument '{parameter}' expects {}, got {actual}",
+                    expected.type_name()
+                )));
             }
         }
     } else {
@@ -305,21 +287,19 @@ fn check_binary<'i>(
         CompilerError::Unsupported(format!("type mismatch: cannot compare {} and {actual}", left_type.type_name()))
     })?;
     match op {
-        BinaryOp::Eq | BinaryOp::Ne | BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge => Ok(scalar_type("bool")?),
+        BinaryOp::Eq | BinaryOp::Ne | BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge => Ok(scalar_type(TypeBase::Bool)),
         BinaryOp::Or | BinaryOp::And => {
-            let bool_type = scalar_type("bool")?;
+            let bool_type = scalar_type(TypeBase::Bool);
             ensure_expected(&left_type, Some(&bool_type), ctx.constants)?;
             ensure_expected(&right_type, Some(&bool_type), ctx.constants)?;
             Ok(bool_type)
         }
         BinaryOp::Add if left_type.is_array() && right_type.is_array() => concat_types(&left_type, &right_type, ctx.constants)
             .ok_or_else(|| CompilerError::Unsupported("array concatenation requires identical element types".to_string())),
-        BinaryOp::Add if is_scalar_byte(&left_type) || is_scalar_byte(&right_type) => {
+        BinaryOp::Add if left_type.is_byte() || right_type.is_byte() => {
             Err(CompilerError::Unsupported("byte values do not support '+'".to_string()))
         }
-        BinaryOp::Add if matches!(left_type.base, TypeBase::String) && matches!(right_type.base, TypeBase::String) => {
-            Ok(scalar_type("string")?)
-        }
+        BinaryOp::Add if left_type.is_string() && right_type.is_string() => Ok(scalar_type(TypeBase::String)),
         BinaryOp::BitOr | BinaryOp::BitXor | BinaryOp::BitAnd
             if matches!(left_type.base, TypeBase::Byte)
                 && left_type.is_array()
@@ -335,7 +315,7 @@ fn check_binary<'i>(
         | BinaryOp::BitOr
         | BinaryOp::BitXor
         | BinaryOp::BitAnd => {
-            let int_type = scalar_type("int")?;
+            let int_type = scalar_type(TypeBase::Int);
             ensure_expected(&left_type, Some(&int_type), ctx.constants)?;
             ensure_expected(&right_type, Some(&int_type), ctx.constants)?;
             Ok(int_type)
@@ -349,7 +329,7 @@ fn check_struct_literal<'i>(
     ctx: &TypeCheckContext<'_, 'i>,
 ) -> Result<TypeRef, CompilerError> {
     let expected = expected.ok_or_else(|| CompilerError::Unsupported("struct literal requires an expected type".to_string()))?;
-    let struct_name = struct_name_from_type_ref(expected, ctx.structs)
+    let struct_name = struct_name(expected, ctx.structs)
         .ok_or_else(|| CompilerError::Unsupported("struct literal requires a struct type".to_string()))?;
     let item = ctx.structs.get(struct_name).ok_or_else(|| CompilerError::Unsupported(format!("unknown struct '{struct_name}'")))?;
     let ExprKind::StructLiteral(fields) = &expr.kind else { unreachable!() };
@@ -392,12 +372,8 @@ fn ensure_expected<'i>(
     }
 }
 
-fn scalar_type(name: &str) -> Result<TypeRef, CompilerError> {
-    parse_type_ref(name)
-}
-
-fn is_scalar_byte(type_ref: &TypeRef) -> bool {
-    matches!(type_ref.base, TypeBase::Byte) && !type_ref.is_array()
+fn scalar_type(base: TypeBase) -> TypeRef {
+    TypeRef { base, array_dims: Vec::new() }
 }
 
 fn dynamic_array_of(type_ref: &TypeRef) -> Result<TypeRef, CompilerError> {
@@ -411,15 +387,31 @@ fn sequence_part_type(type_ref: &TypeRef, operation: &str) -> Result<TypeRef, Co
     if type_ref.is_array() {
         return dynamic_array_of(type_ref);
     }
-    match type_ref.base {
-        TypeBase::String => Ok(type_ref.clone()),
-        TypeBase::Pubkey | TypeBase::Sig | TypeBase::Datasig => parse_type_ref("byte[]"),
-        _ => Err(CompilerError::Unsupported(format!("{operation} source must be a sequence"))),
+    if type_ref.is_string() {
+        return Ok(type_ref.clone());
     }
+    if type_ref.is_pubkey() || type_ref.is_sig() || type_ref.is_datasig() {
+        return Ok(TypeRef { base: TypeBase::Byte, array_dims: vec![ArrayDim::Dynamic] });
+    }
+    Err(CompilerError::Unsupported(format!("{operation} source must be a sequence")))
+}
+
+fn check_constructor<'i>(name: &str, args: &[Expr<'i>], ctx: &TypeCheckContext<'_, 'i>) -> Result<TypeRef, CompilerError> {
+    let parameters =
+        constructor_parameters(name).ok_or_else(|| CompilerError::Unsupported(format!("unknown constructor '{name}'")))?;
+    if parameters.len() != args.len() {
+        return Err(CompilerError::Unsupported(format!("{name} constructor expects {} arguments", parameters.len())));
+    }
+    for (arg, (parameter, expected)) in args.iter().zip(parameters) {
+        check_expr(arg, Some(&expected), ctx).map_err(|_| {
+            CompilerError::Unsupported(format!("{name} constructor argument '{parameter}' expects {}", expected.type_name()))
+        })?;
+    }
+    constructor_return_type(name).ok_or_else(|| CompilerError::Unsupported(format!("unknown constructor '{name}'")))
 }
 
 fn is_sequence_type(type_ref: &TypeRef) -> bool {
-    type_ref.is_array() || matches!(type_ref.base, TypeBase::String | TypeBase::Pubkey | TypeBase::Sig | TypeBase::Datasig)
+    type_ref.is_array() || type_ref.is_string() || type_ref.is_pubkey() || type_ref.is_sig() || type_ref.is_datasig()
 }
 
 fn tuple_index(field: &str) -> Result<usize, CompilerError> {

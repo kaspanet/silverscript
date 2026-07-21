@@ -4,7 +4,7 @@ use super::compile::read_input_state_field_expr_symbolic;
 use super::*;
 use crate::ast::{
     ConstantAst, ContractAst, ContractFieldAst, Expr, ExprKind, FunctionAst, ParamAst, STATE_TYPE_NAME, Statement, StructBindingAst,
-    TypeBase, TypeRef, parse_type_ref,
+    TypeBase, TypeRef,
 };
 use crate::span;
 
@@ -64,7 +64,7 @@ pub(crate) fn build_struct_registry<'i>(contract: &ContractAst<'i>) -> Result<St
     Ok(registry)
 }
 
-pub(crate) fn struct_name_from_type_ref<'a>(type_ref: &'a TypeRef, structs: &'a StructRegistry) -> Option<&'a str> {
+pub(crate) fn struct_name<'a>(type_ref: &'a TypeRef, structs: &'a StructRegistry) -> Option<&'a str> {
     if type_ref.is_array() {
         return None;
     }
@@ -76,16 +76,16 @@ pub(crate) fn struct_name_from_type_ref<'a>(type_ref: &'a TypeRef, structs: &'a 
 }
 
 pub fn is_struct(type_ref: &TypeRef, structs: &StructRegistry) -> bool {
-    struct_name_from_type_ref(type_ref, structs).is_some()
+    struct_name(type_ref, structs).is_some()
 }
 
-pub(crate) fn struct_array_name_from_type_ref(type_ref: &TypeRef, structs: &StructRegistry) -> Option<String> {
+pub(crate) fn struct_array_name(type_ref: &TypeRef, structs: &StructRegistry) -> Option<String> {
     let element_type = type_ref.array_element_type()?;
-    struct_name_from_type_ref(&element_type, structs).map(ToOwned::to_owned)
+    struct_name(&element_type, structs).map(ToOwned::to_owned)
 }
 
 pub fn is_struct_array(type_ref: &TypeRef, structs: &StructRegistry) -> bool {
-    struct_array_name_from_type_ref(type_ref, structs).is_some()
+    struct_array_name(type_ref, structs).is_some()
 }
 
 pub(crate) fn ensure_known_or_builtin_type(type_ref: &TypeRef, structs: &StructRegistry, context: &str) -> Result<(), CompilerError> {
@@ -121,7 +121,7 @@ pub(crate) fn validate_struct_graph(structs: &StructRegistry) -> Result<(), Comp
         let item = structs.get(name).ok_or_else(|| CompilerError::Unsupported(format!("unknown struct '{name}'")))?;
         for field in &item.fields {
             ensure_known_or_builtin_type(&field.type_ref, structs, "struct field")?;
-            if let Some(child) = struct_name_from_type_ref(&field.type_ref, structs) {
+            if let Some(child) = struct_name(&field.type_ref, structs) {
                 visit(child, structs, visiting, visited)?;
             }
         }
@@ -153,7 +153,7 @@ fn flatten_struct_fields(
     prefix: &mut Vec<String>,
     out: &mut Vec<(Vec<String>, TypeRef)>,
 ) -> Result<(), CompilerError> {
-    if let Some(struct_name) = struct_name_from_type_ref(type_ref, structs) {
+    if let Some(struct_name) = struct_name(type_ref, structs) {
         let item = structs.get(struct_name).ok_or_else(|| CompilerError::Unsupported(format!("unknown struct '{struct_name}'")))?;
         for field in &item.fields {
             prefix.push(field.name.clone());
@@ -181,7 +181,7 @@ pub(crate) fn resolve_struct_access<'i>(
         }
         ExprKind::FieldAccess { source, field, .. } => {
             let (base, mut path, current_type) = resolve_struct_access(source, scope, structs)?;
-            let struct_name = struct_name_from_type_ref(&current_type, structs)
+            let struct_name = struct_name(&current_type, structs)
                 .ok_or_else(|| CompilerError::Unsupported("field access requires a struct value".to_string()))?;
             let item =
                 structs.get(struct_name).ok_or_else(|| CompilerError::Unsupported(format!("unknown struct '{struct_name}'")))?;
@@ -213,7 +213,7 @@ fn lower_expr<'i>(expr: &Expr<'i>, scope: &LoweringScope, structs: &StructRegist
         ExprKind::FieldAccess { source, field, .. } => {
             if let ExprKind::ArrayIndex { source: array_source, index } = &source.as_ref().kind {
                 let (base, mut path, array_type) = resolve_struct_access(array_source, scope, structs)?;
-                let struct_name = struct_array_name_from_type_ref(&array_type, structs)
+                let struct_name = struct_array_name(&array_type, structs)
                     .ok_or_else(|| CompilerError::Unsupported("field access requires a struct value".to_string()))?;
                 let item =
                     structs.get(&struct_name).ok_or_else(|| CompilerError::Unsupported(format!("unknown struct '{struct_name}'")))?;
@@ -323,7 +323,7 @@ fn lower_expr<'i>(expr: &Expr<'i>, scope: &LoweringScope, structs: &StructRegist
                 && let Some(type_ref) = scope.vars.get(name)
                 && is_struct_array(type_ref, structs)
             {
-                let first_leaf = flatten_type_ref_leaves(type_ref, structs)?
+                let first_leaf = flatten_type_leaves(type_ref, structs)?
                     .into_iter()
                     .next()
                     .ok_or_else(|| CompilerError::Unsupported("struct array must contain fields".to_string()))?;
@@ -354,7 +354,7 @@ pub(crate) fn lower_struct_value_expr<'i>(
     contract_constants: &HashMap<String, Expr<'i>>,
     contract_field_prefix_len: usize,
 ) -> Result<Vec<Expr<'i>>, CompilerError> {
-    let expected_struct_name = struct_name_from_type_ref(expected_type, structs)
+    let expected_struct_name = struct_name(expected_type, structs)
         .ok_or_else(|| CompilerError::Unsupported(format!("expected struct type '{}'", expected_type.type_name())))?;
     match &expr.kind {
         ExprKind::Call { name, args, .. } if name == "readInputState" => {
@@ -387,7 +387,7 @@ pub(crate) fn lower_struct_value_expr<'i>(
         )),
         ExprKind::Identifier(_) | ExprKind::FieldAccess { .. } => {
             let (base, path, actual_type) = resolve_struct_access(expr, scope, structs)?;
-            let actual_struct_name = struct_name_from_type_ref(&actual_type, structs)
+            let actual_struct_name = struct_name(&actual_type, structs)
                 .ok_or_else(|| CompilerError::Unsupported("expression is not a struct".to_string()))?;
             if actual_struct_name != expected_struct_name {
                 return Err(CompilerError::Unsupported(format!(
@@ -414,7 +414,7 @@ pub(crate) fn lower_struct_value_expr<'i>(
                     .ok_or_else(|| CompilerError::Unsupported(format!("undefined identifier '{}'", name)))?,
                 _ => return Err(CompilerError::Unsupported(format!("expression expects struct {}", expected_type.type_name()))),
             };
-            let actual_struct_name = struct_array_name_from_type_ref(&source_type, structs)
+            let actual_struct_name = struct_array_name(&source_type, structs)
                 .ok_or_else(|| CompilerError::Unsupported("expression is not a struct".to_string()))?;
             if actual_struct_name != expected_struct_name {
                 return Err(CompilerError::Unsupported(format!(
@@ -523,7 +523,7 @@ pub(crate) fn lower_struct_destructure_statement<'i>(
     contract_field_prefix_len: usize,
 ) -> Result<Vec<Statement<'i>>, CompilerError> {
     let expr_type = infer_struct_expr_type(expr, scope, structs, contract_fields)?;
-    let struct_name = struct_name_from_type_ref(&expr_type, structs)
+    let struct_name = struct_name(&expr_type, structs)
         .ok_or_else(|| CompilerError::Unsupported("struct destructuring requires a struct value".to_string()))?;
     let struct_ast = structs.get(struct_name).ok_or_else(|| CompilerError::Unsupported(format!("unknown struct '{struct_name}'")))?;
     let direct_field_values = if matches!(&expr.kind, ExprKind::Call { name, .. } if name == "readInputState") {
@@ -628,18 +628,15 @@ pub(crate) fn lower_struct_destructure_statement<'i>(
 }
 
 // TODO: Make a dedicated type for the flattened struct field spec, which includes the path and type_ref.
-pub(crate) fn flatten_type_ref_leaves(
-    type_ref: &TypeRef,
-    structs: &StructRegistry,
-) -> Result<Vec<(Vec<String>, TypeRef)>, CompilerError> {
-    if let Some(struct_name) = struct_array_name_from_type_ref(type_ref, structs) {
+pub(crate) fn flatten_type_leaves(type_ref: &TypeRef, structs: &StructRegistry) -> Result<Vec<(Vec<String>, TypeRef)>, CompilerError> {
+    if let Some(struct_name) = struct_array_name(type_ref, structs) {
         let outer_dims = type_ref.array_dims.clone();
         let item = structs.get(&struct_name).ok_or_else(|| CompilerError::Unsupported(format!("unknown struct '{struct_name}'")))?;
         let mut leaves = Vec::new();
         for field in &item.fields {
             let mut field_type = field.type_ref.clone();
             field_type.array_dims.extend(outer_dims.iter().cloned());
-            for (mut path, leaf_type) in flatten_type_ref_leaves(&field_type, structs)? {
+            for (mut path, leaf_type) in flatten_type_leaves(&field_type, structs)? {
                 path.insert(0, field.name.clone());
                 leaves.push((path, leaf_type));
             }
@@ -652,19 +649,15 @@ pub(crate) fn flatten_type_ref_leaves(
     Ok(leaves)
 }
 
-pub(crate) fn lowering_scope_from_types(types: &HashMap<String, String>) -> Result<LoweringScope, CompilerError> {
+pub(crate) fn lowering_scope_from_types(types: &TypeMap) -> Result<LoweringScope, CompilerError> {
     let mut scope = LoweringScope::default();
-    for (name, type_name) in types {
-        scope.vars.insert(name.clone(), parse_type_ref(type_name)?);
+    for (name, type_ref) in types {
+        scope.vars.insert(name.clone(), type_ref.clone());
     }
     Ok(scope)
 }
 
-pub(crate) fn lower_runtime_expr<'i>(
-    expr: &Expr<'i>,
-    types: &HashMap<String, String>,
-    structs: &StructRegistry,
-) -> Result<Expr<'i>, CompilerError> {
+pub(crate) fn lower_runtime_expr<'i>(expr: &Expr<'i>, types: &TypeMap, structs: &StructRegistry) -> Result<Expr<'i>, CompilerError> {
     let scope = lowering_scope_from_types(types)?;
     lower_expr(expr, &scope, structs)
 }
@@ -672,7 +665,7 @@ pub(crate) fn lower_runtime_expr<'i>(
 pub(crate) fn lower_runtime_struct_expr<'i>(
     expr: &Expr<'i>,
     expected_type: &TypeRef,
-    types: &HashMap<String, String>,
+    types: &TypeMap,
     structs: &StructRegistry,
     contract_fields: &[ContractFieldAst<'i>],
     contract_constants: &HashMap<String, Expr<'i>>,
@@ -715,7 +708,7 @@ fn lower_struct_array_value_expr<'i>(
 ) -> Result<Vec<Expr<'i>>, CompilerError> {
     match &expr.kind {
         ExprKind::Identifier(name) => {
-            let leaves = flatten_type_ref_leaves(expected_type, structs)?;
+            let leaves = flatten_type_leaves(expected_type, structs)?;
             Ok(leaves
                 .into_iter()
                 .map(|(path, _)| Expr::new(ExprKind::Identifier(flattened_struct_name(name, &path)), span::Span::default()))
@@ -725,7 +718,7 @@ fn lower_struct_array_value_expr<'i>(
             let element_type = expected_type
                 .array_element_type()
                 .ok_or_else(|| CompilerError::Unsupported(format!("expected struct type '{}'", expected_type.type_name())))?;
-            let leaf_specs = flatten_type_ref_leaves(&element_type, structs)?;
+            let leaf_specs = flatten_type_leaves(&element_type, structs)?;
             let mut grouped: Vec<Vec<Expr<'i>>> = vec![Vec::with_capacity(values.len()); leaf_specs.len()];
             for value in values {
                 let lowered = lower_struct_value_expr(
@@ -780,7 +773,7 @@ fn lower_struct_array_value_expr<'i>(
 pub(crate) fn flatten_runtime_return_exprs<'i>(
     exprs: &[Expr<'i>],
     return_types: &[TypeRef],
-    types: &HashMap<String, String>,
+    types: &TypeMap,
     structs: &StructRegistry,
     contract_fields: &[ContractFieldAst<'i>],
     contract_constants: &HashMap<String, Expr<'i>>,
@@ -805,13 +798,13 @@ pub(crate) fn flatten_runtime_return_exprs<'i>(
     Ok(flattened)
 }
 
-fn scope_type_names(scope: &LoweringScope) -> HashMap<String, String> {
-    scope.vars.iter().map(|(name, type_ref)| (name.clone(), type_name_from_ref(type_ref))).collect()
+fn scope_type_names(scope: &LoweringScope) -> TypeMap {
+    scope.vars.clone()
 }
 
 fn flatten_named_type_like(name: &str, type_ref: &TypeRef, structs: &StructRegistry) -> Result<Vec<(String, TypeRef)>, CompilerError> {
     if is_struct(type_ref, structs) || is_struct_array(type_ref, structs) {
-        Ok(flatten_type_ref_leaves(type_ref, structs)?
+        Ok(flatten_type_leaves(type_ref, structs)?
             .into_iter()
             .map(|(path, leaf_type)| (flattened_struct_name(name, &path), leaf_type))
             .collect())
@@ -841,7 +834,7 @@ fn lower_value_for_named_type<'i>(
             contract_constants,
             contract_field_prefix_len,
         )?;
-        Ok(flatten_type_ref_leaves(type_ref, structs)?
+        Ok(flatten_type_leaves(type_ref, structs)?
             .into_iter()
             .zip(lowered)
             .map(|((path, leaf_type), lowered_expr)| (flattened_struct_name(name, &path), leaf_type, lowered_expr))
@@ -892,7 +885,7 @@ fn lower_function_call_bindings<'i>(
     let mut lowered = Vec::new();
     for (binding, return_type) in bindings.iter().zip(callee_return_types.iter()) {
         if is_struct(return_type, structs) || is_struct_array(return_type, structs) {
-            for (path, leaf_type) in flatten_type_ref_leaves(return_type, structs)? {
+            for (path, leaf_type) in flatten_type_leaves(return_type, structs)? {
                 lowered.push(ParamAst {
                     type_ref: leaf_type,
                     name: flattened_struct_name(&binding.name, &path),
@@ -940,7 +933,7 @@ fn lower_statements<'i>(
                 if is_struct(type_ref, structs) || is_struct_array(type_ref, structs) {
                     if let Some(Expr { kind: ExprKind::Call { name: builtin_name, args, .. }, .. }) = expr
                         && matches!(builtin_name.as_str(), "readInputState" | "readInputStateWithTemplate")
-                        && let Some(struct_name) = struct_name_from_type_ref(type_ref, structs)
+                        && let Some(struct_name) = struct_name(type_ref, structs)
                         && let Some(item) = structs.get(struct_name)
                         && item
                             .fields
@@ -1141,7 +1134,7 @@ fn lower_statements<'i>(
                         // group them by leaf and append them in one go, to avoid multiple appends for the same leaf.
                         for arg in args {
                             for ((path, _leaf_type), leaf_expr) in
-                                flatten_type_ref_leaves(&element_type, structs)?.into_iter().zip(lower_runtime_struct_expr(
+                                flatten_type_leaves(&element_type, structs)?.into_iter().zip(lower_runtime_struct_expr(
                                     arg,
                                     &element_type,
                                     &scope_type_names(scope),
@@ -1426,7 +1419,7 @@ pub(crate) fn lower_structs_contract<'i>(
 
         let mut lowered_return_types = Vec::new();
         for return_type in &function.return_types {
-            for (_path, leaf_type) in flatten_type_ref_leaves(return_type, structs)? {
+            for (_path, leaf_type) in flatten_type_leaves(return_type, structs)? {
                 lowered_return_types.push(leaf_type);
             }
         }

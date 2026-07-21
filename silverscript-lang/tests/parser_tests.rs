@@ -1,4 +1,4 @@
-use silverscript_lang::ast::parse_contract_ast;
+use silverscript_lang::ast::{parse_contract_ast, parse_type_ref};
 use silverscript_lang::parser::parse_source_file;
 
 #[test]
@@ -15,6 +15,23 @@ fn parses_minimal_contract() {
 
     let result = parse_source_file(input);
     assert!(result.is_ok());
+}
+
+#[test]
+fn type_predicates_only_match_scalars() {
+    assert!(parse_type_ref("int").unwrap().is_int());
+    assert!(parse_type_ref("bool").unwrap().is_bool());
+    assert!(parse_type_ref("string").unwrap().is_string());
+    assert!(parse_type_ref("pubkey").unwrap().is_pubkey());
+    assert!(parse_type_ref("sig").unwrap().is_sig());
+    assert!(parse_type_ref("datasig").unwrap().is_datasig());
+    assert!(parse_type_ref("byte").unwrap().is_byte());
+    assert!(parse_type_ref("(int, bool)").unwrap().is_tuple());
+    assert!(parse_type_ref("Record").unwrap().is_custom());
+
+    assert!(!parse_type_ref("int[]").unwrap().is_int());
+    assert!(!parse_type_ref("byte[1]").unwrap().is_byte());
+    assert!(!parse_type_ref("Record[]").unwrap().is_custom());
 }
 
 #[test]

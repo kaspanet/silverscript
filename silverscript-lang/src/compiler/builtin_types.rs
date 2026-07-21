@@ -1,35 +1,47 @@
-use crate::ast::{IntrospectionKind, NullaryOp, TypeRef, parse_type_ref};
+use crate::ast::{ArrayDim, IntrospectionKind, NullaryOp, TypeBase, TypeRef};
+
+fn scalar(base: TypeBase) -> TypeRef {
+    TypeRef { base, array_dims: Vec::new() }
+}
+
+fn byte_array(dimension: ArrayDim) -> TypeRef {
+    TypeRef { base: TypeBase::Byte, array_dims: vec![dimension] }
+}
 
 pub(super) fn nullary_type(op: NullaryOp) -> TypeRef {
-    parse_type_ref(match op {
-        NullaryOp::ActiveScriptPubKey | NullaryOp::ThisScriptSizeDataPrefix => "byte[]",
+    match op {
+        NullaryOp::ActiveScriptPubKey | NullaryOp::ThisScriptSizeDataPrefix => byte_array(ArrayDim::Dynamic),
         NullaryOp::ActiveInputIndex
         | NullaryOp::ThisScriptSize
         | NullaryOp::TxInputsLength
         | NullaryOp::TxOutputsLength
         | NullaryOp::TxVersion
-        | NullaryOp::TxLockTime => "int",
-    })
-    .expect("builtin type is valid")
+        | NullaryOp::TxLockTime => scalar(TypeBase::Int),
+    }
 }
 
 pub(super) fn introspection_type(kind: IntrospectionKind) -> TypeRef {
-    parse_type_ref(match kind {
+    match kind {
         IntrospectionKind::InputScriptPubKey
         | IntrospectionKind::InputSigScript
         | IntrospectionKind::InputOutpointTransactionHash
-        | IntrospectionKind::OutputScriptPubKey => "byte[]",
+        | IntrospectionKind::OutputScriptPubKey => byte_array(ArrayDim::Dynamic),
         IntrospectionKind::InputValue
         | IntrospectionKind::InputOutpointIndex
         | IntrospectionKind::InputSequenceNumber
-        | IntrospectionKind::OutputValue => "int",
-    })
-    .expect("builtin type is valid")
+        | IntrospectionKind::OutputValue => scalar(TypeBase::Int),
+    }
 }
 
 pub(super) fn builtin_return_type(name: &str) -> Option<TypeRef> {
-    let name = match name {
-        "int" | "bool" | "byte" | "string" | "pubkey" | "sig" | "datasig" => name,
+    Some(match name {
+        "int" => scalar(TypeBase::Int),
+        "bool" => scalar(TypeBase::Bool),
+        "byte" => scalar(TypeBase::Byte),
+        "string" => scalar(TypeBase::String),
+        "pubkey" => scalar(TypeBase::Pubkey),
+        "sig" => scalar(TypeBase::Sig),
+        "datasig" => scalar(TypeBase::Datasig),
         "OpBin2Num"
         | "OpTxInputDaaScore"
         | "OpTxGas"
@@ -44,10 +56,12 @@ pub(super) fn builtin_return_type(name: &str) -> Option<TypeRef> {
         | "OpCovInputCount"
         | "OpCovInputIdx"
         | "OpCovOutputCount"
-        | "OpCovOutputIdx" => "int",
-        "OpTxInputIsCoinbase" | "checkSig" | "checkSigFromStack" | "checkSigFromStackECDSA" => "bool",
-        "blake2b" | "blake2bWithKey" | "blake3" | "blake3WithKey" | "templateHash" | "sha256" | "OpSha256" => "byte[32]",
-        "OpInputCovenantId" | "OpOutputCovenantId" => "byte[32]",
+        | "OpCovOutputIdx" => scalar(TypeBase::Int),
+        "OpTxInputIsCoinbase" | "checkSig" | "checkSigFromStack" | "checkSigFromStackECDSA" => scalar(TypeBase::Bool),
+        "blake2b" | "blake2bWithKey" | "blake3" | "blake3WithKey" | "templateHash" | "sha256" | "OpSha256" => {
+            byte_array(ArrayDim::Fixed(32))
+        }
+        "OpInputCovenantId" | "OpOutputCovenantId" => byte_array(ArrayDim::Fixed(32)),
         "bytes"
         | "OpTxSubnetId"
         | "OpTxPayloadSubstr"
@@ -57,28 +71,41 @@ pub(super) fn builtin_return_type(name: &str) -> Option<TypeRef> {
         | "OpTxInputSpkSubstr"
         | "OpTxOutputSpkSubstr"
         | "OpNum2Bin"
-        | "OpChainblockSeqCommit"
-        | "LockingBytecodeNullData" => "byte[]",
+        | "OpChainblockSeqCommit" => byte_array(ArrayDim::Dynamic),
         _ => return None,
-    };
-    parse_type_ref(name).ok()
+    })
 }
 
 pub(super) fn constructor_return_type(name: &str) -> Option<TypeRef> {
-    parse_type_ref(match name {
-        "LockingBytecodeNullData" => "byte[]",
-        "ScriptPubKeyP2PK" => "byte[34]",
-        "ScriptPubKeyP2SH" | "ScriptPubKeyP2SHFromRedeemScript" => "byte[35]",
+    Some(match name {
+        "ScriptPubKeyP2PK" => byte_array(ArrayDim::Fixed(34)),
+        "ScriptPubKeyP2SH" | "ScriptPubKeyP2SHFromRedeemScript" => byte_array(ArrayDim::Fixed(35)),
         _ => return None,
     })
-    .ok()
 }
 
-pub(super) fn builtin_parameters(name: &str) -> Option<&'static [(&'static str, &'static str)]> {
+pub(super) fn constructor_parameters(name: &str) -> Option<Vec<(&'static str, TypeRef)>> {
+    Some(match name {
+        "ScriptPubKeyP2PK" => vec![("publicKey", scalar(TypeBase::Pubkey))],
+        "ScriptPubKeyP2SH" => vec![("scriptHash", byte_array(ArrayDim::Fixed(32)))],
+        "ScriptPubKeyP2SHFromRedeemScript" => vec![("redeemScript", byte_array(ArrayDim::Dynamic))],
+        _ => return None,
+    })
+}
+
+pub(super) fn builtin_parameters(name: &str) -> Option<Vec<(&'static str, TypeRef)>> {
     match name {
-        "checkSigFromStack" => Some(&[("signature", "datasig"), ("digest", "byte[32]"), ("publicKey", "pubkey")]),
-        "checkSigFromStackECDSA" => Some(&[("signature", "datasig"), ("digest", "byte[32]"), ("publicKey", "byte[33]")]),
-        "blake3WithKey" => Some(&[("data", "byte[]"), ("key", "byte[32]")]),
+        "checkSigFromStack" => Some(vec![
+            ("signature", scalar(TypeBase::Datasig)),
+            ("digest", byte_array(ArrayDim::Fixed(32))),
+            ("publicKey", scalar(TypeBase::Pubkey)),
+        ]),
+        "checkSigFromStackECDSA" => Some(vec![
+            ("signature", scalar(TypeBase::Datasig)),
+            ("digest", byte_array(ArrayDim::Fixed(32))),
+            ("publicKey", byte_array(ArrayDim::Fixed(33))),
+        ]),
+        "blake3WithKey" => Some(vec![("data", byte_array(ArrayDim::Dynamic)), ("key", byte_array(ArrayDim::Fixed(32)))]),
         _ => None,
     }
 }

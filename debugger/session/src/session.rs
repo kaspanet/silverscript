@@ -190,7 +190,7 @@ type ScopeState<'i> = HashMap<String, ScopeBinding<'i>>;
 type ShadowBindings = Vec<ShadowBindingValue>;
 type EvalEnv<'i> = HashMap<String, Expr<'i>>;
 type StackBindings = HashMap<String, i64>;
-type EvalTypes = HashMap<String, String>;
+type EvalTypes = HashMap<String, TypeRef>;
 type ShadowResolution<'i> = (ShadowBindings, EvalEnv<'i>, StackBindings, EvalTypes);
 
 impl<'a, 'i> DebugSession<'a, 'i> {
@@ -1651,7 +1651,10 @@ impl<'a, 'i> DebugSession<'a, 'i> {
         let mut eval_types = HashMap::new();
 
         for (name, binding) in scope_state {
-            eval_types.insert(name.clone(), binding.type_name.clone());
+            eval_types.insert(
+                name.clone(),
+                parse_type_ref(&binding.type_name).map_err(|err| format!("invalid debug type '{}': {err}", binding.type_name))?,
+            );
             match &binding.source {
                 ScopeValueSource::RuntimeSlot { from_top } => {
                     shadow_by_name.insert(
@@ -2330,7 +2333,7 @@ fn is_inline_synthetic_name(name: &str) -> bool {
 }
 
 fn is_structured_type_name(type_name: &str) -> bool {
-    parse_type_ref(type_name).ok().is_some_and(|type_ref| is_structured_type_ref(&type_ref))
+    parse_type_ref(type_name).ok().is_some_and(|type_ref| is_structured_type(&type_ref))
 }
 
 fn direct_expr_type_name<'i>(scope_state: &ScopeState<'i>, expr: &Expr<'i>) -> Option<String> {
@@ -2345,9 +2348,8 @@ fn direct_expr_type_name<'i>(scope_state: &ScopeState<'i>, expr: &Expr<'i>) -> O
     }
 }
 
-fn is_structured_type_ref(type_ref: &silverscript_lang::ast::TypeRef) -> bool {
-    matches!(&type_ref.base, TypeBase::Custom(_))
-        || type_ref.array_element_type().is_some_and(|element| is_structured_type_ref(&element))
+fn is_structured_type(type_ref: &silverscript_lang::ast::TypeRef) -> bool {
+    type_ref.is_custom() || type_ref.array_element_type().is_some_and(|element| is_structured_type(&element))
 }
 
 fn record_debug_named_values<'i>(bindings: &mut ScopeState<'i>, values: &[DebugNamedValue<'i>], origin: VariableOrigin) {

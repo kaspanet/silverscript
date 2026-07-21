@@ -1,9 +1,8 @@
 use std::collections::HashMap;
 
 use super::builtin_types::{builtin_return_type, constructor_return_type, introspection_type, nullary_type};
-use super::compile::type_name_from_ref;
 use super::*;
-use crate::ast::{ArrayDim, ConstantAst, ContractAst, ContractFieldAst, FunctionAst, ParamAst, Statement, TypeRef};
+use crate::ast::{ArrayDim, ConstantAst, ContractAst, ContractFieldAst, FunctionAst, ParamAst, Statement, TypeBase, TypeRef};
 
 pub(super) fn lower_inferred_array_sizes<'i>(
     contract: &ContractAst<'i>,
@@ -13,7 +12,7 @@ pub(super) fn lower_inferred_array_sizes<'i>(
         contract.functions.iter().map(|function| (function.name.clone(), function)).collect();
     let mut top_level_types = HashMap::new();
     for param in &contract.params {
-        top_level_types.insert(param.name.clone(), type_name_from_ref(&param.type_ref));
+        top_level_types.insert(param.name.clone(), param.type_ref.clone());
     }
 
     let constants = contract
@@ -45,10 +44,10 @@ pub(super) fn lower_inferred_array_sizes<'i>(
     })
 }
 
-fn infer_fixed_array_type_from_initializer_ref<'i>(
+fn infer_fixed_array_type_from_initializer<'i>(
     declared_type: &TypeRef,
     initializer: Option<&Expr<'i>>,
-    types: &HashMap<String, String>,
+    types: &TypeMap,
     constants: &HashMap<String, Expr<'i>>,
     functions: &HashMap<String, &FunctionAst<'i>>,
 ) -> Option<TypeRef> {
@@ -58,7 +57,7 @@ fn infer_fixed_array_type_from_initializer_ref<'i>(
 
     let element_type = declared_type.array_element_type()?;
     let init = initializer?;
-    let init_type = infer_expr_type_ref_with_hint(init, types, constants, functions, Some(&element_type))?;
+    let init_type = infer_expr_type_with_hint(init, types, constants, functions, Some(&element_type))?;
 
     if !init_type.is_array() || !type_refs_equal(&init_type.array_element_type()?, &element_type, constants) {
         return None;
@@ -72,37 +71,37 @@ fn infer_fixed_array_type_from_initializer_ref<'i>(
 
 fn lower_constant<'i>(
     constant: &ConstantAst<'i>,
-    types: &mut HashMap<String, String>,
+    types: &mut TypeMap,
     constants: &HashMap<String, Expr<'i>>,
     functions: &HashMap<String, &FunctionAst<'i>>,
 ) -> Result<ConstantAst<'i>, CompilerError> {
-    let type_ref = infer_type_ref(&constant.type_ref, Some(&constant.expr), types, constants, functions)
+    let type_ref = infer_type(&constant.type_ref, Some(&constant.expr), types, constants, functions)
         .ok_or_else(|| CompilerError::Unsupported(format!("cannot infer fixed array size from constant '{}'", constant.name)))?;
-    types.insert(constant.name.clone(), type_name_from_ref(&type_ref));
+    types.insert(constant.name.clone(), type_ref.clone());
     Ok(ConstantAst { type_ref, ..constant.clone() })
 }
 
 fn lower_field<'i>(
     field: &ContractFieldAst<'i>,
-    types: &mut HashMap<String, String>,
+    types: &mut TypeMap,
     constants: &HashMap<String, Expr<'i>>,
     functions: &HashMap<String, &FunctionAst<'i>>,
 ) -> Result<ContractFieldAst<'i>, CompilerError> {
-    let type_ref = infer_type_ref(&field.type_ref, Some(&field.expr), types, constants, functions)
+    let type_ref = infer_type(&field.type_ref, Some(&field.expr), types, constants, functions)
         .ok_or_else(|| CompilerError::Unsupported(format!("cannot infer fixed array size from contract field '{}'", field.name)))?;
-    types.insert(field.name.clone(), type_name_from_ref(&type_ref));
+    types.insert(field.name.clone(), type_ref.clone());
     Ok(ContractFieldAst { type_ref, ..field.clone() })
 }
 
 fn lower_function<'i>(
     function: &FunctionAst<'i>,
-    top_level_types: &HashMap<String, String>,
+    top_level_types: &TypeMap,
     constants: &HashMap<String, Expr<'i>>,
     functions: &HashMap<String, &FunctionAst<'i>>,
 ) -> Result<FunctionAst<'i>, CompilerError> {
     let mut types = top_level_types.clone();
     for param in &function.params {
-        types.insert(param.name.clone(), type_name_from_ref(&param.type_ref));
+        types.insert(param.name.clone(), param.type_ref.clone());
     }
     let body = lower_block(&function.body, &mut types, constants, functions)?;
     Ok(FunctionAst { body, ..function.clone() })
@@ -110,7 +109,7 @@ fn lower_function<'i>(
 
 fn lower_block<'i>(
     statements: &[Statement<'i>],
-    types: &mut HashMap<String, String>,
+    types: &mut TypeMap,
     constants: &HashMap<String, Expr<'i>>,
     functions: &HashMap<String, &FunctionAst<'i>>,
 ) -> Result<Vec<Statement<'i>>, CompilerError> {
@@ -123,15 +122,15 @@ fn lower_block<'i>(
 
 fn lower_statement<'i>(
     statement: &Statement<'i>,
-    types: &mut HashMap<String, String>,
+    types: &mut TypeMap,
     constants: &HashMap<String, Expr<'i>>,
     functions: &HashMap<String, &FunctionAst<'i>>,
 ) -> Result<Statement<'i>, CompilerError> {
     match statement {
         Statement::VariableDefinition { type_ref, name, expr, .. } => {
-            let lowered_type = infer_type_ref(type_ref, expr.as_ref(), types, constants, functions)
+            let lowered_type = infer_type(type_ref, expr.as_ref(), types, constants, functions)
                 .ok_or_else(|| CompilerError::Unsupported(format!("cannot infer fixed array size from variable '{}'", name)))?;
-            types.insert(name.clone(), type_name_from_ref(&lowered_type));
+            types.insert(name.clone(), lowered_type.clone());
             Ok(match statement {
                 Statement::VariableDefinition { modifiers, span, type_span, modifier_spans, name_span, .. } => {
                     Statement::VariableDefinition {
@@ -152,10 +151,10 @@ fn lower_statement<'i>(
             let lowered_bindings = bindings
                 .iter()
                 .map(|binding| {
-                    let lowered_type = infer_type_ref(&binding.type_ref, None, types, constants, functions).ok_or_else(|| {
+                    let lowered_type = infer_type(&binding.type_ref, None, types, constants, functions).ok_or_else(|| {
                         CompilerError::Unsupported(format!("cannot infer fixed array size from binding '{}'", binding.name))
                     })?;
-                    types.insert(binding.name.clone(), type_name_from_ref(&lowered_type));
+                    types.insert(binding.name.clone(), lowered_type.clone());
                     Ok(ParamAst { type_ref: lowered_type, ..binding.clone() })
                 })
                 .collect::<Result<Vec<_>, CompilerError>>()?;
@@ -193,7 +192,7 @@ fn lower_statement<'i>(
         }
         Statement::For { ident, start, end, max_iterations, body, span, ident_span, body_span } => {
             let mut body_types = types.clone();
-            body_types.insert(ident.clone(), "int".to_string());
+            body_types.insert(ident.clone(), TypeRef { base: TypeBase::Int, array_dims: Vec::new() });
             let lowered_body = lower_block(body, &mut body_types, constants, functions)?;
             Ok(Statement::For {
                 ident: ident.clone(),
@@ -210,42 +209,44 @@ fn lower_statement<'i>(
     }
 }
 
-fn infer_type_ref<'i>(
+fn infer_type<'i>(
     declared_type: &TypeRef,
     initializer: Option<&Expr<'i>>,
-    types: &HashMap<String, String>,
+    types: &TypeMap,
     constants: &HashMap<String, Expr<'i>>,
     functions: &HashMap<String, &FunctionAst<'i>>,
 ) -> Option<TypeRef> {
     if matches!(declared_type.array_size(), Some(ArrayDim::Inferred)) {
-        infer_fixed_array_type_from_initializer_ref(declared_type, initializer, types, constants, functions)
+        infer_fixed_array_type_from_initializer(declared_type, initializer, types, constants, functions)
     } else {
         Some(declared_type.clone())
     }
 }
 
-pub(super) fn infer_expr_type_ref<'i>(
+pub(super) fn infer_expr_type<'i>(
     expr: &Expr<'i>,
-    types: &HashMap<String, String>,
+    types: &TypeMap,
     constants: &HashMap<String, Expr<'i>>,
     functions: &HashMap<String, &FunctionAst<'i>>,
 ) -> Option<TypeRef> {
-    infer_expr_type_ref_with_hint(expr, types, constants, functions, None)
+    infer_expr_type_with_hint(expr, types, constants, functions, None)
 }
 
-fn infer_expr_type_ref_with_hint<'i>(
+fn infer_expr_type_with_hint<'i>(
     expr: &Expr<'i>,
-    types: &HashMap<String, String>,
+    types: &TypeMap,
     constants: &HashMap<String, Expr<'i>>,
     functions: &HashMap<String, &FunctionAst<'i>>,
     array_literal_element_type: Option<&TypeRef>,
 ) -> Option<TypeRef> {
     match &expr.kind {
-        ExprKind::Int(_) | ExprKind::DateLiteral(_) | ExprKind::NumberWithUnit { .. } => parse_type_ref("int").ok(),
-        ExprKind::Bool(_) => parse_type_ref("bool").ok(),
-        ExprKind::String(_) => parse_type_ref("string").ok(),
-        ExprKind::Byte(_) => parse_type_ref("byte").ok(),
-        ExprKind::Identifier(name) => parse_type_ref(types.get(name)?).ok(),
+        ExprKind::Int(_) | ExprKind::DateLiteral(_) | ExprKind::NumberWithUnit { .. } => {
+            Some(TypeRef { base: TypeBase::Int, array_dims: Vec::new() })
+        }
+        ExprKind::Bool(_) => Some(TypeRef { base: TypeBase::Bool, array_dims: Vec::new() }),
+        ExprKind::String(_) => Some(TypeRef { base: TypeBase::String, array_dims: Vec::new() }),
+        ExprKind::Byte(_) => Some(TypeRef { base: TypeBase::Byte, array_dims: Vec::new() }),
+        ExprKind::Identifier(name) => types.get(name).cloned(),
         ExprKind::Array(values) => {
             let mut inferred = array_literal_element_type
                 .cloned()
@@ -255,7 +256,7 @@ fn infer_expr_type_ref_with_hint<'i>(
         }
         ExprKind::Call { name, .. } => {
             if let Some(function) = functions.get(name) {
-                return (!function.entrypoint).then(|| function.return_type_ref()).flatten();
+                return (!function.entrypoint).then(|| function.return_type()).flatten();
             }
             parse_type_ref(name)
                 .ok()
@@ -264,21 +265,21 @@ fn infer_expr_type_ref_with_hint<'i>(
         }
         ExprKind::New { name, .. } => constructor_return_type(name),
         ExprKind::Binary { op: BinaryOp::Add, left, right } => {
-            let left_type = infer_expr_type_ref_with_hint(left, types, constants, functions, None)?;
-            let right_type = infer_expr_type_ref_with_hint(right, types, constants, functions, None)?;
+            let left_type = infer_expr_type_with_hint(left, types, constants, functions, None)?;
+            let right_type = infer_expr_type_with_hint(right, types, constants, functions, None)?;
             concat_types(&left_type, &right_type, constants)
         }
         ExprKind::IfElse { then_expr, else_expr, .. } => {
-            let then_type = infer_expr_type_ref_with_hint(then_expr, types, constants, functions, None)?;
-            let else_type = infer_expr_type_ref_with_hint(else_expr, types, constants, functions, None)?;
+            let then_type = infer_expr_type_with_hint(then_expr, types, constants, functions, None)?;
+            let else_type = infer_expr_type_with_hint(else_expr, types, constants, functions, None)?;
             type_refs_equal(&then_type, &else_type, constants).then_some(then_type)
         }
         ExprKind::Append { source, args, .. } => {
-            let source_type = infer_expr_type_ref_with_hint(source, types, constants, functions, None)?;
+            let source_type = infer_expr_type_with_hint(source, types, constants, functions, None)?;
             append_type(&source_type, args.len(), constants)
         }
         ExprKind::UnarySuffix { source, kind: UnarySuffixKind::Reverse, .. } => {
-            infer_expr_type_ref_with_hint(source, types, constants, functions, None)
+            infer_expr_type_with_hint(source, types, constants, functions, None)
         }
         ExprKind::Nullary(kind) => Some(nullary_type(*kind)),
         ExprKind::Introspection { kind, .. } => Some(introspection_type(*kind)),
@@ -288,13 +289,13 @@ fn infer_expr_type_ref_with_hint<'i>(
 
 fn infer_array_literal_element_type<'i>(
     values: &[Expr<'i>],
-    types: &HashMap<String, String>,
+    types: &TypeMap,
     constants: &HashMap<String, Expr<'i>>,
     functions: &HashMap<String, &FunctionAst<'i>>,
 ) -> Option<TypeRef> {
-    let first_type = infer_expr_type_ref_with_hint(values.first()?, types, constants, functions, None)?;
+    let first_type = infer_expr_type_with_hint(values.first()?, types, constants, functions, None)?;
     if values.iter().skip(1).all(|value| {
-        infer_expr_type_ref_with_hint(value, types, constants, functions, None)
+        infer_expr_type_with_hint(value, types, constants, functions, None)
             .is_some_and(|type_ref| type_refs_equal(&type_ref, &first_type, constants))
     }) {
         Some(first_type)

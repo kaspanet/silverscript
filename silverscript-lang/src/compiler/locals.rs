@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::ast::{ContractAst, Expr, ExprKind, FunctionAst, StateFieldExpr, Statement, TypeBase, TypeRef};
+use crate::ast::{ContractAst, Expr, ExprKind, FunctionAst, StateFieldExpr, Statement, TypeRef};
 
 use super::CompilerError;
 
@@ -190,8 +190,7 @@ fn lower_statements<'i>(
 }
 
 fn coerce_expr_for_declared_scalar_type<'i>(expr: Expr<'i>, type_ref: &TypeRef) -> Result<Expr<'i>, CompilerError> {
-    if matches!(type_ref.base, TypeBase::Byte)
-        && !type_ref.is_array()
+    if type_ref.is_byte()
         && let ExprKind::Int(value) = expr.kind
     {
         let byte_value =

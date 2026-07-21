@@ -15,7 +15,7 @@
 (instantiation
   (identifier) @type.builtin
   (#match? @type.builtin
-    "^(LockingBytecodeNullData|ScriptPubKeyP2PK|ScriptPubKeyP2SH|ScriptPubKeyP2SHFromRedeemScript)$"))
+    "^(ScriptPubKeyP2PK|ScriptPubKeyP2SH|ScriptPubKeyP2SHFromRedeemScript)$"))
 
 (instantiation
   (identifier) @type)

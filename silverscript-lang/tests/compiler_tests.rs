@@ -30,6 +30,33 @@ fn script_builder() -> ScriptBuilder {
     ScriptBuilder::with_flags(EngineFlags { covenants_enabled: true, ..Default::default() })
 }
 
+#[test]
+fn constructors_validate_argument_types() {
+    let cases = [
+        ("ScriptPubKeyP2PK", "1", "publicKey", "pubkey", "byte[34]"),
+        ("ScriptPubKeyP2SH", "byte[31]([0x00])", "scriptHash", "byte[32]", "byte[35]"),
+        ("ScriptPubKeyP2SHFromRedeemScript", "1", "redeemScript", "byte[]", "byte[35]"),
+    ];
+
+    for (constructor, argument, parameter, expected, result_type) in cases {
+        let source = format!(
+            r#"
+            contract Test() {{
+                entrypoint function spend() {{
+                    {result_type} script = new {constructor}({argument});
+                    require(true);
+                }}
+            }}
+            "#
+        );
+        let err = compile_contract(&source, &[], CompileOptions::default()).expect_err("constructor argument should be rejected");
+        assert!(
+            err.to_string().contains(&format!("argument '{parameter}' expects {expected}")),
+            "unexpected error for {constructor}: {err}"
+        );
+    }
+}
+
 fn pay_to_script_hash_signature_script(
     redeem_script: Vec<u8>,
     signature_script: Vec<u8>,

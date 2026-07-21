@@ -23,7 +23,7 @@ use kaspa_txscript::caches::Cache;
 use kaspa_txscript::covenants::CovenantsContext;
 use kaspa_txscript::script_builder::ScriptBuilder;
 use kaspa_txscript::{EngineCtx, EngineFlags, pay_to_script_hash_script};
-use silverscript_lang::ast::{ContractAst, Expr, ExprKind, StateFieldExpr, TypeBase, TypeRef, parse_contract_ast};
+use silverscript_lang::ast::{ArrayDim, ContractAst, Expr, ExprKind, StateFieldExpr, TypeBase, TypeRef, parse_contract_ast};
 use silverscript_lang::compiler::{CompileOptions, CompiledContract, compile_contract, compile_contract_ast};
 
 const PROMPT: &str = "(sdb) ";
@@ -136,12 +136,28 @@ fn debug_value_to_expr(value: &DebugValue) -> Option<Expr<'static>> {
     })
 }
 
-fn is_state_type_ref(type_ref: &TypeRef) -> bool {
-    !type_ref.is_array() && matches!(&type_ref.base, TypeBase::Custom(name) if name == "State")
+fn is_state_type(type_ref: &TypeRef) -> bool {
+    type_ref.is_custom() && matches!(&type_ref.base, TypeBase::Custom(name) if name == "State")
 }
 
-fn is_state_array_type_ref(type_ref: &TypeRef) -> bool {
-    type_ref.is_array() && matches!(&type_ref.base, TypeBase::Custom(name) if name == "State")
+fn is_state_array_type(type_ref: &TypeRef) -> bool {
+    matches!(&type_ref.base, TypeBase::Custom(name) if name == "State")
+        && matches!(type_ref.array_dims.as_slice(), [ArrayDim::Dynamic])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn state_array_type_requires_one_dynamic_dimension() {
+        let state = || TypeBase::Custom("State".to_string());
+
+        assert!(is_state_array_type(&TypeRef { base: state(), array_dims: vec![ArrayDim::Dynamic] }));
+        assert!(!is_state_array_type(&TypeRef { base: state(), array_dims: Vec::new() }));
+        assert!(!is_state_array_type(&TypeRef { base: state(), array_dims: vec![ArrayDim::Fixed(2)] }));
+        assert!(!is_state_array_type(&TypeRef { base: state(), array_dims: vec![ArrayDim::Dynamic, ArrayDim::Dynamic] }));
+    }
 }
 
 fn synthesized_covenant_prefix_args(
@@ -165,13 +181,13 @@ fn synthesized_covenant_prefix_args(
     };
 
     let states = output_states.ok_or("missing output states needed to synthesize covenant verification arguments")?;
-    if is_state_type_ref(&first_param.type_ref) {
+    if is_state_type(&first_param.type_ref) {
         if states.len() != 1 {
             return Err(format!("expected exactly 1 output State for '{entrypoint_name}', got {}", states.len()).into());
         }
         return Ok(vec![debug_value_to_expr(&states[0]).ok_or("failed to materialize synthesized output State")?]);
     }
-    if is_state_array_type_ref(&first_param.type_ref) {
+    if is_state_array_type(&first_param.type_ref) {
         return Ok(vec![Expr::new(
             ExprKind::Array(
                 states
