@@ -149,7 +149,7 @@ contract ChessCastleChallengePrep(
         byte[] mid_bc = prev_dyn.slice(b + 1, c);
         byte[] mid_cd = prev_dyn.slice(c + 1, d);
         byte[] suffix = prev_dyn.slice(d + 1, 64);
-        byte[64] proof_board =
+        byte[64] proof_board = byte[64](
             prefix +
             byte[1](va) +
             mid_ab +
@@ -158,7 +158,8 @@ contract ChessCastleChallengePrep(
             byte[1](vc) +
             mid_cd +
             byte[1](vd) +
-            suffix;
+            suffix
+        );
 
         int from_y = from_idx / 8;
         int from_x = from_idx % 8;

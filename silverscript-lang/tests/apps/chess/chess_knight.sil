@@ -131,7 +131,7 @@ contract ChessKnight(
         byte[] prefix = prev_dyn.slice(0, low_idx);
         byte[] middle = prev_dyn.slice(low_idx + 1, high_idx);
         byte[] suffix = prev_dyn.slice(high_idx + 1, 64);
-        byte[64] next_board = prefix + byte[1](first_slot) + middle + byte[1](second_slot) + suffix;
+        byte[64] next_board = byte[64](prefix + byte[1](first_slot) + middle + byte[1](second_slot) + suffix);
 
         int next_status = status;
         if (recent_castle != 0 /*CLEAR*/) {

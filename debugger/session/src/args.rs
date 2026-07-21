@@ -120,26 +120,29 @@ fn parse_scalar_arg(type_ref: &TypeRef, raw: &str) -> Result<Expr<'static>, Stri
         }
         TypeBase::Pubkey => {
             let bytes = parse_hex_bytes(raw)?;
-            if bytes.len() != 32 {
-                return Err(format!("pubkey expects 32 bytes, got {}", bytes.len()));
+            let expected = type_ref.base.fixed_byte_sequence_len().expect("pubkey has a fixed byte length");
+            if bytes.len() != expected {
+                return Err(format!("pubkey expects {expected} bytes, got {}", bytes.len()));
             }
             Ok(bytes_expr(bytes))
         }
         TypeBase::Sig => {
             let bytes = parse_hex_bytes(raw)?;
-            if bytes.len() != 65 && bytes.len() != 32 {
-                return Err(format!("sig expects 65 bytes (or 32-byte secret key for auto-sign), got {}", bytes.len()));
+            let expected = type_ref.base.fixed_byte_sequence_len().expect("sig has a fixed byte length");
+            if bytes.len() != expected {
+                return Err(format!("sig expects {expected} bytes, got {}", bytes.len()));
             }
             Ok(bytes_expr(bytes))
         }
         TypeBase::Datasig => {
             let bytes = parse_hex_bytes(raw)?;
-            if bytes.len() != 64 && bytes.len() != 32 {
-                return Err(format!("datasig expects 64 bytes (or 32-byte secret key for auto-sign), got {}", bytes.len()));
+            let expected = type_ref.base.fixed_byte_sequence_len().expect("datasig has a fixed byte length");
+            if bytes.len() != expected {
+                return Err(format!("datasig expects {expected} bytes, got {}", bytes.len()));
             }
             Ok(bytes_expr(bytes))
         }
-        TypeBase::Custom(_) => Err(format!("unsupported arg type '{}'", type_ref.type_name())),
+        TypeBase::Tuple(_) | TypeBase::Custom(_) => Err(format!("unsupported arg type '{}'", type_ref.type_name())),
     }
 }
 
@@ -205,15 +208,13 @@ fn parse_json_value_for_type(value: &Value, type_ref: &TypeRef, shapes: &StructS
 
     match value {
         Value::String(raw) => parse_scalar_arg(type_ref, raw),
-        Value::Number(raw) if matches!(type_ref.base, TypeBase::Int) => {
-            Ok(Expr::int(raw.as_i64().ok_or_else(|| "invalid int value".to_string())?))
-        }
-        Value::Number(raw) if matches!(type_ref.base, TypeBase::Byte) => {
+        Value::Number(raw) if type_ref.is_int() => Ok(Expr::int(raw.as_i64().ok_or_else(|| "invalid int value".to_string())?)),
+        Value::Number(raw) if type_ref.is_byte() => {
             let byte_value = raw.as_u64().ok_or_else(|| "invalid byte value".to_string())?;
             let byte = u8::try_from(byte_value).map_err(|_| format!("byte expects value in 0..=255, got {byte_value}"))?;
             Ok(Expr::byte(byte))
         }
-        Value::Bool(raw) if matches!(type_ref.base, TypeBase::Bool) => Ok(Expr::bool(*raw)),
+        Value::Bool(raw) if type_ref.is_bool() => Ok(Expr::bool(*raw)),
         _ => Err(format!("unsupported arg value for '{}'", type_ref.type_name())),
     }
 }

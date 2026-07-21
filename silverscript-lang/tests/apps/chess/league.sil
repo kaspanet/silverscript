@@ -56,7 +56,7 @@ contract League(
         require(checkSig(owner_sig, owner_pk));
 
         byte[32] owner = blake2b(owner_pk);
-        byte[32] spent_outpoint_txid = OpOutpointTxId(this.activeInputIndex);
+        byte[32] spent_outpoint_txid = byte[32](OpOutpointTxId(this.activeInputIndex));
         byte[4] spent_outpoint_index = byte[4](OpOutpointIndex(this.activeInputIndex));
         byte[] player_id_domain = byte[]("LeaguePlayerId");
         byte[32] player_id = blake2b(player_id_domain + spent_outpoint_txid + spent_outpoint_index);

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use super::structs::{flatten_type_ref_leaves, resolve_struct_access, struct_name_from_type_ref};
+use super::structs::{flatten_type_leaves, resolve_struct_access, struct_name};
 use super::*;
 use crate::ast::{ContractAst, Expr, ExprKind, FunctionAst, STATE_TYPE_NAME, Statement, TypeBase, TypeRef};
 use crate::span;
@@ -72,7 +72,7 @@ fn lower_statement<'i>(
                 state_expr.clone()
             } else {
                 let temp_name = unique_state_temp_name(scope);
-                let state_type = state_type_ref();
+                let state_type = state_type();
                 scope.vars.insert(temp_name.clone(), state_type.clone());
                 lowered.push(Statement::VariableDefinition {
                     type_ref: state_type,
@@ -250,11 +250,11 @@ fn lower_statement<'i>(
 }
 
 fn flatten_state_expr<'i>(expr: &Expr<'i>, scope: &ValidationScope, structs: &StructRegistry) -> Result<Vec<Expr<'i>>, CompilerError> {
-    let state_type = state_type_ref();
+    let state_type = state_type();
     flatten_struct_expr(expr, &state_type, scope, structs)
 }
 
-fn state_type_ref() -> TypeRef {
+fn state_type() -> TypeRef {
     TypeRef { base: TypeBase::Custom(STATE_TYPE_NAME.to_string()), array_dims: Vec::new() }
 }
 
@@ -300,7 +300,7 @@ fn flatten_struct_expr<'i>(
     scope: &ValidationScope,
     structs: &StructRegistry,
 ) -> Result<Vec<Expr<'i>>, CompilerError> {
-    let expected_struct_name = struct_name_from_type_ref(expected_type, structs)
+    let expected_struct_name = struct_name(expected_type, structs)
         .ok_or_else(|| CompilerError::Unsupported(format!("expected struct type '{}'", expected_type.type_name())))?;
 
     if !matches!(&expr.kind, ExprKind::Identifier(_)) {
@@ -309,8 +309,8 @@ fn flatten_struct_expr<'i>(
 
     let struct_scope = super::structs::LoweringScope { vars: scope.vars.clone() };
     let (base, path, actual_type) = resolve_struct_access(expr, &struct_scope, structs)?;
-    let actual_struct_name = struct_name_from_type_ref(&actual_type, structs)
-        .ok_or_else(|| CompilerError::Unsupported("expression is not a struct".to_string()))?;
+    let actual_struct_name =
+        struct_name(&actual_type, structs).ok_or_else(|| CompilerError::Unsupported("expression is not a struct".to_string()))?;
     if actual_struct_name != expected_struct_name {
         return Err(CompilerError::Unsupported(format!(
             "struct expression expects {}, got {}",
@@ -319,7 +319,7 @@ fn flatten_struct_expr<'i>(
         )));
     }
 
-    let leaves = flatten_type_ref_leaves(&actual_type, structs)?;
+    let leaves = flatten_type_leaves(&actual_type, structs)?;
     Ok(leaves
         .into_iter()
         .map(|(leaf_path, _)| {

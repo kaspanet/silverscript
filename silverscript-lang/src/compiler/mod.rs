@@ -13,6 +13,7 @@ use crate::debug_info::{DebugInfo, DebugNamedValue};
 pub use crate::errors::{CompilerError, ErrorSpan};
 use crate::span;
 mod array_append;
+mod builtin_types;
 mod compile;
 mod covenant_declarations;
 mod debug_recording;
@@ -25,23 +26,24 @@ mod read_input_state;
 mod stack_bindings;
 mod static_check;
 mod structs;
+mod type_check;
+mod type_system;
 mod validate_output_state;
 
 use compile::compile_contract_impl;
+pub(super) use compile::eval_const_int;
 pub(crate) use compile::resolve_expr;
-pub(super) use compile::{array_element_type, eval_const_int, is_bytes_type, type_name_from_ref};
 pub use compile::{compile_debug_expr, function_branch_index};
 pub(crate) use debug_recording::DebugRecorder;
 use r#for::lower_for_loops;
 use read_input_state::lower_read_input_state_calls;
-pub(crate) use static_check::expr_matches_declared_type_ref;
-use static_check::value_matches_type_ref;
+use static_check::validate_expr_matches_type;
 pub use structs::flattened_struct_name;
 pub(super) use structs::{
-    StructRegistry, build_struct_registry, ensure_known_or_builtin_type, flatten_constructor_args_env, flatten_type_ref_leaves,
-    flattened_struct_field_specs_for_type, is_struct, is_struct_array, lower_runtime_expr, lower_runtime_struct_expr,
-    lower_structs_contract, struct_name_from_type_ref, validate_struct_graph,
+    StructRegistry, build_struct_registry, ensure_known_or_builtin_type, flatten_constructor_args_env, flatten_type_leaves,
+    flattened_struct_field_specs_for_type, is_struct, is_struct_array, lower_structs_contract, struct_name, validate_struct_graph,
 };
+pub(super) use type_system::{append_type, array_size as array_type_size, concat_types, type_refs_equal};
 use validate_output_state::lower_validate_output_state;
 
 /// Prefix used for synthetic argument bindings during inline function expansion.
@@ -49,6 +51,7 @@ pub const SYNTHETIC_ARG_PREFIX: &str = "__arg";
 pub const COMPILER_VERSION: &str = "0.1.0";
 const COVENANT_POLICY_PREFIX: &str = "__covenant_policy";
 pub const COVENANT_ENTRYPOINT_AUTH_PREFIX: &str = "__covenant_entrypoint_auth";
+pub(super) type TypeMap = HashMap<String, TypeRef>;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CovenantDeclCallOptions {
@@ -132,12 +135,15 @@ impl<'i> ContractAst<'i> {
         }
 
         let structs = build_struct_registry(self)?;
-        let mut env: HashMap<String, Expr<'i>> =
+        let constants: HashMap<String, Expr<'i>> =
             self.constants.iter().map(|constant| (constant.name.clone(), constant.expr.clone())).collect();
+        let mut env = constants.clone();
 
         for (param, value) in self.params.iter().zip(constructor_args.iter()) {
-            let type_name = type_name_from_ref(&param.type_ref);
-            if !expr_matches_declared_type_ref(value, &param.type_ref, &structs) {
+            let type_name = param.type_ref.type_name();
+            if validate_expr_matches_type(value, &param.type_ref, &HashMap::new(), &structs, &constants, &HashMap::new(), &self.fields)
+                .is_err()
+            {
                 return Err(CompilerError::Unsupported(format!("constructor argument '{}' expects {}", param.name, type_name)));
             }
             env.insert(param.name.clone(), value.clone());
@@ -151,7 +157,17 @@ impl<'i> ContractAst<'i> {
 
             let type_name = field.type_ref.type_name();
             let resolved = resolve_expr(field.expr.clone(), &env, &mut std::collections::HashSet::new())?;
-            if !expr_matches_declared_type_ref(&resolved, &field.type_ref, &structs) {
+            if validate_expr_matches_type(
+                &resolved,
+                &field.type_ref,
+                &HashMap::new(),
+                &structs,
+                &constants,
+                &HashMap::new(),
+                &self.fields,
+            )
+            .is_err()
+            {
                 return Err(CompilerError::Unsupported(format!("contract field '{}' expects {}", field.name, type_name)));
             }
 
@@ -249,7 +265,7 @@ fn push_typed_sigscript_arg<'i>(
     structs: &StructRegistry,
 ) -> Result<(), CompilerError> {
     if let Some(element_type) = type_ref.array_element_type() {
-        if let Some(struct_name) = struct_name_from_type_ref(&element_type, structs) {
+        if let Some(struct_name) = struct_name(&element_type, structs) {
             let item =
                 structs.get(struct_name).ok_or_else(|| CompilerError::Unsupported(format!("unknown struct '{struct_name}'")))?;
             let ExprKind::Array(values) = arg.kind else {
@@ -298,7 +314,7 @@ fn push_typed_sigscript_arg<'i>(
         }
     }
 
-    if let Some(struct_name) = struct_name_from_type_ref(type_ref, structs) {
+    if let Some(struct_name) = struct_name(type_ref, structs) {
         let item = structs.get(struct_name).ok_or_else(|| CompilerError::Unsupported(format!("unknown struct '{struct_name}'")))?;
         let ExprKind::StructLiteral(fields) = arg.kind else {
             return Err(CompilerError::Unsupported("signature script struct arguments must be object literals".to_string()));
@@ -321,12 +337,16 @@ fn push_typed_sigscript_arg<'i>(
         return Ok(());
     }
 
-    if !value_matches_type_ref(&arg, type_ref) {
+    let types = HashMap::new();
+    let constants = HashMap::new();
+    let functions = HashMap::new();
+    let type_context =
+        type_check::TypeCheckContext { types: &types, structs, constants: &constants, functions: &functions, contract_fields: &[] };
+    if type_check::check_expr(&arg, Some(type_ref), &type_context).is_err() {
         return Err(CompilerError::Unsupported("signature script arguments must match the declared type".to_string()));
     }
 
-    let type_name = type_name_from_ref(type_ref);
-    if compile::is_array_type(&type_name) {
+    if type_ref.is_array() {
         match &arg.kind {
             ExprKind::Array(values) => {
                 if compile::is_byte_array(&arg) {
@@ -336,7 +356,7 @@ fn push_typed_sigscript_arg<'i>(
                         .collect();
                     builder.add_data(&bytes)?;
                 } else {
-                    let bytes = compile::encode_array_literal(values, &type_name)?;
+                    let bytes = compile::encode_array_literal(values, type_ref)?;
                     builder.add_data(&bytes)?;
                 }
                 Ok(())

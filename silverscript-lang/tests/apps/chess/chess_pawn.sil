@@ -294,7 +294,7 @@ contract ChessPawn(
         byte[] middle_xy = prev_dyn.slice(x + 1, y);
         byte[] middle_yz = prev_dyn.slice(y + 1, z);
         byte[] suffix = prev_dyn.slice(z + 1, 64);
-        byte[64] next_board = prefix + byte[1](vx) + middle_xy + byte[1](vy) + middle_yz + byte[1](vz) + suffix;
+        byte[64] next_board = byte[64](prefix + byte[1](vx) + middle_xy + byte[1](vy) + middle_yz + byte[1](vz) + suffix);
 
         State next_state = {
             mux_template: mux_template,

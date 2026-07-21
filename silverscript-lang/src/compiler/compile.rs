@@ -1,7 +1,7 @@
 use super::array_append::lower_array_appends;
 use super::covenant_declarations::lower_covenant_declarations;
 use super::debug_value_types::infer_debug_expr_value_type;
-use super::infer_array::lower_inferred_array_sizes;
+use super::infer_array::{infer_expr_type, lower_inferred_array_sizes};
 use super::inline_functions::lower_inline_functions;
 use super::locals::lower_local_aliases;
 use super::stack_bindings::StackBindings;
@@ -86,7 +86,7 @@ pub(super) fn read_input_state_with_template_values<'i>(
             contract_constants,
             "readInputStateWithTemplate",
         )?);
-        field_chunk_offset += encoded_field_chunk_size_for_type_ref(type_ref, contract_constants)?;
+        field_chunk_offset += encoded_type_chunk_size(type_ref, contract_constants)?;
     }
     Ok(lowered)
 }
@@ -323,15 +323,13 @@ fn compile_contract_fields<'i>(
     let stack_bindings = StackBindings::default();
 
     for field in fields {
-        let type_name = type_name_from_ref(&field.type_ref);
-
         let mut resolve_visiting = HashSet::new();
         let resolved = resolve_expr(field.expr.clone(), base_constants, &mut resolve_visiting)?;
 
         let mut compile_visiting = HashSet::new();
         let mut stack_depth = 0i64;
-        if fixed_type_size_with_constants_ref(&field.type_ref, base_constants).is_some() {
-            let encoded = encode_fixed_size_value(&resolved, &type_name)?;
+        if fixed_type_size_with_constants(&field.type_ref, base_constants).is_some() {
+            let encoded = encode_fixed_size_value(&resolved, &field.type_ref)?;
             builder.add_data_with_push_opcode(&encoded)?;
         } else {
             compile_expr(
@@ -349,7 +347,7 @@ fn compile_contract_fields<'i>(
         }
 
         field_values.insert(field.name.clone(), resolved);
-        field_types.insert(field.name.clone(), type_name);
+        field_types.insert(field.name.clone(), field.type_ref.clone());
     }
 
     Ok((field_values, builder.drain()))
@@ -433,100 +431,42 @@ fn byte_array_len<'i>(expr: &Expr<'i>) -> Option<usize> {
     }
 }
 
-fn infer_expr_type_ref_for_comparison<'i>(
-    expr: &Expr<'i>,
-    constants: &HashMap<String, Expr<'i>>,
-    types: &HashMap<String, String>,
-) -> Option<TypeRef> {
+fn infer_expr_type_for_comparison<'i>(expr: &Expr<'i>, constants: &HashMap<String, Expr<'i>>, types: &TypeMap) -> Option<TypeRef> {
     if let ExprKind::Identifier(name) = &expr.kind {
-        if let Some(type_ref) = types.get(name).and_then(|type_name| parse_type_ref(type_name).ok()) {
-            return Some(type_ref);
+        if let Some(type_ref) = types.get(name) {
+            return Some(type_ref.clone());
         }
     }
     if let ExprKind::Call { name, .. } = &expr.kind {
-        let is_builtin_cast = matches!(name.as_str(), "int" | "bool" | "byte" | "string" | "pubkey" | "sig" | "datasig")
-            || (name.contains('[') && parse_type_ref(name).ok().is_some_and(|type_ref| !matches!(type_ref.base, TypeBase::Custom(_))));
-        let is_known_builtin = matches!(
-            name.as_str(),
-            "int"
-                | "bool"
-                | "byte"
-                | "string"
-                | "pubkey"
-                | "sig"
-                | "datasig"
-                | "bytes"
-                | "blake2b"
-                | "blake2bWithKey"
-                | "blake3"
-                | "blake3WithKey"
-                | "templateHash"
-                | "sha256"
-                | "OpSha256"
-                | "OpTxSubnetId"
-                | "OpTxPayloadSubstr"
-                | "OpOutpointTxId"
-                | "OpTxInputScriptSigSubstr"
-                | "OpTxInputSeq"
-                | "OpTxInputSpkSubstr"
-                | "OpTxOutputSpkSubstr"
-                | "OpNum2Bin"
-                | "OpBin2Num"
-                | "OpChainblockSeqCommit"
-                | "LockingBytecodeNullData"
-                | "ScriptPubKeyP2PK"
-                | "ScriptPubKeyP2SH"
-                | "ScriptPubKeyP2SHFromRedeemScript"
-                | "OpInputCovenantId"
-                | "OpOutputCovenantId"
-                | "checkSigFromStack"
-                | "checkSigFromStackECDSA"
-                | "OpTxGas"
-                | "OpTxPayloadLen"
-                | "OpTxInputIndex"
-                | "OpTxInputIsCoinbase"
-                | "OpTxInputScriptSigLen"
-                | "OpTxInputSpkLen"
-                | "OpOutpointIndex"
-                | "OpTxOutputSpkLen"
-                | "OpAuthOutputCount"
-                | "OpAuthOutputIdx"
-                | "OpCovInputCount"
-                | "OpCovInputIdx"
-                | "OpCovOutputCount"
-                | "OpCovOutputIdx"
-        );
-        if !is_builtin_cast && !is_known_builtin {
+        let known_cast = parse_type_ref(name).is_ok_and(|type_ref| !matches!(type_ref.base, TypeBase::Custom(_)));
+        if !known_cast && builtin_types::builtin_return_type(name).is_none() {
             return None;
         }
     }
-    let type_name = infer_debug_expr_value_type(expr, constants, types, &mut HashSet::new()).ok()?;
-    parse_type_ref(&type_name).ok()
+    infer_debug_expr_value_type(expr, constants, types, &mut HashSet::new()).ok()
 }
 
-pub(super) fn array_literal_matches_type_with_env_ref<'i>(
+pub(super) fn array_literal_matches_type_with_env<'i>(
     values: &[Expr<'i>],
     type_ref: &TypeRef,
-    types: &HashMap<String, String>,
+    types: &TypeMap,
     constants: &HashMap<String, Expr<'i>>,
 ) -> bool {
-    let Some(element_type) = array_element_type_ref(type_ref) else {
+    let Some(element_type) = type_ref.array_element_type() else {
         return false;
     };
 
-    if let Some(expected_size) = array_size_with_constants_ref(type_ref, constants) {
+    if let Some(expected_size) = array_size_with_constants(type_ref, constants) {
         if values.len() != expected_size {
             return false;
         }
     }
 
-    values.iter().all(|value| match &value.kind {
-        ExprKind::Identifier(name) => types
-            .get(name)
-            .and_then(|value_type| parse_type_ref(value_type).ok())
-            .is_some_and(|value_type| is_type_assignable_ref(&value_type, &element_type, constants)),
-        _ => super::static_check::value_matches_type_ref(value, &element_type),
-    })
+    let structs = StructRegistry::new();
+    let functions = HashMap::new();
+    let type_context =
+        super::type_check::TypeCheckContext { types, structs: &structs, constants, functions: &functions, contract_fields: &[] };
+    values.iter().all(|value| super::type_check::check_expr(value, Some(&element_type), &type_context).is_ok())
 }
 
 fn build_function_abi_entries<'i>(contract: &ContractAst<'i>) -> Vec<FunctionAbiEntry> {
@@ -539,32 +479,20 @@ fn build_function_abi_entries<'i>(contract: &ContractAst<'i>) -> Vec<FunctionAbi
             inputs: func
                 .params
                 .iter()
-                .map(|param| FunctionInputAbi { name: param.name.clone(), type_name: type_name_from_ref(&param.type_ref) })
+                .map(|param| FunctionInputAbi { name: param.name.clone(), type_name: param.type_ref.type_name() })
                 .collect(),
         })
         .collect()
 }
 
-pub(crate) fn type_name_from_ref(type_ref: &TypeRef) -> String {
-    type_ref.type_name()
-}
-
-fn is_array_type_ref(type_ref: &TypeRef) -> bool {
-    type_ref.is_array()
-}
-
-fn array_element_type_ref(type_ref: &TypeRef) -> Option<TypeRef> {
-    type_ref.array_element_type()
-}
-
-fn array_size_ref(type_ref: &TypeRef) -> Option<usize> {
+fn array_size(type_ref: &TypeRef) -> Option<usize> {
     match type_ref.array_size()? {
         ArrayDim::Fixed(size) => Some(*size),
         _ => None,
     }
 }
 
-fn array_size_with_constants_ref<'i>(type_ref: &TypeRef, constants: &HashMap<String, Expr<'i>>) -> Option<usize> {
+fn array_size_with_constants<'i>(type_ref: &TypeRef, constants: &HashMap<String, Expr<'i>>) -> Option<usize> {
     match type_ref.array_size()? {
         ArrayDim::Fixed(size) => Some(*size),
         ArrayDim::Constant(name) => {
@@ -579,13 +507,13 @@ fn array_size_with_constants_ref<'i>(type_ref: &TypeRef, constants: &HashMap<Str
     }
 }
 
-fn fixed_type_size_ref(type_ref: &TypeRef) -> Option<i64> {
+fn fixed_type_size(type_ref: &TypeRef) -> Option<i64> {
     if type_ref.is_array() {
-        if let (Some(elem_type), Some(size)) = (array_element_type_ref(type_ref), array_size_ref(type_ref)) {
-            if elem_type.base == TypeBase::Byte && !elem_type.is_array() {
+        if let (Some(elem_type), Some(size)) = (type_ref.array_element_type(), array_size(type_ref)) {
+            if elem_type.is_byte() {
                 return Some(size as i64);
             }
-            if elem_type.base == TypeBase::Int && !elem_type.is_array() {
+            if elem_type.is_int() {
                 return Some((size * 8) as i64);
             }
         }
@@ -596,43 +524,37 @@ fn fixed_type_size_ref(type_ref: &TypeRef) -> Option<i64> {
         TypeBase::Int => Some(8),
         TypeBase::Bool => Some(1),
         TypeBase::Byte => Some(1),
-        TypeBase::Pubkey => Some(32),
-        TypeBase::Sig => Some(65),
-        TypeBase::Datasig => Some(64),
+        TypeBase::Pubkey | TypeBase::Sig | TypeBase::Datasig => type_ref.base.fixed_byte_sequence_len().map(|size| size as i64),
         TypeBase::String => None,
-        TypeBase::Custom(_) => None,
+        TypeBase::Tuple(_) | TypeBase::Custom(_) => None,
     }
 }
 
-fn fixed_type_size_with_constants_ref<'i>(type_ref: &TypeRef, constants: &HashMap<String, Expr<'i>>) -> Option<usize> {
+fn fixed_type_size_with_constants<'i>(type_ref: &TypeRef, constants: &HashMap<String, Expr<'i>>) -> Option<usize> {
     if !type_ref.is_array() {
-        return fixed_type_size_ref(type_ref).map(|size| size as usize);
+        return fixed_type_size(type_ref).map(|size| size as usize);
     }
 
-    let element_type = array_element_type_ref(type_ref)?;
-    let array_len = array_size_with_constants_ref(type_ref, constants)?;
-    let element_size = fixed_type_size_with_constants_ref(&element_type, constants)?;
+    let element_type = type_ref.array_element_type()?;
+    let array_len = array_size_with_constants(type_ref, constants)?;
+    let element_size = fixed_type_size_with_constants(&element_type, constants)?;
     Some(array_len * element_size)
 }
 
-fn fixed_state_field_payload_len_for_type_ref<'i>(
-    type_ref: &TypeRef,
-    contract_constants: &HashMap<String, Expr<'i>>,
-) -> Result<usize, CompilerError> {
-    fixed_type_size_with_constants_ref(type_ref, contract_constants).ok_or_else(|| {
-        CompilerError::Unsupported(format!("readInputState does not support field type {}", type_name_from_ref(type_ref)))
-    })
+fn fixed_state_payload_len<'i>(type_ref: &TypeRef, contract_constants: &HashMap<String, Expr<'i>>) -> Result<usize, CompilerError> {
+    fixed_type_size_with_constants(type_ref, contract_constants)
+        .ok_or_else(|| CompilerError::Unsupported(format!("readInputState does not support field type {}", type_ref.type_name())))
 }
 
 fn fixed_state_field_payload_len<'i>(
     field: &ContractFieldAst<'i>,
     contract_constants: &HashMap<String, Expr<'i>>,
 ) -> Result<usize, CompilerError> {
-    fixed_state_field_payload_len_for_type_ref(&field.type_ref, contract_constants)
+    fixed_state_payload_len(&field.type_ref, contract_constants)
 }
 
-fn array_element_size_ref(type_ref: &TypeRef) -> Option<i64> {
-    array_element_type_ref(type_ref).and_then(|element| fixed_type_size_ref(&element))
+fn array_element_size(type_ref: &TypeRef) -> Option<i64> {
+    type_ref.array_element_type().and_then(|element| fixed_type_size(&element))
 }
 
 fn contains_return(stmt: &Statement<'_>) -> bool {
@@ -800,43 +722,12 @@ fn collect_assigned_names_into<'i>(statements: &[Statement<'i>], assigned: &mut 
     }
 }
 
-fn has_explicit_array_size_ref(type_ref: &TypeRef) -> bool {
-    !matches!(type_ref.array_size(), Some(ArrayDim::Dynamic | ArrayDim::Inferred) | None)
-}
-
-fn has_inferred_array_size_ref(type_ref: &TypeRef) -> bool {
+fn has_inferred_array_size(type_ref: &TypeRef) -> bool {
     matches!(type_ref.array_size(), Some(ArrayDim::Inferred))
 }
 
-fn is_array_type_assignable_ref<'i>(actual: &TypeRef, expected: &TypeRef, constants: &HashMap<String, Expr<'i>>) -> bool {
-    if actual == expected {
-        return true;
-    }
-
-    if !is_array_type_ref(actual) || !is_array_type_ref(expected) {
-        return false;
-    }
-
-    if array_element_type_ref(actual) != array_element_type_ref(expected) {
-        return false;
-    }
-
-    if !has_explicit_array_size_ref(expected) {
-        return true;
-    }
-
-    match (array_size_with_constants_ref(actual, constants), array_size_with_constants_ref(expected, constants)) {
-        (Some(actual_size), Some(expected_size)) => actual_size == expected_size,
-        _ => actual == expected,
-    }
-}
-
-pub(super) fn is_type_assignable_ref<'i>(actual: &TypeRef, expected: &TypeRef, constants: &HashMap<String, Expr<'i>>) -> bool {
-    actual == expected || is_array_type_assignable_ref(actual, expected, constants)
-}
-
-fn coerce_expr_for_declared_scalar_type<'i>(expr: Expr<'i>, type_name: &str) -> Expr<'i> {
-    if type_name == "byte"
+fn coerce_expr_for_declared_scalar_type<'i>(expr: Expr<'i>, type_ref: &TypeRef) -> Expr<'i> {
+    if type_ref.is_byte()
         && let ExprKind::Int(value) = expr.kind
         && (0..=255).contains(&value)
     {
@@ -846,7 +737,7 @@ fn coerce_expr_for_declared_scalar_type<'i>(expr: Expr<'i>, type_name: &str) -> 
 }
 
 fn coerce_rhs_byte_literal_for_comparison<'i>(left_type: Option<&TypeRef>, right: &Expr<'i>) -> Expr<'i> {
-    if left_type.is_some_and(|type_ref| matches!(type_ref.base, TypeBase::Byte) && !type_ref.is_array())
+    if left_type.is_some_and(TypeRef::is_byte)
         && let ExprKind::Int(value) = right.kind
         && (0..=255).contains(&value)
     {
@@ -855,31 +746,31 @@ fn coerce_rhs_byte_literal_for_comparison<'i>(left_type: Option<&TypeRef>, right
     right.clone()
 }
 
-fn infer_fixed_array_type_from_initializer_ref<'i>(
+fn infer_fixed_array_type_from_initializer<'i>(
     declared_type: &TypeRef,
     initializer: Option<&Expr<'i>>,
-    types: &HashMap<String, String>,
+    types: &TypeMap,
     constants: &HashMap<String, Expr<'i>>,
 ) -> Option<TypeRef> {
-    if !has_inferred_array_size_ref(declared_type) {
+    if !has_inferred_array_size(declared_type) {
         return None;
     }
 
-    let element_type = array_element_type_ref(declared_type)?;
+    let element_type = declared_type.array_element_type()?;
     let init = initializer?;
 
     match &init.kind {
         ExprKind::Array(values) => {
             let mut inferred = element_type.clone();
             inferred.array_dims.push(ArrayDim::Fixed(values.len()));
-            if array_literal_matches_type_with_env_ref(values, &inferred, types, constants) { Some(inferred) } else { None }
+            if array_literal_matches_type_with_env(values, &inferred, types, constants) { Some(inferred) } else { None }
         }
         ExprKind::Identifier(name) => {
-            let other_type = parse_type_ref(types.get(name)?).ok()?;
-            if !is_array_type_ref(&other_type) || array_element_type_ref(&other_type) != Some(element_type.clone()) {
+            let other_type = types.get(name)?.clone();
+            if !other_type.is_array() || !type_refs_equal(&other_type.array_element_type()?, &element_type, constants) {
                 return None;
             }
-            let size = array_size_with_constants_ref(&other_type, constants)?;
+            let size = array_size_with_constants(&other_type, constants)?;
             let mut inferred = element_type;
             inferred.array_dims.push(ArrayDim::Fixed(size));
             Some(inferred)
@@ -888,59 +779,9 @@ fn infer_fixed_array_type_from_initializer_ref<'i>(
     }
 }
 
-pub(super) fn is_array_type(type_name: &str) -> bool {
-    parse_type_ref(type_name).is_ok_and(|type_ref| is_array_type_ref(&type_ref))
-}
-
-pub(crate) fn array_element_type(type_name: &str) -> Option<String> {
-    let type_ref = parse_type_ref(type_name).ok()?;
-    let element = array_element_type_ref(&type_ref)?;
-    Some(type_name_from_ref(&element))
-}
-
-fn array_size(type_name: &str) -> Option<usize> {
-    let type_ref = parse_type_ref(type_name).ok()?;
-    array_size_ref(&type_ref)
-}
-
-fn array_size_with_constants<'i>(type_name: &str, constants: &HashMap<String, Expr<'i>>) -> Option<usize> {
-    let type_ref = parse_type_ref(type_name).ok()?;
-    array_size_with_constants_ref(&type_ref, constants)
-}
-
-fn fixed_type_size(type_name: &str) -> Option<i64> {
-    let type_ref = parse_type_ref(type_name).ok()?;
-    fixed_type_size_ref(&type_ref)
-}
-
-fn array_element_size(type_name: &str) -> Option<i64> {
-    let type_ref = parse_type_ref(type_name).ok()?;
-    array_element_size_ref(&type_ref)
-}
-
-fn is_type_assignable<'i>(actual: &str, expected: &str, constants: &HashMap<String, Expr<'i>>) -> bool {
-    let Ok(actual_type) = parse_type_ref(actual) else {
-        return false;
-    };
-    let Ok(expected_type) = parse_type_ref(expected) else {
-        return false;
-    };
-    is_type_assignable_ref(&actual_type, &expected_type, constants)
-}
-
-fn infer_fixed_array_type_from_initializer<'i>(
-    declared_type: &str,
-    initializer: Option<&Expr<'i>>,
-    types: &HashMap<String, String>,
-    constants: &HashMap<String, Expr<'i>>,
-) -> Option<String> {
-    let declared_type = parse_type_ref(declared_type).ok()?;
-    infer_fixed_array_type_from_initializer_ref(&declared_type, initializer, types, constants).map(|t| type_name_from_ref(&t))
-}
-
-fn encode_fixed_size_value<'i>(value: &Expr<'i>, type_name: &str) -> Result<Vec<u8>, CompilerError> {
-    match type_name {
-        "int" => {
+fn encode_fixed_size_value<'i>(value: &Expr<'i>, type_ref: &TypeRef) -> Result<Vec<u8>, CompilerError> {
+    match (&type_ref.base, type_ref.array_dims.as_slice()) {
+        (TypeBase::Int, []) => {
             let number = match &value.kind {
                 ExprKind::Int(number) | ExprKind::DateLiteral(number) => *number,
                 _ => return Err(CompilerError::Unsupported("array literal element type mismatch".to_string())),
@@ -949,39 +790,23 @@ fn encode_fixed_size_value<'i>(value: &Expr<'i>, type_name: &str) -> Result<Vec<
                 .map(|bytes| bytes.to_vec())
                 .map_err(|err| CompilerError::Unsupported(format!("failed to serialize int literal {}: {err}", number)))
         }
-        "bool" => {
+        (TypeBase::Bool, []) => {
             let ExprKind::Bool(flag) = &value.kind else {
                 return Err(CompilerError::Unsupported("array literal element type mismatch".to_string()));
             };
             Ok(vec![u8::from(*flag)])
         }
-        "byte" => {
+        (TypeBase::Byte, []) => {
             let ExprKind::Byte(byte) = &value.kind else {
                 return Err(CompilerError::Unsupported("array literal element type mismatch".to_string()));
             };
             Ok(vec![*byte])
         }
-        "pubkey" => {
+        (base @ (TypeBase::Pubkey | TypeBase::Sig | TypeBase::Datasig), []) => {
             let Some(len) = byte_array_len(value) else {
                 return Err(CompilerError::Unsupported("array literal element type mismatch".to_string()));
             };
-            if len != 32 {
-                return Err(CompilerError::Unsupported("array literal element type mismatch".to_string()));
-            }
-            let ExprKind::Array(bytes_exprs) = &value.kind else {
-                return Err(CompilerError::Unsupported("array literal element type mismatch".to_string()));
-            };
-            Ok(bytes_exprs
-                .iter()
-                .filter_map(|value| if let ExprKind::Byte(byte) = &value.kind { Some(*byte) } else { None })
-                .collect())
-        }
-        "sig" | "datasig" => {
-            let expected_len = if type_name == "sig" { 65 } else { 64 };
-            let Some(len) = byte_array_len(value) else {
-                return Err(CompilerError::Unsupported("array literal element type mismatch".to_string()));
-            };
-            if len != expected_len {
+            if Some(len) != base.fixed_byte_sequence_len() {
                 return Err(CompilerError::Unsupported("array literal element type mismatch".to_string()));
             }
             let ExprKind::Array(bytes_exprs) = &value.kind else {
@@ -994,8 +819,8 @@ fn encode_fixed_size_value<'i>(value: &Expr<'i>, type_name: &str) -> Result<Vec<
         }
         _ => {
             // Handle fixed-size byte arrays like byte[N]
-            if let (Some(inner_type), Some(size)) = (array_element_type(type_name), array_size(type_name)) {
-                if inner_type == "byte" {
+            if let (Some(inner_type), Some(size)) = (type_ref.array_element_type(), array_size(type_ref)) {
+                if inner_type.is_byte() {
                     let Some(len) = byte_array_len(value) else {
                         return Err(CompilerError::Unsupported("array literal element type mismatch".to_string()));
                     };
@@ -1014,9 +839,10 @@ fn encode_fixed_size_value<'i>(value: &Expr<'i>, type_name: &str) -> Result<Vec<
 
             // Handle nested fixed-size arrays with known element sizes.
             if let ExprKind::Array(values) = &value.kind {
-                let element_type = array_element_type(type_name)
+                let element_type = type_ref
+                    .array_element_type()
                     .ok_or_else(|| CompilerError::Unsupported("array element type must have known size".to_string()))?;
-                let expected_len = array_size(type_name)
+                let expected_len = array_size(type_ref)
                     .ok_or_else(|| CompilerError::Unsupported("array literal element type mismatch".to_string()))?;
                 if values.len() != expected_len {
                     return Err(CompilerError::Unsupported("array literal element type mismatch".to_string()));
@@ -1034,8 +860,9 @@ fn encode_fixed_size_value<'i>(value: &Expr<'i>, type_name: &str) -> Result<Vec<
     }
 }
 
-pub(super) fn encode_array_literal<'i>(values: &[Expr<'i>], type_name: &str) -> Result<Vec<u8>, CompilerError> {
-    let element_type = array_element_type(type_name)
+pub(super) fn encode_array_literal<'i>(values: &[Expr<'i>], type_ref: &TypeRef) -> Result<Vec<u8>, CompilerError> {
+    let element_type = type_ref
+        .array_element_type()
         .ok_or_else(|| CompilerError::Unsupported("array element type must have known size".to_string()))?;
     let mut out = Vec::new();
     debug_assert!(fixed_type_size(&element_type).is_some(), "type_check must validate array element type has known size");
@@ -1045,28 +872,29 @@ pub(super) fn encode_array_literal<'i>(values: &[Expr<'i>], type_name: &str) -> 
     Ok(out)
 }
 
-fn infer_fixed_type_from_literal_expr<'i>(expr: &Expr<'i>) -> Option<String> {
+fn infer_fixed_type_from_literal_expr<'i>(expr: &Expr<'i>) -> Option<TypeRef> {
     match &expr.kind {
-        ExprKind::Int(_) | ExprKind::DateLiteral(_) => Some("int".to_string()),
-        ExprKind::Bool(_) => Some("bool".to_string()),
-        ExprKind::Byte(_) => Some("byte".to_string()),
-        ExprKind::Array(values) if is_byte_array(expr) => Some(format!("byte[{}]", values.len())),
-        ExprKind::Array(values) => {
-            let nested_type = infer_fixed_array_literal_type(values)?;
-            Some(nested_type.trim_end_matches("[]").to_string())
+        ExprKind::Int(_) | ExprKind::DateLiteral(_) => Some(TypeRef { base: TypeBase::Int, array_dims: Vec::new() }),
+        ExprKind::Bool(_) => Some(TypeRef { base: TypeBase::Bool, array_dims: Vec::new() }),
+        ExprKind::Byte(_) => Some(TypeRef { base: TypeBase::Byte, array_dims: Vec::new() }),
+        ExprKind::Array(values) if is_byte_array(expr) => {
+            Some(TypeRef { base: TypeBase::Byte, array_dims: vec![ArrayDim::Fixed(values.len())] })
         }
+        ExprKind::Array(values) => infer_fixed_array_literal_type(values)?.array_element_type(),
         _ => None,
     }
 }
 
-fn infer_fixed_array_literal_type<'i>(values: &[Expr<'i>]) -> Option<String> {
+fn infer_fixed_array_literal_type<'i>(values: &[Expr<'i>]) -> Option<TypeRef> {
     if values.is_empty() {
         return None;
     }
     let first_type = infer_fixed_type_from_literal_expr(values.first()?)?;
     fixed_type_size(&first_type)?;
-    if values.iter().skip(1).all(|value| infer_fixed_type_from_literal_expr(value).as_deref() == Some(first_type.as_str())) {
-        Some(format!("{}[]", first_type))
+    if values.iter().skip(1).all(|value| infer_fixed_type_from_literal_expr(value).as_ref() == Some(&first_type)) {
+        let mut array_type = first_type;
+        array_type.array_dims.push(ArrayDim::Dynamic);
+        Some(array_type)
     } else {
         None
     }
@@ -1100,13 +928,13 @@ fn compile_entrypoint_function<'i>(
     let mut flattened_param_names = Vec::new();
     let mut types = HashMap::new();
     for param in contract_params {
-        types.insert(param.name.clone(), type_name_from_ref(&param.type_ref));
+        types.insert(param.name.clone(), param.type_ref.clone());
     }
     for constant in contract_constants {
-        types.insert(constant.name.clone(), type_name_from_ref(&constant.type_ref));
+        types.insert(constant.name.clone(), constant.type_ref.clone());
     }
     for param in &function.params {
-        types.insert(param.name.clone(), type_name_from_ref(&param.type_ref));
+        types.insert(param.name.clone(), param.type_ref.clone());
         flattened_param_names.push(param.name.clone());
     }
 
@@ -1125,7 +953,7 @@ fn compile_entrypoint_function<'i>(
     }
 
     for field in contract_fields {
-        types.insert(field.name.clone(), type_name_from_ref(&field.type_ref));
+        types.insert(field.name.clone(), field.type_ref.clone());
     }
     let mut builder = script_builder();
     let mut return_exprs: Vec<Expr> = Vec::new();
@@ -1254,7 +1082,7 @@ fn compile_statement<'i>(ctx: &mut CompileStatementContext<'_, 'i>, stmt: &State
 struct CompileStatementContext<'a, 'i> {
     assigned_names: &'a HashSet<String>,
     identifier_uses: &'a HashMap<String, usize>,
-    types: &'a mut HashMap<String, String>,
+    types: &'a mut TypeMap,
     stack_bindings: &'a mut StackBindings,
     builder: &'a mut ScriptBuilder,
     options: CompileOptions,
@@ -1269,7 +1097,7 @@ struct CompileStatementContext<'a, 'i> {
 impl<'a, 'i> CompileStatementContext<'a, 'i> {
     pub(crate) fn with_types_and_stack_bindings<'b>(
         &'b mut self,
-        types: &'b mut HashMap<String, String>,
+        types: &'b mut TypeMap,
         stack_bindings: &'b mut StackBindings,
     ) -> CompileStatementContext<'b, 'i>
     where
@@ -1298,41 +1126,40 @@ fn compile_variable_definition_statement<'i>(
     name: &str,
     expr: Option<&Expr<'i>>,
 ) -> Result<Vec<String>, CompilerError> {
-    let type_name = type_name_from_ref(type_ref);
-    let effective_type_name = if has_inferred_array_size_ref(type_ref) {
-        infer_fixed_array_type_from_initializer(&type_name, expr, ctx.types, ctx.contract_constants).ok_or_else(|| {
+    let effective_type = if has_inferred_array_size(type_ref) {
+        infer_fixed_array_type_from_initializer(type_ref, expr, ctx.types, ctx.contract_constants).ok_or_else(|| {
             CompilerError::Unsupported(format!(
                 "variable '{}' requires an initializer with inferrable size for type {}",
-                name, type_name
+                name,
+                type_ref.type_name()
             ))
         })?
     } else {
-        type_name.clone()
+        type_ref.clone()
     };
 
-    let is_array = is_array_type(&effective_type_name);
-    if is_array {
-        let initial = array_initializer_expr(expr, &effective_type_name, ctx.types, ctx.contract_constants)?;
-        return compile_runtime_variable_definition(ctx, name, effective_type_name, initial);
+    if effective_type.is_array() {
+        let initial = array_initializer_expr(expr, &effective_type, ctx.types, ctx.contract_constants)?;
+        return compile_runtime_variable_definition(ctx, name, effective_type, initial);
     }
 
     let expr = expr.cloned().ok_or_else(|| CompilerError::Unsupported("variable definition requires initializer".to_string()))?;
-    let expr = coerce_expr_for_declared_scalar_type(expr, &effective_type_name);
-    compile_runtime_variable_definition(ctx, name, effective_type_name, expr)
+    let expr = coerce_expr_for_declared_scalar_type(expr, &effective_type);
+    compile_runtime_variable_definition(ctx, name, effective_type, expr)
 }
 
 fn array_initializer_expr<'i>(
     expr: Option<&Expr<'i>>,
-    type_name: &str,
-    types: &HashMap<String, String>,
+    type_ref: &TypeRef,
+    types: &TypeMap,
     contract_constants: &HashMap<String, Expr<'i>>,
 ) -> Result<Expr<'i>, CompilerError> {
     match expr {
         Some(Expr { kind: ExprKind::Identifier(other), .. }) => match types.get(other) {
-            Some(other_type) if is_type_assignable(other_type, type_name, contract_constants) => {
+            Some(other_type) if type_refs_equal(other_type, type_ref, contract_constants) => {
                 Ok(Expr::new(ExprKind::Identifier(other.clone()), span::Span::default()))
             }
-            Some(_) => Err(CompilerError::Unsupported("array assignment requires compatible array types".to_string())),
+            Some(_) => Err(CompilerError::Unsupported("array assignment requires identical array types".to_string())),
             None => Err(CompilerError::UndefinedIdentifier(other.clone())),
         },
         Some(expr) => Ok(expr.clone()),
@@ -1343,10 +1170,10 @@ fn array_initializer_expr<'i>(
 fn compile_runtime_variable_definition<'i>(
     ctx: &mut CompileStatementContext<'_, 'i>,
     name: &str,
-    type_name: String,
+    type_ref: TypeRef,
     expr: Expr<'i>,
 ) -> Result<Vec<String>, CompilerError> {
-    ctx.types.insert(name.to_string(), type_name.clone());
+    ctx.types.insert(name.to_string(), type_ref);
     if ctx.stack_bindings.contains(name) {
         return Err(CompilerError::Unsupported(format!("variable '{}' is already defined", name)));
     }
@@ -1371,14 +1198,14 @@ fn compile_runtime_variable_definition<'i>(
 fn compile_stack_variable_definition<'i>(
     ctx: &mut CompileStatementContext<'_, 'i>,
     name: &str,
-    type_name: String,
+    type_ref: TypeRef,
     expr: Expr<'i>,
 ) -> Result<Vec<String>, CompilerError> {
     if ctx.stack_bindings.contains(name) {
         return Err(CompilerError::Unsupported(format!("variable '{}' is already defined", name)));
     }
 
-    ctx.types.insert(name.to_string(), type_name);
+    ctx.types.insert(name.to_string(), type_ref);
     let mut stack_depth = 0i64;
     compile_expr(
         &expr,
@@ -1454,8 +1281,8 @@ fn compile_tuple_assignment_statement<'i>(
                 ExprKind::Split { source: source.clone(), index: index.clone(), part: SplitPart::Right, span: *split_span },
                 span::Span::default(),
             );
-            let mut added = compile_stack_variable_definition(ctx, left_name, type_name_from_ref(left_type_ref), left_expr)?;
-            added.extend(compile_stack_variable_definition(ctx, right_name, type_name_from_ref(right_type_ref), right_expr)?);
+            let mut added = compile_stack_variable_definition(ctx, left_name, left_type_ref.clone(), left_expr)?;
+            added.extend(compile_stack_variable_definition(ctx, right_name, right_type_ref.clone(), right_expr)?);
             Ok(added)
         }
         _ => Err(CompilerError::Unsupported("tuple assignment only supports split()".to_string())),
@@ -1545,12 +1372,12 @@ fn compile_assign_statement<'i>(
     name: &str,
     expr: &Expr<'i>,
 ) -> Result<Vec<String>, CompilerError> {
-    if let Some(type_name) = ctx.types.get(name) {
+    if let Some(type_ref) = ctx.types.get(name) {
         if !ctx.stack_bindings.contains(name) {
             return Err(CompilerError::Unsupported(format!("assigned variable '{}' must be stack-bound before reassignment", name)));
         }
 
-        let lowered_expr = coerce_expr_for_declared_scalar_type(expr.clone(), type_name);
+        let lowered_expr = coerce_expr_for_declared_scalar_type(expr.clone(), type_ref);
         let mut stack_depth = 0i64;
         compile_expr(
             &lowered_expr,
@@ -1583,11 +1410,8 @@ pub(super) fn encoded_field_chunk_size<'i>(
     Ok(data_prefix(payload_size).len() + payload_size)
 }
 
-fn encoded_field_chunk_size_for_type_ref<'i>(
-    type_ref: &TypeRef,
-    contract_constants: &HashMap<String, Expr<'i>>,
-) -> Result<usize, CompilerError> {
-    let payload_size = fixed_state_field_payload_len_for_type_ref(type_ref, contract_constants)?;
+fn encoded_type_chunk_size<'i>(type_ref: &TypeRef, contract_constants: &HashMap<String, Expr<'i>>) -> Result<usize, CompilerError> {
+    let payload_size = fixed_state_payload_len(type_ref, contract_constants)?;
     Ok(data_prefix(payload_size).len() + payload_size)
 }
 
@@ -1602,9 +1426,7 @@ fn encoded_state_len_for_layout_field_types<'i>(
     layout_field_types: &[TypeRef],
     contract_constants: &HashMap<String, Expr<'i>>,
 ) -> Result<usize, CompilerError> {
-    layout_field_types
-        .iter()
-        .try_fold(0usize, |acc, type_ref| Ok(acc + encoded_field_chunk_size_for_type_ref(type_ref, contract_constants)?))
+    layout_field_types.iter().try_fold(0usize, |acc, type_ref| Ok(acc + encoded_type_chunk_size(type_ref, contract_constants)?))
 }
 
 fn state_start_offset<'i>(
@@ -1673,9 +1495,8 @@ fn read_input_state_field_expr_with_type<'i>(
     contract_constants: &HashMap<String, Expr<'i>>,
     builtin_name: &str,
 ) -> Result<Expr<'i>, CompilerError> {
-    let field_payload_len = fixed_state_field_payload_len_for_type_ref(field_type, contract_constants).map_err(|_| {
-        CompilerError::Unsupported(format!("{builtin_name} does not support field type {}", type_name_from_ref(field_type)))
-    })?;
+    let field_payload_len = fixed_state_payload_len(field_type, contract_constants)
+        .map_err(|_| CompilerError::Unsupported(format!("{builtin_name} does not support field type {}", field_type.type_name())))?;
     let field_payload_offset = binary_expr(
         BinaryOp::Add,
         state_start_offset_expr,
@@ -1689,7 +1510,7 @@ fn read_input_state_field_expr_with_type<'i>(
 }
 
 fn cast_read_input_state_expr<'i>(substr: Expr<'i>, type_ref: &TypeRef) -> Result<Expr<'i>, CompilerError> {
-    let type_name = type_name_from_ref(type_ref);
+    let type_name = type_ref.type_name();
     match type_ref.base {
         TypeBase::Custom(_) => Err(CompilerError::Unsupported(format!("readInputState does not support field type {type_name}"))),
         _ => Ok(Expr::call(type_name.as_str(), vec![substr])),
@@ -1741,12 +1562,11 @@ fn compile_read_input_state_statement<'i>(
                     CompilerError::Unsupported("readInputState bindings must include all contract fields exactly once".to_string())
                 })?;
 
-                let binding_type = type_name_from_ref(&binding.type_ref);
-                let field_type = type_name_from_ref(&field.type_ref);
-                if binding_type != field_type {
+                if binding.type_ref != field.type_ref {
                     return Err(CompilerError::Unsupported(format!(
                         "readInputState binding '{}' expects {}",
-                        binding.name, field_type
+                        binding.name,
+                        field.type_ref.type_name()
                     )));
                 }
 
@@ -1758,7 +1578,12 @@ fn compile_read_input_state_statement<'i>(
                     script_size_value,
                     ctx.contract_constants,
                 )?;
-                added_stack_locals.extend(compile_stack_variable_definition(ctx, &binding.name, binding_type, binding_expr)?);
+                added_stack_locals.extend(compile_stack_variable_definition(
+                    ctx,
+                    &binding.name,
+                    binding.type_ref.clone(),
+                    binding_expr,
+                )?);
 
                 field_chunk_offset += encoded_field_chunk_size(field, ctx.contract_constants)?;
             }
@@ -1815,10 +1640,8 @@ fn compile_read_input_state_statement<'i>(
                         "readInputStateWithTemplate bindings must include all target fields exactly once".to_string(),
                     )
                 })?;
-                let binding_type = type_name_from_ref(&binding.type_ref);
-                let field_type = type_name_from_ref(&field.type_ref);
                 debug_assert_eq!(
-                    binding_type, field_type,
+                    binding.type_ref, field.type_ref,
                     "type_check must validate readInputStateWithTemplate destructuring binding types"
                 );
 
@@ -1831,9 +1654,14 @@ fn compile_read_input_state_statement<'i>(
                     ctx.contract_constants,
                     "readInputStateWithTemplate",
                 )?;
-                added_stack_locals.extend(compile_stack_variable_definition(ctx, &binding.name, binding_type, binding_expr)?);
+                added_stack_locals.extend(compile_stack_variable_definition(
+                    ctx,
+                    &binding.name,
+                    binding.type_ref.clone(),
+                    binding_expr,
+                )?);
 
-                field_chunk_offset += encoded_field_chunk_size_for_type_ref(&field.type_ref, ctx.contract_constants)?;
+                field_chunk_offset += encoded_type_chunk_size(&field.type_ref, ctx.contract_constants)?;
             }
 
             Ok(added_stack_locals)
@@ -1906,7 +1734,7 @@ fn struct_name_for_state_bindings<'i>(bindings: &[StructBindingAst<'i>], structs
 fn compile_read_input_state_with_template_validation(
     args: &[Expr<'_>],
     stack_bindings: &StackBindings,
-    types: &HashMap<String, String>,
+    types: &TypeMap,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
     layout_field_types: &[TypeRef],
@@ -2022,7 +1850,7 @@ fn compile_validate_output_state_inner_statement(
     args: &[Expr<'_>],
     constants: &HashMap<String, Expr<'_>>,
     stack_bindings: &StackBindings,
-    types: &HashMap<String, String>,
+    types: &TypeMap,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
     contract_fields: &[ContractFieldAst<'_>],
@@ -2171,7 +1999,7 @@ fn compile_validate_output_state_with_template_inner_statement(
     args: &[Expr<'_>],
     constants: &HashMap<String, Expr<'_>>,
     stack_bindings: &StackBindings,
-    types: &HashMap<String, String>,
+    types: &TypeMap,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
     script_size: Option<i64>,
@@ -2314,7 +2142,7 @@ fn compile_encoded_state_object(
     state_entries: &[StateFieldExpr<'_>],
     constants: &HashMap<String, Expr<'_>>,
     stack_bindings: &StackBindings,
-    types: &HashMap<String, String>,
+    types: &TypeMap,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
     script_size: Option<i64>,
@@ -2324,13 +2152,11 @@ fn compile_encoded_state_object(
     let mut stack_depth = 0i64;
     for entry in state_entries {
         let new_value = &entry.expr;
-        let type_name = infer_debug_expr_value_type(new_value, constants, types, &mut HashSet::new())?;
-        let type_ref = parse_type_ref(&type_name)?;
-        let field_size = fixed_state_field_payload_len_for_type_ref(&type_ref, contract_constants).map_err(|_| {
-            CompilerError::Unsupported(format!("{builtin_name} does not support field type {}", type_name_from_ref(&type_ref)))
-        })?;
+        let type_ref = infer_debug_expr_value_type(new_value, constants, types, &mut HashSet::new())?;
+        let field_size = fixed_state_payload_len(&type_ref, contract_constants)
+            .map_err(|_| CompilerError::Unsupported(format!("{builtin_name} does not support field type {}", type_ref.type_name())))?;
 
-        if !type_ref.is_array() && matches!(type_ref.base, TypeBase::Int | TypeBase::Bool) {
+        if type_ref.is_int() || type_ref.is_bool() {
             compile_expr(
                 new_value,
                 constants,
@@ -2381,7 +2207,7 @@ fn compile_encoded_flat_state_fields(
     state_fields: &[Expr<'_>],
     constants: &HashMap<String, Expr<'_>>,
     stack_bindings: &StackBindings,
-    types: &HashMap<String, String>,
+    types: &TypeMap,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
     script_size: Option<i64>,
@@ -2390,13 +2216,11 @@ fn compile_encoded_flat_state_fields(
 ) -> Result<i64, CompilerError> {
     let mut stack_depth = 0i64;
     for new_value in state_fields {
-        let type_name = infer_debug_expr_value_type(new_value, constants, types, &mut HashSet::new())?;
-        let type_ref = parse_type_ref(&type_name)?;
-        let field_size = fixed_state_field_payload_len_for_type_ref(&type_ref, contract_constants).map_err(|_| {
-            CompilerError::Unsupported(format!("{builtin_name} does not support field type {}", type_name_from_ref(&type_ref)))
-        })?;
+        let type_ref = infer_debug_expr_value_type(new_value, constants, types, &mut HashSet::new())?;
+        let field_size = fixed_state_payload_len(&type_ref, contract_constants)
+            .map_err(|_| CompilerError::Unsupported(format!("{builtin_name} does not support field type {}", type_ref.type_name())))?;
 
-        if !type_ref.is_array() && matches!(type_ref.base, TypeBase::Int | TypeBase::Bool) {
+        if type_ref.is_int() || type_ref.is_bool() {
             compile_expr(
                 new_value,
                 constants,
@@ -2492,7 +2316,7 @@ fn compile_time_op_statement<'i>(
     tx_var: &TimeVar,
     expr: &Expr<'i>,
     stack_bindings: &StackBindings,
-    types: &HashMap<String, String>,
+    types: &TypeMap,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
     script_size: Option<i64>,
@@ -2722,14 +2546,14 @@ pub(crate) fn resolve_expr<'i>(
 struct CompilationScope<'a, 'i> {
     constants: &'a HashMap<String, Expr<'i>>,
     stack_bindings: &'a StackBindings,
-    types: &'a HashMap<String, String>,
+    types: &'a TypeMap,
 }
 
 pub(super) fn compile_expr<'i>(
     expr: &Expr<'i>,
     constants: &HashMap<String, Expr<'i>>,
     stack_bindings: &StackBindings,
-    types: &HashMap<String, String>,
+    types: &TypeMap,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
     visiting: &mut HashSet<String>,
@@ -2830,9 +2654,10 @@ fn compile_array_expr<'i>(ctx: &mut CompileExprContext<'_, 'i>, values: &[Expr<'
 fn compile_runtime_array_literal<'i>(
     ctx: &mut CompileExprContext<'_, 'i>,
     values: &[Expr<'i>],
-    array_type: &str,
+    array_type: &TypeRef,
 ) -> Result<(), CompilerError> {
-    let element_type = array_element_type(array_type)
+    let element_type = array_type
+        .array_element_type()
         .ok_or_else(|| CompilerError::Unsupported("array literal type cannot be inferred".to_string()))?;
     for (index, value) in values.iter().enumerate() {
         compile_array_literal_element(ctx, value, &element_type)?;
@@ -2847,10 +2672,10 @@ fn compile_runtime_array_literal<'i>(
 fn compile_array_literal_element<'i>(
     ctx: &mut CompileExprContext<'_, 'i>,
     value: &Expr<'i>,
-    element_type: &str,
+    element_type: &TypeRef,
 ) -> Result<(), CompilerError> {
-    match element_type {
-        "int" => {
+    match (&element_type.base, element_type.array_dims.as_slice()) {
+        (TypeBase::Int, []) => {
             compile_expr_with_context(ctx, value)?;
             ctx.builder.add_i64(8)?;
             *ctx.stack_depth += 1;
@@ -2858,30 +2683,30 @@ fn compile_array_literal_element<'i>(
             *ctx.stack_depth -= 1;
             Ok(())
         }
-        "bool" => {
+        (TypeBase::Bool, []) => {
             let cast_expr = Expr::new(
                 ExprKind::Call { name: "byte[1]".to_string(), args: vec![value.clone()], name_span: span::Span::default() },
                 span::Span::default(),
             );
             compile_expr_with_context(ctx, &cast_expr)
         }
-        "byte" => compile_expr_with_context(ctx, value),
+        (TypeBase::Byte, []) => compile_expr_with_context(ctx, value),
         _ => compile_expr_with_context(ctx, value),
     }
 }
 
-fn infer_fixed_array_runtime_type<'i>(
-    values: &[Expr<'i>],
-    constants: &HashMap<String, Expr<'i>>,
-    types: &HashMap<String, String>,
-) -> Option<String> {
+fn infer_fixed_array_runtime_type<'i>(values: &[Expr<'i>], constants: &HashMap<String, Expr<'i>>, types: &TypeMap) -> Option<TypeRef> {
     infer_fixed_array_literal_type(values).or_else(|| {
         let first_type = infer_debug_expr_value_type(values.first()?, constants, types, &mut HashSet::new()).ok()?;
         fixed_type_size(&first_type)?;
-        if values.iter().skip(1).all(|value| {
-            infer_debug_expr_value_type(value, constants, types, &mut HashSet::new()).ok().as_deref() == Some(first_type.as_str())
-        }) {
-            Some(format!("{first_type}[]"))
+        if values
+            .iter()
+            .skip(1)
+            .all(|value| infer_debug_expr_value_type(value, constants, types, &mut HashSet::new()).ok().as_ref() == Some(&first_type))
+        {
+            let mut array_type = first_type;
+            array_type.array_dims.push(ArrayDim::Dynamic);
+            Some(array_type)
         } else {
             None
         }
@@ -2954,15 +2779,6 @@ fn compile_call_branch_expr<'i>(ctx: &mut CompileExprContext<'_, 'i>, name: &str
 
 fn compile_new_expr<'i>(ctx: &mut CompileExprContext<'_, 'i>, name: &str, args: &[Expr<'i>]) -> Result<(), CompilerError> {
     match name {
-        "LockingBytecodeNullData" => {
-            if args.len() != 1 {
-                return Err(CompilerError::Unsupported("LockingBytecodeNullData expects a single array argument".to_string()));
-            }
-            let script = build_null_data_script(&args[0])?;
-            ctx.builder.add_data_with_push_opcode(&script)?;
-            *ctx.stack_depth += 1;
-            Ok(())
-        }
         "ScriptPubKeyP2PK" => {
             if args.len() != 1 {
                 return Err(CompilerError::Unsupported("ScriptPubKeyP2PK expects a single pubkey argument".to_string()));
@@ -3049,7 +2865,7 @@ fn compile_binary_expr<'i>(
     left: &Expr<'i>,
     right: &Expr<'i>,
 ) -> Result<(), CompilerError> {
-    let left_cmp_type = infer_expr_type_ref_for_comparison(left, ctx.scope.constants, ctx.scope.types);
+    let left_cmp_type = infer_expr_type_for_comparison(left, ctx.scope.constants, ctx.scope.types);
     let coerced_right = if matches!(op, BinaryOp::Eq | BinaryOp::Ne | BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge) {
         coerce_rhs_byte_literal_for_comparison(left_cmp_type.as_ref(), right)
     } else {
@@ -3058,12 +2874,13 @@ fn compile_binary_expr<'i>(
     let left_value_type = infer_debug_expr_value_type(left, ctx.scope.constants, ctx.scope.types, &mut HashSet::new()).ok();
     let right_value_type = infer_debug_expr_value_type(&coerced_right, ctx.scope.constants, ctx.scope.types, &mut HashSet::new()).ok();
     debug_assert!(
-        !matches!(op, BinaryOp::Add) || (left_value_type.as_deref() != Some("byte") && right_value_type.as_deref() != Some("byte")),
+        !matches!(op, BinaryOp::Add)
+            || (!left_value_type.as_ref().is_some_and(TypeRef::is_byte) && !right_value_type.as_ref().is_some_and(TypeRef::is_byte)),
         "type_check must reject byte addition"
     );
     let bool_eq = matches!(op, BinaryOp::Eq | BinaryOp::Ne)
-        && left_value_type.as_deref() == Some("bool")
-        && right_value_type.as_deref() == Some("bool");
+        && left_value_type.as_ref().is_some_and(TypeRef::is_bool)
+        && right_value_type.as_ref().is_some_and(TypeRef::is_bool);
     let bytes_eq = matches!(op, BinaryOp::Eq | BinaryOp::Ne)
         && (expr_is_bytes(left, ctx.scope.types) || expr_is_bytes(&coerced_right, ctx.scope.types));
     let bytes_add = matches!(op, BinaryOp::Add) && (expr_is_bytes(left, ctx.scope.types) || expr_is_bytes(right, ctx.scope.types));
@@ -3217,8 +3034,9 @@ fn compile_array_index_expr<'i>(
         _ => resolve_expr(source.clone(), ctx.scope.constants, ctx.visiting)?,
     };
     let source_type = infer_debug_expr_value_type(&resolved_source, ctx.scope.constants, ctx.scope.types, &mut HashSet::new())?;
-    let element_type = array_element_type(&source_type)
-        .ok_or_else(|| CompilerError::Unsupported(format!("array index requires array source, got {source_type}")))?;
+    let element_type = source_type
+        .array_element_type()
+        .ok_or_else(|| CompilerError::Unsupported(format!("array index requires array source, got {}", source_type.type_name())))?;
     let element_size = fixed_type_size(&element_type)
         .ok_or_else(|| CompilerError::Unsupported("array element type must have known size".to_string()))?;
     compile_expr_with_context(ctx, &resolved_source)?;
@@ -3349,7 +3167,7 @@ fn compile_split_part<'i>(
     index: &Expr<'i>,
     part: SplitPart,
     stack_bindings: &StackBindings,
-    types: &HashMap<String, String>,
+    types: &TypeMap,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
     visiting: &mut HashSet<String>,
@@ -3413,12 +3231,12 @@ fn compile_split_part<'i>(
     }
 }
 
-fn expr_is_bytes<'i>(expr: &Expr<'i>, types: &HashMap<String, String>) -> bool {
+fn expr_is_bytes<'i>(expr: &Expr<'i>, types: &TypeMap) -> bool {
     let mut visiting = HashSet::new();
     expr_is_bytes_inner(expr, types, &mut visiting)
 }
 
-fn expr_is_bytes_inner<'i>(expr: &Expr<'i>, types: &HashMap<String, String>, visiting: &mut HashSet<String>) -> bool {
+fn expr_is_bytes_inner<'i>(expr: &Expr<'i>, types: &TypeMap, visiting: &mut HashSet<String>) -> bool {
     match &expr.kind {
         ExprKind::Byte(_) => true,
         ExprKind::String(_) => true,
@@ -3426,10 +3244,9 @@ fn expr_is_bytes_inner<'i>(expr: &Expr<'i>, types: &HashMap<String, String>, vis
         // regardless of element type, so downstream bytewise ops must treat them as bytes.
         ExprKind::Array(_) => true,
         ExprKind::Slice { .. } => true,
-        ExprKind::New { name, .. } => matches!(
-            name.as_str(),
-            "LockingBytecodeNullData" | "ScriptPubKeyP2PK" | "ScriptPubKeyP2SH" | "ScriptPubKeyP2SHFromRedeemScript"
-        ),
+        ExprKind::New { name, .. } => {
+            matches!(name.as_str(), "ScriptPubKeyP2PK" | "ScriptPubKeyP2SH" | "ScriptPubKeyP2SHFromRedeemScript")
+        }
         ExprKind::Call { name, .. } => {
             let name = name.as_str();
             matches!(
@@ -3473,7 +3290,7 @@ fn expr_is_bytes_inner<'i>(expr: &Expr<'i>, types: &HashMap<String, String>, vis
         ExprKind::Nullary(NullaryOp::ThisScriptSizeDataPrefix) => true,
         ExprKind::ArrayIndex { source, .. } => match &source.kind {
             ExprKind::Identifier(name) => {
-                types.get(name).and_then(|type_name| array_element_type(type_name)).map(|element| element != "int").unwrap_or(false)
+                types.get(name).and_then(TypeRef::array_element_type).is_some_and(|element| element.is_array() || !element.is_int())
             }
             _ => false,
         },
@@ -3482,7 +3299,7 @@ fn expr_is_bytes_inner<'i>(expr: &Expr<'i>, types: &HashMap<String, String>, vis
                 return false;
             }
             visiting.remove(name);
-            types.get(name).map(|type_name| is_bytes_type(type_name)).unwrap_or(false)
+            types.get(name).is_some_and(is_bytes_type)
         }
         ExprKind::UnarySuffix { kind, .. } => matches!(kind, UnarySuffixKind::Reverse),
         _ => false,
@@ -3492,7 +3309,7 @@ fn expr_is_bytes_inner<'i>(expr: &Expr<'i>, types: &HashMap<String, String>, vis
 fn compile_length_expr<'i>(
     expr: &Expr<'i>,
     stack_bindings: &StackBindings,
-    types: &HashMap<String, String>,
+    types: &TypeMap,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
     visiting: &mut HashSet<String>,
@@ -3501,13 +3318,13 @@ fn compile_length_expr<'i>(
     contract_constants: &HashMap<String, Expr<'i>>,
 ) -> Result<(), CompilerError> {
     if let ExprKind::Identifier(name) = &expr.kind {
-        if let Some(type_name) = types.get(name) {
-            if let Some(size) = array_size_with_constants(type_name, contract_constants) {
+        if let Some(type_ref) = types.get(name) {
+            if let Some(size) = array_size_with_constants(type_ref, contract_constants) {
                 builder.add_i64(size as i64)?;
                 *stack_depth += 1;
                 return Ok(());
             }
-            if let Some(element_size) = array_element_size(type_name) {
+            if let Some(element_size) = array_element_size(type_ref) {
                 compile_expr(
                     expr,
                     contract_constants,
@@ -3598,10 +3415,12 @@ fn compile_call_expr<'i>(
         "bytes" => compile_bytes_call(&mut ctx, args),
         "length" => compile_length_call(&mut ctx, args),
         "int" | "byte" | "bool" | "string" | "sig" | "pubkey" | "datasig" => compile_passthrough_cast_call(&mut ctx, name, args),
-        name if name.starts_with("byte[") && name.ends_with(']') => compile_byte_sequence_cast_call(&mut ctx, name, args),
-        name if parse_type_ref(name).is_ok_and(|type_ref| is_array_type_ref(&type_ref)) => {
-            compile_array_cast_call(&mut ctx, name, args)
+        name if parse_type_ref(name)
+            .is_ok_and(|type_ref| matches!(type_ref.base, TypeBase::Byte) && type_ref.array_dims.len() == 1) =>
+        {
+            compile_byte_sequence_cast_call(&mut ctx, name, args)
         }
+        name if parse_type_ref(name).is_ok_and(|type_ref| type_ref.is_array()) => compile_array_cast_call(&mut ctx, name, args),
         "blake2b" => compile_blake2b_call(&mut ctx, args),
         "blake2bWithKey" => compile_blake2b_with_key_call(&mut ctx, args),
         "blake3" => compile_blake3_call(&mut ctx, args),
@@ -3774,12 +3593,13 @@ fn compile_byte_sequence_cast_call<'i>(
     if args.len() != 1 {
         return Err(CompilerError::Unsupported(format!("{name}() expects a single argument")));
     }
-    let source_type = infer_debug_expr_value_type(&args[0], ctx.scope.constants, ctx.scope.types, &mut HashSet::new()).ok();
-    if let Some(source_type) = source_type.as_deref() {
+    let source_type = infer_expr_type(&args[0], ctx.scope.types, ctx.scope.constants, &HashMap::new())
+        .or_else(|| infer_debug_expr_value_type(&args[0], ctx.scope.constants, ctx.scope.types, &mut HashSet::new()).ok());
+    if let Some(source_type) = source_type.as_ref() {
         if let Some(source_size) = byte_sequence_cast_size(source_type) {
             if let Some(source_size) = source_size {
                 if source_size != size {
-                    return Err(CompilerError::Unsupported(format!("cannot cast {source_type} to {name}")));
+                    return Err(CompilerError::Unsupported(format!("cannot cast {} to {name}", source_type.type_name())));
                 }
             }
             return compile_call_arg_with_context(ctx, &args[0]);
@@ -3929,7 +3749,7 @@ fn compile_concat_operand<'i>(
     expr: &Expr<'i>,
     constants: &HashMap<String, Expr<'i>>,
     stack_bindings: &StackBindings,
-    types: &HashMap<String, String>,
+    types: &TypeMap,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
     visiting: &mut HashSet<String>,
@@ -3947,87 +3767,31 @@ fn compile_concat_operand<'i>(
     Ok(())
 }
 
-pub(crate) fn is_bytes_type(type_name: &str) -> bool {
-    if type_name == "bytes" || type_name == "byte" || matches!(type_name, "pubkey" | "sig" | "datasig" | "string") {
-        return true;
-    }
-    // Check for byte[N] arrays
-    if let Some(elem_type) = array_element_type(type_name) {
-        if elem_type == "byte" || elem_type == "bytes" {
-            return true;
-        }
-    }
-    is_array_type(type_name)
+fn is_bytes_type(type_ref: &TypeRef) -> bool {
+    type_ref.is_array()
+        || type_ref.is_byte()
+        || type_ref.is_string()
+        || type_ref.is_pubkey()
+        || type_ref.is_sig()
+        || type_ref.is_datasig()
 }
 
-pub(super) fn byte_sequence_cast_size(type_name: &str) -> Option<Option<i64>> {
-    match type_name {
-        "bytes" | "byte[]" | "string" => Some(None),
-        "byte" => Some(Some(1)),
-        "pubkey" => Some(Some(32)),
-        "sig" => Some(Some(65)),
-        "datasig" => Some(Some(64)),
-        _ => match array_element_type(type_name).as_deref() {
-            Some("byte") => Some(array_size(type_name).map(|size| size as i64)),
-            _ => None,
-        },
+fn byte_sequence_cast_size(type_ref: &TypeRef) -> Option<Option<i64>> {
+    if type_ref.is_string() {
+        return Some(None);
     }
-}
-
-fn build_null_data_script<'i>(arg: &Expr<'i>) -> Result<Vec<u8>, CompilerError> {
-    let elements = match &arg.kind {
-        ExprKind::Array(items) => items,
-        _ => return Err(CompilerError::Unsupported("LockingBytecodeNullData expects an array literal".to_string())),
-    };
-
-    let mut builder = script_builder();
-    builder.add_op(OpReturn)?;
-    for item in elements {
-        match &item.kind {
-            ExprKind::Int(value) => {
-                builder.add_i64(*value)?;
-            }
-            ExprKind::DateLiteral(value) => {
-                builder.add_i64(*value)?;
-            }
-            ExprKind::Array(values) if values.iter().all(|value| matches!(&value.kind, ExprKind::Byte(_))) => {
-                let bytes: Vec<u8> = values
-                    .iter()
-                    .filter_map(|value| if let ExprKind::Byte(byte) = &value.kind { Some(*byte) } else { None })
-                    .collect();
-                builder.add_data_with_push_opcode(&bytes)?;
-            }
-            ExprKind::String(value) => {
-                builder.add_data_with_push_opcode(value.as_bytes())?;
-            }
-            ExprKind::Call { name, args, .. } if name == "bytes" || name == "byte[]" => {
-                if args.len() != 1 {
-                    return Err(CompilerError::Unsupported(
-                        "byte[]() in LockingBytecodeNullData expects a single argument".to_string(),
-                    ));
-                }
-                match &args[0].kind {
-                    ExprKind::String(value) => {
-                        builder.add_data_with_push_opcode(value.as_bytes())?;
-                    }
-                    _ => {
-                        return Err(CompilerError::Unsupported(
-                            "byte[]() in LockingBytecodeNullData only supports string literals".to_string(),
-                        ));
-                    }
-                }
-            }
-            _ => {
-                return Err(CompilerError::Unsupported("LockingBytecodeNullData only supports int or bytes literals".to_string()));
-            }
-        }
+    if type_ref.is_byte() {
+        return Some(Some(1));
     }
-
-    let script = builder.drain();
-    let mut spk_bytes = Vec::with_capacity(2 + script.len());
-    spk_bytes.extend_from_slice(&0u16.to_be_bytes());
-    spk_bytes.extend_from_slice(&script);
-    Ok(spk_bytes)
+    if !type_ref.is_array()
+        && let Some(size) = type_ref.base.fixed_byte_sequence_len()
+    {
+        return i64::try_from(size).ok().map(Some);
+    }
+    match type_ref.array_element_type() {
+        Some(element) if element.is_byte() => Some(array_size(type_ref).and_then(|size| i64::try_from(size).ok())),
+        _ => None,
+    }
 }
 
 fn data_prefix(data_len: usize) -> Vec<u8> {
@@ -4043,12 +3807,12 @@ pub fn compile_debug_expr<'i>(
     expr: &Expr<'i>,
     constants: &HashMap<String, Expr<'i>>,
     stack_bindings: &HashMap<String, i64>,
-    types: &HashMap<String, String>,
+    types: &TypeMap,
 ) -> Result<(Vec<u8>, String), CompilerError> {
     let empty_constants = HashMap::new();
     let mut builder = script_builder();
     let mut stack_depth = 0i64;
-    let type_name = infer_debug_expr_value_type(expr, constants, types, &mut HashSet::new())?;
+    let type_ref = infer_debug_expr_value_type(expr, constants, types, &mut HashSet::new())?;
     let stack_bindings = StackBindings::from_depths(stack_bindings.clone());
     compile_expr(
         expr,
@@ -4062,7 +3826,7 @@ pub fn compile_debug_expr<'i>(
         None,
         &empty_constants,
     )?;
-    Ok((builder.drain(), type_name))
+    Ok((builder.drain(), type_ref.type_name()))
 }
 
 #[cfg(test)]

@@ -147,14 +147,15 @@ contract ChessCastle(
         byte[] prefix = prev_board.slice(0, a);
         byte[] middle = prev_board.slice(a + 1, b);
         byte[] suffix = prev_board.slice(d + 1, 64);
-        byte[64] next_board =
+        byte[64] next_board = byte[64](
             prefix +
             byte[1](empty_piece) +
             middle +
             byte[1](vb) +
             byte[1](vc) +
             byte[1](empty_piece) +
-            suffix;
+            suffix
+        );
 
         byte next_white_can_castle_k = castle_rights[0];
         byte next_white_can_castle_q = castle_rights[1];
