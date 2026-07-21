@@ -11148,10 +11148,10 @@ fn executes_opcode_builtins_basic() {
 #[test]
 fn template_hash_matches_canonical_rust_and_sil_vectors() {
     let cases: &[(&[u8], &[u8], &str)] = &[
-        (b"", b"", "94c1c088cc9453996779630ad3af45cbd92814828dd784cf2aa12df95d1b8afe"),
-        (b"a", b"bc", "77bbcab7072b897c548327378f11776f4853104c71bdb95a12ded5d2783523bf"),
-        (b"ab", b"c", "20263e794775e4edf2b306c0f306af9e50175c831c857604b481e847f790bf95"),
-        (&[0x00, 0xff], &[0x10, 0x00, 0x80], "81485678b557bcd4a836c2db54ee268e1dc08549f1b8e4d8d67960321b765f25"),
+        (b"", b"", "e572dff82304700b856a555ac3a4558d0df3646a3727816500270a93c66aac1e"),
+        (b"a", b"bc", "405e183e2494cdbe2df89349cc0ffa5b77fb885ad97a1d5660ecd0692ef8142a"),
+        (b"ab", b"c", "a0968c014f3fc7bd1a7d9a8d1ad1177eb379bd2f05e56309eb4e20347c5e7eba"),
+        (&[0x00, 0xff], &[0x10, 0x00, 0x80], "6616a66757315de0221cb2acba729113cebde31f8d3ca7fa93878a0584b96905"),
     ];
 
     let sil_bytes = |bytes: &[u8]| {

@@ -154,7 +154,7 @@ pub(super) fn cast_read_input_state_expr<'i>(substr: Expr<'i>, type_ref: &TypeRe
 ///   ]
 ///
 ///   actual_template = i64le(prefix.length) || prefix || i64le(suffix.length) || suffix
-///   require blake2b(actual_template) == expected_template_hash
+///   require blake3(actual_template) == expected_template_hash
 ///
 ///   expected_input_spk = ScriptPubKeyP2SHFromRedeemScript(actual_redeem_script)
 ///   require input_script_pubkey(input_idx) == expected_input_spk
@@ -216,7 +216,7 @@ pub(super) fn compile_read_input_state_with_template_validation(
     let mut emitter = ScriptEmitter::new(builder, 0);
     let dynamic_bytes = byte_array_type(ArrayDim::Dynamic);
     let p2sh_script_type = constructor_return_type("ScriptPubKeyP2SHFromRedeemScript").expect("known constructor type");
-    let hash_type = builtin_return_type("blake2b").expect("known builtin type");
+    let hash_type = builtin_return_type("blake3").expect("known builtin type");
 
     compile_expr(&actual_input_spk_expr, Some(&dynamic_bytes), &env, &mut emitter)?;
     compile_expr(&expected_input_spk_expr, Some(&p2sh_script_type), &env, &mut emitter)?;
@@ -224,7 +224,7 @@ pub(super) fn compile_read_input_state_with_template_validation(
 
     compile_expr(expected_template_hash, Some(&hash_type), &env, &mut emitter)?;
     compile_expr(&template_expr, Some(&dynamic_bytes), &env, &mut emitter)?;
-    emitter.emit_op(OpBlake2b, 0)?;
+    emitter.emit_op(OpBlake3, 0)?;
     emitter.emit_op(OpEqualVerify, -2)?;
 
     Ok(())
@@ -366,7 +366,7 @@ pub(super) fn compile_validate_output_state_with_template_inner_statement(
 
     let env = ExprEnv { constants, stack_bindings, types, bytecode_size, contract_constants };
     let dynamic_bytes_type = byte_array_type(ArrayDim::Dynamic);
-    let hash_type = builtin_return_type("blake2b").expect("known builtin type");
+    let hash_type = builtin_return_type("blake3").expect("known builtin type");
     let int_type = scalar_type(TypeBase::Int);
 
     let encoded_prefix_len = int_to_fixed_bytes_expr(Expr::call("length", vec![template_prefix.clone()]), 8);
@@ -380,7 +380,7 @@ pub(super) fn compile_validate_output_state_with_template_inner_statement(
         let mut emitter = ScriptEmitter::new(builder, 0);
         compile_expr(expected_template_hash, Some(&hash_type), &env, &mut emitter)?;
         compile_expr(&template_preimage, Some(&dynamic_bytes_type), &env, &mut emitter)?;
-        emitter.emit_op(OpBlake2b, 0)?;
+        emitter.emit_op(OpBlake3, 0)?;
         emitter.emit_op(OpEqualVerify, -2)?;
     }
     let stack_depth = compile_encoded_flat_state_fields(

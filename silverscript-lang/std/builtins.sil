@@ -192,11 +192,11 @@ function readInputStateWithTemplate(
  *   1. Convert `templatePrefix.length` and `templateSuffix.length` with
  *      `length as byte[8]`.
  *   2. Build `prefixLen || templatePrefix || suffixLen || templateSuffix`.
- *   3. Return `blake2b` of that preimage.
+ *   3. Return `blake3` of that preimage.
  *
  * Security notes:
  *   - The encoded lengths bind the location where state is inserted.
- *   - `blake2b(templatePrefix || templateSuffix)` is not a valid template hash
+ *   - `blake3(templatePrefix || templateSuffix)` is not a valid template hash
  *     because it does not commit to the prefix/suffix boundary.
  */
 function templateHash(byte[] templatePrefix, byte[] templateSuffix) : (byte[32]);
