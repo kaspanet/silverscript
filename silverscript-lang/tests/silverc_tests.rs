@@ -13,7 +13,7 @@ use kaspa_txscript::script_builder::ScriptBuilder;
 use kaspa_txscript::{EngineCtx, EngineFlags, TxScriptEngine};
 use rand::RngCore;
 use silverscript_lang::ast::ContractAst;
-use silverscript_lang::compiler::{COMPILER_VERSION, CompiledContract, function_branch_index};
+use silverscript_lang::compiler::{COMPILER_VERSION, CompiledContract, DispatchTag};
 
 fn contract_fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join("silverc-test-files").join(name)
@@ -39,10 +39,10 @@ fn temp_dir(name: &str) -> PathBuf {
     dir
 }
 
-fn run_bytecode_with_selector(bytecode: Vec<u8>, selector: Option<i64>) -> Result<(), kaspa_txscript_errors::TxScriptError> {
+fn run_bytecode_with_selector(bytecode: Vec<u8>, selector: Option<DispatchTag>) -> Result<(), kaspa_txscript_errors::TxScriptError> {
     let mut builder = ScriptBuilder::new();
     if let Some(selector) = selector {
-        builder.add_i64(selector).unwrap();
+        builder.add_data(&selector).unwrap();
     }
     let sigscript = builder.drain();
     let reused_values = SigHashReusedValuesUnsync::new();
@@ -125,8 +125,11 @@ fn silverc_accepts_constructor_args_and_output_flag() {
     let compiled: CompiledContract = serde_json::from_str(&json).expect("parse compiled contract");
     assert_eq!(compiled.contract_name, "WithCtor");
     assert_eq!(compiled.compiler_version, COMPILER_VERSION);
-    let selector =
-        if compiled.without_selector { None } else { Some(function_branch_index(&compiled.ast, "main").expect("selector resolved")) };
+    let selector = if compiled.without_dispatch_tag {
+        None
+    } else {
+        Some(compiled.abi.iter().find(|entry| entry.name == "main").expect("entrypoint resolved").dispatch_tag())
+    };
     assert!(run_bytecode_with_selector(compiled.bytecode, selector).is_ok());
 }
 

@@ -13,7 +13,7 @@ use kaspa_txscript::{EngineCtx, EngineFlags, TxScriptEngine, pay_to_script_hash_
 use rand::{RngCore, thread_rng};
 use secp256k1::{Keypair, Message, Secp256k1, SecretKey};
 use silverscript_lang::ast::Expr;
-use silverscript_lang::compiler::{CompileOptions, CompiledContract, compile_contract, function_branch_index};
+use silverscript_lang::compiler::{CompileOptions, CompiledContract, DispatchTag, compile_contract};
 use std::fs;
 
 fn load_example_source(name: &str) -> String {
@@ -105,7 +105,7 @@ fn random_keypair() -> Keypair {
     }
 }
 
-fn build_sigscript(args: &[ArgValue], selector: Option<i64>) -> Vec<u8> {
+fn build_sigscript(args: &[ArgValue], selector: Option<DispatchTag>) -> Vec<u8> {
     let mut builder = ScriptBuilder::new();
     for arg in args {
         match arg {
@@ -124,16 +124,16 @@ fn build_sigscript(args: &[ArgValue], selector: Option<i64>) -> Vec<u8> {
         }
     }
     if let Some(selector) = selector {
-        builder.add_i64(selector).unwrap();
+        builder.add_data(&selector).unwrap();
     }
     builder.drain()
 }
 
-fn selector_for_compiled(compiled: &CompiledContract<'_>, function_name: &str) -> Option<i64> {
-    if compiled.without_selector {
+fn selector_for_compiled(compiled: &CompiledContract<'_>, function_name: &str) -> Option<DispatchTag> {
+    if compiled.without_dispatch_tag {
         None
     } else {
-        Some(function_branch_index(&compiled.ast, function_name).expect("selector resolved"))
+        Some(compiled.abi.iter().find(|entry| entry.name == function_name).expect("entrypoint resolved").dispatch_tag())
     }
 }
 

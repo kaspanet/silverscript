@@ -176,26 +176,26 @@ let compiled = compile_contract(
 // Build sigscript for multiple entrypoints
 let sig = vec![5u8; 65];
 
-// For 'transfer' function (selector = 0)
+// For the 'transfer' entrypoint
 let transfer_sigscript = compiled.build_sig_script(
     "transfer",
     vec![sig.clone().into()]
 )?;
-// transfer_sigscript contains: <signature> <0> (selector 0)
+// transfer_sigscript contains: <signature> <4-byte KCC-01 dispatch tag>
 
-// For 'reclaim' function (selector = 1)
+// For the 'reclaim' entrypoint
 let reclaim_sigscript = compiled.build_sig_script(
     "reclaim",
     vec![sig.into()]
 )?;
-// reclaim_sigscript contains: <signature> <1> (selector 1)
+// reclaim_sigscript contains: <signature> <4-byte KCC-01 dispatch tag>
 ```
 
 The `build_sig_script` method automatically:
 - Validates argument count and types
 - Encodes arguments properly for the Kaspa script stack
-- Appends the function selector for contracts with multiple entrypoints
-- Omits the selector for contracts with a single entrypoint
+- Appends the KCC-01 function-signature dispatch tag for contracts with multiple entrypoints
+- Omits the dispatch tag for contracts with a single entrypoint
 
 ---
 
@@ -337,7 +337,7 @@ entry spend(sig s, pubkey pk) {
 }
 ```
 
-A contract must have at least one entry. Contracts with multiple entrypoints use function selectors automatically.
+A contract must have at least one entry. Contracts with multiple entrypoints use KCC-01 dispatch tags automatically.
 
 ### Function Parameters and Return Types
 

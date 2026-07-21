@@ -47,18 +47,42 @@ pub(super) fn infer_expr_type<'i>(
     type_check::check_expr(expr, None, &ctx)
 }
 
-pub(super) fn build_function_abi_entries<'i>(contract: &ContractAst<'i>) -> Vec<FunctionAbiEntry> {
+pub(super) fn build_function_abi_entries<'i>(
+    contract: &ContractAst<'i>,
+    constants: &HashMap<String, Expr<'i>>,
+) -> Result<Vec<FunctionAbiEntry>, CompilerError> {
     contract
         .functions
         .iter()
         .filter(|func| func.entrypoint)
-        .map(|func| FunctionAbiEntry {
-            name: func.name.clone(),
-            inputs: func
+        .map(|func| {
+            let inputs = func
                 .params
                 .iter()
-                .map(|param| FunctionInputAbi { name: param.name.clone(), type_name: param.type_ref.type_name() })
-                .collect(),
+                .map(|param| {
+                    let mut type_ref = param.type_ref.clone();
+                    for dimension in &mut type_ref.array_dims {
+                        if matches!(dimension, ArrayDim::Inferred) {
+                            return Err(CompilerError::NonCanonicalEntrypointParameter {
+                                function: func.name.clone(),
+                                param: param.name.clone(),
+                            });
+                        }
+                        if let ArrayDim::Constant(name) = dimension {
+                            let value = constants
+                                .get(name)
+                                .ok_or_else(|| CompilerError::UndefinedIdentifier(name.clone()))
+                                .and_then(|expr| eval_const_int(expr, constants))?;
+                            let size = usize::try_from(value).map_err(|_| {
+                                CompilerError::Unsupported(format!("array size constant '{name}' must be a non-negative integer"))
+                            })?;
+                            *dimension = ArrayDim::Fixed(size);
+                        }
+                    }
+                    Ok(FunctionInputAbi { name: param.name.clone(), type_name: type_ref.type_name() })
+                })
+                .collect::<Result<Vec<_>, CompilerError>>()?;
+            Ok(FunctionAbiEntry { name: func.name.clone(), inputs })
         })
         .collect()
 }

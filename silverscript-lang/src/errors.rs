@@ -18,6 +18,10 @@ pub enum CompilerError {
     CyclicIdentifier(String),
     #[error("script build error: {0}")]
     ScriptBuild(#[from] ScriptBuilderError),
+    #[error("entrypoint parameter type is non-canonical in: {function}.{param}")]
+    NonCanonicalEntrypointParameter { function: String, param: String },
+    #[error("entrypoint dispatch tag collision between {f1} and {f2}")]
+    EntrypointDispatchTagCollision { f1: String, f2: String },
     // QUESTION: not entierly sure about this pattern
     #[error("{source}")]
     Context {

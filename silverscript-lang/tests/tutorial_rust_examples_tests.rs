@@ -47,7 +47,7 @@ fn tutorial_rust_build_sigscript_multiple_entrypoints_example() {
         compile_contract(source, &[sender_pk.into(), recipient_pk.into(), Expr::temporal(timeout)], CompileOptions::default())
             .expect("multi-entrypoint example should compile");
 
-    assert!(!compiled.without_selector, "multiple entrypoints should require a selector");
+    assert!(!compiled.without_dispatch_tag, "multiple entrypoints should require a dispatch tag");
 
     let sig = vec![5u8; 65];
     let transfer_sigscript = compiled.build_sig_script("transfer", vec![sig.clone().into()]).expect("transfer sigscript should build");
@@ -55,5 +55,5 @@ fn tutorial_rust_build_sigscript_multiple_entrypoints_example() {
 
     assert!(!transfer_sigscript.is_empty());
     assert!(!reclaim_sigscript.is_empty());
-    assert_ne!(transfer_sigscript, reclaim_sigscript, "selectors should differ per entrypoint");
+    assert_ne!(transfer_sigscript, reclaim_sigscript, "dispatch tags should differ per entrypoint");
 }

@@ -19,8 +19,9 @@ use kaspa_txscript::{
 };
 use silverscript_lang::ast::{ContractAst, Expr, ExprKind, Statement, format_contract_ast, parse_contract_ast, parse_type_ref};
 use silverscript_lang::compiler::{
-    COMPILER_VERSION, CompileOptions, CompiledContract, CovenantDeclCallOptions, FunctionAbiEntry, FunctionInputAbi, compile_contract,
-    compile_contract_ast, compile_debug_expr, function_branch_index, generated_covenant_auth_entrypoint_name, struct_object,
+    COMPILER_VERSION, CompileOptions, CompiledContract, CompilerError, CovenantDeclCallOptions, DispatchTag, FunctionAbiEntry,
+    FunctionInputAbi, compile_contract, compile_contract_ast, compile_debug_expr, generated_covenant_auth_entrypoint_name,
+    struct_object,
 };
 use silverscript_lang::debug_info::StepKind;
 use silverscript_lang::template::template_hash;
@@ -69,14 +70,14 @@ fn pay_to_script_hash_signature_script(
     )
 }
 
-fn run_bytecode_with_selector(bytecode: Vec<u8>, selector: Option<i64>) -> Result<(), kaspa_txscript_errors::TxScriptError> {
+fn run_bytecode_with_selector(bytecode: Vec<u8>, selector: Option<DispatchTag>) -> Result<(), kaspa_txscript_errors::TxScriptError> {
     let sigscript = selector_sigscript(selector);
     run_bytecode_with_sigscript(bytecode, sigscript)
 }
 
 fn run_bytecode_with_tx(
     bytecode: Vec<u8>,
-    selector: Option<i64>,
+    selector: Option<DispatchTag>,
     lock_time: u64,
     sequence: u64,
 ) -> Result<(), kaspa_txscript_errors::TxScriptError> {
@@ -107,10 +108,10 @@ fn run_bytecode_with_tx(
     vm.execute()
 }
 
-fn selector_sigscript(selector: Option<i64>) -> Vec<u8> {
+fn selector_sigscript(selector: Option<DispatchTag>) -> Vec<u8> {
     let mut builder = script_builder();
     if let Some(selector) = selector {
-        builder.add_i64(selector).unwrap();
+        builder.add_data(&selector).unwrap();
     }
     builder.drain()
 }
@@ -1098,7 +1099,7 @@ fn build_sig_script_builds_expected_script() {
     builder.add_data_with_push_opcode(&[1u8, 2, 3, 4]).unwrap();
     builder.add_i64(7).unwrap();
     if let Some(selector) = selector {
-        builder.add_i64(selector).unwrap();
+        builder.add_data(&selector).unwrap();
     }
     let expected = builder.drain();
 
@@ -2551,7 +2552,7 @@ fn build_sig_script_omits_selector_without_selector() {
         }
     "#;
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
-    assert!(compiled.without_selector);
+    assert!(compiled.without_dispatch_tag);
     let sigscript = compiled.build_sig_script("spend", vec![1.into(), vec![2u8; 4].into()]).expect("sigscript builds");
 
     let expected = script_builder().add_i64(1).unwrap().add_data_with_push_opcode(&[2u8; 4]).unwrap().drain();
@@ -6403,20 +6404,20 @@ fn build_covenant_opcode_tx(sigscript: Vec<u8>, covenant_id_a: Hash, covenant_id
     (tx, entries)
 }
 
-fn selector_for(compiled: &CompiledContract<'_>, function_name: &str) -> Option<i64> {
-    if compiled.without_selector {
+fn selector_for(compiled: &CompiledContract<'_>, function_name: &str) -> Option<DispatchTag> {
+    if compiled.without_dispatch_tag {
         None
     } else {
-        Some(function_branch_index(&compiled.ast, function_name).expect("selector resolved"))
+        Some(compiled.abi.iter().find(|entry| entry.name == function_name).expect("entrypoint resolved").dispatch_tag())
     }
 }
 
-fn wrap_with_dispatch(body: Vec<u8>, selector: Option<i64>) -> Vec<u8> {
+fn wrap_with_dispatch(body: Vec<u8>, selector: Option<DispatchTag>) -> Vec<u8> {
     if let Some(selector) = selector {
         let mut builder = script_builder();
         builder.add_op(OpDup).unwrap();
-        builder.add_i64(selector).unwrap();
-        builder.add_op(OpNumEqual).unwrap();
+        builder.add_data(&selector).unwrap();
+        builder.add_op(OpEqual).unwrap();
         builder.add_op(OpIf).unwrap();
         builder.add_op(OpDrop).unwrap();
         builder.add_ops(&body).unwrap();
@@ -6443,7 +6444,7 @@ fn compiles_without_selector_single_function() {
 
     let contract = parse_contract_ast(source).expect("ast parsed");
     let compiled = compile_contract_ast(&contract, &[], CompileOptions::default()).expect("compile succeeds");
-    assert!(compiled.without_selector);
+    assert!(compiled.without_dispatch_tag);
 
     let expected = script_builder()
         .add_i64(1)
@@ -6466,7 +6467,7 @@ fn compiles_without_selector_single_function() {
 }
 
 #[test]
-fn compiles_with_selector_multiple_entrypoints() {
+fn compiles_with_kcc1_dispatch_tag_for_multiple_entrypoints() {
     let source = r#"
         contract Test() {
             entry a() { require(true); }
@@ -6476,11 +6477,66 @@ fn compiles_with_selector_multiple_entrypoints() {
 
     let contract = parse_contract_ast(source).expect("ast parsed");
     let compiled = compile_contract_ast(&contract, &[], CompileOptions::default()).expect("compile succeeds");
-    assert!(!compiled.without_selector);
-    let selector = function_branch_index(&compiled.ast, "a").expect("selector resolved");
+    assert!(!compiled.without_dispatch_tag);
+    let selector = compiled.abi.iter().find(|entry| entry.name == "a").expect("entrypoint resolved").dispatch_tag();
     let sigscript = compiled.build_sig_script("a", vec![]).expect("sigscript builds");
-    let expected = script_builder().add_i64(selector).unwrap().drain();
+    let expected = script_builder().add_data(&selector).unwrap().drain();
     assert_eq!(sigscript, expected);
+    assert!(run_bytecode_with_sigscript(compiled.bytecode, sigscript).is_ok());
+}
+
+#[test]
+fn dispatch_tag_and_argument_encoding_match_kcc1_vector() {
+    let source = r#"
+        contract Test() {
+            int constant N = 4;
+
+            entry step(int value, byte[N] data, bool enabled, byte marker) {
+                require(value == 17);
+                require(data == byte[4](0x01020304));
+                require(enabled);
+                require(marker == byte(1));
+            }
+            entry other() { require(true); }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let step = compiled.abi.iter().find(|entry| entry.name == "step").expect("step entrypoint exists");
+    assert_eq!(step.inputs[1].type_name, "byte[4]");
+    assert_eq!(step.dispatch_tag(), [0x2c, 0x49, 0xed, 0x65]);
+
+    let sigscript = compiled
+        .build_sig_script("step", vec![Expr::int(17), Expr::bytes(vec![1, 2, 3, 4]), Expr::bool(true), Expr::byte(1)])
+        .expect("KCC-01 vector sigscript builds");
+    assert!(sigscript.ends_with(&[0x04, 0x2c, 0x49, 0xed, 0x65]));
+    assert!(run_bytecode_with_sigscript(compiled.bytecode, sigscript).is_ok());
+}
+
+#[test]
+fn rejects_colliding_kcc1_dispatch_tags() {
+    let source = r#"
+        contract Test() {
+            entry f75360() { require(true); }
+            entry f79327() { require(true); }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("colliding dispatch tags must be rejected");
+    assert!(matches!(err, CompilerError::EntrypointDispatchTagCollision { .. }));
+}
+
+#[test]
+fn rejects_noncanonical_inferred_array_type_in_entrypoint_abi() {
+    let source = r#"
+        contract Test() {
+            entry step(byte[_] data) { require(true); }
+            entry other() { require(true); }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("entrypoint ABI types must be canonical");
+    assert!(matches!(err, CompilerError::NonCanonicalEntrypointParameter { .. }));
 }
 
 #[test]
@@ -6629,7 +6685,7 @@ fn runs_selector_dispatch_with_contract_fields() {
     "#;
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
-    assert!(!compiled.without_selector, "test requires selector dispatch");
+    assert!(!compiled.without_dispatch_tag, "test requires selector dispatch");
 
     let sigscript_a = compiled.build_sig_script("a", vec![]).expect("sigscript a builds");
     let sigscript_b = compiled.build_sig_script("b", vec![]).expect("sigscript b builds");
@@ -11037,7 +11093,7 @@ fn executes_opcode_builtins_basic() {
                 contract Test() {
                     entry dummy() { require(true); }
                     entry main() {
-                        require(OpTxInputScriptSigLen(0) == 1);
+                        require(OpTxInputScriptSigLen(0) == 5);
                     }
                 }
             "#,
@@ -11048,7 +11104,7 @@ fn executes_opcode_builtins_basic() {
                 contract Test() {
                     entry dummy() { require(true); }
                     entry main() {
-                        require(OpTxInputScriptSigSubstr(0, 0, 1) == byte[]("Q"));
+                        require(OpTxInputScriptSigSubstr(0, 0, 1) == byte[](0x04));
                     }
                 }
             "#,
@@ -11748,7 +11804,7 @@ fn compiles_sigscript_inputs_and_verifies() {
     builder.add_i64(3).unwrap();
     builder.add_i64(4).unwrap();
     if let Some(selector) = selector {
-        builder.add_i64(selector).unwrap();
+        builder.add_data(&selector).unwrap();
     }
     let sigscript = builder.drain();
 
@@ -11874,7 +11930,7 @@ fn compiles_sigscript_reused_inputs_and_verifies() {
     let mut builder = script_builder();
     builder.add_i64(3).unwrap();
     if let Some(selector) = selector {
-        builder.add_i64(selector).unwrap();
+        builder.add_data(&selector).unwrap();
     }
     let sigscript = builder.drain();
 
@@ -11898,7 +11954,7 @@ fn compiles_sigscript_inputs_and_fails_on_wrong_sum() {
     builder.add_i64(2).unwrap();
     builder.add_i64(4).unwrap();
     if let Some(selector) = selector {
-        builder.add_i64(selector).unwrap();
+        builder.add_data(&selector).unwrap();
     }
     let sigscript = builder.drain();
 
@@ -11921,7 +11977,7 @@ fn compiles_sigscript_reused_inputs_and_fails_on_wrong_value() {
     let mut builder = script_builder();
     builder.add_i64(4).unwrap();
     if let Some(selector) = selector {
-        builder.add_i64(selector).unwrap();
+        builder.add_data(&selector).unwrap();
     }
     let sigscript = builder.drain();
 
@@ -11951,7 +12007,7 @@ fn entrypoints_validate_fixed_array_argument_sizes_at_runtime() {
         let mut builder = script_builder();
         builder.add_data_with_push_opcode(value).unwrap();
         if let Some(selector) = selector_for(&compiled, entrypoint) {
-            builder.add_i64(selector).unwrap();
+            builder.add_data(&selector).unwrap();
         }
         builder.drain()
     };
