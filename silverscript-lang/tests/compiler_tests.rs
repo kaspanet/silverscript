@@ -11225,3 +11225,19 @@ fn blake3_with_key_requires_a_fixed_32_byte_key() {
     let err = compile_contract(numeric_data, &[], CompileOptions::default()).expect_err("numeric Blake3 data should be rejected");
     assert!(err.to_string().contains("argument 'data' expects byte[], got int"), "unexpected error: {err}");
 }
+
+#[test]
+fn compiles_validate_output_state_with_bool_array_literal() {
+    let source = r#"
+        contract C(bool[2] initW) {
+            bool[2] w = initW;
+            entrypoint function main() {
+                validateOutputState(0, { w: initW });
+            }
+        }
+    "#;
+    let result = compile_contract(source, &[vec![true, false].into()], CompileOptions::default());
+    if let Err(ref e) = result {
+        panic!("compile failed: {e}");
+    }
+}
