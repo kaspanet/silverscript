@@ -77,8 +77,8 @@ pub(super) fn compile_entrypoint_function<'i>(
     } else {
         let env = ExprEnv { constants, stack_bindings: &stack_bindings, types: &types, script_size, contract_constants: constants };
         let mut emitter = ScriptEmitter::new(&mut builder, 0);
-        for expr in &return_exprs {
-            compile_expr(expr, &env, &mut emitter)?;
+        for (expr, expected_type) in return_exprs.iter().zip(&function.return_types) {
+            compile_expr(expr, Some(expected_type), &env, &mut emitter)?;
         }
         for _ in 0..stack_bindings.len() {
             builder.add_i64(return_count as i64)?;
@@ -142,7 +142,7 @@ struct CompileStatementContext<'a, 'i> {
 }
 
 impl<'a, 'i> CompileStatementContext<'a, 'i> {
-    fn compile_expr(&mut self, expr: &Expr<'i>) -> Result<(), CompilerError> {
+    fn compile_expr(&mut self, expr: &Expr<'i>, expected_type: Option<&TypeRef>) -> Result<(), CompilerError> {
         let env = ExprEnv {
             constants: self.contract_constants,
             stack_bindings: self.stack_bindings,
@@ -151,7 +151,7 @@ impl<'a, 'i> CompileStatementContext<'a, 'i> {
             contract_constants: self.contract_constants,
         };
         let mut emitter = ScriptEmitter::new(self.builder, 0);
-        super::compile_expr(expr, &env, &mut emitter)
+        super::compile_expr(expr, expected_type, &env, &mut emitter)
     }
 
     pub(crate) fn with_types_and_stack_bindings<'b>(
@@ -188,7 +188,6 @@ fn compile_variable_definition_statement<'i>(
     }
 
     let expr = expr.cloned().ok_or_else(|| CompilerError::Unsupported("variable definition requires initializer".to_string()))?;
-    let expr = coerce_expr_for_declared_scalar_type(expr, type_ref);
     compile_stack_variable_definition(ctx, name, type_ref.clone(), expr)
 }
 
@@ -202,14 +201,15 @@ fn compile_stack_variable_definition<'i>(
         return Err(CompilerError::Unsupported(format!("variable '{}' is already defined", name)));
     }
 
-    ctx.types.insert(name.to_string(), type_ref);
-    ctx.compile_expr(&expr)?;
+    ctx.types.insert(name.to_string(), type_ref.clone());
+    ctx.compile_expr(&expr, Some(&type_ref))?;
     ctx.stack_bindings.push_binding(name);
     Ok(vec![name.to_string()])
 }
 
 fn compile_require_statement<'i>(ctx: &mut CompileStatementContext<'_, 'i>, expr: &Expr<'i>) -> Result<Vec<String>, CompilerError> {
-    ctx.compile_expr(expr)?;
+    let bool_type = TypeRef { base: TypeBase::Bool, array_dims: Vec::new() };
+    ctx.compile_expr(expr, Some(&bool_type))?;
     ctx.builder.add_op(OpVerify)?;
     Ok(Vec::new())
 }
@@ -219,7 +219,8 @@ fn compile_time_op_statement<'i>(
     tx_var: &TimeVar,
     expr: &Expr<'i>,
 ) -> Result<Vec<String>, CompilerError> {
-    ctx.compile_expr(expr)?;
+    let int_type = TypeRef { base: TypeBase::Int, array_dims: Vec::new() };
+    ctx.compile_expr(expr, Some(&int_type))?;
     ctx.builder.add_op(match tx_var {
         TimeVar::ThisAge => OpCheckSequenceVerify,
         TimeVar::TxTime => OpCheckLockTimeVerify,
@@ -343,8 +344,8 @@ fn compile_assign_statement<'i>(
             return Err(CompilerError::Unsupported(format!("assigned variable '{}' must be stack-bound before reassignment", name)));
         }
 
-        let lowered_expr = coerce_expr_for_declared_scalar_type(expr.clone(), type_ref);
-        ctx.compile_expr(&lowered_expr)?;
+        let expected_type = type_ref.clone();
+        ctx.compile_expr(expr, Some(&expected_type))?;
         ctx.stack_bindings.emit_update_stack_for_rebinding(name, ctx.builder)?;
         return Ok(Vec::new());
     }
@@ -518,7 +519,8 @@ fn compile_if_statement<'i>(
     else_branch: Option<&[Statement<'i>]>,
 ) -> Result<(), CompilerError> {
     let condition = condition.clone();
-    ctx.compile_expr(&condition)?;
+    let bool_type = TypeRef { base: TypeBase::Bool, array_dims: Vec::new() };
+    ctx.compile_expr(&condition, Some(&bool_type))?;
     ctx.builder.add_op(OpIf)?;
     ctx.debug_recorder.record_current_statement_source_step_at(stmt, ctx.builder.script().len(), ctx.types, ctx.stack_bindings);
 

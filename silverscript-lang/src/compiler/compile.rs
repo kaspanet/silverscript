@@ -257,6 +257,6 @@ pub fn compile_debug_expr<'i>(
     let stack_bindings = StackBindings::from_depths(stack_bindings.clone());
     let env = ExprEnv { constants, stack_bindings: &stack_bindings, types, script_size: None, contract_constants: &empty_constants };
     let mut emitter = ScriptEmitter::new(&mut builder, 0);
-    compile_expr(expr, &env, &mut emitter)?;
+    compile_expr(expr, Some(&type_ref), &env, &mut emitter)?;
     Ok((builder.drain(), type_ref.type_name()))
 }

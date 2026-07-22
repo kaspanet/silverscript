@@ -3971,10 +3971,14 @@ fn array_literal_codegen_uses_declared_element_type() {
     let source = r#"
         contract Arrays() {
             entrypoint function main() {
-                byte[] bytes = [1, 2, 3, 4];
-                int[] ints = [1, 2, 3, 4];
+                byte[] bytes = [1, 17, 128, 255];
+                int[] ints = [1, 17, 128, 255];
+                byte[] selected = true ? [1, 17, 128, 255] : [255, 128, 17, 1];
                 require(bytes.length == 4);
                 require(ints.length == 4);
+                require(selected == bytes);
+                bytes = [255, 128, 17, 1];
+                require(bytes == [255, 128, 17, 1]);
             }
         }
     "#;
