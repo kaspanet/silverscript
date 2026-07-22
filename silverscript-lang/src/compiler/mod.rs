@@ -17,7 +17,6 @@ mod builtin_types;
 mod compile;
 mod covenant_declarations;
 mod debug_recording;
-mod debug_value_types;
 mod r#for;
 mod infer_array;
 mod inline_functions;
@@ -32,7 +31,7 @@ mod validate_output_state;
 
 use compile::compile_contract_impl;
 pub(super) use compile::eval_const_int;
-pub(crate) use compile::resolve_expr;
+pub(crate) use compile::resolve_constant_references;
 pub use compile::{compile_debug_expr, function_branch_index};
 pub(crate) use debug_recording::DebugRecorder;
 use r#for::lower_for_loops;
@@ -156,7 +155,7 @@ impl<'i> ContractAst<'i> {
             }
 
             let type_name = field.type_ref.type_name();
-            let resolved = resolve_expr(field.expr.clone(), &env, &mut std::collections::HashSet::new())?;
+            let resolved = resolve_constant_references(field.expr.clone(), &env, &mut std::collections::HashSet::new())?;
             if validate_expr_matches_type(
                 &resolved,
                 &field.type_ref,

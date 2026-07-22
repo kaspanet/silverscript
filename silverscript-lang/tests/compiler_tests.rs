@@ -779,15 +779,15 @@ fn branch_heavy_if_else_logic_matches_rust_model_across_cases() {
     // Snapshot these metrics exactly so compiler codegen changes must consciously
     // acknowledge their size impact on a branch-heavy stress case.
     assert_eq!(
-        script_len, 326,
+        script_len, 318,
         "branch_maze metrics: script_len={script_len} instruction_count={instruction_count} charged_op_count={charged_op_count}"
     );
     assert_eq!(
-        instruction_count, 326,
+        instruction_count, 318,
         "branch_maze metrics: script_len={script_len} instruction_count={instruction_count} charged_op_count={charged_op_count}"
     );
     assert_eq!(
-        charged_op_count, 231,
+        charged_op_count, 227,
         "branch_maze metrics: script_len={script_len} instruction_count={instruction_count} charged_op_count={charged_op_count}"
     );
     let cases = [(7, 2, 5, 4), (7, 2, -3, 4), (2, 7, 5, 4), (2, 7, 5, 3), (4, 4, 9, 2), (-3, 1, 6, -2), (10, -1, -4, 7), (0, 0, 0, 0)];
@@ -919,15 +919,15 @@ fn sorting_network_over_fixed_array_matches_rust_model_across_cases() {
     let (instruction_count, charged_op_count) = script_op_counts(&compiled.script);
     println!("sorting_network {script_len} / {instruction_count} / {charged_op_count}");
     assert_eq!(
-        script_len, 772,
+        script_len, 756,
         "sorting_network metrics: script_len={script_len} instruction_count={instruction_count} charged_op_count={charged_op_count}"
     );
     assert_eq!(
-        instruction_count, 772,
+        instruction_count, 756,
         "sorting_network metrics: script_len={script_len} instruction_count={instruction_count} charged_op_count={charged_op_count}"
     );
     assert_eq!(
-        charged_op_count, 599,
+        charged_op_count, 591,
         "sorting_network metrics: script_len={script_len} instruction_count={instruction_count} charged_op_count={charged_op_count}"
     );
 
@@ -4000,10 +4000,6 @@ fn compiles_int_array_length_to_expected_script() {
         .unwrap()
         .add_op(OpVerify)
         .unwrap()
-        .add_i64(0)
-        .unwrap()
-        .add_op(OpRoll)
-        .unwrap()
         .add_op(OpDrop)
         .unwrap()
         .add_op(OpTrue)
@@ -4055,10 +4051,6 @@ fn compiles_int_array_append_to_expected_script() {
         .add_op(OpNumEqual)
         .unwrap()
         .add_op(OpVerify)
-        .unwrap()
-        .add_i64(0)
-        .unwrap()
-        .add_op(OpRoll)
         .unwrap()
         .add_op(OpDrop)
         .unwrap()
@@ -4244,10 +4236,6 @@ fn compiles_int_array_index_to_expected_script() {
         .add_op(OpNumEqual)
         .unwrap()
         .add_op(OpVerify)
-        .unwrap()
-        .add_i64(0)
-        .unwrap()
-        .add_op(OpRoll)
         .unwrap()
         .add_op(OpDrop)
         .unwrap()
@@ -4507,10 +4495,6 @@ fn compiles_bytes20_array_append_without_num2bin() {
         .add_op(OpNumEqual)
         .unwrap()
         .add_op(OpVerify)
-        .unwrap()
-        .add_data_with_push_opcode(&[])
-        .unwrap()
-        .add_op(OpRoll)
         .unwrap()
         .add_op(OpDrop)
         .unwrap()
@@ -9083,6 +9067,56 @@ fn compiles_time_op_csv_and_verifies() {
 }
 
 #[test]
+fn rejects_unsupported_time_op_comparisons() {
+    for condition in ["this.age > 10", "this.age < 10", "this.age <= 10", "tx.time > 10", "tx.time < 10", "tx.time <= 10"] {
+        let source = format!(
+            r#"
+                contract Test() {{
+                    entrypoint function main() {{
+                        require({condition});
+                    }}
+                }}
+            "#
+        );
+
+        assert!(
+            compile_contract(&source, &[], CompileOptions::default()).is_err(),
+            "unsupported time comparison should fail compilation: {condition}"
+        );
+    }
+}
+
+#[test]
+fn rejects_time_variables_outside_time_op_require() {
+    for statement in [
+        "require(this.age == 10);",
+        "require(tx.time == 10);",
+        "require(10 <= this.age);",
+        "require(10 <= tx.time);",
+        "int value = this.age;",
+        "int value = tx.time;",
+        "if (this.age >= 10) { require(true); }",
+        "if (tx.time >= 10) { require(true); }",
+        "require(this.time >= 10);",
+    ] {
+        let source = format!(
+            r#"
+                contract Test() {{
+                    entrypoint function main() {{
+                        {statement}
+                    }}
+                }}
+            "#
+        );
+
+        assert!(
+            compile_contract(&source, &[], CompileOptions::default()).is_err(),
+            "time variable outside require(time >= threshold) should fail compilation: {statement}"
+        );
+    }
+}
+
+#[test]
 fn compiles_reused_variables_and_verifies() {
     let source = r#"
         contract Test() {
@@ -9119,10 +9153,6 @@ fn compiles_reused_variables_and_verifies() {
         .add_op(OpNumEqual)
         .unwrap()
         .add_op(OpVerify)
-        .unwrap()
-        .add_i64(0)
-        .unwrap()
-        .add_op(OpRoll)
         .unwrap()
         .add_op(OpDrop)
         .unwrap()
@@ -9893,10 +9923,6 @@ fn inline_argument_alias_reuses_existing_local_without_extra_snapshot() {
         .unwrap()
         .add_op(OpVerify)
         .unwrap()
-        .add_i64(0)
-        .unwrap()
-        .add_op(OpRoll)
-        .unwrap()
         .add_op(OpDrop)
         .unwrap()
         .add_op(OpDrop)
@@ -10022,10 +10048,6 @@ fn local_alias_snapshots_existing_stack_value_once() {
         .add_op(OpGreaterThan)
         .unwrap()
         .add_op(OpVerify)
-        .unwrap()
-        .add_i64(0)
-        .unwrap()
-        .add_op(OpRoll)
         .unwrap()
         .add_op(OpDrop)
         .unwrap()
@@ -10725,7 +10747,7 @@ fn compile_time_if_branch_stores_struct_fields_once_and_reuses_them() {
 }
 
 #[test]
-fn partially_reassigned_struct_field_rolls_last_use_without_copying_unchanged_fields() {
+fn partially_reassigned_struct_field_does_not_recompute_unchanged_fields() {
     let source = r#"
         contract ConsumePartialStructField() {
             struct S {
@@ -10753,11 +10775,6 @@ fn partially_reassigned_struct_field_rolls_last_use_without_copying_unchanged_fi
         2,
         "only the initial `s.a = x + 1` and the reassigned `s.a = s.a + 1` should emit additions"
     );
-    assert!(
-        compiled.script.iter().copied().filter(|op| *op == OpRoll).count() >= 2,
-        "the stack-backed struct leaves should be rebound with rolls instead of rebuilding the whole struct"
-    );
-
     let sigscript_ok = compiled.build_sig_script("main", vec![Expr::int(2)]).expect("sigscript builds");
     let result_ok = run_script_with_sigscript(compiled.script.clone(), sigscript_ok);
     assert!(result_ok.is_ok(), "partial struct reassignment should execute successfully: {}", result_ok.unwrap_err());

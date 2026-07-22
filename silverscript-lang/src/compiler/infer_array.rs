@@ -223,15 +223,6 @@ fn infer_type<'i>(
     }
 }
 
-pub(super) fn infer_expr_type<'i>(
-    expr: &Expr<'i>,
-    types: &TypeMap,
-    constants: &HashMap<String, Expr<'i>>,
-    functions: &HashMap<String, &FunctionAst<'i>>,
-) -> Option<TypeRef> {
-    infer_expr_type_with_hint(expr, types, constants, functions, None)
-}
-
 fn infer_expr_type_with_hint<'i>(
     expr: &Expr<'i>,
     types: &TypeMap,
