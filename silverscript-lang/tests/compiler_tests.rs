@@ -3967,6 +3967,25 @@ fn rejects_omitting_parentheses_in_tuple_function_call_assignment() {
 }
 
 #[test]
+fn array_literal_codegen_uses_declared_element_type() {
+    let source = r#"
+        contract Arrays() {
+            entrypoint function main() {
+                byte[] bytes = [1, 2, 3, 4];
+                int[] ints = [1, 2, 3, 4];
+                require(bytes.length == 4);
+                require(ints.length == 4);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions { record_debug_infos: true, ..CompileOptions::default() })
+        .expect("compile succeeds");
+    let result = run_script_with_sigscript(compiled.script, script_builder().drain());
+    assert!(result.is_ok(), "array literals should use their declared element type: {}", result.unwrap_err());
+}
+
+#[test]
 fn compiles_int_array_length_to_expected_script() {
     let source = r#"
         contract Arrays() {
