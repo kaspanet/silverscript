@@ -548,6 +548,13 @@ impl<'i> Expr<'i> {
         Self::new(ExprKind::Array(value.into_iter().map(Expr::byte).collect()), Span::default())
     }
 
+    pub fn bool_array(value: Vec<bool>) -> Self {
+        Self::new(
+            ExprKind::Array(value.into_iter().map(Expr::bool).collect()),
+            Span::default(),
+        )
+    }
+
     pub fn string(value: impl Into<String>) -> Self {
         Self::new(ExprKind::String(value.into()), Span::default())
     }
@@ -576,6 +583,12 @@ impl<'i> From<bool> for Expr<'i> {
 impl<'i> From<Vec<u8>> for Expr<'i> {
     fn from(value: Vec<u8>) -> Self {
         Expr::bytes(value)
+    }
+}
+
+impl<'i> From<Vec<bool>> for Expr<'i> {
+    fn from(value: Vec<bool>) -> Self {
+        Expr::bool_array(value)
     }
 }
 
@@ -2590,4 +2603,30 @@ fn parse_identifier<'i>(pair: Pair<'i, Rule>) -> Result<Identifier<'i>, Compiler
     }
 
     Ok(Identifier { name: value, span })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bool_array_helper_builds_expr_array() {
+        let expr = Expr::bool_array(vec![true, false, true]);
+        if let ExprKind::Array(items) = expr.kind {
+            assert_eq!(items.len(), 3);
+            if let ExprKind::Bool(b) = items[0].kind {
+                assert!(b);
+            } else {
+                panic!("expected Bool");
+            }
+        } else {
+            panic!("expected Array");
+        }
+    }
+
+    #[test]
+    fn from_vec_bool_impl_works() {
+        let _expr: Expr = vec![true, false].into();
+        let _expr2: Expr = Expr::from(vec![false, true, false]);
+    }
 }
