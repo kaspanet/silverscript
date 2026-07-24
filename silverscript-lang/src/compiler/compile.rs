@@ -516,6 +516,9 @@ fn fixed_type_size(type_ref: &TypeRef) -> Option<i64> {
             if elem_type.is_int() {
                 return Some((size * 8) as i64);
             }
+            if elem_type.is_bool() {
+                return Some(size as i64);
+            }
         }
         return None;
     }
@@ -3838,6 +3841,22 @@ mod tests {
     use crate::ast::{BinaryOp, Expr, ExprKind, UnaryOp};
 
     use super::{Op0, OpPushData1, OpPushData2, StackBindings, data_prefix, eval_const_int};
+
+    #[test]
+    fn fixed_type_size_accepts_bool_array() {
+        use crate::ast::TypeRef;
+        use crate::ast::TypeBase;
+        use crate::ast::ArrayDim;
+        // bool[2] → Some(2) (1 byte per element)
+        let bool2 = TypeRef { base: TypeBase::Bool, array_dims: vec![ArrayDim::Fixed(2)] };
+        assert_eq!(super::fixed_type_size(&bool2), Some(2));
+        // bool[4] → Some(4)
+        let bool4 = TypeRef { base: TypeBase::Bool, array_dims: vec![ArrayDim::Fixed(4)] };
+        assert_eq!(super::fixed_type_size(&bool4), Some(4));
+        // scalar bool → Some(1)
+        let bool_scalar = TypeRef { base: TypeBase::Bool, array_dims: vec![] };
+        assert_eq!(super::fixed_type_size(&bool_scalar), Some(1));
+    }
 
     #[test]
     fn data_prefix_encodes_small_pushes() {
