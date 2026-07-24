@@ -100,6 +100,10 @@ pub(super) fn infer_debug_expr_value_type<'i>(
         ExprKind::Array(values) => {
             if values.iter().all(|value| matches!(value.kind, ExprKind::Byte(_))) {
                 Ok(TypeRef { base: TypeBase::Byte, array_dims: vec![ArrayDim::Fixed(values.len())] })
+            } else if values.iter().all(|value| matches!(value.kind, ExprKind::Int(_))) {
+                Ok(TypeRef { base: TypeBase::Int, array_dims: vec![ArrayDim::Fixed(values.len())] })
+            } else if values.iter().all(|value| matches!(value.kind, ExprKind::Bool(_))) {
+                Ok(TypeRef { base: TypeBase::Bool, array_dims: vec![ArrayDim::Fixed(values.len())] })
             } else {
                 Ok(dynamic_bytes())
             }
@@ -254,5 +258,36 @@ mod tests {
         let mut types = HashMap::new();
         types.insert("buf".to_string(), "byte[]".to_string());
         assert_eq!(infer(length, HashMap::new(), types), "int");
+    }
+
+    #[test]
+    fn infers_int_and_bool_array_literal_value_types() {
+        // All-int literal array → int[N]
+        let int_arr = Expr::new(
+            ExprKind::Array(vec![Expr::int(0), Expr::int(1), Expr::int(2), Expr::int(3)]),
+            span::Span::default(),
+        );
+        assert_eq!(infer(int_arr, HashMap::new(), HashMap::new()), "int[4]");
+
+        // All-bool literal array → bool[N]
+        let bool_arr = Expr::new(
+            ExprKind::Array(vec![Expr::bool(true), Expr::bool(false)]),
+            span::Span::default(),
+        );
+        assert_eq!(infer(bool_arr, HashMap::new(), HashMap::new()), "bool[2]");
+
+        // Mixed array falls back to byte[] (heterogeneous → dynamic bytes)
+        let mixed_arr = Expr::new(
+            ExprKind::Array(vec![Expr::int(1), Expr::bool(true)]),
+            span::Span::default(),
+        );
+        assert_eq!(infer(mixed_arr, HashMap::new(), HashMap::new()), "byte[]");
+
+        // All-byte array still byte[N] (regression guard)
+        let byte_arr = Expr::new(
+            ExprKind::Array(vec![Expr::byte(0x00), Expr::byte(0xff)]),
+            span::Span::default(),
+        );
+        assert_eq!(infer(byte_arr, HashMap::new(), HashMap::new()), "byte[2]");
     }
 }

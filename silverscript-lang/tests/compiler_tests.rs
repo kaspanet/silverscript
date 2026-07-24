@@ -11225,3 +11225,42 @@ fn blake3_with_key_requires_a_fixed_32_byte_key() {
     let err = compile_contract(numeric_data, &[], CompileOptions::default()).expect_err("numeric Blake3 data should be rejected");
     assert!(err.to_string().contains("argument 'data' expects byte[], got int"), "unexpected error: {err}");
 }
+
+#[test]
+fn vos_int_array_literal_infers_correct_type() {
+    // Regression: int[4] array literal in validateOutputState body must infer as int[4],
+    // not fall back to byte[]. Previously would fail compile-time type mismatch.
+    let source = r#"
+        contract C(int[4] initWinners) {
+            int[4] winners = initWinners;
+
+            entrypoint function main() {
+                validateOutputState(0, {winners: [0, 1, 2, 3]});
+            }
+        }
+    "#;
+
+    let input_compiled = compile_contract(
+        source,
+        &[vec![Expr::int(0), Expr::int(1), Expr::int(2), Expr::int(3)].into()],
+        CompileOptions::default(),
+    )
+    .expect("compile succeeds");
+
+    let output_compiled = compile_contract(
+        source,
+        &[vec![Expr::int(0), Expr::int(1), Expr::int(2), Expr::int(3)].into()],
+        CompileOptions::default(),
+    )
+    .expect("compile succeeds");
+
+    let input = test_input(0, sigscript_push_script(&input_compiled.script));
+    let input_spk = pay_to_script_hash_script(&input_compiled.script);
+    let output_spk = pay_to_script_hash_script(&output_compiled.script);
+    let output = TransactionOutput { value: 1000, script_public_key: output_spk, covenant: None };
+    let tx = Transaction::new(1, vec![input], vec![output.clone()], 0, Default::default(), 0, vec![]);
+    let utxo_entry = UtxoEntry::new(output.value, input_spk, 0, tx.is_coinbase(), None);
+
+    let result = execute_input(tx, vec![utxo_entry], 0);
+    assert!(result.is_ok(), "validateOutputState should accept int[4] array literal: {result:?}");
+}
