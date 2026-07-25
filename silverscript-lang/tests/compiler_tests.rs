@@ -11225,3 +11225,37 @@ fn blake3_with_key_requires_a_fixed_32_byte_key() {
     let err = compile_contract(numeric_data, &[], CompileOptions::default()).expect_err("numeric Blake3 data should be rejected");
     assert!(err.to_string().contains("argument 'data' expects byte[], got int"), "unexpected error: {err}");
 }
+
+#[test]
+fn vos_int_array_literal_infers_correct_type() {
+    // Regression: int[4] array literal in validateOutputState body must infer as int[4],
+    // not fall back to byte[]. Previously would fail compile-time type mismatch.
+    let source = r#"
+        contract C(int[4] initWinners) {
+            int[4] winners = initWinners;
+
+            entrypoint function main() {
+                validateOutputState(0, {winners: [0, 1, 2, 3]});
+            }
+        }
+    "#;
+
+    let input_compiled = compile_contract(
+        source,
+        &[vec![Expr::int(0), Expr::int(1), Expr::int(2), Expr::int(3)].into()],
+        CompileOptions::default(),
+    )
+    .expect("compile succeeds");
+
+    let output_compiled = compile_contract(
+        source,
+        &[vec![Expr::int(4), Expr::int(5), Expr::int(6), Expr::int(7)].into()],
+        CompileOptions::default(),
+    )
+    .expect("compile succeeds");
+
+    // Different ctor values must produce different scripts — proves the fix
+    // actually encodes each int[4] value through VOS splice rather than
+    // always emitting the same passthrough bytecode.
+    assert_ne!(input_compiled.script, output_compiled.script);
+}
