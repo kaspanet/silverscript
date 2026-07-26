@@ -57,6 +57,7 @@ pub(super) fn builtin_return_type(name: &str) -> Option<TypeRef> {
         | "OpCovInputIdx"
         | "OpCovOutputCount"
         | "OpCovOutputIdx" => scalar(TypeBase::Int),
+        "length" => scalar(TypeBase::Int),
         "OpTxInputIsCoinbase" | "checkSig" | "checkSigFromStack" | "checkSigFromStackECDSA" => scalar(TypeBase::Bool),
         "blake2b" | "blake2bWithKey" | "blake3" | "blake3WithKey" | "templateHash" | "sha256" | "OpSha256" => {
             byte_array(ArrayDim::Fixed(32))
@@ -95,6 +96,12 @@ pub(super) fn constructor_parameters(name: &str) -> Option<Vec<(&'static str, Ty
 
 pub(super) fn builtin_parameters(name: &str) -> Option<Vec<(&'static str, TypeRef)>> {
     match name {
+        "readInputStateWithTemplate" => Some(vec![
+            ("input_idx", scalar(TypeBase::Int)),
+            ("template_prefix_len", scalar(TypeBase::Int)),
+            ("template_suffix_len", scalar(TypeBase::Int)),
+            ("expected_template_hash", byte_array(ArrayDim::Fixed(32))),
+        ]),
         "checkSigFromStack" => Some(vec![
             ("signature", scalar(TypeBase::Datasig)),
             ("digest", byte_array(ArrayDim::Fixed(32))),

@@ -6,7 +6,7 @@ pub(super) fn compile_entrypoint_function<'i>(
     contract_params: &[ParamAst<'i>],
     contract_fields: &[ContractFieldAst<'i>],
     contract_constants: &[ConstantAst<'i>],
-    contract_field_prefix_len: usize,
+    contract_fields_end_offset: usize,
     constants: &HashMap<String, Expr<'i>>,
     structs: &StructRegistry,
     script_size: Option<i64>,
@@ -50,7 +50,7 @@ pub(super) fn compile_entrypoint_function<'i>(
         stack_bindings: &mut stack_bindings,
         builder: &mut builder,
         contract_fields,
-        contract_field_prefix_len,
+        contract_fields_end_offset,
         contract_constants: constants,
         structs,
         script_size,
@@ -134,7 +134,7 @@ struct CompileStatementContext<'a, 'i> {
     stack_bindings: &'a mut StackBindings,
     builder: &'a mut ScriptBuilder,
     contract_fields: &'a [ContractFieldAst<'i>],
-    contract_field_prefix_len: usize,
+    contract_fields_end_offset: usize,
     contract_constants: &'a HashMap<String, Expr<'i>>,
     structs: &'a StructRegistry,
     script_size: Option<i64>,
@@ -167,7 +167,7 @@ impl<'a, 'i> CompileStatementContext<'a, 'i> {
             stack_bindings,
             builder: self.builder,
             contract_fields: self.contract_fields,
-            contract_field_prefix_len: self.contract_field_prefix_len,
+            contract_fields_end_offset: self.contract_fields_end_offset,
             contract_constants: self.contract_constants,
             structs: self.structs,
             script_size: self.script_size,
@@ -271,7 +271,7 @@ fn compile_function_call_statement<'i>(
             ctx.types,
             ctx.builder,
             ctx.contract_fields,
-            ctx.contract_field_prefix_len,
+            ctx.contract_fields_end_offset,
             ctx.script_size,
             ctx.contract_constants,
         )
@@ -308,7 +308,7 @@ fn compile_state_function_call_assign_statement<'i>(
             name,
             args,
             ctx.contract_fields,
-            ctx.contract_field_prefix_len,
+            ctx.contract_fields_end_offset,
             ctx.structs,
         );
     }
@@ -363,7 +363,7 @@ fn compile_read_input_state_statement<'i>(
     name: &str,
     args: &[Expr<'i>],
     contract_fields: &[ContractFieldAst<'i>],
-    contract_field_prefix_len: usize,
+    contract_fields_end_offset: usize,
     structs: &StructRegistry,
 ) -> Result<Vec<String>, CompilerError> {
     let mut added_stack_locals = Vec::new();
@@ -390,7 +390,7 @@ fn compile_read_input_state_statement<'i>(
             let script_size_value =
                 ctx.script_size.ok_or_else(|| CompilerError::Unsupported("readInputState requires this.scriptSize".to_string()))?;
             let total_state_len = encoded_state_len(contract_fields, ctx.contract_constants)?;
-            let state_start_offset = contract_field_prefix_len
+            let state_start_offset = contract_fields_end_offset
                 .checked_sub(total_state_len)
                 .ok_or_else(|| CompilerError::Unsupported("readInputState state offset underflow".to_string()))?;
 
@@ -409,13 +409,14 @@ fn compile_read_input_state_statement<'i>(
                     )));
                 }
 
-                let binding_expr = read_input_state_binding_expr(
+                let binding_expr = read_input_state_field_expr(
                     &input_idx,
-                    field,
-                    state_start_offset,
+                    &field.type_ref,
+                    Expr::int(state_start_offset as i64),
                     field_chunk_offset,
-                    script_size_value,
+                    Expr::int(script_size_value),
                     ctx.contract_constants,
+                    "readInputState",
                 )?;
                 added_stack_locals.extend(compile_stack_variable_definition(
                     ctx,
@@ -424,7 +425,7 @@ fn compile_read_input_state_statement<'i>(
                     binding_expr,
                 )?);
 
-                field_chunk_offset += encoded_field_chunk_size(field, ctx.contract_constants)?;
+                field_chunk_offset += encoded_type_chunk_size(&field.type_ref, ctx.contract_constants)?;
             }
 
             Ok(added_stack_locals)
@@ -483,7 +484,7 @@ fn compile_read_input_state_statement<'i>(
                     "type_check must validate readInputStateWithTemplate destructuring binding types"
                 );
 
-                let binding_expr = read_input_state_field_expr_with_type(
+                let binding_expr = read_input_state_field_expr(
                     &input_idx,
                     &field.type_ref,
                     state_start_offset_expr.clone(),

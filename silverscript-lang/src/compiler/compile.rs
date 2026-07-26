@@ -16,19 +16,19 @@ mod analysis;
 mod const_eval;
 mod emitter;
 mod expression;
+mod helpers;
 mod state;
 mod statement;
-mod support;
 
 use analysis::*;
 pub(crate) use const_eval::{eval_const_int, resolve_constant_references};
 use emitter::*;
 use expression::*;
+pub(super) use helpers::encode_array_literal;
+use helpers::*;
 use state::*;
-pub(super) use state::{encoded_field_chunk_size, read_input_state_field_expr_symbolic, read_input_state_with_template_values};
+pub(super) use state::{encoded_type_chunk_size, read_input_state_field_expr_symbolic};
 use statement::*;
-use support::*;
-pub(super) use support::{encode_array_literal, is_byte_array};
 
 fn script_builder() -> ScriptBuilder {
     ScriptBuilder::with_flags(EngineFlags { covenants_enabled: true, ..Default::default() })
@@ -127,11 +127,11 @@ fn compile_contract_script_iteration<'i>(
     let (_contract_fields, field_prolog_script) = compile_contract_fields(&lowered_contract.fields, lowered_constants, script_size)?;
 
     let selector_prefix_len = if without_selector { 0 } else { 1 };
-    let contract_field_prefix_len = selector_prefix_len + field_prolog_script.len();
+    let contract_fields_end_offset = selector_prefix_len + field_prolog_script.len();
     let state_layout = CompiledStateLayout { start: selector_prefix_len, len: field_prolog_script.len() };
     let compiled_entrypoints = compile_entrypoint_scripts(
         lowered_contract,
-        contract_field_prefix_len,
+        contract_fields_end_offset,
         lowered_constants,
         structs,
         script_size,
@@ -143,7 +143,7 @@ fn compile_contract_script_iteration<'i>(
 
 fn compile_entrypoint_scripts<'i>(
     lowered_contract: &ContractAst<'i>,
-    contract_field_prefix_len: usize,
+    contract_fields_end_offset: usize,
     lowered_constants: &HashMap<String, Expr<'i>>,
     structs: &StructRegistry,
     script_size: Option<i64>,
@@ -157,7 +157,7 @@ fn compile_entrypoint_scripts<'i>(
                 &lowered_contract.params,
                 &lowered_contract.fields,
                 &lowered_contract.constants,
-                contract_field_prefix_len,
+                contract_fields_end_offset,
                 lowered_constants,
                 structs,
                 script_size,

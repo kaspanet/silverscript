@@ -1143,6 +1143,21 @@ fn byte_equality_with_rhs_int_literal_uses_raw_byte_push() {
 }
 
 #[test]
+fn byte_equality_with_lhs_int_literal_is_rejected() {
+    let source = r#"
+        contract Bytes() {
+            entrypoint function main() {
+                byte x = 200;
+                require(200 == x);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("200 == x should compare int against byte");
+    assert!(err.to_string().contains("type mismatch: cannot compare int and byte"), "unexpected error: {err}");
+}
+
+#[test]
 fn byte_equality_with_out_of_range_rhs_int_literal_is_rejected() {
     let source = r#"
         contract Bytes() {
@@ -2773,6 +2788,32 @@ fn runtime_supports_direct_struct_array_entrypoint_signature() {
 }
 
 #[test]
+fn build_sig_script_enforces_fixed_struct_array_length() {
+    let source = r#"
+        contract C() {
+            struct S {
+                int a;
+                byte[2] b;
+            }
+
+            entrypoint function main(S[2] values) {
+                require(values.length == 2);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    compiled
+        .build_sig_script("main", vec![struct_array_arg(vec![(7, vec![0x01, 0x02]), (9, vec![0x03, 0x04])])])
+        .expect("correctly sized struct array should encode");
+
+    let err = compiled
+        .build_sig_script("main", vec![struct_array_arg(vec![(7, vec![0x01, 0x02])])])
+        .expect_err("wrongly sized struct array should be rejected");
+    assert!(err.to_string().contains("size mismatch"), "unexpected error: {err}");
+}
+
+#[test]
 fn runtime_supports_struct_array_append_value_expression() {
     let source = r#"
         contract C() {
@@ -4400,6 +4441,22 @@ fn allows_concat_of_byte_arrays_with_plus() {
 }
 
 #[test]
+fn concatenated_byte_array_literal_has_element_length() {
+    let source = r#"
+        contract Arrays() {
+            entrypoint function main() {
+                byte[] x = [1];
+                require((x + [2]).length == 2);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let result = run_script_with_sigscript(compiled.script, script_builder().drain());
+    assert!(result.is_ok(), "byte[] literal concatenation should have two elements: {}", result.unwrap_err());
+}
+
+#[test]
 fn allows_concat_of_fixed_size_byte_array_elements_with_plus() {
     let source = r#"
         contract Arrays() {
@@ -4421,6 +4478,27 @@ fn allows_concat_of_fixed_size_byte_array_elements_with_plus() {
     let sigscript = script_builder().drain();
     let result = run_script_with_sigscript(compiled.script, sigscript);
     assert!(result.is_ok(), "byte[N][] concatenation runtime failed: {}", result.unwrap_err());
+}
+
+#[test]
+fn composite_array_index_uses_its_result_type_for_bytewise_operations() {
+    let source = r#"
+        contract Arrays() {
+            entrypoint function main() {
+                byte[2][] a = [0x0102];
+                byte[2][] b = [0x0304];
+
+                require((a + b)[0] == 0x0102);
+                require(bytes((a + b)[0]) == byte[](0x0102));
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    assert!(!compiled.script.contains(&OpNum2Bin), "an indexed byte array element is already byte-encoded");
+
+    let result = run_script_with_sigscript(compiled.script, script_builder().drain());
+    assert!(result.is_ok(), "composite array indexing should use bytewise operations: {}", result.unwrap_err());
 }
 
 #[test]
@@ -5335,9 +5413,14 @@ fn compiles_validate_output_state_to_expected_script() {
         .add_data_with_push_opcode(&[1u8, 2u8])
         .unwrap()
 
-        // ---- Build new_state.x = x + 1 ----
-        // duplicate x from stack (x is second item from top: y=0, x=1)
-        .add_op(OpOver)
+        // ---- Build fixed-size new_state.x chunk: <0x08><8-byte payload> ----
+        // Push the PUSHDATA8 prefix before compiling x + 1.
+        .add_data_with_push_opcode(&[0x08])
+        .unwrap()
+        // Copy x past y and the temporary prefix.
+        .add_i64(2)
+        .unwrap()
+        .add_op(OpPick)
         .unwrap()
         // push literal 1
         .add_i64(1)
@@ -5352,22 +5435,15 @@ fn compiles_validate_output_state_to_expected_script() {
         .unwrap()
         .add_op(OpNum2Bin)
         .unwrap()
-        // prepend PUSHDATA8 prefix byte
-        .add_data_with_push_opcode(&[0x08])
-        .unwrap()
-        .add_op(OpSwap)
-        .unwrap()
+        // prefix || encoded x
         .add_op(OpCat)
         .unwrap()
         // ---- Build new_state.y pushdata chunk ----
-        // raw y bytes
-        .add_data_with_push_opcode(&[0x34, 0x12])
-        .unwrap()
         // pushdata prefix for 2-byte data is 0x02
         .add_data_with_push_opcode(&[0x02])
         .unwrap()
-        // reorder to prefix || data
-        .add_op(OpSwap)
+        // raw y bytes
+        .add_data_with_push_opcode(&[0x34, 0x12])
         .unwrap()
         // resulting chunk: <0x02><0x3412>
         .add_op(OpCat)
@@ -5389,14 +5465,9 @@ fn compiles_validate_output_state_to_expected_script() {
         // duplicate sigscript length; one copy becomes substr length
         .add_op(OpDup)
         .unwrap()
-        // script_size of currently compiled contract (new redeem target)
-        .add_i64(compiled.script.len() as i64)
-        .unwrap()
-        // sigscript_len - script_size => bytes before current redeem
-        .add_op(OpSub)
-        .unwrap()
-        // add fixed current-state field prefix length: len(<x><y>) = 12
-        .add_i64(12)
+        // Precompute contract_fields_end_offset - script_size, where
+        // contract_fields_end_offset = len(<x><y>) = 12.
+        .add_i64(12 - compiled.script.len() as i64)
         .unwrap()
         // start offset of REST_OF_SCRIPT inside sigscript
         .add_op(OpAdd)
@@ -7351,6 +7422,37 @@ fn rejects_read_input_state_with_template_as_expression_call_argument() {
     let err = compile_contract(source, &[], CompileOptions::default())
         .expect_err("readInputStateWithTemplate should be rejected as an expression call argument");
     assert!(err.to_string().contains("must be assigned to a struct variable or destructured directly"), "unexpected error: {err}");
+}
+
+#[test]
+fn read_input_state_with_template_checks_argument_types() {
+    let cases = [
+        ("true, prefixLen, suffixLen, templateHash", "input_idx"),
+        ("1, true, suffixLen, templateHash", "template_prefix_len"),
+        ("1, prefixLen, true, templateHash", "template_suffix_len"),
+        ("1, prefixLen, suffixLen, prefixLen", "expected_template_hash"),
+    ];
+
+    for (args, parameter) in cases {
+        let source = format!(
+            r#"
+                contract Reader() {{
+                    struct RemoteState {{
+                        int x;
+                    }}
+
+                    entrypoint function main(int prefixLen, int suffixLen, byte[32] templateHash) {{
+                        RemoteState remote = readInputStateWithTemplate({args});
+                        require(remote.x > 0);
+                    }}
+                }}
+            "#
+        );
+
+        let err = compile_contract(&source, &[], CompileOptions::default())
+            .expect_err("readInputStateWithTemplate should reject an argument with the wrong type");
+        assert!(err.to_string().contains(parameter), "expected an error for '{parameter}', got: {err}");
+    }
 }
 
 #[test]
@@ -9556,6 +9658,23 @@ fn accepts_array_type_with_constant_size() {
 }
 
 #[test]
+fn encodes_contract_field_with_constant_array_size() {
+    let source = r#"
+        contract Test() {
+            int constant HALF_SIZE = 2;
+            int constant SIZE = HALF_SIZE * 2;
+            int[SIZE] values = [1, 2, 3, 4];
+
+            entrypoint function test() {
+                require(values.length == SIZE);
+            }
+        }
+    "#;
+
+    compile_contract(source, &[], CompileOptions::default()).expect("constant-sized contract field should compile");
+}
+
+#[test]
 fn compile_time_length_with_constant_size() {
     // Test that array.length is computed at compile-time for arrays with constant sizes
     let source = r#"
@@ -10335,6 +10454,54 @@ fn runs_standalone_block_tuple_binding_shadowing() {
     let selector = selector_for(&compiled, "main");
     let result = run_script_with_selector(compiled.script, selector);
     assert!(result.is_ok(), "tuple binding shadowing should execute successfully: {}", result.unwrap_err());
+}
+
+#[test]
+fn rejects_split_on_non_byte_array() {
+    let source = r#"
+        contract SplitNonByteArray() {
+            entrypoint function main(int[] values) {
+                (int[] left, int[] right) = values.split(1);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("split on int[] should fail");
+    assert!(err.to_string().contains("split source must be a byte array, string, or fixed-byte type"), "unexpected error: {err}");
+}
+
+#[test]
+fn rejects_slice_on_non_byte_array() {
+    let source = r#"
+        contract SliceNonByteArray() {
+            entrypoint function main(int[] values) {
+                int[] part = values.slice(0, 1);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("slice on int[] should fail");
+    assert!(err.to_string().contains("slice source must be a byte array, string, or fixed-byte type"), "unexpected error: {err}");
+}
+
+#[test]
+fn allows_sequence_operations_on_string_and_fixed_byte_types() {
+    let source = r#"
+        contract ByteSequenceOperations() {
+            entrypoint function main(string text, pubkey publicKey, sig signature, datasig dataSignature) {
+                (string textLeft, string textRight) = text.split(1);
+                (byte[] pubkeyLeft, byte[] pubkeyRight) = publicKey.split(1);
+                (byte[] sigLeft, byte[] sigRight) = signature.split(1);
+                (byte[] datasigLeft, byte[] datasigRight) = dataSignature.split(1);
+                string textSlice = text.slice(0, 1);
+                byte[] pubkeySlice = publicKey.slice(0, 1);
+                byte[] sigSlice = signature.slice(0, 1);
+                byte[] datasigSlice = dataSignature.slice(0, 1);
+            }
+        }
+    "#;
+
+    compile_contract(source, &[], CompileOptions::default()).expect("sequence operations should accept strings and fixed-byte types");
 }
 
 #[test]

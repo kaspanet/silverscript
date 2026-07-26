@@ -352,7 +352,7 @@ pub(crate) fn lower_struct_value_expr<'i>(
     structs: &StructRegistry,
     contract_fields: &[ContractFieldAst<'i>],
     contract_constants: &HashMap<String, Expr<'i>>,
-    contract_field_prefix_len: usize,
+    contract_fields_end_offset: usize,
 ) -> Result<Vec<Expr<'i>>, CompilerError> {
     let expected_struct_name = struct_name(expected_type, structs)
         .ok_or_else(|| CompilerError::Unsupported(format!("expected struct type '{}'", expected_type.type_name())))?;
@@ -374,11 +374,11 @@ pub(crate) fn lower_struct_value_expr<'i>(
                     &args[0],
                     field,
                     contract_fields,
-                    contract_field_prefix_len,
+                    contract_fields_end_offset,
                     field_chunk_offset,
                     contract_constants,
                 )?);
-                field_chunk_offset += super::compile::encoded_field_chunk_size(field, contract_constants)?;
+                field_chunk_offset += super::compile::encoded_type_chunk_size(&field.type_ref, contract_constants)?;
             }
             Ok(lowered)
         }
@@ -431,7 +431,7 @@ pub(crate) fn lower_struct_value_expr<'i>(
                 structs,
                 contract_fields,
                 contract_constants,
-                contract_field_prefix_len,
+                contract_fields_end_offset,
             )?;
             Ok(source_leaves
                 .into_iter()
@@ -463,7 +463,7 @@ pub(crate) fn lower_struct_value_expr<'i>(
                         structs,
                         contract_fields,
                         contract_constants,
-                        contract_field_prefix_len,
+                        contract_fields_end_offset,
                     )?);
                 } else {
                     lowered.push(lower_expr(field_expr, scope, structs)?);
@@ -520,7 +520,7 @@ pub(crate) fn lower_struct_destructure_statement<'i>(
     structs: &StructRegistry,
     contract_fields: &[ContractFieldAst<'i>],
     contract_constants: &HashMap<String, Expr<'i>>,
-    contract_field_prefix_len: usize,
+    contract_fields_end_offset: usize,
 ) -> Result<Vec<Statement<'i>>, CompilerError> {
     let expr_type = infer_struct_expr_type(expr, scope, structs, contract_fields)?;
     let struct_name = struct_name(&expr_type, structs)
@@ -539,7 +539,7 @@ pub(crate) fn lower_struct_destructure_statement<'i>(
                     structs,
                     contract_fields,
                     contract_constants,
-                    contract_field_prefix_len,
+                    contract_fields_end_offset,
                 )?)
                 .collect::<HashMap<_, _>>(),
         )
@@ -588,7 +588,7 @@ pub(crate) fn lower_struct_destructure_statement<'i>(
                     structs,
                     contract_fields,
                     contract_constants,
-                    contract_field_prefix_len,
+                    contract_fields_end_offset,
                 )?;
                 let mut paths = Vec::new();
                 flatten_struct_fields(&binding.type_ref, structs, &mut Vec::new(), &mut paths)?;
@@ -669,7 +669,7 @@ pub(crate) fn lower_runtime_struct_expr<'i>(
     structs: &StructRegistry,
     contract_fields: &[ContractFieldAst<'i>],
     contract_constants: &HashMap<String, Expr<'i>>,
-    contract_field_prefix_len: usize,
+    contract_fields_end_offset: usize,
 ) -> Result<Vec<Expr<'i>>, CompilerError> {
     let scope = lowering_scope_from_types(types)?;
     if is_struct(expected_type, structs) {
@@ -680,7 +680,7 @@ pub(crate) fn lower_runtime_struct_expr<'i>(
             structs,
             contract_fields,
             contract_constants,
-            contract_field_prefix_len,
+            contract_fields_end_offset,
         );
     }
     if is_struct_array(expected_type, structs) {
@@ -691,7 +691,7 @@ pub(crate) fn lower_runtime_struct_expr<'i>(
             structs,
             contract_fields,
             contract_constants,
-            contract_field_prefix_len,
+            contract_fields_end_offset,
         );
     }
     Err(CompilerError::Unsupported(format!("expected struct type '{}'", expected_type.type_name())))
@@ -704,7 +704,7 @@ fn lower_struct_array_value_expr<'i>(
     structs: &StructRegistry,
     contract_fields: &[ContractFieldAst<'i>],
     contract_constants: &HashMap<String, Expr<'i>>,
-    contract_field_prefix_len: usize,
+    contract_fields_end_offset: usize,
 ) -> Result<Vec<Expr<'i>>, CompilerError> {
     match &expr.kind {
         ExprKind::Identifier(name) => {
@@ -728,7 +728,7 @@ fn lower_struct_array_value_expr<'i>(
                     structs,
                     contract_fields,
                     contract_constants,
-                    contract_field_prefix_len,
+                    contract_fields_end_offset,
                 )?;
                 for (idx, expr) in lowered.into_iter().enumerate() {
                     grouped[idx].push(expr);
@@ -744,7 +744,7 @@ fn lower_struct_array_value_expr<'i>(
                 structs,
                 contract_fields,
                 contract_constants,
-                contract_field_prefix_len,
+                contract_fields_end_offset,
             )?;
             let right = lower_struct_array_value_expr(
                 &Expr::new(ExprKind::Array(args.clone()), span::Span::default()),
@@ -753,7 +753,7 @@ fn lower_struct_array_value_expr<'i>(
                 structs,
                 contract_fields,
                 contract_constants,
-                contract_field_prefix_len,
+                contract_fields_end_offset,
             )?;
             Ok(left
                 .into_iter()
@@ -777,7 +777,7 @@ pub(crate) fn flatten_runtime_return_exprs<'i>(
     structs: &StructRegistry,
     contract_fields: &[ContractFieldAst<'i>],
     contract_constants: &HashMap<String, Expr<'i>>,
-    contract_field_prefix_len: usize,
+    contract_fields_end_offset: usize,
 ) -> Result<Vec<Expr<'i>>, CompilerError> {
     let mut flattened = Vec::new();
     for (expr, return_type) in exprs.iter().zip(return_types.iter()) {
@@ -789,7 +789,7 @@ pub(crate) fn flatten_runtime_return_exprs<'i>(
                 structs,
                 contract_fields,
                 contract_constants,
-                contract_field_prefix_len,
+                contract_fields_end_offset,
             )?);
         } else {
             flattened.push(lower_runtime_expr(expr, types, structs)?);
@@ -821,7 +821,7 @@ fn lower_value_for_named_type<'i>(
     structs: &StructRegistry,
     contract_fields: &[ContractFieldAst<'i>],
     contract_constants: &HashMap<String, Expr<'i>>,
-    contract_field_prefix_len: usize,
+    contract_fields_end_offset: usize,
 ) -> Result<Vec<(String, TypeRef, Expr<'i>)>, CompilerError> {
     let scope_types = scope_type_names(scope);
     if is_struct(type_ref, structs) || is_struct_array(type_ref, structs) {
@@ -832,7 +832,7 @@ fn lower_value_for_named_type<'i>(
             structs,
             contract_fields,
             contract_constants,
-            contract_field_prefix_len,
+            contract_fields_end_offset,
         )?;
         Ok(flatten_type_leaves(type_ref, structs)?
             .into_iter()
@@ -852,7 +852,7 @@ fn lower_call_args<'i>(
     structs: &StructRegistry,
     contract_fields: &[ContractFieldAst<'i>],
     contract_constants: &HashMap<String, Expr<'i>>,
-    contract_field_prefix_len: usize,
+    contract_fields_end_offset: usize,
 ) -> Result<Vec<Expr<'i>>, CompilerError> {
     let Some(function) = functions.get(name) else {
         return args.iter().map(|arg| lower_expr(arg, scope, structs)).collect();
@@ -868,7 +868,7 @@ fn lower_call_args<'i>(
                 structs,
                 contract_fields,
                 contract_constants,
-                contract_field_prefix_len,
+                contract_fields_end_offset,
             )?);
         } else {
             lowered.push(lower_expr(arg, scope, structs)?);
@@ -909,7 +909,7 @@ fn lower_statements<'i>(
     structs: &StructRegistry,
     contract_fields: &[ContractFieldAst<'i>],
     contract_constants: &HashMap<String, Expr<'i>>,
-    contract_field_prefix_len: usize,
+    contract_fields_end_offset: usize,
 ) -> Result<Vec<Statement<'i>>, CompilerError> {
     let mut lowered = Vec::new();
     for stmt in statements {
@@ -924,7 +924,7 @@ fn lower_statements<'i>(
                     structs,
                     contract_fields,
                     contract_constants,
-                    contract_field_prefix_len,
+                    contract_fields_end_offset,
                 )?;
                 lowered.push(Statement::Block { body: lowered_body, span: *span });
             }
@@ -970,7 +970,7 @@ fn lower_statements<'i>(
                             structs,
                             contract_fields,
                             contract_constants,
-                            contract_field_prefix_len,
+                            contract_fields_end_offset,
                         )? {
                             lowered.push(Statement::VariableDefinition {
                                 type_ref: leaf_type,
@@ -1048,7 +1048,7 @@ fn lower_statements<'i>(
                         structs,
                         contract_fields,
                         contract_constants,
-                        contract_field_prefix_len,
+                        contract_fields_end_offset,
                     )?,
                     span: *span,
                     name_span: *name_span,
@@ -1079,7 +1079,7 @@ fn lower_statements<'i>(
                         structs,
                         contract_fields,
                         contract_constants,
-                        contract_field_prefix_len,
+                        contract_fields_end_offset,
                     )?,
                     span: *span,
                     name_span: *name_span,
@@ -1109,7 +1109,7 @@ fn lower_statements<'i>(
                     structs,
                     contract_fields,
                     contract_constants,
-                    contract_field_prefix_len,
+                    contract_fields_end_offset,
                 )?);
             }
             Statement::Assign { name, expr, span, name_span } => {
@@ -1141,7 +1141,7 @@ fn lower_statements<'i>(
                                     structs,
                                     contract_fields,
                                     contract_constants,
-                                    contract_field_prefix_len,
+                                    contract_fields_end_offset,
                                 )?)
                             {
                                 let leaf_name = flattened_struct_name(name, &path);
@@ -1171,7 +1171,7 @@ fn lower_statements<'i>(
                         structs,
                         contract_fields,
                         contract_constants,
-                        contract_field_prefix_len,
+                        contract_fields_end_offset,
                     )? {
                         lowered.push(Statement::Assign { name: leaf_name, expr: leaf_expr, span: *span, name_span: *name_span });
                     }
@@ -1208,7 +1208,7 @@ fn lower_statements<'i>(
                     structs,
                     contract_fields,
                     contract_constants,
-                    contract_field_prefix_len,
+                    contract_fields_end_offset,
                 )?;
                 let lowered_else = if let Some(else_branch) = else_branch {
                     let mut else_scope = scope.clone();
@@ -1220,7 +1220,7 @@ fn lower_statements<'i>(
                         structs,
                         contract_fields,
                         contract_constants,
-                        contract_field_prefix_len,
+                        contract_fields_end_offset,
                     )?;
                     Some(lowered_else)
                 } else {
@@ -1246,7 +1246,7 @@ fn lower_statements<'i>(
                     structs,
                     contract_fields,
                     contract_constants,
-                    contract_field_prefix_len,
+                    contract_fields_end_offset,
                 )?;
                 lowered.push(Statement::For {
                     ident: ident.clone(),
@@ -1267,7 +1267,7 @@ fn lower_statements<'i>(
                     structs,
                     contract_fields,
                     contract_constants,
-                    contract_field_prefix_len,
+                    contract_fields_end_offset,
                 )?,
                 span: *span,
             }),

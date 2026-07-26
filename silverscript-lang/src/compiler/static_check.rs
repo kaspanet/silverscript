@@ -109,10 +109,10 @@ fn validate_function_signatures<'i>(
 
     for function in &contract.functions {
         for param in &function.params {
-            ensure_array_elements_have_known_size(&param.type_ref, structs, &param.type_ref.type_name())?;
+            ensure_array_elements_have_known_size(&param.type_ref, structs, constants, &param.type_ref.type_name())?;
         }
         for return_type in &function.return_types {
-            ensure_array_elements_have_known_size(return_type, structs, &return_type.type_name())?;
+            ensure_array_elements_have_known_size(return_type, structs, constants, &return_type.type_name())?;
         }
 
         if function.entrypoint && !options.allow_entrypoint_return && !function.return_types.is_empty() {
@@ -162,7 +162,7 @@ fn validate_contract_field_initializers<'i>(
 
     for field in &contract.fields {
         let type_name = field.type_ref.type_name();
-        ensure_array_elements_have_known_size(&field.type_ref, structs, &type_name)?;
+        ensure_array_elements_have_known_size(&field.type_ref, structs, constants, &type_name)?;
         validate_expr_matches_type(&field.expr, &field.type_ref, &types, structs, constants, &HashMap::new(), &contract.fields)
             .map_err(|_| CompilerError::Unsupported(format!("contract field '{}' expects {}", field.name, type_name)))?;
         types.insert(field.name.clone(), field.type_ref.clone());
@@ -255,7 +255,7 @@ fn validate_variable_definition_statement_shape<'i>(
     expr: Option<&Expr<'i>>,
 ) -> Result<(), CompilerError> {
     let type_name = type_ref.type_name();
-    ensure_array_elements_have_known_size(type_ref, ctx.structs, &type_name)?;
+    ensure_array_elements_have_known_size(type_ref, ctx.structs, ctx.constants, &type_name)?;
     if expr.is_none() && type_ref.is_array() && array_type_size(type_ref, ctx.constants).is_some() {
         return Err(CompilerError::Unsupported("variable definition requires initializer".to_string()));
     }
@@ -293,8 +293,8 @@ fn validate_tuple_assignment_statement_shape<'i>(
     expr: &Expr<'i>,
 ) -> Result<(), CompilerError> {
     ctx.check_expr(expr, None)?;
-    ensure_array_elements_have_known_size(left_type_ref, ctx.structs, &left_type_ref.type_name())?;
-    ensure_array_elements_have_known_size(right_type_ref, ctx.structs, &right_type_ref.type_name())?;
+    ensure_array_elements_have_known_size(left_type_ref, ctx.structs, ctx.constants, &left_type_ref.type_name())?;
+    ensure_array_elements_have_known_size(right_type_ref, ctx.structs, ctx.constants, &right_type_ref.type_name())?;
     insert_type_binding(ctx.types, left_name, left_type_ref);
     insert_type_binding(ctx.types, right_name, right_type_ref);
     Ok(())
@@ -323,7 +323,7 @@ fn validate_state_function_call_assign_statement_shape<'i>(
     }
     validate_state_function_call_assign(bindings, name, args, ctx.structs, ctx.constants, ctx.contract_fields)?;
     for binding in bindings {
-        ensure_array_elements_have_known_size(&binding.type_ref, ctx.structs, &binding.type_ref.type_name())?;
+        ensure_array_elements_have_known_size(&binding.type_ref, ctx.structs, ctx.constants, &binding.type_ref.type_name())?;
         insert_type_binding(ctx.types, &binding.name, &binding.type_ref);
     }
     Ok(())
@@ -338,7 +338,7 @@ fn validate_struct_destructure_statement_shape<'i>(
     let direct_read_input_state = matches!(&expr.kind, ExprKind::Call { name, .. } if name == "readInputState");
     validate_struct_destructure_bindings(bindings, &expr_type, direct_read_input_state, ctx.structs, ctx.constants)?;
     for binding in bindings {
-        ensure_array_elements_have_known_size(&binding.type_ref, ctx.structs, &binding.type_ref.type_name())?;
+        ensure_array_elements_have_known_size(&binding.type_ref, ctx.structs, ctx.constants, &binding.type_ref.type_name())?;
         insert_type_binding(ctx.types, &binding.name, &binding.type_ref);
     }
     Ok(())
@@ -738,35 +738,41 @@ fn map_declared_type_error<'i>(
     }
 }
 
-fn ensure_array_elements_have_known_size(type_ref: &TypeRef, structs: &StructRegistry, type_name: &str) -> Result<(), CompilerError> {
-    if type_ref.is_array() && fixed_type_size(type_ref.array_element_type().as_ref().unwrap_or(type_ref), structs).is_none() {
+fn ensure_array_elements_have_known_size<'i>(
+    type_ref: &TypeRef,
+    structs: &StructRegistry,
+    constants: &HashMap<String, Expr<'i>>,
+    type_name: &str,
+) -> Result<(), CompilerError> {
+    if type_ref.is_array() && fixed_type_size(type_ref.array_element_type().as_ref().unwrap_or(type_ref), structs, constants).is_none()
+    {
         return Err(CompilerError::Unsupported(format!("array element type must have known size: {type_name}")));
     }
     Ok(())
 }
 
-fn fixed_type_size(type_ref: &TypeRef, structs: &StructRegistry) -> Option<i64> {
+fn fixed_type_size<'i>(type_ref: &TypeRef, structs: &StructRegistry, constants: &HashMap<String, Expr<'i>>) -> Option<usize> {
+    if type_ref.is_array() {
+        let element_type = type_ref.array_element_type()?;
+        let array_len = array_type_size(type_ref, constants)?;
+        return fixed_type_size(&element_type, structs, constants)?.checked_mul(array_len);
+    }
+
     match &type_ref.base {
         TypeBase::Int => Some(8),
         TypeBase::Bool | TypeBase::Byte => Some(1),
-        TypeBase::Pubkey | TypeBase::Sig | TypeBase::Datasig => type_ref.base.fixed_byte_sequence_len().map(|size| size as i64),
+        TypeBase::Pubkey | TypeBase::Sig | TypeBase::Datasig => type_ref.base.fixed_byte_sequence_len(),
         TypeBase::String => None,
-        TypeBase::Custom(name) if !type_ref.is_array() => {
+        TypeBase::Custom(name) => {
             let struct_spec = structs.get(name)?;
-            let mut total = 0i64;
+            let mut total = 0usize;
             for field in &struct_spec.fields {
-                total += fixed_type_size(&field.type_ref, structs)?;
+                total = total.checked_add(fixed_type_size(&field.type_ref, structs, constants)?)?;
             }
             Some(total)
         }
-        TypeBase::Tuple(_) | TypeBase::Custom(_) => None,
+        TypeBase::Tuple(_) => None,
     }
-    .and_then(|base_size| {
-        type_ref.array_dims.iter().try_fold(base_size, |acc, dim| match dim {
-            ArrayDim::Fixed(size) => Some(acc.checked_mul(*size as i64)?),
-            ArrayDim::Dynamic | ArrayDim::Inferred | ArrayDim::Constant(_) => None,
-        })
-    })
 }
 
 fn statement_contains_return(stmt: &Statement<'_>) -> bool {
