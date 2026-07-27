@@ -41,7 +41,7 @@ fn lower_statements<'i>(
                 && identifier_uses.get(name).copied().unwrap_or(0) <= 1
                 && !expr_references_any(expr, assigned_names) =>
             {
-                let lowered_expr = coerce_expr_for_declared_scalar_type(substitute_expr(expr, &local_aliases)?, type_ref)?;
+                let lowered_expr = coerce_expr_for_declared_type(substitute_expr(expr, &local_aliases)?, type_ref)?;
                 local_aliases.insert(name.clone(), lowered_expr);
             }
             Statement::VariableDefinition { type_ref, modifiers, name, expr, span, type_span, modifier_spans, name_span } => {
@@ -189,13 +189,20 @@ fn lower_statements<'i>(
     Ok(lowered)
 }
 
-fn coerce_expr_for_declared_scalar_type<'i>(expr: Expr<'i>, type_ref: &TypeRef) -> Result<Expr<'i>, CompilerError> {
+fn coerce_expr_for_declared_type<'i>(expr: Expr<'i>, type_ref: &TypeRef) -> Result<Expr<'i>, CompilerError> {
     if type_ref.is_byte()
         && let ExprKind::Int(value) = expr.kind
     {
         let byte_value =
             value.try_into().map_err(|_| CompilerError::Unsupported(format!("integer literal {value} is out of range for byte")))?;
         return Ok(Expr::new(ExprKind::Byte(byte_value), expr.span));
+    }
+    if let Some(element_type) = type_ref.array_element_type()
+        && let ExprKind::Array(values) = expr.kind
+    {
+        let values =
+            values.into_iter().map(|value| coerce_expr_for_declared_type(value, &element_type)).collect::<Result<Vec<_>, _>>()?;
+        return Ok(Expr::new(ExprKind::Array(values), expr.span));
     }
     Ok(expr)
 }

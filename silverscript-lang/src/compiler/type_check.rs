@@ -5,8 +5,7 @@ use crate::ast::{ArrayDim, BinaryOp, ContractFieldAst, Expr, ExprKind, FunctionA
 use super::builtin_types::{
     builtin_parameters, builtin_return_type, constructor_parameters, constructor_return_type, introspection_type, nullary_type,
 };
-use super::compile;
-use super::structs::{StructRegistry, is_struct, struct_name};
+use super::structs::{StructRegistry, flattened_struct_field_specs_for_type, is_struct, struct_name};
 use super::{CompilerError, STATE_TYPE_NAME, TypeMap, append_type, array_type_size, concat_types, parse_type_ref, type_refs_equal};
 
 pub(super) struct TypeCheckContext<'a, 'i> {
@@ -179,6 +178,19 @@ fn check_array_literal<'i>(
     Ok(result)
 }
 
+fn check_array_literal_with_element_type<'i>(
+    values: &[Expr<'i>],
+    element_type: &TypeRef,
+    ctx: &TypeCheckContext<'_, 'i>,
+) -> Result<TypeRef, CompilerError> {
+    for value in values {
+        check_expr(value, Some(element_type), ctx)?;
+    }
+    let mut result = element_type.clone();
+    result.array_dims.push(ArrayDim::Fixed(values.len()));
+    Ok(result)
+}
+
 pub(super) fn check_call<'i>(
     name: &str,
     source_name: &str,
@@ -201,12 +213,14 @@ pub(super) fn check_call<'i>(
         let expected = expected.ok_or_else(|| {
             CompilerError::Unsupported("readInputStateWithTemplate must be assigned to an explicitly typed struct".to_string())
         })?;
-        return if is_struct(expected, ctx.structs) {
-            compile::read_input_state_with_template_values(args, expected, ctx.structs, ctx.constants)?;
-            Ok(Some(expected.clone()))
-        } else {
-            Err(CompilerError::Unsupported("readInputStateWithTemplate requires a struct type".to_string()))
-        };
+        if !is_struct(expected, ctx.structs) {
+            return Err(CompilerError::Unsupported("readInputStateWithTemplate requires a struct type".to_string()));
+        }
+        check_builtin_args(name, args, builtin_parameters(name).expect("readInputStateWithTemplate signature exists"), ctx)?;
+        if flattened_struct_field_specs_for_type(expected, ctx.structs)?.is_empty() {
+            return Err(CompilerError::Unsupported("readInputStateWithTemplate requires a non-empty struct type".to_string()));
+        }
+        return Ok(Some(expected.clone()));
     }
     if let Some(function) = ctx.functions.get(name).copied() {
         if function.entrypoint {
@@ -250,22 +264,32 @@ pub(super) fn check_call<'i>(
         return Ok(Some(cast_type));
     }
     if let Some(parameters) = builtin_parameters(name) {
-        if parameters.len() != args.len() {
-            return Err(CompilerError::Unsupported(format!("{name}() expects {} arguments", parameters.len())));
-        }
-        for (arg, (parameter, expected)) in args.iter().zip(parameters) {
-            if check_expr(arg, Some(&expected), ctx).is_err() {
-                let actual = check_expr(arg, None, ctx).map(|type_ref| type_ref.type_name()).unwrap_or_else(|_| "unknown".to_string());
-                return Err(CompilerError::Unsupported(format!(
-                    "{name}() argument '{parameter}' expects {}, got {actual}",
-                    expected.type_name()
-                )));
-            }
-        }
+        check_builtin_args(name, args, parameters, ctx)?;
     } else {
         check_all(args, ctx)?;
     }
     builtin_return_type(name).map(Some).ok_or_else(|| CompilerError::Unsupported(format!("function '{name}' not found")))
+}
+
+fn check_builtin_args<'i>(
+    name: &str,
+    args: &[Expr<'i>],
+    parameters: Vec<(&str, TypeRef)>,
+    ctx: &TypeCheckContext<'_, 'i>,
+) -> Result<(), CompilerError> {
+    if parameters.len() != args.len() {
+        return Err(CompilerError::Unsupported(format!("{name}() expects {} arguments", parameters.len())));
+    }
+    for (arg, (parameter, expected)) in args.iter().zip(parameters) {
+        if check_expr(arg, Some(&expected), ctx).is_err() {
+            let actual = check_expr(arg, None, ctx).map(|type_ref| type_ref.type_name()).unwrap_or_else(|_| "unknown".to_string());
+            return Err(CompilerError::Unsupported(format!(
+                "{name}() argument '{parameter}' expects {}, got {actual}",
+                expected.type_name()
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn check_binary<'i>(
@@ -280,12 +304,19 @@ fn check_binary<'i>(
             "function returns a tuple and cannot be used directly in expressions; access a tuple field instead".to_string(),
         ));
     }
-    let right_expected =
-        matches!(op, BinaryOp::Eq | BinaryOp::Ne | BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge).then_some(&left_type);
-    let right_type = check_expr(right, right_expected, ctx).map_err(|_| {
-        let actual = check_expr(right, None, ctx).map(|type_ref| type_ref.type_name()).unwrap_or_else(|_| "unknown".to_string());
-        CompilerError::Unsupported(format!("type mismatch: cannot compare {} and {actual}", left_type.type_name()))
-    })?;
+    let right_type = if matches!(op, BinaryOp::Add)
+        && let Some(element_type) = left_type.array_element_type()
+        && let ExprKind::Array(values) = &right.kind
+    {
+        check_array_literal_with_element_type(values, &element_type, ctx)?
+    } else {
+        let right_expected = matches!(op, BinaryOp::Eq | BinaryOp::Ne | BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge)
+            .then_some(&left_type);
+        check_expr(right, right_expected, ctx).map_err(|_| {
+            let actual = check_expr(right, None, ctx).map(|type_ref| type_ref.type_name()).unwrap_or_else(|_| "unknown".to_string());
+            CompilerError::Unsupported(format!("type mismatch: cannot compare {} and {actual}", left_type.type_name()))
+        })?
+    };
     match op {
         BinaryOp::Eq | BinaryOp::Ne | BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge => Ok(scalar_type(TypeBase::Bool)),
         BinaryOp::Or | BinaryOp::And => {
@@ -384,16 +415,16 @@ fn dynamic_array_of(type_ref: &TypeRef) -> Result<TypeRef, CompilerError> {
 }
 
 fn sequence_part_type(type_ref: &TypeRef, operation: &str) -> Result<TypeRef, CompilerError> {
-    if type_ref.is_array() {
+    if type_ref.array_element_type().is_some_and(|element_type| element_type.is_byte()) {
         return dynamic_array_of(type_ref);
     }
     if type_ref.is_string() {
         return Ok(type_ref.clone());
     }
-    if type_ref.is_pubkey() || type_ref.is_sig() || type_ref.is_datasig() {
+    if !type_ref.is_array() && type_ref.base.fixed_byte_sequence_len().is_some() {
         return Ok(TypeRef { base: TypeBase::Byte, array_dims: vec![ArrayDim::Dynamic] });
     }
-    Err(CompilerError::Unsupported(format!("{operation} source must be a sequence")))
+    Err(CompilerError::Unsupported(format!("{operation} source must be a byte array, string, or fixed-byte type")))
 }
 
 fn check_constructor<'i>(name: &str, args: &[Expr<'i>], ctx: &TypeCheckContext<'_, 'i>) -> Result<TypeRef, CompilerError> {
