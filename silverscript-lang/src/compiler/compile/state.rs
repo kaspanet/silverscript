@@ -133,9 +133,17 @@ pub(super) fn cast_read_input_state_expr<'i>(substr: Expr<'i>, type_ref: &TypeRe
 }
 
 pub(super) fn struct_name_for_state_bindings<'i>(
+    target_struct: Option<&str>,
     bindings: &[StructBindingAst<'i>],
     structs: &StructRegistry,
 ) -> Result<String, CompilerError> {
+    if let Some(target_struct) = target_struct {
+        if !structs.contains_key(target_struct) {
+            return Err(CompilerError::Unsupported(format!("unknown struct '{target_struct}'")));
+        }
+        return Ok(target_struct.to_string());
+    }
+
     let matches = structs
         .iter()
         .filter_map(|(name, spec)| {

@@ -941,6 +941,7 @@ fn lower_statements<'i>(
                             .all(|field| !is_struct(&field.type_ref, structs) && !is_struct_array(&field.type_ref, structs))
                     {
                         lowered.push(Statement::StateFunctionCallAssign {
+                            target_struct: Some(struct_name.to_string()),
                             bindings: item
                                 .fields
                                 .iter()
@@ -1085,11 +1086,12 @@ fn lower_statements<'i>(
                     name_span: *name_span,
                 });
             }
-            Statement::StateFunctionCallAssign { bindings, name, args, span, name_span } => {
+            Statement::StateFunctionCallAssign { target_struct, bindings, name, args, span, name_span } => {
                 for binding in bindings {
                     scope.vars.insert(binding.name.clone(), binding.type_ref.clone());
                 }
                 lowered.push(Statement::StateFunctionCallAssign {
+                    target_struct: target_struct.clone(),
                     bindings: bindings.clone(),
                     name: name.clone(),
                     args: args.iter().map(|arg| lower_expr(arg, scope, structs)).collect::<Result<Vec<_>, _>>()?,

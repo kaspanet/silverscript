@@ -156,13 +156,16 @@ fn lower_statement<'i>(statement: &Statement<'i>, context: &mut LoweringContext)
             span: *span,
             name_span: *name_span,
         },
-        Statement::StateFunctionCallAssign { bindings, name, args, span, name_span } => Statement::StateFunctionCallAssign {
-            bindings: bindings.clone(),
-            name: name.clone(),
-            args: lower_call_args(args, &mut prefix, context),
-            span: *span,
-            name_span: *name_span,
-        },
+        Statement::StateFunctionCallAssign { target_struct, bindings, name, args, span, name_span } => {
+            Statement::StateFunctionCallAssign {
+                target_struct: target_struct.clone(),
+                bindings: bindings.clone(),
+                name: name.clone(),
+                args: lower_call_args(args, &mut prefix, context),
+                span: *span,
+                name_span: *name_span,
+            }
+        }
         Statement::StructDestructure { bindings, expr, span } => {
             Statement::StructDestructure { bindings: bindings.clone(), expr: lower_expr(expr, &mut prefix, context), span: *span }
         }

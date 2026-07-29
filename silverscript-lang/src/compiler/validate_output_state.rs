@@ -227,11 +227,12 @@ fn lower_statement<'i>(
                 name_span: *name_span,
             }])
         }
-        Statement::StateFunctionCallAssign { bindings, name, args, span, name_span } => {
+        Statement::StateFunctionCallAssign { target_struct, bindings, name, args, span, name_span } => {
             for binding in bindings {
                 scope.vars.insert(binding.name.clone(), binding.type_ref.clone());
             }
             Ok(vec![Statement::StateFunctionCallAssign {
+                target_struct: target_struct.clone(),
                 bindings: bindings.clone(),
                 name: name.clone(),
                 args: args.clone(),

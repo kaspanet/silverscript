@@ -191,8 +191,8 @@ fn validate_statement_shapes<'i>(
             Statement::TupleAssignment { left_type_ref, left_name, right_type_ref, right_name, expr, .. } => {
                 validate_tuple_assignment_statement_shape(&mut ctx, left_type_ref, left_name, right_type_ref, right_name, expr)?
             }
-            Statement::StateFunctionCallAssign { bindings, name, args, .. } => {
-                validate_state_function_call_assign_statement_shape(&mut ctx, bindings, name, args)?
+            Statement::StateFunctionCallAssign { target_struct, bindings, name, args, .. } => {
+                validate_state_function_call_assign_statement_shape(&mut ctx, target_struct.as_deref(), bindings, name, args)?
             }
             Statement::StructDestructure { bindings, expr, .. } => {
                 validate_struct_destructure_statement_shape(&mut ctx, bindings, expr)?
@@ -302,6 +302,7 @@ fn validate_tuple_assignment_statement_shape<'i>(
 
 fn validate_state_function_call_assign_statement_shape<'i>(
     ctx: &mut ValidateStatementShapesContext<'_, 'i>,
+    target_struct: Option<&str>,
     bindings: &[StructBindingAst<'i>],
     name: &str,
     args: &[Expr<'i>],
@@ -311,7 +312,7 @@ fn validate_state_function_call_assign_statement_shape<'i>(
             ctx.check_call(name, args, None)?;
         }
         "readInputStateWithTemplate" => {
-            let struct_name = struct_name_for_state_bindings(bindings, ctx.structs, ctx.constants)?;
+            let struct_name = struct_name_for_state_bindings(target_struct, bindings, ctx.structs, ctx.constants)?;
             let expected = TypeRef { base: TypeBase::Custom(struct_name), array_dims: Vec::new() };
             ctx.check_call(name, args, Some(&expected))?;
         }
@@ -321,7 +322,7 @@ fn validate_state_function_call_assign_statement_shape<'i>(
             )));
         }
     }
-    validate_state_function_call_assign(bindings, name, args, ctx.structs, ctx.constants, ctx.contract_fields)?;
+    validate_state_function_call_assign(target_struct, bindings, name, args, ctx.structs, ctx.constants, ctx.contract_fields)?;
     for binding in bindings {
         ensure_array_elements_have_known_size(&binding.type_ref, ctx.structs, ctx.constants, &binding.type_ref.type_name())?;
         insert_type_binding(ctx.types, &binding.name, &binding.type_ref);
@@ -595,6 +596,7 @@ fn validate_struct_destructure_bindings<'i>(
 
 // TODO: Remove this special case and destructure the State struct like any other struct.
 fn validate_state_function_call_assign<'i>(
+    target_struct: Option<&str>,
     bindings: &[StructBindingAst<'i>],
     name: &str,
     args: &[Expr<'i>],
@@ -638,7 +640,7 @@ fn validate_state_function_call_assign<'i>(
                         .to_string(),
                 ));
             };
-            let struct_name = struct_name_for_state_bindings(bindings, structs, constants)?;
+            let struct_name = struct_name_for_state_bindings(target_struct, bindings, structs, constants)?;
             let struct_spec =
                 structs.get(&struct_name).ok_or_else(|| CompilerError::Unsupported(format!("unknown struct '{struct_name}'")))?;
             if bindings.len() != struct_spec.fields.len() {
@@ -672,10 +674,18 @@ fn validate_state_function_call_assign<'i>(
 }
 
 fn struct_name_for_state_bindings<'i>(
+    target_struct: Option<&str>,
     bindings: &[StructBindingAst<'i>],
     structs: &StructRegistry,
     constants: &HashMap<String, Expr<'i>>,
 ) -> Result<String, CompilerError> {
+    if let Some(target_struct) = target_struct {
+        if !structs.contains_key(target_struct) {
+            return Err(CompilerError::Unsupported(format!("unknown struct '{target_struct}'")));
+        }
+        return Ok(target_struct.to_string());
+    }
+
     let matches = structs
         .iter()
         .filter_map(|(name, spec)| {

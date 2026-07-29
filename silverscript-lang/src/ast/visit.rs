@@ -213,7 +213,7 @@ pub fn walk_statement_mut<'i, V: AstVisitorMut<'i> + ?Sized>(visitor: &mut V, st
                 visitor.visit_expr(arg);
             }
         }
-        Statement::StateFunctionCallAssign { bindings, name, args, span, name_span } => {
+        Statement::StateFunctionCallAssign { target_struct: _, bindings, name, args, span, name_span } => {
             visitor.visit_span(span);
             visitor.visit_span(name_span);
             for binding in bindings {

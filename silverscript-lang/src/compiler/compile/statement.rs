@@ -113,8 +113,8 @@ fn compile_statement<'i>(ctx: &mut CompileStatementContext<'_, 'i>, stmt: &State
             compile_tuple_assignment_statement(ctx, left_type_ref, left_name, right_type_ref, right_name, expr)
         }
         Statement::FunctionCall { name, args, .. } => compile_function_call_statement(ctx, name, args),
-        Statement::StateFunctionCallAssign { bindings, name, args, .. } => {
-            compile_state_function_call_assign_statement(ctx, bindings, name, args)
+        Statement::StateFunctionCallAssign { target_struct, bindings, name, args, .. } => {
+            compile_state_function_call_assign_statement(ctx, target_struct.as_deref(), bindings, name, args)
         }
         Statement::StructDestructure { .. } => compile_struct_destructure_statement(),
         Statement::FunctionCallAssign { bindings, name, args, .. } => {
@@ -297,6 +297,7 @@ fn compile_function_call_statement<'i>(
 
 fn compile_state_function_call_assign_statement<'i>(
     ctx: &mut CompileStatementContext<'_, 'i>,
+    target_struct: Option<&str>,
     bindings: &[StructBindingAst<'i>],
     name: &str,
     args: &[Expr<'i>],
@@ -304,6 +305,7 @@ fn compile_state_function_call_assign_statement<'i>(
     if name == "readInputState" || name == "readInputStateWithTemplate" {
         return compile_read_input_state_statement(
             ctx,
+            target_struct,
             bindings,
             name,
             args,
@@ -359,6 +361,7 @@ fn compile_console_statement() -> Result<Vec<String>, CompilerError> {
 
 fn compile_read_input_state_statement<'i>(
     ctx: &mut CompileStatementContext<'_, 'i>,
+    target_struct: Option<&str>,
     bindings: &[StructBindingAst<'i>],
     name: &str,
     args: &[Expr<'i>],
@@ -440,7 +443,7 @@ fn compile_read_input_state_statement<'i>(
                 ));
             };
 
-            let struct_name = struct_name_for_state_bindings(bindings, structs)?;
+            let struct_name = struct_name_for_state_bindings(target_struct, bindings, structs)?;
             let struct_spec =
                 structs.get(&struct_name).ok_or_else(|| CompilerError::Unsupported(format!("unknown struct '{struct_name}'")))?;
             if bindings_by_field.len() != struct_spec.fields.len() {
