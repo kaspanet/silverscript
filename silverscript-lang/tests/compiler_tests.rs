@@ -1275,6 +1275,66 @@ fn allow_comparing_dynamic_and_fixed_byte_arrays_with_cast_in_contract_scope() {
 }
 
 #[test]
+fn fixed_size_builtin_results_assign_to_exact_byte_array_types() {
+    let source = r#"
+        contract Builtins() {
+            entrypoint function main(pubkey pk, byte[] redeem_script) {
+                byte[20] subnet_id = OpTxSubnetId();
+                byte[32] outpoint_tx_id = OpOutpointTxId(0);
+                byte[8] input_sequence = OpTxInputSeq(0);
+                byte[32] sequence_commitment = OpChainblockSeqCommit(
+                    0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+                );
+                byte[34] p2pk = new ScriptPubKeyP2PK(pk);
+                byte[35] p2sh = new ScriptPubKeyP2SH(outpoint_tx_id);
+                byte[35] p2sh_from_redeem_script = new ScriptPubKeyP2SHFromRedeemScript(redeem_script);
+                require(true);
+            }
+        }
+    "#;
+
+    compile_contract(source, &[], CompileOptions::default()).expect("fixed-size builtin results should assign to their exact types");
+}
+
+#[test]
+fn rejects_assigning_fixed_size_builtin_results_to_wrong_byte_array_sizes() {
+    let cases = [
+        ("OpTxSubnetId", "byte[19] value = OpTxSubnetId();"),
+        ("OpOutpointTxId", "byte[31] value = OpOutpointTxId(0);"),
+        ("OpTxInputSeq", "byte[7] value = OpTxInputSeq(0);"),
+        (
+            "OpChainblockSeqCommit",
+            "byte[31] value = OpChainblockSeqCommit(0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f);",
+        ),
+        (
+            "ScriptPubKeyP2PK",
+            "byte[33] value = new ScriptPubKeyP2PK(0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f);",
+        ),
+        (
+            "ScriptPubKeyP2SH",
+            "byte[34] value = new ScriptPubKeyP2SH(0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f);",
+        ),
+        ("ScriptPubKeyP2SHFromRedeemScript", "byte[34] value = new ScriptPubKeyP2SHFromRedeemScript(bytes(\"redeem\"));"),
+    ];
+
+    for (name, statement) in cases {
+        let source = format!(
+            r#"
+                contract Builtins() {{
+                    entrypoint function main() {{
+                        {statement}
+                        require(true);
+                    }}
+                }}
+            "#
+        );
+        let err =
+            compile_contract(&source, &[], CompileOptions::default()).expect_err(&format!("{name} should reject the wrong size"));
+        assert!(err.to_string().contains("variable 'value' expects byte["), "{name}: unexpected error: {err}");
+    }
+}
+
+#[test]
 fn rejects_comparing_different_scalar_types_without_cast() {
     let source = r#"
         contract Reproduce() {
@@ -8139,7 +8199,7 @@ fn compiles_opcode_builtins() {
             r#"
                 contract Test() {
                     entrypoint function main() {
-                        require(OpTxSubnetId() == bytes("subnet"));
+                        require(byte[](OpTxSubnetId()) == bytes("subnet"));
                     }
                 }
             "#,
@@ -8227,7 +8287,7 @@ fn compiles_opcode_builtins() {
             r#"
                 contract Test() {
                     entrypoint function main() {
-                        require(OpOutpointTxId(0) == bytes("txid"));
+                        require(byte[](OpOutpointTxId(0)) == bytes("txid"));
                     }
                 }
             "#,
@@ -8323,7 +8383,7 @@ fn compiles_opcode_builtins() {
             r#"
                 contract Test() {
                     entrypoint function main() {
-                        require(OpTxInputSeq(0) == bytes("seq"));
+                        require(byte[](OpTxInputSeq(0)) == bytes("seq"));
                     }
                 }
             "#,
@@ -8763,7 +8823,7 @@ fn compiles_opcode_builtins() {
             r#"
                 contract Test() {
                     entrypoint function main() {
-                        require(OpChainblockSeqCommit(bytes("block")) == bytes("commit"));
+                        require(byte[](OpChainblockSeqCommit(bytes("block"))) == bytes("commit"));
                     }
                 }
             "#,
@@ -8807,7 +8867,7 @@ fn executes_opcode_builtins_basic() {
             r#"
                 contract Test() {
                     entrypoint function main() {
-                        require(OpTxSubnetId() == bytes("abcdefghijklmnopqrst"));
+                        require(byte[](OpTxSubnetId()) == bytes("abcdefghijklmnopqrst"));
                     }
                 }
             "#,
@@ -8847,7 +8907,7 @@ fn executes_opcode_builtins_basic() {
             r#"
                 contract Test() {
                     entrypoint function main() {
-                        require(OpOutpointTxId(0) == bytes("0123456789abcdef0123456789abcdef"));
+                        require(byte[](OpOutpointTxId(0)) == bytes("0123456789abcdef0123456789abcdef"));
                     }
                 }
             "#,
@@ -8889,7 +8949,7 @@ fn executes_opcode_builtins_basic() {
             r#"
                 contract Test() {
                     entrypoint function main() {
-                        require(OpTxInputSeq(0) == bytes("sequence"));
+                        require(byte[](OpTxInputSeq(0)) == bytes("sequence"));
                     }
                 }
             "#,
@@ -9080,7 +9140,7 @@ fn executes_opcode_chainblock_seq_commit() {
     let source = r#"
         contract Test() {
             entrypoint function main() {
-                require(OpChainblockSeqCommit(bytes("0123456789abcdef0123456789abcdef")) == bytes("fedcba9876543210fedcba9876543210"));
+                require(byte[](OpChainblockSeqCommit(bytes("0123456789abcdef0123456789abcdef"))) == bytes("fedcba9876543210fedcba9876543210"));
             }
         }
     "#;
