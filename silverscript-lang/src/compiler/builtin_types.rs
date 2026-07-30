@@ -59,9 +59,7 @@ pub(super) fn builtin_return_type(name: &str) -> Option<TypeRef> {
         | "OpCovOutputIdx" => scalar(TypeBase::Int),
         "length" => scalar(TypeBase::Int),
         "OpTxInputIsCoinbase" | "checkSig" | "checkSigFromStack" | "checkSigFromStackECDSA" => scalar(TypeBase::Bool),
-        "blake2b" | "blake2bWithKey" | "blake3" | "blake3WithKey" | "templateHash" | "sha256" | "OpSha256" => {
-            byte_array(ArrayDim::Fixed(32))
-        }
+        "blake2b" | "blake2bWithKey" | "blake3" | "blake3WithKey" | "templateHash" | "sha256" => byte_array(ArrayDim::Fixed(32)),
         "OpInputCovenantId" | "OpOutputCovenantId" => byte_array(ArrayDim::Fixed(32)),
         "bytes"
         | "OpTxSubnetId"
