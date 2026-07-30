@@ -5523,11 +5523,8 @@ fn compiles_validate_output_state_to_expected_script() {
         // fetch tx.outputs[0].scriptPubKey
         .add_op(OpTxOutputSpk)
         .unwrap()
-        // expected == actual
-        .add_op(OpEqual)
-        .unwrap()
-        // enforce match
-        .add_op(OpVerify)
+        // enforce expected == actual
+        .add_op(OpEqualVerify)
         .unwrap()
 
         // ---- Entrypoint epilogue cleanup for original state fields ----
@@ -8189,29 +8186,6 @@ fn compiles_opcode_builtins() {
             r#"
                 contract Test() {
                     entrypoint function main() {
-                        require(byte[](OpSha256(bytes("msg"))) == byte[]("hash"));
-                    }
-                }
-            "#,
-            script_builder()
-                .add_data_with_push_opcode(b"msg")
-                .unwrap()
-                .add_op(OpSHA256)
-                .unwrap()
-                .add_data_with_push_opcode(b"hash")
-                .unwrap()
-                .add_op(OpEqual)
-                .unwrap()
-                .add_op(OpVerify)
-                .unwrap()
-                .add_op(OpTrue)
-                .unwrap()
-                .drain(),
-        ),
-        (
-            r#"
-                contract Test() {
-                    entrypoint function main() {
                         require(OpTxSubnetId() == bytes("subnet"));
                     }
                 }
@@ -8870,7 +8844,7 @@ fn executes_opcode_builtins_basic() {
             r#"
                 contract Test() {
                     entrypoint function main() {
-                        require(OpSha256(bytes("msg")) == OpSha256(bytes("msg")));
+                        require(sha256(bytes("msg")) == sha256(bytes("msg")));
                     }
                 }
             "#,
