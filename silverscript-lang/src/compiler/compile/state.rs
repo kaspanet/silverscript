@@ -249,14 +249,12 @@ pub(super) fn compile_read_input_state_with_template_validation(
 
     compile_expr(&actual_input_spk_expr, Some(&dynamic_bytes), &env, &mut emitter)?;
     compile_expr(&expected_input_spk_expr, Some(&p2sh_script_type), &env, &mut emitter)?;
-    emitter.emit_op(OpEqual, -1)?;
-    emitter.emit_op(OpVerify, -1)?;
+    emitter.emit_op(OpEqualVerify, -2)?;
 
     compile_expr(expected_template_hash, Some(&hash_type), &env, &mut emitter)?;
     compile_expr(&template_expr, Some(&dynamic_bytes), &env, &mut emitter)?;
     emitter.emit_op(OpBlake2b, 0)?;
-    emitter.emit_op(OpEqual, -1)?;
-    emitter.emit_op(OpVerify, -1)?;
+    emitter.emit_op(OpEqualVerify, -2)?;
 
     Ok(())
 }
@@ -366,8 +364,7 @@ pub(super) fn compile_validate_output_state_inner_statement(
     let int_type = scalar_type(TypeBase::Int);
     compile_expr(output_idx, Some(&int_type), &env, &mut emitter)?;
     emitter.emit_op(OpTxOutputSpk, 0)?;
-    emitter.emit_op(OpEqual, -1)?;
-    emitter.emit_op(OpVerify, -1)?;
+    emitter.emit_op(OpEqualVerify, -2)?;
 
     Ok(())
 }
@@ -413,8 +410,7 @@ pub(super) fn compile_validate_output_state_with_template_inner_statement(
         compile_expr(expected_template_hash, Some(&hash_type), &env, &mut emitter)?;
         compile_expr(&template_preimage, Some(&dynamic_bytes_type), &env, &mut emitter)?;
         emitter.emit_op(OpBlake2b, 0)?;
-        emitter.emit_op(OpEqual, -1)?;
-        emitter.emit_op(OpVerify, -1)?;
+        emitter.emit_op(OpEqualVerify, -2)?;
     }
     let stack_depth = compile_encoded_flat_state_fields(
         state_fields,
@@ -448,8 +444,7 @@ pub(super) fn compile_validate_output_state_with_template_inner_statement(
 
     compile_expr(output_idx, Some(&int_type), &env, &mut emitter)?;
     emitter.emit_op(OpTxOutputSpk, 0)?;
-    emitter.emit_op(OpEqual, -1)?;
-    emitter.emit_op(OpVerify, -1)?;
+    emitter.emit_op(OpEqualVerify, -2)?;
 
     Ok(())
 }
