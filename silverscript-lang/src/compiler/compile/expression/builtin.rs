@@ -35,7 +35,6 @@ pub(super) fn compile_call_expr<'i>(
 
 fn opcode_builtin(name: &str) -> Option<(usize, u8)> {
     Some(match name {
-        "OpSha256" => (1, OpSHA256),
         "OpTxSubnetId" => (0, OpTxSubnetId),
         "OpTxGas" => (0, OpTxGas),
         "OpTxPayloadLen" => (0, OpTxPayloadLen),
