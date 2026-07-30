@@ -5523,11 +5523,8 @@ fn compiles_validate_output_state_to_expected_script() {
         // fetch tx.outputs[0].scriptPubKey
         .add_op(OpTxOutputSpk)
         .unwrap()
-        // expected == actual
-        .add_op(OpEqual)
-        .unwrap()
-        // enforce match
-        .add_op(OpVerify)
+        // enforce expected == actual
+        .add_op(OpEqualVerify)
         .unwrap()
 
         // ---- Entrypoint epilogue cleanup for original state fields ----
