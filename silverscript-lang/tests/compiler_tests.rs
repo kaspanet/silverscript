@@ -9906,6 +9906,145 @@ fn ternary_expression_executes_selected_branch() {
 }
 
 #[test]
+fn ternary_expression_does_not_execute_unselected_branch() {
+    let source = r#"
+        contract TernaryShortCircuit() {
+            entrypoint function main(
+                bool select_then,
+                int then_numerator,
+                int then_divisor,
+                int else_numerator,
+                int else_divisor,
+                int expected
+            ) {
+                int value = select_then ? then_numerator / then_divisor : else_numerator / else_divisor;
+                require(value == expected);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("ternary contract should compile");
+    let asm = script_to_str(&compiled.script).expect("ternary script should stringify");
+    let if_index = asm.find("OpIf").expect("ternary should emit OpIf");
+    let else_index = asm.find("OpElse").expect("ternary should emit OpElse");
+    let end_if_index = asm.find("OpEndIf").expect("ternary should emit OpEndIf");
+    let div_indices = asm.match_indices("OpDiv").map(|(index, _)| index).collect::<Vec<_>>();
+    assert_eq!(div_indices.len(), 2, "each ternary branch should contain one division: {asm}");
+    assert!(
+        if_index < div_indices[0] && div_indices[0] < else_index && else_index < div_indices[1] && div_indices[1] < end_if_index,
+        "divisions should remain inside their respective conditional branches: {asm}"
+    );
+
+    let select_then = compiled
+        .build_sig_script("main", vec![Expr::bool(true), Expr::int(10), Expr::int(2), Expr::int(20), Expr::int(0), Expr::int(5)])
+        .expect("then-branch sigscript builds");
+    let then_result = run_script_with_sigscript(compiled.script.clone(), select_then);
+    assert!(then_result.is_ok(), "zero divisor in the unselected else branch must not execute: {}", then_result.unwrap_err());
+
+    let select_else = compiled
+        .build_sig_script("main", vec![Expr::bool(false), Expr::int(10), Expr::int(0), Expr::int(20), Expr::int(4), Expr::int(5)])
+        .expect("else-branch sigscript builds");
+    let else_result = run_script_with_sigscript(compiled.script.clone(), select_else);
+    assert!(else_result.is_ok(), "zero divisor in the unselected then branch must not execute: {}", else_result.unwrap_err());
+
+    let failing_then = compiled
+        .build_sig_script("main", vec![Expr::bool(true), Expr::int(10), Expr::int(0), Expr::int(20), Expr::int(4), Expr::int(5)])
+        .expect("failing then-branch sigscript builds");
+    assert!(
+        run_script_with_sigscript(compiled.script.clone(), failing_then).is_err(),
+        "zero divisor in the selected then branch should execute and fail"
+    );
+
+    let failing_else = compiled
+        .build_sig_script("main", vec![Expr::bool(false), Expr::int(10), Expr::int(2), Expr::int(20), Expr::int(0), Expr::int(5)])
+        .expect("failing else-branch sigscript builds");
+    assert!(
+        run_script_with_sigscript(compiled.script, failing_else).is_err(),
+        "zero divisor in the selected else branch should execute and fail"
+    );
+}
+
+#[test]
+fn ternary_expression_does_not_execute_function_call_in_unselected_else_branch() {
+    let source = r#"
+        contract TernaryCallShortCircuit() {
+            function fail(int value) : int {
+                require(false);
+                return value;
+            }
+
+            entrypoint function main(bool select_then, int then_value, int else_value, int expected) {
+                int value = select_then ? then_value : fail(else_value);
+                require(value == expected);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("ternary contract should compile");
+
+    let select_then = compiled
+        .build_sig_script("main", vec![Expr::bool(true), Expr::int(7), Expr::int(11), Expr::int(7)])
+        .expect("then-branch sigscript builds");
+    let then_result = run_script_with_sigscript(compiled.script.clone(), select_then);
+    assert!(then_result.is_ok(), "require(false) in the unselected else-branch call must not execute: {}", then_result.unwrap_err());
+
+    let select_else = compiled
+        .build_sig_script("main", vec![Expr::bool(false), Expr::int(7), Expr::int(11), Expr::int(11)])
+        .expect("else-branch sigscript builds");
+    assert!(
+        run_script_with_sigscript(compiled.script, select_else).is_err(),
+        "require(false) in the selected else-branch call should execute and fail"
+    );
+}
+
+#[test]
+fn if_else_does_not_execute_function_call_in_unselected_else_branch() {
+    let source = r#"
+        contract IfElseCallShortCircuit() {
+            function fail(int value) : int {
+                require(false);
+                return value;
+            }
+
+            entrypoint function main(bool select_then, int then_value, int else_value, int expected) {
+                int value = expected;
+                if (select_then) {
+                    value = then_value;
+                } else {
+                    value = fail(else_value);
+                }
+                require(value == expected);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("if/else contract should compile");
+    let asm = script_to_str(&compiled.script).expect("if/else script should stringify");
+    let if_index = asm.find("OpIf").expect("if/else should emit OpIf");
+    let else_index = asm.find("OpElse").expect("if/else should emit OpElse");
+    let fail_index = asm.find("OpFalse OpVerify").expect("else-branch helper should emit require(false)");
+    let end_if_index = asm.find("OpEndIf").expect("if/else should emit OpEndIf");
+    assert!(
+        if_index < else_index && else_index < fail_index && fail_index < end_if_index,
+        "require(false) should remain inside the else branch: {asm}"
+    );
+
+    let select_then = compiled
+        .build_sig_script("main", vec![Expr::bool(true), Expr::int(7), Expr::int(11), Expr::int(7)])
+        .expect("then-branch sigscript builds");
+    let then_result = run_script_with_sigscript(compiled.script.clone(), select_then);
+    assert!(then_result.is_ok(), "require(false) in the unselected else-branch call must not execute: {}", then_result.unwrap_err());
+
+    let select_else = compiled
+        .build_sig_script("main", vec![Expr::bool(false), Expr::int(7), Expr::int(11), Expr::int(11)])
+        .expect("else-branch sigscript builds");
+    assert!(
+        run_script_with_sigscript(compiled.script, select_else).is_err(),
+        "require(false) in the selected else-branch call should execute and fail"
+    );
+}
+
+#[test]
 fn ternary_expression_rejects_mismatched_branch_types() {
     let source = r#"
         contract TernaryTypes() {
