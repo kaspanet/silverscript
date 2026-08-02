@@ -931,15 +931,15 @@ fn sorting_network_over_fixed_array_matches_rust_model_across_cases() {
     let (instruction_count, charged_op_count) = script_op_counts(&compiled.script);
     println!("sorting_network {script_len} / {instruction_count} / {charged_op_count}");
     assert_eq!(
-        script_len, 756,
+        script_len, 763,
         "sorting_network metrics: script_len={script_len} instruction_count={instruction_count} charged_op_count={charged_op_count}"
     );
     assert_eq!(
-        instruction_count, 756,
+        instruction_count, 762,
         "sorting_network metrics: script_len={script_len} instruction_count={instruction_count} charged_op_count={charged_op_count}"
     );
     assert_eq!(
-        charged_op_count, 591,
+        charged_op_count, 595,
         "sorting_network metrics: script_len={script_len} instruction_count={instruction_count} charged_op_count={charged_op_count}"
     );
 
@@ -10114,6 +10114,43 @@ fn compiles_sigscript_reused_inputs_and_fails_on_wrong_value() {
 
     let result = run_script_with_sigscript(compiled.script, sigscript);
     assert!(result.is_err());
+}
+
+#[test]
+fn entrypoints_validate_fixed_array_argument_sizes_at_runtime() {
+    let source = r#"
+        contract Test() {
+            int constant COUNT = 2;
+            bool enabled = true;
+
+            entry bytes(byte[3] x) {
+                require(enabled);
+            }
+
+            entry ints(int[COUNT] x) {
+                require(enabled);
+            }
+        }
+    "#;
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+
+    let sigscript = |entrypoint: &str, value: &[u8]| {
+        let mut builder = script_builder();
+        builder.add_data_with_push_opcode(value).unwrap();
+        if let Some(selector) = selector_for(&compiled, entrypoint) {
+            builder.add_i64(selector).unwrap();
+        }
+        builder.drain()
+    };
+
+    assert!(run_script_with_sigscript(compiled.script.clone(), sigscript("bytes", &[1, 2, 3])).is_ok());
+    assert!(run_script_with_sigscript(compiled.script.clone(), sigscript("bytes", &[1, 2])).is_err());
+    assert!(run_script_with_sigscript(compiled.script.clone(), sigscript("bytes", &[1, 2, 3, 4])).is_err());
+    assert!(run_script_with_sigscript(compiled.script.clone(), sigscript("ints", &[0; 16])).is_ok());
+    assert!(run_script_with_sigscript(compiled.script.clone(), sigscript("ints", &[0; 8])).is_err());
+
+    let asm = script_to_str(&compiled.script).expect("stringifies");
+    assert_eq!(asm.matches("OpSize").count(), 2, "each entrypoint should validate its fixed-array argument: {asm}");
 }
 
 #[test]

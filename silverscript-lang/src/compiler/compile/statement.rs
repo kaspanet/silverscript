@@ -43,6 +43,7 @@ pub(super) fn compile_entrypoint_function<'i>(
         types.insert(field.name.clone(), field.type_ref.clone());
     }
     let mut builder = script_builder();
+    compile_fixed_size_param_validations(function, constants, &stack_bindings, &mut builder)?;
     let mut return_exprs: Vec<Expr> = Vec::new();
 
     let body_len = function.body.len();
@@ -90,6 +91,35 @@ pub(super) fn compile_entrypoint_function<'i>(
     let script = builder.drain();
     debug_recorder.finish_entrypoint(script.len());
     Ok((function.name.clone(), script))
+}
+
+fn compile_fixed_size_param_validations<'i>(
+    function: &FunctionAst<'i>,
+    constants: &HashMap<String, Expr<'i>>,
+    stack_bindings: &StackBindings,
+    builder: &mut ScriptBuilder,
+) -> Result<(), CompilerError> {
+    for param in &function.params {
+        if !param.type_ref.is_array() {
+            continue;
+        }
+        let Some(expected_size) = fixed_type_size(&param.type_ref, constants) else {
+            continue;
+        };
+        let expected_size = i64::try_from(expected_size)
+            .map_err(|_| CompilerError::Unsupported(format!("entrypoint parameter '{}' is too large", param.name)))?;
+
+        let mut stack_depth = 0;
+        let copied = stack_bindings.emit_copy_binding_to_top(&param.name, &mut stack_depth, builder)?;
+        debug_assert!(copied, "entrypoint parameter must have a stack binding");
+
+        builder.add_op(OpSize)?;
+        builder.add_i64(expected_size)?;
+        builder.add_op(OpNumEqualVerify)?;
+        builder.add_op(OpDrop)?;
+    }
+
+    Ok(())
 }
 
 fn compile_statement<'i>(ctx: &mut CompileStatementContext<'_, 'i>, stmt: &Statement<'i>) -> Result<Vec<String>, CompilerError> {
