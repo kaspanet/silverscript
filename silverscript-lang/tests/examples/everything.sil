@@ -16,7 +16,7 @@ contract Test(int x, string y) {
         myOtherVariable = i;
         myVariable = 10;
 
-        require(blake2b(b) != blake2b(myVariable as byte[8]));
+        require(blake2b(b) != blake2b(byte[](myVariable as byte[8])));
         require(this.age >= 500);
         require(y.length > 1);
 

@@ -69,10 +69,10 @@ contract ChessMux(
         require(status == 0 /*LIVE*/);
 
         // The side-to-move commitment is `blake2b(owner || player_id)`, where
-        // `owner = blake2b(pk)`. Downstream workers rely on the committed
+        // `owner = blake2b(byte[](pk))`. Downstream workers rely on the committed
         // pending move and do not repeat signature checks.
-        byte[32] owner = blake2b(pk);
-        byte[32] player_ref = blake2b(owner + player_id);
+        byte[32] owner = blake2b(byte[](pk));
+        byte[32] player_ref = blake2b(byte[](owner + player_id));
         if (turn == 0 /*WHITE*/) {
             require(player_ref == white_player);
         } else {
@@ -237,8 +237,8 @@ contract ChessMux(
         // The side waiting on a response is `turn`, so the timeout claimant is
         // always the opposite signer, authenticated by the same
         // `blake2b(owner || player_id)` commitment used in `route`.
-        byte[32] owner = blake2b(pk);
-        byte[32] player_ref = blake2b(owner + player_id);
+        byte[32] owner = blake2b(byte[](pk));
+        byte[32] player_ref = blake2b(byte[](owner + player_id));
         if (turn == 0 /*WHITE*/) {
             require(player_ref == black_player);
         } else {
@@ -261,7 +261,7 @@ contract ChessMux(
         }
 
         byte[32] settle_template = templateHash(settle_prefix, settle_suffix);
-        require(blake2b(settle_template + player_template) == byte[32](route_templates.slice(256, 288)));
+        require(blake2b(byte[](settle_template + player_template)) == byte[32](route_templates.slice(256, 288)));
 
         SettleState next_state = {
             player_template: player_template,
@@ -278,7 +278,7 @@ contract ChessMux(
     entry settle(byte[32] player_template, byte[] settle_prefix, byte[] settle_suffix) {
         require(status != 0 /*LIVE*/);
         byte[32] settle_template = templateHash(settle_prefix, settle_suffix);
-        require(blake2b(settle_template + player_template) == byte[32](route_templates.slice(256, 288)));
+        require(blake2b(byte[](settle_template + player_template)) == byte[32](route_templates.slice(256, 288)));
 
         SettleState next_state = {
             player_template: player_template,

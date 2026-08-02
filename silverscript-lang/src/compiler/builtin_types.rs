@@ -1,5 +1,7 @@
 use crate::ast::{ArrayDim, IntrospectionKind, NullaryOp, TypeBase, TypeRef};
 
+use super::STATE_TYPE_NAME;
+
 fn scalar(base: TypeBase) -> TypeRef {
     TypeRef { base, array_dims: Vec::new() }
 }
@@ -96,24 +98,71 @@ pub(super) fn constructor_parameters(name: &str) -> Option<Vec<(&'static str, Ty
 }
 
 pub(super) fn builtin_parameters(name: &str) -> Option<Vec<(&'static str, TypeRef)>> {
-    match name {
-        "readInputStateWithTemplate" => Some(vec![
+    Some(match name {
+        "length" | "sha256" | "blake2b" | "blake3" => vec![("data", byte_array(ArrayDim::Dynamic))],
+        "blake2bWithKey" => vec![("data", byte_array(ArrayDim::Dynamic)), ("key", byte_array(ArrayDim::Dynamic))],
+        "blake3WithKey" => vec![("data", byte_array(ArrayDim::Dynamic)), ("key", byte_array(ArrayDim::Fixed(32)))],
+        "templateHash" => vec![("templatePrefix", byte_array(ArrayDim::Dynamic)), ("templateSuffix", byte_array(ArrayDim::Dynamic))],
+        "checkSig" => vec![("signature", scalar(TypeBase::Sig)), ("publicKey", scalar(TypeBase::Pubkey))],
+        "checkSigFromStack" => vec![
+            ("signature", scalar(TypeBase::Datasig)),
+            ("digest", byte_array(ArrayDim::Fixed(32))),
+            ("publicKey", scalar(TypeBase::Pubkey)),
+        ],
+        "checkSigFromStackECDSA" => vec![
+            ("signature", scalar(TypeBase::Datasig)),
+            ("digest", byte_array(ArrayDim::Fixed(32))),
+            ("publicKey", byte_array(ArrayDim::Fixed(33))),
+        ],
+        "OpTxSubnetId" | "OpTxGas" | "OpTxPayloadLen" | "OpTxInputIndex" => vec![],
+        "OpOutpointTxId"
+        | "OpOutpointIndex"
+        | "OpTxInputScriptSigLen"
+        | "OpTxInputSeq"
+        | "OpTxInputDaaScore"
+        | "OpTxInputIsCoinbase"
+        | "OpTxInputSpkLen"
+        | "OpTxOutputSpkLen"
+        | "OpInputCovenantId"
+        | "OpOutputCovenantId" => vec![("idx", scalar(TypeBase::Int))],
+        "OpTxPayloadSubstr" => vec![("start", scalar(TypeBase::Int)), ("end", scalar(TypeBase::Int))],
+        "OpTxInputScriptSigSubstr" | "OpTxInputSpkSubstr" | "OpTxOutputSpkSubstr" => {
+            vec![("idx", scalar(TypeBase::Int)), ("start", scalar(TypeBase::Int)), ("end", scalar(TypeBase::Int))]
+        }
+        "OpAuthOutputCount" => vec![("input_idx", scalar(TypeBase::Int))],
+        "OpAuthOutputIdx" => vec![("input_idx", scalar(TypeBase::Int)), ("k", scalar(TypeBase::Int))],
+        "OpCovInputCount" | "OpCovOutputCount" => vec![("covenant_id", byte_array(ArrayDim::Fixed(32)))],
+        "OpCovInputIdx" | "OpCovOutputIdx" => {
+            vec![("covenant_id", byte_array(ArrayDim::Fixed(32))), ("k", scalar(TypeBase::Int))]
+        }
+        "OpNum2Bin" => vec![("num", scalar(TypeBase::Int)), ("size", scalar(TypeBase::Int))],
+        "OpBin2Num" => vec![("num", byte_array(ArrayDim::Dynamic))],
+        "OpChainblockSeqCommit" => vec![("block", byte_array(ArrayDim::Fixed(32)))],
+        "readInputState" => vec![("input_idx", scalar(TypeBase::Int))],
+        "readInputStateWithTemplate" => vec![
             ("input_idx", scalar(TypeBase::Int)),
             ("template_prefix_len", scalar(TypeBase::Int)),
             ("template_suffix_len", scalar(TypeBase::Int)),
             ("expected_template_hash", byte_array(ArrayDim::Fixed(32))),
-        ]),
-        "checkSigFromStack" => Some(vec![
-            ("signature", scalar(TypeBase::Datasig)),
-            ("digest", byte_array(ArrayDim::Fixed(32))),
-            ("publicKey", scalar(TypeBase::Pubkey)),
-        ]),
-        "checkSigFromStackECDSA" => Some(vec![
-            ("signature", scalar(TypeBase::Datasig)),
-            ("digest", byte_array(ArrayDim::Fixed(32))),
-            ("publicKey", byte_array(ArrayDim::Fixed(33))),
-        ]),
-        "blake3WithKey" => Some(vec![("data", byte_array(ArrayDim::Dynamic)), ("key", byte_array(ArrayDim::Fixed(32)))]),
-        _ => None,
-    }
+        ],
+        "validateOutputState" => {
+            vec![("outputIndex", scalar(TypeBase::Int)), ("newState", scalar(TypeBase::Custom(STATE_TYPE_NAME.to_string())))]
+        }
+        "validateOutputStateWithTemplate" => vec![
+            ("outputIndex", scalar(TypeBase::Int)),
+            ("newState", scalar(TypeBase::Custom(STATE_TYPE_NAME.to_string()))),
+            ("templatePrefix", byte_array(ArrayDim::Dynamic)),
+            ("templateSuffix", byte_array(ArrayDim::Dynamic)),
+            ("expectedTemplateHash", byte_array(ArrayDim::Fixed(32))),
+        ],
+        "validateOutputStateWithInputTemplate" => vec![
+            ("outputIndex", scalar(TypeBase::Int)),
+            ("newState", scalar(TypeBase::Custom(STATE_TYPE_NAME.to_string()))),
+            ("templateInputIndex", scalar(TypeBase::Int)),
+            ("templatePrefixLen", scalar(TypeBase::Int)),
+            ("templateSuffixLen", scalar(TypeBase::Int)),
+            ("expectedTemplateHash", byte_array(ArrayDim::Fixed(32))),
+        ],
+        _ => return None,
+    })
 }

@@ -55,7 +55,7 @@ contract League(
         // created for a willing owner.
         require(checkSig(owner_sig, owner_pk));
 
-        byte[32] owner = blake2b(owner_pk);
+        byte[32] owner = blake2b(byte[](owner_pk));
         byte[32] spent_outpoint_txid = byte[32](OpOutpointTxId(this.activeInputIndex));
         byte[4] spent_outpoint_index = OpOutpointIndex(this.activeInputIndex) as byte[4];
         byte[] player_id_domain = byte[]("LeaguePlayerId");
@@ -100,7 +100,7 @@ contract League(
     // Admin-signed same-SPK continuity path for adjusting lane value without
     // changing the immutable League state or closing the lane.
     entry rebalance(sig admin_sig, pubkey admin_pk) {
-        require(blake2b(admin_pk) == admin);
+        require(blake2b(byte[](admin_pk)) == admin);
         require(checkSig(admin_sig, admin_pk));
         require(OpAuthOutputCount(this.activeInputIndex) == 1);
         int output_idx = OpAuthOutputIdx(this.activeInputIndex, 0);
@@ -110,7 +110,7 @@ contract League(
     // Admin-signed fan-out path for splitting one immutable registration lane
     // into two identical lanes.
     entry fork(sig admin_sig, pubkey admin_pk) {
-        require(blake2b(admin_pk) == admin);
+        require(blake2b(byte[](admin_pk)) == admin);
         require(checkSig(admin_sig, admin_pk));
         require(OpAuthOutputCount(this.activeInputIndex) == 2);
 
