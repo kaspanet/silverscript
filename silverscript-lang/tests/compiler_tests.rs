@@ -1275,6 +1275,66 @@ fn allow_comparing_dynamic_and_fixed_byte_arrays_with_cast_in_contract_scope() {
 }
 
 #[test]
+fn fixed_size_builtin_results_assign_to_exact_byte_array_types() {
+    let source = r#"
+        contract Builtins() {
+            entrypoint function main(pubkey pk, byte[] redeem_script) {
+                byte[20] subnet_id = OpTxSubnetId();
+                byte[32] outpoint_tx_id = OpOutpointTxId(0);
+                byte[8] input_sequence = OpTxInputSeq(0);
+                byte[32] sequence_commitment = OpChainblockSeqCommit(
+                    0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+                );
+                byte[34] p2pk = new ScriptPubKeyP2PK(pk);
+                byte[35] p2sh = new ScriptPubKeyP2SH(outpoint_tx_id);
+                byte[35] p2sh_from_redeem_script = new ScriptPubKeyP2SHFromRedeemScript(redeem_script);
+                require(true);
+            }
+        }
+    "#;
+
+    compile_contract(source, &[], CompileOptions::default()).expect("fixed-size builtin results should assign to their exact types");
+}
+
+#[test]
+fn rejects_assigning_fixed_size_builtin_results_to_wrong_byte_array_sizes() {
+    let cases = [
+        ("OpTxSubnetId", "byte[19] value = OpTxSubnetId();"),
+        ("OpOutpointTxId", "byte[31] value = OpOutpointTxId(0);"),
+        ("OpTxInputSeq", "byte[7] value = OpTxInputSeq(0);"),
+        (
+            "OpChainblockSeqCommit",
+            "byte[31] value = OpChainblockSeqCommit(0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f);",
+        ),
+        (
+            "ScriptPubKeyP2PK",
+            "byte[33] value = new ScriptPubKeyP2PK(0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f);",
+        ),
+        (
+            "ScriptPubKeyP2SH",
+            "byte[34] value = new ScriptPubKeyP2SH(0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f);",
+        ),
+        ("ScriptPubKeyP2SHFromRedeemScript", "byte[34] value = new ScriptPubKeyP2SHFromRedeemScript(bytes(\"redeem\"));"),
+    ];
+
+    for (name, statement) in cases {
+        let source = format!(
+            r#"
+                contract Builtins() {{
+                    entrypoint function main() {{
+                        {statement}
+                        require(true);
+                    }}
+                }}
+            "#
+        );
+        let err =
+            compile_contract(&source, &[], CompileOptions::default()).expect_err(&format!("{name} should reject the wrong size"));
+        assert!(err.to_string().contains("variable 'value' expects byte["), "{name}: unexpected error: {err}");
+    }
+}
+
+#[test]
 fn rejects_comparing_different_scalar_types_without_cast() {
     let source = r#"
         contract Reproduce() {
@@ -8186,7 +8246,7 @@ fn compiles_opcode_builtins() {
             r#"
                 contract Test() {
                     entrypoint function main() {
-                        require(OpTxSubnetId() == bytes("subnet"));
+                        require(byte[](OpTxSubnetId()) == bytes("subnet"));
                     }
                 }
             "#,
@@ -8274,7 +8334,7 @@ fn compiles_opcode_builtins() {
             r#"
                 contract Test() {
                     entrypoint function main() {
-                        require(OpOutpointTxId(0) == bytes("txid"));
+                        require(byte[](OpOutpointTxId(0)) == bytes("txid"));
                     }
                 }
             "#,
@@ -8370,7 +8430,7 @@ fn compiles_opcode_builtins() {
             r#"
                 contract Test() {
                     entrypoint function main() {
-                        require(OpTxInputSeq(0) == bytes("seq"));
+                        require(byte[](OpTxInputSeq(0)) == bytes("seq"));
                     }
                 }
             "#,
@@ -8810,7 +8870,7 @@ fn compiles_opcode_builtins() {
             r#"
                 contract Test() {
                     entrypoint function main() {
-                        require(OpChainblockSeqCommit(bytes("block")) == bytes("commit"));
+                        require(byte[](OpChainblockSeqCommit(bytes("block"))) == bytes("commit"));
                     }
                 }
             "#,
@@ -8854,7 +8914,7 @@ fn executes_opcode_builtins_basic() {
             r#"
                 contract Test() {
                     entrypoint function main() {
-                        require(OpTxSubnetId() == bytes("abcdefghijklmnopqrst"));
+                        require(byte[](OpTxSubnetId()) == bytes("abcdefghijklmnopqrst"));
                     }
                 }
             "#,
@@ -8894,7 +8954,7 @@ fn executes_opcode_builtins_basic() {
             r#"
                 contract Test() {
                     entrypoint function main() {
-                        require(OpOutpointTxId(0) == bytes("0123456789abcdef0123456789abcdef"));
+                        require(byte[](OpOutpointTxId(0)) == bytes("0123456789abcdef0123456789abcdef"));
                     }
                 }
             "#,
@@ -8936,7 +8996,7 @@ fn executes_opcode_builtins_basic() {
             r#"
                 contract Test() {
                     entrypoint function main() {
-                        require(OpTxInputSeq(0) == bytes("sequence"));
+                        require(byte[](OpTxInputSeq(0)) == bytes("sequence"));
                     }
                 }
             "#,
@@ -9127,7 +9187,7 @@ fn executes_opcode_chainblock_seq_commit() {
     let source = r#"
         contract Test() {
             entrypoint function main() {
-                require(OpChainblockSeqCommit(bytes("0123456789abcdef0123456789abcdef")) == bytes("fedcba9876543210fedcba9876543210"));
+                require(byte[](OpChainblockSeqCommit(bytes("0123456789abcdef0123456789abcdef"))) == bytes("fedcba9876543210fedcba9876543210"));
             }
         }
     "#;
@@ -9890,6 +9950,277 @@ fn ternary_expression_executes_selected_branch() {
     let sigscript_wrong = compiled.build_sig_script("main", vec![Expr::int(0), Expr::int(7)]).expect("sigscript builds");
     let result_wrong = run_script_with_sigscript(compiled.script, sigscript_wrong);
     assert!(result_wrong.is_err(), "else branch should not produce the then value");
+}
+
+#[test]
+fn ternary_expression_does_not_execute_unselected_branch() {
+    let source = r#"
+        contract TernaryShortCircuit() {
+            entrypoint function main(
+                bool select_then,
+                int then_numerator,
+                int then_divisor,
+                int else_numerator,
+                int else_divisor,
+                int expected
+            ) {
+                int value = select_then ? then_numerator / then_divisor : else_numerator / else_divisor;
+                require(value == expected);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("ternary contract should compile");
+    let asm = script_to_str(&compiled.script).expect("ternary script should stringify");
+    let if_index = asm.find("OpIf").expect("ternary should emit OpIf");
+    let else_index = asm.find("OpElse").expect("ternary should emit OpElse");
+    let end_if_index = asm.find("OpEndIf").expect("ternary should emit OpEndIf");
+    let div_indices = asm.match_indices("OpDiv").map(|(index, _)| index).collect::<Vec<_>>();
+    assert_eq!(div_indices.len(), 2, "each ternary branch should contain one division: {asm}");
+    assert!(
+        if_index < div_indices[0] && div_indices[0] < else_index && else_index < div_indices[1] && div_indices[1] < end_if_index,
+        "divisions should remain inside their respective conditional branches: {asm}"
+    );
+
+    let select_then = compiled
+        .build_sig_script("main", vec![Expr::bool(true), Expr::int(10), Expr::int(2), Expr::int(20), Expr::int(0), Expr::int(5)])
+        .expect("then-branch sigscript builds");
+    let then_result = run_script_with_sigscript(compiled.script.clone(), select_then);
+    assert!(then_result.is_ok(), "zero divisor in the unselected else branch must not execute: {}", then_result.unwrap_err());
+
+    let select_else = compiled
+        .build_sig_script("main", vec![Expr::bool(false), Expr::int(10), Expr::int(0), Expr::int(20), Expr::int(4), Expr::int(5)])
+        .expect("else-branch sigscript builds");
+    let else_result = run_script_with_sigscript(compiled.script.clone(), select_else);
+    assert!(else_result.is_ok(), "zero divisor in the unselected then branch must not execute: {}", else_result.unwrap_err());
+
+    let failing_then = compiled
+        .build_sig_script("main", vec![Expr::bool(true), Expr::int(10), Expr::int(0), Expr::int(20), Expr::int(4), Expr::int(5)])
+        .expect("failing then-branch sigscript builds");
+    assert!(
+        run_script_with_sigscript(compiled.script.clone(), failing_then).is_err(),
+        "zero divisor in the selected then branch should execute and fail"
+    );
+
+    let failing_else = compiled
+        .build_sig_script("main", vec![Expr::bool(false), Expr::int(10), Expr::int(2), Expr::int(20), Expr::int(0), Expr::int(5)])
+        .expect("failing else-branch sigscript builds");
+    assert!(
+        run_script_with_sigscript(compiled.script, failing_else).is_err(),
+        "zero divisor in the selected else branch should execute and fail"
+    );
+}
+
+#[test]
+fn ternary_expression_does_not_execute_function_call_in_unselected_else_branch() {
+    let source = r#"
+        contract TernaryCallShortCircuit() {
+            function fail(int value) : int {
+                require(false);
+                return value;
+            }
+
+            entrypoint function main(bool select_then, int then_value, int else_value, int expected) {
+                int value = select_then ? then_value : fail(else_value);
+                require(value == expected);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("ternary contract should compile");
+    let asm = script_to_str(&compiled.script).expect("ternary script should stringify");
+    let if_index = asm.find("OpIf").expect("ternary should emit OpIf");
+    let else_index = asm.find("OpElse").expect("ternary should emit OpElse");
+    let fail_index = asm.find("OpFalse OpVerify").expect("else-branch helper should emit require(false)");
+    let end_if_index = asm.find("OpEndIf").expect("ternary should emit OpEndIf");
+    assert!(
+        if_index < else_index && else_index < fail_index && fail_index < end_if_index,
+        "require(false) should remain inside the ternary's else branch: {asm}"
+    );
+
+    let select_then = compiled
+        .build_sig_script("main", vec![Expr::bool(true), Expr::int(7), Expr::int(11), Expr::int(7)])
+        .expect("then-branch sigscript builds");
+    let then_result = run_script_with_sigscript(compiled.script.clone(), select_then);
+    assert!(then_result.is_ok(), "require(false) in the unselected else-branch call must not execute: {}", then_result.unwrap_err());
+
+    let select_else = compiled
+        .build_sig_script("main", vec![Expr::bool(false), Expr::int(7), Expr::int(11), Expr::int(11)])
+        .expect("else-branch sigscript builds");
+    assert!(
+        run_script_with_sigscript(compiled.script, select_else).is_err(),
+        "require(false) in the selected else-branch call should execute and fail"
+    );
+}
+
+#[test]
+fn ternary_expression_does_not_execute_function_call_in_unselected_then_branch() {
+    let source = r#"
+        contract TernaryCallShortCircuit() {
+            function fail(int value) : int {
+                require(false);
+                return value;
+            }
+
+            entrypoint function main(bool select_then, int then_value, int else_value, int expected) {
+                int value = select_then ? fail(then_value) : else_value;
+                require(value == expected);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("ternary contract should compile");
+    let asm = script_to_str(&compiled.script).expect("ternary script should stringify");
+    let if_index = asm.find("OpIf").expect("ternary should emit OpIf");
+    let fail_index = asm.find("OpFalse OpVerify").expect("then-branch helper should emit require(false)");
+    let else_index = asm.find("OpElse").expect("ternary should emit OpElse");
+    let end_if_index = asm.find("OpEndIf").expect("ternary should emit OpEndIf");
+    assert!(
+        if_index < fail_index && fail_index < else_index && else_index < end_if_index,
+        "require(false) should remain inside the ternary's then branch: {asm}"
+    );
+
+    let select_else = compiled
+        .build_sig_script("main", vec![Expr::bool(false), Expr::int(7), Expr::int(11), Expr::int(11)])
+        .expect("else-branch sigscript builds");
+    let else_result = run_script_with_sigscript(compiled.script.clone(), select_else);
+    assert!(else_result.is_ok(), "require(false) in the unselected then-branch call must not execute: {}", else_result.unwrap_err());
+
+    let select_then = compiled
+        .build_sig_script("main", vec![Expr::bool(true), Expr::int(7), Expr::int(11), Expr::int(7)])
+        .expect("then-branch sigscript builds");
+    assert!(
+        run_script_with_sigscript(compiled.script, select_then).is_err(),
+        "require(false) in the selected then-branch call should execute and fail"
+    );
+}
+
+#[test]
+fn nested_ternary_function_call_remains_in_selected_branch() {
+    let source = r#"
+        contract NestedTernaryCallShortCircuit() {
+            function fail(int value) : int {
+                require(false);
+                return value;
+            }
+
+            entrypoint function main(bool select_then, int then_value, int else_value, int expected) {
+                int value = 1 + (select_then ? then_value : fail(else_value));
+                require(value == expected);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("nested ternary contract should compile");
+
+    let select_then = compiled
+        .build_sig_script("main", vec![Expr::bool(true), Expr::int(7), Expr::int(11), Expr::int(8)])
+        .expect("then-branch sigscript builds");
+    let then_result = run_script_with_sigscript(compiled.script.clone(), select_then);
+    assert!(
+        then_result.is_ok(),
+        "require(false) in a nested unselected else-branch call must not execute: {}",
+        then_result.unwrap_err()
+    );
+
+    let select_else = compiled
+        .build_sig_script("main", vec![Expr::bool(false), Expr::int(7), Expr::int(11), Expr::int(12)])
+        .expect("else-branch sigscript builds");
+    assert!(
+        run_script_with_sigscript(compiled.script, select_else).is_err(),
+        "require(false) in a nested selected else-branch call should execute and fail"
+    );
+}
+
+#[test]
+fn ternary_lowering_initializes_generated_results_for_supported_types() {
+    let source = r#"
+        contract TernaryDefaults(int N, byte[N] initial_bytes, pubkey initial_pubkey, sig initial_sig, datasig initial_datasig) {
+            struct Pair {
+                int number;
+                bool flag;
+            }
+
+            entrypoint function main(bool select_then, int number, byte value) {
+                int int_result = select_then ? number : 1;
+                bool bool_result = select_then ? true : false;
+                byte byte_result = select_then ? value : 1;
+                string string_result = select_then ? "then" : "else";
+                byte[N] fixed_array_result = select_then ? initial_bytes : initial_bytes;
+                byte[] dynamic_array_result = select_then ? byte[](initial_bytes) : byte[](initial_bytes);
+                pubkey pubkey_result = select_then ? initial_pubkey : initial_pubkey;
+                sig sig_result = select_then ? initial_sig : initial_sig;
+                datasig datasig_result = select_then ? initial_datasig : initial_datasig;
+                Pair struct_result = select_then
+                    ? {number: number, flag: true}
+                    : {number: 1, flag: false};
+                require(int_result >= 0);
+                require(bool_result || !bool_result);
+                require(byte_result >= 0);
+                require(string_result.length > 0);
+                require(fixed_array_result.length == 2);
+                require(dynamic_array_result.length == 2);
+                require(pubkey_result == initial_pubkey);
+                require(sig_result == initial_sig);
+                require(datasig_result == initial_datasig);
+                require(struct_result.number >= 0);
+            }
+        }
+    "#;
+
+    compile_contract(
+        source,
+        &[Expr::int(2), Expr::bytes(vec![1, 2]), Expr::bytes(vec![3; 32]), Expr::bytes(vec![4; 65]), Expr::bytes(vec![5; 64])],
+        CompileOptions::default(),
+    )
+    .expect("ternary defaults should compile for every supported value type");
+}
+
+#[test]
+fn if_else_does_not_execute_function_call_in_unselected_else_branch() {
+    let source = r#"
+        contract IfElseCallShortCircuit() {
+            function fail(int value) : int {
+                require(false);
+                return value;
+            }
+
+            entrypoint function main(bool select_then, int then_value, int else_value, int expected) {
+                int value = expected;
+                if (select_then) {
+                    value = then_value;
+                } else {
+                    value = fail(else_value);
+                }
+                require(value == expected);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("if/else contract should compile");
+    let asm = script_to_str(&compiled.script).expect("if/else script should stringify");
+    let if_index = asm.find("OpIf").expect("if/else should emit OpIf");
+    let else_index = asm.find("OpElse").expect("if/else should emit OpElse");
+    let fail_index = asm.find("OpFalse OpVerify").expect("else-branch helper should emit require(false)");
+    let end_if_index = asm.find("OpEndIf").expect("if/else should emit OpEndIf");
+    assert!(
+        if_index < else_index && else_index < fail_index && fail_index < end_if_index,
+        "require(false) should remain inside the else branch: {asm}"
+    );
+
+    let select_then = compiled
+        .build_sig_script("main", vec![Expr::bool(true), Expr::int(7), Expr::int(11), Expr::int(7)])
+        .expect("then-branch sigscript builds");
+    let then_result = run_script_with_sigscript(compiled.script.clone(), select_then);
+    assert!(then_result.is_ok(), "require(false) in the unselected else-branch call must not execute: {}", then_result.unwrap_err());
+
+    let select_else = compiled
+        .build_sig_script("main", vec![Expr::bool(false), Expr::int(7), Expr::int(11), Expr::int(11)])
+        .expect("else-branch sigscript builds");
+    assert!(
+        run_script_with_sigscript(compiled.script, select_else).is_err(),
+        "require(false) in the selected else-branch call should execute and fail"
+    );
 }
 
 #[test]
