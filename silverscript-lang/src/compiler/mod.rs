@@ -98,7 +98,7 @@ pub struct CompiledStateLayout {
     pub len: usize,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CompiledContract<'i> {
     pub contract_name: String,
     pub compiler_version: String,
@@ -116,7 +116,14 @@ pub fn compile_contract<'i>(
     options: CompileOptions,
 ) -> Result<CompiledContract<'i>, CompilerError> {
     let contract = parse_contract_ast(source)?;
-    compile_contract_impl(&contract, constructor_args, options, Some(source))
+    let result = compile_contract_impl(&contract, constructor_args, options, Some(source));
+    let repeated_result = compile_contract_impl(&contract, constructor_args, options, Some(source));
+    assert_eq!(
+        result.as_ref().map_err(ToString::to_string),
+        repeated_result.as_ref().map_err(ToString::to_string),
+        "compiling the same contract twice must produce identical results"
+    );
+    result
 }
 
 pub fn compile_contract_ast<'i>(
