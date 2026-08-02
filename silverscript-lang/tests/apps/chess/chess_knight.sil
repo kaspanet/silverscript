@@ -48,8 +48,8 @@ contract ChessKnight(
         // Workers only accept active move proofs routed out of ChessMux.
         require(status == 0 /*LIVE*/);
 
-        int from_idx = OpBin2Num(pending_src_idx);
-        int to_idx = OpBin2Num(pending_dst_idx);
+        int from_idx = pending_src_idx;
+        int to_idx = pending_dst_idx;
 
         int from_y = from_idx / 8;
         int from_x = from_idx % 8;
@@ -76,8 +76,8 @@ contract ChessKnight(
         byte[64] prev_board = board;
         byte moving_piece = prev_board[from_idx];
         byte target_piece = prev_board[to_idx];
-        int moving_num = OpBin2Num(moving_piece);
-        int target_num = OpBin2Num(target_piece);
+        int moving_num = OpBin2Num(byte[](moving_piece));
+        int target_num = OpBin2Num(byte[](target_piece));
         // This route only accepts knights:
         // white knight = 2, black knight = 10.
         require(moving_num == 2 || moving_num == 10);
@@ -231,7 +231,7 @@ contract ChessKnight(
         }
 
         byte[32] settle_template = templateHash(settle_prefix, settle_suffix);
-        require(blake2b(settle_template + player_template) == byte[32](route_templates.slice(256, 288)));
+        require(blake2b(byte[](settle_template + player_template)) == byte[32](route_templates.slice(256, 288)));
 
         SettleState next_state = {
             player_template: player_template,

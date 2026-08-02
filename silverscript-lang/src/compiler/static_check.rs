@@ -362,6 +362,7 @@ fn validate_output_state_call<'i>(
     args: &[Expr<'i>],
 ) -> Result<(), CompilerError> {
     let int_type = TypeRef { base: TypeBase::Int, array_dims: Vec::new() };
+    let bytes_type = TypeRef { base: TypeBase::Byte, array_dims: vec![ArrayDim::Dynamic] };
     let hash_type = TypeRef { base: TypeBase::Byte, array_dims: vec![ArrayDim::Fixed(32)] };
     match (name, args) {
         ("validateOutputState", [output_index, state]) => {
@@ -387,9 +388,9 @@ fn validate_output_state_call<'i>(
                     "validateOutputStateWithTemplate requires a struct value".to_string(),
                 ));
             }
-            for expression in [prefix, suffix, template_hash] {
-                ctx.check_expr(expression, None)?;
-            }
+            ctx.check_expr(prefix, Some(&bytes_type))?;
+            ctx.check_expr(suffix, Some(&bytes_type))?;
+            ctx.check_expr(template_hash, Some(&hash_type))?;
             Ok(())
         }
         ("validateOutputStateWithTemplate", _) => Err(CompilerError::Unsupported(

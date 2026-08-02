@@ -18,7 +18,7 @@ contract KCC20(byte[32] genesisPk, int genesisAmount, byte genesisIdentifierType
     function checkSigs(State[] prevStates, sig[] sigs, byte[] witnesses) {
         for(i, 0, prevStates.length, maxCovIns) {
             if(prevStates[i].identifierType == IDENTIFIER_PUBKEY){
-                require(checkSig(sigs[i], prevStates[i].ownerIdentifier));
+                require(checkSig(sigs[i], pubkey(prevStates[i].ownerIdentifier)));
             } else if(prevStates[i].identifierType == IDENTIFIER_SCRIPT_HASH){
                 byte[] spk = new ScriptPubKeyP2SH(prevStates[i].ownerIdentifier);
                 require(tx.inputs[witnesses[i]].scriptPubKey == spk);
@@ -114,7 +114,7 @@ These constants drive `checkSigs`.
 ### Pubkey ownership
 
 ```js
-require(checkSig(sigs[i], prevStates[i].ownerIdentifier));
+require(checkSig(sigs[i], pubkey(prevStates[i].ownerIdentifier)));
 ```
 
 The spender must supply a signature matching the previous state's pubkey.

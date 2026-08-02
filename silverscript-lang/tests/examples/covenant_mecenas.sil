@@ -27,7 +27,7 @@ contract Mecenas(pubkey recipient, byte[32] funder, int pledge, int period) {
     }
 
     entry reclaim(pubkey pk, sig s) {
-        require(blake2b(pk) == funder);
+        require(blake2b(byte[](pk)) == funder);
         require(checkSig(s, pk));
     }
 }

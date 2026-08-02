@@ -8,6 +8,6 @@ contract Test(int x) {
 
         string x1 = "Hello \n \\ ' ''  \" World";
         string x2 = 'Hello \n \\ " " \' World';
-        require(sha256(x1) == sha256(x2));
+        require(sha256(byte[](x1)) == sha256(byte[](x2)));
     }
 }

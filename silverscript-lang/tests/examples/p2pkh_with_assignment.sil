@@ -2,7 +2,7 @@ pragma silverscript ^0.1.0;
 
 contract P2PKH(byte[32] pkh) {
     entry spend(pubkey pk, sig s) {
-        byte[32] passedPkh = blake2b(pk);
+        byte[32] passedPkh = blake2b(byte[](pk));
         require(passedPkh == pkh);
         require(checkSig(s, pk));
     }

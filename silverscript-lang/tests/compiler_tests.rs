@@ -1059,7 +1059,7 @@ fn byte_variable_from_int_literal_uses_raw_byte_push() {
         contract Bytes() {
             entry main() {
                 byte x = 5;
-                require(OpBin2Num(x) == 5);
+                require(OpBin2Num(byte[](x)) == 5);
             }
         }
     "#;
@@ -4212,8 +4212,8 @@ fn branchy_three_slot_splice_repro_matches_current_codegen_shape() {
             int pending_dst_idx = init_pending_dst_idx;
 
             entry apply() {
-                int from_idx = OpBin2Num(pending_src_idx);
-                int to_idx = OpBin2Num(pending_dst_idx);
+                int from_idx = pending_src_idx;
+                int to_idx = pending_dst_idx;
                 byte[64] prev_board = board;
                 byte moving_piece = prev_board[from_idx];
                 byte arrived_piece = moving_piece;
@@ -6215,7 +6215,7 @@ contract Sweep(int BOUND, byte[64] init_board) {
         // Keep this loop small so regressions fail fast (the previous exponential blow-up
         // already manifested at single-digit iteration counts).
         for (i, 0, BOUND, BOUND) {
-            if (OpBin2Num(board[i]) == 0) {
+            if (OpBin2Num(byte[](board[i])) == 0) {
                 zero_count = zero_count + 1;
             }
         }
@@ -8832,12 +8832,12 @@ fn compiles_opcode_builtins() {
             r#"
                 contract Test() {
                     entry main() {
-                        require(OpCovInputCount(byte[]("c1")) >= 0);
+                        require(OpCovInputCount(byte[32]("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")) >= 0);
                     }
                 }
             "#,
             script_builder()
-                .add_data_with_push_opcode(b"c1")
+                .add_data_with_push_opcode(b"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
                 .unwrap()
                 .add_op(OpCovInputCount)
                 .unwrap()
@@ -8855,12 +8855,12 @@ fn compiles_opcode_builtins() {
             r#"
                 contract Test() {
                     entry main() {
-                        require(OpCovInputIdx(byte[]("c1"), 0) >= 0);
+                        require(OpCovInputIdx(byte[32]("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"), 0) >= 0);
                     }
                 }
             "#,
             script_builder()
-                .add_data_with_push_opcode(b"c1")
+                .add_data_with_push_opcode(b"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
                 .unwrap()
                 .add_i64(0)
                 .unwrap()
@@ -8880,12 +8880,12 @@ fn compiles_opcode_builtins() {
             r#"
                 contract Test() {
                     entry main() {
-                        require(OpCovOutputCount(byte[]("c1")) >= 0);
+                        require(OpCovOutputCount(byte[32]("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")) >= 0);
                     }
                 }
             "#,
             script_builder()
-                .add_data_with_push_opcode(b"c1")
+                .add_data_with_push_opcode(b"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
                 .unwrap()
                 .add_op(OpCovOutputCount)
                 .unwrap()
@@ -8903,12 +8903,12 @@ fn compiles_opcode_builtins() {
             r#"
                 contract Test() {
                     entry main() {
-                        require(OpCovOutputIdx(byte[]("c1"), 0) >= 0);
+                        require(OpCovOutputIdx(byte[32]("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"), 0) >= 0);
                     }
                 }
             "#,
             script_builder()
-                .add_data_with_push_opcode(b"c1")
+                .add_data_with_push_opcode(b"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
                 .unwrap()
                 .add_i64(0)
                 .unwrap()
@@ -8976,12 +8976,12 @@ fn compiles_opcode_builtins() {
             r#"
                 contract Test() {
                     entry main() {
-                        require(byte[](OpChainblockSeqCommit(byte[]("block"))) == byte[]("commit"));
+                        require(byte[](OpChainblockSeqCommit(byte[32]("0123456789abcdef0123456789abcdef"))) == byte[]("commit"));
                     }
                 }
             "#,
             script_builder()
-                .add_data_with_push_opcode(b"block")
+                .add_data_with_push_opcode(b"0123456789abcdef0123456789abcdef")
                 .unwrap()
                 .add_op(OpChainblockSeqCommit)
                 .unwrap()
@@ -9050,7 +9050,7 @@ fn executes_opcode_builtins_basic() {
             r#"
                 contract Test() {
                     entry main() {
-                        require(OpTxPayloadSubstr(0, 7) == byte[]("payload"));
+                        require(OpTxPayloadSubstr(1, 4) == byte[]("ayl"));
                     }
                 }
             "#,
@@ -9254,10 +9254,10 @@ fn executes_opcode_builtins_covenants() {
                 require(byte[](OpInputCovenantId(0)) == byte[]("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"));
                 require(byte[](OpOutputCovenantId(0)) == byte[]("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"));
                 require(byte[](OpOutputCovenantId(1)) == byte[]("BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"));
-                require(OpCovInputCount(byte[]("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")) == 2);
-                require(OpCovInputIdx(byte[]("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"), 1) == 2);
-                require(OpCovOutputCount(byte[]("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")) == 2);
-                require(OpCovOutputIdx(byte[]("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"), 1) == 2);
+                require(OpCovInputCount(byte[32]("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")) == 2);
+                require(OpCovInputIdx(byte[32]("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"), 1) == 2);
+                require(OpCovOutputCount(byte[32]("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")) == 2);
+                require(OpCovOutputIdx(byte[32]("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"), 1) == 2);
             }
         }
     "#;
@@ -9293,7 +9293,7 @@ fn executes_opcode_chainblock_seq_commit() {
     let source = r#"
         contract Test() {
             entry main() {
-                require(byte[](OpChainblockSeqCommit(byte[]("0123456789abcdef0123456789abcdef"))) == byte[]("fedcba9876543210fedcba9876543210"));
+                require(byte[](OpChainblockSeqCommit(byte[32]("0123456789abcdef0123456789abcdef"))) == byte[]("fedcba9876543210fedcba9876543210"));
             }
         }
     "#;
@@ -10016,32 +10016,78 @@ fn int_as_fixed_bytes_rejects_invalid_source_target_and_size() {
 }
 
 #[test]
-fn blake2b_int_and_byte_cast_forms_compile_to_identical_script() {
-    let source_plain = r#"
+fn blake2b_builtins_require_dynamic_byte_array_arguments() {
+    let invalid_cases = [
+        ("blake2b", "blake2b(5)", "argument 'data' expects byte[], got int"),
+        ("blake2b fixed data", "blake2b(5 as byte[8])", "argument 'data' expects byte[], got byte[8]"),
+        ("blake2bWithKey data", "blake2bWithKey(5, byte[](\"key\"))", "argument 'data' expects byte[], got int"),
+        ("blake2bWithKey key", "blake2bWithKey(byte[](\"data\"), byte[2](0x0001))", "argument 'key' expects byte[], got byte[2]"),
+    ];
+
+    for (name, call, expected_error) in invalid_cases {
+        let source = format!(
+            r#"
+            contract Test() {{
+                entry test() {{
+                    require({call}.length == 32);
+                }}
+            }}
+            "#
+        );
+        let err = compile_contract(&source, &[], CompileOptions::default()).expect_err(&format!("{name} should reject non-byte[]"));
+        assert!(err.to_string().contains(expected_error), "unexpected error for {name}: {err}");
+    }
+
+    let valid_source = r#"
         contract Test() {
-            entry test() {
-                int x = 5;
-                require(blake2b(x as byte[8]).length == 32);
+            entry test(byte[] data, byte[] key) {
+                require(blake2b(data).length == 32);
+                require(blake2bWithKey(data, key).length == 32);
             }
         }
     "#;
+    let compiled = compile_contract(valid_source, &[], CompileOptions::default()).expect("byte[] arguments should compile");
+    let asm = script_to_str(&compiled.script).expect("Blake2b script should stringify");
+    assert!(asm.contains("OpBlake2b"), "expected OpBlake2b in generated script: {asm}");
+    assert!(asm.contains("OpBlake2bWithKey"), "expected OpBlake2bWithKey in generated script: {asm}");
+}
 
-    let source_cast = r#"
-        contract Test() {
-            entry test() {
-                int x = 5;
-                require(blake2b(byte[](x as byte[8])).length == 32);
-            }
-        }
-    "#;
+#[test]
+fn builtin_function_arguments_are_type_checked() {
+    let invalid_calls = [
+        ("length", "length(1) >= 0", "argument 'data' expects byte[], got int"),
+        ("sha256", "sha256(1).length == 32", "argument 'data' expects byte[], got int"),
+        ("blake3", "blake3(false).length == 32", "argument 'data' expects byte[], got bool"),
+        ("checkSig", "checkSig(1, 2)", "argument 'signature' expects sig, got int"),
+        ("transaction index", "OpOutpointTxId(false).length == 32", "argument 'idx' expects int, got bool"),
+        ("transaction substring", "OpTxPayloadSubstr(false, 1).length >= 0", "argument 'start' expects int, got bool"),
+        ("transaction substring end", "OpTxPayloadSubstr(0, false).length >= 0", "argument 'end' expects int, got bool"),
+        ("input signature substring end", "OpTxInputScriptSigSubstr(0, 0, false).length >= 0", "argument 'end' expects int, got bool"),
+        (
+            "input script public key substring end",
+            "OpTxInputSpkSubstr(0, 0, false).length >= 0",
+            "argument 'end' expects int, got bool",
+        ),
+        (
+            "output script public key substring end",
+            "OpTxOutputSpkSubstr(0, 0, false).length >= 0",
+            "argument 'end' expects int, got bool",
+        ),
+        ("covenant id", "OpCovInputCount(byte[](\"id\")) >= 0", "argument 'covenant_id' expects byte[32], got byte[]"),
+        ("number encoding", "OpNum2Bin(false, 1).length >= 0", "argument 'num' expects int, got bool"),
+        ("number decoding", "OpBin2Num(1) >= 0", "argument 'num' expects byte[], got int"),
+        (
+            "sequence commitment",
+            "OpChainblockSeqCommit(byte[](\"block\")).length == 32",
+            "argument 'block' expects byte[32], got byte[]",
+        ),
+    ];
 
-    let compiled_plain = compile_contract(source_plain, &[], CompileOptions::default()).expect("plain form compiles");
-    let compiled_cast = compile_contract(source_cast, &[], CompileOptions::default()).expect("byte-cast form compiles");
-
-    assert_eq!(
-        compiled_plain.script, compiled_cast.script,
-        "a byte-array cast around an integer conversion must not alter the generated script"
-    );
+    for (name, expression, expected_error) in invalid_calls {
+        let source = format!("contract Test() {{ entry test() {{ require({expression}); }} }}");
+        let err = compile_contract(&source, &[], CompileOptions::default()).expect_err(&format!("{name} should type-check arguments"));
+        assert!(err.to_string().contains(expected_error), "unexpected error for {name}: {err}");
+    }
 }
 
 #[test]

@@ -9,8 +9,8 @@ pub(super) fn compile_call_expr<'i>(
     if let Some(cast_type) = as_cast_type(name) {
         return compile_as_cast(ctx, args, &cast_type);
     }
-    if let Some((arity, opcode)) = opcode_builtin(name) {
-        return compile_opcode_call(ctx, name, args, arity, opcode);
+    if let Some(opcode) = opcode_builtin(name) {
+        return compile_opcode_call(ctx, name, args, opcode);
     }
 
     match name {
@@ -35,34 +35,34 @@ pub(super) fn compile_call_expr<'i>(
     }
 }
 
-fn opcode_builtin(name: &str) -> Option<(usize, u8)> {
+fn opcode_builtin(name: &str) -> Option<u8> {
     Some(match name {
-        "OpTxSubnetId" => (0, OpTxSubnetId),
-        "OpTxGas" => (0, OpTxGas),
-        "OpTxPayloadLen" => (0, OpTxPayloadLen),
-        "OpTxPayloadSubstr" => (2, OpTxPayloadSubstr),
-        "OpOutpointTxId" => (1, OpOutpointTxId),
-        "OpOutpointIndex" => (1, OpOutpointIndex),
-        "OpTxInputScriptSigLen" => (1, OpTxInputScriptSigLen),
-        "OpTxInputScriptSigSubstr" => (3, OpTxInputScriptSigSubstr),
-        "OpTxInputSeq" => (1, OpTxInputSeq),
-        "OpTxInputDaaScore" => (1, OpTxInputDaaScore),
-        "OpTxInputIsCoinbase" => (1, OpTxInputIsCoinbase),
-        "OpTxInputSpkLen" => (1, OpTxInputSpkLen),
-        "OpTxInputSpkSubstr" => (3, OpTxInputSpkSubstr),
-        "OpTxOutputSpkLen" => (1, OpTxOutputSpkLen),
-        "OpTxOutputSpkSubstr" => (3, OpTxOutputSpkSubstr),
-        "OpAuthOutputCount" => (1, OpAuthOutputCount),
-        "OpAuthOutputIdx" => (2, OpAuthOutputIdx),
-        "OpInputCovenantId" => (1, OpInputCovenantId),
-        "OpOutputCovenantId" => (1, OpOutputCovenantId),
-        "OpCovInputCount" => (1, OpCovInputCount),
-        "OpCovInputIdx" => (2, OpCovInputIdx),
-        "OpCovOutputCount" => (1, OpCovOutputCount),
-        "OpCovOutputIdx" => (2, OpCovOutputIdx),
-        "OpNum2Bin" => (2, OpNum2Bin),
-        "OpBin2Num" => (1, OpBin2Num),
-        "OpChainblockSeqCommit" => (1, OpChainblockSeqCommit),
+        "OpTxSubnetId" => OpTxSubnetId,
+        "OpTxGas" => OpTxGas,
+        "OpTxPayloadLen" => OpTxPayloadLen,
+        "OpTxPayloadSubstr" => OpTxPayloadSubstr,
+        "OpOutpointTxId" => OpOutpointTxId,
+        "OpOutpointIndex" => OpOutpointIndex,
+        "OpTxInputScriptSigLen" => OpTxInputScriptSigLen,
+        "OpTxInputScriptSigSubstr" => OpTxInputScriptSigSubstr,
+        "OpTxInputSeq" => OpTxInputSeq,
+        "OpTxInputDaaScore" => OpTxInputDaaScore,
+        "OpTxInputIsCoinbase" => OpTxInputIsCoinbase,
+        "OpTxInputSpkLen" => OpTxInputSpkLen,
+        "OpTxInputSpkSubstr" => OpTxInputSpkSubstr,
+        "OpTxOutputSpkLen" => OpTxOutputSpkLen,
+        "OpTxOutputSpkSubstr" => OpTxOutputSpkSubstr,
+        "OpAuthOutputCount" => OpAuthOutputCount,
+        "OpAuthOutputIdx" => OpAuthOutputIdx,
+        "OpInputCovenantId" => OpInputCovenantId,
+        "OpOutputCovenantId" => OpOutputCovenantId,
+        "OpCovInputCount" => OpCovInputCount,
+        "OpCovInputIdx" => OpCovInputIdx,
+        "OpCovOutputCount" => OpCovOutputCount,
+        "OpCovOutputIdx" => OpCovOutputIdx,
+        "OpNum2Bin" => OpNum2Bin,
+        "OpBin2Num" => OpBin2Num,
+        "OpChainblockSeqCommit" => OpChainblockSeqCommit,
         _ => return None,
     })
 }
@@ -90,7 +90,7 @@ fn compile_sha256_call<'i>(ctx: &mut CompileExprContext<'_, '_, 'i>, args: &[Exp
     if args.len() != 1 {
         return Err(CompilerError::Unsupported("sha256() expects a single argument".to_string()));
     }
-    compile_call_arg_with_context(ctx, &args[0])?;
+    compile_typed_builtin_args(ctx, "sha256", args)?;
     ctx.emit_op(OpSHA256, 0)?;
     Ok(())
 }
@@ -164,17 +164,16 @@ fn compile_blake2b_call<'i>(ctx: &mut CompileExprContext<'_, '_, 'i>, args: &[Ex
     if args.len() != 1 {
         return Err(CompilerError::Unsupported("blake2b() expects a single argument".to_string()));
     }
-    compile_call_arg_with_context(ctx, &args[0])?;
+    compile_typed_builtin_args(ctx, "blake2b", args)?;
     ctx.emit_op(OpBlake2b, 0)?;
     Ok(())
 }
 
 fn compile_blake2b_with_key_call<'i>(ctx: &mut CompileExprContext<'_, '_, 'i>, args: &[Expr<'i>]) -> Result<(), CompilerError> {
-    let Ok([data, key]): Result<&[Expr<'i>; 2], _> = args.try_into() else {
+    if args.len() != 2 {
         return Err(CompilerError::Unsupported("blake2bWithKey() expects 2 arguments".to_string()));
-    };
-    compile_call_arg_with_context(ctx, data)?;
-    compile_call_arg_with_context(ctx, key)?;
+    }
+    compile_typed_builtin_args(ctx, "blake2bWithKey", args)?;
     ctx.emit_op(OpBlake2bWithKey, -1)?;
     Ok(())
 }
@@ -183,7 +182,7 @@ fn compile_blake3_call<'i>(ctx: &mut CompileExprContext<'_, '_, 'i>, args: &[Exp
     if args.len() != 1 {
         return Err(CompilerError::Unsupported("blake3() expects a single argument".to_string()));
     }
-    compile_call_arg_with_context(ctx, &args[0])?;
+    compile_typed_builtin_args(ctx, "blake3", args)?;
     ctx.emit_op(OpBlake3, 0)?;
     Ok(())
 }
@@ -218,8 +217,7 @@ fn compile_checksig_call<'i>(ctx: &mut CompileExprContext<'_, '_, 'i>, args: &[E
     if args.len() != 2 {
         return Err(CompilerError::Unsupported("checkSig() expects 2 arguments".to_string()));
     }
-    compile_call_arg_with_context(ctx, &args[0])?;
-    compile_call_arg_with_context(ctx, &args[1])?;
+    compile_typed_builtin_args(ctx, "checkSig", args)?;
     ctx.emit_op(OpCheckSig, -1)?;
     Ok(())
 }
@@ -246,15 +244,9 @@ fn compile_opcode_call<'i>(
     ctx: &mut CompileExprContext<'_, '_, 'i>,
     name: &str,
     args: &[Expr<'i>],
-    expected_args: usize,
     opcode: u8,
 ) -> Result<(), CompilerError> {
-    if args.len() != expected_args {
-        return Err(CompilerError::Unsupported(format!("{name}() expects {expected_args} argument(s)")));
-    }
-    for arg in args {
-        compile_expr_with_context(ctx, arg, None)?;
-    }
-    ctx.emit_op(opcode, 1 - expected_args as i64)?;
+    compile_typed_builtin_args(ctx, name, args)?;
+    ctx.emit_op(opcode, 1 - args.len() as i64)?;
     Ok(())
 }

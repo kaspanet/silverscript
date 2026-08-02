@@ -44,8 +44,8 @@ contract ChessSettle(
         PlayerState white_in = readInputStateWithTemplate(white_input_idx, player_prefix_len, player_suffix_len, player_template);
         PlayerState black_in = readInputStateWithTemplate(black_input_idx, player_prefix_len, player_suffix_len, player_template);
 
-        require(blake2b(white_in.owner + white_in.player_id) == white_player);
-        require(blake2b(black_in.owner + black_in.player_id) == black_player);
+        require(blake2b(byte[](white_in.owner + white_in.player_id)) == white_player);
+        require(blake2b(byte[](black_in.owner + black_in.player_id)) == black_player);
 
         int stake = tx.inputs[this.activeInputIndex].value;
         int white_output_value = tx.inputs[white_input_idx].value;

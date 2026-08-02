@@ -2,8 +2,8 @@ pragma silverscript ^0.1.0;
 
 contract LogIntermediateResults(pubkey owner) {
     entry test_log_intermediate_result() {
-        byte[32] singleHash = sha256(owner);
-        byte[32] doubleHash = sha256(singleHash);
+        byte[32] singleHash = sha256(byte[](owner));
+        byte[32] doubleHash = sha256(byte[](singleHash));
         require(doubleHash.length == 32, "doubleHash should be 32 bytes");
     }
 }

@@ -3,17 +3,17 @@ pragma silverscript ^0.1.0;
 contract LastWill(byte[32] inheritor, byte[32] cold, byte[32] hot) {
     entry inherit(pubkey pk, sig s) {
         require(this.age >= 180);
-        require(blake2b(pk) == inheritor);
+        require(blake2b(byte[](pk)) == inheritor);
         require(checkSig(s, pk));
     }
 
     entry cold(pubkey pk, sig s) {
-        require(blake2b(pk) == cold);
+        require(blake2b(byte[](pk)) == cold);
         require(checkSig(s, pk));
     }
 
     entry refresh(pubkey pk, sig s) {
-        require(blake2b(pk) == hot);
+        require(blake2b(byte[](pk)) == hot);
         require(checkSig(s, pk));
 
         // Check that the correct amount is sent

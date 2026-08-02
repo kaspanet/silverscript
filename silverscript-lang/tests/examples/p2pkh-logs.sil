@@ -4,7 +4,7 @@ contract P2PKH(byte[32] pkh) {
     entry spend(pubkey pk, sig s) {
         console.log("pkh:", pkh);
         console.log("pk:", pk);
-        require(blake2b(pk) == pkh);
+        require(blake2b(byte[](pk)) == pkh);
         require(checkSig(s, pk));
     }
 }
