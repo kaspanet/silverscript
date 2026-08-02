@@ -75,13 +75,16 @@ fn lower_statement<'i>(statement: &Statement<'i>) -> Result<Statement<'i>, Compi
             span: *span,
             name_span: *name_span,
         }),
-        Statement::StateFunctionCallAssign { bindings, name, args, span, name_span } => Ok(Statement::StateFunctionCallAssign {
-            bindings: bindings.clone(),
-            name: name.clone(),
-            args: args.iter().map(lower_expr).collect::<Result<Vec<_>, _>>()?,
-            span: *span,
-            name_span: *name_span,
-        }),
+        Statement::StateFunctionCallAssign { target_struct, bindings, name, args, span, name_span } => {
+            Ok(Statement::StateFunctionCallAssign {
+                target_struct: target_struct.clone(),
+                bindings: bindings.clone(),
+                name: name.clone(),
+                args: args.iter().map(lower_expr).collect::<Result<Vec<_>, _>>()?,
+                span: *span,
+                name_span: *name_span,
+            })
+        }
         Statement::StructDestructure { bindings, expr, span } => {
             Ok(Statement::StructDestructure { bindings: bindings.clone(), expr: lower_expr(expr)?, span: *span })
         }

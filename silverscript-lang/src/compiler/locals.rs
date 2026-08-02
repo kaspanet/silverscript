@@ -102,11 +102,12 @@ fn lower_statements<'i>(
                     name_span: *name_span,
                 });
             }
-            Statement::StateFunctionCallAssign { bindings, name, args, span, name_span } => {
+            Statement::StateFunctionCallAssign { target_struct, bindings, name, args, span, name_span } => {
                 for binding in bindings {
                     local_aliases.remove(&binding.name);
                 }
                 lowered.push(Statement::StateFunctionCallAssign {
+                    target_struct: target_struct.clone(),
                     bindings: bindings.clone(),
                     name: name.clone(),
                     args: args.iter().map(|arg| substitute_expr(arg, &local_aliases)).collect::<Result<Vec<_>, _>>()?,

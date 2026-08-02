@@ -131,7 +131,7 @@ impl<'a, 'i> TernaryLowerer<'a, 'i> {
                     name_span: *name_span,
                 });
             }
-            Statement::StateFunctionCallAssign { bindings, name, args, span, name_span } => {
+            Statement::StateFunctionCallAssign { bindings, name, args, span, name_span, target_struct } => {
                 let (prelude, args) = self.lower_exprs(args, types)?;
                 lowered.extend(prelude);
                 for binding in bindings {
@@ -143,6 +143,7 @@ impl<'a, 'i> TernaryLowerer<'a, 'i> {
                     args,
                     span: *span,
                     name_span: *name_span,
+                    target_struct: target_struct.clone(),
                 });
             }
             Statement::StructDestructure { bindings, expr, span } => {

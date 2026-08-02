@@ -205,7 +205,7 @@ impl<'i, 'd> Inliner<'i, 'd> {
                     );
                 }
             }
-            Statement::StateFunctionCallAssign { bindings, name, args, span, name_span } => {
+            Statement::StateFunctionCallAssign { target_struct, bindings, name, args, span, name_span } => {
                 let (prelude, renamed_args) = self.lower_exprs(args, scope, visited_functions)?;
                 lowered.extend(prelude);
                 let renamed_bindings = bindings
@@ -218,6 +218,7 @@ impl<'i, 'd> Inliner<'i, 'd> {
                 self.push_lowered_statement(
                     &mut lowered,
                     Statement::StateFunctionCallAssign {
+                        target_struct: target_struct.clone(),
                         bindings: renamed_bindings,
                         name: name.clone(),
                         args: renamed_args,

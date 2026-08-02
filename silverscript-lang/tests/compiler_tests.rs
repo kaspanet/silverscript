@@ -7306,6 +7306,93 @@ fn runs_read_input_state_with_template_into_typed_struct_variable() {
 }
 
 #[test]
+fn typed_state_reader_disambiguates_the_implicit_state_layout() {
+    let source = r#"
+        contract Reader() {
+            struct RemoteState {
+                int n;
+            }
+
+            int n = 0;
+
+            entrypoint function main() {
+                RemoteState remote = readInputStateWithTemplate(
+                    1,
+                    0,
+                    0,
+                    0x0000000000000000000000000000000000000000000000000000000000000000
+                );
+                require(remote.n >= 0);
+            }
+        }
+    "#;
+
+    compile_contract(source, &[], CompileOptions::default())
+        .expect("the explicit RemoteState type should disambiguate the identical implicit State layout");
+}
+
+#[test]
+fn typed_state_reader_disambiguates_identical_custom_struct_layouts() {
+    let source = r#"
+        contract Reader() {
+            struct AState {
+                int n;
+            }
+
+            struct BState {
+                int n;
+            }
+
+            int tag = 0;
+
+            entrypoint function main() {
+                AState remote = readInputStateWithTemplate(
+                    1,
+                    0,
+                    0,
+                    0x0000000000000000000000000000000000000000000000000000000000000000
+                );
+                require(remote.n >= 0);
+            }
+        }
+    "#;
+
+    compile_contract(source, &[], CompileOptions::default())
+        .expect("the explicit AState type should disambiguate identical custom layouts");
+}
+
+#[test]
+fn untyped_state_reader_rejects_identical_custom_struct_layouts() {
+    let source = r#"
+        contract Reader() {
+            struct AState {
+                int n;
+            }
+
+            struct BState {
+                int n;
+            }
+
+            int tag = 0;
+
+            entrypoint function main() {
+                {n: int remoteN} = readInputStateWithTemplate(
+                    1,
+                    0,
+                    0,
+                    0x0000000000000000000000000000000000000000000000000000000000000000
+                );
+                require(remoteN >= 0);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default())
+        .expect_err("untyped destructuring cannot select between identical layouts");
+    assert!(err.to_string().contains("bindings match multiple struct layouts"), "unexpected ambiguity error: {err}");
+}
+
+#[test]
 fn runs_read_input_state_with_template_destructuring() {
     let target_hash_value = vec![0x55u8; 32];
     let target_hash_hex = target_hash_value.iter().map(|byte| format!("{byte:02x}")).collect::<String>();

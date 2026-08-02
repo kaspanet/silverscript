@@ -406,6 +406,9 @@ pub enum Statement<'i> {
         name_span: Span<'i>,
     },
     StateFunctionCallAssign {
+        /// Struct selected by a typed assignment before its fields were flattened.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        target_struct: Option<String>,
         bindings: Vec<StructBindingAst<'i>>,
         name: String,
         args: Vec<Expr<'i>>,
@@ -1720,7 +1723,7 @@ fn parse_statement<'i>(pair: Pair<'i, Rule>) -> Result<Statement<'i>, CompilerEr
                 inner.next().ok_or_else(|| CompilerError::Unsupported("missing function call".to_string()).with_span(&span))?;
             let (Identifier { name, span: name_span }, args) =
                 parse_function_call_parts(call_pair).map_err(|err| err.with_span(&span))?;
-            Ok(Statement::StateFunctionCallAssign { bindings, name, args, span, name_span })
+            Ok(Statement::StateFunctionCallAssign { target_struct: None, bindings, name, args, span, name_span })
         }
         Rule::struct_destructure_assignment => {
             let mut inner = pair.into_inner();
