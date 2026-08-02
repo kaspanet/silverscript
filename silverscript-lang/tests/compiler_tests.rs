@@ -199,19 +199,38 @@ fn accepts_compatible_pragma_versions() {
     let pragmas = [
         "pragma silverscript ^0.1.0;",
         "pragma silverscript ~0.1.0;",
-        "pragma silverscript >=0.1.0;",
-        "pragma silverscript >0.0.9;",
         "pragma silverscript <0.2.0;",
         "pragma silverscript <=0.1.5;",
         "pragma silverscript =0.1.0;",
         "pragma silverscript 0.1.0;",
         "pragma silverscript >=0.1.0, <0.2.0;",
+        "pragma silverscript >=0.1.0, <1.0.0;",
         "pragma silverscript 0.1.*;",
     ];
 
     for pragma in pragmas {
         let source = pragma_source(Some(pragma));
         compile_contract(&source, &[], CompileOptions::default()).unwrap_or_else(|err| panic!("{pragma} should compile: {err}"));
+    }
+}
+
+#[test]
+fn rejects_pragmas_that_cover_future_major_versions() {
+    let pragmas = [
+        "pragma silverscript >=0.1.0;",
+        "pragma silverscript >0.0.9;",
+        "pragma silverscript *;",
+        "pragma silverscript <=1.0.0;",
+        "pragma silverscript >=0.1.0, <2.0.0;",
+    ];
+
+    for pragma in pragmas {
+        let source = pragma_source(Some(pragma));
+        let err = compile_contract(&source, &[], CompileOptions::default()).expect_err("future-major pragma should fail");
+        assert!(
+            err.to_string().contains("cannot support pragmas that cover future major versions because they may have breaking changes"),
+            "{pragma} produced unexpected error: {err}"
+        );
     }
 }
 
@@ -233,8 +252,6 @@ fn rejects_incompatible_pragma_versions() {
     let pragmas = [
         "pragma silverscript ^0.2.0;",
         "pragma silverscript ~0.1.1;",
-        "pragma silverscript >=0.1.1;",
-        "pragma silverscript >0.1.0;",
         "pragma silverscript <0.1.0;",
         "pragma silverscript <=0.0.9;",
         "pragma silverscript =0.1.1;",

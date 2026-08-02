@@ -1,5 +1,5 @@
 use super::*;
-use semver::{Version, VersionReq};
+use semver::{Comparator, Op, Version, VersionReq};
 use std::collections::{HashMap, HashSet};
 
 pub(super) fn static_check_contract<'i>(
@@ -50,6 +50,13 @@ fn validate_pragma_versions<'i>(contract: &ContractAst<'i>) -> Result<(), Compil
         CompilerError::Unsupported(format!("invalid SilverScript version requirement '{}': {err}", pragma.value))
             .with_span(&pragma.value_span)
     })?;
+    if covers_future_major_versions(&req, &compiler_version) {
+        return Err(CompilerError::Unsupported(
+            "SilverScript compiler cannot support pragmas that cover future major versions because they may have breaking changes"
+                .to_string(),
+        )
+        .with_span(&pragma.value_span));
+    }
     if !req.matches(&compiler_version) {
         return Err(CompilerError::Unsupported(format!(
             "SilverScript compiler version {COMPILER_VERSION} does not satisfy pragma {}",
@@ -59,6 +66,30 @@ fn validate_pragma_versions<'i>(contract: &ContractAst<'i>) -> Result<(), Compil
     }
 
     Ok(())
+}
+
+fn covers_future_major_versions(req: &VersionReq, compiler_version: &Version) -> bool {
+    let Some(next_major) = compiler_version.major.checked_add(1) else {
+        return false;
+    };
+
+    !req.comparators.iter().any(|comparator| comparator_excludes_future_majors(comparator, compiler_version.major, next_major))
+}
+
+fn comparator_excludes_future_majors(comparator: &Comparator, current_major: u64, next_major: u64) -> bool {
+    match comparator.op {
+        Op::Exact | Op::Tilde | Op::Caret | Op::Wildcard => comparator.major <= current_major,
+        Op::Less => {
+            comparator.major <= current_major
+                || (comparator.major == next_major
+                    && comparator.minor.unwrap_or(0) == 0
+                    && comparator.patch.unwrap_or(0) == 0
+                    && comparator.pre.is_empty())
+        }
+        Op::LessEq => comparator.major <= current_major,
+        Op::Greater | Op::GreaterEq => false,
+        _ => false,
+    }
 }
 
 pub(crate) fn validate_return_types<'i>(
