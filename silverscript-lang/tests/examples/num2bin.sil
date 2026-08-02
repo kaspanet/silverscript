@@ -2,7 +2,7 @@ pragma silverscript ^0.1.0;
 
 contract Test() {
     entry hello() {
-        byte[2] byte_ = byte[2](10);
+        byte[2] byte_ = 10 as byte[2];
         require(int(byte_) == 10);
     }
 }

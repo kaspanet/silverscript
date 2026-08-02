@@ -1033,7 +1033,7 @@ fn build_sig_script_builds_expected_script() {
     let source = r#"
         contract BoundedBytes() {
             entry spend(byte[4] b, int i) {
-                require(b == byte[4](i));
+                require(b == i as byte[4]);
             }
         }
     "#;
@@ -1314,7 +1314,7 @@ fn rejects_assigning_fixed_size_builtin_results_to_wrong_byte_array_sizes() {
             "ScriptPubKeyP2SH",
             "byte[34] value = new ScriptPubKeyP2SH(0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f);",
         ),
-        ("ScriptPubKeyP2SHFromRedeemScript", "byte[34] value = new ScriptPubKeyP2SHFromRedeemScript(bytes(\"redeem\"));"),
+        ("ScriptPubKeyP2SHFromRedeemScript", "byte[34] value = new ScriptPubKeyP2SHFromRedeemScript(byte[](\"redeem\"));"),
     ];
 
     for (name, statement) in cases {
@@ -4549,7 +4549,7 @@ fn composite_array_index_uses_its_result_type_for_bytewise_operations() {
                 byte[2][] b = [0x0304];
 
                 require((a + b)[0] == 0x0102);
-                require(bytes((a + b)[0]) == byte[](0x0102));
+                require(byte[]((a + b)[0]) == byte[](0x0102));
             }
         }
     "#;
@@ -8352,7 +8352,7 @@ fn compiles_opcode_builtins() {
             r#"
                 contract Test() {
                     entry main() {
-                        require(byte[](OpTxSubnetId()) == bytes("subnet"));
+                        require(byte[](OpTxSubnetId()) == byte[]("subnet"));
                     }
                 }
             "#,
@@ -8415,7 +8415,7 @@ fn compiles_opcode_builtins() {
             r#"
                 contract Test() {
                     entry main() {
-                        require(OpTxPayloadSubstr(1, 3) == bytes("ok"));
+                        require(OpTxPayloadSubstr(1, 3) == byte[]("ok"));
                     }
                 }
             "#,
@@ -8440,7 +8440,7 @@ fn compiles_opcode_builtins() {
             r#"
                 contract Test() {
                     entry main() {
-                        require(byte[](OpOutpointTxId(0)) == bytes("txid"));
+                        require(byte[](OpOutpointTxId(0)) == byte[]("txid"));
                     }
                 }
             "#,
@@ -8509,7 +8509,7 @@ fn compiles_opcode_builtins() {
             r#"
                 contract Test() {
                     entry main() {
-                        require(OpTxInputScriptSigSubstr(0, 0, 1) == bytes("sig"));
+                        require(OpTxInputScriptSigSubstr(0, 0, 1) == byte[]("sig"));
                     }
                 }
             "#,
@@ -8536,7 +8536,7 @@ fn compiles_opcode_builtins() {
             r#"
                 contract Test() {
                     entry main() {
-                        require(byte[](OpTxInputSeq(0)) == bytes("seq"));
+                        require(byte[](OpTxInputSeq(0)) == byte[]("seq"));
                     }
                 }
             "#,
@@ -8661,7 +8661,7 @@ fn compiles_opcode_builtins() {
             r#"
                 contract Test() {
                     entry main() {
-                        require(OpTxInputSpkSubstr(0, 0, 1) == bytes("spk"));
+                        require(OpTxInputSpkSubstr(0, 0, 1) == byte[]("spk"));
                     }
                 }
             "#,
@@ -8711,7 +8711,7 @@ fn compiles_opcode_builtins() {
             r#"
                 contract Test() {
                     entry main() {
-                        require(OpTxOutputSpkSubstr(0, 0, 1) == bytes("out"));
+                        require(OpTxOutputSpkSubstr(0, 0, 1) == byte[]("out"));
                     }
                 }
             "#,
@@ -8786,7 +8786,7 @@ fn compiles_opcode_builtins() {
             r#"
                 contract Test() {
                     entry main() {
-                        require(byte[](OpInputCovenantId(0)) == bytes("cov"));
+                        require(byte[](OpInputCovenantId(0)) == byte[]("cov"));
                     }
                 }
             "#,
@@ -8809,7 +8809,7 @@ fn compiles_opcode_builtins() {
             r#"
                 contract Test() {
                     entry main() {
-                        require(byte[](OpOutputCovenantId(0)) == bytes("cov"));
+                        require(byte[](OpOutputCovenantId(0)) == byte[]("cov"));
                     }
                 }
             "#,
@@ -8832,7 +8832,7 @@ fn compiles_opcode_builtins() {
             r#"
                 contract Test() {
                     entry main() {
-                        require(OpCovInputCount(bytes("c1")) >= 0);
+                        require(OpCovInputCount(byte[]("c1")) >= 0);
                     }
                 }
             "#,
@@ -8855,7 +8855,7 @@ fn compiles_opcode_builtins() {
             r#"
                 contract Test() {
                     entry main() {
-                        require(OpCovInputIdx(bytes("c1"), 0) >= 0);
+                        require(OpCovInputIdx(byte[]("c1"), 0) >= 0);
                     }
                 }
             "#,
@@ -8880,7 +8880,7 @@ fn compiles_opcode_builtins() {
             r#"
                 contract Test() {
                     entry main() {
-                        require(OpCovOutputCount(bytes("c1")) >= 0);
+                        require(OpCovOutputCount(byte[]("c1")) >= 0);
                     }
                 }
             "#,
@@ -8903,7 +8903,7 @@ fn compiles_opcode_builtins() {
             r#"
                 contract Test() {
                     entry main() {
-                        require(OpCovOutputIdx(bytes("c1"), 0) >= 0);
+                        require(OpCovOutputIdx(byte[]("c1"), 0) >= 0);
                     }
                 }
             "#,
@@ -8928,7 +8928,7 @@ fn compiles_opcode_builtins() {
             r#"
                 contract Test() {
                     entry main() {
-                        require(OpNum2Bin(5, 2) == bytes("bin"));
+                        require(OpNum2Bin(5, 2) == byte[]("bin"));
                     }
                 }
             "#,
@@ -8953,7 +8953,7 @@ fn compiles_opcode_builtins() {
             r#"
                 contract Test() {
                     entry main() {
-                        require(OpBin2Num(bytes("a")) == 5);
+                        require(OpBin2Num(byte[]("a")) == 5);
                     }
                 }
             "#,
@@ -8976,7 +8976,7 @@ fn compiles_opcode_builtins() {
             r#"
                 contract Test() {
                     entry main() {
-                        require(byte[](OpChainblockSeqCommit(bytes("block"))) == bytes("commit"));
+                        require(byte[](OpChainblockSeqCommit(byte[]("block"))) == byte[]("commit"));
                     }
                 }
             "#,
@@ -9010,7 +9010,7 @@ fn executes_opcode_builtins_basic() {
             r#"
                 contract Test() {
                     entry main() {
-                        require(sha256(bytes("msg")) == sha256(bytes("msg")));
+                        require(sha256(byte[]("msg")) == sha256(byte[]("msg")));
                     }
                 }
             "#,
@@ -9020,7 +9020,7 @@ fn executes_opcode_builtins_basic() {
             r#"
                 contract Test() {
                     entry main() {
-                        require(byte[](OpTxSubnetId()) == bytes("abcdefghijklmnopqrst"));
+                        require(byte[](OpTxSubnetId()) == byte[]("abcdefghijklmnopqrst"));
                     }
                 }
             "#,
@@ -9050,7 +9050,7 @@ fn executes_opcode_builtins_basic() {
             r#"
                 contract Test() {
                     entry main() {
-                        require(OpTxPayloadSubstr(0, 7) == bytes("payload"));
+                        require(OpTxPayloadSubstr(0, 7) == byte[]("payload"));
                     }
                 }
             "#,
@@ -9060,7 +9060,7 @@ fn executes_opcode_builtins_basic() {
             r#"
                 contract Test() {
                     entry main() {
-                        require(byte[](OpOutpointTxId(0)) == bytes("0123456789abcdef0123456789abcdef"));
+                        require(byte[](OpOutpointTxId(0)) == byte[]("0123456789abcdef0123456789abcdef"));
                     }
                 }
             "#,
@@ -9092,7 +9092,7 @@ fn executes_opcode_builtins_basic() {
                 contract Test() {
                     entry dummy() { require(true); }
                     entry main() {
-                        require(OpTxInputScriptSigSubstr(0, 0, 1) == bytes("Q"));
+                        require(OpTxInputScriptSigSubstr(0, 0, 1) == byte[]("Q"));
                     }
                 }
             "#,
@@ -9102,7 +9102,7 @@ fn executes_opcode_builtins_basic() {
             r#"
                 contract Test() {
                     entry main() {
-                        require(byte[](OpTxInputSeq(0)) == bytes("sequence"));
+                        require(byte[](OpTxInputSeq(0)) == byte[]("sequence"));
                     }
                 }
             "#,
@@ -9162,7 +9162,7 @@ fn executes_opcode_builtins_basic() {
             r#"
                 contract Test() {
                     entry main() {
-                        require(OpTxOutputSpkSubstr(0, 2, 8) == bytes("outspk"));
+                        require(OpTxOutputSpkSubstr(0, 2, 8) == byte[]("outspk"));
                     }
                 }
             "#,
@@ -9200,7 +9200,7 @@ fn template_hash_matches_canonical_rust_and_sil_vectors() {
 
     let sil_bytes = |bytes: &[u8]| {
         if bytes.is_empty() {
-            "bytes(\"\")".to_string()
+            "byte[](\"\")".to_string()
         } else {
             format!("0x{}", bytes.iter().map(|byte| format!("{byte:02x}")).collect::<String>())
         }
@@ -9234,7 +9234,7 @@ fn template_hash_binds_prefix_suffix_boundary() {
     let source = r#"
         contract Test() {
             entry main() {
-                require(templateHash(bytes("a"), bytes("bc")) != templateHash(bytes("ab"), bytes("c")));
+                require(templateHash(byte[]("a"), byte[]("bc")) != templateHash(byte[]("ab"), byte[]("c")));
             }
         }
     "#;
@@ -9251,13 +9251,13 @@ fn executes_opcode_builtins_covenants() {
             entry main() {
                 require(OpAuthOutputCount(0) == 2);
                 require(OpAuthOutputIdx(0, 1) == 2);
-                require(byte[](OpInputCovenantId(0)) == bytes("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"));
-                require(byte[](OpOutputCovenantId(0)) == bytes("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"));
-                require(byte[](OpOutputCovenantId(1)) == bytes("BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"));
-                require(OpCovInputCount(bytes("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")) == 2);
-                require(OpCovInputIdx(bytes("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"), 1) == 2);
-                require(OpCovOutputCount(bytes("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")) == 2);
-                require(OpCovOutputIdx(bytes("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"), 1) == 2);
+                require(byte[](OpInputCovenantId(0)) == byte[]("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"));
+                require(byte[](OpOutputCovenantId(0)) == byte[]("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"));
+                require(byte[](OpOutputCovenantId(1)) == byte[]("BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"));
+                require(OpCovInputCount(byte[]("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")) == 2);
+                require(OpCovInputIdx(byte[]("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"), 1) == 2);
+                require(OpCovOutputCount(byte[]("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")) == 2);
+                require(OpCovOutputIdx(byte[]("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"), 1) == 2);
             }
         }
     "#;
@@ -9293,7 +9293,7 @@ fn executes_opcode_chainblock_seq_commit() {
     let source = r#"
         contract Test() {
             entry main() {
-                require(byte[](OpChainblockSeqCommit(bytes("0123456789abcdef0123456789abcdef"))) == bytes("fedcba9876543210fedcba9876543210"));
+                require(byte[](OpChainblockSeqCommit(byte[]("0123456789abcdef0123456789abcdef"))) == byte[]("fedcba9876543210fedcba9876543210"));
             }
         }
     "#;
@@ -9931,12 +9931,97 @@ fn fixed_and_dynamic_array_types_are_not_identical() {
 }
 
 #[test]
+fn rejects_integer_to_byte_array_casts() {
+    for cast in ["byte[](x)", "byte[8](x)"] {
+        let source = format!(
+            r#"
+            contract Test() {{
+                entry test(int x) {{
+                    byte[] encoded = {cast};
+                    require(encoded.length == 8);
+                }}
+            }}
+            "#
+        );
+        let err = compile_contract(&source, &[], CompileOptions::default()).expect_err("int-to-bytes cast should be rejected");
+        assert!(
+            err.to_string().contains("cannot cast int to") && err.to_string().contains("use 'value as byte[N]' instead"),
+            "unexpected error for {cast}: {err}"
+        );
+    }
+
+    let source = r#"
+        contract Test() {
+            entry test(int x) {
+                byte[] encoded = byte[](x, 4);
+                require(encoded.length == 4);
+            }
+        }
+    "#;
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("sized byte[] cast should be rejected");
+    assert!(err.to_string().contains("byte[]() expects 1 arguments"), "unexpected error: {err}");
+}
+
+#[test]
+fn int_as_fixed_bytes_has_a_fixed_result_type_and_uses_num2bin() {
+    let source = r#"
+        contract Test() {
+            entry test(int x) {
+                byte[8] y = x as byte[8];
+                byte[_] z = x as byte[4];
+                require(y == byte[8](OpNum2Bin(x, 8)));
+                require(z == byte[4](OpNum2Bin(x, 4)));
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("fixed-size integer conversions compile");
+    assert_eq!(compiled.script.iter().filter(|&&op| op == OpNum2Bin).count(), 4);
+    assert!(
+        run_script_with_sigscript(compiled.script, script_builder().add_i64(42).unwrap().drain()).is_ok(),
+        "fixed-size integer conversions should execute"
+    );
+}
+
+#[test]
+fn int_as_fixed_bytes_accepts_a_compile_time_size_constant() {
+    let source = r#"
+        contract Test() {
+            int constant SIZE = 4;
+
+            entry test(int x) {
+                byte[_] encoded = x as byte[SIZE];
+                require(encoded.length == SIZE);
+            }
+        }
+    "#;
+
+    compile_contract(source, &[], CompileOptions::default()).expect("constant byte size compiles");
+}
+
+#[test]
+fn int_as_fixed_bytes_rejects_invalid_source_target_and_size() {
+    let cases = [
+        ("byte[] data = 0x01; byte[_] encoded = data as byte[4];", "source must be int"),
+        ("int x = 1; byte[] encoded = x as byte[];", "requires a fixed byte[N] target"),
+        ("int x = 1; byte[_] encoded = x as byte[_];", "cannot infer fixed array size"),
+        ("int x = 1; byte[_] encoded = x as byte[9];", "must be between 1 and 8"),
+    ];
+
+    for (statement, expected_error) in cases {
+        let source = format!("contract Test() {{ entry test() {{ {statement} require(true); }} }}");
+        let err = compile_contract(&source, &[], CompileOptions::default()).expect_err("invalid 'as byte[N]' must fail");
+        assert!(err.to_string().contains(expected_error), "unexpected error for {statement}: {err}");
+    }
+}
+
+#[test]
 fn blake2b_int_and_byte_cast_forms_compile_to_identical_script() {
     let source_plain = r#"
         contract Test() {
             entry test() {
                 int x = 5;
-                require(blake2b(x).length == 32);
+                require(blake2b(x as byte[8]).length == 32);
             }
         }
     "#;
@@ -9945,7 +10030,7 @@ fn blake2b_int_and_byte_cast_forms_compile_to_identical_script() {
         contract Test() {
             entry test() {
                 int x = 5;
-                require(blake2b(byte[](x)).length == 32);
+                require(blake2b(byte[](x as byte[8])).length == 32);
             }
         }
     "#;
@@ -9955,8 +10040,26 @@ fn blake2b_int_and_byte_cast_forms_compile_to_identical_script() {
 
     assert_eq!(
         compiled_plain.script, compiled_cast.script,
-        "blake2b(x) and blake2b(byte[](x)) should currently compile to identical scripts"
+        "a byte-array cast around an integer conversion must not alter the generated script"
     );
+}
+
+#[test]
+fn byte_array_to_int_cast_compiles_without_extra_opcodes_and_executes() {
+    let source = r#"
+        contract Test() {
+            entry test(byte[] data) {
+                int number = int(data);
+                require(number == 42);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("byte[] to int cast compiles");
+    assert!(!compiled.script.contains(&OpBin2Num), "int(data) must not emit OpBin2Num");
+
+    let sigscript = script_builder().add_data_with_push_opcode(&[42]).unwrap().drain();
+    assert!(run_script_with_sigscript(compiled.script, sigscript).is_ok(), "int(data) should produce a usable integer value");
 }
 
 #[test]
@@ -11831,8 +11934,8 @@ fn blake2b_builtins_lower_and_execute_correctly() {
         r#"
         contract Blake2bHashes() {{
             entry main() {{
-                require(blake2b(bytes("genesis covenant")) == 0x{expected_hex});
-                require(blake2bWithKey(bytes("genesis covenant"), bytes("CovenantID")) == 0x{expected_keyed_hex});
+                require(blake2b(byte[]("genesis covenant")) == 0x{expected_hex});
+                require(blake2bWithKey(byte[]("genesis covenant"), byte[]("CovenantID")) == 0x{expected_keyed_hex});
             }}
         }}
         "#
@@ -11858,8 +11961,8 @@ fn blake3_builtins_lower_and_execute_correctly() {
         r#"
         contract Blake3Hashes() {{
             entry main() {{
-                require(blake3(bytes("genesis covenant")) == 0x{expected_hex});
-                require(blake3WithKey(bytes("genesis covenant"), 0x{key_hex}) == 0x{expected_keyed_hex});
+                require(blake3(byte[]("genesis covenant")) == 0x{expected_hex});
+                require(blake3WithKey(byte[]("genesis covenant"), 0x{key_hex}) == 0x{expected_keyed_hex});
             }}
         }}
         "#
@@ -11877,7 +11980,7 @@ fn blake3_with_key_requires_a_fixed_32_byte_key() {
     let dynamic_key = r#"
         contract Blake3Hash() {
             entry main(byte[] key) {
-                require(blake3WithKey(bytes("data"), key).length == 32);
+                require(blake3WithKey(byte[]("data"), key).length == 32);
             }
         }
     "#;
@@ -11887,7 +11990,7 @@ fn blake3_with_key_requires_a_fixed_32_byte_key() {
     let explicit_cast = r#"
         contract Blake3Hash() {
             entry main(byte[] key) {
-                require(blake3WithKey(bytes("data"), byte[32](key)).length == 32);
+                require(blake3WithKey(byte[]("data"), byte[32](key)).length == 32);
             }
         }
     "#;

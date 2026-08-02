@@ -299,6 +299,7 @@ export default grammar({
         $.slice_call,
         $.append_call,
         $.reverse_call,
+        $.as_cast,
       ),
 
     tuple_index: ($) => seq("[", $.expression, "]"),
@@ -316,6 +317,8 @@ export default grammar({
     append_call: ($) => seq(".append", $.expression_list),
 
     reverse_call: (_) => seq(".reverse", "(", ")"),
+
+    as_cast: ($) => prec.right(seq("as", $.type_name)),
 
     primary: ($) =>
       choice(
@@ -391,7 +394,7 @@ export default grammar({
 
     modifier: (_) => "constant",
 
-    type_name: ($) => seq($.base_type, repeat($.array_suffix)),
+    type_name: ($) => prec.right(seq($.base_type, repeat($.array_suffix))),
 
     base_type: ($) =>
       choice("int", "bool", "string", "pubkey", "sig", "datasig", "byte", $.identifier),
@@ -400,7 +403,7 @@ export default grammar({
 
     array_suffix: ($) => seq("[", optional($.array_size), "]"),
 
-    array_size: ($) => choice($.identifier, $.array_bound),
+    array_size: ($) => choice("_", $.identifier, $.array_bound),
 
     array_bound: (_) => token(/[1-9][0-9]*/),
 

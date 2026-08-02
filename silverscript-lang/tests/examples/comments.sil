@@ -9,7 +9,7 @@ contract Test(int x) {
     // Line comments are a thing
     entry hello(sig s, pubkey pk) {
         int i = 400 + x;
-        byte[] b = byte[](0x07364897987fe87) + byte[](x);
+        byte[] b = byte[](0x07364897987fe87) + x as byte[8];
 
         int myVariable = 10 - 4; // they can go at the end of the line
         int myOtherVariable = i + myVariable % 2;

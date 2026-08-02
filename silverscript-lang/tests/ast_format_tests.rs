@@ -58,6 +58,22 @@ return(total, values[0]);
 }
 
 #[test]
+fn formats_as_byte_conversion() {
+    let source = r#"contract Convert() {
+    entry main(int x) {
+        byte[_] encoded = (x + 1) as byte[4];
+        require(encoded.length == 4);
+    }
+}
+"#;
+
+    let ast = parse_contract_ast(source).expect("parse succeeds");
+    let formatted = format_contract_ast(&ast);
+    assert!(formatted.contains("byte[_] encoded = (x + 1) as byte[4];"));
+    parse_contract_ast(&formatted).expect("formatted conversion parses");
+}
+
+#[test]
 fn formatted_contracts_parse_back_to_same_canonical_source() {
     let source = r#"
 contract Advanced(int limit, pubkey owner) {

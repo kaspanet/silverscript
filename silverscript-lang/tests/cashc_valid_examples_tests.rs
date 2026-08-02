@@ -448,7 +448,7 @@ fn runs_cashc_valid_examples() {
                 assert!(result.is_ok(), "{example} failed: {}", result.unwrap_err());
             }
             "force_cast_smaller_bytes.sil" => {
-                // Unsatisfiable: bytes(0x1234) is 2 bytes, so the forced cast has length 2.
+                // Unsatisfiable: byte[](0x1234) is 2 bytes, so the forced cast has length 2.
                 let constructor_args = vec![];
                 let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
                 let selector = selector_for_compiled(&compiled, "hello");
@@ -608,7 +608,7 @@ fn runs_cashc_valid_examples() {
                 let constructor_args = vec![];
                 let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
                 let selector = selector_for_compiled(&compiled, "spend");
-                let sigscript = build_sigscript(&[ArgValue::Int(2)], selector);
+                let sigscript = build_sigscript(&[], selector);
                 let (mut tx, utxo, reused) = build_tx_context(
                     compiled.script.clone(),
                     vec![(1_000, compiled.script.clone()), (1_000, compiled.script.clone())],
@@ -681,7 +681,7 @@ fn runs_cashc_valid_examples() {
                 assert!(result.is_err(), "{example} should fail");
             }
             "simple_cast.sil" => {
-                // Unsatisfiable: requires sha256(pubkey) == sha256(bytes("Hello World" + y) + bytes(pubkey)).
+                // Unsatisfiable: requires sha256(pubkey) == sha256(byte[]("Hello World" + y) + byte[](pubkey)).
                 let constructor_args = vec![0i64.into(), String::from("y").into()];
                 let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
                 let selector = selector_for_compiled(&compiled, "hello");
@@ -932,7 +932,6 @@ fn runs_cashc_valid_examples() {
                 assert!(result.is_ok(), "{example} failed: {}", result.unwrap_err());
             }
             "slice_optimised.sil" => {
-                // Unsatisfiable in this runtime: NUM2BIN rejects target sizes > 8 (slice needs 20).
                 let constructor_args = vec![vec![0u8; 32].into()];
                 let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
                 let selector = selector_for_compiled(&compiled, "spend");
@@ -946,7 +945,7 @@ fn runs_cashc_valid_examples() {
                 );
                 tx.tx.inputs[0].signature_script = sigscript;
                 let result = execute_tx(tx, utxo, reused);
-                assert!(result.is_err(), "{example} should fail");
+                assert!(result.is_ok(), "{example} failed: {}", result.unwrap_err());
             }
             "split_or_slice_signature.sil" => {
                 // Valid in this runtime with current slice lowering.

@@ -30,6 +30,21 @@ fn parses_entry_declaration() {
 }
 
 #[test]
+fn parses_int_as_fixed_byte_array() {
+    let source = r#"
+        contract Convert() {
+            entry main(int x) {
+                byte[8] y = x as byte[8];
+                byte[_] z = x as byte[4];
+                require(y.length == 8 && z.length == 4);
+            }
+        }
+    "#;
+
+    parse_contract_ast(source).expect("'as byte[N]' parses");
+}
+
+#[test]
 fn type_predicates_only_match_scalars() {
     assert!(parse_type_ref("int").unwrap().is_int());
     assert!(parse_type_ref("bool").unwrap().is_bool());
