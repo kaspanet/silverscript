@@ -537,23 +537,8 @@ impl<'i, 'd> Inliner<'i, 'd> {
                 prelude.extend(more_prelude);
                 Ok((prelude, Expr::new(ExprKind::Append { source: Box::new(source), args, span: *append_span }, span)))
             }
-            ExprKind::IfElse { condition, then_expr, else_expr } => {
-                let (mut prelude, condition) = self.lower_expr(condition, scope, visited_functions)?;
-                let (more_prelude, then_expr) = self.lower_expr(then_expr, scope, visited_functions)?;
-                prelude.extend(more_prelude);
-                let (more_prelude, else_expr) = self.lower_expr(else_expr, scope, visited_functions)?;
-                prelude.extend(more_prelude);
-                Ok((
-                    prelude,
-                    Expr::new(
-                        ExprKind::IfElse {
-                            condition: Box::new(condition),
-                            then_expr: Box::new(then_expr),
-                            else_expr: Box::new(else_expr),
-                        },
-                        span,
-                    ),
-                ))
+            ExprKind::IfElse { .. } => {
+                Err(CompilerError::Unsupported("ternary expressions must be lowered before inline function expansion".to_string()))
             }
             ExprKind::Nullary(op) => Ok((Vec::new(), Expr::new(ExprKind::Nullary(*op), span))),
             ExprKind::Introspection { kind, index, field_span } => {
