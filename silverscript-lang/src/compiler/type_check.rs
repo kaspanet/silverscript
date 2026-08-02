@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 
-use crate::ast::{ArrayDim, BinaryOp, ContractFieldAst, Expr, ExprKind, FunctionAst, TypeBase, TypeRef, UnaryOp, UnarySuffixKind};
+use crate::ast::{
+    ArrayDim, BinaryOp, ContractFieldAst, Expr, ExprKind, FunctionAst, TypeBase, TypeRef, UnaryOp, UnarySuffixKind, as_cast_type,
+};
 
 use super::builtin_types::{
     BuiltinReturn, builtin_parameters, builtin_return, constructor_parameters, constructor_return_type, introspection_type,
@@ -223,6 +225,22 @@ pub(super) fn check_call<'i>(
         }
         return Ok(Some(expected.clone()));
     }
+    if let Some(cast_type) = as_cast_type(name) {
+        check_arity("as", args, 1)?;
+        if !matches!(cast_type.base, TypeBase::Byte)
+            || !matches!(cast_type.array_dims.as_slice(), [ArrayDim::Fixed(_) | ArrayDim::Constant(_)])
+        {
+            return Err(CompilerError::Unsupported("'as' conversion requires a fixed byte[N] target".to_string()));
+        }
+        check_expr(&args[0], Some(&scalar_type(TypeBase::Int)), ctx)
+            .map_err(|_| CompilerError::Unsupported("'as byte[N]' source must be int".to_string()))?;
+        let size = array_type_size(&cast_type, ctx.constants)
+            .ok_or_else(|| CompilerError::Unsupported("byte size in 'as byte[N]' must be known at compile time".to_string()))?;
+        if size == 0 || size > 8 {
+            return Err(CompilerError::Unsupported("byte size in 'as byte[N]' must be between 1 and 8".to_string()));
+        }
+        return Ok(Some(cast_type));
+    }
     if let Some(function) = ctx.functions.get(name).copied() {
         if function.entrypoint {
             return Err(CompilerError::Unsupported(format!("entry '{name}' cannot be called")));
@@ -245,23 +263,14 @@ pub(super) fn check_call<'i>(
     if let Ok(cast_type) = parse_type_ref(name)
         && !matches!(cast_type.base, TypeBase::Custom(_))
     {
-        let variable_size_byte_cast =
-            matches!(cast_type.base, TypeBase::Byte) && matches!(cast_type.array_dims.as_slice(), [ArrayDim::Dynamic]);
-        if variable_size_byte_cast {
-            match args {
-                [value] => {
-                    check_expr(value, None, ctx)?;
-                }
-                [value, size] => {
-                    check_expr(value, None, ctx)?;
-                    check_expr(size, Some(&scalar_type(TypeBase::Int)), ctx)?;
-                }
-                _ => return Err(CompilerError::Unsupported(format!("{name}() expects 1 or 2 arguments"))),
-            }
-            return Ok(Some(cast_type));
-        }
         check_arity(name, args, 1)?;
-        check_expr(&args[0], None, ctx)?;
+        let source_type = check_expr(&args[0], None, ctx)?;
+        if matches!(cast_type.base, TypeBase::Byte) && cast_type.is_array() && source_type.is_int() {
+            return Err(CompilerError::Unsupported(format!(
+                "cannot cast int to {}; use 'value as byte[N]' instead",
+                cast_type.type_name()
+            )));
+        }
         return Ok(Some(cast_type));
     }
     if let Some(parameters) = builtin_parameters(name) {

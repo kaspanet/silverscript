@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::ast::{
     ArrayDim, BinaryOp, ConstantAst, ContractAst, ContractFieldAst, Expr, ExprKind, FunctionAst, IntrospectionKind, NullaryOp,
     ParamAst, STATE_TYPE_NAME, SplitPart, StateFieldExpr, Statement, StructBindingAst, TimeVar, TypeBase, TypeRef, UnaryOp,
-    UnarySuffixKind, parse_contract_ast, parse_type_ref,
+    UnarySuffixKind, as_cast_call_name, as_cast_type, parse_contract_ast, parse_type_ref,
 };
 use crate::debug_info::{DebugInfo, DebugNamedValue};
 pub use crate::errors::{CompilerError, ErrorSpan};
@@ -433,4 +433,9 @@ fn push_sigscript_non_array_arg<'i>(builder: &mut ScriptBuilder, arg: Expr<'i>) 
 
 fn binary_expr<'i>(op: BinaryOp, left: Expr<'i>, right: Expr<'i>) -> Expr<'i> {
     Expr::new(ExprKind::Binary { op, left: Box::new(left), right: Box::new(right) }, span::Span::default())
+}
+
+fn int_to_fixed_bytes_expr<'i>(source: Expr<'i>, size: usize) -> Expr<'i> {
+    let type_ref = TypeRef { base: TypeBase::Byte, array_dims: vec![ArrayDim::Fixed(size)] };
+    Expr::call(as_cast_call_name(&type_ref), vec![source])
 }

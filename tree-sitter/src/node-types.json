@@ -35,7 +35,7 @@
     "fields": {},
     "children": {
       "multiple": false,
-      "required": true,
+      "required": false,
       "types": [
         {
           "type": "array_bound",
@@ -58,6 +58,21 @@
       "types": [
         {
           "type": "array_size",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "as_cast",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": false,
+      "required": true,
+      "types": [
+        {
+          "type": "type_name",
           "named": true
         }
       ]
@@ -913,6 +928,10 @@
           "named": true
         },
         {
+          "type": "as_cast",
+          "named": true
+        },
+        {
           "type": "call_suffix",
           "named": true
         },
@@ -1615,8 +1634,16 @@
     "named": false
   },
   {
+    "type": "_",
+    "named": false
+  },
+  {
     "type": "array_bound",
     "named": true
+  },
+  {
+    "type": "as",
+    "named": false
   },
   {
     "type": "attribute",

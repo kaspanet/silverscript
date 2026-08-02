@@ -8,13 +8,15 @@ pub(super) fn compile_call_expr<'i>(
     name: &str,
     args: &[Expr<'i>],
 ) -> Result<(), CompilerError> {
+    if let Some(cast_type) = as_cast_type(name) {
+        return compile_as_cast(ctx, args, &cast_type);
+    }
     if let Some((arity, opcode)) = opcode_builtin(name) {
         return compile_opcode_call(ctx, name, args, arity, opcode);
     }
 
     match name {
         "sha256" => compile_sha256_call(ctx, args),
-        "bytes" => compile_bytes_call(ctx, args),
         "length" => compile_length_call(ctx, args),
         "int" | "byte" | "bool" | "string" | "sig" | "pubkey" | "datasig" => compile_passthrough_cast_call(ctx, name, args),
         name if parse_type_ref(name)
@@ -99,22 +101,15 @@ fn compile_sha256_call<'i>(ctx: &mut CompileExprContext<'_, '_, 'i>, args: &[Exp
     Ok(())
 }
 
-fn compile_bytes_call<'i>(ctx: &mut CompileExprContext<'_, '_, 'i>, args: &[Expr<'i>]) -> Result<(), CompilerError> {
-    if args.is_empty() || args.len() > 2 {
-        return Err(CompilerError::Unsupported("bytes() expects one or two arguments".to_string()));
-    }
-    if args.len() == 2 {
-        compile_call_arg_with_context(ctx, &args[0])?;
-        compile_call_arg_with_context(ctx, &args[1])?;
-        ctx.emit_op(OpNum2Bin, -1)?;
-        return Ok(());
-    }
-    let arg_type = infer_expr_type(&args[0], ctx.env.constants, ctx.env.types)?;
-    compile_call_arg_with_context(ctx, &args[0])?;
-    if !is_byte_encoded_type(&arg_type) {
-        ctx.push_int(8)?;
-        ctx.emit_op(OpNum2Bin, -1)?;
-    }
+fn compile_as_cast<'i>(ctx: &mut CompileExprContext<'_, '_, 'i>, args: &[Expr<'i>], cast_type: &TypeRef) -> Result<(), CompilerError> {
+    let [source] = args else {
+        return Err(CompilerError::Unsupported("'as' conversion expects one source expression".to_string()));
+    };
+    let size = array_type_size(cast_type, ctx.env.constants)
+        .ok_or_else(|| CompilerError::Unsupported("byte size in 'as byte[N]' must be known at compile time".to_string()))?;
+    compile_call_arg_with_context(ctx, source)?;
+    ctx.push_int(i64::try_from(size).map_err(|_| CompilerError::Unsupported("byte size is too large".to_string()))?)?;
+    ctx.emit_op(OpNum2Bin, -1)?;
     Ok(())
 }
 
@@ -143,14 +138,10 @@ fn compile_byte_sequence_cast_call<'i>(
 ) -> Result<(), CompilerError> {
     let size_part = &name[5..name.len() - 1];
     if size_part.is_empty() {
-        if args.len() != 1 && args.len() != 2 {
-            return Err(CompilerError::Unsupported(format!("{name}() expects 1 or 2 arguments")));
+        if args.len() != 1 {
+            return Err(CompilerError::Unsupported(format!("{name}() expects a single argument")));
         }
         compile_call_arg_with_context(ctx, &args[0])?;
-        if args.len() == 2 {
-            compile_call_arg_with_context(ctx, &args[1])?;
-            ctx.emit_op(OpNum2Bin, -1)?;
-        }
         return Ok(());
     }
 
@@ -158,21 +149,14 @@ fn compile_byte_sequence_cast_call<'i>(
     if args.len() != 1 {
         return Err(CompilerError::Unsupported(format!("{name}() expects a single argument")));
     }
-    let source_type = infer_expr_type(&args[0], ctx.env.constants, ctx.env.types).ok();
-    if let Some(source_type) = source_type.as_ref() {
-        if let Some(source_size) = byte_sequence_cast_size(source_type, ctx.env.constants) {
-            if let Some(source_size) = source_size {
-                if source_size != size {
-                    return Err(CompilerError::Unsupported(format!("cannot cast {} to {name}", source_type.type_name())));
-                }
-            }
-            return compile_call_arg_with_context(ctx, &args[0]);
-        }
+    let source_type = infer_expr_type(&args[0], ctx.env.constants, ctx.env.types)?;
+    if let Some(source_size) = byte_sequence_cast_size(&source_type, ctx.env.constants)
+        && let Some(source_size) = source_size
+        && source_size != size
+    {
+        return Err(CompilerError::Unsupported(format!("cannot cast {} to {name}", source_type.type_name())));
     }
-    compile_call_arg_with_context(ctx, &args[0])?;
-    ctx.push_int(size)?;
-    ctx.emit_op(OpNum2Bin, -1)?;
-    Ok(())
+    compile_call_arg_with_context(ctx, &args[0])
 }
 
 fn compile_array_cast_call<'i>(ctx: &mut CompileExprContext<'_, '_, 'i>, name: &str, args: &[Expr<'i>]) -> Result<(), CompilerError> {
@@ -224,8 +208,8 @@ fn compile_template_hash_call<'i>(ctx: &mut CompileExprContext<'_, '_, 'i>, args
         return Err(CompilerError::Unsupported("templateHash() expects 2 arguments".to_string()));
     };
 
-    let encoded_prefix_len = Expr::call("bytes", vec![Expr::call("length", vec![prefix.clone()]), Expr::int(8)]);
-    let encoded_suffix_len = Expr::call("bytes", vec![Expr::call("length", vec![suffix.clone()]), Expr::int(8)]);
+    let encoded_prefix_len = int_to_fixed_bytes_expr(Expr::call("length", vec![prefix.clone()]), 8);
+    let encoded_suffix_len = int_to_fixed_bytes_expr(Expr::call("length", vec![suffix.clone()]), 8);
     let preimage = binary_expr(
         BinaryOp::Add,
         binary_expr(BinaryOp::Add, encoded_prefix_len, prefix.clone()),

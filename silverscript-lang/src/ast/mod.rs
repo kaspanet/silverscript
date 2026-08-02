@@ -265,6 +265,16 @@ pub enum ArrayDim {
     Constant(String),
 }
 
+const AS_CAST_PREFIX: &str = "__as_cast_";
+
+pub(crate) fn as_cast_call_name(type_ref: &TypeRef) -> String {
+    format!("{AS_CAST_PREFIX}{}", type_ref.type_name())
+}
+
+pub(crate) fn as_cast_type(name: &str) -> Option<TypeRef> {
+    parse_type_ref(name.strip_prefix(AS_CAST_PREFIX)?).ok()
+}
+
 impl TypeRef {
     pub fn is_int(&self) -> bool {
         self.array_dims.is_empty() && matches!(self.base, TypeBase::Int)
@@ -1057,7 +1067,13 @@ fn format_expr_with_prec(expr: &Expr<'_>, parent_prec: u8, right_child: bool) ->
         ExprKind::DateLiteral(value) => value.to_string(),
         ExprKind::Identifier(value) => value.clone(),
         ExprKind::Array(items) => format_array(items),
-        ExprKind::Call { name, args, .. } => format!("{}({})", name, format_expr_list(args)),
+        ExprKind::Call { name, args, .. } => {
+            if let (Some(type_ref), [source]) = (as_cast_type(name), args.as_slice()) {
+                format!("{} as {}", format_expr_with_prec(source, PREC_POSTFIX, false), type_ref.type_name())
+            } else {
+                format!("{}({})", name, format_expr_list(args))
+            }
+        }
         ExprKind::New { name, args, .. } => format!("new {}({})", name, format_expr_list(args)),
         ExprKind::Split { source, index, part, .. } => {
             format!(
@@ -2119,6 +2135,14 @@ fn parse_postfix<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {
                 let span = expr.span.join(&postfix_span);
                 expr = Expr::new(ExprKind::FieldAccess { source: Box::new(expr), field, field_span }, span);
             }
+            Rule::as_cast => {
+                let mut cast_inner = postfix.into_inner();
+                let type_pair = cast_inner.next().ok_or_else(|| CompilerError::Unsupported("missing type after 'as'".to_string()))?;
+                let type_span = Span::from(type_pair.as_span());
+                let type_ref = parse_type_name_pair(type_pair)?;
+                let span = expr.span.join(&postfix_span);
+                expr = Expr::new(ExprKind::Call { name: as_cast_call_name(&type_ref), args: vec![expr], name_span: type_span }, span);
+            }
             _ => {
                 return Err(CompilerError::Unsupported("postfix operators are not supported".to_string()));
             }
@@ -2343,10 +2367,6 @@ fn parse_cast<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {
     let mut args = Vec::new();
     for part in inner {
         args.push(parse_expression(part)?);
-    }
-
-    if type_name == "bytes" {
-        return Ok(Expr::new(ExprKind::Call { name: "bytes".to_string(), args, name_span: type_span }, span));
     }
 
     if type_name == "byte" {
