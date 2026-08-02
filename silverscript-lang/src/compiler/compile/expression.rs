@@ -504,10 +504,20 @@ fn compile_slice_expr<'i>(
     start: &Expr<'i>,
     end: &Expr<'i>,
 ) -> Result<(), CompilerError> {
+    let source_type = infer_expr_type(source, ctx.env.constants, ctx.env.types)?;
+    let element_size = array_element_size(&source_type, ctx.env.contract_constants);
     let int_type = scalar_type(TypeBase::Int);
-    compile_expr_with_context(ctx, source, None)?;
+    compile_expr_with_context(ctx, source, Some(&source_type))?;
     compile_expr_with_context(ctx, start, Some(&int_type))?;
+    if let Some(element_size) = element_size.filter(|size| *size != 1) {
+        ctx.push_int(element_size)?;
+        ctx.emit_op(OpMul, -1)?;
+    }
     compile_expr_with_context(ctx, end, Some(&int_type))?;
+    if let Some(element_size) = element_size.filter(|size| *size != 1) {
+        ctx.push_int(element_size)?;
+        ctx.emit_op(OpMul, -1)?;
+    }
     ctx.emit_op(OpSubstr, -2)?;
     Ok(())
 }
@@ -609,18 +619,28 @@ fn compile_split_part<'i>(
     index: &Expr<'i>,
     part: SplitPart,
 ) -> Result<(), CompilerError> {
+    let source_type = infer_expr_type(source, ctx.env.constants, ctx.env.types)?;
+    let element_size = array_element_size(&source_type, ctx.env.contract_constants);
     let int_type = scalar_type(TypeBase::Int);
-    compile_expr_with_context(ctx, source, None)?;
+    compile_expr_with_context(ctx, source, Some(&source_type))?;
     match part {
         SplitPart::Left => {
             ctx.push_int(0)?;
             compile_expr_with_context(ctx, index, Some(&int_type))?;
+            if let Some(element_size) = element_size.filter(|size| *size != 1) {
+                ctx.push_int(element_size)?;
+                ctx.emit_op(OpMul, -1)?;
+            }
             ctx.emit_op(OpSubstr, -2)?;
             Ok(())
         }
         SplitPart::Right => {
             ctx.emit_op(OpSize, 1)?;
             compile_expr_with_context(ctx, index, Some(&int_type))?;
+            if let Some(element_size) = element_size.filter(|size| *size != 1) {
+                ctx.push_int(element_size)?;
+                ctx.emit_op(OpMul, -1)?;
+            }
             ctx.emit_op(OpSwap, 0)?;
             ctx.emit_op(OpSubstr, -2)?;
             Ok(())

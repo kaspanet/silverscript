@@ -422,7 +422,7 @@ fn dynamic_array_of(type_ref: &TypeRef) -> Result<TypeRef, CompilerError> {
 }
 
 fn sequence_part_type(type_ref: &TypeRef, operation: &str) -> Result<TypeRef, CompilerError> {
-    if type_ref.array_element_type().is_some_and(|element_type| element_type.is_byte()) {
+    if type_ref.is_array() {
         return dynamic_array_of(type_ref);
     }
     if type_ref.is_string() {
@@ -431,7 +431,7 @@ fn sequence_part_type(type_ref: &TypeRef, operation: &str) -> Result<TypeRef, Co
     if !type_ref.is_array() && type_ref.base.fixed_byte_sequence_len().is_some() {
         return Ok(TypeRef { base: TypeBase::Byte, array_dims: vec![ArrayDim::Dynamic] });
     }
-    Err(CompilerError::Unsupported(format!("{operation} source must be a byte array, string, or fixed-byte type")))
+    Err(CompilerError::Unsupported(format!("{operation} source must be an array, string, or fixed-byte type")))
 }
 
 fn check_constructor<'i>(name: &str, args: &[Expr<'i>], ctx: &TypeCheckContext<'_, 'i>) -> Result<TypeRef, CompilerError> {
