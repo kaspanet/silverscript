@@ -16,12 +16,12 @@ repository = ""
 rust-version = "1.85.0"
 
 [workspace.dependencies]
-kaspa-consensus-core = { git = "https://github.com/someone235/rusty-kaspa", branch = "append_r0_groth16_verifier_with_image_id" } #TODO: Change to v2.0.1 before merging
-kaspa-addresses = { git = "https://github.com/someone235/rusty-kaspa", branch = "append_r0_groth16_verifier_with_image_id" }
-kaspa-hashes = { git = "https://github.com/someone235/rusty-kaspa", branch = "append_r0_groth16_verifier_with_image_id" }
-kaspa-txscript = { git = "https://github.com/someone235/rusty-kaspa", branch = "append_r0_groth16_verifier_with_image_id" }
-kaspa-txscript-zk-sdk = { git = "https://github.com/someone235/rusty-kaspa", branch = "append_r0_groth16_verifier_with_image_id" }
-kaspa-txscript-errors = { git = "https://github.com/someone235/rusty-kaspa", branch = "append_r0_groth16_verifier_with_image_id" }
+kaspa-consensus-core = { git = "https://github.com/kaspanet/rusty-kaspa", rev = "a41a333b08848f41bf737b72592e463a6011b8ac" }
+kaspa-addresses = { git = "https://github.com/kaspanet/rusty-kaspa", rev = "a41a333b08848f41bf737b72592e463a6011b8ac" }
+kaspa-hashes = { git = "https://github.com/kaspanet/rusty-kaspa", rev = "a41a333b08848f41bf737b72592e463a6011b8ac" }
+kaspa-txscript = { git = "https://github.com/kaspanet/rusty-kaspa", rev = "a41a333b08848f41bf737b72592e463a6011b8ac" }
+kaspa-txscript-zk-sdk = { git = "https://github.com/kaspanet/rusty-kaspa", rev = "a41a333b08848f41bf737b72592e463a6011b8ac" }
+kaspa-txscript-errors = { git = "https://github.com/kaspanet/rusty-kaspa", rev = "a41a333b08848f41bf737b72592e463a6011b8ac" }
 blake2b_simd = "1.0.2"
 indexmap = "2.7.0"
 rand = "0.8.5"

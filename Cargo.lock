@@ -2304,7 +2304,7 @@ dependencies = [
 [[package]]
 name = "kaspa-addresses"
 version = "2.0.1"
-source = "git+https://github.com/someone235/rusty-kaspa?branch=append_r0_groth16_verifier_with_image_id#520b018495e4c7a216004120d17ee80be5e536e8"
+source = "git+https://github.com/kaspanet/rusty-kaspa?rev=a41a333b08848f41bf737b72592e463a6011b8ac#a41a333b08848f41bf737b72592e463a6011b8ac"
 dependencies = [
  "borsh",
  "js-sys",
@@ -2319,7 +2319,7 @@ dependencies = [
 [[package]]
 name = "kaspa-consensus-core"
 version = "2.0.1"
-source = "git+https://github.com/someone235/rusty-kaspa?branch=append_r0_groth16_verifier_with_image_id#520b018495e4c7a216004120d17ee80be5e536e8"
+source = "git+https://github.com/kaspanet/rusty-kaspa?rev=a41a333b08848f41bf737b72592e463a6011b8ac#a41a333b08848f41bf737b72592e463a6011b8ac"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -2358,7 +2358,7 @@ dependencies = [
 [[package]]
 name = "kaspa-core"
 version = "2.0.1"
-source = "git+https://github.com/someone235/rusty-kaspa?branch=append_r0_groth16_verifier_with_image_id#520b018495e4c7a216004120d17ee80be5e536e8"
+source = "git+https://github.com/kaspanet/rusty-kaspa?rev=a41a333b08848f41bf737b72592e463a6011b8ac#a41a333b08848f41bf737b72592e463a6011b8ac"
 dependencies = [
  "anyhow",
  "cfg-if",
@@ -2378,7 +2378,7 @@ dependencies = [
 [[package]]
 name = "kaspa-hashes"
 version = "2.0.1"
-source = "git+https://github.com/someone235/rusty-kaspa?branch=append_r0_groth16_verifier_with_image_id#520b018495e4c7a216004120d17ee80be5e536e8"
+source = "git+https://github.com/kaspanet/rusty-kaspa?rev=a41a333b08848f41bf737b72592e463a6011b8ac#a41a333b08848f41bf737b72592e463a6011b8ac"
 dependencies = [
  "blake2b_simd",
  "blake3",
@@ -2397,7 +2397,7 @@ dependencies = [
 [[package]]
 name = "kaspa-math"
 version = "2.0.1"
-source = "git+https://github.com/someone235/rusty-kaspa?branch=append_r0_groth16_verifier_with_image_id#520b018495e4c7a216004120d17ee80be5e536e8"
+source = "git+https://github.com/kaspanet/rusty-kaspa?rev=a41a333b08848f41bf737b72592e463a6011b8ac#a41a333b08848f41bf737b72592e463a6011b8ac"
 dependencies = [
  "borsh",
  "faster-hex 0.9.0",
@@ -2417,7 +2417,7 @@ dependencies = [
 [[package]]
 name = "kaspa-merkle"
 version = "2.0.1"
-source = "git+https://github.com/someone235/rusty-kaspa?branch=append_r0_groth16_verifier_with_image_id#520b018495e4c7a216004120d17ee80be5e536e8"
+source = "git+https://github.com/kaspanet/rusty-kaspa?rev=a41a333b08848f41bf737b72592e463a6011b8ac#a41a333b08848f41bf737b72592e463a6011b8ac"
 dependencies = [
  "kaspa-hashes",
 ]
@@ -2425,7 +2425,7 @@ dependencies = [
 [[package]]
 name = "kaspa-muhash"
 version = "2.0.1"
-source = "git+https://github.com/someone235/rusty-kaspa?branch=append_r0_groth16_verifier_with_image_id#520b018495e4c7a216004120d17ee80be5e536e8"
+source = "git+https://github.com/kaspanet/rusty-kaspa?rev=a41a333b08848f41bf737b72592e463a6011b8ac#a41a333b08848f41bf737b72592e463a6011b8ac"
 dependencies = [
  "kaspa-hashes",
  "kaspa-math",
@@ -2436,7 +2436,7 @@ dependencies = [
 [[package]]
 name = "kaspa-smt"
 version = "2.0.1"
-source = "git+https://github.com/someone235/rusty-kaspa?branch=append_r0_groth16_verifier_with_image_id#520b018495e4c7a216004120d17ee80be5e536e8"
+source = "git+https://github.com/kaspanet/rusty-kaspa?rev=a41a333b08848f41bf737b72592e463a6011b8ac#a41a333b08848f41bf737b72592e463a6011b8ac"
 dependencies = [
  "blake3",
  "kaspa-hashes",
@@ -2447,7 +2447,7 @@ dependencies = [
 [[package]]
 name = "kaspa-txscript"
 version = "2.0.1"
-source = "git+https://github.com/someone235/rusty-kaspa?branch=append_r0_groth16_verifier_with_image_id#520b018495e4c7a216004120d17ee80be5e536e8"
+source = "git+https://github.com/kaspanet/rusty-kaspa?rev=a41a333b08848f41bf737b72592e463a6011b8ac#a41a333b08848f41bf737b72592e463a6011b8ac"
 dependencies = [
  "ark-bn254 0.6.0",
  "ark-ec 0.6.0",
@@ -2475,6 +2475,7 @@ dependencies = [
  "risc0-circuit-recursion",
  "risc0-core",
  "risc0-zkp",
+ "risc0-zkvm-platform",
  "secp256k1",
  "serde",
  "serde-wasm-bindgen",
@@ -2489,7 +2490,7 @@ dependencies = [
 [[package]]
 name = "kaspa-txscript-errors"
 version = "2.0.1"
-source = "git+https://github.com/someone235/rusty-kaspa?branch=append_r0_groth16_verifier_with_image_id#520b018495e4c7a216004120d17ee80be5e536e8"
+source = "git+https://github.com/kaspanet/rusty-kaspa?rev=a41a333b08848f41bf737b72592e463a6011b8ac#a41a333b08848f41bf737b72592e463a6011b8ac"
 dependencies = [
  "borsh",
  "kaspa-hashes",
@@ -2500,7 +2501,7 @@ dependencies = [
 [[package]]
 name = "kaspa-txscript-zk-sdk"
 version = "2.0.1"
-source = "git+https://github.com/someone235/rusty-kaspa?branch=append_r0_groth16_verifier_with_image_id#520b018495e4c7a216004120d17ee80be5e536e8"
+source = "git+https://github.com/kaspanet/rusty-kaspa?rev=a41a333b08848f41bf737b72592e463a6011b8ac#a41a333b08848f41bf737b72592e463a6011b8ac"
 dependencies = [
  "ark-bn254 0.6.0",
  "ark-ec 0.6.0",
@@ -2517,7 +2518,7 @@ dependencies = [
 [[package]]
 name = "kaspa-utils"
 version = "2.0.1"
-source = "git+https://github.com/someone235/rusty-kaspa?branch=append_r0_groth16_verifier_with_image_id#520b018495e4c7a216004120d17ee80be5e536e8"
+source = "git+https://github.com/kaspanet/rusty-kaspa?rev=a41a333b08848f41bf737b72592e463a6011b8ac#a41a333b08848f41bf737b72592e463a6011b8ac"
 dependencies = [
  "async-channel 2.5.0",
  "borsh",
