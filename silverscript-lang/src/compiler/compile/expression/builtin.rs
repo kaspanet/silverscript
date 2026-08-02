@@ -279,7 +279,7 @@ fn compile_r0_succinct_verify_call<'i>(
         "r0.succinct.verify" | "r0.succinct.poseidon2.verify" => 1,
         "r0.succinct.blake2b.verify" | "r0.succinct.sha256.verify" => {
             return Err(CompilerError::Unsupported(format!(
-                "{name}() is reserved for future use; only Poseidon2 R0 Succinct verification is currently supported"
+                "{name}() is reserved for future use by the Kaspa script engine; only Poseidon2 R0 Succinct verification is currently supported"
             )));
         }
         _ => return Err(CompilerError::Unsupported(format!("unknown R0 Succinct verifier '{name}'"))),
