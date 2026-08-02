@@ -189,8 +189,8 @@ function readInputStateWithTemplate(
  * ```
  *
  * Pseudo logic:
- *   1. Encode `templatePrefix.length` and `templateSuffix.length` with
- *      `bytes(length, 8)`.
+ *   1. Convert `templatePrefix.length` and `templateSuffix.length` with
+ *      `length as byte[8]`.
  *   2. Build `prefixLen || templatePrefix || suffixLen || templateSuffix`.
  *   3. Return `blake2b` of that preimage.
  *
@@ -225,7 +225,7 @@ function blake2b(byte[] data) : (byte[32]);
  *
  * Example:
  * ```js
- * byte[32] id = blake2bWithKey(preimage, bytes("CovenantID"));
+ * byte[32] id = blake2bWithKey(preimage, byte[]("CovenantID"));
  * ```
  *
  * Security notes:

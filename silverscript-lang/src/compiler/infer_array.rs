@@ -246,6 +246,9 @@ fn infer_expr_type_with_hint<'i>(
             Some(inferred)
         }
         ExprKind::Call { name, .. } => {
+            if let Some(type_ref) = as_cast_type(name) {
+                return Some(type_ref);
+            }
             if let Some(function) = functions.get(name) {
                 return (!function.entrypoint).then(|| function.return_type()).flatten();
             }

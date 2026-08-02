@@ -232,8 +232,8 @@ pub(super) fn compile_read_input_state_with_template_validation(
     let input_redeem_script_expr = input_sigscript_substr_expr(input_idx, script_base_expr.clone(), script_end_expr);
     let prefix_expr = input_sigscript_substr_expr(input_idx, script_base_expr, prefix_end_expr);
     let suffix_expr = input_sigscript_substr_expr(input_idx, suffix_start_expr, suffix_end_expr);
-    let encoded_prefix_len_expr = Expr::call("bytes", vec![template_prefix_len.clone(), Expr::int(8)]);
-    let encoded_suffix_len_expr = Expr::call("bytes", vec![template_suffix_len.clone(), Expr::int(8)]);
+    let encoded_prefix_len_expr = int_to_fixed_bytes_expr(template_prefix_len.clone(), 8);
+    let encoded_suffix_len_expr = int_to_fixed_bytes_expr(template_suffix_len.clone(), 8);
     let template_expr = binary_expr(
         BinaryOp::Add,
         binary_expr(BinaryOp::Add, encoded_prefix_len_expr, prefix_expr),
@@ -406,8 +406,8 @@ pub(super) fn compile_validate_output_state_with_template_inner_statement(
     let hash_type = builtin_return_type("blake2b").expect("known builtin type");
     let int_type = scalar_type(TypeBase::Int);
 
-    let encoded_prefix_len = Expr::call("bytes", vec![Expr::call("length", vec![template_prefix.clone()]), Expr::int(8)]);
-    let encoded_suffix_len = Expr::call("bytes", vec![Expr::call("length", vec![template_suffix.clone()]), Expr::int(8)]);
+    let encoded_prefix_len = int_to_fixed_bytes_expr(Expr::call("length", vec![template_prefix.clone()]), 8);
+    let encoded_suffix_len = int_to_fixed_bytes_expr(Expr::call("length", vec![template_suffix.clone()]), 8);
     let template_preimage = binary_expr(
         BinaryOp::Add,
         binary_expr(BinaryOp::Add, encoded_prefix_len, template_prefix.clone()),

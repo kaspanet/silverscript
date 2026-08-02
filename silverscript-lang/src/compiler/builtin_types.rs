@@ -71,7 +71,7 @@ pub(super) fn builtin_return_type(name: &str) -> Option<TypeRef> {
         | "OpOutputCovenantId" => byte_array(ArrayDim::Fixed(32)),
         "OpTxSubnetId" => byte_array(ArrayDim::Fixed(20)),
         "OpTxInputSeq" => byte_array(ArrayDim::Fixed(8)),
-        "bytes" | "OpTxPayloadSubstr" | "OpTxInputScriptSigSubstr" | "OpTxInputSpkSubstr" | "OpTxOutputSpkSubstr" | "OpNum2Bin" => {
+        "OpTxPayloadSubstr" | "OpTxInputScriptSigSubstr" | "OpTxInputSpkSubstr" | "OpTxOutputSpkSubstr" | "OpNum2Bin" => {
             byte_array(ArrayDim::Dynamic)
         }
         _ => return None,

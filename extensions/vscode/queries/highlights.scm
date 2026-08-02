@@ -98,6 +98,7 @@
   "else"
   "for"
   "new"
+  "as"
   "require"
   "return"
   "console.log"

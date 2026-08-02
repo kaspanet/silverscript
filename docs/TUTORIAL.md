@@ -36,7 +36,7 @@
 8. [Type Casting](#type-casting)
 9. [Built-in Functions](#built-in-functions)
    - [Cryptographic Functions](#cryptographic-functions)
-   - [Type Conversion Functions](#type-conversion-functions)
+   - [Type Conversions](#type-conversions)
 10. [Transaction Introspection](#transaction-introspection)
     - [Transaction Fields](#transaction-fields)
     - [Input Introspection](#input-introspection)
@@ -789,8 +789,7 @@ int size = data.length;  // 2
 SilverScript supports explicit type casting:
 
 ```javascript
-// Cast to bytes
-byte[] fromInt = byte[](42);
+// Cast between byte-compatible types
 byte[] fromString = byte[]("hello");
 
 // Cast to specific byte size
@@ -867,24 +866,17 @@ Verify a compact 64-byte ECDSA signature against a 32-byte digest and compressed
 require(checkSigFromStackECDSA(oracleSig, sha256(oracleMessage), oraclePk));
 ```
 
-### Type Conversion Functions
+### Type Conversions
 
-**`byte[](value): bytes`**
-
-Convert to bytes:
+Use `as byte[N]` to convert an integer to a fixed-size byte array:
 
 ```javascript
-byte[] b1 = byte[](42);
-byte[] b2 = byte[]("hello");
+int amount = 1234;
+byte[8] encodedAmount = amount as byte[8];
 ```
 
-**`byte[](int value, int size): bytes`**
-
-Convert integer to byte[] with specific size:
-
-```javascript
-byte[8] b = byte[](1234, 8);
-```
+The source value must be an `int`, and `N` must be known at compile time and
+between 1 and 8. The conversion expression has type `byte[N]`.
 
 **`int(bool value): int`**
 
@@ -892,14 +884,6 @@ Convert boolean to integer (true = 1, false = 0):
 
 ```javascript
 int x = int(false);  // 0
-```
-
-**`length(byte[] value): int`**
-
-Get the length of a byte array:
-
-```javascript
-int size = length(data);
 ```
 
 ---

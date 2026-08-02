@@ -1605,6 +1605,10 @@
         {
           "type": "SYMBOL",
           "name": "reverse_call"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "as_cast"
         }
       ]
     },
@@ -1741,6 +1745,23 @@
           "value": ")"
         }
       ]
+    },
+    "as_cast": {
+      "type": "PREC_RIGHT",
+      "value": 0,
+      "content": {
+        "type": "SEQ",
+        "members": [
+          {
+            "type": "STRING",
+            "value": "as"
+          },
+          {
+            "type": "SYMBOL",
+            "name": "type_name"
+          }
+        ]
+      }
     },
     "primary": {
       "type": "CHOICE",
@@ -2227,20 +2248,24 @@
       "value": "constant"
     },
     "type_name": {
-      "type": "SEQ",
-      "members": [
-        {
-          "type": "SYMBOL",
-          "name": "base_type"
-        },
-        {
-          "type": "REPEAT",
-          "content": {
+      "type": "PREC_RIGHT",
+      "value": 0,
+      "content": {
+        "type": "SEQ",
+        "members": [
+          {
             "type": "SYMBOL",
-            "name": "array_suffix"
+            "name": "base_type"
+          },
+          {
+            "type": "REPEAT",
+            "content": {
+              "type": "SYMBOL",
+              "name": "array_suffix"
+            }
           }
-        }
-      ]
+        ]
+      }
     },
     "base_type": {
       "type": "CHOICE",
@@ -2327,6 +2352,10 @@
     "array_size": {
       "type": "CHOICE",
       "members": [
+        {
+          "type": "STRING",
+          "value": "_"
+        },
         {
           "type": "SYMBOL",
           "name": "identifier"
