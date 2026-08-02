@@ -266,6 +266,7 @@ fn compile_r0_groth16_verify_call<'i>(ctx: &mut CompileExprContext<'_, '_, 'i>, 
     append_r0_groth16_verifier_dynamic_image_id(builder)
         .map_err(|err| CompilerError::Unsupported(format!("failed to append r0 Groth16 verifier: {err}")))?;
     *stack_depth -= 2;
+    ctx.emit_op(OpDrop, -1)?; // OpDrop the OpTrue that is pushed by the verifier
     Ok(())
 }
 
@@ -288,6 +289,7 @@ fn compile_r0_succinct_verify_call<'i>(
     ctx.push_data(&[hash_fn_id])?;
     ctx.push_data(&[ZkTag::R0Succinct as u8])?;
     ctx.emit_op(OpZkPrecompile, -8)?;
+    ctx.emit_op(OpDrop, -1)?; // OpDrop the OpTrue that is pushed by the verifier
     Ok(())
 }
 

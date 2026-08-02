@@ -8,6 +8,12 @@ fn byte_array(dimension: ArrayDim) -> TypeRef {
     TypeRef { base: TypeBase::Byte, array_dims: vec![dimension] }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum BuiltinReturn {
+    Value(TypeRef),
+    Void,
+}
+
 pub(super) fn nullary_type(op: NullaryOp) -> TypeRef {
     match op {
         NullaryOp::ActiveScriptPubKey | NullaryOp::ThisScriptSizeDataPrefix => byte_array(ArrayDim::Dynamic),
@@ -33,8 +39,8 @@ pub(super) fn introspection_type(kind: IntrospectionKind) -> TypeRef {
     }
 }
 
-pub(super) fn builtin_return_type(name: &str) -> Option<TypeRef> {
-    Some(match name {
+pub(super) fn builtin_return(name: &str) -> Option<BuiltinReturn> {
+    let value_type = match name {
         "int" => scalar(TypeBase::Int),
         "bool" => scalar(TypeBase::Bool),
         "byte" => scalar(TypeBase::Byte),
@@ -58,15 +64,12 @@ pub(super) fn builtin_return_type(name: &str) -> Option<TypeRef> {
         | "OpCovOutputCount"
         | "OpCovOutputIdx" => scalar(TypeBase::Int),
         "length" => scalar(TypeBase::Int),
-        "OpTxInputIsCoinbase"
-        | "checkSig"
-        | "checkSigFromStack"
-        | "checkSigFromStackECDSA"
-        | "r0.g16.verify"
+        "OpTxInputIsCoinbase" | "checkSig" | "checkSigFromStack" | "checkSigFromStackECDSA" => scalar(TypeBase::Bool),
+        "r0.g16.verify"
         | "r0.succinct.verify"
         | "r0.succinct.blake2b.verify"
         | "r0.succinct.poseidon2.verify"
-        | "r0.succinct.sha256.verify" => scalar(TypeBase::Bool),
+        | "r0.succinct.sha256.verify" => return Some(BuiltinReturn::Void),
         "blake2b"
         | "blake2bWithKey"
         | "blake3"
@@ -83,7 +86,15 @@ pub(super) fn builtin_return_type(name: &str) -> Option<TypeRef> {
             byte_array(ArrayDim::Dynamic)
         }
         _ => return None,
-    })
+    };
+    Some(BuiltinReturn::Value(value_type))
+}
+
+pub(super) fn builtin_return_type(name: &str) -> Option<TypeRef> {
+    match builtin_return(name)? {
+        BuiltinReturn::Value(type_ref) => Some(type_ref),
+        BuiltinReturn::Void => None,
+    }
 }
 
 pub(super) fn constructor_return_type(name: &str) -> Option<TypeRef> {

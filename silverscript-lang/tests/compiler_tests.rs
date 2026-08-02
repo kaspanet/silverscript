@@ -8148,7 +8148,7 @@ fn r0_succinct_verify_lowers_hash_aliases_to_zk_precompile() {
                     byte[] journal
                 ) {{
                     entry main() {{
-                        require({call_name}(claim, control_index, control_digests, seal, journal, image_id, control_id));
+                        {call_name}(claim, control_index, control_digests, seal, journal, image_id, control_id);
                     }}
                 }}
             "#
@@ -8196,11 +8196,13 @@ fn r0_succinct_verify_lowers_hash_aliases_to_zk_precompile() {
             .unwrap()
             .add_op(OpZkPrecompile)
             .unwrap()
-            .add_op(OpVerify)
+            .add_op(OpDrop)
             .unwrap()
             .add_op(OpTrue)
             .unwrap()
             .drain();
+        let asm = script_to_str(&compiled.script).expect("R0 succinct script should stringify");
+        assert!(asm.contains("OpZkPrecompile OpDrop"), "void verifier result should be dropped: {asm}");
         assert_eq!(compiled.script, expected, "{call_name} lowered unexpectedly");
     }
 }
@@ -8215,7 +8217,7 @@ fn r0_succinct_verify_rejects_reserved_non_poseidon_hashes() {
             r#"
                 contract R0() {{
                     entry main() {{
-                        require({call_name}(bytes("claim"), bytes("control_index"), bytes("control_digests"), bytes("seal"), bytes("journal"), {b32_a}, {b32_b}));
+                        {call_name}(bytes("claim"), bytes("control_index"), bytes("control_digests"), bytes("seal"), bytes("journal"), {b32_a}, {b32_b});
                     }}
                 }}
             "#
@@ -8233,7 +8235,7 @@ fn r0_g16_verify_lowers_with_sdk_verifier_fragment() {
     let source = r#"
         contract R0(byte[32] journal_hash, byte[] proof, byte[32] image_id) {
             entry main() {
-                require(r0.g16.verify(journal_hash, proof, image_id));
+                r0.g16.verify(journal_hash, proof, image_id);
             }
         }
     "#;
@@ -8252,10 +8254,58 @@ fn r0_g16_verify_lowers_with_sdk_verifier_fragment() {
     expected_builder.add_data_with_push_opcode(&proof).unwrap();
     expected_builder.add_data_with_push_opcode(&image_id).unwrap();
     kaspa_txscript_zk_sdk::append_r0_groth16_verifier_dynamic_image_id(&mut expected_builder).unwrap();
-    expected_builder.add_op(OpVerify).unwrap();
+    expected_builder.add_op(OpDrop).unwrap();
     expected_builder.add_op(OpTrue).unwrap();
 
+    let asm = script_to_str(&compiled.script).expect("R0 Groth16 script should stringify");
+    assert!(asm.contains("OpZkPrecompile OpDrop"), "void verifier result should be dropped: {asm}");
     assert_eq!(compiled.script, expected_builder.drain());
+}
+
+#[test]
+fn r0_verify_builtins_do_not_return_values() {
+    let b32_a = format!("0x{}", "11".repeat(32));
+    let b32_b = format!("0x{}", "22".repeat(32));
+    let cases = [
+        format!(
+            r#"
+                contract R0() {{
+                    entry main() {{
+                        require(r0.g16.verify({b32_a}, bytes("proof"), {b32_b}));
+                    }}
+                }}
+            "#
+        ),
+        format!(
+            r#"
+                contract R0() {{
+                    entry main() {{
+                        bool valid = r0.succinct.verify(bytes("claim"), bytes("control_index"), bytes("control_digests"), bytes("seal"), bytes("journal"), {b32_a}, {b32_b});
+                        require(valid);
+                    }}
+                }}
+            "#
+        ),
+    ];
+
+    for source in cases {
+        let err = compile_contract(&source, &[], CompileOptions::default()).expect_err("void verifier should not be an expression");
+        assert!(err.to_string().contains("does not return a value"), "unexpected error: {err}");
+    }
+}
+
+#[test]
+fn value_returning_builtin_statement_discards_result() {
+    let source = r#"
+        contract Hash() {
+            entry main() {
+                sha256(bytes("ignored"));
+            }
+        }
+    "#;
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("value-returning builtin statement should compile");
+    let asm = script_to_str(&compiled.script).expect("builtin statement script should stringify");
+    assert!(asm.ends_with("OpSHA256 OpDrop OpTrue"), "builtin statement result should be discarded: {asm}");
 }
 
 fn assert_r0_type_error(source: &str, expected: &str) {
@@ -8415,7 +8465,7 @@ fn r0_succinct_verify_runtime_checks_each_hash_with_fixture() {
             r#"
                 contract R0(byte[32] image_id, byte[32] control_id) {{
                     entry main(byte[] claim, byte[] control_index, byte[] control_digests, byte[] seal, byte[] journal) {{
-                        require({call_name}(claim, control_index, control_digests, seal, journal, image_id, control_id));
+                        {call_name}(claim, control_index, control_digests, seal, journal, image_id, control_id);
                     }}
                 }}
             "#
@@ -8455,7 +8505,7 @@ fn r0_g16_verify_executes_with_fixture() {
     let source = r#"
         contract R0() {
             entry main(byte[32] journal_hash, byte[] proof, byte[32] image_id) {
-                require(r0.g16.verify(journal_hash, proof, image_id));
+                r0.g16.verify(journal_hash, proof, image_id);
             }
         }
     "#;

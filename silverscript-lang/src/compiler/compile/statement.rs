@@ -1,4 +1,5 @@
 use super::*;
+use crate::compiler::builtin_types::{BuiltinReturn, builtin_return};
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn compile_entrypoint_function<'i>(
@@ -154,6 +155,18 @@ impl<'a, 'i> CompileStatementContext<'a, 'i> {
         super::compile_expr(expr, expected_type, &env, &mut emitter)
     }
 
+    fn compile_void_builtin_call(&mut self, name: &str, args: &[Expr<'i>]) -> Result<(), CompilerError> {
+        let env = ExprEnv {
+            constants: self.contract_constants,
+            stack_bindings: self.stack_bindings,
+            types: self.types,
+            script_size: self.script_size,
+            contract_constants: self.contract_constants,
+        };
+        let mut emitter = ScriptEmitter::new(self.builder, 0);
+        super::compile_void_builtin_call(name, args, &env, &mut emitter)
+    }
+
     pub(crate) fn with_types_and_stack_bindings<'b>(
         &'b mut self,
         types: &'b mut TypeMap,
@@ -288,6 +301,18 @@ fn compile_function_call_statement<'i>(
             ctx.contract_constants,
         )
         .map(|_| Vec::new());
+    }
+    match builtin_return(name) {
+        Some(BuiltinReturn::Void) => {
+            ctx.compile_void_builtin_call(name, args)?;
+            return Ok(Vec::new());
+        }
+        Some(BuiltinReturn::Value(return_type)) => {
+            ctx.compile_expr(&Expr::call(name, args.to_vec()), Some(&return_type))?;
+            ctx.builder.add_op(OpDrop)?;
+            return Ok(Vec::new());
+        }
+        None => {}
     }
     Err(CompilerError::Unsupported(format!(
         "inline lowering must eliminate internal function calls before compilation, found '{}()'",

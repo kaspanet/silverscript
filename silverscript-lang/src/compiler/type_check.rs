@@ -3,7 +3,8 @@ use std::collections::HashMap;
 use crate::ast::{ArrayDim, BinaryOp, ContractFieldAst, Expr, ExprKind, FunctionAst, TypeBase, TypeRef, UnaryOp, UnarySuffixKind};
 
 use super::builtin_types::{
-    builtin_parameters, builtin_return_type, constructor_parameters, constructor_return_type, introspection_type, nullary_type,
+    BuiltinReturn, builtin_parameters, builtin_return, constructor_parameters, constructor_return_type, introspection_type,
+    nullary_type,
 };
 use super::structs::{StructRegistry, flattened_struct_field_specs_for_type, is_struct, struct_name};
 use super::{CompilerError, STATE_TYPE_NAME, TypeMap, append_type, array_type_size, concat_types, parse_type_ref, type_refs_equal};
@@ -268,7 +269,11 @@ pub(super) fn check_call<'i>(
     } else {
         check_all(args, ctx)?;
     }
-    builtin_return_type(name).map(Some).ok_or_else(|| CompilerError::Unsupported(format!("function '{name}' not found")))
+    match builtin_return(name) {
+        Some(BuiltinReturn::Value(type_ref)) => Ok(Some(type_ref)),
+        Some(BuiltinReturn::Void) => Ok(None),
+        None => Err(CompilerError::Unsupported(format!("function '{name}' not found"))),
+    }
 }
 
 fn check_builtin_args<'i>(

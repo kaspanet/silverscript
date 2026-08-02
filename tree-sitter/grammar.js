@@ -173,7 +173,14 @@ export default grammar({
     state_typed_binding: ($) =>
       seq($.identifier, ":", $.type_name, $.identifier),
 
-    call_statement: ($) => seq($.function_call, ";"),
+    call_statement: ($) =>
+      seq(
+        choice(
+          $.function_call,
+          seq($.identifier, repeat1($.member_access), $.call_suffix),
+        ),
+        ";",
+      ),
 
     return_statement: ($) => seq("return", choice($.expression_list, $.expression), ";"),
 

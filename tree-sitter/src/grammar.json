@@ -850,8 +850,33 @@
       "type": "SEQ",
       "members": [
         {
-          "type": "SYMBOL",
-          "name": "function_call"
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "SYMBOL",
+              "name": "function_call"
+            },
+            {
+              "type": "SEQ",
+              "members": [
+                {
+                  "type": "SYMBOL",
+                  "name": "identifier"
+                },
+                {
+                  "type": "REPEAT1",
+                  "content": {
+                    "type": "SYMBOL",
+                    "name": "member_access"
+                  }
+                },
+                {
+                  "type": "SYMBOL",
+                  "name": "call_suffix"
+                }
+              ]
+            }
+          ]
         },
         {
           "type": "STRING",
