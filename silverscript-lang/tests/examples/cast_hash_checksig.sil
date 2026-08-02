@@ -1,7 +1,7 @@
 pragma silverscript ^0.1.0;
 
 contract CastHashChecksig() {
-    entrypoint function hello(pubkey pk, sig s) {
+    entry hello(pubkey pk, sig s) {
         require((sha256(byte[](pk)) == blake2b(0x) == !true));
         require(checkSig(s, pk));
     }

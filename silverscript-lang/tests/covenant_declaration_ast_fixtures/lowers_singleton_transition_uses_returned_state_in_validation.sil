@@ -16,7 +16,7 @@ contract Decls(int init_value) {
         return { value: prev_state.value + delta };
     }
 
-    entrypoint function bump(int delta) {
+    entry bump(int delta) {
         int auth_out_count = OpAuthOutputCount(this.activeInputIndex);
 
         State prev_state = { value: value };

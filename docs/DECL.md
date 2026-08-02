@@ -43,7 +43,7 @@ Manual-entrypoint acknowledgment in a leader contract:
 
 ```js
 #[covenant.allow(rule = manual_entrypoint_in_leader_contract)]
-entrypoint function recover(...) {
+entry recover(...) {
     // Manual covenant-group checks.
 }
 ```
@@ -312,7 +312,7 @@ contract VaultNM(
     function __covenant_policy_conserve_and_bump(State[] prev_states, State[] new_states, sig leader_sig) { ... }
 
     // Generated for N:M leader path
-    entrypoint function __leader_conserve_and_bump(State[] new_states, sig leader_sig) {
+    entry __leader_conserve_and_bump(State[] new_states, sig leader_sig) {
         byte[32] cov_id = OpInputCovenantId(this.activeInputIndex);
 
         int in_count = OpCovInputCount(cov_id);
@@ -351,7 +351,7 @@ contract VaultNM(
     }
 
     // Generated for N:M delegate path
-    entrypoint function __delegate_conserve_and_bump() {
+    entry __delegate_conserve_and_bump() {
         byte[32] cov_id = OpInputCovenantId(this.activeInputIndex);
         // delegate path must not be leader
         require(OpCovInputIdx(cov_id, 0) != this.activeInputIndex);
@@ -394,7 +394,7 @@ contract SeqCommitMirror(byte[32] init_seqcommit) {
     function __covenant_policy_roll_seqcommit(State prev_state, byte[32] block_hash) : (State new_state) { ... }
 
     // Generated 1:1 covenant entrypoint
-    entrypoint function __roll_seqcommit(byte[32] block_hash) {
+    entry __roll_seqcommit(byte[32] block_hash) {
         State prev_state = {
             seqcommit: seqcommit
         };

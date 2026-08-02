@@ -7,7 +7,7 @@ fn tutorial_rust_programmatic_compilation_example() {
         pragma silverscript ^0.1.0;
 
         contract MyContract(int x) {
-            entrypoint function spend(int y) {
+            entry spend(int y) {
                 require(y > x);
             }
         }
@@ -29,11 +29,11 @@ fn tutorial_rust_build_sigscript_multiple_entrypoints_example() {
         pragma silverscript ^0.1.0;
 
         contract TransferWithTimeout(pubkey sender, pubkey recipient, int timeout) {
-            entrypoint function transfer(sig recipientSig) {
+            entry transfer(sig recipientSig) {
                 require(checkSig(recipientSig, recipient));
             }
 
-            entrypoint function reclaim(sig senderSig) {
+            entry reclaim(sig senderSig) {
                 require(checkSig(senderSig, sender));
                 require(tx.time >= timeout);
             }

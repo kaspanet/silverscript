@@ -21,7 +21,7 @@ contract Matrix(int init_amount, byte[32] init_owner) {
         return({ amount: prev_state.amount - fee, owner: prev_state.owner });
     }
 
-    entrypoint function step(int fee) {
+    entry step(int fee) {
         int auth_out_count = OpAuthOutputCount(this.activeInputIndex);
 
         State prev_state = { amount: amount, owner: owner };

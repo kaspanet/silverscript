@@ -334,11 +334,11 @@ mod tests {
                 bool active = true;
                 byte[1] tag = 0xaa;
 
-                entrypoint function inspect_state(State next) {
+                entry inspect_state(State next) {
                     require(next.active == active);
                 }
 
-                entrypoint function inspect_state_array(State[] next_states) {
+                entry inspect_state_array(State[] next_states) {
                     require(next_states.length == 2);
                 }
             }

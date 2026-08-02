@@ -224,7 +224,7 @@ pub(super) fn check_call<'i>(
     }
     if let Some(function) = ctx.functions.get(name).copied() {
         if function.entrypoint {
-            return Err(CompilerError::Unsupported(format!("entrypoint function '{name}' cannot be called")));
+            return Err(CompilerError::Unsupported(format!("entry '{name}' cannot be called")));
         }
         if function.params.len() != args.len() {
             return Err(CompilerError::Unsupported(format!("function '{name}' expects {} arguments", function.params.len())));

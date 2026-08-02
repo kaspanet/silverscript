@@ -18,6 +18,18 @@ fn parses_minimal_contract() {
 }
 
 #[test]
+fn parses_entry_declaration() {
+    let entry = r#"
+        contract Foo() {
+            entry main() {
+                require(true);
+            }
+        }
+    "#;
+    assert!(parse_source_file(entry).is_ok());
+}
+
+#[test]
 fn type_predicates_only_match_scalars() {
     assert!(parse_type_ref("int").unwrap().is_int());
     assert!(parse_type_ref("bool").unwrap().is_bool());
@@ -53,7 +65,7 @@ fn parses_timeops_and_console() {
 fn rejects_number_unit_overflow() {
     let input = r#"
         contract TimeLock() {
-            entrypoint function main() {
+            entry main() {
                 require(this.age >= 9223372036854775807 weeks);
             }
         }
@@ -119,7 +131,7 @@ fn parses_structs_and_field_access() {
                 require(x.b.length == 5);
             }
 
-            entrypoint function main() {
+            entry main() {
                 S y = {a: 0, b: "hello"};
                 f(y);
             }
@@ -139,7 +151,7 @@ fn parses_struct_destructuring() {
                 byte[5] b;
             }
 
-            entrypoint function main() {
+            entry main() {
                 S s = {a: 1, b: 0x0102030405};
                 {a: int x, b: byte[5] y} = s;
                 require(x == 1);
@@ -271,7 +283,7 @@ fn parses_tuple_variable_declaration_without_parentheses_as_tuple_assignment_syn
                 return(1, 2);
             }
 
-            entrypoint function main() {
+            entry main() {
                 int a, int b = pair();
             }
         }

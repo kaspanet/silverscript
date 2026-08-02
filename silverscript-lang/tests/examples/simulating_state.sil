@@ -6,7 +6,7 @@ contract SimulatingState(
     int pledgePerBlock,
     byte[8] initialBlock,
 ) {
-    entrypoint function receive() {
+    entry receive() {
         // Check that the first output sends to the recipient
         byte[34] recipientScriptPubKey = new ScriptPubKeyP2PK(recipient);
         require(tx.outputs[0].scriptPubKey == byte[](recipientScriptPubKey));
@@ -47,7 +47,7 @@ contract SimulatingState(
         }
     }
 
-    entrypoint function reclaim(pubkey pk, sig s) {
+    entry reclaim(pubkey pk, sig s) {
         require(blake2b(pk) == funder);
         require(checkSig(s, pk));
     }

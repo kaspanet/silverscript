@@ -1,7 +1,7 @@
 pragma silverscript ^0.1.0;
 
 contract SplitTyped(byte[] b) {
-    entrypoint function spend() {
+    entry spend() {
         byte[4] x = byte[4](b.split(4).0);
         require(byte[](x) != b);
     }

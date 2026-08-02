@@ -1633,7 +1633,7 @@
     "named": false
   },
   {
-    "type": "entrypoint",
+    "type": "entry",
     "named": false
   },
   {

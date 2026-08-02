@@ -16,7 +16,7 @@ fn compiles_from_ast_json_require() {
 
     let source = r#"
         contract Test() {
-            entrypoint function main(int a, int b) {
+            entry main(int a, int b) {
                 require(a + b == 7);
             }
         }
@@ -34,7 +34,7 @@ fn compiles_from_ast_json_return() {
 
     let source = r#"
         contract ReturnTest() {
-            entrypoint function main() : (int) {
+            entry main() : (int) {
                 int x = 5;
                 return(x + 2);
             }

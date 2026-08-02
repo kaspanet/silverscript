@@ -5,11 +5,11 @@ contract MultiFunction(
     pubkey recipient,
     int timeout
 ) {
-    entrypoint function transfer(sig recipientSig) {
+    entry transfer(sig recipientSig) {
         require(checkSig(recipientSig, recipient));
     }
 
-    entrypoint function timeout(sig senderSig) {
+    entry timeout(sig senderSig) {
         require(checkSig(senderSig, sender));
         require(tx.time >= timeout);
     }

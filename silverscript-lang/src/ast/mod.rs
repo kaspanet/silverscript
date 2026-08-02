@@ -860,9 +860,10 @@ impl SourceFormatter {
     fn write_function(&mut self, function: &FunctionAst<'_>) {
         let mut signature = String::new();
         if function.entrypoint {
-            signature.push_str("entrypoint ");
+            signature.push_str("entry ");
+        } else {
+            signature.push_str("function ");
         }
-        signature.push_str("function ");
         signature.push_str(&function.name);
         signature.push('(');
         signature.push_str(&format_params(&function.params));
@@ -1468,7 +1469,7 @@ fn parse_function_definition<'i>(pair: Pair<'i, Rule>) -> Result<FunctionAst<'i>
     }
 
     let first = inner.next().ok_or_else(|| CompilerError::Unsupported("missing function name".to_string()))?;
-    let (entrypoint, name_pair) = if first.as_rule() == Rule::entrypoint {
+    let (entrypoint, name_pair) = if first.as_rule() == Rule::entry {
         let name_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing function name".to_string()))?;
         (true, name_pair)
     } else {

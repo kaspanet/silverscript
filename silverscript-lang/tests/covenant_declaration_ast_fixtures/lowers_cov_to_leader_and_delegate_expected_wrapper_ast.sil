@@ -16,7 +16,7 @@ contract Decls(int max_ins, int max_outs) {
         require(delta >= 0);
     }
 
-    entrypoint function leader_transition_ok(State[] new_states, int delta) {
+    entry leader_transition_ok(State[] new_states, int delta) {
         byte[32] cov_id = OpInputCovenantId(this.activeInputIndex);
 
         require(OpCovInputIdx(cov_id, 0) == this.activeInputIndex);
@@ -41,7 +41,7 @@ contract Decls(int max_ins, int max_outs) {
         }
     }
 
-    entrypoint function delegate_transition_ok() {
+    entry delegate_transition_ok() {
         byte[32] cov_id = OpInputCovenantId(this.activeInputIndex);
 
         require(OpCovInputIdx(cov_id, 0) != this.activeInputIndex);

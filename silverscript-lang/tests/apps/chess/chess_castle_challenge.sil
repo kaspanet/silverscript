@@ -52,7 +52,7 @@ contract ChessCastleChallengePrep(
         return(result);
     }
 
-    entrypoint function apply(byte[] target_prefix, byte[] target_suffix) {
+    entry apply(byte[] target_prefix, byte[] target_suffix) {
         // This prep worker is only reachable immediately after a recorded
         // castle. It rewrites the castle lane into a proof board and then
         // forwards to the ordinary move family that can capture the challenged
@@ -235,7 +235,7 @@ contract ChessCastleChallengePrep(
         );
     }
 
-    entrypoint function timeout(byte[32] player_template, byte[] settle_prefix, byte[] settle_suffix) {
+    entry timeout(byte[32] player_template, byte[] settle_prefix, byte[] settle_suffix) {
         require(status == 0 /*LIVE*/);
 
         // Worker timeout is permissionless. Once a bad route strands funds in a

@@ -3,7 +3,7 @@ pragma silverscript ^0.1.0;
 contract CovenantId(int max_ins, int max_outs, int init_amount) {
     int amount = init_amount;
 
-    entrypoint function main(int[] output_amounts) {
+    entry main(int[] output_amounts) {
         require(output_amounts.length <= max_outs);
         byte[32] covid = OpInputCovenantId(this.activeInputIndex);
         

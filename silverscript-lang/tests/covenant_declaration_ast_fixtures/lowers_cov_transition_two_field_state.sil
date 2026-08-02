@@ -20,7 +20,7 @@ contract Matrix(int max_ins, int max_outs, int init_amount, byte[32] init_owner)
         return(prev_states);
     }
 
-    entrypoint function leader_step(int fee) {
+    entry leader_step(int fee) {
         byte[32] cov_id = OpInputCovenantId(this.activeInputIndex);
 
         require(OpCovInputIdx(cov_id, 0) == this.activeInputIndex);
@@ -45,7 +45,7 @@ contract Matrix(int max_ins, int max_outs, int init_amount, byte[32] init_owner)
         }
     }
 
-    entrypoint function delegate_step() {
+    entry delegate_step() {
         byte[32] cov_id = OpInputCovenantId(this.activeInputIndex);
 
         require(OpCovInputIdx(cov_id, 0) != this.activeInputIndex);

@@ -1,5 +1,5 @@
 contract ReturnBasic() {
-    entrypoint function main(int b) : (int, int) {
+    entry main(int b) : (int, int) {
         int a = 5;
         int x = a + 7;
         int c = b * b;

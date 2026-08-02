@@ -75,9 +75,10 @@ export default grammar({
     function_definition: ($) =>
       seq(
         repeat($.attribute),
-        optional("entrypoint"),
-        "function",
-        field("name", $.identifier),
+        choice(
+          seq("entry", field("name", $.identifier)),
+          seq("function", field("name", $.identifier)),
+        ),
         $.parameter_list,
         optional($.return_type_list),
         "{",

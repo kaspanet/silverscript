@@ -1,7 +1,7 @@
 pragma silverscript ^0.1.0;
 
 contract SiblingIntrospection(byte[] expectedLockingBytecode) {
-    entrypoint function spend() {
+    entry spend() {
         require(this.activeInputIndex == 0);
 
         byte[] outputBytecode = tx.outputs[1].scriptPubKey;

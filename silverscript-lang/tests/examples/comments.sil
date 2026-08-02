@@ -7,7 +7,7 @@ pragma silverscript ^0.1.0;
 
 contract Test(int x) {
     // Line comments are a thing
-    entrypoint function hello(sig s, pubkey pk) {
+    entry hello(sig s, pubkey pk) {
         int i = 400 + x;
         byte[] b = byte[](0x07364897987fe87) + byte[](x);
 

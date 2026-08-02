@@ -43,7 +43,7 @@ contract League(
     int base_rating = init_base_rating;
     byte[32] admin = init_admin;
 
-    entrypoint function register_player(
+    entry register_player(
         sig owner_sig,
         pubkey owner_pk,
         byte[] player_prefix,
@@ -99,7 +99,7 @@ contract League(
 
     // Admin-signed same-SPK continuity path for adjusting lane value without
     // changing the immutable League state or closing the lane.
-    entrypoint function rebalance(sig admin_sig, pubkey admin_pk) {
+    entry rebalance(sig admin_sig, pubkey admin_pk) {
         require(blake2b(admin_pk) == admin);
         require(checkSig(admin_sig, admin_pk));
         require(OpAuthOutputCount(this.activeInputIndex) == 1);
@@ -109,7 +109,7 @@ contract League(
 
     // Admin-signed fan-out path for splitting one immutable registration lane
     // into two identical lanes.
-    entrypoint function fork(sig admin_sig, pubkey admin_pk) {
+    entry fork(sig admin_sig, pubkey admin_pk) {
         require(blake2b(admin_pk) == admin);
         require(checkSig(admin_sig, admin_pk));
         require(OpAuthOutputCount(this.activeInputIndex) == 2);

@@ -52,7 +52,7 @@ contract ChessDiag(
         return(result);
     }
 
-    entrypoint function apply(byte[] mux_prefix, byte[] mux_suffix) {
+    entry apply(byte[] mux_prefix, byte[] mux_suffix) {
         // Workers only accept active move proofs routed out of ChessMux.
         require(status == 0 /*LIVE*/);
 
@@ -227,7 +227,7 @@ contract ChessDiag(
         validateOutputStateWithTemplate(output_idx, next_state, mux_prefix, mux_suffix, mux_template);
     }
 
-    entrypoint function timeout(byte[32] player_template, byte[] settle_prefix, byte[] settle_suffix) {
+    entry timeout(byte[32] player_template, byte[] settle_prefix, byte[] settle_suffix) {
         require(status == 0 /*LIVE*/);
 
         // Worker timeout is permissionless. Once a bad route strands funds in a
