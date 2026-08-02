@@ -11500,31 +11500,138 @@ fn runs_standalone_block_tuple_binding_shadowing() {
 }
 
 #[test]
-fn rejects_split_on_non_byte_array() {
+fn runs_split_on_non_byte_array() {
     let source = r#"
         contract SplitNonByteArray() {
-            entry main(int[] values) {
+            entry main() {
+                int[] values = [10, 20, 30, 40];
                 (int[] left, int[] right) = values.split(1);
+                require(left == [10]);
+                require(right == [20, 30, 40]);
             }
         }
     "#;
 
-    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("split on int[] should fail");
-    assert!(err.to_string().contains("split source must be a byte array, string, or fixed-byte type"), "unexpected error: {err}");
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("split on int[] should compile");
+    let selector = selector_for(&compiled, "main");
+    let result = run_script_with_selector(compiled.script, selector);
+    assert!(result.is_ok(), "split on int[] should execute successfully: {}", result.unwrap_err());
 }
 
 #[test]
-fn rejects_slice_on_non_byte_array() {
+fn runs_slice_on_non_byte_array() {
     let source = r#"
         contract SliceNonByteArray() {
-            entry main(int[] values) {
-                int[] part = values.slice(0, 1);
+            entry main() {
+                int[] values = [10, 20, 30, 40];
+                int[] part = values.slice(1, 3);
+                require(part == [20, 30]);
             }
         }
     "#;
 
-    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("slice on int[] should fail");
-    assert!(err.to_string().contains("slice source must be a byte array, string, or fixed-byte type"), "unexpected error: {err}");
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("slice on int[] should compile");
+    let selector = selector_for(&compiled, "main");
+    let result = run_script_with_selector(compiled.script, selector);
+    assert!(result.is_ok(), "slice on int[] should execute successfully: {}", result.unwrap_err());
+}
+
+#[test]
+fn runs_split_and_slice_on_struct_array() {
+    let source = r#"
+        contract StructArraySequenceOperations() {
+            struct S {
+                int number;
+                byte[2] tag;
+            }
+
+            entry main() {
+                S[] values = [
+                    {number: 10, tag: 0x0102},
+                    {number: 20, tag: 0x0304},
+                    {number: 30, tag: 0x0506}
+                ];
+                S[] left = values.split(1).0;
+                S[] right = values.split(1).1;
+                S[] part = values.slice(1, 3);
+
+                require(left == [{number: 10, tag: 0x0102}]);
+                require(right == [
+                    {number: 20, tag: 0x0304},
+                    {number: 30, tag: 0x0506}
+                ]);
+                require(part == [
+                    {number: 20, tag: 0x0304},
+                    {number: 30, tag: 0x0506}
+                ]);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("struct array sequence operations should compile");
+    let selector = selector_for(&compiled, "main");
+    let result = run_script_with_selector(compiled.script, selector);
+    assert!(result.is_ok(), "struct array sequence operations should execute successfully: {}", result.unwrap_err());
+}
+
+#[test]
+fn runs_struct_array_equality_and_inequality_comparisons() {
+    let source = r#"
+        contract StructArrayComparisons() {
+            struct Details {
+                bool active;
+                int score;
+            }
+
+            struct Item {
+                int id;
+                byte[2] tag;
+                Details details;
+            }
+
+            entry main() {
+                Item[] values = [
+                    {id: 1, tag: 0x0102, details: {active: true, score: 10}},
+                    {id: 2, tag: 0x0304, details: {active: false, score: 20}}
+                ];
+                Item[] same = [
+                    {id: 1, tag: 0x0102, details: {active: true, score: 10}},
+                    {id: 2, tag: 0x0304, details: {active: false, score: 20}}
+                ];
+                Item[] differentId = [
+                    {id: 1, tag: 0x0102, details: {active: true, score: 10}},
+                    {id: 3, tag: 0x0304, details: {active: false, score: 20}}
+                ];
+                Item[] differentTag = [
+                    {id: 1, tag: 0x0102, details: {active: true, score: 10}},
+                    {id: 2, tag: 0x0506, details: {active: false, score: 20}}
+                ];
+                Item[] differentNestedField = [
+                    {id: 1, tag: 0x0102, details: {active: true, score: 10}},
+                    {id: 2, tag: 0x0304, details: {active: true, score: 20}}
+                ];
+                Item[] shorter = [
+                    {id: 1, tag: 0x0102, details: {active: true, score: 10}}
+                ];
+                Item[] empty;
+
+                require(values == same);
+                require(!(values != same));
+                require(values != differentId);
+                require(values != differentTag);
+                require(values != differentNestedField);
+                require(values != shorter);
+                require(!(values == differentId));
+                require(empty == []);
+                require(empty != values);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("struct array comparisons should compile");
+    let selector = selector_for(&compiled, "main");
+    let result = run_script_with_selector(compiled.script, selector);
+    assert!(result.is_ok(), "struct array comparisons should execute successfully: {}", result.unwrap_err());
 }
 
 #[test]

@@ -245,14 +245,41 @@ fn lower_expr<'i>(expr: &Expr<'i>, scope: &LoweringScope, structs: &StructRegist
         ExprKind::Unary { op, expr } => {
             Ok(Expr::new(ExprKind::Unary { op: *op, expr: Box::new(lower_expr(expr, scope, structs)?) }, span))
         }
-        ExprKind::Binary { op, left, right } => Ok(Expr::new(
-            ExprKind::Binary {
-                op: *op,
-                left: Box::new(lower_expr(left, scope, structs)?),
-                right: Box::new(lower_expr(right, scope, structs)?),
-            },
-            span,
-        )),
+        ExprKind::Binary { op, left, right } => {
+            if matches!(op, BinaryOp::Eq | BinaryOp::Ne)
+                && let ExprKind::Identifier(left_name) = &left.kind
+                && let Some(left_type) = scope.vars.get(left_name)
+                && is_struct_array(left_type, structs)
+            {
+                if let ExprKind::Identifier(right_name) = &right.kind
+                    && scope.vars.get(right_name).is_some_and(|right_type| right_type != left_type)
+                {
+                    return Err(CompilerError::Unsupported("struct array comparison requires matching types".to_string()));
+                }
+                let empty_constants = HashMap::new();
+                let left_leaves = lower_struct_array_value_expr(left, left_type, scope, structs, &[], &empty_constants, 0)?;
+                let right_leaves = lower_struct_array_value_expr(right, left_type, scope, structs, &[], &empty_constants, 0)?;
+                let comparison_op = *op;
+                let combination_op = if *op == BinaryOp::Eq { BinaryOp::And } else { BinaryOp::Or };
+                let comparisons = left_leaves.into_iter().zip(right_leaves).map(|(left, right)| {
+                    Expr::new(ExprKind::Binary { op: comparison_op, left: Box::new(left), right: Box::new(right) }, span)
+                });
+                return comparisons
+                    .reduce(|left, right| {
+                        Expr::new(ExprKind::Binary { op: combination_op, left: Box::new(left), right: Box::new(right) }, span)
+                    })
+                    .ok_or_else(|| CompilerError::Unsupported("cannot compare empty struct arrays".to_string()));
+            }
+
+            Ok(Expr::new(
+                ExprKind::Binary {
+                    op: *op,
+                    left: Box::new(lower_expr(left, scope, structs)?),
+                    right: Box::new(lower_expr(right, scope, structs)?),
+                },
+                span,
+            ))
+        }
         ExprKind::Append { source, args, span: append_span } => Ok(Expr::new(
             ExprKind::Append {
                 source: Box::new(lower_expr(source, scope, structs)?),
@@ -762,6 +789,54 @@ fn lower_struct_array_value_expr<'i>(
                     Expr::new(
                         ExprKind::Binary { op: BinaryOp::Add, left: Box::new(left), right: Box::new(right) },
                         span::Span::default(),
+                    )
+                })
+                .collect())
+        }
+        ExprKind::Split { source, index, part, span } => {
+            let sources = lower_struct_array_value_expr(
+                source,
+                expected_type,
+                scope,
+                structs,
+                contract_fields,
+                contract_constants,
+                contract_fields_end_offset,
+            )?;
+            let index = lower_expr(index, scope, structs)?;
+            Ok(sources
+                .into_iter()
+                .map(|source| {
+                    Expr::new(
+                        ExprKind::Split { source: Box::new(source), index: Box::new(index.clone()), part: *part, span: *span },
+                        expr.span,
+                    )
+                })
+                .collect())
+        }
+        ExprKind::Slice { source, start, end, span } => {
+            let sources = lower_struct_array_value_expr(
+                source,
+                expected_type,
+                scope,
+                structs,
+                contract_fields,
+                contract_constants,
+                contract_fields_end_offset,
+            )?;
+            let start = lower_expr(start, scope, structs)?;
+            let end = lower_expr(end, scope, structs)?;
+            Ok(sources
+                .into_iter()
+                .map(|source| {
+                    Expr::new(
+                        ExprKind::Slice {
+                            source: Box::new(source),
+                            start: Box::new(start.clone()),
+                            end: Box::new(end.clone()),
+                            span: *span,
+                        },
+                        expr.span,
                     )
                 })
                 .collect())
