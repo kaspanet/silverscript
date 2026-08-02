@@ -56,8 +56,8 @@ contract ChessKing(
         // Workers only accept active move proofs routed out of ChessMux.
         require(status == 0 /*LIVE*/);
 
-        int from_idx = OpBin2Num(pending_src_idx);
-        int to_idx = OpBin2Num(pending_dst_idx);
+        int from_idx = pending_src_idx;
+        int to_idx = pending_dst_idx;
 
         // Chess alternates between white (0) and black (1).
         bool is_white_turn = turn == 0 /*WHITE*/;
@@ -79,8 +79,8 @@ contract ChessKing(
         byte[64] prev_board = board;
         byte moving_piece = prev_board[from_idx];
         byte target_piece = prev_board[to_idx];
-        int moving_num = OpBin2Num(moving_piece);
-        int target_num = OpBin2Num(target_piece);
+        int moving_num = OpBin2Num(byte[](moving_piece));
+        int target_num = OpBin2Num(byte[](target_piece));
         // This route only accepts kings:
         // white king = 6, black king = 14.
         require(moving_num == 6 || moving_num == 14);
@@ -245,7 +245,7 @@ contract ChessKing(
         }
 
         byte[32] settle_template = templateHash(settle_prefix, settle_suffix);
-        require(blake2b(settle_template + player_template) == byte[32](route_templates.slice(256, 288)));
+        require(blake2b(byte[](settle_template + player_template)) == byte[32](route_templates.slice(256, 288)));
 
         SettleState next_state = {
             player_template: player_template,

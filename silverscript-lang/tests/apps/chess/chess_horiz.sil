@@ -56,8 +56,8 @@ contract ChessHoriz(
         // Workers only accept active move proofs routed out of ChessMux.
         require(status == 0 /*LIVE*/);
 
-        int from_idx = OpBin2Num(pending_src_idx);
-        int to_idx = OpBin2Num(pending_dst_idx);
+        int from_idx = pending_src_idx;
+        int to_idx = pending_dst_idx;
 
         // Chess alternates between white (0) and black (1).
         require(turn == 0 /*WHITE*/ || turn == 1 /*BLACK*/);
@@ -77,8 +77,8 @@ contract ChessHoriz(
         byte[64] prev_board = board;
         byte moving_piece = prev_board[from_idx];
         byte target_piece = prev_board[to_idx];
-        int moving_num = OpBin2Num(moving_piece);
-        int target_num = OpBin2Num(target_piece);
+        int moving_num = OpBin2Num(byte[](moving_piece));
+        int target_num = OpBin2Num(byte[](target_piece));
         // Straight routes are shared by rooks and queens:
         // white rook = 4, white queen = 5, black rook = 12, black queen = 13.
         require(moving_num == 4 || moving_num == 5 || moving_num == 12 || moving_num == 13);
@@ -117,7 +117,7 @@ contract ChessHoriz(
                 int scan_x = from_x + dir * (i + 1);
                 int scan_y = from_y;
                 int scan_idx = scan_y * 8 + scan_x;
-                if (OpBin2Num(prev_board[scan_idx]) != 0) {
+                if (OpBin2Num(byte[](prev_board[scan_idx])) != 0) {
                     clear = 0;
                 }
             }
@@ -260,7 +260,7 @@ contract ChessHoriz(
         }
 
         byte[32] settle_template = templateHash(settle_prefix, settle_suffix);
-        require(blake2b(settle_template + player_template) == byte[32](route_templates.slice(256, 288)));
+        require(blake2b(byte[](settle_template + player_template)) == byte[32](route_templates.slice(256, 288)));
 
         SettleState next_state = {
             player_template: player_template,

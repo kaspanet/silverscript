@@ -273,15 +273,15 @@ pub(super) fn check_call<'i>(
         }
         return Ok(Some(cast_type));
     }
-    if let Some(parameters) = builtin_parameters(name) {
-        check_builtin_args(name, args, parameters, ctx)?;
-    } else {
-        check_all(args, ctx)?;
-    }
-    match builtin_return(name) {
-        Some(BuiltinReturn::Value(type_ref)) => Ok(Some(type_ref)),
-        Some(BuiltinReturn::Void) => Ok(None),
-        None => Err(CompilerError::Unsupported(format!("function '{name}' not found"))),
+    let Some(return_type) = builtin_return(name) else {
+        return Err(CompilerError::Unsupported(format!("function '{name}' not found")));
+    };
+    let parameters = builtin_parameters(name)
+        .ok_or_else(|| CompilerError::Unsupported(format!("builtin function '{name}' has no parameter types")))?;
+    check_builtin_args(name, args, parameters, ctx)?;
+    match return_type {
+        BuiltinReturn::Value(type_ref) => Ok(Some(type_ref)),
+        BuiltinReturn::Void => Ok(None),
     }
 }
 
@@ -396,13 +396,6 @@ fn check_struct_literal<'i>(
         return Err(CompilerError::Unsupported(format!("unknown struct field '{extra}'")));
     }
     Ok(expected.clone())
-}
-
-fn check_all<'i>(expressions: &[Expr<'i>], ctx: &TypeCheckContext<'_, 'i>) -> Result<(), CompilerError> {
-    for expression in expressions {
-        check_expr(expression, None, ctx)?;
-    }
-    Ok(())
 }
 
 fn ensure_expected<'i>(

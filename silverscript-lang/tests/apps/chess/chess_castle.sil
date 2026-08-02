@@ -49,8 +49,8 @@ contract ChessCastle(
         require(status == 0 /*LIVE*/);
         require(draw_state >= 3 /*NORMAL*/);
 
-        int from_idx = OpBin2Num(pending_src_idx);
-        int to_idx = OpBin2Num(pending_dst_idx);
+        int from_idx = pending_src_idx;
+        int to_idx = pending_dst_idx;
 
         // Chess alternates between white (0) and black (1).
         require(turn == 0 /*WHITE*/ || turn == 1 /*BLACK*/);
@@ -61,8 +61,8 @@ contract ChessCastle(
         // Board access enforces src/dst index bounds.
         byte[64] prev_board = board;
         byte moving_piece = prev_board[from_idx];
-        int moving_num = OpBin2Num(moving_piece);
-        int target_num = OpBin2Num(prev_board[to_idx]);
+        int moving_num = OpBin2Num(byte[](moving_piece));
+        int target_num = OpBin2Num(byte[](prev_board[to_idx]));
 
         // This route only accepts kings:
         // white king = 6, black king = 14.
@@ -116,14 +116,14 @@ contract ChessCastle(
         // The castle-right bit is only historical permission. The live board
         // still has to show the correct corner rook on the correct square, and
         // the lane between king and rook still has to be empty.
-        require(OpBin2Num(prev_board[rook_from_idx]) == rook_num);
+        require(OpBin2Num(byte[](prev_board[rook_from_idx])) == rook_num);
         if (is_king_side) {
-            require(OpBin2Num(prev_board[row_base + 5]) == 0);
-            require(OpBin2Num(prev_board[row_base + 6]) == 0);
+            require(OpBin2Num(byte[](prev_board[row_base + 5])) == 0);
+            require(OpBin2Num(byte[](prev_board[row_base + 6])) == 0);
         } else {
-            require(OpBin2Num(prev_board[row_base + 1]) == 0);
-            require(OpBin2Num(prev_board[row_base + 2]) == 0);
-            require(OpBin2Num(prev_board[row_base + 3]) == 0);
+            require(OpBin2Num(byte[](prev_board[row_base + 1])) == 0);
+            require(OpBin2Num(byte[](prev_board[row_base + 2])) == 0);
+            require(OpBin2Num(byte[](prev_board[row_base + 3])) == 0);
         }
 
         byte rook_piece = prev_board[rook_from_idx];
@@ -227,7 +227,7 @@ contract ChessCastle(
         }
 
         byte[32] settle_template = templateHash(settle_prefix, settle_suffix);
-        require(blake2b(settle_template + player_template) == byte[32](route_templates.slice(256, 288)));
+        require(blake2b(byte[](settle_template + player_template)) == byte[32](route_templates.slice(256, 288)));
 
         SettleState next_state = {
             player_template: player_template,

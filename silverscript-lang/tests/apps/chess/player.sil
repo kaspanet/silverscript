@@ -68,9 +68,9 @@ contract Player(
     ) {
         require(self_side == 0 || self_side == 1);
         require(move_timeout > 0);
-        require(blake2b(owner_pk) == owner);
+        require(blake2b(byte[](owner_pk)) == owner);
         require(checkSig(owner_sig, owner_pk));
-        require(blake2b(route_templates) == routes_commitment);
+        require(blake2b(byte[](route_templates)) == routes_commitment);
 
         byte[32] cov_id = OpInputCovenantId(this.activeInputIndex);
         require(OpCovInputCount(cov_id) == 2);
@@ -80,8 +80,8 @@ contract Player(
         State other = readInputStateWithTemplate(other_input_idx, player_prefix_len, player_suffix_len, player_template);
         require(other.player_id != player_id);
 
-        byte[32] self_ref = blake2b(owner + player_id);
-        byte[32] other_ref = blake2b(other.owner + other.player_id);
+        byte[32] self_ref = blake2b(byte[](owner + player_id));
+        byte[32] other_ref = blake2b(byte[](other.owner + other.player_id));
         byte[32] white_player = self_ref;
         byte[32] black_player = other_ref;
         if (self_side == 1) {
@@ -157,7 +157,7 @@ contract Player(
         int player_suffix_len
     ) {
         require(move_timeout > 0);
-        require(blake2b(owner_pk) == owner);
+        require(blake2b(byte[](owner_pk)) == owner);
         require(checkSig(owner_sig, owner_pk));
 
         byte[32] cov_id = OpInputCovenantId(this.activeInputIndex);
@@ -188,8 +188,8 @@ contract Player(
         require(OpAuthOutputCount(this.activeInputIndex) == 0);
 
         int leader_input_idx = OpCovInputIdx(cov_id, 0);
-        require(blake2b(route_templates) == routes_commitment);
-        require(blake2b(settle_template + player_template) == byte[32](route_templates.slice(256, 288)));
+        require(blake2b(byte[](route_templates)) == routes_commitment);
+        require(blake2b(byte[](settle_template + player_template)) == byte[32](route_templates.slice(256, 288)));
         SettleState leader = readInputStateWithTemplate(leader_input_idx, settle_prefix_len, settle_suffix_len, settle_template);
 
         // Settlement is driven by a terminal settle worker state, not by a
@@ -198,14 +198,14 @@ contract Player(
         require(leader.status != 0);
         require(leader.player_template == player_template);
 
-        byte[32] self_ref = blake2b(owner + player_id);
+        byte[32] self_ref = blake2b(byte[](owner + player_id));
         require(self_ref == leader.white_player || self_ref == leader.black_player);
     }
 
     // Owner-signed same-SPK continuity path for depositing to or withdrawing
     // from the Player UTXO without changing its serialized state.
     entry rebalance(sig owner_sig, pubkey owner_pk) {
-        require(blake2b(owner_pk) == owner);
+        require(blake2b(byte[](owner_pk)) == owner);
         require(checkSig(owner_sig, owner_pk));
         // Verify that the current input is the only input in its chess covenant
         // group. This is required because `delegate_start_game` trusts the
@@ -222,7 +222,7 @@ contract Player(
     // Terminal owner-signed path for closing the Player account. Requiring
     // open_games == 0 prevents abandoning live game obligations.
     entry retire(sig owner_sig, pubkey owner_pk) {
-        require(blake2b(owner_pk) == owner);
+        require(blake2b(byte[](owner_pk)) == owner);
         require(checkSig(owner_sig, owner_pk));
         require(open_games == 0);
         // See the `rebalance` safety comment: every non-delegate `Player`

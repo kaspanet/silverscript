@@ -48,9 +48,9 @@ contract ChessPawn(
         // Workers only accept active move proofs routed out of ChessMux.
         require(status == 0 /*LIVE*/);
 
-        int from_idx = OpBin2Num(pending_src_idx);
-        int to_idx = OpBin2Num(pending_dst_idx);
-        int promo_piece = OpBin2Num(pending_promo);
+        int from_idx = pending_src_idx;
+        int to_idx = pending_dst_idx;
+        int promo_piece = pending_promo;
 
         // Chess alternates between white (0) and black (1).
         bool is_white_turn = turn == 0 /*WHITE*/;
@@ -72,8 +72,8 @@ contract ChessPawn(
         byte[64] prev_board = board;
         byte moving_piece = prev_board[from_idx];
         byte target_piece = prev_board[to_idx];
-        int moving_num = OpBin2Num(moving_piece);
-        int target_num = OpBin2Num(target_piece);
+        int moving_num = OpBin2Num(byte[](moving_piece));
+        int target_num = OpBin2Num(byte[](target_piece));
         // This route only accepts pawns:
         // white pawn = 1, black pawn = 9.
         require(moving_num == 1 || moving_num == 9);
@@ -94,7 +94,7 @@ contract ChessPawn(
             require(!target_is_black);
         }
 
-        int ep_idx = OpBin2Num(en_passant_idx);
+        int ep_idx = en_passant_idx;
         int from_y = from_idx / 8;
         int from_x = from_idx % 8;
         int to_y = to_idx / 8;
@@ -135,7 +135,7 @@ contract ChessPawn(
         // square must also be empty.
         if (from_y == start_rank && same_file && two_forward && target_is_empty) {
             int mid_idx = (from_y + dir) * 8 + from_x;
-            two_step = OpBin2Num(prev_board[mid_idx]) == 0;
+            two_step = OpBin2Num(byte[](prev_board[mid_idx])) == 0;
         }
 
         // Ordinary diagonal capture into an occupied enemy square.
@@ -147,7 +147,7 @@ contract ChessPawn(
         // that target square, opposite the pawn's movement direction.
         if (side_adjacent && one_forward && target_is_empty && to_idx == ep_idx) {
             en_passant_capture_idx = to_idx - dir * 8;
-            en_passant = OpBin2Num(prev_board[en_passant_capture_idx]) == ep_captured_piece;
+            en_passant = OpBin2Num(byte[](prev_board[en_passant_capture_idx])) == ep_captured_piece;
         }
 
         // A pawn move is legal iff it matches one of the four allowed cases above.
@@ -343,7 +343,7 @@ contract ChessPawn(
         }
 
         byte[32] settle_template = templateHash(settle_prefix, settle_suffix);
-        require(blake2b(settle_template + player_template) == byte[32](route_templates.slice(256, 288)));
+        require(blake2b(byte[](settle_template + player_template)) == byte[32](route_templates.slice(256, 288)));
 
         SettleState next_state = {
             player_template: player_template,

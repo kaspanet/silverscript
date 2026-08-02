@@ -9,7 +9,7 @@ contract Reassignment(int x, string y) {
         string hw = "Hello World";
         hw = hw + y;
 
-        require(sha256(pk) == sha256(hw));
+        require(sha256(byte[](pk)) == sha256(byte[](hw)));
         require(checkSig(s, pk));
     }
 }

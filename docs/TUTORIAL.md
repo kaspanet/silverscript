@@ -828,7 +828,7 @@ Compute the BLAKE2b hash of the input:
 
 ```javascript
 byte[32] hash = blake2b(data);
-byte[32] pkh = blake2b(pk);
+byte[32] pkh = blake2b(byte[](pk));
 ```
 
 **`sha256(byte[] data): byte[32]`**
@@ -1326,7 +1326,7 @@ contract Mecenas(pubkey recipient, byte[32] funder, int pledge, int period) {
 
     // Funder can reclaim at any time
     entry reclaim(pubkey pk, sig s) {
-        require(blake2b(pk) == funder);
+        require(blake2b(byte[](pk)) == funder);
         require(checkSig(s, pk));
     }
 }

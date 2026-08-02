@@ -61,8 +61,8 @@ contract ChessCastleChallengePrep(
         require(draw_state == 3 /*NORMAL*/);
         require(recent_castle >= 1 && recent_castle <= 4);
 
-        int from_idx = OpBin2Num(pending_src_idx);
-        int to_idx = OpBin2Num(pending_dst_idx);
+        int from_idx = pending_src_idx;
+        int to_idx = pending_dst_idx;
         require(from_idx != to_idx);
 
         byte[64] prev_board = board;
@@ -169,7 +169,7 @@ contract ChessCastleChallengePrep(
         int dy = to_y - from_y;
         (int abs_dx) = abs_int(dx);
         (int abs_dy) = abs_int(dy);
-        int moving_num = OpBin2Num(proof_board[from_idx]);
+        int moving_num = OpBin2Num(byte[](proof_board[from_idx]));
 
         int selector = -1;
         if (moving_num == 1 || moving_num == 9) {
@@ -253,7 +253,7 @@ contract ChessCastleChallengePrep(
         }
 
         byte[32] settle_template = templateHash(settle_prefix, settle_suffix);
-        require(blake2b(settle_template + player_template) == byte[32](route_templates.slice(256, 288)));
+        require(blake2b(byte[](settle_template + player_template)) == byte[32](route_templates.slice(256, 288)));
 
         SettleState next_state = {
             player_template: player_template,
