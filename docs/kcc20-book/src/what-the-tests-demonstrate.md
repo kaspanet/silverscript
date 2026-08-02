@@ -107,6 +107,10 @@ KCC20Minter does not merely inspect some KCC20-looking output. It validates:
 
 This is critical because it means the minter is validating a real KCC20 state transition, not trusting a lookalike output.
 
+The minter reuses the template bytes from the co-spent KCC20 input for both
+successor outputs. The existing input UTXO commits to its redeem script, and
+the minter checks the extracted template against its expected template hash.
+
 ## 9. The Issuance Budget Is Enforced Across Transactions
 
 The KCC20Minter flow walks through several mint transactions and shows that:

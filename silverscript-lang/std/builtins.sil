@@ -66,6 +66,42 @@ function validateOutputStateWithTemplate(
 
 /**
  * Role:
+ *      Validate a foreign output using template bytes already present in an input.
+ *
+ * Definition:
+ *      Extract the template prefix and suffix from the redeem script at the end
+ *      of `tx.inputs[templateInputIndex].sigScript`, then validate `newState`
+ *      through the same rules as `validateOutputStateWithTemplate`.
+ *
+ * Example:
+ * ```js
+ * Receipt nextReceipt = { orderId: orderId, buyer: buyer, amount: amount };
+ * validateOutputStateWithInputTemplate(1, nextReceipt, 2, receiptPrefixLen, receiptSuffixLen, receiptHash);
+ * ```
+ *
+ * Pseudo logic:
+ *   1. Use the supplied prefix/suffix lengths and static `newState` layout to
+ *      locate the redeem script at the end of the selected input's sigscript.
+ *   2. Extract its template prefix and suffix.
+ *   3. Check that `templateHash(prefix, suffix)` matches `expectedTemplateHash`.
+ *   4. Encode `newState`, rebuild the redeem script, and require the selected
+ *      output to use the matching P2SH `scriptPubKey`.
+ *
+ * Security notes:
+ *   - The selected input is only the source of the template bytes.
+ *   - `expectedTemplateHash` should come from trusted protocol data.
+ */
+function validateOutputStateWithInputTemplate(
+    int outputIndex,
+    object newState,
+    int templateInputIndex,
+    int templatePrefixLen,
+    int templateSuffixLen,
+    byte[32] expectedTemplateHash
+);
+
+/**
+ * Role:
  *      Read another input as this same contract's `State`.
  *
  * Definition:

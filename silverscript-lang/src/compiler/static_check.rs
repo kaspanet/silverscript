@@ -349,7 +349,7 @@ fn validate_function_call_statement_shape<'i>(
     name: &str,
     args: &[Expr<'i>],
 ) -> Result<(), CompilerError> {
-    if matches!(name, "validateOutputState" | "validateOutputStateWithTemplate") {
+    if matches!(name, "validateOutputState" | "validateOutputStateWithTemplate" | "validateOutputStateWithInputTemplate") {
         return validate_output_state_call(ctx, name, args);
     }
     ctx.check_call(name, args, None).map(|_| ())
@@ -361,6 +361,7 @@ fn validate_output_state_call<'i>(
     args: &[Expr<'i>],
 ) -> Result<(), CompilerError> {
     let int_type = TypeRef { base: TypeBase::Int, array_dims: Vec::new() };
+    let hash_type = TypeRef { base: TypeBase::Byte, array_dims: vec![ArrayDim::Fixed(32)] };
     match (name, args) {
         ("validateOutputState", [output_index, state]) => {
             let state_type = TypeRef { base: TypeBase::Custom(STATE_TYPE_NAME.to_string()), array_dims: Vec::new() };
@@ -392,6 +393,27 @@ fn validate_output_state_call<'i>(
         }
         ("validateOutputStateWithTemplate", _) => Err(CompilerError::Unsupported(
             "validateOutputStateWithTemplate(output_idx, new_state, template_prefix, template_suffix, expected_template_hash) expects 5 arguments"
+                .to_string(),
+        )),
+        (
+            "validateOutputStateWithInputTemplate",
+            [output_index, state, template_input_index, template_prefix_len, template_suffix_len, template_hash],
+        ) => {
+            ctx.check_expr(output_index, Some(&int_type))?;
+            let state_type = ctx.check_expr(state, None)?;
+            if !is_struct(&state_type, ctx.structs) {
+                return Err(CompilerError::Unsupported(
+                    "validateOutputStateWithInputTemplate requires a struct value".to_string(),
+                ));
+            }
+            for expression in [template_input_index, template_prefix_len, template_suffix_len] {
+                ctx.check_expr(expression, Some(&int_type))?;
+            }
+            ctx.check_expr(template_hash, Some(&hash_type))?;
+            Ok(())
+        }
+        ("validateOutputStateWithInputTemplate", _) => Err(CompilerError::Unsupported(
+            "validateOutputStateWithInputTemplate(output_idx, new_state, template_input_idx, template_prefix_len, template_suffix_len, expected_template_hash) expects 6 arguments"
                 .to_string(),
         )),
         _ => unreachable!(),

@@ -1017,7 +1017,7 @@ byte[35] outputScriptPubKey = new ScriptPubKeyP2SHFromRedeemScript(redeemScript)
 
 ### State Transition Builtins
 
-SilverScript provides four builtins for state routing and cross-template state inspection.
+SilverScript provides five builtins for state routing and cross-template state inspection.
 
 - **Validate Output State**: validate continuation into the same contract template. `newState` must provide every state field exactly once in the local `State` layout.
 
@@ -1033,6 +1033,21 @@ validateOutputStateWithTemplate(
     object newState,
     byte[] templatePrefix,
     byte[] templateSuffix,
+    byte[32] expectedTemplateHash
+)
+```
+
+- **Validate Output State With Input Template**: validate a foreign output while
+  reusing the template bytes from another input's redeem script. The prefix and
+  suffix lengths locate those bytes at the end of the selected input's sigscript.
+
+```js
+validateOutputStateWithInputTemplate(
+    int outputIndex,
+    object newState,
+    int templateInputIndex,
+    int templatePrefixLen,
+    int templateSuffixLen,
     byte[32] expectedTemplateHash
 )
 ```

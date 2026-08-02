@@ -931,8 +931,6 @@ fn kcc20_covenant_minter() {
                 Expr::int(template_prefix.len() as i64),      // templatePrefixLen
                 Expr::int(template_suffix.len() as i64),      // templateSuffixLen
                 Expr::bytes(expected_template_hash.clone()),  // expectedTemplateHash
-                Expr::bytes(template_prefix.clone()),         // templatePrefix
-                Expr::bytes(template_suffix.clone()),         // templateSuffix
             ],
             CompileOptions::default(),
         )
