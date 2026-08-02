@@ -158,6 +158,32 @@ fn parses_structs_and_field_access() {
 }
 
 #[test]
+fn parses_qualified_r0_verifier_calls() {
+    let input = r#"
+        contract R0(byte[32] image_id, byte[32] control_id) {
+            entry main() {
+                require(r0.g16.verify(image_id, bytes("proof"), image_id));
+                require(r0.succinct.sha256.verify(bytes("claim"), bytes("control_index"), bytes("control_digests"), bytes("seal"), bytes("journal"), image_id, control_id));
+                require(r0.succinct.verify(bytes("claim"), bytes("control_index"), bytes("control_digests"), bytes("seal"), bytes("journal"), image_id, control_id));
+            }
+        }
+    "#;
+    assert!(parse_source_file(input).is_ok());
+}
+
+#[test]
+fn rejects_misspelled_r0_succinct_verifier_call() {
+    let input = r#"
+        contract R0(byte[32] image_id, byte[32] control_id) {
+            entry main() {
+                require(r0.succint.verify(image_id, control_id));
+            }
+        }
+    "#;
+    assert!(parse_source_file(input).is_err());
+}
+
+#[test]
 fn parses_struct_destructuring() {
     let input = r#"
         contract Structs() {

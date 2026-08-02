@@ -5,7 +5,8 @@ use crate::ast::{
 };
 
 use super::builtin_types::{
-    builtin_parameters, builtin_return_type, constructor_parameters, constructor_return_type, introspection_type, nullary_type,
+    BuiltinReturn, builtin_parameters, builtin_return, constructor_parameters, constructor_return_type, introspection_type,
+    nullary_type,
 };
 use super::structs::{StructRegistry, flattened_struct_field_specs_for_type, is_struct, struct_name};
 use super::{CompilerError, STATE_TYPE_NAME, TypeMap, append_type, array_type_size, concat_types, parse_type_ref, type_refs_equal};
@@ -272,13 +273,16 @@ pub(super) fn check_call<'i>(
         }
         return Ok(Some(cast_type));
     }
-    let Some(return_type) = builtin_return_type(name) else {
+    let Some(return_type) = builtin_return(name) else {
         return Err(CompilerError::Unsupported(format!("function '{name}' not found")));
     };
     let parameters = builtin_parameters(name)
         .ok_or_else(|| CompilerError::Unsupported(format!("builtin function '{name}' has no parameter types")))?;
     check_builtin_args(name, args, parameters, ctx)?;
-    Ok(Some(return_type))
+    match return_type {
+        BuiltinReturn::Value(type_ref) => Ok(Some(type_ref)),
+        BuiltinReturn::Void => Ok(None),
+    }
 }
 
 fn check_builtin_args<'i>(

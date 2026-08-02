@@ -14,6 +14,7 @@ path = "src/lib.rs"
 [dependencies]
 kaspa-consensus-core.workspace = true
 kaspa-txscript.workspace = true
+kaspa-txscript-zk-sdk.workspace = true
 kaspa-txscript-errors.workspace = true
 blake2b_simd.workspace = true
 indexmap.workspace = true
@@ -32,4 +33,6 @@ semver = "1.0"
 [dev-dependencies]
 blake3 = "1.8.5"
 kaspa-addresses.workspace = true
+borsh = "1.7.0"
+risc0-zkvm = "3.0.4"
 sha2 = "0.10"

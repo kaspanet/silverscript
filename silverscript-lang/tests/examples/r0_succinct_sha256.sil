@@ -1,0 +1,7 @@
+pragma silverscript ^0.1.0;
+
+contract R0SuccinctSha256(byte[32] image_id, byte[32] control_id) {
+    entry verify(byte[32] claim, byte[4] control_index, byte[] control_digests, byte[] seal, byte[32] journal) {
+        r0.succinct.sha256.verify(claim, control_index, control_digests, seal, journal, image_id, control_id);
+    }
+}

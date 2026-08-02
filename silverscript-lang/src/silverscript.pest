@@ -65,7 +65,12 @@ require_message = { StringLiteral }
 
 console_parameter_list = { "(" ~ (expression ~ ("," ~ expression)* ~ ","?)? ~ ")" }
 
-function_call = { Identifier ~ expression_list }
+function_call = { function_name ~ expression_list }
+function_name = { r0_groth16_verify_name | r0_succinct_verify_name | Identifier }
+r0_groth16_verify_name = { "r0.g16.verify" }
+r0_succinct_verify_name = {
+    "r0.succinct" ~ ("." ~ ("blake2b" | "poseidon2" | "sha256"))? ~ ".verify"
+}
 expression_list = { "(" ~ (expression ~ ("," ~ expression)* ~ ","?)? ~ ")" }
 
 expression = _{ conditional }

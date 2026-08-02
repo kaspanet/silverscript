@@ -5,6 +5,20 @@ mod builtin;
 
 use builtin::compile_call_expr;
 
+pub(super) fn compile_void_builtin_call<'i>(
+    name: &str,
+    args: &[Expr<'i>],
+    env: &ExprEnv<'_, 'i>,
+    emitter: &mut ScriptEmitter<'_>,
+) -> Result<(), CompilerError> {
+    let initial_depth = emitter.stack_depth();
+    let mut visiting = HashSet::new();
+    let mut ctx = CompileExprContext { env, emitter, visiting: &mut visiting };
+    compile_call_expr(&mut ctx, name, args)?;
+    assert!(ctx.emitter.stack_depth() == initial_depth, "void builtin compilation should leave stack depth unchanged");
+    Ok(())
+}
+
 pub(super) struct ExprEnv<'a, 'i> {
     pub constants: &'a HashMap<String, Expr<'i>>,
     pub stack_bindings: &'a StackBindings,

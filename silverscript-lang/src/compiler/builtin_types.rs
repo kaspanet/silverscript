@@ -10,6 +10,12 @@ fn byte_array(dimension: ArrayDim) -> TypeRef {
     TypeRef { base: TypeBase::Byte, array_dims: vec![dimension] }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum BuiltinReturn {
+    Value(TypeRef),
+    Void,
+}
+
 pub(super) fn nullary_type(op: NullaryOp) -> TypeRef {
     match op {
         NullaryOp::ActiveScriptPubKey | NullaryOp::ThisScriptSizeDataPrefix => byte_array(ArrayDim::Dynamic),
@@ -35,8 +41,8 @@ pub(super) fn introspection_type(kind: IntrospectionKind) -> TypeRef {
     }
 }
 
-pub(super) fn builtin_return_type(name: &str) -> Option<TypeRef> {
-    Some(match name {
+pub(super) fn builtin_return(name: &str) -> Option<BuiltinReturn> {
+    let value_type = match name {
         "int" => scalar(TypeBase::Int),
         "bool" => scalar(TypeBase::Bool),
         "byte" => scalar(TypeBase::Byte),
@@ -61,6 +67,11 @@ pub(super) fn builtin_return_type(name: &str) -> Option<TypeRef> {
         | "OpCovOutputIdx" => scalar(TypeBase::Int),
         "length" => scalar(TypeBase::Int),
         "OpTxInputIsCoinbase" | "checkSig" | "checkSigFromStack" | "checkSigFromStackECDSA" => scalar(TypeBase::Bool),
+        "r0.g16.verify"
+        | "r0.succinct.verify"
+        | "r0.succinct.blake2b.verify"
+        | "r0.succinct.poseidon2.verify"
+        | "r0.succinct.sha256.verify" => return Some(BuiltinReturn::Void),
         "blake2b"
         | "blake2bWithKey"
         | "blake3"
@@ -77,7 +88,15 @@ pub(super) fn builtin_return_type(name: &str) -> Option<TypeRef> {
             byte_array(ArrayDim::Dynamic)
         }
         _ => return None,
-    })
+    };
+    Some(BuiltinReturn::Value(value_type))
+}
+
+pub(super) fn builtin_return_type(name: &str) -> Option<TypeRef> {
+    match builtin_return(name)? {
+        BuiltinReturn::Value(type_ref) => Some(type_ref),
+        BuiltinReturn::Void => None,
+    }
 }
 
 pub(super) fn constructor_return_type(name: &str) -> Option<TypeRef> {
@@ -145,6 +164,22 @@ pub(super) fn builtin_parameters(name: &str) -> Option<Vec<(&'static str, TypeRe
             ("template_suffix_len", scalar(TypeBase::Int)),
             ("expected_template_hash", byte_array(ArrayDim::Fixed(32))),
         ],
+        "r0.g16.verify" => vec![
+            ("journal_hash", byte_array(ArrayDim::Fixed(32))),
+            ("proof", byte_array(ArrayDim::Dynamic)),
+            ("image_id", byte_array(ArrayDim::Fixed(32))),
+        ],
+        "r0.succinct.verify" | "r0.succinct.blake2b.verify" | "r0.succinct.poseidon2.verify" | "r0.succinct.sha256.verify" => {
+            vec![
+                ("claim", byte_array(ArrayDim::Fixed(32))),
+                ("control_index", byte_array(ArrayDim::Fixed(4))),
+                ("control_digests", byte_array(ArrayDim::Dynamic)),
+                ("seal", byte_array(ArrayDim::Dynamic)),
+                ("journal", byte_array(ArrayDim::Fixed(32))),
+                ("image_id", byte_array(ArrayDim::Fixed(32))),
+                ("control_id", byte_array(ArrayDim::Fixed(32))),
+            ]
+        }
         "validateOutputState" => {
             vec![("outputIndex", scalar(TypeBase::Int)), ("newState", scalar(TypeBase::Custom(STATE_TYPE_NAME.to_string())))]
         }

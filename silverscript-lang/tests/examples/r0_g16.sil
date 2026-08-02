@@ -1,0 +1,7 @@
+pragma silverscript ^0.1.0;
+
+contract R0Groth16(byte[32] image_id) {
+    entry verify(byte[32] journal_hash, byte[] proof) {
+        r0.g16.verify(journal_hash, proof, image_id);
+    }
+}

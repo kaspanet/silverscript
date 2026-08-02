@@ -74,6 +74,12 @@
   (#match? @function.builtin
     "^(readInputState|readInputStateWithTemplate|validateOutputState|validateOutputStateWithTemplate|validateOutputStateWithInputTemplate|verifyOutputState|verifyOutputStates|sha256|OpTxSubnetId|OpTxGas|OpTxPayloadLen|OpTxPayloadSubstr|OpOutpointTxId|OpOutpointIndex|OpTxInputScriptSigLen|OpTxInputScriptSigSubstr|OpTxInputSeq|OpTxInputIsCoinbase|OpTxInputSpkLen|OpTxInputSpkSubstr|OpTxOutputSpkLen|OpTxOutputSpkSubstr|OpAuthOutputCount|OpAuthOutputIdx|OpInputCovenantId|OpOutputCovenantId|OpCovInputCount|OpCovInputIdx|OpCovOutputCount|OpCovOutputIdx|OpNum2Bin|OpBin2Num|OpChainblockSeqCommit|checkSigFromStack|checkSigFromStackECDSA|checkSig|checkMultiSig|blake2b|blake2bWithKey|blake3|blake3WithKey|templateHash)$"))
 
+(call_statement
+  (member_access
+    name: (identifier) @function.builtin)
+  .
+  (call_suffix))
+
 (unary_suffix) @property
 
 (split_call

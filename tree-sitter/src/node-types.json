@@ -189,11 +189,38 @@
     "named": true,
     "fields": {},
     "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "call_suffix",
+          "named": true
+        },
+        {
+          "type": "function_call",
+          "named": true
+        },
+        {
+          "type": "identifier",
+          "named": true
+        },
+        {
+          "type": "member_access",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "call_suffix",
+    "named": true,
+    "fields": {},
+    "children": {
       "multiple": false,
       "required": true,
       "types": [
         {
-          "type": "function_call",
+          "type": "expression_list",
           "named": true
         }
       ]
@@ -902,6 +929,10 @@
         },
         {
           "type": "as_cast",
+          "named": true
+        },
+        {
+          "type": "call_suffix",
           "named": true
         },
         {

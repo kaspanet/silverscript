@@ -1,5 +1,7 @@
 use super::*;
 use crate::compiler::builtin_types::builtin_parameters;
+use kaspa_txscript::zk_precompiles::tags::ZkTag;
+use kaspa_txscript_zk_sdk::append_r0_groth16_verifier_dynamic_image_id;
 
 pub(super) fn compile_call_expr<'i>(
     ctx: &mut CompileExprContext<'_, '_, 'i>,
@@ -31,6 +33,10 @@ pub(super) fn compile_call_expr<'i>(
         "checkSig" => compile_checksig_call(ctx, args),
         "checkSigFromStack" => compile_checksigfromstack_call(ctx, name, args, OpCheckSigFromStack),
         "checkSigFromStackECDSA" => compile_checksigfromstack_call(ctx, name, args, OpCheckSigFromStackECDSA),
+        "r0.g16.verify" => compile_r0_groth16_verify_call(ctx, args),
+        "r0.succinct.verify" | "r0.succinct.blake2b.verify" | "r0.succinct.poseidon2.verify" | "r0.succinct.sha256.verify" => {
+            compile_r0_succinct_verify_call(ctx, name, args)
+        }
         _ => compile_unknown_function_call(name),
     }
 }
@@ -233,6 +239,39 @@ fn compile_checksigfromstack_call<'i>(
     }
     compile_typed_builtin_args(ctx, name, args)?;
     ctx.emit_op(opcode, -2)?;
+    Ok(())
+}
+
+fn compile_r0_groth16_verify_call<'i>(ctx: &mut CompileExprContext<'_, '_, 'i>, args: &[Expr<'i>]) -> Result<(), CompilerError> {
+    compile_typed_builtin_args(ctx, "r0.g16.verify", args)?;
+    let (builder, stack_depth) = ctx.emitter.parts();
+    append_r0_groth16_verifier_dynamic_image_id(builder)
+        .map_err(|err| CompilerError::Unsupported(format!("failed to append r0 Groth16 verifier: {err}")))?;
+    *stack_depth -= 2;
+    ctx.emit_op(OpDrop, -1)?; // OpDrop the OpTrue that is pushed by the verifier
+    Ok(())
+}
+
+fn compile_r0_succinct_verify_call<'i>(
+    ctx: &mut CompileExprContext<'_, '_, 'i>,
+    name: &str,
+    args: &[Expr<'i>],
+) -> Result<(), CompilerError> {
+    let hash_fn_id = match name {
+        "r0.succinct.verify" | "r0.succinct.poseidon2.verify" => 1,
+        "r0.succinct.blake2b.verify" | "r0.succinct.sha256.verify" => {
+            return Err(CompilerError::Unsupported(format!(
+                "{name}() is reserved for future use by the Kaspa script engine; only Poseidon2 R0 Succinct verification is currently supported"
+            )));
+        }
+        _ => return Err(CompilerError::Unsupported(format!("unknown R0 Succinct verifier '{name}'"))),
+    };
+
+    compile_typed_builtin_args(ctx, name, args)?;
+    ctx.push_data(&[hash_fn_id])?;
+    ctx.push_data(&[ZkTag::R0Succinct as u8])?;
+    ctx.emit_op(OpZkPrecompile, -8)?;
+    ctx.emit_op(OpDrop, -1)?; // OpDrop the OpTrue that is pushed by the verifier
     Ok(())
 }
 
