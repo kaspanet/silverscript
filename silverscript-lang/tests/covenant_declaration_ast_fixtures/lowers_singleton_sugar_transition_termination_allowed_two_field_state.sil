@@ -24,7 +24,7 @@ contract Matrix(int init_amount, byte[32] init_owner) {
         return(next_states);
     }
 
-    entrypoint function step(State[] next_states) {
+    entry step(State[] next_states) {
         int auth_out_count = OpAuthOutputCount(this.activeInputIndex);
 
         State prev_state = { amount: amount, owner: owner };

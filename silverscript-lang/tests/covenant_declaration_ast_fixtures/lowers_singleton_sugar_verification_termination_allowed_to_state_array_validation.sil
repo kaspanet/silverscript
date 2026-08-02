@@ -16,7 +16,7 @@ contract Counter(int init_value) {
         require(new_states.length <= 1);
     }
 
-    entrypoint function step(State[] new_states) {
+    entry step(State[] new_states) {
         int auth_out_count = OpAuthOutputCount(this.activeInputIndex);
 
         State prev_state = { value: value };

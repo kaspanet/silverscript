@@ -65,7 +65,7 @@ pub(super) fn compile_contract_impl<'i>(
 
     let entrypoint_functions: Vec<&FunctionAst<'i>> = lowered_contract.functions.iter().filter(|func| func.entrypoint).collect();
     if entrypoint_functions.is_empty() {
-        return Err(CompilerError::Unsupported("contract has no entrypoint functions".to_string()));
+        return Err(CompilerError::Unsupported("contract has no entries".to_string()));
     }
 
     let without_selector = entrypoint_functions.len() == 1;
@@ -178,9 +178,8 @@ fn build_contract_script(
     compiled_entrypoints: &[(String, Vec<u8>)],
 ) -> Result<Vec<u8>, CompilerError> {
     if without_selector {
-        let (name, entrypoint_script) = compiled_entrypoints
-            .first()
-            .ok_or_else(|| CompilerError::Unsupported("contract has no entrypoint functions".to_string()))?;
+        let (name, entrypoint_script) =
+            compiled_entrypoints.first().ok_or_else(|| CompilerError::Unsupported("contract has no entries".to_string()))?;
         debug_recorder.set_entrypoint_start(name, field_prolog_script.len());
         let mut script = field_prolog_script.to_vec();
         script.extend(entrypoint_script.clone());

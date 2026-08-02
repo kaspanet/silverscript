@@ -344,7 +344,7 @@ fn compiles_return_loop_example_file_and_verifies() {
 fn compiles_return_basic_example_and_verifies() {
     let source = r#"
         contract ReturnTest() {
-            entrypoint function main(int a, int b) : (int, int) {
+            entry main(int a, int b) : (int, int) {
                 return(a + 1, b + 2);
             }
         }

@@ -91,7 +91,7 @@
   "pragma"
   "silverscript"
   "contract"
-  "entrypoint"
+  "entry"
   "function"
   "constant"
   "if"

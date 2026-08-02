@@ -1,5 +1,5 @@
 contract ComplexAssignments(int limit){
-    entrypoint function main(int n){
+    entry main(int n){
         require(n >= 0);
         require(n <= limit);
         int a = 0;

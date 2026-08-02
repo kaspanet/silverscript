@@ -32,7 +32,7 @@ fn write_logging_test_fixture() -> (std::path::PathBuf, std::path::PathBuf) {
         r#"pragma silverscript ^0.1.0;
 
 contract Logging(int seed) {
-    entrypoint function check(int a) {
+    entry check(int a) {
         console.log("seed", seed);
         console.log("sum", seed + a);
         require(seed + a > 0);
@@ -69,7 +69,7 @@ contract DebugSmallInline() {
     bool active = true;
     byte[1] tag = 0xaa;
 
-    entrypoint function inspect(State[] next_states) {
+    entry inspect(State[] next_states) {
         console.log("total sum of amounts: ", next_states[0].amount + next_states[1].amount);
 
         require(next_states[0].active == active);
@@ -105,7 +105,7 @@ contract DebugState(int ctor_x) {
         byte[2] code;
     }
 
-    entrypoint function inspect_state(State next_state) {
+    entry inspect_state(State next_state) {
         int bumped = next_state.amount + 1;
         byte[1] next_tag = next_state.tag;
 
@@ -114,7 +114,7 @@ contract DebugState(int ctor_x) {
         require(next_tag == next_state.tag);
     }
 
-    entrypoint function inspect_state_array(State[] next_states) {
+    entry inspect_state_array(State[] next_states) {
         int first_amount = next_states[0].amount;
         byte[1] second_tag = next_states[1].tag;
 
@@ -124,7 +124,7 @@ contract DebugState(int ctor_x) {
         require(second_tag == next_states[1].tag);
     }
 
-    entrypoint function inspect_pair(Pair next_pair) {
+    entry inspect_pair(Pair next_pair) {
         int pair_amount = next_pair.amount;
         byte[2] pair_tag = next_pair.code;
 
@@ -146,7 +146,7 @@ fn write_named_test_fixture(script_name: &str, test_file_name: &str) -> (std::pa
         r#"pragma silverscript ^0.1.0;
 
 contract Simple(int x) {
-    entrypoint function check(int a) {
+    entry check(int a) {
         require(a == x);
     }
 }
@@ -183,12 +183,12 @@ contract StructuredArgs() {
     int amount = 1;
     byte[32] owner = 0x1111111111111111111111111111111111111111111111111111111111111111;
 
-    entrypoint function inspect(State next) {
+    entry inspect(State next) {
         int bumped = next.amount + 1;
         require(bumped > amount);
     }
 
-    entrypoint function inspect_many(State[] next_states) {
+    entry inspect_many(State[] next_states) {
         require(next_states.length == 2);
     }
 }
@@ -241,7 +241,7 @@ contract StructuredCtor(Pair seed) {
         byte[2] code;
     }
 
-    entrypoint function inspect() {
+    entry inspect() {
         require(true);
     }
 }
@@ -438,7 +438,7 @@ fn cli_debugger_repl_all_commands_smoke() {
         r#"pragma silverscript ^0.1.0;
 
 contract IfStatement(int x, int y) {
-    entrypoint function hello(int a, int b) {
+    entry hello(int a, int b) {
         int d = a + b;
         d = d - a;
         if (d == x - 2) {

@@ -1318,7 +1318,7 @@ mod tests {
         let contract = parse_contract_ast(
             r#"
             contract Demo() {
-                entrypoint function spend(int x) {
+                entry spend(int x) {
                     require(x > 0);
                 }
             }
@@ -1339,7 +1339,7 @@ mod tests {
             contract Demo(int seed) {
                 int constant BONUS = 2;
 
-                entrypoint function spend(int x) {
+                entry spend(int x) {
                     require(x + seed + BONUS > 0);
                 }
             }
@@ -1365,7 +1365,7 @@ mod tests {
         let contract = parse_contract_ast(
             r#"
             contract Demo() {
-                entrypoint function spend(int x) {
+                entry spend(int x) {
                     require(x > 0);
                 }
             }
@@ -1373,7 +1373,7 @@ mod tests {
         )
         .expect("parse contract");
         let _structs = build_struct_registry(&contract).expect("build struct registry");
-        let function = contract.functions.first().expect("entrypoint function");
+        let function = contract.functions.first().expect("entry");
 
         let mut recorder =
             DebugRecorder::new(CompileOptions { record_debug_infos: true, ..Default::default() }, &contract).expect("recorder");
@@ -1395,7 +1395,7 @@ mod tests {
         let contract = parse_contract_ast(
             r#"
             contract Demo() {
-                entrypoint function spend(int x) {
+                entry spend(int x) {
                     require(x > 0);
                 }
             }
@@ -1403,7 +1403,7 @@ mod tests {
         )
         .expect("parse contract");
         let _structs = build_struct_registry(&contract).expect("build struct registry");
-        let function = contract.functions.first().expect("entrypoint function");
+        let function = contract.functions.first().expect("entry");
 
         let mut recorder =
             DebugRecorder::new(CompileOptions { record_debug_infos: true, ..Default::default() }, &contract).expect("recorder");

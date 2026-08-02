@@ -68,7 +68,7 @@ fn wrap_snippet(snippet: &str) -> String {
     out.push_str("contract TutorialSnippet() {\n");
 
     if rest.is_empty() {
-        out.push_str("    entrypoint function main() {\n");
+        out.push_str("    entry main() {\n");
         out.push_str("    }\n");
         out.push_str("}\n");
         return out;
@@ -83,7 +83,7 @@ fn wrap_snippet(snippet: &str) -> String {
         return out;
     }
 
-    out.push_str("    entrypoint function main() {\n");
+    out.push_str("    entry main() {\n");
     out.push_str(&indent(rest, 8));
     if !rest.ends_with('\n') {
         out.push('\n');
@@ -168,7 +168,7 @@ fn looks_like_contract_item(snippet: &str) -> bool {
         return false;
     };
 
-    line.starts_with("entrypoint function")
+    line.starts_with("entry ")
         || line.starts_with("function ")
         || line.starts_with("int constant ")
         || line.starts_with("bool constant ")

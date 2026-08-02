@@ -1,7 +1,7 @@
 pragma silverscript ^0.1.0;
 
 contract Test() {
-    entrypoint function hello() {
+    entry hello() {
         // Have to know what you're doing to force cast
         byte[3] byte_ = byte[3](byte[](0x1234));
         require(byte_.length == 1);

@@ -104,7 +104,7 @@ The compiled JSON output includes:
 - `compiler_version`: The SilverScript compiler version that produced the artifact
 - `script`: The compiled bytecode (as an array of bytes)
 - `ast`: The abstract syntax tree of the parsed contract
-- `abi`: An array of entrypoint functions with their parameter types
+- `abi`: An array of entries with their parameter types
 
 ### Programmatic Compilation
 
@@ -119,7 +119,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         pragma silverscript ^0.1.0;
         
         contract MyContract(int x) {
-            entrypoint function spend(int y) {
+            entry spend(int y) {
                 require(y > x);
             }
         }
@@ -143,7 +143,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 **Building Signature Scripts Programmatically:**
 
-After compiling a contract, you can build signature scripts for its entrypoint functions:
+After compiling a contract, you can build signature scripts for its entries:
 
 ```rust
 use silverscript_lang::ast::Expr;
@@ -152,11 +152,11 @@ let source = r#"
     pragma silverscript ^0.1.0;
     
     contract TransferWithTimeout(pubkey sender, pubkey recipient, int timeout) {
-        entrypoint function transfer(sig recipientSig) {
+        entry transfer(sig recipientSig) {
             require(checkSig(recipientSig, recipient));
         }
         
-        entrypoint function reclaim(sig senderSig) {
+        entry reclaim(sig senderSig) {
             require(checkSig(senderSig, sender));
             require(tx.time >= timeout);
         }
@@ -212,7 +212,7 @@ contract MyContract(int param1, byte[32] param2) {
     int constant MAX_VALUE = 1000;
     
     // Functions
-    entrypoint function spend(sig s, pubkey pk) {
+    entry spend(sig s, pubkey pk) {
         require(checkSig(s, pk));
     }
 }
@@ -270,7 +270,7 @@ int[] nums = [1, 2, 3];    // inferred as int[3]
 Variables must be declared with their type before use:
 
 ```javascript
-entrypoint function example() {
+entry example() {
     // Variable declaration
     int myNumber = 42;
     bool flag = true;
@@ -320,15 +320,15 @@ function helper(int x, int y) {
 
 ### Entrypoint Functions
 
-Entrypoint functions are callable from outside the contract. Mark them with the `entrypoint` keyword:
+Entrypoint functions are callable from outside the contract. Declare them with the `entry` keyword:
 
 ```javascript
-entrypoint function spend(sig s, pubkey pk) {
+entry spend(sig s, pubkey pk) {
     require(checkSig(s, pk));
 }
 ```
 
-A contract must have at least one entrypoint function. Contracts with multiple entrypoints use function selectors automatically.
+A contract must have at least one entry. Contracts with multiple entrypoints use function selectors automatically.
 
 ### Function Parameters and Return Types
 
@@ -341,7 +341,7 @@ function add(int a, int b): int {
 }
 
 // Using the return value
-entrypoint function example() {
+entry example() {
     int result = add(5, 10);
     require(result == 15);
 }
@@ -355,7 +355,7 @@ function getPair(): (int, int) {
     return (10, 20);
 }
 
-entrypoint function example() {
+entry example() {
     (int left, int right) = getPair();
     require(left + right == 30);
 }
@@ -369,7 +369,7 @@ function getWrapped(): (int) {
     return (7);
 }
 
-entrypoint function example() {
+entry example() {
     int value = getWrapped().0;
     require(value == 7);
 }
@@ -442,7 +442,7 @@ int value = condition ? thenValue : elseValue;
 The condition must evaluate to `bool`, and both result branches must have the same type. The ternary expression's result must also match the declared type where it is assigned or returned:
 
 ```javascript
-entrypoint function example(int amount, bool useBonus) {
+entry example(int amount, bool useBonus) {
     int payout = useBonus ? amount + 100 : amount;
     require(payout >= amount);
 }
@@ -457,7 +457,7 @@ entrypoint function example(int amount, bool useBonus) {
 Basic if-else structure:
 
 ```javascript
-entrypoint function example(int x) {
+entry example(int x) {
     if (x > 10) {
         require(true);
     } else if (x < 0) {
@@ -507,7 +507,7 @@ contract ForLoop() {
     int constant MAX_ITERATIONS = 4;
     int constant MIN_OUT = 1000;
 
-    entrypoint function check(int start, int end) {
+    entry check(int start, int end) {
         for(i, start, end, MAX_ITERATIONS) {
             require(tx.outputs[i].value >= MIN_OUT + i);
         }
@@ -523,7 +523,7 @@ This fails during compilation because the constant range has 4 values, but the u
 
 ```javascript
 contract CompileTimeLoopFailure() {
-    entrypoint function check() {
+    entry check() {
         for(i, 0, 4, 3) {
             require(i >= 0);
         }
@@ -535,7 +535,7 @@ This compiles because the range bounds are provided at runtime, but calling `che
 
 ```javascript
 contract RuntimeLoopFailure() {
-    entrypoint function check(int start, int end) {
+    entry check(int start, int end) {
         for(i, start, end, 3) {
             require(i >= start);
         }
@@ -617,7 +617,7 @@ int time5 = 4 weeks;    // 2419200 seconds
 Example usage:
 
 ```javascript
-entrypoint function withdraw() {
+entry withdraw() {
     require(this.age >= 30 days);
     require(tx.outputs[0].value >= 10000 litras);
 }
@@ -811,7 +811,7 @@ int number = int(someData);
 **Example:**
 
 ```javascript
-entrypoint function example(pubkey pk, byte[65] sigBytes) {
+entry example(pubkey pk, byte[65] sigBytes) {
     sig s = sig(sigBytes);
     require(checkSig(s, pk));
 }
@@ -955,7 +955,7 @@ byte[] inputScript = tx.inputs[i].scriptPubKey;
 **Example:**
 
 ```javascript
-entrypoint function spend() {
+entry spend() {
     int currentValue = tx.inputs[this.activeInputIndex].value;
     require(currentValue >= 1000);
 }
@@ -974,7 +974,7 @@ byte[] outputScriptPubKey = tx.outputs[i].scriptPubKey;
 **Example:**
 
 ```javascript
-entrypoint function transfer() {
+entry transfer() {
     // Ensure first output has at least 10000 litras
     require(tx.outputs[0].value >= 10000);
 }
@@ -1084,7 +1084,7 @@ contract Counter(int initCount, byte[2] initTag) {
     int count = initCount;
     byte[2] tag = initTag;
 
-    entrypoint function step() {
+    entry step() {
         validateOutputState(0, { count: count + 1, tag: tag });
     }
 }
@@ -1105,7 +1105,7 @@ Input-side note:
 pragma silverscript ^0.1.0;
 
 contract SimpleCovenant(pubkey recipient) {
-    entrypoint function spend() {
+    entry spend() {
         // First output must go to the recipient
         byte[34] recipientScriptPubKey = new ScriptPubKeyP2PK(recipient);
         require(tx.outputs[0].scriptPubKey == recipientScriptPubKey);
@@ -1119,7 +1119,7 @@ contract SimpleCovenant(pubkey recipient) {
 pragma silverscript ^0.1.0;
 
 contract RecurringPayment(pubkey recipient, int paymentAmount, int period) {
-    entrypoint function withdraw() {
+    entry withdraw() {
         // Must wait for the period to elapse
         require(this.age >= period);
         
@@ -1157,7 +1157,7 @@ contract MyContract() {
     int constant MIN_VALUE = 100;
     string constant MESSAGE = "hello";
     
-    entrypoint function check(int x) {
+    entry check(int x) {
         require(x >= MIN_VALUE);
         require(x <= MAX_VALUE);
     }
@@ -1167,7 +1167,7 @@ contract MyContract() {
 Constants can also be declared inside functions:
 
 ```javascript
-entrypoint function example() {
+entry example() {
     string constant greeting = "Hello";
     require(sha256(greeting) != 0x);
 }
@@ -1183,7 +1183,7 @@ function getPair(): (int, int) {
     return (10, 20);
 }
 
-entrypoint function example(byte[32] data) {
+entry example(byte[32] data) {
     (byte[16] left, byte[16] right) = data.split(16);
     (int x, int y) = getPair();
 }
@@ -1196,7 +1196,7 @@ function getPair(): (int, int) {
     return (10, 20);
 }
 
-entrypoint function example() {
+entry example() {
     int first = getPair().0;
     int second = getPair().1;
     require(first + second == 30);
@@ -1210,7 +1210,7 @@ function getOnly(): (int) {
     return (5);
 }
 
-entrypoint function example() {
+entry example() {
     require(getOnly().0 == 5);
 }
 ```
@@ -1260,7 +1260,7 @@ byte[] extracted = data.slice(start, end);
 pragma silverscript ^0.1.0;
 
 contract P2PK(pubkey pk) {
-    entrypoint function spend(sig s) {      
+    entry spend(sig s) {
         // Verify the signature
         require(checkSig(s, pk));
     }
@@ -1284,12 +1284,12 @@ contract TransferWithTimeout(
     int timeout
 ) {
     // Recipient can spend at any time
-    entrypoint function transfer(sig recipientSig) {
+    entry transfer(sig recipientSig) {
         require(checkSig(recipientSig, recipient));
     }
 
     // Sender can reclaim after timeout
-    entrypoint function reclaim(sig senderSig) {
+    entry reclaim(sig senderSig) {
         require(checkSig(senderSig, sender));
         require(tx.time >= timeout);
     }
@@ -1314,7 +1314,7 @@ pragma silverscript ^0.1.0;
 
 contract Mecenas(pubkey recipient, byte[32] funder, int pledge, int period) {
     // Periodic payment to recipient
-    entrypoint function receive() {
+    entry receive() {
         // Must wait for the period to elapse
         require(this.age >= period);
 
@@ -1341,7 +1341,7 @@ contract Mecenas(pubkey recipient, byte[32] funder, int pledge, int period) {
     }
 
     // Funder can reclaim at any time
-    entrypoint function reclaim(pubkey pk, sig s) {
+    entry reclaim(pubkey pk, sig s) {
         require(blake2b(pk) == funder);
         require(checkSig(s, pk));
     }

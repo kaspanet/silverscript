@@ -12,7 +12,7 @@ contract Decls(int max_ins, int max_outs) {
         require(nonce >= 0);
     }
 
-    entrypoint function leader_check(int nonce) {
+    entry leader_check(int nonce) {
         byte[32] cov_id = OpInputCovenantId(this.activeInputIndex);
 
         require(OpCovInputIdx(cov_id, 0) == this.activeInputIndex);
@@ -25,7 +25,7 @@ contract Decls(int max_ins, int max_outs) {
         require(cov_out_count <= max_outs);
     }
 
-    entrypoint function delegate_check() {
+    entry delegate_check() {
         byte[32] cov_id = OpInputCovenantId(this.activeInputIndex);
 
         require(OpCovInputIdx(cov_id, 0) != this.activeInputIndex);

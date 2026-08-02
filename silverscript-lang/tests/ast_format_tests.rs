@@ -18,7 +18,7 @@ fn formats_contract_ast_into_canonical_silverscript() {
 contract Pretty(sig s, pubkey pk){
 int constant LIMIT=3;
 byte[2] seed=0x1234;
-entrypoint function main(int x):(int, int){
+entry main(int x):(int, int){
 int total=(x+LIMIT)*2;
 int[] values=[1,2,3];
 values = values.append(total);
@@ -40,7 +40,7 @@ return(total, values[0]);
 
     byte[2] seed = 0x1234;
 
-    entrypoint function main(int x): (int, int) {
+    entry main(int x): (int, int) {
         int total = (x + LIMIT) * 2;
         int[] values = [1, 2, 3];
         values = values.append(total);
@@ -69,7 +69,7 @@ contract Advanced(int limit, pubkey owner) {
         return(left, right);
     }
 
-    entrypoint function main() {
+    entry main() {
         (int left, int right) = compute(1 + 2 * 3);
         {balance: int current} = readState();
         int[] values = [1, 2];
@@ -110,7 +110,7 @@ fn compiled_formatted_contract_preserves_exact_ast_for_basic_contract() {
         return(left, right);
     }
 
-    entrypoint function main() {
+    entry main() {
         int input = 1 + 2;
         (int left, int right) = compute(input);
         require(left < right, "ordered");
@@ -127,7 +127,7 @@ fn compiled_formatted_contract_preserves_exact_ast_with_state_and_return() {
     let source = r#"contract ExactState() {
     int amount = 7;
 
-    entrypoint function main(): (byte[]) {
+    entry main(): (byte[]) {
         {amount: int current} = readInputState(this.activeInputIndex);
         byte[] tail = this.activeScriptPubKey.slice(1, this.activeScriptPubKey.length);
         validateOutputState(0, {amount: current});

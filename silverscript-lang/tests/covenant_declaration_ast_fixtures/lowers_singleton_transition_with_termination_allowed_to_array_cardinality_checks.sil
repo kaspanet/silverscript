@@ -16,7 +16,7 @@ contract Decls(int init_value) {
         return(next_states);
     }
 
-    entrypoint function bump_or_terminate(State[] next_states) {
+    entry bump_or_terminate(State[] next_states) {
         int auth_out_count = OpAuthOutputCount(this.activeInputIndex);
 
         State prev_state = { value: value };

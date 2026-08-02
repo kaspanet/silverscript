@@ -635,7 +635,7 @@ fn leader_contract_rejects_unacknowledged_manual_entrypoint() {
                 require(nonce >= 0);
             }
 
-            entrypoint function recover() {
+            entry recover() {
                 require(true);
             }
         }
@@ -658,7 +658,7 @@ fn leader_contract_allows_acknowledged_manual_entrypoint() {
             }
 
             #[covenant.allow(rule = manual_entrypoint_in_leader_contract)]
-            entrypoint function recover() {
+            entry recover() {
                 byte[32] cov_id = OpInputCovenantId(this.activeInputIndex);
                 require(OpCovInputCount(cov_id) == 1);
             }

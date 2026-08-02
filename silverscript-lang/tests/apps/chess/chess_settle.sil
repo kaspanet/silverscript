@@ -28,7 +28,7 @@ contract ChessSettle(
         int losses;
     }
 
-    entrypoint function settle(
+    entry settle(
         int player_prefix_len,
         int player_suffix_len
     ) {

@@ -3,7 +3,7 @@ contract ReturnLoop() {
     int constant END = 4;
     int constant MAX_ITERATIONS = 4;
 
-    entrypoint function main() : (int) {
+    entry main() : (int) {
         int total = 0;
         for(i, START, END, MAX_ITERATIONS) {
             total = total + i + 1;
