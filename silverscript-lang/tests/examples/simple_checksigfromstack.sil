@@ -1,7 +1,7 @@
 pragma silverscript ^0.1.0;
 
 contract Test(datasig s, pubkey pk) {
-    entrypoint function cds(byte[] data) {
+    entry cds(byte[] data) {
         require(checkSigFromStack(s, sha256(data), pk));
     }
 }

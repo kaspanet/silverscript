@@ -1,11 +1,11 @@
 pragma silverscript ^0.1.0;
 
 contract Test() {
-    entrypoint function hello(sig s, pubkey pk) {
+    entry hello(sig s, pubkey pk) {
         require(checkSig(s, pk));
     }
 
-    entrypoint function world(int a) {
+    entry world(int a) {
         require(a + 5 == 10);
     }
 }

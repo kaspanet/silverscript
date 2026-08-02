@@ -43,10 +43,11 @@ The field name `kcc20Covid` is just the name used in the example source. Functio
 - `templatePrefixLen`
 - `templateSuffixLen`
 - `expectedTemplateHash`
-- `templatePrefix`
-- `templateSuffix`
 
-That metadata lets the minter read and validate KCC20 state by template rather than blindly trusting that some output "looks like" a KCC20 output.
+That metadata lets the minter locate the template bytes in the co-spent KCC20
+input and authenticate them against the expected hash. It reuses those bytes
+to validate the KCC20 outputs rather than embedding another copy of the
+template or trusting that an output merely "looks like" KCC20.
 
 ## Controller Covenant Terminology
 

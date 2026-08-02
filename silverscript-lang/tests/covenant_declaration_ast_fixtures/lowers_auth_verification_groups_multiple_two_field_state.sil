@@ -18,7 +18,7 @@ contract Matrix(int max_outs, int init_amount, byte[32] init_owner) {
         require(nonce >= 0);
     }
 
-    entrypoint function step(State[] new_states, int nonce) {
+    entry step(State[] new_states, int nonce) {
         int auth_out_count = OpAuthOutputCount(this.activeInputIndex);
 
         State prev_state = { amount: amount, owner: owner };

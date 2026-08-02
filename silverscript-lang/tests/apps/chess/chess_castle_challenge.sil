@@ -52,7 +52,7 @@ contract ChessCastleChallengePrep(
         return(result);
     }
 
-    entrypoint function apply(byte[] target_prefix, byte[] target_suffix) {
+    entry apply(byte[] target_prefix, byte[] target_suffix) {
         // This prep worker is only reachable immediately after a recorded
         // castle. It rewrites the castle lane into a proof board and then
         // forwards to the ordinary move family that can capture the challenged
@@ -149,7 +149,7 @@ contract ChessCastleChallengePrep(
         byte[] mid_bc = prev_dyn.slice(b + 1, c);
         byte[] mid_cd = prev_dyn.slice(c + 1, d);
         byte[] suffix = prev_dyn.slice(d + 1, 64);
-        byte[64] proof_board =
+        byte[64] proof_board = byte[64](
             prefix +
             byte[1](va) +
             mid_ab +
@@ -158,7 +158,8 @@ contract ChessCastleChallengePrep(
             byte[1](vc) +
             mid_cd +
             byte[1](vd) +
-            suffix;
+            suffix
+        );
 
         int from_y = from_idx / 8;
         int from_x = from_idx % 8;
@@ -234,7 +235,7 @@ contract ChessCastleChallengePrep(
         );
     }
 
-    entrypoint function timeout(byte[32] player_template, byte[] settle_prefix, byte[] settle_suffix) {
+    entry timeout(byte[32] player_template, byte[] settle_prefix, byte[] settle_suffix) {
         require(status == 0 /*LIVE*/);
 
         // Worker timeout is permissionless. Once a bad route strands funds in a
@@ -251,7 +252,7 @@ contract ChessCastleChallengePrep(
             next_status = 1 /*WWIN*/;
         }
 
-        byte[32] settle_template = blake2b(settle_prefix + settle_suffix);
+        byte[32] settle_template = templateHash(settle_prefix, settle_suffix);
         require(blake2b(settle_template + player_template) == byte[32](route_templates.slice(256, 288)));
 
         SettleState next_state = {

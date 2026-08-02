@@ -1,4 +1,4 @@
-use silverscript_lang::ast::parse_contract_ast;
+use silverscript_lang::ast::{parse_contract_ast, parse_type_ref};
 use silverscript_lang::parser::parse_source_file;
 
 #[test]
@@ -15,6 +15,35 @@ fn parses_minimal_contract() {
 
     let result = parse_source_file(input);
     assert!(result.is_ok());
+}
+
+#[test]
+fn parses_entry_declaration() {
+    let entry = r#"
+        contract Foo() {
+            entry main() {
+                require(true);
+            }
+        }
+    "#;
+    assert!(parse_source_file(entry).is_ok());
+}
+
+#[test]
+fn type_predicates_only_match_scalars() {
+    assert!(parse_type_ref("int").unwrap().is_int());
+    assert!(parse_type_ref("bool").unwrap().is_bool());
+    assert!(parse_type_ref("string").unwrap().is_string());
+    assert!(parse_type_ref("pubkey").unwrap().is_pubkey());
+    assert!(parse_type_ref("sig").unwrap().is_sig());
+    assert!(parse_type_ref("datasig").unwrap().is_datasig());
+    assert!(parse_type_ref("byte").unwrap().is_byte());
+    assert!(parse_type_ref("(int, bool)").unwrap().is_tuple());
+    assert!(parse_type_ref("Record").unwrap().is_custom());
+
+    assert!(!parse_type_ref("int[]").unwrap().is_int());
+    assert!(!parse_type_ref("byte[1]").unwrap().is_byte());
+    assert!(!parse_type_ref("Record[]").unwrap().is_custom());
 }
 
 #[test]
@@ -36,7 +65,7 @@ fn parses_timeops_and_console() {
 fn rejects_number_unit_overflow() {
     let input = r#"
         contract TimeLock() {
-            entrypoint function main() {
+            entry main() {
                 require(this.age >= 9223372036854775807 weeks);
             }
         }
@@ -102,7 +131,7 @@ fn parses_structs_and_field_access() {
                 require(x.b.length == 5);
             }
 
-            entrypoint function main() {
+            entry main() {
                 S y = {a: 0, b: "hello"};
                 f(y);
             }
@@ -117,7 +146,7 @@ fn parses_structs_and_field_access() {
 fn parses_qualified_r0_verifier_calls() {
     let input = r#"
         contract R0(byte[32] image_id, byte[32] control_id) {
-            entrypoint function main() {
+            entry main() {
                 require(r0.g16.verify(image_id, bytes("proof"), image_id));
                 require(r0.succinct.sha256.verify(bytes("claim"), bytes("control_index"), bytes("control_digests"), bytes("seal"), bytes("journal"), image_id, control_id));
                 require(r0.succinct.verify(bytes("claim"), bytes("control_index"), bytes("control_digests"), bytes("seal"), bytes("journal"), image_id, control_id));
@@ -131,7 +160,7 @@ fn parses_qualified_r0_verifier_calls() {
 fn rejects_misspelled_r0_succinct_verifier_call() {
     let input = r#"
         contract R0(byte[32] image_id, byte[32] control_id) {
-            entrypoint function main() {
+            entry main() {
                 require(r0.succint.verify(image_id, control_id));
             }
         }
@@ -148,7 +177,7 @@ fn parses_struct_destructuring() {
                 byte[5] b;
             }
 
-            entrypoint function main() {
+            entry main() {
                 S s = {a: 1, b: 0x0102030405};
                 {a: int x, b: byte[5] y} = s;
                 require(x == 1);
@@ -280,7 +309,7 @@ fn parses_tuple_variable_declaration_without_parentheses_as_tuple_assignment_syn
                 return(1, 2);
             }
 
-            entrypoint function main() {
+            entry main() {
                 int a, int b = pair();
             }
         }

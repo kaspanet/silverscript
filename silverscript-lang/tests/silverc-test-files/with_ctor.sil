@@ -1,5 +1,5 @@
 contract WithCtor(int a) {
-    entrypoint function main() {
+    entry main() {
         require(a == 7);
     }
 }

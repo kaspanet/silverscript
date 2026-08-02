@@ -12,7 +12,7 @@ contract Decls(int max_outs) {
         require(nonce >= 0);
     }
 
-    entrypoint function check(int nonce) {
+    entry check(int nonce) {
         int auth_out_count = OpAuthOutputCount(this.activeInputIndex);
 
         covenant_policy_check(nonce);

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::ast::{
-    ContractAst, ContractFieldAst, Expr, ExprKind, FunctionAst, ParamAst, StateBindingAst, StateFieldExpr, Statement, TypeRef,
+    ContractAst, ContractFieldAst, Expr, ExprKind, FunctionAst, ParamAst, StateFieldExpr, Statement, StructBindingAst, TypeRef,
 };
 use crate::debug_info::{
     DebugFunctionRange, DebugInfo, DebugInfoRecorder, DebugLeafBinding, DebugNamedValue, DebugParamBinding, DebugParamMapping,
@@ -10,8 +10,7 @@ use crate::debug_info::{
 
 use super::stack_bindings::StackBindings;
 use super::{
-    CompileOptions, CompilerError, StructRegistry, build_struct_registry, flatten_type_ref_leaves, struct_array_name_from_type_ref,
-    struct_name_from_type_ref, type_name_from_ref,
+    CompileOptions, CompilerError, StructRegistry, TypeMap, build_struct_registry, flatten_type_leaves, is_struct, is_struct_array,
 };
 
 /// High-level compiler/debug bridge.
@@ -259,7 +258,7 @@ impl<'i> DebugRecorder<'i> {
             ExprKind::Introspection { kind, index, field_span } => {
                 ExprKind::Introspection { kind, index: Box::new(self.rewrite_debug_expr(*index)), field_span }
             }
-            ExprKind::StateObject(fields) => ExprKind::StateObject(
+            ExprKind::StructLiteral(fields) => ExprKind::StructLiteral(
                 fields
                     .into_iter()
                     .map(|field| StateFieldExpr {
@@ -324,7 +323,7 @@ impl<'i> DebugRecorder<'i> {
         &mut self,
         stmt: &Statement<'i>,
         bytecode_start: usize,
-        _before_types: &HashMap<String, String>,
+        _before_types: &TypeMap,
         _before_stack_bindings: &StackBindings,
     ) {
         let Some(active) = self.active.as_mut() else {
@@ -360,7 +359,7 @@ impl<'i> DebugRecorder<'i> {
         &mut self,
         stmt: &Statement<'i>,
         bytecode_end: usize,
-        after_types: &HashMap<String, String>,
+        after_types: &TypeMap,
         after_stack_bindings: &StackBindings,
     ) {
         if !should_record_source_step(stmt) {
@@ -420,7 +419,7 @@ impl<'i> DebugRecorder<'i> {
         &mut self,
         stmt: &Statement<'i>,
         bytecode_end: usize,
-        after_types: &HashMap<String, String>,
+        after_types: &TypeMap,
         after_stack_bindings: &StackBindings,
     ) {
         let current_updates =
@@ -584,7 +583,7 @@ fn rewrite_debug_expr_with_function<'i>(
             index: Box::new(rewrite_debug_expr_with_function(*index, function_name, visible_names_by_function)),
             field_span,
         },
-        ExprKind::StateObject(fields) => ExprKind::StateObject(
+        ExprKind::StructLiteral(fields) => ExprKind::StructLiteral(
             fields
                 .into_iter()
                 .map(|field| StateFieldExpr {
@@ -620,9 +619,9 @@ fn collect_console_args<'i>(recorder: &DebugRecorder<'i>, stmt: &Statement<'i>) 
 fn collect_variable_updates<'i>(
     recorder: &DebugRecorder<'i>,
     stmt: &Statement<'i>,
-    _before_types: &HashMap<String, String>,
+    _before_types: &TypeMap,
     _before_stack_bindings: &StackBindings,
-    after_types: &HashMap<String, String>,
+    after_types: &TypeMap,
     after_stack_bindings: &StackBindings,
 ) -> Vec<DebugVariableUpdate<'i>> {
     match stmt {
@@ -715,13 +714,13 @@ fn build_runtime_debug_update<'i>(
     recorder: &DebugRecorder<'i>,
     lowered_name: &str,
     expr: Expr<'i>,
-    after_types: &HashMap<String, String>,
+    after_types: &TypeMap,
     after_stack_bindings: &StackBindings,
 ) -> Option<DebugVariableUpdate<'i>> {
     if let Some(update) = build_structured_root_debug_update(recorder, lowered_name, expr.clone(), after_stack_bindings) {
         return Some(update);
     }
-    let type_name = after_types.get(lowered_name)?.clone();
+    let type_name = after_types.get(lowered_name)?.type_name();
     let stack_binding = after_stack_bindings
         .depth(lowered_name)
         .map(|from_top| crate::debug_info::DebugStackBinding { from_top, stack_height: Some(after_stack_bindings.len()) });
@@ -1123,14 +1122,14 @@ fn build_structured_leaf_specs_for_function<'i>(
 }
 
 fn inline_param_leaf_bindings(type_ref: &TypeRef, structs: &StructRegistry) -> Option<Vec<DebugLeafBinding>> {
-    if struct_name_from_type_ref(type_ref, structs).is_none() && struct_array_name_from_type_ref(type_ref, structs).is_none() {
+    if !is_struct(type_ref, structs) && !is_struct_array(type_ref, structs) {
         return None;
     }
 
-    let leaf_bindings = flatten_type_ref_leaves(type_ref, structs)
+    let leaf_bindings = flatten_type_leaves(type_ref, structs)
         .ok()?
         .into_iter()
-        .map(|(field_path, leaf_type)| DebugLeafBinding { field_path, type_name: type_name_from_ref(&leaf_type), stack_binding: None })
+        .map(|(field_path, leaf_type)| DebugLeafBinding { field_path, type_name: leaf_type.type_name(), stack_binding: None })
         .collect::<Vec<_>>();
     Some(leaf_bindings)
 }
@@ -1185,7 +1184,7 @@ fn collect_structured_binding_specs_from_statements<'i>(
 
 fn record_structured_state_binding_spec(
     specs: &mut HashMap<String, StructuredLeafSpec>,
-    binding: &StateBindingAst<'_>,
+    binding: &StructBindingAst<'_>,
     visible_names: Option<&HashMap<String, String>>,
     structs: &StructRegistry,
 ) -> Result<(), CompilerError> {
@@ -1199,7 +1198,7 @@ fn record_structured_binding_spec(
     visible_names: Option<&HashMap<String, String>>,
     structs: &StructRegistry,
 ) -> Result<(), CompilerError> {
-    if struct_name_from_type_ref(type_ref, structs).is_none() && struct_array_name_from_type_ref(type_ref, structs).is_none() {
+    if !is_struct(type_ref, structs) && !is_struct_array(type_ref, structs) {
         return Ok(());
     }
 
@@ -1207,7 +1206,7 @@ fn record_structured_binding_spec(
         visible_names.and_then(|names| names.get(lowered_base_name)).cloned().unwrap_or_else(|| lowered_base_name.to_string());
     let base_type_name = type_ref.type_name();
 
-    for (field_path, leaf_type) in flatten_type_ref_leaves(type_ref, structs)? {
+    for (field_path, leaf_type) in flatten_type_leaves(type_ref, structs)? {
         let lowered_leaf_name = flattened_struct_field_name(lowered_base_name, &field_path);
         specs.insert(
             lowered_leaf_name,
@@ -1215,7 +1214,7 @@ fn record_structured_binding_spec(
                 visible_base_name: visible_base_name.clone(),
                 base_type_name: base_type_name.clone(),
                 field_path,
-                leaf_type_name: type_name_from_ref(&leaf_type),
+                leaf_type_name: leaf_type.type_name(),
             },
         );
     }
@@ -1235,12 +1234,10 @@ fn build_param_mappings<'i>(
     let mut flattened_param_names = Vec::new();
 
     for param in params_source {
-        if struct_name_from_type_ref(&param.type_ref, structs).is_some()
-            || struct_array_name_from_type_ref(&param.type_ref, structs).is_some()
-        {
-            let leaf_specs = flatten_type_ref_leaves(&param.type_ref, structs)?
+        if is_struct(&param.type_ref, structs) || is_struct_array(&param.type_ref, structs) {
+            let leaf_specs = flatten_type_leaves(&param.type_ref, structs)?
                 .into_iter()
-                .map(|(field_path, leaf_type)| (field_path, type_name_from_ref(&leaf_type)))
+                .map(|(field_path, leaf_type)| (field_path, leaf_type.type_name()))
                 .collect::<Vec<_>>();
             for (field_path, _) in &leaf_specs {
                 flattened_param_names.push(flattened_struct_field_name(&param.name, field_path));
@@ -1321,7 +1318,7 @@ mod tests {
         let contract = parse_contract_ast(
             r#"
             contract Demo() {
-                entrypoint function spend(int x) {
+                entry spend(int x) {
                     require(x > 0);
                 }
             }
@@ -1342,7 +1339,7 @@ mod tests {
             contract Demo(int seed) {
                 int constant BONUS = 2;
 
-                entrypoint function spend(int x) {
+                entry spend(int x) {
                     require(x + seed + BONUS > 0);
                 }
             }
@@ -1368,7 +1365,7 @@ mod tests {
         let contract = parse_contract_ast(
             r#"
             contract Demo() {
-                entrypoint function spend(int x) {
+                entry spend(int x) {
                     require(x > 0);
                 }
             }
@@ -1376,7 +1373,7 @@ mod tests {
         )
         .expect("parse contract");
         let _structs = build_struct_registry(&contract).expect("build struct registry");
-        let function = contract.functions.first().expect("entrypoint function");
+        let function = contract.functions.first().expect("entry");
 
         let mut recorder =
             DebugRecorder::new(CompileOptions { record_debug_infos: true, ..Default::default() }, &contract).expect("recorder");
@@ -1398,7 +1395,7 @@ mod tests {
         let contract = parse_contract_ast(
             r#"
             contract Demo() {
-                entrypoint function spend(int x) {
+                entry spend(int x) {
                     require(x > 0);
                 }
             }
@@ -1406,7 +1403,7 @@ mod tests {
         )
         .expect("parse contract");
         let _structs = build_struct_registry(&contract).expect("build struct registry");
-        let function = contract.functions.first().expect("entrypoint function");
+        let function = contract.functions.first().expect("entry");
 
         let mut recorder =
             DebugRecorder::new(CompileOptions { record_debug_infos: true, ..Default::default() }, &contract).expect("recorder");

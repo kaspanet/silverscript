@@ -29,7 +29,7 @@ Launch a session to explore how your contract behaves line-by-line.
 ```javascript
 // counter.sil
 contract Counter(int threshold) {
-    entrypoint function check(int value) {
+    entry check(int value) {
         int doubled = value + value;
         require(doubled > threshold);
     }
@@ -43,7 +43,7 @@ Stepping through 42 bytes of script
      1 | pragma silverscript ^0.1.0;
      2 | 
      3 | contract Counter(int threshold) {
-     4 |     entrypoint function check(int value) {
+     4 |     entry check(int value) {
 →    5 |         int doubled = value + value;
      6 |         require(doubled > threshold);
      7 |     }

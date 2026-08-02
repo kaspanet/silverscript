@@ -92,7 +92,7 @@ impl<'i> DebugInfoRecorder<'i> {
 
 /// Complete debug metadata attached to compiled contract.
 /// Contains everything needed to map bytecode execution back to source and evaluate variables.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DebugInfo<'i> {
     pub source: String,
     pub steps: Vec<DebugStep<'i>>,
@@ -119,7 +119,7 @@ impl<'i> DebugInfo<'i> {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DebugVariableUpdate<'i> {
     pub name: String,
     pub type_name: String,
@@ -156,7 +156,7 @@ pub enum DebugParamBinding {
 }
 
 /// Maps one source parameter to either a single runtime slot or a lowered set of leaf slots.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DebugParamMapping {
     pub name: String,
     pub type_name: String,
@@ -166,21 +166,21 @@ pub struct DebugParamMapping {
 
 /// Bytecode range for a compiled function.
 /// Used to determine which function is executing at a given bytecode offset.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DebugFunctionRange {
     pub name: String,
     pub bytecode_start: usize,
     pub bytecode_end: usize,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DebugNamedValue<'i> {
     pub name: String,
     pub type_name: String,
     pub value: Expr<'i>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DebugStep<'i> {
     pub bytecode_start: usize,
     pub bytecode_end: usize,
@@ -223,7 +223,7 @@ impl StepId {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum StepKind {
     Source {},
     InlineCallEnter { callee: String },

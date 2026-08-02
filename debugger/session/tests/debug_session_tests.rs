@@ -26,7 +26,7 @@ use silverscript_lang::debug_info::StepKind;
 const IF_STATEMENT_CONTRACT: &str = r#"pragma silverscript ^0.1.0;
 
 contract IfStatement(int x, int y) {
-    entrypoint function hello(int a, int b) {
+    entry hello(int a, int b) {
         int d = a + b;
         d = d - a;
         if (d == x - 2) {
@@ -119,7 +119,7 @@ fn debug_session_emits_console_logs_when_landing_on_step() -> Result<(), Box<dyn
     let source = r#"pragma silverscript ^0.1.0;
 
 contract ConsoleStep() {
-    entrypoint function inspect(int a, int b) {
+    entry inspect(int a, int b) {
         console.log("sum", a + b);
         require(a + b > 0);
     }
@@ -171,7 +171,7 @@ fn debug_session_hits_multiline_breakpoints() -> Result<(), Box<dyn Error>> {
     let source = r#"pragma silverscript ^0.1.0;
 
 contract BP() {
-    entrypoint function main(int a) {
+    entry main(int a) {
         require(a == 1);
         require(a == 1);
         require(
@@ -200,7 +200,7 @@ fn debug_session_dedupes_shadowed_constructor_constants() -> Result<(), Box<dyn 
     let source = r#"pragma silverscript ^0.1.0;
 
 contract Shadow(int x) {
-    entrypoint function main(int x) {
+    entry main(int x) {
         require(x == x);
     }
 }
@@ -226,7 +226,7 @@ fn debug_session_prefers_function_param_value_over_shadowed_constructor_constant
     let source = r#"pragma silverscript ^0.1.0;
 
 contract ShadowMath(int fee) {
-    entrypoint function main(int fee) {
+    entry main(int fee) {
         int local = fee + 1;
         local = local + fee;
         require(local > 0);
@@ -259,7 +259,7 @@ fn debug_session_offsets_param_indexes_when_contract_has_fields() -> Result<(), 
 contract FieldOffset(int c) {
     int x = 7;
 
-    entrypoint function main(int a) {
+    entry main(int a) {
         require(a > 0);
     }
 }
@@ -284,7 +284,7 @@ fn debug_session_resolves_updates_that_reference_contract_fields() -> Result<(),
 contract FieldMath(int c) {
     int x = 7;
 
-    entrypoint function main(int a) {
+    entry main(int a) {
         int z = a + x + c;
         require(z > 0);
     }
@@ -313,7 +313,7 @@ fn debug_session_exposes_concrete_source_steps() -> Result<(), Box<dyn Error>> {
     let source = r#"pragma silverscript ^0.1.0;
 
 contract Virtuals() {
-    entrypoint function main(int a) {
+    entry main(int a) {
         int x = a + 1;
         x = x + 2;
         require(x > 0);
@@ -343,7 +343,7 @@ fn debug_session_step_opcode_advances_statement_cursor() -> Result<(), Box<dyn E
     let source = r#"pragma silverscript ^0.1.0;
 
 contract OpcodeCursor() {
-    entrypoint function main(int a) {
+    entry main(int a) {
         int x = a + 1;
         x = x + 2;
         require(x > 0);
@@ -380,7 +380,7 @@ fn debug_session_breakpoint_hits_source_line() -> Result<(), Box<dyn Error>> {
     let source = r#"pragma silverscript ^0.1.0;
 
 contract VirtualBp() {
-    entrypoint function main(int a) {
+    entry main(int a) {
         int x = a + 1;
         x = x + 2;
         require(x > 0);
@@ -404,7 +404,7 @@ fn debug_session_tracks_local_variable_updates() -> Result<(), Box<dyn Error>> {
     let source = r#"pragma silverscript ^0.1.0;
 
 contract LocalVars() {
-    entrypoint function main(int a) {
+    entry main(int a) {
         int x = a + 1;
         x = x + 2;
         require(x > 0);
@@ -452,7 +452,7 @@ contract InlineCalls() {
         return(y);
     }
 
-    entrypoint function main(int a) {
+    entry main(int a) {
         (int b) = addOne(a);
         require(b == a + 1);
     }
@@ -504,7 +504,7 @@ contract Repeat() {
         require(y > 0);
     }
 
-    entrypoint function main(int a) {
+    entry main(int a) {
         inc(a);
         inc(a);
         require(a >= 0);
@@ -530,7 +530,7 @@ contract Repeat() {
         require(y > 0);
     }
 
-    entrypoint function main(int a) {
+    entry main(int a) {
         inc(a);
         inc(a);
         require(a >= 0);
@@ -573,7 +573,7 @@ contract NestedNoArgs() {
         require(1 == 1);
     }
 
-    entrypoint function main() {
+    entry main() {
         outer();
         require(1 == 1);
     }
@@ -610,7 +610,7 @@ contract DebugPoC(int const) {
         require(right >= left);
     }
 
-    entrypoint function main(int a, int b) {
+    entry main(int a, int b) {
         int seed = a + const;
         check_pair(a, b);
         bump(seed);
@@ -658,7 +658,7 @@ contract InlineParams() {
         return(y);
     }
 
-    entrypoint function main(int a) {
+    entry main(int a) {
         int seed = a;
         (int r) = add1(seed);
         require(r > 0);
@@ -701,7 +701,7 @@ contract InlineEval() {
         return(y);
     }
 
-    entrypoint function main(int a) {
+    entry main(int a) {
         (int r) = add1(a);
         require(r > 0);
     }
@@ -740,7 +740,7 @@ fn debug_session_exposes_ctor_args_and_contract_constants_distinctly() -> Result
 contract ScopeKinds(int init_amount) {
     int constant BONUS = 2;
 
-    entrypoint function main(int delta) {
+    entry main(int delta) {
         int total = init_amount + delta + BONUS;
         require(total > 0);
     }
@@ -777,7 +777,7 @@ contract StepVisibility(int init_amount) {
         return(y);
     }
 
-    entrypoint function inspect(int delta, int[] values) {
+    entry inspect(int delta, int[] values) {
         int base = init_amount + values[0];
         (int after) = add_bonus(base + delta);
         require(after > base);
@@ -818,7 +818,7 @@ contract ShiftedBindings() {
         return(y);
     }
 
-    entrypoint function inspect(int delta, int[] values) {
+    entry inspect(int delta, int[] values) {
         int base = amount + values[0];
         (int after) = add_bonus(base + delta);
         require(after >= amount);
@@ -879,7 +879,7 @@ contract StructuredEvalState() {
     bool active = true;
     byte[1] tag = 0xaa;
 
-    entrypoint function inspect(State next_state) {
+    entry inspect(State next_state) {
         int bumped = next_state.amount + amount;
         require(bumped > 0);
     }
@@ -919,7 +919,7 @@ contract StructuredEvalStateArray() {
     bool active = true;
     byte[1] tag = 0xaa;
 
-    entrypoint function inspect(State[] next_states) {
+    entry inspect(State[] next_states) {
         require(next_states.length == 2);
     }
 }
@@ -972,7 +972,7 @@ contract StructuredEvalPair() {
         byte[2] code;
     }
 
-    entrypoint function inspect(Pair next_pair) {
+    entry inspect(Pair next_pair) {
         require(next_pair.amount > 0);
     }
 }
@@ -1016,7 +1016,7 @@ contract InlineStructuredEval() {
         require(bumped > 0);
     }
 
-    entrypoint function inspect(State next_state) {
+    entry inspect(State next_state) {
         inspect_inner(next_state);
         require(next_state.active == active);
     }
@@ -1071,7 +1071,7 @@ fn debug_session_evaluates_structured_expressions_without_source_text() -> Resul
 contract MissingStructuredSource() {
     int amount = 1;
 
-    entrypoint function inspect(State next) {
+    entry inspect(State next) {
         require(next.amount > amount);
     }
 }
@@ -1111,7 +1111,7 @@ contract NestedArgs() {
         require(v >= 0);
     }
 
-    entrypoint function main(int a) {
+    entry main(int a) {
         outer(a);
         require(a >= 0);
     }
@@ -1135,7 +1135,7 @@ fn debug_session_exposes_loop_index_variable_i() -> Result<(), Box<dyn Error>> {
     let source = r#"pragma silverscript ^0.1.0;
 
 contract LoopIndex() {
-    entrypoint function main() {
+    entry main() {
         int sum = 0;
         for(i,0,2,2){
             sum = sum + i;
@@ -1170,7 +1170,7 @@ fn debug_session_step_over_preserves_loop_iterations_on_same_source_line() -> Re
     let source = r#"pragma silverscript ^0.1.0;
 
 contract LoopStepOver() {
-    entrypoint function main() {
+    entry main() {
         int sum = 0;
         for(i,0,2,2){
             sum = sum + i;
@@ -1223,7 +1223,7 @@ fn debug_session_loop_header_keeps_outer_locals_across_iterations() -> Result<()
     let source = r#"pragma silverscript ^0.1.0;
 
 contract LoopHeaderLocals() {
-    entrypoint function main() {
+    entry main() {
         int sum = 0;
         for(i,0,2,2){
             sum = sum + i;
@@ -1263,7 +1263,7 @@ contract InlineLoop() {
         require(total >= base);
     }
 
-    entrypoint function main() {
+    entry main() {
         int alias = 1;
         walk(alias);
         require(alias == 1);
@@ -1339,7 +1339,7 @@ contract InlineLoopPreface() {
         require(total >= threshold);
     }
 
-    entrypoint function main() {
+    entry main() {
         int branch_limit = 1;
         walk(branch_limit);
         require(branch_limit == 1);
@@ -1384,7 +1384,7 @@ contract InlineIntoArgs() {
         require(total > threshold);
     }
 
-    entrypoint function main() {
+    entry main() {
         walk(1);
         require(1 == 1);
     }
@@ -1469,7 +1469,7 @@ contract DebugStress() {
         require(snapshot.total >= pair.left + pair.right);
     }
 
-    entrypoint function main() {
+    entry main() {
         Pair start = {left: seed, right: seed + 3};
         Pair alias = start;
         int branch_limit = baseline + 2;
@@ -1629,7 +1629,7 @@ fn debug_session_shadow_eval_uses_tx_context_for_covenant_opcode_locals() -> Res
     let source = r#"pragma silverscript ^0.1.0;
 
 contract CovLocal() {
-    entrypoint function main() {
+    entry main() {
         byte[32] covid = OpInputCovenantId(this.activeInputIndex);
         require(covid == covid);
     }
@@ -1694,7 +1694,7 @@ fn debug_session_eval_uses_tx_context_for_covenant_expression() -> Result<(), Bo
     let source = r#"pragma silverscript ^0.1.0;
 
 contract CovEval() {
-    entrypoint function main() {
+    entry main() {
         require(true);
     }
 }

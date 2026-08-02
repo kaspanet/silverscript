@@ -6,40 +6,44 @@ use serde::{Deserialize, Serialize};
 
 use crate::ast::{
     ArrayDim, BinaryOp, ConstantAst, ContractAst, ContractFieldAst, Expr, ExprKind, FunctionAst, IntrospectionKind, NullaryOp,
-    ParamAst, STATE_TYPE_NAME, SplitPart, StateBindingAst, StateFieldExpr, Statement, TimeVar, TypeBase, TypeRef, UnaryOp,
+    ParamAst, STATE_TYPE_NAME, SplitPart, StateFieldExpr, Statement, StructBindingAst, TimeVar, TypeBase, TypeRef, UnaryOp,
     UnarySuffixKind, parse_contract_ast, parse_type_ref,
 };
 use crate::debug_info::{DebugInfo, DebugNamedValue};
 pub use crate::errors::{CompilerError, ErrorSpan};
 use crate::span;
 mod array_append;
+mod builtin_types;
 mod compile;
 mod covenant_declarations;
 mod debug_recording;
-mod debug_value_types;
 mod r#for;
 mod infer_array;
 mod inline_functions;
 mod locals;
+mod read_input_state;
 mod stack_bindings;
 mod static_check;
 mod structs;
+mod ternary;
+mod type_check;
+mod type_system;
 mod validate_output_state;
 
 use compile::compile_contract_impl;
-pub(crate) use compile::resolve_expr;
-pub(super) use compile::{array_element_type, eval_const_int, is_bytes_type, type_name_from_ref};
+pub(super) use compile::eval_const_int;
+pub(crate) use compile::resolve_constant_references;
 pub use compile::{compile_debug_expr, function_branch_index};
 pub(crate) use debug_recording::DebugRecorder;
 use r#for::lower_for_loops;
-pub(crate) use static_check::expr_matches_declared_type_ref;
-use static_check::value_matches_type_ref;
+use read_input_state::lower_read_input_state_calls;
+use static_check::validate_expr_matches_type;
 pub use structs::flattened_struct_name;
 pub(super) use structs::{
-    StructRegistry, build_struct_registry, ensure_known_or_builtin_type, flatten_constructor_args_env, flatten_type_ref_leaves,
-    flattened_struct_field_specs_for_type, lower_runtime_expr, lower_runtime_struct_expr, lower_structs_contract,
-    struct_array_name_from_type_ref, struct_name_from_type_ref, validate_struct_graph,
+    StructRegistry, build_struct_registry, ensure_known_or_builtin_type, flatten_constructor_args_env, flatten_type_leaves,
+    flattened_struct_field_specs_for_type, is_struct, is_struct_array, lower_structs_contract, struct_name, validate_struct_graph,
 };
+pub(super) use type_system::{append_type, array_size as array_type_size, concat_types, type_refs_equal};
 use validate_output_state::lower_validate_output_state;
 
 /// Prefix used for synthetic argument bindings during inline function expansion.
@@ -47,6 +51,7 @@ pub const SYNTHETIC_ARG_PREFIX: &str = "__arg";
 pub const COMPILER_VERSION: &str = "0.1.0";
 const COVENANT_POLICY_PREFIX: &str = "__covenant_policy";
 pub const COVENANT_ENTRYPOINT_AUTH_PREFIX: &str = "__covenant_entrypoint_auth";
+pub(super) type TypeMap = HashMap<String, TypeRef>;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CovenantDeclCallOptions {
@@ -93,7 +98,7 @@ pub struct CompiledStateLayout {
     pub len: usize,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CompiledContract<'i> {
     pub contract_name: String,
     pub compiler_version: String,
@@ -111,7 +116,14 @@ pub fn compile_contract<'i>(
     options: CompileOptions,
 ) -> Result<CompiledContract<'i>, CompilerError> {
     let contract = parse_contract_ast(source)?;
-    compile_contract_impl(&contract, constructor_args, options, Some(source))
+    let result = compile_contract_impl(&contract, constructor_args, options, Some(source));
+    let repeated_result = compile_contract_impl(&contract, constructor_args, options, Some(source));
+    assert_eq!(
+        result.as_ref().map_err(ToString::to_string),
+        repeated_result.as_ref().map_err(ToString::to_string),
+        "compiling the same contract twice must produce identical results"
+    );
+    result
 }
 
 pub fn compile_contract_ast<'i>(
@@ -130,12 +142,15 @@ impl<'i> ContractAst<'i> {
         }
 
         let structs = build_struct_registry(self)?;
-        let mut env: HashMap<String, Expr<'i>> =
+        let constants: HashMap<String, Expr<'i>> =
             self.constants.iter().map(|constant| (constant.name.clone(), constant.expr.clone())).collect();
+        let mut env = constants.clone();
 
         for (param, value) in self.params.iter().zip(constructor_args.iter()) {
-            let type_name = type_name_from_ref(&param.type_ref);
-            if !expr_matches_declared_type_ref(value, &param.type_ref, &structs) {
+            let type_name = param.type_ref.type_name();
+            if validate_expr_matches_type(value, &param.type_ref, &HashMap::new(), &structs, &constants, &HashMap::new(), &self.fields)
+                .is_err()
+            {
                 return Err(CompilerError::Unsupported(format!("constructor argument '{}' expects {}", param.name, type_name)));
             }
             env.insert(param.name.clone(), value.clone());
@@ -148,8 +163,18 @@ impl<'i> ContractAst<'i> {
             }
 
             let type_name = field.type_ref.type_name();
-            let resolved = resolve_expr(field.expr.clone(), &env, &mut std::collections::HashSet::new())?;
-            if !expr_matches_declared_type_ref(&resolved, &field.type_ref, &structs) {
+            let resolved = resolve_constant_references(field.expr.clone(), &env, &mut std::collections::HashSet::new())?;
+            if validate_expr_matches_type(
+                &resolved,
+                &field.type_ref,
+                &HashMap::new(),
+                &structs,
+                &constants,
+                &HashMap::new(),
+                &self.fields,
+            )
+            .is_err()
+            {
                 return Err(CompilerError::Unsupported(format!("contract field '{}' expects {}", field.name, type_name)));
             }
 
@@ -163,7 +188,7 @@ impl<'i> ContractAst<'i> {
 
 pub fn struct_object<'i>(fields: Vec<(&str, Expr<'i>)>) -> Expr<'i> {
     Expr::new(
-        ExprKind::StateObject(
+        ExprKind::StructLiteral(
             fields
                 .into_iter()
                 .map(|(name, expr)| StateFieldExpr {
@@ -179,8 +204,16 @@ pub fn struct_object<'i>(fields: Vec<(&str, Expr<'i>)>) -> Expr<'i> {
 }
 
 impl<'i> CompiledContract<'i> {
+    /// Calculate the canonical hash of this contract's state template.
+    pub fn template_hash(&self) -> [u8; 32] {
+        let state_end = self.state_layout.start + self.state_layout.len;
+        crate::template::template_hash(&self.script[..self.state_layout.start], &self.script[state_end..])
+    }
+
     pub fn build_sig_script(&self, function_name: &str, args: Vec<Expr<'i>>) -> Result<Vec<u8>, CompilerError> {
         let structs = build_struct_registry(&self.ast)?;
+        let constants: HashMap<_, _> =
+            self.ast.constants.iter().map(|constant| (constant.name.clone(), constant.expr.clone())).collect();
         let function = self
             .abi
             .iter()
@@ -198,7 +231,7 @@ impl<'i> CompiledContract<'i> {
         let mut builder = ScriptBuilder::with_flags(EngineFlags { covenants_enabled: true, ..Default::default() });
         for (input, arg) in function.inputs.iter().zip(args) {
             let type_ref = parse_type_ref(&input.type_name)?;
-            push_typed_sigscript_arg(&mut builder, arg, &type_ref, &structs).map_err(|err| {
+            push_typed_sigscript_arg(&mut builder, arg, &type_ref, &structs, &constants).map_err(|err| {
                 CompilerError::Unsupported(format!("function argument '{}' expects {} ({err})", input.name, input.type_name))
             })?;
         }
@@ -239,108 +272,136 @@ fn push_typed_sigscript_arg<'i>(
     arg: Expr<'i>,
     type_ref: &TypeRef,
     structs: &StructRegistry,
+    constants: &HashMap<String, Expr<'i>>,
 ) -> Result<(), CompilerError> {
-    if let Some(element_type) = type_ref.element_type() {
-        if let Some(struct_name) = struct_name_from_type_ref(&element_type, structs) {
-            let item =
-                structs.get(struct_name).ok_or_else(|| CompilerError::Unsupported(format!("unknown struct '{struct_name}'")))?;
-            let ExprKind::Array(values) = arg.kind else {
-                return Err(CompilerError::Unsupported("signature script struct array arguments must be array literals".to_string()));
-            };
+    validate_sigscript_arg(&arg, type_ref, structs, constants)?;
 
-            for field in &item.fields {
-                let mut field_values = Vec::with_capacity(values.len());
-                for value in &values {
-                    let ExprKind::StateObject(entries) = &value.kind else {
-                        return Err(CompilerError::Unsupported(
-                            "signature script struct array arguments must contain object literals".to_string(),
-                        ));
-                    };
-
-                    let mut matched = None;
-                    for entry in entries {
-                        if entry.name == field.name {
-                            if matched.is_some() {
-                                return Err(CompilerError::Unsupported(format!("duplicate struct field '{}'", field.name)));
-                            }
-                            matched = Some(entry.expr.clone());
-                        }
-                    }
-
-                    field_values
-                        .push(matched.ok_or_else(|| {
-                            CompilerError::Unsupported(format!("struct field '{}' must be initialized", field.name))
-                        })?);
-
-                    if let Some(extra) = entries.iter().find(|entry| item.fields.iter().all(|field| field.name != entry.name)) {
-                        return Err(CompilerError::Unsupported(format!("unknown struct field '{}'", extra.name)));
-                    }
-                }
-
-                let mut field_type = field.type_ref.clone();
-                field_type.array_dims.push(ArrayDim::Dynamic);
-                push_typed_sigscript_arg(
-                    builder,
-                    Expr::new(ExprKind::Array(field_values), span::Span::default()),
-                    &field_type,
-                    structs,
-                )?;
-            }
-            return Ok(());
+    if let Some(element_type) = type_ref.array_element_type() {
+        if let Some(struct_name) = struct_name(&element_type, structs) {
+            return push_struct_array_sigscript_arg(builder, arg, type_ref, struct_name, structs, constants);
         }
     }
 
-    if let Some(struct_name) = struct_name_from_type_ref(type_ref, structs) {
-        let item = structs.get(struct_name).ok_or_else(|| CompilerError::Unsupported(format!("unknown struct '{struct_name}'")))?;
-        let ExprKind::StateObject(fields) = arg.kind else {
-            return Err(CompilerError::Unsupported("signature script struct arguments must be object literals".to_string()));
+    if let Some(struct_name) = struct_name(type_ref, structs) {
+        return push_struct_sigscript_arg(builder, arg, struct_name, structs, constants);
+    }
+
+    if type_ref.is_array() {
+        return push_array_sigscript_arg(builder, arg, type_ref, constants);
+    }
+
+    push_sigscript_non_array_arg(builder, arg)
+}
+
+fn validate_sigscript_arg<'i>(
+    arg: &Expr<'i>,
+    type_ref: &TypeRef,
+    structs: &StructRegistry,
+    constants: &HashMap<String, Expr<'i>>,
+) -> Result<(), CompilerError> {
+    let types = HashMap::new();
+    let functions = HashMap::new();
+    let type_context = type_check::TypeCheckContext { types: &types, structs, constants, functions: &functions, contract_fields: &[] };
+    type_check::check_expr(arg, Some(type_ref), &type_context)?;
+    Ok(())
+}
+
+fn push_struct_sigscript_arg<'i>(
+    builder: &mut ScriptBuilder,
+    arg: Expr<'i>,
+    struct_name: &str,
+    structs: &StructRegistry,
+    constants: &HashMap<String, Expr<'i>>,
+) -> Result<(), CompilerError> {
+    let item = structs.get(struct_name).ok_or_else(|| CompilerError::Unsupported(format!("unknown struct '{struct_name}'")))?;
+    let ExprKind::StructLiteral(fields) = arg.kind else {
+        return Err(CompilerError::Unsupported("signature script struct arguments must be object literals".to_string()));
+    };
+    let mut provided = fields.into_iter().map(|field| (field.name, field.expr)).collect::<HashMap<_, _>>();
+
+    for field in &item.fields {
+        let value = provided
+            .remove(&field.name)
+            .ok_or_else(|| CompilerError::Unsupported(format!("struct field '{}' must be initialized", field.name)))?;
+        push_typed_sigscript_arg(builder, value, &field.type_ref, structs, constants)?;
+    }
+
+    if let Some(extra) = provided.keys().next() {
+        return Err(CompilerError::Unsupported(format!("unknown struct field '{}'", extra)));
+    }
+    Ok(())
+}
+
+fn push_struct_array_sigscript_arg<'i>(
+    builder: &mut ScriptBuilder,
+    arg: Expr<'i>,
+    type_ref: &TypeRef,
+    struct_name: &str,
+    structs: &StructRegistry,
+    constants: &HashMap<String, Expr<'i>>,
+) -> Result<(), CompilerError> {
+    let item = structs.get(struct_name).ok_or_else(|| CompilerError::Unsupported(format!("unknown struct '{struct_name}'")))?;
+    let dimension = type_ref
+        .array_size()
+        .cloned()
+        .ok_or_else(|| CompilerError::Unsupported("signature script struct array argument requires an array type".to_string()))?;
+    let ExprKind::Array(values) = arg.kind else {
+        return Err(CompilerError::Unsupported("signature script struct array arguments must be array literals".to_string()));
+    };
+
+    let mut objects = Vec::with_capacity(values.len());
+    for value in values {
+        let ExprKind::StructLiteral(entries) = value.kind else {
+            return Err(CompilerError::Unsupported(
+                "signature script struct array arguments must contain object literals".to_string(),
+            ));
         };
-        let mut provided = HashMap::new();
-        for field in fields {
-            if provided.insert(field.name.clone(), field.expr).is_some() {
-                return Err(CompilerError::Unsupported(format!("duplicate struct field '{}'", field.name)));
-            }
-        }
-        for field in &item.fields {
-            let value = provided
-                .remove(&field.name)
-                .ok_or_else(|| CompilerError::Unsupported(format!("struct field '{}' must be initialized", field.name)))?;
-            push_typed_sigscript_arg(builder, value, &field.type_ref, structs)?;
-        }
-        if let Some(extra) = provided.keys().next() {
-            return Err(CompilerError::Unsupported(format!("unknown struct field '{}'", extra)));
-        }
-        return Ok(());
+        objects.push(entries.into_iter().map(|entry| (entry.name, entry.expr)).collect::<HashMap<_, _>>());
     }
 
-    if !value_matches_type_ref(&arg, type_ref) {
-        return Err(CompilerError::Unsupported("signature script arguments must match the declared type".to_string()));
+    for field in &item.fields {
+        let field_values = objects
+            .iter_mut()
+            .map(|fields| {
+                fields
+                    .remove(&field.name)
+                    .ok_or_else(|| CompilerError::Unsupported(format!("struct field '{}' must be initialized", field.name)))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut field_type = field.type_ref.clone();
+        field_type.array_dims.push(dimension.clone());
+        push_typed_sigscript_arg(
+            builder,
+            Expr::new(ExprKind::Array(field_values), span::Span::default()),
+            &field_type,
+            structs,
+            constants,
+        )?;
     }
 
-    let type_name = type_name_from_ref(type_ref);
-    if compile::is_array_type(&type_name) {
-        match &arg.kind {
-            ExprKind::Array(values) => {
-                if compile::is_byte_array(&arg) {
-                    let bytes: Vec<u8> = values
-                        .iter()
-                        .filter_map(|value| if let ExprKind::Byte(byte) = &value.kind { Some(*byte) } else { None })
-                        .collect();
-                    builder.add_data(&bytes)?;
-                } else {
-                    let bytes = compile::encode_array_literal(values, &type_name)?;
-                    builder.add_data(&bytes)?;
-                }
-                Ok(())
-            }
-            _ => Err(CompilerError::Unsupported("signature script arguments must be literals".to_string())),
+    if let Some(extra) = objects.iter().find_map(|fields| fields.keys().next()) {
+        return Err(CompilerError::Unsupported(format!("unknown struct field '{}'", extra)));
+    }
+    Ok(())
+}
+
+fn push_array_sigscript_arg<'i>(
+    builder: &mut ScriptBuilder,
+    arg: Expr<'i>,
+    type_ref: &TypeRef,
+    constants: &HashMap<String, Expr<'i>>,
+) -> Result<(), CompilerError> {
+    match &arg.kind {
+        ExprKind::Array(values) => {
+            let bytes = compile::encode_array_literal(values, type_ref, constants)?;
+            builder.add_data(&bytes)?;
+            Ok(())
         }
-    } else {
-        push_sigscript_arg(builder, arg)
+        _ => Err(CompilerError::Unsupported("signature script arguments must be literals".to_string())),
     }
 }
 
-fn push_sigscript_arg<'i>(builder: &mut ScriptBuilder, arg: Expr<'i>) -> Result<(), CompilerError> {
+fn push_sigscript_non_array_arg<'i>(builder: &mut ScriptBuilder, arg: Expr<'i>) -> Result<(), CompilerError> {
     match arg.kind {
         ExprKind::Int(value) => {
             builder.add_i64(value)?;
@@ -354,6 +415,7 @@ fn push_sigscript_arg<'i>(builder: &mut ScriptBuilder, arg: Expr<'i>) -> Result<
         ExprKind::Byte(value) => {
             builder.add_data(&[value])?;
         }
+        // This is not intended for byte-arrays, but for pubkey, datasig, etc.
         ExprKind::Array(values) if values.iter().all(|value| matches!(&value.kind, ExprKind::Byte(_))) => {
             let bytes: Vec<u8> =
                 values.iter().filter_map(|value| if let ExprKind::Byte(byte) = &value.kind { Some(*byte) } else { None }).collect();
@@ -371,23 +433,4 @@ fn push_sigscript_arg<'i>(builder: &mut ScriptBuilder, arg: Expr<'i>) -> Result<
 
 fn binary_expr<'i>(op: BinaryOp, left: Expr<'i>, right: Expr<'i>) -> Expr<'i> {
     Expr::new(ExprKind::Binary { op, left: Box::new(left), right: Box::new(right) }, span::Span::default())
-}
-
-fn input_sigscript_base_expr<'i>(input_idx: &Expr<'i>, script_size_expr: Expr<'i>) -> Expr<'i> {
-    binary_expr(BinaryOp::Sub, Expr::call("OpTxInputScriptSigLen", vec![input_idx.clone()]), script_size_expr)
-}
-
-fn input_sigscript_substr_expr<'i>(input_idx: &Expr<'i>, start: Expr<'i>, end: Expr<'i>) -> Expr<'i> {
-    Expr::call("OpTxInputScriptSigSubstr", vec![input_idx.clone(), start, end])
-}
-
-fn input_script_pubkey_expr<'i>(input_idx: &Expr<'i>) -> Expr<'i> {
-    Expr::new(
-        ExprKind::Introspection {
-            kind: IntrospectionKind::InputScriptPubKey,
-            index: Box::new(input_idx.clone()),
-            field_span: span::Span::default(),
-        },
-        span::Span::default(),
-    )
 }

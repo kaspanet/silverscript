@@ -31,6 +31,7 @@ faster-hex = "0.10"
 semver = "1.0"
 
 [dev-dependencies]
+blake3 = "1.8.5"
 kaspa-addresses.workspace = true
 borsh = "1.7.0"
 risc0-zkvm = "3.0.4"

@@ -1,6 +1,6 @@
 use super::{
     ConstantAst, ContractAst, ContractFieldAst, Expr, ExprKind, FunctionAst, FunctionAttributeArgAst, FunctionAttributeAst, ParamAst,
-    StateBindingAst, Statement,
+    Statement, StructBindingAst,
 };
 use crate::span::Span;
 
@@ -54,7 +54,7 @@ pub trait AstVisitorMut<'i> {
         walk_param_mut(self, param);
     }
 
-    fn visit_state_binding(&mut self, binding: &mut StateBindingAst<'i>) {
+    fn visit_state_binding(&mut self, binding: &mut StructBindingAst<'i>) {
         walk_state_binding_mut(self, binding);
     }
 
@@ -151,7 +151,7 @@ pub fn walk_param_mut<'i, V: AstVisitorMut<'i> + ?Sized>(visitor: &mut V, param:
     visitor.visit_span(&mut param.name_span);
 }
 
-pub fn walk_state_binding_mut<'i, V: AstVisitorMut<'i> + ?Sized>(visitor: &mut V, binding: &mut StateBindingAst<'i>) {
+pub fn walk_state_binding_mut<'i, V: AstVisitorMut<'i> + ?Sized>(visitor: &mut V, binding: &mut StructBindingAst<'i>) {
     visitor.visit_name(&mut binding.field_name, NameKind::StateField);
     visitor.visit_name(&mut binding.name, NameKind::StateBinding);
     visitor.visit_span(&mut binding.span);
@@ -213,7 +213,7 @@ pub fn walk_statement_mut<'i, V: AstVisitorMut<'i> + ?Sized>(visitor: &mut V, st
                 visitor.visit_expr(arg);
             }
         }
-        Statement::StateFunctionCallAssign { bindings, name, args, span, name_span } => {
+        Statement::StateFunctionCallAssign { target_struct: _, bindings, name, args, span, name_span } => {
             visitor.visit_span(span);
             visitor.visit_span(name_span);
             for binding in bindings {
@@ -359,7 +359,7 @@ pub fn walk_expr_mut<'i, V: AstVisitorMut<'i> + ?Sized>(visitor: &mut V, expr: &
             visitor.visit_span(field_span);
             visitor.visit_expr(index);
         }
-        ExprKind::StateObject(fields) => {
+        ExprKind::StructLiteral(fields) => {
             for field in fields {
                 visitor.visit_name(&mut field.name, NameKind::StateField);
                 visitor.visit_span(&mut field.span);

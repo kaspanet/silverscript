@@ -28,13 +28,11 @@ contract ChessSettle(
         int losses;
     }
 
-    entrypoint function settle(
-        byte[] player_prefix,
-        byte[] player_suffix
+    entry settle(
+        int player_prefix_len,
+        int player_suffix_len
     ) {
         require(status != 0 /*LIVE*/);
-        int player_prefix_len = player_prefix.length;
-        int player_suffix_len = player_suffix.length;
 
         byte[32] cov_id = OpInputCovenantId(this.activeInputIndex);
         require(OpCovInputCount(cov_id) == 3);
@@ -177,18 +175,20 @@ contract ChessSettle(
         int black_output_idx = OpAuthOutputIdx(this.activeInputIndex, 1);
         require(tx.outputs[white_output_idx].value == white_output_value);
         require(tx.outputs[black_output_idx].value == black_output_value);
-        validateOutputStateWithTemplate(
+        validateOutputStateWithInputTemplate(
             white_output_idx,
             next_white,
-            player_prefix,
-            player_suffix,
+            white_input_idx,
+            player_prefix_len,
+            player_suffix_len,
             player_template
         );
-        validateOutputStateWithTemplate(
+        validateOutputStateWithInputTemplate(
             black_output_idx,
             next_black,
-            player_prefix,
-            player_suffix,
+            white_input_idx,
+            player_prefix_len,
+            player_suffix_len,
             player_template
         );
     }

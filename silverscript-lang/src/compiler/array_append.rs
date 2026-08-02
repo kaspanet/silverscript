@@ -75,13 +75,16 @@ fn lower_statement<'i>(statement: &Statement<'i>) -> Result<Statement<'i>, Compi
             span: *span,
             name_span: *name_span,
         }),
-        Statement::StateFunctionCallAssign { bindings, name, args, span, name_span } => Ok(Statement::StateFunctionCallAssign {
-            bindings: bindings.clone(),
-            name: name.clone(),
-            args: args.iter().map(lower_expr).collect::<Result<Vec<_>, _>>()?,
-            span: *span,
-            name_span: *name_span,
-        }),
+        Statement::StateFunctionCallAssign { target_struct, bindings, name, args, span, name_span } => {
+            Ok(Statement::StateFunctionCallAssign {
+                target_struct: target_struct.clone(),
+                bindings: bindings.clone(),
+                name: name.clone(),
+                args: args.iter().map(lower_expr).collect::<Result<Vec<_>, _>>()?,
+                span: *span,
+                name_span: *name_span,
+            })
+        }
         Statement::StructDestructure { bindings, expr, span } => {
             Ok(Statement::StructDestructure { bindings: bindings.clone(), expr: lower_expr(expr)?, span: *span })
         }
@@ -194,8 +197,8 @@ fn lower_expr<'i>(expr: &Expr<'i>) -> Result<Expr<'i>, CompilerError> {
         ExprKind::Introspection { kind, index, field_span } => {
             Ok(Expr::new(ExprKind::Introspection { kind: *kind, index: Box::new(lower_expr(index)?), field_span: *field_span }, span))
         }
-        ExprKind::StateObject(fields) => Ok(Expr::new(
-            ExprKind::StateObject(
+        ExprKind::StructLiteral(fields) => Ok(Expr::new(
+            ExprKind::StructLiteral(
                 fields
                     .iter()
                     .map(|field| {

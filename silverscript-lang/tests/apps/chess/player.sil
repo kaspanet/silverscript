@@ -55,7 +55,7 @@ contract Player(
     int draws = init_draws;
     int losses = init_losses;
 
-    entrypoint function start_game(
+    entry start_game(
         sig owner_sig,
         pubkey owner_pk,
         int self_side,
@@ -149,7 +149,7 @@ contract Player(
         );
     }
 
-    entrypoint function delegate_start_game(
+    entry delegate_start_game(
         sig owner_sig,
         pubkey owner_pk,
         int move_timeout,
@@ -176,7 +176,7 @@ contract Player(
         require(leader.player_id != player_id);
     }
 
-    entrypoint function delegate_settle(
+    entry delegate_settle(
         int settle_prefix_len,
         int settle_suffix_len,
         byte[32] settle_template,
@@ -204,9 +204,16 @@ contract Player(
 
     // Owner-signed same-SPK continuity path for depositing to or withdrawing
     // from the Player UTXO without changing its serialized state.
-    entrypoint function rebalance(sig owner_sig, pubkey owner_pk) {
+    entry rebalance(sig owner_sig, pubkey owner_pk) {
         require(blake2b(owner_pk) == owner);
         require(checkSig(owner_sig, owner_pk));
+        // Verify that the current input is the only input in its chess covenant
+        // group. This is required because `delegate_start_game` trusts the
+        // `Player` contract at covenant input zero as its leader. Every
+        // non-delegate `Player` entrypoint must therefore ensure that it
+        // authorizes exactly the covenant inputs it intends to authorize.
+        byte[32] cov_id = OpInputCovenantId(this.activeInputIndex);
+        require(OpCovInputCount(cov_id) == 1);
         require(OpAuthOutputCount(this.activeInputIndex) == 1);
         int output_idx = OpAuthOutputIdx(this.activeInputIndex, 0);
         require(tx.outputs[output_idx].scriptPubKey == tx.inputs[this.activeInputIndex].scriptPubKey);
@@ -214,10 +221,14 @@ contract Player(
 
     // Terminal owner-signed path for closing the Player account. Requiring
     // open_games == 0 prevents abandoning live game obligations.
-    entrypoint function retire(sig owner_sig, pubkey owner_pk) {
+    entry retire(sig owner_sig, pubkey owner_pk) {
         require(blake2b(owner_pk) == owner);
         require(checkSig(owner_sig, owner_pk));
         require(open_games == 0);
+        // See the `rebalance` safety comment: every non-delegate `Player`
+        // entrypoint must constrain the covenant input group it authorizes.
+        byte[32] cov_id = OpInputCovenantId(this.activeInputIndex);
+        require(OpCovInputCount(cov_id) == 1);
         require(OpAuthOutputCount(this.activeInputIndex) == 0);
     }
 }

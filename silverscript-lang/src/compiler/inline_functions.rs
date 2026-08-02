@@ -77,40 +77,16 @@ impl<'i, 'd> Inliner<'i, 'd> {
         Ok(lowered)
     }
 
-    fn bind_visible_name(&mut self, source_name: &str, scope: &mut HashMap<String, String>) -> String {
-        scope
-            .entry(source_name.to_string())
-            .or_insert_with(|| {
-                let fresh = self.fresh_name(source_name);
-                self.debug_recorder.record_visible_name(&fresh, source_name);
-                fresh
-            })
-            .clone()
+    fn bind_fresh_visible_name(&mut self, source_name: &str, scope: &mut HashMap<String, String>) -> String {
+        let fresh = self.fresh_visible_name(source_name);
+        scope.insert(source_name.to_string(), fresh.clone());
+        fresh
     }
 
-    fn predeclare_branch_bindings(&mut self, statements: &[Statement<'i>], scope: &mut HashMap<String, String>) {
-        for statement in statements {
-            match statement {
-                Statement::VariableDefinition { name, .. } => {
-                    self.bind_visible_name(name, scope);
-                }
-                Statement::TupleAssignment { left_name, right_name, .. } => {
-                    self.bind_visible_name(left_name, scope);
-                    self.bind_visible_name(right_name, scope);
-                }
-                Statement::FunctionCallAssign { bindings, .. } => {
-                    for binding in bindings {
-                        self.bind_visible_name(&binding.name, scope);
-                    }
-                }
-                Statement::StateFunctionCallAssign { bindings, .. } | Statement::StructDestructure { bindings, .. } => {
-                    for binding in bindings {
-                        self.bind_visible_name(&binding.name, scope);
-                    }
-                }
-                _ => {}
-            }
-        }
+    fn fresh_visible_name(&mut self, source_name: &str) -> String {
+        let fresh = self.fresh_name(source_name);
+        self.debug_recorder.record_visible_name(&fresh, source_name);
+        fresh
     }
 
     fn lower_statement(
@@ -122,7 +98,6 @@ impl<'i, 'd> Inliner<'i, 'd> {
         let mut lowered = Vec::new();
         match statement {
             Statement::VariableDefinition { type_ref, modifiers, name, expr, span, type_span, modifier_spans, name_span } => {
-                let fresh = self.bind_visible_name(name, scope);
                 let renamed_expr = if let Some(expr) = expr {
                     let (prelude, renamed_expr) = self.lower_expr(expr, scope, visited_functions)?;
                     lowered.extend(prelude);
@@ -130,6 +105,7 @@ impl<'i, 'd> Inliner<'i, 'd> {
                 } else {
                     None
                 };
+                let fresh = self.bind_fresh_visible_name(name, scope);
                 self.push_lowered_statement(
                     &mut lowered,
                     Statement::VariableDefinition {
@@ -156,10 +132,10 @@ impl<'i, 'd> Inliner<'i, 'd> {
                 right_type_span,
                 right_name_span,
             } => {
-                let left_fresh = self.bind_visible_name(left_name, scope);
-                let right_fresh = self.bind_visible_name(right_name, scope);
                 let (prelude, renamed_expr) = self.lower_expr(expr, scope, visited_functions)?;
                 lowered.extend(prelude);
+                let left_fresh = self.bind_fresh_visible_name(left_name, scope);
+                let right_fresh = self.bind_fresh_visible_name(right_name, scope);
                 self.push_lowered_statement(
                     &mut lowered,
                     Statement::TupleAssignment {
@@ -198,21 +174,25 @@ impl<'i, 'd> Inliner<'i, 'd> {
                     let renamed_bindings = bindings
                         .iter()
                         .map(|binding| {
-                            let fresh = self.bind_visible_name(&binding.name, scope);
+                            let fresh = self.fresh_visible_name(&binding.name);
                             ParamAst { name: fresh, ..binding.clone() }
                         })
                         .collect::<Vec<_>>();
-                    lowered.extend(self.inline_call(&function, args, Some(&renamed_bindings), scope, visited_functions, *span)?);
+                    let inlined = self.inline_call(&function, args, Some(&renamed_bindings), scope, visited_functions, *span)?;
+                    for (binding, renamed_binding) in bindings.iter().zip(&renamed_bindings) {
+                        scope.insert(binding.name.clone(), renamed_binding.name.clone());
+                    }
+                    lowered.extend(inlined);
                 } else {
+                    let (prelude, renamed_args) = self.lower_exprs(args, scope, visited_functions)?;
+                    lowered.extend(prelude);
                     let renamed_bindings = bindings
                         .iter()
                         .map(|binding| {
-                            let fresh = self.bind_visible_name(&binding.name, scope);
+                            let fresh = self.bind_fresh_visible_name(&binding.name, scope);
                             ParamAst { name: fresh, ..binding.clone() }
                         })
                         .collect::<Vec<_>>();
-                    let (prelude, renamed_args) = self.lower_exprs(args, scope, visited_functions)?;
-                    lowered.extend(prelude);
                     self.push_lowered_statement(
                         &mut lowered,
                         Statement::FunctionCallAssign {
@@ -225,19 +205,20 @@ impl<'i, 'd> Inliner<'i, 'd> {
                     );
                 }
             }
-            Statement::StateFunctionCallAssign { bindings, name, args, span, name_span } => {
+            Statement::StateFunctionCallAssign { target_struct, bindings, name, args, span, name_span } => {
+                let (prelude, renamed_args) = self.lower_exprs(args, scope, visited_functions)?;
+                lowered.extend(prelude);
                 let renamed_bindings = bindings
                     .iter()
                     .map(|binding| {
-                        let fresh = self.bind_visible_name(&binding.name, scope);
-                        StateBindingAst { name: fresh, ..binding.clone() }
+                        let fresh = self.bind_fresh_visible_name(&binding.name, scope);
+                        StructBindingAst { name: fresh, ..binding.clone() }
                     })
                     .collect();
-                let (prelude, renamed_args) = self.lower_exprs(args, scope, visited_functions)?;
-                lowered.extend(prelude);
                 self.push_lowered_statement(
                     &mut lowered,
                     Statement::StateFunctionCallAssign {
+                        target_struct: target_struct.clone(),
                         bindings: renamed_bindings,
                         name: name.clone(),
                         args: renamed_args,
@@ -247,15 +228,15 @@ impl<'i, 'd> Inliner<'i, 'd> {
                 );
             }
             Statement::StructDestructure { bindings, expr, span } => {
+                let (prelude, renamed_expr) = self.lower_expr(expr, scope, visited_functions)?;
+                lowered.extend(prelude);
                 let renamed_bindings = bindings
                     .iter()
                     .map(|binding| {
-                        let fresh = self.bind_visible_name(&binding.name, scope);
-                        StateBindingAst { name: fresh, ..binding.clone() }
+                        let fresh = self.bind_fresh_visible_name(&binding.name, scope);
+                        StructBindingAst { name: fresh, ..binding.clone() }
                     })
                     .collect();
-                let (prelude, renamed_expr) = self.lower_expr(expr, scope, visited_functions)?;
-                lowered.extend(prelude);
                 self.push_lowered_statement(
                     &mut lowered,
                     Statement::StructDestructure { bindings: renamed_bindings, expr: renamed_expr, span: *span },
@@ -296,12 +277,10 @@ impl<'i, 'd> Inliner<'i, 'd> {
                 let (prelude, renamed_condition) = self.lower_expr(condition, scope, visited_functions)?;
                 lowered.extend(prelude);
                 let mut then_scope = scope.clone();
-                self.predeclare_branch_bindings(then_branch, &mut then_scope);
                 let lowered_then = self.lower_block(then_branch, &mut then_scope, visited_functions)?;
 
                 let lowered_else = if let Some(else_branch) = else_branch {
                     let mut else_scope = scope.clone();
-                    self.predeclare_branch_bindings(else_branch, &mut else_scope);
                     Some(self.lower_block(else_branch, &mut else_scope, visited_functions)?)
                 } else {
                     None
@@ -320,7 +299,7 @@ impl<'i, 'd> Inliner<'i, 'd> {
             }
             Statement::For { ident, start, end, max_iterations, body, span, ident_span, body_span } => {
                 let mut body_scope = scope.clone();
-                let lowered_ident = self.bind_visible_name(ident, &mut body_scope);
+                let lowered_ident = self.bind_fresh_visible_name(ident, &mut body_scope);
                 let lowered_body = self.lower_block(body, &mut body_scope, visited_functions)?;
                 let (mut prelude, lowered_start) = self.lower_expr(start, scope, visited_functions)?;
                 let (more_prelude, lowered_end) = self.lower_expr(end, scope, visited_functions)?;
@@ -389,7 +368,7 @@ impl<'i, 'd> Inliner<'i, 'd> {
         self.debug_recorder.begin_inline_source_call(&function.name, SourceSpan::from(span));
         visited_functions.insert(function.name.clone());
         for (param, arg) in function.params.iter().zip(args.iter()) {
-            let fresh = self.bind_visible_name(&param.name, &mut local_scope);
+            let fresh = self.bind_fresh_visible_name(&param.name, &mut local_scope);
             let (prelude, renamed_arg) = self.lower_expr(arg, caller_scope, visited_functions)?;
             lowered.extend(prelude);
             self.debug_recorder.record_inline_source_param(&param.name, &param.type_ref, renamed_arg.clone());
@@ -559,23 +538,8 @@ impl<'i, 'd> Inliner<'i, 'd> {
                 prelude.extend(more_prelude);
                 Ok((prelude, Expr::new(ExprKind::Append { source: Box::new(source), args, span: *append_span }, span)))
             }
-            ExprKind::IfElse { condition, then_expr, else_expr } => {
-                let (mut prelude, condition) = self.lower_expr(condition, scope, visited_functions)?;
-                let (more_prelude, then_expr) = self.lower_expr(then_expr, scope, visited_functions)?;
-                prelude.extend(more_prelude);
-                let (more_prelude, else_expr) = self.lower_expr(else_expr, scope, visited_functions)?;
-                prelude.extend(more_prelude);
-                Ok((
-                    prelude,
-                    Expr::new(
-                        ExprKind::IfElse {
-                            condition: Box::new(condition),
-                            then_expr: Box::new(then_expr),
-                            else_expr: Box::new(else_expr),
-                        },
-                        span,
-                    ),
-                ))
+            ExprKind::IfElse { .. } => {
+                Err(CompilerError::Unsupported("ternary expressions must be lowered before inline function expansion".to_string()))
             }
             ExprKind::Nullary(op) => Ok((Vec::new(), Expr::new(ExprKind::Nullary(*op), span))),
             ExprKind::Introspection { kind, index, field_span } => {
@@ -585,7 +549,7 @@ impl<'i, 'd> Inliner<'i, 'd> {
                     Expr::new(ExprKind::Introspection { kind: *kind, index: Box::new(index), field_span: *field_span }, span),
                 ))
             }
-            ExprKind::StateObject(fields) => {
+            ExprKind::StructLiteral(fields) => {
                 let mut prelude = Vec::new();
                 let mut lowered_fields = Vec::with_capacity(fields.len());
                 for field in fields {
@@ -598,7 +562,7 @@ impl<'i, 'd> Inliner<'i, 'd> {
                         name_span: field.name_span,
                     });
                 }
-                Ok((prelude, Expr::new(ExprKind::StateObject(lowered_fields), span)))
+                Ok((prelude, Expr::new(ExprKind::StructLiteral(lowered_fields), span)))
             }
             ExprKind::FieldAccess { source, field, field_span } => {
                 if let Some(index) = Self::tuple_field_index(field)

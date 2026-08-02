@@ -1,13 +1,12 @@
 # The KCC20Minter Contract
 
-Source: `silverscript-lang/tests/examples/kcc20-minter.sil` [[Link]](https://github.com/kaspanet/silverscript/blob/cd3857d93e53c320d2a8b8eebb391773a12b38f4/silverscript-lang/tests/examples/kcc20-minter.sil)
+Source: `silverscript-lang/tests/examples/kcc20-minter.sil` [[Link]](https://github.com/kaspanet/silverscript/blob/master/silverscript-lang/tests/examples/kcc20-minter.sil)
 
 ## Full Source
 
 ```js
 contract KCC20Minter(pubkey owner, byte[32] initKCC20Covid, int initAmount,
-    bool initInitialized, int templatePrefixLen, int templateSuffixLen, byte[32] expectedTemplateHash,
-    byte[] templatePrefix, byte[] templateSuffix) {
+    bool initInitialized, int templatePrefixLen, int templateSuffixLen, byte[32] expectedTemplateHash) {
 
     byte[32] kcc20Covid = initKCC20Covid;
     int amount = initAmount;
@@ -22,38 +21,40 @@ contract KCC20Minter(pubkey owner, byte[32] initKCC20Covid, int initAmount,
 
     byte constant IDENTIFIER_COVENANT_ID = 0x02;
 
-    function calcInAmount() : (int) {
+    function calcInAmount(int kcc20InputIdx) : int {
         KCC20State kcc20PrevState = readInputStateWithTemplate(
-            OpCovInputIdx(kcc20Covid, 0),
+            kcc20InputIdx,
             templatePrefixLen,
             templateSuffixLen,
             expectedTemplateHash
         );
-        return (kcc20PrevState.amount);
+        return kcc20PrevState.amount;
     }
 
-    function checkMinterKcc20NewState(KCC20State minterKcc20NewState){
+    function checkMinterKcc20NewState(KCC20State minterKcc20NewState, int kcc20InputIdx){
         byte[32] controllerId = OpInputCovenantId(this.activeInputIndex);
         require(minterKcc20NewState.ownerIdentifier == controllerId); // We do not allow the minter to delegate minting authority to another party.
         require(minterKcc20NewState.identifierType == IDENTIFIER_COVENANT_ID);
         require(minterKcc20NewState.isMinter); // The minter cannot stop being a minter.
 
-        validateOutputStateWithTemplate(
+        validateOutputStateWithInputTemplate(
             OpCovOutputIdx(kcc20Covid, 0),
             minterKcc20NewState,
-            templatePrefix,
-            templateSuffix,
+            kcc20InputIdx,
+            templatePrefixLen,
+            templateSuffixLen,
             expectedTemplateHash
         );
     }
 
-    function checkRecipientKcc20NewState(KCC20State recipientKcc20NewState){
+    function checkRecipientKcc20NewState(KCC20State recipientKcc20NewState, int kcc20InputIdx){
         require(!recipientKcc20NewState.isMinter); // We do not allow the minter to designate another minter.
-        validateOutputStateWithTemplate(
+        validateOutputStateWithInputTemplate(
             OpCovOutputIdx(kcc20Covid, 1),
             recipientKcc20NewState,
-            templatePrefix,
-            templateSuffix,
+            kcc20InputIdx,
+            templatePrefixLen,
+            templateSuffixLen,
             expectedTemplateHash
         );
     }
@@ -78,11 +79,12 @@ contract KCC20Minter(pubkey owner, byte[32] initKCC20Covid, int initAmount,
         // We focus on the simple case 1-2 minting transfer.
         require(OpCovOutputCount(kcc20Covid) == 2);
         require(OpCovInputCount(kcc20Covid) == 1);
+        int kcc20InputIdx = OpCovInputIdx(kcc20Covid, 0);
 
-        checkMinterKcc20NewState(minterKcc20NewState);
-        checkRecipientKcc20NewState(recipientKcc20NewState);
+        checkMinterKcc20NewState(minterKcc20NewState, kcc20InputIdx);
+        checkRecipientKcc20NewState(recipientKcc20NewState, kcc20InputIdx);
 
-        int inAmount = calcInAmount();
+        int inAmount = calcInAmount(kcc20InputIdx);
         int mintedAmount = minterKcc20NewState.amount + recipientKcc20NewState.amount - inAmount;
         require(newState.amount == amount - mintedAmount);
         require(checkSig(s, owner));
@@ -111,8 +113,6 @@ The constructor takes:
 - `templatePrefixLen`
 - `templateSuffixLen`
 - `expectedTemplateHash`
-- `templatePrefix`
-- `templateSuffix`
 
 The state fields derived from those constructor args are:
 
@@ -148,26 +148,25 @@ That is why the contract stores:
 - prefix length
 - suffix length
 - expected template hash
-- the actual prefix bytes
-- the actual suffix bytes
 
-These values come from the KCC20 script with its encoded state region removed. Conceptually, they identify the fixed template around the mutable KCC20 state payload.
+The lengths locate the fixed template bytes around the state payload in the
+co-spent KCC20 input. The expected hash authenticates those bytes. The minter
+therefore does not embed or receive a second copy of the full template.
 
 ## `calcInAmount`
 
 ```js
-function calcInAmount() : (int)
+function calcInAmount(int kcc20InputIdx) : int
 ```
 
-This function reads the previous KCC20 state from the covenant input selected by:
+The `mint` entrypoint selects the sole KCC20 input with:
 
 ```js
 OpCovInputIdx(kcc20Covid, 0)
 ```
 
-That means:
+It passes that index into `calcInAmount`. The function then:
 
-- find the first covenant input whose covenant ID equals `kcc20Covid`
 - parse it using the expected template metadata
 - return its `amount`
 
@@ -176,7 +175,7 @@ This is how the minter learns the old token supply before minting.
 ## `checkMinterKcc20NewState`
 
 ```js
-function checkMinterKcc20NewState(KCC20State minterKcc20NewState)
+function checkMinterKcc20NewState(KCC20State minterKcc20NewState, int kcc20InputIdx)
 ```
 
 This validates the continuing controller-owned KCC20 minter branch.
@@ -204,26 +203,29 @@ So the admin key authorizes the controller, but the KCC20 branch remains owned b
 Then it validates the actual output with:
 
 ```js
-validateOutputStateWithTemplate(
+validateOutputStateWithInputTemplate(
     OpCovOutputIdx(kcc20Covid, 0),
     minterKcc20NewState,
-    templatePrefix,
-    templateSuffix,
+    kcc20InputIdx,
+    templatePrefixLen,
+    templateSuffixLen,
     expectedTemplateHash
 );
 ```
 
-This does two jobs:
+This does three jobs:
 
 - it selects the first KCC20 output for the governed covenant ID
-- it ensures that output matches the expected KCC20 template and state payload
+- it extracts the KCC20 template bytes from the co-spent KCC20 input
+- it authenticates those bytes against `expectedTemplateHash`
+- it ensures that the output matches that template and the supplied state
 
 This is much safer than trusting an arbitrary output index or script shape.
 
 ## `checkRecipientKcc20NewState`
 
 ```js
-function checkRecipientKcc20NewState(KCC20State recipientKcc20NewState)
+function checkRecipientKcc20NewState(KCC20State recipientKcc20NewState, int kcc20InputIdx)
 ```
 
 This validates the newly minted recipient output.
@@ -320,6 +322,7 @@ The minter must stay initialized, cannot go negative, and cannot switch to a dif
 ```js
 require(OpCovOutputCount(kcc20Covid) == 2);
 require(OpCovInputCount(kcc20Covid) == 1);
+int kcc20InputIdx = OpCovInputIdx(kcc20Covid, 0);
 ```
 
 The example only allows minting when exactly one KCC20 covenant input and two KCC20 covenant outputs are involved. That keeps the accounting simple and makes the split between the persistent minter branch and the recipient branch explicit.
@@ -327,16 +330,18 @@ The example only allows minting when exactly one KCC20 covenant input and two KC
 ### KCC20 template validation
 
 ```js
-checkMinterKcc20NewState(minterKcc20NewState);
-checkRecipientKcc20NewState(recipientKcc20NewState);
+checkMinterKcc20NewState(minterKcc20NewState, kcc20InputIdx);
+checkRecipientKcc20NewState(recipientKcc20NewState, kcc20InputIdx);
 ```
 
-This ensures both supplied KCC20 successor states match the actual outputs in the transaction.
+This ensures both supplied KCC20 successor states match the actual outputs in
+the transaction. Both checks reuse the same template source because the
+cardinality rule establishes exactly one KCC20 input.
 
 ### Issuance accounting
 
 ```js
-int inAmount = calcInAmount();
+int inAmount = calcInAmount(kcc20InputIdx);
 int mintedAmount = minterKcc20NewState.amount + recipientKcc20NewState.amount - inAmount;
 require(newState.amount == amount - mintedAmount);
 ```

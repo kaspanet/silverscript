@@ -6,7 +6,7 @@ contract Mecenas(
     int pledgePerBlock,
     byte[8] initialBlock,
 ) {
-    entrypoint function receive() {
+    entry receive() {
         byte[34] recipientScriptPubKey = new ScriptPubKeyP2PK(recipient);
         require(tx.outputs[0].scriptPubKey == byte[](recipientScriptPubKey));
 
@@ -26,13 +26,13 @@ contract Mecenas(
             require(tx.outputs[0].value == pledge);
             require(tx.outputs[1].value == changeValue);
 
-            byte[] bcValue = 8 + byte[8](tx.locktime) + this.activeScriptPubKey.split(9).1;
+            byte[] bcValue = byte[](8) + byte[8](tx.locktime) + this.activeScriptPubKey.split(9).1;
             byte[35] lockValue = new ScriptPubKeyP2SH(blake2b(bcValue));
             require(tx.outputs[1].scriptPubKey == byte[](lockValue));
         }
     }
 
-    entrypoint function reclaim(pubkey pk, sig s) {
+    entry reclaim(pubkey pk, sig s) {
         require(blake2b(pk) == funder);
         require(checkSig(s, pk));
     }

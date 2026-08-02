@@ -44,7 +44,7 @@ contract ChessCastle(
         int status;
     }
 
-    entrypoint function apply(byte[] mux_prefix, byte[] mux_suffix) {
+    entry apply(byte[] mux_prefix, byte[] mux_suffix) {
         // Workers only accept active move proofs routed out of ChessMux.
         require(status == 0 /*LIVE*/);
         require(draw_state >= 3 /*NORMAL*/);
@@ -147,14 +147,15 @@ contract ChessCastle(
         byte[] prefix = prev_board.slice(0, a);
         byte[] middle = prev_board.slice(a + 1, b);
         byte[] suffix = prev_board.slice(d + 1, 64);
-        byte[64] next_board =
+        byte[64] next_board = byte[64](
             prefix +
             byte[1](empty_piece) +
             middle +
             byte[1](vb) +
             byte[1](vc) +
             byte[1](empty_piece) +
-            suffix;
+            suffix
+        );
 
         byte next_white_can_castle_k = castle_rights[0];
         byte next_white_can_castle_q = castle_rights[1];
@@ -208,7 +209,7 @@ contract ChessCastle(
         );
     }
 
-    entrypoint function timeout(byte[32] player_template, byte[] settle_prefix, byte[] settle_suffix) {
+    entry timeout(byte[32] player_template, byte[] settle_prefix, byte[] settle_suffix) {
         require(status == 0 /*LIVE*/);
 
         // Worker timeout is permissionless. Once a bad route strands funds in a
@@ -225,7 +226,7 @@ contract ChessCastle(
             next_status = 1 /*WWIN*/;
         }
 
-        byte[32] settle_template = blake2b(settle_prefix + settle_suffix);
+        byte[32] settle_template = templateHash(settle_prefix, settle_suffix);
         require(blake2b(settle_template + player_template) == byte[32](route_templates.slice(256, 288)));
 
         SettleState next_state = {

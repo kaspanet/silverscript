@@ -29,6 +29,8 @@ struct SizeSnapshot {
     name: &'static str,
     ctor: fn() -> Vec<Expr<'static>>,
     expected_script_len: usize,
+    // Total complete P2SH sigscript bytes in the runtime-tested transaction.
+    expected_sigscript_len: usize,
     expected_instruction_count: usize,
     expected_charged_op_count: usize,
 }
@@ -318,7 +320,7 @@ fn template_fixture(source: &'static str, ctor: &[Expr<'static>]) -> TemplateFix
     let layout = compiled.state_layout;
     let prefix = compiled.script[..layout.start].to_vec();
     let suffix = compiled.script[layout.start + layout.len..].to_vec();
-    let hash = blake2b_bytes(&[prefix.as_slice(), suffix.as_slice()].concat());
+    let hash = Hash::from_bytes(compiled.template_hash());
     TemplateFixture { source, prefix, suffix, hash }
 }
 
@@ -435,8 +437,7 @@ fn player_template_hash(fix: &MuxChessFixture) -> Hash {
             losses: 0,
         },
     );
-    let layout = compiled.state_layout;
-    blake2b_bytes(&[&compiled.script[..layout.start], &compiled.script[layout.start + layout.len..]].concat())
+    Hash::from_bytes(compiled.template_hash())
 }
 
 fn entry_sigscript(compiled: &CompiledContract<'_>, function: &str, args: Vec<Expr<'_>>) -> Vec<u8> {
@@ -563,6 +564,7 @@ fn run_route(
             Expr::bytes(target.suffix.clone()),
         ],
     );
+    assert_sigscript_size("chess_mux.sil", &tx);
     let result = execute_input_with_covenants(tx, entries, 0);
     assert!(result.is_ok(), "route should succeed: {:?}", result.unwrap_err());
 }
@@ -578,6 +580,7 @@ fn run_worker_apply(
     let outputs = vec![covenant_output(next, 0, covenant_id)];
     let entries = vec![covenant_utxo(active, covenant_id)];
     let tx = Transaction::new(1, vec![tx_input(0, sigscript, 0)], outputs, 0, Default::default(), 0, vec![]);
+    assert_sigscript_size(&format!("chess_{label}.sil"), &tx);
     let result = execute_input_with_covenants(tx, entries, 0);
     assert!(result.is_ok(), "{label} worker apply should succeed: {:?}", result.unwrap_err());
 }
@@ -593,6 +596,7 @@ fn run_prep_apply(
     let outputs = vec![covenant_output(next, 0, covenant_id)];
     let entries = vec![covenant_utxo(active, covenant_id)];
     let tx = Transaction::new(1, vec![tx_input(0, sigscript, 0)], outputs, 0, Default::default(), 0, vec![]);
+    assert_sigscript_size(&format!("chess_{label}.sil"), &tx);
     let result = execute_input_with_covenants(tx, entries, 0);
     assert!(result.is_ok(), "{label} prep apply should succeed: {:?}", result.unwrap_err());
 }
@@ -658,88 +662,110 @@ fn size_snapshots() -> Vec<SizeSnapshot> {
         SizeSnapshot {
             name: "league.sil",
             ctor: league_constructor_args,
-            expected_script_len: 468,
-            expected_instruction_count: 269,
-            expected_charged_op_count: 199,
+            expected_script_len: 471,
+            expected_sigscript_len: 3646,
+            expected_instruction_count: 272,
+            expected_charged_op_count: 198,
         },
         SizeSnapshot {
             name: "player.sil",
             ctor: player_constructor_args,
-            expected_script_len: 3382,
-            expected_instruction_count: 2482,
-            expected_charged_op_count: 1618,
+            expected_script_len: 3332,
+            expected_sigscript_len: 8291,
+            expected_instruction_count: 2428,
+            expected_charged_op_count: 1576,
         },
         SizeSnapshot {
             name: "chess_mux.sil",
             ctor: mux_constructor_args,
-            expected_script_len: 1644,
-            expected_instruction_count: 986,
-            expected_charged_op_count: 666,
+            expected_script_len: 1678,
+            expected_sigscript_len: 3111,
+            expected_instruction_count: 1004,
+            expected_charged_op_count: 683,
         },
         SizeSnapshot {
             name: "chess_settle.sil",
             ctor: settle_constructor_args,
-            expected_script_len: 2591,
-            expected_instruction_count: 2007,
-            expected_charged_op_count: 1307,
+            expected_script_len: 2720,
+            expected_sigscript_len: 10035,
+            expected_instruction_count: 2057,
+            expected_charged_op_count: 1346,
         },
         SizeSnapshot {
             name: "chess_pawn.sil",
             ctor: pawn_constructor_args,
-            expected_script_len: 1906,
-            expected_instruction_count: 1272,
-            expected_charged_op_count: 830,
+            expected_script_len: 1827,
+            expected_sigscript_len: 2972,
+            expected_instruction_count: 1187,
+            expected_charged_op_count: 789,
         },
         SizeSnapshot {
             name: "chess_knight.sil",
             ctor: pawn_constructor_args,
-            expected_script_len: 1430,
-            expected_instruction_count: 831,
-            expected_charged_op_count: 552,
+            expected_script_len: 1413,
+            expected_sigscript_len: 2558,
+            expected_instruction_count: 808,
+            expected_charged_op_count: 542,
         },
         SizeSnapshot {
             name: "chess_vert.sil",
             ctor: pawn_constructor_args,
-            expected_script_len: 2038,
-            expected_instruction_count: 1409,
-            expected_charged_op_count: 969,
+            expected_script_len: 2001,
+            expected_sigscript_len: 3146,
+            expected_instruction_count: 1366,
+            expected_charged_op_count: 949,
         },
         SizeSnapshot {
             name: "chess_horiz.sil",
             ctor: pawn_constructor_args,
-            expected_script_len: 2038,
-            expected_instruction_count: 1409,
-            expected_charged_op_count: 969,
+            expected_script_len: 2001,
+            expected_sigscript_len: 3146,
+            expected_instruction_count: 1366,
+            expected_charged_op_count: 949,
         },
         SizeSnapshot {
             name: "chess_diag.sil",
             ctor: pawn_constructor_args,
-            expected_script_len: 2005,
-            expected_instruction_count: 1383,
-            expected_charged_op_count: 951,
+            expected_script_len: 1968,
+            expected_sigscript_len: 3113,
+            expected_instruction_count: 1340,
+            expected_charged_op_count: 931,
         },
         SizeSnapshot {
             name: "chess_king.sil",
             ctor: pawn_constructor_args,
-            expected_script_len: 1516,
-            expected_instruction_count: 898,
-            expected_charged_op_count: 595,
+            expected_script_len: 1483,
+            expected_sigscript_len: 2628,
+            expected_instruction_count: 859,
+            expected_charged_op_count: 577,
         },
         SizeSnapshot {
             name: "chess_castle.sil",
             ctor: pawn_constructor_args,
-            expected_script_len: 1564,
-            expected_instruction_count: 959,
-            expected_charged_op_count: 628,
+            expected_script_len: 1529,
+            expected_sigscript_len: 2674,
+            expected_instruction_count: 918,
+            expected_charged_op_count: 609,
         },
         SizeSnapshot {
             name: "chess_castle_challenge.sil",
             ctor: pawn_constructor_args,
-            expected_script_len: 1663,
-            expected_instruction_count: 1060,
-            expected_charged_op_count: 691,
+            expected_script_len: 1623,
+            expected_sigscript_len: 2917,
+            expected_instruction_count: 1013,
+            expected_charged_op_count: 669,
         },
     ]
+}
+
+fn assert_sigscript_size(name: &str, tx: &Transaction) {
+    let expected = size_snapshots()
+        .into_iter()
+        .find(|snapshot| snapshot.name == name)
+        .unwrap_or_else(|| panic!("missing size snapshot for {name}"))
+        .expected_sigscript_len;
+    let actual = tx.inputs.iter().map(|input| input.signature_script.len()).sum();
+    assert_size_within_noise(&format!("{name} sigscript_len"), actual, expected);
 }
 
 fn pawn_constructor_args() -> Vec<Expr<'static>> {
@@ -828,7 +854,7 @@ fn chess_apps_compile_and_probe_sizes_within_noise() {
     }
 
     for (name, script_len, instruction_count, charged_op_count) in &actual_sizes {
-        println!("{name} {script_len} / {instruction_count} / {charged_op_count}");
+        println!("{name} script={script_len} instructions={instruction_count} charged_ops={charged_op_count}");
     }
 
     for (snapshot, (_, script_len, instruction_count, charged_op_count)) in size_snapshots().into_iter().zip(actual_sizes) {
@@ -873,7 +899,7 @@ fn league_register_player_runtime_matches_expected_output_state() {
     let layout = player_template_contract.state_layout;
     let player_prefix = player_template_contract.script[..layout.start].to_vec();
     let player_suffix = player_template_contract.script[layout.start + layout.len..].to_vec();
-    let player_template = blake2b_bytes(&[player_prefix.as_slice(), player_suffix.as_slice()].concat());
+    let player_template = Hash::from_bytes(player_template_contract.template_hash());
 
     let league_ctor = vec![
         hash_expr(league_template),
@@ -934,6 +960,7 @@ fn league_register_player_runtime_matches_expected_output_state() {
         vec![Expr::bytes(sig), Expr::bytes(owner.pubkey_bytes), Expr::bytes(player_prefix), Expr::bytes(player_suffix)],
     );
 
+    assert_sigscript_size("league.sil", &tx);
     let result = execute_input_with_covenants(tx, entries, 0);
     assert!(result.is_ok(), "league register_player runtime failed: {}", result.unwrap_err());
 }
@@ -968,9 +995,7 @@ fn player_start_game_runtime_matches_expected_output_states() {
         },
     );
     let player_layout = player_contract.state_layout;
-    let player_template = blake2b_bytes(
-        &[&player_contract.script[..player_layout.start], &player_contract.script[player_layout.start + player_layout.len..]].concat(),
-    );
+    let player_template = Hash::from_bytes(player_contract.template_hash());
     let player_prefix_len = player_layout.start as i64;
     let player_suffix_len = (player_contract.script.len() - (player_layout.start + player_layout.len)) as i64;
 
@@ -1134,11 +1159,212 @@ fn player_start_game_runtime_matches_expected_output_states() {
         ],
     );
 
+    assert_sigscript_size("player.sil", &tx);
     let leader_result = execute_input_with_covenants(tx.clone(), entries.clone(), 0);
     assert!(leader_result.is_ok(), "player start_game leader runtime failed: {}", leader_result.unwrap_err());
 
     let delegate_result = execute_input_with_covenants(tx, entries, 1);
     assert!(delegate_result.is_ok(), "player delegate_start_game runtime failed: {}", delegate_result.unwrap_err());
+}
+
+#[test]
+fn player_rebalance_requires_a_standalone_covenant_input() {
+    let fix = fixture();
+    let owner = player_from_seed(3);
+    let delegate_owner = player_from_seed(5);
+    let covenant_id = Hash::from_bytes([0x68u8; 32]);
+    let player_template = player_template_hash(fix);
+    let route_templates = packed_route_templates(fix);
+    let routes_commitment = routes_commitment(&route_templates);
+    let player = compile_player_state(
+        player_source(),
+        PlayerStateArgs {
+            league_template: &repeated_hash(0x11),
+            player_template: &player_template,
+            mux_template: &fix.mux.hash,
+            routes_commitment: &routes_commitment,
+            owner_hash: &owner.owner_hash,
+            player_id: &owner.player_id,
+            open_games: 0,
+            rating: 1200,
+            games: 0,
+            wins: 0,
+            draws: 0,
+            losses: 0,
+        },
+    );
+    let delegate = compile_player_state(
+        player_source(),
+        PlayerStateArgs {
+            league_template: &repeated_hash(0x11),
+            player_template: &player_template,
+            mux_template: &fix.mux.hash,
+            routes_commitment: &routes_commitment,
+            owner_hash: &delegate_owner.owner_hash,
+            player_id: &delegate_owner.player_id,
+            open_games: 0,
+            rating: 1200,
+            games: 0,
+            wins: 0,
+            draws: 0,
+            losses: 0,
+        },
+    );
+    let player_layout = player.state_layout;
+    let player_prefix_len = player_layout.start as i64;
+    let player_suffix_len = (player.script.len() - player_layout.start - player_layout.len) as i64;
+
+    let placeholder = entry_sigscript(&player, "rebalance", vec![Expr::bytes(vec![0u8; 65]), Expr::bytes(owner.pubkey_bytes.clone())]);
+    let entries = vec![covenant_utxo(&player, covenant_id)];
+    let outputs = vec![covenant_output(&player, 0, covenant_id)];
+    let mut standalone_tx = Transaction::new(1, vec![tx_input(0, placeholder, 1)], outputs, 0, Default::default(), 0, vec![]);
+    let signature = sign_tx_input_schnorr(&standalone_tx, &entries, 0, &owner);
+    standalone_tx.inputs[0].signature_script =
+        entry_sigscript(&player, "rebalance", vec![Expr::bytes(signature), Expr::bytes(owner.pubkey_bytes.clone())]);
+    let standalone_result = execute_input_with_covenants(standalone_tx, entries, 0);
+    assert!(standalone_result.is_ok(), "standalone player rebalance failed: {}", standalone_result.unwrap_err());
+
+    let placeholder = entry_sigscript(&player, "rebalance", vec![Expr::bytes(vec![0u8; 65]), Expr::bytes(owner.pubkey_bytes.clone())]);
+    let delegate_placeholder = entry_sigscript(
+        &delegate,
+        "delegate_start_game",
+        vec![
+            Expr::bytes(vec![0u8; 65]),
+            Expr::bytes(delegate_owner.pubkey_bytes.clone()),
+            Expr::int(DEFAULT_MOVE_TIMEOUT),
+            Expr::int(player_prefix_len),
+            Expr::int(player_suffix_len),
+        ],
+    );
+    let entries = vec![covenant_utxo(&player, covenant_id), covenant_utxo(&delegate, covenant_id)];
+    let outputs = vec![covenant_output(&player, 0, covenant_id)];
+    let mut shared_tx = Transaction::new(
+        1,
+        vec![tx_input(0, placeholder, 1), tx_input(1, delegate_placeholder, 1)],
+        outputs,
+        0,
+        Default::default(),
+        0,
+        vec![],
+    );
+    let signature = sign_tx_input_schnorr(&shared_tx, &entries, 0, &owner);
+    let delegate_signature = sign_tx_input_schnorr(&shared_tx, &entries, 1, &delegate_owner);
+    shared_tx.inputs[0].signature_script =
+        entry_sigscript(&player, "rebalance", vec![Expr::bytes(signature), Expr::bytes(owner.pubkey_bytes)]);
+    shared_tx.inputs[1].signature_script = entry_sigscript(
+        &delegate,
+        "delegate_start_game",
+        vec![
+            Expr::bytes(delegate_signature),
+            Expr::bytes(delegate_owner.pubkey_bytes),
+            Expr::int(DEFAULT_MOVE_TIMEOUT),
+            Expr::int(player_prefix_len),
+            Expr::int(player_suffix_len),
+        ],
+    );
+    let delegate_result = execute_input_with_covenants(shared_tx.clone(), entries.clone(), 1);
+    assert!(delegate_result.is_ok(), "delegate side of shared rebalance unexpectedly failed: {}", delegate_result.unwrap_err());
+    let shared_result = execute_input_with_covenants(shared_tx, entries, 0);
+    assert!(shared_result.is_err(), "player rebalance must not lead a shared covenant input group");
+}
+
+#[test]
+fn player_retire_requires_a_standalone_covenant_input() {
+    let fix = fixture();
+    let owner = player_from_seed(4);
+    let delegate_owner = player_from_seed(6);
+    let covenant_id = Hash::from_bytes([0x69u8; 32]);
+    let player_template = player_template_hash(fix);
+    let route_templates = packed_route_templates(fix);
+    let routes_commitment = routes_commitment(&route_templates);
+    let player = compile_player_state(
+        player_source(),
+        PlayerStateArgs {
+            league_template: &repeated_hash(0x11),
+            player_template: &player_template,
+            mux_template: &fix.mux.hash,
+            routes_commitment: &routes_commitment,
+            owner_hash: &owner.owner_hash,
+            player_id: &owner.player_id,
+            open_games: 0,
+            rating: 1200,
+            games: 0,
+            wins: 0,
+            draws: 0,
+            losses: 0,
+        },
+    );
+    let delegate = compile_player_state(
+        player_source(),
+        PlayerStateArgs {
+            league_template: &repeated_hash(0x11),
+            player_template: &player_template,
+            mux_template: &fix.mux.hash,
+            routes_commitment: &routes_commitment,
+            owner_hash: &delegate_owner.owner_hash,
+            player_id: &delegate_owner.player_id,
+            open_games: 0,
+            rating: 1200,
+            games: 0,
+            wins: 0,
+            draws: 0,
+            losses: 0,
+        },
+    );
+    let player_layout = player.state_layout;
+    let player_prefix_len = player_layout.start as i64;
+    let player_suffix_len = (player.script.len() - player_layout.start - player_layout.len) as i64;
+
+    let placeholder = entry_sigscript(&player, "retire", vec![Expr::bytes(vec![0u8; 65]), Expr::bytes(owner.pubkey_bytes.clone())]);
+    let entries = vec![covenant_utxo(&player, covenant_id)];
+    let mut standalone_tx = Transaction::new(1, vec![tx_input(0, placeholder, 1)], vec![], 0, Default::default(), 0, vec![]);
+    let signature = sign_tx_input_schnorr(&standalone_tx, &entries, 0, &owner);
+    standalone_tx.inputs[0].signature_script =
+        entry_sigscript(&player, "retire", vec![Expr::bytes(signature), Expr::bytes(owner.pubkey_bytes.clone())]);
+    let standalone_result = execute_input_with_covenants(standalone_tx, entries, 0);
+    assert!(standalone_result.is_ok(), "standalone player retirement failed: {}", standalone_result.unwrap_err());
+
+    let placeholder = entry_sigscript(&player, "retire", vec![Expr::bytes(vec![0u8; 65]), Expr::bytes(owner.pubkey_bytes.clone())]);
+    let delegate_placeholder = entry_sigscript(
+        &delegate,
+        "delegate_start_game",
+        vec![
+            Expr::bytes(vec![0u8; 65]),
+            Expr::bytes(delegate_owner.pubkey_bytes.clone()),
+            Expr::int(DEFAULT_MOVE_TIMEOUT),
+            Expr::int(player_prefix_len),
+            Expr::int(player_suffix_len),
+        ],
+    );
+    let entries = vec![covenant_utxo(&player, covenant_id), covenant_utxo(&delegate, covenant_id)];
+    let mut shared_tx = Transaction::new(
+        1,
+        vec![tx_input(0, placeholder, 1), tx_input(1, delegate_placeholder, 1)],
+        vec![],
+        0,
+        Default::default(),
+        0,
+        vec![],
+    );
+    let signature = sign_tx_input_schnorr(&shared_tx, &entries, 0, &owner);
+    let delegate_signature = sign_tx_input_schnorr(&shared_tx, &entries, 1, &delegate_owner);
+    shared_tx.inputs[0].signature_script =
+        entry_sigscript(&player, "retire", vec![Expr::bytes(signature), Expr::bytes(owner.pubkey_bytes)]);
+    shared_tx.inputs[1].signature_script = entry_sigscript(
+        &delegate,
+        "delegate_start_game",
+        vec![
+            Expr::bytes(delegate_signature),
+            Expr::bytes(delegate_owner.pubkey_bytes),
+            Expr::int(DEFAULT_MOVE_TIMEOUT),
+            Expr::int(player_prefix_len),
+            Expr::int(player_suffix_len),
+        ],
+    );
+    let delegate_result = execute_input_with_covenants(shared_tx.clone(), entries.clone(), 1);
+    assert!(delegate_result.is_ok(), "delegate side of shared retirement unexpectedly failed: {}", delegate_result.unwrap_err());
+    let shared_result = execute_input_with_covenants(shared_tx, entries, 0);
+    assert!(shared_result.is_err(), "player retirement must not lead a shared covenant input group");
 }
 
 #[test]
@@ -1632,9 +1858,7 @@ fn settle_runtime_matches_expected_output_states() {
         },
     );
     let player_layout = player_contract.state_layout;
-    let player_template = blake2b_bytes(
-        &[&player_contract.script[..player_layout.start], &player_contract.script[player_layout.start + player_layout.len..]].concat(),
-    );
+    let player_template = Hash::from_bytes(player_contract.template_hash());
     let white_player = compile_player_state(
         player_source(),
         PlayerStateArgs {
@@ -1713,8 +1937,8 @@ fn settle_runtime_matches_expected_output_states() {
         &routed_settle,
         "settle",
         vec![
-            Expr::bytes(player_contract.script[..player_layout.start].to_vec()),
-            Expr::bytes(player_contract.script[player_layout.start + player_layout.len..].to_vec()),
+            Expr::int(player_layout.start as i64),
+            Expr::int((player_contract.script.len() - player_layout.start - player_layout.len) as i64),
         ],
     );
     let settle_prefix_len = fix.settle.prefix.len() as i64;
@@ -1754,6 +1978,7 @@ fn settle_runtime_matches_expected_output_states() {
         vec![],
     );
 
+    assert_sigscript_size("chess_settle.sil", &tx);
     let leader_result = execute_input_with_covenants(tx.clone(), entries.clone(), 0);
     assert!(leader_result.is_ok(), "settle leader runtime failed: {}", leader_result.unwrap_err());
 

@@ -4,7 +4,7 @@ contract ForLoop() {
     int constant MAX_ITERATIONS = 4;
     int constant MIN_OUT = 1000;
 
-    entrypoint function check() {
+    entry check() {
         for(i, START, END, MAX_ITERATIONS) {
             require(tx.outputs[i].value >= MIN_OUT + i);
         }

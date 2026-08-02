@@ -10,7 +10,7 @@ resolver = "2"
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-license = "MIT"
+license = "ISC"
 authors = ["Kaspa developers"]
 repository = ""
 rust-version = "1.85.0"

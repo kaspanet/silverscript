@@ -1,5 +1,5 @@
 contract ManyAssignments(){
-    entrypoint function main(int x){
+    entry main(int x){
         int a_1 = x*x;
         int a_2 = a_1*a_1;
         int a_3 = a_2*a_2;

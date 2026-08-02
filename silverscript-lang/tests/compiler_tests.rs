@@ -21,11 +21,39 @@ use silverscript_lang::compiler::{
     compile_contract_ast, function_branch_index, generated_covenant_auth_entrypoint_name, struct_object,
 };
 use silverscript_lang::debug_info::StepKind;
+use silverscript_lang::template::template_hash;
 
 use crate::common::compiled_template_parts_and_hash;
 
 fn script_builder() -> ScriptBuilder {
     ScriptBuilder::with_flags(EngineFlags { covenants_enabled: true, ..Default::default() })
+}
+
+#[test]
+fn constructors_validate_argument_types() {
+    let cases = [
+        ("ScriptPubKeyP2PK", "1", "publicKey", "pubkey", "byte[34]"),
+        ("ScriptPubKeyP2SH", "byte[31]([0x00])", "scriptHash", "byte[32]", "byte[35]"),
+        ("ScriptPubKeyP2SHFromRedeemScript", "1", "redeemScript", "byte[]", "byte[35]"),
+    ];
+
+    for (constructor, argument, parameter, expected, result_type) in cases {
+        let source = format!(
+            r#"
+            contract Test() {{
+                entry spend() {{
+                    {result_type} script = new {constructor}({argument});
+                    require(true);
+                }}
+            }}
+            "#
+        );
+        let err = compile_contract(&source, &[], CompileOptions::default()).expect_err("constructor argument should be rejected");
+        assert!(
+            err.to_string().contains(&format!("argument '{parameter}' expects {expected}")),
+            "unexpected error for {constructor}: {err}"
+        );
+    }
 }
 
 fn pay_to_script_hash_signature_script(
@@ -158,7 +186,7 @@ fn pragma_source(pragma: Option<&str>) -> String {
         r#"
             {pragma}
             contract Versioned() {{
-                entrypoint function main() {{
+                entry main() {{
                     require(true);
                 }}
             }}
@@ -234,7 +262,7 @@ fn rejects_multiple_pragma_directives() {
         pragma silverscript >=0.1.0, <0.2.0;
 
         contract Versioned() {
-            entrypoint function main() {
+            entry main() {
                 require(true);
             }
         }
@@ -247,7 +275,7 @@ fn rejects_multiple_pragma_directives() {
 fn accepts_constructor_args_with_matching_types() {
     let source = r#"
         contract Types(int a, bool b, string c, byte[] d, byte e, byte[4] f, pubkey pk, sig s, datasig ds) {
-            entrypoint function main() {
+            entry main() {
                 require(true);
             }
         }
@@ -279,7 +307,7 @@ fn supports_struct_contract_params_fields_and_constants() {
             Pair from_param = init_pair;
             Pair from_constant = DEFAULT_PAIR;
 
-            entrypoint function main() {
+            entry main() {
                 require(true);
             }
         }
@@ -303,7 +331,7 @@ fn resolve_contract_state_values_resolves_constructor_args_constants_and_prior_f
             int count = DEFAULT_COUNT;
             int mirrored = amount;
 
-            entrypoint function spend() {
+            entry spend() {
                 require(true);
             }
         }
@@ -337,7 +365,7 @@ fn resolve_contract_state_values_rejects_constructor_arg_count_mismatch() {
         contract ResolveState(int initAmount) {
             int amount = initAmount;
 
-            entrypoint function spend() {
+            entry spend() {
                 require(true);
             }
         }
@@ -355,7 +383,7 @@ fn resolve_contract_state_values_rejects_constructor_arg_type_mismatch() {
         contract ResolveState(int initAmount) {
             int amount = initAmount;
 
-            entrypoint function spend() {
+            entry spend() {
                 require(true);
             }
         }
@@ -373,7 +401,7 @@ fn resolve_contract_state_values_rejects_resolved_field_type_mismatch() {
         contract ResolveState(byte[2] initTag) {
             int amount = initTag;
 
-            entrypoint function spend() {
+            entry spend() {
                 require(true);
             }
         }
@@ -410,7 +438,7 @@ fn assert_byte_array_expr(expr: &Expr<'_>, expected: &[u8]) {
 fn compile_contract_omits_debug_info_when_recording_disabled() {
     let source = r#"
         contract DebugToggle() {
-            entrypoint function spend(int x) {
+            entry spend(int x) {
                 require(x == x);
             }
         }
@@ -427,7 +455,7 @@ fn compile_contract_emits_debug_info_scaffold_when_recording_enabled() {
             int amount = 7;
             int constant BONUS = 2;
 
-            entrypoint function spend(int x) {
+            entry spend(int x) {
                 require(x + amount + seed + BONUS > 0);
             }
         }
@@ -456,11 +484,11 @@ fn compile_contract_emits_debug_info_scaffold_when_recording_enabled() {
 fn compile_contract_debug_info_scaffold_records_selector_entrypoint_ranges() {
     let source = r#"
         contract DebugSelector() {
-            entrypoint function a(int x) {
+            entry a(int x) {
                 require(x >= 0);
             }
 
-            entrypoint function b(int x) {
+            entry b(int x) {
                 require(x > 0);
             }
         }
@@ -487,7 +515,7 @@ fn compile_contract_debug_info_records_inline_boundaries_and_return_bindings() {
                 return(y);
             }
 
-            entrypoint function main(int a) {
+            entry main(int a) {
                 (int b) = addOne(a);
                 require(b == a + 1);
             }
@@ -557,7 +585,7 @@ fn compile_contract_debug_info_preserves_structured_scope_inside_inline_calls() 
                 require(bumped > 0);
             }
 
-            entrypoint function inspect(State next_state) {
+            entry inspect(State next_state) {
                 inspect_inner(next_state);
                 require(next_state.active == active);
             }
@@ -665,7 +693,7 @@ fn branch_heavy_if_else_logic_matches_rust_model_across_cases() {
 
     let source = r#"
         contract BranchMaze() {
-            entrypoint function main(
+            entry main(
                 int a,
                 int b,
                 int c,
@@ -746,15 +774,15 @@ fn branch_heavy_if_else_logic_matches_rust_model_across_cases() {
     // Snapshot these metrics exactly so compiler codegen changes must consciously
     // acknowledge their size impact on a branch-heavy stress case.
     assert_eq!(
-        script_len, 326,
+        script_len, 318,
         "branch_maze metrics: script_len={script_len} instruction_count={instruction_count} charged_op_count={charged_op_count}"
     );
     assert_eq!(
-        instruction_count, 326,
+        instruction_count, 318,
         "branch_maze metrics: script_len={script_len} instruction_count={instruction_count} charged_op_count={charged_op_count}"
     );
     assert_eq!(
-        charged_op_count, 231,
+        charged_op_count, 227,
         "branch_maze metrics: script_len={script_len} instruction_count={instruction_count} charged_op_count={charged_op_count}"
     );
     let cases = [(7, 2, 5, 4), (7, 2, -3, 4), (2, 7, 5, 4), (2, 7, 5, 3), (4, 4, 9, 2), (-3, 1, 6, -2), (10, -1, -4, 7), (0, 0, 0, 0)];
@@ -815,7 +843,7 @@ fn sorting_network_over_fixed_array_matches_rust_model_across_cases() {
 
     let source = r#"
         contract SortingNetworkCheck() {
-            entrypoint function main(
+            entry main(
                 int[8] values,
                 int expected_a,
                 int expected_b,
@@ -886,15 +914,15 @@ fn sorting_network_over_fixed_array_matches_rust_model_across_cases() {
     let (instruction_count, charged_op_count) = script_op_counts(&compiled.script);
     println!("sorting_network {script_len} / {instruction_count} / {charged_op_count}");
     assert_eq!(
-        script_len, 772,
+        script_len, 756,
         "sorting_network metrics: script_len={script_len} instruction_count={instruction_count} charged_op_count={charged_op_count}"
     );
     assert_eq!(
-        instruction_count, 772,
+        instruction_count, 756,
         "sorting_network metrics: script_len={script_len} instruction_count={instruction_count} charged_op_count={charged_op_count}"
     );
     assert_eq!(
-        charged_op_count, 599,
+        charged_op_count, 591,
         "sorting_network metrics: script_len={script_len} instruction_count={instruction_count} charged_op_count={charged_op_count}"
     );
 
@@ -934,7 +962,7 @@ fn sorting_network_over_fixed_array_matches_rust_model_across_cases() {
 fn rejects_constructor_args_with_wrong_scalar_types() {
     let source = r#"
         contract Types(int a, bool b, string c) {
-            entrypoint function main() {
+            entry main() {
                 require(true);
             }
         }
@@ -947,7 +975,7 @@ fn rejects_constructor_args_with_wrong_scalar_types() {
 fn rejects_constructor_args_with_wrong_byte_lengths() {
     let source = r#"
         contract Types(byte b, byte[4] c, pubkey pk, sig s, datasig ds) {
-            entrypoint function main() {
+            entry main() {
                 require(true);
             }
         }
@@ -966,7 +994,7 @@ fn rejects_constructor_args_with_wrong_byte_lengths() {
 fn enforces_exact_sig_and_datasig_lengths_in_constructor_args() {
     let source = r#"
         contract Types(sig s, datasig ds) {
-            entrypoint function main() {
+            entry main() {
                 require(true);
             }
         }
@@ -986,7 +1014,7 @@ fn enforces_exact_sig_and_datasig_lengths_in_constructor_args() {
 fn accepts_constructor_args_with_any_bytes_length() {
     let source = r#"
         contract Types(byte[] blob) {
-            entrypoint function main() {
+            entry main() {
                 require(true);
             }
         }
@@ -999,7 +1027,7 @@ fn accepts_constructor_args_with_any_bytes_length() {
 fn build_sig_script_builds_expected_script() {
     let source = r#"
         contract BoundedBytes() {
-            entrypoint function spend(byte[4] b, int i) {
+            entry spend(byte[4] b, int i) {
                 require(b == byte[4](i));
             }
         }
@@ -1024,7 +1052,7 @@ fn build_sig_script_builds_expected_script() {
 fn byte_variable_from_int_literal_uses_raw_byte_push() {
     let source = r#"
         contract Bytes() {
-            entrypoint function main() {
+            entry main() {
                 byte x = 5;
                 require(OpBin2Num(x) == 5);
             }
@@ -1054,7 +1082,7 @@ fn byte_variable_from_int_literal_uses_raw_byte_push() {
 fn byte_variable_from_out_of_range_int_literal_is_rejected() {
     let source = r#"
         contract Bytes() {
-            entrypoint function main() {
+            entry main() {
                 byte x = 256;
                 require(true);
             }
@@ -1068,7 +1096,7 @@ fn byte_variable_from_out_of_range_int_literal_is_rejected() {
 fn byte_equality_uses_op_equal_not_op_numequal() {
     let source = r#"
         contract Bytes() {
-            entrypoint function main() {
+            entry main() {
                 byte x = 5;
                 byte y = 7;
                 require(x == y);
@@ -1085,7 +1113,7 @@ fn byte_equality_uses_op_equal_not_op_numequal() {
 fn byte_equality_with_rhs_int_literal_uses_raw_byte_push() {
     let source = r#"
         contract Bytes() {
-            entrypoint function main() {
+            entry main() {
                 byte x = 1;
                 require(x == 1);
             }
@@ -1110,10 +1138,25 @@ fn byte_equality_with_rhs_int_literal_uses_raw_byte_push() {
 }
 
 #[test]
+fn byte_equality_with_lhs_int_literal_is_rejected() {
+    let source = r#"
+        contract Bytes() {
+            entry main() {
+                byte x = 200;
+                require(200 == x);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("200 == x should compare int against byte");
+    assert!(err.to_string().contains("type mismatch: cannot compare int and byte"), "unexpected error: {err}");
+}
+
+#[test]
 fn byte_equality_with_out_of_range_rhs_int_literal_is_rejected() {
     let source = r#"
         contract Bytes() {
-            entrypoint function main() {
+            entry main() {
                 byte x = 5;
                 require(x == 256);
             }
@@ -1127,7 +1170,7 @@ fn byte_equality_with_out_of_range_rhs_int_literal_is_rejected() {
 fn rejects_adding_byte_values() {
     let source = r#"
         contract Bytes() {
-            entrypoint function main() {
+            entry main() {
                 byte x = 5;
                 byte y = 7;
                 require(x + y > 0);
@@ -1143,7 +1186,7 @@ fn rejects_adding_byte_values() {
 fn rejects_assigning_sum_of_byte_values_to_byte() {
     let source = r#"
         contract Bytes() {
-            entrypoint function main() {
+            entry main() {
                 byte x = 5;
                 byte y = 7;
                 byte z = x + y;
@@ -1160,7 +1203,7 @@ fn rejects_assigning_sum_of_byte_values_to_byte() {
 fn build_sig_script_rejects_unknown_function() {
     let source = r#"
         contract C() {
-            entrypoint function spend(int a) {
+            entry spend(int a) {
                 require(a == 1);
             }
         }
@@ -1178,7 +1221,7 @@ fn disallow_comparing_byte_array_to_byte_constant() {
             byte identifierType = genesisIdentifierType;
             byte constant ZERO = 0x00;
 
-            entrypoint function main() {
+            entry main() {
                 if (ownerIdentifier == ZERO) {
                     require(true);
                 }
@@ -1198,7 +1241,7 @@ fn disallow_comparing_dynamic_and_fixed_byte_arrays_without_cast_in_contract_sco
         contract Test(byte[] x) {
             byte[2] y = 0x1234;
 
-            entrypoint function main() {
+            entry main() {
                 require(x == y);
             }
         }
@@ -1216,7 +1259,7 @@ fn allow_comparing_dynamic_and_fixed_byte_arrays_with_cast_in_contract_scope() {
         contract Test(byte[] x) {
             byte[2] y = 0x1234;
 
-            entrypoint function main() {
+            entry main() {
                 require(x == byte[](y));
             }
         }
@@ -1227,10 +1270,70 @@ fn allow_comparing_dynamic_and_fixed_byte_arrays_with_cast_in_contract_scope() {
 }
 
 #[test]
+fn fixed_size_builtin_results_assign_to_exact_byte_array_types() {
+    let source = r#"
+        contract Builtins() {
+            entry main(pubkey pk, byte[] redeem_script) {
+                byte[20] subnet_id = OpTxSubnetId();
+                byte[32] outpoint_tx_id = OpOutpointTxId(0);
+                byte[8] input_sequence = OpTxInputSeq(0);
+                byte[32] sequence_commitment = OpChainblockSeqCommit(
+                    0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+                );
+                byte[34] p2pk = new ScriptPubKeyP2PK(pk);
+                byte[35] p2sh = new ScriptPubKeyP2SH(outpoint_tx_id);
+                byte[35] p2sh_from_redeem_script = new ScriptPubKeyP2SHFromRedeemScript(redeem_script);
+                require(true);
+            }
+        }
+    "#;
+
+    compile_contract(source, &[], CompileOptions::default()).expect("fixed-size builtin results should assign to their exact types");
+}
+
+#[test]
+fn rejects_assigning_fixed_size_builtin_results_to_wrong_byte_array_sizes() {
+    let cases = [
+        ("OpTxSubnetId", "byte[19] value = OpTxSubnetId();"),
+        ("OpOutpointTxId", "byte[31] value = OpOutpointTxId(0);"),
+        ("OpTxInputSeq", "byte[7] value = OpTxInputSeq(0);"),
+        (
+            "OpChainblockSeqCommit",
+            "byte[31] value = OpChainblockSeqCommit(0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f);",
+        ),
+        (
+            "ScriptPubKeyP2PK",
+            "byte[33] value = new ScriptPubKeyP2PK(0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f);",
+        ),
+        (
+            "ScriptPubKeyP2SH",
+            "byte[34] value = new ScriptPubKeyP2SH(0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f);",
+        ),
+        ("ScriptPubKeyP2SHFromRedeemScript", "byte[34] value = new ScriptPubKeyP2SHFromRedeemScript(bytes(\"redeem\"));"),
+    ];
+
+    for (name, statement) in cases {
+        let source = format!(
+            r#"
+                contract Builtins() {{
+                    entry main() {{
+                        {statement}
+                        require(true);
+                    }}
+                }}
+            "#
+        );
+        let err =
+            compile_contract(&source, &[], CompileOptions::default()).expect_err(&format!("{name} should reject the wrong size"));
+        assert!(err.to_string().contains("variable 'value' expects byte["), "{name}: unexpected error: {err}");
+    }
+}
+
+#[test]
 fn rejects_comparing_different_scalar_types_without_cast() {
     let source = r#"
         contract Reproduce() {
-            entrypoint function main() {
+            entry main() {
                 if (1 == true) {
                     require(false);
                 }
@@ -1246,7 +1349,7 @@ fn rejects_comparing_different_scalar_types_without_cast() {
 fn disallow_comparing_dynamic_and_fixed_int_arrays_without_cast() {
     let source = r#"
         contract Arrays() {
-            entrypoint function main() {
+            entry main() {
                 int[] x = [1];
                 int[1] y = [1];
                 require(x == y);
@@ -1261,7 +1364,7 @@ fn disallow_comparing_dynamic_and_fixed_int_arrays_without_cast() {
 fn allows_comparing_dynamic_and_fixed_int_arrays_with_cast() {
     let source = r#"
         contract Arrays() {
-            entrypoint function main() {
+            entry main() {
                 int[] x = [1];
                 int[1] y = [1];
                 require(x == int[](y));
@@ -1276,7 +1379,7 @@ fn allows_comparing_dynamic_and_fixed_int_arrays_with_cast() {
 fn allows_comparing_inferred_and_fixed_byte_arrays_when_sizes_match() {
     let source = r#"
         contract Arrays() {
-            entrypoint function main() {
+            entry main() {
                 byte[_] x = 0x1256;
                 byte[2] y = 0x1234;
                 require(x == y);
@@ -1291,7 +1394,7 @@ fn allows_comparing_inferred_and_fixed_byte_arrays_when_sizes_match() {
 fn rejects_comparing_inferred_and_fixed_byte_arrays_when_sizes_differ() {
     let source = r#"
         contract Arrays() {
-            entrypoint function main() {
+            entry main() {
                 byte[_] x = 0x12;
                 byte[2] y = 0x1234;
                 require(x == y);
@@ -1352,7 +1455,7 @@ fn rejects_inferred_array_size_when_initializer_cannot_provide_matching_fixed_ar
         let source = format!(
             r#"
                 contract Arrays() {{
-                    entrypoint function main() {{
+                    entry main() {{
                         {body}
                         require(true);
                     }}
@@ -1369,7 +1472,7 @@ fn rejects_inferred_array_size_when_initializer_cannot_provide_matching_fixed_ar
 fn infers_fixed_sizes_for_multiple_array_element_types() {
     let source = r#"
         contract Arrays() {
-            entrypoint function main() {
+            entry main() {
                 int[_] ints = [1, 2, 3, 4];
                 int[4] ints_expected = [1, 2, 3, 4];
                 bool[_] flags = [true, false];
@@ -1403,7 +1506,7 @@ fn infers_fixed_array_size_from_function_call_initializer_expression() {
                 return [1, 2, 3];
             }
 
-            entrypoint function main() {
+            entry main() {
                 int[_] x = makeArray();
                 require(x.length == 3);
             }
@@ -1417,7 +1520,7 @@ fn infers_fixed_array_size_from_function_call_initializer_expression() {
 fn infers_fixed_array_size_from_array_concat_initializer_expression() {
     let source = r#"
         contract Arrays() {
-            entrypoint function main() {
+            entry main() {
                 int[2] left = [1, 2];
                 int[1] right = [3];
                 int[_] x = left + right;
@@ -1433,7 +1536,7 @@ fn infers_fixed_array_size_from_array_concat_initializer_expression() {
 fn infers_fixed_array_size_from_ternary_initializer_expression() {
     let source = r#"
         contract Arrays() {
-            entrypoint function main(bool flag) {
+            entry main(bool flag) {
                 int[3] left = [1, 2, 3];
                 int[3] right = [4, 5, 6];
                 int[_] x = flag ? left : right;
@@ -1449,7 +1552,7 @@ fn infers_fixed_array_size_from_ternary_initializer_expression() {
 fn recursively_infers_fixed_array_size_from_inferred_array_identifier() {
     let source = r#"
         contract Arrays() {
-            entrypoint function main() {
+            entry main() {
                 int[_] x = [1, 2, 3];
                 int[_] y = x;
                 require(y.length == 3);
@@ -1461,10 +1564,31 @@ fn recursively_infers_fixed_array_size_from_inferred_array_identifier() {
 }
 
 #[test]
+fn inferred_array_in_branch_does_not_shadow_outer_inference_scope() {
+    let source = r#"
+        contract Arrays() {
+            entry main(bool condition) {
+                int[_] values = [1, 2];
+                if (condition) {
+                    bool[_] values = [true];
+                    require(values.length == 1);
+                }
+
+                int[_] copy = values;
+                require(copy.length == 2);
+            }
+        }
+    "#;
+
+    compile_contract(source, &[], CompileOptions::default())
+        .expect("branch-local inferred arrays should not affect the outer inference scope");
+}
+
+#[test]
 fn rejects_comparing_dynamic_and_fixed_arrays_without_cast_in_function_scope() {
     let source = r#"
         contract Arrays() {
-            entrypoint function main(byte[] x) {
+            entry main(byte[] x) {
                 byte[2] y = 0x1234;
                 require(x == y);
             }
@@ -1481,7 +1605,7 @@ fn rejects_comparing_dynamic_and_fixed_arrays_without_cast_in_function_scope() {
 fn allows_comparing_dynamic_and_fixed_arrays_with_cast_in_function_scope() {
     let source = r#"
         contract Arrays() {
-            entrypoint function main(byte[] x) {
+            entry main(byte[] x) {
                 byte[2] y = 0x1234;
                 require(x == byte[](y));
             }
@@ -1495,7 +1619,7 @@ fn allows_comparing_dynamic_and_fixed_arrays_with_cast_in_function_scope() {
 fn byte_array_to_fixed_byte_array_cast_compiles_without_num2bin() {
     let source = r#"
         contract Arrays() {
-            entrypoint function main() {
+            entry main() {
                 byte[] route_templates = 0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f;
                 byte[32] target_template = byte[32](route_templates.slice(16, 48));
                 require(byte[](target_template) == route_templates.slice(16, 48));
@@ -1512,7 +1636,7 @@ fn byte_array_to_fixed_byte_array_cast_compiles_without_num2bin() {
 fn rejects_cast_between_different_fixed_byte_array_sizes() {
     let source = r#"
         contract Arrays() {
-            entrypoint function main() {
+            entry main() {
                 byte[32] hash = 0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f;
                 byte[31] truncated = byte[31](hash);
                 require(truncated.length == 31);
@@ -1528,7 +1652,7 @@ fn rejects_cast_between_different_fixed_byte_array_sizes() {
 fn rejects_cast_from_smaller_fixed_byte_array_to_larger_fixed_byte_array() {
     let source = r#"
         contract Arrays() {
-            entrypoint function main() {
+            entry main() {
                 byte[31] hash = 0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e;
                 byte[32] padded = byte[32](hash);
                 require(padded.length == 32);
@@ -1541,10 +1665,64 @@ fn rejects_cast_from_smaller_fixed_byte_array_to_larger_fixed_byte_array() {
 }
 
 #[test]
+fn allows_array_concat_to_matching_size() {
+    let source = r#"
+        contract Arrays() {
+            entry main() {
+                byte[2] left = 0x0102;
+                byte[2] right = 0x0304;
+                byte[4] combined = left + right;
+                require(combined == 0x01020304);
+            }
+        }
+    "#;
+
+    compile_contract(source, &[], CompileOptions::default()).expect("byte[2] + byte[2] should cast to byte[4]");
+}
+
+#[test]
+fn rejects_cast_from_fixed_byte_array_concat_to_wrong_size() {
+    let source = r#"
+        contract Arrays() {
+            entry main() {
+                byte[2] left = 0x0102;
+                byte[2] right = 0x0304;
+                byte[5] combined = byte[5](left + right);
+                require(combined.length == 5);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("byte[2] + byte[2] should not cast to byte[5]");
+    assert!(err.to_string().contains("cannot cast byte[4] to byte[5]"), "unexpected error: {err}");
+}
+
+#[test]
+fn rejects_fixed_byte_array_size_mismatch_inside_struct_literal() {
+    let source = r#"
+        contract Arrays() {
+            struct Wrapped {
+                byte[32] hash;
+            }
+
+            entry main() {
+                byte[31] hash = 0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e;
+                Wrapped wrapped = {hash: byte[32](hash)};
+                require(wrapped.hash.length == 32);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default())
+        .expect_err("byte[31] to byte[32] cast inside struct literal should be rejected");
+    assert!(err.to_string().contains("cannot cast byte[31] to byte[32]"), "unexpected error: {err}");
+}
+
+#[test]
 fn build_sig_script_rejects_wrong_argument_count() {
     let source = r#"
         contract C() {
-            entrypoint function spend(int a, int b) {
+            entry spend(int a, int b) {
                 require(a == b);
             }
         }
@@ -1558,7 +1736,7 @@ fn build_sig_script_rejects_wrong_argument_count() {
 fn build_sig_script_rejects_wrong_argument_type() {
     let source = r#"
         contract C() {
-            entrypoint function spend(byte[4] b) {
+            entry spend(byte[4] b) {
                 require(b.length == 4);
             }
         }
@@ -1626,7 +1804,7 @@ fn build_sig_script_for_covenant_decl_routes_to_hidden_cov_entrypoints() {
 fn build_sig_script_for_covenant_decl_rejects_unknown_declaration() {
     let source = r#"
         contract C() {
-            entrypoint function spend() {
+            entry spend() {
                 require(true);
             }
         }
@@ -1641,7 +1819,7 @@ fn build_sig_script_for_covenant_decl_rejects_unknown_declaration() {
 fn rejects_double_underscore_variable_names() {
     let source = r#"
         contract Bad() {
-            entrypoint function main() {
+            entry main() {
                 int __tmp = 1;
                 require(__tmp == 1);
             }
@@ -1651,7 +1829,7 @@ fn rejects_double_underscore_variable_names() {
 
     let source = r#"
         contract Bad(int __arg) {
-            entrypoint function main() {
+            entry main() {
                 require(__arg == 1);
             }
         }
@@ -1667,7 +1845,7 @@ fn rejects_double_underscore_function_names() {
                 require(true);
             }
 
-            entrypoint function main() {
+            entry main() {
                 require(true);
             }
         }
@@ -1684,7 +1862,7 @@ fn rejects_double_underscore_struct_names() {
                 int value;
             }
 
-            entrypoint function main() {
+            entry main() {
                 require(true);
             }
         }
@@ -1701,7 +1879,7 @@ fn rejects_struct_named_state() {
                 int value;
             }
 
-            entrypoint function main() {
+            entry main() {
                 require(true);
             }
         }
@@ -1718,7 +1896,7 @@ fn rejects_external_call_without_entrypoint() {
                 require(true);
             }
 
-            entrypoint function main() {
+            entry main() {
                 require(true);
             }
         }
@@ -1733,7 +1911,7 @@ fn rejects_external_call_without_entrypoint() {
 fn rejects_entrypoint_return_by_default() {
     let source = r#"
         contract EntryReturn() {
-            entrypoint function main() : (int) {
+            entry main() : (int) {
                 return(1);
             }
         }
@@ -1747,7 +1925,7 @@ fn rejects_entrypoint_return_by_default() {
 fn build_sig_script_rejects_mismatched_bytes_length() {
     let source = r#"
         contract C() {
-            entrypoint function spend(byte[4] b) {
+            entry spend(byte[4] b) {
                 require(b.length == 4);
             }
         }
@@ -1758,7 +1936,7 @@ fn build_sig_script_rejects_mismatched_bytes_length() {
 
     let source = r#"
         contract C() {
-            entrypoint function spend(byte[5] b) {
+            entry spend(byte[5] b) {
                 require(b.length == 5);
             }
         }
@@ -1772,7 +1950,7 @@ fn build_sig_script_rejects_mismatched_bytes_length() {
 fn build_sig_script_omits_selector_without_selector() {
     let source = r#"
         contract Single() {
-            entrypoint function spend(int a, byte[4] b) {
+            entry spend(int a, byte[4] b) {
                 require(a == 1);
                 require(b.length == 4);
             }
@@ -1800,7 +1978,7 @@ fn compiles_struct_sugar_for_locals_calls_and_field_access() {
                 require(x.b.length == 5);
             }
 
-            entrypoint function main() {
+            entry main() {
                 f({a: 0, b: "12345"});
                 S y = {a: 0, b: "22345"};
                 f(y);
@@ -1832,7 +2010,7 @@ fn compiles_struct_return_types_in_inline_calls() {
                 require(x.b.length == 5);
             }
 
-            entrypoint function main() {
+            entry main() {
                 (S out) = make(0);
                 check(out);
             }
@@ -1854,7 +2032,7 @@ fn build_sig_script_supports_struct_entrypoint_arguments() {
                 string b;
             }
 
-            entrypoint function main(S x) {
+            entry main(S x) {
                 require(x.a == 0);
                 require(x.b.length == 5);
             }
@@ -1876,7 +2054,7 @@ fn build_sig_script_supports_state_entrypoint_arguments() {
             int x = initX;
             byte[2] y = initY;
 
-            entrypoint function main(State s) {
+            entry main(State s) {
                 require(s.x == 9);
                 require(s.y == 0x3412);
             }
@@ -1895,7 +2073,7 @@ fn build_sig_script_supports_state_entrypoint_arguments() {
 fn build_sig_script_supports_sig_array_arguments() {
     let source = r#"
         contract C() {
-            entrypoint function main(sig[] sigs) {
+            entry main(sig[] sigs) {
                 require(sigs.length == 2);
             }
         }
@@ -1996,7 +2174,7 @@ fn build_sig_script_for_covenant_decl_supports_all_covenant_ast_examples() {
             }
         }
     "#;
-    let matrix_all_source = r#"
+    let matrix_auth_source = r#"
         contract Matrix(int max_ins, int max_outs, int init_amount, byte[32] init_owner) {
             int amount = init_amount;
             byte[32] owner = init_owner;
@@ -2016,24 +2194,8 @@ fn build_sig_script_for_covenant_decl_supports_all_covenant_ast_examples() {
                 return({ amount: prev_state.amount - fee, owner: prev_state.owner });
             }
 
-            #[covenant(binding = cov, from = max_ins, to = max_outs, mode = verification)]
-            function cov_verification(State[] prev_states, State[] new_states, int nonce) {
-                require(nonce >= 0);
-            }
-
-            #[covenant(binding = cov, from = max_ins, to = max_outs, mode = transition)]
-            function cov_transition(State[] prev_states, int fee) : (State[]) {
-                require(fee >= 0);
-                return(prev_states);
-            }
-
             #[covenant(from = 1, to = max_outs)]
             function inferred_auth(State prev_state, State[] new_states) {
-                require(new_states.length == new_states.length);
-            }
-
-            #[covenant(from = max_ins, to = max_outs)]
-            function inferred_cov(State[] prev_states, State[] new_states) {
                 require(new_states.length == new_states.length);
             }
 
@@ -2055,6 +2217,28 @@ fn build_sig_script_for_covenant_decl_supports_all_covenant_ast_examples() {
 
             #[covenant.fanout(to = max_outs, mode = verification)]
             function fanout_verification(State prev_state, State[] new_states) {
+                require(new_states.length == new_states.length);
+            }
+        }
+    "#;
+    let matrix_cov_source = r#"
+        contract Matrix(int max_ins, int max_outs, int init_amount, byte[32] init_owner) {
+            int amount = init_amount;
+            byte[32] owner = init_owner;
+
+            #[covenant(binding = cov, from = max_ins, to = max_outs, mode = verification)]
+            function cov_verification(State[] prev_states, State[] new_states, int nonce) {
+                require(nonce >= 0);
+            }
+
+            #[covenant(binding = cov, from = max_ins, to = max_outs, mode = transition)]
+            function cov_transition(State[] prev_states, int fee) : (State[]) {
+                require(fee >= 0);
+                return(prev_states);
+            }
+
+            #[covenant(from = max_ins, to = max_outs)]
+            function inferred_cov(State[] prev_states, State[] new_states) {
                 require(new_states.length == new_states.length);
             }
         }
@@ -2388,7 +2572,7 @@ fn build_sig_script_for_covenant_decl_supports_all_covenant_ast_examples() {
             generated_covenant_entrypoint_name: "__step",
         },
         Case {
-            source: matrix_all_source,
+            source: matrix_auth_source,
             constructor_args: vec![Expr::int(2), Expr::int(4), Expr::int(10), Expr::bytes(owner.clone())],
             function_name: "auth_verification_multi",
             args: vec![matrix_state_array_arg(vec![(11, next_owner.clone())]), Expr::int(0)],
@@ -2396,7 +2580,7 @@ fn build_sig_script_for_covenant_decl_supports_all_covenant_ast_examples() {
             generated_covenant_entrypoint_name: "__auth_verification_multi",
         },
         Case {
-            source: matrix_all_source,
+            source: matrix_auth_source,
             constructor_args: vec![Expr::int(2), Expr::int(4), Expr::int(10), Expr::bytes(owner.clone())],
             function_name: "auth_verification_single",
             args: vec![matrix_state_array_arg(vec![(11, next_owner.clone())])],
@@ -2404,7 +2588,7 @@ fn build_sig_script_for_covenant_decl_supports_all_covenant_ast_examples() {
             generated_covenant_entrypoint_name: "__auth_verification_single",
         },
         Case {
-            source: matrix_all_source,
+            source: matrix_auth_source,
             constructor_args: vec![Expr::int(2), Expr::int(4), Expr::int(10), Expr::bytes(owner.clone())],
             function_name: "auth_transition",
             args: vec![Expr::int(1)],
@@ -2412,7 +2596,7 @@ fn build_sig_script_for_covenant_decl_supports_all_covenant_ast_examples() {
             generated_covenant_entrypoint_name: "__auth_transition",
         },
         Case {
-            source: matrix_all_source,
+            source: matrix_cov_source,
             constructor_args: vec![Expr::int(2), Expr::int(4), Expr::int(10), Expr::bytes(owner.clone())],
             function_name: "cov_verification",
             args: vec![matrix_state_array_arg(vec![(11, next_owner.clone())]), Expr::int(0)],
@@ -2420,7 +2604,7 @@ fn build_sig_script_for_covenant_decl_supports_all_covenant_ast_examples() {
             generated_covenant_entrypoint_name: "__leader_cov_verification",
         },
         Case {
-            source: matrix_all_source,
+            source: matrix_cov_source,
             constructor_args: vec![Expr::int(2), Expr::int(4), Expr::int(10), Expr::bytes(owner.clone())],
             function_name: "cov_verification",
             args: vec![],
@@ -2428,7 +2612,7 @@ fn build_sig_script_for_covenant_decl_supports_all_covenant_ast_examples() {
             generated_covenant_entrypoint_name: "__delegate_cov_verification",
         },
         Case {
-            source: matrix_all_source,
+            source: matrix_cov_source,
             constructor_args: vec![Expr::int(2), Expr::int(4), Expr::int(10), Expr::bytes(owner.clone())],
             function_name: "cov_transition",
             args: vec![Expr::int(1)],
@@ -2436,7 +2620,7 @@ fn build_sig_script_for_covenant_decl_supports_all_covenant_ast_examples() {
             generated_covenant_entrypoint_name: "__leader_cov_transition",
         },
         Case {
-            source: matrix_all_source,
+            source: matrix_cov_source,
             constructor_args: vec![Expr::int(2), Expr::int(4), Expr::int(10), Expr::bytes(owner.clone())],
             function_name: "cov_transition",
             args: vec![],
@@ -2444,7 +2628,7 @@ fn build_sig_script_for_covenant_decl_supports_all_covenant_ast_examples() {
             generated_covenant_entrypoint_name: "__delegate_cov_transition",
         },
         Case {
-            source: matrix_all_source,
+            source: matrix_auth_source,
             constructor_args: vec![Expr::int(2), Expr::int(4), Expr::int(10), Expr::bytes(owner.clone())],
             function_name: "inferred_auth",
             args: vec![matrix_state_array_arg(vec![(11, next_owner.clone())])],
@@ -2452,7 +2636,7 @@ fn build_sig_script_for_covenant_decl_supports_all_covenant_ast_examples() {
             generated_covenant_entrypoint_name: "__inferred_auth",
         },
         Case {
-            source: matrix_all_source,
+            source: matrix_cov_source,
             constructor_args: vec![Expr::int(2), Expr::int(4), Expr::int(10), Expr::bytes(owner.clone())],
             function_name: "inferred_cov",
             args: vec![matrix_state_array_arg(vec![(11, next_owner.clone())])],
@@ -2460,7 +2644,7 @@ fn build_sig_script_for_covenant_decl_supports_all_covenant_ast_examples() {
             generated_covenant_entrypoint_name: "__leader_inferred_cov",
         },
         Case {
-            source: matrix_all_source,
+            source: matrix_cov_source,
             constructor_args: vec![Expr::int(2), Expr::int(4), Expr::int(10), Expr::bytes(owner.clone())],
             function_name: "inferred_cov",
             args: vec![],
@@ -2468,7 +2652,7 @@ fn build_sig_script_for_covenant_decl_supports_all_covenant_ast_examples() {
             generated_covenant_entrypoint_name: "__delegate_inferred_cov",
         },
         Case {
-            source: matrix_all_source,
+            source: matrix_auth_source,
             constructor_args: vec![Expr::int(2), Expr::int(4), Expr::int(10), Expr::bytes(owner.clone())],
             function_name: "inferred_transition",
             args: vec![Expr::int(1)],
@@ -2476,7 +2660,7 @@ fn build_sig_script_for_covenant_decl_supports_all_covenant_ast_examples() {
             generated_covenant_entrypoint_name: "__inferred_transition",
         },
         Case {
-            source: matrix_all_source,
+            source: matrix_auth_source,
             constructor_args: vec![Expr::int(2), Expr::int(4), Expr::int(10), Expr::bytes(owner.clone())],
             function_name: "singleton_transition",
             args: vec![Expr::int(1)],
@@ -2484,7 +2668,7 @@ fn build_sig_script_for_covenant_decl_supports_all_covenant_ast_examples() {
             generated_covenant_entrypoint_name: "__singleton_transition",
         },
         Case {
-            source: matrix_all_source,
+            source: matrix_auth_source,
             constructor_args: vec![Expr::int(2), Expr::int(4), Expr::int(10), Expr::bytes(owner.clone())],
             function_name: "singleton_terminate",
             args: vec![matrix_state_array_arg(vec![(11, next_owner.clone())])],
@@ -2492,7 +2676,7 @@ fn build_sig_script_for_covenant_decl_supports_all_covenant_ast_examples() {
             generated_covenant_entrypoint_name: "__singleton_terminate",
         },
         Case {
-            source: matrix_all_source,
+            source: matrix_auth_source,
             constructor_args: vec![Expr::int(2), Expr::int(4), Expr::int(10), Expr::bytes(owner.clone())],
             function_name: "fanout_verification",
             args: vec![matrix_state_array_arg(vec![(11, next_owner.clone())])],
@@ -2528,7 +2712,7 @@ fn runtime_rejects_regular_struct_array_entrypoint_arguments_without_struct_sign
                 byte[2] b;
             }
 
-            entrypoint function main(int[] items_a, byte[2][] items_b) {
+            entry main(int[] items_a, byte[2][] items_b) {
                 require(items_a.length == 2);
                 require(items_b.length == 2);
                 require(items_a[0] == 7);
@@ -2567,7 +2751,7 @@ fn runtime_supports_regular_struct_array_entrypoint_arguments_with_struct_signat
                 byte[2] b;
             }
 
-            entrypoint function main(int[] items_a, byte[2][] items_b) {
+            entry main(int[] items_a, byte[2][] items_b) {
                 require(items_a.length == 2);
                 require(items_b.length == 2);
                 require(items_a[0] == 7);
@@ -2585,7 +2769,7 @@ fn runtime_supports_regular_struct_array_entrypoint_arguments_with_struct_signat
                 byte[2] b;
             }
 
-            entrypoint function main(S[] x) {
+            entry main(S[] x) {
                 require(x.length == 2);
                 require(x[0].a == 7);
                 require(x[1].a == 9);
@@ -2627,7 +2811,7 @@ fn runtime_supports_direct_struct_array_entrypoint_signature() {
                 byte[2] b;
             }
 
-            entrypoint function f(S[] x) {
+            entry f(S[] x) {
                 require(x.length == 2);
                 require(x[0].a == 7);
                 require(x[1].a == 9);
@@ -2659,6 +2843,63 @@ fn runtime_supports_direct_struct_array_entrypoint_signature() {
 }
 
 #[test]
+fn build_sig_script_enforces_fixed_struct_array_length() {
+    let source = r#"
+        contract C() {
+            struct S {
+                int a;
+                byte[2] b;
+            }
+
+            entry main(S[2] values) {
+                require(values.length == 2);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    compiled
+        .build_sig_script("main", vec![struct_array_arg(vec![(7, vec![0x01, 0x02]), (9, vec![0x03, 0x04])])])
+        .expect("correctly sized struct array should encode");
+
+    let err = compiled
+        .build_sig_script("main", vec![struct_array_arg(vec![(7, vec![0x01, 0x02])])])
+        .expect_err("wrongly sized struct array should be rejected");
+    assert!(err.to_string().contains("size mismatch"), "unexpected error: {err}");
+}
+
+#[test]
+fn runtime_supports_struct_array_append_value_expression() {
+    let source = r#"
+        contract C() {
+            struct S {
+                int a;
+                byte[2] b;
+            }
+
+            entry main(S[] source) {
+                S[] result = source.append({a: 9, b: 0x0304}, {a: 11, b: 0x0506});
+
+                require(source.length == 1);
+                require(result.length == 3);
+                require(result[0].a == 7);
+                require(result[1].a == 9);
+                require(result[2].a == 11);
+                require(result[0].b == 0x0102);
+                require(result[1].b == 0x0304);
+                require(result[2].b == 0x0506);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let sigscript = compiled.build_sig_script("main", vec![struct_array_arg(vec![(7, vec![0x01, 0x02])])]).expect("sigscript builds");
+    let result = run_script_with_sigscript(compiled.script, sigscript);
+
+    assert!(result.is_ok(), "struct[] append value expression should execute successfully: {result:?}");
+}
+
+#[test]
 fn runtime_rejects_regular_struct_array_non_entrypoint_arguments_without_struct_signature() {
     let source = r#"
         contract C() {
@@ -2676,7 +2917,7 @@ fn runtime_rejects_regular_struct_array_non_entrypoint_arguments_without_struct_
                 require(items_b[1] == 0x0304);
             }
 
-            entrypoint function main(int[] items_a, byte[2][] items_b) {
+            entry main(int[] items_a, byte[2][] items_b) {
                 verify(items_a, items_b);
             }
         }
@@ -2731,7 +2972,7 @@ fn runtime_supports_regular_struct_array_non_entrypoint_arguments_with_struct_si
                 require(items_b[1] == 0x0304);
             }
 
-            entrypoint function main(int[] items_a, byte[2][] items_b) {
+            entry main(int[] items_a, byte[2][] items_b) {
                 verify(items_a, items_b);
             }
         }
@@ -2752,7 +2993,7 @@ fn runtime_supports_regular_struct_array_non_entrypoint_arguments_with_struct_si
                 require(x[1].b == 0x0304);
             }
 
-            entrypoint function main(S[] x) {
+            entry main(S[] x) {
                 verify(x);
             }
         }
@@ -2806,7 +3047,7 @@ fn rejects_wrong_argument_type_for_direct_struct_array_non_entrypoint_signature(
                 require(x.length == 2);
             }
 
-            entrypoint function main() {
+            entry main() {
                 int[] xs = [7, 9];
                 verify(xs);
             }
@@ -2835,7 +3076,7 @@ fn runtime_supports_direct_struct_array_non_entrypoint_signature() {
                 require(x[1].b == 0x0304);
             }
 
-            entrypoint function main(S[] x) {
+            entry main(S[] x) {
                 verify(x);
             }
         }
@@ -2872,7 +3113,7 @@ fn debug_info_inline_call_with_plain_array_param_compiles() {
                 require(x[1] == 9);
             }
 
-            entrypoint function main(int[] x) {
+            entry main(int[] x) {
                 verify(x);
             }
         }
@@ -2900,7 +3141,7 @@ fn debug_info_inline_call_with_struct_array_param_should_compile() {
                 require(x[1].b == 0x0304);
             }
 
-            entrypoint function main(S[] x) {
+            entry main(S[] x) {
                 verify(x);
             }
         }
@@ -2924,7 +3165,7 @@ fn rejects_struct_literal_with_wrong_field_type_in_function_call() {
                 require(x.a == 0);
             }
 
-            entrypoint function main() {
+            entry main() {
                 f({a: "hello", b: "world"});
             }
         }
@@ -2950,7 +3191,7 @@ fn rejects_non_struct_argument_for_struct_parameter() {
                 require(s.x > 0);
             }
 
-            entrypoint function main() {
+            entry main() {
                 int x = 5;
                 f(x);
             }
@@ -2971,7 +3212,7 @@ fn rejects_struct_literal_with_wrong_field_type_in_variable_definition() {
                 string b;
             }
 
-            entrypoint function main() {
+            entry main() {
                 S y = {a: "hello", b: "world"};
                 require(true);
             }
@@ -2991,7 +3232,7 @@ fn rejects_struct_literal_with_missing_fields() {
                 string b;
             }
 
-            entrypoint function main() {
+            entry main() {
                 S y = {a: 0};
                 require(true);
             }
@@ -3011,7 +3252,7 @@ fn build_sig_script_rejects_struct_argument_with_wrong_field_type() {
                 string b;
             }
 
-            entrypoint function main(S x) {
+            entry main(S x) {
                 require(x.a == 0);
             }
         }
@@ -3032,7 +3273,7 @@ fn compiles_struct_destructuring_and_runs() {
                 byte[5] b;
             }
 
-            entrypoint function main() {
+            entry main() {
                 S s = {a: 7, b: 0x0102030405};
                 {a: int x, b: byte[5] y} = s;
                 require(x == 7);
@@ -3056,7 +3297,7 @@ fn rejects_struct_destructuring_with_missing_field() {
                 byte[5] b;
             }
 
-            entrypoint function main() {
+            entry main() {
                 S s = {a: 7, b: 0x0102030405};
                 {a: int x} = s;
                 require(x == 7);
@@ -3077,7 +3318,7 @@ fn rejects_struct_destructuring_with_wrong_field_type() {
                 byte[5] b;
             }
 
-            entrypoint function main() {
+            entry main() {
                 S s = {a: 7, b: 0x0102030405};
                 {a: string x, b: byte[5] y} = s;
                 require(y == 0x0102030405);
@@ -3097,7 +3338,7 @@ fn compiles_function_call_assignment_and_verifies() {
                 return(a + b, a * b);
             }
 
-            entrypoint function main() {
+            entry main() {
                 (int sum, int prod) = f(2, 3);
                 require(sum == 5);
                 require(prod == 6);
@@ -3120,7 +3361,7 @@ fn compiles_function_call_statement_elides_unused_return_expression() {
                 return(a + 1);
             }
 
-            entrypoint function main() {
+            entry main() {
                 f(2);
             }
         }
@@ -3140,7 +3381,7 @@ fn rejects_function_call_assignment_with_mismatched_signature() {
                 return(a + b, a * b);
             }
 
-            entrypoint function main() {
+            entry main() {
                 (int sum, byte[] prod) = f(2, 3);
                 require(sum == 5);
             }
@@ -3158,7 +3399,7 @@ fn rejects_function_call_assignment_with_wrong_return_count() {
                 return(a + b, a * b);
             }
 
-            entrypoint function main() {
+            entry main() {
                 (int sum) = f(2, 3);
                 require(sum == 5);
             }
@@ -3176,7 +3417,7 @@ fn rejects_internal_function_call_with_wrong_fixed_array_arg_size() {
                 require(b.length == 4);
             }
 
-            entrypoint function main() {
+            entry main() {
                 f(0x010203);
             }
         }
@@ -3193,7 +3434,7 @@ fn accepts_internal_function_call_with_matching_fixed_array_arg_size() {
                 require(b.length == 4);
             }
 
-            entrypoint function main() {
+            entry main() {
                 f(0x01020304);
             }
         }
@@ -3210,7 +3451,7 @@ fn rejects_internal_function_call_with_wrong_fixed_int_array_arg_size() {
                 require(a.length == 4);
             }
 
-            entrypoint function main() {
+            entry main() {
                 f([1, 2, 3]);
             }
         }
@@ -3227,7 +3468,7 @@ fn accepts_internal_function_call_with_matching_fixed_int_array_arg_size() {
                 require(a.length == 4);
             }
 
-            entrypoint function main() {
+            entry main() {
                 f([1, 2, 3, 4]);
             }
         }
@@ -3244,7 +3485,7 @@ fn allows_calling_void_function() {
                 require(a == 1);
             }
 
-            entrypoint function main() {
+            entry main() {
                 ping(1);
                 require(true);
             }
@@ -3273,7 +3514,7 @@ fn recursive_fibonacci_inlining_behavior() {
                 return(result);
             }
 
-            entrypoint function main(int n) {
+            entry main(int n) {
                 (int out) = fib(n);
                 require(out > 0);
             }
@@ -3293,7 +3534,7 @@ fn function_call_in_require_statement() {
                 return n + 1;
             }
 
-            entrypoint function main(int n) {
+            entry main(int n) {
                 require(plus_one(n) > 0);
             }
         }
@@ -3313,7 +3554,7 @@ fn single_return_helper_call_can_participate_in_expression() {
                 return n + 1;
             }
 
-            entrypoint function main(int n) {
+            entry main(int n) {
                 require(plus_one(n) == n + 1);
             }
         }
@@ -3333,7 +3574,7 @@ fn single_return_helper_call_in_expression_respects_type_checking() {
                 return(5);
             }
 
-            entrypoint function main() {
+            entry main() {
                 byte[_] x = 0x1234;
                 require(f() == x);
             }
@@ -3349,7 +3590,7 @@ fn single_return_helper_call_in_expression_respects_type_checking() {
 fn rejects_calling_later_defined_function() {
     let source = r#"
         contract Calls() {
-            entrypoint function first() {
+            entry first() {
                 second();
             }
 
@@ -3391,7 +3632,7 @@ fn rejects_mutually_recursive_helper_calls() {
                 return(result);
             }
 
-            entrypoint function main() {
+            entry main() {
                 (int out) = even(2);
                 require(out == 1);
             }
@@ -3411,7 +3652,7 @@ fn rejects_multi_return_helper_call_in_expression() {
                 return(6, 7);
             }
 
-            entrypoint function main() {
+            entry main() {
                 require(pair() > 5);
             }
         }
@@ -3431,7 +3672,7 @@ fn multi_return_helper_call_assignment_remains_valid() {
                 return(6, 7);
             }
 
-            entrypoint function main() {
+            entry main() {
                 (int a, int b) = pair();
                 require(a == 6);
                 require(b == 7);
@@ -3453,7 +3694,7 @@ fn tuple_return_field_access_can_initialize_variable_and_run() {
                 return(2, 3, 4, 5);
             }
 
-            entrypoint function main() {
+            entry main() {
                 int x = f().2;
                 require(x == 4);
             }
@@ -3474,7 +3715,7 @@ fn tuple_return_field_access_can_be_used_in_require_and_run() {
                 return(2, 3, 4, 5);
             }
 
-            entrypoint function main() {
+            entry main() {
                 require(f().3 == 5);
             }
         }
@@ -3494,7 +3735,7 @@ fn tuple_return_field_access_allows_parenthesized_single_return_type() {
                 return(5);
             }
 
-            entrypoint function main() {
+            entry main() {
                 require(f().0 == 5);
             }
         }
@@ -3514,7 +3755,7 @@ fn tuple_return_field_access_rejects_direct_single_tuple_value_use_as_scalar() {
                 return(7);
             }
 
-            entrypoint function main() {
+            entry main() {
                 require(f() == 7);
             }
         }
@@ -3531,7 +3772,7 @@ fn tuple_return_field_access_rejects_scalar_single_return_type() {
                 return 5;
             }
 
-            entrypoint function main() {
+            entry main() {
                 require(f().0 == 5);
             }
         }
@@ -3549,7 +3790,7 @@ fn tuple_return_field_access_rejects_out_of_bounds_index() {
                 return(1, 2, 3);
             }
 
-            entrypoint function main() {
+            entry main() {
                 require(f().3 == 3);
             }
         }
@@ -3580,7 +3821,7 @@ fn allows_call_chain_with_earlier_defined_functions() {
                 return(v + w);
             }
 
-            entrypoint function main() {
+            entry main() {
                 (int out) = f(4);
                 require(out == 10);
             }
@@ -3603,7 +3844,7 @@ fn allows_call_chain_with_later_defined_functions() {
                 return(v + w);
             }
 
-            entrypoint function main() {
+            entry main() {
                 (int out) = f(4);
                 require(out == 10);
             }
@@ -3631,11 +3872,11 @@ fn allows_call_chain_with_later_defined_functions() {
 fn rejects_calling_entrypoint_from_helper() {
     let source = r#"
         contract Calls() {
-            entrypoint function main() {
+            entry main() {
                 helper();
             }
 
-            entrypoint function other() {
+            entry other() {
                 require(true);
             }
 
@@ -3647,18 +3888,18 @@ fn rejects_calling_entrypoint_from_helper() {
 
     let err = compile_contract(source, &[], CompileOptions::default()).expect_err("helper should not be able to call entrypoint");
     let err_msg = err.to_string();
-    assert!(err_msg.contains("entrypoint function 'other' cannot be called"), "unexpected error: {err_msg}");
+    assert!(err_msg.contains("entry 'other' cannot be called"), "unexpected error: {err_msg}");
 }
 
 #[test]
 fn rejects_calling_entrypoint_from_entrypoint() {
     let source = r#"
         contract Calls() {
-            entrypoint function main() {
+            entry main() {
                 other();
             }
 
-            entrypoint function other() {
+            entry other() {
                 require(true);
             }
         }
@@ -3666,7 +3907,7 @@ fn rejects_calling_entrypoint_from_entrypoint() {
 
     let err = compile_contract(source, &[], CompileOptions::default()).expect_err("entrypoint should not be able to call entrypoint");
     let err_msg = err.to_string();
-    assert!(err_msg.contains("entrypoint function 'other' cannot be called"), "unexpected error: {err_msg}");
+    assert!(err_msg.contains("entry 'other' cannot be called"), "unexpected error: {err_msg}");
 }
 
 #[test]
@@ -3677,7 +3918,7 @@ fn allows_calling_void_function_fails() {
                 require(a == 2);
             }
 
-            entrypoint function main() {
+            entry main() {
                 ping(1);
                 require(true);
             }
@@ -3693,7 +3934,7 @@ fn allows_calling_void_function_fails() {
 fn rejects_return_without_signature() {
     let source = r#"
         contract C() {
-            entrypoint function main() {
+            entry main() {
                 return(1);
             }
         }
@@ -3705,7 +3946,7 @@ fn rejects_return_without_signature() {
 fn rejects_return_not_last_statement() {
     let source = r#"
         contract C() {
-            entrypoint function main() : (int) {
+            entry main() : (int) {
                 return(1);
                 require(true);
             }
@@ -3718,7 +3959,7 @@ fn rejects_return_not_last_statement() {
 fn rejects_return_value_count_mismatch() {
     let source = r#"
         contract C() {
-            entrypoint function main() : (int, int) {
+            entry main() : (int, int) {
                 return(1);
             }
         }
@@ -3730,7 +3971,7 @@ fn rejects_return_value_count_mismatch() {
 fn rejects_return_type_mismatch() {
     let source = r#"
         contract C() {
-            entrypoint function main(bool b) : (int) {
+            entry main(bool b) : (int) {
                 return(b);
             }
         }
@@ -3746,7 +3987,7 @@ fn single_return_signature_without_parentheses_compiles_and_runs() {
                 return(41);
             }
 
-            entrypoint function main() {
+            entry main() {
                 (int amount) = calcInAmount();
                 require(amount == 41);
             }
@@ -3767,7 +4008,7 @@ fn single_return_signature_without_parentheses_supports_direct_variable_definiti
                 return(41);
             }
 
-            entrypoint function main() {
+            entry main() {
                 int amount = calcInAmount();
                 require(amount == 41);
             }
@@ -3788,7 +4029,7 @@ fn single_return_statement_without_parentheses_compiles_and_runs() {
                 return 41;
             }
 
-            entrypoint function main() {
+            entry main() {
                 int amount = calcInAmount();
                 require(amount == 41);
             }
@@ -3809,7 +4050,7 @@ fn rejects_omitting_parentheses_in_tuple_function_call_assignment() {
                 return(1, 2);
             }
 
-            entrypoint function main() {
+            entry main() {
                 int a, int b = pair();
             }
         }
@@ -3822,10 +4063,33 @@ fn rejects_omitting_parentheses_in_tuple_function_call_assignment() {
 }
 
 #[test]
+fn array_literal_codegen_uses_declared_element_type() {
+    let source = r#"
+        contract Arrays() {
+            entry main() {
+                byte[] bytes = [1, 17, 128, 255];
+                int[] ints = [1, 17, 128, 255];
+                byte[] selected = true ? [1, 17, 128, 255] : [255, 128, 17, 1];
+                require(bytes.length == 4);
+                require(ints.length == 4);
+                require(selected == bytes);
+                bytes = [255, 128, 17, 1];
+                require(bytes == [255, 128, 17, 1]);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions { record_debug_infos: true, ..CompileOptions::default() })
+        .expect("compile succeeds");
+    let result = run_script_with_sigscript(compiled.script, script_builder().drain());
+    assert!(result.is_ok(), "array literals should use their declared element type: {}", result.unwrap_err());
+}
+
+#[test]
 fn compiles_int_array_length_to_expected_script() {
     let source = r#"
         contract Arrays() {
-            entrypoint function main() {
+            entry main() {
                 int[] x;
                 require(x.length == 0);
             }
@@ -3855,10 +4119,6 @@ fn compiles_int_array_length_to_expected_script() {
         .unwrap()
         .add_op(OpVerify)
         .unwrap()
-        .add_i64(0)
-        .unwrap()
-        .add_op(OpRoll)
-        .unwrap()
         .add_op(OpDrop)
         .unwrap()
         .add_op(OpTrue)
@@ -3872,7 +4132,7 @@ fn compiles_int_array_length_to_expected_script() {
 fn compiles_int_array_append_to_expected_script() {
     let source = r#"
         contract Arrays() {
-            entrypoint function main() {
+            entry main() {
                 int[] x;
                 x = x.append(7);
                 require(x.length == 1);
@@ -3911,10 +4171,6 @@ fn compiles_int_array_append_to_expected_script() {
         .unwrap()
         .add_op(OpVerify)
         .unwrap()
-        .add_i64(0)
-        .unwrap()
-        .add_op(OpRoll)
-        .unwrap()
         .add_op(OpDrop)
         .unwrap()
         .add_op(OpTrue)
@@ -3950,7 +4206,7 @@ fn branchy_three_slot_splice_repro_matches_current_codegen_shape() {
             int pending_src_idx = init_pending_src_idx;
             int pending_dst_idx = init_pending_dst_idx;
 
-            entrypoint function apply() {
+            entry apply() {
                 int from_idx = OpBin2Num(pending_src_idx);
                 int to_idx = OpBin2Num(pending_dst_idx);
                 byte[64] prev_board = board;
@@ -4004,7 +4260,9 @@ fn branchy_three_slot_splice_repro_matches_current_codegen_shape() {
                 byte[] middle_xy = prev_dyn.slice(x + 1, y);
                 byte[] middle_yz = prev_dyn.slice(y + 1, z);
                 byte[] suffix = prev_dyn.slice(z + 1, 64);
-                byte[64] next_board = prefix + byte[1](vx) + middle_xy + byte[1](vy) + middle_yz + byte[1](vz) + suffix;
+                byte[64] next_board = byte[64](
+                    prefix + byte[1](vx) + middle_xy + byte[1](vy) + middle_yz + byte[1](vz) + suffix
+                );
 
                 require(next_board[10] == 1);
                 require(next_board[20] == 2);
@@ -4055,7 +4313,7 @@ fn branchy_three_slot_splice_repro_matches_current_codegen_shape() {
 fn compiles_int_array_index_to_expected_script() {
     let source = r#"
         contract Arrays() {
-            entrypoint function main() {
+            entry main() {
                 int[] x;
                 x = x.append(7);
                 require(x[0] == 7);
@@ -4098,10 +4356,6 @@ fn compiles_int_array_index_to_expected_script() {
         .unwrap()
         .add_op(OpVerify)
         .unwrap()
-        .add_i64(0)
-        .unwrap()
-        .add_op(OpRoll)
-        .unwrap()
         .add_op(OpDrop)
         .unwrap()
         .add_op(OpTrue)
@@ -4115,7 +4369,7 @@ fn compiles_int_array_index_to_expected_script() {
 fn runs_array_append_runtime_examples() {
     let source = r#"
         contract Arrays() {
-            entrypoint function main() {
+            entry main() {
                 int[] x;
                 int[] y = x.append(7, 9, 11);
                 require(x.append(1).length > 0);
@@ -4138,7 +4392,7 @@ fn runs_array_append_runtime_examples() {
 fn runs_int_array_append_length_runtime_example() {
     let source = r#"
         contract Arrays() {
-            entrypoint function main() {
+            entry main() {
                 int[] x = [1, 2, 3];
                 x = x.append(4);
                 require(x.length == 4);
@@ -4156,7 +4410,7 @@ fn runs_int_array_append_length_runtime_example() {
 fn runs_slice_with_explicit_end_bounds() {
     let source = r#"
         contract SliceLowering() {
-            entrypoint function main() {
+            entry main() {
                 byte[] data = 0x0102030405060708090a;
                 byte[] segment = data.slice(3, 8);
                 require(segment.length == 5);
@@ -4174,7 +4428,7 @@ fn runs_slice_with_explicit_end_bounds() {
 fn runs_slice_reconstruction_and_compare_runtime_example() {
     let source = r#"
         contract SliceReconstruct() {
-            entrypoint function main() {
+            entry main() {
                 byte[] data = 0x0102030405060708090a;
                 byte[] left = data.slice(0, 4);
                 byte[] right = data.slice(4, 10);
@@ -4198,10 +4452,10 @@ fn runs_slice_reconstruction_and_compare_runtime_example() {
 fn allows_concat_of_int_arrays_with_plus() {
     let source = r#"
         contract Arrays() {
-            entrypoint function main() {
+            entry main() {
                 int[] a = [1, 2];
                 int[] b = [3, 4];
-                int[4] c = a + b;
+                int[4] c = int[4](a + b);
 
                 require(c.length == 4);
                 require(c[0] == 1);
@@ -4223,10 +4477,10 @@ fn allows_concat_of_int_arrays_with_plus() {
 fn allows_concat_of_byte_arrays_with_plus() {
     let source = r#"
         contract Arrays() {
-            entrypoint function main() {
+            entry main() {
                 byte[] a = 0x0102;
                 byte[] b = 0x0304;
-                byte[4] c = a + b;
+                byte[4] c = byte[4](a + b);
 
                 require(c.length == 4);
                 require(c == 0x01020304);
@@ -4242,13 +4496,29 @@ fn allows_concat_of_byte_arrays_with_plus() {
 }
 
 #[test]
+fn concatenated_byte_array_literal_has_element_length() {
+    let source = r#"
+        contract Arrays() {
+            entry main() {
+                byte[] x = [1];
+                require((x + [2]).length == 2);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let result = run_script_with_sigscript(compiled.script, script_builder().drain());
+    assert!(result.is_ok(), "byte[] literal concatenation should have two elements: {}", result.unwrap_err());
+}
+
+#[test]
 fn allows_concat_of_fixed_size_byte_array_elements_with_plus() {
     let source = r#"
         contract Arrays() {
-            entrypoint function main() {
+            entry main() {
                 byte[2][] a = [0x0102, 0x0304];
                 byte[2][] b = [0x0506];
-                byte[2][3] c = a + b;
+                byte[2][3] c = byte[2][3](a + b);
 
                 require(c.length == 3);
                 require(c[0] == 0x0102);
@@ -4266,13 +4536,34 @@ fn allows_concat_of_fixed_size_byte_array_elements_with_plus() {
 }
 
 #[test]
+fn composite_array_index_uses_its_result_type_for_bytewise_operations() {
+    let source = r#"
+        contract Arrays() {
+            entry main() {
+                byte[2][] a = [0x0102];
+                byte[2][] b = [0x0304];
+
+                require((a + b)[0] == 0x0102);
+                require(bytes((a + b)[0]) == byte[](0x0102));
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    assert!(!compiled.script.contains(&OpNum2Bin), "an indexed byte array element is already byte-encoded");
+
+    let result = run_script_with_sigscript(compiled.script, script_builder().drain());
+    assert!(result.is_ok(), "composite array indexing should use bytewise operations: {}", result.unwrap_err());
+}
+
+#[test]
 fn allows_concat_of_bool_arrays_with_plus() {
     let source = r#"
         contract Arrays() {
-            entrypoint function main() {
+            entry main() {
                 bool[] a = [true, false];
                 bool[] b = [true, false];
-                bool[4] c = a + b;
+                bool[4] c = bool[4](a + b);
 
                 require(c.length == 4);
                 require(c[0]);
@@ -4294,13 +4585,13 @@ fn allows_concat_of_bool_arrays_with_plus() {
 fn allows_concat_of_pubkey_arrays_with_plus() {
     let source = r#"
         contract Arrays() {
-            entrypoint function main() {
+            entry main() {
                 pubkey p1 = 0x0202020202020202020202020202020202020202020202020202020202020202;
                 pubkey p2 = 0x0303030303030303030303030303030303030303030303030303030303030303;
 
                 pubkey[] a = [p1];
                 pubkey[] b = [p2];
-                pubkey[2] c = a + b;
+                pubkey[2] c = pubkey[2](a + b);
 
                 require(c.length == 2);
                 require(c[0] == p1);
@@ -4320,7 +4611,7 @@ fn allows_concat_of_pubkey_arrays_with_plus() {
 fn compiles_bytes20_array_append_without_num2bin() {
     let source = r#"
         contract Arrays() {
-            entrypoint function main() {
+            entry main() {
                 byte[20][] x;
                 x = x.append(0x0102030405060708090a0b0c0d0e0f1011121314);
                 require(x.length == 1);
@@ -4361,10 +4652,6 @@ fn compiles_bytes20_array_append_without_num2bin() {
         .unwrap()
         .add_op(OpVerify)
         .unwrap()
-        .add_data_with_push_opcode(&[])
-        .unwrap()
-        .add_op(OpRoll)
-        .unwrap()
         .add_op(OpDrop)
         .unwrap()
         .add_op(OpTrue)
@@ -4378,7 +4665,7 @@ fn compiles_bytes20_array_append_without_num2bin() {
 fn runs_bytes20_array_runtime_example() {
     let source = r#"
         contract Arrays() {
-            entrypoint function main() {
+            entry main() {
                 byte[20][] x;
                 x = x.append(0x0102030405060708090a0b0c0d0e0f1011121314);
                 x = x.append(0x1111111111111111111111111111111111111111);
@@ -4399,7 +4686,7 @@ fn runs_bytes20_array_runtime_example() {
 fn allows_array_equality_comparison() {
     let source = r#"
         contract Arrays() {
-            entrypoint function main() {
+            entry main() {
                 byte[20][] x;
                 byte[20][] y;
                 x = x.append(0x0102030405060708090a0b0c0d0e0f1011121314);
@@ -4419,7 +4706,7 @@ fn allows_array_equality_comparison() {
 fn fails_array_equality_comparison() {
     let source = r#"
         contract Arrays() {
-            entrypoint function main() {
+            entry main() {
                 byte[20][] x;
                 byte[20][] y;
                 x = x.append(0x0102030405060708090a0b0c0d0e0f1011121314);
@@ -4439,7 +4726,7 @@ fn fails_array_equality_comparison() {
 fn allows_array_inequality_with_different_sizes() {
     let source = r#"
         contract Arrays() {
-            entrypoint function main() {
+            entry main() {
                 byte[20][] x;
                 byte[20][] y;
                 x = x.append(0x0102030405060708090a0b0c0d0e0f1011121314);
@@ -4460,7 +4747,7 @@ fn allows_array_inequality_with_different_sizes() {
 fn runs_array_for_loop_example() {
     let source = r#"
         contract Arrays() {
-            entrypoint function main() {
+            entry main() {
                 int[] x;
                 x = x.append(1);
                 x = x.append(2);
@@ -4484,7 +4771,7 @@ fn runs_array_for_loop_with_length_guard() {
         contract Arrays() {
             int constant MAX_ARRAY_SIZE = 7;
 
-            entrypoint function main(int[] x) {
+            entry main(int[] x) {
                 require(x.length <= MAX_ARRAY_SIZE);
                 for (i, 1, x.length, MAX_ARRAY_SIZE - 1) {
                     require(x[i] == x[i-1]+1);
@@ -4515,7 +4802,7 @@ fn runs_array_loop_and_function_calls_example() {
                 return(sum);
             }
 
-            entrypoint function main() {
+            entry main() {
                 int[] x;
                 x = x.append(1);
                 x = x.append(2);
@@ -4544,7 +4831,7 @@ fn rejects_array_append_elements_with_wrong_type() {
         let source = format!(
             r#"
                 contract Arrays() {{
-                    entrypoint function main() {{
+                    entry main() {{
                         int[] x;
                         {append_statement}
                     }}
@@ -4561,7 +4848,7 @@ fn rejects_array_append_elements_with_wrong_type() {
 fn rejects_non_constant_for_loop_max_iterations() {
     let source = r#"
         contract Loops() {
-            entrypoint function main(int start, int end, int max_iterations) {
+            entry main(int start, int end, int max_iterations) {
                 for (i, start, end, max_iterations) {
                     require(i >= 0);
                 }
@@ -4577,7 +4864,7 @@ fn rejects_non_constant_for_loop_max_iterations() {
 fn rejects_constant_for_loop_range_above_max_iterations() {
     let source = r#"
         contract Loops() {
-            entrypoint function main() {
+            entry main() {
                 for (i, 0, 4, 3) {
                     require(i >= 0);
                 }
@@ -4604,7 +4891,7 @@ fn rejects_overflow_in_constant_for_loop_bounds() {
         let source = format!(
             r#"
                 contract Loops() {{
-                    entrypoint function main() {{
+                    entry main() {{
                         for (i, 0, 1, {expr}) {{
                             require(i >= 0);
                         }}
@@ -4622,7 +4909,7 @@ fn rejects_overflow_in_constant_for_loop_bounds() {
 fn runs_runtime_bounded_for_loop_example() {
     let source = r#"
         contract RuntimeLoop() {
-            entrypoint function main(int start, int end, int expected_count, int expected_last) {
+            entry main(int start, int end, int expected_count, int expected_last) {
                 int count = 0;
                 int last = -1;
 
@@ -4657,7 +4944,7 @@ fn runs_runtime_bounded_for_loop_example() {
 fn rejects_runtime_for_loop_range_above_max_iterations() {
     let source = r#"
         contract RuntimeLoop() {
-            entrypoint function main(int start, int end) {
+            entry main(int start, int end) {
                 for (i, start, end, 3) {
                     require(i >= start);
                 }
@@ -4675,7 +4962,7 @@ fn rejects_runtime_for_loop_range_above_max_iterations() {
 fn allows_array_assignment_with_compatible_types() {
     let source = r#"
         contract Arrays() {
-            entrypoint function main() {
+            entry main() {
                 int[] x;
                 int[] y;
                 x = y;
@@ -4701,7 +4988,7 @@ fn inline_pubkey_param_reassignment_compiles_and_runs() {
                 require(selected == expected);
             }
 
-            entrypoint function main(pubkey a, pubkey b, pubkey expected, bool take_other) {
+            entry main(pubkey a, pubkey b, pubkey expected, bool take_other) {
                 verify(a, b, expected, take_other);
             }
         }
@@ -4733,7 +5020,7 @@ fn inline_pubkey_param_reassignment_compiles_and_runs() {
 fn rejects_unsized_array_type() {
     let source = r#"
         contract Arrays() {
-            entrypoint function main() {
+            entry main() {
                 bytes[] x;
             }
         }
@@ -4746,7 +5033,7 @@ fn rejects_unsized_array_type() {
 fn rejects_array_element_assignment() {
     let source = r#"
         contract Arrays() {
-            entrypoint function main() {
+            entry main() {
                 int[] x;
                 x[3] = 9;
             }
@@ -4760,8 +5047,8 @@ fn rejects_array_element_assignment() {
 fn locking_bytecode_p2pk_matches_pay_to_address_script() {
     let source = r#"
         contract Test() {
-            entrypoint function main(pubkey pk, byte[] expected) {
-                byte[] spk = new ScriptPubKeyP2PK(pk);
+            entry main(pubkey pk, byte[] expected) {
+                byte[] spk = byte[](new ScriptPubKeyP2PK(pk));
                 require(spk == expected);
             }
         }
@@ -4784,8 +5071,8 @@ fn locking_bytecode_p2pk_matches_pay_to_address_script() {
 fn locking_bytecode_p2sh_matches_pay_to_address_script() {
     let source = r#"
         contract Test() {
-            entrypoint function main(byte[32] hash, byte[] expected) {
-                byte[] spk = new ScriptPubKeyP2SH(hash);
+            entry main(byte[32] hash, byte[] expected) {
+                byte[] spk = byte[](new ScriptPubKeyP2SH(hash));
                 require(spk == expected);
             }
         }
@@ -4808,8 +5095,8 @@ fn locking_bytecode_p2sh_matches_pay_to_address_script() {
 fn locking_bytecode_p2sh_from_redeem_script_matches_pay_to_script_hash_script() {
     let source = r#"
         contract Test() {
-            entrypoint function main(byte[] redeem_script, byte[] expected) {
-                byte[] spk = new ScriptPubKeyP2SHFromRedeemScript(redeem_script);
+            entry main(byte[] redeem_script, byte[] expected) {
+                byte[] spk = byte[](new ScriptPubKeyP2SHFromRedeemScript(redeem_script));
                 require(spk == expected);
             }
         }
@@ -4952,7 +5239,7 @@ fn wrap_with_dispatch(body: Vec<u8>, selector: Option<i64>) -> Vec<u8> {
 fn compiles_without_selector_single_function() {
     let source = r#"
         contract Test() {
-            entrypoint function main() {
+            entry main() {
                 require(1 + 2 == 3);
             }
         }
@@ -4986,8 +5273,8 @@ fn compiles_without_selector_single_function() {
 fn compiles_with_selector_multiple_entrypoints() {
     let source = r#"
         contract Test() {
-            entrypoint function a() { require(true); }
-            entrypoint function b() { require(true); }
+            entry a() { require(true); }
+            entry b() { require(true); }
         }
     "#;
 
@@ -5004,7 +5291,7 @@ fn compiles_with_selector_multiple_entrypoints() {
 fn compiles_basic_arithmetic_and_verifies() {
     let source = r#"
         contract Test() {
-            entrypoint function main() {
+            entry main() {
                 require(1 + 2 == 3);
             }
         }
@@ -5042,7 +5329,7 @@ fn compiles_contract_constants_and_verifies() {
         contract Test() {
             int constant MAX_SUPPLY = 1_000_000;
 
-            entrypoint function main() {
+            entry main() {
                 require(MAX_SUPPLY == 1_000_000);
             }
         }
@@ -5077,7 +5364,7 @@ fn compiles_contract_fields_as_script_prolog() {
             int x = 5;
             byte[2] y = 0x1234;
 
-            entrypoint function main() {
+            entry main() {
                 require(x == 5);
             }
         }
@@ -5115,7 +5402,7 @@ fn runs_contract_with_fields_prolog() {
             int x = 5;
             byte[2] y = 0x1234;
 
-            entrypoint function main() {
+            entry main() {
                 require(x == 5);
                 require(y == 0x1234);
             }
@@ -5134,11 +5421,11 @@ fn runs_selector_dispatch_with_contract_fields() {
             int x = 5;
             byte[2] y = 0x1234;
 
-            entrypoint function a() {
+            entry a() {
                 require(true);
             }
 
-            entrypoint function b() {
+            entry b() {
                 require(x == 5);
                 require(y == 0x1234);
             }
@@ -5165,7 +5452,7 @@ fn compiles_validate_output_state_to_expected_script() {
             int x = init_x;
             byte[2] y = init_y;
 
-            entrypoint function main() {
+            entry main() {
                 validateOutputState(0,{x:x+1,y:0x3412});
             }
         }
@@ -5181,9 +5468,14 @@ fn compiles_validate_output_state_to_expected_script() {
         .add_data_with_push_opcode(&[1u8, 2u8])
         .unwrap()
 
-        // ---- Build new_state.x = x + 1 ----
-        // duplicate x from stack (x is second item from top: y=0, x=1)
-        .add_op(OpOver)
+        // ---- Build fixed-size new_state.x chunk: <0x08><8-byte payload> ----
+        // Push the PUSHDATA8 prefix before compiling x + 1.
+        .add_data_with_push_opcode(&[0x08])
+        .unwrap()
+        // Copy x past y and the temporary prefix.
+        .add_i64(2)
+        .unwrap()
+        .add_op(OpPick)
         .unwrap()
         // push literal 1
         .add_i64(1)
@@ -5198,22 +5490,15 @@ fn compiles_validate_output_state_to_expected_script() {
         .unwrap()
         .add_op(OpNum2Bin)
         .unwrap()
-        // prepend PUSHDATA8 prefix byte
-        .add_data_with_push_opcode(&[0x08])
-        .unwrap()
-        .add_op(OpSwap)
-        .unwrap()
+        // prefix || encoded x
         .add_op(OpCat)
         .unwrap()
         // ---- Build new_state.y pushdata chunk ----
-        // raw y bytes
-        .add_data_with_push_opcode(&[0x34, 0x12])
-        .unwrap()
         // pushdata prefix for 2-byte data is 0x02
         .add_data_with_push_opcode(&[0x02])
         .unwrap()
-        // reorder to prefix || data
-        .add_op(OpSwap)
+        // raw y bytes
+        .add_data_with_push_opcode(&[0x34, 0x12])
         .unwrap()
         // resulting chunk: <0x02><0x3412>
         .add_op(OpCat)
@@ -5235,14 +5520,9 @@ fn compiles_validate_output_state_to_expected_script() {
         // duplicate sigscript length; one copy becomes substr length
         .add_op(OpDup)
         .unwrap()
-        // script_size of currently compiled contract (new redeem target)
-        .add_i64(compiled.script.len() as i64)
-        .unwrap()
-        // sigscript_len - script_size => bytes before current redeem
-        .add_op(OpSub)
-        .unwrap()
-        // add fixed current-state field prefix length: len(<x><y>) = 12
-        .add_i64(12)
+        // Precompute contract_fields_end_offset - script_size, where
+        // contract_fields_end_offset = len(<x><y>) = 12.
+        .add_i64(12 - compiled.script.len() as i64)
         .unwrap()
         // start offset of REST_OF_SCRIPT inside sigscript
         .add_op(OpAdd)
@@ -5298,11 +5578,8 @@ fn compiles_validate_output_state_to_expected_script() {
         // fetch tx.outputs[0].scriptPubKey
         .add_op(OpTxOutputSpk)
         .unwrap()
-        // expected == actual
-        .add_op(OpEqual)
-        .unwrap()
-        // enforce match
-        .add_op(OpVerify)
+        // enforce expected == actual
+        .add_op(OpEqualVerify)
         .unwrap()
 
         // ---- Entrypoint epilogue cleanup for original state fields ----
@@ -5327,7 +5604,7 @@ fn runs_validate_output_state() {
             int x = initX;
             byte[2] y = initY;
 
-            entrypoint function main() {
+            entry main() {
                 validateOutputState(0,{x:x+1,y:0x3412});
             }
         }
@@ -5357,7 +5634,7 @@ fn runs_validate_output_state_with_state_variable() {
             int x = initX;
             byte[2] y = initY;
 
-            entrypoint function main() {
+            entry main() {
                 State next = {x: x + 1, y: 0x3412};
                 validateOutputState(0, next);
             }
@@ -5431,7 +5708,7 @@ fn run_validate_output_state_with_template_case(
             int x = initX;
             byte[2] y = initY;
 
-            entrypoint function routeToA() {{
+            entry routeToA() {{
                 State s = {{muxHash: muxHash, aHash: aHash, x: x + 1, y: 0x3412}};
                 validateOutputStateWithTemplate(
                     0,
@@ -5479,7 +5756,7 @@ fn runs_validate_output_state_with_template() {
             int x = initX;
             byte[2] y = initY;
 
-            entrypoint function noop() {
+            entry noop() {
                 require(true);
             }
         }
@@ -5511,7 +5788,7 @@ fn runs_validate_output_state_with_template() {
             int x = initX;
             byte[2] y = initY;
 
-            entrypoint function routeToA() {{
+            entry routeToA() {{
                 State s = {{muxHash: muxHash, aHash: aHash, x: x + 1, y: 0x3412}};
                 validateOutputStateWithTemplate(
                     0,
@@ -5547,6 +5824,142 @@ fn runs_validate_output_state_with_template() {
 }
 
 #[test]
+fn template_hash_matches_all_template_builtins() {
+    let target_source = r#"
+        contract Target(int initX) {
+            int x = initX;
+
+            entry noop() {
+                require(true);
+            }
+        }
+    "#;
+    let target_input = compile_contract(target_source, &[7.into()], CompileOptions::default()).expect("compile target input succeeds");
+    let target_output =
+        compile_contract(target_source, &[8.into()], CompileOptions::default()).expect("compile target output succeeds");
+    let layout = target_input.state_layout;
+    let prefix = &target_input.script[..layout.start];
+    let suffix = &target_input.script[layout.start + layout.len..];
+    let prefix_hex = prefix.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+    let suffix_hex = suffix.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+
+    let verifier_source = format!(
+        r#"
+        contract Verifier() {{
+            struct RemoteState {{
+                int x;
+            }}
+
+            entry main() {{
+                byte[] templatePrefix = 0x{prefix_hex};
+                byte[] templateSuffix = 0x{suffix_hex};
+                byte[32] expectedTemplateHash = templateHash(templatePrefix, templateSuffix);
+
+                RemoteState prev = readInputStateWithTemplate(
+                    1,
+                    {},
+                    {},
+                    expectedTemplateHash
+                );
+                require(prev.x == 7);
+
+                RemoteState next = {{x: 8}};
+                validateOutputStateWithTemplate(
+                    0,
+                    next,
+                    templatePrefix,
+                    templateSuffix,
+                    expectedTemplateHash
+                );
+                validateOutputStateWithInputTemplate(
+                    0,
+                    next,
+                    1,
+                    {},
+                    {},
+                    expectedTemplateHash
+                );
+            }}
+        }}
+    "#,
+        prefix.len(),
+        suffix.len(),
+        prefix.len(),
+        suffix.len(),
+    );
+    let verifier = compile_contract(&verifier_source, &[], CompileOptions::default()).expect("compile verifier succeeds");
+    let verifier_sigscript = verifier.build_sig_script("main", vec![]).expect("verifier sigscript builds");
+    let verifier_sigscript = pay_to_script_hash_signature_script(verifier.script.clone(), verifier_sigscript).unwrap();
+
+    let verifier_input = test_input(0, verifier_sigscript);
+    let target_input_tx = test_input(1, sigscript_push_script(&target_input.script));
+    let output =
+        TransactionOutput { value: 1000, script_public_key: pay_to_script_hash_script(&target_output.script), covenant: None };
+    let tx = Transaction::new(1, vec![verifier_input, target_input_tx], vec![output.clone()], 0, Default::default(), 0, vec![]);
+    let verifier_utxo = UtxoEntry::new(1000, pay_to_script_hash_script(&verifier.script), 0, tx.is_coinbase(), None);
+    let target_utxo = UtxoEntry::new(1000, pay_to_script_hash_script(&target_input.script), 0, tx.is_coinbase(), None);
+
+    let result = execute_input(tx, vec![verifier_utxo, target_utxo], 0);
+    assert!(result.is_ok(), "templateHash should match all state template builtins: {}", result.unwrap_err());
+
+    let invalid_verifier_source = format!(
+        r#"
+        contract Verifier() {{
+            struct RemoteState {{
+                int x;
+            }}
+
+            entry main() {{
+                RemoteState next = {{x: 8}};
+                validateOutputStateWithInputTemplate(
+                    0,
+                    next,
+                    1,
+                    {},
+                    {},
+                    templateHash(0x{prefix_hex}, 0x{suffix_hex})
+                );
+            }}
+        }}
+    "#,
+        prefix.len() + 1,
+        suffix.len(),
+    );
+    let invalid_verifier =
+        compile_contract(&invalid_verifier_source, &[], CompileOptions::default()).expect("compile invalid verifier succeeds");
+    let invalid_sigscript = invalid_verifier.build_sig_script("main", vec![]).expect("invalid verifier sigscript builds");
+    let invalid_sigscript = pay_to_script_hash_signature_script(invalid_verifier.script.clone(), invalid_sigscript).unwrap();
+    let invalid_input = test_input(0, invalid_sigscript);
+    let target_input_tx = test_input(1, sigscript_push_script(&target_input.script));
+    let output =
+        TransactionOutput { value: 1000, script_public_key: pay_to_script_hash_script(&target_output.script), covenant: None };
+    let tx = Transaction::new(1, vec![invalid_input, target_input_tx], vec![output.clone()], 0, Default::default(), 0, vec![]);
+    let invalid_verifier_utxo = UtxoEntry::new(1000, pay_to_script_hash_script(&invalid_verifier.script), 0, tx.is_coinbase(), None);
+    let target_utxo = UtxoEntry::new(1000, pay_to_script_hash_script(&target_input.script), 0, tx.is_coinbase(), None);
+
+    assert!(execute_input(tx, vec![invalid_verifier_utxo, target_utxo], 0).is_err(), "incorrect template lengths must fail");
+}
+
+#[test]
+fn validate_output_state_with_input_template_requires_fixed_hash_type() {
+    let source = r#"
+        contract Verifier() {
+            struct RemoteState {
+                int x;
+            }
+
+            entry main() {
+                RemoteState next = {x: 8};
+                validateOutputStateWithInputTemplate(0, next, 1, 2, 3, true);
+            }
+        }
+    "#;
+
+    compile_contract(source, &[], CompileOptions::default())
+        .expect_err("validateOutputStateWithInputTemplate should require a byte[32] template hash");
+}
+
+#[test]
 fn runs_validate_output_state_with_template_using_passed_struct_layout() {
     let target_hash_value = vec![0x44u8; 32];
     let target_hash_hex = target_hash_value.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
@@ -5558,7 +5971,7 @@ fn runs_validate_output_state_with_template_using_passed_struct_layout() {
             int x = initX;
             byte[32] targetHash = initTargetHash;
 
-            entrypoint function noop() {{
+            entry noop() {{
                 require(y == 0x3412);
                 require(x == 6);
                 require(targetHash == 0x{target_hash_hex});
@@ -5597,7 +6010,7 @@ fn runs_validate_output_state_with_template_using_passed_struct_layout() {
             int x = initX;
             byte[2] y = initY;
 
-            entrypoint function routeToA(byte[32] targetHash) {{
+            entry routeToA(byte[32] targetHash) {{
                 C next = {{
                     y: 0x3412,
                     x: x + 1,
@@ -5658,7 +6071,7 @@ fn validate_output_state_with_template_rejects_wrong_template_hash() {
             int x = initX;
             byte[2] y = initY;
 
-            entrypoint function noop() {
+            entry noop() {
                 require(true);
             }
         }
@@ -5694,7 +6107,7 @@ fn validate_output_state_with_template_rejects_wrong_template_parts() {
             int x = initX;
             byte[2] y = initY;
 
-            entrypoint function noop() {
+            entry noop() {
                 require(true);
             }
         }
@@ -5729,7 +6142,7 @@ fn validate_output_state_with_template_rejects_wrong_output_script() {
             int x = initX;
             byte[2] y = initY;
 
-            entrypoint function noop() {
+            entry noop() {
                 require(true);
             }
         }
@@ -5762,7 +6175,7 @@ fn validate_output_state_with_template_rejects_different_target_state_layout() {
             byte[32] aHash = initAHash;
             int x = initX;
 
-            entrypoint function noop() {
+            entry noop() {
                 require(true);
             }
         }
@@ -5792,7 +6205,7 @@ pragma silverscript ^0.1.0;
 contract Sweep(int BOUND, byte[64] init_board) {
     byte[64] board = init_board;
 
-    entrypoint function main() {
+    entry main() {
         int zero_count = 0;
         // Keep this loop small so regressions fail fast (the previous exponential blow-up
         // already manifested at single-digit iteration counts).
@@ -5830,7 +6243,7 @@ fn validate_output_state_accepts_state_value_from_array_index() {
         contract C(int initX) {
             int x = initX;
 
-            entrypoint function main(State[] xs) {
+            entry main(State[] xs) {
                 State next = xs[0];
                 validateOutputState(0, next);
             }
@@ -5862,7 +6275,7 @@ fn validate_output_state_accepts_state_value_from_inline_returned_array() {
                 return(xs);
             }
 
-            entrypoint function main(State[] xs) {
+            entry main(State[] xs) {
                 (State[] ys) = id(xs);
                 State next = ys[0];
                 validateOutputState(0, next);
@@ -5891,11 +6304,11 @@ fn read_input_state_accepts_self_state_under_selector_dispatch() {
         contract C(int initX) {
             int x = initX;
 
-            entrypoint function noop() {
+            entry noop() {
                 require(true);
             }
 
-            entrypoint function main() {
+            entry main() {
                 State s = readInputState(this.activeInputIndex);
                 require(s.x == 5);
             }
@@ -5923,7 +6336,7 @@ fn read_input_state_int_addition_uses_numeric_semantics() {
         contract C(int initX) {
             int x = initX;
 
-            entrypoint function main() {
+            entry main() {
                 State s = readInputState(this.activeInputIndex);
                 int y = s.x + 5;
                 require(y == 10);
@@ -5952,11 +6365,11 @@ fn read_input_state_accepts_three_field_state_under_selector_dispatch() {
             byte[2] code = initCode;
             byte[32] owner = initOwner;
 
-            entrypoint function noop() {
+            entry noop() {
                 require(true);
             }
 
-            entrypoint function main() {
+            entry main() {
                 State s = readInputState(this.activeInputIndex);
                 require(s.amount == 5);
                 require(s.code == 0x3412);
@@ -5991,11 +6404,11 @@ fn read_input_state_accepts_pubkey_and_bool_fields_under_selector_dispatch() {
             bool flag = initFlag;
             pubkey owner = initOwner;
 
-            entrypoint function noop() {
+            entry noop() {
                 require(true);
             }
 
-            entrypoint function main() {
+            entry main() {
                 State s = readInputState(this.activeInputIndex);
                 require(s.flag);
                 require(s.owner == pubkey(0x0202020202020202020202020202020202020202020202020202020202020202));
@@ -6041,11 +6454,11 @@ fn read_input_state_runtime_preserves_supported_field_types_across_contract_shap
             contract C(int initInt) {
                 int someInt = initInt;
 
-                entrypoint function noop() {
+                entry noop() {
                     require(true);
                 }
 
-                entrypoint function main() {
+                entry main() {
                     State x = readInputState(this.activeInputIndex);
                     require(x.someInt + 5 == 15);
                 }
@@ -6060,11 +6473,11 @@ fn read_input_state_runtime_preserves_supported_field_types_across_contract_shap
             contract C(int[2] initInts) {
                 int[2] someInts = initInts;
 
-                entrypoint function noop() {
+                entry noop() {
                     require(true);
                 }
 
-                entrypoint function main() {
+                entry main() {
                     State x = readInputState(this.activeInputIndex);
                     require(x.someInts.length == 2);
                     require(x.someInts[0] == 1);
@@ -6081,11 +6494,11 @@ fn read_input_state_runtime_preserves_supported_field_types_across_contract_shap
             contract C(bool initBool) {
                 bool someBool = initBool;
 
-                entrypoint function noop() {
+                entry noop() {
                     require(true);
                 }
 
-                entrypoint function main() {
+                entry main() {
                     State x = readInputState(this.activeInputIndex);
                     require(x.someBool);
                 }
@@ -6100,11 +6513,11 @@ fn read_input_state_runtime_preserves_supported_field_types_across_contract_shap
             contract C(bool[2] initBools) {
                 bool[2] someBools = initBools;
 
-                entrypoint function noop() {
+                entry noop() {
                     require(true);
                 }
 
-                entrypoint function main() {
+                entry main() {
                     State x = readInputState(this.activeInputIndex);
                     require(x.someBools.length == 2);
                     require(x.someBools[0]);
@@ -6121,11 +6534,11 @@ fn read_input_state_runtime_preserves_supported_field_types_across_contract_shap
             contract C(byte[2] initBytes2) {
                 byte[2] someBytes2 = initBytes2;
 
-                entrypoint function noop() {
+                entry noop() {
                     require(true);
                 }
 
-                entrypoint function main() {
+                entry main() {
                     State x = readInputState(this.activeInputIndex);
                     require(x.someBytes2.length == 2);
                     require(x.someBytes2 == 0x3412);
@@ -6141,11 +6554,11 @@ fn read_input_state_runtime_preserves_supported_field_types_across_contract_shap
             contract C(pubkey initPubkey) {
                 pubkey somePubkey = initPubkey;
 
-                entrypoint function noop() {
+                entry noop() {
                     require(true);
                 }
 
-                entrypoint function main() {
+                entry main() {
                     State x = readInputState(this.activeInputIndex);
                     require(x.somePubkey == pubkey(0x0202020202020202020202020202020202020202020202020202020202020202));
 
@@ -6164,11 +6577,11 @@ fn read_input_state_runtime_preserves_supported_field_types_across_contract_shap
             contract C(sig initSig) {
                 sig someSig = initSig;
 
-                entrypoint function noop() {
+                entry noop() {
                     require(true);
                 }
 
-                entrypoint function main() {
+                entry main() {
                     State x = readInputState(this.activeInputIndex);
                     require(x.someSig == sig(0x1111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111));
 
@@ -6187,11 +6600,11 @@ fn read_input_state_runtime_preserves_supported_field_types_across_contract_shap
             contract C(datasig initDatasig) {
                 datasig someDatasig = initDatasig;
 
-                entrypoint function noop() {
+                entry noop() {
                     require(true);
                 }
 
-                entrypoint function main() {
+                entry main() {
                     State x = readInputState(this.activeInputIndex);
                     require(x.someDatasig == datasig(0x22222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222));
 
@@ -6227,7 +6640,7 @@ fn read_input_state_runtime_preserves_supported_field_types_without_selector_dis
             contract C(int initInt) {
                 int someInt = initInt;
 
-                entrypoint function main() {
+                entry main() {
                     State x = readInputState(this.activeInputIndex);
                     require(x.someInt + 5 == 15);
                 }
@@ -6242,7 +6655,7 @@ fn read_input_state_runtime_preserves_supported_field_types_without_selector_dis
             contract C(byte[2] initBytes2) {
                 byte[2] someBytes2 = initBytes2;
 
-                entrypoint function main() {
+                entry main() {
                     State x = readInputState(this.activeInputIndex);
                     require(x.someBytes2.length == 2);
                     require(x.someBytes2 == 0x3412);
@@ -6258,7 +6671,7 @@ fn read_input_state_runtime_preserves_supported_field_types_without_selector_dis
             contract C(pubkey initPubkey) {
                 pubkey somePubkey = initPubkey;
 
-                entrypoint function main() {
+                entry main() {
                     State x = readInputState(this.activeInputIndex);
                     require(x.somePubkey == pubkey(0x0202020202020202020202020202020202020202020202020202020202020202));
 
@@ -6280,11 +6693,11 @@ fn read_input_state_scalar_byte_round_trips_at_runtime() {
             byte someByte = initByte;
             pubkey someOwner = initOwner;
 
-            entrypoint function noop() {
+            entry noop() {
                 require(true);
             }
 
-            entrypoint function main() {
+            entry main() {
                 State x = readInputState(this.activeInputIndex);
 
                 // The companion pubkey field proves the state offsets are otherwise correct for this layout.
@@ -6317,11 +6730,11 @@ fn validate_output_state_accepts_state_under_selector_dispatch() {
         contract C(int initX) {
             int x = initX;
 
-            entrypoint function noop() {
+            entry noop() {
                 require(true);
             }
 
-            entrypoint function main(State next) {
+            entry main(State next) {
                 validateOutputState(0, next);
             }
         }
@@ -6350,11 +6763,11 @@ fn validate_output_state_accepts_three_field_state_under_selector_dispatch() {
             byte[2] code = initCode;
             byte[32] owner = initOwner;
 
-            entrypoint function noop() {
+            entry noop() {
                 require(true);
             }
 
-            entrypoint function main(State next) {
+            entry main(State next) {
                 validateOutputState(0, next);
             }
         }
@@ -6397,7 +6810,7 @@ fn debug_validate_output_state_accepts_current_byte32_fields() {
             int x = initX;
             byte[2] y = initY;
 
-            entrypoint function main() {
+            entry main() {
                 validateOutputState(0, {muxHash: muxHash, aHash: aHash, x: x + 1, y: 0x3412});
             }
         }
@@ -6434,11 +6847,11 @@ fn validate_output_state_accepts_pubkey_field_under_selector_dispatch() {
         contract C(pubkey initOwner) {
             pubkey owner = initOwner;
 
-            entrypoint function noop() {
+            entry noop() {
                 require(true);
             }
 
-            entrypoint function main(State next) {
+            entry main(State next) {
                 validateOutputState(0, next);
             }
         }
@@ -6473,7 +6886,7 @@ fn compiles_state_variable_and_internal_function_argument() {
                 require(s.y == 0x3412);
             }
 
-            entrypoint function main() {
+            entry main() {
                 State next = {x: x + 1, y: 0x3412};
                 check(next);
             }
@@ -6495,7 +6908,7 @@ fn runs_state_variable_and_internal_function_argument() {
                 require(s.y == 0x3412);
             }
 
-            entrypoint function main() {
+            entry main() {
                 State next = {x: x + 1, y: 0x3412};
                 check(next);
             }
@@ -6521,7 +6934,7 @@ fn plain_state_return_accepts_local_fixed_byte_field_from_local_identifier() {
                 });
             }
 
-            entrypoint function main() {
+            entry main() {
                 State prev = {data: data};
                 (State next) = step(prev);
                 require(next.data == data);
@@ -6537,7 +6950,7 @@ fn plain_state_return_accepts_local_fixed_byte_field_from_local_identifier() {
 fn byte_hex_literal_error_recommends_scalar_cast() {
     let source = r#"
         contract C() {
-            entrypoint function main() {
+            entry main() {
                 byte local = 0x07;
                 require(local == local);
             }
@@ -6560,7 +6973,7 @@ fn compiles_read_input_state_to_expected_script() {
             int x = initX;
             byte[2] y = initY;
 
-            entrypoint function main() {
+            entry main() {
                 {x: int in1_x, y: byte[2] in1_y} = readInputState(1);
                 require(in1_x > 7);
                 require(in1_y == 0x3412);
@@ -6724,7 +7137,7 @@ fn runs_read_input_state() {
             int x = initX;
             byte[2] y = initY;
 
-            entrypoint function main() {
+            entry main() {
                 {x: int in1_x, y: byte[2] in1_y} = readInputState(1);
                 require(in1_x > 7);
                 require(in1_y == 0x3412);
@@ -6759,7 +7172,7 @@ fn runs_read_input_state_into_state_variable() {
             int x = initX;
             byte[2] y = initY;
 
-            entrypoint function main() {
+            entry main() {
                 State in1 = readInputState(1);
                 require(in1.x > 7);
                 require(in1.y == 0x3412);
@@ -6788,6 +7201,44 @@ fn runs_read_input_state_into_state_variable() {
 }
 
 #[test]
+fn runs_read_input_state_as_internal_function_argument() {
+    let source = r#"
+        contract C(int initX, byte[2] initY) {
+            int x = initX;
+            byte[2] y = initY;
+
+            function check(State remote) {
+                require(remote.x > 7);
+                require(remote.y == 0x3412);
+            }
+
+            entry main() {
+                check(readInputState(1));
+            }
+        }
+    "#;
+
+    let active_compiled =
+        compile_contract(source, &[5.into(), vec![1u8, 2u8].into()], CompileOptions::default()).expect("compile succeeds");
+    let input1_compiled =
+        compile_contract(source, &[8.into(), vec![0x34u8, 0x12u8].into()], CompileOptions::default()).expect("compile succeeds");
+
+    let input0 = test_input(0, vec![]);
+    let input1 = test_input(1, sigscript_push_script(&input1_compiled.script));
+    let output = TransactionOutput {
+        value: 1000,
+        script_public_key: ScriptPublicKey::new(0, active_compiled.script.clone().into()),
+        covenant: None,
+    };
+    let tx = Transaction::new(1, vec![input0, input1], vec![output.clone()], 0, Default::default(), 0, vec![]);
+    let utxo0 = UtxoEntry::new(output.value, output.script_public_key.clone(), 0, tx.is_coinbase(), None);
+    let utxo1 = UtxoEntry::new(1000, ScriptPublicKey::new(0, vec![OpTrue].into()), 0, tx.is_coinbase(), None);
+
+    let result = execute_input(tx, vec![utxo0, utxo1], 0);
+    assert!(result.is_ok(), "readInputState call argument failed at runtime: {}", result.unwrap_err());
+}
+
+#[test]
 fn runs_read_input_state_with_template_into_typed_struct_variable() {
     let target_hash_value = vec![0x44u8; 32];
     let target_hash_hex = target_hash_value.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
@@ -6798,7 +7249,7 @@ fn runs_read_input_state_with_template_into_typed_struct_variable() {
             int x = initX;
             byte[32] targetHash = initTargetHash;
 
-            entrypoint function noop() {
+            entry noop() {
                 require(true);
             }
         }
@@ -6822,7 +7273,7 @@ fn runs_read_input_state_with_template_into_typed_struct_variable() {
 
             int round = initRound;
 
-            entrypoint function main() {{
+            entry main() {{
                 RemoteState remote = readInputStateWithTemplate(
                     1,
                     {},
@@ -6850,6 +7301,93 @@ fn runs_read_input_state_with_template_into_typed_struct_variable() {
 }
 
 #[test]
+fn typed_state_reader_disambiguates_the_implicit_state_layout() {
+    let source = r#"
+        contract Reader() {
+            struct RemoteState {
+                int n;
+            }
+
+            int n = 0;
+
+            entry main() {
+                RemoteState remote = readInputStateWithTemplate(
+                    1,
+                    0,
+                    0,
+                    0x0000000000000000000000000000000000000000000000000000000000000000
+                );
+                require(remote.n >= 0);
+            }
+        }
+    "#;
+
+    compile_contract(source, &[], CompileOptions::default())
+        .expect("the explicit RemoteState type should disambiguate the identical implicit State layout");
+}
+
+#[test]
+fn typed_state_reader_disambiguates_identical_custom_struct_layouts() {
+    let source = r#"
+        contract Reader() {
+            struct AState {
+                int n;
+            }
+
+            struct BState {
+                int n;
+            }
+
+            int tag = 0;
+
+            entry main() {
+                AState remote = readInputStateWithTemplate(
+                    1,
+                    0,
+                    0,
+                    0x0000000000000000000000000000000000000000000000000000000000000000
+                );
+                require(remote.n >= 0);
+            }
+        }
+    "#;
+
+    compile_contract(source, &[], CompileOptions::default())
+        .expect("the explicit AState type should disambiguate identical custom layouts");
+}
+
+#[test]
+fn untyped_state_reader_rejects_identical_custom_struct_layouts() {
+    let source = r#"
+        contract Reader() {
+            struct AState {
+                int n;
+            }
+
+            struct BState {
+                int n;
+            }
+
+            int tag = 0;
+
+            entry main() {
+                {n: int remoteN} = readInputStateWithTemplate(
+                    1,
+                    0,
+                    0,
+                    0x0000000000000000000000000000000000000000000000000000000000000000
+                );
+                require(remoteN >= 0);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default())
+        .expect_err("untyped destructuring cannot select between identical layouts");
+    assert!(err.to_string().contains("bindings match multiple struct layouts"), "unexpected ambiguity error: {err}");
+}
+
+#[test]
 fn runs_read_input_state_with_template_destructuring() {
     let target_hash_value = vec![0x55u8; 32];
     let target_hash_hex = target_hash_value.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
@@ -6860,7 +7398,7 @@ fn runs_read_input_state_with_template_destructuring() {
             int x = initX;
             byte[32] targetHash = initTargetHash;
 
-            entrypoint function noop() {
+            entry noop() {
                 require(true);
             }
         }
@@ -6882,7 +7420,7 @@ fn runs_read_input_state_with_template_destructuring() {
                 byte[32] targetHash;
             }}
 
-            entrypoint function main() {{
+            entry main() {{
                 {{y: byte[2] inY, x: int inX, targetHash: byte[32] inHash}} = readInputStateWithTemplate(
                     1,
                     {},
@@ -6911,7 +7449,7 @@ fn read_input_state_with_template_rejects_wrong_template_hash() {
             byte[2] y = initY;
             int x = initX;
 
-            entrypoint function noop() {
+            entry noop() {
                 require(true);
             }
         }
@@ -6929,7 +7467,7 @@ fn read_input_state_with_template_rejects_wrong_template_hash() {
                 int x;
             }}
 
-            entrypoint function main() {{
+            entry main() {{
                 RemoteState remote = readInputStateWithTemplate(
                     1,
                     {},
@@ -6957,7 +7495,7 @@ fn read_input_state_with_template_rejects_wrong_template_sizes() {
             byte[2] y = initY;
             int x = initX;
 
-            entrypoint function noop() {
+            entry noop() {
                 require(true);
             }
         }
@@ -6975,7 +7513,7 @@ fn read_input_state_with_template_rejects_wrong_template_sizes() {
                 int x;
             }}
 
-            entrypoint function main() {{
+            entry main() {{
                 RemoteState remote = readInputStateWithTemplate(
                     1,
                     {},
@@ -7003,7 +7541,7 @@ fn read_input_state_with_template_rejects_input_with_wrong_p2sh_commitment() {
             byte[2] y = initY;
             int x = initX;
 
-            entrypoint function noop() {
+            entry noop() {
                 require(true);
             }
         }
@@ -7020,7 +7558,7 @@ fn read_input_state_with_template_rejects_input_with_wrong_p2sh_commitment() {
                 int x;
             }}
 
-            entrypoint function main() {{
+            entry main() {{
                 RemoteState remote = readInputStateWithTemplate(
                     1,
                     {},
@@ -7054,7 +7592,7 @@ fn rejects_read_input_state_with_template_outside_direct_binding() {
                 require(remote.x > 0);
             }
 
-            entrypoint function main(int prefixLen, int suffixLen, byte[32] templateHash) {
+            entry main(int prefixLen, int suffixLen, byte[32] templateHash) {
                 check(readInputStateWithTemplate(1, prefixLen, suffixLen, templateHash));
             }
         }
@@ -7063,6 +7601,63 @@ fn rejects_read_input_state_with_template_outside_direct_binding() {
     let err = compile_contract(source, &[], CompileOptions::default())
         .expect_err("readInputStateWithTemplate should be rejected outside direct struct bindings");
     assert!(err.to_string().contains("must be assigned to a struct variable or destructured directly"), "unexpected error: {err}");
+}
+
+#[test]
+fn rejects_read_input_state_with_template_as_expression_call_argument() {
+    let source = r#"
+        contract Reader() {
+            struct RemoteState {
+                int x;
+            }
+
+            function identity(RemoteState remote) : RemoteState {
+                return remote;
+            }
+
+            entry main(int prefixLen, int suffixLen, byte[32] templateHash) {
+                RemoteState remote = identity(
+                    readInputStateWithTemplate(1, prefixLen, suffixLen, templateHash)
+                );
+                require(remote.x > 0);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default())
+        .expect_err("readInputStateWithTemplate should be rejected as an expression call argument");
+    assert!(err.to_string().contains("must be assigned to a struct variable or destructured directly"), "unexpected error: {err}");
+}
+
+#[test]
+fn read_input_state_with_template_checks_argument_types() {
+    let cases = [
+        ("true, prefixLen, suffixLen, templateHash", "input_idx"),
+        ("1, true, suffixLen, templateHash", "template_prefix_len"),
+        ("1, prefixLen, true, templateHash", "template_suffix_len"),
+        ("1, prefixLen, suffixLen, prefixLen", "expected_template_hash"),
+    ];
+
+    for (args, parameter) in cases {
+        let source = format!(
+            r#"
+                contract Reader() {{
+                    struct RemoteState {{
+                        int x;
+                    }}
+
+                    entry main(int prefixLen, int suffixLen, byte[32] templateHash) {{
+                        RemoteState remote = readInputStateWithTemplate({args});
+                        require(remote.x > 0);
+                    }}
+                }}
+            "#
+        );
+
+        let err = compile_contract(&source, &[], CompileOptions::default())
+            .expect_err("readInputStateWithTemplate should reject an argument with the wrong type");
+        assert!(err.to_string().contains(parameter), "expected an error for '{parameter}', got: {err}");
+    }
 }
 
 #[test]
@@ -7076,7 +7671,7 @@ fn rejects_validate_output_state_with_incorrect_state_variable_type() {
             int x = initX;
             byte[2] y = initY;
 
-            entrypoint function main() {
+            entry main() {
                 OtherState next = {z: 7};
                 validateOutputState(0, next);
             }
@@ -7100,7 +7695,7 @@ fn validate_output_state_lowers_nested_state_literal_in_state_field_order() {
             int a = initA;
             S2 b = {c: initC, d: initD};
 
-            entrypoint function main() {
+            entry main() {
                 validateOutputState(0, {b: {d: 8, c: 7}, a: 6});
             }
         }
@@ -7133,7 +7728,7 @@ fn validate_output_state_with_state_identifier() {
             int a = initA;
             S2 b = {c: initC, d: initD};
 
-            entrypoint function main() {
+            entry main() {
                 State next = {b: {d: 8, c: 7}, a: 6};
                 validateOutputState(0, next);
             }
@@ -7168,7 +7763,7 @@ fn validate_output_state_with_template_uses_passed_struct_layout_not_local_state
             int x = initX;
             byte[2] y = initY;
 
-            entrypoint function route(byte[32] targetHash) {
+            entry route(byte[32] targetHash) {
                 C next = {
                     y: 0x3412,
                     x: x + 1,
@@ -7203,7 +7798,7 @@ fn rejects_read_input_state_with_incorrect_target_type() {
             int x = initX;
             byte[2] y = initY;
 
-            entrypoint function main() {
+            entry main() {
                 OtherState in0 = readInputState(0);
                 require(in0.z > 0);
             }
@@ -7222,7 +7817,7 @@ fn fails_validate_output_state_with_wrong_output_index() {
             int x = initX;
             byte[2] y = initY;
 
-            entrypoint function main() {
+            entry main() {
                 validateOutputState(0,{x:x+1,y:0x3412});
             }
         }
@@ -7255,7 +7850,7 @@ fn fails_validate_output_state_with_mismatched_next_state_fields() {
             int x = initX;
             byte[2] y = initY;
 
-            entrypoint function main() {
+            entry main() {
                 validateOutputState(0,{x:x+1,y:0x3412});
             }
         }
@@ -7285,7 +7880,7 @@ fn rejects_validate_output_state_with_malformed_state_object() {
             int x = initX;
             byte[2] y = initY;
 
-            entrypoint function main() {
+            entry main() {
                 validateOutputState(0,{x:x+1});
             }
         }
@@ -7303,7 +7898,7 @@ fn rejects_validate_output_state_with_duplicate_state_field() {
             int x = initX;
             byte[2] y = initY;
 
-            entrypoint function main() {
+            entry main() {
                 validateOutputState(0,{x:x+1,y:0x3412,x:x+2});
             }
         }
@@ -7321,7 +7916,7 @@ fn rejects_validate_output_state_with_unknown_state_field() {
             int x = initX;
             byte[2] y = initY;
 
-            entrypoint function main() {
+            entry main() {
                 validateOutputState(0,{x:x+1,y:0x3412,z:1});
             }
         }
@@ -7343,7 +7938,7 @@ fn assert_compiled_body(source: &str, body: Vec<u8>) {
 fn checksig_result_can_be_used_in_bool_comparisons() {
     let source = r#"
         contract P2PK(sig signature, pubkey publicKey) {
-            entrypoint function main() {
+            entry main() {
                 require(checkSig(signature, publicKey) == true);
             }
         }
@@ -7356,7 +7951,7 @@ fn checksig_result_can_be_used_in_bool_comparisons() {
 fn checksigfromstack_lowers_to_matching_opcode() {
     let source = r#"
         contract DataSig(datasig signature, byte[32] digest, pubkey publicKey) {
-            entrypoint function main() {
+            entry main() {
                 require(checkSigFromStack(signature, digest, publicKey));
             }
         }
@@ -7392,7 +7987,7 @@ fn checksigfromstack_lowers_to_matching_opcode() {
 fn checksigfromstackecdsa_lowers_to_matching_opcode() {
     let source = r#"
         contract DataSig(datasig signature, byte[32] digest, byte[33] publicKey) {
-            entrypoint function main() {
+            entry main() {
                 require(checkSigFromStackECDSA(signature, digest, publicKey));
             }
         }
@@ -7428,7 +8023,7 @@ fn checksigfromstackecdsa_lowers_to_matching_opcode() {
 fn checksigfromstack_requires_datasig_and_32_byte_digest_types() {
     let raw_message = r#"
         contract DataSig(datasig signature, byte[] message, pubkey publicKey) {
-            entrypoint function main() {
+            entry main() {
                 require(checkSigFromStack(signature, message, publicKey));
             }
         }
@@ -7443,7 +8038,7 @@ fn checksigfromstack_requires_datasig_and_32_byte_digest_types() {
 
     let local_size_identifier = r#"
         contract DataSig(datasig signature, pubkey publicKey) {
-            entrypoint function main() {
+            entry main() {
                 int N = 32;
                 byte[N] digest = 0x010203;
                 require(checkSigFromStack(signature, digest, publicKey));
@@ -7462,7 +8057,7 @@ fn checksigfromstack_requires_datasig_and_32_byte_digest_types() {
         contract DataSig(datasig signature, pubkey publicKey) {
             int constant N = 32;
 
-            entrypoint function main(byte[N] digest) {
+            entry main(byte[N] digest) {
                 require(checkSigFromStack(signature, digest, publicKey));
             }
         }
@@ -7476,7 +8071,7 @@ fn checksigfromstack_requires_datasig_and_32_byte_digest_types() {
     let literal_args = format!(
         r#"
         contract DataSig() {{
-            entrypoint function main() {{
+            entry main() {{
                 require(checkSigFromStack({signature_literal}, {digest_literal}, {public_key_literal}));
             }}
         }}
@@ -7487,7 +8082,7 @@ fn checksigfromstack_requires_datasig_and_32_byte_digest_types() {
     let byte_pubkey_variable = format!(
         r#"
         contract DataSig(datasig signature) {{
-            entrypoint function main() {{
+            entry main() {{
                 byte[32] digest = {digest_literal};
                 byte[32] publicKey = {public_key_literal};
                 require(checkSigFromStack(signature, digest, publicKey));
@@ -7504,7 +8099,7 @@ fn checksigfromstack_requires_datasig_and_32_byte_digest_types() {
 
     let tx_signature = r#"
         contract DataSig(sig signature, byte[32] digest, pubkey publicKey) {
-            entrypoint function main() {
+            entry main() {
                 require(checkSigFromStack(signature, digest, publicKey));
             }
         }
@@ -7519,7 +8114,7 @@ fn checksigfromstack_requires_datasig_and_32_byte_digest_types() {
 
     let schnorr_pubkey_for_ecdsa = r#"
         contract DataSig(datasig signature, byte[32] digest, pubkey publicKey) {
-            entrypoint function main() {
+            entry main() {
                 require(checkSigFromStackECDSA(signature, digest, publicKey));
             }
         }
@@ -7552,7 +8147,7 @@ fn r0_succinct_verify_lowers_hash_aliases_to_zk_precompile() {
                     byte[] seal,
                     byte[] journal
                 ) {{
-                    entrypoint function main() {{
+                    entry main() {{
                         require({call_name}(claim, control_index, control_digests, seal, journal, image_id, control_id));
                     }}
                 }}
@@ -7619,7 +8214,7 @@ fn r0_succinct_verify_rejects_reserved_non_poseidon_hashes() {
         let source = format!(
             r#"
                 contract R0() {{
-                    entrypoint function main() {{
+                    entry main() {{
                         require({call_name}(bytes("claim"), bytes("control_index"), bytes("control_digests"), bytes("seal"), bytes("journal"), {b32_a}, {b32_b}));
                     }}
                 }}
@@ -7637,7 +8232,7 @@ fn r0_succinct_verify_rejects_reserved_non_poseidon_hashes() {
 fn r0_g16_verify_lowers_with_sdk_verifier_fragment() {
     let source = r#"
         contract R0(byte[32] journal_hash, byte[] proof, byte[32] image_id) {
-            entrypoint function main() {
+            entry main() {
                 require(r0.g16.verify(journal_hash, proof, image_id));
             }
         }
@@ -7678,7 +8273,7 @@ fn r0_verify_builtins_reject_incorrect_argument_types() {
             format!(
                 r#"
                     contract R0() {{
-                        entrypoint function main() {{
+                        entry main() {{
                             require(r0.g16.verify(1, bytes("proof"), {b32_a}));
                         }}
                     }}
@@ -7690,7 +8285,7 @@ fn r0_verify_builtins_reject_incorrect_argument_types() {
             format!(
                 r#"
                     contract R0() {{
-                        entrypoint function main() {{
+                        entry main() {{
                             require(r0.g16.verify({b32_a}, 1, {b32_b}));
                         }}
                     }}
@@ -7702,7 +8297,7 @@ fn r0_verify_builtins_reject_incorrect_argument_types() {
             format!(
                 r#"
                     contract R0() {{
-                        entrypoint function main() {{
+                        entry main() {{
                             require(r0.g16.verify({b32_a}, bytes("proof"), bytes("image")));
                         }}
                     }}
@@ -7720,7 +8315,7 @@ fn r0_verify_builtins_reject_incorrect_argument_types() {
         let source = format!(
             r#"
                 contract R0() {{
-                    entrypoint function main() {{
+                    entry main() {{
                         require({call_name}(1, bytes("control_index"), bytes("control_digests"), bytes("seal"), bytes("journal"), {b32_a}, {b32_b}));
                     }}
                 }}
@@ -7734,7 +8329,7 @@ fn r0_verify_builtins_reject_incorrect_argument_types() {
             format!(
                 r#"
                     contract R0() {{
-                        entrypoint function main() {{
+                        entry main() {{
                             require(r0.succinct.verify(bytes("claim"), 1, bytes("control_digests"), bytes("seal"), bytes("journal"), {b32_a}, {b32_b}));
                         }}
                     }}
@@ -7746,7 +8341,7 @@ fn r0_verify_builtins_reject_incorrect_argument_types() {
             format!(
                 r#"
                     contract R0() {{
-                        entrypoint function main() {{
+                        entry main() {{
                             require(r0.succinct.verify(bytes("claim"), bytes("control_index"), 1, bytes("seal"), bytes("journal"), {b32_a}, {b32_b}));
                         }}
                     }}
@@ -7758,7 +8353,7 @@ fn r0_verify_builtins_reject_incorrect_argument_types() {
             format!(
                 r#"
                     contract R0() {{
-                        entrypoint function main() {{
+                        entry main() {{
                             require(r0.succinct.verify(bytes("claim"), bytes("control_index"), bytes("control_digests"), 1, bytes("journal"), {b32_a}, {b32_b}));
                         }}
                     }}
@@ -7770,7 +8365,7 @@ fn r0_verify_builtins_reject_incorrect_argument_types() {
             format!(
                 r#"
                     contract R0() {{
-                        entrypoint function main() {{
+                        entry main() {{
                             require(r0.succinct.verify(bytes("claim"), bytes("control_index"), bytes("control_digests"), bytes("seal"), 1, {b32_a}, {b32_b}));
                         }}
                     }}
@@ -7782,7 +8377,7 @@ fn r0_verify_builtins_reject_incorrect_argument_types() {
             format!(
                 r#"
                     contract R0() {{
-                        entrypoint function main() {{
+                        entry main() {{
                             require(r0.succinct.verify(bytes("claim"), bytes("control_index"), bytes("control_digests"), bytes("seal"), bytes("journal"), bytes("image"), {b32_b}));
                         }}
                     }}
@@ -7794,7 +8389,7 @@ fn r0_verify_builtins_reject_incorrect_argument_types() {
             format!(
                 r#"
                     contract R0() {{
-                        entrypoint function main() {{
+                        entry main() {{
                             require(r0.succinct.verify(bytes("claim"), bytes("control_index"), bytes("control_digests"), bytes("seal"), bytes("journal"), {b32_a}, bytes("control")));
                         }}
                     }}
@@ -7819,7 +8414,7 @@ fn r0_succinct_verify_runtime_checks_each_hash_with_fixture() {
         let source = format!(
             r#"
                 contract R0(byte[32] image_id, byte[32] control_id) {{
-                    entrypoint function main(byte[] claim, byte[] control_index, byte[] control_digests, byte[] seal, byte[] journal) {{
+                    entry main(byte[] claim, byte[] control_index, byte[] control_digests, byte[] seal, byte[] journal) {{
                         require({call_name}(claim, control_index, control_digests, seal, journal, image_id, control_id));
                     }}
                 }}
@@ -7859,7 +8454,7 @@ fn r0_g16_verify_executes_with_fixture() {
 
     let source = r#"
         contract R0() {
-            entrypoint function main(byte[32] journal_hash, byte[] proof, byte[32] image_id) {
+            entry main(byte[32] journal_hash, byte[] proof, byte[32] image_id) {
                 require(r0.g16.verify(journal_hash, proof, image_id));
             }
         }
@@ -7876,7 +8471,7 @@ fn r0_g16_verify_executes_with_fixture() {
 fn checksigfromstack_result_is_checked_as_bool() {
     let bool_assignment = r#"
         contract DataSig(datasig signature, byte[32] digest, pubkey publicKey) {
-            entrypoint function main() {
+            entry main() {
                 bool ok = checkSigFromStack(signature, digest, publicKey);
                 require(ok);
             }
@@ -7891,7 +8486,7 @@ fn checksigfromstack_result_is_checked_as_bool() {
 
     let byte_assignment = r#"
         contract DataSig(datasig signature, byte[32] digest, pubkey publicKey) {
-            entrypoint function main() {
+            entry main() {
                 byte[32] ok = checkSigFromStack(signature, digest, publicKey);
                 require(true);
             }
@@ -7911,7 +8506,7 @@ fn checksigfromstack_result_is_checked_as_bool() {
                 return checkSigFromStack(signature, digest, publicKey);
             }
 
-            entrypoint function main() {
+            entry main() {
                 require(ok());
             }
         }
@@ -7929,7 +8524,7 @@ fn checksigfromstack_result_is_checked_as_bool() {
                 return checkSigFromStack(signature, digest, publicKey);
             }
 
-            entrypoint function main() {
+            entry main() {
                 require(true);
             }
         }
@@ -7947,7 +8542,7 @@ fn checksigfromstack_result_is_checked_as_bool() {
 fn checksigfromstack_executes_schnorr_signature_verification() {
     let source = r#"
         contract DataSig(datasig signature, byte[32] digest, pubkey publicKey) {
-            entrypoint function main() {
+            entry main() {
                 require(checkSigFromStack(signature, digest, publicKey));
             }
         }
@@ -7979,7 +8574,7 @@ fn checksigfromstack_executes_schnorr_signature_verification() {
 fn checksigfromstack_false_result_can_be_asserted() {
     let source = r#"
         contract DataSig() {
-            entrypoint function main(datasig signature, byte[32] digest, pubkey publicKey) {
+            entry main(datasig signature, byte[32] digest, pubkey publicKey) {
                 require(!checkSigFromStack(signature, digest, publicKey));
             }
         }
@@ -8008,7 +8603,7 @@ fn checksigfromstack_false_result_can_be_asserted() {
 fn checksigfromstackecdsa_executes_ecdsa_signature_verification() {
     let source = r#"
         contract DataSig(datasig signature, byte[32] digest, byte[33] publicKey) {
-            entrypoint function main() {
+            entry main() {
                 require(checkSigFromStackECDSA(signature, digest, publicKey));
             }
         }
@@ -8044,7 +8639,7 @@ fn canonicalizes_bool_comparison_operands_for_equality_and_inequality() {
         let source = format!(
             r#"
                 contract BoolCompare() {{
-                    entrypoint function main(bool x, bool y) {{
+                    entry main(bool x, bool y) {{
                         require(x {operator} y);
                     }}
                 }}
@@ -8087,31 +8682,8 @@ fn compiles_opcode_builtins() {
         (
             r#"
                 contract Test() {
-                    entrypoint function main() {
-                        require(byte[](OpSha256(bytes("msg"))) == byte[]("hash"));
-                    }
-                }
-            "#,
-            script_builder()
-                .add_data_with_push_opcode(b"msg")
-                .unwrap()
-                .add_op(OpSHA256)
-                .unwrap()
-                .add_data_with_push_opcode(b"hash")
-                .unwrap()
-                .add_op(OpEqual)
-                .unwrap()
-                .add_op(OpVerify)
-                .unwrap()
-                .add_op(OpTrue)
-                .unwrap()
-                .drain(),
-        ),
-        (
-            r#"
-                contract Test() {
-                    entrypoint function main() {
-                        require(OpTxSubnetId() == bytes("subnet"));
+                    entry main() {
+                        require(byte[](OpTxSubnetId()) == bytes("subnet"));
                     }
                 }
             "#,
@@ -8131,7 +8703,7 @@ fn compiles_opcode_builtins() {
         (
             r#"
                 contract Test() {
-                    entrypoint function main() {
+                    entry main() {
                         require(OpTxGas() == 0);
                     }
                 }
@@ -8152,7 +8724,7 @@ fn compiles_opcode_builtins() {
         (
             r#"
                 contract Test() {
-                    entrypoint function main() {
+                    entry main() {
                         require(OpTxPayloadLen() >= 0);
                     }
                 }
@@ -8173,7 +8745,7 @@ fn compiles_opcode_builtins() {
         (
             r#"
                 contract Test() {
-                    entrypoint function main() {
+                    entry main() {
                         require(OpTxPayloadSubstr(1, 3) == bytes("ok"));
                     }
                 }
@@ -8198,8 +8770,8 @@ fn compiles_opcode_builtins() {
         (
             r#"
                 contract Test() {
-                    entrypoint function main() {
-                        require(OpOutpointTxId(0) == bytes("txid"));
+                    entry main() {
+                        require(byte[](OpOutpointTxId(0)) == bytes("txid"));
                     }
                 }
             "#,
@@ -8221,7 +8793,7 @@ fn compiles_opcode_builtins() {
         (
             r#"
                 contract Test() {
-                    entrypoint function main() {
+                    entry main() {
                         require(OpOutpointIndex(0) == 0);
                     }
                 }
@@ -8244,7 +8816,7 @@ fn compiles_opcode_builtins() {
         (
             r#"
                 contract Test() {
-                    entrypoint function main() {
+                    entry main() {
                         require(OpTxInputScriptSigLen(0) >= 0);
                     }
                 }
@@ -8267,7 +8839,7 @@ fn compiles_opcode_builtins() {
         (
             r#"
                 contract Test() {
-                    entrypoint function main() {
+                    entry main() {
                         require(OpTxInputScriptSigSubstr(0, 0, 1) == bytes("sig"));
                     }
                 }
@@ -8294,8 +8866,8 @@ fn compiles_opcode_builtins() {
         (
             r#"
                 contract Test() {
-                    entrypoint function main() {
-                        require(OpTxInputSeq(0) == bytes("seq"));
+                    entry main() {
+                        require(byte[](OpTxInputSeq(0)) == bytes("seq"));
                     }
                 }
             "#,
@@ -8317,7 +8889,7 @@ fn compiles_opcode_builtins() {
         (
             r#"
                 contract Test() {
-                    entrypoint function main() {
+                    entry main() {
                         require(OpTxInputDaaScore(0) == 0);
                     }
                 }
@@ -8340,7 +8912,7 @@ fn compiles_opcode_builtins() {
         (
             r#"
                 contract Test() {
-                    entrypoint function main() {
+                    entry main() {
                         require(OpTxInputDaaScore(0) == 0);
                     }
                 }
@@ -8363,7 +8935,7 @@ fn compiles_opcode_builtins() {
         (
             r#"
                 contract Test() {
-                    entrypoint function main() {
+                    entry main() {
                         require(OpTxInputIsCoinbase(0) == false);
                     }
                 }
@@ -8396,7 +8968,7 @@ fn compiles_opcode_builtins() {
         (
             r#"
                 contract Test() {
-                    entrypoint function main() {
+                    entry main() {
                         require(OpTxInputSpkLen(0) >= 0);
                     }
                 }
@@ -8419,7 +8991,7 @@ fn compiles_opcode_builtins() {
         (
             r#"
                 contract Test() {
-                    entrypoint function main() {
+                    entry main() {
                         require(OpTxInputSpkSubstr(0, 0, 1) == bytes("spk"));
                     }
                 }
@@ -8446,7 +9018,7 @@ fn compiles_opcode_builtins() {
         (
             r#"
                 contract Test() {
-                    entrypoint function main() {
+                    entry main() {
                         require(OpTxOutputSpkLen(0) >= 0);
                     }
                 }
@@ -8469,7 +9041,7 @@ fn compiles_opcode_builtins() {
         (
             r#"
                 contract Test() {
-                    entrypoint function main() {
+                    entry main() {
                         require(OpTxOutputSpkSubstr(0, 0, 1) == bytes("out"));
                     }
                 }
@@ -8496,7 +9068,7 @@ fn compiles_opcode_builtins() {
         (
             r#"
                 contract Test() {
-                    entrypoint function main() {
+                    entry main() {
                         require(OpAuthOutputCount(0) >= 0);
                     }
                 }
@@ -8519,7 +9091,7 @@ fn compiles_opcode_builtins() {
         (
             r#"
                 contract Test() {
-                    entrypoint function main() {
+                    entry main() {
                         require(OpAuthOutputIdx(0, 0) >= 0);
                     }
                 }
@@ -8544,7 +9116,7 @@ fn compiles_opcode_builtins() {
         (
             r#"
                 contract Test() {
-                    entrypoint function main() {
+                    entry main() {
                         require(byte[](OpInputCovenantId(0)) == bytes("cov"));
                     }
                 }
@@ -8567,7 +9139,7 @@ fn compiles_opcode_builtins() {
         (
             r#"
                 contract Test() {
-                    entrypoint function main() {
+                    entry main() {
                         require(byte[](OpOutputCovenantId(0)) == bytes("cov"));
                     }
                 }
@@ -8590,7 +9162,7 @@ fn compiles_opcode_builtins() {
         (
             r#"
                 contract Test() {
-                    entrypoint function main() {
+                    entry main() {
                         require(OpCovInputCount(bytes("c1")) >= 0);
                     }
                 }
@@ -8613,7 +9185,7 @@ fn compiles_opcode_builtins() {
         (
             r#"
                 contract Test() {
-                    entrypoint function main() {
+                    entry main() {
                         require(OpCovInputIdx(bytes("c1"), 0) >= 0);
                     }
                 }
@@ -8638,7 +9210,7 @@ fn compiles_opcode_builtins() {
         (
             r#"
                 contract Test() {
-                    entrypoint function main() {
+                    entry main() {
                         require(OpCovOutputCount(bytes("c1")) >= 0);
                     }
                 }
@@ -8661,7 +9233,7 @@ fn compiles_opcode_builtins() {
         (
             r#"
                 contract Test() {
-                    entrypoint function main() {
+                    entry main() {
                         require(OpCovOutputIdx(bytes("c1"), 0) >= 0);
                     }
                 }
@@ -8686,7 +9258,7 @@ fn compiles_opcode_builtins() {
         (
             r#"
                 contract Test() {
-                    entrypoint function main() {
+                    entry main() {
                         require(OpNum2Bin(5, 2) == bytes("bin"));
                     }
                 }
@@ -8711,7 +9283,7 @@ fn compiles_opcode_builtins() {
         (
             r#"
                 contract Test() {
-                    entrypoint function main() {
+                    entry main() {
                         require(OpBin2Num(bytes("a")) == 5);
                     }
                 }
@@ -8734,8 +9306,8 @@ fn compiles_opcode_builtins() {
         (
             r#"
                 contract Test() {
-                    entrypoint function main() {
-                        require(OpChainblockSeqCommit(bytes("block")) == bytes("commit"));
+                    entry main() {
+                        require(byte[](OpChainblockSeqCommit(bytes("block"))) == bytes("commit"));
                     }
                 }
             "#,
@@ -8768,8 +9340,8 @@ fn executes_opcode_builtins_basic() {
             "sha256",
             r#"
                 contract Test() {
-                    entrypoint function main() {
-                        require(OpSha256(bytes("msg")) == OpSha256(bytes("msg")));
+                    entry main() {
+                        require(sha256(bytes("msg")) == sha256(bytes("msg")));
                     }
                 }
             "#,
@@ -8778,8 +9350,8 @@ fn executes_opcode_builtins_basic() {
             "subnet_id",
             r#"
                 contract Test() {
-                    entrypoint function main() {
-                        require(OpTxSubnetId() == bytes("abcdefghijklmnopqrst"));
+                    entry main() {
+                        require(byte[](OpTxSubnetId()) == bytes("abcdefghijklmnopqrst"));
                     }
                 }
             "#,
@@ -8788,7 +9360,7 @@ fn executes_opcode_builtins_basic() {
             "gas",
             r#"
                 contract Test() {
-                    entrypoint function main() {
+                    entry main() {
                         require(OpTxGas() == 123);
                     }
                 }
@@ -8798,7 +9370,7 @@ fn executes_opcode_builtins_basic() {
             "payload_len",
             r#"
                 contract Test() {
-                    entrypoint function main() {
+                    entry main() {
                         require(OpTxPayloadLen() == 12);
                     }
                 }
@@ -8808,7 +9380,7 @@ fn executes_opcode_builtins_basic() {
             "payload_substr",
             r#"
                 contract Test() {
-                    entrypoint function main() {
+                    entry main() {
                         require(OpTxPayloadSubstr(0, 7) == bytes("payload"));
                     }
                 }
@@ -8818,8 +9390,8 @@ fn executes_opcode_builtins_basic() {
             "outpoint_txid",
             r#"
                 contract Test() {
-                    entrypoint function main() {
-                        require(OpOutpointTxId(0) == bytes("0123456789abcdef0123456789abcdef"));
+                    entry main() {
+                        require(byte[](OpOutpointTxId(0)) == bytes("0123456789abcdef0123456789abcdef"));
                     }
                 }
             "#,
@@ -8828,7 +9400,7 @@ fn executes_opcode_builtins_basic() {
             "outpoint_index",
             r#"
                 contract Test() {
-                    entrypoint function main() {
+                    entry main() {
                         require(OpOutpointIndex(0) == 7);
                     }
                 }
@@ -8838,8 +9410,8 @@ fn executes_opcode_builtins_basic() {
             "sigscript_len",
             r#"
                 contract Test() {
-                    entrypoint function dummy() { require(true); }
-                    entrypoint function main() {
+                    entry dummy() { require(true); }
+                    entry main() {
                         require(OpTxInputScriptSigLen(0) == 1);
                     }
                 }
@@ -8849,8 +9421,8 @@ fn executes_opcode_builtins_basic() {
             "sigscript_substr",
             r#"
                 contract Test() {
-                    entrypoint function dummy() { require(true); }
-                    entrypoint function main() {
+                    entry dummy() { require(true); }
+                    entry main() {
                         require(OpTxInputScriptSigSubstr(0, 0, 1) == bytes("Q"));
                     }
                 }
@@ -8860,8 +9432,8 @@ fn executes_opcode_builtins_basic() {
             "input_seq",
             r#"
                 contract Test() {
-                    entrypoint function main() {
-                        require(OpTxInputSeq(0) == bytes("sequence"));
+                    entry main() {
+                        require(byte[](OpTxInputSeq(0)) == bytes("sequence"));
                     }
                 }
             "#,
@@ -8870,7 +9442,7 @@ fn executes_opcode_builtins_basic() {
             "input_daa_score",
             r#"
                 contract Test() {
-                    entrypoint function main() {
+                    entry main() {
                         require(OpTxInputDaaScore(0) == 0);
                     }
                 }
@@ -8880,7 +9452,7 @@ fn executes_opcode_builtins_basic() {
             "is_coinbase",
             r#"
                 contract Test() {
-                    entrypoint function main() {
+                    entry main() {
                         require(OpTxInputIsCoinbase(0) == bool(0));
                     }
                 }
@@ -8890,7 +9462,7 @@ fn executes_opcode_builtins_basic() {
             "input_spk_len",
             r#"
                 contract Test() {
-                    entrypoint function main() {
+                    entry main() {
                         require(OpTxInputSpkLen(0) == OpTxInputSpkLen(0));
                     }
                 }
@@ -8900,7 +9472,7 @@ fn executes_opcode_builtins_basic() {
             "input_spk_substr",
             r#"
                 contract Test() {
-                    entrypoint function main() {
+                    entry main() {
                         require(OpTxInputSpkSubstr(0, 0, 1) == OpTxInputSpkSubstr(0, 0, 1));
                     }
                 }
@@ -8910,7 +9482,7 @@ fn executes_opcode_builtins_basic() {
             "output_spk_len",
             r#"
                 contract Test() {
-                    entrypoint function main() {
+                    entry main() {
                         require(OpTxOutputSpkLen(0) == 8);
                     }
                 }
@@ -8920,7 +9492,7 @@ fn executes_opcode_builtins_basic() {
             "output_spk_substr",
             r#"
                 contract Test() {
-                    entrypoint function main() {
+                    entry main() {
                         require(OpTxOutputSpkSubstr(0, 2, 8) == bytes("outspk"));
                     }
                 }
@@ -8930,7 +9502,7 @@ fn executes_opcode_builtins_basic() {
             "num2bin_bin2num",
             r#"
                 contract Test() {
-                    entrypoint function main() {
+                    entry main() {
                         require(OpBin2Num(OpNum2Bin(5, 2)) == 5);
                     }
                 }
@@ -8949,10 +9521,65 @@ fn executes_opcode_builtins_basic() {
 }
 
 #[test]
+fn template_hash_matches_canonical_rust_and_sil_vectors() {
+    let cases: &[(&[u8], &[u8], &str)] = &[
+        (b"", b"", "94c1c088cc9453996779630ad3af45cbd92814828dd784cf2aa12df95d1b8afe"),
+        (b"a", b"bc", "77bbcab7072b897c548327378f11776f4853104c71bdb95a12ded5d2783523bf"),
+        (b"ab", b"c", "20263e794775e4edf2b306c0f306af9e50175c831c857604b481e847f790bf95"),
+        (&[0x00, 0xff], &[0x10, 0x00, 0x80], "81485678b557bcd4a836c2db54ee268e1dc08549f1b8e4d8d67960321b765f25"),
+    ];
+
+    let sil_bytes = |bytes: &[u8]| {
+        if bytes.is_empty() {
+            "bytes(\"\")".to_string()
+        } else {
+            format!("0x{}", bytes.iter().map(|byte| format!("{byte:02x}")).collect::<String>())
+        }
+    };
+
+    for (prefix, suffix, expected_hex) in cases {
+        let mut expected = [0u8; 32];
+        faster_hex::hex_decode(expected_hex.as_bytes(), &mut expected).unwrap();
+        assert_eq!(template_hash(prefix, suffix), expected);
+
+        let prefix = sil_bytes(prefix);
+        let suffix = sil_bytes(suffix);
+        let source = format!(
+            r#"
+            contract Test() {{
+                entry main() {{
+                    require(templateHash({prefix}, {suffix}) == 0x{expected_hex});
+                }}
+            }}
+        "#
+        );
+
+        let compiled = compile_contract(&source, &[], CompileOptions::default()).expect("templateHash should compile");
+        let result = run_script_with_selector(compiled.script, None);
+        assert!(result.is_ok(), "templateHash should match canonical vector {expected_hex}: {result:?}");
+    }
+}
+
+#[test]
+fn template_hash_binds_prefix_suffix_boundary() {
+    let source = r#"
+        contract Test() {
+            entry main() {
+                require(templateHash(bytes("a"), bytes("bc")) != templateHash(bytes("ab"), bytes("c")));
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("templateHash should compile");
+    let result = run_script_with_selector(compiled.script, None);
+    assert!(result.is_ok(), "templateHash should commit to the prefix/suffix boundary: {result:?}");
+}
+
+#[test]
 fn executes_opcode_builtins_covenants() {
     let source = r#"
         contract Test() {
-            entrypoint function main() {
+            entry main() {
                 require(OpAuthOutputCount(0) == 2);
                 require(OpAuthOutputIdx(0, 1) == 2);
                 require(byte[](OpInputCovenantId(0)) == bytes("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"));
@@ -8996,8 +9623,8 @@ fn executes_opcode_chainblock_seq_commit() {
 
     let source = r#"
         contract Test() {
-            entrypoint function main() {
-                require(OpChainblockSeqCommit(bytes("0123456789abcdef0123456789abcdef")) == bytes("fedcba9876543210fedcba9876543210"));
+            entry main() {
+                require(byte[](OpChainblockSeqCommit(bytes("0123456789abcdef0123456789abcdef"))) == bytes("fedcba9876543210fedcba9876543210"));
             }
         }
     "#;
@@ -9018,7 +9645,7 @@ fn executes_opcode_chainblock_seq_commit() {
 fn compiles_if_else_and_verifies() {
     let source = r#"
         contract Test() {
-            entrypoint function main() {
+            entry main() {
                 if (1 < 2) {
                     require(true);
                 } else {
@@ -9066,7 +9693,7 @@ fn compiles_if_else_and_verifies() {
 fn compiles_time_op_csv_and_verifies() {
     let source = r#"
         contract Test() {
-            entrypoint function main() {
+            entry main() {
                 require(this.age >= 10);
             }
         }
@@ -9083,10 +9710,60 @@ fn compiles_time_op_csv_and_verifies() {
 }
 
 #[test]
+fn rejects_unsupported_time_op_comparisons() {
+    for condition in ["this.age > 10", "this.age < 10", "this.age <= 10", "tx.time > 10", "tx.time < 10", "tx.time <= 10"] {
+        let source = format!(
+            r#"
+                contract Test() {{
+                    entry main() {{
+                        require({condition});
+                    }}
+                }}
+            "#
+        );
+
+        assert!(
+            compile_contract(&source, &[], CompileOptions::default()).is_err(),
+            "unsupported time comparison should fail compilation: {condition}"
+        );
+    }
+}
+
+#[test]
+fn rejects_time_variables_outside_time_op_require() {
+    for statement in [
+        "require(this.age == 10);",
+        "require(tx.time == 10);",
+        "require(10 <= this.age);",
+        "require(10 <= tx.time);",
+        "int value = this.age;",
+        "int value = tx.time;",
+        "if (this.age >= 10) { require(true); }",
+        "if (tx.time >= 10) { require(true); }",
+        "require(this.time >= 10);",
+    ] {
+        let source = format!(
+            r#"
+                contract Test() {{
+                    entry main() {{
+                        {statement}
+                    }}
+                }}
+            "#
+        );
+
+        assert!(
+            compile_contract(&source, &[], CompileOptions::default()).is_err(),
+            "time variable outside require(time >= threshold) should fail compilation: {statement}"
+        );
+    }
+}
+
+#[test]
 fn compiles_reused_variables_and_verifies() {
     let source = r#"
         contract Test() {
-            entrypoint function main() {
+            entry main() {
                 int a = 2 + 3;
                 int b = a * a + a;
                 require(b == 30);
@@ -9120,10 +9797,6 @@ fn compiles_reused_variables_and_verifies() {
         .unwrap()
         .add_op(OpVerify)
         .unwrap()
-        .add_i64(0)
-        .unwrap()
-        .add_op(OpRoll)
-        .unwrap()
         .add_op(OpDrop)
         .unwrap()
         .add_op(OpTrue)
@@ -9140,7 +9813,7 @@ fn compiles_reused_variables_and_verifies() {
 fn return_reused_local_is_stored_once_and_reused() {
     let source = r#"
         contract Test() {
-            entrypoint function main() : (int) {
+            entry main() : (int) {
                 int a = 2 + 3;
                 return(a * a + a);
             }
@@ -9182,7 +9855,7 @@ fn return_reused_local_is_stored_once_and_reused() {
 fn compiles_sigscript_inputs_and_verifies() {
     let source = r#"
         contract Test() {
-            entrypoint function main(int a, int b) {
+            entry main(int a, int b) {
                 require(a + b == 7);
             }
         }
@@ -9216,7 +9889,7 @@ fn compiles_script_size_and_runs_sum_array() {
                 return(sum);
             }
 
-            entrypoint function main(int expected_script_size) {
+            entry main(int expected_script_size) {
                 require(expected_script_size == this.scriptSize);
                 int[] x;
                 x = x.append(1);
@@ -9248,7 +9921,7 @@ fn data_prefix_for_size(data_len: usize) -> Vec<u8> {
 fn compiles_script_size_data_prefix_small_script() {
     let source = r#"
         contract PrefixSmall() {
-            entrypoint function main(byte[] expected_data_prefix) {
+            entry main(byte[] expected_data_prefix) {
                 require(expected_data_prefix == this.scriptSizeDataPrefix);
                 require(true);
             }
@@ -9267,7 +9940,7 @@ fn compiles_script_size_data_prefix_small_script() {
 fn compiles_script_size_data_prefix_medium_script() {
     let source = r#"
         contract PrefixMedium() {
-            entrypoint function main(byte[] expected_data_prefix) {
+            entry main(byte[] expected_data_prefix) {
                 require(expected_data_prefix == this.scriptSizeDataPrefix);
                 for (i, 0, 100, 100) {
                     require(true);
@@ -9288,7 +9961,7 @@ fn compiles_script_size_data_prefix_medium_script() {
 fn compiles_script_size_data_prefix_large_script() {
     let source = r#"
         contract PrefixLarge() {
-            entrypoint function main(byte[] expected_data_prefix) {
+            entry main(byte[] expected_data_prefix) {
                 require(expected_data_prefix == this.scriptSizeDataPrefix);
                 for (i, 0, 300, 300) {
                     require(true);
@@ -9309,7 +9982,7 @@ fn compiles_script_size_data_prefix_large_script() {
 fn compiles_sigscript_reused_inputs_and_verifies() {
     let source = r#"
         contract Test() {
-            entrypoint function main(int a) {
+            entry main(int a) {
                 require(a * a + a == 12);
             }
         }
@@ -9332,7 +10005,7 @@ fn compiles_sigscript_reused_inputs_and_verifies() {
 fn compiles_sigscript_inputs_and_fails_on_wrong_sum() {
     let source = r#"
         contract Test() {
-            entrypoint function main(int a, int b) {
+            entry main(int a, int b) {
                 require(a + b == 7);
             }
         }
@@ -9356,7 +10029,7 @@ fn compiles_sigscript_inputs_and_fails_on_wrong_sum() {
 fn compiles_sigscript_reused_inputs_and_fails_on_wrong_value() {
     let source = r#"
         contract Test() {
-            entrypoint function main(int a) {
+            entry main(int a) {
                 require(a * a + a == 12);
             }
         }
@@ -9379,7 +10052,7 @@ fn compiles_sigscript_reused_inputs_and_fails_on_wrong_value() {
 fn compile_time_length_for_fixed_size_int_array() {
     let source = r#"
         contract Test() {
-            entrypoint function test() {
+            entry test() {
                 int[5] nums = [1, 2, 3, 4, 5];
                 require(nums.length == 5);
             }
@@ -9396,7 +10069,7 @@ fn compile_time_length_for_fixed_size_int_array() {
 fn compile_time_length_for_fixed_size_byte_array() {
     let source = r#"
         contract Test() {
-            entrypoint function test() {
+            entry test() {
                 byte[3] data = 0x010203;
                 require(data.length == 3);
             }
@@ -9413,7 +10086,7 @@ fn compile_time_length_for_fixed_size_byte_array() {
 fn compile_time_length_for_inferred_array_sizes() {
     let source = r#"
         contract Test() {
-            entrypoint function test() {
+            entry test() {
                 byte[_] data = 0x1234abcd;
                 int[_] nums = [1, 2, 3];
                 require(data.length == 4);
@@ -9433,7 +10106,7 @@ fn compile_time_length_for_inferred_array_sizes() {
 fn accepts_fixed_size_array_init_with_correct_size() {
     let source = r#"
         contract Test() {
-            entrypoint function test() {
+            entry test() {
                 int[4] nums = [1, 2, 3, 4];
                 byte[3] data = 0x010203;
                 require(nums.length == 4);
@@ -9448,7 +10121,7 @@ fn accepts_fixed_size_array_init_with_correct_size() {
 fn rejects_fixed_size_array_init_with_too_few_elements() {
     let source = r#"
         contract Test() {
-            entrypoint function test() {
+            entry test() {
                 int[4] nums = [1, 2, 3];  // Too few
             }
         }
@@ -9463,7 +10136,7 @@ fn rejects_fixed_size_array_init_with_too_few_elements() {
 fn rejects_fixed_size_array_init_with_too_many_elements() {
     let source = r#"
         contract Test() {
-            entrypoint function test() {
+            entry test() {
                 int[3] nums = [1, 2, 3, 4, 5];  // Too many
             }
         }
@@ -9478,7 +10151,7 @@ fn rejects_fixed_size_array_init_with_too_many_elements() {
 fn accepts_fixed_size_byte_array_init() {
     let source = r#"
         contract Test() {
-            entrypoint function test() {
+            entry test() {
                 byte[32] hash = 0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f;
                 require(hash.length == 32);
             }
@@ -9493,7 +10166,7 @@ fn accepts_array_type_with_constant_size() {
     let source = r#"
         contract Test() {
             int constant SIZE = 4;
-            entrypoint function test() {
+            entry test() {
                 int[SIZE] nums = [1, 2, 3, 4];
                 require(nums.length == SIZE);
             }
@@ -9503,12 +10176,29 @@ fn accepts_array_type_with_constant_size() {
 }
 
 #[test]
+fn encodes_contract_field_with_constant_array_size() {
+    let source = r#"
+        contract Test() {
+            int constant HALF_SIZE = 2;
+            int constant SIZE = HALF_SIZE * 2;
+            int[SIZE] values = [1, 2, 3, 4];
+
+            entry test() {
+                require(values.length == SIZE);
+            }
+        }
+    "#;
+
+    compile_contract(source, &[], CompileOptions::default()).expect("constant-sized contract field should compile");
+}
+
+#[test]
 fn compile_time_length_with_constant_size() {
     // Test that array.length is computed at compile-time for arrays with constant sizes
     let source = r#"
         contract Test() {
             int constant SIZE = 5;
-            entrypoint function test() {
+            entry test() {
                 int[SIZE] nums = [1, 2, 3, 4, 5];
                 require(nums.length == SIZE);
             }
@@ -9527,7 +10217,7 @@ fn accepts_byte_array_with_constant_size() {
     let source = r#"
         contract Test() {
             int constant HASH_SIZE = 32;
-            entrypoint function test(byte[HASH_SIZE] hash) {
+            entry test(byte[HASH_SIZE] hash) {
                 require(hash.length == HASH_SIZE);
             }
         }
@@ -9536,10 +10226,46 @@ fn accepts_byte_array_with_constant_size() {
 }
 
 #[test]
+fn constant_array_dimension_expressions_compare_by_value() {
+    let source = r#"
+        contract Test() {
+            int constant HALF_SIZE = 16;
+            int constant HASH_SIZE = HALF_SIZE * 2;
+
+            function consume(byte[32] hash) {
+                require(hash.length == 32);
+            }
+
+            entry test(byte[HASH_SIZE] hash) {
+                consume(hash);
+            }
+        }
+    "#;
+    compile_contract(source, &[], CompileOptions::default()).expect("equal compiled array dimensions should match");
+}
+
+#[test]
+fn fixed_and_dynamic_array_types_are_not_identical() {
+    let source = r#"
+        contract Test() {
+            function consume(byte[] hash) {
+                require(hash.length == 32);
+            }
+
+            entry test(byte[32] hash) {
+                consume(hash);
+            }
+        }
+    "#;
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("fixed and dynamic array types should differ");
+    assert!(err.to_string().contains("function argument 'hash' expects byte[]"), "unexpected error: {err}");
+}
+
+#[test]
 fn blake2b_int_and_byte_cast_forms_compile_to_identical_script() {
     let source_plain = r#"
         contract Test() {
-            entrypoint function test() {
+            entry test() {
                 int x = 5;
                 require(blake2b(x).length == 32);
             }
@@ -9548,7 +10274,7 @@ fn blake2b_int_and_byte_cast_forms_compile_to_identical_script() {
 
     let source_cast = r#"
         contract Test() {
-            entrypoint function test() {
+            entry test() {
                 int x = 5;
                 require(blake2b(byte[](x)).length == 32);
             }
@@ -9568,7 +10294,7 @@ fn blake2b_int_and_byte_cast_forms_compile_to_identical_script() {
 fn empty_array_statement_expr_evaluation_compiles_to_empty_array_data() {
     let source = r#"
         contract Test() {
-            entrypoint function main() {
+            entry main() {
                 require([] == []);
             }
         }
@@ -9600,7 +10326,7 @@ fn function_param_shadows_constructor_constant_with_same_name() {
     // the function parameter value must be used (not the constant).
     let source = r#"
         contract Shadow(int fee) {
-            entrypoint function main(int fee) {
+            entry main(int fee) {
                 int local = fee + 1;
                 require(local == 4);
             }
@@ -9623,7 +10349,7 @@ fn function_param_shadows_constructor_constant_with_same_name() {
 fn ternary_syntax_lowers_to_if_else_expr() {
     let source = r#"
         contract TernaryAst() {
-            entrypoint function main(bool flag) {
+            entry main(bool flag) {
                 int value = flag ? 7 : 11;
                 require(value > 0);
             }
@@ -9641,7 +10367,7 @@ fn ternary_syntax_lowers_to_if_else_expr() {
 fn ternary_expression_executes_selected_branch() {
     let source = r#"
         contract TernaryRuntime() {
-            entrypoint function main(int selector, int expected) {
+            entry main(int selector, int expected) {
                 int value = selector > 0 ? 7 : 11;
                 require(value == expected);
             }
@@ -9664,10 +10390,281 @@ fn ternary_expression_executes_selected_branch() {
 }
 
 #[test]
+fn ternary_expression_does_not_execute_unselected_branch() {
+    let source = r#"
+        contract TernaryShortCircuit() {
+            entry main(
+                bool select_then,
+                int then_numerator,
+                int then_divisor,
+                int else_numerator,
+                int else_divisor,
+                int expected
+            ) {
+                int value = select_then ? then_numerator / then_divisor : else_numerator / else_divisor;
+                require(value == expected);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("ternary contract should compile");
+    let asm = script_to_str(&compiled.script).expect("ternary script should stringify");
+    let if_index = asm.find("OpIf").expect("ternary should emit OpIf");
+    let else_index = asm.find("OpElse").expect("ternary should emit OpElse");
+    let end_if_index = asm.find("OpEndIf").expect("ternary should emit OpEndIf");
+    let div_indices = asm.match_indices("OpDiv").map(|(index, _)| index).collect::<Vec<_>>();
+    assert_eq!(div_indices.len(), 2, "each ternary branch should contain one division: {asm}");
+    assert!(
+        if_index < div_indices[0] && div_indices[0] < else_index && else_index < div_indices[1] && div_indices[1] < end_if_index,
+        "divisions should remain inside their respective conditional branches: {asm}"
+    );
+
+    let select_then = compiled
+        .build_sig_script("main", vec![Expr::bool(true), Expr::int(10), Expr::int(2), Expr::int(20), Expr::int(0), Expr::int(5)])
+        .expect("then-branch sigscript builds");
+    let then_result = run_script_with_sigscript(compiled.script.clone(), select_then);
+    assert!(then_result.is_ok(), "zero divisor in the unselected else branch must not execute: {}", then_result.unwrap_err());
+
+    let select_else = compiled
+        .build_sig_script("main", vec![Expr::bool(false), Expr::int(10), Expr::int(0), Expr::int(20), Expr::int(4), Expr::int(5)])
+        .expect("else-branch sigscript builds");
+    let else_result = run_script_with_sigscript(compiled.script.clone(), select_else);
+    assert!(else_result.is_ok(), "zero divisor in the unselected then branch must not execute: {}", else_result.unwrap_err());
+
+    let failing_then = compiled
+        .build_sig_script("main", vec![Expr::bool(true), Expr::int(10), Expr::int(0), Expr::int(20), Expr::int(4), Expr::int(5)])
+        .expect("failing then-branch sigscript builds");
+    assert!(
+        run_script_with_sigscript(compiled.script.clone(), failing_then).is_err(),
+        "zero divisor in the selected then branch should execute and fail"
+    );
+
+    let failing_else = compiled
+        .build_sig_script("main", vec![Expr::bool(false), Expr::int(10), Expr::int(2), Expr::int(20), Expr::int(0), Expr::int(5)])
+        .expect("failing else-branch sigscript builds");
+    assert!(
+        run_script_with_sigscript(compiled.script, failing_else).is_err(),
+        "zero divisor in the selected else branch should execute and fail"
+    );
+}
+
+#[test]
+fn ternary_expression_does_not_execute_function_call_in_unselected_else_branch() {
+    let source = r#"
+        contract TernaryCallShortCircuit() {
+            function fail(int value) : int {
+                require(false);
+                return value;
+            }
+
+            entry main(bool select_then, int then_value, int else_value, int expected) {
+                int value = select_then ? then_value : fail(else_value);
+                require(value == expected);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("ternary contract should compile");
+    let asm = script_to_str(&compiled.script).expect("ternary script should stringify");
+    let if_index = asm.find("OpIf").expect("ternary should emit OpIf");
+    let else_index = asm.find("OpElse").expect("ternary should emit OpElse");
+    let fail_index = asm.find("OpFalse OpVerify").expect("else-branch helper should emit require(false)");
+    let end_if_index = asm.find("OpEndIf").expect("ternary should emit OpEndIf");
+    assert!(
+        if_index < else_index && else_index < fail_index && fail_index < end_if_index,
+        "require(false) should remain inside the ternary's else branch: {asm}"
+    );
+
+    let select_then = compiled
+        .build_sig_script("main", vec![Expr::bool(true), Expr::int(7), Expr::int(11), Expr::int(7)])
+        .expect("then-branch sigscript builds");
+    let then_result = run_script_with_sigscript(compiled.script.clone(), select_then);
+    assert!(then_result.is_ok(), "require(false) in the unselected else-branch call must not execute: {}", then_result.unwrap_err());
+
+    let select_else = compiled
+        .build_sig_script("main", vec![Expr::bool(false), Expr::int(7), Expr::int(11), Expr::int(11)])
+        .expect("else-branch sigscript builds");
+    assert!(
+        run_script_with_sigscript(compiled.script, select_else).is_err(),
+        "require(false) in the selected else-branch call should execute and fail"
+    );
+}
+
+#[test]
+fn ternary_expression_does_not_execute_function_call_in_unselected_then_branch() {
+    let source = r#"
+        contract TernaryCallShortCircuit() {
+            function fail(int value) : int {
+                require(false);
+                return value;
+            }
+
+            entry main(bool select_then, int then_value, int else_value, int expected) {
+                int value = select_then ? fail(then_value) : else_value;
+                require(value == expected);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("ternary contract should compile");
+    let asm = script_to_str(&compiled.script).expect("ternary script should stringify");
+    let if_index = asm.find("OpIf").expect("ternary should emit OpIf");
+    let fail_index = asm.find("OpFalse OpVerify").expect("then-branch helper should emit require(false)");
+    let else_index = asm.find("OpElse").expect("ternary should emit OpElse");
+    let end_if_index = asm.find("OpEndIf").expect("ternary should emit OpEndIf");
+    assert!(
+        if_index < fail_index && fail_index < else_index && else_index < end_if_index,
+        "require(false) should remain inside the ternary's then branch: {asm}"
+    );
+
+    let select_else = compiled
+        .build_sig_script("main", vec![Expr::bool(false), Expr::int(7), Expr::int(11), Expr::int(11)])
+        .expect("else-branch sigscript builds");
+    let else_result = run_script_with_sigscript(compiled.script.clone(), select_else);
+    assert!(else_result.is_ok(), "require(false) in the unselected then-branch call must not execute: {}", else_result.unwrap_err());
+
+    let select_then = compiled
+        .build_sig_script("main", vec![Expr::bool(true), Expr::int(7), Expr::int(11), Expr::int(7)])
+        .expect("then-branch sigscript builds");
+    assert!(
+        run_script_with_sigscript(compiled.script, select_then).is_err(),
+        "require(false) in the selected then-branch call should execute and fail"
+    );
+}
+
+#[test]
+fn nested_ternary_function_call_remains_in_selected_branch() {
+    let source = r#"
+        contract NestedTernaryCallShortCircuit() {
+            function fail(int value) : int {
+                require(false);
+                return value;
+            }
+
+            entry main(bool select_then, int then_value, int else_value, int expected) {
+                int value = 1 + (select_then ? then_value : fail(else_value));
+                require(value == expected);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("nested ternary contract should compile");
+
+    let select_then = compiled
+        .build_sig_script("main", vec![Expr::bool(true), Expr::int(7), Expr::int(11), Expr::int(8)])
+        .expect("then-branch sigscript builds");
+    let then_result = run_script_with_sigscript(compiled.script.clone(), select_then);
+    assert!(
+        then_result.is_ok(),
+        "require(false) in a nested unselected else-branch call must not execute: {}",
+        then_result.unwrap_err()
+    );
+
+    let select_else = compiled
+        .build_sig_script("main", vec![Expr::bool(false), Expr::int(7), Expr::int(11), Expr::int(12)])
+        .expect("else-branch sigscript builds");
+    assert!(
+        run_script_with_sigscript(compiled.script, select_else).is_err(),
+        "require(false) in a nested selected else-branch call should execute and fail"
+    );
+}
+
+#[test]
+fn ternary_lowering_initializes_generated_results_for_supported_types() {
+    let source = r#"
+        contract TernaryDefaults(int N, byte[N] initial_bytes, pubkey initial_pubkey, sig initial_sig, datasig initial_datasig) {
+            struct Pair {
+                int number;
+                bool flag;
+            }
+
+            entry main(bool select_then, int number, byte value) {
+                int int_result = select_then ? number : 1;
+                bool bool_result = select_then ? true : false;
+                byte byte_result = select_then ? value : 1;
+                string string_result = select_then ? "then" : "else";
+                byte[N] fixed_array_result = select_then ? initial_bytes : initial_bytes;
+                byte[] dynamic_array_result = select_then ? byte[](initial_bytes) : byte[](initial_bytes);
+                pubkey pubkey_result = select_then ? initial_pubkey : initial_pubkey;
+                sig sig_result = select_then ? initial_sig : initial_sig;
+                datasig datasig_result = select_then ? initial_datasig : initial_datasig;
+                Pair struct_result = select_then
+                    ? {number: number, flag: true}
+                    : {number: 1, flag: false};
+                require(int_result >= 0);
+                require(bool_result || !bool_result);
+                require(byte_result >= 0);
+                require(string_result.length > 0);
+                require(fixed_array_result.length == 2);
+                require(dynamic_array_result.length == 2);
+                require(pubkey_result == initial_pubkey);
+                require(sig_result == initial_sig);
+                require(datasig_result == initial_datasig);
+                require(struct_result.number >= 0);
+            }
+        }
+    "#;
+
+    compile_contract(
+        source,
+        &[Expr::int(2), Expr::bytes(vec![1, 2]), Expr::bytes(vec![3; 32]), Expr::bytes(vec![4; 65]), Expr::bytes(vec![5; 64])],
+        CompileOptions::default(),
+    )
+    .expect("ternary defaults should compile for every supported value type");
+}
+
+#[test]
+fn if_else_does_not_execute_function_call_in_unselected_else_branch() {
+    let source = r#"
+        contract IfElseCallShortCircuit() {
+            function fail(int value) : int {
+                require(false);
+                return value;
+            }
+
+            entry main(bool select_then, int then_value, int else_value, int expected) {
+                int value = expected;
+                if (select_then) {
+                    value = then_value;
+                } else {
+                    value = fail(else_value);
+                }
+                require(value == expected);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("if/else contract should compile");
+    let asm = script_to_str(&compiled.script).expect("if/else script should stringify");
+    let if_index = asm.find("OpIf").expect("if/else should emit OpIf");
+    let else_index = asm.find("OpElse").expect("if/else should emit OpElse");
+    let fail_index = asm.find("OpFalse OpVerify").expect("else-branch helper should emit require(false)");
+    let end_if_index = asm.find("OpEndIf").expect("if/else should emit OpEndIf");
+    assert!(
+        if_index < else_index && else_index < fail_index && fail_index < end_if_index,
+        "require(false) should remain inside the else branch: {asm}"
+    );
+
+    let select_then = compiled
+        .build_sig_script("main", vec![Expr::bool(true), Expr::int(7), Expr::int(11), Expr::int(7)])
+        .expect("then-branch sigscript builds");
+    let then_result = run_script_with_sigscript(compiled.script.clone(), select_then);
+    assert!(then_result.is_ok(), "require(false) in the unselected else-branch call must not execute: {}", then_result.unwrap_err());
+
+    let select_else = compiled
+        .build_sig_script("main", vec![Expr::bool(false), Expr::int(7), Expr::int(11), Expr::int(11)])
+        .expect("else-branch sigscript builds");
+    assert!(
+        run_script_with_sigscript(compiled.script, select_else).is_err(),
+        "require(false) in the selected else-branch call should execute and fail"
+    );
+}
+
+#[test]
 fn ternary_expression_rejects_mismatched_branch_types() {
     let source = r#"
         contract TernaryTypes() {
-            entrypoint function main(bool flag) {
+            entry main(bool flag) {
                 int value = flag ? 7 : false;
                 require(value > 0);
             }
@@ -9675,14 +10672,14 @@ fn ternary_expression_rejects_mismatched_branch_types() {
     "#;
 
     let err = compile_contract(source, &[], CompileOptions::default()).expect_err("mismatched ternary branches should fail");
-    assert!(err.to_string().contains("ternary branch type mismatch"), "unexpected error: {err}");
+    assert!(err.to_string().contains("variable 'value' expects int"), "unexpected error: {err}");
 }
 
 #[test]
 fn ternary_expression_rejects_branch_type_that_does_not_match_declared_variable_type() {
     let source = r#"
         contract TernaryDeclaredType() {
-            entrypoint function main(bool cond, bool y, bool z) {
+            entry main(bool cond, bool y, bool z) {
                 int x = cond ? y : z;
                 require(x > 0);
             }
@@ -9701,7 +10698,7 @@ fn ternary_expression_rejects_branch_type_that_does_not_match_function_return_ty
                 return cond ? y : z;
             }
 
-            entrypoint function main(bool cond, bool y, bool z) {
+            entry main(bool cond, bool y, bool z) {
                 int value = choose(cond, y, z);
                 require(value > 0);
             }
@@ -9733,7 +10730,7 @@ fn nested_inline_calls_with_args_compile_and_execute() {
                 require(z >= 0);
             }
 
-            entrypoint function main(int a) {
+            entry main(int a) {
                 top(a);
                 require(a >= 0);
             }
@@ -9756,7 +10753,7 @@ fn inline_local_binding_is_stored_once_and_reused() {
                 require(y < 10);
             }
 
-            entrypoint function main(int x) {
+            entry main(int x) {
                 helper(x);
             }
         }
@@ -9788,7 +10785,7 @@ fn inline_function_argument_expression_is_stored_once_and_reused() {
                 require(y < 10);
             }
 
-            entrypoint function main(int x) {
+            entry main(int x) {
                 f(x + 1);
             }
         }
@@ -9823,7 +10820,7 @@ fn inline_argument_alias_reuses_existing_local_without_extra_snapshot() {
                 require(z < 10);
             }
 
-            entrypoint function main(int x) {
+            entry main(int x) {
                 int y = x * x;
                 f(y);
                 g(y);
@@ -9856,10 +10853,6 @@ fn inline_argument_alias_reuses_existing_local_without_extra_snapshot() {
         .add_op(OpLessThan)
         .unwrap()
         .add_op(OpVerify)
-        .unwrap()
-        .add_i64(0)
-        .unwrap()
-        .add_op(OpRoll)
         .unwrap()
         .add_op(OpDrop)
         .unwrap()
@@ -9898,7 +10891,7 @@ fn inline_argument_alias_snapshots_entrypoint_param_once_per_inlined_call() {
                 require(z < 10);
             }
 
-            entrypoint function main(int y) {
+            entry main(int y) {
                 f(y);
                 g(y);
             }
@@ -9952,7 +10945,7 @@ fn inline_argument_alias_snapshots_entrypoint_param_once_per_inlined_call() {
 fn local_alias_snapshots_existing_stack_value_once() {
     let source = r#"
         contract LocalAliasReuse() {
-            entrypoint function main(int x) {
+            entry main(int x) {
                 int y = x * x;
                 require(y > 1);
                 int z = y;
@@ -9987,10 +10980,6 @@ fn local_alias_snapshots_existing_stack_value_once() {
         .unwrap()
         .add_op(OpVerify)
         .unwrap()
-        .add_i64(0)
-        .unwrap()
-        .add_op(OpRoll)
-        .unwrap()
         .add_op(OpDrop)
         .unwrap()
         .add_op(OpDrop)
@@ -10020,7 +11009,7 @@ fn local_alias_snapshots_existing_stack_value_once() {
 fn local_alias_reassignment_from_alias_passes_for_x_5() {
     let source = r#"
         contract LocalAliasReassign() {
-            entrypoint function main(int x) {
+            entry main(int x) {
                 int y = x * x;
                 require(y > 1);
                 int z = y;
@@ -10045,7 +11034,7 @@ fn local_alias_reassignment_from_alias_passes_for_x_5() {
 fn local_bool_expression_is_stored_once_and_reused() {
     let source = r#"
         contract BoolRepeat() {
-            entrypoint function main(int x) {
+            entry main(int x) {
                 bool y = x + 1 > 1;
                 require(y);
                 require(y == true);
@@ -10074,7 +11063,7 @@ fn local_bool_expression_is_stored_once_and_reused() {
 fn local_nested_expression_is_stored_once_and_reused() {
     let source = r#"
         contract NestedRepeat() {
-            entrypoint function main(int x) {
+            entry main(int x) {
                 int y = (x + 1) * (x + 2);
                 require(y > 10);
                 require(y < 100);
@@ -10108,7 +11097,7 @@ fn local_nested_expression_is_stored_once_and_reused() {
 fn rejects_using_branch_local_outside_its_scope() {
     let source = r#"
         contract BranchScope() {
-            entrypoint function main(bool cond) {
+            entry main(bool cond) {
                 if (cond) {
                     int x = 1;
                     require(x == 1);
@@ -10126,10 +11115,363 @@ fn rejects_using_branch_local_outside_its_scope() {
 }
 
 #[test]
+fn runs_branch_local_shadowing_and_preserves_outer_scope() {
+    let source = r#"
+        contract BranchShadowing() {
+            entry main(bool cond) {
+                int x = 3;
+                if (cond) {
+                    int x = 1;
+                    require(x == 1);
+                } else {
+                    int x = 2;
+                    require(x == 2);
+                }
+                require(x == 3);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("branch-local shadowing should compile");
+
+    for cond in [true, false] {
+        let sigscript = compiled.build_sig_script("main", vec![Expr::bool(cond)]).expect("sigscript builds");
+        let result = run_script_with_sigscript(compiled.script.clone(), sigscript);
+        assert!(result.is_ok(), "branch-local shadowing should execute successfully for cond={cond}: {}", result.unwrap_err());
+    }
+}
+
+#[test]
+fn runs_for_loop_local_shadowing_and_preserves_outer_scope() {
+    let source = r#"
+        contract LoopShadowing() {
+            entry main() {
+                int x = 10;
+                for (i, 0, 2, 2) {
+                    int x = i + 1;
+                    require(x == i + 1);
+                }
+                require(x == 10);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("loop-local shadowing should compile");
+    let selector = selector_for(&compiled, "main");
+    let result = run_script_with_selector(compiled.script, selector);
+    assert!(result.is_ok(), "loop-local shadowing should execute successfully: {}", result.unwrap_err());
+}
+
+#[test]
+fn runs_standalone_block_local_shadowing_and_preserves_outer_scope() {
+    let source = r#"
+        contract BlockShadowing() {
+            entry main() {
+                int x = 3;
+                {
+                    int x = 1;
+                    require(x == 1);
+                }
+                require(x == 3);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("block-local shadowing should compile");
+    let selector = selector_for(&compiled, "main");
+    let result = run_script_with_selector(compiled.script, selector);
+    assert!(result.is_ok(), "block-local shadowing should execute successfully: {}", result.unwrap_err());
+}
+
+#[test]
+fn runs_function_parameter_shadowing() {
+    let source = r#"
+        contract ParameterShadowing() {
+            entry main(int x) {
+                int x = 1;
+                require(x == 1);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("parameter shadowing should compile");
+    let sigscript = compiled.build_sig_script("main", vec![Expr::int(9)]).expect("sigscript builds");
+    let result = run_script_with_sigscript(compiled.script, sigscript);
+    assert!(result.is_ok(), "parameter shadowing should execute successfully: {}", result.unwrap_err());
+}
+
+#[test]
+fn runs_inlined_function_parameter_shadowing() {
+    let source = r#"
+        contract InlineParameterShadowing() {
+            function check(int x) {
+                int x = 1;
+                require(x == 1);
+            }
+
+            entry main() {
+                check(9);
+            }
+        }
+    "#;
+
+    let compiled =
+        compile_contract(source, &[], CompileOptions::default()).expect("inlined function parameter shadowing should compile");
+    let selector = selector_for(&compiled, "main");
+    let result = run_script_with_selector(compiled.script, selector);
+    assert!(result.is_ok(), "inlined function parameter shadowing should execute successfully: {}", result.unwrap_err());
+}
+
+#[test]
+fn runs_standalone_block_tuple_binding_shadowing() {
+    let source = r#"
+        contract TupleBlockShadowing() {
+            entry main() {
+                byte[] left = 0xaa;
+                byte[] source = 0x0102;
+                {
+                    (byte[] left, byte[] right) = source.split(1);
+                    require(left == byte[](0x01));
+                    require(right == byte[](0x02));
+                }
+                require(left == byte[](0xaa));
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("tuple binding shadowing should compile");
+    let selector = selector_for(&compiled, "main");
+    let result = run_script_with_selector(compiled.script, selector);
+    assert!(result.is_ok(), "tuple binding shadowing should execute successfully: {}", result.unwrap_err());
+}
+
+#[test]
+fn rejects_split_on_non_byte_array() {
+    let source = r#"
+        contract SplitNonByteArray() {
+            entry main(int[] values) {
+                (int[] left, int[] right) = values.split(1);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("split on int[] should fail");
+    assert!(err.to_string().contains("split source must be a byte array, string, or fixed-byte type"), "unexpected error: {err}");
+}
+
+#[test]
+fn rejects_slice_on_non_byte_array() {
+    let source = r#"
+        contract SliceNonByteArray() {
+            entry main(int[] values) {
+                int[] part = values.slice(0, 1);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("slice on int[] should fail");
+    assert!(err.to_string().contains("slice source must be a byte array, string, or fixed-byte type"), "unexpected error: {err}");
+}
+
+#[test]
+fn allows_sequence_operations_on_string_and_fixed_byte_types() {
+    let source = r#"
+        contract ByteSequenceOperations() {
+            entry main(string text, pubkey publicKey, sig signature, datasig dataSignature) {
+                (string textLeft, string textRight) = text.split(1);
+                (byte[] pubkeyLeft, byte[] pubkeyRight) = publicKey.split(1);
+                (byte[] sigLeft, byte[] sigRight) = signature.split(1);
+                (byte[] datasigLeft, byte[] datasigRight) = dataSignature.split(1);
+                string textSlice = text.slice(0, 1);
+                byte[] pubkeySlice = publicKey.slice(0, 1);
+                byte[] sigSlice = signature.slice(0, 1);
+                byte[] datasigSlice = dataSignature.slice(0, 1);
+            }
+        }
+    "#;
+
+    compile_contract(source, &[], CompileOptions::default()).expect("sequence operations should accept strings and fixed-byte types");
+}
+
+#[test]
+fn runs_standalone_block_function_result_binding_shadowing() {
+    let source = r#"
+        contract FunctionResultBlockShadowing() {
+            function pair() : (int, int) {
+                return(1, 2);
+            }
+
+            entry main() {
+                int x = 3;
+                {
+                    (int x, int y) = pair();
+                    require(x == 1);
+                    require(y == 2);
+                }
+                require(x == 3);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("function result binding shadowing should compile");
+    let selector = selector_for(&compiled, "main");
+    let result = run_script_with_selector(compiled.script, selector);
+    assert!(result.is_ok(), "function result binding shadowing should execute successfully: {}", result.unwrap_err());
+}
+
+#[test]
+fn runs_standalone_block_state_binding_shadowing() {
+    let source = r#"
+        contract StateBindingBlockShadowing(int initialValue) {
+            int value = initialValue;
+
+            entry main() {
+                int x = 3;
+                {
+                    {value: int x} = readInputState(this.activeInputIndex);
+                    require(x == 7);
+                }
+                require(x == 3);
+            }
+        }
+    "#;
+
+    let input_compiled =
+        compile_contract(source, &[Expr::int(7)], CompileOptions::default()).expect("state binding shadowing should compile");
+    let sigscript = input_compiled.build_sig_script("main", vec![]).expect("sigscript builds");
+    let sigscript = pay_to_script_hash_signature_script(input_compiled.script.clone(), sigscript).unwrap();
+    let input = test_input(0, sigscript);
+    let input_spk = pay_to_script_hash_script(&input_compiled.script);
+    let output = TransactionOutput { value: 1000, script_public_key: input_spk.clone(), covenant: None };
+    let tx = Transaction::new(1, vec![input], vec![output.clone()], 0, Default::default(), 0, vec![]);
+    let utxo_entry = UtxoEntry::new(output.value, input_spk, 0, tx.is_coinbase(), None);
+
+    let result = execute_input(tx, vec![utxo_entry], 0);
+    assert!(result.is_ok(), "state binding shadowing should execute successfully: {}", result.unwrap_err());
+}
+
+#[test]
+fn runs_standalone_block_struct_destructure_binding_shadowing() {
+    let source = r#"
+        contract StructBindingBlockShadowing() {
+            struct S {
+                int value;
+            }
+
+            entry main() {
+                int x = 3;
+                S s = {value: 1};
+                {
+                    {value: int x} = s;
+                    require(x == 1);
+                }
+                require(x == 3);
+            }
+        }
+    "#;
+
+    let compiled =
+        compile_contract(source, &[], CompileOptions::default()).expect("struct destructure binding shadowing should compile");
+    let selector = selector_for(&compiled, "main");
+    let result = run_script_with_selector(compiled.script, selector);
+    assert!(result.is_ok(), "struct destructure binding shadowing should execute successfully: {}", result.unwrap_err());
+}
+
+#[test]
+fn branch_shadowing_initializer_reads_outer_binding() {
+    let source = r#"
+        contract BranchInitializerShadowing() {
+            entry main(bool cond) {
+                int x = 3;
+                if (cond) {
+                    int x = x + 1;
+                    require(x == 4);
+                }
+                require(x == 3);
+            }
+        }
+    "#;
+
+    let compiled =
+        compile_contract(source, &[], CompileOptions::default()).expect("branch shadowing initializer should read the outer binding");
+    let sigscript = compiled.build_sig_script("main", vec![Expr::bool(true)]).expect("sigscript builds");
+    let result = run_script_with_sigscript(compiled.script, sigscript);
+    assert!(result.is_ok(), "branch shadowing initializer should execute successfully: {}", result.unwrap_err());
+}
+
+#[test]
+fn branch_reference_before_shadowing_declaration_reads_outer_binding() {
+    let source = r#"
+        contract BranchReferenceBeforeShadowing() {
+            entry main(bool cond) {
+                int x = 3;
+                if (cond) {
+                    require(x == 3);
+                    int x = 1;
+                    require(x == 1);
+                }
+                require(x == 3);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default())
+        .expect("a branch reference before a shadowing declaration should read the outer binding");
+    let sigscript = compiled.build_sig_script("main", vec![Expr::bool(true)]).expect("sigscript builds");
+    let result = run_script_with_sigscript(compiled.script, sigscript);
+    assert!(result.is_ok(), "branch reference before shadowing should execute successfully: {}", result.unwrap_err());
+}
+
+#[test]
+fn for_loop_shadowing_initializer_reads_outer_binding() {
+    let source = r#"
+        contract LoopInitializerShadowing() {
+            entry main() {
+                int x = 3;
+                for (i, 0, 2, 2) {
+                    int x = x + i;
+                    require(x == 3 + i);
+                }
+                require(x == 3);
+            }
+        }
+    "#;
+
+    let compiled =
+        compile_contract(source, &[], CompileOptions::default()).expect("loop shadowing initializer should read the outer binding");
+    let selector = selector_for(&compiled, "main");
+    let result = run_script_with_selector(compiled.script, selector);
+    assert!(result.is_ok(), "loop shadowing initializer should execute successfully: {}", result.unwrap_err());
+}
+
+#[test]
+fn for_loop_reference_before_shadowing_declaration_reads_outer_binding() {
+    let source = r#"
+        contract LoopReferenceBeforeShadowing() {
+            entry main() {
+                int x = 3;
+                for (i, 0, 2, 2) {
+                    require(x == 3);
+                    int x = i + 1;
+                    require(x == i + 1);
+                }
+                require(x == 3);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default())
+        .expect("a loop reference before a shadowing declaration should read the outer binding");
+    let selector = selector_for(&compiled, "main");
+    let result = run_script_with_selector(compiled.script, selector);
+    assert!(result.is_ok(), "loop reference before shadowing should execute successfully: {}", result.unwrap_err());
+}
+
+#[test]
 fn rejects_using_block_local_outside_its_scope() {
     let source = r#"
         contract BlockScope() {
-            entrypoint function main() {
+            entry main() {
                 {
                     int x = 1;
                     require(x == 1);
@@ -10148,7 +11490,7 @@ fn rejects_using_block_local_outside_its_scope() {
 fn runs_standalone_block_and_preserves_outer_scope() {
     let source = r#"
         contract BlockRuntime() {
-            entrypoint function main(int x) {
+            entry main(int x) {
                 int y = x + 1;
                 {
                     int z = y + 1;
@@ -10179,7 +11521,7 @@ fn inline_nested_argument_expression_is_stored_once_and_reused() {
                 require(y < 100);
             }
 
-            entrypoint function main(int x) {
+            entry main(int x) {
                 f((x + 1) * (x + 2));
             }
         }
@@ -10223,7 +11565,7 @@ fn function_call_assignment_result_is_stored_once_and_reused() {
                 return(shifted * 2);
             }
 
-            entrypoint function main(int x) {
+            entry main(int x) {
                 (int y) = f(x);
                 require(y > 1);
                 require(y < 10);
@@ -10269,7 +11611,7 @@ fn struct_return_field_is_stored_once_and_reused() {
                 });
             }
 
-            entrypoint function main(int x) {
+            entry main(int x) {
                 (S s) = f(x);
                 require(s.a < 10);
                 require(s.b < 20);
@@ -10306,7 +11648,7 @@ fn compile_time_if_branch_stores_local_var_once_and_reuses_it() {
     let source = r#"
         contract IfRepeat() {
 
-            entrypoint function main(int x) {
+            entry main(int x) {
                 if (1 < 2) {
                     int a = x + 1;
                     require(a < 10);
@@ -10342,7 +11684,7 @@ fn compile_time_if_branch_stores_struct_fields_once_and_reuses_them() {
                 int b;
             }
 
-            entrypoint function main(int x) {
+            entry main(int x) {
                 if (1 < 2) {
                     S s = { a: x + 1, b: x * x };
                     require(s.a < 10);
@@ -10384,7 +11726,7 @@ fn compile_time_if_branch_stores_struct_fields_once_and_reuses_them() {
 }
 
 #[test]
-fn partially_reassigned_struct_field_rolls_last_use_without_copying_unchanged_fields() {
+fn partially_reassigned_struct_field_does_not_recompute_unchanged_fields() {
     let source = r#"
         contract ConsumePartialStructField() {
             struct S {
@@ -10392,7 +11734,7 @@ fn partially_reassigned_struct_field_rolls_last_use_without_copying_unchanged_fi
                 int b;
             }
 
-            entrypoint function main(int x) {
+            entry main(int x) {
                 S s = {a: x + 1, b: x * x};
                 s = {a: s.a + 1, b: s.b};
                 require(s.a > 0);
@@ -10412,11 +11754,6 @@ fn partially_reassigned_struct_field_rolls_last_use_without_copying_unchanged_fi
         2,
         "only the initial `s.a = x + 1` and the reassigned `s.a = s.a + 1` should emit additions"
     );
-    assert!(
-        compiled.script.iter().copied().filter(|op| *op == OpRoll).count() >= 2,
-        "the stack-backed struct leaves should be rebound with rolls instead of rebuilding the whole struct"
-    );
-
     let sigscript_ok = compiled.build_sig_script("main", vec![Expr::int(2)]).expect("sigscript builds");
     let result_ok = run_script_with_sigscript(compiled.script.clone(), sigscript_ok);
     assert!(result_ok.is_ok(), "partial struct reassignment should execute successfully: {}", result_ok.unwrap_err());
@@ -10430,7 +11767,7 @@ fn partially_reassigned_struct_field_rolls_last_use_without_copying_unchanged_fi
 fn if_branch_reassignment_drops_hidden_shadow_bindings() {
     let source = r#"
         contract BranchShadowCleanup() {
-            entrypoint function main(int flag, int a, int b, int expected) {
+            entry main(int flag, int a, int b, int expected) {
                 int d = a + b;
                 d = d - a;
                 if (flag > 0) {
@@ -10471,7 +11808,7 @@ fn struct_if_reassignment_preserves_types_after_merge() {
                 require(value.b == expected_b);
             }
 
-            entrypoint function main(int flag, int expected_a, int expected_b) {
+            entry main(int flag, int expected_a, int expected_b) {
                 S s = {a: 2, b: 3};
                 if (flag > 0) {
                     s = {a: s.a + 1, b: s.b + 1};
@@ -10503,7 +11840,7 @@ fn partial_struct_if_reassignment_preserves_types_after_merge() {
                 require(value.b == expected_b);
             }
 
-            entrypoint function main(int flag, int expected_a, int expected_b) {
+            entry main(int flag, int expected_a, int expected_b) {
                 S s = {a: 2, b: 3};
                 if (flag > 0) {
                     s = {a: s.a + 1, b: s.b};
@@ -10530,7 +11867,7 @@ fn struct_if_branch_reassignment_drops_hidden_shadow_bindings() {
                 int b;
             }
 
-            entrypoint function main(int flag, int x, int y, int expected_a, int expected_b) {
+            entry main(int flag, int x, int y, int expected_a, int expected_b) {
                 S s = {a: x, b: y};
                 if (flag > 0) {
                     S t = {a: s.a + 1, b: s.b + 2};
@@ -10569,7 +11906,7 @@ fn partial_struct_if_branch_reassignment_drops_hidden_shadow_bindings() {
                 int b;
             }
 
-            entrypoint function main(int flag, int x, int y, int expected_a, int expected_b) {
+            entry main(int flag, int x, int y, int expected_a, int expected_b) {
                 S s = {a: x, b: y};
                 if (flag > 0) {
                     S t = {a: s.a + 1, b: s.b};
@@ -10605,7 +11942,7 @@ fn conditional_counter_in_unrolled_loop_stays_linear() {
 pragma silverscript ^0.1.0;
 
 contract CounterLoop(int BOUND) {
-    entrypoint function main() {
+    entry main() {
         int count = 0;
         for (i, 0, BOUND, BOUND) {
             if (true) {
@@ -10644,7 +11981,7 @@ contract StructCounterLoop(int BOUND) {
         int b;
     }
 
-    entrypoint function main() {
+    entry main() {
         S s = {a: 0, b: 0};
         for (i, 0, BOUND, BOUND) {
             if (true) {
@@ -10688,7 +12025,7 @@ fn validate_output_state_preserves_nested_struct_field_paths() {
             Left left = {id: initLeft};
             Right right = {id: initRight};
 
-            entrypoint function route() {
+            entry route() {
                 State next = {
                     left: {id: 3},
                     right: {id: 4}
@@ -10730,7 +12067,7 @@ fn validate_output_state_with_template_preserves_nested_struct_field_paths() {
             Right right = {{id: initRight}};
             byte[32] targetHash = initTargetHash;
 
-            entrypoint function noop() {{
+            entry noop() {{
                 require(left.id == 1);
                 require(right.id == 2);
                 require(targetHash == 0x{target_hash_hex});
@@ -10768,7 +12105,7 @@ fn validate_output_state_with_template_preserves_nested_struct_field_paths() {
                 byte[32] targetHash;
             }}
 
-            entrypoint function route(byte[32] targetHash) {{
+            entry route(byte[32] targetHash) {{
                 Pair next = {{
                     left: {{id: 1}},
                     right: {{id: 2}},
@@ -10781,21 +12118,119 @@ fn validate_output_state_with_template_preserves_nested_struct_field_paths() {
                     0x{template_suffix_hex},
                     0x{template_hash_hex}
                 );
+                validateOutputStateWithInputTemplate(
+                    0,
+                    next,
+                    1,
+                    {},
+                    {},
+                    0x{template_hash_hex}
+                );
             }}
         }}
-    "#
+    "#,
+        template_prefix.len(),
+        template_suffix.len(),
     );
 
     let input_compiled = compile_contract(&source, &[], CompileOptions::default()).expect("compile router succeeds");
     let sigscript = input_compiled.build_sig_script("route", vec![target_hash.into()]).expect("sigscript builds");
     let sigscript = pay_to_script_hash_signature_script(input_compiled.script.clone(), sigscript).unwrap();
     let input = test_input(0, sigscript);
+    let template_input = test_input(1, sigscript_push_script(&target_template_compiled.script));
     let input_spk = pay_to_script_hash_script(&input_compiled.script);
     let output_spk = pay_to_script_hash_script(&target_output_compiled.script);
     let output = TransactionOutput { value: 1000, script_public_key: output_spk, covenant: None };
-    let tx = Transaction::new(1, vec![input], vec![output.clone()], 0, Default::default(), 0, vec![]);
+    let tx = Transaction::new(1, vec![input, template_input], vec![output.clone()], 0, Default::default(), 0, vec![]);
     let utxo_entry = UtxoEntry::new(output.value, input_spk, 0, tx.is_coinbase(), None);
+    let template_utxo =
+        UtxoEntry::new(output.value, pay_to_script_hash_script(&target_template_compiled.script), 0, tx.is_coinbase(), None);
 
-    let result = execute_input(tx, vec![utxo_entry], 0);
+    let result = execute_input(tx, vec![utxo_entry, template_utxo], 0);
     assert!(result.is_ok(), "nested struct fields with the same leaf name should remain distinct by path: {result:?}");
+}
+
+#[test]
+fn blake2b_builtins_lower_and_execute_correctly() {
+    let data = b"genesis covenant";
+    let key = b"CovenantID";
+    let expected = blake2b_simd::Params::new().hash_length(32).hash(data);
+    let expected_keyed = blake2b_simd::Params::new().hash_length(32).key(key).hash(data);
+    let expected_hex = expected.as_bytes().iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+    let expected_keyed_hex = expected_keyed.as_bytes().iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+    let source = format!(
+        r#"
+        contract Blake2bHashes() {{
+            entry main() {{
+                require(blake2b(bytes("genesis covenant")) == 0x{expected_hex});
+                require(blake2bWithKey(bytes("genesis covenant"), bytes("CovenantID")) == 0x{expected_keyed_hex});
+            }}
+        }}
+        "#
+    );
+
+    let compiled = compile_contract(&source, &[], CompileOptions::default()).expect("Blake2b builtins compile");
+    assert!(compiled.script.contains(&OpBlake2b));
+    assert!(compiled.script.contains(&OpBlake2bWithKey));
+    let result = run_script_with_selector(compiled.script, None);
+    assert!(result.is_ok(), "Blake2b builtins should execute correctly: {result:?}");
+}
+
+#[test]
+fn blake3_builtins_lower_and_execute_correctly() {
+    let data = b"genesis covenant";
+    let key = std::array::from_fn(|i| i as u8);
+    let expected = blake3::hash(data);
+    let expected_keyed = blake3::keyed_hash(&key, data);
+    let key_hex = key.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+    let expected_hex = expected.to_hex();
+    let expected_keyed_hex = expected_keyed.to_hex();
+    let source = format!(
+        r#"
+        contract Blake3Hashes() {{
+            entry main() {{
+                require(blake3(bytes("genesis covenant")) == 0x{expected_hex});
+                require(blake3WithKey(bytes("genesis covenant"), 0x{key_hex}) == 0x{expected_keyed_hex});
+            }}
+        }}
+        "#
+    );
+
+    let compiled = compile_contract(&source, &[], CompileOptions::default()).expect("Blake3 builtins compile");
+    assert!(compiled.script.contains(&OpBlake3));
+    assert!(compiled.script.contains(&OpBlake3WithKey));
+    let result = run_script_with_selector(compiled.script, None);
+    assert!(result.is_ok(), "Blake3 builtins should call the engine correctly: {result:?}");
+}
+
+#[test]
+fn blake3_with_key_requires_a_fixed_32_byte_key() {
+    let dynamic_key = r#"
+        contract Blake3Hash() {
+            entry main(byte[] key) {
+                require(blake3WithKey(bytes("data"), key).length == 32);
+            }
+        }
+    "#;
+    let err = compile_contract(dynamic_key, &[], CompileOptions::default()).expect_err("dynamic Blake3 key should be rejected");
+    assert!(err.to_string().contains("argument 'key' expects byte[32]"), "unexpected error: {err}");
+
+    let explicit_cast = r#"
+        contract Blake3Hash() {
+            entry main(byte[] key) {
+                require(blake3WithKey(bytes("data"), byte[32](key)).length == 32);
+            }
+        }
+    "#;
+    compile_contract(explicit_cast, &[], CompileOptions::default()).expect("explicit byte[32] key cast should compile");
+
+    let numeric_data = r#"
+        contract Blake3Hash() {
+            entry main(byte[32] key) {
+                require(blake3WithKey(5, key).length == 32);
+            }
+        }
+    "#;
+    let err = compile_contract(numeric_data, &[], CompileOptions::default()).expect_err("numeric Blake3 data should be rejected");
+    assert!(err.to_string().contains("argument 'data' expects byte[], got int"), "unexpected error: {err}");
 }

@@ -120,26 +120,29 @@ fn parse_scalar_arg(type_ref: &TypeRef, raw: &str) -> Result<Expr<'static>, Stri
         }
         TypeBase::Pubkey => {
             let bytes = parse_hex_bytes(raw)?;
-            if bytes.len() != 32 {
-                return Err(format!("pubkey expects 32 bytes, got {}", bytes.len()));
+            let expected = type_ref.base.fixed_byte_sequence_len().expect("pubkey has a fixed byte length");
+            if bytes.len() != expected {
+                return Err(format!("pubkey expects {expected} bytes, got {}", bytes.len()));
             }
             Ok(bytes_expr(bytes))
         }
         TypeBase::Sig => {
             let bytes = parse_hex_bytes(raw)?;
-            if bytes.len() != 65 && bytes.len() != 32 {
-                return Err(format!("sig expects 65 bytes (or 32-byte secret key for auto-sign), got {}", bytes.len()));
+            let expected = type_ref.base.fixed_byte_sequence_len().expect("sig has a fixed byte length");
+            if bytes.len() != expected {
+                return Err(format!("sig expects {expected} bytes, got {}", bytes.len()));
             }
             Ok(bytes_expr(bytes))
         }
         TypeBase::Datasig => {
             let bytes = parse_hex_bytes(raw)?;
-            if bytes.len() != 64 && bytes.len() != 32 {
-                return Err(format!("datasig expects 64 bytes (or 32-byte secret key for auto-sign), got {}", bytes.len()));
+            let expected = type_ref.base.fixed_byte_sequence_len().expect("datasig has a fixed byte length");
+            if bytes.len() != expected {
+                return Err(format!("datasig expects {expected} bytes, got {}", bytes.len()));
             }
             Ok(bytes_expr(bytes))
         }
-        TypeBase::Custom(_) => Err(format!("unsupported arg type '{}'", type_ref.type_name())),
+        TypeBase::Tuple(_) | TypeBase::Custom(_) => Err(format!("unsupported arg type '{}'", type_ref.type_name())),
     }
 }
 
@@ -165,12 +168,12 @@ fn parse_struct_arg(
         return Err(format!("unknown struct field '{}'", extra));
     }
 
-    Ok(Expr::new(ExprKind::StateObject(out), span::Span::default()))
+    Ok(Expr::new(ExprKind::StructLiteral(out), span::Span::default()))
 }
 
 fn parse_array_arg(values: &[Value], type_ref: &TypeRef, shapes: &StructShapeRegistry) -> Result<Expr<'static>, String> {
     validate_array_len(type_ref, values.len())?;
-    let element_type = type_ref.element_type().ok_or_else(|| format!("unsupported arg type '{}'", type_ref.type_name()))?;
+    let element_type = type_ref.array_element_type().ok_or_else(|| format!("unsupported arg type '{}'", type_ref.type_name()))?;
     values
         .iter()
         .map(|value| parse_json_value_for_type(value, &element_type, shapes))
@@ -205,15 +208,13 @@ fn parse_json_value_for_type(value: &Value, type_ref: &TypeRef, shapes: &StructS
 
     match value {
         Value::String(raw) => parse_scalar_arg(type_ref, raw),
-        Value::Number(raw) if matches!(type_ref.base, TypeBase::Int) => {
-            Ok(Expr::int(raw.as_i64().ok_or_else(|| "invalid int value".to_string())?))
-        }
-        Value::Number(raw) if matches!(type_ref.base, TypeBase::Byte) => {
+        Value::Number(raw) if type_ref.is_int() => Ok(Expr::int(raw.as_i64().ok_or_else(|| "invalid int value".to_string())?)),
+        Value::Number(raw) if type_ref.is_byte() => {
             let byte_value = raw.as_u64().ok_or_else(|| "invalid byte value".to_string())?;
             let byte = u8::try_from(byte_value).map_err(|_| format!("byte expects value in 0..=255, got {byte_value}"))?;
             Ok(Expr::byte(byte))
         }
-        Value::Bool(raw) if matches!(type_ref.base, TypeBase::Bool) => Ok(Expr::bool(*raw)),
+        Value::Bool(raw) if type_ref.is_bool() => Ok(Expr::bool(*raw)),
         _ => Err(format!("unsupported arg value for '{}'", type_ref.type_name())),
     }
 }
@@ -333,11 +334,11 @@ mod tests {
                 bool active = true;
                 byte[1] tag = 0xaa;
 
-                entrypoint function inspect_state(State next) {
+                entry inspect_state(State next) {
                     require(next.active == active);
                 }
 
-                entrypoint function inspect_state_array(State[] next_states) {
+                entry inspect_state_array(State[] next_states) {
                     require(next_states.length == 2);
                 }
             }
@@ -351,7 +352,7 @@ mod tests {
         let contract = debug_shapes_contract();
         let args = parse_call_args(&contract, "inspect_state", &[r#"{"amount":5,"active":true,"tag":"0xaa"}"#.to_string()])
             .expect("parse State arg");
-        let ExprKind::StateObject(fields) = &args[0].kind else {
+        let ExprKind::StructLiteral(fields) = &args[0].kind else {
             panic!("expected state object");
         };
         assert_eq!(fields.len(), 3);
@@ -372,7 +373,7 @@ mod tests {
             panic!("expected array expr");
         };
         assert_eq!(values.len(), 2);
-        assert!(matches!(values[0].kind, ExprKind::StateObject(_)));
+        assert!(matches!(values[0].kind, ExprKind::StructLiteral(_)));
     }
 
     #[test]
@@ -380,7 +381,7 @@ mod tests {
         let contract = debug_shapes_contract();
         let args = parse_ctor_args(&contract, &[r#"{"amount":7,"tag":"0xaa"}"#.to_string()]).expect("parse ctor args");
         assert_eq!(args.len(), 1);
-        let ExprKind::StateObject(fields) = &args[0].kind else {
+        let ExprKind::StructLiteral(fields) = &args[0].kind else {
             panic!("expected struct object");
         };
         let tag = fields.iter().find(|field| field.name == "tag").expect("tag field");
@@ -430,7 +431,7 @@ mod tests {
     fn parses_explicit_state_value() {
         let contract = debug_shapes_contract();
         let value = parse_state_value(&contract, r#"{"amount":9,"active":false,"tag":"0xcc"}"#).expect("parse State value");
-        let ExprKind::StateObject(fields) = value.kind else {
+        let ExprKind::StructLiteral(fields) = value.kind else {
             panic!("expected state object");
         };
         assert_eq!(fields.len(), 3);

@@ -272,7 +272,7 @@ mod tests {
         let test_path = dir.join("cov.test.json");
         std::fs::write(
             &script_path,
-            "pragma silverscript ^0.1.0;\ncontract Cov(int initial_value) { int value = initial_value; entrypoint function spend() { require(true); } }\n",
+            "pragma silverscript ^0.1.0;\ncontract Cov(int initial_value) { int value = initial_value; entry spend() { require(true); } }\n",
         )
         .expect("write script");
         std::fs::write(

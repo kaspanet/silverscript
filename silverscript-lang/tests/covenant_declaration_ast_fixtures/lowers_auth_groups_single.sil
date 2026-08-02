@@ -16,7 +16,7 @@ contract Decls(int max_outs) {
         require(amount >= 0);
     }
 
-    entrypoint function split(State[] new_states, int amount) {
+    entry split(State[] new_states, int amount) {
         int auth_out_count = OpAuthOutputCount(this.activeInputIndex);
 
         byte[32] cov_id = OpInputCovenantId(this.activeInputIndex);

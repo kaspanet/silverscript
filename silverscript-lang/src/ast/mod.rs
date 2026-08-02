@@ -118,6 +118,16 @@ pub struct FunctionAst<'i> {
     pub body_span: Span<'i>,
 }
 
+impl FunctionAst<'_> {
+    pub fn return_type(&self) -> Option<TypeRef> {
+        match self.return_types.as_slice() {
+            [] => None,
+            [single] if !self.returns_tuple => Some(single.clone()),
+            elements => Some(TypeRef::tuple(elements.to_vec())),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FunctionAttributeAst<'i> {
     pub path: Vec<String>,
@@ -152,7 +162,7 @@ pub struct ParamAst<'i> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StateBindingAst<'i> {
+pub struct StructBindingAst<'i> {
     pub field_name: String,
     pub type_ref: TypeRef,
     pub name: String,
@@ -182,20 +192,37 @@ pub enum TypeBase {
     Sig,
     Datasig,
     Byte,
+    Tuple(Vec<TypeRef>),
     Custom(String),
 }
 
+pub const PUBKEY_BYTE_LEN: usize = 32;
+pub const SIG_BYTE_LEN: usize = 65;
+pub const DATASIG_BYTE_LEN: usize = 64;
+
 impl TypeBase {
-    pub fn as_str(&self) -> &str {
+    pub fn fixed_byte_sequence_len(&self) -> Option<usize> {
         match self {
-            TypeBase::Int => "int",
-            TypeBase::Bool => "bool",
-            TypeBase::String => "string",
-            TypeBase::Pubkey => "pubkey",
-            TypeBase::Sig => "sig",
-            TypeBase::Datasig => "datasig",
-            TypeBase::Byte => "byte",
-            TypeBase::Custom(name) => name,
+            TypeBase::Pubkey => Some(PUBKEY_BYTE_LEN),
+            TypeBase::Sig => Some(SIG_BYTE_LEN),
+            TypeBase::Datasig => Some(DATASIG_BYTE_LEN),
+            _ => None,
+        }
+    }
+
+    pub fn type_name(&self) -> String {
+        match self {
+            TypeBase::Int => "int".to_string(),
+            TypeBase::Bool => "bool".to_string(),
+            TypeBase::String => "string".to_string(),
+            TypeBase::Pubkey => "pubkey".to_string(),
+            TypeBase::Sig => "sig".to_string(),
+            TypeBase::Datasig => "datasig".to_string(),
+            TypeBase::Byte => "byte".to_string(),
+            TypeBase::Tuple(elements) => {
+                format!("({})", elements.iter().map(TypeRef::type_name).collect::<Vec<_>>().join(", "))
+            }
+            TypeBase::Custom(name) => name.clone(),
         }
     }
 }
@@ -205,7 +232,7 @@ impl Serialize for TypeBase {
     where
         S: Serializer,
     {
-        serializer.serialize_str(self.as_str())
+        serializer.serialize_str(&self.type_name())
     }
 }
 
@@ -223,6 +250,7 @@ impl<'de> Deserialize<'de> for TypeBase {
             "sig" => TypeBase::Sig,
             "datasig" => TypeBase::Datasig,
             "byte" => TypeBase::Byte,
+            value if value.starts_with('(') && value.ends_with(')') => parse_type_ref(value).map_err(serde::de::Error::custom)?.base,
             other => TypeBase::Custom(other.to_string()),
         })
     }
@@ -238,8 +266,44 @@ pub enum ArrayDim {
 }
 
 impl TypeRef {
+    pub fn is_int(&self) -> bool {
+        self.array_dims.is_empty() && matches!(self.base, TypeBase::Int)
+    }
+
+    pub fn is_bool(&self) -> bool {
+        self.array_dims.is_empty() && matches!(self.base, TypeBase::Bool)
+    }
+
+    pub fn is_string(&self) -> bool {
+        self.array_dims.is_empty() && matches!(self.base, TypeBase::String)
+    }
+
+    pub fn is_pubkey(&self) -> bool {
+        self.array_dims.is_empty() && matches!(self.base, TypeBase::Pubkey)
+    }
+
+    pub fn is_sig(&self) -> bool {
+        self.array_dims.is_empty() && matches!(self.base, TypeBase::Sig)
+    }
+
+    pub fn is_datasig(&self) -> bool {
+        self.array_dims.is_empty() && matches!(self.base, TypeBase::Datasig)
+    }
+
+    pub fn is_byte(&self) -> bool {
+        self.array_dims.is_empty() && matches!(self.base, TypeBase::Byte)
+    }
+
+    pub fn is_tuple(&self) -> bool {
+        self.array_dims.is_empty() && matches!(self.base, TypeBase::Tuple(_))
+    }
+
+    pub fn is_custom(&self) -> bool {
+        self.array_dims.is_empty() && matches!(self.base, TypeBase::Custom(_))
+    }
+
     pub fn type_name(&self) -> String {
-        let mut out = self.base.as_str().to_string();
+        let mut out = self.base.type_name();
         for dim in &self.array_dims {
             match dim {
                 ArrayDim::Dynamic => out.push_str("[]"),
@@ -255,7 +319,13 @@ impl TypeRef {
         !self.array_dims.is_empty()
     }
 
-    pub fn element_type(&self) -> Option<Self> {
+    // This returns the type of the array elements, or None if this is not an array type.
+    // e.g.
+    // int       → None
+    // int[]     → Some(int)
+    // int[][]   → Some(int[])
+    // byte[32]  → Some(byte)
+    pub fn array_element_type(&self) -> Option<Self> {
         if self.array_dims.is_empty() {
             return None;
         }
@@ -266,6 +336,20 @@ impl TypeRef {
 
     pub fn array_size(&self) -> Option<&ArrayDim> {
         self.array_dims.last()
+    }
+
+    pub fn tuple(elements: Vec<TypeRef>) -> Self {
+        Self { base: TypeBase::Tuple(elements), array_dims: Vec::new() }
+    }
+
+    pub fn tuple_elements(&self) -> Option<&[TypeRef]> {
+        if self.is_array() {
+            return None;
+        }
+        match &self.base {
+            TypeBase::Tuple(elements) => Some(elements),
+            _ => None,
+        }
     }
 }
 
@@ -322,7 +406,10 @@ pub enum Statement<'i> {
         name_span: Span<'i>,
     },
     StateFunctionCallAssign {
-        bindings: Vec<StateBindingAst<'i>>,
+        /// Struct selected by a typed assignment before its fields were flattened.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        target_struct: Option<String>,
+        bindings: Vec<StructBindingAst<'i>>,
         name: String,
         args: Vec<Expr<'i>>,
         #[serde(skip_deserializing)]
@@ -331,7 +418,7 @@ pub enum Statement<'i> {
         name_span: Span<'i>,
     },
     StructDestructure {
-        bindings: Vec<StateBindingAst<'i>>,
+        bindings: Vec<StructBindingAst<'i>>,
         expr: Expr<'i>,
         #[serde(skip_deserializing)]
         span: Span<'i>,
@@ -594,7 +681,7 @@ pub enum ExprKind<'i> {
         #[serde(skip_deserializing)]
         field_span: Span<'i>,
     },
-    StateObject(Vec<StateFieldExpr<'i>>),
+    StructLiteral(Vec<StateFieldExpr<'i>>),
     FieldAccess {
         source: Box<Expr<'i>>,
         field: String,
@@ -773,9 +860,10 @@ impl SourceFormatter {
     fn write_function(&mut self, function: &FunctionAst<'_>) {
         let mut signature = String::new();
         if function.entrypoint {
-            signature.push_str("entrypoint ");
+            signature.push_str("entry ");
+        } else {
+            signature.push_str("function ");
         }
-        signature.push_str("function ");
         signature.push_str(&function.name);
         signature.push('(');
         signature.push_str(&format_params(&function.params));
@@ -939,7 +1027,7 @@ fn format_params(params: &[ParamAst<'_>]) -> String {
     params.iter().map(|param| format!("{} {}", param.type_ref.type_name(), param.name)).collect::<Vec<_>>().join(", ")
 }
 
-fn format_state_bindings(bindings: &[StateBindingAst<'_>]) -> String {
+fn format_state_bindings(bindings: &[StructBindingAst<'_>]) -> String {
     bindings
         .iter()
         .map(|binding| format!("{}: {} {}", binding.field_name, binding.type_ref.type_name(), binding.name))
@@ -1008,7 +1096,7 @@ fn format_expr_with_prec(expr: &Expr<'_>, parent_prec: u8, right_child: bool) ->
         ExprKind::Introspection { kind, index, .. } => {
             format!("{}[{}]{}", introspection_root(*kind), format_expr(index), introspection_field(*kind))
         }
-        ExprKind::StateObject(fields) => format_state_object(fields),
+        ExprKind::StructLiteral(fields) => format_state_object(fields),
         ExprKind::FieldAccess { source, field, .. } => {
             format!("{}.{}", format_expr_with_prec(source, PREC_POSTFIX, false), field)
         }
@@ -1172,9 +1260,40 @@ fn unary_suffix_str(kind: UnarySuffixKind) -> &'static str {
 }
 
 pub fn parse_type_ref(type_name: &str) -> Result<TypeRef, CompilerError> {
+    let type_name = type_name.trim();
+    if type_name.starts_with('(') && type_name.ends_with(')') {
+        let inner = &type_name[1..type_name.len() - 1];
+        let elements = split_tuple_type_names(inner).into_iter().map(parse_type_ref).collect::<Result<Vec<_>, _>>()?;
+        if elements.is_empty() {
+            return Err(CompilerError::Unsupported("tuple type must contain at least one element".to_string()));
+        }
+        return Ok(TypeRef::tuple(elements));
+    }
     let mut pairs = parse_type_name_rule(type_name)?;
     let pair = pairs.next().ok_or_else(|| CompilerError::Unsupported("missing type name".to_string()))?;
     parse_type_name_pair(pair)
+}
+
+fn split_tuple_type_names(value: &str) -> Vec<&str> {
+    let mut depth = 0usize;
+    let mut start = 0usize;
+    let mut parts = Vec::new();
+    for (index, ch) in value.char_indices() {
+        match ch {
+            '(' | '[' => depth += 1,
+            ')' | ']' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                parts.push(value[start..index].trim());
+                start = index + 1;
+            }
+            _ => {}
+        }
+    }
+    let tail = value[start..].trim();
+    if !tail.is_empty() {
+        parts.push(tail);
+    }
+    parts
 }
 
 fn parse_type_name_pair(pair: Pair<'_, Rule>) -> Result<TypeRef, CompilerError> {
@@ -1350,7 +1469,7 @@ fn parse_function_definition<'i>(pair: Pair<'i, Rule>) -> Result<FunctionAst<'i>
     }
 
     let first = inner.next().ok_or_else(|| CompilerError::Unsupported("missing function name".to_string()))?;
-    let (entrypoint, name_pair) = if first.as_rule() == Rule::entrypoint {
+    let (entrypoint, name_pair) = if first.as_rule() == Rule::entry {
         let name_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing function name".to_string()))?;
         (true, name_pair)
     } else {
@@ -1605,7 +1724,7 @@ fn parse_statement<'i>(pair: Pair<'i, Rule>) -> Result<Statement<'i>, CompilerEr
                 inner.next().ok_or_else(|| CompilerError::Unsupported("missing function call".to_string()).with_span(&span))?;
             let (Identifier { name, span: name_span }, args) =
                 parse_function_call_parts(call_pair).map_err(|err| err.with_span(&span))?;
-            Ok(Statement::StateFunctionCallAssign { bindings, name, args, span, name_span })
+            Ok(Statement::StateFunctionCallAssign { target_struct: None, bindings, name, args, span, name_span })
         }
         Rule::struct_destructure_assignment => {
             let mut inner = pair.into_inner();
@@ -1803,7 +1922,7 @@ fn parse_require_message<'i>(pair: Pair<'i, Rule>) -> Result<(String, Span<'i>),
     }
 }
 
-fn parse_state_typed_binding<'i>(pair: Pair<'i, Rule>) -> Result<StateBindingAst<'i>, CompilerError> {
+fn parse_state_typed_binding<'i>(pair: Pair<'i, Rule>) -> Result<StructBindingAst<'i>, CompilerError> {
     let span = Span::from(pair.as_span());
     let mut inner = pair.into_inner();
 
@@ -1816,7 +1935,7 @@ fn parse_state_typed_binding<'i>(pair: Pair<'i, Rule>) -> Result<StateBindingAst
     let type_ref = parse_type_name_pair(type_pair)?;
     let Identifier { name, span: name_span } = parse_identifier(ident_pair)?;
 
-    Ok(StateBindingAst { field_name, type_ref, name, span, field_span, type_span, name_span })
+    Ok(StructBindingAst { field_name, type_ref, name, span, field_span, type_span, name_span })
 }
 
 fn parse_expression<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {
@@ -2099,7 +2218,7 @@ fn parse_state_object<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerErro
         let expr = parse_expression(expr_pair)?;
         fields.push(StateFieldExpr { name, expr, span: field_span, name_span });
     }
-    Ok(Expr::new(ExprKind::StateObject(fields), span))
+    Ok(Expr::new(ExprKind::StructLiteral(fields), span))
 }
 
 fn parse_literal<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {

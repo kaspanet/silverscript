@@ -93,7 +93,6 @@ pub fn compiled_template_parts_and_hash(compiled: &CompiledContract) -> (Vec<u8>
     let layout = compiled.state_layout;
     let prefix = compiled.script[..layout.start].to_vec();
     let suffix = compiled.script[layout.start + layout.len..].to_vec();
-    let template_hash =
-        blake2b_simd::Params::new().hash_length(32).to_state().update(&prefix).update(&suffix).finalize().as_bytes().to_vec();
+    let template_hash = compiled.template_hash().to_vec();
     (prefix, suffix, template_hash)
 }

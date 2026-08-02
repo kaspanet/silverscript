@@ -16,7 +16,7 @@ contract Decls(int max_outs, int init_value) {
         return next_states;
     }
 
-    entrypoint function fanout(State[] next_states) {
+    entry fanout(State[] next_states) {
         int auth_out_count = OpAuthOutputCount(this.activeInputIndex);
 
         State prev_state = { value: value };
