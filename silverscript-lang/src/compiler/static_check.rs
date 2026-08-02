@@ -361,6 +361,7 @@ fn validate_output_state_call<'i>(
     args: &[Expr<'i>],
 ) -> Result<(), CompilerError> {
     let int_type = TypeRef { base: TypeBase::Int, array_dims: Vec::new() };
+    let hash_type = TypeRef { base: TypeBase::Byte, array_dims: vec![ArrayDim::Fixed(32)] };
     match (name, args) {
         ("validateOutputState", [output_index, state]) => {
             let state_type = TypeRef { base: TypeBase::Custom(STATE_TYPE_NAME.to_string()), array_dims: Vec::new() };
@@ -408,7 +409,7 @@ fn validate_output_state_call<'i>(
             for expression in [template_input_index, template_prefix_len, template_suffix_len] {
                 ctx.check_expr(expression, Some(&int_type))?;
             }
-            ctx.check_expr(template_hash, None)?;
+            ctx.check_expr(template_hash, Some(&hash_type))?;
             Ok(())
         }
         ("validateOutputStateWithInputTemplate", _) => Err(CompilerError::Unsupported(

@@ -5946,6 +5946,25 @@ fn template_hash_matches_all_template_builtins() {
 }
 
 #[test]
+fn validate_output_state_with_input_template_requires_fixed_hash_type() {
+    let source = r#"
+        contract Verifier() {
+            struct RemoteState {
+                int x;
+            }
+
+            entrypoint function main() {
+                RemoteState next = {x: 8};
+                validateOutputStateWithInputTemplate(0, next, 1, 2, 3, true);
+            }
+        }
+    "#;
+
+    compile_contract(source, &[], CompileOptions::default())
+        .expect_err("validateOutputStateWithInputTemplate should require a byte[32] template hash");
+}
+
+#[test]
 fn runs_validate_output_state_with_template_using_passed_struct_layout() {
     let target_hash_value = vec![0x44u8; 32];
     let target_hash_hex = target_hash_value.iter().map(|byte| format!("{byte:02x}")).collect::<String>();

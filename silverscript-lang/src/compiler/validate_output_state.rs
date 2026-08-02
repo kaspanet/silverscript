@@ -343,6 +343,8 @@ fn bind_template_part<'i>(
     scope.vars.insert(name.clone(), type_ref.clone());
     // Assignment keeps the slice stack-bound; immutable single-use locals are
     // inlined before the inner validation expands its repeated references.
+    // TODO: Replace this workaround by lowering validateOutputStateWithTemplate
+    // before locals.rs, or by binding its template parts internally.
     let binding = Statement::VariableDefinition {
         type_ref: type_ref.clone(),
         modifiers: Vec::new(),
