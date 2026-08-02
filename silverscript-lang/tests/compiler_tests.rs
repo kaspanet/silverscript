@@ -8141,11 +8141,11 @@ fn r0_succinct_verify_lowers_hash_aliases_to_zk_precompile() {
                 contract R0(
                     byte[32] image_id,
                     byte[32] control_id,
-                    byte[] claim,
-                    byte[] control_index,
+                    byte[32] claim,
+                    byte[4] control_index,
                     byte[] control_digests,
                     byte[] seal,
-                    byte[] journal
+                    byte[32] journal
                 ) {{
                     entry main() {{
                         {call_name}(claim, control_index, control_digests, seal, journal, image_id, control_id);
@@ -8155,11 +8155,11 @@ fn r0_succinct_verify_lowers_hash_aliases_to_zk_precompile() {
         );
         let image_id = vec![0x11u8; 32];
         let control_id = vec![0x22u8; 32];
-        let claim = vec![0x33u8];
-        let control_index = vec![0x44u8];
+        let claim = vec![0x33u8; 32];
+        let control_index = vec![0x44u8; 4];
         let control_digests = vec![0x55u8];
         let seal = vec![0x66u8];
-        let journal = vec![0x77u8];
+        let journal = vec![0x77u8; 32];
         let compiled = compile_contract(
             &source,
             &[
@@ -8216,15 +8216,15 @@ fn r0_succinct_verify_rejects_reserved_non_poseidon_hashes() {
         let source = format!(
             r#"
                 contract R0() {{
-                    entry main() {{
-                        {call_name}(bytes("claim"), bytes("control_index"), bytes("control_digests"), bytes("seal"), bytes("journal"), {b32_a}, {b32_b});
+                    entry main(byte[32] claim, byte[4] control_index, byte[] control_digests, byte[] seal, byte[32] journal) {{
+                        {call_name}(claim, control_index, control_digests, seal, journal, {b32_a}, {b32_b});
                     }}
                 }}
             "#
         );
         let err = compile_contract(&source, &[], CompileOptions::default()).expect_err("reserved R0 hash should fail");
         assert!(
-            err.to_string().contains("reserved for future use; only Poseidon2 R0 Succinct verification is currently supported"),
+            err.to_string().contains("only Poseidon2 R0 Succinct verification is currently supported"),
             "unexpected error for {call_name}: {err}"
         );
     }
@@ -8270,8 +8270,8 @@ fn r0_verify_builtins_do_not_return_values() {
         format!(
             r#"
                 contract R0() {{
-                    entry main() {{
-                        require(r0.g16.verify({b32_a}, bytes("proof"), {b32_b}));
+                    entry main(byte[] proof) {{
+                        require(r0.g16.verify({b32_a}, proof, {b32_b}));
                     }}
                 }}
             "#
@@ -8279,8 +8279,8 @@ fn r0_verify_builtins_do_not_return_values() {
         format!(
             r#"
                 contract R0() {{
-                    entry main() {{
-                        bool valid = r0.succinct.verify(bytes("claim"), bytes("control_index"), bytes("control_digests"), bytes("seal"), bytes("journal"), {b32_a}, {b32_b});
+                    entry main(byte[32] claim, byte[4] control_index, byte[] control_digests, byte[] seal, byte[32] journal) {{
+                        bool valid = r0.succinct.verify(claim, control_index, control_digests, seal, journal, {b32_a}, {b32_b});
                         require(valid);
                     }}
                 }}
@@ -8317,14 +8317,15 @@ fn assert_r0_type_error(source: &str, expected: &str) {
 fn r0_verify_builtins_reject_incorrect_argument_types() {
     let b32_a = format!("0x{}", "11".repeat(32));
     let b32_b = format!("0x{}", "22".repeat(32));
+    let b4 = format!("0x{}", "33".repeat(4));
 
     let g16_cases = [
         (
             format!(
                 r#"
                     contract R0() {{
-                        entry main() {{
-                            require(r0.g16.verify(1, bytes("proof"), {b32_a}));
+                        entry main(byte[] proof) {{
+                            require(r0.g16.verify(1, proof, {b32_a}));
                         }}
                     }}
                 "#
@@ -8347,8 +8348,8 @@ fn r0_verify_builtins_reject_incorrect_argument_types() {
             format!(
                 r#"
                     contract R0() {{
-                        entry main() {{
-                            require(r0.g16.verify({b32_a}, bytes("proof"), bytes("image")));
+                        entry main(byte[] proof) {{
+                            require(r0.g16.verify({b32_a}, proof, 0x11));
                         }}
                     }}
                 "#
@@ -8365,13 +8366,13 @@ fn r0_verify_builtins_reject_incorrect_argument_types() {
         let source = format!(
             r#"
                 contract R0() {{
-                    entry main() {{
-                        require({call_name}(1, bytes("control_index"), bytes("control_digests"), bytes("seal"), bytes("journal"), {b32_a}, {b32_b}));
+                    entry main(byte[] control_digests, byte[] seal) {{
+                        require({call_name}(1, {b4}, control_digests, seal, {b32_a}, {b32_a}, {b32_b}));
                     }}
                 }}
             "#
         );
-        assert_r0_type_error(&source, "argument 'claim' expects byte[]");
+        assert_r0_type_error(&source, "argument 'claim' expects byte[32]");
     }
 
     let succinct_arg_cases = [
@@ -8379,20 +8380,20 @@ fn r0_verify_builtins_reject_incorrect_argument_types() {
             format!(
                 r#"
                     contract R0() {{
-                        entry main() {{
-                            require(r0.succinct.verify(bytes("claim"), 1, bytes("control_digests"), bytes("seal"), bytes("journal"), {b32_a}, {b32_b}));
+                        entry main(byte[] control_digests, byte[] seal) {{
+                            require(r0.succinct.verify({b32_a}, 1, control_digests, seal, {b32_a}, {b32_a}, {b32_b}));
                         }}
                     }}
                 "#
             ),
-            "argument 'control_index' expects byte[]",
+            "argument 'control_index' expects byte[4]",
         ),
         (
             format!(
                 r#"
                     contract R0() {{
-                        entry main() {{
-                            require(r0.succinct.verify(bytes("claim"), bytes("control_index"), 1, bytes("seal"), bytes("journal"), {b32_a}, {b32_b}));
+                        entry main(byte[] seal) {{
+                            require(r0.succinct.verify({b32_a}, {b4}, 1, seal, {b32_a}, {b32_a}, {b32_b}));
                         }}
                     }}
                 "#
@@ -8403,8 +8404,8 @@ fn r0_verify_builtins_reject_incorrect_argument_types() {
             format!(
                 r#"
                     contract R0() {{
-                        entry main() {{
-                            require(r0.succinct.verify(bytes("claim"), bytes("control_index"), bytes("control_digests"), 1, bytes("journal"), {b32_a}, {b32_b}));
+                        entry main(byte[] control_digests) {{
+                            require(r0.succinct.verify({b32_a}, {b4}, control_digests, 1, {b32_a}, {b32_a}, {b32_b}));
                         }}
                     }}
                 "#
@@ -8415,20 +8416,20 @@ fn r0_verify_builtins_reject_incorrect_argument_types() {
             format!(
                 r#"
                     contract R0() {{
-                        entry main() {{
-                            require(r0.succinct.verify(bytes("claim"), bytes("control_index"), bytes("control_digests"), bytes("seal"), 1, {b32_a}, {b32_b}));
+                        entry main(byte[] control_digests, byte[] seal) {{
+                            require(r0.succinct.verify({b32_a}, {b4}, control_digests, seal, 1, {b32_a}, {b32_b}));
                         }}
                     }}
                 "#
             ),
-            "argument 'journal' expects byte[]",
+            "argument 'journal' expects byte[32]",
         ),
         (
             format!(
                 r#"
                     contract R0() {{
-                        entry main() {{
-                            require(r0.succinct.verify(bytes("claim"), bytes("control_index"), bytes("control_digests"), bytes("seal"), bytes("journal"), bytes("image"), {b32_b}));
+                        entry main(byte[] control_digests, byte[] seal) {{
+                            require(r0.succinct.verify({b32_a}, {b4}, control_digests, seal, {b32_a}, 0x11, {b32_b}));
                         }}
                     }}
                 "#
@@ -8439,8 +8440,8 @@ fn r0_verify_builtins_reject_incorrect_argument_types() {
             format!(
                 r#"
                     contract R0() {{
-                        entry main() {{
-                            require(r0.succinct.verify(bytes("claim"), bytes("control_index"), bytes("control_digests"), bytes("seal"), bytes("journal"), {b32_a}, bytes("control")));
+                        entry main(byte[] control_digests, byte[] seal) {{
+                            require(r0.succinct.verify({b32_a}, {b4}, control_digests, seal, {b32_a}, {b32_a}, 0x22));
                         }}
                     }}
                 "#
@@ -8464,7 +8465,7 @@ fn r0_succinct_verify_runtime_checks_each_hash_with_fixture() {
         let source = format!(
             r#"
                 contract R0(byte[32] image_id, byte[32] control_id) {{
-                    entry main(byte[] claim, byte[] control_index, byte[] control_digests, byte[] seal, byte[] journal) {{
+                    entry main(byte[32] claim, byte[4] control_index, byte[] control_digests, byte[] seal, byte[32] journal) {{
                         {call_name}(claim, control_index, control_digests, seal, journal, image_id, control_id);
                     }}
                 }}

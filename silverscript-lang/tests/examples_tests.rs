@@ -390,10 +390,7 @@ fn r0_succinct_sha256_example_is_reserved_for_future_use() {
 
     let err =
         compile_contract(&source, &[image_id.into(), control_id.into()], CompileOptions::default()).expect_err("compile should fail");
-    assert!(
-        err.to_string().contains("reserved for future use; only Poseidon2 R0 Succinct verification is currently supported"),
-        "unexpected error: {err}"
-    );
+    assert!(err.to_string().contains("only Poseidon2 R0 Succinct verification is currently supported"), "unexpected error: {err}");
 }
 
 #[test]

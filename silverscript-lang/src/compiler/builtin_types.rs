@@ -139,11 +139,11 @@ pub(super) fn builtin_parameters(name: &str) -> Option<Vec<(&'static str, TypeRe
         ]),
         "r0.succinct.verify" | "r0.succinct.blake2b.verify" | "r0.succinct.poseidon2.verify" | "r0.succinct.sha256.verify" => {
             Some(vec![
-                ("claim", byte_array(ArrayDim::Dynamic)),
-                ("control_index", byte_array(ArrayDim::Dynamic)),
+                ("claim", byte_array(ArrayDim::Fixed(32))),
+                ("control_index", byte_array(ArrayDim::Fixed(4))),
                 ("control_digests", byte_array(ArrayDim::Dynamic)),
                 ("seal", byte_array(ArrayDim::Dynamic)),
-                ("journal", byte_array(ArrayDim::Dynamic)),
+                ("journal", byte_array(ArrayDim::Fixed(32))),
                 ("image_id", byte_array(ArrayDim::Fixed(32))),
                 ("control_id", byte_array(ArrayDim::Fixed(32))),
             ])
