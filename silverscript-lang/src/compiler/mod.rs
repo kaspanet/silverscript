@@ -25,6 +25,7 @@ mod read_input_state;
 mod stack_bindings;
 mod static_check;
 mod structs;
+mod ternary;
 mod type_check;
 mod type_system;
 mod validate_output_state;
