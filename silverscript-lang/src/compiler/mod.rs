@@ -349,7 +349,7 @@ fn push_struct_array_sigscript_arg<'i>(
         .array_size()
         .cloned()
         .ok_or_else(|| CompilerError::Unsupported("signature script struct array argument requires an array type".to_string()))?;
-    let ExprKind::Array(values) = arg.kind else {
+    let ExprKind::Array { values, .. } = arg.kind else {
         return Err(CompilerError::Unsupported("signature script struct array arguments must be array literals".to_string()));
     };
 
@@ -377,13 +377,7 @@ fn push_struct_array_sigscript_arg<'i>(
             .collect::<Result<Vec<_>, _>>()?;
         let mut field_type = field.type_ref.clone();
         field_type.array_dims.push(dimension.clone());
-        push_typed_sigscript_arg(
-            builder,
-            Expr::new(ExprKind::Array(field_values), span::Span::default()),
-            &field_type,
-            structs,
-            constants,
-        )?;
+        push_typed_sigscript_arg(builder, Expr::array(field_type.clone(), field_values), &field_type, structs, constants)?;
     }
 
     if let Some(extra) = objects.iter().find_map(|fields| fields.keys().next()) {
@@ -399,7 +393,7 @@ fn push_array_sigscript_arg<'i>(
     constants: &HashMap<String, Expr<'i>>,
 ) -> Result<(), CompilerError> {
     match &arg.kind {
-        ExprKind::Array(values) => {
+        ExprKind::Array { values, .. } => {
             let bytes = compile::encode_array_literal(values, type_ref, constants)?;
             builder.add_data(&bytes)?;
             Ok(())
@@ -423,7 +417,7 @@ fn push_sigscript_non_array_arg<'i>(builder: &mut ScriptBuilder, arg: Expr<'i>) 
             builder.add_data(&[value])?;
         }
         // This is not intended for byte-arrays, but for pubkey, datasig, etc.
-        ExprKind::Array(values) if values.iter().all(|value| matches!(&value.kind, ExprKind::Byte(_))) => {
+        ExprKind::Array { values, .. } if values.iter().all(|value| matches!(&value.kind, ExprKind::Byte(_))) => {
             let bytes: Vec<u8> =
                 values.iter().filter_map(|value| if let ExprKind::Byte(byte) = &value.kind { Some(*byte) } else { None }).collect();
             builder.add_data(&bytes)?;

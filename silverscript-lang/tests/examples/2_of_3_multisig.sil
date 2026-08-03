@@ -2,6 +2,6 @@ pragma silverscript ^0.1.0;
 
 contract MultiSig(pubkey pk1, pubkey pk2, pubkey pk3) {
   entry spend(sig s1, sig s2) {
-    require(checkMultiSig([s1, s2], [pk1, pk2, pk3]));
+    require(checkMultiSig(sig[]{s1, s2}, pubkey[]{pk1, pk2, pk3}));
   }
 }

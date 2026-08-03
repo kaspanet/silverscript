@@ -1,4 +1,4 @@
-use silverscript_lang::ast::{parse_contract_ast, parse_type_ref};
+use silverscript_lang::ast::{Expr, ExprKind, Statement, parse_contract_ast, parse_type_ref};
 use silverscript_lang::parser::parse_source_file;
 
 #[test]
@@ -62,6 +62,59 @@ fn type_predicates_only_match_scalars() {
 }
 
 #[test]
+fn try_from_expr_vec_infers_a_fixed_array_type() {
+    let expr = Expr::try_from(vec![Expr::int(1), Expr::int(2)]).expect("homogeneous array type should be inferred");
+    let ExprKind::Array { type_ref, values } = expr.kind else {
+        panic!("expected an array expression");
+    };
+
+    assert_eq!(type_ref, parse_type_ref("int[2]").unwrap());
+    assert_eq!(values.len(), 2);
+    assert!(Expr::try_from(Vec::<Expr<'static>>::new()).is_err());
+    assert!(Expr::try_from(vec![Expr::int(1), Expr::bool(true)]).is_err());
+}
+
+#[test]
+fn byte_vector_constructors_distinguish_fixed_and_dynamic_arrays() {
+    let ExprKind::Array { type_ref: fixed_type, .. } = Expr::bytes(vec![1, 2]).kind else {
+        panic!("expected a fixed byte array expression");
+    };
+    let ExprKind::Array { type_ref: dynamic_type, .. } = Expr::dynamic_bytes(vec![1, 2]).kind else {
+        panic!("expected a dynamic byte array expression");
+    };
+
+    assert_eq!(fixed_type, parse_type_ref("byte[2]").unwrap());
+    assert_eq!(dynamic_type, parse_type_ref("byte[]").unwrap());
+}
+
+#[test]
+fn array_constructor_resolves_inferred_dimension_to_fixed() {
+    let ExprKind::Array { type_ref, .. } = Expr::array(parse_type_ref("int[_]").unwrap(), vec![Expr::int(1), Expr::int(2)]).kind
+    else {
+        panic!("expected an array expression");
+    };
+
+    assert_eq!(type_ref, parse_type_ref("int[2]").unwrap());
+}
+
+#[test]
+fn try_from_nested_byte_vec_requires_equal_nonempty_elements() {
+    let expr = Expr::try_from(vec![vec![1u8, 2], vec![3, 4]]).expect("uniform nested byte array should be inferred");
+    let ExprKind::Array { type_ref, values } = expr.kind else {
+        panic!("expected an array expression");
+    };
+
+    assert_eq!(type_ref, parse_type_ref("byte[2][2]").unwrap());
+    assert_eq!(values.len(), 2);
+
+    let unequal = Expr::try_from(vec![vec![1u8], vec![2, 3]]).expect_err("unequal inner lengths should be rejected");
+    assert!(unequal.to_string().contains("nested array elements must have equal lengths"), "unexpected error: {unequal}");
+
+    let empty = Expr::try_from(Vec::<Vec<u8>>::new()).expect_err("empty nested array type cannot be inferred");
+    assert!(empty.to_string().contains("nested array element type cannot be inferred"), "unexpected error: {empty}");
+}
+
+#[test]
 fn parses_timeops_and_console() {
     let input = r#"
         contract TimeLock(pubkey owner) {
@@ -95,7 +148,7 @@ fn parses_arrays_and_introspection() {
     let input = r#"
         contract Complex(byte[20] hash) {
             function verify(int idx) {
-                int a = [1, 2, 3][0];
+                int a = int[]{1, 2, 3}[0];
                 int b = (a * 2).split(1).length;
                 int c = tx.outputs[idx].value;
                 int d = tx.inputs[idx].outpointIndex;
@@ -108,6 +161,98 @@ fn parses_arrays_and_introspection() {
     if let Err(err) = result {
         panic!("{}", err);
     }
+}
+
+#[test]
+fn typed_array_literal_stores_its_declared_type_on_the_array_expr() {
+    let input = r#"
+        contract Arrays() {
+            entry main() {
+                byte[2][_] values = byte[2][]{byte[2](0x0102), byte[2](0x0304)};
+            }
+        }
+    "#;
+    let contract = parse_contract_ast(input).expect("typed array literal should parse");
+    let Statement::VariableDefinition { expr: Some(expr), .. } = &contract.functions[0].body[0] else {
+        panic!("expected a variable definition with an initializer");
+    };
+    let ExprKind::Array { type_ref, values } = &expr.kind else {
+        panic!("expected a typed array expression");
+    };
+
+    assert_eq!(type_ref, &parse_type_ref("byte[2][]").unwrap());
+    assert_eq!(values.len(), 2);
+}
+
+#[test]
+fn typed_array_literal_outer_dimension_controls_its_ast_type() {
+    let input = r#"
+        contract Arrays() {
+            entry main() {
+                int[] dynamic = int[]{1, 2, 3};
+                int[3] inferred = int[_]{1, 2, 3};
+                int[3] fixed = int[3]{1, 2, 3};
+            }
+        }
+    "#;
+    let contract = parse_contract_ast(input).expect("typed array literals should parse");
+    let expected = ["int[]", "int[3]", "int[3]"];
+    for (statement, expected_type) in contract.functions[0].body.iter().zip(expected) {
+        let Statement::VariableDefinition { expr: Some(expr), .. } = statement else {
+            panic!("expected a variable definition with an initializer");
+        };
+        let ExprKind::Array { type_ref, .. } = &expr.kind else {
+            panic!("expected an array expression");
+        };
+        assert_eq!(type_ref, &parse_type_ref(expected_type).unwrap());
+    }
+}
+
+#[test]
+fn rejects_fixed_typed_array_literal_with_wrong_length() {
+    let input = r#"
+        contract Arrays() {
+            entry main() {
+                int[4] values = int[4]{1, 2, 3};
+            }
+        }
+    "#;
+    let err = parse_contract_ast(input).expect_err("fixed literal length mismatch should fail");
+    assert!(err.to_string().contains("array literal size mismatch: expected 4, got 3"), "unexpected error: {err}");
+}
+
+#[test]
+fn byte_array_hex_cast_becomes_a_typed_array_expr() {
+    let input = r#"
+        contract Arrays() {
+            entry main() {
+                byte[_] value = byte[_](0x010203);
+            }
+        }
+    "#;
+    let contract = parse_contract_ast(input).expect("byte-array hex literal should parse");
+    let Statement::VariableDefinition { expr: Some(expr), .. } = &contract.functions[0].body[0] else {
+        panic!("expected a variable definition with an initializer");
+    };
+    let ExprKind::Array { type_ref, values } = &expr.kind else {
+        panic!("expected the hex cast to lower directly to a typed array expression");
+    };
+
+    assert_eq!(type_ref, &parse_type_ref("byte[3]").unwrap());
+    assert_eq!(values.len(), 3);
+}
+
+#[test]
+fn rejects_untyped_array_literals() {
+    let input = r#"
+        contract Arrays() {
+            entry main() {
+                int[_] values = [1, 2, 3];
+            }
+        }
+    "#;
+
+    assert!(parse_source_file(input).is_err());
 }
 
 #[test]

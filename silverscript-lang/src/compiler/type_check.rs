@@ -31,7 +31,7 @@ pub(super) fn check_expr<'i>(
         ExprKind::Byte(_) => scalar_type(TypeBase::Byte),
         ExprKind::String(_) => scalar_type(TypeBase::String),
         ExprKind::Identifier(name) => ctx.types.get(name).cloned().ok_or_else(|| CompilerError::UndefinedIdentifier(name.clone()))?,
-        ExprKind::Array(values) => check_array_literal(values, expected, ctx)?,
+        ExprKind::Array { type_ref, values } => check_typed_array_literal(values, type_ref, expected, ctx)?,
         ExprKind::Call { name, args, name_span } => check_call(name, name_span.as_str(), args, expected, ctx)?
             .ok_or_else(|| CompilerError::Unsupported(format!("function '{name}' does not return a value")))?,
         ExprKind::New { name, args, .. } => check_constructor(name, args, ctx)?,
@@ -142,45 +142,6 @@ pub(super) fn check_expr<'i>(
     Ok(actual)
 }
 
-fn check_array_literal<'i>(
-    values: &[Expr<'i>],
-    expected: Option<&TypeRef>,
-    ctx: &TypeCheckContext<'_, 'i>,
-) -> Result<TypeRef, CompilerError> {
-    if let Some(expected) = expected {
-        if !expected.is_array() {
-            let fixed_bytes = expected.base.fixed_byte_sequence_len();
-            if fixed_bytes == Some(values.len()) && values.iter().all(|value| matches!(value.kind, ExprKind::Byte(_))) {
-                return Ok(expected.clone());
-            }
-            return Err(CompilerError::Unsupported("type mismatch".to_string()));
-        }
-        let element_type = expected
-            .array_element_type()
-            .ok_or_else(|| CompilerError::Unsupported("array literal requires an array type".to_string()))?;
-        if let Some(size) = array_type_size(expected, ctx.constants)
-            && size != values.len()
-        {
-            return Err(CompilerError::Unsupported("size mismatch".to_string()));
-        }
-        for value in values {
-            check_expr(value, Some(&element_type), ctx)?;
-        }
-        return Ok(expected.clone());
-    }
-
-    let Some(first) = values.first() else {
-        return Ok(TypeRef { base: TypeBase::Byte, array_dims: vec![crate::ast::ArrayDim::Fixed(0)] });
-    };
-    let element_type = check_expr(first, None, ctx)?;
-    for value in &values[1..] {
-        check_expr(value, Some(&element_type), ctx)?;
-    }
-    let mut result = element_type;
-    result.array_dims.push(crate::ast::ArrayDim::Fixed(values.len()));
-    Ok(result)
-}
-
 fn check_array_literal_with_element_type<'i>(
     values: &[Expr<'i>],
     element_type: &TypeRef,
@@ -192,6 +153,61 @@ fn check_array_literal_with_element_type<'i>(
     let mut result = element_type.clone();
     result.array_dims.push(ArrayDim::Fixed(values.len()));
     Ok(result)
+}
+
+fn check_typed_array_literal<'i>(
+    values: &[Expr<'i>],
+    literal_type: &TypeRef,
+    expected: Option<&TypeRef>,
+    ctx: &TypeCheckContext<'_, 'i>,
+) -> Result<TypeRef, CompilerError> {
+    let literal_element_type = literal_type
+        .array_element_type()
+        .ok_or_else(|| CompilerError::Unsupported("array literal requires an array type".to_string()))?;
+    check_array_literal_with_element_type(values, &literal_element_type, ctx)
+        .map_err(|_| CompilerError::Unsupported("array element type mismatch".to_string()))?;
+    if let Some(literal_size) = array_type_size(literal_type, ctx.constants)
+        && literal_size != values.len()
+    {
+        return Err(CompilerError::Unsupported("size mismatch".to_string()));
+    }
+
+    if let Some(expected) = expected {
+        if !expected.is_array() {
+            if expected.base.fixed_byte_sequence_len() == Some(values.len())
+                && matches!(literal_type.base, TypeBase::Byte)
+                && literal_type.array_dims.len() == 1
+                && values.iter().all(|value| matches!(value.kind, ExprKind::Byte(_)))
+            {
+                return Ok(expected.clone());
+            }
+            return Err(CompilerError::Unsupported("type mismatch".to_string()));
+        }
+        let expected_element_type =
+            expected.array_element_type().ok_or_else(|| CompilerError::Unsupported("type mismatch".to_string()))?;
+        if !type_refs_equal(&literal_element_type, &expected_element_type, ctx.constants) {
+            if let (TypeBase::Custom(expected_name), TypeBase::Custom(actual_name)) =
+                (&expected_element_type.base, &literal_element_type.base)
+            {
+                return Err(CompilerError::Unsupported(format!("expected struct '{expected_name}', got '{actual_name}'")));
+            }
+            return Err(CompilerError::Unsupported("array element type mismatch".to_string()));
+        }
+        if matches!(expected.array_size(), Some(ArrayDim::Dynamic)) && !matches!(literal_type.array_size(), Some(ArrayDim::Dynamic)) {
+            return Err(CompilerError::Unsupported("type mismatch".to_string()));
+        }
+        if array_type_size(expected, ctx.constants).is_some() && matches!(literal_type.array_size(), Some(ArrayDim::Dynamic)) {
+            return Err(CompilerError::Unsupported("type mismatch".to_string()));
+        }
+        if let Some(expected_size) = array_type_size(expected, ctx.constants)
+            && expected_size != values.len()
+        {
+            return Err(CompilerError::Unsupported("size mismatch".to_string()));
+        }
+        return Ok(expected.clone());
+    }
+
+    Ok(literal_type.clone())
 }
 
 pub(super) fn check_call<'i>(
@@ -273,6 +289,14 @@ pub(super) fn check_call<'i>(
                 cast_type.type_name()
             )));
         }
+        if cast_type.is_array()
+            && source_type.is_array()
+            && let (Some(target_size), Some(source_size)) =
+                (array_type_size(&cast_type, ctx.constants), array_type_size(&source_type, ctx.constants))
+            && target_size != source_size
+        {
+            return Err(CompilerError::Unsupported(format!("cannot cast {} to {}", source_type.type_name(), cast_type.type_name())));
+        }
         return Ok(Some(cast_type));
     }
     let Some(return_type) = builtin_return(name) else {
@@ -322,7 +346,7 @@ fn check_binary<'i>(
     }
     let right_type = if matches!(op, BinaryOp::Add)
         && let Some(element_type) = left_type.array_element_type()
-        && let ExprKind::Array(values) = &right.kind
+        && let ExprKind::Array { values, .. } = &right.kind
     {
         check_array_literal_with_element_type(values, &element_type, ctx)?
     } else {

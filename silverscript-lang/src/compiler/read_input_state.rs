@@ -242,7 +242,10 @@ fn lower_call_arg<'i>(arg: &Expr<'i>, prefix: &mut Vec<Statement<'i>>, context: 
 
 fn lower_expr<'i>(expr: &Expr<'i>, prefix: &mut Vec<Statement<'i>>, context: &mut LoweringContext) -> Expr<'i> {
     let kind = match &expr.kind {
-        ExprKind::Array(values) => ExprKind::Array(values.iter().map(|value| lower_expr(value, prefix, context)).collect()),
+        ExprKind::Array { type_ref, values } => ExprKind::Array {
+            type_ref: type_ref.clone(),
+            values: values.iter().map(|value| lower_expr(value, prefix, context)).collect(),
+        },
         ExprKind::Call { name, args, name_span } => {
             ExprKind::Call { name: name.clone(), args: lower_call_args(args, prefix, context), name_span: *name_span }
         }

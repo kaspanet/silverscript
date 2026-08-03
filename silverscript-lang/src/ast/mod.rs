@@ -558,7 +558,13 @@ impl<'i> Expr<'i> {
     }
 
     pub fn bytes(value: Vec<u8>) -> Self {
-        Self::new(ExprKind::Array(value.into_iter().map(Expr::byte).collect()), Span::default())
+        let type_ref = TypeRef { base: TypeBase::Byte, array_dims: vec![ArrayDim::Fixed(value.len())] };
+        Self::array(type_ref, value.into_iter().map(Expr::byte).collect())
+    }
+
+    pub fn dynamic_bytes(value: Vec<u8>) -> Self {
+        let type_ref = TypeRef { base: TypeBase::Byte, array_dims: vec![ArrayDim::Dynamic] };
+        Self::array(type_ref, value.into_iter().map(Expr::byte).collect())
     }
 
     pub fn string(value: impl Into<String>) -> Self {
@@ -572,6 +578,36 @@ impl<'i> Expr<'i> {
     pub fn call(name: impl Into<String>, args: Vec<Expr<'i>>) -> Self {
         Self::new(ExprKind::Call { name: name.into(), args, name_span: Span::default() }, Span::default())
     }
+
+    pub fn array(mut type_ref: TypeRef, values: Vec<Expr<'i>>) -> Self {
+        if matches!(type_ref.array_dims.last(), Some(ArrayDim::Inferred)) {
+            *type_ref.array_dims.last_mut().unwrap() = ArrayDim::Fixed(values.len());
+        }
+        Self::new(ExprKind::Array { type_ref, values }, Span::default())
+    }
+
+    pub fn inferred_array(values: Vec<Expr<'i>>) -> Option<Self> {
+        let mut type_ref = intrinsic_expr_type(values.first()?)?;
+        if values.iter().skip(1).any(|value| intrinsic_expr_type(value).as_ref() != Some(&type_ref)) {
+            return None;
+        }
+        type_ref.array_dims.push(ArrayDim::Fixed(values.len()));
+        Some(Self::array(type_ref, values))
+    }
+}
+
+fn intrinsic_expr_type(expr: &Expr<'_>) -> Option<TypeRef> {
+    let base = match &expr.kind {
+        ExprKind::Int(_) | ExprKind::DateLiteral(_) | ExprKind::NumberWithUnit { .. } => TypeBase::Int,
+        ExprKind::Bool(_) => TypeBase::Bool,
+        ExprKind::Byte(_) => TypeBase::Byte,
+        ExprKind::String(_) => TypeBase::String,
+        ExprKind::Array { type_ref, .. } => return Some(type_ref.clone()),
+        ExprKind::StructLiteral { name, .. } | ExprKind::New { name, .. } => TypeBase::Custom(name.clone()),
+        ExprKind::Call { name, .. } => return parse_type_ref(name).ok(),
+        _ => return None,
+    };
+    Some(TypeRef { base, array_dims: Vec::new() })
 }
 
 impl<'i> From<i64> for Expr<'i> {
@@ -606,21 +642,33 @@ impl<'i> From<&str> for Expr<'i> {
 
 impl<'i> From<Vec<i64>> for Expr<'i> {
     fn from(values: Vec<i64>) -> Self {
+        let type_ref = TypeRef { base: TypeBase::Int, array_dims: vec![ArrayDim::Dynamic] };
         let exprs = values.into_iter().map(Expr::int).collect();
-        Expr::new(ExprKind::Array(exprs), Span::default())
+        Expr::array(type_ref, exprs)
     }
 }
 
-impl<'i> From<Vec<Expr<'i>>> for Expr<'i> {
-    fn from(values: Vec<Expr<'i>>) -> Self {
-        Expr::new(ExprKind::Array(values), Span::default())
+impl<'i> TryFrom<Vec<Expr<'i>>> for Expr<'i> {
+    type Error = CompilerError;
+
+    fn try_from(values: Vec<Expr<'i>>) -> Result<Self, Self::Error> {
+        Expr::inferred_array(values).ok_or_else(|| CompilerError::Unsupported("array element type cannot be inferred".to_string()))
     }
 }
 
-impl<'i> From<Vec<Vec<u8>>> for Expr<'i> {
-    fn from(values: Vec<Vec<u8>>) -> Self {
+impl<'i> TryFrom<Vec<Vec<u8>>> for Expr<'i> {
+    type Error = CompilerError;
+
+    fn try_from(values: Vec<Vec<u8>>) -> Result<Self, Self::Error> {
+        let inner_len = values.first().map(Vec::len).ok_or_else(|| {
+            CompilerError::Unsupported("nested array element type cannot be inferred from an empty array".to_string())
+        })?;
+        if values.iter().any(|value| value.len() != inner_len) {
+            return Err(CompilerError::Unsupported("nested array elements must have equal lengths".to_string()));
+        }
+        let type_ref = TypeRef { base: TypeBase::Byte, array_dims: vec![ArrayDim::Fixed(inner_len), ArrayDim::Fixed(values.len())] };
         let exprs = values.into_iter().map(Expr::bytes).collect();
-        Expr::new(ExprKind::Array(exprs), Span::default())
+        Ok(Expr::array(type_ref, exprs))
     }
 }
 
@@ -633,7 +681,10 @@ pub enum ExprKind<'i> {
     String(String),
     DateLiteral(i64),
     Identifier(String),
-    Array(Vec<Expr<'i>>),
+    Array {
+        type_ref: TypeRef,
+        values: Vec<Expr<'i>>,
+    },
     Call {
         name: String,
         args: Vec<Expr<'i>>,
@@ -1077,7 +1128,7 @@ fn format_expr_with_prec(expr: &Expr<'_>, parent_prec: u8, right_child: bool) ->
         ExprKind::String(value) => format_string_literal(value),
         ExprKind::DateLiteral(value) => value.to_string(),
         ExprKind::Identifier(value) => value.clone(),
-        ExprKind::Array(items) => format_array(items),
+        ExprKind::Array { type_ref, values } => format_array(type_ref, values),
         ExprKind::Call { name, args, .. } => {
             if let (Some(type_ref), [source]) = (as_cast_type(name), args.as_slice()) {
                 format!("{} as {}", format_expr_with_prec(source, PREC_POSTFIX, false), type_ref.type_name())
@@ -1136,16 +1187,18 @@ fn format_expr_with_prec(expr: &Expr<'_>, parent_prec: u8, right_child: bool) ->
     if prec < parent_prec || (right_child && prec == parent_prec) { format!("({rendered})") } else { rendered }
 }
 
-fn format_array(items: &[Expr<'_>]) -> String {
-    if let Some(bytes) = try_format_byte_array(items) {
+fn format_array(type_ref: &TypeRef, items: &[Expr<'_>]) -> String {
+    if let Some(bytes) = try_format_byte_array(items)
+        && matches!(type_ref.base, TypeBase::Byte)
+        && type_ref.array_dims.len() == 1
+    {
         let mut hex = String::from("0x");
         for byte in bytes {
             hex.push_str(&format!("{byte:02x}"));
         }
-        return hex;
+        return format!("{}({hex})", type_ref.type_name());
     }
-
-    format!("[{}]", format_expr_list(items))
+    format!("{}{{{}}}", type_ref.type_name(), format_expr_list(items))
 }
 
 fn try_format_byte_array(items: &[Expr<'_>]) -> Option<Vec<u8>> {
@@ -2001,7 +2054,7 @@ fn parse_expression<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError>
         }
         Rule::NullaryOp => parse_nullary(pair.as_str(), Span::from(pair.as_span())),
         Rule::introspection => parse_introspection(pair),
-        Rule::array => parse_array(pair),
+        Rule::typed_array => parse_typed_array(pair),
         Rule::function_call => parse_function_call(pair),
         Rule::instantiation => parse_instantiation(pair),
         Rule::cast => parse_cast(pair),
@@ -2236,7 +2289,7 @@ fn parse_primary<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {
         }
         Rule::NullaryOp => parse_nullary(pair.as_str(), Span::from(pair.as_span())),
         Rule::introspection => parse_introspection(pair),
-        Rule::array => parse_array(pair),
+        Rule::typed_array => parse_typed_array(pair),
         Rule::function_call => parse_function_call(pair),
         Rule::instantiation => parse_instantiation(pair),
         Rule::cast => parse_cast(pair),
@@ -2319,13 +2372,27 @@ fn parse_number(raw: &str) -> Result<i64, CompilerError> {
     Ok(value as i64)
 }
 
-fn parse_array<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {
+fn parse_typed_array<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {
     let span = Span::from(pair.as_span());
+    let mut inner = pair.into_inner();
+    let type_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing array literal type".to_string()))?;
+    let mut type_ref = parse_type_name_pair(type_pair)?;
     let mut values = Vec::new();
-    for expr_pair in pair.into_inner() {
+    for expr_pair in inner {
         values.push(parse_expression(expr_pair)?);
     }
-    Ok(Expr::new(ExprKind::Array(values), span))
+    let Some(outer_dim) = type_ref.array_dims.last_mut() else {
+        return Err(CompilerError::Unsupported("array literal type must include an outer array dimension".to_string()));
+    };
+    match outer_dim {
+        ArrayDim::Dynamic | ArrayDim::Constant(_) => {}
+        ArrayDim::Inferred => *outer_dim = ArrayDim::Fixed(values.len()),
+        ArrayDim::Fixed(expected) if *expected != values.len() => {
+            return Err(CompilerError::Unsupported(format!("array literal size mismatch: expected {expected}, got {}", values.len())));
+        }
+        ArrayDim::Fixed(_) => {}
+    }
+    Ok(Expr::new(ExprKind::Array { type_ref, values }, span))
 }
 
 fn parse_function_call_parts<'i>(pair: Pair<'i, Rule>) -> Result<(Identifier<'i>, Vec<Expr<'i>>), CompilerError> {
@@ -2386,10 +2453,28 @@ fn parse_cast<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {
     let type_name = type_pair.as_str().trim().to_string();
     let type_span = Span::from(type_pair.as_span());
 
-    let mut args = Vec::new();
-    for part in inner {
-        args.push(parse_expression(part)?);
+    let cast_type = parse_type_ref(&type_name).ok();
+    let is_byte_array_cast =
+        cast_type.as_ref().is_some_and(|type_ref| matches!(type_ref.base, TypeBase::Byte) && type_ref.array_dims.len() == 1);
+
+    let parts = inner.collect::<Vec<_>>();
+    if is_byte_array_cast
+        && let [part] = parts.as_slice()
+        && let Some(hex_pair) = immediate_hex_literal(part)
+    {
+        let bytes = parse_hex_bytes(&hex_pair)?;
+        let mut type_ref = cast_type.expect("byte-array cast type was parsed");
+        if matches!(type_ref.array_size(), Some(ArrayDim::Inferred)) {
+            type_ref.array_dims[0] = ArrayDim::Fixed(bytes.len());
+        }
+        let byte_span = Span::from(hex_pair.as_span());
+        let values = bytes.into_iter().map(|byte| Expr::new(ExprKind::Byte(byte), byte_span)).collect();
+        return Ok(Expr::new(ExprKind::Array { type_ref, values }, span));
     }
+
+    let args = parts.into_iter().map(parse_expression).collect::<Result<Vec<_>, _>>()?;
+
+    let type_name = cast_type.map_or(type_name, |type_ref| type_ref.type_name());
 
     if type_name == "byte" {
         return Ok(Expr::new(ExprKind::Call { name: "byte[1]".to_string(), args, name_span: type_span }, span));
@@ -2425,14 +2510,41 @@ fn parse_number_literal<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerEr
 fn parse_hex_literal<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {
     let span = Span::from(pair.as_span());
     let raw = pair.as_str();
+    let bytes = parse_hex_bytes(&pair)?;
+    if bytes.is_empty() {
+        return Err(CompilerError::InvalidLiteral(format!("invalid hex literal '{raw}'")));
+    }
+    if bytes.len() > 8 {
+        return Err(CompilerError::InvalidLiteral(format!("hex literal '{raw}' exceeds 8 bytes; cast it directly to a byte array")));
+    }
+    let value = u64::from_str_radix(raw.trim_start_matches("0x").trim_start_matches("0X"), 16)
+        .ok()
+        .and_then(|value| i64::try_from(value).ok())
+        .ok_or_else(|| CompilerError::InvalidLiteral(format!("hex literal '{raw}' is out of range for int")))?;
+    Ok(Expr::new(ExprKind::Int(value), span))
+}
+
+fn parse_hex_bytes(pair: &Pair<'_, Rule>) -> Result<Vec<u8>, CompilerError> {
+    let raw = pair.as_str();
     let trimmed = raw.trim_start_matches("0x").trim_start_matches("0X");
     let normalized = if trimmed.len() % 2 != 0 { format!("0{trimmed}") } else { trimmed.to_string() };
-    let bytes = (0..normalized.len())
+    (0..normalized.len())
         .step_by(2)
         .map(|i| u8::from_str_radix(&normalized[i..i + 2], 16))
         .collect::<Result<Vec<_>, _>>()
-        .map_err(|_| CompilerError::InvalidLiteral(format!("invalid hex literal '{raw}'")))?;
-    Ok(Expr::new(ExprKind::Array(bytes.into_iter().map(|byte| Expr::new(ExprKind::Byte(byte), span)).collect()), span))
+        .map_err(|_| CompilerError::InvalidLiteral(format!("invalid hex literal '{raw}'")))
+}
+
+fn immediate_hex_literal<'i>(pair: &Pair<'i, Rule>) -> Option<Pair<'i, Rule>> {
+    if pair.as_rule() == Rule::HexLiteral {
+        return Some(pair.clone());
+    }
+    let mut inner = pair.clone().into_inner();
+    let only = inner.next()?;
+    if inner.next().is_some() {
+        return None;
+    }
+    immediate_hex_literal(&only)
 }
 
 fn apply_number_unit<'i>(expr: Expr<'i>, unit: &str) -> Result<Expr<'i>, CompilerError> {

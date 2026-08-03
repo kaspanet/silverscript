@@ -200,11 +200,11 @@ fn coerce_expr_for_declared_type<'i>(expr: Expr<'i>, type_ref: &TypeRef) -> Resu
         return Ok(Expr::new(ExprKind::Byte(byte_value), expr.span));
     }
     if let Some(element_type) = type_ref.array_element_type()
-        && let ExprKind::Array(values) = expr.kind
+        && let ExprKind::Array { values, .. } = expr.kind
     {
         let values =
             values.into_iter().map(|value| coerce_expr_for_declared_type(value, &element_type)).collect::<Result<Vec<_>, _>>()?;
-        return Ok(Expr::new(ExprKind::Array(values), expr.span));
+        return Ok(Expr::new(ExprKind::Array { type_ref: type_ref.clone(), values }, expr.span));
     }
     Ok(expr)
 }
@@ -230,8 +230,11 @@ fn substitute_expr<'i>(expr: &Expr<'i>, aliases: &HashMap<String, Expr<'i>>) -> 
             },
             span,
         ),
-        ExprKind::Array(values) => Expr::new(
-            ExprKind::Array(values.iter().map(|value| substitute_expr(value, aliases)).collect::<Result<Vec<_>, _>>()?),
+        ExprKind::Array { type_ref, values } => Expr::new(
+            ExprKind::Array {
+                type_ref,
+                values: values.iter().map(|value| substitute_expr(value, aliases)).collect::<Result<Vec<_>, _>>()?,
+            },
             span,
         ),
         ExprKind::StructLiteral { name, fields, name_span } => Expr::new(
@@ -407,7 +410,7 @@ fn collect_expr_identifier_uses<'i>(expr: &Expr<'i>, uses: &mut HashMap<String, 
             collect_expr_identifier_uses(then_expr, uses);
             collect_expr_identifier_uses(else_expr, uses);
         }
-        ExprKind::Array(values) => {
+        ExprKind::Array { values, .. } => {
             for value in values {
                 collect_expr_identifier_uses(value, uses);
             }
@@ -454,7 +457,7 @@ fn expr_references_any(expr: &Expr<'_>, names: &HashSet<String>) -> bool {
         ExprKind::IfElse { condition, then_expr, else_expr } => {
             expr_references_any(condition, names) || expr_references_any(then_expr, names) || expr_references_any(else_expr, names)
         }
-        ExprKind::Array(values) => values.iter().any(|value| expr_references_any(value, names)),
+        ExprKind::Array { values, .. } => values.iter().any(|value| expr_references_any(value, names)),
         ExprKind::StructLiteral { fields, .. } => fields.iter().any(|field| expr_references_any(&field.expr, names)),
         ExprKind::Call { args, .. } | ExprKind::New { args, .. } => args.iter().any(|arg| expr_references_any(arg, names)),
         ExprKind::Split { source, index, .. } | ExprKind::ArrayIndex { source, index } => {

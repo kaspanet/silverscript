@@ -293,7 +293,7 @@ fn validate_variable_definition_statement_shape<'i>(
     if let Some(expr) = expr {
         ctx.check_expr(expr, Some(type_ref)).map_err(|err| {
             if type_ref.is_array()
-                && matches!(expr.kind, ExprKind::Array(_))
+                && matches!(expr.kind, ExprKind::Array { .. })
                 && !matches!(&err, CompilerError::Unsupported(message) if message == "size mismatch")
             {
                 return CompilerError::Unsupported(format!("array element type mismatch for type {type_name}"));
@@ -756,13 +756,5 @@ fn expr_matches_return_type_hint<'i>(
     if validate_expr_matches_type(expr, type_ref, types, structs, constants, &HashMap::new(), &[]).is_ok() {
         return None;
     }
-    match (&expr.kind, &type_ref.base, !type_ref.is_array()) {
-        (ExprKind::Array(values), TypeBase::Byte, true) if values.len() == 1 => match values[0].kind {
-            ExprKind::Byte(byte) => {
-                Some(format!("hex literals are byte arrays; use byte({byte:#04x}) to cast a one-byte hex literal to byte"))
-            }
-            _ => None,
-        },
-        _ => None,
-    }
+    None
 }

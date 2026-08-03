@@ -19,7 +19,7 @@ use debugger_session::{
     format_value,
     session::{DebugSession, DebugValue, ShadowTxContext},
 };
-use silverscript_lang::ast::{Expr, ExprKind, parse_contract_ast};
+use silverscript_lang::ast::{Expr, parse_contract_ast, parse_type_ref};
 use silverscript_lang::compiler::{CompileOptions, compile_contract, struct_object};
 use silverscript_lang::debug_info::StepKind;
 
@@ -789,7 +789,7 @@ contract StepVisibility(int init_amount) {
         source,
         vec![Expr::int(7)],
         "inspect",
-        vec![Expr::int(3), Expr::new(ExprKind::Array(vec![Expr::int(4)]), Default::default())],
+        vec![Expr::int(3), Expr::array(parse_type_ref("int[]")?, vec![Expr::int(4)])],
         |session| {
             session.run_to_first_executed_statement()?;
             session.current_span().ok_or("missing starting span")?;
@@ -810,7 +810,7 @@ fn debug_session_keeps_shifted_runtime_bindings_correct_after_inline_call() -> R
 
 contract ShiftedBindings() {
     int amount = 11;
-    byte[32] owner = 0x1111111111111111111111111111111111111111111111111111111111111111;
+    byte[32] owner = byte[32](0x1111111111111111111111111111111111111111111111111111111111111111);
 
     function add_bonus(int x) : (int) {
         int y = x + 2;
@@ -831,7 +831,7 @@ contract ShiftedBindings() {
         source,
         vec![],
         "inspect",
-        vec![Expr::int(3), Expr::new(ExprKind::Array(vec![Expr::int(4), Expr::int(5)]), Default::default())],
+        vec![Expr::int(3), Expr::array(parse_type_ref("int[]")?, vec![Expr::int(4), Expr::int(5)])],
         |session| {
             session.run_to_first_executed_statement()?;
 
@@ -877,7 +877,7 @@ fn debug_session_evaluates_structured_state_expressions() -> Result<(), Box<dyn 
 contract StructuredEvalState() {
     int amount = 1;
     bool active = true;
-    byte[1] tag = 0xaa;
+    byte[1] tag = byte[1](0xaa);
 
     entry inspect(State next_state) {
         int bumped = next_state.amount + amount;
@@ -917,7 +917,7 @@ fn debug_session_evaluates_structured_state_array_expressions() -> Result<(), Bo
 contract StructuredEvalStateArray() {
     int amount = 1;
     bool active = true;
-    byte[1] tag = 0xaa;
+    byte[1] tag = byte[1](0xaa);
 
     entry inspect(State[] next_states) {
         require(next_states.length == 2);
@@ -929,12 +929,12 @@ contract StructuredEvalStateArray() {
         source,
         vec![],
         "inspect",
-        vec![Expr::new(
-            ExprKind::Array(vec![
+        vec![Expr::array(
+            parse_type_ref("State[]")?,
+            vec![
                 struct_object("State", vec![("amount", Expr::int(5)), ("active", Expr::bool(true)), ("tag", Expr::bytes(vec![0xaa]))]),
                 struct_object("State", vec![("amount", Expr::int(7)), ("active", Expr::bool(true)), ("tag", Expr::bytes(vec![0xaa]))]),
-            ]),
-            Default::default(),
+            ],
         )],
         |session| {
             session.run_to_first_executed_statement()?;
@@ -1009,7 +1009,7 @@ fn debug_session_preserves_structured_scope_inside_inline_calls() -> Result<(), 
 contract InlineStructuredEval() {
     int amount = 1;
     bool active = true;
-    byte[1] tag = 0xaa;
+    byte[1] tag = byte[1](0xaa);
 
     function inspect_inner(State inner_state) {
         int bumped = inner_state.amount + amount;
@@ -1777,12 +1777,9 @@ contract CovDebugDemo(int initial_value) {
     let compile_opts = CompileOptions { record_debug_infos: true, ..Default::default() };
     let compiled0 = compile_contract(source, &[Expr::int(10)], compile_opts)?;
     let compiled1 = compile_contract(source, &[Expr::int(20)], compile_opts)?;
-    let leader_args = vec![Expr::new(
-        ExprKind::Array(vec![
-            struct_object("State", vec![("value", Expr::int(30))]),
-            struct_object("State", vec![("value", Expr::int(40))]),
-        ]),
-        Default::default(),
+    let leader_args = vec![Expr::array(
+        parse_type_ref("State[]")?,
+        vec![struct_object("State", vec![("value", Expr::int(30))]), struct_object("State", vec![("value", Expr::int(40))])],
     )];
     let leader_target =
         resolve_covenant_call_target(&parsed_contract, &compiled0, "rebalance").ok_or("missing covenant call target")?;

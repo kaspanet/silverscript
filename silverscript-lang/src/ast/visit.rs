@@ -305,7 +305,7 @@ pub fn walk_expr_mut<'i, V: AstVisitorMut<'i> + ?Sized>(visitor: &mut V, expr: &
     visitor.visit_span(&mut expr.span);
     match &mut expr.kind {
         ExprKind::Identifier(name) => visitor.visit_name(name, NameKind::IdentifierExpr),
-        ExprKind::Array(items) => {
+        ExprKind::Array { values: items, .. } => {
             for item in items {
                 visitor.visit_expr(item);
             }

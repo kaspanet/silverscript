@@ -3,7 +3,7 @@ pragma silverscript ^0.1.0;
 contract Announcement() {
     entry announce() {
         // TODO: Change this to check the payload field.
-        byte[] announcement = byte[]([0x00, 0x00, 0x6a, 0x02, 0x02, 0x6d, 0x4c, 0x62])
+        byte[] announcement = byte[](0x00006a02026d4c62)
             + byte[]('A contract may not injure a human being or, through inaction, allow a human being to come to harm.');
 
         require(tx.outputs[0].value == 0);

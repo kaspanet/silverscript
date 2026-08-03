@@ -13,6 +13,7 @@ use kaspa_txscript::script_builder::ScriptBuilder;
 use kaspa_txscript::{EngineCtx, EngineFlags, TxScriptEngine, pay_to_script_hash_script};
 use rand::{RngCore, thread_rng};
 use secp256k1::{Keypair, Secp256k1, SecretKey};
+use silverscript_lang::ast::Expr;
 use silverscript_lang::compiler::{CompileOptions, compile_contract};
 use std::fs;
 
@@ -358,7 +359,8 @@ fn compiles_r0_g16_example_and_verifies() {
     let source = load_example_source("r0_g16.sil");
     let (journal_hash, proof, image_id) = r0_groth16_fixture();
     let compiled = compile_contract(&source, &[image_id.into()], CompileOptions::default()).expect("compile succeeds");
-    let sigscript = compiled.build_sig_script("verify", vec![journal_hash.into(), proof.into()]).expect("sigscript builds");
+    let sigscript =
+        compiled.build_sig_script("verify", vec![journal_hash.into(), Expr::dynamic_bytes(proof)]).expect("sigscript builds");
 
     let result =
         run_contract_with_tx(compiled.script.clone(), compiled.script.clone(), compiled.script.clone(), 2000, 500, 500, sigscript, 0);
@@ -374,7 +376,10 @@ fn compiles_r0_succinct_example_and_verifies() {
     let compiled =
         compile_contract(&source, &[image_id.into(), control_id.into()], CompileOptions::default()).expect("compile succeeds");
     let sigscript = compiled
-        .build_sig_script("verify", vec![claim.into(), control_index.into(), control_digests.into(), seal.into(), journal.into()])
+        .build_sig_script(
+            "verify",
+            vec![claim.into(), control_index.into(), Expr::dynamic_bytes(control_digests), Expr::dynamic_bytes(seal), journal.into()],
+        )
         .expect("sigscript builds");
 
     let result =
@@ -567,7 +572,7 @@ fn compiles_hodl_vault_example_and_verifies() {
 
     // Test spend() function call (build sigscript for spend()).
     let sigscript = compiled
-        .build_sig_script("spend", vec![signature.clone().into(), oracle_sig.into(), oracle_message.clone().into()])
+        .build_sig_script("spend", vec![signature.clone().into(), oracle_sig.into(), Expr::dynamic_bytes(oracle_message.clone())])
         .expect("sigscript builds");
     tx.tx.inputs[0].signature_script = sigscript;
 
@@ -1516,7 +1521,7 @@ fn compiles_sibling_introspection_example_and_verifies() {
     let mut expected_locking_bytecode = Vec::new();
     expected_locking_bytecode.extend_from_slice(&0u16.to_be_bytes());
     expected_locking_bytecode.extend_from_slice(&expected_script);
-    let constructor_args = [expected_locking_bytecode.clone().into()];
+    let constructor_args = [Expr::dynamic_bytes(expected_locking_bytecode.clone())];
 
     let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
     let sigscript = compiled.build_sig_script("spend", vec![]).expect("sigscript builds");

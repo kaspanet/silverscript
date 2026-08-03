@@ -4,7 +4,7 @@ contract Matrix(int max_ins, int init_amount, byte[32] init_owner) {
 
     #[covenant(binding = cov, from = max_ins, to = 1, mode = transition)]
     function step(State[] prev_states, int fee) : (State[]) {
-        return([State { amount: prev_states[0].amount - fee, owner: prev_states[0].owner }]);
+        return(State[]{State { amount: prev_states[0].amount - fee, owner: prev_states[0].owner }});
     }
 }
 
@@ -15,7 +15,7 @@ contract Matrix(int max_ins, int init_amount, byte[32] init_owner) {
     byte[32] owner = init_owner;
 
     function covenant_policy_step(State[] prev_states, int fee) : (State[]) {
-        return([State { amount: prev_states[0].amount - fee, owner: prev_states[0].owner }]);
+        return(State[]{State { amount: prev_states[0].amount - fee, owner: prev_states[0].owner }});
     }
 
     entry leader_step(int fee) {

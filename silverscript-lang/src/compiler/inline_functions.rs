@@ -458,9 +458,9 @@ impl<'i, 'd> Inliner<'i, 'd> {
             ExprKind::String(value) => Ok((Vec::new(), Expr::new(ExprKind::String(value.clone()), span))),
             ExprKind::DateLiteral(value) => Ok((Vec::new(), Expr::new(ExprKind::DateLiteral(*value), span))),
             ExprKind::Identifier(name) => Ok((Vec::new(), Expr::new(ExprKind::Identifier(self.rename_name(name, scope)), span))),
-            ExprKind::Array(values) => {
+            ExprKind::Array { type_ref, values } => {
                 let (prelude, values) = self.lower_exprs(values, scope, visited_functions)?;
-                Ok((prelude, Expr::new(ExprKind::Array(values), span)))
+                Ok((prelude, Expr::new(ExprKind::Array { type_ref: type_ref.clone(), values }, span)))
             }
             ExprKind::Call { name, args, name_span } => {
                 let (mut prelude, args) = self.lower_exprs(args, scope, visited_functions)?;

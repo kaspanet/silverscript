@@ -24,7 +24,7 @@ use kaspa_txscript::covenants::CovenantsContext;
 use kaspa_txscript::script_builder::ScriptBuilder;
 use kaspa_txscript::{EngineCtx, EngineFlags, pay_to_script_hash_script};
 use silverscript_lang::ast::{
-    ArrayDim, ContractAst, Expr, ExprKind, STATE_TYPE_NAME, StateFieldExpr, TypeBase, TypeRef, parse_contract_ast,
+    ArrayDim, ContractAst, Expr, ExprKind, STATE_TYPE_NAME, StateFieldExpr, TypeBase, TypeRef, parse_contract_ast, parse_type_ref,
 };
 use silverscript_lang::compiler::{CompileOptions, CompiledContract, compile_contract, compile_contract_ast};
 
@@ -82,7 +82,7 @@ fn expr_to_debug_value(expr: &Expr<'_>) -> Result<DebugValue, String> {
         ExprKind::Bool(value) => Ok(DebugValue::Bool(*value)),
         ExprKind::Byte(value) => Ok(DebugValue::Bytes(vec![*value])),
         ExprKind::String(value) => Ok(DebugValue::String(value.clone())),
-        ExprKind::Array(values) => {
+        ExprKind::Array { values, .. } => {
             if values.iter().all(|value| matches!(value.kind, ExprKind::Byte(_))) {
                 return Ok(DebugValue::Bytes(
                     values
@@ -102,6 +102,7 @@ fn expr_to_debug_value(expr: &Expr<'_>) -> Result<DebugValue, String> {
                 .map(|field| Ok((field.name.clone(), expr_to_debug_value(&field.expr)?)))
                 .collect::<Result<Vec<_>, String>>()?,
         )),
+        ExprKind::Call { name, args, .. } if parse_type_ref(name).is_ok() && args.len() == 1 => expr_to_debug_value(&args[0]),
         other => Err(format!("unsupported resolved state expression in debugger: {other:?}")),
     }
 }
@@ -110,15 +111,11 @@ fn debug_value_to_expr(value: &DebugValue, struct_name: Option<&str>) -> Option<
     Some(match value {
         DebugValue::Int(value) => Expr::int(*value),
         DebugValue::Bool(value) => Expr::new(ExprKind::Bool(*value), Default::default()),
-        DebugValue::Bytes(bytes) => Expr::new(
-            ExprKind::Array(bytes.iter().map(|byte| Expr::new(ExprKind::Byte(*byte), Default::default())).collect()),
-            Default::default(),
-        ),
+        DebugValue::Bytes(bytes) => Expr::bytes(bytes.clone()),
         DebugValue::String(value) => Expr::new(ExprKind::String(value.clone()), Default::default()),
-        DebugValue::Array(values) => Expr::new(
-            ExprKind::Array(values.iter().map(|value| debug_value_to_expr(value, struct_name)).collect::<Option<Vec<_>>>()?),
-            Default::default(),
-        ),
+        DebugValue::Array(values) => {
+            Expr::inferred_array(values.iter().map(|value| debug_value_to_expr(value, struct_name)).collect::<Option<Vec<_>>>()?)?
+        }
         DebugValue::Object(fields) => Expr::new(
             ExprKind::StructLiteral {
                 name: struct_name?.to_string(),
@@ -180,15 +177,13 @@ fn synthesized_covenant_prefix_args(
         ]);
     }
     if is_state_array_type(&first_param.type_ref) {
-        return Ok(vec![Expr::new(
-            ExprKind::Array(
-                states
-                    .iter()
-                    .map(|state| debug_value_to_expr(state, Some(STATE_TYPE_NAME)))
-                    .collect::<Option<Vec<_>>>()
-                    .ok_or("failed to materialize synthesized output State[]")?,
-            ),
-            Default::default(),
+        return Ok(vec![Expr::array(
+            first_param.type_ref.clone(),
+            states
+                .iter()
+                .map(|state| debug_value_to_expr(state, Some(STATE_TYPE_NAME)))
+                .collect::<Option<Vec<_>>>()
+                .ok_or("failed to materialize synthesized output State[]")?,
         )]);
     }
 

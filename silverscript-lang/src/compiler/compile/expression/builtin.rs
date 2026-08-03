@@ -149,6 +149,13 @@ fn compile_byte_sequence_cast_call<'i>(
     if args.len() != 1 {
         return Err(CompilerError::Unsupported(format!("{name}() expects a single argument")));
     }
+    if size == 1
+        && let ExprKind::Int(value) = args[0].kind
+    {
+        let byte = u8::try_from(value)
+            .map_err(|_| CompilerError::Unsupported(format!("integer literal {value} is out of range for byte")))?;
+        return ctx.push_data(&[byte]);
+    }
     let source_type = infer_expr_type(&args[0], ctx.env.constants, ctx.env.types)?;
     if let Some(source_size) = byte_sequence_cast_size(&source_type, ctx.env.constants)
         && let Some(source_size) = source_size

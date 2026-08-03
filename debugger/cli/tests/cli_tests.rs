@@ -67,14 +67,14 @@ fn write_structured_console_fixture() -> std::path::PathBuf {
 contract DebugSmallInline() {
     int amount = 1;
     bool active = true;
-    byte[1] tag = 0xaa;
+    byte[1] tag = byte[1](0xaa);
 
     entry inspect(State[] next_states) {
         console.log("total sum of amounts: ", next_states[0].amount + next_states[1].amount);
 
         require(next_states[0].active == active);
         require(next_states[0].tag == tag);
-        require(next_states[1].tag == 0xbb);
+        require(next_states[1].tag == byte[1](0xbb));
     }
 }
 "#,
@@ -99,7 +99,7 @@ contract DebugState(int ctor_x) {
 
     int amount = 1;
     bool active = true;
-    byte[1] tag = 0xaa;
+    byte[1] tag = byte[1](0xaa);
     struct Pair {
         int amount;
         byte[2] code;
@@ -181,7 +181,7 @@ fn write_structured_args_fixture() -> (std::path::PathBuf, std::path::PathBuf) {
 
 contract StructuredArgs() {
     int amount = 1;
-    byte[32] owner = 0x1111111111111111111111111111111111111111111111111111111111111111;
+    byte[32] owner = byte[32](0x1111111111111111111111111111111111111111111111111111111111111111);
 
     entry inspect(State next) {
         int bumped = next.amount + 1;

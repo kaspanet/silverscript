@@ -57,13 +57,13 @@ fn infer_fixed_array_type_from_initializer<'i>(
 
     let element_type = declared_type.array_element_type()?;
     let init = initializer?;
-    let init_type = infer_expr_type_with_hint(init, types, constants, functions, Some(&element_type))?;
+    let init_type = infer_expr_type(init, types, constants, functions)?;
 
     if !init_type.is_array() || !type_refs_equal(&init_type.array_element_type()?, &element_type, constants) {
         return None;
     }
 
-    let size = array_type_size(&init_type, constants)?;
+    let size = if let ExprKind::Array { values, .. } = &init.kind { values.len() } else { array_type_size(&init_type, constants)? };
     let mut inferred = element_type;
     inferred.array_dims.push(ArrayDim::Fixed(size));
     Some(inferred)
@@ -223,12 +223,11 @@ fn infer_type<'i>(
     }
 }
 
-fn infer_expr_type_with_hint<'i>(
+pub(super) fn infer_expr_type<'i>(
     expr: &Expr<'i>,
     types: &TypeMap,
     constants: &HashMap<String, Expr<'i>>,
     functions: &HashMap<String, &FunctionAst<'i>>,
-    array_literal_element_type: Option<&TypeRef>,
 ) -> Option<TypeRef> {
     match &expr.kind {
         ExprKind::Int(_) | ExprKind::DateLiteral(_) | ExprKind::NumberWithUnit { .. } => {
@@ -238,13 +237,7 @@ fn infer_expr_type_with_hint<'i>(
         ExprKind::String(_) => Some(TypeRef { base: TypeBase::String, array_dims: Vec::new() }),
         ExprKind::Byte(_) => Some(TypeRef { base: TypeBase::Byte, array_dims: Vec::new() }),
         ExprKind::Identifier(name) => types.get(name).cloned(),
-        ExprKind::Array(values) => {
-            let mut inferred = array_literal_element_type
-                .cloned()
-                .or_else(|| infer_array_literal_element_type(values, types, constants, functions))?;
-            inferred.array_dims.push(ArrayDim::Fixed(values.len()));
-            Some(inferred)
-        }
+        ExprKind::Array { type_ref, .. } => Some(type_ref.clone()),
         ExprKind::Call { name, .. } => {
             if let Some(type_ref) = as_cast_type(name) {
                 return Some(type_ref);
@@ -259,41 +252,22 @@ fn infer_expr_type_with_hint<'i>(
         }
         ExprKind::New { name, .. } => constructor_return_type(name),
         ExprKind::Binary { op: BinaryOp::Add, left, right } => {
-            let left_type = infer_expr_type_with_hint(left, types, constants, functions, None)?;
-            let right_type = infer_expr_type_with_hint(right, types, constants, functions, None)?;
+            let left_type = infer_expr_type(left, types, constants, functions)?;
+            let right_type = infer_expr_type(right, types, constants, functions)?;
             concat_types(&left_type, &right_type, constants)
         }
         ExprKind::IfElse { then_expr, else_expr, .. } => {
-            let then_type = infer_expr_type_with_hint(then_expr, types, constants, functions, None)?;
-            let else_type = infer_expr_type_with_hint(else_expr, types, constants, functions, None)?;
+            let then_type = infer_expr_type(then_expr, types, constants, functions)?;
+            let else_type = infer_expr_type(else_expr, types, constants, functions)?;
             type_refs_equal(&then_type, &else_type, constants).then_some(then_type)
         }
         ExprKind::Append { source, args, .. } => {
-            let source_type = infer_expr_type_with_hint(source, types, constants, functions, None)?;
+            let source_type = infer_expr_type(source, types, constants, functions)?;
             append_type(&source_type, args.len(), constants)
         }
-        ExprKind::UnarySuffix { source, kind: UnarySuffixKind::Reverse, .. } => {
-            infer_expr_type_with_hint(source, types, constants, functions, None)
-        }
+        ExprKind::UnarySuffix { source, kind: UnarySuffixKind::Reverse, .. } => infer_expr_type(source, types, constants, functions),
         ExprKind::Nullary(kind) => Some(nullary_type(*kind)),
         ExprKind::Introspection { kind, .. } => Some(introspection_type(*kind)),
         _ => None,
-    }
-}
-
-fn infer_array_literal_element_type<'i>(
-    values: &[Expr<'i>],
-    types: &TypeMap,
-    constants: &HashMap<String, Expr<'i>>,
-    functions: &HashMap<String, &FunctionAst<'i>>,
-) -> Option<TypeRef> {
-    let first_type = infer_expr_type_with_hint(values.first()?, types, constants, functions, None)?;
-    if values.iter().skip(1).all(|value| {
-        infer_expr_type_with_hint(value, types, constants, functions, None)
-            .is_some_and(|type_ref| type_refs_equal(&type_ref, &first_type, constants))
-    }) {
-        Some(first_type)
-    } else {
-        None
     }
 }

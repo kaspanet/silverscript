@@ -296,8 +296,11 @@ fn lower_expr<'i>(expr: &Expr<'i>, scope: &LoweringScope, structs: &StructRegist
             },
             span,
         )),
-        ExprKind::Array(values) => Ok(Expr::new(
-            ExprKind::Array(values.iter().map(|value| lower_expr(value, scope, structs)).collect::<Result<Vec<_>, _>>()?),
+        ExprKind::Array { type_ref, values } => Ok(Expr::new(
+            ExprKind::Array {
+                type_ref: type_ref.clone(),
+                values: values.iter().map(|value| lower_expr(value, scope, structs)).collect::<Result<Vec<_>, _>>()?,
+            },
             span,
         )),
         ExprKind::StructLiteral { .. } => {
@@ -709,11 +712,15 @@ fn lower_struct_array_value_expr<'i>(
                 .map(|(path, _)| Expr::new(ExprKind::Identifier(flattened_struct_name(name, &path)), span::Span::default()))
                 .collect())
         }
-        ExprKind::Array(values) => {
+        ExprKind::Array { values, .. } => {
             let element_type = expected_type
                 .array_element_type()
                 .ok_or_else(|| CompilerError::Unsupported(format!("expected struct type '{}'", expected_type.type_name())))?;
             let leaf_specs = flatten_type_leaves(&element_type, structs)?;
+            let outer_dim = expected_type
+                .array_size()
+                .cloned()
+                .ok_or_else(|| CompilerError::Unsupported(format!("expected array type '{}'", expected_type.type_name())))?;
             let mut grouped: Vec<Vec<Expr<'i>>> = vec![Vec::with_capacity(values.len()); leaf_specs.len()];
             for value in values {
                 let lowered = lower_struct_value_expr(
@@ -729,7 +736,14 @@ fn lower_struct_array_value_expr<'i>(
                     grouped[idx].push(expr);
                 }
             }
-            Ok(grouped.into_iter().map(|entries| Expr::new(ExprKind::Array(entries), span::Span::default())).collect())
+            Ok(leaf_specs
+                .into_iter()
+                .zip(grouped)
+                .map(|((_, mut leaf_type), entries)| {
+                    leaf_type.array_dims.push(outer_dim.clone());
+                    Expr::array(leaf_type, entries)
+                })
+                .collect())
         }
         ExprKind::Append { source, args, .. } => {
             let left = lower_struct_array_value_expr(
@@ -742,7 +756,7 @@ fn lower_struct_array_value_expr<'i>(
                 contract_fields_end_offset,
             )?;
             let right = lower_struct_array_value_expr(
-                &Expr::new(ExprKind::Array(args.clone()), span::Span::default()),
+                &Expr::array(expected_type.clone(), args.clone()),
                 expected_type,
                 scope,
                 structs,

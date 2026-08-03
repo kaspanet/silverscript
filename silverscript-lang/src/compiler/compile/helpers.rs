@@ -90,6 +90,15 @@ pub(super) fn encode_value_with_constant_size<'i>(
     type_ref: &TypeRef,
     constants: &HashMap<String, Expr<'i>>,
 ) -> Result<Vec<u8>, CompilerError> {
+    let value = match &value.kind {
+        ExprKind::Call { name, args, .. }
+            if parse_type_ref(name).is_ok_and(|cast_type| cast_type.is_array())
+                && matches!(args.as_slice(), [Expr { kind: ExprKind::Array { .. }, .. }]) =>
+        {
+            args.first().unwrap_or(value)
+        }
+        _ => value,
+    };
     match (&type_ref.base, type_ref.array_dims.as_slice()) {
         (TypeBase::Int, []) => {
             let number = match &value.kind {
@@ -117,7 +126,7 @@ pub(super) fn encode_value_with_constant_size<'i>(
             Ok(vec![byte])
         }
         (base @ (TypeBase::Pubkey | TypeBase::Sig | TypeBase::Datasig), []) => {
-            let ExprKind::Array(bytes_exprs) = &value.kind else {
+            let ExprKind::Array { values: bytes_exprs, .. } = &value.kind else {
                 return Err(CompilerError::Unsupported("array literal element type mismatch".to_string()));
             };
             if Some(bytes_exprs.len()) != base.fixed_byte_sequence_len() {
@@ -135,7 +144,7 @@ pub(super) fn encode_value_with_constant_size<'i>(
             // Handle fixed-size byte arrays like byte[N]
             if let (Some(inner_type), Some(size)) = (type_ref.array_element_type(), array_type_size(type_ref, constants)) {
                 if inner_type.is_byte() {
-                    let ExprKind::Array(values) = &value.kind else {
+                    let ExprKind::Array { values, .. } = &value.kind else {
                         return Err(CompilerError::Unsupported("array literal element type mismatch".to_string()));
                     };
                     if values.len() != size {
@@ -150,7 +159,7 @@ pub(super) fn encode_value_with_constant_size<'i>(
             }
 
             // Handle nested fixed-size arrays with known element sizes.
-            if let ExprKind::Array(values) = &value.kind {
+            if let ExprKind::Array { values, .. } = &value.kind {
                 let element_type = type_ref
                     .array_element_type()
                     .ok_or_else(|| CompilerError::Unsupported("array element type must have known size".to_string()))?;

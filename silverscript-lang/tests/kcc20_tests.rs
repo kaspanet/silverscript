@@ -13,7 +13,7 @@ use kaspa_txscript::pay_to_script_hash_script;
 use kaspa_txscript::standard::multisig_redeem_script;
 use rand::{RngCore, thread_rng};
 use secp256k1::{Keypair, Secp256k1, SecretKey};
-use silverscript_lang::ast::Expr;
+use silverscript_lang::ast::{Expr, parse_type_ref};
 use silverscript_lang::compiler::{CompileOptions, CompiledContract, compile_contract, struct_object};
 use std::fs;
 
@@ -46,21 +46,23 @@ fn kcc20_state_array_arg<'i>(values: Vec<(Vec<u8>, i64)>) -> Expr<'i> {
 }
 
 fn kcc20_state_array_arg_full<'i>(values: Vec<(Vec<u8>, u8, i64, bool)>) -> Expr<'i> {
-    values
-        .into_iter()
-        .map(|(owner_identifier, identifier_type, amount, is_minter)| {
-            struct_object(
-                "State",
-                vec![
-                    ("ownerIdentifier", Expr::bytes(owner_identifier)),
-                    ("identifierType", Expr::byte(identifier_type)),
-                    ("amount", Expr::int(amount)),
-                    ("isMinter", Expr::bool(is_minter)),
-                ],
-            )
-        })
-        .collect::<Vec<_>>()
-        .into()
+    Expr::array(
+        parse_type_ref("State[]").unwrap(),
+        values
+            .into_iter()
+            .map(|(owner_identifier, identifier_type, amount, is_minter)| {
+                struct_object(
+                    "State",
+                    vec![
+                        ("ownerIdentifier", Expr::bytes(owner_identifier)),
+                        ("identifierType", Expr::byte(identifier_type)),
+                        ("amount", Expr::int(amount)),
+                        ("isMinter", Expr::bool(is_minter)),
+                    ],
+                )
+            })
+            .collect(),
+    )
 }
 
 fn kcc20_state_array_arg_with_minter<'i>(values: Vec<(Vec<u8>, i64, bool)>) -> Expr<'i> {
@@ -70,11 +72,11 @@ fn kcc20_state_array_arg_with_minter<'i>(values: Vec<(Vec<u8>, i64, bool)>) -> E
 }
 
 fn sig_array_arg<'i>(values: Vec<Vec<u8>>) -> Expr<'i> {
-    values.into_iter().map(Expr::bytes).collect::<Vec<_>>().into()
+    Expr::array(parse_type_ref("sig[]").unwrap(), values.into_iter().map(Expr::bytes).collect())
 }
 
 fn witness_array_arg<'i>(values: Vec<u8>) -> Expr<'i> {
-    Expr::bytes(values)
+    Expr::dynamic_bytes(values)
 }
 
 fn kcc20_state_arg<'i>(owner_identifier: Vec<u8>, identifier_type: u8, amount: i64, is_minter: bool) -> Expr<'i> {

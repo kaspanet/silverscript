@@ -53,7 +53,7 @@ fn dummy_expr_for_type(type_name: &str) -> Expr<'static> {
         return String::from("aa").into();
     }
     if type_name == "byte[]" {
-        return Vec::<u8>::new().into(); // Empty byte array
+        return Expr::dynamic_bytes(Vec::new());
     }
     if type_name == "pubkey" {
         return vec![0u8; 32].into(); // Converts to Expr::Array of Expr::Byte
@@ -829,7 +829,7 @@ fn runs_cashc_valid_examples() {
                 assert!(result.is_ok(), "{example} failed: {}", result.unwrap_err());
             }
             "simple_splice.sil" => {
-                let constructor_args = vec![vec![0u8; 6].into()];
+                let constructor_args = vec![Expr::dynamic_bytes(vec![0u8; 6])];
                 let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
                 let selector = selector_for_compiled(&compiled, "spend");
                 let sigscript = build_sigscript(&[], selector);
@@ -967,7 +967,7 @@ fn runs_cashc_valid_examples() {
                 assert!(result.is_ok(), "{example} failed: {}", result.unwrap_err());
             }
             "split_size.sil" => {
-                let constructor_args = vec![b"abcd".to_vec().into()];
+                let constructor_args = vec![Expr::dynamic_bytes(b"abcd".to_vec())];
                 let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
                 let selector = selector_for_compiled(&compiled, "spend");
                 let sigscript = build_sigscript(&[], selector);
@@ -983,7 +983,7 @@ fn runs_cashc_valid_examples() {
                 assert!(result.is_ok(), "{example} failed: {}", result.unwrap_err());
             }
             "split_typed.sil" => {
-                let constructor_args = vec![b"abcde".to_vec().into()];
+                let constructor_args = vec![Expr::dynamic_bytes(b"abcde".to_vec())];
                 let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
                 let selector = selector_for_compiled(&compiled, "spend");
                 let sigscript = build_sigscript(&[], selector);

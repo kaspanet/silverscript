@@ -223,7 +223,7 @@ contract MyContract(int param1, byte[32] param2) {
 Every contract should start with a pragma directive specifying the SilverScript version requirement:
 
 ```javascript
-pragma silverscript ^0.1.2;
+pragma silverscript ^0.1.0;
 ```
 
 Pragma values use standard semver requirements. See [semver.org](https://semver.org/) for more details.
@@ -247,22 +247,23 @@ SilverScript supports the following data types:
 You can create arrays by appending `[]` or `[N]` to any type:
 
 ```javascript
-int[] numbers;
-int[4] fixedNumbers;
-byte[] data;
-byte[32] hash;
-byte[32][] hashes;
-pubkey[] publicKeys;
+int[] numbers = int[]{};
+int[4] fixedNumbers = int[4]{0, 0, 0, 0};
+byte[] data = byte[]{};
+byte[32] hash = byte[32](0x0000000000000000000000000000000000000000000000000000000000000000);
+byte[32][] hashes = byte[32][]{};
+pubkey[] publicKeys = pubkey[]{};
 ```
 
-- `type[]` = array type where the size may be inferred from initialization.
+- `type[]` = dynamically sized array type.
+- `type[_]` = fixed-size array type inferred from its initializer.
 - `type[N]` = fixed-size array type with compile-time size `N`.
 
 When a `type[]` variable is initialized with a literal, SilverScript infers a fixed size from context:
 
 ```javascript
-byte[] data = 0x1234abcd;  // inferred as byte[4]
-int[] nums = [1, 2, 3];    // inferred as int[3]
+byte[_] data = byte[_](0x1234abcd);  // inferred as byte[4]
+int[_] nums = int[_]{1, 2, 3};   // inferred as int[3]
 ```
 
 ### Variables
@@ -277,12 +278,12 @@ entry example() {
     string message = "Hello World";
 
     // Array initialization
-    byte[] data = 0x1234abcd;
-    int[] nums = [1, 2, 3];
-    int[4] fixed = [10, 20, 30, 40];
+    byte[_] data = byte[_](0x1234abcd);
+    int[_] nums = int[_]{1, 2, 3};
+    int[4] fixed = int[4]{10, 20, 30, 40};
     
-    // Declaration without initialization
-    int uninitializedValue;
+    // Variables require an initializer
+    int initializedValue = 0;
     
     // Variable reassignment
     myNumber = 100;
@@ -396,6 +397,9 @@ int negative = -a;       // -10
 ### Comparison Operators
 
 ```javascript
+int a = 10;
+int b = 3;
+
 bool eq = (a == b);   // false (equality)
 bool ne = (a != b);   // true (inequality)
 bool lt = (a < b);    // false (less than)
@@ -471,6 +475,7 @@ entry example(int x) {
 Single-statement branches don't require braces:
 
 ```javascript
+int x = 1;
 if (x > 0)
     require(true);
 else
@@ -482,6 +487,7 @@ else
 The `require` statement enforces conditions. If the condition is false, the contract execution fails:
 
 ```javascript
+int x = 1;
 require(x > 0);  // Passes if x > 0, fails otherwise
 
 // With error message
@@ -521,7 +527,7 @@ If `start >= end`, the loop performs no iterations. Otherwise, the compiler emit
 
 This fails during compilation because the constant range has 4 values, but the unroll bound is only 3:
 
-```javascript
+```text
 contract CompileTimeLoopFailure() {
     entry check() {
         for(i, 0, 4, 3) {
@@ -580,16 +586,17 @@ string apostrophe = 'It\'s working';
 **Hex Literals:**
 
 ```javascript
-byte[] data = 0x1234abcd;
-byte[] empty = 0x;
-byte[] pubkeyBytes = 0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef;
+byte[] data = byte[](0x1234abcd);
+byte[] empty = byte[](0x);
+byte[] pubkeyBytes = byte[](0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef);
+int mask = 0xff00;
+byte tag = 0xff;
 ```
 
-Hex literals are always parsed as byte sequences. That means `0x00` is not a scalar `byte`; use an explicit cast when you want one:
+Hex literals of up to eight bytes are numerals and can initialize `int` or `byte` values. To use the hexadecimal spelling as raw bytes, cast it directly to a byte-array type. Literals longer than eight bytes are accepted only in such an immediate cast:
 
 ```javascript
-byte bad = 0x00;        // compiler error: use byte(0x00) to cast a one-byte hex literal to byte
-byte good = byte(0x00); // compiles
+byte[_] id = byte[_](0x010203040506070809);
 ```
 
 ### Number Units
@@ -638,14 +645,16 @@ Format: `YYYY-MM-DDThh:mm:ss`
 
 SilverScript supports both direct array initialization and dynamic building with `.append()`:
 
+Array literals include their element type and use braces: `T[]{a, b, c}`. Nested element types retain their inner dimensions, for example `byte[2][]{byte[2](0x0102)}`.
+
 ```javascript
-// Direct initialization (size inferred from literals)
-int[] nums = [1, 2, 3];           // inferred as int[3]
-byte[] data = 0x1234abcd;         // inferred as byte[4]
+// Dynamic array initialization
+int[] nums = int[]{1, 2, 3};
+byte[] data = byte[](0x1234abcd);
 
 // Explicit fixed-size initialization
-int[4] fixedNums = [1, 2, 3, 4];
-byte[4] tag = 0x01020304;
+int[4] fixedNums = int[4]{1, 2, 3, 4};
+byte[4] tag = byte[4](0x01020304);
 
 // Dynamic building with append
 int[] numbers;
@@ -653,8 +662,8 @@ numbers = numbers.append(1, 2, 3, 4, 5);
 
 // Build byte[32] array dynamically
 byte[32][] hashes;
-hashes = hashes.append(0x1111111111111111111111111111111111111111111111111111111111111111);
-hashes = hashes.append(0x2222222222222222222222222222222222222222222222222222222222222222);
+hashes = hashes.append(byte[32](0x1111111111111111111111111111111111111111111111111111111111111111));
+hashes = hashes.append(byte[32](0x2222222222222222222222222222222222222222222222222222222222222222));
 
 // Access array elements
 int first = numbers[0];
@@ -683,9 +692,9 @@ Examples:
 
 ```javascript
 // int[] + int[]
-int[] a = [1, 2];
-int[] b = [3, 4];
-int[4] c = a + b;
+int[_] a = int[_]{1, 2};
+int[_] b = int[_]{3, 4};
+int[_] c = a + b;
 
 require(c.length == 4);
 require(c[0] == 1);
@@ -694,35 +703,35 @@ require(c[2] == 3);
 require(c[3] == 4);
 
 // byte[] + byte[]
-byte[] p = 0x0102;
-byte[] q = 0x0304;
-byte[4] r = p + q;
-require(r == 0x01020304);
+byte[_] p = byte[_](0x0102);
+byte[_] q = byte[_](0x0304);
+byte[_] r = p + q;
+require(r == byte[4](0x01020304));
 
 // bool[] + bool[]
-bool[] f1 = [true, false];
-bool[] f2 = [true, false];
-bool[4] f = f1 + f2;
+bool[_] f1 = bool[_]{true, false};
+bool[_] f2 = bool[_]{true, false};
+bool[_] f = f1 + f2;
 require(f[0]);
 require(!f[1]);
 require(f[2]);
 require(!f[3]);
 
 // pubkey[] + pubkey[]
-pubkey k1 = 0x0202020202020202020202020202020202020202020202020202020202020202;
-pubkey k2 = 0x0303030303030303030303030303030303030303030303030303030303030303;
-pubkey[] ks1 = [k1];
-pubkey[] ks2 = [k2];
-pubkey[2] ks = ks1 + ks2;
+pubkey k1 = pubkey(byte[32](0x0202020202020202020202020202020202020202020202020202020202020202));
+pubkey k2 = pubkey(byte[32](0x0303030303030303030303030303030303030303030303030303030303030303));
+pubkey[_] ks1 = pubkey[_]{k1};
+pubkey[_] ks2 = pubkey[_]{k2};
+pubkey[_] ks = ks1 + ks2;
 require(ks[0] == k1);
 require(ks[1] == k2);
 
 // byte[N][] + byte[N][]
-byte[2][] x = [0x0102, 0x0304];
-byte[2][] y = [0x0506];
-byte[2][3] z = x + y;
+byte[2][_] x = byte[2][_]{byte[2](0x0102), byte[2](0x0304)};
+byte[2][_] y = byte[2][_]{byte[2](0x0506)};
+byte[2][_] z = x + y;
 require(z.length == 3);
-require(z[2] == 0x0506);
+require(z[2] == byte[2](0x0506));
 ```
 
 ### String Operations
@@ -743,8 +752,8 @@ int len = message.length;  // 11
 **Concatenation:**
 
 ```javascript
-byte[] a = 0x1234;
-byte[] b = 0x5678;
+byte[] a = byte[](0x1234);
+byte[] b = byte[](0x5678);
 byte[] combined = a + b;  // 0x12345678
 ```
 
@@ -754,7 +763,7 @@ byte[] combined = a + b;  // 0x12345678
 tuple `(byte[], byte[])`. Use `.0` for the left part and `.1` for the right part:
 
 ```javascript
-byte[] data = 0x1234567890abcdef;
+byte[] data = byte[](0x1234567890abcdef);
 byte[] left = data.split(4).0;   // 0x12345678
 byte[] right = data.split(4).1;  // 0x90abcdef
 ```
@@ -762,7 +771,7 @@ byte[] right = data.split(4).1;  // 0x90abcdef
 You can also destructure both parts at once:
 
 ```javascript
-byte[] data = 0x1234567890abcdef;
+byte[] data = byte[](0x1234567890abcdef);
 (byte[4] left, byte[4] right) = data.split(4);
 ```
 
@@ -771,14 +780,14 @@ byte[] data = 0x1234567890abcdef;
 Extract a range of bytes:
 
 ```javascript
-byte[] data = 0x123456789abcdef;
+byte[] data = byte[](0x123456789abcdef);
 byte[] middle = data.slice(2, 5);  // byte[] from index 2 to 5 (exclusive)
 ```
 
 **Length:**
 
 ```javascript
-byte[] data = 0x1234;
+byte[] data = byte[](0x1234);
 int size = data.length;  // 2
 ```
 
@@ -789,22 +798,24 @@ int size = data.length;  // 2
 SilverScript supports explicit type casting:
 
 ```javascript
-// Cast between byte-compatible types
-byte[] fromString = byte[]("hello");
+entry casts(byte[32] data, byte[65] sigBytes, byte[32] keyBytes, byte[] someData) {
+    // Cast between byte-compatible types
+    byte[] fromString = byte[]("hello");
 
-// Cast to specific byte size
-byte[32] hash = byte[32](data);
-byte[65] signatureBytes = byte[65](sigBytes);
+    // Cast to specific byte size
+    byte[32] hash = byte[32](data);
+    byte[65] signatureBytes = byte[65](sigBytes);
 
-// Cast a one-byte hex literal to scalar byte
-byte b = byte(0x00);
+    // Cast a one-byte hex literal to scalar byte
+    byte b = byte(0x00);
 
-// Cast to pubkey or sig
-pubkey pk = pubkey(keyBytes);
-sig signature = sig(signatureBytes);
+    // Cast to pubkey or sig
+    pubkey pk = pubkey(keyBytes);
+    sig signature = sig(signatureBytes);
 
-// Cast to int
-int number = int(someData);
+    // Cast to int
+    int number = int(someData);
+}
 ```
 
 **Example:**
@@ -827,8 +838,11 @@ entry example(pubkey pk, byte[65] sigBytes) {
 Compute the BLAKE2b hash of the input:
 
 ```javascript
-byte[32] hash = blake2b(data);
-byte[32] pkh = blake2b(byte[](pk));
+entry hashes(byte[] data, pubkey pk) {
+    byte[32] hash = blake2b(data);
+    byte[32] pkh = blake2b(byte[](pk));
+    require(hash != pkh);
+}
 ```
 
 **`sha256(byte[] data): byte[32]`**
@@ -836,7 +850,10 @@ byte[32] pkh = blake2b(byte[](pk));
 Compute the SHA-256 hash:
 
 ```javascript
-byte[32] hash = sha256(data);
+entry hash(byte[] data) {
+    byte[32] hash = sha256(data);
+    require(hash == hash);
+}
 ```
 
 **`checkSig(sig signature, pubkey publicKey): bool`**
@@ -844,7 +861,9 @@ byte[32] hash = sha256(data);
 Verify a signature against a public key:
 
 ```javascript
-require(checkSig(s, pk));
+entry verify(sig s, pubkey pk) {
+    require(checkSig(s, pk));
+}
 ```
 
 **`checkSigFromStack(datasig signature, byte[32] digest, pubkey publicKey): bool`**
@@ -854,7 +873,9 @@ contract. Hash the message explicitly with the hash function required by your
 protocol:
 
 ```javascript
-require(checkSigFromStack(oracleSig, sha256(oracleMessage), oraclePk));
+entry verify(datasig oracleSig, byte[] oracleMessage, pubkey oraclePk) {
+    require(checkSigFromStack(oracleSig, sha256(oracleMessage), oraclePk));
+}
 ```
 
 **`checkSigFromStackECDSA(datasig signature, byte[32] digest, byte[33] publicKey): bool`**
@@ -863,7 +884,9 @@ Verify a compact 64-byte ECDSA signature against a 32-byte digest and compressed
 33-byte ECDSA public key:
 
 ```javascript
-require(checkSigFromStackECDSA(oracleSig, sha256(oracleMessage), oraclePk));
+entry verify(datasig oracleSig, byte[] oracleMessage, byte[33] oraclePk) {
+    require(checkSigFromStackECDSA(oracleSig, sha256(oracleMessage), oraclePk));
+}
 ```
 
 ### Type Conversions
@@ -932,6 +955,7 @@ Access properties of transaction inputs:
 
 ```javascript
 // Access input at index i
+int i = 0;
 int inputValue = tx.inputs[i].value;
 byte[] inputScript = tx.inputs[i].scriptPubKey;
 ```
@@ -951,6 +975,7 @@ Access properties of transaction outputs:
 
 ```javascript
 // Access output at index i
+int i = 0;
 int outputValue = tx.outputs[i].value;
 byte[] outputScriptPubKey = tx.outputs[i].scriptPubKey;
 ```
@@ -977,8 +1002,10 @@ Covenants are contracts that enforce conditions on how funds can be spent. They 
 Create a Pay-to-Public-Key scriptPubKey:
 
 ```javascript
-byte[34] outputScriptPubKey = new ScriptPubKeyP2PK(recipientPubkey);
-require(tx.outputs[0].scriptPubKey == outputScriptPubKey);
+entry checkOutput(pubkey recipientPubkey) {
+    byte[34] outputScriptPubKey = new ScriptPubKeyP2PK(recipientPubkey);
+    require(tx.outputs[0].scriptPubKey == byte[](outputScriptPubKey));
+}
 ```
 
 **`new ScriptPubKeyP2SH(byte[32] scriptHash): byte[35]`**
@@ -986,9 +1013,11 @@ require(tx.outputs[0].scriptPubKey == outputScriptPubKey);
 Create a Pay-to-Script-Hash scriptPubKey:
 
 ```javascript
-byte[32] redeemScriptHash = blake2b(redeemScript);
-byte[35] outputScriptPubKey = new ScriptPubKeyP2SH(redeemScriptHash);
-require(tx.outputs[0].scriptPubKey == outputScriptPubKey);
+entry checkOutput(byte[] redeemScript) {
+    byte[32] redeemScriptHash = blake2b(redeemScript);
+    byte[35] outputScriptPubKey = new ScriptPubKeyP2SH(redeemScriptHash);
+    require(tx.outputs[0].scriptPubKey == byte[](outputScriptPubKey));
+}
 ```
 
 **`new ScriptPubKeyP2SHFromRedeemScript(byte[] redeemScript): byte[35]`**
@@ -996,7 +1025,10 @@ require(tx.outputs[0].scriptPubKey == outputScriptPubKey);
 Create a P2SH scriptPubKey directly from a redeem script:
 
 ```javascript
-byte[35] outputScriptPubKey = new ScriptPubKeyP2SHFromRedeemScript(redeemScript);
+entry build(byte[] redeemScript) {
+    byte[35] outputScriptPubKey = new ScriptPubKeyP2SHFromRedeemScript(redeemScript);
+    require(outputScriptPubKey == outputScriptPubKey);
+}
 ```
 
 ### State Transition Builtins
@@ -1092,7 +1124,7 @@ contract SimpleCovenant(pubkey recipient) {
     entry spend() {
         // First output must go to the recipient
         byte[34] recipientScriptPubKey = new ScriptPubKeyP2PK(recipient);
-        require(tx.outputs[0].scriptPubKey == recipientScriptPubKey);
+        require(tx.outputs[0].scriptPubKey == byte[](recipientScriptPubKey));
     }
 }
 ```
@@ -1109,7 +1141,7 @@ contract RecurringPayment(pubkey recipient, int paymentAmount, int period) {
         
         // First output must pay the recipient
         byte[34] recipientScriptPubKey = new ScriptPubKeyP2PK(recipient);
-        require(tx.outputs[0].scriptPubKey == recipientScriptPubKey);
+        require(tx.outputs[0].scriptPubKey == byte[](recipientScriptPubKey));
         require(tx.outputs[0].value >= paymentAmount);
         
         // Calculate change
@@ -1153,7 +1185,7 @@ Constants can also be declared inside functions:
 ```javascript
 entry example() {
     string constant greeting = "Hello";
-    require(sha256(greeting) != 0x);
+    require(sha256(byte[](greeting)) != byte[32](0x0000000000000000000000000000000000000000000000000000000000000000));
 }
 ```
 
@@ -1208,7 +1240,7 @@ Divide `byte[]` into two parts at a given index. The built-in has the shape
 returns:
 
 ```javascript
-byte[] data = 0x1122334455667788;
+byte[] data = byte[](0x1122334455667788);
 
 // Split at byte 4
 byte[] left = data.split(4).0;   // 0x11223344
@@ -1223,7 +1255,7 @@ byte[] right = data.split(4).1;  // 0x55667788
 Extract a substring of bytes:
 
 ```javascript
-byte[] data = 0x1122334455667788;
+byte[] data = byte[](0x1122334455667788);
 
 // Get byte[] from index 2 to 5 (exclusive)
 byte[] middle = data.slice(2, 5);  // 0x334455
@@ -1304,7 +1336,7 @@ contract Mecenas(pubkey recipient, byte[32] funder, int pledge, int period) {
 
         // Check that the first output sends to the recipient
         byte[34] recipientScriptPubKey = new ScriptPubKeyP2PK(recipient);
-        require(tx.outputs[0].scriptPubKey == recipientScriptPubKey);
+        require(tx.outputs[0].scriptPubKey == byte[](recipientScriptPubKey));
 
         // Calculate the value that's left
         int minerFee = 1000;
