@@ -55,7 +55,7 @@ fn lowers_cov_covenant_to_leader_and_delegate_entrypoints() {
 
     let compiled = compile_contract(source, &[Expr::int(2), Expr::int(4)], CompileOptions::default()).expect("compile succeeds");
     let abi_names: Vec<&str> = compiled.abi.iter().map(|entry| entry.name.as_str()).collect();
-    assert_eq!(abi_names, vec!["__leader_transition_ok", "__delegate_transition_ok"]);
+    assert_eq!(abi_names, vec!["__leader_transition_ok", "__delegate"]);
     assert!(compiled.ast.functions.iter().any(|f| f.name == "__covenant_policy_transition_ok" && !f.entrypoint));
     assert!(compiled.script.contains(&OpCovInputCount));
     assert!(compiled.script.contains(&OpCovOutputCount));
@@ -75,7 +75,7 @@ fn infers_cov_binding_from_from_greater_than_one_when_binding_omitted() {
 
     let compiled = compile_contract(source, &[Expr::int(2), Expr::int(4)], CompileOptions::default()).expect("compile succeeds");
     let abi_names: Vec<&str> = compiled.abi.iter().map(|entry| entry.name.as_str()).collect();
-    assert_eq!(abi_names, vec!["__leader_transition_ok", "__delegate_transition_ok"]);
+    assert_eq!(abi_names, vec!["__leader_transition_ok", "__delegate"]);
     assert!(compiled.ast.functions.iter().any(|f| f.name == "__covenant_policy_transition_ok" && !f.entrypoint));
     assert!(compiled.script.contains(&OpCovInputCount));
     assert!(compiled.script.contains(&OpCovOutputCount));
@@ -691,5 +691,14 @@ fn allows_multiple_cov_covenant_declarations() {
     let compiled = compile_contract(source, &[Expr::int(2), Expr::int(4)], CompileOptions::default())
         .expect("multiple cov-bound declarations compile");
     let abi_names: Vec<&str> = compiled.abi.iter().map(|entry| entry.name.as_str()).collect();
-    assert_eq!(abi_names, vec!["__leader_merge", "__delegate_merge", "__leader_rebalance", "__delegate_rebalance"]);
+    assert_eq!(abi_names, vec!["__leader_merge", "__leader_rebalance", "__delegate"]);
+
+    let merge_delegate =
+        compiled.build_sig_script_for_covenant_decl("merge", vec![], Default::default()).expect("merge routes to the shared delegate");
+    let rebalance_delegate = compiled
+        .build_sig_script_for_covenant_decl("rebalance", vec![], Default::default())
+        .expect("rebalance routes to the shared delegate");
+    let shared_delegate = compiled.build_sig_script("__delegate", vec![]).expect("shared delegate sigscript builds");
+    assert_eq!(merge_delegate, shared_delegate);
+    assert_eq!(rebalance_delegate, shared_delegate);
 }

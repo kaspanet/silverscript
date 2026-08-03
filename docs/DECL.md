@@ -209,19 +209,23 @@ Given policy function `f`:
 1. `1:N` generates one entrypoint:
 
     * `__f`
-2. `N:M` generates two entrypoints:
+2. The first `N:M` declaration makes the contract a leader contract. Each
+   declaration generates its own leader entrypoint, while the contract has one
+   shared delegate entrypoint:
 
     * `__leader_f`
-    * `__delegate_f`
+    * `__delegate`
 
-`__delegate_f` does not call policy. It enforces delegation-path invariants only.
+`__delegate` does not call policy. It enforces contract-level delegation-path
+invariants only and is shared by every cov-bound declaration in the contract.
 
 ## Leader contracts
 
-A `binding = cov` declaration generates both leader and delegate entrypoints.
-The leader runs at covenant input zero and validates the shared covenant
-transition. A delegate runs at another covenant input and relies on input zero
-to perform that validation.
+A `binding = cov` declaration generates its own leader entrypoint. A leader
+contract generates exactly one shared delegate entrypoint, regardless of how
+many cov-bound declarations it contains. The leader runs at covenant input zero
+and validates the shared covenant transition. A delegate runs at another
+covenant input and relies on input zero to perform that validation.
 
 This makes delegation a contract-wide property. A generated delegate
 authenticates the contract at input zero, but cannot determine which entrypoint
@@ -351,7 +355,7 @@ contract VaultNM(
     }
 
     // Generated for N:M delegate path
-    entry __delegate_conserve_and_bump() {
+    entry __delegate() {
         byte[32] cov_id = OpInputCovenantId(this.activeInputIndex);
         // delegate path must not be leader
         require(OpCovInputIdx(cov_id, 0) != this.activeInputIndex);

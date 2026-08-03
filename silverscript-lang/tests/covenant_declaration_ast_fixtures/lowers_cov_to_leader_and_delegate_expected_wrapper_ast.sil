@@ -41,7 +41,7 @@ contract Decls(int max_ins, int max_outs) {
         }
     }
 
-    entry delegate_transition_ok() {
+    entry delegate() {
         byte[32] cov_id = OpInputCovenantId(this.activeInputIndex);
 
         require(OpCovInputIdx(cov_id, 0) != this.activeInputIndex);

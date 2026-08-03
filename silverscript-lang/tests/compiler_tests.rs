@@ -1949,7 +1949,7 @@ fn build_sig_script_for_covenant_decl_routes_to_hidden_cov_entrypoints() {
     let delegate = compiled
         .build_sig_script_for_covenant_decl("rebalance", vec![], CovenantDeclCallOptions { is_leader: false })
         .expect("delegate sigscript builds");
-    let expected_delegate = compiled.build_sig_script("__delegate_rebalance", vec![]).expect("hidden delegate sigscript builds");
+    let expected_delegate = compiled.build_sig_script("__delegate", vec![]).expect("hidden delegate sigscript builds");
     assert_eq!(delegate, expected_delegate);
 }
 
@@ -2470,7 +2470,7 @@ fn build_sig_script_for_covenant_decl_supports_all_covenant_ast_examples() {
             function_name: "transition_ok",
             args: vec![],
             options: CovenantDeclCallOptions { is_leader: false },
-            generated_covenant_entrypoint_name: "__delegate_transition_ok",
+            generated_covenant_entrypoint_name: "__delegate",
         },
         Case {
             source: r#"
@@ -2611,7 +2611,7 @@ fn build_sig_script_for_covenant_decl_supports_all_covenant_ast_examples() {
             function_name: "step",
             args: vec![],
             options: CovenantDeclCallOptions { is_leader: false },
-            generated_covenant_entrypoint_name: "__delegate_step",
+            generated_covenant_entrypoint_name: "__delegate",
         },
         Case {
             source: r#"
@@ -2649,7 +2649,7 @@ fn build_sig_script_for_covenant_decl_supports_all_covenant_ast_examples() {
             function_name: "step",
             args: vec![],
             options: CovenantDeclCallOptions { is_leader: false },
-            generated_covenant_entrypoint_name: "__delegate_step",
+            generated_covenant_entrypoint_name: "__delegate",
         },
         Case {
             source: r#"
@@ -2703,7 +2703,7 @@ fn build_sig_script_for_covenant_decl_supports_all_covenant_ast_examples() {
             function_name: "step",
             args: vec![],
             options: CovenantDeclCallOptions { is_leader: false },
-            generated_covenant_entrypoint_name: "__delegate_step",
+            generated_covenant_entrypoint_name: "__delegate",
         },
         Case {
             source: r#"
@@ -2785,7 +2785,7 @@ fn build_sig_script_for_covenant_decl_supports_all_covenant_ast_examples() {
             function_name: "cov_verification",
             args: vec![],
             options: CovenantDeclCallOptions { is_leader: false },
-            generated_covenant_entrypoint_name: "__delegate_cov_verification",
+            generated_covenant_entrypoint_name: "__delegate",
         },
         Case {
             source: matrix_cov_source,
@@ -2801,7 +2801,7 @@ fn build_sig_script_for_covenant_decl_supports_all_covenant_ast_examples() {
             function_name: "cov_transition",
             args: vec![],
             options: CovenantDeclCallOptions { is_leader: false },
-            generated_covenant_entrypoint_name: "__delegate_cov_transition",
+            generated_covenant_entrypoint_name: "__delegate",
         },
         Case {
             source: matrix_auth_source,
@@ -2825,7 +2825,7 @@ fn build_sig_script_for_covenant_decl_supports_all_covenant_ast_examples() {
             function_name: "inferred_cov",
             args: vec![],
             options: CovenantDeclCallOptions { is_leader: false },
-            generated_covenant_entrypoint_name: "__delegate_inferred_cov",
+            generated_covenant_entrypoint_name: "__delegate",
         },
         Case {
             source: matrix_auth_source,
@@ -2867,7 +2867,7 @@ fn build_sig_script_for_covenant_decl_supports_all_covenant_ast_examples() {
             .build_sig_script_for_covenant_decl(case.function_name, case.args.clone(), case.options)
             .expect("covenant declaration sigscript builds");
         let generated_entrypoint_name = if case.generated_covenant_entrypoint_name.starts_with("__leader_")
-            || case.generated_covenant_entrypoint_name.starts_with("__delegate_")
+            || case.generated_covenant_entrypoint_name == "__delegate"
         {
             case.generated_covenant_entrypoint_name.to_string()
         } else {
