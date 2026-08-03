@@ -469,7 +469,6 @@ fn compile_unary_suffix_expr<'i>(
 ) -> Result<(), CompilerError> {
     match kind {
         UnarySuffixKind::Length => compile_length_expr(ctx, source),
-        UnarySuffixKind::Reverse => Err(CompilerError::Unsupported("reverse() is not supported".to_string())),
     }
 }
 

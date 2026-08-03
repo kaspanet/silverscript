@@ -310,7 +310,6 @@ export default grammar({
         $.split_call,
         $.slice_call,
         $.append_call,
-        $.reverse_call,
         $.as_cast,
       ),
 
@@ -327,8 +326,6 @@ export default grammar({
     slice_call: ($) => seq(".slice", "(", $.expression, ",", $.expression, ")"),
 
     append_call: ($) => seq(".append", $.expression_list),
-
-    reverse_call: (_) => seq(".reverse", "(", ")"),
 
     as_cast: ($) => prec.right(seq("as", $.type_name)),
 

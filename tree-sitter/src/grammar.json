@@ -1711,10 +1711,6 @@
         },
         {
           "type": "SYMBOL",
-          "name": "reverse_call"
-        },
-        {
-          "type": "SYMBOL",
           "name": "as_cast"
         }
       ]
@@ -1833,23 +1829,6 @@
         {
           "type": "SYMBOL",
           "name": "expression_list"
-        }
-      ]
-    },
-    "reverse_call": {
-      "type": "SEQ",
-      "members": [
-        {
-          "type": "STRING",
-          "value": ".reverse"
-        },
-        {
-          "type": "STRING",
-          "value": "("
-        },
-        {
-          "type": "STRING",
-          "value": ")"
         }
       ]
     },

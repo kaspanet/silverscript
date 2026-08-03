@@ -856,7 +856,6 @@ pub struct ConstantAst<'i> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum UnarySuffixKind {
-    Reverse,
     Length,
 }
 
@@ -1334,7 +1333,6 @@ fn introspection_field(kind: IntrospectionKind) -> &'static str {
 
 fn unary_suffix_str(kind: UnarySuffixKind) -> &'static str {
     match kind {
-        UnarySuffixKind::Reverse => ".reverse()",
         UnarySuffixKind::Length => ".length",
     }
 }
@@ -2163,7 +2161,6 @@ fn parse_postfix<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {
             }
             Rule::unary_suffix => {
                 let kind = match postfix.as_str() {
-                    ".reverse()" => UnarySuffixKind::Reverse,
                     ".length" => UnarySuffixKind::Length,
                     other => return Err(CompilerError::Unsupported(format!("unknown unary suffix '{other}'"))),
                 };

@@ -1869,7 +1869,6 @@ impl<'a, 'i> DebugSession<'a, 'i> {
                     DebugValue::String(value) => Some(DebugValue::Int(value.len() as i64)),
                     _ => None,
                 },
-                UnarySuffixKind::Reverse => None,
             },
             _ => None,
         }
