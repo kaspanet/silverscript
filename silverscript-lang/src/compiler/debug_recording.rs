@@ -258,8 +258,9 @@ impl<'i> DebugRecorder<'i> {
             ExprKind::Introspection { kind, index, field_span } => {
                 ExprKind::Introspection { kind, index: Box::new(self.rewrite_debug_expr(*index)), field_span }
             }
-            ExprKind::StructLiteral(fields) => ExprKind::StructLiteral(
-                fields
+            ExprKind::StructLiteral { name, fields, name_span } => ExprKind::StructLiteral {
+                name,
+                fields: fields
                     .into_iter()
                     .map(|field| StateFieldExpr {
                         name: field.name,
@@ -268,7 +269,8 @@ impl<'i> DebugRecorder<'i> {
                         name_span: field.name_span,
                     })
                     .collect(),
-            ),
+                name_span,
+            },
             ExprKind::FieldAccess { source, field, field_span } => {
                 ExprKind::FieldAccess { source: Box::new(self.rewrite_debug_expr(*source)), field, field_span }
             }
@@ -583,8 +585,9 @@ fn rewrite_debug_expr_with_function<'i>(
             index: Box::new(rewrite_debug_expr_with_function(*index, function_name, visible_names_by_function)),
             field_span,
         },
-        ExprKind::StructLiteral(fields) => ExprKind::StructLiteral(
-            fields
+        ExprKind::StructLiteral { name, fields, name_span } => ExprKind::StructLiteral {
+            name,
+            fields: fields
                 .into_iter()
                 .map(|field| StateFieldExpr {
                     name: field.name,
@@ -593,7 +596,8 @@ fn rewrite_debug_expr_with_function<'i>(
                     name_span: field.name_span,
                 })
                 .collect(),
-        ),
+            name_span,
+        },
         ExprKind::FieldAccess { source, field, field_span } => ExprKind::FieldAccess {
             source: Box::new(rewrite_debug_expr_with_function(*source, function_name, visible_names_by_function)),
             field,

@@ -370,7 +370,7 @@ contract CovDebugDemo(int initial_value) {
 
     #[covenant(binding = auth, from = 1, to = 1, mode = transition)]
     function rebalance(State prev_state, int delta) : (State) {
-        return({ value: prev_state.value + delta });
+        return(State { value: prev_state.value + delta });
     }
 }
 "#,

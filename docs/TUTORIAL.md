@@ -1069,7 +1069,7 @@ contract Counter(int initCount, byte[2] initTag) {
     byte[2] tag = initTag;
 
     entry step() {
-        validateOutputState(0, { count: count + 1, tag: tag });
+        validateOutputState(0, State { count: count + 1, tag: tag });
     }
 }
 ```

@@ -19,7 +19,7 @@ contract Decls(int init_value) {
     entry bump_or_terminate(State[] next_states) {
         int auth_out_count = OpAuthOutputCount(this.activeInputIndex);
 
-        State prev_state = { value: value };
+        State prev_state = State { value: value };
         (State[] cov_new_states) = covenant_policy_bump_or_terminate(prev_state, next_states);
         require(auth_out_count <= 1);
         require(auth_out_count == cov_new_states.length);

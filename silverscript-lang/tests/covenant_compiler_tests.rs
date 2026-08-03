@@ -342,7 +342,7 @@ fn infers_transition_mode_when_mode_omitted_and_has_returns() {
 
             #[covenant(from = 1, to = 1)]
             function roll(State prev_state, int x) : (State) {
-                return({ value: prev_state.value + x });
+                return(State { value: prev_state.value + x });
             }
         }
     "#;
@@ -360,7 +360,7 @@ fn rejects_auth_transition_single_state_return_when_to_is_not_literal_one() {
 
             #[covenant(binding = auth, from = 1, to = max_outs, mode = transition)]
             function step(State prev_state, int fee) : (State) {
-                return({
+                return(State {
                     amount: prev_state.amount - fee,
                     owner: prev_state.owner
                 });
@@ -382,7 +382,7 @@ fn rejects_auth_transition_single_state_return_when_to_is_constant_one() {
 
             #[covenant(binding = auth, from = 1, to = ONE, mode = transition)]
             function roll(State prev_state, int x) : (State) {
-                return({ value: prev_state.value + x });
+                return(State { value: prev_state.value + x });
             }
         }
     "#;
@@ -400,7 +400,7 @@ fn allows_auth_transition_single_state_return_when_to_is_literal_one() {
 
             #[covenant(binding = auth, from = 1, to = 1, mode = transition)]
             function roll(State prev_state, int x) : (State) {
-                return({ value: prev_state.value + x });
+                return(State { value: prev_state.value + x });
             }
         }
     "#;
@@ -417,7 +417,7 @@ fn allows_auth_transition_single_state_return_when_to_is_omitted() {
 
             #[covenant(binding = auth, from = 1, mode = transition)]
             function roll(State prev_state, int x) : (State) {
-                return({ value: prev_state.value + x });
+                return(State { value: prev_state.value + x });
             }
         }
     "#;

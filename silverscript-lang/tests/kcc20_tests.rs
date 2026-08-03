@@ -49,12 +49,15 @@ fn kcc20_state_array_arg_full<'i>(values: Vec<(Vec<u8>, u8, i64, bool)>) -> Expr
     values
         .into_iter()
         .map(|(owner_identifier, identifier_type, amount, is_minter)| {
-            struct_object(vec![
-                ("ownerIdentifier", Expr::bytes(owner_identifier)),
-                ("identifierType", Expr::byte(identifier_type)),
-                ("amount", Expr::int(amount)),
-                ("isMinter", Expr::bool(is_minter)),
-            ])
+            struct_object(
+                "State",
+                vec![
+                    ("ownerIdentifier", Expr::bytes(owner_identifier)),
+                    ("identifierType", Expr::byte(identifier_type)),
+                    ("amount", Expr::int(amount)),
+                    ("isMinter", Expr::bool(is_minter)),
+                ],
+            )
         })
         .collect::<Vec<_>>()
         .into()
@@ -75,20 +78,22 @@ fn witness_array_arg<'i>(values: Vec<u8>) -> Expr<'i> {
 }
 
 fn kcc20_state_arg<'i>(owner_identifier: Vec<u8>, identifier_type: u8, amount: i64, is_minter: bool) -> Expr<'i> {
-    struct_object(vec![
-        ("ownerIdentifier", Expr::bytes(owner_identifier)),
-        ("identifierType", Expr::byte(identifier_type)),
-        ("amount", Expr::int(amount)),
-        ("isMinter", Expr::bool(is_minter)),
-    ])
+    struct_object(
+        "KCC20State",
+        vec![
+            ("ownerIdentifier", Expr::bytes(owner_identifier)),
+            ("identifierType", Expr::byte(identifier_type)),
+            ("amount", Expr::int(amount)),
+            ("isMinter", Expr::bool(is_minter)),
+        ],
+    )
 }
 
 fn kcc20_minter_state_arg<'i>(kcc20_covid: Vec<u8>, amount: i64, initialized: bool) -> Expr<'i> {
-    struct_object(vec![
-        ("kcc20Covid", Expr::bytes(kcc20_covid)),
-        ("amount", Expr::int(amount)),
-        ("initialized", Expr::bool(initialized)),
-    ])
+    struct_object(
+        "State",
+        vec![("kcc20Covid", Expr::bytes(kcc20_covid)), ("amount", Expr::int(amount)), ("initialized", Expr::bool(initialized))],
+    )
 }
 
 fn compile_kcc20_state<'a>(source: &'a str, owner: Vec<u8>, amount: i64, max_cov_ins: i64, max_cov_outs: i64) -> CompiledContract<'a> {

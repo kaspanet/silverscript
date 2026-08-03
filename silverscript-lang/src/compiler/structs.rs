@@ -300,7 +300,7 @@ fn lower_expr<'i>(expr: &Expr<'i>, scope: &LoweringScope, structs: &StructRegist
             ExprKind::Array(values.iter().map(|value| lower_expr(value, scope, structs)).collect::<Result<Vec<_>, _>>()?),
             span,
         )),
-        ExprKind::StructLiteral(_) => {
+        ExprKind::StructLiteral { .. } => {
             Err(CompilerError::Unsupported("struct literals are only supported in struct-typed positions".to_string()))
         }
         ExprKind::Call { name, args, name_span } => {
@@ -467,7 +467,7 @@ pub(crate) fn lower_struct_value_expr<'i>(
                 })
                 .collect())
         }
-        ExprKind::StructLiteral(entries) => {
+        ExprKind::StructLiteral { fields: entries, .. } => {
             let item = structs
                 .get(expected_struct_name)
                 .ok_or_else(|| CompilerError::Unsupported(format!("unknown struct '{expected_struct_name}'")))?;
@@ -1174,7 +1174,7 @@ fn lower_statements<'i>(
                     name_span: *name_span,
                 });
             }
-            Statement::StructDestructure { bindings, expr, span } => {
+            Statement::StructDestructure { bindings, expr, span, .. } => {
                 for binding in bindings {
                     scope.vars.insert(binding.name.clone(), binding.type_ref.clone());
                 }

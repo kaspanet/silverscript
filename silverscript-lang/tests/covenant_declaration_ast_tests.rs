@@ -137,7 +137,7 @@ fn covers_auth_attribute_config_combinations_with_two_field_state() {
 
             #[covenant(binding = auth, from = 1, to = 1, mode = transition)]
             function auth_transition(State prev_state, int fee) : (State) {
-                return({ amount: prev_state.amount - fee, owner: prev_state.owner });
+                return(State { amount: prev_state.amount - fee, owner: prev_state.owner });
             }
 
             #[covenant(from = 1, to = max_outs)]
@@ -147,12 +147,12 @@ fn covers_auth_attribute_config_combinations_with_two_field_state() {
 
             #[covenant(from = 1, to = 1)]
             function inferred_transition(State prev_state, int delta) : (State) {
-                return({ amount: prev_state.amount + delta, owner: prev_state.owner });
+                return(State { amount: prev_state.amount + delta, owner: prev_state.owner });
             }
 
             #[covenant.singleton(mode = transition)]
             function singleton_transition(State prev_state, int delta) : (State) {
-                return({ amount: prev_state.amount + delta, owner: prev_state.owner });
+                return(State { amount: prev_state.amount + delta, owner: prev_state.owner });
             }
 
             #[covenant.singleton(mode = transition, termination = allowed)]

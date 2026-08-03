@@ -147,7 +147,7 @@ fn parses_structs_and_field_access() {
             }
 
             entry main() {
-                S y = {a: 0, b: "hello"};
+                S y = S {a: 0, b: "hello"};
                 f(y);
             }
         }
@@ -193,8 +193,8 @@ fn parses_struct_destructuring() {
             }
 
             entry main() {
-                S s = {a: 1, b: 0x0102030405};
-                {a: int x, b: byte[5] y} = s;
+                S s = S {a: 1, b: 0x0102030405};
+                S {a: int x, b: byte[5] y} = s;
                 require(x == 1);
             }
         }

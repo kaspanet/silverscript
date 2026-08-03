@@ -19,7 +19,7 @@ contract Counter(int init_value) {
     entry step(State[] new_states) {
         int auth_out_count = OpAuthOutputCount(this.activeInputIndex);
 
-        State prev_state = { value: value };
+        State prev_state = State { value: value };
         covenant_policy_step(prev_state, new_states);
         require(auth_out_count <= 1);
         require(auth_out_count == new_states.length);

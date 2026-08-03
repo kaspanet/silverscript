@@ -45,8 +45,8 @@ statement = _{
 variable_definition = { type_name ~ modifier* ~ Identifier ~ ("=" ~ expression)? ~ ";" }
 tuple_assignment = { ("(" ~ type_name ~ Identifier ~ "," ~ type_name ~ Identifier ~ ","? ~ ")" | type_name ~ Identifier ~ "," ~ type_name ~ Identifier) ~ "=" ~ expression ~ ";" }
 function_call_assignment = { "(" ~ typed_binding ~ ("," ~ typed_binding)* ~ ","? ~ ")" ~ "=" ~ function_call ~ ";" }
-state_function_call_assignment = { "{" ~ state_typed_binding ~ ("," ~ state_typed_binding)* ~ ","? ~ "}" ~ "=" ~ function_call ~ ";" }
-struct_destructure_assignment = { "{" ~ state_typed_binding ~ ("," ~ state_typed_binding)* ~ ","? ~ "}" ~ "=" ~ expression ~ ";" }
+state_function_call_assignment = { Identifier ~ "{" ~ state_typed_binding ~ ("," ~ state_typed_binding)* ~ ","? ~ "}" ~ "=" ~ function_call ~ ";" }
+struct_destructure_assignment = { Identifier ~ "{" ~ state_typed_binding ~ ("," ~ state_typed_binding)* ~ ","? ~ "}" ~ "=" ~ expression ~ ";" }
 typed_binding = { type_name ~ Identifier }
 state_typed_binding = { Identifier ~ ":" ~ type_name ~ Identifier }
 call_statement = { function_call ~ ";" }
@@ -116,7 +116,7 @@ primary = _{
     | cast
     | function_call
     | instantiation
-    | state_object
+    | struct_literal
     | introspection
     | array
     | NullaryOp
@@ -124,7 +124,7 @@ primary = _{
     | literal
 }
 
-state_object = { "{" ~ (state_entry ~ ("," ~ state_entry)* ~ ","?)? ~ "}" }
+struct_literal = { Identifier ~ "{" ~ (state_entry ~ ("," ~ state_entry)* ~ ","?)? ~ "}" }
 state_entry = { Identifier ~ ":" ~ expression }
 
 parenthesized = { "(" ~ expression ~ ")" }

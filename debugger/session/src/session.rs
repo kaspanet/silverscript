@@ -1829,7 +1829,7 @@ impl<'a, 'i> DebugSession<'a, 'i> {
                     Some(DebugValue::Array(items))
                 }
             }
-            ExprKind::StructLiteral(fields) => {
+            ExprKind::StructLiteral { fields, .. } => {
                 let mut values = Vec::with_capacity(fields.len());
                 for field in fields {
                     let value = self.try_resolve_expr_value(scope_state, &field.expr, visiting)?;
@@ -2019,8 +2019,9 @@ fn debug_value_to_expr<'i>(value: &DebugValue) -> Option<Expr<'i>> {
             Some(Expr::new(ExprKind::Array(items.iter().map(debug_value_to_expr).collect::<Option<Vec<_>>>()?), span::Span::default()))
         }
         DebugValue::Object(fields) => Some(Expr::new(
-            ExprKind::StructLiteral(
-                fields
+            ExprKind::StructLiteral {
+                name: String::new(),
+                fields: fields
                     .iter()
                     .map(|(name, value)| {
                         Some(StateFieldExpr {
@@ -2031,7 +2032,8 @@ fn debug_value_to_expr<'i>(value: &DebugValue) -> Option<Expr<'i>> {
                         })
                     })
                     .collect::<Option<Vec<_>>>()?,
-            ),
+                name_span: span::Span::default(),
+            },
             span::Span::default(),
         )),
         DebugValue::Unknown(_) => None,
@@ -2145,9 +2147,10 @@ where
         ExprKind::Array(values) => {
             Ok(Expr::new(ExprKind::Array(values.iter().map(&mut *map_child).collect::<Result<Vec<_>, _>>()?), span))
         }
-        ExprKind::StructLiteral(fields) => Ok(Expr::new(
-            ExprKind::StructLiteral(
-                fields
+        ExprKind::StructLiteral { name, fields, name_span } => Ok(Expr::new(
+            ExprKind::StructLiteral {
+                name: name.clone(),
+                fields: fields
                     .iter()
                     .map(|field| {
                         Ok(StateFieldExpr {
@@ -2158,7 +2161,8 @@ where
                         })
                     })
                     .collect::<Result<Vec<_>, String>>()?,
-            ),
+                name_span: *name_span,
+            },
             span,
         )),
         ExprKind::FieldAccess { source, field, field_span } => Ok(Expr::new(
@@ -2619,20 +2623,24 @@ mod tests {
                 name: "DEFAULT_PAIR".to_string(),
                 type_name: "Pair".to_string(),
                 value: Expr::new(
-                    ExprKind::StructLiteral(vec![
-                        StateFieldExpr {
-                            name: "amount".to_string(),
-                            expr: Expr::int(7),
-                            span: span::Span::default(),
-                            name_span: span::Span::default(),
-                        },
-                        StateFieldExpr {
-                            name: "code".to_string(),
-                            expr: Expr::new(ExprKind::Array(vec![Expr::byte(0x12), Expr::byte(0x34)]), span::Span::default()),
-                            span: span::Span::default(),
-                            name_span: span::Span::default(),
-                        },
-                    ]),
+                    ExprKind::StructLiteral {
+                        name: "Pair".to_string(),
+                        fields: vec![
+                            StateFieldExpr {
+                                name: "amount".to_string(),
+                                expr: Expr::int(7),
+                                span: span::Span::default(),
+                                name_span: span::Span::default(),
+                            },
+                            StateFieldExpr {
+                                name: "code".to_string(),
+                                expr: Expr::new(ExprKind::Array(vec![Expr::byte(0x12), Expr::byte(0x34)]), span::Span::default()),
+                                span: span::Span::default(),
+                                name_span: span::Span::default(),
+                            },
+                        ],
+                        name_span: span::Span::default(),
+                    },
                     span::Span::default(),
                 ),
             }],

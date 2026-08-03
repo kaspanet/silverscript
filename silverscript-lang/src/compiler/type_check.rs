@@ -104,7 +104,7 @@ pub(super) fn check_expr<'i>(
             check_expr(index, Some(&scalar_type(TypeBase::Int)), ctx)?;
             introspection_type(*kind)
         }
-        ExprKind::StructLiteral(_) => check_struct_literal(expr, expected, ctx)?,
+        ExprKind::StructLiteral { .. } => check_struct_literal(expr, expected, ctx)?,
         ExprKind::FieldAccess { source, field, .. } => {
             let source_type = check_expr(source, None, ctx)?;
             if let Some(elements) = source_type.tuple_elements() {
@@ -210,7 +210,9 @@ pub(super) fn check_call<'i>(
     if name == "readInputState" && !ctx.contract_fields.is_empty() {
         check_arity(name, args, 1)?;
         check_expr(&args[0], Some(&scalar_type(TypeBase::Int)), ctx)?;
-        return Ok(Some(TypeRef { base: TypeBase::Custom(STATE_TYPE_NAME.to_string()), array_dims: Vec::new() }));
+        let return_type = TypeRef { base: TypeBase::Custom(STATE_TYPE_NAME.to_string()), array_dims: Vec::new() };
+        ensure_expected(&return_type, expected, ctx.constants)?;
+        return Ok(Some(return_type));
     }
     if name == "readInputStateWithTemplate" {
         let expected = expected.ok_or_else(|| {
@@ -377,7 +379,10 @@ fn check_struct_literal<'i>(
     let struct_name = struct_name(expected, ctx.structs)
         .ok_or_else(|| CompilerError::Unsupported("struct literal requires a struct type".to_string()))?;
     let item = ctx.structs.get(struct_name).ok_or_else(|| CompilerError::Unsupported(format!("unknown struct '{struct_name}'")))?;
-    let ExprKind::StructLiteral(fields) = &expr.kind else { unreachable!() };
+    let ExprKind::StructLiteral { name, fields, .. } = &expr.kind else { unreachable!() };
+    if !name.is_empty() && name != struct_name {
+        return Err(CompilerError::Unsupported(format!("expected struct '{struct_name}', got '{name}'")));
+    }
     let mut provided = HashMap::new();
     for field in fields {
         if provided.insert(field.name.as_str(), &field.expr).is_some() {

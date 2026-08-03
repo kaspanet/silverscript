@@ -890,7 +890,7 @@ contract StructuredEvalState() {
         source,
         vec![],
         "inspect",
-        vec![struct_object(vec![("amount", Expr::int(5)), ("active", Expr::bool(true)), ("tag", Expr::bytes(vec![0xaa]))])],
+        vec![struct_object("State", vec![("amount", Expr::int(5)), ("active", Expr::bool(true)), ("tag", Expr::bytes(vec![0xaa]))])],
         |session| {
             session.run_to_first_executed_statement()?;
 
@@ -931,8 +931,8 @@ contract StructuredEvalStateArray() {
         "inspect",
         vec![Expr::new(
             ExprKind::Array(vec![
-                struct_object(vec![("amount", Expr::int(5)), ("active", Expr::bool(true)), ("tag", Expr::bytes(vec![0xaa]))]),
-                struct_object(vec![("amount", Expr::int(7)), ("active", Expr::bool(true)), ("tag", Expr::bytes(vec![0xaa]))]),
+                struct_object("State", vec![("amount", Expr::int(5)), ("active", Expr::bool(true)), ("tag", Expr::bytes(vec![0xaa]))]),
+                struct_object("State", vec![("amount", Expr::int(7)), ("active", Expr::bool(true)), ("tag", Expr::bytes(vec![0xaa]))]),
             ]),
             Default::default(),
         )],
@@ -982,7 +982,7 @@ contract StructuredEvalPair() {
         source,
         vec![],
         "inspect",
-        vec![struct_object(vec![("amount", Expr::int(9)), ("code", Expr::bytes(vec![0x12, 0x34]))])],
+        vec![struct_object("Pair", vec![("amount", Expr::int(9)), ("code", Expr::bytes(vec![0x12, 0x34]))])],
         |session| {
             session.run_to_first_executed_statement()?;
 
@@ -1027,7 +1027,7 @@ contract InlineStructuredEval() {
         source,
         vec![],
         "inspect",
-        vec![struct_object(vec![("amount", Expr::int(5)), ("active", Expr::bool(true)), ("tag", Expr::bytes(vec![0xaa]))])],
+        vec![struct_object("State", vec![("amount", Expr::int(5)), ("active", Expr::bool(true)), ("tag", Expr::bytes(vec![0xaa]))])],
         |session| {
             session.run_to_first_executed_statement()?;
 
@@ -1086,7 +1086,7 @@ contract MissingStructuredSource() {
     let reused_values = SigHashReusedValuesUnsync::new();
     let ctx = EngineCtx::new(&sig_cache).with_reused(&reused_values);
     let engine = debugger_session::session::DebugEngine::new(ctx, EngineFlags { covenants_enabled: true, ..Default::default() });
-    let sigscript = compiled.build_sig_script("inspect", vec![struct_object(vec![("amount", Expr::int(7))])])?;
+    let sigscript = compiled.build_sig_script("inspect", vec![struct_object("State", vec![("amount", Expr::int(7))])])?;
     let mut session = DebugSession::full(&sigscript, &compiled.script, "", Some(debug_info), engine)?;
 
     session.run_to_first_executed_statement()?;
@@ -1458,7 +1458,7 @@ contract DebugStress() {
             total = total + current;
         }
 
-        Stats snapshot = {
+        Stats snapshot = Stats {
             total: total,
             evens: even_acc,
             odds: odd_acc,
@@ -1470,7 +1470,7 @@ contract DebugStress() {
     }
 
     entry main() {
-        Pair start = {left: seed, right: seed + 3};
+        Pair start = Pair {left: seed, right: seed + 3};
         Pair alias = start;
         int branch_limit = baseline + 2;
 
@@ -1778,7 +1778,10 @@ contract CovDebugDemo(int initial_value) {
     let compiled0 = compile_contract(source, &[Expr::int(10)], compile_opts)?;
     let compiled1 = compile_contract(source, &[Expr::int(20)], compile_opts)?;
     let leader_args = vec![Expr::new(
-        ExprKind::Array(vec![struct_object(vec![("value", Expr::int(30))]), struct_object(vec![("value", Expr::int(40))])]),
+        ExprKind::Array(vec![
+            struct_object("State", vec![("value", Expr::int(30))]),
+            struct_object("State", vec![("value", Expr::int(40))]),
+        ]),
         Default::default(),
     )];
     let leader_target =

@@ -227,7 +227,7 @@ impl<'i, 'd> Inliner<'i, 'd> {
                     },
                 );
             }
-            Statement::StructDestructure { bindings, expr, span } => {
+            Statement::StructDestructure { struct_name, bindings, expr, span } => {
                 let (prelude, renamed_expr) = self.lower_expr(expr, scope, visited_functions)?;
                 lowered.extend(prelude);
                 let renamed_bindings = bindings
@@ -239,7 +239,12 @@ impl<'i, 'd> Inliner<'i, 'd> {
                     .collect();
                 self.push_lowered_statement(
                     &mut lowered,
-                    Statement::StructDestructure { bindings: renamed_bindings, expr: renamed_expr, span: *span },
+                    Statement::StructDestructure {
+                        struct_name: struct_name.clone(),
+                        bindings: renamed_bindings,
+                        expr: renamed_expr,
+                        span: *span,
+                    },
                 );
             }
             Statement::Assign { name, expr, span, name_span } => {
@@ -549,7 +554,7 @@ impl<'i, 'd> Inliner<'i, 'd> {
                     Expr::new(ExprKind::Introspection { kind: *kind, index: Box::new(index), field_span: *field_span }, span),
                 ))
             }
-            ExprKind::StructLiteral(fields) => {
+            ExprKind::StructLiteral { name, fields, name_span } => {
                 let mut prelude = Vec::new();
                 let mut lowered_fields = Vec::with_capacity(fields.len());
                 for field in fields {
@@ -562,7 +567,10 @@ impl<'i, 'd> Inliner<'i, 'd> {
                         name_span: field.name_span,
                     });
                 }
-                Ok((prelude, Expr::new(ExprKind::StructLiteral(lowered_fields), span)))
+                Ok((
+                    prelude,
+                    Expr::new(ExprKind::StructLiteral { name: name.clone(), fields: lowered_fields, name_span: *name_span }, span),
+                ))
             }
             ExprKind::FieldAccess { source, field, field_span } => {
                 if let Some(index) = Self::tuple_field_index(field)

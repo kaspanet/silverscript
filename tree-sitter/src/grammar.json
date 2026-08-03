@@ -503,6 +503,10 @@
         },
         {
           "type": "SYMBOL",
+          "name": "struct_destructure_assignment"
+        },
+        {
+          "type": "SYMBOL",
           "name": "function_call_assignment"
         },
         {
@@ -751,8 +755,82 @@
       ]
     },
     "state_function_call_assignment": {
+      "type": "PREC",
+      "value": 1,
+      "content": {
+        "type": "SEQ",
+        "members": [
+          {
+            "type": "SYMBOL",
+            "name": "identifier"
+          },
+          {
+            "type": "STRING",
+            "value": "{"
+          },
+          {
+            "type": "SEQ",
+            "members": [
+              {
+                "type": "SYMBOL",
+                "name": "state_typed_binding"
+              },
+              {
+                "type": "REPEAT",
+                "content": {
+                  "type": "SEQ",
+                  "members": [
+                    {
+                      "type": "STRING",
+                      "value": ","
+                    },
+                    {
+                      "type": "SYMBOL",
+                      "name": "state_typed_binding"
+                    }
+                  ]
+                }
+              },
+              {
+                "type": "CHOICE",
+                "members": [
+                  {
+                    "type": "STRING",
+                    "value": ","
+                  },
+                  {
+                    "type": "BLANK"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "STRING",
+            "value": "}"
+          },
+          {
+            "type": "STRING",
+            "value": "="
+          },
+          {
+            "type": "SYMBOL",
+            "name": "function_call"
+          },
+          {
+            "type": "STRING",
+            "value": ";"
+          }
+        ]
+      }
+    },
+    "struct_destructure_assignment": {
       "type": "SEQ",
       "members": [
+        {
+          "type": "SYMBOL",
+          "name": "identifier"
+        },
         {
           "type": "STRING",
           "value": "{"
@@ -804,7 +882,7 @@
         },
         {
           "type": "SYMBOL",
-          "name": "function_call"
+          "name": "expression"
         },
         {
           "type": "STRING",
@@ -1813,7 +1891,7 @@
         },
         {
           "type": "SYMBOL",
-          "name": "state_object"
+          "name": "struct_literal"
         },
         {
           "type": "SYMBOL",
@@ -2000,9 +2078,13 @@
         }
       ]
     },
-    "state_object": {
+    "struct_literal": {
       "type": "SEQ",
       "members": [
+        {
+          "type": "SYMBOL",
+          "name": "identifier"
+        },
         {
           "type": "STRING",
           "value": "{"

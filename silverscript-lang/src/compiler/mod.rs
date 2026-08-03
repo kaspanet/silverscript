@@ -186,10 +186,11 @@ impl<'i> ContractAst<'i> {
     }
 }
 
-pub fn struct_object<'i>(fields: Vec<(&str, Expr<'i>)>) -> Expr<'i> {
+pub fn struct_object<'i>(name: &str, fields: Vec<(&str, Expr<'i>)>) -> Expr<'i> {
     Expr::new(
-        ExprKind::StructLiteral(
-            fields
+        ExprKind::StructLiteral {
+            name: name.to_string(),
+            fields: fields
                 .into_iter()
                 .map(|(name, expr)| StateFieldExpr {
                     name: name.to_string(),
@@ -198,7 +199,8 @@ pub fn struct_object<'i>(fields: Vec<(&str, Expr<'i>)>) -> Expr<'i> {
                     name_span: Default::default(),
                 })
                 .collect(),
-        ),
+            name_span: Default::default(),
+        },
         Default::default(),
     )
 }
@@ -276,14 +278,12 @@ fn push_typed_sigscript_arg<'i>(
 ) -> Result<(), CompilerError> {
     validate_sigscript_arg(&arg, type_ref, structs, constants)?;
 
-    if let Some(element_type) = type_ref.array_element_type() {
-        if let Some(struct_name) = struct_name(&element_type, structs) {
-            return push_struct_array_sigscript_arg(builder, arg, type_ref, struct_name, structs, constants);
-        }
+    if is_struct_array(type_ref, structs) {
+        return push_struct_array_sigscript_arg(builder, arg, type_ref, structs, constants);
     }
 
-    if let Some(struct_name) = struct_name(type_ref, structs) {
-        return push_struct_sigscript_arg(builder, arg, struct_name, structs, constants);
+    if is_struct(type_ref, structs) {
+        return push_struct_sigscript_arg(builder, arg, structs, constants);
     }
 
     if type_ref.is_array() {
@@ -309,14 +309,13 @@ fn validate_sigscript_arg<'i>(
 fn push_struct_sigscript_arg<'i>(
     builder: &mut ScriptBuilder,
     arg: Expr<'i>,
-    struct_name: &str,
     structs: &StructRegistry,
     constants: &HashMap<String, Expr<'i>>,
 ) -> Result<(), CompilerError> {
-    let item = structs.get(struct_name).ok_or_else(|| CompilerError::Unsupported(format!("unknown struct '{struct_name}'")))?;
-    let ExprKind::StructLiteral(fields) = arg.kind else {
+    let ExprKind::StructLiteral { name, fields, .. } = arg.kind else {
         return Err(CompilerError::Unsupported("signature script struct arguments must be object literals".to_string()));
     };
+    let item = structs.get(&name).ok_or_else(|| CompilerError::Unsupported(format!("unknown struct '{name}'")))?;
     let mut provided = fields.into_iter().map(|field| (field.name, field.expr)).collect::<HashMap<_, _>>();
 
     for field in &item.fields {
@@ -336,10 +335,15 @@ fn push_struct_array_sigscript_arg<'i>(
     builder: &mut ScriptBuilder,
     arg: Expr<'i>,
     type_ref: &TypeRef,
-    struct_name: &str,
     structs: &StructRegistry,
     constants: &HashMap<String, Expr<'i>>,
 ) -> Result<(), CompilerError> {
+    let element_type = type_ref
+        .array_element_type()
+        .ok_or_else(|| CompilerError::Unsupported("signature script struct array argument requires an array type".to_string()))?;
+    let struct_name = struct_name(&element_type, structs).ok_or_else(|| {
+        CompilerError::Unsupported("signature script struct array argument requires a struct element type".to_string())
+    })?;
     let item = structs.get(struct_name).ok_or_else(|| CompilerError::Unsupported(format!("unknown struct '{struct_name}'")))?;
     let dimension = type_ref
         .array_size()
@@ -351,7 +355,7 @@ fn push_struct_array_sigscript_arg<'i>(
 
     let mut objects = Vec::with_capacity(values.len());
     for value in values {
-        let ExprKind::StructLiteral(entries) = value.kind else {
+        let ExprKind::StructLiteral { fields: entries, .. } = value.kind else {
             return Err(CompilerError::Unsupported(
                 "signature script struct array arguments must contain object literals".to_string(),
             ));

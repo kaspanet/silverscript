@@ -196,7 +196,7 @@ contract ChessKing(
 
         // Return to ChessMux with the updated board, the turn flipped, and the
         // pending move cleared.
-        State next_state = {
+        State next_state = State {
             mux_template: mux_template,
             route_templates: route_templates,
             white_player: white_player,
@@ -247,7 +247,7 @@ contract ChessKing(
         byte[32] settle_template = templateHash(settle_prefix, settle_suffix);
         require(blake2b(byte[](settle_template + player_template)) == byte[32](route_templates.slice(256, 288)));
 
-        SettleState next_state = {
+        SettleState next_state = SettleState {
             player_template: player_template,
             white_player: white_player,
             black_player: black_player,

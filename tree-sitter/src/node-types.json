@@ -1026,7 +1026,7 @@
           "named": true
         },
         {
-          "type": "state_object",
+          "type": "struct_literal",
           "named": true
         }
       ]
@@ -1187,22 +1187,11 @@
           "named": true
         },
         {
-          "type": "state_typed_binding",
+          "type": "identifier",
           "named": true
-        }
-      ]
-    }
-  },
-  {
-    "type": "state_object",
-    "named": true,
-    "fields": {},
-    "children": {
-      "multiple": true,
-      "required": false,
-      "types": [
+        },
         {
-          "type": "state_entry",
+          "type": "state_typed_binding",
           "named": true
         }
       ]
@@ -1272,6 +1261,10 @@
           "named": true
         },
         {
+          "type": "struct_destructure_assignment",
+          "named": true
+        },
+        {
           "type": "time_op_statement",
           "named": true
         },
@@ -1313,6 +1306,29 @@
     }
   },
   {
+    "type": "struct_destructure_assignment",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "expression",
+          "named": true
+        },
+        {
+          "type": "identifier",
+          "named": true
+        },
+        {
+          "type": "state_typed_binding",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
     "type": "struct_field_definition",
     "named": true,
     "fields": {
@@ -1333,6 +1349,25 @@
       "types": [
         {
           "type": "type_name",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "struct_literal",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "identifier",
+          "named": true
+        },
+        {
+          "type": "state_entry",
           "named": true
         }
       ]

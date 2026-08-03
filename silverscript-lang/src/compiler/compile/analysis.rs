@@ -55,7 +55,7 @@ pub(super) fn expr_uses_script_size<'i>(expr: &Expr<'i>) -> bool {
             expr_uses_script_size(condition) || expr_uses_script_size(then_expr) || expr_uses_script_size(else_expr)
         }
         ExprKind::Array(values) => values.iter().any(expr_uses_script_size),
-        ExprKind::StructLiteral(fields) => fields.iter().any(|field| expr_uses_script_size(&field.expr)),
+        ExprKind::StructLiteral { fields, .. } => fields.iter().any(|field| expr_uses_script_size(&field.expr)),
         ExprKind::Call { name, args, .. } => name == "readInputState" || args.iter().any(expr_uses_script_size),
         ExprKind::New { args, .. } => args.iter().any(expr_uses_script_size),
         ExprKind::Split { source, index, .. } => expr_uses_script_size(source) || expr_uses_script_size(index),

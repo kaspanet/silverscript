@@ -109,7 +109,7 @@ pub(crate) fn resolve_constant_references<'i>(
             }
             Ok(Expr::new(ExprKind::Array(resolved), span))
         }
-        ExprKind::StructLiteral(fields) => {
+        ExprKind::StructLiteral { name, fields, name_span } => {
             let mut resolved_fields = Vec::with_capacity(fields.len());
             for field in fields {
                 resolved_fields.push(StateFieldExpr {
@@ -119,7 +119,7 @@ pub(crate) fn resolve_constant_references<'i>(
                     name_span: field.name_span,
                 });
             }
-            Ok(Expr::new(ExprKind::StructLiteral(resolved_fields), span))
+            Ok(Expr::new(ExprKind::StructLiteral { name, fields: resolved_fields, name_span }, span))
         }
         ExprKind::FieldAccess { source, field, field_span } => Ok(Expr::new(
             ExprKind::FieldAccess { source: Box::new(resolve_constant_references(*source, constants, visiting)?), field, field_span },

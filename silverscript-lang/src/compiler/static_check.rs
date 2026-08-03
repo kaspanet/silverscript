@@ -225,8 +225,8 @@ fn validate_statement_shapes<'i>(
             Statement::StateFunctionCallAssign { target_struct, bindings, name, args, .. } => {
                 validate_state_function_call_assign_statement_shape(&mut ctx, target_struct.as_deref(), bindings, name, args)?
             }
-            Statement::StructDestructure { bindings, expr, .. } => {
-                validate_struct_destructure_statement_shape(&mut ctx, bindings, expr)?
+            Statement::StructDestructure { struct_name, bindings, expr, .. } => {
+                validate_struct_destructure_statement_shape(&mut ctx, struct_name, bindings, expr)?
             }
             Statement::FunctionCall { name, args, .. } => validate_function_call_statement_shape(&mut ctx, name, args)?,
             Statement::FunctionCallAssign { bindings, name, args, .. } => {
@@ -338,21 +338,17 @@ fn validate_state_function_call_assign_statement_shape<'i>(
     name: &str,
     args: &[Expr<'i>],
 ) -> Result<(), CompilerError> {
-    match name {
-        "readInputState" => {
-            ctx.check_call(name, args, None)?;
-        }
-        "readInputStateWithTemplate" => {
-            let struct_name = struct_name_for_state_bindings(target_struct, bindings, ctx.structs, ctx.constants)?;
-            let expected = TypeRef { base: TypeBase::Custom(struct_name), array_dims: Vec::new() };
-            ctx.check_call(name, args, Some(&expected))?;
-        }
+    let expected_struct_name = match name {
+        "readInputState" => target_struct.unwrap_or(STATE_TYPE_NAME).to_string(),
+        "readInputStateWithTemplate" => struct_name_for_state_bindings(target_struct, bindings, ctx.structs, ctx.constants)?,
         _ => {
             return Err(CompilerError::Unsupported(format!(
                 "state destructuring assignment is only supported for readInputState()/readInputStateWithTemplate(), got '{name}()'"
             )));
         }
-    }
+    };
+    let expected = TypeRef { base: TypeBase::Custom(expected_struct_name), array_dims: Vec::new() };
+    ctx.check_call(name, args, Some(&expected))?;
     validate_state_function_call_assign(target_struct, bindings, name, args, ctx.structs, ctx.constants, ctx.contract_fields)?;
     for binding in bindings {
         ensure_array_elements_have_known_size(&binding.type_ref, ctx.structs, ctx.constants, &binding.type_ref.type_name())?;
@@ -363,10 +359,12 @@ fn validate_state_function_call_assign_statement_shape<'i>(
 
 fn validate_struct_destructure_statement_shape<'i>(
     ctx: &mut ValidateStatementShapesContext<'_, 'i>,
+    expected_struct_name: &str,
     bindings: &[StructBindingAst<'i>],
     expr: &Expr<'i>,
 ) -> Result<(), CompilerError> {
-    let expr_type = ctx.check_expr(expr, None)?;
+    let expected_type = TypeRef { base: TypeBase::Custom(expected_struct_name.to_string()), array_dims: Vec::new() };
+    let expr_type = ctx.check_expr(expr, Some(&expected_type))?;
     let direct_read_input_state = matches!(&expr.kind, ExprKind::Call { name, .. } if name == "readInputState");
     validate_struct_destructure_bindings(bindings, &expr_type, direct_read_input_state, ctx.structs, ctx.constants)?;
     for binding in bindings {
@@ -400,7 +398,7 @@ fn validate_output_state_call<'i>(
             let state_type = TypeRef { base: TypeBase::Custom(STATE_TYPE_NAME.to_string()), array_dims: Vec::new() };
             ctx.check_expr(output_index, Some(&int_type))?;
             ctx.check_expr(state, Some(&state_type)).map_err(|err| {
-                if matches!(state.kind, ExprKind::StructLiteral(_)) {
+                if matches!(state.kind, ExprKind::StructLiteral { .. }) {
                     err
                 } else {
                     CompilerError::Unsupported("validateOutputState requires a State value".to_string())

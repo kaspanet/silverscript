@@ -428,6 +428,7 @@ pub enum Statement<'i> {
         name_span: Span<'i>,
     },
     StructDestructure {
+        struct_name: String,
         bindings: Vec<StructBindingAst<'i>>,
         expr: Expr<'i>,
         #[serde(skip_deserializing)]
@@ -691,7 +692,12 @@ pub enum ExprKind<'i> {
         #[serde(skip_deserializing)]
         field_span: Span<'i>,
     },
-    StructLiteral(Vec<StateFieldExpr<'i>>),
+    StructLiteral {
+        name: String,
+        fields: Vec<StateFieldExpr<'i>>,
+        #[serde(skip_deserializing)]
+        name_span: Span<'i>,
+    },
     FieldAccess {
         source: Box<Expr<'i>>,
         field: String,
@@ -922,11 +928,18 @@ impl SourceFormatter {
             Statement::FunctionCallAssign { bindings, name, args, .. } => {
                 self.line(&format!("({}) = {}({});", format_params(bindings), name, format_expr_list(args)));
             }
-            Statement::StateFunctionCallAssign { bindings, name, args, .. } => {
-                self.line(&format!("{{{}}} = {}({});", format_state_bindings(bindings), name, format_expr_list(args)));
+            Statement::StateFunctionCallAssign { target_struct, bindings, name, args, .. } => {
+                let target_struct = target_struct.as_deref().unwrap_or(STATE_TYPE_NAME);
+                self.line(&format!(
+                    "{} {{{}}} = {}({});",
+                    target_struct,
+                    format_state_bindings(bindings),
+                    name,
+                    format_expr_list(args)
+                ));
             }
-            Statement::StructDestructure { bindings, expr, .. } => {
-                self.line(&format!("{{{}}} = {};", format_state_bindings(bindings), format_expr(expr)));
+            Statement::StructDestructure { struct_name, bindings, expr, .. } => {
+                self.line(&format!("{} {{{}}} = {};", struct_name, format_state_bindings(bindings), format_expr(expr)));
             }
             Statement::Assign { name, expr, .. } => {
                 self.line(&format!("{} = {};", name, format_expr(expr)));
@@ -1112,7 +1125,7 @@ fn format_expr_with_prec(expr: &Expr<'_>, parent_prec: u8, right_child: bool) ->
         ExprKind::Introspection { kind, index, .. } => {
             format!("{}[{}]{}", introspection_root(*kind), format_expr(index), introspection_field(*kind))
         }
-        ExprKind::StructLiteral(fields) => format_state_object(fields),
+        ExprKind::StructLiteral { name, fields, .. } => format!("{} {}", name, format_state_object(fields)),
         ExprKind::FieldAccess { source, field, .. } => {
             format!("{}.{}", format_expr_with_prec(source, PREC_POSTFIX, false), field)
         }
@@ -1728,6 +1741,10 @@ fn parse_statement<'i>(pair: Pair<'i, Rule>) -> Result<Statement<'i>, CompilerEr
         }
         Rule::state_function_call_assignment => {
             let mut inner = pair.into_inner();
+            let struct_pair = inner
+                .next()
+                .ok_or_else(|| CompilerError::Unsupported("missing destructuring struct name".to_string()).with_span(&span))?;
+            let Identifier { name: target_struct, .. } = parse_identifier(struct_pair)?;
             let mut bindings = Vec::new();
             while let Some(p) = inner.peek() {
                 if p.as_rule() != Rule::state_typed_binding {
@@ -1740,10 +1757,14 @@ fn parse_statement<'i>(pair: Pair<'i, Rule>) -> Result<Statement<'i>, CompilerEr
                 inner.next().ok_or_else(|| CompilerError::Unsupported("missing function call".to_string()).with_span(&span))?;
             let (Identifier { name, span: name_span }, args) =
                 parse_function_call_parts(call_pair).map_err(|err| err.with_span(&span))?;
-            Ok(Statement::StateFunctionCallAssign { target_struct: None, bindings, name, args, span, name_span })
+            Ok(Statement::StateFunctionCallAssign { target_struct: Some(target_struct), bindings, name, args, span, name_span })
         }
         Rule::struct_destructure_assignment => {
             let mut inner = pair.into_inner();
+            let struct_pair = inner
+                .next()
+                .ok_or_else(|| CompilerError::Unsupported("missing destructuring struct name".to_string()).with_span(&span))?;
+            let Identifier { name: struct_name, .. } = parse_identifier(struct_pair)?;
             let mut bindings = Vec::new();
             while let Some(p) = inner.peek() {
                 if p.as_rule() != Rule::state_typed_binding {
@@ -1756,7 +1777,7 @@ fn parse_statement<'i>(pair: Pair<'i, Rule>) -> Result<Statement<'i>, CompilerEr
                 .next()
                 .ok_or_else(|| CompilerError::Unsupported("missing destructuring expression".to_string()).with_span(&span))?;
             let expr = parse_expression(expr_pair).map_err(|err| err.with_span(&span))?;
-            Ok(Statement::StructDestructure { bindings, expr, span })
+            Ok(Statement::StructDestructure { struct_name, bindings, expr, span })
         }
         Rule::call_statement => {
             let mut inner = pair.into_inner();
@@ -1986,7 +2007,7 @@ fn parse_expression<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError>
         Rule::function_call => parse_function_call(pair),
         Rule::instantiation => parse_instantiation(pair),
         Rule::cast => parse_cast(pair),
-        Rule::state_object => parse_state_object(pair),
+        Rule::struct_literal => parse_struct_literal(pair),
         Rule::field_access
         | Rule::append_call
         | Rule::split_call
@@ -2221,16 +2242,19 @@ fn parse_primary<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {
         Rule::function_call => parse_function_call(pair),
         Rule::instantiation => parse_instantiation(pair),
         Rule::cast => parse_cast(pair),
-        Rule::state_object => parse_state_object(pair),
+        Rule::struct_literal => parse_struct_literal(pair),
         Rule::expression => parse_expression(pair),
         _ => Err(CompilerError::Unsupported(format!("primary not supported: {:?}", pair.as_rule()))),
     }
 }
 
-fn parse_state_object<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {
+fn parse_struct_literal<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {
     let span = Span::from(pair.as_span());
+    let mut inner = pair.into_inner();
+    let name_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing struct literal name".to_string()))?;
+    let Identifier { name, span: name_span } = parse_identifier(name_pair)?;
     let mut fields = Vec::new();
-    for field_pair in pair.into_inner() {
+    for field_pair in inner {
         if field_pair.as_rule() != Rule::state_entry {
             continue;
         }
@@ -2242,7 +2266,7 @@ fn parse_state_object<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerErro
         let expr = parse_expression(expr_pair)?;
         fields.push(StateFieldExpr { name, expr, span: field_span, name_span });
     }
-    Ok(Expr::new(ExprKind::StructLiteral(fields), span))
+    Ok(Expr::new(ExprKind::StructLiteral { name, fields, name_span }, span))
 }
 
 fn parse_literal<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {
