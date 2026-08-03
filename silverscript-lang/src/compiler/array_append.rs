@@ -330,8 +330,8 @@ fn lower_expr<'i>(
             },
             span,
         )),
-        ExprKind::Introspection { kind, index, field_span } => Ok(Expr::new(
-            ExprKind::Introspection {
+        ExprKind::IndexedIntrospection { kind, index, field_span } => Ok(Expr::new(
+            ExprKind::IndexedIntrospection {
                 kind: *kind,
                 index: Box::new(lower_expr(index, types, constants, functions)?),
                 field_span: *field_span,

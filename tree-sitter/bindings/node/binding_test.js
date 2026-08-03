@@ -9,3 +9,24 @@ test("can load grammar", () => {
     parser.setLanguage(language);
   });
 });
+
+test("distinguishes indexed and unindexed introspection", async () => {
+  const parser = new Parser();
+  const { default: language } = await import("./index.js");
+  parser.setLanguage(language);
+
+  const tree = parser.parse(`
+    contract Introspection() {
+      entry main(int index) {
+        int inputCount = tx.inputs.length;
+        int outputValue = tx.outputs[index].value;
+        require(inputCount > 0 && outputValue >= 0);
+      }
+    }
+  `);
+  const syntaxTree = tree.rootNode.toString();
+
+  assert.match(syntaxTree, /\(introspection\b/);
+  assert.match(syntaxTree, /\(indexed_introspection\b/);
+  assert.doesNotMatch(syntaxTree, /nullary/);
+});

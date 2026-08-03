@@ -546,12 +546,12 @@ impl<'i, 'd> Inliner<'i, 'd> {
             ExprKind::Ternary { .. } => {
                 Err(CompilerError::Unsupported("ternary expressions must be lowered before inline function expansion".to_string()))
             }
-            ExprKind::Nullary(op) => Ok((Vec::new(), Expr::new(ExprKind::Nullary(*op), span))),
-            ExprKind::Introspection { kind, index, field_span } => {
+            ExprKind::Introspection(op) => Ok((Vec::new(), Expr::new(ExprKind::Introspection(*op), span))),
+            ExprKind::IndexedIntrospection { kind, index, field_span } => {
                 let (prelude, index) = self.lower_expr(index, scope, visited_functions)?;
                 Ok((
                     prelude,
-                    Expr::new(ExprKind::Introspection { kind: *kind, index: Box::new(index), field_span: *field_span }, span),
+                    Expr::new(ExprKind::IndexedIntrospection { kind: *kind, index: Box::new(index), field_span: *field_span }, span),
                 ))
             }
             ExprKind::StructLiteral { name, fields, name_span } => {

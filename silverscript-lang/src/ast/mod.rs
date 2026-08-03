@@ -735,9 +735,9 @@ pub enum ExprKind<'i> {
         then_expr: Box<Expr<'i>>,
         else_expr: Box<Expr<'i>>,
     },
-    Nullary(NullaryOp),
-    Introspection {
-        kind: IntrospectionKind,
+    Introspection(IntrospectionKind),
+    IndexedIntrospection {
+        kind: IndexedIntrospectionKind,
         index: Box<Expr<'i>>,
         #[serde(skip_deserializing)]
         field_span: Span<'i>,
@@ -813,7 +813,7 @@ pub enum BinaryOp {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum NullaryOp {
+pub enum IntrospectionKind {
     ActiveInputIndex,
     ActiveScriptPubKey,
     ThisBytecodeSize,
@@ -826,7 +826,7 @@ pub enum NullaryOp {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum IntrospectionKind {
+pub enum IndexedIntrospectionKind {
     InputValue,
     InputScriptPubKey,
     InputSigScript,
@@ -1169,9 +1169,9 @@ fn format_expr_with_prec(expr: &Expr<'_>, parent_prec: u8, right_child: bool) ->
             format_expr(then_expr),
             format_expr_with_prec(else_expr, expr_precedence(&expr.kind), false)
         ),
-        ExprKind::Nullary(op) => nullary_op_str(*op).to_string(),
-        ExprKind::Introspection { kind, index, .. } => {
-            format!("{}[{}]{}", introspection_root(*kind), format_expr(index), introspection_field(*kind))
+        ExprKind::Introspection(op) => introspection_str(*op).to_string(),
+        ExprKind::IndexedIntrospection { kind, index, .. } => {
+            format!("{}[{}]{}", indexed_introspection_root(*kind), format_expr(index), indexed_introspection_field(*kind))
         }
         ExprKind::StructLiteral { name, fields, .. } => format!("{} {}", name, format_state_object(fields)),
         ExprKind::FieldAccess { source, field, .. } => {
@@ -1248,7 +1248,7 @@ fn expr_precedence(kind: &ExprKind<'_>) -> u8 {
         | ExprKind::ArrayIndex { .. }
         | ExprKind::FieldAccess { .. }
         | ExprKind::UnarySuffix { .. }
-        | ExprKind::Introspection { .. } => PREC_POSTFIX,
+        | ExprKind::IndexedIntrospection { .. } => PREC_POSTFIX,
         _ => 12,
     }
 }
@@ -1295,39 +1295,39 @@ fn binary_op_str(op: BinaryOp) -> &'static str {
     }
 }
 
-fn nullary_op_str(op: NullaryOp) -> &'static str {
+fn introspection_str(op: IntrospectionKind) -> &'static str {
     match op {
-        NullaryOp::ActiveInputIndex => "this.activeInputIndex",
-        NullaryOp::ActiveScriptPubKey => "this.activeScriptPubKey",
-        NullaryOp::ThisBytecodeSize => "this.bytecodeSize",
-        NullaryOp::ThisBytecodeSizeDataPrefix => "this.bytecodeSizeDataPrefix",
-        NullaryOp::TxInputsLength => "tx.inputs.length",
-        NullaryOp::TxOutputsLength => "tx.outputs.length",
-        NullaryOp::TxVersion => "tx.version",
-        NullaryOp::TxLockTime => "tx.locktime",
+        IntrospectionKind::ActiveInputIndex => "this.activeInputIndex",
+        IntrospectionKind::ActiveScriptPubKey => "this.activeScriptPubKey",
+        IntrospectionKind::ThisBytecodeSize => "this.bytecodeSize",
+        IntrospectionKind::ThisBytecodeSizeDataPrefix => "this.bytecodeSizeDataPrefix",
+        IntrospectionKind::TxInputsLength => "tx.inputs.length",
+        IntrospectionKind::TxOutputsLength => "tx.outputs.length",
+        IntrospectionKind::TxVersion => "tx.version",
+        IntrospectionKind::TxLockTime => "tx.locktime",
     }
 }
 
-fn introspection_root(kind: IntrospectionKind) -> &'static str {
+fn indexed_introspection_root(kind: IndexedIntrospectionKind) -> &'static str {
     match kind {
-        IntrospectionKind::InputValue
-        | IntrospectionKind::InputScriptPubKey
-        | IntrospectionKind::InputSigScript
-        | IntrospectionKind::InputOutpointTransactionHash
-        | IntrospectionKind::InputOutpointIndex
-        | IntrospectionKind::InputSequenceNumber => "tx.inputs",
-        IntrospectionKind::OutputValue | IntrospectionKind::OutputScriptPubKey => "tx.outputs",
+        IndexedIntrospectionKind::InputValue
+        | IndexedIntrospectionKind::InputScriptPubKey
+        | IndexedIntrospectionKind::InputSigScript
+        | IndexedIntrospectionKind::InputOutpointTransactionHash
+        | IndexedIntrospectionKind::InputOutpointIndex
+        | IndexedIntrospectionKind::InputSequenceNumber => "tx.inputs",
+        IndexedIntrospectionKind::OutputValue | IndexedIntrospectionKind::OutputScriptPubKey => "tx.outputs",
     }
 }
 
-fn introspection_field(kind: IntrospectionKind) -> &'static str {
+fn indexed_introspection_field(kind: IndexedIntrospectionKind) -> &'static str {
     match kind {
-        IntrospectionKind::InputValue | IntrospectionKind::OutputValue => ".value",
-        IntrospectionKind::InputScriptPubKey | IntrospectionKind::OutputScriptPubKey => ".scriptPubKey",
-        IntrospectionKind::InputSigScript => ".sigScript",
-        IntrospectionKind::InputOutpointTransactionHash => ".outpointTransactionHash",
-        IntrospectionKind::InputOutpointIndex => ".outpointIndex",
-        IntrospectionKind::InputSequenceNumber => ".sequenceNumber",
+        IndexedIntrospectionKind::InputValue | IndexedIntrospectionKind::OutputValue => ".value",
+        IndexedIntrospectionKind::InputScriptPubKey | IndexedIntrospectionKind::OutputScriptPubKey => ".scriptPubKey",
+        IndexedIntrospectionKind::InputSigScript => ".sigScript",
+        IndexedIntrospectionKind::InputOutpointTransactionHash => ".outpointTransactionHash",
+        IndexedIntrospectionKind::InputOutpointIndex => ".outpointIndex",
+        IndexedIntrospectionKind::InputSequenceNumber => ".sequenceNumber",
     }
 }
 
@@ -2050,8 +2050,8 @@ fn parse_expression<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError>
             let Identifier { name, span } = parse_identifier(pair)?;
             Ok(Expr::new(ExprKind::Identifier(name), span))
         }
-        Rule::NullaryOp => parse_nullary(pair.as_str(), Span::from(pair.as_span())),
-        Rule::introspection => parse_introspection(pair),
+        Rule::Introspection => parse_introspection(pair.as_str(), Span::from(pair.as_span())),
+        Rule::indexed_introspection => parse_indexed_introspection(pair),
         Rule::typed_array => parse_typed_array(pair),
         Rule::function_call => parse_function_call(pair),
         Rule::instantiation => parse_instantiation(pair),
@@ -2195,7 +2195,8 @@ fn parse_postfix<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {
                 }
             }
             Rule::field_access => {
-                if matches!(&expr.kind, ExprKind::Introspection { .. }) || expr_root_identifier(&expr).as_deref() == Some("tx") {
+                if matches!(&expr.kind, ExprKind::IndexedIntrospection { .. }) || expr_root_identifier(&expr).as_deref() == Some("tx")
+                {
                     return Err(CompilerError::Unsupported("field access on transaction introspection is not supported".to_string()));
                 }
                 let field_pair =
@@ -2284,8 +2285,8 @@ fn parse_primary<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {
             let Identifier { name, span } = parse_identifier(pair)?;
             Ok(Expr::new(ExprKind::Identifier(name), span))
         }
-        Rule::NullaryOp => parse_nullary(pair.as_str(), Span::from(pair.as_span())),
-        Rule::introspection => parse_introspection(pair),
+        Rule::Introspection => parse_introspection(pair.as_str(), Span::from(pair.as_span())),
+        Rule::indexed_introspection => parse_indexed_introspection(pair),
         Rule::typed_array => parse_typed_array(pair),
         Rule::function_call => parse_function_call(pair),
         Rule::instantiation => parse_instantiation(pair),
@@ -2612,22 +2613,22 @@ fn parse_string_literal<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerEr
     Ok(Expr::new(ExprKind::String(unescaped), span))
 }
 
-fn parse_nullary<'i>(raw: &str, span: Span<'i>) -> Result<Expr<'i>, CompilerError> {
+fn parse_introspection<'i>(raw: &str, span: Span<'i>) -> Result<Expr<'i>, CompilerError> {
     let op = match raw {
-        "this.activeInputIndex" => NullaryOp::ActiveInputIndex,
-        "this.activeScriptPubKey" => NullaryOp::ActiveScriptPubKey,
-        "this.bytecodeSize" => NullaryOp::ThisBytecodeSize,
-        "this.bytecodeSizeDataPrefix" => NullaryOp::ThisBytecodeSizeDataPrefix,
-        "tx.inputs.length" => NullaryOp::TxInputsLength,
-        "tx.outputs.length" => NullaryOp::TxOutputsLength,
-        "tx.version" => NullaryOp::TxVersion,
-        "tx.locktime" => NullaryOp::TxLockTime,
-        _ => return Err(CompilerError::Unsupported(format!("unknown nullary op: {raw}"))),
+        "this.activeInputIndex" => IntrospectionKind::ActiveInputIndex,
+        "this.activeScriptPubKey" => IntrospectionKind::ActiveScriptPubKey,
+        "this.bytecodeSize" => IntrospectionKind::ThisBytecodeSize,
+        "this.bytecodeSizeDataPrefix" => IntrospectionKind::ThisBytecodeSizeDataPrefix,
+        "tx.inputs.length" => IntrospectionKind::TxInputsLength,
+        "tx.outputs.length" => IntrospectionKind::TxOutputsLength,
+        "tx.version" => IntrospectionKind::TxVersion,
+        "tx.locktime" => IntrospectionKind::TxLockTime,
+        _ => return Err(CompilerError::Unsupported(format!("unknown introspection field: {raw}"))),
     };
-    Ok(Expr::new(ExprKind::Nullary(op), span))
+    Ok(Expr::new(ExprKind::Introspection(op), span))
 }
 
-fn parse_introspection<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {
+fn parse_indexed_introspection<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {
     let span = Span::from(pair.as_span());
     let text = pair.as_str();
     let mut inner = pair.into_inner();
@@ -2638,26 +2639,26 @@ fn parse_introspection<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerErr
     let field_raw = field_pair.as_str();
     let kind = if text.starts_with("tx.inputs") {
         match field_raw {
-            ".value" => IntrospectionKind::InputValue,
-            ".scriptPubKey" => IntrospectionKind::InputScriptPubKey,
-            ".sigScript" => IntrospectionKind::InputSigScript,
+            ".value" => IndexedIntrospectionKind::InputValue,
+            ".scriptPubKey" => IndexedIntrospectionKind::InputScriptPubKey,
+            ".sigScript" => IndexedIntrospectionKind::InputSigScript,
             // TODO: support this
-            ".outpointTransactionHash" => IntrospectionKind::InputOutpointTransactionHash,
-            ".outpointIndex" => IntrospectionKind::InputOutpointIndex,
-            ".sequenceNumber" => IntrospectionKind::InputSequenceNumber,
+            ".outpointTransactionHash" => IndexedIntrospectionKind::InputOutpointTransactionHash,
+            ".outpointIndex" => IndexedIntrospectionKind::InputOutpointIndex,
+            ".sequenceNumber" => IndexedIntrospectionKind::InputSequenceNumber,
             _ => return Err(CompilerError::Unsupported(format!("input field '{field_raw}' not supported"))),
         }
     } else if text.starts_with("tx.outputs") {
         match field_raw {
-            ".value" => IntrospectionKind::OutputValue,
-            ".scriptPubKey" => IntrospectionKind::OutputScriptPubKey,
+            ".value" => IndexedIntrospectionKind::OutputValue,
+            ".scriptPubKey" => IndexedIntrospectionKind::OutputScriptPubKey,
             _ => return Err(CompilerError::Unsupported(format!("output field '{field_raw}' not supported"))),
         }
     } else {
         return Err(CompilerError::Unsupported("unknown introspection root".to_string()));
     };
 
-    Ok(Expr::new(ExprKind::Introspection { kind, index, field_span: Span::from(field_pair.as_span()) }, span))
+    Ok(Expr::new(ExprKind::IndexedIntrospection { kind, index, field_span: Span::from(field_pair.as_span()) }, span))
 }
 
 fn single_inner(pair: Pair<'_, Rule>) -> Result<Pair<'_, Rule>, CompilerError> {

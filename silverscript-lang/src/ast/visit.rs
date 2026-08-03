@@ -355,7 +355,7 @@ pub fn walk_expr_mut<'i, V: AstVisitorMut<'i> + ?Sized>(visitor: &mut V, expr: &
             visitor.visit_expr(then_expr);
             visitor.visit_expr(else_expr);
         }
-        ExprKind::Introspection { index, field_span, .. } => {
+        ExprKind::IndexedIntrospection { index, field_span, .. } => {
             visitor.visit_span(field_span);
             visitor.visit_expr(index);
         }
@@ -378,7 +378,7 @@ pub fn walk_expr_mut<'i, V: AstVisitorMut<'i> + ?Sized>(visitor: &mut V, expr: &
         | ExprKind::Byte(_)
         | ExprKind::String(_)
         | ExprKind::DateLiteral(_)
-        | ExprKind::Nullary(_)
+        | ExprKind::Introspection(_)
         | ExprKind::NumberWithUnit { .. } => {}
     }
 }

@@ -636,6 +636,50 @@
     }
   },
   {
+    "type": "indexed_introspection",
+    "named": true,
+    "fields": {
+      "field": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "input_field",
+            "named": true
+          },
+          {
+            "type": "output_field",
+            "named": true
+          }
+        ]
+      },
+      "index": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "tuple_index",
+            "named": true
+          }
+        ]
+      },
+      "root": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "input_root",
+            "named": true
+          },
+          {
+            "type": "output_root",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
     "type": "input_field",
     "named": true,
     "fields": {
@@ -678,46 +722,7 @@
   {
     "type": "introspection",
     "named": true,
-    "fields": {
-      "field": {
-        "multiple": false,
-        "required": true,
-        "types": [
-          {
-            "type": "input_field",
-            "named": true
-          },
-          {
-            "type": "output_field",
-            "named": true
-          }
-        ]
-      },
-      "index": {
-        "multiple": false,
-        "required": true,
-        "types": [
-          {
-            "type": "tuple_index",
-            "named": true
-          }
-        ]
-      },
-      "root": {
-        "multiple": false,
-        "required": true,
-        "types": [
-          {
-            "type": "input_root",
-            "named": true
-          },
-          {
-            "type": "output_root",
-            "named": true
-          }
-        ]
-      }
-    }
+    "fields": {}
   },
   {
     "type": "literal",
@@ -798,11 +803,6 @@
   },
   {
     "type": "modifier",
-    "named": true,
-    "fields": {}
-  },
-  {
-    "type": "nullary_op",
     "named": true,
     "fields": {}
   },
@@ -1002,6 +1002,10 @@
           "named": true
         },
         {
+          "type": "indexed_introspection",
+          "named": true
+        },
+        {
           "type": "instantiation",
           "named": true
         },
@@ -1011,10 +1015,6 @@
         },
         {
           "type": "literal",
-          "named": true
-        },
-        {
-          "type": "nullary_op",
           "named": true
         },
         {

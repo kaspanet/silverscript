@@ -795,7 +795,7 @@ fn bytes32_type() -> TypeRef {
 }
 
 fn active_input_index_expr<'i>() -> Expr<'i> {
-    Expr::new(ExprKind::Nullary(NullaryOp::ActiveInputIndex), span::Span::default())
+    Expr::new(ExprKind::Introspection(IntrospectionKind::ActiveInputIndex), span::Span::default())
 }
 
 fn identifier_expr<'i>(name: &str) -> Expr<'i> {

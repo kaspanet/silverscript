@@ -152,15 +152,24 @@ fn parses_arrays_and_introspection() {
                 int b = (a * 2).split(1).length;
                 int c = tx.outputs[idx].value;
                 int d = tx.inputs[idx].outpointIndex;
+                int inputCount = tx.inputs.length;
                 require(c >= d);
             }
         }
     "#;
 
-    let result = parse_source_file(input);
-    if let Err(err) = result {
-        panic!("{}", err);
-    }
+    parse_source_file(input).unwrap_or_else(|err| panic!("{err}"));
+
+    let contract = parse_contract_ast(input).expect("contract should parse");
+    let Statement::VariableDefinition { expr: Some(indexed), .. } = &contract.functions[0].body[2] else {
+        panic!("expected indexed introspection variable");
+    };
+    assert!(matches!(&indexed.kind, ExprKind::IndexedIntrospection { .. }));
+
+    let Statement::VariableDefinition { expr: Some(unindexed), .. } = &contract.functions[0].body[4] else {
+        panic!("expected introspection variable");
+    };
+    assert!(matches!(&unindexed.kind, ExprKind::Introspection(_)));
 }
 
 #[test]

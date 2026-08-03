@@ -336,9 +336,9 @@ export default grammar({
         $.function_call,
         $.instantiation,
         $.struct_literal,
-        $.introspection,
+        $.indexed_introspection,
         $.typed_array,
-        $.nullary_op,
+        $.introspection,
         $.identifier,
         $.literal,
       ),
@@ -369,7 +369,7 @@ export default grammar({
 
     state_entry: ($) => seq($.identifier, ":", $.expression),
 
-    introspection: ($) =>
+    indexed_introspection: ($) =>
       choice(
         seq(
           field("root", $.output_root),
@@ -459,7 +459,7 @@ export default grammar({
 
     tx_var: (_) => choice("this.age", "tx.time"),
 
-    nullary_op: (_) =>
+    introspection: (_) =>
       choice(
         "this.activeInputIndex",
         "this.activeScriptPubKey",

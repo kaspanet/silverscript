@@ -917,7 +917,7 @@ Transaction introspection allows contracts to examine the transaction that is sp
 
 ### Transaction Fields
 
-**Nullary Operations** (no parameters):
+**Introspection Fields** (no index):
 
 ```javascript
 // Current active input index
