@@ -17,10 +17,10 @@ fn formats_contract_ast_into_canonical_silverscript() {
     let source = r#"
 contract Pretty(sig s, pubkey pk){
 int constant LIMIT=3;
-byte[2] seed=0x1234;
+byte[2] seed=byte[_](0x1234);
 entry main(int x):(int, int){
 int total=(x+LIMIT)*2;
-int[] values=[1,2,3];
+int[] values=int[]{1,2,3};
 values = values.append(total);
 if(x>0&&x<LIMIT){
 require(checkSig(s,pk), "ok");
@@ -38,11 +38,11 @@ return(total, values[0]);
     let expected = r#"contract Pretty(sig s, pubkey pk) {
     int constant LIMIT = 3;
 
-    byte[2] seed = 0x1234;
+    byte[2] seed = byte[2](0x1234);
 
     entry main(int x): (int, int) {
         int total = (x + LIMIT) * 2;
-        int[] values = [1, 2, 3];
+        int[] values = int[]{1, 2, 3};
         values = values.append(total);
         if (x > 0 && x < LIMIT) {
             require(checkSig(s, pk), "ok");
@@ -88,7 +88,7 @@ contract Advanced(int limit, pubkey owner) {
     entry main() {
         (int left, int right) = compute(1 + 2 * 3);
         State {balance: int current} = readState();
-        int[] values = [1, 2];
+        int[] values = int[]{1, 2};
         values = values.append(current);
         byte[] tail = this.activeScriptPubKey.slice(1, this.activeScriptPubKey.length);
         validateOutputState(0, State {balance: current});

@@ -28,7 +28,7 @@ pub fn parse_hex_bytes(raw: &str) -> Result<Vec<u8>, String> {
 }
 
 pub fn bytes_expr(bytes: Vec<u8>) -> Expr<'static> {
-    Expr::new(ExprKind::Array(bytes.into_iter().map(Expr::byte).collect()), span::Span::default())
+    Expr::bytes(bytes)
 }
 
 #[derive(Debug, Clone)]
@@ -101,7 +101,7 @@ fn validate_array_len(type_ref: &TypeRef, len: usize) -> Result<(), String> {
 fn parse_byte_array_arg(type_ref: &TypeRef, raw: &str) -> Result<Expr<'static>, String> {
     let bytes = parse_hex_bytes(raw)?;
     validate_byte_array_len(type_ref, bytes.len())?;
-    Ok(bytes_expr(bytes))
+    if matches!(type_ref.array_size(), Some(ArrayDim::Dynamic)) { Ok(Expr::dynamic_bytes(bytes)) } else { Ok(bytes_expr(bytes)) }
 }
 
 fn parse_scalar_arg(type_ref: &TypeRef, raw: &str) -> Result<Expr<'static>, String> {
@@ -178,11 +178,8 @@ fn parse_struct_arg(
 fn parse_array_arg(values: &[Value], type_ref: &TypeRef, shapes: &StructShapeRegistry) -> Result<Expr<'static>, String> {
     validate_array_len(type_ref, values.len())?;
     let element_type = type_ref.array_element_type().ok_or_else(|| format!("unsupported arg type '{}'", type_ref.type_name()))?;
-    values
-        .iter()
-        .map(|value| parse_json_value_for_type(value, &element_type, shapes))
-        .collect::<Result<Vec<_>, _>>()
-        .map(|values| Expr::new(ExprKind::Array(values), span::Span::default()))
+    let parsed = values.iter().map(|value| parse_json_value_for_type(value, &element_type, shapes)).collect::<Result<Vec<_>, _>>()?;
+    Ok(Expr::array(type_ref.clone(), parsed))
 }
 
 fn parse_json_value_for_type(value: &Value, type_ref: &TypeRef, shapes: &StructShapeRegistry) -> Result<Expr<'static>, String> {
@@ -336,7 +333,7 @@ mod tests {
 
                 int amount = 1;
                 bool active = true;
-                byte[1] tag = 0xaa;
+                byte[1] tag = byte[1](0xaa);
 
                 entry inspect_state(State next) {
                     require(next.active == active);
@@ -362,7 +359,7 @@ mod tests {
         assert_eq!(name, "State");
         assert_eq!(fields.len(), 3);
         let tag = fields.iter().find(|field| field.name == "tag").expect("tag field");
-        assert!(matches!(tag.expr.kind, ExprKind::Array(ref values) if values.len() == 1));
+        assert!(matches!(tag.expr.kind, ExprKind::Array { ref values, .. } if values.len() == 1));
     }
 
     #[test]
@@ -374,7 +371,7 @@ mod tests {
             &[r#"[{"amount":5,"active":true,"tag":"0xaa"},{"amount":7,"active":false,"tag":"0xbb"}]"#.to_string()],
         )
         .expect("parse State[] arg");
-        let ExprKind::Array(values) = &args[0].kind else {
+        let ExprKind::Array { values, .. } = &args[0].kind else {
             panic!("expected array expr");
         };
         assert_eq!(values.len(), 2);
@@ -391,7 +388,7 @@ mod tests {
         };
         assert_eq!(name, "Pair");
         let tag = fields.iter().find(|field| field.name == "tag").expect("tag field");
-        assert!(matches!(tag.expr.kind, ExprKind::Array(ref values) if values.len() == 1));
+        assert!(matches!(tag.expr.kind, ExprKind::Array { ref values, .. } if values.len() == 1));
     }
 
     #[test]

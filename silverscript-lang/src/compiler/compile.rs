@@ -57,7 +57,7 @@ pub(super) fn compile_contract_impl<'i>(
     let structs = build_struct_registry(&inline_lowered_contract)?;
     let validate_output_state_lowered_contract = lower_validate_output_state(&inline_lowered_contract, &structs, &constants)?;
     let struct_lowered_contract = lower_structs_contract(&validate_output_state_lowered_contract, &structs, &constants)?;
-    let append_lowered_contract = lower_array_appends(&struct_lowered_contract)?;
+    let append_lowered_contract = lower_array_appends(&struct_lowered_contract, &constants)?;
     let for_lowered_contract = lower_for_loops(&append_lowered_contract, &constants)?;
     let lowered_contract = if options.record_debug_infos { for_lowered_contract } else { lower_local_aliases(&for_lowered_contract)? };
     let mut lowered_constants = flatten_constructor_args_env(&covenant_lowered_contract.params, constructor_args, &structs)?;

@@ -118,7 +118,7 @@ primary = _{
     | instantiation
     | struct_literal
     | introspection
-    | array
+    | typed_array
     | NullaryOp
     | Identifier
     | literal
@@ -140,7 +140,7 @@ introspection = {
 output_field = { "." ~ ("value" | "scriptPubKey") }
 input_field = { "." ~ ("value" | "scriptPubKey" | "outpointTransactionHash" | "outpointIndex" | "sigScript") }
 
-array = { "[" ~ (expression ~ ("," ~ expression)* ~ ","?)? ~ "]" }
+typed_array = { type_name ~ "{" ~ (expression ~ ("," ~ expression)* ~ ","?)? ~ "}" }
 
 modifier = { "constant" }
 
@@ -151,7 +151,7 @@ type_name = { base_type ~ array_suffix* }
 base_type = { builtin_type | Identifier }
 builtin_type = @{ ("int" | "bool" | "string" | "pubkey" | "sig" | "datasig" | "byte") ~ !(ASCII_ALPHANUMERIC | "_") }
 array_suffix = { "[" ~ array_size? ~ "]" }
-array_size = { "_" | Identifier | (ASCII_NONZERO_DIGIT ~ ASCII_DIGIT*) }
+array_size = { "_" | Identifier | ASCII_DIGIT+ }
 
 VersionLiteral = @{ ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT+ }
 

@@ -15,7 +15,7 @@ use kaspa_txscript::{
     EngineCtx, EngineFlags, SeqCommitAccessor, TxScriptEngine, parse_script, pay_to_address_script, pay_to_script_hash_script,
     pay_to_script_hash_signature_script_with_flags, script_to_str, serialize_i64,
 };
-use silverscript_lang::ast::{Expr, ExprKind, Statement, format_contract_ast, parse_contract_ast};
+use silverscript_lang::ast::{Expr, ExprKind, Statement, format_contract_ast, parse_contract_ast, parse_type_ref};
 use silverscript_lang::compiler::{
     COMPILER_VERSION, CompileOptions, CompiledContract, CovenantDeclCallOptions, FunctionAbiEntry, FunctionInputAbi, compile_contract,
     compile_contract_ast, function_branch_index, generated_covenant_auth_entrypoint_name, struct_object,
@@ -33,7 +33,7 @@ fn script_builder() -> ScriptBuilder {
 fn constructors_validate_argument_types() {
     let cases = [
         ("ScriptPubKeyP2PK", "1", "publicKey", "pubkey", "byte[34]"),
-        ("ScriptPubKeyP2SH", "byte[31]([0x00])", "scriptHash", "byte[32]", "byte[35]"),
+        ("ScriptPubKeyP2SH", "byte[31](byte[]{0x00})", "scriptHash", "byte[32]", "byte[35]"),
         ("ScriptPubKeyP2SHFromRedeemScript", "1", "redeemScript", "byte[]", "byte[35]"),
     ];
 
@@ -301,7 +301,7 @@ fn accepts_constructor_args_with_matching_types() {
         Expr::int(7),
         Expr::bool(true),
         Expr::string("hello".to_string()),
-        Expr::bytes(vec![1u8; 10]),
+        Expr::dynamic_bytes(vec![1u8; 10]),
         Expr::byte(2),
         Expr::bytes(vec![3u8; 4]),
         Expr::bytes(vec![4u8; 32]),
@@ -320,7 +320,7 @@ fn supports_struct_contract_params_fields_and_constants() {
                 byte[2] code;
             }
 
-            Pair constant DEFAULT_PAIR = Pair {amount: 7, code: 0x1234};
+            Pair constant DEFAULT_PAIR = Pair {amount: 7, code: byte[_](0x1234)};
             Pair from_param = init_pair;
             Pair from_constant = DEFAULT_PAIR;
 
@@ -437,7 +437,7 @@ fn assert_int_expr(expr: &Expr<'_>, expected: i64) {
 }
 
 fn assert_byte_array_expr(expr: &Expr<'_>, expected: &[u8]) {
-    let ExprKind::Array(values) = &expr.kind else {
+    let ExprKind::Array { values, .. } = &expr.kind else {
         panic!("expected byte array {expected:?}, got {expr:?}");
     };
 
@@ -595,7 +595,7 @@ fn compile_contract_debug_info_preserves_structured_scope_inside_inline_calls() 
         contract InlineStructuredEval() {
             int amount = 1;
             bool active = true;
-            byte[1] tag = 0xaa;
+            byte[1] tag = byte[1](0xaa);
 
             function inspect_inner(State inner_state) {
                 int bumped = inner_state.amount + amount;
@@ -958,7 +958,7 @@ fn sorting_network_over_fixed_array_matches_rust_model_across_cases() {
             .build_sig_script(
                 "main",
                 vec![
-                    values.to_vec().into(),
+                    Expr::inferred_array(values.into_iter().map(Expr::int).collect()).expect("non-empty fixed int array"),
                     Expr::int(expected_a),
                     Expr::int(expected_b),
                     Expr::int(expected_c),
@@ -1036,7 +1036,7 @@ fn accepts_constructor_args_with_any_bytes_length() {
             }
         }
     "#;
-    let args = vec![Expr::bytes(vec![9u8; 128])];
+    let args = vec![Expr::dynamic_bytes(vec![9u8; 128])];
     compile_contract(source, &args, CompileOptions::default()).expect("compile succeeds");
 }
 
@@ -1256,7 +1256,7 @@ fn disallow_comparing_byte_array_to_byte_constant() {
 fn disallow_comparing_dynamic_and_fixed_byte_arrays_without_cast_in_contract_scope() {
     let source = r#"
         contract Test(byte[] x) {
-            byte[2] y = 0x1234;
+            byte[2] y = byte[_](0x1234);
 
             entry main() {
                 require(x == y);
@@ -1265,7 +1265,7 @@ fn disallow_comparing_dynamic_and_fixed_byte_arrays_without_cast_in_contract_sco
     "#;
 
     assert!(
-        compile_contract(source, &[Expr::bytes(vec![0x12])], CompileOptions::default()).is_err(),
+        compile_contract(source, &[Expr::dynamic_bytes(vec![0x12])], CompileOptions::default()).is_err(),
         "comparing byte[] to byte[2] should be rejected without cast"
     );
 }
@@ -1274,7 +1274,7 @@ fn disallow_comparing_dynamic_and_fixed_byte_arrays_without_cast_in_contract_sco
 fn allow_comparing_dynamic_and_fixed_byte_arrays_with_cast_in_contract_scope() {
     let source = r#"
         contract Test(byte[] x) {
-            byte[2] y = 0x1234;
+            byte[2] y = byte[_](0x1234);
 
             entry main() {
                 require(x == byte[](y));
@@ -1282,7 +1282,7 @@ fn allow_comparing_dynamic_and_fixed_byte_arrays_with_cast_in_contract_scope() {
         }
     "#;
 
-    compile_contract(source, &[Expr::bytes(vec![0x12])], CompileOptions::default())
+    compile_contract(source, &[Expr::dynamic_bytes(vec![0x12])], CompileOptions::default())
         .expect("comparing byte[] to byte[2] should be allowed with cast");
 }
 
@@ -1295,7 +1295,7 @@ fn fixed_size_builtin_results_assign_to_exact_byte_array_types() {
                 byte[32] outpoint_tx_id = OpOutpointTxId(0);
                 byte[8] input_sequence = OpTxInputSeq(0);
                 byte[32] sequence_commitment = OpChainblockSeqCommit(
-                    0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+                    byte[_](0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f)
                 );
                 byte[34] p2pk = new ScriptPubKeyP2PK(pk);
                 byte[35] p2sh = new ScriptPubKeyP2SH(outpoint_tx_id);
@@ -1316,15 +1316,15 @@ fn rejects_assigning_fixed_size_builtin_results_to_wrong_byte_array_sizes() {
         ("OpTxInputSeq", "byte[7] value = OpTxInputSeq(0);"),
         (
             "OpChainblockSeqCommit",
-            "byte[31] value = OpChainblockSeqCommit(0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f);",
+            "byte[31] value = OpChainblockSeqCommit(byte[32](0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f));",
         ),
         (
             "ScriptPubKeyP2PK",
-            "byte[33] value = new ScriptPubKeyP2PK(0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f);",
+            "byte[33] value = new ScriptPubKeyP2PK(pubkey(0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f));",
         ),
         (
             "ScriptPubKeyP2SH",
-            "byte[34] value = new ScriptPubKeyP2SH(0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f);",
+            "byte[34] value = new ScriptPubKeyP2SH(byte[32](0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f));",
         ),
         ("ScriptPubKeyP2SHFromRedeemScript", "byte[34] value = new ScriptPubKeyP2SHFromRedeemScript(byte[](\"redeem\"));"),
     ];
@@ -1367,8 +1367,8 @@ fn disallow_comparing_dynamic_and_fixed_int_arrays_without_cast() {
     let source = r#"
         contract Arrays() {
             entry main() {
-                int[] x = [1];
-                int[1] y = [1];
+                int[] x = int[]{1};
+                int[1] y = int[_]{1};
                 require(x == y);
             }
         }
@@ -1382,8 +1382,8 @@ fn allows_comparing_dynamic_and_fixed_int_arrays_with_cast() {
     let source = r#"
         contract Arrays() {
             entry main() {
-                int[] x = [1];
-                int[1] y = [1];
+                int[] x = int[]{1};
+                int[1] y = int[_]{1};
                 require(x == int[](y));
             }
         }
@@ -1397,8 +1397,8 @@ fn allows_comparing_inferred_and_fixed_byte_arrays_when_sizes_match() {
     let source = r#"
         contract Arrays() {
             entry main() {
-                byte[_] x = 0x1256;
-                byte[2] y = 0x1234;
+                byte[_] x = byte[_](0x1256);
+                byte[2] y = byte[_](0x1234);
                 require(x == y);
             }
         }
@@ -1412,8 +1412,8 @@ fn rejects_comparing_inferred_and_fixed_byte_arrays_when_sizes_differ() {
     let source = r#"
         contract Arrays() {
             entry main() {
-                byte[_] x = 0x12;
-                byte[2] y = 0x1234;
+                byte[_] x = byte[_](0x12);
+                byte[2] y = byte[_](0x1234);
                 require(x == y);
             }
         }
@@ -1431,7 +1431,7 @@ fn rejects_inferred_array_size_when_initializer_cannot_provide_matching_fixed_ar
         (
             "literal values do not match declared element type",
             r#"
-                int[_] x = [1, true];
+                int[_] x = int[]{1, true};
             "#,
             "array element type mismatch",
         ),
@@ -1453,7 +1453,7 @@ fn rejects_inferred_array_size_when_initializer_cannot_provide_matching_fixed_ar
         (
             "identifier has a different array element type",
             r#"
-                bool[2] y = [true, false];
+                bool[2] y = bool[]{true, false};
                 int[_] x = y;
             "#,
             "cannot infer fixed array size from variable 'x'",
@@ -1461,7 +1461,7 @@ fn rejects_inferred_array_size_when_initializer_cannot_provide_matching_fixed_ar
         (
             "identifier has a dynamic array size",
             r#"
-                int[] y = [1, 2];
+                int[] y = int[]{1, 2};
                 int[_] x = y;
             "#,
             "cannot infer fixed array size from variable 'x'",
@@ -1490,18 +1490,18 @@ fn infers_fixed_sizes_for_multiple_array_element_types() {
     let source = r#"
         contract Arrays() {
             entry main() {
-                int[_] ints = [1, 2, 3, 4];
-                int[4] ints_expected = [1, 2, 3, 4];
-                bool[_] flags = [true, false];
-                bool[2] flags_expected = [true, false];
-                pubkey[_] keys = [
-                    0x0101010101010101010101010101010101010101010101010101010101010101,
-                    0x0202020202020202020202020202020202020202020202020202020202020202
-                ];
-                pubkey[2] keys_expected = [
-                    0x0303030303030303030303030303030303030303030303030303030303030303,
-                    0x0404040404040404040404040404040404040404040404040404040404040404
-                ];
+                int[_] ints = int[_]{1, 2, 3, 4};
+                int[4] ints_expected = int[_]{1, 2, 3, 4};
+                bool[_] flags = bool[_]{true, false};
+                bool[2] flags_expected = bool[_]{true, false};
+                pubkey[_] keys = pubkey[_]{
+                    pubkey(0x0101010101010101010101010101010101010101010101010101010101010101),
+                    pubkey(0x0202020202020202020202020202020202020202020202020202020202020202)
+                };
+                pubkey[2] keys_expected = pubkey[_]{
+                    pubkey(0x0303030303030303030303030303030303030303030303030303030303030303),
+                    pubkey(0x0404040404040404040404040404040404040404040404040404040404040404)
+                };
                 require(ints == ints_expected);
                 require(flags == flags_expected);
                 require(keys == keys_expected);
@@ -1520,7 +1520,7 @@ fn infers_fixed_array_size_from_function_call_initializer_expression() {
     let source = r#"
         contract Arrays() {
             function makeArray(): int[3] {
-                return [1, 2, 3];
+                return int[_]{1, 2, 3};
             }
 
             entry main() {
@@ -1538,8 +1538,8 @@ fn infers_fixed_array_size_from_array_concat_initializer_expression() {
     let source = r#"
         contract Arrays() {
             entry main() {
-                int[2] left = [1, 2];
-                int[1] right = [3];
+                int[2] left = int[_]{1, 2};
+                int[1] right = int[_]{3};
                 int[_] x = left + right;
                 require(x.length == 3);
             }
@@ -1550,12 +1550,110 @@ fn infers_fixed_array_size_from_array_concat_initializer_expression() {
 }
 
 #[test]
+fn infers_nested_fixed_array_size_from_array_concat_initializer_expression() {
+    let source = r#"
+        contract Arrays() {
+            entry main() {
+                byte[2][_] x = byte[2][_]{byte[2](0x0102), byte[2](0x0304)};
+                byte[2][_] y = byte[2][_]{byte[2](0x0506)};
+                byte[2][_] z = x + y;
+                require(z.length == 3);
+            }
+        }
+    "#;
+
+    compile_contract(source, &[], CompileOptions::default()).expect("byte[2][_] z should infer from byte[2][2] + byte[2][1]");
+}
+
+#[test]
+fn typed_array_literal_dimensions_compile_with_declared_semantics() {
+    let source = r#"
+        contract Arrays() {
+            entry main() {
+                int[] dynamic = int[]{1, 2, 3};
+                int[3] inferred = int[_]{1, 2, 3};
+                int[3] fixed = int[3]{1, 2, 3};
+                require(dynamic.length == 3);
+                require(inferred.length == 3);
+                require(fixed.length == 3);
+            }
+        }
+    "#;
+
+    compile_contract(source, &[], CompileOptions::default()).expect("valid typed array dimensions should compile");
+}
+
+#[test]
+fn rejects_dynamic_array_literal_for_fixed_array_variable() {
+    let source = r#"
+        contract Arrays() {
+            entry main() {
+                int[1] values = int[]{1};
+                require(values[0] == 1);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default())
+        .expect_err("dynamic array literal should not initialize a fixed array variable");
+    assert!(err.to_string().contains("type mismatch"), "unexpected error: {err}");
+}
+
+#[test]
+fn accepts_inferred_and_fixed_literals_for_fixed_array_variables() {
+    let source = r#"
+        contract Arrays() {
+            entry main() {
+                int[1] inferred = int[_]{1};
+                int[1] fixed = int[1]{1};
+                require(inferred[0] == 1);
+                require(fixed[0] == 1);
+            }
+        }
+    "#;
+
+    compile_contract(source, &[], CompileOptions::default())
+        .expect("inferred and matching fixed array literals should initialize fixed arrays");
+}
+
+#[test]
+fn rejects_fixed_typed_array_literal_size_mismatch() {
+    let source = r#"
+        contract Arrays() {
+            entry main() {
+                int[4] values = int[4]{1, 2, 3};
+                require(values.length == 4);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("fixed literal length mismatch should fail");
+    assert!(err.to_string().contains("array literal size mismatch: expected 4, got 3"), "unexpected error: {err}");
+}
+
+#[test]
+fn rejects_nested_array_literal_with_unequal_element_lengths() {
+    let source = r#"
+        contract Arrays() {
+            entry main() {
+                byte[][] values = byte[][]{byte[](0x01), byte[](0x0203)};
+                require(values.length == 2);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default())
+        .expect_err("nested arrays with unequal element lengths should be rejected");
+    assert!(err.to_string().contains("array element type must have known size: byte[][]"), "unexpected error: {err}");
+}
+
+#[test]
 fn infers_fixed_array_size_from_ternary_initializer_expression() {
     let source = r#"
         contract Arrays() {
             entry main(bool flag) {
-                int[3] left = [1, 2, 3];
-                int[3] right = [4, 5, 6];
+                int[3] left = int[_]{1, 2, 3};
+                int[3] right = int[_]{4, 5, 6};
                 int[_] x = flag ? left : right;
                 require(x.length == 3);
             }
@@ -1570,7 +1668,7 @@ fn recursively_infers_fixed_array_size_from_inferred_array_identifier() {
     let source = r#"
         contract Arrays() {
             entry main() {
-                int[_] x = [1, 2, 3];
+                int[_] x = int[_]{1, 2, 3};
                 int[_] y = x;
                 require(y.length == 3);
             }
@@ -1585,9 +1683,9 @@ fn inferred_array_in_branch_does_not_shadow_outer_inference_scope() {
     let source = r#"
         contract Arrays() {
             entry main(bool condition) {
-                int[_] values = [1, 2];
+                int[_] values = int[_]{1, 2};
                 if (condition) {
-                    bool[_] values = [true];
+                    bool[_] values = bool[_]{true};
                     require(values.length == 1);
                 }
 
@@ -1606,7 +1704,7 @@ fn rejects_comparing_dynamic_and_fixed_arrays_without_cast_in_function_scope() {
     let source = r#"
         contract Arrays() {
             entry main(byte[] x) {
-                byte[2] y = 0x1234;
+                byte[2] y = byte[_](0x1234);
                 require(x == y);
             }
         }
@@ -1623,7 +1721,7 @@ fn allows_comparing_dynamic_and_fixed_arrays_with_cast_in_function_scope() {
     let source = r#"
         contract Arrays() {
             entry main(byte[] x) {
-                byte[2] y = 0x1234;
+                byte[2] y = byte[_](0x1234);
                 require(x == byte[](y));
             }
         }
@@ -1637,7 +1735,7 @@ fn byte_array_to_fixed_byte_array_cast_compiles_without_num2bin() {
     let source = r#"
         contract Arrays() {
             entry main() {
-                byte[] route_templates = 0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f;
+                byte[] route_templates = byte[](0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f);
                 byte[32] target_template = byte[32](route_templates.slice(16, 48));
                 require(byte[](target_template) == route_templates.slice(16, 48));
             }
@@ -1654,7 +1752,7 @@ fn rejects_cast_between_different_fixed_byte_array_sizes() {
     let source = r#"
         contract Arrays() {
             entry main() {
-                byte[32] hash = 0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f;
+                byte[32] hash = byte[_](0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f);
                 byte[31] truncated = byte[31](hash);
                 require(truncated.length == 31);
             }
@@ -1666,11 +1764,44 @@ fn rejects_cast_between_different_fixed_byte_array_sizes() {
 }
 
 #[test]
+fn rejects_cast_between_different_fixed_non_byte_array_sizes() {
+    let source = r#"
+        contract Arrays() {
+            entry main() {
+                int[2] source = int[2]{1, 2};
+                int[3] value = int[3](source);
+                require(value.length == 3);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("fixed array cast size mismatch should fail");
+    assert!(err.to_string().contains("cannot cast int[2] to int[3]"), "unexpected error: {err}");
+}
+
+#[test]
+fn encodes_non_byte_array_literal_cast_in_contract_field() {
+    let source = r#"
+        contract Arrays() {
+            int[2] values = int[2](int[]{1, 2});
+
+            entry main() {
+                require(values[0] == 1);
+                require(values[1] == 2);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("non-byte array literal cast should compile");
+    assert!(run_script_with_selector(compiled.script, None).is_ok(), "encoded non-byte array literal cast should execute");
+}
+
+#[test]
 fn rejects_cast_from_smaller_fixed_byte_array_to_larger_fixed_byte_array() {
     let source = r#"
         contract Arrays() {
             entry main() {
-                byte[31] hash = 0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e;
+                byte[31] hash = byte[_](0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e);
                 byte[32] padded = byte[32](hash);
                 require(padded.length == 32);
             }
@@ -1686,10 +1817,10 @@ fn allows_array_concat_to_matching_size() {
     let source = r#"
         contract Arrays() {
             entry main() {
-                byte[2] left = 0x0102;
-                byte[2] right = 0x0304;
+                byte[2] left = byte[_](0x0102);
+                byte[2] right = byte[_](0x0304);
                 byte[4] combined = left + right;
-                require(combined == 0x01020304);
+                require(combined == byte[_](0x01020304));
             }
         }
     "#;
@@ -1702,8 +1833,8 @@ fn rejects_cast_from_fixed_byte_array_concat_to_wrong_size() {
     let source = r#"
         contract Arrays() {
             entry main() {
-                byte[2] left = 0x0102;
-                byte[2] right = 0x0304;
+                byte[2] left = byte[_](0x0102);
+                byte[2] right = byte[_](0x0304);
                 byte[5] combined = byte[5](left + right);
                 require(combined.length == 5);
             }
@@ -1723,7 +1854,7 @@ fn rejects_fixed_byte_array_size_mismatch_inside_struct_literal() {
             }
 
             entry main() {
-                byte[31] hash = 0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e;
+                byte[31] hash = byte[_](0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e);
                 Wrapped wrapped = Wrapped {hash: byte[32](hash)};
                 require(wrapped.hash.length == 32);
             }
@@ -1732,7 +1863,11 @@ fn rejects_fixed_byte_array_size_mismatch_inside_struct_literal() {
 
     let err = compile_contract(source, &[], CompileOptions::default())
         .expect_err("byte[31] to byte[32] cast inside struct literal should be rejected");
-    assert!(err.to_string().contains("cannot cast byte[31] to byte[32]"), "unexpected error: {err}");
+    assert!(
+        err.to_string().contains("cannot cast byte[31] to byte[32]")
+            || err.to_string().contains("struct field 'hash' expects byte[32]"),
+        "unexpected error: {err}"
+    );
 }
 
 #[test]
@@ -1802,7 +1937,8 @@ fn build_sig_script_for_covenant_decl_routes_to_hidden_cov_entrypoints() {
     "#;
 
     let compiled = compile_contract(source, &[Expr::int(7)], CompileOptions::default()).expect("compile succeeds");
-    let leader_args = vec![vec![struct_object("State", vec![("value", Expr::int(8))])].into()];
+    let leader_args =
+        vec![Expr::array(parse_type_ref("State[]").unwrap(), vec![struct_object("State", vec![("value", Expr::int(8))])])];
 
     let leader = compiled
         .build_sig_script_for_covenant_decl("rebalance", leader_args.clone(), CovenantDeclCallOptions { is_leader: true })
@@ -2073,7 +2209,7 @@ fn build_sig_script_supports_state_entrypoint_arguments() {
 
             entry main(State s) {
                 require(s.x == 9);
-                require(s.y == 0x3412);
+                require(s.y == byte[_](0x3412));
             }
         }
     "#;
@@ -2100,7 +2236,10 @@ fn build_sig_script_supports_sig_array_arguments() {
     let sig_a = vec![0x11u8; 65];
     let sig_b = vec![0x22u8; 65];
     let sigscript = compiled
-        .build_sig_script("main", vec![vec![Expr::bytes(sig_a.clone()), Expr::bytes(sig_b.clone())].into()])
+        .build_sig_script(
+            "main",
+            vec![Expr::array(parse_type_ref("sig[]").unwrap(), vec![Expr::bytes(sig_a.clone()), Expr::bytes(sig_b.clone())])],
+        )
         .expect("sigscript builds");
 
     let mut encoded = sig_a;
@@ -2110,23 +2249,43 @@ fn build_sig_script_supports_sig_array_arguments() {
 }
 
 fn struct_array_arg<'i>(values: Vec<(i64, Vec<u8>)>) -> Expr<'i> {
-    values.into_iter().map(|(a, b)| struct_object("S", vec![("a", Expr::int(a)), ("b", Expr::bytes(b))])).collect::<Vec<_>>().into()
+    Expr::array(
+        parse_type_ref("S[]").unwrap(),
+        values.into_iter().map(|(a, b)| struct_object("S", vec![("a", Expr::int(a)), ("b", Expr::bytes(b))])).collect(),
+    )
+}
+
+fn fixed_struct_array_arg<'i>(values: Vec<(i64, Vec<u8>)>) -> Expr<'i> {
+    let mut type_ref = parse_type_ref("S[]").unwrap();
+    type_ref.array_dims[0] = silverscript_lang::ast::ArrayDim::Fixed(values.len());
+    Expr::array(
+        type_ref,
+        values.into_iter().map(|(a, b)| struct_object("S", vec![("a", Expr::int(a)), ("b", Expr::bytes(b))])).collect(),
+    )
 }
 
 fn state_array_arg<'i>(values: Vec<i64>) -> Expr<'i> {
-    values.into_iter().map(|value| struct_object("State", vec![("value", Expr::int(value))])).collect::<Vec<_>>().into()
+    Expr::array(
+        parse_type_ref("State[]").unwrap(),
+        values.into_iter().map(|value| struct_object("State", vec![("value", Expr::int(value))])).collect(),
+    )
 }
 
 fn state_array_arg_x<'i>(values: Vec<i64>) -> Expr<'i> {
-    values.into_iter().map(|value| struct_object("State", vec![("x", Expr::int(value))])).collect::<Vec<_>>().into()
+    Expr::array(
+        parse_type_ref("State[]").unwrap(),
+        values.into_iter().map(|value| struct_object("State", vec![("x", Expr::int(value))])).collect(),
+    )
 }
 
 fn matrix_state_array_arg<'i>(values: Vec<(i64, Vec<u8>)>) -> Expr<'i> {
-    values
-        .into_iter()
-        .map(|(amount, owner)| struct_object("State", vec![("amount", Expr::int(amount)), ("owner", Expr::bytes(owner))]))
-        .collect::<Vec<_>>()
-        .into()
+    Expr::array(
+        parse_type_ref("State[]").unwrap(),
+        values
+            .into_iter()
+            .map(|(amount, owner)| struct_object("State", vec![("amount", Expr::int(amount)), ("owner", Expr::bytes(owner))]))
+            .collect(),
+    )
 }
 
 fn replace_compiled_interface<'i>(
@@ -2734,8 +2893,8 @@ fn runtime_rejects_regular_struct_array_entrypoint_arguments_without_struct_sign
                 require(items_b.length == 2);
                 require(items_a[0] == 7);
                 require(items_a[1] == 9);
-                require(items_b[0] == 0x0102);
-                require(items_b[1] == 0x0304);
+                require(items_b[0] == byte[_](0x0102));
+                require(items_b[1] == byte[_](0x0304));
             }
         }
     "#;
@@ -2773,8 +2932,8 @@ fn runtime_supports_regular_struct_array_entrypoint_arguments_with_struct_signat
                 require(items_b.length == 2);
                 require(items_a[0] == 7);
                 require(items_a[1] == 9);
-                require(items_b[0] == 0x0102);
-                require(items_b[1] == 0x0304);
+                require(items_b[0] == byte[_](0x0102));
+                require(items_b[1] == byte[_](0x0304));
             }
         }
     "#;
@@ -2790,8 +2949,8 @@ fn runtime_supports_regular_struct_array_entrypoint_arguments_with_struct_signat
                 require(x.length == 2);
                 require(x[0].a == 7);
                 require(x[1].a == 9);
-                require(x[0].b == 0x0102);
-                require(x[1].b == 0x0304);
+                require(x[0].b == byte[_](0x0102));
+                require(x[1].b == byte[_](0x0304));
             }
         }
     "#;
@@ -2832,8 +2991,8 @@ fn runtime_supports_direct_struct_array_entrypoint_signature() {
                 require(x.length == 2);
                 require(x[0].a == 7);
                 require(x[1].a == 9);
-                require(x[0].b == 0x0102);
-                require(x[1].b == 0x0304);
+                require(x[0].b == byte[_](0x0102));
+                require(x[1].b == byte[_](0x0304));
             }
         }
     "#;
@@ -2876,11 +3035,11 @@ fn build_sig_script_enforces_fixed_struct_array_length() {
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
     compiled
-        .build_sig_script("main", vec![struct_array_arg(vec![(7, vec![0x01, 0x02]), (9, vec![0x03, 0x04])])])
+        .build_sig_script("main", vec![fixed_struct_array_arg(vec![(7, vec![0x01, 0x02]), (9, vec![0x03, 0x04])])])
         .expect("correctly sized struct array should encode");
 
     let err = compiled
-        .build_sig_script("main", vec![struct_array_arg(vec![(7, vec![0x01, 0x02])])])
+        .build_sig_script("main", vec![fixed_struct_array_arg(vec![(7, vec![0x01, 0x02])])])
         .expect_err("wrongly sized struct array should be rejected");
     assert!(err.to_string().contains("size mismatch"), "unexpected error: {err}");
 }
@@ -2906,7 +3065,10 @@ fn build_sig_script_rejects_structurally_identical_array_element_type() {
     "#;
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
-    let arg = vec![struct_object("T", vec![("a", Expr::int(7)), ("b", Expr::bytes(vec![0x01, 0x02]))])].into();
+    let arg = Expr::array(
+        parse_type_ref("T[]").unwrap(),
+        vec![struct_object("T", vec![("a", Expr::int(7)), ("b", Expr::bytes(vec![0x01, 0x02]))])],
+    );
     let err = compiled
         .build_sig_script("main", vec![arg])
         .expect_err("a structurally identical struct array must retain its nominal element type");
@@ -2923,16 +3085,16 @@ fn runtime_supports_struct_array_append_value_expression() {
             }
 
             entry main(S[] source) {
-                S[] result = source.append(S {a: 9, b: 0x0304}, S {a: 11, b: 0x0506});
+                S[] result = source.append(S {a: 9, b: byte[_](0x0304)}, S {a: 11, b: byte[_](0x0506)});
 
                 require(source.length == 1);
                 require(result.length == 3);
                 require(result[0].a == 7);
                 require(result[1].a == 9);
                 require(result[2].a == 11);
-                require(result[0].b == 0x0102);
-                require(result[1].b == 0x0304);
-                require(result[2].b == 0x0506);
+                require(result[0].b == byte[_](0x0102));
+                require(result[1].b == byte[_](0x0304));
+                require(result[2].b == byte[_](0x0506));
             }
         }
     "#;
@@ -2958,8 +3120,8 @@ fn runtime_rejects_regular_struct_array_non_entrypoint_arguments_without_struct_
                 require(items_b.length == 2);
                 require(items_a[0] == 7);
                 require(items_a[1] == 9);
-                require(items_b[0] == 0x0102);
-                require(items_b[1] == 0x0304);
+                require(items_b[0] == byte[_](0x0102));
+                require(items_b[1] == byte[_](0x0304));
             }
 
             entry main(int[] items_a, byte[2][] items_b) {
@@ -3013,8 +3175,8 @@ fn runtime_supports_regular_struct_array_non_entrypoint_arguments_with_struct_si
                 require(items_b.length == 2);
                 require(items_a[0] == 7);
                 require(items_a[1] == 9);
-                require(items_b[0] == 0x0102);
-                require(items_b[1] == 0x0304);
+                require(items_b[0] == byte[_](0x0102));
+                require(items_b[1] == byte[_](0x0304));
             }
 
             entry main(int[] items_a, byte[2][] items_b) {
@@ -3034,8 +3196,8 @@ fn runtime_supports_regular_struct_array_non_entrypoint_arguments_with_struct_si
                 require(x.length == 2);
                 require(x[0].a == 7);
                 require(x[1].a == 9);
-                require(x[0].b == 0x0102);
-                require(x[1].b == 0x0304);
+                require(x[0].b == byte[_](0x0102));
+                require(x[1].b == byte[_](0x0304));
             }
 
             entry main(S[] x) {
@@ -3093,7 +3255,7 @@ fn rejects_wrong_argument_type_for_direct_struct_array_non_entrypoint_signature(
             }
 
             entry main() {
-                int[] xs = [7, 9];
+                int[] xs = int[]{7, 9};
                 verify(xs);
             }
         }
@@ -3117,8 +3279,8 @@ fn runtime_supports_direct_struct_array_non_entrypoint_signature() {
                 require(x.length == 2);
                 require(x[0].a == 7);
                 require(x[1].a == 9);
-                require(x[0].b == 0x0102);
-                require(x[1].b == 0x0304);
+                require(x[0].b == byte[_](0x0102));
+                require(x[1].b == byte[_](0x0304));
             }
 
             entry main(S[] x) {
@@ -3182,8 +3344,8 @@ fn debug_info_inline_call_with_struct_array_param_should_compile() {
                 require(x.length == 2);
                 require(x[0].a == 7);
                 require(x[1].a == 9);
-                require(x[0].b == 0x0102);
-                require(x[1].b == 0x0304);
+                require(x[0].b == byte[_](0x0102));
+                require(x[1].b == byte[_](0x0304));
             }
 
             entry main(S[] x) {
@@ -3364,10 +3526,10 @@ fn compiles_struct_destructuring_and_runs() {
             }
 
             entry main() {
-                S s = S {a: 7, b: 0x0102030405};
+                S s = S {a: 7, b: byte[_](0x0102030405)};
                 S {a: int x, b: byte[5] y} = s;
                 require(x == 7);
-                require(y == 0x0102030405);
+                require(y == byte[_](0x0102030405));
             }
         }
     "#;
@@ -3388,7 +3550,7 @@ fn rejects_struct_destructuring_with_missing_field() {
             }
 
             entry main() {
-                S s = S {a: 7, b: 0x0102030405};
+                S s = S {a: 7, b: byte[_](0x0102030405)};
                 S {a: int x} = s;
                 require(x == 7);
             }
@@ -3409,9 +3571,9 @@ fn rejects_struct_destructuring_with_wrong_field_type() {
             }
 
             entry main() {
-                S s = S {a: 7, b: 0x0102030405};
+                S s = S {a: 7, b: byte[_](0x0102030405)};
                 S {a: string x, b: byte[5] y} = s;
-                require(y == 0x0102030405);
+                require(y == byte[_](0x0102030405));
             }
         }
     "#;
@@ -3508,7 +3670,7 @@ fn rejects_internal_function_call_with_wrong_fixed_array_arg_size() {
             }
 
             entry main() {
-                f(0x010203);
+                f(byte[_](0x010203));
             }
         }
     "#;
@@ -3525,7 +3687,7 @@ fn accepts_internal_function_call_with_matching_fixed_array_arg_size() {
             }
 
             entry main() {
-                f(0x01020304);
+                f(byte[_](0x01020304));
             }
         }
     "#;
@@ -3542,7 +3704,7 @@ fn rejects_internal_function_call_with_wrong_fixed_int_array_arg_size() {
             }
 
             entry main() {
-                f([1, 2, 3]);
+                f(int[_]{1, 2, 3});
             }
         }
     "#;
@@ -3559,7 +3721,7 @@ fn accepts_internal_function_call_with_matching_fixed_int_array_arg_size() {
             }
 
             entry main() {
-                f([1, 2, 3, 4]);
+                f(int[_]{1, 2, 3, 4});
             }
         }
     "#;
@@ -3665,7 +3827,7 @@ fn single_return_helper_call_in_expression_respects_type_checking() {
             }
 
             entry main() {
-                byte[_] x = 0x1234;
+                byte[_] x = byte[_](0x1234);
                 require(f() == x);
             }
         }
@@ -4157,14 +4319,14 @@ fn array_literal_codegen_uses_declared_element_type() {
     let source = r#"
         contract Arrays() {
             entry main() {
-                byte[] bytes = [1, 17, 128, 255];
-                int[] ints = [1, 17, 128, 255];
-                byte[] selected = true ? [1, 17, 128, 255] : [255, 128, 17, 1];
+                byte[] bytes = byte[]{1, 17, 128, 255};
+                int[] ints = int[]{1, 17, 128, 255};
+                byte[] selected = true ? byte[]{1, 17, 128, 255} : byte[]{255, 128, 17, 1};
                 require(bytes.length == 4);
                 require(ints.length == 4);
                 require(selected == bytes);
-                bytes = [255, 128, 17, 1];
-                require(bytes == [255, 128, 17, 1]);
+                bytes = byte[]{255, 128, 17, 1};
+                require(bytes == byte[]{255, 128, 17, 1});
             }
         }
     "#;
@@ -4483,7 +4645,7 @@ fn runs_int_array_append_length_runtime_example() {
     let source = r#"
         contract Arrays() {
             entry main() {
-                int[] x = [1, 2, 3];
+                int[] x = int[]{1, 2, 3};
                 x = x.append(4);
                 require(x.length == 4);
             }
@@ -4501,10 +4663,10 @@ fn runs_slice_with_explicit_end_bounds() {
     let source = r#"
         contract SliceLowering() {
             entry main() {
-                byte[] data = 0x0102030405060708090a;
+                byte[] data = byte[](0x0102030405060708090a);
                 byte[] segment = data.slice(3, 8);
                 require(segment.length == 5);
-                require(segment == byte[](0x0405060708));
+                require(segment == byte[](byte[_](0x0405060708)));
             }
         }
     "#;
@@ -4519,13 +4681,13 @@ fn runs_slice_reconstruction_and_compare_runtime_example() {
     let source = r#"
         contract SliceReconstruct() {
             entry main() {
-                byte[] data = 0x0102030405060708090a;
+                byte[] data = byte[](0x0102030405060708090a);
                 byte[] left = data.slice(0, 4);
                 byte[] right = data.slice(4, 10);
                 byte[] rebuilt = left + right;
 
-                require(left == byte[](0x01020304));
-                require(right == byte[](0x05060708090a));
+                require(left == byte[](byte[_](0x01020304)));
+                require(right == byte[](byte[_](0x05060708090a)));
                 require(rebuilt.length == data.length);
                 require(rebuilt == data);
             }
@@ -4543,8 +4705,8 @@ fn allows_concat_of_int_arrays_with_plus() {
     let source = r#"
         contract Arrays() {
             entry main() {
-                int[] a = [1, 2];
-                int[] b = [3, 4];
+                int[] a = int[]{1, 2};
+                int[] b = int[]{3, 4};
                 int[4] c = int[4](a + b);
 
                 require(c.length == 4);
@@ -4568,12 +4730,12 @@ fn allows_concat_of_byte_arrays_with_plus() {
     let source = r#"
         contract Arrays() {
             entry main() {
-                byte[] a = 0x0102;
-                byte[] b = 0x0304;
+                byte[] a = byte[](0x0102);
+                byte[] b = byte[](0x0304);
                 byte[4] c = byte[4](a + b);
 
                 require(c.length == 4);
-                require(c == 0x01020304);
+                require(c == byte[_](0x01020304));
             }
         }
     "#;
@@ -4590,8 +4752,8 @@ fn concatenated_byte_array_literal_has_element_length() {
     let source = r#"
         contract Arrays() {
             entry main() {
-                byte[] x = [1];
-                require((x + [2]).length == 2);
+                byte[] x = byte[]{1};
+                require((x + byte[]{2}).length == 2);
             }
         }
     "#;
@@ -4606,14 +4768,14 @@ fn allows_concat_of_fixed_size_byte_array_elements_with_plus() {
     let source = r#"
         contract Arrays() {
             entry main() {
-                byte[2][] a = [0x0102, 0x0304];
-                byte[2][] b = [0x0506];
+                byte[2][] a = byte[2][]{byte[_](0x0102), byte[_](0x0304)};
+                byte[2][] b = byte[2][]{byte[_](0x0506)};
                 byte[2][3] c = byte[2][3](a + b);
 
                 require(c.length == 3);
-                require(c[0] == 0x0102);
-                require(c[1] == 0x0304);
-                require(c[2] == 0x0506);
+                require(c[0] == byte[_](0x0102));
+                require(c[1] == byte[_](0x0304));
+                require(c[2] == byte[_](0x0506));
             }
         }
     "#;
@@ -4630,11 +4792,11 @@ fn composite_array_index_uses_its_result_type_for_bytewise_operations() {
     let source = r#"
         contract Arrays() {
             entry main() {
-                byte[2][] a = [0x0102];
-                byte[2][] b = [0x0304];
+                byte[2][] a = byte[2][]{byte[_](0x0102)};
+                byte[2][] b = byte[2][]{byte[_](0x0304)};
 
-                require((a + b)[0] == 0x0102);
-                require(byte[]((a + b)[0]) == byte[](0x0102));
+                require((a + b)[0] == byte[_](0x0102));
+                require(byte[]((a + b)[0]) == byte[](byte[_](0x0102)));
             }
         }
     "#;
@@ -4651,8 +4813,8 @@ fn allows_concat_of_bool_arrays_with_plus() {
     let source = r#"
         contract Arrays() {
             entry main() {
-                bool[] a = [true, false];
-                bool[] b = [true, false];
+                bool[] a = bool[]{true, false};
+                bool[] b = bool[]{true, false};
                 bool[4] c = bool[4](a + b);
 
                 require(c.length == 4);
@@ -4676,11 +4838,11 @@ fn allows_concat_of_pubkey_arrays_with_plus() {
     let source = r#"
         contract Arrays() {
             entry main() {
-                pubkey p1 = 0x0202020202020202020202020202020202020202020202020202020202020202;
-                pubkey p2 = 0x0303030303030303030303030303030303030303030303030303030303030303;
+                pubkey p1 = pubkey(0x0202020202020202020202020202020202020202020202020202020202020202);
+                pubkey p2 = pubkey(0x0303030303030303030303030303030303030303030303030303030303030303);
 
-                pubkey[] a = [p1];
-                pubkey[] b = [p2];
+                pubkey[] a = pubkey[]{p1};
+                pubkey[] b = pubkey[]{p2};
                 pubkey[2] c = pubkey[2](a + b);
 
                 require(c.length == 2);
@@ -4703,7 +4865,7 @@ fn compiles_bytes20_array_append_without_num2bin() {
         contract Arrays() {
             entry main() {
                 byte[20][] x;
-                x = x.append(0x0102030405060708090a0b0c0d0e0f1011121314);
+                x = x.append(byte[_](0x0102030405060708090a0b0c0d0e0f1011121314));
                 require(x.length == 1);
             }
         }
@@ -4757,11 +4919,11 @@ fn runs_bytes20_array_runtime_example() {
         contract Arrays() {
             entry main() {
                 byte[20][] x;
-                x = x.append(0x0102030405060708090a0b0c0d0e0f1011121314);
-                x = x.append(0x1111111111111111111111111111111111111111);
+                x = x.append(byte[_](0x0102030405060708090a0b0c0d0e0f1011121314));
+                x = x.append(byte[_](0x1111111111111111111111111111111111111111));
                 require(x.length == 2);
-                require(x[0] == 0x0102030405060708090a0b0c0d0e0f1011121314);
-                require(x[1] == 0x1111111111111111111111111111111111111111);
+                require(x[0] == byte[_](0x0102030405060708090a0b0c0d0e0f1011121314));
+                require(x[1] == byte[_](0x1111111111111111111111111111111111111111));
             }
         }
     "#;
@@ -4779,8 +4941,8 @@ fn allows_array_equality_comparison() {
             entry main() {
                 byte[20][] x;
                 byte[20][] y;
-                x = x.append(0x0102030405060708090a0b0c0d0e0f1011121314);
-                y = y.append(0x0102030405060708090a0b0c0d0e0f1011121314);
+                x = x.append(byte[_](0x0102030405060708090a0b0c0d0e0f1011121314));
+                y = y.append(byte[_](0x0102030405060708090a0b0c0d0e0f1011121314));
                 require(x == y);
             }
         }
@@ -4799,8 +4961,8 @@ fn fails_array_equality_comparison() {
             entry main() {
                 byte[20][] x;
                 byte[20][] y;
-                x = x.append(0x0102030405060708090a0b0c0d0e0f1011121314);
-                y = y.append(0x2222222222222222222222222222222222222222);
+                x = x.append(byte[_](0x0102030405060708090a0b0c0d0e0f1011121314));
+                y = y.append(byte[_](0x2222222222222222222222222222222222222222));
                 require(x == y);
             }
         }
@@ -4819,9 +4981,9 @@ fn allows_array_inequality_with_different_sizes() {
             entry main() {
                 byte[20][] x;
                 byte[20][] y;
-                x = x.append(0x0102030405060708090a0b0c0d0e0f1011121314);
-                y = y.append(0x0102030405060708090a0b0c0d0e0f1011121314);
-                y = y.append(0x2222222222222222222222222222222222222222);
+                x = x.append(byte[_](0x0102030405060708090a0b0c0d0e0f1011121314));
+                y = y.append(byte[_](0x0102030405060708090a0b0c0d0e0f1011121314));
+                y = y.append(byte[_](0x2222222222222222222222222222222222222222));
                 require(x != y);
             }
         }
@@ -5152,7 +5314,7 @@ fn locking_bytecode_p2pk_matches_pay_to_address_script() {
     expected.extend_from_slice(&spk.version().to_be_bytes());
     expected.extend_from_slice(spk.script());
 
-    let sigscript = compiled.build_sig_script("main", vec![pubkey.into(), expected.into()]).expect("sigscript builds");
+    let sigscript = compiled.build_sig_script("main", vec![pubkey.into(), Expr::dynamic_bytes(expected)]).expect("sigscript builds");
     let result = run_script_with_sigscript(compiled.script, sigscript);
     assert!(result.is_ok(), "p2pk locking bytecode mismatch: {}", result.unwrap_err());
 }
@@ -5176,7 +5338,7 @@ fn locking_bytecode_p2sh_matches_pay_to_address_script() {
     expected.extend_from_slice(&spk.version().to_be_bytes());
     expected.extend_from_slice(spk.script());
 
-    let sigscript = compiled.build_sig_script("main", vec![hash.into(), expected.into()]).expect("sigscript builds");
+    let sigscript = compiled.build_sig_script("main", vec![hash.into(), Expr::dynamic_bytes(expected)]).expect("sigscript builds");
     let result = run_script_with_sigscript(compiled.script, sigscript);
     assert!(result.is_ok(), "p2sh locking bytecode mismatch: {}", result.unwrap_err());
 }
@@ -5199,7 +5361,9 @@ fn locking_bytecode_p2sh_from_redeem_script_matches_pay_to_script_hash_script() 
     expected.extend_from_slice(&spk.version().to_be_bytes());
     expected.extend_from_slice(spk.script());
 
-    let sigscript = compiled.build_sig_script("main", vec![redeem_script.into(), expected.into()]).expect("sigscript builds");
+    let sigscript = compiled
+        .build_sig_script("main", vec![Expr::dynamic_bytes(redeem_script), Expr::dynamic_bytes(expected)])
+        .expect("sigscript builds");
     let result = run_script_with_sigscript(compiled.script, sigscript);
     assert!(result.is_ok(), "p2sh-from-redeem-script locking bytecode mismatch: {}", result.unwrap_err());
 }
@@ -5452,7 +5616,7 @@ fn compiles_contract_fields_as_script_prolog() {
     let source = r#"
         contract C() {
             int x = 5;
-            byte[2] y = 0x1234;
+            byte[2] y = byte[_](0x1234);
 
             entry main() {
                 require(x == 5);
@@ -5490,11 +5654,11 @@ fn runs_contract_with_fields_prolog() {
     let source = r#"
         contract C() {
             int x = 5;
-            byte[2] y = 0x1234;
+            byte[2] y = byte[_](0x1234);
 
             entry main() {
                 require(x == 5);
-                require(y == 0x1234);
+                require(y == byte[_](0x1234));
             }
         }
     "#;
@@ -5509,7 +5673,7 @@ fn runs_selector_dispatch_with_contract_fields() {
     let source = r#"
         contract C() {
             int x = 5;
-            byte[2] y = 0x1234;
+            byte[2] y = byte[_](0x1234);
 
             entry a() {
                 require(true);
@@ -5517,7 +5681,7 @@ fn runs_selector_dispatch_with_contract_fields() {
 
             entry b() {
                 require(x == 5);
-                require(y == 0x1234);
+                require(y == byte[_](0x1234));
             }
         }
     "#;
@@ -5543,7 +5707,7 @@ fn compiles_validate_output_state_to_expected_script() {
             byte[2] y = init_y;
 
             entry main() {
-                validateOutputState(0, State {x:x+1,y:0x3412});
+                validateOutputState(0, State {x:x+1,y:byte[_](0x3412)});
             }
         }
     "#;
@@ -5695,7 +5859,7 @@ fn runs_validate_output_state() {
             byte[2] y = initY;
 
             entry main() {
-                validateOutputState(0, State {x:x+1,y:0x3412});
+                validateOutputState(0, State {x:x+1,y:byte[_](0x3412)});
             }
         }
     "#;
@@ -5725,7 +5889,7 @@ fn runs_validate_output_state_with_state_variable() {
             byte[2] y = initY;
 
             entry main() {
-                State next = State {x: x + 1, y: 0x3412};
+                State next = State {x: x + 1, y: byte[_](0x3412)};
                 validateOutputState(0, next);
             }
         }
@@ -5799,13 +5963,13 @@ fn run_validate_output_state_with_template_case(
             byte[2] y = initY;
 
             entry routeToA() {{
-                State s = State {{muxHash: muxHash, aHash: aHash, x: x + 1, y: 0x3412}};
+                State s = State {{muxHash: muxHash, aHash: aHash, x: x + 1, y: byte[_](0x3412)}};
                 validateOutputStateWithTemplate(
                     0,
                     s,
-                    0x{},
-                    0x{},
-                    0x{}
+                    byte[](0x{}),
+                    byte[](0x{}),
+                    byte[32](0x{})
                 );
             }}
         }}
@@ -5879,13 +6043,13 @@ fn runs_validate_output_state_with_template() {
             byte[2] y = initY;
 
             entry routeToA() {{
-                State s = State {{muxHash: muxHash, aHash: aHash, x: x + 1, y: 0x3412}};
+                State s = State {{muxHash: muxHash, aHash: aHash, x: x + 1, y: byte[_](0x3412)}};
                 validateOutputStateWithTemplate(
                     0,
                     s,
-                    0x{a_prefix_hex},
-                    0x{a_suffix_hex},
-                    0x{a_template_hash_hex}
+                    byte[](0x{a_prefix_hex}),
+                    byte[](0x{a_suffix_hex}),
+                    byte[32](0x{a_template_hash_hex})
                 );
             }}
         }}
@@ -5941,8 +6105,8 @@ fn template_hash_matches_all_template_builtins() {
             }}
 
             entry main() {{
-                byte[] templatePrefix = 0x{prefix_hex};
-                byte[] templateSuffix = 0x{suffix_hex};
+                byte[] templatePrefix = byte[](0x{prefix_hex});
+                byte[] templateSuffix = byte[](0x{suffix_hex});
                 byte[32] expectedTemplateHash = templateHash(templatePrefix, templateSuffix);
 
                 RemoteState prev = readInputStateWithTemplate(
@@ -6006,7 +6170,7 @@ fn template_hash_matches_all_template_builtins() {
                     1,
                     {},
                     {},
-                    templateHash(0x{prefix_hex}, 0x{suffix_hex})
+                    templateHash(byte[](0x{prefix_hex}), byte[](0x{suffix_hex}))
                 );
             }}
         }}
@@ -6061,9 +6225,9 @@ fn runs_validate_output_state_with_template_using_passed_struct_layout() {
             byte[32] targetHash = initTargetHash;
 
             entry noop() {{
-                require(y == 0x3412);
+                require(y == byte[_](0x3412));
                 require(x == 6);
-                require(targetHash == 0x{target_hash_hex});
+                require(targetHash == byte[32](0x{target_hash_hex}));
             }}
         }}
     "#
@@ -6101,16 +6265,16 @@ fn runs_validate_output_state_with_template_using_passed_struct_layout() {
 
             entry routeToA(byte[32] targetHash) {{
                 C next = C {{
-                    y: 0x3412,
+                    y: byte[_](0x3412),
                     x: x + 1,
                     targetHash: targetHash
                 }};
                 validateOutputStateWithTemplate(
                     0,
                     next,
-                    0x{a_prefix_hex},
-                    0x{a_suffix_hex},
-                    0x{a_template_hash_hex}
+                    byte[](0x{a_prefix_hex}),
+                    byte[](0x{a_suffix_hex}),
+                    byte[32](0x{a_template_hash_hex})
                 );
             }}
         }}
@@ -6461,8 +6625,8 @@ fn read_input_state_accepts_three_field_state_under_selector_dispatch() {
             entry main() {
                 State s = readInputState(this.activeInputIndex);
                 require(s.amount == 5);
-                require(s.code == 0x3412);
-                require(s.owner == 0x0101010101010101010101010101010101010101010101010101010101010101);
+                require(s.code == byte[_](0x3412));
+                require(s.owner == byte[_](0x0101010101010101010101010101010101010101010101010101010101010101));
             }
         }
     "#;
@@ -6574,7 +6738,7 @@ fn read_input_state_runtime_preserves_supported_field_types_across_contract_shap
                 }
             }
         "#,
-        vec![vec![Expr::int(1), Expr::int(2)].into()],
+        vec![Expr::try_from(vec![Expr::int(1), Expr::int(2)]).unwrap()],
         "int[2] fields should preserve array indexing semantics",
     );
 
@@ -6614,7 +6778,7 @@ fn read_input_state_runtime_preserves_supported_field_types_across_contract_shap
                 }
             }
         "#,
-        vec![vec![Expr::bool(true), Expr::bool(false)].into()],
+        vec![Expr::try_from(vec![Expr::bool(true), Expr::bool(false)]).unwrap()],
         "bool[2] fields should preserve array indexing semantics",
     );
 
@@ -6630,7 +6794,7 @@ fn read_input_state_runtime_preserves_supported_field_types_across_contract_shap
                 entry main() {
                     State x = readInputState(this.activeInputIndex);
                     require(x.someBytes2.length == 2);
-                    require(x.someBytes2 == 0x3412);
+                    require(x.someBytes2 == byte[_](0x3412));
                 }
             }
         "#,
@@ -6747,7 +6911,7 @@ fn read_input_state_runtime_preserves_supported_field_types_without_selector_dis
                 entry main() {
                     State x = readInputState(this.activeInputIndex);
                     require(x.someBytes2.length == 2);
-                    require(x.someBytes2 == 0x3412);
+                    require(x.someBytes2 == byte[_](0x3412));
                 }
             }
         "#,
@@ -6900,7 +7064,7 @@ fn debug_validate_output_state_accepts_current_byte32_fields() {
             byte[2] y = initY;
 
             entry main() {
-                validateOutputState(0, State {muxHash: muxHash, aHash: aHash, x: x + 1, y: 0x3412});
+                validateOutputState(0, State {muxHash: muxHash, aHash: aHash, x: x + 1, y: byte[_](0x3412)});
             }
         }
     "#;
@@ -6972,11 +7136,11 @@ fn compiles_state_variable_and_internal_function_argument() {
 
             function check(State s) {
                 require(s.x == 6);
-                require(s.y == 0x3412);
+                require(s.y == byte[_](0x3412));
             }
 
             entry main() {
-                State next = State {x: x + 1, y: 0x3412};
+                State next = State {x: x + 1, y: byte[_](0x3412)};
                 check(next);
             }
         }
@@ -6994,11 +7158,11 @@ fn runs_state_variable_and_internal_function_argument() {
 
             function check(State s) {
                 require(s.x == 6);
-                require(s.y == 0x3412);
+                require(s.y == byte[_](0x3412));
             }
 
             entry main() {
-                State next = State {x: x + 1, y: 0x3412};
+                State next = State {x: x + 1, y: byte[_](0x3412)};
                 check(next);
             }
         }
@@ -7036,7 +7200,7 @@ fn plain_state_return_accepts_local_fixed_byte_field_from_local_identifier() {
 }
 
 #[test]
-fn byte_hex_literal_error_recommends_scalar_cast() {
+fn byte_hex_literal_is_a_scalar_numeral() {
     let source = r#"
         contract C() {
             entry main() {
@@ -7046,13 +7210,115 @@ fn byte_hex_literal_error_recommends_scalar_cast() {
         }
     "#;
 
-    let err =
-        compile_contract(source, &[], CompileOptions::default()).expect_err("scalar byte hex literal should require an explicit cast");
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("scalar byte hex literal should compile");
+    assert!(run_script_with_selector(compiled.script, None).is_ok());
+}
 
-    assert_eq!(
-        err.to_string(),
-        "unsupported feature: variable 'local' expects byte; hex literals are byte arrays; use byte(0x07) to cast a one-byte hex literal to byte"
+#[test]
+fn hex_literals_are_numerals_for_int_and_byte() {
+    let source = r#"
+        contract HexNumerals() {
+            entry main() {
+                int a = 0x1234;
+                byte b = 0x12;
+                int eight_bytes = 0x0102030405060708;
+                require(a == 4660);
+                require(b == 18);
+                require(eight_bytes == 72623859790382856);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("hex numerals should compile");
+    assert!(run_script_with_selector(compiled.script, None).is_ok());
+}
+
+#[test]
+fn rejects_hex_numerals_that_do_not_fit_the_scalar_type() {
+    let cases = [
+        ("int", "0x010203040506070809", "nine-byte hex literal should not initialize int"),
+        ("byte", "0x0102", "two-byte hex literal should not initialize byte"),
+    ];
+
+    for (type_name, literal, message) in cases {
+        let source = format!("contract C() {{ entry main() {{ {type_name} value = {literal}; require(true); }} }}");
+        compile_contract(&source, &[], CompileOptions::default()).expect_err(message);
+    }
+}
+
+#[test]
+fn hex_literal_over_eight_bytes_requires_an_immediate_byte_array_cast() {
+    let raw = "0x010203040506070809";
+    let uncast = format!("contract C() {{ entry main() {{ byte[_] value = {raw}; require(true); }} }}");
+    let err = compile_contract(&uncast, &[], CompileOptions::default()).expect_err("uncast nine-byte hex literal should fail");
+    assert!(
+        err.to_string().contains("exceeds 8 bytes; cast it directly to a byte array or fixed byte-sequence type"),
+        "unexpected error: {err}"
     );
+
+    let source = format!("contract C() {{ entry main() {{ byte[_] value = byte[_]({raw}); require(value == byte[9]({raw})); }} }}");
+    let compiled =
+        compile_contract(&source, &[], CompileOptions::default()).expect("immediately cast nine-byte literal should compile");
+    assert!(run_script_with_selector(compiled.script, None).is_ok());
+}
+
+#[test]
+fn fixed_byte_sequence_types_accept_immediate_hex_literals() {
+    let pubkey = "02".repeat(32);
+    let sig = "11".repeat(65);
+    let datasig = "22".repeat(64);
+    let source = format!(
+        r#"
+        contract C() {{
+            entry main() {{
+                pubkey public_key = pubkey(0x{pubkey});
+                sig signature = sig(0x{sig});
+                datasig data_signature = datasig(0x{datasig});
+                require(public_key == public_key);
+                require(signature == signature);
+                require(data_signature == data_signature);
+            }}
+        }}
+        "#
+    );
+
+    let compiled = compile_contract(&source, &[], CompileOptions::default()).expect("direct fixed byte-sequence casts should compile");
+    assert!(run_script_with_selector(compiled.script, None).is_ok());
+}
+
+#[test]
+fn fixed_byte_sequence_hex_literals_require_exact_sizes() {
+    let cases = [("pubkey", 31, 32), ("pubkey", 33, 32), ("sig", 64, 65), ("sig", 66, 65), ("datasig", 63, 64), ("datasig", 65, 64)];
+
+    for (type_name, actual, expected) in cases {
+        let source = format!(
+            "contract C() {{ entry main() {{ {type_name} value = {type_name}(0x{}); require(true); }} }}",
+            "02".repeat(actual)
+        );
+        let err = compile_contract(&source, &[], CompileOptions::default())
+            .expect_err("wrong-sized fixed byte-sequence literal should fail");
+        assert!(
+            err.to_string().contains(&format!("{type_name} hex literal size mismatch: expected {expected} bytes, got {actual}")),
+            "unexpected error: {err}"
+        );
+    }
+}
+
+#[test]
+fn empty_hex_literal_requires_a_byte_array_cast() {
+    let source = r#"
+        contract C() {
+            entry main() {
+                byte[] value = byte[](0x);
+                require(value.length == 0);
+            }
+        }
+    "#;
+    compile_contract(source, &[], CompileOptions::default()).expect("explicit empty byte literal should compile");
+
+    let err = compile_contract("contract C() { entry main() { int value = 0x; require(true); } }", &[], CompileOptions::default())
+        .expect_err("an empty numeral should fail");
+    assert!(err.to_string().contains("invalid hex literal '0x'"), "unexpected error: {err}");
 }
 
 #[test]
@@ -7065,7 +7331,7 @@ fn compiles_read_input_state_to_expected_script() {
             entry main() {
                 State {x: int in1_x, y: byte[2] in1_y} = readInputState(1);
                 require(in1_x > 7);
-                require(in1_y == 0x3412);
+                require(in1_y == byte[_](0x3412));
             }
         }
     "#;
@@ -7229,7 +7495,7 @@ fn runs_read_input_state() {
             entry main() {
                 State {x: int in1_x, y: byte[2] in1_y} = readInputState(1);
                 require(in1_x > 7);
-                require(in1_y == 0x3412);
+                require(in1_y == byte[_](0x3412));
             }
         }
     "#;
@@ -7264,7 +7530,7 @@ fn runs_read_input_state_into_state_variable() {
             entry main() {
                 State in1 = readInputState(1);
                 require(in1.x > 7);
-                require(in1.y == 0x3412);
+                require(in1.y == byte[_](0x3412));
             }
         }
     "#;
@@ -7298,7 +7564,7 @@ fn runs_read_input_state_as_internal_function_argument() {
 
             function check(State remote) {
                 require(remote.x > 7);
-                require(remote.y == 0x3412);
+                require(remote.y == byte[_](0x3412));
             }
 
             entry main() {
@@ -7367,12 +7633,12 @@ fn runs_read_input_state_with_template_into_typed_struct_variable() {
                     1,
                     {},
                     {},
-                    0x{}
+                    byte[32](0x{})
                 );
                 require(round == 5);
-                require(remote.y == 0x3412);
+                require(remote.y == byte[_](0x3412));
                 require(remote.x == 8);
-                require(remote.targetHash == 0x{target_hash_hex});
+                require(remote.targetHash == byte[32](0x{target_hash_hex}));
             }}
         }}
     "#,
@@ -7404,7 +7670,7 @@ fn typed_state_reader_disambiguates_the_implicit_state_layout() {
                     1,
                     0,
                     0,
-                    0x0000000000000000000000000000000000000000000000000000000000000000
+                    byte[_](0x0000000000000000000000000000000000000000000000000000000000000000)
                 );
                 require(remote.n >= 0);
             }
@@ -7434,7 +7700,7 @@ fn typed_state_reader_disambiguates_identical_custom_struct_layouts() {
                     1,
                     0,
                     0,
-                    0x0000000000000000000000000000000000000000000000000000000000000000
+                    byte[_](0x0000000000000000000000000000000000000000000000000000000000000000)
                 );
                 require(remote.n >= 0);
             }
@@ -7464,7 +7730,7 @@ fn typed_state_reader_destructuring_disambiguates_identical_custom_struct_layout
                     1,
                     0,
                     0,
-                    0x0000000000000000000000000000000000000000000000000000000000000000
+                    byte[_](0x0000000000000000000000000000000000000000000000000000000000000000)
                 );
                 require(remoteN >= 0);
             }
@@ -7512,11 +7778,11 @@ fn runs_read_input_state_with_template_destructuring() {
                     1,
                     {},
                     {},
-                    0x{}
+                    byte[32](0x{})
                 );
-                require(inY == 0x7856);
+                require(inY == byte[_](0x7856));
                 require(inX == 11);
-                require(inHash == 0x{target_hash_hex});
+                require(inHash == byte[32](0x{target_hash_hex}));
             }}
         }}
     "#,
@@ -7559,9 +7825,9 @@ fn read_input_state_with_template_rejects_wrong_template_hash() {
                     1,
                     {},
                     {},
-                    0x{}
+                    byte[32](0x{})
                 );
-                require(remote.y == 0x3412);
+                require(remote.y == byte[_](0x3412));
                 require(remote.x == 8);
             }}
         }}
@@ -7605,9 +7871,9 @@ fn read_input_state_with_template_rejects_wrong_template_sizes() {
                     1,
                     {},
                     {},
-                    0x{}
+                    byte[32](0x{})
                 );
-                require(remote.y == 0x3412);
+                require(remote.y == byte[_](0x3412));
                 require(remote.x == 8);
             }}
         }}
@@ -7650,9 +7916,9 @@ fn read_input_state_with_template_rejects_input_with_wrong_p2sh_commitment() {
                     1,
                     {},
                     {},
-                    0x{}
+                    byte[32](0x{})
                 );
-                require(remote.y == 0x3412);
+                require(remote.y == byte[_](0x3412));
                 require(remote.x == 8);
             }}
         }}
@@ -7852,16 +8118,16 @@ fn validate_output_state_with_template_uses_passed_struct_layout_not_local_state
 
             entry route(byte[32] targetHash) {
                 C next = C {
-                    y: 0x3412,
+                    y: byte[_](0x3412),
                     x: x + 1,
                     targetHash: targetHash
                 };
                 validateOutputStateWithTemplate(
                     0,
                     next,
-                    0x51,
-                    0x52,
-                    0x0000000000000000000000000000000000000000000000000000000000000000
+                    byte[](0x51),
+                    byte[](0x52),
+                    byte[32](0x0000000000000000000000000000000000000000000000000000000000000000)
                 );
             }
         }
@@ -7927,7 +8193,7 @@ fn fails_validate_output_state_with_wrong_output_index() {
             byte[2] y = initY;
 
             entry main() {
-                validateOutputState(0, State {x:x+1,y:0x3412});
+                validateOutputState(0, State {x:x+1,y:byte[_](0x3412)});
             }
         }
     "#;
@@ -7960,7 +8226,7 @@ fn fails_validate_output_state_with_mismatched_next_state_fields() {
             byte[2] y = initY;
 
             entry main() {
-                validateOutputState(0, State {x:x+1,y:0x3412});
+                validateOutputState(0, State {x:x+1,y:byte[_](0x3412)});
             }
         }
     "#;
@@ -8008,7 +8274,7 @@ fn rejects_validate_output_state_with_duplicate_state_field() {
             byte[2] y = initY;
 
             entry main() {
-                validateOutputState(0, State {x:x+1,y:0x3412,x:x+2});
+                validateOutputState(0, State {x:x+1,y:byte[_](0x3412),x:x+2});
             }
         }
     "#;
@@ -8026,7 +8292,7 @@ fn rejects_validate_output_state_with_unknown_state_field() {
             byte[2] y = initY;
 
             entry main() {
-                validateOutputState(0, State {x:x+1,y:0x3412,z:1});
+                validateOutputState(0, State {x:x+1,y:byte[_](0x3412),z:1});
             }
         }
     "#;
@@ -8149,7 +8415,7 @@ fn checksigfromstack_requires_datasig_and_32_byte_digest_types() {
         contract DataSig(datasig signature, pubkey publicKey) {
             entry main() {
                 int N = 32;
-                byte[N] digest = 0x010203;
+                byte[N] digest = byte[N](0x010203);
                 require(checkSigFromStack(signature, digest, publicKey));
             }
         }
@@ -8174,9 +8440,10 @@ fn checksigfromstack_requires_datasig_and_32_byte_digest_types() {
     compile_contract(contract_constant_size, &[vec![0x11u8; 64].into(), vec![0x22u8; 32].into()], CompileOptions::default())
         .expect("contract constants should satisfy byte[32]");
 
-    let signature_literal = format!("0x{}", "11".repeat(64));
-    let digest_literal = format!("0x{}", "33".repeat(32));
-    let public_key_literal = format!("0x{}", "22".repeat(32));
+    let signature_literal = format!("datasig(0x{})", "11".repeat(64));
+    let digest_literal = format!("byte[32](0x{})", "33".repeat(32));
+    let public_key_literal = format!("pubkey(0x{})", "22".repeat(32));
+    let public_key_bytes_literal = format!("byte[32](0x{})", "22".repeat(32));
     let literal_args = format!(
         r#"
         contract DataSig() {{
@@ -8193,7 +8460,7 @@ fn checksigfromstack_requires_datasig_and_32_byte_digest_types() {
         contract DataSig(datasig signature) {{
             entry main() {{
                 byte[32] digest = {digest_literal};
-                byte[32] publicKey = {public_key_literal};
+                byte[32] publicKey = {public_key_bytes_literal};
                 require(checkSigFromStack(signature, digest, publicKey));
             }}
         }}
@@ -8276,8 +8543,8 @@ fn r0_succinct_verify_lowers_hash_aliases_to_zk_precompile() {
                 control_id.clone().into(),
                 claim.clone().into(),
                 control_index.clone().into(),
-                control_digests.clone().into(),
-                seal.clone().into(),
+                Expr::dynamic_bytes(control_digests.clone()),
+                Expr::dynamic_bytes(seal.clone()),
                 journal.clone().into(),
             ],
             CompileOptions::default(),
@@ -8318,8 +8585,8 @@ fn r0_succinct_verify_lowers_hash_aliases_to_zk_precompile() {
 
 #[test]
 fn r0_succinct_verify_rejects_reserved_non_poseidon_hashes() {
-    let b32_a = format!("0x{}", "11".repeat(32));
-    let b32_b = format!("0x{}", "22".repeat(32));
+    let b32_a = format!("byte[32](0x{})", "11".repeat(32));
+    let b32_b = format!("byte[32](0x{})", "22".repeat(32));
 
     for call_name in ["r0.succinct.blake2b.verify", "r0.succinct.sha256.verify"] {
         let source = format!(
@@ -8353,7 +8620,7 @@ fn r0_g16_verify_lowers_with_sdk_verifier_fragment() {
     let image_id = [0x33u8; 32];
     let compiled = compile_contract(
         source,
-        &[journal_hash.clone().into(), proof.clone().into(), image_id.to_vec().into()],
+        &[journal_hash.clone().into(), Expr::dynamic_bytes(proof.clone()), image_id.to_vec().into()],
         CompileOptions::default(),
     )
     .expect("compile succeeds");
@@ -8373,8 +8640,8 @@ fn r0_g16_verify_lowers_with_sdk_verifier_fragment() {
 
 #[test]
 fn r0_verify_builtins_do_not_return_values() {
-    let b32_a = format!("0x{}", "11".repeat(32));
-    let b32_b = format!("0x{}", "22".repeat(32));
+    let b32_a = format!("byte[32](0x{})", "11".repeat(32));
+    let b32_b = format!("byte[32](0x{})", "22".repeat(32));
     let cases = [
         format!(
             r#"
@@ -8424,9 +8691,9 @@ fn assert_r0_type_error(source: &str, expected: &str) {
 
 #[test]
 fn r0_verify_builtins_reject_incorrect_argument_types() {
-    let b32_a = format!("0x{}", "11".repeat(32));
-    let b32_b = format!("0x{}", "22".repeat(32));
-    let b4 = format!("0x{}", "33".repeat(4));
+    let b32_a = format!("byte[32](0x{})", "11".repeat(32));
+    let b32_b = format!("byte[32](0x{})", "22".repeat(32));
+    let b4 = format!("byte[4](0x{})", "33".repeat(4));
 
     let g16_cases = [
         (
@@ -8589,8 +8856,8 @@ fn r0_succinct_verify_runtime_checks_each_hash_with_fixture() {
                 vec![
                     claim.clone().into(),
                     control_index.clone().into(),
-                    control_digests.clone().into(),
-                    seal.clone().into(),
+                    Expr::dynamic_bytes(control_digests.clone()),
+                    Expr::dynamic_bytes(seal.clone()),
                     journal.clone().into(),
                 ],
             )
@@ -8620,8 +8887,9 @@ fn r0_g16_verify_executes_with_fixture() {
         }
     "#;
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
-    let sigscript =
-        compiled.build_sig_script("main", vec![journal_hash.into(), proof.into(), image_id.into()]).expect("sigscript builds");
+    let sigscript = compiled
+        .build_sig_script("main", vec![journal_hash.into(), Expr::dynamic_bytes(proof), image_id.into()])
+        .expect("sigscript builds");
 
     let result = run_script_with_sigscript(compiled.script, sigscript);
     assert!(result.is_ok(), "R0 Groth16 verifier should execute successfully: {result:?}");
@@ -9693,7 +9961,7 @@ fn template_hash_matches_canonical_rust_and_sil_vectors() {
         if bytes.is_empty() {
             "byte[](\"\")".to_string()
         } else {
-            format!("0x{}", bytes.iter().map(|byte| format!("{byte:02x}")).collect::<String>())
+            format!("byte[](0x{})", bytes.iter().map(|byte| format!("{byte:02x}")).collect::<String>())
         }
     };
 
@@ -9708,7 +9976,7 @@ fn template_hash_matches_canonical_rust_and_sil_vectors() {
             r#"
             contract Test() {{
                 entry main() {{
-                    require(templateHash({prefix}, {suffix}) == 0x{expected_hex});
+                    require(templateHash({prefix}, {suffix}) == byte[32](0x{expected_hex}));
                 }}
             }}
         "#
@@ -10090,7 +10358,7 @@ fn compiles_script_size_data_prefix_small_script() {
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
     let expected_prefix = data_prefix_for_size(compiled.script.len());
-    let sigscript = compiled.build_sig_script("main", vec![Expr::bytes(expected_prefix)]).expect("sigscript builds");
+    let sigscript = compiled.build_sig_script("main", vec![Expr::dynamic_bytes(expected_prefix)]).expect("sigscript builds");
 
     let result = run_script_with_sigscript(compiled.script, sigscript);
     assert!(result.is_ok(), "scriptSizeDataPrefix small failed: {}", result.unwrap_err());
@@ -10111,7 +10379,7 @@ fn compiles_script_size_data_prefix_medium_script() {
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
     let expected_prefix = data_prefix_for_size(compiled.script.len());
-    let sigscript = compiled.build_sig_script("main", vec![Expr::bytes(expected_prefix)]).expect("sigscript builds");
+    let sigscript = compiled.build_sig_script("main", vec![Expr::dynamic_bytes(expected_prefix)]).expect("sigscript builds");
 
     let result = run_script_with_sigscript(compiled.script, sigscript);
     assert!(result.is_ok(), "scriptSizeDataPrefix medium failed: {}", result.unwrap_err());
@@ -10132,7 +10400,7 @@ fn compiles_script_size_data_prefix_large_script() {
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
     let expected_prefix = data_prefix_for_size(compiled.script.len());
-    let sigscript = compiled.build_sig_script("main", vec![Expr::bytes(expected_prefix)]).expect("sigscript builds");
+    let sigscript = compiled.build_sig_script("main", vec![Expr::dynamic_bytes(expected_prefix)]).expect("sigscript builds");
 
     let result = run_script_with_sigscript(compiled.script, sigscript);
     assert!(result.is_ok(), "scriptSizeDataPrefix large failed: {}", result.unwrap_err());
@@ -10250,7 +10518,7 @@ fn compile_time_length_for_fixed_size_int_array() {
     let source = r#"
         contract Test() {
             entry test() {
-                int[5] nums = [1, 2, 3, 4, 5];
+                int[5] nums = int[_]{1, 2, 3, 4, 5};
                 require(nums.length == 5);
             }
         }
@@ -10267,7 +10535,7 @@ fn compile_time_length_for_fixed_size_byte_array() {
     let source = r#"
         contract Test() {
             entry test() {
-                byte[3] data = 0x010203;
+                byte[3] data = byte[_](0x010203);
                 require(data.length == 3);
             }
         }
@@ -10284,8 +10552,8 @@ fn compile_time_length_for_inferred_array_sizes() {
     let source = r#"
         contract Test() {
             entry test() {
-                byte[_] data = 0x1234abcd;
-                int[_] nums = [1, 2, 3];
+                byte[_] data = byte[_](0x1234abcd);
+                int[_] nums = int[_]{1, 2, 3};
                 require(data.length == 4);
                 require(nums.length == 3);
             }
@@ -10304,8 +10572,8 @@ fn accepts_fixed_size_array_init_with_correct_size() {
     let source = r#"
         contract Test() {
             entry test() {
-                int[4] nums = [1, 2, 3, 4];
-                byte[3] data = 0x010203;
+                int[4] nums = int[_]{1, 2, 3, 4};
+                byte[3] data = byte[_](0x010203);
                 require(nums.length == 4);
                 require(data.length == 3);
             }
@@ -10319,7 +10587,7 @@ fn rejects_fixed_size_array_init_with_too_few_elements() {
     let source = r#"
         contract Test() {
             entry test() {
-                int[4] nums = [1, 2, 3];  // Too few
+                int[4] nums = int[_]{1, 2, 3};  // Too few
             }
         }
     "#;
@@ -10334,7 +10602,7 @@ fn rejects_fixed_size_array_init_with_too_many_elements() {
     let source = r#"
         contract Test() {
             entry test() {
-                int[3] nums = [1, 2, 3, 4, 5];  // Too many
+                int[3] nums = int[_]{1, 2, 3, 4, 5};  // Too many
             }
         }
     "#;
@@ -10349,7 +10617,7 @@ fn accepts_fixed_size_byte_array_init() {
     let source = r#"
         contract Test() {
             entry test() {
-                byte[32] hash = 0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f;
+                byte[32] hash = byte[_](0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f);
                 require(hash.length == 32);
             }
         }
@@ -10364,7 +10632,7 @@ fn accepts_array_type_with_constant_size() {
         contract Test() {
             int constant SIZE = 4;
             entry test() {
-                int[SIZE] nums = [1, 2, 3, 4];
+                int[SIZE] nums = int[_]{1, 2, 3, 4};
                 require(nums.length == SIZE);
             }
         }
@@ -10378,7 +10646,7 @@ fn encodes_contract_field_with_constant_array_size() {
         contract Test() {
             int constant HALF_SIZE = 2;
             int constant SIZE = HALF_SIZE * 2;
-            int[SIZE] values = [1, 2, 3, 4];
+            int[SIZE] values = int[_]{1, 2, 3, 4};
 
             entry test() {
                 require(values.length == SIZE);
@@ -10396,7 +10664,7 @@ fn compile_time_length_with_constant_size() {
         contract Test() {
             int constant SIZE = 5;
             entry test() {
-                int[SIZE] nums = [1, 2, 3, 4, 5];
+                int[SIZE] nums = int[_]{1, 2, 3, 4, 5};
                 require(nums.length == SIZE);
             }
         }
@@ -10530,7 +10798,7 @@ fn int_as_fixed_bytes_accepts_a_compile_time_size_constant() {
 #[test]
 fn int_as_fixed_bytes_rejects_invalid_source_target_and_size() {
     let cases = [
-        ("byte[] data = 0x01; byte[_] encoded = data as byte[4];", "source must be int"),
+        ("byte[] data = byte[](0x01); byte[_] encoded = data as byte[4];", "source must be int"),
         ("int x = 1; byte[] encoded = x as byte[];", "requires a fixed byte[N] target"),
         ("int x = 1; byte[_] encoded = x as byte[_];", "cannot infer fixed array size"),
         ("int x = 1; byte[_] encoded = x as byte[9];", "must be between 1 and 8"),
@@ -10641,7 +10909,7 @@ fn empty_array_statement_expr_evaluation_compiles_to_empty_array_data() {
     let source = r#"
         contract Test() {
             entry main() {
-                require([] == []);
+                require(byte[]{} == byte[]{});
             }
         }
     "#;
@@ -11573,8 +11841,8 @@ fn runs_standalone_block_tuple_binding_shadowing() {
     let source = r#"
         contract TupleBlockShadowing() {
             entry main() {
-                byte[] left = 0xaa;
-                byte[] source = 0x0102;
+                byte[] left = byte[](0xaa);
+                byte[] source = byte[](0x0102);
                 {
                     (byte[] left, byte[] right) = source.split(1);
                     require(left == byte[](0x01));
@@ -11596,10 +11864,10 @@ fn runs_split_on_non_byte_array() {
     let source = r#"
         contract SplitNonByteArray() {
             entry main() {
-                int[] values = [10, 20, 30, 40];
+                int[] values = int[]{10, 20, 30, 40};
                 (int[] left, int[] right) = values.split(1);
-                require(left == [10]);
-                require(right == [20, 30, 40]);
+                require(left == int[]{10});
+                require(right == int[]{20, 30, 40});
             }
         }
     "#;
@@ -11615,9 +11883,9 @@ fn runs_slice_on_non_byte_array() {
     let source = r#"
         contract SliceNonByteArray() {
             entry main() {
-                int[] values = [10, 20, 30, 40];
+                int[] values = int[]{10, 20, 30, 40};
                 int[] part = values.slice(1, 3);
-                require(part == [20, 30]);
+                require(part == int[]{20, 30});
             }
         }
     "#;
@@ -11638,24 +11906,24 @@ fn runs_split_and_slice_on_struct_array() {
             }
 
             entry main() {
-                S[] values = [
-                    S {number: 10, tag: 0x0102},
-                    S {number: 20, tag: 0x0304},
-                    S {number: 30, tag: 0x0506}
-                ];
+                S[] values = S[]{
+                    S {number: 10, tag: byte[_](0x0102)},
+                    S {number: 20, tag: byte[_](0x0304)},
+                    S {number: 30, tag: byte[_](0x0506)}
+                };
                 S[] left = values.split(1).0;
                 S[] right = values.split(1).1;
                 S[] part = values.slice(1, 3);
 
-                require(left == [S {number: 10, tag: 0x0102}]);
-                require(right == [
-                    S {number: 20, tag: 0x0304},
-                    S {number: 30, tag: 0x0506}
-                ]);
-                require(part == [
-                    S {number: 20, tag: 0x0304},
-                    S {number: 30, tag: 0x0506}
-                ]);
+                require(left == S[]{S {number: 10, tag: byte[_](0x0102)}});
+                require(right == S[]{
+                    S {number: 20, tag: byte[_](0x0304)},
+                    S {number: 30, tag: byte[_](0x0506)}
+                });
+                require(part == S[]{
+                    S {number: 20, tag: byte[_](0x0304)},
+                    S {number: 30, tag: byte[_](0x0506)}
+                });
             }
         }
     "#;
@@ -11682,29 +11950,29 @@ fn runs_struct_array_equality_and_inequality_comparisons() {
             }
 
             entry main() {
-                Item[] values = [
-                    Item {id: 1, tag: 0x0102, details: Details {active: true, score: 10}},
-                    Item {id: 2, tag: 0x0304, details: Details {active: false, score: 20}}
-                ];
-                Item[] same = [
-                    Item {id: 1, tag: 0x0102, details: Details {active: true, score: 10}},
-                    Item {id: 2, tag: 0x0304, details: Details {active: false, score: 20}}
-                ];
-                Item[] differentId = [
-                    Item {id: 1, tag: 0x0102, details: Details {active: true, score: 10}},
-                    Item {id: 3, tag: 0x0304, details: Details {active: false, score: 20}}
-                ];
-                Item[] differentTag = [
-                    Item {id: 1, tag: 0x0102, details: Details {active: true, score: 10}},
-                    Item {id: 2, tag: 0x0506, details: Details {active: false, score: 20}}
-                ];
-                Item[] differentNestedField = [
-                    Item {id: 1, tag: 0x0102, details: Details {active: true, score: 10}},
-                    Item {id: 2, tag: 0x0304, details: Details {active: true, score: 20}}
-                ];
-                Item[] shorter = [
-                    Item {id: 1, tag: 0x0102, details: Details {active: true, score: 10}}
-                ];
+                Item[] values = Item[]{
+                    Item {id: 1, tag: byte[_](0x0102), details: Details {active: true, score: 10}},
+                    Item {id: 2, tag: byte[_](0x0304), details: Details {active: false, score: 20}}
+                };
+                Item[] same = Item[]{
+                    Item {id: 1, tag: byte[_](0x0102), details: Details {active: true, score: 10}},
+                    Item {id: 2, tag: byte[_](0x0304), details: Details {active: false, score: 20}}
+                };
+                Item[] differentId = Item[]{
+                    Item {id: 1, tag: byte[_](0x0102), details: Details {active: true, score: 10}},
+                    Item {id: 3, tag: byte[_](0x0304), details: Details {active: false, score: 20}}
+                };
+                Item[] differentTag = Item[]{
+                    Item {id: 1, tag: byte[_](0x0102), details: Details {active: true, score: 10}},
+                    Item {id: 2, tag: byte[_](0x0506), details: Details {active: false, score: 20}}
+                };
+                Item[] differentNestedField = Item[]{
+                    Item {id: 1, tag: byte[_](0x0102), details: Details {active: true, score: 10}},
+                    Item {id: 2, tag: byte[_](0x0304), details: Details {active: true, score: 20}}
+                };
+                Item[] shorter = Item[]{
+                    Item {id: 1, tag: byte[_](0x0102), details: Details {active: true, score: 10}}
+                };
                 Item[] empty;
 
                 require(values == same);
@@ -11714,7 +11982,7 @@ fn runs_struct_array_equality_and_inequality_comparisons() {
                 require(values != differentNestedField);
                 require(values != shorter);
                 require(!(values == differentId));
-                require(empty == []);
+                require(empty == Item[]{});
                 require(empty != values);
             }
         }
@@ -12523,7 +12791,7 @@ fn validate_output_state_with_template_preserves_nested_struct_field_paths() {
             entry noop() {{
                 require(left.id == 1);
                 require(right.id == 2);
-                require(targetHash == 0x{target_hash_hex});
+                require(targetHash == byte[32](0x{target_hash_hex}));
             }}
         }}
     "#
@@ -12567,9 +12835,9 @@ fn validate_output_state_with_template_preserves_nested_struct_field_paths() {
                 validateOutputStateWithTemplate(
                     0,
                     next,
-                    0x{template_prefix_hex},
-                    0x{template_suffix_hex},
-                    0x{template_hash_hex}
+                    byte[](0x{template_prefix_hex}),
+                    byte[](0x{template_suffix_hex}),
+                    byte[32](0x{template_hash_hex})
                 );
                 validateOutputStateWithInputTemplate(
                     0,
@@ -12577,7 +12845,7 @@ fn validate_output_state_with_template_preserves_nested_struct_field_paths() {
                     1,
                     {},
                     {},
-                    0x{template_hash_hex}
+                    byte[32](0x{template_hash_hex})
                 );
             }}
         }}
@@ -12615,8 +12883,8 @@ fn blake2b_builtins_lower_and_execute_correctly() {
         r#"
         contract Blake2bHashes() {{
             entry main() {{
-                require(blake2b(byte[]("genesis covenant")) == 0x{expected_hex});
-                require(blake2bWithKey(byte[]("genesis covenant"), byte[]("CovenantID")) == 0x{expected_keyed_hex});
+                require(blake2b(byte[]("genesis covenant")) == byte[32](0x{expected_hex}));
+                require(blake2bWithKey(byte[]("genesis covenant"), byte[]("CovenantID")) == byte[32](0x{expected_keyed_hex}));
             }}
         }}
         "#
@@ -12642,8 +12910,8 @@ fn blake3_builtins_lower_and_execute_correctly() {
         r#"
         contract Blake3Hashes() {{
             entry main() {{
-                require(blake3(byte[]("genesis covenant")) == 0x{expected_hex});
-                require(blake3WithKey(byte[]("genesis covenant"), 0x{key_hex}) == 0x{expected_keyed_hex});
+                require(blake3(byte[]("genesis covenant")) == byte[32](0x{expected_hex}));
+                require(blake3WithKey(byte[]("genesis covenant"), byte[32](0x{key_hex})) == byte[32](0x{expected_keyed_hex}));
             }}
         }}
         "#

@@ -1810,7 +1810,7 @@ impl<'a, 'i> DebugSession<'a, 'i> {
             ExprKind::Bool(value) => Some(DebugValue::Bool(*value)),
             ExprKind::Byte(value) => Some(DebugValue::Bytes(vec![*value])),
             ExprKind::String(value) => Some(DebugValue::String(value.clone())),
-            ExprKind::Array(values) => {
+            ExprKind::Array { values, .. } => {
                 if values.iter().all(|value| matches!(value.kind, ExprKind::Byte(_))) {
                     let bytes = values
                         .iter()
@@ -2027,10 +2027,9 @@ fn debug_value_to_expr<'i>(value: &DebugValue, struct_name: Option<&str>) -> Opt
         DebugValue::Bool(value) => Some(Expr::bool(*value)),
         DebugValue::Bytes(bytes) => Some(Expr::bytes(bytes.clone())),
         DebugValue::String(value) => Some(Expr::new(ExprKind::String(value.clone()), span::Span::default())),
-        DebugValue::Array(items) => Some(Expr::new(
-            ExprKind::Array(items.iter().map(|item| debug_value_to_expr(item, struct_name)).collect::<Option<Vec<_>>>()?),
-            span::Span::default(),
-        )),
+        DebugValue::Array(items) => {
+            Expr::inferred_array(items.iter().map(|item| debug_value_to_expr(item, struct_name)).collect::<Option<Vec<_>>>()?)
+        }
         DebugValue::Object(fields) => Some(Expr::new(
             ExprKind::StructLiteral {
                 name: struct_name?.to_string(),
@@ -2157,9 +2156,10 @@ where
             },
             span,
         )),
-        ExprKind::Array(values) => {
-            Ok(Expr::new(ExprKind::Array(values.iter().map(&mut *map_child).collect::<Result<Vec<_>, _>>()?), span))
-        }
+        ExprKind::Array { type_ref, values } => Ok(Expr::new(
+            ExprKind::Array { type_ref: type_ref.clone(), values: values.iter().map(&mut *map_child).collect::<Result<Vec<_>, _>>()? },
+            span,
+        )),
         ExprKind::StructLiteral { name, fields, name_span } => Ok(Expr::new(
             ExprKind::StructLiteral {
                 name: name.clone(),
@@ -2647,7 +2647,7 @@ mod tests {
                             },
                             StateFieldExpr {
                                 name: "code".to_string(),
-                                expr: Expr::new(ExprKind::Array(vec![Expr::byte(0x12), Expr::byte(0x34)]), span::Span::default()),
+                                expr: Expr::bytes(vec![0x12, 0x34]),
                                 span: span::Span::default(),
                                 name_span: span::Span::default(),
                             },

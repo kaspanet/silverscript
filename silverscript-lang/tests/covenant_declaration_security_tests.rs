@@ -1,7 +1,7 @@
 use kaspa_consensus_core::Hash;
 use kaspa_consensus_core::tx::{Transaction, TransactionOutput, UtxoEntry};
 use kaspa_txscript_errors::TxScriptError;
-use silverscript_lang::ast::Expr;
+use silverscript_lang::ast::{Expr, parse_type_ref};
 use silverscript_lang::compiler::{
     CompileOptions, CompiledContract, CovenantDeclCallOptions, compile_contract, generated_covenant_auth_entrypoint_name,
     struct_object,
@@ -139,7 +139,10 @@ fn function_param_type_names(compiled: &CompiledContract<'_>, function_name: &st
 }
 
 fn state_array_arg(values: Vec<i64>) -> Expr<'static> {
-    values.into_iter().map(|value| struct_object("State", vec![("value", Expr::int(value))])).collect::<Vec<_>>().into()
+    Expr::array(
+        parse_type_ref("State[]").unwrap(),
+        values.into_iter().map(|value| struct_object("State", vec![("value", Expr::int(value))])).collect(),
+    )
 }
 
 fn state_arg(value: i64) -> Expr<'static> {

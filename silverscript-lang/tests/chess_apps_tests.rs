@@ -538,8 +538,8 @@ fn run_route(
             Expr::bytes(placeholder_sig),
             Expr::bytes(player.pubkey_bytes.clone()),
             hash_expr(player.player_id),
-            Expr::bytes(target.prefix.clone()),
-            Expr::bytes(target.suffix.clone()),
+            Expr::dynamic_bytes(target.prefix.clone()),
+            Expr::dynamic_bytes(target.suffix.clone()),
         ],
     );
     let outputs = vec![covenant_output(out, 0, covenant_id)];
@@ -560,8 +560,8 @@ fn run_route(
             Expr::bytes(sig),
             Expr::bytes(player.pubkey_bytes.clone()),
             hash_expr(player.player_id),
-            Expr::bytes(target.prefix.clone()),
-            Expr::bytes(target.suffix.clone()),
+            Expr::dynamic_bytes(target.prefix.clone()),
+            Expr::dynamic_bytes(target.suffix.clone()),
         ],
     );
     assert_sigscript_size("chess_mux.sil", &tx);
@@ -576,7 +576,8 @@ fn run_worker_apply(
     covenant_id: Hash,
     mux: &TemplateFixture,
 ) {
-    let sigscript = entry_sigscript(active, "apply", vec![Expr::bytes(mux.prefix.clone()), Expr::bytes(mux.suffix.clone())]);
+    let sigscript =
+        entry_sigscript(active, "apply", vec![Expr::dynamic_bytes(mux.prefix.clone()), Expr::dynamic_bytes(mux.suffix.clone())]);
     let outputs = vec![covenant_output(next, 0, covenant_id)];
     let entries = vec![covenant_utxo(active, covenant_id)];
     let tx = Transaction::new(1, vec![tx_input(0, sigscript, 0)], outputs, 0, Default::default(), 0, vec![]);
@@ -592,7 +593,8 @@ fn run_prep_apply(
     covenant_id: Hash,
     target: &TemplateFixture,
 ) {
-    let sigscript = entry_sigscript(active, "apply", vec![Expr::bytes(target.prefix.clone()), Expr::bytes(target.suffix.clone())]);
+    let sigscript =
+        entry_sigscript(active, "apply", vec![Expr::dynamic_bytes(target.prefix.clone()), Expr::dynamic_bytes(target.suffix.clone())]);
     let outputs = vec![covenant_output(next, 0, covenant_id)];
     let entries = vec![covenant_utxo(active, covenant_id)];
     let tx = Transaction::new(1, vec![tx_input(0, sigscript, 0)], outputs, 0, Default::default(), 0, vec![]);
@@ -944,8 +946,8 @@ fn league_register_player_runtime_matches_expected_output_state() {
         vec![
             Expr::bytes(vec![0u8; 65]),
             Expr::bytes(owner.pubkey_bytes.clone()),
-            Expr::bytes(player_prefix.clone()),
-            Expr::bytes(player_suffix.clone()),
+            Expr::dynamic_bytes(player_prefix.clone()),
+            Expr::dynamic_bytes(player_suffix.clone()),
         ],
     );
     let outputs = vec![covenant_output(&league, 0, covenant_id), covenant_output(&registered_player, 0, covenant_id)];
@@ -957,7 +959,12 @@ fn league_register_player_runtime_matches_expected_output_state() {
     tx.inputs[0].signature_script = entry_sigscript(
         &league,
         "register_player",
-        vec![Expr::bytes(sig), Expr::bytes(owner.pubkey_bytes), Expr::bytes(player_prefix), Expr::bytes(player_suffix)],
+        vec![
+            Expr::bytes(sig),
+            Expr::bytes(owner.pubkey_bytes),
+            Expr::dynamic_bytes(player_prefix),
+            Expr::dynamic_bytes(player_suffix),
+        ],
     );
 
     assert_sigscript_size("league.sil", &tx);
@@ -1097,8 +1104,8 @@ fn player_start_game_runtime_matches_expected_output_states() {
             Expr::int(player_suffix_len),
             Expr::bytes(route_templates.clone()),
             Expr::int(DEFAULT_MOVE_TIMEOUT),
-            Expr::bytes(fix.mux.prefix.clone()),
-            Expr::bytes(fix.mux.suffix.clone()),
+            Expr::dynamic_bytes(fix.mux.prefix.clone()),
+            Expr::dynamic_bytes(fix.mux.suffix.clone()),
         ],
     );
     let black_placeholder = entry_sigscript(
@@ -1143,8 +1150,8 @@ fn player_start_game_runtime_matches_expected_output_states() {
             Expr::int(player_suffix_len),
             Expr::bytes(route_templates),
             Expr::int(DEFAULT_MOVE_TIMEOUT),
-            Expr::bytes(fix.mux.prefix.clone()),
-            Expr::bytes(fix.mux.suffix.clone()),
+            Expr::dynamic_bytes(fix.mux.prefix.clone()),
+            Expr::dynamic_bytes(fix.mux.suffix.clone()),
         ],
     );
     tx.inputs[1].signature_script = entry_sigscript(

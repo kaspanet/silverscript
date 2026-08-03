@@ -15,21 +15,6 @@
     }
   },
   {
-    "type": "array",
-    "named": true,
-    "fields": {},
-    "children": {
-      "multiple": true,
-      "required": false,
-      "types": [
-        {
-          "type": "expression",
-          "named": true
-        }
-      ]
-    }
-  },
-  {
     "type": "array_size",
     "named": true,
     "fields": {},
@@ -58,6 +43,25 @@
       "types": [
         {
           "type": "array_size",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "array_type",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "array_suffix",
+          "named": true
+        },
+        {
+          "type": "base_type",
           "named": true
         }
       ]
@@ -990,10 +994,6 @@
       "required": true,
       "types": [
         {
-          "type": "array",
-          "named": true
-        },
-        {
           "type": "cast",
           "named": true
         },
@@ -1027,6 +1027,10 @@
         },
         {
           "type": "struct_literal",
+          "named": true
+        },
+        {
+          "type": "typed_array",
           "named": true
         }
       ]
@@ -1468,6 +1472,25 @@
         },
         {
           "type": "base_type",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "typed_array",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "array_type",
+          "named": true
+        },
+        {
+          "type": "expression",
           "named": true
         }
       ]

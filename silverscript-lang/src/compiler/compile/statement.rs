@@ -226,7 +226,7 @@ fn compile_variable_definition_statement<'i>(
     expr: Option<&Expr<'i>>,
 ) -> Result<Vec<String>, CompilerError> {
     if type_ref.is_array() {
-        let initial = expr.cloned().unwrap_or_else(|| Expr::new(ExprKind::Array(Vec::new()), span::Span::default()));
+        let initial = expr.cloned().unwrap_or_else(|| Expr::array(type_ref.clone(), Vec::new()));
         return compile_stack_variable_definition(ctx, name, type_ref.clone(), initial);
     }
 

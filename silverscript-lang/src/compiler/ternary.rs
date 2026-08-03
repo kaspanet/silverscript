@@ -313,8 +313,8 @@ impl<'a, 'i> TernaryLowerer<'a, 'i> {
 
                 Ok((prelude, Expr::new(ExprKind::Identifier(result_name), span)))
             }
-            ExprKind::Array(values) => {
-                let element_type = expected.and_then(TypeRef::array_element_type);
+            ExprKind::Array { type_ref, values } => {
+                let element_type = expected.or(Some(type_ref)).and_then(TypeRef::array_element_type);
                 let mut prelude = Vec::new();
                 let mut lowered_values = Vec::with_capacity(values.len());
                 for value in values {
@@ -322,7 +322,7 @@ impl<'a, 'i> TernaryLowerer<'a, 'i> {
                     prelude.extend(more_prelude);
                     lowered_values.push(value);
                 }
-                Ok((prelude, Expr::new(ExprKind::Array(lowered_values), span)))
+                Ok((prelude, Expr::new(ExprKind::Array { type_ref: type_ref.clone(), values: lowered_values }, span)))
             }
             ExprKind::Call { name, args, name_span } => {
                 let (prelude, args) = self.lower_exprs(args, types)?;
@@ -458,7 +458,7 @@ impl<'a, 'i> TernaryLowerer<'a, 'i> {
                 }
             };
             let values = (0..len).map(|_| self.default_expr(&element_type, span)).collect::<Result<Vec<_>, CompilerError>>()?;
-            return Ok(Expr::new(ExprKind::Array(values), span));
+            return Ok(Expr::new(ExprKind::Array { type_ref: type_ref.clone(), values }, span));
         }
 
         let kind = match &type_ref.base {
@@ -471,7 +471,7 @@ impl<'a, 'i> TernaryLowerer<'a, 'i> {
                     .base
                     .fixed_byte_sequence_len()
                     .ok_or_else(|| CompilerError::Unsupported(format!("cannot create default {}", type_ref.type_name())))?;
-                ExprKind::Array((0..len).map(|_| Expr::new(ExprKind::Byte(0), span)).collect())
+                ExprKind::Array { type_ref: type_ref.clone(), values: (0..len).map(|_| Expr::new(ExprKind::Byte(0), span)).collect() }
             }
             TypeBase::Custom(name) => {
                 let item = self

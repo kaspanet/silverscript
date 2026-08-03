@@ -102,12 +102,12 @@ pub(crate) fn resolve_constant_references<'i>(
             },
             span,
         )),
-        ExprKind::Array(values) => {
+        ExprKind::Array { type_ref, values } => {
             let mut resolved = Vec::with_capacity(values.len());
             for value in values {
                 resolved.push(resolve_constant_references(value, constants, visiting)?);
             }
-            Ok(Expr::new(ExprKind::Array(resolved), span))
+            Ok(Expr::new(ExprKind::Array { type_ref: type_ref.clone(), values: resolved }, span))
         }
         ExprKind::StructLiteral { name, fields, name_span } => {
             let mut resolved_fields = Vec::with_capacity(fields.len());

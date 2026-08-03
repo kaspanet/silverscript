@@ -1,4 +1,5 @@
-use silverscript_lang::ast::parse_contract_ast;
+use silverscript_lang::ast::{ArrayDim, Expr, TypeBase, TypeRef, parse_contract_ast};
+use silverscript_lang::compiler::{CompileOptions, compile_contract};
 
 #[test]
 fn tutorial_contract_examples_parse() {
@@ -12,6 +13,54 @@ fn tutorial_contract_examples_parse() {
             panic!("tutorial example #{index} failed to parse: {err}\n--- snippet ---\n{snippet}\n--- wrapped source ---\n{source}");
         }
     }
+}
+
+#[test]
+fn tutorial_examples_compile() {
+    let markdown = include_str!("../../docs/TUTORIAL.md");
+    let blocks = extract_code_blocks(markdown, "javascript");
+    assert!(!blocks.is_empty(), "no contract examples found in docs/TUTORIAL.md");
+
+    for (index, snippet) in blocks {
+        let source = wrap_snippet(&snippet);
+        let contract = parse_contract_ast(&source).unwrap_or_else(|err| {
+            panic!("tutorial example #{index} failed to parse before compilation: {err}\n--- snippet ---\n{snippet}")
+        });
+        let constructor_args = contract
+            .params
+            .iter()
+            .map(|param| dummy_value(&param.type_ref))
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap_or_else(|err| panic!("tutorial example #{index} constructor arguments could not be generated: {err}"));
+        if let Err(err) = compile_contract(&source, &constructor_args, CompileOptions::default()) {
+            panic!("tutorial example #{index} failed to compile: {err}\n--- snippet ---\n{snippet}\n--- wrapped source ---\n{source}");
+        }
+    }
+}
+
+fn dummy_value(type_ref: &TypeRef) -> Result<Expr<'static>, String> {
+    if type_ref.is_array() {
+        let length = match type_ref.array_size() {
+            Some(ArrayDim::Fixed(length)) => *length,
+            Some(ArrayDim::Dynamic) => 0,
+            Some(ArrayDim::Constant(name)) => return Err(format!("array size constant '{name}' is unsupported in tutorial tests")),
+            Some(ArrayDim::Inferred) | None => return Err(format!("cannot generate a value for {}", type_ref.type_name())),
+        };
+        let element_type = type_ref.array_element_type().ok_or_else(|| format!("invalid array type {}", type_ref.type_name()))?;
+        let values = (0..length).map(|_| dummy_value(&element_type)).collect::<Result<Vec<_>, _>>()?;
+        return Ok(Expr::array(type_ref.clone(), values));
+    }
+
+    Ok(match &type_ref.base {
+        TypeBase::Int => Expr::int(0),
+        TypeBase::Bool => Expr::bool(false),
+        TypeBase::Byte => Expr::byte(0),
+        TypeBase::String => Expr::string(String::new()),
+        TypeBase::Pubkey => Expr::bytes(vec![0; 32]),
+        TypeBase::Sig => Expr::bytes(vec![0; 65]),
+        TypeBase::Datasig => Expr::bytes(vec![0; 64]),
+        TypeBase::Tuple(_) | TypeBase::Custom(_) => return Err(format!("cannot generate a value for {}", type_ref.type_name())),
+    })
 }
 
 fn extract_code_blocks(markdown: &str, language: &str) -> Vec<(usize, String)> {
@@ -78,6 +127,11 @@ fn wrap_snippet(snippet: &str) -> String {
         out.push_str(&indent(rest, 4));
         if !rest.ends_with('\n') {
             out.push('\n');
+        }
+        if !rest.lines().any(|line| line.trim_start().starts_with("entry ")) {
+            out.push_str("    entry main() {\n");
+            out.push_str("        require(true);\n");
+            out.push_str("    }\n");
         }
         out.push_str("}\n");
         return out;

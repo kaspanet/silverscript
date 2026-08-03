@@ -6,6 +6,6 @@ contract Test(sig signature) {
         byte[] hashtype1 = signature.split(64).1;
         byte[1] hashtype2 = byte[1](signature.slice(64, 65));
         require(hashtype1 == byte[](0x01));
-        require(hashtype2 == 0x01);
+        require(hashtype2 == byte[1](0x01));
     }
 }

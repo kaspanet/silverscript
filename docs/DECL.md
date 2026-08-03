@@ -322,7 +322,7 @@ contract VaultNM(
         // k=0 must execute leader path
         require(OpCovInputIdx(cov_id, 0) == this.activeInputIndex);
 
-        State[] prev_states = [];
+        State[] prev_states = State[]{};
         for(k, 0, in_count, max_ins) {
             int in_idx = OpCovInputIdx(cov_id, k);
             {

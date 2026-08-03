@@ -53,7 +53,7 @@ fn compile_expr_with_context<'i>(
         ExprKind::Int(value) => compile_int_expr(ctx, *value, expected_type),
         ExprKind::Bool(value) => compile_bool_expr(ctx, *value),
         ExprKind::Byte(byte) => compile_byte_expr(ctx, *byte),
-        ExprKind::Array(values) => compile_array_expr(ctx, values, expected_type),
+        ExprKind::Array { type_ref, values } => compile_array_expr(ctx, values, Some(type_ref)),
         ExprKind::StructLiteral { .. } => compile_state_object_expr(),
         ExprKind::FieldAccess { .. } => compile_field_access_expr(),
         ExprKind::String(value) => compile_string_expr(ctx, value),
@@ -337,7 +337,7 @@ fn compile_binary_expr<'i>(
     let left_value_type = infer_expr_type(left, ctx.env.constants, ctx.env.types).ok();
     let right_value_type = if matches!(op, BinaryOp::Add)
         && let Some(element_type) = left_value_type.as_ref().and_then(TypeRef::array_element_type)
-        && let ExprKind::Array(values) = &right.kind
+        && let ExprKind::Array { values, .. } = &right.kind
     {
         let mut type_ref = element_type;
         type_ref.array_dims.push(ArrayDim::Fixed(values.len()));
@@ -444,6 +444,7 @@ fn compile_binary_expr<'i>(
     Ok(())
 }
 
+// TODO: Get rid of this function, since it should already be handled by earlier lowering.
 fn compile_append_expr<'i>(
     ctx: &mut CompileExprContext<'_, '_, 'i>,
     source: &Expr<'i>,
@@ -453,7 +454,7 @@ fn compile_append_expr<'i>(
     let mut appended_type =
         source_type.array_element_type().ok_or_else(|| CompilerError::Unsupported("append target must be an array".to_string()))?;
     appended_type.array_dims.push(ArrayDim::Fixed(args.len()));
-    let appended = Expr::new(ExprKind::Array(args.to_vec()), span::Span::default());
+    let appended = Expr::array(appended_type.clone(), args.to_vec());
 
     compile_expr_with_context(ctx, source, Some(&source_type))?;
     compile_expr_with_context(ctx, &appended, Some(&appended_type))?;
@@ -649,12 +650,18 @@ fn compile_split_part<'i>(
 }
 
 fn compile_length_expr<'i>(ctx: &mut CompileExprContext<'_, '_, 'i>, expr: &Expr<'i>) -> Result<(), CompilerError> {
+    let expr_type = infer_expr_type(expr, ctx.env.constants, ctx.env.types)?;
+    if let Some(size) = array_type_size(&expr_type, ctx.env.contract_constants) {
+        let is_literal_or_identifier = matches!(expr.kind, ExprKind::Identifier(_) | ExprKind::Array { .. });
+        if !is_literal_or_identifier {
+            compile_expr_with_context(ctx, expr, Some(&expr_type))?;
+            ctx.emit_op(OpDrop, -1)?;
+        }
+        ctx.push_int(size as i64)?;
+        return Ok(());
+    }
     if let ExprKind::Identifier(name) = &expr.kind {
         if let Some(type_ref) = ctx.env.types.get(name) {
-            if let Some(size) = array_type_size(type_ref, ctx.env.contract_constants) {
-                ctx.push_int(size as i64)?;
-                return Ok(());
-            }
             if let Some(element_size) = array_element_size(type_ref, ctx.env.contract_constants) {
                 compile_expr_with_context(ctx, expr, Some(type_ref))?;
                 ctx.emit_op(OpSize, 1)?;
@@ -665,10 +672,6 @@ fn compile_length_expr<'i>(ctx: &mut CompileExprContext<'_, '_, 'i>, expr: &Expr
                 return Ok(());
             }
         }
-    }
-    if let ExprKind::Array(values) = &expr.kind {
-        ctx.push_int(values.len() as i64)?;
-        return Ok(());
     }
     compile_expr_with_context(ctx, expr, None)?;
     ctx.emit_op(OpSize, 1)?;
