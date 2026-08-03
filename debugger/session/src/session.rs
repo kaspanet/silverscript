@@ -1681,7 +1681,7 @@ impl<'a, 'i> DebugSession<'a, 'i> {
     }
 
     fn build_shadow_bytecode(&self, bindings: &[ShadowBindingValue], expr_bytecode: &[u8]) -> Result<Vec<u8>, String> {
-        let mut builder = ScriptBuilder::new();
+        let mut builder = ScriptBuilder::with_flags(EngineFlags { covenants_enabled: true, ..Default::default() });
         for binding in bindings {
             builder.add_data(&binding.value).map_err(|err| err.to_string())?;
         }
@@ -2468,6 +2468,21 @@ mod tests {
         let scope_state = session.scope_state(StepId::ROOT).unwrap();
         let value = session.evaluate_scope_expr_as(&scope_state, &update.expr, &update.type_name).unwrap();
         assert!(matches!(value, DebugValue::Int(12)));
+    }
+
+    #[test]
+    fn shadow_vm_evaluates_large_runtime_byte_array_param() {
+        let payload = vec![0x42; 800];
+        let mut sig_builder = ScriptBuilder::with_flags(EngineFlags { covenants_enabled: true, ..Default::default() });
+        sig_builder.add_data(&payload).unwrap();
+        let sigscript = sig_builder.drain();
+
+        let session = make_session(vec![scalar_param("payload", "byte[]", 0)], vec![], &sigscript).unwrap();
+        let expr = parse_expression_ast("payload == payload").expect("parse equality expression");
+        let scope_state = session.scope_state(StepId::ROOT).unwrap();
+        let value = session.evaluate_scope_expr_as(&scope_state, &expr, "bool").unwrap();
+
+        assert!(matches!(value, DebugValue::Bool(true)));
     }
 
     #[test]
