@@ -275,7 +275,7 @@ impl<'a, 'i> TernaryLowerer<'a, 'i> {
     ) -> Result<(Vec<Statement<'i>>, Expr<'i>), CompilerError> {
         let span = expr.span;
         match &expr.kind {
-            ExprKind::IfElse { condition, then_expr, else_expr } => {
+            ExprKind::Ternary { condition, then_expr, else_expr } => {
                 let result_type = self.check_expr(expr, expected, types)?;
                 let bool_type = TypeRef { base: TypeBase::Bool, array_dims: Vec::new() };
                 let (mut prelude, condition) = self.lower_expr(condition, Some(&bool_type), types)?;

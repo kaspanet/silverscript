@@ -2148,8 +2148,8 @@ where
         ExprKind::Binary { op, left, right } => {
             Ok(Expr::new(ExprKind::Binary { op: *op, left: Box::new(map_child(left)?), right: Box::new(map_child(right)?) }, span))
         }
-        ExprKind::IfElse { condition, then_expr, else_expr } => Ok(Expr::new(
-            ExprKind::IfElse {
+        ExprKind::Ternary { condition, then_expr, else_expr } => Ok(Expr::new(
+            ExprKind::Ternary {
                 condition: Box::new(map_child(condition)?),
                 then_expr: Box::new(map_child(then_expr)?),
                 else_expr: Box::new(map_child(else_expr)?),

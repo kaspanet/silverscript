@@ -256,7 +256,7 @@ pub(super) fn infer_expr_type<'i>(
             let right_type = infer_expr_type(right, types, constants, functions)?;
             concat_types(&left_type, &right_type, constants)
         }
-        ExprKind::IfElse { then_expr, else_expr, .. } => {
+        ExprKind::Ternary { then_expr, else_expr, .. } => {
             let then_type = infer_expr_type(then_expr, types, constants, functions)?;
             let else_type = infer_expr_type(else_expr, types, constants, functions)?;
             type_refs_equal(&then_type, &else_type, constants).then_some(then_type)

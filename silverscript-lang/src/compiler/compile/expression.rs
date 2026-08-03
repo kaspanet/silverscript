@@ -58,8 +58,8 @@ fn compile_expr_with_context<'i>(
         ExprKind::FieldAccess { .. } => compile_field_access_expr(),
         ExprKind::String(value) => compile_string_expr(ctx, value),
         ExprKind::Identifier(name) => compile_identifier_expr(ctx, name, expected_type),
-        ExprKind::IfElse { condition, then_expr, else_expr } => {
-            compile_if_else_expr(ctx, condition, then_expr, else_expr, expected_type)
+        ExprKind::Ternary { condition, then_expr, else_expr } => {
+            compile_ternary_expr(ctx, condition, then_expr, else_expr, expected_type)
         }
         ExprKind::Call { name, args, .. } => compile_call_expr(ctx, name, args),
         ExprKind::New { name, args, .. } => compile_new_expr(ctx, name, args),
@@ -247,7 +247,7 @@ fn compile_identifier_expr<'i>(
     Err(CompilerError::UndefinedIdentifier(name.to_string()))
 }
 
-fn compile_if_else_expr<'i>(
+fn compile_ternary_expr<'i>(
     ctx: &mut CompileExprContext<'_, '_, 'i>,
     condition: &Expr<'i>,
     then_expr: &Expr<'i>,

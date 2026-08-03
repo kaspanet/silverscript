@@ -350,7 +350,7 @@ pub fn walk_expr_mut<'i, V: AstVisitorMut<'i> + ?Sized>(visitor: &mut V, expr: &
             visitor.visit_expr(left);
             visitor.visit_expr(right);
         }
-        ExprKind::IfElse { condition, then_expr, else_expr } => {
+        ExprKind::Ternary { condition, then_expr, else_expr } => {
             visitor.visit_expr(condition);
             visitor.visit_expr(then_expr);
             visitor.visit_expr(else_expr);

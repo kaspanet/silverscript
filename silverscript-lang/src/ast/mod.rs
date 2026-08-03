@@ -730,7 +730,7 @@ pub enum ExprKind<'i> {
         left: Box<Expr<'i>>,
         right: Box<Expr<'i>>,
     },
-    IfElse {
+    Ternary {
         condition: Box<Expr<'i>>,
         then_expr: Box<Expr<'i>>,
         else_expr: Box<Expr<'i>>,
@@ -1164,7 +1164,7 @@ fn format_expr_with_prec(expr: &Expr<'_>, parent_prec: u8, right_child: bool) ->
             binary_op_str(*op),
             format_expr_with_prec(right, binary_precedence(*op), true)
         ),
-        ExprKind::IfElse { condition, then_expr, else_expr } => format!(
+        ExprKind::Ternary { condition, then_expr, else_expr } => format!(
             "{} ? {} : {}",
             format_expr_with_prec(condition, binary_precedence(BinaryOp::Or), false),
             format_expr(then_expr),
@@ -1238,7 +1238,7 @@ const PREC_UNARY: u8 = 10;
 
 fn expr_precedence(kind: &ExprKind<'_>) -> u8 {
     match kind {
-        ExprKind::IfElse { .. } => 1,
+        ExprKind::Ternary { .. } => 1,
         ExprKind::Binary { op, .. } => binary_precedence(*op),
         ExprKind::Unary { .. } => PREC_UNARY,
         ExprKind::Call { .. }
@@ -2085,7 +2085,7 @@ fn parse_conditional<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError
     let else_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing conditional else expression".to_string()))?;
     let else_expr = parse_expression(else_pair)?;
     Ok(Expr::new(
-        ExprKind::IfElse { condition: Box::new(condition), then_expr: Box::new(then_expr), else_expr: Box::new(else_expr) },
+        ExprKind::Ternary { condition: Box::new(condition), then_expr: Box::new(then_expr), else_expr: Box::new(else_expr) },
         span,
     ))
 }
