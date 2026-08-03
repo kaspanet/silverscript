@@ -421,15 +421,15 @@ bool not = !t;      // false (logical NOT)
 
 ### Bitwise Operators
 
-**Note:** Bitwise operators require covenant features to be enabled.
+**Note:** Bitwise operators operate on two bytes or two equal-sized byte arrays. Two dynamic byte arrays may be used, but their sizes must match at runtime.
 
 ```javascript
-int x = 0x0F;  // 00001111
-int y = 0xF0;  // 11110000
+byte[1] x = byte[_](0x0F);  // 00001111
+byte[1] y = byte[_](0xF0);  // 11110000
 
-int bitAnd = x & y;  // 0x00 (bitwise AND)
-int bitOr = x | y;   // 0xFF (bitwise OR)
-int bitXor = x ^ y;  // 0xFF (bitwise XOR)
+byte[1] bitAnd = x & y;  // 0x00 (bitwise AND)
+byte[1] bitOr = x | y;   // 0xFF (bitwise OR)
+byte[1] bitXor = x ^ y;  // 0xFF (bitwise XOR)
 ```
 
 ### Ternary Operator

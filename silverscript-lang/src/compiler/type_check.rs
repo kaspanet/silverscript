@@ -371,21 +371,29 @@ fn check_binary<'i>(
             Err(CompilerError::Unsupported("byte values do not support '+'".to_string()))
         }
         BinaryOp::Add if left_type.is_string() && right_type.is_string() => Ok(scalar_type(TypeBase::String)),
-        BinaryOp::BitOr | BinaryOp::BitXor | BinaryOp::BitAnd
-            if matches!(left_type.base, TypeBase::Byte)
-                && left_type.is_array()
-                && type_refs_equal(&left_type, &right_type, ctx.constants) =>
-        {
+        BinaryOp::BitOr | BinaryOp::BitXor | BinaryOp::BitAnd => {
+            if left_type.is_byte() && right_type.is_byte() {
+                return Ok(left_type);
+            }
+            let left_is_byte_array = matches!(left_type.base, TypeBase::Byte) && left_type.is_array();
+            let right_is_byte_array = matches!(right_type.base, TypeBase::Byte) && right_type.is_array();
+            if !left_is_byte_array || !right_is_byte_array {
+                return Err(CompilerError::Unsupported(format!(
+                    "bitwise operations require bytes or byte arrays, got {} and {}",
+                    left_type.type_name(),
+                    right_type.type_name()
+                )));
+            }
+            if !type_refs_equal(&left_type, &right_type, ctx.constants) {
+                return Err(CompilerError::Unsupported(format!(
+                    "bitwise operations require byte arrays of equal size, got {} and {}",
+                    left_type.type_name(),
+                    right_type.type_name()
+                )));
+            }
             Ok(left_type)
         }
-        BinaryOp::Add
-        | BinaryOp::Sub
-        | BinaryOp::Mul
-        | BinaryOp::Div
-        | BinaryOp::Mod
-        | BinaryOp::BitOr
-        | BinaryOp::BitXor
-        | BinaryOp::BitAnd => {
+        BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Mod => {
             let int_type = scalar_type(TypeBase::Int);
             ensure_expected(&left_type, Some(&int_type), ctx.constants)?;
             ensure_expected(&right_type, Some(&int_type), ctx.constants)?;
