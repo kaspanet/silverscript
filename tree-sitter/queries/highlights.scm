@@ -12,6 +12,8 @@
 
 (type_name) @type
 
+(array_type) @type
+
 (instantiation
   (identifier) @type.builtin
   (#match? @type.builtin

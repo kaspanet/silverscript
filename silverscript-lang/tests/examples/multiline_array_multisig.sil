@@ -3,11 +3,11 @@ pragma silverscript ^0.1.0;
 contract Test() {
     function cms(sig s, pubkey pk) {
         require(checkMultiSig(
-            [
+            sig[]{
                 s, sig(0x00)
-            ], [
+            }, pubkey[]{
                 pk, pubkey(0x00)
-            ]
+            }
         ));
     }
 }

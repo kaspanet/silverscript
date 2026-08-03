@@ -340,7 +340,7 @@ export default grammar({
         $.instantiation,
         $.struct_literal,
         $.introspection,
-        $.array,
+        $.typed_array,
         $.nullary_op,
         $.identifier,
         $.literal,
@@ -405,11 +405,14 @@ export default grammar({
         "sigScript",
       ),
 
-    array: ($) => seq("[", optional(commaSep($.expression)), "]"),
+    typed_array: ($) =>
+      seq($.array_type, "{", optional(commaSep($.expression)), "}"),
 
     modifier: (_) => "constant",
 
     type_name: ($) => prec.right(seq($.base_type, repeat($.array_suffix))),
+
+    array_type: ($) => prec.right(seq($.base_type, repeat1($.array_suffix))),
 
     base_type: ($) =>
       choice("int", "bool", "string", "pubkey", "sig", "datasig", "byte", $.identifier),
@@ -420,7 +423,7 @@ export default grammar({
 
     array_size: ($) => choice("_", $.identifier, $.array_bound),
 
-    array_bound: (_) => token(/[1-9][0-9]*/),
+    array_bound: (_) => token(/[0-9]+/),
 
     literal: ($) =>
       choice(

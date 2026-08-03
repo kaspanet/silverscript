@@ -15,12 +15,12 @@ contract Contract(
             sha256(oracleMessage),
             oraclePk,
         ));
-        require(checkMultiSig([
+        require(checkMultiSig(sig[]{
             ownerSig,
             oracleTxSig,
-        ], [
+        }, pubkey[]{
             ownerPk,
             oraclePk,
-        ]));
+        }));
     }
 }
