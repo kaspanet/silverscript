@@ -2218,9 +2218,10 @@ where
         ExprKind::ArrayIndex { source, index } => {
             Ok(Expr::new(ExprKind::ArrayIndex { source: Box::new(map_child(source)?), index: Box::new(map_child(index)?) }, span))
         }
-        ExprKind::Introspection { kind, index, field_span } => {
-            Ok(Expr::new(ExprKind::Introspection { kind: *kind, index: Box::new(map_child(index)?), field_span: *field_span }, span))
-        }
+        ExprKind::IndexedIntrospection { kind, index, field_span } => Ok(Expr::new(
+            ExprKind::IndexedIntrospection { kind: *kind, index: Box::new(map_child(index)?), field_span: *field_span },
+            span,
+        )),
         ExprKind::UnarySuffix { source, kind, span: suffix_span } => {
             Ok(Expr::new(ExprKind::UnarySuffix { source: Box::new(map_child(source)?), kind: *kind, span: *suffix_span }, span))
         }

@@ -343,8 +343,12 @@ fn lower_expr<'i>(expr: &Expr<'i>, scope: &LoweringScope, structs: &StructRegist
             },
             span,
         )),
-        ExprKind::Introspection { kind, index, field_span } => Ok(Expr::new(
-            ExprKind::Introspection { kind: *kind, index: Box::new(lower_expr(index, scope, structs)?), field_span: *field_span },
+        ExprKind::IndexedIntrospection { kind, index, field_span } => Ok(Expr::new(
+            ExprKind::IndexedIntrospection {
+                kind: *kind,
+                index: Box::new(lower_expr(index, scope, structs)?),
+                field_span: *field_span,
+            },
             span,
         )),
         ExprKind::UnarySuffix { source, kind, span: suffix_span } => {

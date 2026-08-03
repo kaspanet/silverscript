@@ -117,9 +117,9 @@ primary = _{
     | function_call
     | instantiation
     | struct_literal
-    | introspection
+    | indexed_introspection
     | typed_array
-    | NullaryOp
+    | Introspection
     | Identifier
     | literal
 }
@@ -132,7 +132,7 @@ cast = { cast_type_name ~ "(" ~ expression ~ ("," ~ expression)? ~ ","? ~ ")" }
 cast_type_name = { builtin_type ~ array_suffix* }
 instantiation = { "new" ~ Identifier ~ expression_list }
 
-introspection = {
+indexed_introspection = {
     ("tx.outputs" ~ "[" ~ expression ~ "]" ~ output_field)
     | ("tx.inputs" ~ "[" ~ expression ~ "]" ~ input_field)
 }
@@ -173,7 +173,7 @@ HexLiteral = @{ "0" ~ ("x" | "X") ~ ASCII_HEX_DIGIT* }
 
 TxVar = { "this.age" | "tx.time" }
 
-NullaryOp = {
+Introspection = {
     "this.activeInputIndex"
     | "this.activeScriptPubKey"
     | "this.bytecodeSizeDataPrefix"

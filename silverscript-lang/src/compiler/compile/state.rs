@@ -19,8 +19,8 @@ fn input_sigscript_substr_expr<'i>(input_idx: &Expr<'i>, start: Expr<'i>, end: E
 
 fn input_script_pubkey_expr<'i>(input_idx: &Expr<'i>) -> Expr<'i> {
     Expr::new(
-        ExprKind::Introspection {
-            kind: IntrospectionKind::InputScriptPubKey,
+        ExprKind::IndexedIntrospection {
+            kind: IndexedIntrospectionKind::InputScriptPubKey,
             index: Box::new(input_idx.clone()),
             field_span: span::Span::default(),
         },
@@ -37,7 +37,7 @@ pub(in crate::compiler) fn read_input_state_field_expr_symbolic<'i>(
     contract_constants: &HashMap<String, Expr<'i>>,
 ) -> Result<Expr<'i>, CompilerError> {
     let state_start_offset = state_start_offset(contract_fields_end_offset, contract_fields, contract_constants)?;
-    let bytecode_size_expr = Expr::new(ExprKind::Nullary(NullaryOp::ThisBytecodeSize), span::Span::default());
+    let bytecode_size_expr = Expr::new(ExprKind::Introspection(IntrospectionKind::ThisBytecodeSize), span::Span::default());
     read_input_state_field_expr(
         input_idx,
         &field.type_ref,

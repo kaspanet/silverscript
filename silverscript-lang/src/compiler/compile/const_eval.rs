@@ -155,8 +155,12 @@ pub(crate) fn resolve_constant_references<'i>(
             },
             span,
         )),
-        ExprKind::Introspection { kind, index, field_span } => Ok(Expr::new(
-            ExprKind::Introspection { kind, index: Box::new(resolve_constant_references(*index, constants, visiting)?), field_span },
+        ExprKind::IndexedIntrospection { kind, index, field_span } => Ok(Expr::new(
+            ExprKind::IndexedIntrospection {
+                kind,
+                index: Box::new(resolve_constant_references(*index, constants, visiting)?),
+                field_span,
+            },
             span,
         )),
         ExprKind::UnarySuffix { source, kind, span: suffix_span } => Ok(Expr::new(

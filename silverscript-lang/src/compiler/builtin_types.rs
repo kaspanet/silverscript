@@ -1,4 +1,4 @@
-use crate::ast::{ArrayDim, IntrospectionKind, NullaryOp, TypeBase, TypeRef};
+use crate::ast::{ArrayDim, IndexedIntrospectionKind, IntrospectionKind, TypeBase, TypeRef};
 
 use super::STATE_TYPE_NAME;
 
@@ -16,28 +16,28 @@ pub(super) enum BuiltinReturn {
     Void,
 }
 
-pub(super) fn nullary_type(op: NullaryOp) -> TypeRef {
+pub(super) fn introspection_type(op: IntrospectionKind) -> TypeRef {
     match op {
-        NullaryOp::ActiveScriptPubKey | NullaryOp::ThisBytecodeSizeDataPrefix => byte_array(ArrayDim::Dynamic),
-        NullaryOp::ActiveInputIndex
-        | NullaryOp::ThisBytecodeSize
-        | NullaryOp::TxInputsLength
-        | NullaryOp::TxOutputsLength
-        | NullaryOp::TxVersion
-        | NullaryOp::TxLockTime => scalar(TypeBase::Int),
+        IntrospectionKind::ActiveScriptPubKey | IntrospectionKind::ThisBytecodeSizeDataPrefix => byte_array(ArrayDim::Dynamic),
+        IntrospectionKind::ActiveInputIndex
+        | IntrospectionKind::ThisBytecodeSize
+        | IntrospectionKind::TxInputsLength
+        | IntrospectionKind::TxOutputsLength
+        | IntrospectionKind::TxVersion
+        | IntrospectionKind::TxLockTime => scalar(TypeBase::Int),
     }
 }
 
-pub(super) fn introspection_type(kind: IntrospectionKind) -> TypeRef {
+pub(super) fn indexed_introspection_type(kind: IndexedIntrospectionKind) -> TypeRef {
     match kind {
-        IntrospectionKind::InputScriptPubKey
-        | IntrospectionKind::InputSigScript
-        | IntrospectionKind::InputOutpointTransactionHash
-        | IntrospectionKind::OutputScriptPubKey => byte_array(ArrayDim::Dynamic),
-        IntrospectionKind::InputValue
-        | IntrospectionKind::InputOutpointIndex
-        | IntrospectionKind::InputSequenceNumber
-        | IntrospectionKind::OutputValue => scalar(TypeBase::Int),
+        IndexedIntrospectionKind::InputScriptPubKey
+        | IndexedIntrospectionKind::InputSigScript
+        | IndexedIntrospectionKind::InputOutpointTransactionHash
+        | IndexedIntrospectionKind::OutputScriptPubKey => byte_array(ArrayDim::Dynamic),
+        IndexedIntrospectionKind::InputValue
+        | IndexedIntrospectionKind::InputOutpointIndex
+        | IndexedIntrospectionKind::InputSequenceNumber
+        | IndexedIntrospectionKind::OutputValue => scalar(TypeBase::Int),
     }
 }
 

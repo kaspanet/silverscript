@@ -5,8 +5,8 @@ use crate::ast::{
 };
 
 use super::builtin_types::{
-    BuiltinReturn, builtin_parameters, builtin_return, constructor_parameters, constructor_return_type, introspection_type,
-    nullary_type,
+    BuiltinReturn, builtin_parameters, builtin_return, constructor_parameters, constructor_return_type, indexed_introspection_type,
+    introspection_type,
 };
 use super::structs::{StructRegistry, flattened_struct_field_specs_for_type, is_struct, struct_name};
 use super::{CompilerError, STATE_TYPE_NAME, TypeMap, append_type, array_type_size, concat_types, parse_type_ref, type_refs_equal};
@@ -99,10 +99,10 @@ pub(super) fn check_expr<'i>(
                 then_type
             }
         }
-        ExprKind::Nullary(kind) => nullary_type(*kind),
-        ExprKind::Introspection { kind, index, .. } => {
+        ExprKind::Introspection(kind) => introspection_type(*kind),
+        ExprKind::IndexedIntrospection { kind, index, .. } => {
             check_expr(index, Some(&scalar_type(TypeBase::Int)), ctx)?;
-            introspection_type(*kind)
+            indexed_introspection_type(*kind)
         }
         ExprKind::StructLiteral { .. } => check_struct_literal(expr, expected, ctx)?,
         ExprKind::FieldAccess { source, field, .. } => {

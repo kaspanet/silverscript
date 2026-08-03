@@ -42,7 +42,7 @@
 
 (tx_var) @variable.builtin
 
-(nullary_op) @variable.builtin
+(introspection) @variable.builtin
 
 (output_root) @variable.builtin
 

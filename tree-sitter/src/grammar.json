@@ -1874,7 +1874,7 @@
         },
         {
           "type": "SYMBOL",
-          "name": "introspection"
+          "name": "indexed_introspection"
         },
         {
           "type": "SYMBOL",
@@ -1882,7 +1882,7 @@
         },
         {
           "type": "SYMBOL",
-          "name": "nullary_op"
+          "name": "introspection"
         },
         {
           "type": "SYMBOL",
@@ -2136,7 +2136,7 @@
         }
       ]
     },
-    "introspection": {
+    "indexed_introspection": {
       "type": "CHOICE",
       "members": [
         {
@@ -2651,7 +2651,7 @@
         }
       ]
     },
-    "nullary_op": {
+    "introspection": {
       "type": "CHOICE",
       "members": [
         {

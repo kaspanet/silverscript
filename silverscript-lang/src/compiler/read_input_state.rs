@@ -284,9 +284,11 @@ fn lower_expr<'i>(expr: &Expr<'i>, prefix: &mut Vec<Statement<'i>>, context: &mu
             then_expr: Box::new(lower_expr(then_expr, prefix, context)),
             else_expr: Box::new(lower_expr(else_expr, prefix, context)),
         },
-        ExprKind::Introspection { kind, index, field_span } => {
-            ExprKind::Introspection { kind: *kind, index: Box::new(lower_expr(index, prefix, context)), field_span: *field_span }
-        }
+        ExprKind::IndexedIntrospection { kind, index, field_span } => ExprKind::IndexedIntrospection {
+            kind: *kind,
+            index: Box::new(lower_expr(index, prefix, context)),
+            field_span: *field_span,
+        },
         ExprKind::StructLiteral { name, fields, name_span } => ExprKind::StructLiteral {
             name: name.clone(),
             fields: fields

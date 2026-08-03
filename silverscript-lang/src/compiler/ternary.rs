@@ -384,11 +384,11 @@ impl<'a, 'i> TernaryLowerer<'a, 'i> {
                     ),
                 ))
             }
-            ExprKind::Introspection { kind, index, field_span } => {
+            ExprKind::IndexedIntrospection { kind, index, field_span } => {
                 let (prelude, index) = self.lower_expr(index, None, types)?;
                 Ok((
                     prelude,
-                    Expr::new(ExprKind::Introspection { kind: *kind, index: Box::new(index), field_span: *field_span }, span),
+                    Expr::new(ExprKind::IndexedIntrospection { kind: *kind, index: Box::new(index), field_span: *field_span }, span),
                 ))
             }
             ExprKind::StructLiteral { name, fields, name_span } => {
@@ -422,7 +422,7 @@ impl<'a, 'i> TernaryLowerer<'a, 'i> {
             | ExprKind::String(_)
             | ExprKind::DateLiteral(_)
             | ExprKind::Identifier(_)
-            | ExprKind::Nullary(_)
+            | ExprKind::Introspection(_)
             | ExprKind::NumberWithUnit { .. } => Ok((Vec::new(), expr.clone())),
         }
     }

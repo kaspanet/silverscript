@@ -290,8 +290,8 @@ fn substitute_expr<'i>(expr: &Expr<'i>, aliases: &HashMap<String, Expr<'i>>) -> 
             },
             span,
         ),
-        ExprKind::Introspection { kind, index, field_span } => {
-            Expr::new(ExprKind::Introspection { kind, index: Box::new(substitute_expr(&index, aliases)?), field_span }, span)
+        ExprKind::IndexedIntrospection { kind, index, field_span } => {
+            Expr::new(ExprKind::IndexedIntrospection { kind, index: Box::new(substitute_expr(&index, aliases)?), field_span }, span)
         }
         ExprKind::UnarySuffix { source, kind, span: suffix_span } => {
             Expr::new(ExprKind::UnarySuffix { source: Box::new(substitute_expr(&source, aliases)?), kind, span: suffix_span }, span)
@@ -434,14 +434,14 @@ fn collect_expr_identifier_uses<'i>(expr: &Expr<'i>, uses: &mut HashMap<String, 
             collect_expr_identifier_uses(start, uses);
             collect_expr_identifier_uses(end, uses);
         }
-        ExprKind::Introspection { index, .. } => collect_expr_identifier_uses(index, uses),
+        ExprKind::IndexedIntrospection { index, .. } => collect_expr_identifier_uses(index, uses),
         ExprKind::UnarySuffix { source, .. } | ExprKind::FieldAccess { source, .. } => collect_expr_identifier_uses(source, uses),
         ExprKind::Int(_)
         | ExprKind::DateLiteral(_)
         | ExprKind::Bool(_)
         | ExprKind::Byte(_)
         | ExprKind::String(_)
-        | ExprKind::Nullary(_)
+        | ExprKind::Introspection(_)
         | ExprKind::NumberWithUnit { .. } => {}
     }
 }
@@ -466,14 +466,14 @@ fn expr_references_any(expr: &Expr<'_>, names: &HashSet<String>) -> bool {
         ExprKind::Slice { source, start, end, .. } => {
             expr_references_any(source, names) || expr_references_any(start, names) || expr_references_any(end, names)
         }
-        ExprKind::Introspection { index, .. } => expr_references_any(index, names),
+        ExprKind::IndexedIntrospection { index, .. } => expr_references_any(index, names),
         ExprKind::UnarySuffix { source, .. } | ExprKind::FieldAccess { source, .. } => expr_references_any(source, names),
         ExprKind::Int(_)
         | ExprKind::DateLiteral(_)
         | ExprKind::Bool(_)
         | ExprKind::Byte(_)
         | ExprKind::String(_)
-        | ExprKind::Nullary(_)
+        | ExprKind::Introspection(_)
         | ExprKind::NumberWithUnit { .. } => false,
     }
 }

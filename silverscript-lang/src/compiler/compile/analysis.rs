@@ -46,8 +46,8 @@ pub(super) fn statement_uses_bytecode_size(stmt: &Statement<'_>) -> bool {
 
 pub(super) fn expr_uses_bytecode_size<'i>(expr: &Expr<'i>) -> bool {
     match &expr.kind {
-        ExprKind::Nullary(NullaryOp::ThisBytecodeSize) => true,
-        ExprKind::Nullary(NullaryOp::ThisBytecodeSizeDataPrefix) => true,
+        ExprKind::Introspection(IntrospectionKind::ThisBytecodeSize) => true,
+        ExprKind::Introspection(IntrospectionKind::ThisBytecodeSizeDataPrefix) => true,
         ExprKind::Unary { expr, .. } => expr_uses_bytecode_size(expr),
         ExprKind::Binary { left, right, .. } => expr_uses_bytecode_size(left) || expr_uses_bytecode_size(right),
         ExprKind::Append { source, args, .. } => expr_uses_bytecode_size(source) || args.iter().any(expr_uses_bytecode_size),
@@ -65,7 +65,7 @@ pub(super) fn expr_uses_bytecode_size<'i>(expr: &Expr<'i>) -> bool {
         ExprKind::FieldAccess { source, .. } => expr_uses_bytecode_size(source),
         ExprKind::UnarySuffix { source, .. } => expr_uses_bytecode_size(source),
         ExprKind::ArrayIndex { source, index } => expr_uses_bytecode_size(source) || expr_uses_bytecode_size(index),
-        ExprKind::Introspection { index, .. } => expr_uses_bytecode_size(index),
+        ExprKind::IndexedIntrospection { index, .. } => expr_uses_bytecode_size(index),
         ExprKind::Int(_)
         | ExprKind::Bool(_)
         | ExprKind::Byte(_)
@@ -73,6 +73,6 @@ pub(super) fn expr_uses_bytecode_size<'i>(expr: &Expr<'i>) -> bool {
         | ExprKind::Identifier(_)
         | ExprKind::DateLiteral(_)
         | ExprKind::NumberWithUnit { .. }
-        | ExprKind::Nullary(_) => false,
+        | ExprKind::Introspection(_) => false,
     }
 }

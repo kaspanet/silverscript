@@ -70,8 +70,8 @@ fn compile_expr_with_context<'i>(
         ExprKind::UnarySuffix { source, kind, .. } => compile_unary_suffix_expr(ctx, source, *kind),
         ExprKind::ArrayIndex { source, index } => compile_array_index_expr(ctx, source, index),
         ExprKind::Slice { source, start, end, .. } => compile_slice_expr(ctx, source, start, end),
-        ExprKind::Nullary(op) => compile_nullary_expr(ctx, *op),
-        ExprKind::Introspection { kind, index, .. } => compile_introspection_expr(ctx, *kind, index),
+        ExprKind::Introspection(op) => compile_introspection_expr(ctx, *op),
+        ExprKind::IndexedIntrospection { kind, index, .. } => compile_indexed_introspection_expr(ctx, *kind, index),
         ExprKind::DateLiteral(value) => compile_date_literal_expr(ctx, *value),
         ExprKind::NumberWithUnit { .. } => compile_number_with_unit_expr(),
     }
@@ -522,23 +522,23 @@ fn compile_slice_expr<'i>(
     Ok(())
 }
 
-fn compile_nullary_expr<'i>(ctx: &mut CompileExprContext<'_, '_, 'i>, op: NullaryOp) -> Result<(), CompilerError> {
+fn compile_introspection_expr<'i>(ctx: &mut CompileExprContext<'_, '_, 'i>, op: IntrospectionKind) -> Result<(), CompilerError> {
     match op {
-        NullaryOp::ActiveInputIndex => {
+        IntrospectionKind::ActiveInputIndex => {
             ctx.emit_op(OpTxInputIndex, 1)?;
         }
-        NullaryOp::ActiveScriptPubKey => {
+        IntrospectionKind::ActiveScriptPubKey => {
             ctx.emit_op(OpTxInputIndex, 1)?;
             ctx.emit_op(OpTxInputSpk, 0)?;
         }
-        NullaryOp::ThisBytecodeSize => {
+        IntrospectionKind::ThisBytecodeSize => {
             let size = ctx
                 .env
                 .bytecode_size
                 .ok_or_else(|| CompilerError::Unsupported("this.bytecodeSize is only available at compile time".to_string()))?;
             ctx.push_int(size)?;
         }
-        NullaryOp::ThisBytecodeSizeDataPrefix => {
+        IntrospectionKind::ThisBytecodeSizeDataPrefix => {
             let size = ctx.env.bytecode_size.ok_or_else(|| {
                 CompilerError::Unsupported("this.bytecodeSizeDataPrefix is only available at compile time".to_string())
             })?;
@@ -548,56 +548,56 @@ fn compile_nullary_expr<'i>(ctx: &mut CompileExprContext<'_, '_, 'i>, op: Nullar
             let prefix = data_prefix(size)?;
             ctx.push_data(&prefix)?;
         }
-        NullaryOp::TxInputsLength => {
+        IntrospectionKind::TxInputsLength => {
             ctx.emit_op(OpTxInputCount, 1)?;
         }
-        NullaryOp::TxOutputsLength => {
+        IntrospectionKind::TxOutputsLength => {
             ctx.emit_op(OpTxOutputCount, 1)?;
         }
-        NullaryOp::TxVersion => {
+        IntrospectionKind::TxVersion => {
             ctx.emit_op(OpTxVersion, 1)?;
         }
-        NullaryOp::TxLockTime => {
+        IntrospectionKind::TxLockTime => {
             ctx.emit_op(OpTxLockTime, 1)?;
         }
     }
     Ok(())
 }
 
-fn compile_introspection_expr<'i>(
+fn compile_indexed_introspection_expr<'i>(
     ctx: &mut CompileExprContext<'_, '_, 'i>,
-    kind: IntrospectionKind,
+    kind: IndexedIntrospectionKind,
     index: &Expr<'i>,
 ) -> Result<(), CompilerError> {
     let int_type = scalar_type(TypeBase::Int);
     compile_expr_with_context(ctx, index, Some(&int_type))?;
     match kind {
-        IntrospectionKind::InputValue => {
+        IndexedIntrospectionKind::InputValue => {
             ctx.emit_op(OpTxInputAmount, 0)?;
         }
-        IntrospectionKind::InputScriptPubKey => {
+        IndexedIntrospectionKind::InputScriptPubKey => {
             ctx.emit_op(OpTxInputSpk, 0)?;
         }
-        IntrospectionKind::InputSigScript => {
+        IndexedIntrospectionKind::InputSigScript => {
             ctx.emit_op(OpDup, 1)?;
             ctx.emit_op(OpTxInputScriptSigLen, 0)?;
             ctx.push_int(0)?;
             ctx.emit_op(OpSwap, 0)?;
             ctx.emit_op(OpTxInputScriptSigSubstr, -2)?;
         }
-        IntrospectionKind::InputOutpointTransactionHash => {
+        IndexedIntrospectionKind::InputOutpointTransactionHash => {
             ctx.emit_op(OpOutpointTxId, 0)?;
         }
-        IntrospectionKind::InputOutpointIndex => {
+        IndexedIntrospectionKind::InputOutpointIndex => {
             ctx.emit_op(OpOutpointIndex, 0)?;
         }
-        IntrospectionKind::InputSequenceNumber => {
+        IndexedIntrospectionKind::InputSequenceNumber => {
             ctx.emit_op(OpTxInputSeq, 0)?;
         }
-        IntrospectionKind::OutputValue => {
+        IndexedIntrospectionKind::OutputValue => {
             ctx.emit_op(OpTxOutputAmount, 0)?;
         }
-        IntrospectionKind::OutputScriptPubKey => {
+        IndexedIntrospectionKind::OutputScriptPubKey => {
             ctx.emit_op(OpTxOutputSpk, 0)?;
         }
     }
