@@ -275,7 +275,7 @@ impl<'a, 'i> ValidateStatementShapesContext<'a, 'i> {
     }
 
     fn check_call(&self, name: &str, args: &[Expr<'i>], expected: Option<&TypeRef>) -> Result<Option<TypeRef>, CompilerError> {
-        type_check::check_call(name, name, args, expected, &self.type_check_context())
+        type_check::check_call(name, args, expected, &self.type_check_context())
     }
 }
 

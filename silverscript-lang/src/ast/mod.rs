@@ -2487,15 +2487,7 @@ fn parse_cast<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {
 
     let type_name = cast_type.map_or(type_name, |type_ref| type_ref.type_name());
 
-    if type_name == "byte" {
-        return Ok(Expr::new(ExprKind::Call { name: "byte[1]".to_string(), args, name_span: type_span }, span));
-    }
-
-    if type_name == "int" {
-        return Ok(Expr::new(ExprKind::Call { name: "int".to_string(), args, name_span: type_span }, span));
-    }
-
-    if matches!(type_name.as_str(), "sig" | "pubkey" | "datasig") {
+    if matches!(type_name.as_str(), "byte" | "int" | "sig" | "pubkey" | "datasig") {
         return Ok(Expr::new(ExprKind::Call { name: type_name, args, name_span: type_span }, span));
     }
 

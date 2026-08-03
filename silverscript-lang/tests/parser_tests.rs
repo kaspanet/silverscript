@@ -62,6 +62,26 @@ fn type_predicates_only_match_scalars() {
 }
 
 #[test]
+fn scalar_byte_cast_remains_scalar_in_the_ast() {
+    let input = r#"
+        contract Convert() {
+            entry main(int value) {
+                byte result = byte(value);
+            }
+        }
+    "#;
+    let contract = parse_contract_ast(input).expect("scalar byte cast should parse");
+    let Statement::VariableDefinition { expr: Some(expr), .. } = &contract.functions[0].body[0] else {
+        panic!("expected a variable definition with an initializer");
+    };
+    let ExprKind::Call { name, .. } = &expr.kind else {
+        panic!("expected a scalar cast call");
+    };
+
+    assert_eq!(name, "byte");
+}
+
+#[test]
 fn try_from_expr_vec_infers_a_fixed_array_type() {
     let expr = Expr::try_from(vec![Expr::int(1), Expr::int(2)]).expect("homogeneous array type should be inferred");
     let ExprKind::Array { type_ref, values } = expr.kind else {
