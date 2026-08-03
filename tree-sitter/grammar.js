@@ -466,8 +466,8 @@ export default grammar({
       choice(
         "this.activeInputIndex",
         "this.activeScriptPubKey",
-        "this.scriptSizeDataPrefix",
-        "this.scriptSize",
+        "this.bytecodeSizeDataPrefix",
+        "this.bytecodeSize",
         "tx.inputs.length",
         "tx.outputs.length",
         "tx.version",

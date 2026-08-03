@@ -71,84 +71,85 @@ pub(super) fn compile_contract_impl<'i>(
     let without_selector = entrypoint_functions.len() == 1;
 
     let function_abi_entries = build_function_abi_entries(&covenant_lowered_contract);
-    let uses_script_size = contract_uses_script_size(&lowered_contract);
+    let uses_bytecode_size = contract_uses_bytecode_size(&lowered_contract);
 
-    let mut script_size = if uses_script_size { Some(100i64) } else { None };
+    let mut bytecode_size = if uses_bytecode_size { Some(100i64) } else { None };
 
     for _ in 0..32 {
         debug_recorder.record_contract_scope(&inline_lowered_contract, constructor_args, &structs)?;
 
-        let (script, state_layout) = compile_contract_script_iteration(
+        let (bytecode, state_layout) = compile_contract_bytecode_iteration(
             &lowered_contract,
             &lowered_constants,
-            script_size,
+            bytecode_size,
             without_selector,
             &structs,
             &mut debug_recorder,
         )?;
 
         let debug_info = debug_recorder.take_debug_info(source);
-        if !uses_script_size {
+        if !uses_bytecode_size {
             return Ok(build_compiled_contract(
                 &lowered_contract,
                 &covenant_lowered_contract,
                 function_abi_entries.clone(),
                 without_selector,
-                script,
+                bytecode,
                 state_layout,
                 debug_info,
             ));
         }
 
-        let actual_size = script.len() as i64;
-        if Some(actual_size) == script_size {
+        let actual_size = bytecode.len() as i64;
+        if Some(actual_size) == bytecode_size {
             return Ok(build_compiled_contract(
                 &lowered_contract,
                 &covenant_lowered_contract,
                 function_abi_entries.clone(),
                 without_selector,
-                script,
+                bytecode,
                 state_layout,
                 debug_info,
             ));
         }
-        script_size = Some(actual_size);
+        bytecode_size = Some(actual_size);
     }
 
-    Err(CompilerError::Unsupported("script size did not stabilize".to_string()))
+    Err(CompilerError::Unsupported("bytecode size did not stabilize".to_string()))
 }
 
-fn compile_contract_script_iteration<'i>(
+fn compile_contract_bytecode_iteration<'i>(
     lowered_contract: &ContractAst<'i>,
     lowered_constants: &HashMap<String, Expr<'i>>,
-    script_size: Option<i64>,
+    bytecode_size: Option<i64>,
     without_selector: bool,
     structs: &StructRegistry,
     debug_recorder: &mut DebugRecorder<'i>,
 ) -> Result<(Vec<u8>, CompiledStateLayout), CompilerError> {
-    let (_contract_fields, field_prolog_script) = compile_contract_fields(&lowered_contract.fields, lowered_constants, script_size)?;
+    let (_contract_fields, field_prolog_bytecode) =
+        compile_contract_fields(&lowered_contract.fields, lowered_constants, bytecode_size)?;
 
     let selector_prefix_len = if without_selector { 0 } else { 1 };
-    let contract_fields_end_offset = selector_prefix_len + field_prolog_script.len();
-    let state_layout = CompiledStateLayout { start: selector_prefix_len, len: field_prolog_script.len() };
-    let compiled_entrypoints = compile_entrypoint_scripts(
+    let contract_fields_end_offset = selector_prefix_len + field_prolog_bytecode.len();
+    let state_layout = CompiledStateLayout { start: selector_prefix_len, len: field_prolog_bytecode.len() };
+    let compiled_entrypoints = compile_entrypoint_bytecodes(
         lowered_contract,
         contract_fields_end_offset,
         lowered_constants,
         structs,
-        script_size,
+        bytecode_size,
         debug_recorder,
     )?;
-    let script = build_contract_script(debug_recorder, without_selector, &field_prolog_script, &compiled_entrypoints)?;
-    Ok((script, state_layout))
+    let bytecode = build_contract_bytecode(debug_recorder, without_selector, &field_prolog_bytecode, &compiled_entrypoints)?;
+    Ok((bytecode, state_layout))
 }
 
-fn compile_entrypoint_scripts<'i>(
+fn compile_entrypoint_bytecodes<'i>(
     lowered_contract: &ContractAst<'i>,
     contract_fields_end_offset: usize,
     lowered_constants: &HashMap<String, Expr<'i>>,
     structs: &StructRegistry,
-    script_size: Option<i64>,
+    bytecode_size: Option<i64>,
     debug_recorder: &mut DebugRecorder<'i>,
 ) -> Result<Vec<(String, Vec<u8>)>, CompilerError> {
     let mut compiled_entrypoints = Vec::new();
@@ -162,7 +163,7 @@ fn compile_entrypoint_scripts<'i>(
                 contract_fields_end_offset,
                 lowered_constants,
                 structs,
-                script_size,
+                bytecode_size,
                 debug_recorder,
             )?;
             compiled_entrypoints.push(compiled);
@@ -171,36 +172,36 @@ fn compile_entrypoint_scripts<'i>(
     Ok(compiled_entrypoints)
 }
 
-fn build_contract_script(
+fn build_contract_bytecode(
     debug_recorder: &mut DebugRecorder<'_>,
     without_selector: bool,
-    field_prolog_script: &[u8],
+    field_prolog_bytecode: &[u8],
     compiled_entrypoints: &[(String, Vec<u8>)],
 ) -> Result<Vec<u8>, CompilerError> {
     if without_selector {
-        let (name, entrypoint_script) =
+        let (name, entrypoint_bytecode) =
             compiled_entrypoints.first().ok_or_else(|| CompilerError::Unsupported("contract has no entries".to_string()))?;
-        debug_recorder.set_entrypoint_start(name, field_prolog_script.len());
-        let mut script = field_prolog_script.to_vec();
-        script.extend(entrypoint_script.clone());
-        return Ok(script);
+        debug_recorder.set_entrypoint_start(name, field_prolog_bytecode.len());
+        let mut bytecode = field_prolog_bytecode.to_vec();
+        bytecode.extend(entrypoint_bytecode.clone());
+        return Ok(bytecode);
     }
 
     // Preserve the selector while encoding contract state once so
     // reflection helpers can rewrite a single contiguous state segment.
     let mut builder = script_builder();
     builder.add_op(OpToAltStack)?;
-    builder.add_ops(field_prolog_script)?;
+    builder.add_ops(field_prolog_bytecode)?;
     builder.add_op(OpFromAltStack)?;
     let total = compiled_entrypoints.len();
-    for (entrypoint_index, (name, script)) in compiled_entrypoints.iter().enumerate() {
+    for (entrypoint_index, (name, bytecode)) in compiled_entrypoints.iter().enumerate() {
         builder.add_op(OpDup)?;
         builder.add_i64(entrypoint_index as i64)?;
         builder.add_op(OpNumEqual)?;
         builder.add_op(OpIf)?;
         builder.add_op(OpDrop)?;
         debug_recorder.set_entrypoint_start(name, builder.script().len());
-        builder.add_ops(script)?;
+        builder.add_ops(bytecode)?;
         builder.add_op(OpElse)?;
         if entrypoint_index == total - 1 {
             builder.add_op(OpReturn)?;
@@ -219,14 +220,14 @@ fn build_compiled_contract<'i>(
     covenant_lowered_contract: &ContractAst<'i>,
     function_abi_entries: Vec<FunctionAbiEntry>,
     without_selector: bool,
-    script: Vec<u8>,
+    bytecode: Vec<u8>,
     state_layout: CompiledStateLayout,
     debug_info: Option<DebugInfo<'i>>,
 ) -> CompiledContract<'i> {
     CompiledContract {
         contract_name: lowered_contract.name.clone(),
         compiler_version: COMPILER_VERSION.to_string(),
-        script,
+        bytecode,
         ast: covenant_lowered_contract.clone(),
         abi: function_abi_entries,
         without_selector,
@@ -256,7 +257,7 @@ pub fn compile_debug_expr<'i>(
     let mut builder = script_builder();
     let type_ref = infer_expr_type(expr, constants, types)?;
     let stack_bindings = StackBindings::from_depths(stack_bindings.clone());
-    let env = ExprEnv { constants, stack_bindings: &stack_bindings, types, script_size: None, contract_constants: &empty_constants };
+    let env = ExprEnv { constants, stack_bindings: &stack_bindings, types, bytecode_size: None, contract_constants: &empty_constants };
     let mut emitter = ScriptEmitter::new(&mut builder, 0);
     compile_expr(expr, Some(&type_ref), &env, &mut emitter)?;
     Ok((builder.drain(), type_ref.type_name()))

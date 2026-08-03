@@ -23,7 +23,7 @@ fn compiles_from_ast_json_require() {
     "#;
     let compiled_from_source = compile_contract(source, &[], CompileOptions::default()).expect("compile from source succeeds");
 
-    assert_eq!(compiled_from_ast.script, compiled_from_source.script);
+    assert_eq!(compiled_from_ast.bytecode, compiled_from_source.bytecode);
 }
 
 #[test]
@@ -42,5 +42,5 @@ fn compiles_from_ast_json_return() {
     "#;
     let compiled_from_source = compile_contract(source, &[], options).expect("compile from source succeeds");
 
-    assert_eq!(compiled_from_ast.script, compiled_from_source.script);
+    assert_eq!(compiled_from_ast.bytecode, compiled_from_source.bytecode);
 }

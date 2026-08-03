@@ -52,19 +52,19 @@ struct CliArgs {
     raw_args: Vec<String>,
 }
 
-fn compile_script_for_ctor_args(
+fn compile_bytecode_for_ctor_args(
     source: &str,
     parsed_contract: &ContractAst<'_>,
     raw_ctor_args: &[String],
     cache: &mut HashMap<Vec<String>, Vec<u8>>,
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    if let Some(script) = cache.get(raw_ctor_args) {
-        return Ok(script.clone());
+    if let Some(bytecode) = cache.get(raw_ctor_args) {
+        return Ok(bytecode.clone());
     }
     let ctor_args = parse_ctor_args(parsed_contract, raw_ctor_args)?;
     let compiled = compile_contract(source, &ctor_args, CompileOptions { record_debug_infos: true, ..Default::default() })?;
-    cache.insert(raw_ctor_args.to_vec(), compiled.script.clone());
-    Ok(compiled.script)
+    cache.insert(raw_ctor_args.to_vec(), compiled.bytecode.clone());
+    Ok(compiled.bytecode)
 }
 
 fn compile_contract_for_raw_ctor_args<'i>(
@@ -253,7 +253,7 @@ fn resolve_state_from_raw(
     Ok(value)
 }
 
-fn materialize_script_for_explicit_state(
+fn materialize_bytecode_for_explicit_state(
     source: &str,
     parsed_contract: &ContractAst<'_>,
     raw_instance_args: &[String],
@@ -271,20 +271,20 @@ fn materialize_script_for_explicit_state(
     let materialized_start = materialized.state_layout.start;
     let materialized_end = materialized_start + materialized.state_layout.len;
     if base_compiled.state_layout.len != materialized.state_layout.len {
-        return Err("explicit state changes encoded script size; provide raw script_hex instead".into());
+        return Err("explicit state changes encoded bytecode size; provide raw script_hex instead".into());
     }
-    if base_compiled.script.len() < base_end || materialized.script.len() < materialized_end {
-        return Err("state layout exceeds compiled script length".into());
+    if base_compiled.bytecode.len() < base_end || materialized.bytecode.len() < materialized_end {
+        return Err("state layout exceeds compiled bytecode length".into());
     }
-    if base_compiled.script[..base_start] != materialized.script[..materialized_start]
-        || base_compiled.script[base_end..] != materialized.script[materialized_end..]
+    if base_compiled.bytecode[..base_start] != materialized.bytecode[..materialized_start]
+        || base_compiled.bytecode[base_end..] != materialized.bytecode[materialized_end..]
     {
         return Err("explicit state changed non-state bytecode; provide raw script_hex instead".into());
     }
 
-    let mut script = base_compiled.script;
-    script[base_start..base_end].copy_from_slice(&materialized.script[materialized_start..materialized_end]);
-    Ok(script)
+    let mut bytecode = base_compiled.bytecode;
+    bytecode[base_start..base_end].copy_from_slice(&materialized.bytecode[materialized_start..materialized_end]);
+    Ok(bytecode)
 }
 
 fn contract_with_explicit_state<'i>(contract: &ContractAst<'i>, state: &Expr<'i>) -> Result<ContractAst<'i>, String> {
@@ -337,10 +337,10 @@ fn build_p2pk_script(pubkey: &[u8]) -> Vec<u8> {
         .drain()
 }
 
-fn sigscript_push_script(script: &[u8]) -> Vec<u8> {
+fn sigscript_push_bytecode(bytecode: &[u8]) -> Vec<u8> {
     ScriptBuilder::with_flags(EngineFlags { covenants_enabled: true, ..Default::default() })
-        .add_data(script)
-        .expect("push script data")
+        .add_data(bytecode)
+        .expect("push bytecode data")
         .drain()
 }
 
@@ -724,10 +724,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let compile_opts = CompileOptions { record_debug_infos: true, ..Default::default() };
     let compiled = compile_contract(&source, &ctor_args, compile_opts)?;
     let debug_info = compiled.debug_info.clone();
-    let mut ctor_script_cache = HashMap::<Vec<String>, Vec<u8>>::new();
+    let mut ctor_bytecode_cache = HashMap::<Vec<String>, Vec<u8>>::new();
     let mut ctor_state_cache = HashMap::<Vec<String>, DebugValue>::new();
     let mut explicit_state_cache = HashMap::<String, DebugValue>::new();
-    ctor_script_cache.insert(raw_ctor_args.clone(), compiled.script.clone());
+    ctor_bytecode_cache.insert(raw_ctor_args.clone(), compiled.bytecode.clone());
     if !parsed_contract.fields.is_empty() {
         let root_state = resolve_state_for_ctor_args(&parsed_contract, &raw_ctor_args, &mut ctor_state_cache)?;
         ctor_state_cache.insert(raw_ctor_args.clone(), root_state);
@@ -770,9 +770,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
         let redeem_script = if input.utxo_script_hex.is_none() {
             if let Some(raw_state) = input.state.as_deref() {
-                Some(materialize_script_for_explicit_state(&source, &parsed_contract, &input_ctor_raw, raw_state)?)
+                Some(materialize_bytecode_for_explicit_state(&source, &parsed_contract, &input_ctor_raw, raw_state)?)
             } else {
-                Some(compile_script_for_ctor_args(&source, &parsed_contract, &input_ctor_raw, &mut ctor_script_cache)?)
+                Some(compile_bytecode_for_ctor_args(&source, &parsed_contract, &input_ctor_raw, &mut ctor_bytecode_cache)?)
             }
         } else {
             None
@@ -816,12 +816,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let p2pk_script = build_p2pk_script(&pubkey_bytes);
             ScriptPublicKey::new(0, p2pk_script.into())
         } else {
-            let output_script = if let Some(raw_state) = output.state.as_deref() {
-                materialize_script_for_explicit_state(&source, &parsed_contract, &output_ctor_raw, raw_state)?
+            let output_bytecode = if let Some(raw_state) = output.state.as_deref() {
+                materialize_bytecode_for_explicit_state(&source, &parsed_contract, &output_ctor_raw, raw_state)?
             } else {
-                compile_script_for_ctor_args(&source, &parsed_contract, &output_ctor_raw, &mut ctor_script_cache)?
+                compile_bytecode_for_ctor_args(&source, &parsed_contract, &output_ctor_raw, &mut ctor_bytecode_cache)?
             };
-            pay_to_script_hash_script(&output_script)
+            pay_to_script_hash_script(&output_bytecode)
         };
 
         let covenant = if let Some(raw) = output.covenant_id.as_deref() {
@@ -917,7 +917,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             )?;
             combine_action_and_redeem(&auto_action, input_redeem_scripts[input_idx].as_ref().expect("checked is_some above"))?
         } else if let Some(redeem) = input_redeem_scripts[input_idx].as_ref() {
-            sigscript_push_script(redeem)
+            sigscript_push_bytecode(redeem)
         } else {
             vec![]
         };
@@ -949,7 +949,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         populated_tx.utxo(tx.active_input_index).ok_or_else(|| format!("missing utxo entry for input {}", tx.active_input_index))?;
     let active_covenant_input_state = input_covenant_states.get(tx.active_input_index).cloned().flatten();
     let active_lockscript =
-        input_redeem_scripts.get(tx.active_input_index).cloned().flatten().unwrap_or_else(|| compiled.script.clone());
+        input_redeem_scripts.get(tx.active_input_index).cloned().flatten().unwrap_or_else(|| compiled.bytecode.clone());
     let covenant_input_states = active_utxo.covenant_id.and_then(|covenant_id| {
         let mut values = Vec::new();
         for (input_covenant_id, covenant_input_state) in input_covenant_ids.iter().zip(input_covenant_states.iter()) {
@@ -984,7 +984,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         match session.run_to_completion() {
             Ok(()) if expect_fail => {
                 print_console_messages(&session.take_console_output());
-                eprintln!("FAIL: expected failure but script passed");
+                eprintln!("FAIL: expected failure but bytecode passed");
                 Err("FAIL".into())
             }
             Ok(()) => {
@@ -1002,7 +1002,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     } else {
-        println!("Stepping through {} bytes of script", compiled.script.len());
+        println!("Stepping through {} bytes of bytecode", compiled.bytecode.len());
         session.run_to_first_executed_statement()?;
         let mut pending_console_output = session.take_console_output();
         let console_output = Vec::new();

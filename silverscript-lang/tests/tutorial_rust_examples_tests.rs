@@ -18,7 +18,7 @@ fn tutorial_rust_programmatic_compilation_example() {
         .expect("programmatic compilation example should compile");
 
     assert_eq!(compiled.contract_name, "MyContract");
-    assert!(!compiled.script.is_empty());
+    assert!(!compiled.bytecode.is_empty());
     assert_eq!(compiled.abi.len(), 1);
     assert_eq!(compiled.abi[0].name, "spend");
 }

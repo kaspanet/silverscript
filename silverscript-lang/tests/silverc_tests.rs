@@ -39,7 +39,7 @@ fn temp_dir(name: &str) -> PathBuf {
     dir
 }
 
-fn run_script_with_selector(script: Vec<u8>, selector: Option<i64>) -> Result<(), kaspa_txscript_errors::TxScriptError> {
+fn run_bytecode_with_selector(bytecode: Vec<u8>, selector: Option<i64>) -> Result<(), kaspa_txscript_errors::TxScriptError> {
     let mut builder = ScriptBuilder::new();
     if let Some(selector) = selector {
         builder.add_i64(selector).unwrap();
@@ -54,7 +54,8 @@ fn run_script_with_selector(script: Vec<u8>, selector: Option<i64>) -> Result<()
         sequence: 0,
         compute_commit: SigopCount(0).into(),
     };
-    let output = TransactionOutput { value: 1000, script_public_key: ScriptPublicKey::new(0, script.clone().into()), covenant: None };
+    let output =
+        TransactionOutput { value: 1000, script_public_key: ScriptPublicKey::new(0, bytecode.clone().into()), covenant: None };
     let tx = Transaction::new(1, vec![input.clone()], vec![output.clone()], 0, Default::default(), 0, vec![]);
     let utxo_entry = UtxoEntry::new(output.value, output.script_public_key.clone(), 0, tx.is_coinbase(), None);
     let populated_tx = PopulatedTransaction::new(&tx, vec![utxo_entry.clone()]);
@@ -126,7 +127,7 @@ fn silverc_accepts_constructor_args_and_output_flag() {
     assert_eq!(compiled.compiler_version, COMPILER_VERSION);
     let selector =
         if compiled.without_selector { None } else { Some(function_branch_index(&compiled.ast, "main").expect("selector resolved")) };
-    assert!(run_script_with_selector(compiled.script, selector).is_ok());
+    assert!(run_bytecode_with_selector(compiled.bytecode, selector).is_ok());
 }
 
 #[test]

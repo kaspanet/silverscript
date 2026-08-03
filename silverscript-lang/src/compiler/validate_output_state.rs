@@ -312,20 +312,23 @@ fn input_template_parts_exprs<'i>(
     template_suffix_len: &Expr<'i>,
     state_len: usize,
 ) -> (Expr<'i>, Expr<'i>) {
-    let script_size = binary_expr(
+    let bytecode_size = binary_expr(
         BinaryOp::Add,
         binary_expr(BinaryOp::Add, template_prefix_len.clone(), Expr::int(state_len as i64)),
         template_suffix_len.clone(),
     );
-    let script_base = input_sigscript_base_expr(input_idx, script_size.clone());
-    let prefix_end = binary_expr(BinaryOp::Add, script_base.clone(), template_prefix_len.clone());
+    let bytecode_base = input_sigscript_base_expr(input_idx, bytecode_size.clone());
+    let prefix_end = binary_expr(BinaryOp::Add, bytecode_base.clone(), template_prefix_len.clone());
     let suffix_start = binary_expr(BinaryOp::Add, prefix_end.clone(), Expr::int(state_len as i64));
     let suffix_end = binary_expr(BinaryOp::Add, suffix_start.clone(), template_suffix_len.clone());
-    (input_sigscript_substr_expr(input_idx, script_base, prefix_end), input_sigscript_substr_expr(input_idx, suffix_start, suffix_end))
+    (
+        input_sigscript_substr_expr(input_idx, bytecode_base, prefix_end),
+        input_sigscript_substr_expr(input_idx, suffix_start, suffix_end),
+    )
 }
 
-fn input_sigscript_base_expr<'i>(input_idx: &Expr<'i>, script_size_expr: Expr<'i>) -> Expr<'i> {
-    binary_expr(BinaryOp::Sub, Expr::call("OpTxInputScriptSigLen", vec![input_idx.clone()]), script_size_expr)
+fn input_sigscript_base_expr<'i>(input_idx: &Expr<'i>, bytecode_size_expr: Expr<'i>) -> Expr<'i> {
+    binary_expr(BinaryOp::Sub, Expr::call("OpTxInputScriptSigLen", vec![input_idx.clone()]), bytecode_size_expr)
 }
 
 fn input_sigscript_substr_expr<'i>(input_idx: &Expr<'i>, start: Expr<'i>, end: Expr<'i>) -> Expr<'i> {

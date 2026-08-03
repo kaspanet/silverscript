@@ -1889,11 +1889,11 @@
     "named": false
   },
   {
-    "type": "this.scriptSize",
+    "type": "this.bytecodeSize",
     "named": false
   },
   {
-    "type": "this.scriptSizeDataPrefix",
+    "type": "this.bytecodeSizeDataPrefix",
     "named": false
   },
   {

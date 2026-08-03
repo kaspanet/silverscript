@@ -9,8 +9,8 @@ fn byte_array_type(dimension: ArrayDim) -> TypeRef {
     TypeRef { base: TypeBase::Byte, array_dims: vec![dimension] }
 }
 
-fn input_sigscript_base_expr<'i>(input_idx: &Expr<'i>, script_size_expr: Expr<'i>) -> Expr<'i> {
-    binary_expr(BinaryOp::Sub, Expr::call("OpTxInputScriptSigLen", vec![input_idx.clone()]), script_size_expr)
+fn input_sigscript_base_expr<'i>(input_idx: &Expr<'i>, bytecode_size_expr: Expr<'i>) -> Expr<'i> {
+    binary_expr(BinaryOp::Sub, Expr::call("OpTxInputScriptSigLen", vec![input_idx.clone()]), bytecode_size_expr)
 }
 
 fn input_sigscript_substr_expr<'i>(input_idx: &Expr<'i>, start: Expr<'i>, end: Expr<'i>) -> Expr<'i> {
@@ -37,13 +37,13 @@ pub(in crate::compiler) fn read_input_state_field_expr_symbolic<'i>(
     contract_constants: &HashMap<String, Expr<'i>>,
 ) -> Result<Expr<'i>, CompilerError> {
     let state_start_offset = state_start_offset(contract_fields_end_offset, contract_fields, contract_constants)?;
-    let script_size_expr = Expr::new(ExprKind::Nullary(NullaryOp::ThisScriptSize), span::Span::default());
+    let bytecode_size_expr = Expr::new(ExprKind::Nullary(NullaryOp::ThisBytecodeSize), span::Span::default());
     read_input_state_field_expr(
         input_idx,
         &field.type_ref,
         Expr::int(state_start_offset as i64),
         field_chunk_offset,
-        script_size_expr,
+        bytecode_size_expr,
         contract_constants,
         "readInputState",
     )
@@ -87,7 +87,7 @@ pub(super) fn state_start_offset<'i>(
         .ok_or_else(|| CompilerError::Unsupported("state offset underflow".to_string()))
 }
 
-pub(super) fn templated_input_script_size_expr<'i>(
+pub(super) fn templated_input_bytecode_size_expr<'i>(
     template_prefix_len: &Expr<'i>,
     template_suffix_len: &Expr<'i>,
     layout_field_types: &[TypeRef],
@@ -106,7 +106,7 @@ pub(super) fn read_input_state_field_expr<'i>(
     field_type: &TypeRef,
     state_start_offset_expr: Expr<'i>,
     field_chunk_offset: usize,
-    script_size_expr: Expr<'i>,
+    bytecode_size_expr: Expr<'i>,
     contract_constants: &HashMap<String, Expr<'i>>,
     builtin_name: &str,
 ) -> Result<Expr<'i>, CompilerError> {
@@ -117,7 +117,7 @@ pub(super) fn read_input_state_field_expr<'i>(
         state_start_offset_expr,
         Expr::int((field_chunk_offset + data_prefix(field_payload_len)?.len()) as i64),
     );
-    let start = binary_expr(BinaryOp::Add, input_sigscript_base_expr(input_idx, script_size_expr), field_payload_offset);
+    let start = binary_expr(BinaryOp::Add, input_sigscript_base_expr(input_idx, bytecode_size_expr), field_payload_offset);
     let end = binary_expr(BinaryOp::Add, start.clone(), Expr::int(field_payload_len as i64));
     let substr = input_sigscript_substr_expr(input_idx, start, end);
 
@@ -142,15 +142,15 @@ pub(super) fn cast_read_input_state_expr<'i>(substr: Expr<'i>, type_ref: &TypeRe
 ///   args = (input_idx, template_prefix_len, template_suffix_len, expected_template_hash)
 ///   require target state layout is a non-empty flattened struct
 ///
-///   script_size = template_prefix_len + encoded_state_len(layout_field_types) + template_suffix_len
-///   script_base = input_sigscript_len(input_idx) - script_size
+///   bytecode_size = template_prefix_len + encoded_state_len(layout_field_types) + template_suffix_len
+///   bytecode_base = input_sigscript_len(input_idx) - bytecode_size
 ///
-///   actual_redeem_script = input_sigscript[script_base .. script_base + script_size]
-///   prefix = input_sigscript[script_base .. script_base + template_prefix_len]
+///   actual_redeem_script = input_sigscript[bytecode_base .. bytecode_base + bytecode_size]
+///   prefix = input_sigscript[bytecode_base .. bytecode_base + template_prefix_len]
 ///   suffix = input_sigscript[
-///       script_base + template_prefix_len + encoded_state_len(layout_field_types)
+///       bytecode_base + template_prefix_len + encoded_state_len(layout_field_types)
 ///       ..
-///       script_base + script_size
+///       bytecode_base + bytecode_size
 ///   ]
 ///
 ///   actual_template = i64le(prefix.length) || prefix || i64le(suffix.length) || suffix
@@ -168,7 +168,7 @@ pub(super) fn compile_read_input_state_with_template_validation(
     types: &TypeMap,
     builder: &mut ScriptBuilder,
     layout_field_types: &[TypeRef],
-    current_script_size: Option<i64>,
+    current_bytecode_size: Option<i64>,
     contract_constants: &HashMap<String, Expr<'_>>,
 ) -> Result<(), CompilerError> {
     let Ok([input_idx, template_prefix_len, template_suffix_len, expected_template_hash]): Result<&[Expr<'_>; 4], _> = args.try_into()
@@ -182,17 +182,17 @@ pub(super) fn compile_read_input_state_with_template_validation(
         return Err(CompilerError::Unsupported("readInputStateWithTemplate requires a struct type".to_string()));
     }
 
-    let script_size_expr =
-        templated_input_script_size_expr(template_prefix_len, template_suffix_len, layout_field_types, contract_constants)?;
-    let script_base_expr = input_sigscript_base_expr(input_idx, script_size_expr.clone());
-    let prefix_end_expr = binary_expr(BinaryOp::Add, script_base_expr.clone(), template_prefix_len.clone());
-    let script_end_expr = binary_expr(BinaryOp::Add, script_base_expr.clone(), script_size_expr.clone());
+    let bytecode_size_expr =
+        templated_input_bytecode_size_expr(template_prefix_len, template_suffix_len, layout_field_types, contract_constants)?;
+    let bytecode_base_expr = input_sigscript_base_expr(input_idx, bytecode_size_expr.clone());
+    let prefix_end_expr = binary_expr(BinaryOp::Add, bytecode_base_expr.clone(), template_prefix_len.clone());
+    let bytecode_end_expr = binary_expr(BinaryOp::Add, bytecode_base_expr.clone(), bytecode_size_expr.clone());
     let state_len = encoded_state_len_for_layout_field_types(layout_field_types, contract_constants)?;
     let suffix_start_expr = binary_expr(BinaryOp::Add, prefix_end_expr.clone(), Expr::int(state_len as i64));
     let suffix_end_expr = binary_expr(BinaryOp::Add, suffix_start_expr.clone(), template_suffix_len.clone());
 
-    let input_redeem_script_expr = input_sigscript_substr_expr(input_idx, script_base_expr.clone(), script_end_expr);
-    let prefix_expr = input_sigscript_substr_expr(input_idx, script_base_expr, prefix_end_expr);
+    let input_redeem_script_expr = input_sigscript_substr_expr(input_idx, bytecode_base_expr.clone(), bytecode_end_expr);
+    let prefix_expr = input_sigscript_substr_expr(input_idx, bytecode_base_expr, prefix_end_expr);
     let suffix_expr = input_sigscript_substr_expr(input_idx, suffix_start_expr, suffix_end_expr);
     let encoded_prefix_len_expr = int_to_fixed_bytes_expr(template_prefix_len.clone(), 8);
     let encoded_suffix_len_expr = int_to_fixed_bytes_expr(template_suffix_len.clone(), 8);
@@ -211,7 +211,8 @@ pub(super) fn compile_read_input_state_with_template_validation(
     );
     let actual_input_spk_expr = input_script_pubkey_expr(input_idx);
 
-    let env = ExprEnv { constants: contract_constants, stack_bindings, types, script_size: current_script_size, contract_constants };
+    let env =
+        ExprEnv { constants: contract_constants, stack_bindings, types, bytecode_size: current_bytecode_size, contract_constants };
     let mut emitter = ScriptEmitter::new(builder, 0);
     let dynamic_bytes = byte_array_type(ArrayDim::Dynamic);
     let p2sh_script_type = constructor_return_type("ScriptPubKeyP2SHFromRedeemScript").expect("known constructor type");
@@ -238,7 +239,7 @@ pub(super) fn compile_validate_output_state_inner_statement(
     builder: &mut ScriptBuilder,
     contract_fields: &[ContractFieldAst<'_>],
     contract_fields_end_offset: usize,
-    script_size: Option<i64>,
+    bytecode_size: Option<i64>,
     contract_constants: &HashMap<String, Expr<'_>>,
 ) -> Result<(), CompilerError> {
     if args.len() != contract_fields.len() + 1 {
@@ -271,7 +272,7 @@ pub(super) fn compile_validate_output_state_inner_statement(
         stack_bindings,
         types,
         builder,
-        script_size,
+        bytecode_size,
         contract_constants,
         "validateOutputState",
     )?;
@@ -281,18 +282,18 @@ pub(super) fn compile_validate_output_state_inner_statement(
         .checked_sub(total_state_len)
         .ok_or_else(|| CompilerError::Unsupported("validateOutputState state offset underflow".to_string()))?;
 
-    let script_size_value =
-        script_size.ok_or_else(|| CompilerError::Unsupported("validateOutputState requires this.scriptSize".to_string()))?;
+    let bytecode_size_value =
+        bytecode_size.ok_or_else(|| CompilerError::Unsupported("validateOutputState requires this.bytecodeSize".to_string()))?;
     let mut emitter = ScriptEmitter::new(builder, stack_depth);
 
     // Rebuild `prefix || encoded_new_state || suffix`. The redeem script starts
-    // at `input_sigscript_len - script_size_value`.
+    // at `input_sigscript_len - bytecode_size_value`.
     if state_start_offset > 0 {
         // Extract the bytes before the old state and prepend them to the new state.
         emitter.emit_op(OpTxInputIndex, 1)?;
         emitter.emit_op(OpDup, 1)?;
         emitter.emit_op(OpTxInputScriptSigLen, 0)?;
-        emitter.push_int(script_size_value)?;
+        emitter.push_int(bytecode_size_value)?;
         emitter.emit_op(OpSub, -1)?;
         emitter.emit_op(OpDup, 1)?;
         emitter.push_int(state_start_offset as i64)?;
@@ -308,8 +309,8 @@ pub(super) fn compile_validate_output_state_inner_statement(
     emitter.emit_op(OpTxInputScriptSigLen, 0)?;
     emitter.emit_op(OpDup, 1)?;
 
-    // Compute `suffix_start = input_sigscript_len + contract_fields_end_offset - script_size_value`.`
-    emitter.push_int(contract_fields_end_offset as i64 - script_size_value)?;
+    // Compute `suffix_start = input_sigscript_len + contract_fields_end_offset - bytecode_size_value`.`
+    emitter.push_int(contract_fields_end_offset as i64 - bytecode_size_value)?;
     emitter.emit_op(OpAdd, -1)?;
     emitter.emit_op(OpSwap, 0)?;
     emitter.emit_op(OpTxInputScriptSigSubstr, -2)?;
@@ -330,7 +331,7 @@ pub(super) fn compile_validate_output_state_inner_statement(
     emitter.emit_op(OpCat, -1)?;
 
     // Require the selected output to use that scriptPubKey.
-    let env = ExprEnv { constants, stack_bindings, types, script_size: Some(script_size_value), contract_constants };
+    let env = ExprEnv { constants, stack_bindings, types, bytecode_size: Some(bytecode_size_value), contract_constants };
     let int_type = scalar_type(TypeBase::Int);
     compile_expr(output_idx, Some(&int_type), &env, &mut emitter)?;
     emitter.emit_op(OpTxOutputSpk, 0)?;
@@ -345,7 +346,7 @@ pub(super) fn compile_validate_output_state_with_template_inner_statement(
     stack_bindings: &StackBindings,
     types: &TypeMap,
     builder: &mut ScriptBuilder,
-    script_size: Option<i64>,
+    bytecode_size: Option<i64>,
     contract_constants: &HashMap<String, Expr<'_>>,
 ) -> Result<(), CompilerError> {
     if args.len() < 5 {
@@ -363,7 +364,7 @@ pub(super) fn compile_validate_output_state_with_template_inner_statement(
         return Err(CompilerError::Unsupported("validateOutputStateWithTemplate requires contract fields".to_string()));
     }
 
-    let env = ExprEnv { constants, stack_bindings, types, script_size, contract_constants };
+    let env = ExprEnv { constants, stack_bindings, types, bytecode_size, contract_constants };
     let dynamic_bytes_type = byte_array_type(ArrayDim::Dynamic);
     let hash_type = builtin_return_type("blake2b").expect("known builtin type");
     let int_type = scalar_type(TypeBase::Int);
@@ -388,7 +389,7 @@ pub(super) fn compile_validate_output_state_with_template_inner_statement(
         stack_bindings,
         types,
         builder,
-        script_size,
+        bytecode_size,
         contract_constants,
         "validateOutputStateWithTemplate",
     )?;
@@ -425,7 +426,7 @@ pub(super) fn compile_encoded_state_object(
     stack_bindings: &StackBindings,
     types: &TypeMap,
     builder: &mut ScriptBuilder,
-    script_size: Option<i64>,
+    bytecode_size: Option<i64>,
     contract_constants: &HashMap<String, Expr<'_>>,
     builtin_name: &str,
 ) -> Result<i64, CompilerError> {
@@ -435,7 +436,7 @@ pub(super) fn compile_encoded_state_object(
         stack_bindings,
         types,
         builder,
-        script_size,
+        bytecode_size,
         contract_constants,
         builtin_name,
     )
@@ -447,7 +448,7 @@ pub(super) fn compile_encoded_flat_state_fields(
     stack_bindings: &StackBindings,
     types: &TypeMap,
     builder: &mut ScriptBuilder,
-    script_size: Option<i64>,
+    bytecode_size: Option<i64>,
     contract_constants: &HashMap<String, Expr<'_>>,
     builtin_name: &str,
 ) -> Result<i64, CompilerError> {
@@ -457,7 +458,7 @@ pub(super) fn compile_encoded_flat_state_fields(
         stack_bindings,
         types,
         builder,
-        script_size,
+        bytecode_size,
         contract_constants,
         builtin_name,
     )
@@ -470,7 +471,7 @@ fn compile_encoded_state_fields<'a, 'i>(
     stack_bindings: &StackBindings,
     types: &TypeMap,
     builder: &mut ScriptBuilder,
-    script_size: Option<i64>,
+    bytecode_size: Option<i64>,
     contract_constants: &HashMap<String, Expr<'i>>,
     builtin_name: &str,
 ) -> Result<i64, CompilerError>
@@ -478,7 +479,7 @@ where
     'i: 'a,
 {
     let field_count = state_fields.len();
-    let env = ExprEnv { constants, stack_bindings, types, script_size, contract_constants };
+    let env = ExprEnv { constants, stack_bindings, types, bytecode_size, contract_constants };
     let mut emitter = ScriptEmitter::new(builder, 0);
     for new_value in state_fields {
         let type_ref = infer_expr_type(new_value, constants, types)?;

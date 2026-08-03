@@ -90,9 +90,9 @@ where
 
     assert_eq!(entry.inputs.len(), function_args.len());
 
-    // Seed stack with sigscript args and then execute the lockscript in debug mode.
+    // Seed the stack with sigscript arguments, then execute the bytecode in debug mode.
     let sigscript = compiled.build_sig_script(function_name, function_args)?;
-    let mut session = DebugSession::full(&sigscript, &compiled.script, source, debug_info, engine)?;
+    let mut session = DebugSession::full(&sigscript, &compiled.bytecode, source, debug_info, engine)?;
 
     f(&mut session)
 }
@@ -1087,7 +1087,7 @@ contract MissingStructuredSource() {
     let ctx = EngineCtx::new(&sig_cache).with_reused(&reused_values);
     let engine = debugger_session::session::DebugEngine::new(ctx, EngineFlags { covenants_enabled: true, ..Default::default() });
     let sigscript = compiled.build_sig_script("inspect", vec![struct_object("State", vec![("amount", Expr::int(7))])])?;
-    let mut session = DebugSession::full(&sigscript, &compiled.script, "", Some(debug_info), engine)?;
+    let mut session = DebugSession::full(&sigscript, &compiled.bytecode, "", Some(debug_info), engine)?;
 
     session.run_to_first_executed_statement()?;
     let (type_name, value) = session.evaluate_expression("next.amount")?;
@@ -1652,7 +1652,7 @@ contract CovLocal() {
 
     let covenant_id = Hash::from_bytes([0x11u8; 32]);
     let utxo_entry =
-        UtxoEntry::new(1000, ScriptPublicKey::new(0, compiled.script.clone().into()), 0, tx.is_coinbase(), Some(covenant_id));
+        UtxoEntry::new(1000, ScriptPublicKey::new(0, compiled.bytecode.clone().into()), 0, tx.is_coinbase(), Some(covenant_id));
     let populated_tx = PopulatedTransaction::new(&tx, vec![utxo_entry]);
     let cov_ctx = CovenantsContext::from_tx(&populated_tx)?;
 
@@ -1672,7 +1672,8 @@ contract CovLocal() {
     let shadow_ctx =
         ShadowTxContext { tx: &populated_tx, input: input_ref, input_index: 0, utxo_entry: utxo_ref, covenants_ctx: &cov_ctx };
 
-    let mut session = DebugSession::full(&sigscript, &compiled.script, source, debug_info, engine)?.with_shadow_tx_context(shadow_ctx);
+    let mut session =
+        DebugSession::full(&sigscript, &compiled.bytecode, source, debug_info, engine)?.with_shadow_tx_context(shadow_ctx);
     session.run_to_first_executed_statement()?;
 
     for _ in 0..4 {
@@ -1716,7 +1717,7 @@ contract CovEval() {
 
     let covenant_id = Hash::from_bytes([0x22u8; 32]);
     let utxo_entry =
-        UtxoEntry::new(1000, ScriptPublicKey::new(0, compiled.script.clone().into()), 0, tx.is_coinbase(), Some(covenant_id));
+        UtxoEntry::new(1000, ScriptPublicKey::new(0, compiled.bytecode.clone().into()), 0, tx.is_coinbase(), Some(covenant_id));
     let populated_tx = PopulatedTransaction::new(&tx, vec![utxo_entry]);
     let cov_ctx = CovenantsContext::from_tx(&populated_tx)?;
 
@@ -1737,7 +1738,8 @@ contract CovEval() {
     let shadow_ctx =
         ShadowTxContext { tx: &populated_tx, input: input_ref, input_index: 0, utxo_entry: utxo_ref, covenants_ctx: &cov_ctx };
 
-    let mut session = DebugSession::full(&sigscript, &compiled.script, source, debug_info, engine)?.with_shadow_tx_context(shadow_ctx);
+    let mut session =
+        DebugSession::full(&sigscript, &compiled.bytecode, source, debug_info, engine)?.with_shadow_tx_context(shadow_ctx);
     session.run_to_first_executed_statement()?;
 
     let (type_name, value) = session.evaluate_expression("OpInputCovenantId(this.activeInputIndex)")?;
@@ -1750,8 +1752,8 @@ fn covenant_debug_value(value: i64) -> DebugValue {
     DebugValue::Object(vec![("value".to_string(), DebugValue::Int(value))])
 }
 
-fn push_redeem_script(script: &[u8]) -> Vec<u8> {
-    ScriptBuilder::new().add_data(script).expect("push redeem script").drain()
+fn push_redeem_script(bytecode: &[u8]) -> Vec<u8> {
+    ScriptBuilder::new().add_data(bytecode).expect("push redeem script").drain()
 }
 
 fn with_cov_rebalance_session<F>(mut f: F) -> Result<(), Box<dyn Error>>
@@ -1785,10 +1787,10 @@ contract CovDebugDemo(int initial_value) {
         resolve_covenant_call_target(&parsed_contract, &compiled0, "rebalance").ok_or("missing covenant call target")?;
     let leader_sigscript = compiled0.build_sig_script(&leader_target.generated_entrypoint_name, leader_args)?;
     let mut leader_input_sigscript = leader_sigscript.clone();
-    leader_input_sigscript.extend_from_slice(&push_redeem_script(&compiled0.script));
+    leader_input_sigscript.extend_from_slice(&push_redeem_script(&compiled0.bytecode));
     let delegate_sigscript = compiled1.build_sig_script(&leader_target.generated_entrypoint_name_for(false), vec![])?;
     let mut delegate_input_sigscript = delegate_sigscript.clone();
-    delegate_input_sigscript.extend_from_slice(&push_redeem_script(&compiled1.script));
+    delegate_input_sigscript.extend_from_slice(&push_redeem_script(&compiled1.bytecode));
 
     let covenant_id = Hash::from_bytes([0x33u8; 32]);
     let inputs = vec![
@@ -1810,20 +1812,20 @@ contract CovDebugDemo(int initial_value) {
     let outputs = vec![
         TransactionOutput {
             value: 1000,
-            script_public_key: pay_to_script_hash_script(&next0.script),
+            script_public_key: pay_to_script_hash_script(&next0.bytecode),
             covenant: Some(CovenantBinding { authorizing_input: 0, covenant_id }),
         },
         TransactionOutput {
             value: 1000,
-            script_public_key: pay_to_script_hash_script(&next1.script),
+            script_public_key: pay_to_script_hash_script(&next1.bytecode),
             covenant: Some(CovenantBinding { authorizing_input: 0, covenant_id }),
         },
     ];
     let tx = Transaction::new(1, inputs, outputs, 0, Default::default(), 0, vec![]);
 
     let utxos = vec![
-        UtxoEntry::new(1000, pay_to_script_hash_script(&compiled0.script), 0, tx.is_coinbase(), Some(covenant_id)),
-        UtxoEntry::new(1000, pay_to_script_hash_script(&compiled1.script), 0, tx.is_coinbase(), Some(covenant_id)),
+        UtxoEntry::new(1000, pay_to_script_hash_script(&compiled0.bytecode), 0, tx.is_coinbase(), Some(covenant_id)),
+        UtxoEntry::new(1000, pay_to_script_hash_script(&compiled1.bytecode), 0, tx.is_coinbase(), Some(covenant_id)),
     ];
     let populated_tx = PopulatedTransaction::new(&tx, utxos);
     let cov_ctx = CovenantsContext::from_tx(&populated_tx)?;
@@ -1845,7 +1847,7 @@ contract CovDebugDemo(int initial_value) {
     let shadow_ctx =
         ShadowTxContext { tx: &populated_tx, input: input_ref, input_index: 0, utxo_entry: utxo_ref, covenants_ctx: &cov_ctx };
 
-    let mut session = DebugSession::full(&leader_sigscript, &compiled0.script, source, compiled0.debug_info.clone(), engine)?
+    let mut session = DebugSession::full(&leader_sigscript, &compiled0.bytecode, source, compiled0.debug_info.clone(), engine)?
         .with_shadow_tx_context(shadow_ctx)
         .with_covenant_mode(Some(DebugValue::Array(vec![covenant_debug_value(10), covenant_debug_value(20)])), Some(leader_target));
 

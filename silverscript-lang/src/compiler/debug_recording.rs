@@ -17,8 +17,8 @@ use super::{
 ///
 /// This intentionally keeps the compiler-facing API small:
 /// - record contract-scoped debug state once from the pre-lowering contract
-/// - stage entrypoints once per compiled entrypoint script
-/// - set final bytecode starts after the full contract script is assembled
+/// - stage entrypoints once per compiled entrypoint bytecode sequence
+/// - set final bytecode starts after the full contract bytecode is assembled
 /// - finalize into `DebugInfo`
 ///
 /// The detailed source-step recorder will be built behind this facade in later
@@ -302,7 +302,7 @@ impl<'i> DebugRecorder<'i> {
         }
         active.entrypoints.push(StagedEntrypointDebug {
             name: function.name.clone(),
-            script_len: 0,
+            bytecode_len: 0,
             bytecode_start: None,
             params: build_param_mappings(
                 function,
@@ -450,7 +450,7 @@ impl<'i> DebugRecorder<'i> {
         active.store_pending_statement_slot(depth, state);
     }
 
-    pub(crate) fn finish_entrypoint(&mut self, script_len: usize) {
+    pub(crate) fn finish_entrypoint(&mut self, bytecode_len: usize) {
         let Some(active) = self.active.as_mut() else {
             return;
         };
@@ -459,8 +459,8 @@ impl<'i> DebugRecorder<'i> {
             return;
         };
         if let Some(entrypoint) = active.entrypoints.get_mut(index) {
-            entrypoint.emit_inline_call_resumes(entrypoint.next_statement_index, script_len);
-            entrypoint.script_len = script_len;
+            entrypoint.emit_inline_call_resumes(entrypoint.next_statement_index, bytecode_len);
+            entrypoint.bytecode_len = bytecode_len;
         }
         active.active_function_name = None;
         active.statement_debug_state_stack.clear();
@@ -488,7 +488,7 @@ impl<'i> DebugRecorder<'i> {
             recorder.record_function(DebugFunctionRange {
                 name: entrypoint.name,
                 bytecode_start,
-                bytecode_end: bytecode_start + entrypoint.script_len,
+                bytecode_end: bytecode_start + entrypoint.bytecode_len,
             });
 
             for param in entrypoint.params {
@@ -956,7 +956,7 @@ struct InlineFramePlan<'i> {
 #[derive(Debug)]
 struct StagedEntrypointDebug<'i> {
     name: String,
-    script_len: usize,
+    bytecode_len: usize,
     bytecode_start: Option<usize>,
     params: Vec<DebugParamMapping>,
     steps: Vec<DebugStep<'i>>,
@@ -1392,7 +1392,7 @@ mod tests {
         let entrypoint = active.entrypoints.first().expect("staged entrypoint");
 
         assert_eq!(entrypoint.name, "spend");
-        assert_eq!(entrypoint.script_len, 0);
+        assert_eq!(entrypoint.bytecode_len, 0);
         assert!(entrypoint.bytecode_start.is_none());
         assert_eq!(entrypoint.params.len(), 1);
     }

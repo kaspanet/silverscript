@@ -154,7 +154,7 @@ fn cov_decl_nm_leader_sigscript(compiled: &CompiledContract<'_>, next_values: Ve
 }
 
 fn redeem_only_sigscript(compiled: &CompiledContract<'_>) -> Vec<u8> {
-    push_redeem_script(&compiled.script)
+    push_redeem_script(&compiled.bytecode)
 }
 
 #[test]
@@ -393,8 +393,8 @@ fn many_to_many_happy_path_succeeds() {
     let in1 = compile_state(COV_N_TO_M_SOURCE, 7);
     let out0 = compile_state(COV_N_TO_M_SOURCE, 10);
     let out1 = compile_state(COV_N_TO_M_SOURCE, 10);
-    assert_eq!(in0.script, out0.script, "leader input and output[0] script should match");
-    assert_eq!(in0.script, out1.script, "leader input and output[1] script should match");
+    assert_eq!(in0.bytecode, out0.bytecode, "leader input and output[0] script should match");
+    assert_eq!(in0.bytecode, out1.bytecode, "leader input and output[1] script should match");
 
     // Intended valid shape: two covenant inputs in the same id, two covenant outputs in the same id,
     // leader path on input 0 and delegate path on input 1.

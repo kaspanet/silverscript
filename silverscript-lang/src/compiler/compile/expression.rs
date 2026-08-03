@@ -23,7 +23,7 @@ pub(super) struct ExprEnv<'a, 'i> {
     pub constants: &'a HashMap<String, Expr<'i>>,
     pub stack_bindings: &'a StackBindings,
     pub types: &'a TypeMap,
-    pub script_size: Option<i64>,
+    pub bytecode_size: Option<i64>,
     pub contract_constants: &'a HashMap<String, Expr<'i>>,
 }
 
@@ -532,19 +532,19 @@ fn compile_nullary_expr<'i>(ctx: &mut CompileExprContext<'_, '_, 'i>, op: Nullar
             ctx.emit_op(OpTxInputIndex, 1)?;
             ctx.emit_op(OpTxInputSpk, 0)?;
         }
-        NullaryOp::ThisScriptSize => {
+        NullaryOp::ThisBytecodeSize => {
             let size = ctx
                 .env
-                .script_size
-                .ok_or_else(|| CompilerError::Unsupported("this.scriptSize is only available at compile time".to_string()))?;
+                .bytecode_size
+                .ok_or_else(|| CompilerError::Unsupported("this.bytecodeSize is only available at compile time".to_string()))?;
             ctx.push_int(size)?;
         }
-        NullaryOp::ThisScriptSizeDataPrefix => {
-            let size = ctx.env.script_size.ok_or_else(|| {
-                CompilerError::Unsupported("this.scriptSizeDataPrefix is only available at compile time".to_string())
+        NullaryOp::ThisBytecodeSizeDataPrefix => {
+            let size = ctx.env.bytecode_size.ok_or_else(|| {
+                CompilerError::Unsupported("this.bytecodeSizeDataPrefix is only available at compile time".to_string())
             })?;
             let size: usize = size.try_into().map_err(|_| {
-                CompilerError::Unsupported("this.scriptSizeDataPrefix requires a non-negative script size".to_string())
+                CompilerError::Unsupported("this.bytecodeSizeDataPrefix requires a non-negative bytecode size".to_string())
             })?;
             let prefix = data_prefix(size)?;
             ctx.push_data(&prefix)?;
@@ -714,8 +714,8 @@ pub(super) fn data_prefix(data_len: usize) -> Result<Vec<u8>, CompilerError> {
     let dummy_data = vec![0u8; data_len];
     let mut builder = script_builder();
     builder.add_data_with_push_opcode(&dummy_data)?;
-    let script = builder.drain();
-    Ok(script[..script.len() - data_len].to_vec())
+    let bytecode = builder.drain();
+    Ok(bytecode[..bytecode.len() - data_len].to_vec())
 }
 
 #[cfg(test)]

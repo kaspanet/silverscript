@@ -3,7 +3,7 @@ use super::*;
 pub(super) fn compile_contract_fields<'i>(
     fields: &[ContractFieldAst<'i>],
     base_constants: &HashMap<String, Expr<'i>>,
-    script_size: Option<i64>,
+    bytecode_size: Option<i64>,
 ) -> Result<(HashMap<String, Expr<'i>>, Vec<u8>), CompilerError> {
     let mut field_values = HashMap::new();
     let mut field_types = HashMap::new();
@@ -22,7 +22,7 @@ pub(super) fn compile_contract_fields<'i>(
                 constants: base_constants,
                 stack_bindings: &stack_bindings,
                 types: &field_types,
-                script_size,
+                bytecode_size,
                 contract_constants: base_constants,
             };
             let mut emitter = ScriptEmitter::new(&mut builder, 0);
