@@ -2886,6 +2886,34 @@ fn build_sig_script_enforces_fixed_struct_array_length() {
 }
 
 #[test]
+fn build_sig_script_rejects_structurally_identical_array_element_type() {
+    let source = r#"
+        contract C() {
+            struct S {
+                int a;
+                byte[2] b;
+            }
+
+            struct T {
+                int a;
+                byte[2] b;
+            }
+
+            entry main(S[] values) {
+                require(values.length == 1);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let arg = vec![struct_object("T", vec![("a", Expr::int(7)), ("b", Expr::bytes(vec![0x01, 0x02]))])].into();
+    let err = compiled
+        .build_sig_script("main", vec![arg])
+        .expect_err("a structurally identical struct array must retain its nominal element type");
+    assert!(err.to_string().contains("expected struct 'S', got 'T'"), "unexpected error: {err}");
+}
+
+#[test]
 fn runtime_supports_struct_array_append_value_expression() {
     let source = r#"
         contract C() {
@@ -5925,17 +5953,16 @@ fn template_hash_matches_all_template_builtins() {
                 );
                 require(prev.x == 7);
 
-                RemoteState next = RemoteState {{x: 8}};
                 validateOutputStateWithTemplate(
                     0,
-                    next,
+                    RemoteState {{x: 8}},
                     templatePrefix,
                     templateSuffix,
                     expectedTemplateHash
                 );
                 validateOutputStateWithInputTemplate(
                     0,
-                    next,
+                    RemoteState {{x: 8}},
                     1,
                     {},
                     {},

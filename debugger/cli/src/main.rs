@@ -23,7 +23,9 @@ use kaspa_txscript::caches::Cache;
 use kaspa_txscript::covenants::CovenantsContext;
 use kaspa_txscript::script_builder::ScriptBuilder;
 use kaspa_txscript::{EngineCtx, EngineFlags, pay_to_script_hash_script};
-use silverscript_lang::ast::{ArrayDim, ContractAst, Expr, ExprKind, StateFieldExpr, TypeBase, TypeRef, parse_contract_ast};
+use silverscript_lang::ast::{
+    ArrayDim, ContractAst, Expr, ExprKind, STATE_TYPE_NAME, StateFieldExpr, TypeBase, TypeRef, parse_contract_ast,
+};
 use silverscript_lang::compiler::{CompileOptions, CompiledContract, compile_contract, compile_contract_ast};
 
 const PROMPT: &str = "(sdb) ";
@@ -104,7 +106,7 @@ fn expr_to_debug_value(expr: &Expr<'_>) -> Result<DebugValue, String> {
     }
 }
 
-fn debug_value_to_expr(value: &DebugValue) -> Option<Expr<'static>> {
+fn debug_value_to_expr(value: &DebugValue, struct_name: Option<&str>) -> Option<Expr<'static>> {
     Some(match value {
         DebugValue::Int(value) => Expr::int(*value),
         DebugValue::Bool(value) => Expr::new(ExprKind::Bool(*value), Default::default()),
@@ -113,18 +115,19 @@ fn debug_value_to_expr(value: &DebugValue) -> Option<Expr<'static>> {
             Default::default(),
         ),
         DebugValue::String(value) => Expr::new(ExprKind::String(value.clone()), Default::default()),
-        DebugValue::Array(values) => {
-            Expr::new(ExprKind::Array(values.iter().map(debug_value_to_expr).collect::<Option<Vec<_>>>()?), Default::default())
-        }
+        DebugValue::Array(values) => Expr::new(
+            ExprKind::Array(values.iter().map(|value| debug_value_to_expr(value, struct_name)).collect::<Option<Vec<_>>>()?),
+            Default::default(),
+        ),
         DebugValue::Object(fields) => Expr::new(
             ExprKind::StructLiteral {
-                name: String::new(),
+                name: struct_name?.to_string(),
                 fields: fields
                     .iter()
                     .map(|(name, value)| {
                         Some(StateFieldExpr {
                             name: name.clone(),
-                            expr: debug_value_to_expr(value)?,
+                            expr: debug_value_to_expr(value, None)?,
                             span: Default::default(),
                             name_span: Default::default(),
                         })
@@ -172,14 +175,16 @@ fn synthesized_covenant_prefix_args(
         if states.len() != 1 {
             return Err(format!("expected exactly 1 output State for '{entrypoint_name}', got {}", states.len()).into());
         }
-        return Ok(vec![debug_value_to_expr(&states[0]).ok_or("failed to materialize synthesized output State")?]);
+        return Ok(vec![
+            debug_value_to_expr(&states[0], Some(STATE_TYPE_NAME)).ok_or("failed to materialize synthesized output State")?,
+        ]);
     }
     if is_state_array_type(&first_param.type_ref) {
         return Ok(vec![Expr::new(
             ExprKind::Array(
                 states
                     .iter()
-                    .map(debug_value_to_expr)
+                    .map(|state| debug_value_to_expr(state, Some(STATE_TYPE_NAME)))
                     .collect::<Option<Vec<_>>>()
                     .ok_or("failed to materialize synthesized output State[]")?,
             ),
@@ -288,9 +293,12 @@ fn materialize_script_for_explicit_state(
 }
 
 fn contract_with_explicit_state<'i>(contract: &ContractAst<'i>, state: &Expr<'i>) -> Result<ContractAst<'i>, String> {
-    let ExprKind::StructLiteral { fields: entries, .. } = &state.kind else {
+    let ExprKind::StructLiteral { name, fields: entries, .. } = &state.kind else {
         return Err("State value must be an object literal".to_string());
     };
+    if name != STATE_TYPE_NAME {
+        return Err(format!("expected struct '{STATE_TYPE_NAME}', got '{name}'"));
+    }
 
     let mut provided = entries.iter().map(|entry| (entry.name.as_str(), entry.expr.clone())).collect::<HashMap<_, _>>();
     if provided.len() != contract.fields.len() {

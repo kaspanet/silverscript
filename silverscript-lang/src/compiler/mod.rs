@@ -355,11 +355,14 @@ fn push_struct_array_sigscript_arg<'i>(
 
     let mut objects = Vec::with_capacity(values.len());
     for value in values {
-        let ExprKind::StructLiteral { fields: entries, .. } = value.kind else {
+        let ExprKind::StructLiteral { name, fields: entries, .. } = value.kind else {
             return Err(CompilerError::Unsupported(
                 "signature script struct array arguments must contain object literals".to_string(),
             ));
         };
+        if name != struct_name {
+            return Err(CompilerError::Unsupported(format!("expected struct '{struct_name}', got '{name}'")));
+        }
         objects.push(entries.into_iter().map(|entry| (entry.name, entry.expr)).collect::<HashMap<_, _>>());
     }
 

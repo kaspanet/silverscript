@@ -145,7 +145,7 @@ fn compile_statement<'i>(ctx: &mut CompileStatementContext<'_, 'i>, stmt: &State
         }
         Statement::FunctionCall { name, args, .. } => compile_function_call_statement(ctx, name, args),
         Statement::StateFunctionCallAssign { target_struct, bindings, name, args, .. } => {
-            compile_state_function_call_assign_statement(ctx, target_struct.as_deref(), bindings, name, args)
+            compile_state_function_call_assign_statement(ctx, target_struct, bindings, name, args)
         }
         Statement::StructDestructure { .. } => compile_struct_destructure_statement(),
         Statement::FunctionCallAssign { bindings, name, args, .. } => {
@@ -352,7 +352,7 @@ fn compile_function_call_statement<'i>(
 
 fn compile_state_function_call_assign_statement<'i>(
     ctx: &mut CompileStatementContext<'_, 'i>,
-    target_struct: Option<&str>,
+    target_struct: &str,
     bindings: &[StructBindingAst<'i>],
     name: &str,
     args: &[Expr<'i>],
@@ -416,7 +416,7 @@ fn compile_console_statement() -> Result<Vec<String>, CompilerError> {
 
 fn compile_read_input_state_statement<'i>(
     ctx: &mut CompileStatementContext<'_, 'i>,
-    target_struct: Option<&str>,
+    target_struct: &str,
     bindings: &[StructBindingAst<'i>],
     name: &str,
     args: &[Expr<'i>],
@@ -498,9 +498,8 @@ fn compile_read_input_state_statement<'i>(
                 ));
             };
 
-            let struct_name = struct_name_for_state_bindings(target_struct, bindings, structs)?;
             let struct_spec =
-                structs.get(&struct_name).ok_or_else(|| CompilerError::Unsupported(format!("unknown struct '{struct_name}'")))?;
+                structs.get(target_struct).ok_or_else(|| CompilerError::Unsupported(format!("unknown struct '{target_struct}'")))?;
             if bindings_by_field.len() != struct_spec.fields.len() {
                 return Err(CompilerError::Unsupported(
                     "readInputStateWithTemplate bindings must include all target fields exactly once".to_string(),
@@ -508,7 +507,7 @@ fn compile_read_input_state_statement<'i>(
             }
 
             let layout_field_types = flattened_struct_field_specs_for_type(
-                &TypeRef { base: TypeBase::Custom(struct_name.clone()), array_dims: Vec::new() },
+                &TypeRef { base: TypeBase::Custom(target_struct.to_string()), array_dims: Vec::new() },
                 structs,
             )?;
             compile_read_input_state_with_template_validation(

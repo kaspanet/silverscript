@@ -403,9 +403,12 @@ fn infer_template_state_type(expr: &Expr<'_>, scope: &ValidationScope, structs: 
                 .array_element_type()
                 .ok_or_else(|| CompilerError::Unsupported("validateOutputStateWithTemplate requires a struct value".to_string()))
         }
-        ExprKind::StructLiteral { .. } => Err(CompilerError::Unsupported(
-            "validateOutputStateWithTemplate does not support inline state objects; use a struct variable instead".to_string(),
-        )),
+        ExprKind::StructLiteral { name, .. } => {
+            if !structs.contains_key(name) {
+                return Err(CompilerError::Unsupported(format!("unknown struct '{name}'")));
+            }
+            Ok(TypeRef { base: TypeBase::Custom(name.clone()), array_dims: Vec::new() })
+        }
         _ => Err(CompilerError::Unsupported("validateOutputStateWithTemplate requires a struct value".to_string())),
     }
 }

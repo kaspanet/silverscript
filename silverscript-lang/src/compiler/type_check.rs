@@ -375,14 +375,15 @@ fn check_struct_literal<'i>(
     expected: Option<&TypeRef>,
     ctx: &TypeCheckContext<'_, 'i>,
 ) -> Result<TypeRef, CompilerError> {
-    let expected = expected.ok_or_else(|| CompilerError::Unsupported("struct literal requires an expected type".to_string()))?;
-    let struct_name = struct_name(expected, ctx.structs)
-        .ok_or_else(|| CompilerError::Unsupported("struct literal requires a struct type".to_string()))?;
-    let item = ctx.structs.get(struct_name).ok_or_else(|| CompilerError::Unsupported(format!("unknown struct '{struct_name}'")))?;
     let ExprKind::StructLiteral { name, fields, .. } = &expr.kind else { unreachable!() };
-    if !name.is_empty() && name != struct_name {
-        return Err(CompilerError::Unsupported(format!("expected struct '{struct_name}', got '{name}'")));
+    let actual = TypeRef { base: TypeBase::Custom(name.clone()), array_dims: Vec::new() };
+    let item = ctx.structs.get(name).ok_or_else(|| CompilerError::Unsupported(format!("unknown struct '{name}'")))?;
+    if let Some(expected_name) = expected.and_then(|expected| struct_name(expected, ctx.structs))
+        && expected_name != name
+    {
+        return Err(CompilerError::Unsupported(format!("expected struct '{expected_name}', got '{name}'")));
     }
+    ensure_expected(&actual, expected, ctx.constants)?;
     let mut provided = HashMap::new();
     for field in fields {
         if provided.insert(field.name.as_str(), &field.expr).is_some() {
@@ -400,7 +401,7 @@ fn check_struct_literal<'i>(
     if let Some(extra) = provided.keys().next() {
         return Err(CompilerError::Unsupported(format!("unknown struct field '{extra}'")));
     }
-    Ok(expected.clone())
+    Ok(actual)
 }
 
 fn ensure_expected<'i>(

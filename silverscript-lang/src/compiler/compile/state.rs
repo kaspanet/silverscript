@@ -132,44 +132,6 @@ pub(super) fn cast_read_input_state_expr<'i>(substr: Expr<'i>, type_ref: &TypeRe
     }
 }
 
-pub(super) fn struct_name_for_state_bindings<'i>(
-    target_struct: Option<&str>,
-    bindings: &[StructBindingAst<'i>],
-    structs: &StructRegistry,
-) -> Result<String, CompilerError> {
-    if let Some(target_struct) = target_struct {
-        if !structs.contains_key(target_struct) {
-            return Err(CompilerError::Unsupported(format!("unknown struct '{target_struct}'")));
-        }
-        return Ok(target_struct.to_string());
-    }
-
-    let matches = structs
-        .iter()
-        .filter_map(|(name, spec)| {
-            if spec.fields.len() != bindings.len() {
-                return None;
-            }
-            let all_match = spec.fields.iter().all(|field| {
-                bindings
-                    .iter()
-                    .find(|binding| binding.field_name == field.name)
-                    .is_some_and(|binding| binding.type_ref == field.type_ref)
-            });
-            all_match.then(|| name.clone())
-        })
-        .collect::<Vec<_>>();
-
-    match matches.as_slice() {
-        [name] => Ok(name.clone()),
-        [] => Err(CompilerError::Unsupported("readInputStateWithTemplate bindings must match a declared struct layout".to_string())),
-        _ => Err(CompilerError::Unsupported(
-            "readInputStateWithTemplate bindings match multiple struct layouts; assign into an explicitly typed struct first"
-                .to_string(),
-        )),
-    }
-}
-
 /// Validation half of `readInputStateWithTemplate(...)`.
 ///
 /// This builtin is stronger than `readInputState(...)`: before decoding any
