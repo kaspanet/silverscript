@@ -152,6 +152,8 @@ fn parses_arrays_and_introspection() {
                 int b = (a * 2).split(1).length;
                 int c = tx.outputs[idx].value;
                 int d = tx.inputs[idx].outpointIndex;
+                byte[32] txId = tx.inputs[idx].outpointTxId;
+                byte[8] sequence = tx.inputs[idx].sequence;
                 int inputCount = tx.inputs.length;
                 require(c >= d);
             }
@@ -166,7 +168,7 @@ fn parses_arrays_and_introspection() {
     };
     assert!(matches!(&indexed.kind, ExprKind::IndexedIntrospection { .. }));
 
-    let Statement::VariableDefinition { expr: Some(unindexed), .. } = &contract.functions[0].body[4] else {
+    let Statement::VariableDefinition { expr: Some(unindexed), .. } = &contract.functions[0].body[6] else {
         panic!("expected introspection variable");
     };
     assert!(matches!(&unindexed.kind, ExprKind::Introspection(_)));

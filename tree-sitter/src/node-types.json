@@ -1804,7 +1804,7 @@
     "named": false
   },
   {
-    "type": "outpointTransactionHash",
+    "type": "outpointTxId",
     "named": false
   },
   {
@@ -1837,6 +1837,10 @@
   },
   {
     "type": "seconds",
+    "named": false
+  },
+  {
+    "type": "sequence",
     "named": false
   },
   {

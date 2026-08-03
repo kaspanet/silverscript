@@ -1441,11 +1441,70 @@ fn fixed_size_builtin_results_assign_to_exact_byte_array_types() {
 }
 
 #[test]
+fn indexed_introspection_fields_emit_and_execute_all_supported_opcodes() {
+    let source = r#"
+        contract Introspection() {
+            entry main() {
+                require(tx.inputs[0].value == 5000);
+                require(tx.inputs[0].scriptPubKey.length >= 0);
+                require(tx.inputs[0].sigScript.length == 0);
+                require(tx.inputs[0].outpointTxId == byte[32]("0123456789abcdef0123456789abcdef"));
+                require(tx.inputs[0].outpointIndex == 7);
+                require(tx.inputs[0].sequence == byte[8]("sequence"));
+                require(tx.outputs[0].value == 1000);
+                require(tx.outputs[0].scriptPubKey.length >= 0);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("all indexed introspection fields should compile");
+    let opcodes = script_to_str(&compiled.bytecode).expect("compiled bytecode should stringify");
+    for opcode in [
+        "OpTxInputAmount",
+        "OpTxInputSpk",
+        "OpTxInputScriptSigLen",
+        "OpTxInputScriptSigSubstr",
+        "OpOutpointTxId",
+        "OpOutpointIndex",
+        "OpTxInputSeq",
+        "OpTxOutputAmount",
+        "OpTxOutputSpk",
+    ] {
+        assert!(opcodes.contains(opcode), "missing {opcode} in {opcodes}");
+    }
+
+    let (tx, mut entries) = build_basic_opcode_tx(vec![]);
+    entries[0].script_public_key = ScriptPublicKey::new(0, compiled.bytecode.clone().into());
+    let reused_values = SigHashReusedValuesUnsync::new();
+    let sig_cache = Cache::new(10_000);
+    let populated = PopulatedTransaction::new(&tx, entries);
+    let covenants = CovenantsContext::from_tx(&populated).expect("covenants context should build");
+    let context = EngineCtx::new(&sig_cache).with_reused(&reused_values).with_covenants_ctx(&covenants);
+    let mut trace = Vec::new();
+    let result = {
+        let mut vm = TxScriptEngine::from_transaction_input(
+            &populated,
+            &tx.inputs[0],
+            0,
+            populated.utxo(0).expect("utxo entry for input 0"),
+            context,
+            EngineFlags { covenants_enabled: true, ..Default::default() },
+        )
+        .with_opcode_execution_log_buffer(&mut trace);
+        vm.execute()
+    };
+    let trace = String::from_utf8_lossy(&trace);
+    assert!(result.is_ok(), "indexed introspection execution failed:\n{trace}");
+}
+
+#[test]
 fn rejects_assigning_fixed_size_builtin_results_to_wrong_byte_array_sizes() {
     let cases = [
         ("OpTxSubnetId", "byte[19] value = OpTxSubnetId();"),
         ("OpOutpointTxId", "byte[31] value = OpOutpointTxId(0);"),
         ("OpTxInputSeq", "byte[7] value = OpTxInputSeq(0);"),
+        ("outpointTxId introspection", "byte[31] value = tx.inputs[0].outpointTxId;"),
+        ("sequence introspection", "byte[7] value = tx.inputs[0].sequence;"),
         (
             "OpChainblockSeqCommit",
             "byte[31] value = OpChainblockSeqCommit(byte[32](0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f));",

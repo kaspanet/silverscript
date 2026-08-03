@@ -2267,11 +2267,15 @@
         },
         {
           "type": "STRING",
-          "value": "outpointTransactionHash"
+          "value": "outpointTxId"
         },
         {
           "type": "STRING",
           "value": "outpointIndex"
+        },
+        {
+          "type": "STRING",
+          "value": "sequence"
         },
         {
           "type": "STRING",

@@ -585,13 +585,13 @@ fn compile_indexed_introspection_expr<'i>(
             ctx.emit_op(OpSwap, 0)?;
             ctx.emit_op(OpTxInputScriptSigSubstr, -2)?;
         }
-        IndexedIntrospectionKind::InputOutpointTransactionHash => {
+        IndexedIntrospectionKind::InputOutpointTxId => {
             ctx.emit_op(OpOutpointTxId, 0)?;
         }
         IndexedIntrospectionKind::InputOutpointIndex => {
             ctx.emit_op(OpOutpointIndex, 0)?;
         }
-        IndexedIntrospectionKind::InputSequenceNumber => {
+        IndexedIntrospectionKind::InputSequence => {
             ctx.emit_op(OpTxInputSeq, 0)?;
         }
         IndexedIntrospectionKind::OutputValue => {
