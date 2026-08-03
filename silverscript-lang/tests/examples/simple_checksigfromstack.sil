@@ -2,6 +2,6 @@ pragma silverscript ^0.1.0;
 
 contract Test(datasig s, pubkey pk) {
     entry cds(byte[] data) {
-        require(checkSigFromStack(s, sha256(data), pk));
+        require(checkMsgSig(s, sha256(data), pk));
     }
 }

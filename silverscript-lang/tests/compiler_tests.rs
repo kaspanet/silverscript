@@ -8518,7 +8518,7 @@ fn checksigfromstack_lowers_to_matching_opcode() {
     let source = r#"
         contract DataSig(datasig signature, byte[32] digest, pubkey publicKey) {
             entry main() {
-                require(checkSigFromStack(signature, digest, publicKey));
+                require(checkMsgSig(signature, digest, publicKey));
             }
         }
     "#;
@@ -8590,7 +8590,7 @@ fn checksigfromstack_requires_datasig_and_32_byte_digest_types() {
     let raw_message = r#"
         contract DataSig(datasig signature, byte[] message, pubkey publicKey) {
             entry main() {
-                require(checkSigFromStack(signature, message, publicKey));
+                require(checkMsgSig(signature, message, publicKey));
             }
         }
     "#;
@@ -8607,7 +8607,7 @@ fn checksigfromstack_requires_datasig_and_32_byte_digest_types() {
             entry main() {
                 int N = 32;
                 byte[N] digest = byte[N](0x010203);
-                require(checkSigFromStack(signature, digest, publicKey));
+                require(checkMsgSig(signature, digest, publicKey));
             }
         }
     "#;
@@ -8624,7 +8624,7 @@ fn checksigfromstack_requires_datasig_and_32_byte_digest_types() {
             int constant N = 32;
 
             entry main(byte[N] digest) {
-                require(checkSigFromStack(signature, digest, publicKey));
+                require(checkMsgSig(signature, digest, publicKey));
             }
         }
     "#;
@@ -8639,7 +8639,7 @@ fn checksigfromstack_requires_datasig_and_32_byte_digest_types() {
         r#"
         contract DataSig() {{
             entry main() {{
-                require(checkSigFromStack({signature_literal}, {digest_literal}, {public_key_literal}));
+                require(checkMsgSig({signature_literal}, {digest_literal}, {public_key_literal}));
             }}
         }}
     "#
@@ -8652,7 +8652,7 @@ fn checksigfromstack_requires_datasig_and_32_byte_digest_types() {
             entry main() {{
                 byte[32] digest = {digest_literal};
                 byte[32] publicKey = {public_key_bytes_literal};
-                require(checkSigFromStack(signature, digest, publicKey));
+                require(checkMsgSig(signature, digest, publicKey));
             }}
         }}
     "#
@@ -8667,7 +8667,7 @@ fn checksigfromstack_requires_datasig_and_32_byte_digest_types() {
     let tx_signature = r#"
         contract DataSig(sig signature, byte[32] digest, pubkey publicKey) {
             entry main() {
-                require(checkSigFromStack(signature, digest, publicKey));
+                require(checkMsgSig(signature, digest, publicKey));
             }
         }
     "#;
@@ -9091,7 +9091,7 @@ fn checksigfromstack_result_is_checked_as_bool() {
     let bool_assignment = r#"
         contract DataSig(datasig signature, byte[32] digest, pubkey publicKey) {
             entry main() {
-                bool ok = checkSigFromStack(signature, digest, publicKey);
+                bool ok = checkMsgSig(signature, digest, publicKey);
                 require(ok);
             }
         }
@@ -9106,7 +9106,7 @@ fn checksigfromstack_result_is_checked_as_bool() {
     let byte_assignment = r#"
         contract DataSig(datasig signature, byte[32] digest, pubkey publicKey) {
             entry main() {
-                byte[32] ok = checkSigFromStack(signature, digest, publicKey);
+                byte[32] ok = checkMsgSig(signature, digest, publicKey);
                 require(true);
             }
         }
@@ -9122,7 +9122,7 @@ fn checksigfromstack_result_is_checked_as_bool() {
     let bool_return = r#"
         contract DataSig(datasig signature, byte[32] digest, pubkey publicKey) {
             function ok() : bool {
-                return checkSigFromStack(signature, digest, publicKey);
+                return checkMsgSig(signature, digest, publicKey);
             }
 
             entry main() {
@@ -9140,7 +9140,7 @@ fn checksigfromstack_result_is_checked_as_bool() {
     let byte_return = r#"
         contract DataSig(datasig signature, byte[32] digest, pubkey publicKey) {
             function bad() : byte[32] {
-                return checkSigFromStack(signature, digest, publicKey);
+                return checkMsgSig(signature, digest, publicKey);
             }
 
             entry main() {
@@ -9162,7 +9162,7 @@ fn checksigfromstack_executes_schnorr_signature_verification() {
     let source = r#"
         contract DataSig(datasig signature, byte[32] digest, pubkey publicKey) {
             entry main() {
-                require(checkSigFromStack(signature, digest, publicKey));
+                require(checkMsgSig(signature, digest, publicKey));
             }
         }
     "#;
@@ -9194,7 +9194,7 @@ fn checksigfromstack_false_result_can_be_asserted() {
     let source = r#"
         contract DataSig() {
             entry main(datasig signature, byte[32] digest, pubkey publicKey) {
-                require(!checkSigFromStack(signature, digest, publicKey));
+                require(!checkMsgSig(signature, digest, publicKey));
             }
         }
     "#;

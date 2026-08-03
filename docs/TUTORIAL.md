@@ -866,7 +866,7 @@ entry verify(sig s, pubkey pk) {
 }
 ```
 
-**`checkSigFromStack(datasig signature, byte[32] digest, pubkey publicKey): bool`**
+**`checkMsgSig(datasig signature, byte[32] digest, pubkey publicKey): bool`**
 
 Verify a 64-byte Schnorr signature against a 32-byte digest supplied by the
 contract. Hash the message explicitly with the hash function required by your
@@ -874,7 +874,7 @@ protocol:
 
 ```javascript
 entry verify(datasig oracleSig, byte[] oracleMessage, pubkey oraclePk) {
-    require(checkSigFromStack(oracleSig, sha256(oracleMessage), oraclePk));
+    require(checkMsgSig(oracleSig, sha256(oracleMessage), oraclePk));
 }
 ```
 

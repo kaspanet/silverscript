@@ -31,7 +31,7 @@ pub(super) fn compile_call_expr<'i>(
         "blake3WithKey" => compile_blake3_with_key_call(ctx, args),
         "templateHash" => compile_template_hash_call(ctx, args),
         "checkSig" => compile_checksig_call(ctx, args),
-        "checkSigFromStack" => compile_checksigfromstack_call(ctx, name, args, OpCheckSigFromStack),
+        "checkMsgSig" => compile_checksigfromstack_call(ctx, name, args, OpCheckSigFromStack),
         "checkSigFromStackECDSA" => compile_checksigfromstack_call(ctx, name, args, OpCheckSigFromStackECDSA),
         "r0.g16.verify" => compile_r0_groth16_verify_call(ctx, args),
         "r0.succinct.verify" | "r0.succinct.blake2b.verify" | "r0.succinct.poseidon2.verify" | "r0.succinct.sha256.verify" => {
