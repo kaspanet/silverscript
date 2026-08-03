@@ -11639,22 +11639,22 @@ fn runs_split_and_slice_on_struct_array() {
 
             entry main() {
                 S[] values = [
-                    {number: 10, tag: 0x0102},
-                    {number: 20, tag: 0x0304},
-                    {number: 30, tag: 0x0506}
+                    S {number: 10, tag: 0x0102},
+                    S {number: 20, tag: 0x0304},
+                    S {number: 30, tag: 0x0506}
                 ];
                 S[] left = values.split(1).0;
                 S[] right = values.split(1).1;
                 S[] part = values.slice(1, 3);
 
-                require(left == [{number: 10, tag: 0x0102}]);
+                require(left == [S {number: 10, tag: 0x0102}]);
                 require(right == [
-                    {number: 20, tag: 0x0304},
-                    {number: 30, tag: 0x0506}
+                    S {number: 20, tag: 0x0304},
+                    S {number: 30, tag: 0x0506}
                 ]);
                 require(part == [
-                    {number: 20, tag: 0x0304},
-                    {number: 30, tag: 0x0506}
+                    S {number: 20, tag: 0x0304},
+                    S {number: 30, tag: 0x0506}
                 ]);
             }
         }
@@ -11683,27 +11683,27 @@ fn runs_struct_array_equality_and_inequality_comparisons() {
 
             entry main() {
                 Item[] values = [
-                    {id: 1, tag: 0x0102, details: {active: true, score: 10}},
-                    {id: 2, tag: 0x0304, details: {active: false, score: 20}}
+                    Item {id: 1, tag: 0x0102, details: Details {active: true, score: 10}},
+                    Item {id: 2, tag: 0x0304, details: Details {active: false, score: 20}}
                 ];
                 Item[] same = [
-                    {id: 1, tag: 0x0102, details: {active: true, score: 10}},
-                    {id: 2, tag: 0x0304, details: {active: false, score: 20}}
+                    Item {id: 1, tag: 0x0102, details: Details {active: true, score: 10}},
+                    Item {id: 2, tag: 0x0304, details: Details {active: false, score: 20}}
                 ];
                 Item[] differentId = [
-                    {id: 1, tag: 0x0102, details: {active: true, score: 10}},
-                    {id: 3, tag: 0x0304, details: {active: false, score: 20}}
+                    Item {id: 1, tag: 0x0102, details: Details {active: true, score: 10}},
+                    Item {id: 3, tag: 0x0304, details: Details {active: false, score: 20}}
                 ];
                 Item[] differentTag = [
-                    {id: 1, tag: 0x0102, details: {active: true, score: 10}},
-                    {id: 2, tag: 0x0506, details: {active: false, score: 20}}
+                    Item {id: 1, tag: 0x0102, details: Details {active: true, score: 10}},
+                    Item {id: 2, tag: 0x0506, details: Details {active: false, score: 20}}
                 ];
                 Item[] differentNestedField = [
-                    {id: 1, tag: 0x0102, details: {active: true, score: 10}},
-                    {id: 2, tag: 0x0304, details: {active: true, score: 20}}
+                    Item {id: 1, tag: 0x0102, details: Details {active: true, score: 10}},
+                    Item {id: 2, tag: 0x0304, details: Details {active: true, score: 20}}
                 ];
                 Item[] shorter = [
-                    {id: 1, tag: 0x0102, details: {active: true, score: 10}}
+                    Item {id: 1, tag: 0x0102, details: Details {active: true, score: 10}}
                 ];
                 Item[] empty;
 
