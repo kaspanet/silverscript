@@ -1194,35 +1194,45 @@ fn lower_statements<'i>(
                         let element_type = type_ref
                             .array_element_type()
                             .ok_or_else(|| CompilerError::Unsupported("array element type not supported".to_string()))?;
-                        // TODO: Instead of appending each leaf of each element individually, we should probably
-                        // group them by leaf and append them in one go, to avoid multiple appends for the same leaf.
+                        let leaves = flatten_type_leaves(&element_type, structs)?;
+                        let mut args_by_leaf = vec![Vec::with_capacity(args.len()); leaves.len()];
                         for arg in args {
-                            for ((path, _leaf_type), leaf_expr) in
-                                flatten_type_leaves(&element_type, structs)?.into_iter().zip(lower_runtime_struct_expr(
-                                    arg,
-                                    &element_type,
-                                    &scope_type_names(scope),
-                                    structs,
-                                    contract_fields,
-                                    contract_constants,
-                                    contract_fields_end_offset,
-                                )?)
-                            {
-                                let leaf_name = flattened_struct_name(name, &path);
-                                lowered.push(Statement::Assign {
-                                    name: leaf_name.clone(),
-                                    expr: Expr::new(
-                                        ExprKind::Append {
-                                            source: Box::new(Expr::identifier(&leaf_name)),
-                                            args: vec![leaf_expr],
-                                            span: span::Span::default(),
-                                        },
-                                        *span,
-                                    ),
-                                    span: *span,
-                                    name_span: *name_span,
-                                });
+                            let lowered_arg = lower_runtime_struct_expr(
+                                arg,
+                                &element_type,
+                                &scope_type_names(scope),
+                                structs,
+                                contract_fields,
+                                contract_constants,
+                                contract_fields_end_offset,
+                            )?;
+                            if lowered_arg.len() != leaves.len() {
+                                return Err(CompilerError::Unsupported(
+                                    "internal error: flattened struct value does not match its type".to_string(),
+                                ));
                             }
+                            for (leaf_args, leaf_expr) in args_by_leaf.iter_mut().zip(lowered_arg) {
+                                leaf_args.push(leaf_expr);
+                            }
+                        }
+                        for ((path, _leaf_type), leaf_args) in leaves.into_iter().zip(args_by_leaf) {
+                            if leaf_args.is_empty() {
+                                continue;
+                            }
+                            let leaf_name = flattened_struct_name(name, &path);
+                            lowered.push(Statement::Assign {
+                                name: leaf_name.clone(),
+                                expr: Expr::new(
+                                    ExprKind::Append {
+                                        source: Box::new(Expr::identifier(&leaf_name)),
+                                        args: leaf_args,
+                                        span: span::Span::default(),
+                                    },
+                                    *span,
+                                ),
+                                span: *span,
+                                name_span: *name_span,
+                            });
                         }
                         continue;
                     }
@@ -1525,4 +1535,47 @@ pub(crate) fn lower_structs_contract<'i>(
         span: contract.span,
         name_span: contract.name_span,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ast::parse_contract_ast;
+
+    #[test]
+    fn struct_array_append_groups_values_by_leaf() {
+        let source = r#"
+            contract C() {
+                struct S {
+                    int a;
+                    byte[2] b;
+                }
+
+                entry main(S[] values) {
+                    values = values.append(S {a: 1, b: byte[_](0x0102)}, S {a: 2, b: byte[_](0x0304)});
+                    require(values.length == 2);
+                }
+            }
+        "#;
+        let contract = parse_contract_ast(source).expect("contract should parse");
+        let structs = build_struct_registry(&contract).expect("struct registry should build");
+        let lowered = lower_structs_contract(&contract, &structs, &HashMap::new()).expect("struct array append should lower");
+
+        let append_assignments = lowered.functions[0]
+            .body
+            .iter()
+            .filter_map(|statement| {
+                let Statement::Assign { name, expr, .. } = statement else {
+                    return None;
+                };
+                let ExprKind::Append { args, .. } = &expr.kind else {
+                    return None;
+                };
+                Some((name, args))
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(append_assignments.len(), 2, "one append assignment should be emitted per struct leaf");
+        assert!(append_assignments.iter().all(|(_, args)| args.len() == 2), "each leaf append should contain both values");
+    }
 }
