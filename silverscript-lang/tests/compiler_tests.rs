@@ -1219,6 +1219,136 @@ fn rejects_assigning_sum_of_byte_values_to_byte() {
 }
 
 #[test]
+fn rejects_bitwise_operations_on_integers() {
+    for operator in ["&", "|", "^"] {
+        let source = format!(
+            r#"
+                contract Bitwise() {{
+                    entry main() {{
+                        require((128 {operator} 1) == 0);
+                    }}
+                }}
+            "#
+        );
+
+        let err = compile_contract(&source, &[], CompileOptions::default())
+            .expect_err(&format!("integer operands for {operator} should be rejected"));
+        assert!(
+            err.to_string().contains("bitwise operations require bytes or byte arrays, got int and int"),
+            "unexpected error for {operator}: {err}"
+        );
+    }
+}
+
+#[test]
+fn allows_bitwise_operations_on_bytes() {
+    for (operator, expected) in [("&", 0x04), ("|", 0x3f), ("^", 0x3b)] {
+        let source = format!(
+            r#"
+                contract Bitwise() {{
+                    entry main() {{
+                        byte x = 0x34;
+                        byte y = 0x0f;
+                        byte result = x {operator} y;
+                        require(result == {expected});
+                    }}
+                }}
+            "#
+        );
+
+        let compiled = compile_contract(&source, &[], CompileOptions::default())
+            .unwrap_or_else(|err| panic!("byte operands for {operator} should compile: {err}"));
+        let result = run_bytecode_with_selector(compiled.bytecode, None);
+        assert!(result.is_ok(), "byte operands for {operator} should execute: {result:?}");
+    }
+}
+
+#[test]
+fn rejects_bitwise_operations_mixing_bytes_and_byte_arrays() {
+    for operator in ["&", "|", "^"] {
+        let source = format!(
+            r#"
+                contract Bitwise() {{
+                    entry main() {{
+                        byte x = 0x12;
+                        byte[1] y = byte[_](0x34);
+                        byte result = x {operator} y;
+                        require(result == 0);
+                    }}
+                }}
+            "#
+        );
+
+        let err = compile_contract(&source, &[], CompileOptions::default())
+            .expect_err(&format!("mixed byte and byte-array operands for {operator} should be rejected"));
+        assert!(
+            err.to_string().contains("bitwise operations require bytes or byte arrays, got byte and byte[1]"),
+            "unexpected error for {operator}: {err}"
+        );
+    }
+}
+
+#[test]
+fn rejects_bitwise_operations_on_different_sized_byte_arrays() {
+    for operator in ["&", "|", "^"] {
+        let source = format!(
+            r#"
+                contract Bitwise() {{
+                    entry main() {{
+                        byte[2] x = byte[_](0x1234);
+                        byte[3] y = byte[_](0x56789a);
+                        byte[] result = x {operator} y;
+                        require(result.length > 0);
+                    }}
+                }}
+            "#
+        );
+
+        let err = compile_contract(&source, &[], CompileOptions::default())
+            .expect_err(&format!("different-sized byte arrays for {operator} should be rejected"));
+        assert!(
+            err.to_string().contains("bitwise operations require byte arrays of equal size, got byte[2] and byte[3]"),
+            "unexpected error for {operator}: {err}"
+        );
+    }
+}
+
+#[test]
+fn allows_bitwise_operations_on_dynamic_byte_arrays_and_checks_size_at_runtime() {
+    for (operator, expected) in [("&", vec![0x00, 0x04]), ("|", vec![0x5f, 0x3f]), ("^", vec![0x5f, 0x3b])] {
+        let source = format!(
+            r#"
+                contract Bitwise() {{
+                    entry main(byte[] x, byte[] y, byte[] expected) {{
+                        require((x {operator} y) == expected);
+                    }}
+                }}
+            "#
+        );
+        let compiled = compile_contract(&source, &[], CompileOptions::default())
+            .unwrap_or_else(|err| panic!("dynamic byte arrays for {operator} should compile: {err}"));
+
+        let sigscript = compiled
+            .build_sig_script(
+                "main",
+                vec![Expr::dynamic_bytes(vec![0x12, 0x34]), Expr::dynamic_bytes(vec![0x4d, 0x0f]), Expr::dynamic_bytes(expected)],
+            )
+            .expect("matching dynamic byte-array arguments should build");
+        let result = run_bytecode_with_sigscript(compiled.bytecode.clone(), sigscript);
+        assert!(result.is_ok(), "matching dynamic byte arrays for {operator} should execute: {result:?}");
+
+        let sigscript = compiled
+            .build_sig_script(
+                "main",
+                vec![Expr::dynamic_bytes(vec![0x12, 0x34]), Expr::dynamic_bytes(vec![0x4d]), Expr::dynamic_bytes(vec![0x00, 0x00])],
+            )
+            .expect("different-sized dynamic byte-array arguments should build");
+        let result = run_bytecode_with_sigscript(compiled.bytecode.clone(), sigscript);
+        assert!(result.is_err(), "different-sized dynamic byte arrays for {operator} should fail at runtime");
+    }
+}
+
+#[test]
 fn build_sig_script_rejects_unknown_function() {
     let source = r#"
         contract C() {
