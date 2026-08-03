@@ -51,7 +51,7 @@ pub(super) fn expr_uses_bytecode_size<'i>(expr: &Expr<'i>) -> bool {
         ExprKind::Unary { expr, .. } => expr_uses_bytecode_size(expr),
         ExprKind::Binary { left, right, .. } => expr_uses_bytecode_size(left) || expr_uses_bytecode_size(right),
         ExprKind::Append { source, args, .. } => expr_uses_bytecode_size(source) || args.iter().any(expr_uses_bytecode_size),
-        ExprKind::IfElse { condition, then_expr, else_expr } => {
+        ExprKind::Ternary { condition, then_expr, else_expr } => {
             expr_uses_bytecode_size(condition) || expr_uses_bytecode_size(then_expr) || expr_uses_bytecode_size(else_expr)
         }
         ExprKind::Array { values, .. } => values.iter().any(expr_uses_bytecode_size),

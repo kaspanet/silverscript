@@ -288,8 +288,8 @@ fn lower_expr<'i>(expr: &Expr<'i>, scope: &LoweringScope, structs: &StructRegist
             },
             span,
         )),
-        ExprKind::IfElse { condition, then_expr, else_expr } => Ok(Expr::new(
-            ExprKind::IfElse {
+        ExprKind::Ternary { condition, then_expr, else_expr } => Ok(Expr::new(
+            ExprKind::Ternary {
                 condition: Box::new(lower_expr(condition, scope, structs)?),
                 then_expr: Box::new(lower_expr(then_expr, scope, structs)?),
                 else_expr: Box::new(lower_expr(else_expr, scope, structs)?),

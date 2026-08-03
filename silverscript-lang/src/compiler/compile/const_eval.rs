@@ -94,8 +94,8 @@ pub(crate) fn resolve_constant_references<'i>(
             },
             span,
         )),
-        ExprKind::IfElse { condition, then_expr, else_expr } => Ok(Expr::new(
-            ExprKind::IfElse {
+        ExprKind::Ternary { condition, then_expr, else_expr } => Ok(Expr::new(
+            ExprKind::Ternary {
                 condition: Box::new(resolve_constant_references(*condition, constants, visiting)?),
                 then_expr: Box::new(resolve_constant_references(*then_expr, constants, visiting)?),
                 else_expr: Box::new(resolve_constant_references(*else_expr, constants, visiting)?),

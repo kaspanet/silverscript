@@ -222,8 +222,8 @@ fn substitute_expr<'i>(expr: &Expr<'i>, aliases: &HashMap<String, Expr<'i>>) -> 
             },
             span,
         ),
-        ExprKind::IfElse { condition, then_expr, else_expr } => Expr::new(
-            ExprKind::IfElse {
+        ExprKind::Ternary { condition, then_expr, else_expr } => Expr::new(
+            ExprKind::Ternary {
                 condition: Box::new(substitute_expr(&condition, aliases)?),
                 then_expr: Box::new(substitute_expr(&then_expr, aliases)?),
                 else_expr: Box::new(substitute_expr(&else_expr, aliases)?),
@@ -405,7 +405,7 @@ fn collect_expr_identifier_uses<'i>(expr: &Expr<'i>, uses: &mut HashMap<String, 
                 collect_expr_identifier_uses(arg, uses);
             }
         }
-        ExprKind::IfElse { condition, then_expr, else_expr } => {
+        ExprKind::Ternary { condition, then_expr, else_expr } => {
             collect_expr_identifier_uses(condition, uses);
             collect_expr_identifier_uses(then_expr, uses);
             collect_expr_identifier_uses(else_expr, uses);
@@ -454,7 +454,7 @@ fn expr_references_any(expr: &Expr<'_>, names: &HashSet<String>) -> bool {
         ExprKind::Append { source, args, .. } => {
             expr_references_any(source, names) || args.iter().any(|arg| expr_references_any(arg, names))
         }
-        ExprKind::IfElse { condition, then_expr, else_expr } => {
+        ExprKind::Ternary { condition, then_expr, else_expr } => {
             expr_references_any(condition, names) || expr_references_any(then_expr, names) || expr_references_any(else_expr, names)
         }
         ExprKind::Array { values, .. } => values.iter().any(|value| expr_references_any(value, names)),

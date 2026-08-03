@@ -322,8 +322,8 @@ fn lower_expr<'i>(
             },
             span,
         )),
-        ExprKind::IfElse { condition, then_expr, else_expr } => Ok(Expr::new(
-            ExprKind::IfElse {
+        ExprKind::Ternary { condition, then_expr, else_expr } => Ok(Expr::new(
+            ExprKind::Ternary {
                 condition: Box::new(lower_expr(condition, types, constants, functions)?),
                 then_expr: Box::new(lower_expr(then_expr, types, constants, functions)?),
                 else_expr: Box::new(lower_expr(else_expr, types, constants, functions)?),

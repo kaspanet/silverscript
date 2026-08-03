@@ -279,7 +279,7 @@ fn lower_expr<'i>(expr: &Expr<'i>, prefix: &mut Vec<Statement<'i>>, context: &mu
             left: Box::new(lower_expr(left, prefix, context)),
             right: Box::new(lower_expr(right, prefix, context)),
         },
-        ExprKind::IfElse { condition, then_expr, else_expr } => ExprKind::IfElse {
+        ExprKind::Ternary { condition, then_expr, else_expr } => ExprKind::Ternary {
             condition: Box::new(lower_expr(condition, prefix, context)),
             then_expr: Box::new(lower_expr(then_expr, prefix, context)),
             else_expr: Box::new(lower_expr(else_expr, prefix, context)),

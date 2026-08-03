@@ -11092,7 +11092,7 @@ fn function_param_shadows_constructor_constant_with_same_name() {
 }
 
 #[test]
-fn ternary_syntax_lowers_to_if_else_expr() {
+fn ternary_syntax_lowers_to_ternary_expr() {
     let source = r#"
         contract TernaryAst() {
             entry main(bool flag) {
@@ -11106,7 +11106,7 @@ fn ternary_syntax_lowers_to_if_else_expr() {
     let Statement::VariableDefinition { expr: Some(expr), .. } = &contract.functions[0].body[0] else {
         panic!("expected variable definition");
     };
-    assert!(matches!(&expr.kind, ExprKind::IfElse { .. }), "ternary should lower to ExprKind::IfElse: {expr:?}");
+    assert!(matches!(&expr.kind, ExprKind::Ternary { .. }), "ternary should lower to ExprKind::Ternary: {expr:?}");
 }
 
 #[test]

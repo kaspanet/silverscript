@@ -543,7 +543,7 @@ impl<'i, 'd> Inliner<'i, 'd> {
                 prelude.extend(more_prelude);
                 Ok((prelude, Expr::new(ExprKind::Append { source: Box::new(source), args, span: *append_span }, span)))
             }
-            ExprKind::IfElse { .. } => {
+            ExprKind::Ternary { .. } => {
                 Err(CompilerError::Unsupported("ternary expressions must be lowered before inline function expansion".to_string()))
             }
             ExprKind::Nullary(op) => Ok((Vec::new(), Expr::new(ExprKind::Nullary(*op), span))),

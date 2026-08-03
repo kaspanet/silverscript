@@ -252,7 +252,7 @@ impl<'i> DebugRecorder<'i> {
                 args: args.into_iter().map(|arg| self.rewrite_debug_expr(arg)).collect(),
                 span,
             },
-            ExprKind::IfElse { condition, then_expr, else_expr } => ExprKind::IfElse {
+            ExprKind::Ternary { condition, then_expr, else_expr } => ExprKind::Ternary {
                 condition: Box::new(self.rewrite_debug_expr(*condition)),
                 then_expr: Box::new(self.rewrite_debug_expr(*then_expr)),
                 else_expr: Box::new(self.rewrite_debug_expr(*else_expr)),
@@ -578,7 +578,7 @@ fn rewrite_debug_expr_with_function<'i>(
                 .collect(),
             span,
         },
-        ExprKind::IfElse { condition, then_expr, else_expr } => ExprKind::IfElse {
+        ExprKind::Ternary { condition, then_expr, else_expr } => ExprKind::Ternary {
             condition: Box::new(rewrite_debug_expr_with_function(*condition, function_name, visible_names_by_function)),
             then_expr: Box::new(rewrite_debug_expr_with_function(*then_expr, function_name, visible_names_by_function)),
             else_expr: Box::new(rewrite_debug_expr_with_function(*else_expr, function_name, visible_names_by_function)),

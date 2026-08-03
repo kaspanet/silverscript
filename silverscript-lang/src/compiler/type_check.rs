@@ -80,7 +80,7 @@ pub(super) fn check_expr<'i>(
             }
         },
         ExprKind::Binary { op, left, right } => check_binary(*op, left, right, ctx)?,
-        ExprKind::IfElse { condition, then_expr, else_expr } => {
+        ExprKind::Ternary { condition, then_expr, else_expr } => {
             check_expr(condition, Some(&scalar_type(TypeBase::Bool)), ctx)?;
             if let Some(expected) = expected {
                 check_expr(then_expr, Some(expected), ctx)?;
