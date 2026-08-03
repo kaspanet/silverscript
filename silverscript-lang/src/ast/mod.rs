@@ -2454,22 +2454,38 @@ fn parse_cast<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {
     let type_span = Span::from(type_pair.as_span());
 
     let cast_type = parse_type_ref(&type_name).ok();
-    let is_byte_array_cast =
-        cast_type.as_ref().is_some_and(|type_ref| matches!(type_ref.base, TypeBase::Byte) && type_ref.array_dims.len() == 1);
-
     let parts = inner.collect::<Vec<_>>();
-    if is_byte_array_cast
-        && let [part] = parts.as_slice()
+    if let [part] = parts.as_slice()
         && let Some(hex_pair) = immediate_hex_literal(part)
+        && let Some(cast_type) = cast_type.as_ref()
     {
         let bytes = parse_hex_bytes(&hex_pair)?;
-        let mut type_ref = cast_type.expect("byte-array cast type was parsed");
-        if matches!(type_ref.array_size(), Some(ArrayDim::Inferred)) {
-            type_ref.array_dims[0] = ArrayDim::Fixed(bytes.len());
-        }
         let byte_span = Span::from(hex_pair.as_span());
-        let values = bytes.into_iter().map(|byte| Expr::new(ExprKind::Byte(byte), byte_span)).collect();
-        return Ok(Expr::new(ExprKind::Array { type_ref, values }, span));
+        let values = bytes.into_iter().map(|byte| Expr::new(ExprKind::Byte(byte), byte_span)).collect::<Vec<_>>();
+        if matches!(cast_type.base, TypeBase::Byte) && cast_type.array_dims.len() == 1 {
+            let mut type_ref = cast_type.clone();
+            if matches!(type_ref.array_size(), Some(ArrayDim::Inferred)) {
+                type_ref.array_dims[0] = ArrayDim::Fixed(values.len());
+            }
+            return Ok(Expr::new(ExprKind::Array { type_ref, values }, span));
+        }
+        if let Some(expected_len) = cast_type.base.fixed_byte_sequence_len() {
+            if values.len() != expected_len {
+                return Err(CompilerError::InvalidLiteral(format!(
+                    "{} hex literal size mismatch: expected {expected_len} bytes, got {}",
+                    cast_type.type_name(),
+                    values.len()
+                )));
+            }
+            let value = Expr::new(
+                ExprKind::Array {
+                    type_ref: TypeRef { base: TypeBase::Byte, array_dims: vec![ArrayDim::Fixed(expected_len)] },
+                    values,
+                },
+                byte_span,
+            );
+            return Ok(Expr::new(ExprKind::Call { name: cast_type.type_name(), args: vec![value], name_span: type_span }, span));
+        }
     }
 
     let args = parts.into_iter().map(parse_expression).collect::<Result<Vec<_>, _>>()?;
@@ -2515,7 +2531,9 @@ fn parse_hex_literal<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError
         return Err(CompilerError::InvalidLiteral(format!("invalid hex literal '{raw}'")));
     }
     if bytes.len() > 8 {
-        return Err(CompilerError::InvalidLiteral(format!("hex literal '{raw}' exceeds 8 bytes; cast it directly to a byte array")));
+        return Err(CompilerError::InvalidLiteral(format!(
+            "hex literal '{raw}' exceeds 8 bytes; cast it directly to a byte array or fixed byte-sequence type"
+        )));
     }
     let value = u64::from_str_radix(raw.trim_start_matches("0x").trim_start_matches("0X"), 16)
         .ok()

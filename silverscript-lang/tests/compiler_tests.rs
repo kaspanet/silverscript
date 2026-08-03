@@ -1320,7 +1320,7 @@ fn rejects_assigning_fixed_size_builtin_results_to_wrong_byte_array_sizes() {
         ),
         (
             "ScriptPubKeyP2PK",
-            "byte[33] value = new ScriptPubKeyP2PK(pubkey(byte[32](0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f)));",
+            "byte[33] value = new ScriptPubKeyP2PK(pubkey(0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f));",
         ),
         (
             "ScriptPubKeyP2SH",
@@ -1495,12 +1495,12 @@ fn infers_fixed_sizes_for_multiple_array_element_types() {
                 bool[_] flags = bool[_]{true, false};
                 bool[2] flags_expected = bool[_]{true, false};
                 pubkey[_] keys = pubkey[_]{
-                    pubkey(byte[32](0x0101010101010101010101010101010101010101010101010101010101010101)),
-                    pubkey(byte[32](0x0202020202020202020202020202020202020202020202020202020202020202))
+                    pubkey(0x0101010101010101010101010101010101010101010101010101010101010101),
+                    pubkey(0x0202020202020202020202020202020202020202020202020202020202020202)
                 };
                 pubkey[2] keys_expected = pubkey[_]{
-                    pubkey(byte[32](0x0303030303030303030303030303030303030303030303030303030303030303)),
-                    pubkey(byte[32](0x0404040404040404040404040404040404040404040404040404040404040404))
+                    pubkey(0x0303030303030303030303030303030303030303030303030303030303030303),
+                    pubkey(0x0404040404040404040404040404040404040404040404040404040404040404)
                 };
                 require(ints == ints_expected);
                 require(flags == flags_expected);
@@ -4838,8 +4838,8 @@ fn allows_concat_of_pubkey_arrays_with_plus() {
     let source = r#"
         contract Arrays() {
             entry main() {
-                pubkey p1 = pubkey(byte[32](0x0202020202020202020202020202020202020202020202020202020202020202));
-                pubkey p2 = pubkey(byte[32](0x0303030303030303030303030303030303030303030303030303030303030303));
+                pubkey p1 = pubkey(0x0202020202020202020202020202020202020202020202020202020202020202);
+                pubkey p2 = pubkey(0x0303030303030303030303030303030303030303030303030303030303030303);
 
                 pubkey[] a = pubkey[]{p1};
                 pubkey[] b = pubkey[]{p2};
@@ -6664,7 +6664,7 @@ fn read_input_state_accepts_pubkey_and_bool_fields_under_selector_dispatch() {
             entry main() {
                 State s = readInputState(this.activeInputIndex);
                 require(s.flag);
-                require(s.owner == pubkey(byte[_](0x0202020202020202020202020202020202020202020202020202020202020202)));
+                require(s.owner == pubkey(0x0202020202020202020202020202020202020202020202020202020202020202));
             }
         }
     "#;
@@ -6813,7 +6813,7 @@ fn read_input_state_runtime_preserves_supported_field_types_across_contract_shap
 
                 entry main() {
                     State x = readInputState(this.activeInputIndex);
-                    require(x.somePubkey == pubkey(byte[_](0x0202020202020202020202020202020202020202020202020202020202020202)));
+                    require(x.somePubkey == pubkey(0x0202020202020202020202020202020202020202020202020202020202020202));
 
                     byte[] owner = byte[](x.somePubkey);
                     owner = owner.append(byte(3));
@@ -6836,7 +6836,7 @@ fn read_input_state_runtime_preserves_supported_field_types_across_contract_shap
 
                 entry main() {
                     State x = readInputState(this.activeInputIndex);
-                    require(x.someSig == sig(byte[_](0x1111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111)));
+                    require(x.someSig == sig(0x1111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111));
 
                     byte[] sigBytes = byte[](x.someSig);
                     sigBytes = sigBytes.append(byte(0x42));
@@ -6859,7 +6859,7 @@ fn read_input_state_runtime_preserves_supported_field_types_across_contract_shap
 
                 entry main() {
                     State x = readInputState(this.activeInputIndex);
-                    require(x.someDatasig == datasig(byte[_](0x22222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222)));
+                    require(x.someDatasig == datasig(0x22222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222));
 
                     byte[] datasigBytes = byte[](x.someDatasig);
                     datasigBytes = datasigBytes.append(byte(0x24));
@@ -6926,7 +6926,7 @@ fn read_input_state_runtime_preserves_supported_field_types_without_selector_dis
 
                 entry main() {
                     State x = readInputState(this.activeInputIndex);
-                    require(x.somePubkey == pubkey(byte[_](0x0202020202020202020202020202020202020202020202020202020202020202)));
+                    require(x.somePubkey == pubkey(0x0202020202020202020202020202020202020202020202020202020202020202));
 
                     byte[] owner = byte[](x.somePubkey);
                     owner = owner.append(byte(3));
@@ -6954,7 +6954,7 @@ fn read_input_state_scalar_byte_round_trips_at_runtime() {
                 State x = readInputState(this.activeInputIndex);
 
                 // The companion pubkey field proves the state offsets are otherwise correct for this layout.
-                require(x.someOwner == pubkey(byte[_](0x0202020202020202020202020202020202020202020202020202020202020202)));
+                require(x.someOwner == pubkey(0x0202020202020202020202020202020202020202020202020202020202020202));
 
                 // Regression coverage: scalar byte fields should round-trip through readInputState
                 // with the same semantics as ordinary byte values.
@@ -7251,12 +7251,57 @@ fn hex_literal_over_eight_bytes_requires_an_immediate_byte_array_cast() {
     let raw = "0x010203040506070809";
     let uncast = format!("contract C() {{ entry main() {{ byte[_] value = {raw}; require(true); }} }}");
     let err = compile_contract(&uncast, &[], CompileOptions::default()).expect_err("uncast nine-byte hex literal should fail");
-    assert!(err.to_string().contains("exceeds 8 bytes; cast it directly to a byte array"), "unexpected error: {err}");
+    assert!(
+        err.to_string().contains("exceeds 8 bytes; cast it directly to a byte array or fixed byte-sequence type"),
+        "unexpected error: {err}"
+    );
 
     let source = format!("contract C() {{ entry main() {{ byte[_] value = byte[_]({raw}); require(value == byte[9]({raw})); }} }}");
     let compiled =
         compile_contract(&source, &[], CompileOptions::default()).expect("immediately cast nine-byte literal should compile");
     assert!(run_script_with_selector(compiled.script, None).is_ok());
+}
+
+#[test]
+fn fixed_byte_sequence_types_accept_immediate_hex_literals() {
+    let pubkey = "02".repeat(32);
+    let sig = "11".repeat(65);
+    let datasig = "22".repeat(64);
+    let source = format!(
+        r#"
+        contract C() {{
+            entry main() {{
+                pubkey public_key = pubkey(0x{pubkey});
+                sig signature = sig(0x{sig});
+                datasig data_signature = datasig(0x{datasig});
+                require(public_key == public_key);
+                require(signature == signature);
+                require(data_signature == data_signature);
+            }}
+        }}
+        "#
+    );
+
+    let compiled = compile_contract(&source, &[], CompileOptions::default()).expect("direct fixed byte-sequence casts should compile");
+    assert!(run_script_with_selector(compiled.script, None).is_ok());
+}
+
+#[test]
+fn fixed_byte_sequence_hex_literals_require_exact_sizes() {
+    let cases = [("pubkey", 31, 32), ("pubkey", 33, 32), ("sig", 64, 65), ("sig", 66, 65), ("datasig", 63, 64), ("datasig", 65, 64)];
+
+    for (type_name, actual, expected) in cases {
+        let source = format!(
+            "contract C() {{ entry main() {{ {type_name} value = {type_name}(0x{}); require(true); }} }}",
+            "02".repeat(actual)
+        );
+        let err = compile_contract(&source, &[], CompileOptions::default())
+            .expect_err("wrong-sized fixed byte-sequence literal should fail");
+        assert!(
+            err.to_string().contains(&format!("{type_name} hex literal size mismatch: expected {expected} bytes, got {actual}")),
+            "unexpected error: {err}"
+        );
+    }
 }
 
 #[test]
@@ -8395,9 +8440,9 @@ fn checksigfromstack_requires_datasig_and_32_byte_digest_types() {
     compile_contract(contract_constant_size, &[vec![0x11u8; 64].into(), vec![0x22u8; 32].into()], CompileOptions::default())
         .expect("contract constants should satisfy byte[32]");
 
-    let signature_literal = format!("datasig(byte[64](0x{}))", "11".repeat(64));
+    let signature_literal = format!("datasig(0x{})", "11".repeat(64));
     let digest_literal = format!("byte[32](0x{})", "33".repeat(32));
-    let public_key_literal = format!("pubkey(byte[32](0x{}))", "22".repeat(32));
+    let public_key_literal = format!("pubkey(0x{})", "22".repeat(32));
     let public_key_bytes_literal = format!("byte[32](0x{})", "22".repeat(32));
     let literal_args = format!(
         r#"

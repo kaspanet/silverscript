@@ -243,6 +243,29 @@ fn byte_array_hex_cast_becomes_a_typed_array_expr() {
 }
 
 #[test]
+fn fixed_byte_sequence_hex_casts_contain_fixed_byte_array_exprs() {
+    let cases = [("pubkey", 32), ("sig", 65), ("datasig", 64)];
+
+    for (type_name, size) in cases {
+        let input = format!("contract C() {{ entry main() {{ {type_name} value = {type_name}(0x{}); }} }}", "02".repeat(size));
+        let contract = parse_contract_ast(&input).expect("fixed byte-sequence hex literal should parse");
+        let Statement::VariableDefinition { expr: Some(expr), .. } = &contract.functions[0].body[0] else {
+            panic!("expected a variable definition with an initializer");
+        };
+        let ExprKind::Call { name, args, .. } = &expr.kind else {
+            panic!("expected a scalar cast call");
+        };
+        assert_eq!(name, type_name);
+        let [Expr { kind: ExprKind::Array { type_ref, values }, .. }] = args.as_slice() else {
+            panic!("expected a single typed byte-array argument");
+        };
+        assert_eq!(type_ref, &parse_type_ref(&format!("byte[{size}]")).unwrap());
+        assert_eq!(values.len(), size);
+        assert!(values.iter().all(|value| matches!(value.kind, ExprKind::Byte(2))));
+    }
+}
+
+#[test]
 fn rejects_untyped_array_literals() {
     let input = r#"
         contract Arrays() {
