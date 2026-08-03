@@ -16,6 +16,20 @@ pub(super) enum BuiltinReturn {
     Void,
 }
 
+pub(super) struct G16VerifyParameterTypes {
+    pub(super) verifying_key: TypeRef,
+    pub(super) proof: TypeRef,
+    pub(super) public_input: TypeRef,
+}
+
+pub(super) fn g16_verify_parameter_types() -> G16VerifyParameterTypes {
+    G16VerifyParameterTypes {
+        verifying_key: byte_array(ArrayDim::Dynamic),
+        proof: byte_array(ArrayDim::Dynamic),
+        public_input: byte_array(ArrayDim::Fixed(32)),
+    }
+}
+
 pub(super) fn introspection_type(op: IntrospectionKind) -> TypeRef {
     match op {
         IntrospectionKind::ActiveScriptPubKey | IntrospectionKind::ThisBytecodeSizeDataPrefix => byte_array(ArrayDim::Dynamic),
@@ -67,7 +81,8 @@ pub(super) fn builtin_return(name: &str) -> Option<BuiltinReturn> {
         | "OpCovOutputIdx" => scalar(TypeBase::Int),
         "length" => scalar(TypeBase::Int),
         "OpTxInputIsCoinbase" | "checkSig" | "checkMsgSig" | "checkSigFromStackECDSA" => scalar(TypeBase::Bool),
-        "r0.g16.verify"
+        "g16.verify"
+        | "r0.g16.verify"
         | "r0.succinct.verify"
         | "r0.succinct.blake2b.verify"
         | "r0.succinct.poseidon2.verify"

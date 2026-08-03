@@ -1,5 +1,5 @@
 use super::*;
-use crate::compiler::builtin_types::builtin_parameters;
+use crate::compiler::builtin_types::{builtin_parameters, g16_verify_parameter_types};
 use kaspa_txscript::zk_precompiles::tags::ZkTag;
 use kaspa_txscript_zk_sdk::append_r0_groth16_verifier_dynamic_image_id;
 
@@ -34,6 +34,7 @@ pub(super) fn compile_call_expr<'i>(
         "checkSig" => compile_checksig_call(ctx, args),
         "checkMsgSig" => compile_checksigfromstack_call(ctx, name, args, OpCheckSigFromStack),
         "checkSigFromStackECDSA" => compile_checksigfromstack_call(ctx, name, args, OpCheckSigFromStackECDSA),
+        "g16.verify" => compile_g16_verify_call(ctx, args),
         "r0.g16.verify" => compile_r0_groth16_verify_call(ctx, args),
         "r0.succinct.verify" | "r0.succinct.blake2b.verify" | "r0.succinct.poseidon2.verify" | "r0.succinct.sha256.verify" => {
             compile_r0_succinct_verify_call(ctx, name, args)
@@ -247,6 +248,26 @@ fn compile_checksigfromstack_call<'i>(
     }
     compile_typed_builtin_args(ctx, name, args)?;
     ctx.emit_op(opcode, -2)?;
+    Ok(())
+}
+
+fn compile_g16_verify_call<'i>(ctx: &mut CompileExprContext<'_, '_, 'i>, args: &[Expr<'i>]) -> Result<(), CompilerError> {
+    if args.len() < 2 {
+        return Err(CompilerError::Unsupported("g16.verify() expects at least 2 arguments".to_string()));
+    }
+
+    let parameters = g16_verify_parameter_types();
+    let public_inputs = &args[2..];
+    // The precompile pops public inputs in source order, so push them in reverse.
+    for public_input in public_inputs.iter().rev() {
+        compile_expr_with_context(ctx, public_input, Some(&parameters.public_input))?;
+    }
+    ctx.push_int(public_inputs.len() as i64)?;
+    compile_expr_with_context(ctx, &args[1], Some(&parameters.proof))?;
+    compile_expr_with_context(ctx, &args[0], Some(&parameters.verifying_key))?;
+    ctx.push_data(&[ZkTag::Groth16 as u8])?;
+    ctx.emit_op(OpZkPrecompile, -(public_inputs.len() as i64 + 3))?;
+    ctx.emit_op(OpDrop, -1)?; // Drop the OpTrue pushed after successful verification.
     Ok(())
 }
 

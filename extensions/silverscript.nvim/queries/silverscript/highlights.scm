@@ -82,6 +82,14 @@
   .
   (call_suffix))
 
+(postfix
+  (postfix_op
+    (member_access
+      name: (identifier) @function.builtin))
+  .
+  (postfix_op
+    (call_suffix)))
+
 (unary_suffix) @property
 
 (split_call

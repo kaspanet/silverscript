@@ -371,6 +371,18 @@ fn parses_qualified_r0_verifier_calls() {
 }
 
 #[test]
+fn parses_g16_verify_call() {
+    let input = r#"
+        contract Groth16(byte[] verifying_key, byte[] proof, byte[32] public_input) {
+            entry verify() {
+                g16.verify(verifying_key, proof, public_input);
+            }
+        }
+    "#;
+    assert!(parse_source_file(input).is_ok());
+}
+
+#[test]
 fn rejects_misspelled_r0_succinct_verifier_call() {
     let input = r#"
         contract R0(byte[32] image_id, byte[32] control_id) {

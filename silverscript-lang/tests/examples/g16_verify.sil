@@ -1,0 +1,23 @@
+pragma silverscript ^0.1.0;
+
+contract Groth16Verify() {
+    entry verify(
+        byte[] verifying_key,
+        byte[] proof,
+        byte[32] public_input0,
+        byte[32] public_input1,
+        byte[32] public_input2,
+        byte[32] public_input3,
+        byte[32] public_input4,
+    ) {
+        g16.verify(
+            verifying_key,
+            proof,
+            public_input0,
+            public_input1,
+            public_input2,
+            public_input3,
+            public_input4,
+        );
+    }
+}

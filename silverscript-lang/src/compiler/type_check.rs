@@ -5,8 +5,8 @@ use crate::ast::{
 };
 
 use super::builtin_types::{
-    BuiltinReturn, builtin_parameters, builtin_return, constructor_parameters, constructor_return_type, indexed_introspection_type,
-    introspection_type,
+    BuiltinReturn, builtin_parameters, builtin_return, constructor_parameters, constructor_return_type, g16_verify_parameter_types,
+    indexed_introspection_type, introspection_type,
 };
 use super::structs::{StructRegistry, flattened_struct_field_specs_for_type, is_struct, struct_name};
 use super::{CompilerError, STATE_TYPE_NAME, TypeMap, append_type, array_type_size, concat_types, parse_type_ref, type_refs_equal};
@@ -291,13 +291,31 @@ pub(super) fn check_call<'i>(
     let Some(return_type) = builtin_return(name) else {
         return Err(CompilerError::Unsupported(format!("function '{name}' not found")));
     };
-    let parameters = builtin_parameters(name)
-        .ok_or_else(|| CompilerError::Unsupported(format!("builtin function '{name}' has no parameter types")))?;
-    check_builtin_args(name, args, parameters, ctx)?;
+    if name == "g16.verify" {
+        check_g16_verify_args(args, ctx)?;
+    } else {
+        let parameters = builtin_parameters(name)
+            .ok_or_else(|| CompilerError::Unsupported(format!("builtin function '{name}' has no parameter types")))?;
+        check_builtin_args(name, args, parameters, ctx)?;
+    }
     match return_type {
         BuiltinReturn::Value(type_ref) => Ok(Some(type_ref)),
         BuiltinReturn::Void => Ok(None),
     }
+}
+
+fn check_g16_verify_args<'i>(args: &[Expr<'i>], ctx: &TypeCheckContext<'_, 'i>) -> Result<(), CompilerError> {
+    if args.len() < 2 {
+        return Err(CompilerError::Unsupported("g16.verify() expects at least 2 arguments".to_string()));
+    }
+
+    let parameters = g16_verify_parameter_types();
+    check_builtin_arg("g16.verify", "verifyingKey", &args[0], &parameters.verifying_key, ctx)?;
+    check_builtin_arg("g16.verify", "proof", &args[1], &parameters.proof, ctx)?;
+    for (index, arg) in args[2..].iter().enumerate() {
+        check_builtin_arg("g16.verify", &format!("publicInput{index}"), arg, &parameters.public_input, ctx)?;
+    }
+    Ok(())
 }
 
 fn check_builtin_args<'i>(
@@ -310,13 +328,24 @@ fn check_builtin_args<'i>(
         return Err(CompilerError::Unsupported(format!("{name}() expects {} arguments", parameters.len())));
     }
     for (arg, (parameter, expected)) in args.iter().zip(parameters) {
-        if check_expr(arg, Some(&expected), ctx).is_err() {
-            let actual = check_expr(arg, None, ctx).map(|type_ref| type_ref.type_name()).unwrap_or_else(|_| "unknown".to_string());
-            return Err(CompilerError::Unsupported(format!(
-                "{name}() argument '{parameter}' expects {}, got {actual}",
-                expected.type_name()
-            )));
-        }
+        check_builtin_arg(name, parameter, arg, &expected, ctx)?;
+    }
+    Ok(())
+}
+
+fn check_builtin_arg<'i>(
+    name: &str,
+    parameter: &str,
+    arg: &Expr<'i>,
+    expected: &TypeRef,
+    ctx: &TypeCheckContext<'_, 'i>,
+) -> Result<(), CompilerError> {
+    if check_expr(arg, Some(expected), ctx).is_err() {
+        let actual = check_expr(arg, None, ctx).map(|type_ref| type_ref.type_name()).unwrap_or_else(|_| "unknown".to_string());
+        return Err(CompilerError::Unsupported(format!(
+            "{name}() argument '{parameter}' expects {}, got {actual}",
+            expected.type_name()
+        )));
     }
     Ok(())
 }
