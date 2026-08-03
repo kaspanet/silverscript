@@ -29,6 +29,14 @@ pub(super) fn lower_array_appends<'i>(
     Ok(ContractAst { fields, constants, functions, ..contract.clone() })
 }
 
+pub(super) fn lower_array_append_expr<'i>(
+    expr: &Expr<'i>,
+    types: &TypeMap,
+    constants: &HashMap<String, Expr<'i>>,
+) -> Result<Expr<'i>, CompilerError> {
+    lower_expr(expr, types, constants, &HashMap::new())
+}
+
 fn lower_contract_field<'i>(
     field: &ContractFieldAst<'i>,
     types: &TypeMap,

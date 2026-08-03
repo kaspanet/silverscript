@@ -1,4 +1,4 @@
-use super::array_append::lower_array_appends;
+use super::array_append::{lower_array_append_expr, lower_array_appends};
 use super::covenant_declarations::lower_covenant_declarations;
 use super::infer_array::lower_inferred_array_sizes;
 use super::inline_functions::lower_inline_functions;
@@ -255,10 +255,11 @@ pub fn compile_debug_expr<'i>(
 ) -> Result<(Vec<u8>, String), CompilerError> {
     let empty_constants = HashMap::new();
     let mut builder = script_builder();
-    let type_ref = infer_expr_type(expr, constants, types)?;
+    let expr = lower_array_append_expr(expr, types, constants)?;
+    let type_ref = infer_expr_type(&expr, constants, types)?;
     let stack_bindings = StackBindings::from_depths(stack_bindings.clone());
     let env = ExprEnv { constants, stack_bindings: &stack_bindings, types, bytecode_size: None, contract_constants: &empty_constants };
     let mut emitter = ScriptEmitter::new(&mut builder, 0);
-    compile_expr(expr, Some(&type_ref), &env, &mut emitter)?;
+    compile_expr(&expr, Some(&type_ref), &env, &mut emitter)?;
     Ok((builder.drain(), type_ref.type_name()))
 }

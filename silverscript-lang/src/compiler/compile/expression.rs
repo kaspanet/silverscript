@@ -65,7 +65,9 @@ fn compile_expr_with_context<'i>(
         ExprKind::New { name, args, .. } => compile_new_expr(ctx, name, args),
         ExprKind::Unary { op, expr } => compile_unary_expr(ctx, *op, expr),
         ExprKind::Binary { op, left, right } => compile_binary_expr(ctx, *op, left, right),
-        ExprKind::Append { source, args, .. } => compile_append_expr(ctx, source, args),
+        ExprKind::Append { .. } => {
+            Err(CompilerError::Unsupported("internal error: array append was not lowered before expression compilation".to_string()))
+        }
         ExprKind::Split { source, index, part, .. } => compile_split_part(ctx, source, index, *part),
         ExprKind::UnarySuffix { source, kind, .. } => compile_unary_suffix_expr(ctx, source, *kind),
         ExprKind::ArrayIndex { source, index } => compile_array_index_expr(ctx, source, index),
@@ -441,24 +443,6 @@ fn compile_binary_expr<'i>(
             ctx.emit_op(OpMod, -1)?;
         }
     }
-    Ok(())
-}
-
-// TODO: Get rid of this function, since it should already be handled by earlier lowering.
-fn compile_append_expr<'i>(
-    ctx: &mut CompileExprContext<'_, '_, 'i>,
-    source: &Expr<'i>,
-    args: &[Expr<'i>],
-) -> Result<(), CompilerError> {
-    let source_type = infer_expr_type(source, ctx.env.constants, ctx.env.types)?;
-    let mut appended_type =
-        source_type.array_element_type().ok_or_else(|| CompilerError::Unsupported("append target must be an array".to_string()))?;
-    appended_type.array_dims.push(ArrayDim::Fixed(args.len()));
-    let appended = Expr::array(appended_type.clone(), args.to_vec());
-
-    compile_expr_with_context(ctx, source, Some(&source_type))?;
-    compile_expr_with_context(ctx, &appended, Some(&appended_type))?;
-    ctx.emit_op(OpCat, -1)?;
     Ok(())
 }
 

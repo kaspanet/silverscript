@@ -18,7 +18,8 @@ pub(super) fn compile_call_expr<'i>(
     match name {
         "sha256" => compile_sha256_call(ctx, args),
         "length" => compile_length_call(ctx, args),
-        "int" | "byte" | "bool" | "string" | "sig" | "pubkey" | "datasig" => compile_passthrough_cast_call(ctx, name, args),
+        "byte" => compile_byte_sequence_cast_call(ctx, "byte[1]", args),
+        "int" | "bool" | "string" | "sig" | "pubkey" | "datasig" => compile_passthrough_cast_call(ctx, name, args),
         name if parse_type_ref(name)
             .is_ok_and(|type_ref| matches!(type_ref.base, TypeBase::Byte) && type_ref.array_dims.len() == 1) =>
         {

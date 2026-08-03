@@ -18,7 +18,7 @@ use kaspa_txscript::{
 use silverscript_lang::ast::{Expr, ExprKind, Statement, format_contract_ast, parse_contract_ast, parse_type_ref};
 use silverscript_lang::compiler::{
     COMPILER_VERSION, CompileOptions, CompiledContract, CovenantDeclCallOptions, FunctionAbiEntry, FunctionInputAbi, compile_contract,
-    compile_contract_ast, function_branch_index, generated_covenant_auth_entrypoint_name, struct_object,
+    compile_contract_ast, compile_debug_expr, function_branch_index, generated_covenant_auth_entrypoint_name, struct_object,
 };
 use silverscript_lang::debug_info::StepKind;
 use silverscript_lang::template::template_hash;
@@ -4621,6 +4621,29 @@ fn compiles_int_array_append_to_expected_script() {
         .drain();
 
     assert_eq!(compiled.bytecode, expected);
+}
+
+#[test]
+fn debug_expression_compilation_lowers_array_append() {
+    let expr = Expr::new(
+        ExprKind::Append {
+            source: Box::new(Expr::array(parse_type_ref("int[1]").unwrap(), vec![Expr::int(1)])),
+            args: vec![Expr::int(2)],
+            span: Default::default(),
+        },
+        Default::default(),
+    );
+
+    let (bytecode, type_name) = compile_debug_expr(
+        &expr,
+        &std::collections::HashMap::new(),
+        &std::collections::HashMap::new(),
+        &std::collections::HashMap::new(),
+    )
+    .expect("debug append expression should compile after lowering");
+
+    assert_eq!(type_name, "int[2]");
+    assert!(bytecode.contains(&OpCat));
 }
 
 #[test]

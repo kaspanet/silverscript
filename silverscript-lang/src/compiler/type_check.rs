@@ -32,7 +32,7 @@ pub(super) fn check_expr<'i>(
         ExprKind::String(_) => scalar_type(TypeBase::String),
         ExprKind::Identifier(name) => ctx.types.get(name).cloned().ok_or_else(|| CompilerError::UndefinedIdentifier(name.clone()))?,
         ExprKind::Array { type_ref, values } => check_typed_array_literal(values, type_ref, expected, ctx)?,
-        ExprKind::Call { name, args, name_span } => check_call(name, name_span.as_str(), args, expected, ctx)?
+        ExprKind::Call { name, args, .. } => check_call(name, args, expected, ctx)?
             .ok_or_else(|| CompilerError::Unsupported(format!("function '{name}' does not return a value")))?,
         ExprKind::New { name, args, .. } => check_constructor(name, args, ctx)?,
         ExprKind::Split { source, index, .. } => {
@@ -208,17 +208,10 @@ fn check_typed_array_literal<'i>(
 
 pub(super) fn check_call<'i>(
     name: &str,
-    source_name: &str,
     args: &[Expr<'i>],
     expected: Option<&TypeRef>,
     ctx: &TypeCheckContext<'_, 'i>,
 ) -> Result<Option<TypeRef>, CompilerError> {
-    // TODO: Consider removing this special case
-    if name == "byte[1]" && source_name == "byte" {
-        check_arity(name, args, 1)?;
-        check_expr(&args[0], None, ctx)?;
-        return Ok(Some(scalar_type(TypeBase::Byte)));
-    }
     if name == "readInputState" && !ctx.contract_fields.is_empty() {
         check_arity(name, args, 1)?;
         check_expr(&args[0], Some(&scalar_type(TypeBase::Int)), ctx)?;
