@@ -138,7 +138,7 @@ indexed_introspection = {
 }
 
 output_field = { "." ~ ("value" | "scriptPubKey") }
-input_field = { "." ~ ("value" | "scriptPubKey" | "outpointTransactionHash" | "outpointIndex" | "sigScript") }
+input_field = { "." ~ ("value" | "scriptPubKey" | "outpointTxId" | "outpointIndex" | "sequence" | "sigScript") }
 
 typed_array = { type_name ~ "{" ~ (expression ~ ("," ~ expression)* ~ ","?)? ~ "}" }
 

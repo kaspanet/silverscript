@@ -830,12 +830,9 @@ pub enum IndexedIntrospectionKind {
     InputValue,
     InputScriptPubKey,
     InputSigScript,
-    /// TODO: not supported yet
-    InputOutpointTransactionHash,
-    /// TODO: not supported yet
+    InputOutpointTxId,
     InputOutpointIndex,
-    /// TODO: not supported yet
-    InputSequenceNumber,
+    InputSequence,
     OutputValue,
     OutputScriptPubKey,
 }
@@ -1313,9 +1310,9 @@ fn indexed_introspection_root(kind: IndexedIntrospectionKind) -> &'static str {
         IndexedIntrospectionKind::InputValue
         | IndexedIntrospectionKind::InputScriptPubKey
         | IndexedIntrospectionKind::InputSigScript
-        | IndexedIntrospectionKind::InputOutpointTransactionHash
+        | IndexedIntrospectionKind::InputOutpointTxId
         | IndexedIntrospectionKind::InputOutpointIndex
-        | IndexedIntrospectionKind::InputSequenceNumber => "tx.inputs",
+        | IndexedIntrospectionKind::InputSequence => "tx.inputs",
         IndexedIntrospectionKind::OutputValue | IndexedIntrospectionKind::OutputScriptPubKey => "tx.outputs",
     }
 }
@@ -1325,9 +1322,9 @@ fn indexed_introspection_field(kind: IndexedIntrospectionKind) -> &'static str {
         IndexedIntrospectionKind::InputValue | IndexedIntrospectionKind::OutputValue => ".value",
         IndexedIntrospectionKind::InputScriptPubKey | IndexedIntrospectionKind::OutputScriptPubKey => ".scriptPubKey",
         IndexedIntrospectionKind::InputSigScript => ".sigScript",
-        IndexedIntrospectionKind::InputOutpointTransactionHash => ".outpointTransactionHash",
+        IndexedIntrospectionKind::InputOutpointTxId => ".outpointTxId",
         IndexedIntrospectionKind::InputOutpointIndex => ".outpointIndex",
-        IndexedIntrospectionKind::InputSequenceNumber => ".sequenceNumber",
+        IndexedIntrospectionKind::InputSequence => ".sequence",
     }
 }
 
@@ -2642,10 +2639,9 @@ fn parse_indexed_introspection<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, Com
             ".value" => IndexedIntrospectionKind::InputValue,
             ".scriptPubKey" => IndexedIntrospectionKind::InputScriptPubKey,
             ".sigScript" => IndexedIntrospectionKind::InputSigScript,
-            // TODO: support this
-            ".outpointTransactionHash" => IndexedIntrospectionKind::InputOutpointTransactionHash,
+            ".outpointTxId" => IndexedIntrospectionKind::InputOutpointTxId,
             ".outpointIndex" => IndexedIntrospectionKind::InputOutpointIndex,
-            ".sequenceNumber" => IndexedIntrospectionKind::InputSequenceNumber,
+            ".sequence" => IndexedIntrospectionKind::InputSequence,
             _ => return Err(CompilerError::Unsupported(format!("input field '{field_raw}' not supported"))),
         }
     } else if text.starts_with("tx.outputs") {

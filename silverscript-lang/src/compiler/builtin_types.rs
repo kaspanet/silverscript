@@ -32,11 +32,11 @@ pub(super) fn indexed_introspection_type(kind: IndexedIntrospectionKind) -> Type
     match kind {
         IndexedIntrospectionKind::InputScriptPubKey
         | IndexedIntrospectionKind::InputSigScript
-        | IndexedIntrospectionKind::InputOutpointTransactionHash
         | IndexedIntrospectionKind::OutputScriptPubKey => byte_array(ArrayDim::Dynamic),
+        IndexedIntrospectionKind::InputOutpointTxId => byte_array(ArrayDim::Fixed(32)),
+        IndexedIntrospectionKind::InputSequence => byte_array(ArrayDim::Fixed(8)),
         IndexedIntrospectionKind::InputValue
         | IndexedIntrospectionKind::InputOutpointIndex
-        | IndexedIntrospectionKind::InputSequenceNumber
         | IndexedIntrospectionKind::OutputValue => scalar(TypeBase::Int),
     }
 }

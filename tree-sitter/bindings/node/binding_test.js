@@ -20,6 +20,8 @@ test("distinguishes indexed and unindexed introspection", async () => {
       entry main(int index) {
         int inputCount = tx.inputs.length;
         int outputValue = tx.outputs[index].value;
+        byte[32] outpointTxId = tx.inputs[index].outpointTxId;
+        byte[8] sequence = tx.inputs[index].sequence;
         require(inputCount > 0 && outputValue >= 0);
       }
     }

@@ -958,6 +958,9 @@ Access properties of transaction inputs:
 int i = 0;
 int inputValue = tx.inputs[i].value;
 byte[] inputScript = tx.inputs[i].scriptPubKey;
+byte[32] outpointTxId = tx.inputs[i].outpointTxId;
+int outpointIndex = tx.inputs[i].outpointIndex;
+byte[8] sequence = tx.inputs[i].sequence;
 ```
 
 **Example:**

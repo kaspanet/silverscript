@@ -397,8 +397,9 @@ export default grammar({
       choice(
         "value",
         "scriptPubKey",
-        "outpointTransactionHash",
+        "outpointTxId",
         "outpointIndex",
+        "sequence",
         "sigScript",
       ),
 
