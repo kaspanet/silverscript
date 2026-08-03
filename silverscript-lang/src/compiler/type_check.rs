@@ -127,12 +127,8 @@ pub(super) fn check_expr<'i>(
             let source_type = check_expr(source, None, ctx)?;
             match kind {
                 UnarySuffixKind::Length if is_sequence_type(&source_type) => scalar_type(TypeBase::Int),
-                UnarySuffixKind::Reverse if is_sequence_type(&source_type) => source_type,
                 UnarySuffixKind::Length => {
                     return Err(CompilerError::Unsupported("length requires an array or string".to_string()));
-                }
-                UnarySuffixKind::Reverse => {
-                    return Err(CompilerError::Unsupported("reverse requires an array".to_string()));
                 }
             }
         }

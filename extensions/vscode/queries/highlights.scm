@@ -90,9 +90,6 @@
 (slice_call
   ".slice" @function.method)
 
-(reverse_call
-  ".reverse" @function.method)
-
 (array_bound) @number
 
 [

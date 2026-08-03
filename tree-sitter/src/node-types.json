@@ -944,10 +944,6 @@
           "named": true
         },
         {
-          "type": "reverse_call",
-          "named": true
-        },
-        {
           "type": "slice_call",
           "named": true
         },
@@ -1103,11 +1099,6 @@
         }
       ]
     }
-  },
-  {
-    "type": "reverse_call",
-    "named": true,
-    "fields": {}
   },
   {
     "type": "slice_call",
@@ -1629,10 +1620,6 @@
   },
   {
     "type": ".append",
-    "named": false
-  },
-  {
-    "type": ".reverse",
     "named": false
   },
   {

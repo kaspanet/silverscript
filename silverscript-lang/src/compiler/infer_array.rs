@@ -265,7 +265,6 @@ pub(super) fn infer_expr_type<'i>(
             let source_type = infer_expr_type(source, types, constants, functions)?;
             append_type(&source_type, args.len(), constants)
         }
-        ExprKind::UnarySuffix { source, kind: UnarySuffixKind::Reverse, .. } => infer_expr_type(source, types, constants, functions),
         ExprKind::Nullary(kind) => Some(nullary_type(*kind)),
         ExprKind::Introspection { kind, .. } => Some(introspection_type(*kind)),
         _ => None,
