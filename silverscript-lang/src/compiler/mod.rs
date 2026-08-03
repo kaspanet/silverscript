@@ -70,8 +70,8 @@ pub fn generated_covenant_leader_entrypoint_name(function_name: &str) -> String 
     format!("__leader_{function_name}")
 }
 
-pub fn generated_covenant_delegate_entrypoint_name(function_name: &str) -> String {
-    format!("__delegate_{function_name}")
+pub fn generated_covenant_delegate_entrypoint_name() -> String {
+    "__delegate".to_string()
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -255,13 +255,9 @@ impl<'i> CompiledContract<'i> {
             return self.build_sig_script(&auth_entrypoint, args);
         }
 
-        let entrypoint = if options.is_leader {
-            generated_covenant_leader_entrypoint_name(function_name)
-        } else {
-            generated_covenant_delegate_entrypoint_name(function_name)
-        };
-
-        if self.abi.iter().any(|entry| entry.name == entrypoint) {
+        let leader_entrypoint = generated_covenant_leader_entrypoint_name(function_name);
+        if self.abi.iter().any(|entry| entry.name == leader_entrypoint) {
+            let entrypoint = if options.is_leader { leader_entrypoint } else { generated_covenant_delegate_entrypoint_name() };
             return self.build_sig_script(&entrypoint, args);
         }
 

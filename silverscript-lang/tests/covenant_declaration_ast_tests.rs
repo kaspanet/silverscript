@@ -243,16 +243,8 @@ fn covers_cov_attribute_config_combinations_with_two_field_state() {
     let contract = compile_and_normalize_contract(source, &[Expr::int(2), Expr::int(4), Expr::int(10), Expr::bytes(vec![7u8; 32])]);
     let functions = &contract.functions;
 
-    let expected_entrypoints: HashSet<&str> = vec![
-        "leader_cov_verification",
-        "delegate_cov_verification",
-        "leader_cov_transition",
-        "delegate_cov_transition",
-        "leader_inferred_cov",
-        "delegate_inferred_cov",
-    ]
-    .into_iter()
-    .collect();
+    let expected_entrypoints: HashSet<&str> =
+        vec!["leader_cov_verification", "leader_cov_transition", "leader_inferred_cov", "delegate"].into_iter().collect();
     let actual_entrypoints: HashSet<&str> =
         functions.iter().filter(|function| function.entrypoint).map(|function| function.name.as_str()).collect();
     assert_eq!(actual_entrypoints, expected_entrypoints);
@@ -263,9 +255,7 @@ fn covers_cov_attribute_config_combinations_with_two_field_state() {
     }
 
     assert_param_names(function_by_name(functions, "leader_cov_verification"), &["new_states", "nonce"]);
-    assert_param_names(function_by_name(functions, "delegate_cov_verification"), &[]);
     assert_param_names(function_by_name(functions, "leader_cov_transition"), &["fee"]);
-    assert_param_names(function_by_name(functions, "delegate_cov_transition"), &[]);
     assert_param_names(function_by_name(functions, "leader_inferred_cov"), &["new_states"]);
-    assert_param_names(function_by_name(functions, "delegate_inferred_cov"), &[]);
+    assert_param_names(function_by_name(functions, "delegate"), &[]);
 }

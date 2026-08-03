@@ -51,7 +51,7 @@ impl ResolvedCovenantCallTarget {
                 if is_leader {
                     generated_covenant_leader_entrypoint_name(&self.source_name)
                 } else {
-                    generated_covenant_delegate_entrypoint_name(&self.source_name)
+                    generated_covenant_delegate_entrypoint_name()
                 }
             }
         }
@@ -95,6 +95,10 @@ pub fn resolve_covenant_call_target<'i>(
     }
     if has_leader_entrypoint {
         generated_function_names.insert(leader_entrypoint_name);
+    }
+
+    if binding == CovenantBinding::Cov {
+        generated_function_names.insert(generated_covenant_delegate_entrypoint_name());
     }
 
     Some(ResolvedCovenantCallTarget {
