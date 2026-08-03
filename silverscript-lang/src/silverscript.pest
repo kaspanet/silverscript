@@ -176,8 +176,8 @@ TxVar = { "this.age" | "tx.time" }
 NullaryOp = {
     "this.activeInputIndex"
     | "this.activeScriptPubKey"
-    | "this.scriptSizeDataPrefix"
-    | "this.scriptSize"
+    | "this.bytecodeSizeDataPrefix"
+    | "this.bytecodeSize"
     | "tx.inputs.length"
     | "tx.outputs.length"
     | "tx.version"
@@ -192,7 +192,7 @@ keyword = {
     "pragma" | "silverscript" | "contract" | "struct" | "entry" | "function" | "if" | "else" | "require" | "for" | "return"
     | "console.log" | "new" | "as" | "true" | "false" | "constant" | "date"
     | "int" | "bool" | "string" | "pubkey" | "sig" | "datasig" | "byte"
-    | "this.age" | "tx.time" | "this.activeInputIndex" | "this.activeScriptPubKey" | "this.scriptSizeDataPrefix" | "this.scriptSize"
+    | "this.age" | "tx.time" | "this.activeInputIndex" | "this.activeScriptPubKey" | "this.bytecodeSizeDataPrefix" | "this.bytecodeSize"
     | "tx.inputs.length" | "tx.outputs.length" | "tx.version" | "tx.locktime"
 }
 

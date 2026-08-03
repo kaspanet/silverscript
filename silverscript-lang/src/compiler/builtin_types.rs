@@ -18,9 +18,9 @@ pub(super) enum BuiltinReturn {
 
 pub(super) fn nullary_type(op: NullaryOp) -> TypeRef {
     match op {
-        NullaryOp::ActiveScriptPubKey | NullaryOp::ThisScriptSizeDataPrefix => byte_array(ArrayDim::Dynamic),
+        NullaryOp::ActiveScriptPubKey | NullaryOp::ThisBytecodeSizeDataPrefix => byte_array(ArrayDim::Dynamic),
         NullaryOp::ActiveInputIndex
-        | NullaryOp::ThisScriptSize
+        | NullaryOp::ThisBytecodeSize
         | NullaryOp::TxInputsLength
         | NullaryOp::TxOutputsLength
         | NullaryOp::TxVersion

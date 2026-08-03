@@ -179,7 +179,7 @@ fn kcc20_can_split_then_merge_tokens_with_two_way_fanout() {
 
     let handoff_outputs = vec![TransactionOutput {
         value: 1_000,
-        script_public_key: pay_to_script_hash_script(&handoff.script),
+        script_public_key: pay_to_script_hash_script(&handoff.bytecode),
         covenant: Some(CovenantBinding { authorizing_input: 0, covenant_id: COV_A }),
     }];
     let handoff_entries = vec![covenant_utxo(&genesis, COV_A)];
@@ -221,12 +221,12 @@ fn kcc20_can_split_then_merge_tokens_with_two_way_fanout() {
     let split_outputs = vec![
         TransactionOutput {
             value: 700,
-            script_public_key: pay_to_script_hash_script(&split_a.script),
+            script_public_key: pay_to_script_hash_script(&split_a.bytecode),
             covenant: Some(CovenantBinding { authorizing_input: 0, covenant_id: COV_A }),
         },
         TransactionOutput {
             value: 700,
-            script_public_key: pay_to_script_hash_script(&split_b.script),
+            script_public_key: pay_to_script_hash_script(&split_b.bytecode),
             covenant: Some(CovenantBinding { authorizing_input: 0, covenant_id: COV_A }),
         },
     ];
@@ -272,12 +272,12 @@ fn kcc20_can_split_then_merge_tokens_with_two_way_fanout() {
     let merged = compile_kcc20_state(&source, merged_owner_bytes.clone(), 1_000, 2, 2);
     let merge_outputs = vec![TransactionOutput {
         value: 2_000,
-        script_public_key: pay_to_script_hash_script(&merged.script),
+        script_public_key: pay_to_script_hash_script(&merged.bytecode),
         covenant: Some(CovenantBinding { authorizing_input: 0, covenant_id: COV_A }),
     }];
     let merge_entries = vec![
-        UtxoEntry::new(700, pay_to_script_hash_script(&split_a.script), 0, split_tx.is_coinbase(), Some(COV_A)),
-        UtxoEntry::new(700, pay_to_script_hash_script(&split_b.script), 0, split_tx.is_coinbase(), Some(COV_A)),
+        UtxoEntry::new(700, pay_to_script_hash_script(&split_a.bytecode), 0, split_tx.is_coinbase(), Some(COV_A)),
+        UtxoEntry::new(700, pay_to_script_hash_script(&split_b.bytecode), 0, split_tx.is_coinbase(), Some(COV_A)),
     ];
     let merge_unsigned_tx = Transaction::new(
         1,
@@ -346,7 +346,7 @@ fn kcc20_rejects_merge_when_one_signature_is_wrong() {
 
     let handoff_outputs = vec![TransactionOutput {
         value: 1_000,
-        script_public_key: pay_to_script_hash_script(&handoff.script),
+        script_public_key: pay_to_script_hash_script(&handoff.bytecode),
         covenant: Some(CovenantBinding { authorizing_input: 0, covenant_id: COV_A }),
     }];
     let handoff_entries = vec![covenant_utxo(&genesis, COV_A)];
@@ -388,12 +388,12 @@ fn kcc20_rejects_merge_when_one_signature_is_wrong() {
     let split_outputs = vec![
         TransactionOutput {
             value: 700,
-            script_public_key: pay_to_script_hash_script(&split_a.script),
+            script_public_key: pay_to_script_hash_script(&split_a.bytecode),
             covenant: Some(CovenantBinding { authorizing_input: 0, covenant_id: COV_A }),
         },
         TransactionOutput {
             value: 700,
-            script_public_key: pay_to_script_hash_script(&split_b.script),
+            script_public_key: pay_to_script_hash_script(&split_b.bytecode),
             covenant: Some(CovenantBinding { authorizing_input: 0, covenant_id: COV_A }),
         },
     ];
@@ -438,12 +438,12 @@ fn kcc20_rejects_merge_when_one_signature_is_wrong() {
 
     let merge_outputs = vec![TransactionOutput {
         value: 2_000,
-        script_public_key: pay_to_script_hash_script(&merged.script),
+        script_public_key: pay_to_script_hash_script(&merged.bytecode),
         covenant: Some(CovenantBinding { authorizing_input: 0, covenant_id: COV_A }),
     }];
     let merge_entries = vec![
-        UtxoEntry::new(700, pay_to_script_hash_script(&split_a.script), 0, split_tx.is_coinbase(), Some(COV_A)),
-        UtxoEntry::new(700, pay_to_script_hash_script(&split_b.script), 0, split_tx.is_coinbase(), Some(COV_A)),
+        UtxoEntry::new(700, pay_to_script_hash_script(&split_a.bytecode), 0, split_tx.is_coinbase(), Some(COV_A)),
+        UtxoEntry::new(700, pay_to_script_hash_script(&split_b.bytecode), 0, split_tx.is_coinbase(), Some(COV_A)),
     ];
     let merge_unsigned_tx = Transaction::new(
         1,
@@ -509,7 +509,7 @@ fn kcc20_rejects_split_when_amounts_do_not_match() {
 
     let handoff_outputs = vec![TransactionOutput {
         value: 1_000,
-        script_public_key: pay_to_script_hash_script(&handoff.script),
+        script_public_key: pay_to_script_hash_script(&handoff.bytecode),
         covenant: Some(CovenantBinding { authorizing_input: 0, covenant_id: COV_A }),
     }];
     let handoff_entries = vec![covenant_utxo(&genesis, COV_A)];
@@ -551,12 +551,12 @@ fn kcc20_rejects_split_when_amounts_do_not_match() {
     let split_outputs = vec![
         TransactionOutput {
             value: 700,
-            script_public_key: pay_to_script_hash_script(&split_a.script),
+            script_public_key: pay_to_script_hash_script(&split_a.bytecode),
             covenant: Some(CovenantBinding { authorizing_input: 0, covenant_id: COV_A }),
         },
         TransactionOutput {
             value: 700,
-            script_public_key: pay_to_script_hash_script(&split_b.script),
+            script_public_key: pay_to_script_hash_script(&split_b.bytecode),
             covenant: Some(CovenantBinding { authorizing_input: 0, covenant_id: COV_A }),
         },
     ];
@@ -623,12 +623,12 @@ fn kcc20_minter_can_split_then_mint_then_burn() {
     let split_outputs = vec![
         TransactionOutput {
             value: 1_000,
-            script_public_key: pay_to_script_hash_script(&split_minter.script),
+            script_public_key: pay_to_script_hash_script(&split_minter.bytecode),
             covenant: Some(CovenantBinding { authorizing_input: 0, covenant_id: COV_A }),
         },
         TransactionOutput {
             value: 1_000,
-            script_public_key: pay_to_script_hash_script(&split_other.script),
+            script_public_key: pay_to_script_hash_script(&split_other.bytecode),
             covenant: Some(CovenantBinding { authorizing_input: 0, covenant_id: COV_A }),
         },
     ];
@@ -671,11 +671,11 @@ fn kcc20_minter_can_split_then_mint_then_burn() {
     let forged_other = compile_kcc20_state(&source, other_owner_bytes.clone(), 700, 2, 2);
     let forged_other_outputs = vec![TransactionOutput {
         value: 1_000,
-        script_public_key: pay_to_script_hash_script(&forged_other.script),
+        script_public_key: pay_to_script_hash_script(&forged_other.bytecode),
         covenant: Some(CovenantBinding { authorizing_input: 0, covenant_id: COV_A }),
     }];
     let forged_other_entries =
-        vec![UtxoEntry::new(1_000, pay_to_script_hash_script(&split_other.script), 0, split_tx.is_coinbase(), Some(COV_A))];
+        vec![UtxoEntry::new(1_000, pay_to_script_hash_script(&split_other.bytecode), 0, split_tx.is_coinbase(), Some(COV_A))];
     let forged_other_unsigned_tx = Transaction::new(
         1,
         vec![tx_input_from_outpoint_v1(TransactionOutpoint { transaction_id: split_tx.id(), index: 1 }, vec![])],
@@ -713,11 +713,11 @@ fn kcc20_minter_can_split_then_mint_then_burn() {
     let forged_other_minter = compile_kcc20_state_with_minter(&source, other_owner_bytes.clone(), 600, true, 2, 2);
     let forged_other_minter_outputs = vec![TransactionOutput {
         value: 1_000,
-        script_public_key: pay_to_script_hash_script(&forged_other_minter.script),
+        script_public_key: pay_to_script_hash_script(&forged_other_minter.bytecode),
         covenant: Some(CovenantBinding { authorizing_input: 0, covenant_id: COV_A }),
     }];
     let forged_other_minter_entries =
-        vec![UtxoEntry::new(1_000, pay_to_script_hash_script(&split_other.script), 0, split_tx.is_coinbase(), Some(COV_A))];
+        vec![UtxoEntry::new(1_000, pay_to_script_hash_script(&split_other.bytecode), 0, split_tx.is_coinbase(), Some(COV_A))];
     let forged_other_minter_unsigned_tx = Transaction::new(
         1,
         vec![tx_input_from_outpoint_v1(TransactionOutpoint { transaction_id: split_tx.id(), index: 1 }, vec![])],
@@ -757,11 +757,11 @@ fn kcc20_minter_can_split_then_mint_then_burn() {
 
     let mint_outputs = vec![TransactionOutput {
         value: 1_000,
-        script_public_key: pay_to_script_hash_script(&minted_minter.script),
+        script_public_key: pay_to_script_hash_script(&minted_minter.bytecode),
         covenant: Some(CovenantBinding { authorizing_input: 0, covenant_id: COV_A }),
     }];
     let mint_entries =
-        vec![UtxoEntry::new(1_000, pay_to_script_hash_script(&split_minter.script), 0, split_tx.is_coinbase(), Some(COV_A))];
+        vec![UtxoEntry::new(1_000, pay_to_script_hash_script(&split_minter.bytecode), 0, split_tx.is_coinbase(), Some(COV_A))];
     let mint_unsigned_tx = Transaction::new(
         1,
         vec![tx_input_from_outpoint_v1(TransactionOutpoint { transaction_id: split_tx.id(), index: 0 }, vec![])],
@@ -796,11 +796,11 @@ fn kcc20_minter_can_split_then_mint_then_burn() {
 
     let burn_outputs = vec![TransactionOutput {
         value: 1_000,
-        script_public_key: pay_to_script_hash_script(&burned_minter.script),
+        script_public_key: pay_to_script_hash_script(&burned_minter.bytecode),
         covenant: Some(CovenantBinding { authorizing_input: 0, covenant_id: COV_A }),
     }];
     let burn_entries =
-        vec![UtxoEntry::new(1_000, pay_to_script_hash_script(&minted_minter.script), 0, mint_tx.is_coinbase(), Some(COV_A))];
+        vec![UtxoEntry::new(1_000, pay_to_script_hash_script(&minted_minter.bytecode), 0, mint_tx.is_coinbase(), Some(COV_A))];
     let burn_unsigned_tx = Transaction::new(
         1,
         vec![tx_input_from_outpoint_v1(TransactionOutpoint { transaction_id: mint_tx.id(), index: 0 }, vec![])],
@@ -846,7 +846,7 @@ fn kcc20_minter_can_mint_in_single_transaction() {
 
     let mint_outputs = vec![TransactionOutput {
         value: 1_000,
-        script_public_key: pay_to_script_hash_script(&minted.script),
+        script_public_key: pay_to_script_hash_script(&minted.bytecode),
         covenant: Some(CovenantBinding { authorizing_input: 0, covenant_id: COV_A }),
     }];
     let mint_entries = vec![covenant_utxo(&genesis, COV_A)];
@@ -967,7 +967,7 @@ fn kcc20_covenant_minter() {
     let minter_genesis_input = tx_input_from_outpoint_v1(minter_genesis_outpoint, vec![]);
     let minter_genesis_utxo = UtxoEntry::new(1_500, funding_spk.clone(), 0, false, None);
     let minter_genesis_output_without_covenant =
-        TransactionOutput { value: 1_000, script_public_key: pay_to_script_hash_script(&pre_init.script), covenant: None };
+        TransactionOutput { value: 1_000, script_public_key: pay_to_script_hash_script(&pre_init.bytecode), covenant: None };
     let minter_cov_id =
         hashing::covenant_id::covenant_id(minter_genesis_outpoint, std::iter::once((0, &minter_genesis_output_without_covenant)));
     let minter_genesis_outputs = vec![TransactionOutput {
@@ -1268,7 +1268,7 @@ fn kcc20_non_minter_can_spend_script_hash_and_covenant_id_owned_outputs() {
         .iter()
         .map(|state| TransactionOutput {
             value: 150,
-            script_public_key: pay_to_script_hash_script(&state.script),
+            script_public_key: pay_to_script_hash_script(&state.bytecode),
             covenant: Some(CovenantBinding { authorizing_input: 0, covenant_id: COV_A }),
         })
         .collect();
@@ -1314,7 +1314,7 @@ fn kcc20_non_minter_can_spend_script_hash_and_covenant_id_owned_outputs() {
     let build_single_output = |state: &CompiledContract<'_>| {
         vec![TransactionOutput {
             value: 150,
-            script_public_key: pay_to_script_hash_script(&state.script),
+            script_public_key: pay_to_script_hash_script(&state.bytecode),
             covenant: Some(CovenantBinding { authorizing_input: 0, covenant_id: COV_A }),
         }]
     };
@@ -1339,7 +1339,7 @@ fn kcc20_non_minter_can_spend_script_hash_and_covenant_id_owned_outputs() {
     let script_hash_spent = compile_kcc20_state(&source, multisig_spend_destination_owner_bytes.clone(), 400, 2, 2);
     let script_hash_spend_outputs = build_single_output(&script_hash_spent);
     let script_hash_spend_entries = vec![
-        UtxoEntry::new(150, pay_to_script_hash_script(&split_states[0].script), 0, split_tx.is_coinbase(), Some(COV_A)),
+        UtxoEntry::new(150, pay_to_script_hash_script(&split_states[0].bytecode), 0, split_tx.is_coinbase(), Some(COV_A)),
         UtxoEntry::new(500, pay_to_script_hash_script(&multisig_redeem_script), 0, false, None),
     ];
     let script_hash_auxiliary_outpoint = TransactionOutpoint { transaction_id: TransactionId::from_bytes([2; 32]), index: 0 };
@@ -1402,7 +1402,7 @@ fn kcc20_non_minter_can_spend_script_hash_and_covenant_id_owned_outputs() {
     let covenant_id_spent = compile_kcc20_state(&source, covenant_spend_destination_owner_bytes.clone(), 600, 2, 2);
     let covenant_id_spend_outputs = build_single_output(&covenant_id_spent);
     let covenant_id_spend_entries = vec![
-        UtxoEntry::new(150, pay_to_script_hash_script(&split_states[1].script), 0, split_tx.is_coinbase(), Some(COV_A)),
+        UtxoEntry::new(150, pay_to_script_hash_script(&split_states[1].bytecode), 0, split_tx.is_coinbase(), Some(COV_A)),
         UtxoEntry::new(500, pay_to_script_hash_script(&[0x51]), 0, false, Some(covenant_owner)),
     ];
     let covenant_id_auxiliary_outpoint = TransactionOutpoint { transaction_id: TransactionId::from_bytes([3; 32]), index: 0 };

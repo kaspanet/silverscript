@@ -39,7 +39,7 @@ fn random_keypair() -> Keypair {
 }
 
 fn run_contract_with_tx(
-    script: Vec<u8>,
+    bytecode: Vec<u8>,
     output0_script: Vec<u8>,
     output1_script: Vec<u8>,
     input_value: u64,
@@ -49,7 +49,7 @@ fn run_contract_with_tx(
     lock_time: u64,
 ) -> Result<(), kaspa_txscript_errors::TxScriptError> {
     run_contract_with_tx_sequence(
-        script,
+        bytecode,
         output0_script,
         output1_script,
         input_value,
@@ -62,7 +62,7 @@ fn run_contract_with_tx(
 }
 
 fn run_contract_with_tx_sequence(
-    script: Vec<u8>,
+    bytecode: Vec<u8>,
     output0_script: Vec<u8>,
     output1_script: Vec<u8>,
     input_value: u64,
@@ -88,7 +88,7 @@ fn run_contract_with_tx_sequence(
 
     let tx =
         Transaction::new(1, vec![input.clone()], vec![output0.clone(), output1.clone()], lock_time, Default::default(), 0, vec![]);
-    let utxo_entry = UtxoEntry::new(input_value, ScriptPublicKey::new(0, script.clone().into()), 0, tx.is_coinbase(), None);
+    let utxo_entry = UtxoEntry::new(input_value, ScriptPublicKey::new(0, bytecode.clone().into()), 0, tx.is_coinbase(), None);
     let populated_tx = PopulatedTransaction::new(&tx, vec![utxo_entry.clone()]);
 
     let mut vm = TxScriptEngine::from_transaction_input(
@@ -103,7 +103,7 @@ fn run_contract_with_tx_sequence(
 }
 
 fn run_contract_with_outputs(
-    script: Vec<u8>,
+    bytecode: Vec<u8>,
     outputs: Vec<(u64, Vec<u8>)>,
     input_value: u64,
     sigscript: Vec<u8>,
@@ -125,7 +125,7 @@ fn run_contract_with_outputs(
         .collect::<Vec<_>>();
 
     let tx = Transaction::new(1, vec![input.clone()], tx_outputs.clone(), lock_time, Default::default(), 0, vec![]);
-    let utxo_entry = UtxoEntry::new(input_value, ScriptPublicKey::new(0, script.clone().into()), 0, tx.is_coinbase(), None);
+    let utxo_entry = UtxoEntry::new(input_value, ScriptPublicKey::new(0, bytecode.clone().into()), 0, tx.is_coinbase(), None);
     let populated_tx = PopulatedTransaction::new(&tx, vec![utxo_entry.clone()]);
 
     let mut vm = TxScriptEngine::from_transaction_input(
@@ -139,9 +139,9 @@ fn run_contract_with_outputs(
     vm.execute()
 }
 
-fn script_with_return_checks(script: Vec<u8>, expected: &[i64]) -> Vec<u8> {
+fn bytecode_with_return_checks(bytecode: Vec<u8>, expected: &[i64]) -> Vec<u8> {
     let mut builder = ScriptBuilder::new();
-    builder.add_ops(&script).unwrap();
+    builder.add_ops(&bytecode).unwrap();
     for value in expected.iter().rev() {
         builder.add_i64(*value).unwrap();
         builder.add_op(OpEqualVerify).unwrap();
@@ -150,8 +150,8 @@ fn script_with_return_checks(script: Vec<u8>, expected: &[i64]) -> Vec<u8> {
     builder.drain()
 }
 
-fn sigscript_push_script(script: &[u8]) -> Vec<u8> {
-    ScriptBuilder::new().add_data(script).unwrap().drain()
+fn sigscript_push_bytecode(bytecode: &[u8]) -> Vec<u8> {
+    ScriptBuilder::new().add_data(bytecode).unwrap().drain()
 }
 
 fn r0_groth16_fixture() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
@@ -180,9 +180,9 @@ fn compiles_announcement_example_and_verifies() {
     let input_value = 3000u64;
     let output1_value = input_value - 1000;
     let result = run_contract_with_tx(
-        compiled.script.clone(),
+        compiled.bytecode.clone(),
         announcement_script.clone(),
-        compiled.script.clone(),
+        compiled.bytecode.clone(),
         input_value,
         0,
         output1_value,
@@ -196,9 +196,9 @@ fn compiles_announcement_example_and_verifies() {
     let input_value = 1500u64;
     let output1_value = 1u64;
     let result = run_contract_with_tx(
-        compiled.script.clone(),
+        compiled.bytecode.clone(),
         announcement_script,
-        compiled.script,
+        compiled.bytecode,
         input_value,
         0,
         output1_value,
@@ -224,7 +224,7 @@ fn compiles_constant_budget_example_and_verifies() {
     let output0_value = 1500u64;
     let output1_value = 1200u64;
     let result = run_contract_with_tx(
-        compiled.script.clone(),
+        compiled.bytecode.clone(),
         output0_script.clone(),
         output1_script.clone(),
         input_value,
@@ -240,8 +240,16 @@ fn compiles_constant_budget_example_and_verifies() {
     let input_value = 3000u64;
     let output0_value = 1300u64;
     let output1_value = 500u64;
-    let result =
-        run_contract_with_tx(compiled.script, output0_script, output1_script, input_value, output0_value, output1_value, sigscript, 0);
+    let result = run_contract_with_tx(
+        compiled.bytecode,
+        output0_script,
+        output1_script,
+        input_value,
+        output0_value,
+        output1_value,
+        sigscript,
+        0,
+    );
     assert!(result.is_ok(), "constant_budget else branch failed: {}", result.unwrap_err());
 }
 
@@ -268,7 +276,7 @@ fn compiles_for_loop_example_and_verifies() {
         (1002u64, output2_script.clone()),
         (1003u64, output3_script.clone()),
     ];
-    let result = run_contract_with_outputs(compiled.script.clone(), outputs, input_value, sigscript, 0);
+    let result = run_contract_with_outputs(compiled.bytecode.clone(), outputs, input_value, sigscript, 0);
     assert!(result.is_ok(), "for_loop example failed: {}", result.unwrap_err());
 
     // Test check() failure when require fails in the loop.
@@ -280,14 +288,14 @@ fn compiles_for_loop_example_and_verifies() {
         (999u64, output2_script.clone()),
         (1003u64, output3_script.clone()),
     ];
-    let result = run_contract_with_outputs(compiled.script.clone(), outputs, input_value, sigscript, 0);
+    let result = run_contract_with_outputs(compiled.bytecode.clone(), outputs, input_value, sigscript, 0);
     assert!(result.is_err(), "for_loop require failure should error");
 
     // Test check() failure when there are fewer than 4 outputs.
     let sigscript = compiled.build_sig_script("check", vec![]).expect("sigscript builds");
     let input_value = 10_000u64;
     let outputs = vec![(1000u64, output0_script), (1001u64, output1_script), (1002u64, output2_script)];
-    let result = run_contract_with_outputs(compiled.script, outputs, input_value, sigscript, 0);
+    let result = run_contract_with_outputs(compiled.bytecode, outputs, input_value, sigscript, 0);
     assert!(result.is_err(), "for_loop with too few outputs should error");
 }
 
@@ -314,7 +322,7 @@ fn compiles_for_loop_ctor_example_with_constructor_bounds() {
         (1002u64, output2_script.clone()),
         (1003u64, output3_script.clone()),
     ];
-    let result = run_contract_with_outputs(compiled.script, outputs, input_value, sigscript, 0);
+    let result = run_contract_with_outputs(compiled.bytecode, outputs, input_value, sigscript, 0);
     assert!(result.is_ok(), "for_loop_ctor example failed: {}", result.unwrap_err());
 }
 
@@ -324,7 +332,7 @@ fn compiles_return_basic_example_file_and_verifies() {
 
     let options = CompileOptions { allow_entrypoint_return: true, ..CompileOptions::default() };
     let compiled = compile_contract(&source, &[], options).expect("compile succeeds");
-    let script = script_with_return_checks(compiled.script.clone(), &[12, 8]);
+    let script = bytecode_with_return_checks(compiled.bytecode.clone(), &[12, 8]);
     let recipient0 = [9u8; 32];
     let recipient1 = [10u8; 32];
     let output0_script = build_p2pk_script(&recipient0);
@@ -342,7 +350,7 @@ fn compiles_return_loop_example_file_and_verifies() {
 
     let options = CompileOptions { allow_entrypoint_return: true, ..CompileOptions::default() };
     let compiled = compile_contract(&source, &[], options).expect("compile succeeds");
-    let script = script_with_return_checks(compiled.script.clone(), &[10]);
+    let script = bytecode_with_return_checks(compiled.bytecode.clone(), &[10]);
     let recipient0 = [11u8; 32];
     let recipient1 = [12u8; 32];
     let output0_script = build_p2pk_script(&recipient0);
@@ -362,8 +370,16 @@ fn compiles_r0_g16_example_and_verifies() {
     let sigscript =
         compiled.build_sig_script("verify", vec![journal_hash.into(), Expr::dynamic_bytes(proof)]).expect("sigscript builds");
 
-    let result =
-        run_contract_with_tx(compiled.script.clone(), compiled.script.clone(), compiled.script.clone(), 2000, 500, 500, sigscript, 0);
+    let result = run_contract_with_tx(
+        compiled.bytecode.clone(),
+        compiled.bytecode.clone(),
+        compiled.bytecode.clone(),
+        2000,
+        500,
+        500,
+        sigscript,
+        0,
+    );
     assert!(result.is_ok(), "R0 Groth16 example failed: {}", result.unwrap_err());
 }
 
@@ -382,8 +398,16 @@ fn compiles_r0_succinct_example_and_verifies() {
         )
         .expect("sigscript builds");
 
-    let result =
-        run_contract_with_tx(compiled.script.clone(), compiled.script.clone(), compiled.script.clone(), 2000, 500, 500, sigscript, 0);
+    let result = run_contract_with_tx(
+        compiled.bytecode.clone(),
+        compiled.bytecode.clone(),
+        compiled.bytecode.clone(),
+        2000,
+        500,
+        500,
+        sigscript,
+        0,
+    );
     assert!(result.is_ok(), "R0 Succinct example failed: {}", result.unwrap_err());
 }
 
@@ -410,7 +434,7 @@ fn compiles_return_basic_example_and_verifies() {
 
     let options = CompileOptions { allow_entrypoint_return: true, ..CompileOptions::default() };
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
-    let script = script_with_return_checks(compiled.script.clone(), &[2, 5]);
+    let script = bytecode_with_return_checks(compiled.bytecode.clone(), &[2, 5]);
     let recipient0 = [13u8; 32];
     let recipient1 = [14u8; 32];
     let output0_script = build_p2pk_script(&recipient0);
@@ -441,11 +465,15 @@ fn runs_everything_example_and_verifies() {
         sequence: 500,
         compute_commit: SigopCount(1).into(),
     };
-    let output =
-        TransactionOutput { value: 5_000, script_public_key: ScriptPublicKey::new(0, compiled.script.clone().into()), covenant: None };
+    let output = TransactionOutput {
+        value: 5_000,
+        script_public_key: ScriptPublicKey::new(0, compiled.bytecode.clone().into()),
+        covenant: None,
+    };
 
     let tx = Transaction::new(1, vec![input.clone()], vec![output.clone()], 0, Default::default(), 0, vec![]);
-    let utxo_entry = UtxoEntry::new(output.value, ScriptPublicKey::new(0, compiled.script.clone().into()), 0, tx.is_coinbase(), None);
+    let utxo_entry =
+        UtxoEntry::new(output.value, ScriptPublicKey::new(0, compiled.bytecode.clone().into()), 0, tx.is_coinbase(), None);
     let mut tx = MutableTransaction::with_entries(tx, vec![utxo_entry.clone()]);
 
     let reused_values = SigHashReusedValuesUnsync::new();
@@ -486,9 +514,9 @@ fn runs_sum_series_example_with_multiple_inputs() {
         let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
         let sigscript = compiled.build_sig_script("main", vec![n.into()]).expect("sigscript builds");
         let result = run_contract_with_tx(
-            compiled.script.clone(),
-            compiled.script.clone(),
-            compiled.script.clone(),
+            compiled.bytecode.clone(),
+            compiled.bytecode.clone(),
+            compiled.bytecode.clone(),
             2000,
             500,
             500,
@@ -515,9 +543,9 @@ fn runs_complex_assignments_example_and_verifies() {
         let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
         let sigscript = compiled.build_sig_script("main", vec![n.into()]).expect("sigscript builds");
         let result = run_contract_with_tx(
-            compiled.script.clone(),
-            compiled.script.clone(),
-            compiled.script.clone(),
+            compiled.bytecode.clone(),
+            compiled.bytecode.clone(),
+            compiled.bytecode.clone(),
             2000,
             500,
             500,
@@ -555,11 +583,15 @@ fn compiles_hodl_vault_example_and_verifies() {
         sequence: 0,
         compute_commit: SigopCount(1).into(),
     };
-    let output =
-        TransactionOutput { value: 5000, script_public_key: ScriptPublicKey::new(0, compiled.script.clone().into()), covenant: None };
+    let output = TransactionOutput {
+        value: 5000,
+        script_public_key: ScriptPublicKey::new(0, compiled.bytecode.clone().into()),
+        covenant: None,
+    };
 
     let tx = Transaction::new(1, vec![input.clone()], vec![output.clone()], block_height as u64, Default::default(), 0, vec![]);
-    let utxo_entry = UtxoEntry::new(output.value, ScriptPublicKey::new(0, compiled.script.clone().into()), 0, tx.is_coinbase(), None);
+    let utxo_entry =
+        UtxoEntry::new(output.value, ScriptPublicKey::new(0, compiled.bytecode.clone().into()), 0, tx.is_coinbase(), None);
     let mut tx = MutableTransaction::with_entries(tx, vec![utxo_entry.clone()]);
 
     let reused_values = SigHashReusedValuesUnsync::new();
@@ -613,9 +645,9 @@ fn compiles_mecenas_example_and_verifies() {
     let output0_script = build_p2pk_script(&recipient);
 
     let result = run_contract_with_tx(
-        compiled.script.clone(),
+        compiled.bytecode.clone(),
         output0_script,
-        compiled.script.clone(),
+        compiled.bytecode.clone(),
         input_value,
         output0_value,
         output1_value,
@@ -633,9 +665,9 @@ fn compiles_mecenas_example_and_verifies() {
     let output0_script = build_p2pk_script(&recipient);
 
     let result = run_contract_with_tx(
-        compiled.script.clone(),
+        compiled.bytecode.clone(),
         output0_script,
-        compiled.script.clone(),
+        compiled.bytecode.clone(),
         input_value,
         output0_value,
         output1_value,
@@ -650,11 +682,15 @@ fn compiles_mecenas_example_and_verifies() {
         sequence: 0,
         compute_commit: SigopCount(1).into(),
     };
-    let output =
-        TransactionOutput { value: 5000, script_public_key: ScriptPublicKey::new(0, compiled.script.clone().into()), covenant: None };
+    let output = TransactionOutput {
+        value: 5000,
+        script_public_key: ScriptPublicKey::new(0, compiled.bytecode.clone().into()),
+        covenant: None,
+    };
 
     let tx = Transaction::new(1, vec![input.clone()], vec![output.clone()], 0, Default::default(), 0, vec![]);
-    let utxo_entry = UtxoEntry::new(output.value, ScriptPublicKey::new(0, compiled.script.clone().into()), 0, tx.is_coinbase(), None);
+    let utxo_entry =
+        UtxoEntry::new(output.value, ScriptPublicKey::new(0, compiled.bytecode.clone().into()), 0, tx.is_coinbase(), None);
     let mut tx = MutableTransaction::with_entries(tx, vec![utxo_entry.clone()]);
 
     let reused_values = SigHashReusedValuesUnsync::new();
@@ -709,9 +745,9 @@ fn compiles_mecenas_locktime_example_and_verifies() {
     let pledge = passed_blocks as i64 * pledge_per_block;
 
     let output0_script = build_p2pk_script(&recipient);
-    let mut active_bytecode = Vec::with_capacity(2 + compiled.script.len());
+    let mut active_bytecode = Vec::with_capacity(2 + compiled.bytecode.len());
     active_bytecode.extend_from_slice(&0u16.to_be_bytes());
-    active_bytecode.extend_from_slice(&compiled.script);
+    active_bytecode.extend_from_slice(&compiled.bytecode);
     let mut bc_value = Vec::new();
     bc_value.push(8u8);
     bc_value.extend_from_slice(&lock_time.to_le_bytes());
@@ -725,7 +761,7 @@ fn compiles_mecenas_locktime_example_and_verifies() {
     let output1_value = input_value - pledge as u64 - 1000;
 
     let result = run_contract_with_tx(
-        compiled.script.clone(),
+        compiled.bytecode.clone(),
         output0_script.clone(),
         output1_script,
         input_value,
@@ -744,9 +780,9 @@ fn compiles_mecenas_locktime_example_and_verifies() {
     let output1_value = 0u64;
 
     let result = run_contract_with_tx(
-        compiled.script.clone(),
+        compiled.bytecode.clone(),
         output0_script,
-        compiled.script.clone(),
+        compiled.bytecode.clone(),
         input_value,
         output0_value,
         output1_value,
@@ -761,11 +797,15 @@ fn compiles_mecenas_locktime_example_and_verifies() {
         sequence: 0,
         compute_commit: SigopCount(1).into(),
     };
-    let output =
-        TransactionOutput { value: 6000, script_public_key: ScriptPublicKey::new(0, compiled.script.clone().into()), covenant: None };
+    let output = TransactionOutput {
+        value: 6000,
+        script_public_key: ScriptPublicKey::new(0, compiled.bytecode.clone().into()),
+        covenant: None,
+    };
 
     let tx = Transaction::new(1, vec![input.clone()], vec![output.clone()], 0, Default::default(), 0, vec![]);
-    let utxo_entry = UtxoEntry::new(output.value, ScriptPublicKey::new(0, compiled.script.clone().into()), 0, tx.is_coinbase(), None);
+    let utxo_entry =
+        UtxoEntry::new(output.value, ScriptPublicKey::new(0, compiled.bytecode.clone().into()), 0, tx.is_coinbase(), None);
     let mut tx = MutableTransaction::with_entries(tx, vec![utxo_entry.clone()]);
 
     let reused_values = SigHashReusedValuesUnsync::new();
@@ -813,11 +853,15 @@ fn compiles_p2pkh_example_and_verifies() {
         sequence: 0,
         compute_commit: SigopCount(1).into(),
     };
-    let output =
-        TransactionOutput { value: 7000, script_public_key: ScriptPublicKey::new(0, compiled.script.clone().into()), covenant: None };
+    let output = TransactionOutput {
+        value: 7000,
+        script_public_key: ScriptPublicKey::new(0, compiled.bytecode.clone().into()),
+        covenant: None,
+    };
 
     let tx = Transaction::new(1, vec![input.clone()], vec![output.clone()], 0, Default::default(), 0, vec![]);
-    let utxo_entry = UtxoEntry::new(output.value, ScriptPublicKey::new(0, compiled.script.clone().into()), 0, tx.is_coinbase(), None);
+    let utxo_entry =
+        UtxoEntry::new(output.value, ScriptPublicKey::new(0, compiled.bytecode.clone().into()), 0, tx.is_coinbase(), None);
     let mut tx = MutableTransaction::with_entries(tx, vec![utxo_entry.clone()]);
 
     let reused_values = SigHashReusedValuesUnsync::new();
@@ -867,11 +911,15 @@ fn compiles_transfer_with_timeout_and_verifies() {
         sequence: 0,
         compute_commit: SigopCount(1).into(),
     };
-    let output =
-        TransactionOutput { value: 8_000, script_public_key: ScriptPublicKey::new(0, compiled.script.clone().into()), covenant: None };
+    let output = TransactionOutput {
+        value: 8_000,
+        script_public_key: ScriptPublicKey::new(0, compiled.bytecode.clone().into()),
+        covenant: None,
+    };
 
     let tx = Transaction::new(1, vec![input.clone()], vec![output.clone()], 0, Default::default(), 0, vec![]);
-    let utxo_entry = UtxoEntry::new(output.value, ScriptPublicKey::new(0, compiled.script.clone().into()), 0, tx.is_coinbase(), None);
+    let utxo_entry =
+        UtxoEntry::new(output.value, ScriptPublicKey::new(0, compiled.bytecode.clone().into()), 0, tx.is_coinbase(), None);
     let mut tx = MutableTransaction::with_entries(tx, vec![utxo_entry.clone()]);
 
     let reused_values = SigHashReusedValuesUnsync::new();
@@ -907,11 +955,15 @@ fn compiles_transfer_with_timeout_and_verifies() {
         sequence: 0,
         compute_commit: SigopCount(1).into(),
     };
-    let output =
-        TransactionOutput { value: 9_000, script_public_key: ScriptPublicKey::new(0, compiled.script.clone().into()), covenant: None };
+    let output = TransactionOutput {
+        value: 9_000,
+        script_public_key: ScriptPublicKey::new(0, compiled.bytecode.clone().into()),
+        covenant: None,
+    };
 
     let tx = Transaction::new(1, vec![input.clone()], vec![output.clone()], lock_time, Default::default(), 0, vec![]);
-    let utxo_entry = UtxoEntry::new(output.value, ScriptPublicKey::new(0, compiled.script.clone().into()), 0, tx.is_coinbase(), None);
+    let utxo_entry =
+        UtxoEntry::new(output.value, ScriptPublicKey::new(0, compiled.bytecode.clone().into()), 0, tx.is_coinbase(), None);
     let mut tx = MutableTransaction::with_entries(tx, vec![utxo_entry.clone()]);
 
     let reused_values = SigHashReusedValuesUnsync::new();
@@ -969,7 +1021,7 @@ fn compiles_covenant_escrow_example_and_verifies() {
         TransactionOutput { value: output0_value, script_public_key: ScriptPublicKey::new(0, output0_script.into()), covenant: None };
 
     let tx = Transaction::new(1, vec![input.clone()], vec![output0.clone()], 0, Default::default(), 0, vec![]);
-    let utxo_entry = UtxoEntry::new(input_value, ScriptPublicKey::new(0, compiled.script.clone().into()), 0, tx.is_coinbase(), None);
+    let utxo_entry = UtxoEntry::new(input_value, ScriptPublicKey::new(0, compiled.bytecode.clone().into()), 0, tx.is_coinbase(), None);
     let mut tx = MutableTransaction::with_entries(tx, vec![utxo_entry.clone()]);
 
     let reused_values = SigHashReusedValuesUnsync::new();
@@ -1025,11 +1077,15 @@ fn compiles_covenant_last_will_and_verifies() {
         sequence: 180,
         compute_commit: SigopCount(1).into(),
     };
-    let output =
-        TransactionOutput { value: 5_000, script_public_key: ScriptPublicKey::new(0, compiled.script.clone().into()), covenant: None };
+    let output = TransactionOutput {
+        value: 5_000,
+        script_public_key: ScriptPublicKey::new(0, compiled.bytecode.clone().into()),
+        covenant: None,
+    };
 
     let tx = Transaction::new(1, vec![input.clone()], vec![output.clone()], 0, Default::default(), 0, vec![]);
-    let utxo_entry = UtxoEntry::new(output.value, ScriptPublicKey::new(0, compiled.script.clone().into()), 0, tx.is_coinbase(), None);
+    let utxo_entry =
+        UtxoEntry::new(output.value, ScriptPublicKey::new(0, compiled.bytecode.clone().into()), 0, tx.is_coinbase(), None);
     let mut tx = MutableTransaction::with_entries(tx, vec![utxo_entry.clone()]);
 
     let reused_values = SigHashReusedValuesUnsync::new();
@@ -1065,11 +1121,15 @@ fn compiles_covenant_last_will_and_verifies() {
         sequence: 0,
         compute_commit: SigopCount(1).into(),
     };
-    let output =
-        TransactionOutput { value: 4_000, script_public_key: ScriptPublicKey::new(0, compiled.script.clone().into()), covenant: None };
+    let output = TransactionOutput {
+        value: 4_000,
+        script_public_key: ScriptPublicKey::new(0, compiled.bytecode.clone().into()),
+        covenant: None,
+    };
 
     let tx = Transaction::new(1, vec![input.clone()], vec![output.clone()], 0, Default::default(), 0, vec![]);
-    let utxo_entry = UtxoEntry::new(output.value, ScriptPublicKey::new(0, compiled.script.clone().into()), 0, tx.is_coinbase(), None);
+    let utxo_entry =
+        UtxoEntry::new(output.value, ScriptPublicKey::new(0, compiled.bytecode.clone().into()), 0, tx.is_coinbase(), None);
     let mut tx = MutableTransaction::with_entries(tx, vec![utxo_entry.clone()]);
 
     let reused_values = SigHashReusedValuesUnsync::new();
@@ -1110,12 +1170,12 @@ fn compiles_covenant_last_will_and_verifies() {
     };
     let output0 = TransactionOutput {
         value: output0_value,
-        script_public_key: ScriptPublicKey::new(0, compiled.script.clone().into()),
+        script_public_key: ScriptPublicKey::new(0, compiled.bytecode.clone().into()),
         covenant: None,
     };
 
     let tx = Transaction::new(1, vec![input.clone()], vec![output0.clone()], 0, Default::default(), 0, vec![]);
-    let utxo_entry = UtxoEntry::new(input_value, ScriptPublicKey::new(0, compiled.script.clone().into()), 0, tx.is_coinbase(), None);
+    let utxo_entry = UtxoEntry::new(input_value, ScriptPublicKey::new(0, compiled.bytecode.clone().into()), 0, tx.is_coinbase(), None);
     let mut tx = MutableTransaction::with_entries(tx, vec![utxo_entry.clone()]);
 
     let reused_values = SigHashReusedValuesUnsync::new();
@@ -1170,9 +1230,9 @@ fn compiles_covenant_mecenas_example_and_verifies() {
     let output0_script = build_p2pk_script(&recipient);
 
     let result = run_contract_with_tx_sequence(
-        compiled.script.clone(),
+        compiled.bytecode.clone(),
         output0_script,
-        compiled.script.clone(),
+        compiled.bytecode.clone(),
         input_value,
         output0_value,
         output1_value,
@@ -1190,9 +1250,9 @@ fn compiles_covenant_mecenas_example_and_verifies() {
     let output0_script = build_p2pk_script(&recipient);
 
     let result = run_contract_with_tx_sequence(
-        compiled.script.clone(),
+        compiled.bytecode.clone(),
         output0_script,
-        compiled.script.clone(),
+        compiled.bytecode.clone(),
         input_value,
         output0_value,
         output1_value,
@@ -1208,11 +1268,15 @@ fn compiles_covenant_mecenas_example_and_verifies() {
         sequence: 0,
         compute_commit: SigopCount(1).into(),
     };
-    let output =
-        TransactionOutput { value: 7_000, script_public_key: ScriptPublicKey::new(0, compiled.script.clone().into()), covenant: None };
+    let output = TransactionOutput {
+        value: 7_000,
+        script_public_key: ScriptPublicKey::new(0, compiled.bytecode.clone().into()),
+        covenant: None,
+    };
 
     let tx = Transaction::new(1, vec![input.clone()], vec![output.clone()], 0, Default::default(), 0, vec![]);
-    let utxo_entry = UtxoEntry::new(output.value, ScriptPublicKey::new(0, compiled.script.clone().into()), 0, tx.is_coinbase(), None);
+    let utxo_entry =
+        UtxoEntry::new(output.value, ScriptPublicKey::new(0, compiled.bytecode.clone().into()), 0, tx.is_coinbase(), None);
     let mut tx = MutableTransaction::with_entries(tx, vec![utxo_entry.clone()]);
 
     let reused_values = SigHashReusedValuesUnsync::new();
@@ -1267,7 +1331,7 @@ fn compiles_covenant_id_example_and_verifies() {
 
         let mut active_sigscript =
             active_compiled.build_sig_script("main", vec![vec![out0_amount, out1_amount].into()]).expect("sigscript builds");
-        active_sigscript.extend_from_slice(&sigscript_push_script(&active_compiled.script));
+        active_sigscript.extend_from_slice(&sigscript_push_bytecode(&active_compiled.bytecode));
 
         let input0 = TransactionInput {
             previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([24u8; 32]), index: 0 },
@@ -1277,7 +1341,7 @@ fn compiles_covenant_id_example_and_verifies() {
         };
         let input1 = TransactionInput {
             previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([25u8; 32]), index: 1 },
-            signature_script: sigscript_push_script(&input1_compiled.script),
+            signature_script: sigscript_push_bytecode(&input1_compiled.bytecode),
             sequence: 0,
             compute_commit: SigopCount(0).into(),
         };
@@ -1290,7 +1354,7 @@ fn compiles_covenant_id_example_and_verifies() {
 
         let output0 = TransactionOutput {
             value: 1,
-            script_public_key: pay_to_script_hash_script(&output0_compiled.script),
+            script_public_key: pay_to_script_hash_script(&output0_compiled.bytecode),
             covenant: Some(CovenantBinding { authorizing_input: 0, covenant_id }),
         };
 
@@ -1302,7 +1366,7 @@ fn compiles_covenant_id_example_and_verifies() {
 
         let output2 = TransactionOutput {
             value: 1,
-            script_public_key: pay_to_script_hash_script(&output1_compiled.script),
+            script_public_key: pay_to_script_hash_script(&output1_compiled.bytecode),
             covenant: Some(CovenantBinding { authorizing_input: 0, covenant_id }),
         };
 
@@ -1316,8 +1380,9 @@ fn compiles_covenant_id_example_and_verifies() {
             vec![],
         );
 
-        let utxo0 = UtxoEntry::new(1_600, pay_to_script_hash_script(&active_compiled.script), 0, tx.is_coinbase(), Some(covenant_id));
-        let utxo1 = UtxoEntry::new(700, pay_to_script_hash_script(&input1_compiled.script), 0, tx.is_coinbase(), Some(covenant_id));
+        let utxo0 =
+            UtxoEntry::new(1_600, pay_to_script_hash_script(&active_compiled.bytecode), 0, tx.is_coinbase(), Some(covenant_id));
+        let utxo1 = UtxoEntry::new(700, pay_to_script_hash_script(&input1_compiled.bytecode), 0, tx.is_coinbase(), Some(covenant_id));
         let utxo2 = UtxoEntry::new(300, ScriptPublicKey::new(0, vec![OpTrue].into()), 0, tx.is_coinbase(), Some(other_covenant_id));
 
         let reused_values = SigHashReusedValuesUnsync::new();
@@ -1361,11 +1426,15 @@ fn compiles_bar_example_and_verifies() {
         sequence: 0,
         compute_commit: SigopCount(1).into(),
     };
-    let output =
-        TransactionOutput { value: 7_000, script_public_key: ScriptPublicKey::new(0, compiled.script.clone().into()), covenant: None };
+    let output = TransactionOutput {
+        value: 7_000,
+        script_public_key: ScriptPublicKey::new(0, compiled.bytecode.clone().into()),
+        covenant: None,
+    };
 
     let tx = Transaction::new(1, vec![input.clone()], vec![output.clone()], 0, Default::default(), 0, vec![]);
-    let utxo_entry = UtxoEntry::new(output.value, ScriptPublicKey::new(0, compiled.script.clone().into()), 0, tx.is_coinbase(), None);
+    let utxo_entry =
+        UtxoEntry::new(output.value, ScriptPublicKey::new(0, compiled.bytecode.clone().into()), 0, tx.is_coinbase(), None);
     let mut tx = MutableTransaction::with_entries(tx, vec![utxo_entry.clone()]);
 
     let reused_values = SigHashReusedValuesUnsync::new();
@@ -1412,11 +1481,15 @@ fn compiles_foo_example_and_verifies() {
         sequence: 0,
         compute_commit: SigopCount(1).into(),
     };
-    let output =
-        TransactionOutput { value: 7_000, script_public_key: ScriptPublicKey::new(0, compiled.script.clone().into()), covenant: None };
+    let output = TransactionOutput {
+        value: 7_000,
+        script_public_key: ScriptPublicKey::new(0, compiled.bytecode.clone().into()),
+        covenant: None,
+    };
 
     let tx = Transaction::new(1, vec![input.clone()], vec![output.clone()], 0, Default::default(), 0, vec![]);
-    let utxo_entry = UtxoEntry::new(output.value, ScriptPublicKey::new(0, compiled.script.clone().into()), 0, tx.is_coinbase(), None);
+    let utxo_entry =
+        UtxoEntry::new(output.value, ScriptPublicKey::new(0, compiled.bytecode.clone().into()), 0, tx.is_coinbase(), None);
     let mut tx = MutableTransaction::with_entries(tx, vec![utxo_entry.clone()]);
 
     let reused_values = SigHashReusedValuesUnsync::new();
@@ -1452,13 +1525,29 @@ fn compiles_bounded_bytes_example_and_verifies() {
 
     let compiled = compile_contract(&source, &[], CompileOptions::default()).expect("compile succeeds");
     let sigscript = compiled.build_sig_script("spend", vec![vec![0u8; 4].into(), 0.into()]).expect("sigscript builds");
-    let result =
-        run_contract_with_tx(compiled.script.clone(), compiled.script.clone(), compiled.script.clone(), 2000, 500, 500, sigscript, 0);
+    let result = run_contract_with_tx(
+        compiled.bytecode.clone(),
+        compiled.bytecode.clone(),
+        compiled.bytecode.clone(),
+        2000,
+        500,
+        500,
+        sigscript,
+        0,
+    );
     assert!(result.is_ok(), "bounded_bytes example failed: {}", result.unwrap_err());
 
     let sigscript = compiled.build_sig_script("spend", vec![vec![0u8; 4].into(), 1.into()]).expect("sigscript builds");
-    let result =
-        run_contract_with_tx(compiled.script.clone(), compiled.script.clone(), compiled.script.clone(), 2000, 500, 500, sigscript, 0);
+    let result = run_contract_with_tx(
+        compiled.bytecode.clone(),
+        compiled.bytecode.clone(),
+        compiled.bytecode.clone(),
+        2000,
+        500,
+        500,
+        sigscript,
+        0,
+    );
     assert!(result.is_err(), "bounded_bytes mismatch should fail");
 }
 
@@ -1479,11 +1568,15 @@ fn compiles_p2pkh_invalid_example_and_fails() {
         sequence: 0,
         compute_commit: SigopCount(1).into(),
     };
-    let output =
-        TransactionOutput { value: 7_000, script_public_key: ScriptPublicKey::new(0, compiled.script.clone().into()), covenant: None };
+    let output = TransactionOutput {
+        value: 7_000,
+        script_public_key: ScriptPublicKey::new(0, compiled.bytecode.clone().into()),
+        covenant: None,
+    };
 
     let tx = Transaction::new(1, vec![input.clone()], vec![output.clone()], 0, Default::default(), 0, vec![]);
-    let utxo_entry = UtxoEntry::new(output.value, ScriptPublicKey::new(0, compiled.script.clone().into()), 0, tx.is_coinbase(), None);
+    let utxo_entry =
+        UtxoEntry::new(output.value, ScriptPublicKey::new(0, compiled.bytecode.clone().into()), 0, tx.is_coinbase(), None);
     let mut tx = MutableTransaction::with_entries(tx, vec![utxo_entry.clone()]);
 
     let reused_values = SigHashReusedValuesUnsync::new();
@@ -1538,8 +1631,11 @@ fn compiles_sibling_introspection_example_and_verifies() {
         compute_commit: SigopCount(0).into(),
     };
 
-    let output0 =
-        TransactionOutput { value: 1_000, script_public_key: ScriptPublicKey::new(0, compiled.script.clone().into()), covenant: None };
+    let output0 = TransactionOutput {
+        value: 1_000,
+        script_public_key: ScriptPublicKey::new(0, compiled.bytecode.clone().into()),
+        covenant: None,
+    };
     let output1 = TransactionOutput {
         value: 1_000,
         script_public_key: ScriptPublicKey::new(0, expected_locking_bytecode[2..].to_vec().into()),
@@ -1555,7 +1651,7 @@ fn compiles_sibling_introspection_example_and_verifies() {
         0,
         vec![],
     );
-    let utxo0 = UtxoEntry::new(output0.value, ScriptPublicKey::new(0, compiled.script.clone().into()), 0, tx.is_coinbase(), None);
+    let utxo0 = UtxoEntry::new(output0.value, ScriptPublicKey::new(0, compiled.bytecode.clone().into()), 0, tx.is_coinbase(), None);
     let utxo1 = UtxoEntry::new(
         output1.value,
         ScriptPublicKey::new(0, expected_locking_bytecode[2..].to_vec().into()),
@@ -1590,5 +1686,5 @@ fn compiles_many_assignments_example_under_500_bytes() {
     // We check the final bytecode stays small to prove the compiler is not
     // re-expanding earlier expressions exponentially. Instead, each interim
     // variable should be stored on the stack once and reused by later steps.
-    assert!(compiled.script.len() < 500, "long.sil should compile to less than 500 bytes, got {}", compiled.script.len());
+    assert!(compiled.bytecode.len() < 500, "long.sil should compile to less than 500 bytes, got {}", compiled.bytecode.len());
 }

@@ -81,7 +81,7 @@ fn unavailable_reason(reason: &str) -> String {
         || reason.contains("__arg_")
     {
         "<unavailable: depends on inlined function call internals>".to_string()
-    } else if reason.contains("failed to execute shadow script") {
+    } else if reason.contains("failed to execute shadow bytecode") {
         "<unavailable: runtime evaluation failed>".to_string()
     } else {
         format!("<unavailable: {}>", concise_reason(reason))

@@ -10,7 +10,7 @@ pub(super) fn compile_entrypoint_function<'i>(
     contract_fields_end_offset: usize,
     constants: &HashMap<String, Expr<'i>>,
     structs: &StructRegistry,
-    script_size: Option<i64>,
+    bytecode_size: Option<i64>,
     debug_recorder: &mut DebugRecorder<'i>,
 ) -> Result<(String, Vec<u8>), CompilerError> {
     debug_recorder.begin_entrypoint(function, contract_fields, structs)?;
@@ -55,7 +55,7 @@ pub(super) fn compile_entrypoint_function<'i>(
         contract_fields_end_offset,
         contract_constants: constants,
         structs,
-        script_size,
+        bytecode_size,
         debug_recorder,
     };
     for (index, stmt) in function.body.iter().enumerate() {
@@ -77,7 +77,7 @@ pub(super) fn compile_entrypoint_function<'i>(
         }
         builder.add_op(OpTrue)?;
     } else {
-        let env = ExprEnv { constants, stack_bindings: &stack_bindings, types: &types, script_size, contract_constants: constants };
+        let env = ExprEnv { constants, stack_bindings: &stack_bindings, types: &types, bytecode_size, contract_constants: constants };
         let mut emitter = ScriptEmitter::new(&mut builder, 0);
         for (expr, expected_type) in return_exprs.iter().zip(&function.return_types) {
             compile_expr(expr, Some(expected_type), &env, &mut emitter)?;
@@ -88,9 +88,9 @@ pub(super) fn compile_entrypoint_function<'i>(
             builder.add_op(OpDrop)?;
         }
     }
-    let script = builder.drain();
-    debug_recorder.finish_entrypoint(script.len());
-    Ok((function.name.clone(), script))
+    let bytecode = builder.drain();
+    debug_recorder.finish_entrypoint(bytecode.len());
+    Ok((function.name.clone(), bytecode))
 }
 
 fn compile_fixed_size_param_validations<'i>(
@@ -168,7 +168,7 @@ struct CompileStatementContext<'a, 'i> {
     contract_fields_end_offset: usize,
     contract_constants: &'a HashMap<String, Expr<'i>>,
     structs: &'a StructRegistry,
-    script_size: Option<i64>,
+    bytecode_size: Option<i64>,
     debug_recorder: &'a mut DebugRecorder<'i>,
 }
 
@@ -178,7 +178,7 @@ impl<'a, 'i> CompileStatementContext<'a, 'i> {
             constants: self.contract_constants,
             stack_bindings: self.stack_bindings,
             types: self.types,
-            script_size: self.script_size,
+            bytecode_size: self.bytecode_size,
             contract_constants: self.contract_constants,
         };
         let mut emitter = ScriptEmitter::new(self.builder, 0);
@@ -190,7 +190,7 @@ impl<'a, 'i> CompileStatementContext<'a, 'i> {
             constants: self.contract_constants,
             stack_bindings: self.stack_bindings,
             types: self.types,
-            script_size: self.script_size,
+            bytecode_size: self.bytecode_size,
             contract_constants: self.contract_constants,
         };
         let mut emitter = ScriptEmitter::new(self.builder, 0);
@@ -213,7 +213,7 @@ impl<'a, 'i> CompileStatementContext<'a, 'i> {
             contract_fields_end_offset: self.contract_fields_end_offset,
             contract_constants: self.contract_constants,
             structs: self.structs,
-            script_size: self.script_size,
+            bytecode_size: self.bytecode_size,
             debug_recorder: self.debug_recorder,
         }
     }
@@ -315,7 +315,7 @@ fn compile_function_call_statement<'i>(
             ctx.builder,
             ctx.contract_fields,
             ctx.contract_fields_end_offset,
-            ctx.script_size,
+            ctx.bytecode_size,
             ctx.contract_constants,
         )
         .map(|_| Vec::new());
@@ -327,7 +327,7 @@ fn compile_function_call_statement<'i>(
             ctx.stack_bindings,
             ctx.types,
             ctx.builder,
-            ctx.script_size,
+            ctx.bytecode_size,
             ctx.contract_constants,
         )
         .map(|_| Vec::new());
@@ -445,8 +445,9 @@ fn compile_read_input_state_statement<'i>(
                 ));
             }
 
-            let script_size_value =
-                ctx.script_size.ok_or_else(|| CompilerError::Unsupported("readInputState requires this.scriptSize".to_string()))?;
+            let bytecode_size_value = ctx
+                .bytecode_size
+                .ok_or_else(|| CompilerError::Unsupported("readInputState requires this.bytecodeSize".to_string()))?;
             let total_state_len = encoded_state_len(contract_fields, ctx.contract_constants)?;
             let state_start_offset = contract_fields_end_offset
                 .checked_sub(total_state_len)
@@ -472,7 +473,7 @@ fn compile_read_input_state_statement<'i>(
                     &field.type_ref,
                     Expr::int(state_start_offset as i64),
                     field_chunk_offset,
-                    Expr::int(script_size_value),
+                    Expr::int(bytecode_size_value),
                     ctx.contract_constants,
                     "readInputState",
                 )?;
@@ -516,13 +517,13 @@ fn compile_read_input_state_statement<'i>(
                 ctx.types,
                 ctx.builder,
                 &layout_field_types,
-                ctx.script_size,
+                ctx.bytecode_size,
                 ctx.contract_constants,
             )?;
 
             let input_idx = input_idx.clone();
             let state_start_offset_expr = template_prefix_len.clone();
-            let script_size_expr = templated_input_script_size_expr(
+            let bytecode_size_expr = templated_input_bytecode_size_expr(
                 template_prefix_len,
                 template_suffix_len,
                 &layout_field_types,
@@ -546,7 +547,7 @@ fn compile_read_input_state_statement<'i>(
                     &field.type_ref,
                     state_start_offset_expr.clone(),
                     field_chunk_offset,
-                    script_size_expr.clone(),
+                    bytecode_size_expr.clone(),
                     ctx.contract_constants,
                     "readInputStateWithTemplate",
                 )?;

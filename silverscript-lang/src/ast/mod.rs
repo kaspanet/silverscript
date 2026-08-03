@@ -816,8 +816,8 @@ pub enum BinaryOp {
 pub enum NullaryOp {
     ActiveInputIndex,
     ActiveScriptPubKey,
-    ThisScriptSize,
-    ThisScriptSizeDataPrefix,
+    ThisBytecodeSize,
+    ThisBytecodeSizeDataPrefix,
     TxInputsLength,
     TxOutputsLength,
     TxVersion,
@@ -1300,8 +1300,8 @@ fn nullary_op_str(op: NullaryOp) -> &'static str {
     match op {
         NullaryOp::ActiveInputIndex => "this.activeInputIndex",
         NullaryOp::ActiveScriptPubKey => "this.activeScriptPubKey",
-        NullaryOp::ThisScriptSize => "this.scriptSize",
-        NullaryOp::ThisScriptSizeDataPrefix => "this.scriptSizeDataPrefix",
+        NullaryOp::ThisBytecodeSize => "this.bytecodeSize",
+        NullaryOp::ThisBytecodeSizeDataPrefix => "this.bytecodeSizeDataPrefix",
         NullaryOp::TxInputsLength => "tx.inputs.length",
         NullaryOp::TxOutputsLength => "tx.outputs.length",
         NullaryOp::TxVersion => "tx.version",
@@ -2619,8 +2619,8 @@ fn parse_nullary<'i>(raw: &str, span: Span<'i>) -> Result<Expr<'i>, CompilerErro
     let op = match raw {
         "this.activeInputIndex" => NullaryOp::ActiveInputIndex,
         "this.activeScriptPubKey" => NullaryOp::ActiveScriptPubKey,
-        "this.scriptSize" => NullaryOp::ThisScriptSize,
-        "this.scriptSizeDataPrefix" => NullaryOp::ThisScriptSizeDataPrefix,
+        "this.bytecodeSize" => NullaryOp::ThisBytecodeSize,
+        "this.bytecodeSizeDataPrefix" => NullaryOp::ThisBytecodeSizeDataPrefix,
         "tx.inputs.length" => NullaryOp::TxInputsLength,
         "tx.outputs.length" => NullaryOp::TxOutputsLength,
         "tx.version" => NullaryOp::TxVersion,

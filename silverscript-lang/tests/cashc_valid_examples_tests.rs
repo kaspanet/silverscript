@@ -139,7 +139,7 @@ fn build_p2pk_script(pubkey: &[u8]) -> Vec<u8> {
 }
 
 fn build_tx_context(
-    script: Vec<u8>,
+    bytecode: Vec<u8>,
     outputs: Vec<(u64, Vec<u8>)>,
     input_value: u64,
     lock_time: u64,
@@ -157,7 +157,7 @@ fn build_tx_context(
         .map(|(value, script)| TransactionOutput { value, script_public_key: ScriptPublicKey::new(0, script.into()), covenant: None })
         .collect::<Vec<_>>();
     let tx = Transaction::new(version, vec![input.clone()], tx_outputs.clone(), lock_time, Default::default(), 0, vec![]);
-    let utxo_entry = UtxoEntry::new(input_value, ScriptPublicKey::new(0, script.clone().into()), 0, tx.is_coinbase(), None);
+    let utxo_entry = UtxoEntry::new(input_value, ScriptPublicKey::new(0, bytecode.clone().into()), 0, tx.is_coinbase(), None);
     let mut tx = MutableTransaction::with_entries(tx, vec![utxo_entry.clone()]);
     tx.tx.inputs[0].signature_script = vec![];
     (tx, utxo_entry, reused_values)
@@ -259,8 +259,8 @@ fn runs_cashc_valid_examples() {
                 let selector = selector_for_compiled(&compiled, "hello");
                 let sigscript = build_sigscript(&[], selector);
                 let (mut tx, utxo, reused) = build_tx_context(
-                    compiled.script.clone(),
-                    vec![(1_000, compiled.script.clone()), (1_000, compiled.script.clone())],
+                    compiled.bytecode.clone(),
+                    vec![(1_000, compiled.bytecode.clone()), (1_000, compiled.bytecode.clone())],
                     2_000,
                     0,
                     1,
@@ -275,8 +275,8 @@ fn runs_cashc_valid_examples() {
                 let selector = selector_for_compiled(&compiled, "hello");
                 let sigscript = build_sigscript(&[ArgValue::Int(1), ArgValue::Byte(1)], selector);
                 let (mut tx, utxo, reused) = build_tx_context(
-                    compiled.script.clone(),
-                    vec![(1_000, compiled.script.clone()), (1_000, compiled.script.clone())],
+                    compiled.bytecode.clone(),
+                    vec![(1_000, compiled.bytecode.clone()), (1_000, compiled.bytecode.clone())],
                     2_000,
                     0,
                     1,
@@ -289,8 +289,8 @@ fn runs_cashc_valid_examples() {
                 let constructor_args = vec![];
                 let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
                 let (mut tx, utxo, reused) = build_tx_context(
-                    compiled.script.clone(),
-                    vec![(1_000, compiled.script.clone()), (1_000, compiled.script.clone())],
+                    compiled.bytecode.clone(),
+                    vec![(1_000, compiled.bytecode.clone()), (1_000, compiled.bytecode.clone())],
                     2_000,
                     0,
                     1,
@@ -310,8 +310,8 @@ fn runs_cashc_valid_examples() {
                 let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
                 let selector = selector_for_compiled(&compiled, "hello");
                 let (mut tx, utxo, reused) = build_tx_context(
-                    compiled.script.clone(),
-                    vec![(1_000, compiled.script.clone()), (1_000, compiled.script.clone())],
+                    compiled.bytecode.clone(),
+                    vec![(1_000, compiled.bytecode.clone()), (1_000, compiled.bytecode.clone())],
                     2_000,
                     0,
                     1,
@@ -329,8 +329,8 @@ fn runs_cashc_valid_examples() {
                 let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
                 let selector = selector_for_compiled(&compiled, "hello");
                 let (mut tx, utxo, reused) = build_tx_context(
-                    compiled.script.clone(),
-                    vec![(1_000, compiled.script.clone()), (1_000, compiled.script.clone())],
+                    compiled.bytecode.clone(),
+                    vec![(1_000, compiled.bytecode.clone()), (1_000, compiled.bytecode.clone())],
                     2_000,
                     0,
                     1,
@@ -350,8 +350,8 @@ fn runs_cashc_valid_examples() {
                 let selector = selector_for_compiled(&compiled, "spend");
                 let sigscript = build_sigscript(&[], selector);
                 let (mut tx, utxo, reused) = build_tx_context(
-                    compiled.script.clone(),
-                    vec![(1_000, compiled.script.clone()), (1_000, compiled.script.clone())],
+                    compiled.bytecode.clone(),
+                    vec![(1_000, compiled.bytecode.clone()), (1_000, compiled.bytecode.clone())],
                     2_000,
                     0,
                     1,
@@ -367,8 +367,8 @@ fn runs_cashc_valid_examples() {
                 let selector = selector_for_compiled(&compiled, "test");
                 let sigscript = build_sigscript(&[], selector);
                 let (mut tx, utxo, reused) = build_tx_context(
-                    compiled.script.clone(),
-                    vec![(1_000, compiled.script.clone()), (1_000, compiled.script.clone())],
+                    compiled.bytecode.clone(),
+                    vec![(1_000, compiled.bytecode.clone()), (1_000, compiled.bytecode.clone())],
                     2_000,
                     0,
                     1,
@@ -383,8 +383,8 @@ fn runs_cashc_valid_examples() {
                 let selector = selector_for_compiled(&compiled, "spend");
                 let sigscript = build_sigscript(&[ArgValue::Int(1)], selector);
                 let (mut tx, utxo, reused) = build_tx_context(
-                    compiled.script.clone(),
-                    vec![(1_000, compiled.script.clone()), (1_000, compiled.script.clone())],
+                    compiled.bytecode.clone(),
+                    vec![(1_000, compiled.bytecode.clone()), (1_000, compiled.bytecode.clone())],
                     2_000,
                     0,
                     1,
@@ -400,8 +400,8 @@ fn runs_cashc_valid_examples() {
                 let selector = selector_for_compiled(&compiled, "hello");
                 let sigscript = build_sigscript(&[], selector);
                 let (mut tx, utxo, reused) = build_tx_context(
-                    compiled.script.clone(),
-                    vec![(1_000, compiled.script.clone()), (1_000, compiled.script.clone())],
+                    compiled.bytecode.clone(),
+                    vec![(1_000, compiled.bytecode.clone()), (1_000, compiled.bytecode.clone())],
                     2_000,
                     0,
                     1,
@@ -418,8 +418,8 @@ fn runs_cashc_valid_examples() {
                 let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
                 let selector = selector_for_compiled(&compiled, "transfer");
                 let (mut tx, utxo, reused) = build_tx_context(
-                    compiled.script.clone(),
-                    vec![(1_000, compiled.script.clone()), (1_000, compiled.script.clone())],
+                    compiled.bytecode.clone(),
+                    vec![(1_000, compiled.bytecode.clone()), (1_000, compiled.bytecode.clone())],
                     2_000,
                     0,
                     1,
@@ -437,8 +437,8 @@ fn runs_cashc_valid_examples() {
                 let selector = selector_for_compiled(&compiled, "spend");
                 let sigscript = build_sigscript(&[], selector);
                 let (mut tx, utxo, reused) = build_tx_context(
-                    compiled.script.clone(),
-                    vec![(1_000, compiled.script.clone()), (1_000, compiled.script.clone())],
+                    compiled.bytecode.clone(),
+                    vec![(1_000, compiled.bytecode.clone()), (1_000, compiled.bytecode.clone())],
                     2_000,
                     0,
                     1,
@@ -454,8 +454,8 @@ fn runs_cashc_valid_examples() {
                 let selector = selector_for_compiled(&compiled, "hello");
                 let sigscript = build_sigscript(&[], selector);
                 let (mut tx, utxo, reused) = build_tx_context(
-                    compiled.script.clone(),
-                    vec![(1_000, compiled.script.clone()), (1_000, compiled.script.clone())],
+                    compiled.bytecode.clone(),
+                    vec![(1_000, compiled.bytecode.clone()), (1_000, compiled.bytecode.clone())],
                     2_000,
                     0,
                     1,
@@ -470,8 +470,8 @@ fn runs_cashc_valid_examples() {
                 let selector = selector_for_compiled(&compiled, "hello");
                 let sigscript = build_sigscript(&[ArgValue::Int(1), ArgValue::Int(1)], selector);
                 let (mut tx, utxo, reused) = build_tx_context(
-                    compiled.script.clone(),
-                    vec![(1_000, compiled.script.clone()), (1_000, compiled.script.clone())],
+                    compiled.bytecode.clone(),
+                    vec![(1_000, compiled.bytecode.clone()), (1_000, compiled.bytecode.clone())],
                     2_000,
                     0,
                     1,
@@ -486,8 +486,8 @@ fn runs_cashc_valid_examples() {
                 let selector = selector_for_compiled(&compiled, "hello");
                 let sigscript = build_sigscript(&[ArgValue::Int(20), ArgValue::Int(1_209_600)], selector);
                 let (mut tx, utxo, reused) = build_tx_context(
-                    compiled.script.clone(),
-                    vec![(1_000, compiled.script.clone()), (1_000, compiled.script.clone())],
+                    compiled.bytecode.clone(),
+                    vec![(1_000, compiled.bytecode.clone()), (1_000, compiled.bytecode.clone())],
                     2_000,
                     0,
                     1,
@@ -502,8 +502,8 @@ fn runs_cashc_valid_examples() {
                 let selector = selector_for_compiled(&compiled, "hello");
                 let sigscript = build_sigscript(&[ArgValue::Int(1), ArgValue::Byte(1)], selector);
                 let (mut tx, utxo, reused) = build_tx_context(
-                    compiled.script.clone(),
-                    vec![(1_000, compiled.script.clone()), (1_000, compiled.script.clone())],
+                    compiled.bytecode.clone(),
+                    vec![(1_000, compiled.bytecode.clone()), (1_000, compiled.bytecode.clone())],
                     2_000,
                     0,
                     1,
@@ -524,8 +524,8 @@ fn runs_cashc_valid_examples() {
                 let selector = selector_for_compiled(&compiled, function_name);
                 let sigscript = build_sigscript(&[], selector);
                 let (mut tx, utxo, reused) = build_tx_context(
-                    compiled.script.clone(),
-                    vec![(1_000, compiled.script.clone()), (1_000, compiled.script.clone())],
+                    compiled.bytecode.clone(),
+                    vec![(1_000, compiled.bytecode.clone()), (1_000, compiled.bytecode.clone())],
                     2_000,
                     0,
                     1,
@@ -544,8 +544,8 @@ fn runs_cashc_valid_examples() {
                 let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
                 let selector = selector_for_compiled(&compiled, "transfer");
                 let (mut tx, utxo, reused) = build_tx_context(
-                    compiled.script.clone(),
-                    vec![(1_000, compiled.script.clone()), (1_000, compiled.script.clone())],
+                    compiled.bytecode.clone(),
+                    vec![(1_000, compiled.bytecode.clone()), (1_000, compiled.bytecode.clone())],
                     2_000,
                     0,
                     1,
@@ -562,8 +562,8 @@ fn runs_cashc_valid_examples() {
                 let selector = selector_for_compiled(&compiled, "transfer");
                 let sigscript = build_sigscript(&[ArgValue::Int(1), ArgValue::Int(2)], selector);
                 let (mut tx, utxo, reused) = build_tx_context(
-                    compiled.script.clone(),
-                    vec![(1_000, compiled.script.clone()), (1_000, compiled.script.clone())],
+                    compiled.bytecode.clone(),
+                    vec![(1_000, compiled.bytecode.clone()), (1_000, compiled.bytecode.clone())],
                     2_000,
                     0,
                     1,
@@ -578,8 +578,8 @@ fn runs_cashc_valid_examples() {
                 let selector = selector_for_compiled(&compiled, "spend");
                 let sigscript = build_sigscript(&[ArgValue::Int(0), ArgValue::String("Nope".to_string())], selector);
                 let (mut tx, utxo, reused) = build_tx_context(
-                    compiled.script.clone(),
-                    vec![(1_000, compiled.script.clone()), (1_000, compiled.script.clone())],
+                    compiled.bytecode.clone(),
+                    vec![(1_000, compiled.bytecode.clone()), (1_000, compiled.bytecode.clone())],
                     2_000,
                     0,
                     1,
@@ -594,8 +594,8 @@ fn runs_cashc_valid_examples() {
                 let selector = selector_for_compiled(&compiled, "hello");
                 let sigscript = build_sigscript(&[], selector);
                 let (mut tx, utxo, reused) = build_tx_context(
-                    compiled.script.clone(),
-                    vec![(1_000, compiled.script.clone()), (1_000, compiled.script.clone())],
+                    compiled.bytecode.clone(),
+                    vec![(1_000, compiled.bytecode.clone()), (1_000, compiled.bytecode.clone())],
                     2_000,
                     0,
                     1,
@@ -610,8 +610,8 @@ fn runs_cashc_valid_examples() {
                 let selector = selector_for_compiled(&compiled, "spend");
                 let sigscript = build_sigscript(&[], selector);
                 let (mut tx, utxo, reused) = build_tx_context(
-                    compiled.script.clone(),
-                    vec![(1_000, compiled.script.clone()), (1_000, compiled.script.clone())],
+                    compiled.bytecode.clone(),
+                    vec![(1_000, compiled.bytecode.clone()), (1_000, compiled.bytecode.clone())],
                     2_000,
                     0,
                     1,
@@ -627,8 +627,8 @@ fn runs_cashc_valid_examples() {
                 let constructor_args = vec![pkh.into()];
                 let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
                 let (mut tx, utxo, reused) = build_tx_context(
-                    compiled.script.clone(),
-                    vec![(1_000, compiled.script.clone()), (1_000, compiled.script.clone())],
+                    compiled.bytecode.clone(),
+                    vec![(1_000, compiled.bytecode.clone()), (1_000, compiled.bytecode.clone())],
                     2_000,
                     0,
                     1,
@@ -647,8 +647,8 @@ fn runs_cashc_valid_examples() {
                 let constructor_args = vec![pkh.into()];
                 let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
                 let (mut tx, utxo, reused) = build_tx_context(
-                    compiled.script.clone(),
-                    vec![(1_000, compiled.script.clone()), (1_000, compiled.script.clone())],
+                    compiled.bytecode.clone(),
+                    vec![(1_000, compiled.bytecode.clone()), (1_000, compiled.bytecode.clone())],
                     2_000,
                     0,
                     1,
@@ -666,8 +666,8 @@ fn runs_cashc_valid_examples() {
                 let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
                 let selector = selector_for_compiled(&compiled, "hello");
                 let (mut tx, utxo, reused) = build_tx_context(
-                    compiled.script.clone(),
-                    vec![(1_000, compiled.script.clone()), (1_000, compiled.script.clone())],
+                    compiled.bytecode.clone(),
+                    vec![(1_000, compiled.bytecode.clone()), (1_000, compiled.bytecode.clone())],
                     2_000,
                     0,
                     1,
@@ -686,8 +686,8 @@ fn runs_cashc_valid_examples() {
                 let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
                 let selector = selector_for_compiled(&compiled, "hello");
                 let (mut tx, utxo, reused) = build_tx_context(
-                    compiled.script.clone(),
-                    vec![(1_000, compiled.script.clone()), (1_000, compiled.script.clone())],
+                    compiled.bytecode.clone(),
+                    vec![(1_000, compiled.bytecode.clone()), (1_000, compiled.bytecode.clone())],
                     2_000,
                     0,
                     1,
@@ -717,8 +717,8 @@ fn runs_cashc_valid_examples() {
                     let selector = selector_for_compiled(&compiled, "cds");
                     let sigscript = build_sigscript(&[ArgValue::Bytes(message.clone())], selector);
                     let (mut tx, utxo, reused) = build_tx_context(
-                        compiled.script.clone(),
-                        vec![(1_000, compiled.script.clone()), (1_000, compiled.script.clone())],
+                        compiled.bytecode.clone(),
+                        vec![(1_000, compiled.bytecode.clone()), (1_000, compiled.bytecode.clone())],
                         2_000,
                         0,
                         1,
@@ -749,8 +749,8 @@ fn runs_cashc_valid_examples() {
                     let selector = selector_for_compiled(&compiled, "cds");
                     let sigscript = build_sigscript(&[ArgValue::Bytes(message.clone())], selector);
                     let (mut tx, utxo, reused) = build_tx_context(
-                        compiled.script.clone(),
-                        vec![(1_000, compiled.script.clone()), (1_000, compiled.script.clone())],
+                        compiled.bytecode.clone(),
+                        vec![(1_000, compiled.bytecode.clone()), (1_000, compiled.bytecode.clone())],
                         2_000,
                         0,
                         1,
@@ -770,8 +770,8 @@ fn runs_cashc_valid_examples() {
                 let selector = selector_for_compiled(&compiled, "hello");
                 let sigscript = build_sigscript(&[], selector);
                 let (mut tx, utxo, reused) = build_tx_context(
-                    compiled.script.clone(),
-                    vec![(1_000, compiled.script.clone()), (1_000, compiled.script.clone())],
+                    compiled.bytecode.clone(),
+                    vec![(1_000, compiled.bytecode.clone()), (1_000, compiled.bytecode.clone())],
                     2_000,
                     0,
                     1,
@@ -786,8 +786,8 @@ fn runs_cashc_valid_examples() {
                 let selector = selector_for_compiled(&compiled, "covenant");
                 let sigscript = build_sigscript(&[], selector);
                 let (mut tx, utxo, reused) = build_tx_context(
-                    compiled.script.clone(),
-                    vec![(1_000, compiled.script.clone()), (1_000, compiled.script.clone())],
+                    compiled.bytecode.clone(),
+                    vec![(1_000, compiled.bytecode.clone()), (1_000, compiled.bytecode.clone())],
                     2_000,
                     0,
                     2,
@@ -802,8 +802,8 @@ fn runs_cashc_valid_examples() {
                 let selector = selector_for_compiled(&compiled, "world");
                 let sigscript = build_sigscript(&[ArgValue::Int(5)], selector);
                 let (mut tx, utxo, reused) = build_tx_context(
-                    compiled.script.clone(),
-                    vec![(1_000, compiled.script.clone()), (1_000, compiled.script.clone())],
+                    compiled.bytecode.clone(),
+                    vec![(1_000, compiled.bytecode.clone()), (1_000, compiled.bytecode.clone())],
                     2_000,
                     0,
                     1,
@@ -818,8 +818,8 @@ fn runs_cashc_valid_examples() {
                 let selector = selector_for_compiled(&compiled, "hello");
                 let sigscript = build_sigscript(&[ArgValue::Int(0), ArgValue::String("Hello World".to_string())], selector);
                 let (mut tx, utxo, reused) = build_tx_context(
-                    compiled.script.clone(),
-                    vec![(1_000, compiled.script.clone()), (1_000, compiled.script.clone())],
+                    compiled.bytecode.clone(),
+                    vec![(1_000, compiled.bytecode.clone()), (1_000, compiled.bytecode.clone())],
                     2_000,
                     0,
                     1,
@@ -834,8 +834,8 @@ fn runs_cashc_valid_examples() {
                 let selector = selector_for_compiled(&compiled, "spend");
                 let sigscript = build_sigscript(&[], selector);
                 let (mut tx, utxo, reused) = build_tx_context(
-                    compiled.script.clone(),
-                    vec![(1_000, compiled.script.clone()), (1_000, compiled.script.clone())],
+                    compiled.bytecode.clone(),
+                    vec![(1_000, compiled.bytecode.clone()), (1_000, compiled.bytecode.clone())],
                     2_000,
                     0,
                     1,
@@ -850,8 +850,8 @@ fn runs_cashc_valid_examples() {
                 let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
                 let selector = selector_for_compiled(&compiled, "hello");
                 let (mut tx, utxo, reused) = build_tx_context(
-                    compiled.script.clone(),
-                    vec![(1_000, compiled.script.clone()), (1_000, compiled.script.clone())],
+                    compiled.bytecode.clone(),
+                    vec![(1_000, compiled.bytecode.clone()), (1_000, compiled.bytecode.clone())],
                     2_000,
                     0,
                     1,
@@ -894,7 +894,7 @@ fn runs_cashc_valid_examples() {
                     out.extend_from_slice(&lock_bytes);
                     let mut active_bytecode = Vec::new();
                     active_bytecode.extend_from_slice(&0u16.to_be_bytes());
-                    active_bytecode.extend_from_slice(&compiled.script);
+                    active_bytecode.extend_from_slice(&compiled.bytecode);
                     out.extend_from_slice(&active_bytecode[9..]);
                     out
                 };
@@ -904,7 +904,7 @@ fn runs_cashc_valid_examples() {
 
                 let sigscript = build_sigscript(&[], selector);
                 let (mut tx, utxo, reused) = build_tx_context(
-                    compiled.script.clone(),
+                    compiled.bytecode.clone(),
                     vec![(output0_value, output0_script), (output1_value, output1_script)],
                     input_value,
                     lock_time,
@@ -921,8 +921,8 @@ fn runs_cashc_valid_examples() {
                 let selector = selector_for_compiled(&compiled, "spend");
                 let sigscript = build_sigscript(&[], selector);
                 let (mut tx, utxo, reused) = build_tx_context(
-                    compiled.script.clone(),
-                    vec![(1_000, compiled.script.clone()), (1_000, compiled.script.clone())],
+                    compiled.bytecode.clone(),
+                    vec![(1_000, compiled.bytecode.clone()), (1_000, compiled.bytecode.clone())],
                     2_000,
                     0,
                     1,
@@ -937,8 +937,8 @@ fn runs_cashc_valid_examples() {
                 let selector = selector_for_compiled(&compiled, "spend");
                 let sigscript = build_sigscript(&[], selector);
                 let (mut tx, utxo, reused) = build_tx_context(
-                    compiled.script.clone(),
-                    vec![(1_000, compiled.script.clone()), (1_000, compiled.script.clone())],
+                    compiled.bytecode.clone(),
+                    vec![(1_000, compiled.bytecode.clone()), (1_000, compiled.bytecode.clone())],
                     2_000,
                     0,
                     1,
@@ -956,8 +956,8 @@ fn runs_cashc_valid_examples() {
                 let selector = selector_for_compiled(&compiled, "spend");
                 let sigscript = build_sigscript(&[], selector);
                 let (mut tx, utxo, reused) = build_tx_context(
-                    compiled.script.clone(),
-                    vec![(1_000, compiled.script.clone()), (1_000, compiled.script.clone())],
+                    compiled.bytecode.clone(),
+                    vec![(1_000, compiled.bytecode.clone()), (1_000, compiled.bytecode.clone())],
                     2_000,
                     0,
                     1,
@@ -972,8 +972,8 @@ fn runs_cashc_valid_examples() {
                 let selector = selector_for_compiled(&compiled, "spend");
                 let sigscript = build_sigscript(&[], selector);
                 let (mut tx, utxo, reused) = build_tx_context(
-                    compiled.script.clone(),
-                    vec![(1_000, compiled.script.clone()), (1_000, compiled.script.clone())],
+                    compiled.bytecode.clone(),
+                    vec![(1_000, compiled.bytecode.clone()), (1_000, compiled.bytecode.clone())],
                     2_000,
                     0,
                     1,
@@ -988,8 +988,8 @@ fn runs_cashc_valid_examples() {
                 let selector = selector_for_compiled(&compiled, "spend");
                 let sigscript = build_sigscript(&[], selector);
                 let (mut tx, utxo, reused) = build_tx_context(
-                    compiled.script.clone(),
-                    vec![(1_000, compiled.script.clone()), (1_000, compiled.script.clone())],
+                    compiled.bytecode.clone(),
+                    vec![(1_000, compiled.bytecode.clone()), (1_000, compiled.bytecode.clone())],
                     2_000,
                     0,
                     1,
@@ -1004,8 +1004,8 @@ fn runs_cashc_valid_examples() {
                 let selector = selector_for_compiled(&compiled, "hello");
                 let sigscript = build_sigscript(&[ArgValue::String("world".to_string())], selector);
                 let (mut tx, utxo, reused) = build_tx_context(
-                    compiled.script.clone(),
-                    vec![(1_000, compiled.script.clone()), (1_000, compiled.script.clone())],
+                    compiled.bytecode.clone(),
+                    vec![(1_000, compiled.bytecode.clone()), (1_000, compiled.bytecode.clone())],
                     2_000,
                     0,
                     1,
@@ -1021,8 +1021,8 @@ fn runs_cashc_valid_examples() {
                 let selector = selector_for_compiled(&compiled, "hello");
                 let sigscript = build_sigscript(&[], selector);
                 let (mut tx, utxo, reused) = build_tx_context(
-                    compiled.script.clone(),
-                    vec![(1_000, compiled.script.clone()), (1_000, compiled.script.clone())],
+                    compiled.bytecode.clone(),
+                    vec![(1_000, compiled.bytecode.clone()), (1_000, compiled.bytecode.clone())],
                     2_000,
                     0,
                     1,
@@ -1038,8 +1038,8 @@ fn runs_cashc_valid_examples() {
                 let selector = selector_for_compiled(&compiled, "split");
                 let sigscript = build_sigscript(&[], selector);
                 let (mut tx, utxo, reused) = build_tx_context(
-                    compiled.script.clone(),
-                    vec![(1_000, compiled.script.clone()), (1_000, compiled.script.clone())],
+                    compiled.bytecode.clone(),
+                    vec![(1_000, compiled.bytecode.clone()), (1_000, compiled.bytecode.clone())],
                     2_000,
                     0,
                     1,
@@ -1054,8 +1054,8 @@ fn runs_cashc_valid_examples() {
                 let selector = selector_for_compiled(&compiled, "split");
                 let sigscript = build_sigscript(&[ArgValue::Bytes(vec![0u8; 32])], selector);
                 let (mut tx, utxo, reused) = build_tx_context(
-                    compiled.script.clone(),
-                    vec![(1_000, compiled.script.clone()), (1_000, compiled.script.clone())],
+                    compiled.bytecode.clone(),
+                    vec![(1_000, compiled.bytecode.clone()), (1_000, compiled.bytecode.clone())],
                     2_000,
                     0,
                     1,
@@ -1070,8 +1070,8 @@ fn runs_cashc_valid_examples() {
                 let selector = selector_for_compiled(&compiled, "split");
                 let sigscript = build_sigscript(&[ArgValue::Bytes(vec![0u8; 32])], selector);
                 let (mut tx, utxo, reused) = build_tx_context(
-                    compiled.script.clone(),
-                    vec![(1_000, compiled.script.clone()), (1_000, compiled.script.clone())],
+                    compiled.bytecode.clone(),
+                    vec![(1_000, compiled.bytecode.clone()), (1_000, compiled.bytecode.clone())],
                     2_000,
                     0,
                     1,

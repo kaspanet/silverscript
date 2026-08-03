@@ -2685,11 +2685,11 @@
         },
         {
           "type": "STRING",
-          "value": "this.scriptSizeDataPrefix"
+          "value": "this.bytecodeSizeDataPrefix"
         },
         {
           "type": "STRING",
-          "value": "this.scriptSize"
+          "value": "this.bytecodeSize"
         },
         {
           "type": "STRING",

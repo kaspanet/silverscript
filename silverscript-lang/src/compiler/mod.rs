@@ -102,7 +102,7 @@ pub struct CompiledStateLayout {
 pub struct CompiledContract<'i> {
     pub contract_name: String,
     pub compiler_version: String,
-    pub script: Vec<u8>,
+    pub bytecode: Vec<u8>,
     pub ast: ContractAst<'i>,
     pub abi: Vec<FunctionAbiEntry>,
     pub without_selector: bool,
@@ -209,7 +209,7 @@ impl<'i> CompiledContract<'i> {
     /// Calculate the canonical hash of this contract's state template.
     pub fn template_hash(&self) -> [u8; 32] {
         let state_end = self.state_layout.start + self.state_layout.len;
-        crate::template::template_hash(&self.script[..self.state_layout.start], &self.script[state_end..])
+        crate::template::template_hash(&self.bytecode[..self.state_layout.start], &self.bytecode[state_end..])
     }
 
     pub fn build_sig_script(&self, function_name: &str, args: Vec<Expr<'i>>) -> Result<Vec<u8>, CompilerError> {

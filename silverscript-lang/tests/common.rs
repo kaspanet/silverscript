@@ -18,9 +18,9 @@ use silverscript_lang::compiler::{CompiledContract, CovenantDeclCallOptions};
 pub const COV_A: Hash = Hash::from_bytes(*b"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
 pub const COV_B: Hash = Hash::from_bytes(*b"BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB");
 
-pub fn push_redeem_script(script: &[u8]) -> Vec<u8> {
+pub fn push_redeem_script(bytecode: &[u8]) -> Vec<u8> {
     ScriptBuilder::with_flags(EngineFlags { covenants_enabled: true, ..Default::default() })
-        .add_data(script)
+        .add_data(bytecode)
         .expect("push redeem script")
         .drain()
 }
@@ -29,12 +29,12 @@ pub fn covenant_decl_sigscript(compiled: &CompiledContract<'_>, function_name: &
     let mut sigscript = compiled
         .build_sig_script_for_covenant_decl(function_name, args, CovenantDeclCallOptions { is_leader })
         .expect("build covenant declaration sigscript");
-    sigscript.extend_from_slice(&push_redeem_script(&compiled.script));
+    sigscript.extend_from_slice(&push_redeem_script(&compiled.bytecode));
     sigscript
 }
 
 pub fn covenant_utxo(compiled: &CompiledContract<'_>, covenant_id: Hash) -> UtxoEntry {
-    UtxoEntry::new(1_500, pay_to_script_hash_script(&compiled.script), 0, false, Some(covenant_id))
+    UtxoEntry::new(1_500, pay_to_script_hash_script(&compiled.bytecode), 0, false, Some(covenant_id))
 }
 
 pub fn plain_covenant_output(authorizing_input: u16, covenant_id: Hash) -> TransactionOutput {
@@ -84,15 +84,15 @@ pub fn tx_input(index: u32, signature_script: Vec<u8>) -> TransactionInput {
 pub fn covenant_output(compiled: &CompiledContract<'_>, authorizing_input: u16, covenant_id: Hash) -> TransactionOutput {
     TransactionOutput {
         value: 1_000,
-        script_public_key: pay_to_script_hash_script(&compiled.script),
+        script_public_key: pay_to_script_hash_script(&compiled.bytecode),
         covenant: Some(CovenantBinding { authorizing_input, covenant_id }),
     }
 }
 
 pub fn compiled_template_parts_and_hash(compiled: &CompiledContract) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
     let layout = compiled.state_layout;
-    let prefix = compiled.script[..layout.start].to_vec();
-    let suffix = compiled.script[layout.start + layout.len..].to_vec();
+    let prefix = compiled.bytecode[..layout.start].to_vec();
+    let suffix = compiled.bytecode[layout.start + layout.len..].to_vec();
     let template_hash = compiled.template_hash().to_vec();
     (prefix, suffix, template_hash)
 }

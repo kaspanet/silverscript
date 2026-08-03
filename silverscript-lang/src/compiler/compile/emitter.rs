@@ -1,10 +1,10 @@
 use super::*;
 
-/// Emits script while tracking the number of temporary stack values.
+/// Emits bytecode while tracking the number of temporary stack values.
 ///
 /// Named values are tracked separately by `StackBindings`; this type only
 /// accounts for values produced and consumed while compiling an expression or
-/// another self-contained script fragment.
+/// another self-contained bytecode fragment.
 pub(super) struct ScriptEmitter<'a> {
     builder: &'a mut ScriptBuilder,
     stack_depth: i64,

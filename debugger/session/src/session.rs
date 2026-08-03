@@ -135,7 +135,7 @@ pub struct DebugSession<'a, 'i> {
     opcodes: Vec<Option<DebugOpcode<'a>>>,
     op_displays: Vec<String>,
     opcode_offsets: Vec<usize>,
-    script_len: usize,
+    bytecode_len: usize,
     pc: usize,
     debug_info: DebugInfo<'i>,
     contract_ast: Option<ContractAst<'i>>,
@@ -197,21 +197,21 @@ impl<'a, 'i> DebugSession<'a, 'i> {
     // --- Session construction + stepping ---
 
     /// Creates a debug session simulating a full transaction spend.
-    /// Executes sigscript first to seed the stack, then debugs lockscript execution.
+    /// Executes sigscript first to seed the stack, then debugs the compiled bytecode.
     pub fn full(
         sigscript: &[u8],
-        lockscript: &[u8],
+        bytecode: &[u8],
         source: &'i str,
         debug_info: Option<DebugInfo<'i>>,
         mut engine: DebugEngine<'a>,
     ) -> Result<Self, kaspa_txscript_errors::TxScriptError> {
         seed_engine_with_sigscript(&mut engine, sigscript)?;
-        Self::from_scripts(lockscript, source, debug_info, engine)
+        Self::from_bytecode(bytecode, source, debug_info, engine)
     }
 
-    /// Internal constructor: parses script, prepares opcodes, extracts statement steps.
-    pub fn from_scripts(
-        script: &[u8],
+    /// Internal constructor: parses bytecode, prepares opcodes, extracts statement steps.
+    pub fn from_bytecode(
+        bytecode: &[u8],
         source: &'i str,
         debug_info: Option<DebugInfo<'i>>,
         engine: DebugEngine<'a>,
@@ -222,11 +222,11 @@ impl<'a, 'i> DebugSession<'a, 'i> {
             .as_ref()
             .map(|contract| contract.functions.iter().map(|function| (function.name.clone(), function.params.len())).collect())
             .unwrap_or_default();
-        let opcodes = parse_script::<DebugTx<'a>, DebugReused>(script).collect::<Result<Vec<_>, _>>()?;
+        let opcodes = parse_script::<DebugTx<'a>, DebugReused>(bytecode).collect::<Result<Vec<_>, _>>()?;
         let op_displays = opcodes.iter().map(|op| format!("{op:?}")).collect();
         let opcodes: Vec<Option<DebugOpcode<'a>>> = opcodes.into_iter().map(Some).collect();
         let source_lines: Vec<String> = source.lines().map(String::from).collect();
-        let (opcode_offsets, script_len) = build_opcode_offsets(&opcodes);
+        let (opcode_offsets, bytecode_len) = build_opcode_offsets(&opcodes);
 
         let mut step_order: Vec<usize> = (0..debug_info.steps.len()).collect();
         // Overlapping inline ranges can share the same bytecode offsets; keep
@@ -242,7 +242,7 @@ impl<'a, 'i> DebugSession<'a, 'i> {
             opcodes,
             op_displays,
             opcode_offsets,
-            script_len,
+            bytecode_len,
             pc: 0,
             debug_info,
             contract_ast,
@@ -559,9 +559,9 @@ impl<'a, 'i> DebugSession<'a, 'i> {
         self.current_timeline_step().cloned().or_else(|| self.step_for_offset(self.current_byte_offset()).cloned())
     }
 
-    /// Returns the current bytecode offset in the script.
+    /// Returns the current offset in the bytecode.
     pub fn current_byte_offset(&self) -> usize {
-        self.opcode_offsets.get(self.pc).copied().unwrap_or(self.script_len)
+        self.opcode_offsets.get(self.pc).copied().unwrap_or(self.bytecode_len)
     }
 
     /// Returns the source span (line/col range) at the current position.
@@ -1559,9 +1559,9 @@ impl<'a, 'i> DebugSession<'a, 'i> {
             .enumerate()
             .map(|(index, display)| OpcodeMeta {
                 index,
-                byte_offset: self.opcode_offsets.get(index).copied().unwrap_or(self.script_len),
+                byte_offset: self.opcode_offsets.get(index).copied().unwrap_or(self.bytecode_len),
                 display: display.clone(),
-                step: self.step_for_offset(self.opcode_offsets.get(index).copied().unwrap_or(self.script_len)).cloned(),
+                step: self.step_for_offset(self.opcode_offsets.get(index).copied().unwrap_or(self.bytecode_len)).cloned(),
             })
             .collect()
     }
@@ -1618,8 +1618,8 @@ impl<'a, 'i> DebugSession<'a, 'i> {
         let prepared_expr = lower_expr_for_eval(expr, scope_state)?;
         let (bytecode, _) = compile_debug_expr(&prepared_expr, &env, &stack_bindings, &eval_types)
             .map_err(|err| format!("failed to compile debug expression: {err}"))?;
-        let script = self.build_shadow_script(&shadow_bindings, &bytecode)?;
-        let bytes = self.execute_shadow_script(&script)?;
+        let shadow_bytecode = self.build_shadow_bytecode(&shadow_bindings, &bytecode)?;
+        let bytes = self.execute_shadow_bytecode(&shadow_bytecode)?;
         decode_value_by_type(type_name, bytes)
     }
 
@@ -1639,8 +1639,8 @@ impl<'a, 'i> DebugSession<'a, 'i> {
         let prepared_expr = lower_expr_for_eval(expr, scope_state)?;
         let (bytecode, type_name) = compile_debug_expr(&prepared_expr, &env, &stack_bindings, &eval_types)
             .map_err(|err| format!("failed to compile debug expression: {err}"))?;
-        let script = self.build_shadow_script(&shadow_bindings, &bytecode)?;
-        let bytes = self.execute_shadow_script(&script)?;
+        let shadow_bytecode = self.build_shadow_bytecode(&shadow_bindings, &bytecode)?;
+        let bytes = self.execute_shadow_bytecode(&shadow_bytecode)?;
         let value = decode_value_by_type(&type_name, bytes)?;
         Ok((type_name, value))
     }
@@ -1680,7 +1680,7 @@ impl<'a, 'i> DebugSession<'a, 'i> {
         Ok((shadow_bindings, env, stack_bindings, eval_types))
     }
 
-    fn build_shadow_script(&self, bindings: &[ShadowBindingValue], expr_bytecode: &[u8]) -> Result<Vec<u8>, String> {
+    fn build_shadow_bytecode(&self, bindings: &[ShadowBindingValue], expr_bytecode: &[u8]) -> Result<Vec<u8>, String> {
         let mut builder = ScriptBuilder::new();
         for binding in bindings {
             builder.add_data(&binding.value).map_err(|err| err.to_string())?;
@@ -1689,7 +1689,7 @@ impl<'a, 'i> DebugSession<'a, 'i> {
         Ok(builder.drain())
     }
 
-    fn execute_shadow_script(&self, script: &[u8]) -> Result<Vec<u8>, String> {
+    fn execute_shadow_bytecode(&self, bytecode: &[u8]) -> Result<Vec<u8>, String> {
         let sig_cache = Cache::new(0);
         let reused_values = SigHashReusedValuesUnsync::new();
         let mut engine: DebugEngine<'_> = if let Some(shadow) = self.shadow_tx_context {
@@ -1708,9 +1708,9 @@ impl<'a, 'i> DebugSession<'a, 'i> {
                 EngineFlags { covenants_enabled: true, ..Default::default() },
             )
         };
-        for opcode in parse_script::<DebugTx<'_>, DebugReused>(script) {
-            let opcode = opcode.map_err(|err| format!("failed to parse shadow script: {err}"))?;
-            engine.execute_opcode(opcode).map_err(|err| format!("failed to execute shadow script: {err}"))?;
+        for opcode in parse_script::<DebugTx<'_>, DebugReused>(bytecode) {
+            let opcode = opcode.map_err(|err| format!("failed to parse shadow bytecode: {err}"))?;
+            engine.execute_opcode(opcode).map_err(|err| format!("failed to execute shadow bytecode: {err}"))?;
         }
         engine.stacks().dstack.last().cloned().map(|item| item.to_vec()).ok_or_else(|| "shadow VM produced an empty stack".to_string())
     }
@@ -2102,7 +2102,7 @@ fn flatten_contract_type_leaves<'i>(contract: &ContractAst<'i>, type_ref: &TypeR
     Ok(leaves)
 }
 
-/// Executes sigscript to seed the stack before debugging lockscript.
+/// Executes sigscript to seed the stack before debugging bytecode.
 fn seed_engine_with_sigscript(engine: &mut DebugEngine<'_>, sigscript: &[u8]) -> Result<(), kaspa_txscript_errors::TxScriptError> {
     for opcode in parse_script::<DebugTx<'_>, DebugReused>(sigscript) {
         engine.execute_opcode(opcode?)?;

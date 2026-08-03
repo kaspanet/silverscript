@@ -19,7 +19,7 @@ fn lowers_auth_covenant_declaration_to_hidden_entrypoint_name() {
     assert_eq!(compiled.abi[0].name, generated_covenant_auth_entrypoint_name("spend"));
     assert!(compiled.ast.functions.iter().any(|f| f.name == "__covenant_policy_spend" && !f.entrypoint));
     assert!(compiled.ast.functions.iter().any(|f| f.name == generated_covenant_auth_entrypoint_name("spend") && f.entrypoint));
-    assert!(compiled.script.contains(&OpAuthOutputCount));
+    assert!(compiled.bytecode.contains(&OpAuthOutputCount));
 }
 
 #[test]
@@ -39,7 +39,7 @@ fn infers_auth_binding_from_from_equal_one_when_binding_omitted() {
     assert_eq!(compiled.abi[0].name, generated_covenant_auth_entrypoint_name("spend"));
     assert!(compiled.ast.functions.iter().any(|f| f.name == "__covenant_policy_spend" && !f.entrypoint));
     assert!(compiled.ast.functions.iter().any(|f| f.name == generated_covenant_auth_entrypoint_name("spend") && f.entrypoint));
-    assert!(compiled.script.contains(&OpAuthOutputCount));
+    assert!(compiled.bytecode.contains(&OpAuthOutputCount));
 }
 
 #[test]
@@ -57,9 +57,9 @@ fn lowers_cov_covenant_to_leader_and_delegate_entrypoints() {
     let abi_names: Vec<&str> = compiled.abi.iter().map(|entry| entry.name.as_str()).collect();
     assert_eq!(abi_names, vec!["__leader_transition_ok", "__delegate"]);
     assert!(compiled.ast.functions.iter().any(|f| f.name == "__covenant_policy_transition_ok" && !f.entrypoint));
-    assert!(compiled.script.contains(&OpCovInputCount));
-    assert!(compiled.script.contains(&OpCovOutputCount));
-    assert!(compiled.script.contains(&OpCovInputIdx));
+    assert!(compiled.bytecode.contains(&OpCovInputCount));
+    assert!(compiled.bytecode.contains(&OpCovOutputCount));
+    assert!(compiled.bytecode.contains(&OpCovInputIdx));
 }
 
 #[test]
@@ -77,9 +77,9 @@ fn infers_cov_binding_from_from_greater_than_one_when_binding_omitted() {
     let abi_names: Vec<&str> = compiled.abi.iter().map(|entry| entry.name.as_str()).collect();
     assert_eq!(abi_names, vec!["__leader_transition_ok", "__delegate"]);
     assert!(compiled.ast.functions.iter().any(|f| f.name == "__covenant_policy_transition_ok" && !f.entrypoint));
-    assert!(compiled.script.contains(&OpCovInputCount));
-    assert!(compiled.script.contains(&OpCovOutputCount));
-    assert!(compiled.script.contains(&OpCovInputIdx));
+    assert!(compiled.bytecode.contains(&OpCovInputCount));
+    assert!(compiled.bytecode.contains(&OpCovOutputCount));
+    assert!(compiled.bytecode.contains(&OpCovInputIdx));
 }
 
 #[test]
@@ -239,7 +239,7 @@ fn lowers_singleton_sugar_to_auth_one_to_one_defaults() {
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
     assert!(compiled.without_selector);
     assert_eq!(compiled.abi[0].name, generated_covenant_auth_entrypoint_name("spend"));
-    assert!(compiled.script.contains(&OpAuthOutputCount));
+    assert!(compiled.bytecode.contains(&OpAuthOutputCount));
 }
 
 #[test]
@@ -256,7 +256,7 @@ fn lowers_fanout_sugar_to_auth_with_to_bound() {
     let compiled = compile_contract(source, &[Expr::int(3)], CompileOptions::default()).expect("compile succeeds");
     assert!(compiled.without_selector);
     assert_eq!(compiled.abi[0].name, generated_covenant_auth_entrypoint_name("split"));
-    assert!(compiled.script.contains(&OpAuthOutputCount));
+    assert!(compiled.bytecode.contains(&OpAuthOutputCount));
 }
 
 #[test]
@@ -575,9 +575,9 @@ fn auth_covenant_groups_single_injects_shared_count_check() {
     "#;
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
-    assert!(compiled.script.contains(&OpInputCovenantId));
-    assert!(compiled.script.contains(&OpCovOutputCount));
-    assert!(compiled.script.contains(&OpAuthOutputCount));
+    assert!(compiled.bytecode.contains(&OpInputCovenantId));
+    assert!(compiled.bytecode.contains(&OpCovOutputCount));
+    assert!(compiled.bytecode.contains(&OpAuthOutputCount));
 }
 
 #[test]

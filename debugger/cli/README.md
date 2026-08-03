@@ -39,7 +39,7 @@ contract Counter(int threshold) {
 When the session starts, you'll see your source context and the `(sdb)` prompt:
 
 ```text
-Stepping through 42 bytes of script
+Stepping through 42 bytes of bytecode
      1 | pragma silverscript ^0.1.0;
      2 | 
      3 | contract Counter(int threshold) {
@@ -101,7 +101,7 @@ Run `.test.json` suites non-interactively to verify logic in bulk. If you pass a
 }
 ```
 
-The debugger will report `PASS` if the script result matches your `expect` field (either `pass` or `fail`).
+The debugger will report `PASS` if the bytecode result matches your `expect` field (either `pass` or `fail`).
 
 Structured args use the same JSON object and object-array form inside `.test.json`:
 
@@ -192,7 +192,7 @@ Add `--test-file <path>` to either form to use an explicit test file instead of 
 ```text
   PASS  valid_transfer
   FAIL  insufficient_funds
-        FAIL: expected failure but script passed
+        FAIL: expected failure but bytecode passed
 
 10 tests: 9 passed, 1 failed
 ```
