@@ -187,7 +187,7 @@ contract ChessMux(
             next_pending_promo = promo_piece;
         }
 
-        State next_state = {
+        State next_state = State {
             mux_template: mux_template,
             route_templates: route_templates,
             white_player: white_player,
@@ -263,7 +263,7 @@ contract ChessMux(
         byte[32] settle_template = templateHash(settle_prefix, settle_suffix);
         require(blake2b(byte[](settle_template + player_template)) == byte[32](route_templates.slice(256, 288)));
 
-        SettleState next_state = {
+        SettleState next_state = SettleState {
             player_template: player_template,
             white_player: white_player,
             black_player: black_player,
@@ -280,7 +280,7 @@ contract ChessMux(
         byte[32] settle_template = templateHash(settle_prefix, settle_suffix);
         require(blake2b(byte[](settle_template + player_template)) == byte[32](route_templates.slice(256, 288)));
 
-        SettleState next_state = {
+        SettleState next_state = SettleState {
             player_template: player_template,
             white_player: white_player,
             black_player: black_player,

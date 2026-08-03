@@ -49,7 +49,7 @@ const AUTH_SINGLETON_TRANSITION_SOURCE: &str = r#"
 
         #[covenant.singleton(mode = transition)]
         function bump(State prev_state, int delta) : (State) {
-            return({ value: prev_state.value + delta });
+            return(State { value: prev_state.value + delta });
         }
     }
 "#;
@@ -139,11 +139,11 @@ fn function_param_type_names(compiled: &CompiledContract<'_>, function_name: &st
 }
 
 fn state_array_arg(values: Vec<i64>) -> Expr<'static> {
-    values.into_iter().map(|value| struct_object(vec![("value", Expr::int(value))])).collect::<Vec<_>>().into()
+    values.into_iter().map(|value| struct_object("State", vec![("value", Expr::int(value))])).collect::<Vec<_>>().into()
 }
 
 fn state_arg(value: i64) -> Expr<'static> {
-    struct_object(vec![("value", Expr::int(value))])
+    struct_object("State", vec![("value", Expr::int(value))])
 }
 
 fn cov_decl_nm_leader_sigscript(compiled: &CompiledContract<'_>, next_values: Vec<i64>) -> Vec<u8> {

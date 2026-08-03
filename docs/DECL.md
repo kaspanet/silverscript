@@ -172,7 +172,7 @@ Default singleton transition is strict continuation:
 ```js
 #[covenant.singleton(mode = transition)]
 function bump(State prev_state, int delta) : (State) {
-    return({ value: prev_state.value + delta });
+    return(State { value: prev_state.value + delta });
 }
 ```
 
@@ -342,7 +342,7 @@ contract VaultNM(
 
         for(k, 0, out_count, max_outs) {
             int out_idx = OpCovOutputIdx(cov_id, k);
-            validateOutputState(out_idx, {
+            validateOutputState(out_idx, State {
                 amount: new_states[k].amount,
                 owner: new_states[k].owner,
                 round: new_states[k].round
@@ -374,7 +374,7 @@ contract SeqCommitMirror(byte[32] init_seqcommit) {
     #[covenant(binding = auth, from = 1, to = 1, mode = transition)]
     function roll_seqcommit(State prev_state, byte[32] block_hash) : (State new_state) {
         byte[32] new_seqcommit = OpChainblockSeqCommit(block_hash);
-        return {
+        return State {
             seqcommit: new_seqcommit
         };
     }
@@ -395,7 +395,7 @@ contract SeqCommitMirror(byte[32] init_seqcommit) {
 
     // Generated 1:1 covenant entrypoint
     entry __roll_seqcommit(byte[32] block_hash) {
-        State prev_state = {
+        State prev_state = State {
             seqcommit: seqcommit
         };
 
@@ -403,7 +403,7 @@ contract SeqCommitMirror(byte[32] init_seqcommit) {
 
         require(OpAuthOutputCount(this.activeInputIndex) == 1);
         int out_idx = OpAuthOutputIdx(this.activeInputIndex, 0);
-        validateOutputState(out_idx, {
+        validateOutputState(out_idx, State {
             seqcommit: new_state.seqcommit
         });
     }

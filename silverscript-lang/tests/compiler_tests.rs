@@ -320,7 +320,7 @@ fn supports_struct_contract_params_fields_and_constants() {
                 byte[2] code;
             }
 
-            Pair constant DEFAULT_PAIR = {amount: 7, code: 0x1234};
+            Pair constant DEFAULT_PAIR = Pair {amount: 7, code: 0x1234};
             Pair from_param = init_pair;
             Pair from_constant = DEFAULT_PAIR;
 
@@ -330,7 +330,7 @@ fn supports_struct_contract_params_fields_and_constants() {
         }
     "#;
 
-    let args = vec![struct_object(vec![("amount", Expr::int(11)), ("code", Expr::bytes(vec![0xab, 0xcd]))])];
+    let args = vec![struct_object("Pair", vec![("amount", Expr::int(11)), ("code", Expr::bytes(vec![0xab, 0xcd]))])];
     let compiled = compile_contract(source, &args, CompileOptions::default()).expect("compile succeeds");
     let selector = selector_for(&compiled, "main");
     let result = run_script_with_selector(compiled.script, selector);
@@ -1724,7 +1724,7 @@ fn rejects_fixed_byte_array_size_mismatch_inside_struct_literal() {
 
             entry main() {
                 byte[31] hash = 0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e;
-                Wrapped wrapped = {hash: byte[32](hash)};
+                Wrapped wrapped = Wrapped {hash: byte[32](hash)};
                 require(wrapped.hash.length == 32);
             }
         }
@@ -1777,7 +1777,7 @@ fn build_sig_script_for_covenant_decl_routes_to_hidden_auth_entrypoint() {
     "#;
 
     let compiled = compile_contract(source, &[Expr::int(7)], CompileOptions::default()).expect("compile succeeds");
-    let args = vec![struct_object(vec![("value", Expr::int(8))])];
+    let args = vec![struct_object("State", vec![("value", Expr::int(8))])];
 
     let actual = compiled
         .build_sig_script_for_covenant_decl("step", args.clone(), CovenantDeclCallOptions { is_leader: false })
@@ -1802,7 +1802,7 @@ fn build_sig_script_for_covenant_decl_routes_to_hidden_cov_entrypoints() {
     "#;
 
     let compiled = compile_contract(source, &[Expr::int(7)], CompileOptions::default()).expect("compile succeeds");
-    let leader_args = vec![vec![struct_object(vec![("value", Expr::int(8))])].into()];
+    let leader_args = vec![vec![struct_object("State", vec![("value", Expr::int(8))])].into()];
 
     let leader = compiled
         .build_sig_script_for_covenant_decl("rebalance", leader_args.clone(), CovenantDeclCallOptions { is_leader: true })
@@ -1996,8 +1996,8 @@ fn compiles_struct_sugar_for_locals_calls_and_field_access() {
             }
 
             entry main() {
-                f({a: 0, b: "12345"});
-                S y = {a: 0, b: "22345"};
+                f(S {a: 0, b: "12345"});
+                S y = S {a: 0, b: "22345"};
                 f(y);
             }
         }
@@ -2019,7 +2019,7 @@ fn compiles_struct_return_types_in_inline_calls() {
             }
 
             function make(int a) : (S) {
-                return({a: a, b: "12345"});
+                return(S {a: a, b: "12345"});
             }
 
             function check(S x) {
@@ -2057,7 +2057,7 @@ fn build_sig_script_supports_struct_entrypoint_arguments() {
     "#;
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
-    let arg = struct_object(vec![("a", Expr::int(0)), ("b", Expr::string("12345"))]);
+    let arg = struct_object("S", vec![("a", Expr::int(0)), ("b", Expr::string("12345"))]);
     let sigscript = compiled.build_sig_script("main", vec![arg]).expect("sigscript builds");
 
     let expected = script_builder().add_i64(0).unwrap().add_data_with_push_opcode(b"12345").unwrap().drain();
@@ -2079,7 +2079,7 @@ fn build_sig_script_supports_state_entrypoint_arguments() {
     "#;
 
     let compiled = compile_contract(source, &[5.into(), vec![1u8, 2u8].into()], CompileOptions::default()).expect("compile succeeds");
-    let arg = struct_object(vec![("x", Expr::int(9)), ("y", Expr::bytes(vec![0x34, 0x12]))]);
+    let arg = struct_object("State", vec![("x", Expr::int(9)), ("y", Expr::bytes(vec![0x34, 0x12]))]);
     let sigscript = compiled.build_sig_script("main", vec![arg]).expect("sigscript builds");
 
     let expected = script_builder().add_i64(9).unwrap().add_data_with_push_opcode(&[0x34, 0x12]).unwrap().drain();
@@ -2110,21 +2110,21 @@ fn build_sig_script_supports_sig_array_arguments() {
 }
 
 fn struct_array_arg<'i>(values: Vec<(i64, Vec<u8>)>) -> Expr<'i> {
-    values.into_iter().map(|(a, b)| struct_object(vec![("a", Expr::int(a)), ("b", Expr::bytes(b))])).collect::<Vec<_>>().into()
+    values.into_iter().map(|(a, b)| struct_object("S", vec![("a", Expr::int(a)), ("b", Expr::bytes(b))])).collect::<Vec<_>>().into()
 }
 
 fn state_array_arg<'i>(values: Vec<i64>) -> Expr<'i> {
-    values.into_iter().map(|value| struct_object(vec![("value", Expr::int(value))])).collect::<Vec<_>>().into()
+    values.into_iter().map(|value| struct_object("State", vec![("value", Expr::int(value))])).collect::<Vec<_>>().into()
 }
 
 fn state_array_arg_x<'i>(values: Vec<i64>) -> Expr<'i> {
-    values.into_iter().map(|value| struct_object(vec![("x", Expr::int(value))])).collect::<Vec<_>>().into()
+    values.into_iter().map(|value| struct_object("State", vec![("x", Expr::int(value))])).collect::<Vec<_>>().into()
 }
 
 fn matrix_state_array_arg<'i>(values: Vec<(i64, Vec<u8>)>) -> Expr<'i> {
     values
         .into_iter()
-        .map(|(amount, owner)| struct_object(vec![("amount", Expr::int(amount)), ("owner", Expr::bytes(owner))]))
+        .map(|(amount, owner)| struct_object("State", vec![("amount", Expr::int(amount)), ("owner", Expr::bytes(owner))]))
         .collect::<Vec<_>>()
         .into()
 }
@@ -2165,7 +2165,7 @@ fn build_sig_script_for_covenant_decl_supports_all_covenant_ast_examples() {
 
             #[covenant.singleton(mode = transition)]
             function step(State prev_state, int delta) : (State) {
-                return({ amount: prev_state.amount + delta, owner: prev_state.owner });
+                return(State { amount: prev_state.amount + delta, owner: prev_state.owner });
             }
         }
     "#;
@@ -2208,7 +2208,7 @@ fn build_sig_script_for_covenant_decl_supports_all_covenant_ast_examples() {
 
             #[covenant(binding = auth, from = 1, to = 1, mode = transition)]
             function auth_transition(State prev_state, int fee) : (State) {
-                return({ amount: prev_state.amount - fee, owner: prev_state.owner });
+                return(State { amount: prev_state.amount - fee, owner: prev_state.owner });
             }
 
             #[covenant(from = 1, to = max_outs)]
@@ -2218,12 +2218,12 @@ fn build_sig_script_for_covenant_decl_supports_all_covenant_ast_examples() {
 
             #[covenant(from = 1, to = 1)]
             function inferred_transition(State prev_state, int delta) : (State) {
-                return({ amount: prev_state.amount + delta, owner: prev_state.owner });
+                return(State { amount: prev_state.amount + delta, owner: prev_state.owner });
             }
 
             #[covenant.singleton(mode = transition)]
             function singleton_transition(State prev_state, int delta) : (State) {
-                return({ amount: prev_state.amount + delta, owner: prev_state.owner });
+                return(State { amount: prev_state.amount + delta, owner: prev_state.owner });
             }
 
             #[covenant.singleton(mode = transition, termination = allowed)]
@@ -2320,7 +2320,7 @@ fn build_sig_script_for_covenant_decl_supports_all_covenant_ast_examples() {
 
                     #[covenant.singleton(mode = transition)]
                     function bump(State prev_state, int delta) : (State) {
-                        return({ value: prev_state.value + delta });
+                        return(State { value: prev_state.value + delta });
                     }
                 }
             "#,
@@ -2408,7 +2408,7 @@ fn build_sig_script_for_covenant_decl_supports_all_covenant_ast_examples() {
 
                     #[covenant(binding = auth, from = 1, to = 1, mode = transition)]
                     function step(State prev_state, int fee) : (State) {
-                        return({ amount: prev_state.amount - fee, owner: prev_state.owner });
+                        return(State { amount: prev_state.amount - fee, owner: prev_state.owner });
                     }
                 }
             "#,
@@ -2554,7 +2554,7 @@ fn build_sig_script_for_covenant_decl_supports_all_covenant_ast_examples() {
 
                     #[covenant(from = 1, to = 1)]
                     function step(State prev_state, int delta) : (State) {
-                        return({ amount: prev_state.amount + delta, owner: prev_state.owner });
+                        return(State { amount: prev_state.amount + delta, owner: prev_state.owner });
                     }
                 }
             "#,
@@ -2886,6 +2886,34 @@ fn build_sig_script_enforces_fixed_struct_array_length() {
 }
 
 #[test]
+fn build_sig_script_rejects_structurally_identical_array_element_type() {
+    let source = r#"
+        contract C() {
+            struct S {
+                int a;
+                byte[2] b;
+            }
+
+            struct T {
+                int a;
+                byte[2] b;
+            }
+
+            entry main(S[] values) {
+                require(values.length == 1);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let arg = vec![struct_object("T", vec![("a", Expr::int(7)), ("b", Expr::bytes(vec![0x01, 0x02]))])].into();
+    let err = compiled
+        .build_sig_script("main", vec![arg])
+        .expect_err("a structurally identical struct array must retain its nominal element type");
+    assert!(err.to_string().contains("expected struct 'S', got 'T'"), "unexpected error: {err}");
+}
+
+#[test]
 fn runtime_supports_struct_array_append_value_expression() {
     let source = r#"
         contract C() {
@@ -2895,7 +2923,7 @@ fn runtime_supports_struct_array_append_value_expression() {
             }
 
             entry main(S[] source) {
-                S[] result = source.append({a: 9, b: 0x0304}, {a: 11, b: 0x0506});
+                S[] result = source.append(S {a: 9, b: 0x0304}, S {a: 11, b: 0x0506});
 
                 require(source.length == 1);
                 require(result.length == 3);
@@ -3183,7 +3211,7 @@ fn rejects_struct_literal_with_wrong_field_type_in_function_call() {
             }
 
             entry main() {
-                f({a: "hello", b: "world"});
+                f(S {a: "hello", b: "world"});
             }
         }
     "#;
@@ -3230,7 +3258,7 @@ fn rejects_struct_literal_with_wrong_field_type_in_variable_definition() {
             }
 
             entry main() {
-                S y = {a: "hello", b: "world"};
+                S y = S {a: "hello", b: "world"};
                 require(true);
             }
         }
@@ -3250,7 +3278,7 @@ fn rejects_struct_literal_with_missing_fields() {
             }
 
             entry main() {
-                S y = {a: 0};
+                S y = S {a: 0};
                 require(true);
             }
         }
@@ -3258,6 +3286,51 @@ fn rejects_struct_literal_with_missing_fields() {
 
     let err = compile_contract(source, &[], CompileOptions::default()).expect_err("compile should fail");
     assert!(err.to_string().contains("struct field 'b' must be initialized"));
+}
+
+#[test]
+fn rejects_struct_literal_with_mismatched_explicit_type() {
+    let source = r#"
+        contract C() {
+            struct Left {
+                int value;
+            }
+
+            struct Right {
+                int value;
+            }
+
+            entry main() {
+                Left value = Right {value: 1};
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("mismatched struct literal type should fail");
+    assert!(err.to_string().contains("expected struct 'Left', got 'Right'"), "unexpected error: {err}");
+}
+
+#[test]
+fn rejects_struct_destructuring_with_mismatched_explicit_type() {
+    let source = r#"
+        contract C() {
+            struct Left {
+                int value;
+            }
+
+            struct Right {
+                int value;
+            }
+
+            entry main() {
+                Left value = Left {value: 1};
+                Right {value: int inner} = value;
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("mismatched destructuring type should fail");
+    assert!(err.to_string().contains("type mismatch"), "unexpected error: {err}");
 }
 
 #[test]
@@ -3276,7 +3349,7 @@ fn build_sig_script_rejects_struct_argument_with_wrong_field_type() {
     "#;
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
-    let arg = struct_object(vec![("a", Expr::string("hello")), ("b", Expr::string("world"))]);
+    let arg = struct_object("S", vec![("a", Expr::string("hello")), ("b", Expr::string("world"))]);
     let result = compiled.build_sig_script("main", vec![arg]);
     assert!(result.is_err());
 }
@@ -3291,8 +3364,8 @@ fn compiles_struct_destructuring_and_runs() {
             }
 
             entry main() {
-                S s = {a: 7, b: 0x0102030405};
-                {a: int x, b: byte[5] y} = s;
+                S s = S {a: 7, b: 0x0102030405};
+                S {a: int x, b: byte[5] y} = s;
                 require(x == 7);
                 require(y == 0x0102030405);
             }
@@ -3315,8 +3388,8 @@ fn rejects_struct_destructuring_with_missing_field() {
             }
 
             entry main() {
-                S s = {a: 7, b: 0x0102030405};
-                {a: int x} = s;
+                S s = S {a: 7, b: 0x0102030405};
+                S {a: int x} = s;
                 require(x == 7);
             }
         }
@@ -3336,8 +3409,8 @@ fn rejects_struct_destructuring_with_wrong_field_type() {
             }
 
             entry main() {
-                S s = {a: 7, b: 0x0102030405};
-                {a: string x, b: byte[5] y} = s;
+                S s = S {a: 7, b: 0x0102030405};
+                S {a: string x, b: byte[5] y} = s;
                 require(y == 0x0102030405);
             }
         }
@@ -5470,7 +5543,7 @@ fn compiles_validate_output_state_to_expected_script() {
             byte[2] y = init_y;
 
             entry main() {
-                validateOutputState(0,{x:x+1,y:0x3412});
+                validateOutputState(0, State {x:x+1,y:0x3412});
             }
         }
     "#;
@@ -5622,7 +5695,7 @@ fn runs_validate_output_state() {
             byte[2] y = initY;
 
             entry main() {
-                validateOutputState(0,{x:x+1,y:0x3412});
+                validateOutputState(0, State {x:x+1,y:0x3412});
             }
         }
     "#;
@@ -5652,7 +5725,7 @@ fn runs_validate_output_state_with_state_variable() {
             byte[2] y = initY;
 
             entry main() {
-                State next = {x: x + 1, y: 0x3412};
+                State next = State {x: x + 1, y: 0x3412};
                 validateOutputState(0, next);
             }
         }
@@ -5726,7 +5799,7 @@ fn run_validate_output_state_with_template_case(
             byte[2] y = initY;
 
             entry routeToA() {{
-                State s = {{muxHash: muxHash, aHash: aHash, x: x + 1, y: 0x3412}};
+                State s = State {{muxHash: muxHash, aHash: aHash, x: x + 1, y: 0x3412}};
                 validateOutputStateWithTemplate(
                     0,
                     s,
@@ -5806,7 +5879,7 @@ fn runs_validate_output_state_with_template() {
             byte[2] y = initY;
 
             entry routeToA() {{
-                State s = {{muxHash: muxHash, aHash: aHash, x: x + 1, y: 0x3412}};
+                State s = State {{muxHash: muxHash, aHash: aHash, x: x + 1, y: 0x3412}};
                 validateOutputStateWithTemplate(
                     0,
                     s,
@@ -5880,17 +5953,16 @@ fn template_hash_matches_all_template_builtins() {
                 );
                 require(prev.x == 7);
 
-                RemoteState next = {{x: 8}};
                 validateOutputStateWithTemplate(
                     0,
-                    next,
+                    RemoteState {{x: 8}},
                     templatePrefix,
                     templateSuffix,
                     expectedTemplateHash
                 );
                 validateOutputStateWithInputTemplate(
                     0,
-                    next,
+                    RemoteState {{x: 8}},
                     1,
                     {},
                     {},
@@ -5927,7 +5999,7 @@ fn template_hash_matches_all_template_builtins() {
             }}
 
             entry main() {{
-                RemoteState next = {{x: 8}};
+                RemoteState next = RemoteState {{x: 8}};
                 validateOutputStateWithInputTemplate(
                     0,
                     next,
@@ -5966,7 +6038,7 @@ fn validate_output_state_with_input_template_requires_fixed_hash_type() {
             }
 
             entry main() {
-                RemoteState next = {x: 8};
+                RemoteState next = RemoteState {x: 8};
                 validateOutputStateWithInputTemplate(0, next, 1, 2, 3, true);
             }
         }
@@ -6028,7 +6100,7 @@ fn runs_validate_output_state_with_template_using_passed_struct_layout() {
             byte[2] y = initY;
 
             entry routeToA(byte[32] targetHash) {{
-                C next = {{
+                C next = C {{
                     y: 0x3412,
                     x: x + 1,
                     targetHash: targetHash
@@ -6758,7 +6830,8 @@ fn validate_output_state_accepts_state_under_selector_dispatch() {
     "#;
 
     let input_compiled = compile_contract(source, &[5.into()], CompileOptions::default()).expect("compile succeeds");
-    let sigscript = input_compiled.build_sig_script("main", vec![struct_object(vec![("x", Expr::int(6))])]).expect("sigscript builds");
+    let sigscript =
+        input_compiled.build_sig_script("main", vec![struct_object("State", vec![("x", Expr::int(6))])]).expect("sigscript builds");
     let sigscript = pay_to_script_hash_signature_script(input_compiled.script.clone(), sigscript).unwrap();
     let output_compiled = compile_contract(source, &[6.into()], CompileOptions::default()).expect("compile succeeds");
     let input = test_input(0, sigscript);
@@ -6796,11 +6869,10 @@ fn validate_output_state_accepts_three_field_state_under_selector_dispatch() {
     let sigscript = input_compiled
         .build_sig_script(
             "main",
-            vec![struct_object(vec![
-                ("amount", Expr::int(6)),
-                ("code", Expr::bytes(vec![0xabu8, 0xcdu8])),
-                ("owner", Expr::bytes(vec![2u8; 32])),
-            ])],
+            vec![struct_object(
+                "State",
+                vec![("amount", Expr::int(6)), ("code", Expr::bytes(vec![0xabu8, 0xcdu8])), ("owner", Expr::bytes(vec![2u8; 32]))],
+            )],
         )
         .expect("sigscript builds");
     let sigscript = pay_to_script_hash_signature_script(input_compiled.script.clone(), sigscript).unwrap();
@@ -6828,7 +6900,7 @@ fn debug_validate_output_state_accepts_current_byte32_fields() {
             byte[2] y = initY;
 
             entry main() {
-                validateOutputState(0, {muxHash: muxHash, aHash: aHash, x: x + 1, y: 0x3412});
+                validateOutputState(0, State {muxHash: muxHash, aHash: aHash, x: x + 1, y: 0x3412});
             }
         }
     "#;
@@ -6876,7 +6948,7 @@ fn validate_output_state_accepts_pubkey_field_under_selector_dispatch() {
 
     let input_compiled = compile_contract(source, &[vec![1u8; 32].into()], CompileOptions::default()).expect("compile succeeds");
     let sigscript = input_compiled
-        .build_sig_script("main", vec![struct_object(vec![("owner", Expr::bytes(vec![2u8; 32]))])])
+        .build_sig_script("main", vec![struct_object("State", vec![("owner", Expr::bytes(vec![2u8; 32]))])])
         .expect("sigscript builds");
     let sigscript = pay_to_script_hash_signature_script(input_compiled.script.clone(), sigscript).unwrap();
     let output_compiled = compile_contract(source, &[vec![2u8; 32].into()], CompileOptions::default()).expect("compile succeeds");
@@ -6904,7 +6976,7 @@ fn compiles_state_variable_and_internal_function_argument() {
             }
 
             entry main() {
-                State next = {x: x + 1, y: 0x3412};
+                State next = State {x: x + 1, y: 0x3412};
                 check(next);
             }
         }
@@ -6926,7 +6998,7 @@ fn runs_state_variable_and_internal_function_argument() {
             }
 
             entry main() {
-                State next = {x: x + 1, y: 0x3412};
+                State next = State {x: x + 1, y: 0x3412};
                 check(next);
             }
         }
@@ -6946,13 +7018,13 @@ fn plain_state_return_accepts_local_fixed_byte_field_from_local_identifier() {
 
             function step(State prev_state) : (State) {
                 byte[2] next_data = prev_state.data;
-                return({
+                return(State {
                     data: next_data
                 });
             }
 
             entry main() {
-                State prev = {data: data};
+                State prev = State {data: data};
                 (State next) = step(prev);
                 require(next.data == data);
             }
@@ -6991,7 +7063,7 @@ fn compiles_read_input_state_to_expected_script() {
             byte[2] y = initY;
 
             entry main() {
-                {x: int in1_x, y: byte[2] in1_y} = readInputState(1);
+                State {x: int in1_x, y: byte[2] in1_y} = readInputState(1);
                 require(in1_x > 7);
                 require(in1_y == 0x3412);
             }
@@ -7155,7 +7227,7 @@ fn runs_read_input_state() {
             byte[2] y = initY;
 
             entry main() {
-                {x: int in1_x, y: byte[2] in1_y} = readInputState(1);
+                State {x: int in1_x, y: byte[2] in1_y} = readInputState(1);
                 require(in1_x > 7);
                 require(in1_y == 0x3412);
             }
@@ -7374,7 +7446,7 @@ fn typed_state_reader_disambiguates_identical_custom_struct_layouts() {
 }
 
 #[test]
-fn untyped_state_reader_rejects_identical_custom_struct_layouts() {
+fn typed_state_reader_destructuring_disambiguates_identical_custom_struct_layouts() {
     let source = r#"
         contract Reader() {
             struct AState {
@@ -7388,7 +7460,7 @@ fn untyped_state_reader_rejects_identical_custom_struct_layouts() {
             int tag = 0;
 
             entry main() {
-                {n: int remoteN} = readInputStateWithTemplate(
+                AState {n: int remoteN} = readInputStateWithTemplate(
                     1,
                     0,
                     0,
@@ -7399,9 +7471,7 @@ fn untyped_state_reader_rejects_identical_custom_struct_layouts() {
         }
     "#;
 
-    let err = compile_contract(source, &[], CompileOptions::default())
-        .expect_err("untyped destructuring cannot select between identical layouts");
-    assert!(err.to_string().contains("bindings match multiple struct layouts"), "unexpected ambiguity error: {err}");
+    compile_contract(source, &[], CompileOptions::default()).expect("the explicit pattern type should disambiguate identical layouts");
 }
 
 #[test]
@@ -7438,7 +7508,7 @@ fn runs_read_input_state_with_template_destructuring() {
             }}
 
             entry main() {{
-                {{y: byte[2] inY, x: int inX, targetHash: byte[32] inHash}} = readInputStateWithTemplate(
+                RemoteState {{y: byte[2] inY, x: int inX, targetHash: byte[32] inHash}} = readInputStateWithTemplate(
                     1,
                     {},
                     {},
@@ -7689,7 +7759,7 @@ fn rejects_validate_output_state_with_incorrect_state_variable_type() {
             byte[2] y = initY;
 
             entry main() {
-                OtherState next = {z: 7};
+                OtherState next = OtherState {z: 7};
                 validateOutputState(0, next);
             }
         }
@@ -7710,10 +7780,10 @@ fn validate_output_state_lowers_nested_state_literal_in_state_field_order() {
             }
 
             int a = initA;
-            S2 b = {c: initC, d: initD};
+            S2 b = S2 {c: initC, d: initD};
 
             entry main() {
-                validateOutputState(0, {b: {d: 8, c: 7}, a: 6});
+                validateOutputState(0, State {b: S2 {d: 8, c: 7}, a: 6});
             }
         }
     "#;
@@ -7743,10 +7813,10 @@ fn validate_output_state_with_state_identifier() {
             }
 
             int a = initA;
-            S2 b = {c: initC, d: initD};
+            S2 b = S2 {c: initC, d: initD};
 
             entry main() {
-                State next = {b: {d: 8, c: 7}, a: 6};
+                State next = State {b: S2 {d: 8, c: 7}, a: 6};
                 validateOutputState(0, next);
             }
         }
@@ -7781,7 +7851,7 @@ fn validate_output_state_with_template_uses_passed_struct_layout_not_local_state
             byte[2] y = initY;
 
             entry route(byte[32] targetHash) {
-                C next = {
+                C next = C {
                     y: 0x3412,
                     x: x + 1,
                     targetHash: targetHash
@@ -7828,6 +7898,28 @@ fn rejects_read_input_state_with_incorrect_target_type() {
 }
 
 #[test]
+fn rejects_read_input_state_destructuring_with_incorrect_target_type() {
+    let source = r#"
+        contract C(int initX) {
+            struct OtherState {
+                int x;
+            }
+
+            int x = initX;
+
+            entry main() {
+                OtherState {x: int inputX} = readInputState(0);
+                require(inputX > 0);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[5.into()], CompileOptions::default())
+        .expect_err("readInputState destructured as the wrong struct type should be rejected");
+    assert!(err.to_string().contains("type mismatch"), "unexpected error: {err}");
+}
+
+#[test]
 fn fails_validate_output_state_with_wrong_output_index() {
     let source = r#"
         contract C(int initX, byte[2] initY) {
@@ -7835,7 +7927,7 @@ fn fails_validate_output_state_with_wrong_output_index() {
             byte[2] y = initY;
 
             entry main() {
-                validateOutputState(0,{x:x+1,y:0x3412});
+                validateOutputState(0, State {x:x+1,y:0x3412});
             }
         }
     "#;
@@ -7868,7 +7960,7 @@ fn fails_validate_output_state_with_mismatched_next_state_fields() {
             byte[2] y = initY;
 
             entry main() {
-                validateOutputState(0,{x:x+1,y:0x3412});
+                validateOutputState(0, State {x:x+1,y:0x3412});
             }
         }
     "#;
@@ -7898,7 +7990,7 @@ fn rejects_validate_output_state_with_malformed_state_object() {
             byte[2] y = initY;
 
             entry main() {
-                validateOutputState(0,{x:x+1});
+                validateOutputState(0, State {x:x+1});
             }
         }
     "#;
@@ -7916,7 +8008,7 @@ fn rejects_validate_output_state_with_duplicate_state_field() {
             byte[2] y = initY;
 
             entry main() {
-                validateOutputState(0,{x:x+1,y:0x3412,x:x+2});
+                validateOutputState(0, State {x:x+1,y:0x3412,x:x+2});
             }
         }
     "#;
@@ -7934,7 +8026,7 @@ fn rejects_validate_output_state_with_unknown_state_field() {
             byte[2] y = initY;
 
             entry main() {
-                validateOutputState(0,{x:x+1,y:0x3412,z:1});
+                validateOutputState(0, State {x:x+1,y:0x3412,z:1});
             }
         }
     "#;
@@ -10843,8 +10935,8 @@ fn ternary_lowering_initializes_generated_results_for_supported_types() {
                 sig sig_result = select_then ? initial_sig : initial_sig;
                 datasig datasig_result = select_then ? initial_datasig : initial_datasig;
                 Pair struct_result = select_then
-                    ? {number: number, flag: true}
-                    : {number: 1, flag: false};
+                    ? Pair {number: number, flag: true}
+                    : Pair {number: 1, flag: false};
                 require(int_result >= 0);
                 require(bool_result || !bool_result);
                 require(byte_result >= 0);
@@ -11547,22 +11639,22 @@ fn runs_split_and_slice_on_struct_array() {
 
             entry main() {
                 S[] values = [
-                    {number: 10, tag: 0x0102},
-                    {number: 20, tag: 0x0304},
-                    {number: 30, tag: 0x0506}
+                    S {number: 10, tag: 0x0102},
+                    S {number: 20, tag: 0x0304},
+                    S {number: 30, tag: 0x0506}
                 ];
                 S[] left = values.split(1).0;
                 S[] right = values.split(1).1;
                 S[] part = values.slice(1, 3);
 
-                require(left == [{number: 10, tag: 0x0102}]);
+                require(left == [S {number: 10, tag: 0x0102}]);
                 require(right == [
-                    {number: 20, tag: 0x0304},
-                    {number: 30, tag: 0x0506}
+                    S {number: 20, tag: 0x0304},
+                    S {number: 30, tag: 0x0506}
                 ]);
                 require(part == [
-                    {number: 20, tag: 0x0304},
-                    {number: 30, tag: 0x0506}
+                    S {number: 20, tag: 0x0304},
+                    S {number: 30, tag: 0x0506}
                 ]);
             }
         }
@@ -11591,27 +11683,27 @@ fn runs_struct_array_equality_and_inequality_comparisons() {
 
             entry main() {
                 Item[] values = [
-                    {id: 1, tag: 0x0102, details: {active: true, score: 10}},
-                    {id: 2, tag: 0x0304, details: {active: false, score: 20}}
+                    Item {id: 1, tag: 0x0102, details: Details {active: true, score: 10}},
+                    Item {id: 2, tag: 0x0304, details: Details {active: false, score: 20}}
                 ];
                 Item[] same = [
-                    {id: 1, tag: 0x0102, details: {active: true, score: 10}},
-                    {id: 2, tag: 0x0304, details: {active: false, score: 20}}
+                    Item {id: 1, tag: 0x0102, details: Details {active: true, score: 10}},
+                    Item {id: 2, tag: 0x0304, details: Details {active: false, score: 20}}
                 ];
                 Item[] differentId = [
-                    {id: 1, tag: 0x0102, details: {active: true, score: 10}},
-                    {id: 3, tag: 0x0304, details: {active: false, score: 20}}
+                    Item {id: 1, tag: 0x0102, details: Details {active: true, score: 10}},
+                    Item {id: 3, tag: 0x0304, details: Details {active: false, score: 20}}
                 ];
                 Item[] differentTag = [
-                    {id: 1, tag: 0x0102, details: {active: true, score: 10}},
-                    {id: 2, tag: 0x0506, details: {active: false, score: 20}}
+                    Item {id: 1, tag: 0x0102, details: Details {active: true, score: 10}},
+                    Item {id: 2, tag: 0x0506, details: Details {active: false, score: 20}}
                 ];
                 Item[] differentNestedField = [
-                    {id: 1, tag: 0x0102, details: {active: true, score: 10}},
-                    {id: 2, tag: 0x0304, details: {active: true, score: 20}}
+                    Item {id: 1, tag: 0x0102, details: Details {active: true, score: 10}},
+                    Item {id: 2, tag: 0x0304, details: Details {active: true, score: 20}}
                 ];
                 Item[] shorter = [
-                    {id: 1, tag: 0x0102, details: {active: true, score: 10}}
+                    Item {id: 1, tag: 0x0102, details: Details {active: true, score: 10}}
                 ];
                 Item[] empty;
 
@@ -11689,7 +11781,7 @@ fn runs_standalone_block_state_binding_shadowing() {
             entry main() {
                 int x = 3;
                 {
-                    {value: int x} = readInputState(this.activeInputIndex);
+                    State {value: int x} = readInputState(this.activeInputIndex);
                     require(x == 7);
                 }
                 require(x == 3);
@@ -11721,9 +11813,9 @@ fn runs_standalone_block_struct_destructure_binding_shadowing() {
 
             entry main() {
                 int x = 3;
-                S s = {value: 1};
+                S s = S {value: 1};
                 {
-                    {value: int x} = s;
+                    S {value: int x} = s;
                     require(x == 1);
                 }
                 require(x == 3);
@@ -11966,7 +12058,7 @@ fn struct_return_field_is_stored_once_and_reused() {
             }
 
             function f(int x) : (S) {
-                return({
+                return(S {
                     a: x + 1,
                     b: x * x,
                 });
@@ -12047,7 +12139,7 @@ fn compile_time_if_branch_stores_struct_fields_once_and_reuses_them() {
 
             entry main(int x) {
                 if (1 < 2) {
-                    S s = { a: x + 1, b: x * x };
+                    S s = S { a: x + 1, b: x * x };
                     require(s.a < 10);
                     require(s.b < 20);
                     require(s.a > 1);
@@ -12096,8 +12188,8 @@ fn partially_reassigned_struct_field_does_not_recompute_unchanged_fields() {
             }
 
             entry main(int x) {
-                S s = {a: x + 1, b: x * x};
-                s = {a: s.a + 1, b: s.b};
+                S s = S {a: x + 1, b: x * x};
+                s = S {a: s.a + 1, b: s.b};
                 require(s.a > 0);
                 require(s.b > 0);
             }
@@ -12170,11 +12262,11 @@ fn struct_if_reassignment_preserves_types_after_merge() {
             }
 
             entry main(int flag, int expected_a, int expected_b) {
-                S s = {a: 2, b: 3};
+                S s = S {a: 2, b: 3};
                 if (flag > 0) {
-                    s = {a: s.a + 1, b: s.b + 1};
+                    s = S {a: s.a + 1, b: s.b + 1};
                 } else {
-                    s = {a: s.a + 2, b: s.b + 2};
+                    s = S {a: s.a + 2, b: s.b + 2};
                 }
                 S t = s;
                 verify_pair(t, expected_a, expected_b);
@@ -12202,11 +12294,11 @@ fn partial_struct_if_reassignment_preserves_types_after_merge() {
             }
 
             entry main(int flag, int expected_a, int expected_b) {
-                S s = {a: 2, b: 3};
+                S s = S {a: 2, b: 3};
                 if (flag > 0) {
-                    s = {a: s.a + 1, b: s.b};
+                    s = S {a: s.a + 1, b: s.b};
                 } else {
-                    s = {a: s.a, b: s.b + 2};
+                    s = S {a: s.a, b: s.b + 2};
                 }
                 S t = s;
                 verify_pair(t, expected_a, expected_b);
@@ -12229,13 +12321,13 @@ fn struct_if_branch_reassignment_drops_hidden_shadow_bindings() {
             }
 
             entry main(int flag, int x, int y, int expected_a, int expected_b) {
-                S s = {a: x, b: y};
+                S s = S {a: x, b: y};
                 if (flag > 0) {
-                    S t = {a: s.a + 1, b: s.b + 2};
-                    s = {a: t.a + y, b: t.b + x};
+                    S t = S {a: s.a + 1, b: s.b + 2};
+                    s = S {a: t.a + y, b: t.b + x};
                 } else {
-                    S t = {a: s.a + x, b: s.b + y};
-                    s = {a: t.a + 1, b: t.b + 1};
+                    S t = S {a: s.a + x, b: s.b + y};
+                    s = S {a: t.a + 1, b: t.b + 1};
                 }
                 require(s.a == expected_a);
                 require(s.b == expected_b);
@@ -12268,13 +12360,13 @@ fn partial_struct_if_branch_reassignment_drops_hidden_shadow_bindings() {
             }
 
             entry main(int flag, int x, int y, int expected_a, int expected_b) {
-                S s = {a: x, b: y};
+                S s = S {a: x, b: y};
                 if (flag > 0) {
-                    S t = {a: s.a + 1, b: s.b};
-                    s = {a: t.a + y, b: s.b};
+                    S t = S {a: s.a + 1, b: s.b};
+                    s = S {a: t.a + y, b: s.b};
                 } else {
-                    S t = {a: s.a, b: s.b + y};
-                    s = {a: s.a, b: t.b + x};
+                    S t = S {a: s.a, b: s.b + y};
+                    s = S {a: s.a, b: t.b + x};
                 }
                 require(s.a == expected_a);
                 require(s.b == expected_b);
@@ -12343,10 +12435,10 @@ contract StructCounterLoop(int BOUND) {
     }
 
     entry main() {
-        S s = {a: 0, b: 0};
+        S s = S {a: 0, b: 0};
         for (i, 0, BOUND, BOUND) {
             if (true) {
-                s = {a: s.a + 1, b: s.b + 1};
+                s = S {a: s.a + 1, b: s.b + 1};
             }
         }
         require(s.a >= 0);
@@ -12383,13 +12475,13 @@ fn validate_output_state_preserves_nested_struct_field_paths() {
                 int id;
             }
 
-            Left left = {id: initLeft};
-            Right right = {id: initRight};
+            Left left = Left {id: initLeft};
+            Right right = Right {id: initRight};
 
             entry route() {
-                State next = {
-                    left: {id: 3},
-                    right: {id: 4}
+                State next = State {
+                    left: Left {id: 3},
+                    right: Right {id: 4}
                 };
                 validateOutputState(0, next);
             }
@@ -12424,8 +12516,8 @@ fn validate_output_state_with_template_preserves_nested_struct_field_paths() {
                 int id;
             }}
 
-            Left left = {{id: initLeft}};
-            Right right = {{id: initRight}};
+            Left left = Left {{id: initLeft}};
+            Right right = Right {{id: initRight}};
             byte[32] targetHash = initTargetHash;
 
             entry noop() {{
@@ -12467,9 +12559,9 @@ fn validate_output_state_with_template_preserves_nested_struct_field_paths() {
             }}
 
             entry route(byte[32] targetHash) {{
-                Pair next = {{
-                    left: {{id: 1}},
-                    right: {{id: 2}},
+                Pair next = Pair {{
+                    left: Left {{id: 1}},
+                    right: Right {{id: 2}},
                     targetHash: targetHash
                 }};
                 validateOutputStateWithTemplate(

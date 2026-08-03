@@ -121,6 +121,7 @@ export default grammar({
       choice(
         $.variable_definition,
         $.state_function_call_assignment,
+        $.struct_destructure_assignment,
         $.function_call_assignment,
         $.tuple_assignment,
         $.call_statement,
@@ -166,7 +167,10 @@ export default grammar({
       seq("(", commaSep($.typed_binding), ")", "=", $.function_call, ";"),
 
     state_function_call_assignment: ($) =>
-      seq("{", commaSep($.state_typed_binding), "}", "=", $.function_call, ";"),
+      prec(1, seq($.identifier, "{", commaSep($.state_typed_binding), "}", "=", $.function_call, ";")),
+
+    struct_destructure_assignment: ($) =>
+      seq($.identifier, "{", commaSep($.state_typed_binding), "}", "=", $.expression, ";"),
 
     typed_binding: ($) => seq($.type_name, $.identifier),
 
@@ -334,7 +338,7 @@ export default grammar({
         $.cast,
         $.function_call,
         $.instantiation,
-        $.state_object,
+        $.struct_literal,
         $.introspection,
         $.array,
         $.nullary_op,
@@ -363,7 +367,8 @@ export default grammar({
 
     instantiation: ($) => seq("new", $.identifier, $.expression_list),
 
-    state_object: ($) => seq("{", optional(commaSep($.state_entry)), "}"),
+    struct_literal: ($) =>
+      seq($.identifier, "{", optional(commaSep($.state_entry)), "}"),
 
     state_entry: ($) => seq($.identifier, ":", $.expression),
 

@@ -4,7 +4,7 @@ contract Matrix(int init_amount, byte[32] init_owner) {
 
     #[covenant(from = 1, to = 1)]
     function step(State prev_state, int delta) : (State) {
-        return({ amount: prev_state.amount + delta, owner: prev_state.owner });
+        return(State { amount: prev_state.amount + delta, owner: prev_state.owner });
     }
 }
 
@@ -15,13 +15,13 @@ contract Matrix(int init_amount, byte[32] init_owner) {
     byte[32] owner = init_owner;
 
     function covenant_policy_step(State prev_state, int delta) : (State) {
-        return({ amount: prev_state.amount + delta, owner: prev_state.owner });
+        return(State { amount: prev_state.amount + delta, owner: prev_state.owner });
     }
 
     entry step(int delta) {
         int auth_out_count = OpAuthOutputCount(this.activeInputIndex);
 
-        State prev_state = { amount: amount, owner: owner };
+        State prev_state = State { amount: amount, owner: owner };
         (State cov_new_state) = covenant_policy_step(prev_state, delta);
         require(auth_out_count == 1);
 

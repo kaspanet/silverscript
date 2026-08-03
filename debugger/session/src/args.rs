@@ -148,6 +148,7 @@ fn parse_scalar_arg(type_ref: &TypeRef, raw: &str) -> Result<Expr<'static>, Stri
 
 fn parse_struct_arg(
     entries: &serde_json::Map<String, Value>,
+    struct_name: &str,
     declared_fields: &[StructShapeField],
     shapes: &StructShapeRegistry,
 ) -> Result<Expr<'static>, String> {
@@ -168,7 +169,10 @@ fn parse_struct_arg(
         return Err(format!("unknown struct field '{}'", extra));
     }
 
-    Ok(Expr::new(ExprKind::StructLiteral(out), span::Span::default()))
+    Ok(Expr::new(
+        ExprKind::StructLiteral { name: struct_name.to_string(), fields: out, name_span: span::Span::default() },
+        span::Span::default(),
+    ))
 }
 
 fn parse_array_arg(values: &[Value], type_ref: &TypeRef, shapes: &StructShapeRegistry) -> Result<Expr<'static>, String> {
@@ -203,7 +207,7 @@ fn parse_json_value_for_type(value: &Value, type_ref: &TypeRef, shapes: &StructS
         let Value::Object(entries) = value else {
             return Err(format!("unsupported object literal format for '{}'", type_ref.type_name()));
         };
-        return parse_struct_arg(entries, fields, shapes);
+        return parse_struct_arg(entries, &type_ref.type_name(), fields, shapes);
     }
 
     match value {
@@ -313,7 +317,7 @@ pub fn parse_state_value(contract: &ContractAst<'_>, raw_state: &str) -> Result<
         .iter()
         .map(|field| StructShapeField { name: field.name.clone(), type_ref: field.type_ref.clone() })
         .collect::<Vec<_>>();
-    parse_struct_arg(&entries, &declared_fields, &shapes)
+    parse_struct_arg(&entries, "State", &declared_fields, &shapes)
 }
 
 #[cfg(test)]
@@ -352,9 +356,10 @@ mod tests {
         let contract = debug_shapes_contract();
         let args = parse_call_args(&contract, "inspect_state", &[r#"{"amount":5,"active":true,"tag":"0xaa"}"#.to_string()])
             .expect("parse State arg");
-        let ExprKind::StructLiteral(fields) = &args[0].kind else {
+        let ExprKind::StructLiteral { name, fields, .. } = &args[0].kind else {
             panic!("expected state object");
         };
+        assert_eq!(name, "State");
         assert_eq!(fields.len(), 3);
         let tag = fields.iter().find(|field| field.name == "tag").expect("tag field");
         assert!(matches!(tag.expr.kind, ExprKind::Array(ref values) if values.len() == 1));
@@ -373,7 +378,7 @@ mod tests {
             panic!("expected array expr");
         };
         assert_eq!(values.len(), 2);
-        assert!(matches!(values[0].kind, ExprKind::StructLiteral(_)));
+        assert!(matches!(values[0].kind, ExprKind::StructLiteral { ref name, .. } if name == "State"));
     }
 
     #[test]
@@ -381,9 +386,10 @@ mod tests {
         let contract = debug_shapes_contract();
         let args = parse_ctor_args(&contract, &[r#"{"amount":7,"tag":"0xaa"}"#.to_string()]).expect("parse ctor args");
         assert_eq!(args.len(), 1);
-        let ExprKind::StructLiteral(fields) = &args[0].kind else {
+        let ExprKind::StructLiteral { name, fields, .. } = &args[0].kind else {
             panic!("expected struct object");
         };
+        assert_eq!(name, "Pair");
         let tag = fields.iter().find(|field| field.name == "tag").expect("tag field");
         assert!(matches!(tag.expr.kind, ExprKind::Array(ref values) if values.len() == 1));
     }
@@ -431,9 +437,10 @@ mod tests {
     fn parses_explicit_state_value() {
         let contract = debug_shapes_contract();
         let value = parse_state_value(&contract, r#"{"amount":9,"active":false,"tag":"0xcc"}"#).expect("parse State value");
-        let ExprKind::StructLiteral(fields) = value.kind else {
+        let ExprKind::StructLiteral { name, fields, .. } = value.kind else {
             panic!("expected state object");
         };
+        assert_eq!(name, "State");
         assert_eq!(fields.len(), 3);
         assert!(fields.iter().any(|field| field.name == "amount"));
         assert!(fields.iter().any(|field| field.name == "active"));

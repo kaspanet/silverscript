@@ -223,10 +223,10 @@ fn validate_statement_shapes<'i>(
                 validate_tuple_assignment_statement_shape(&mut ctx, left_type_ref, left_name, right_type_ref, right_name, expr)?
             }
             Statement::StateFunctionCallAssign { target_struct, bindings, name, args, .. } => {
-                validate_state_function_call_assign_statement_shape(&mut ctx, target_struct.as_deref(), bindings, name, args)?
+                validate_state_function_call_assign_statement_shape(&mut ctx, target_struct, bindings, name, args)?
             }
-            Statement::StructDestructure { bindings, expr, .. } => {
-                validate_struct_destructure_statement_shape(&mut ctx, bindings, expr)?
+            Statement::StructDestructure { struct_name, bindings, expr, .. } => {
+                validate_struct_destructure_statement_shape(&mut ctx, struct_name, bindings, expr)?
             }
             Statement::FunctionCall { name, args, .. } => validate_function_call_statement_shape(&mut ctx, name, args)?,
             Statement::FunctionCallAssign { bindings, name, args, .. } => {
@@ -333,27 +333,14 @@ fn validate_tuple_assignment_statement_shape<'i>(
 
 fn validate_state_function_call_assign_statement_shape<'i>(
     ctx: &mut ValidateStatementShapesContext<'_, 'i>,
-    target_struct: Option<&str>,
+    target_struct: &str,
     bindings: &[StructBindingAst<'i>],
     name: &str,
     args: &[Expr<'i>],
 ) -> Result<(), CompilerError> {
-    match name {
-        "readInputState" => {
-            ctx.check_call(name, args, None)?;
-        }
-        "readInputStateWithTemplate" => {
-            let struct_name = struct_name_for_state_bindings(target_struct, bindings, ctx.structs, ctx.constants)?;
-            let expected = TypeRef { base: TypeBase::Custom(struct_name), array_dims: Vec::new() };
-            ctx.check_call(name, args, Some(&expected))?;
-        }
-        _ => {
-            return Err(CompilerError::Unsupported(format!(
-                "state destructuring assignment is only supported for readInputState()/readInputStateWithTemplate(), got '{name}()'"
-            )));
-        }
-    }
-    validate_state_function_call_assign(target_struct, bindings, name, args, ctx.structs, ctx.constants, ctx.contract_fields)?;
+    let expected = TypeRef { base: TypeBase::Custom(target_struct.to_string()), array_dims: Vec::new() };
+    ctx.check_call(name, args, Some(&expected))?;
+    validate_state_function_call_assign(target_struct, bindings, name, ctx.structs, ctx.constants, ctx.contract_fields)?;
     for binding in bindings {
         ensure_array_elements_have_known_size(&binding.type_ref, ctx.structs, ctx.constants, &binding.type_ref.type_name())?;
         insert_type_binding(ctx.types, &binding.name, &binding.type_ref);
@@ -363,12 +350,20 @@ fn validate_state_function_call_assign_statement_shape<'i>(
 
 fn validate_struct_destructure_statement_shape<'i>(
     ctx: &mut ValidateStatementShapesContext<'_, 'i>,
+    expected_struct_name: &str,
     bindings: &[StructBindingAst<'i>],
     expr: &Expr<'i>,
 ) -> Result<(), CompilerError> {
-    let expr_type = ctx.check_expr(expr, None)?;
+    let expected_type = TypeRef { base: TypeBase::Custom(expected_struct_name.to_string()), array_dims: Vec::new() };
+    let expr_type = ctx.check_expr(expr, Some(&expected_type))?;
     let direct_read_input_state = matches!(&expr.kind, ExprKind::Call { name, .. } if name == "readInputState");
-    validate_struct_destructure_bindings(bindings, &expr_type, direct_read_input_state, ctx.structs, ctx.constants)?;
+    validate_struct_destructure_bindings(
+        bindings,
+        &expr_type,
+        direct_read_input_state.then_some("readInputState"),
+        ctx.structs,
+        ctx.constants,
+    )?;
     for binding in bindings {
         ensure_array_elements_have_known_size(&binding.type_ref, ctx.structs, ctx.constants, &binding.type_ref.type_name())?;
         insert_type_binding(ctx.types, &binding.name, &binding.type_ref);
@@ -400,7 +395,7 @@ fn validate_output_state_call<'i>(
             let state_type = TypeRef { base: TypeBase::Custom(STATE_TYPE_NAME.to_string()), array_dims: Vec::new() };
             ctx.check_expr(output_index, Some(&int_type))?;
             ctx.check_expr(state, Some(&state_type)).map_err(|err| {
-                if matches!(state.kind, ExprKind::StructLiteral(_)) {
+                if matches!(state.kind, ExprKind::StructLiteral { .. }) {
                     err
                 } else {
                     CompilerError::Unsupported("validateOutputState requires a State value".to_string())
@@ -587,7 +582,7 @@ fn validate_for_statement_shape<'i>(
 fn validate_struct_destructure_bindings<'i>(
     bindings: &[StructBindingAst<'i>],
     expr_type: &TypeRef,
-    direct_read_input_state: bool,
+    state_reader: Option<&str>,
     structs: &StructRegistry,
     constants: &HashMap<String, Expr<'i>>,
 ) -> Result<(), CompilerError> {
@@ -618,130 +613,29 @@ fn validate_struct_destructure_bindings<'i>(
         if !type_refs_equal(&binding.type_ref, &field.type_ref, constants) {
             return Err(CompilerError::Unsupported(format!("struct field '{}' expects {}", field.name, field.type_ref.type_name())));
         }
-        if direct_read_input_state && is_struct(&binding.type_ref, structs) {
-            return Err(CompilerError::Unsupported("readInputState does not support nested struct fields".to_string()));
+        if let Some(state_reader) = state_reader
+            && is_struct(&binding.type_ref, structs)
+        {
+            return Err(CompilerError::Unsupported(format!("{state_reader} does not support nested struct fields")));
         }
     }
 
     Ok(())
 }
 
-// TODO: Remove this special case and destructure the State struct like any other struct.
 fn validate_state_function_call_assign<'i>(
-    target_struct: Option<&str>,
+    target_struct: &str,
     bindings: &[StructBindingAst<'i>],
     name: &str,
-    args: &[Expr<'i>],
     structs: &StructRegistry,
     constants: &HashMap<String, Expr<'i>>,
     contract_fields: &[ContractFieldAst<'i>],
 ) -> Result<(), CompilerError> {
-    match name {
-        "readInputState" => {
-            if args.len() != 1 {
-                return Err(CompilerError::Unsupported("readInputState(input_idx) expects 1 argument".to_string()));
-            }
-            if contract_fields.is_empty() {
-                return Err(CompilerError::Unsupported("readInputState requires contract fields".to_string()));
-            }
-            if bindings.len() != contract_fields.len() {
-                return Err(CompilerError::Unsupported(
-                    "readInputState bindings must include all contract fields exactly once".to_string(),
-                ));
-            }
-            for field in contract_fields {
-                let Some(binding) = bindings.iter().find(|binding| binding.field_name == field.name) else {
-                    return Err(CompilerError::Unsupported(
-                        "readInputState bindings must include all contract fields exactly once".to_string(),
-                    ));
-                };
-                if !type_refs_equal(&binding.type_ref, &field.type_ref, constants) {
-                    return Err(CompilerError::Unsupported(format!(
-                        "readInputState binding '{}' expects {}",
-                        binding.name,
-                        field.type_ref.type_name()
-                    )));
-                }
-            }
-            Ok(())
-        }
-        "readInputStateWithTemplate" => {
-            let Ok([_, _, _, _]): Result<&[Expr<'i>; 4], _> = args.try_into() else {
-                return Err(CompilerError::Unsupported(
-                    "readInputStateWithTemplate(input_idx, template_prefix_len, template_suffix_len, expected_template_hash) expects 4 arguments"
-                        .to_string(),
-                ));
-            };
-            let struct_name = struct_name_for_state_bindings(target_struct, bindings, structs, constants)?;
-            let struct_spec =
-                structs.get(&struct_name).ok_or_else(|| CompilerError::Unsupported(format!("unknown struct '{struct_name}'")))?;
-            if bindings.len() != struct_spec.fields.len() {
-                return Err(CompilerError::Unsupported(
-                    "readInputStateWithTemplate bindings must include all target fields exactly once".to_string(),
-                ));
-            }
-            for field in &struct_spec.fields {
-                let Some(binding) = bindings.iter().find(|binding| binding.field_name == field.name) else {
-                    return Err(CompilerError::Unsupported(
-                        "readInputStateWithTemplate bindings must include all target fields exactly once".to_string(),
-                    ));
-                };
-                if is_struct(&field.type_ref, structs) {
-                    return Err(CompilerError::Unsupported(
-                        "readInputStateWithTemplate does not support nested struct fields in destructuring".to_string(),
-                    ));
-                }
-                if !type_refs_equal(&binding.type_ref, &field.type_ref, constants) {
-                    return Err(CompilerError::Unsupported(format!(
-                        "readInputStateWithTemplate binding '{}' expects {}",
-                        binding.name,
-                        field.type_ref.type_name()
-                    )));
-                }
-            }
-            Ok(())
-        }
-        _ => Ok(()),
+    if name == "readInputState" && contract_fields.is_empty() {
+        return Err(CompilerError::Unsupported("readInputState requires contract fields".to_string()));
     }
-}
-
-fn struct_name_for_state_bindings<'i>(
-    target_struct: Option<&str>,
-    bindings: &[StructBindingAst<'i>],
-    structs: &StructRegistry,
-    constants: &HashMap<String, Expr<'i>>,
-) -> Result<String, CompilerError> {
-    if let Some(target_struct) = target_struct {
-        if !structs.contains_key(target_struct) {
-            return Err(CompilerError::Unsupported(format!("unknown struct '{target_struct}'")));
-        }
-        return Ok(target_struct.to_string());
-    }
-
-    let matches = structs
-        .iter()
-        .filter_map(|(name, spec)| {
-            if spec.fields.len() != bindings.len() {
-                return None;
-            }
-            let all_match = spec.fields.iter().all(|field| {
-                bindings
-                    .iter()
-                    .find(|binding| binding.field_name == field.name)
-                    .is_some_and(|binding| type_refs_equal(&binding.type_ref, &field.type_ref, constants))
-            });
-            all_match.then(|| name.clone())
-        })
-        .collect::<Vec<_>>();
-
-    match matches.as_slice() {
-        [name] => Ok(name.clone()),
-        [] => Err(CompilerError::Unsupported("readInputStateWithTemplate bindings must match a declared struct layout".to_string())),
-        _ => Err(CompilerError::Unsupported(
-            "readInputStateWithTemplate bindings match multiple struct layouts; assign into an explicitly typed struct first"
-                .to_string(),
-        )),
-    }
+    let expected = TypeRef { base: TypeBase::Custom(target_struct.to_string()), array_dims: Vec::new() };
+    validate_struct_destructure_bindings(bindings, &expected, Some(name), structs, constants)
 }
 
 fn initial_function_types<'i>(contract: &ContractAst<'i>, function: &FunctionAst<'i>) -> Result<TypeMap, CompilerError> {

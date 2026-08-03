@@ -54,7 +54,7 @@ fn compile_expr_with_context<'i>(
         ExprKind::Bool(value) => compile_bool_expr(ctx, *value),
         ExprKind::Byte(byte) => compile_byte_expr(ctx, *byte),
         ExprKind::Array(values) => compile_array_expr(ctx, values, expected_type),
-        ExprKind::StructLiteral(_) => compile_state_object_expr(),
+        ExprKind::StructLiteral { .. } => compile_state_object_expr(),
         ExprKind::FieldAccess { .. } => compile_field_access_expr(),
         ExprKind::String(value) => compile_string_expr(ctx, value),
         ExprKind::Identifier(name) => compile_identifier_expr(ctx, name, expected_type),

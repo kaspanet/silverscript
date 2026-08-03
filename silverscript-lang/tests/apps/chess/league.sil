@@ -61,7 +61,7 @@ contract League(
         byte[] player_id_domain = byte[]("LeaguePlayerId");
         byte[32] player_id = blake2b(player_id_domain + spent_outpoint_txid + spent_outpoint_index);
 
-        PlayerState next_player = {
+        PlayerState next_player = PlayerState {
             league_template: league_template,
             player_template: player_template,
             mux_template: mux_template,

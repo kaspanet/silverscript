@@ -166,9 +166,12 @@ fn lower_statement<'i>(statement: &Statement<'i>, context: &mut LoweringContext)
                 name_span: *name_span,
             }
         }
-        Statement::StructDestructure { bindings, expr, span } => {
-            Statement::StructDestructure { bindings: bindings.clone(), expr: lower_expr(expr, &mut prefix, context), span: *span }
-        }
+        Statement::StructDestructure { struct_name, bindings, expr, span } => Statement::StructDestructure {
+            struct_name: struct_name.clone(),
+            bindings: bindings.clone(),
+            expr: lower_expr(expr, &mut prefix, context),
+            span: *span,
+        },
         Statement::Assign { name, expr, span, name_span } => {
             Statement::Assign { name: name.clone(), expr: lower_expr(expr, &mut prefix, context), span: *span, name_span: *name_span }
         }
@@ -281,8 +284,9 @@ fn lower_expr<'i>(expr: &Expr<'i>, prefix: &mut Vec<Statement<'i>>, context: &mu
         ExprKind::Introspection { kind, index, field_span } => {
             ExprKind::Introspection { kind: *kind, index: Box::new(lower_expr(index, prefix, context)), field_span: *field_span }
         }
-        ExprKind::StructLiteral(fields) => ExprKind::StructLiteral(
-            fields
+        ExprKind::StructLiteral { name, fields, name_span } => ExprKind::StructLiteral {
+            name: name.clone(),
+            fields: fields
                 .iter()
                 .map(|field| StateFieldExpr {
                     name: field.name.clone(),
@@ -291,7 +295,8 @@ fn lower_expr<'i>(expr: &Expr<'i>, prefix: &mut Vec<Statement<'i>>, context: &mu
                     name_span: field.name_span,
                 })
                 .collect(),
-        ),
+            name_span: *name_span,
+        },
         ExprKind::FieldAccess { source, field, field_span } => ExprKind::FieldAccess {
             source: Box::new(lower_expr(source, prefix, context)),
             field: field.clone(),

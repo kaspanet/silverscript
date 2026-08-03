@@ -146,13 +146,18 @@ impl<'a, 'i> TernaryLowerer<'a, 'i> {
                     target_struct: target_struct.clone(),
                 });
             }
-            Statement::StructDestructure { bindings, expr, span } => {
+            Statement::StructDestructure { struct_name, bindings, expr, span } => {
                 let (prelude, expr) = self.lower_expr(expr, None, types)?;
                 lowered.extend(prelude);
                 for binding in bindings {
                     types.insert(binding.name.clone(), binding.type_ref.clone());
                 }
-                lowered.push(Statement::StructDestructure { bindings: bindings.clone(), expr, span: *span });
+                lowered.push(Statement::StructDestructure {
+                    struct_name: struct_name.clone(),
+                    bindings: bindings.clone(),
+                    expr,
+                    span: *span,
+                });
             }
             Statement::FunctionCall { name, args, span, name_span } => {
                 let (prelude, args) = self.lower_exprs(args, types)?;
@@ -386,7 +391,7 @@ impl<'a, 'i> TernaryLowerer<'a, 'i> {
                     Expr::new(ExprKind::Introspection { kind: *kind, index: Box::new(index), field_span: *field_span }, span),
                 ))
             }
-            ExprKind::StructLiteral(fields) => {
+            ExprKind::StructLiteral { name, fields, name_span } => {
                 let struct_fields = expected
                     .and_then(|type_ref| struct_name(type_ref, self.structs))
                     .and_then(|name| self.structs.get(name))
@@ -399,7 +404,10 @@ impl<'a, 'i> TernaryLowerer<'a, 'i> {
                     prelude.extend(more_prelude);
                     lowered_fields.push(StateFieldExpr { expr, ..field.clone() });
                 }
-                Ok((prelude, Expr::new(ExprKind::StructLiteral(lowered_fields), span)))
+                Ok((
+                    prelude,
+                    Expr::new(ExprKind::StructLiteral { name: name.clone(), fields: lowered_fields, name_span: *name_span }, span),
+                ))
             }
             ExprKind::FieldAccess { source, field, field_span } => {
                 let (prelude, source) = self.lower_expr(source, None, types)?;
@@ -482,7 +490,7 @@ impl<'a, 'i> TernaryLowerer<'a, 'i> {
                         })
                     })
                     .collect::<Result<Vec<_>, CompilerError>>()?;
-                ExprKind::StructLiteral(fields)
+                ExprKind::StructLiteral { name: name.clone(), fields, name_span: span }
             }
             TypeBase::Tuple(_) => {
                 return Err(CompilerError::Unsupported("ternary tuple results are not supported".to_string()));

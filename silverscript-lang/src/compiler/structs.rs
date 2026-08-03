@@ -300,7 +300,7 @@ fn lower_expr<'i>(expr: &Expr<'i>, scope: &LoweringScope, structs: &StructRegist
             ExprKind::Array(values.iter().map(|value| lower_expr(value, scope, structs)).collect::<Result<Vec<_>, _>>()?),
             span,
         )),
-        ExprKind::StructLiteral(_) => {
+        ExprKind::StructLiteral { .. } => {
             Err(CompilerError::Unsupported("struct literals are only supported in struct-typed positions".to_string()))
         }
         ExprKind::Call { name, args, name_span } => {
@@ -467,10 +467,11 @@ pub(crate) fn lower_struct_value_expr<'i>(
                 })
                 .collect())
         }
-        ExprKind::StructLiteral(entries) => {
-            let item = structs
-                .get(expected_struct_name)
-                .ok_or_else(|| CompilerError::Unsupported(format!("unknown struct '{expected_struct_name}'")))?;
+        ExprKind::StructLiteral { name, fields: entries, .. } => {
+            if name != expected_struct_name {
+                return Err(CompilerError::Unsupported(format!("struct expression expects {}, got {}", expected_struct_name, name)));
+            }
+            let item = structs.get(name).ok_or_else(|| CompilerError::Unsupported(format!("unknown struct '{name}'")))?;
             let mut provided = HashMap::new();
             for entry in entries {
                 if provided.insert(entry.name.clone(), &entry.expr).is_some() {
@@ -505,41 +506,8 @@ pub(crate) fn lower_struct_value_expr<'i>(
     }
 }
 
-pub(crate) fn infer_struct_expr_type<'i>(
-    expr: &Expr<'i>,
-    scope: &LoweringScope,
-    structs: &StructRegistry,
-    contract_fields: &[ContractFieldAst<'i>],
-) -> Result<TypeRef, CompilerError> {
-    match &expr.kind {
-        ExprKind::Identifier(_) | ExprKind::FieldAccess { .. } => {
-            let (_, _, type_ref) = resolve_struct_access(expr, scope, structs)?;
-            Ok(type_ref)
-        }
-        ExprKind::ArrayIndex { source, .. } => match &source.kind {
-            ExprKind::Identifier(name) => scope
-                .vars
-                .get(name)
-                .cloned()
-                .ok_or_else(|| CompilerError::Unsupported(format!("undefined identifier '{}'", name)))?
-                .array_element_type()
-                .ok_or_else(|| CompilerError::Unsupported("struct destructuring requires a struct value".to_string())),
-            _ => Err(CompilerError::Unsupported("struct destructuring requires a struct value".to_string())),
-        },
-        ExprKind::Call { name, .. } if name == "readInputState" => {
-            if contract_fields.is_empty() {
-                return Err(CompilerError::Unsupported("readInputState requires contract fields".to_string()));
-            }
-            Ok(TypeRef { base: TypeBase::Custom(STATE_TYPE_NAME.to_string()), array_dims: Vec::new() })
-        }
-        ExprKind::Call { name, .. } if name == "readInputStateWithTemplate" => Err(CompilerError::Unsupported(
-            "readInputStateWithTemplate must be assigned to a struct variable or destructured directly".to_string(),
-        )),
-        _ => Err(CompilerError::Unsupported("struct destructuring requires a struct value".to_string())),
-    }
-}
-
 pub(crate) fn lower_struct_destructure_statement<'i>(
+    expected_struct_name: &str,
     bindings: &[StructBindingAst<'i>],
     expr: &Expr<'i>,
     span: crate::span::Span<'i>,
@@ -549,10 +517,10 @@ pub(crate) fn lower_struct_destructure_statement<'i>(
     contract_constants: &HashMap<String, Expr<'i>>,
     contract_fields_end_offset: usize,
 ) -> Result<Vec<Statement<'i>>, CompilerError> {
-    let expr_type = infer_struct_expr_type(expr, scope, structs, contract_fields)?;
-    let struct_name = struct_name(&expr_type, structs)
-        .ok_or_else(|| CompilerError::Unsupported("struct destructuring requires a struct value".to_string()))?;
-    let struct_ast = structs.get(struct_name).ok_or_else(|| CompilerError::Unsupported(format!("unknown struct '{struct_name}'")))?;
+    let expr_type = TypeRef { base: TypeBase::Custom(expected_struct_name.to_string()), array_dims: Vec::new() };
+    let struct_ast = structs
+        .get(expected_struct_name)
+        .ok_or_else(|| CompilerError::Unsupported(format!("unknown struct '{expected_struct_name}'")))?;
     let direct_field_values = if matches!(&expr.kind, ExprKind::Call { name, .. } if name == "readInputState") {
         Some(
             struct_ast
@@ -1016,7 +984,7 @@ fn lower_statements<'i>(
                             .all(|field| !is_struct(&field.type_ref, structs) && !is_struct_array(&field.type_ref, structs))
                     {
                         lowered.push(Statement::StateFunctionCallAssign {
-                            target_struct: Some(struct_name.to_string()),
+                            target_struct: struct_name.to_string(),
                             bindings: item
                                 .fields
                                 .iter()
@@ -1174,11 +1142,12 @@ fn lower_statements<'i>(
                     name_span: *name_span,
                 });
             }
-            Statement::StructDestructure { bindings, expr, span } => {
+            Statement::StructDestructure { struct_name, bindings, expr, span } => {
                 for binding in bindings {
                     scope.vars.insert(binding.name.clone(), binding.type_ref.clone());
                 }
                 lowered.extend(lower_struct_destructure_statement(
+                    struct_name,
                     bindings,
                     expr,
                     *span,

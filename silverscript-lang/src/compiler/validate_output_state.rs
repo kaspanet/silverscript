@@ -240,11 +240,16 @@ fn lower_statement<'i>(
                 name_span: *name_span,
             }])
         }
-        Statement::StructDestructure { bindings, expr, span } => {
+        Statement::StructDestructure { struct_name, bindings, expr, span } => {
             for binding in bindings {
                 scope.vars.insert(binding.name.clone(), binding.type_ref.clone());
             }
-            Ok(vec![Statement::StructDestructure { bindings: bindings.clone(), expr: expr.clone(), span: *span }])
+            Ok(vec![Statement::StructDestructure {
+                struct_name: struct_name.clone(),
+                bindings: bindings.clone(),
+                expr: expr.clone(),
+                span: *span,
+            }])
         }
         Statement::Block { body, span } => {
             let mut block_scope = scope.clone();
@@ -398,9 +403,12 @@ fn infer_template_state_type(expr: &Expr<'_>, scope: &ValidationScope, structs: 
                 .array_element_type()
                 .ok_or_else(|| CompilerError::Unsupported("validateOutputStateWithTemplate requires a struct value".to_string()))
         }
-        ExprKind::StructLiteral(_) => Err(CompilerError::Unsupported(
-            "validateOutputStateWithTemplate does not support inline state objects; use a struct variable instead".to_string(),
-        )),
+        ExprKind::StructLiteral { name, .. } => {
+            if !structs.contains_key(name) {
+                return Err(CompilerError::Unsupported(format!("unknown struct '{name}'")));
+            }
+            Ok(TypeRef { base: TypeBase::Custom(name.clone()), array_dims: Vec::new() })
+        }
         _ => Err(CompilerError::Unsupported("validateOutputStateWithTemplate requires a struct value".to_string())),
     }
 }

@@ -141,7 +141,7 @@ contract ChessSettle(
         require(white_in.open_games > 0);
         require(black_in.open_games > 0);
 
-        PlayerState next_white = {
+        PlayerState next_white = PlayerState {
             league_template: white_in.league_template,
             player_template: white_in.player_template,
             mux_template: white_in.mux_template,
@@ -156,7 +156,7 @@ contract ChessSettle(
             losses: white_losses
         };
 
-        PlayerState next_black = {
+        PlayerState next_black = PlayerState {
             league_template: black_in.league_template,
             player_template: black_in.player_template,
             mux_template: black_in.mux_template,

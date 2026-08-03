@@ -85,9 +85,12 @@ fn lower_statement<'i>(statement: &Statement<'i>) -> Result<Statement<'i>, Compi
                 name_span: *name_span,
             })
         }
-        Statement::StructDestructure { bindings, expr, span } => {
-            Ok(Statement::StructDestructure { bindings: bindings.clone(), expr: lower_expr(expr)?, span: *span })
-        }
+        Statement::StructDestructure { struct_name, bindings, expr, span } => Ok(Statement::StructDestructure {
+            struct_name: struct_name.clone(),
+            bindings: bindings.clone(),
+            expr: lower_expr(expr)?,
+            span: *span,
+        }),
         Statement::Assign { name, expr, span, name_span } => {
             Ok(Statement::Assign { name: name.clone(), expr: lower_expr(expr)?, span: *span, name_span: *name_span })
         }
@@ -197,9 +200,10 @@ fn lower_expr<'i>(expr: &Expr<'i>) -> Result<Expr<'i>, CompilerError> {
         ExprKind::Introspection { kind, index, field_span } => {
             Ok(Expr::new(ExprKind::Introspection { kind: *kind, index: Box::new(lower_expr(index)?), field_span: *field_span }, span))
         }
-        ExprKind::StructLiteral(fields) => Ok(Expr::new(
-            ExprKind::StructLiteral(
-                fields
+        ExprKind::StructLiteral { name, fields, name_span } => Ok(Expr::new(
+            ExprKind::StructLiteral {
+                name: name.clone(),
+                fields: fields
                     .iter()
                     .map(|field| {
                         Ok(StateFieldExpr {
@@ -210,7 +214,8 @@ fn lower_expr<'i>(expr: &Expr<'i>) -> Result<Expr<'i>, CompilerError> {
                         })
                     })
                     .collect::<Result<Vec<_>, CompilerError>>()?,
-            ),
+                name_span: *name_span,
+            },
             span,
         )),
         ExprKind::FieldAccess { source, field, field_span } => Ok(Expr::new(

@@ -978,7 +978,7 @@ impl<'a, 'i> DebugSession<'a, 'i> {
         let type_name = type_ref.type_name();
         let leaf_specs = flatten_contract_type_leaves(self.contract_ast.as_ref()?, type_ref).ok()?;
         if leaf_specs.is_empty() {
-            let expr = debug_value_to_expr(value)?;
+            let expr = debug_value_to_expr(value, struct_name_from_type_ref(type_ref))?;
             bindings.insert(name.to_string(), ScopeBinding { type_name, source: ScopeValueSource::Expr(expr), origin, hidden: false });
             return Some(());
         }
@@ -1004,7 +1004,7 @@ impl<'a, 'i> DebugSession<'a, 'i> {
 
         for (field_path, leaf_type) in leaf_specs {
             let leaf_value = structured_leaf_value(value, &field_path)?;
-            let leaf_expr = debug_value_to_expr(&leaf_value)?;
+            let leaf_expr = debug_value_to_expr(&leaf_value, struct_name_from_type_ref(&leaf_type))?;
             let leaf_name = flattened_struct_name(name, &field_path);
             bindings.insert(
                 leaf_name,
@@ -1213,7 +1213,7 @@ impl<'a, 'i> DebugSession<'a, 'i> {
             let Ok(value) = self.resolve_scope_binding(scope_state, binding) else {
                 continue;
             };
-            let Some(expr) = debug_value_to_expr(&value) else {
+            let Some(expr) = debug_value_to_expr(&value, struct_name_from_type_name(&binding.type_name)) else {
                 continue;
             };
 
@@ -1232,7 +1232,7 @@ impl<'a, 'i> DebugSession<'a, 'i> {
                     let Some(leaf_value) = structured_leaf_value(&value, &leaf.field_path) else {
                         continue;
                     };
-                    let Some(leaf_expr) = debug_value_to_expr(&leaf_value) else {
+                    let Some(leaf_expr) = debug_value_to_expr(&leaf_value, struct_name_from_type_name(&leaf.type_name)) else {
                         continue;
                     };
                     snapshot.insert(
@@ -1829,7 +1829,7 @@ impl<'a, 'i> DebugSession<'a, 'i> {
                     Some(DebugValue::Array(items))
                 }
             }
-            ExprKind::StructLiteral(fields) => {
+            ExprKind::StructLiteral { fields, .. } => {
                 let mut values = Vec::with_capacity(fields.len());
                 for field in fields {
                     let value = self.try_resolve_expr_value(scope_state, &field.expr, visiting)?;
@@ -2009,29 +2009,44 @@ fn structured_leaf_value(value: &DebugValue, field_path: &[String]) -> Option<De
     }
 }
 
-fn debug_value_to_expr<'i>(value: &DebugValue) -> Option<Expr<'i>> {
+fn struct_name_from_type_ref(type_ref: &TypeRef) -> Option<&str> {
+    match &type_ref.base {
+        TypeBase::Custom(name) => Some(name),
+        _ => None,
+    }
+}
+
+fn struct_name_from_type_name(type_name: &str) -> Option<&str> {
+    let base = type_name.split('[').next()?;
+    (!matches!(base, "int" | "bool" | "byte" | "string" | "pubkey" | "sig" | "datasig" | "void")).then_some(base)
+}
+
+fn debug_value_to_expr<'i>(value: &DebugValue, struct_name: Option<&str>) -> Option<Expr<'i>> {
     match value {
         DebugValue::Int(value) => Some(Expr::int(*value)),
         DebugValue::Bool(value) => Some(Expr::bool(*value)),
         DebugValue::Bytes(bytes) => Some(Expr::bytes(bytes.clone())),
         DebugValue::String(value) => Some(Expr::new(ExprKind::String(value.clone()), span::Span::default())),
-        DebugValue::Array(items) => {
-            Some(Expr::new(ExprKind::Array(items.iter().map(debug_value_to_expr).collect::<Option<Vec<_>>>()?), span::Span::default()))
-        }
+        DebugValue::Array(items) => Some(Expr::new(
+            ExprKind::Array(items.iter().map(|item| debug_value_to_expr(item, struct_name)).collect::<Option<Vec<_>>>()?),
+            span::Span::default(),
+        )),
         DebugValue::Object(fields) => Some(Expr::new(
-            ExprKind::StructLiteral(
-                fields
+            ExprKind::StructLiteral {
+                name: struct_name?.to_string(),
+                fields: fields
                     .iter()
                     .map(|(name, value)| {
                         Some(StateFieldExpr {
                             name: name.clone(),
-                            expr: debug_value_to_expr(value)?,
+                            expr: debug_value_to_expr(value, None)?,
                             span: span::Span::default(),
                             name_span: span::Span::default(),
                         })
                     })
                     .collect::<Option<Vec<_>>>()?,
-            ),
+                name_span: span::Span::default(),
+            },
             span::Span::default(),
         )),
         DebugValue::Unknown(_) => None,
@@ -2145,9 +2160,10 @@ where
         ExprKind::Array(values) => {
             Ok(Expr::new(ExprKind::Array(values.iter().map(&mut *map_child).collect::<Result<Vec<_>, _>>()?), span))
         }
-        ExprKind::StructLiteral(fields) => Ok(Expr::new(
-            ExprKind::StructLiteral(
-                fields
+        ExprKind::StructLiteral { name, fields, name_span } => Ok(Expr::new(
+            ExprKind::StructLiteral {
+                name: name.clone(),
+                fields: fields
                     .iter()
                     .map(|field| {
                         Ok(StateFieldExpr {
@@ -2158,7 +2174,8 @@ where
                         })
                     })
                     .collect::<Result<Vec<_>, String>>()?,
-            ),
+                name_span: *name_span,
+            },
             span,
         )),
         ExprKind::FieldAccess { source, field, field_span } => Ok(Expr::new(
@@ -2619,20 +2636,24 @@ mod tests {
                 name: "DEFAULT_PAIR".to_string(),
                 type_name: "Pair".to_string(),
                 value: Expr::new(
-                    ExprKind::StructLiteral(vec![
-                        StateFieldExpr {
-                            name: "amount".to_string(),
-                            expr: Expr::int(7),
-                            span: span::Span::default(),
-                            name_span: span::Span::default(),
-                        },
-                        StateFieldExpr {
-                            name: "code".to_string(),
-                            expr: Expr::new(ExprKind::Array(vec![Expr::byte(0x12), Expr::byte(0x34)]), span::Span::default()),
-                            span: span::Span::default(),
-                            name_span: span::Span::default(),
-                        },
-                    ]),
+                    ExprKind::StructLiteral {
+                        name: "Pair".to_string(),
+                        fields: vec![
+                            StateFieldExpr {
+                                name: "amount".to_string(),
+                                expr: Expr::int(7),
+                                span: span::Span::default(),
+                                name_span: span::Span::default(),
+                            },
+                            StateFieldExpr {
+                                name: "code".to_string(),
+                                expr: Expr::new(ExprKind::Array(vec![Expr::byte(0x12), Expr::byte(0x34)]), span::Span::default()),
+                                span: span::Span::default(),
+                                name_span: span::Span::default(),
+                            },
+                        ],
+                        name_span: span::Span::default(),
+                    },
                     span::Span::default(),
                 ),
             }],

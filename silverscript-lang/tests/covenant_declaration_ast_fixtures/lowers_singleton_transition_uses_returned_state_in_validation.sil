@@ -3,7 +3,7 @@ contract Decls(int init_value) {
 
     #[covenant.singleton(mode = transition)]
     function bump(State prev_state, int delta) : State {
-        return { value: prev_state.value + delta };
+        return State { value: prev_state.value + delta };
     }
 }
 
@@ -13,13 +13,13 @@ contract Decls(int init_value) {
     int value = init_value;
 
     function covenant_policy_bump(State prev_state, int delta) : State {
-        return { value: prev_state.value + delta };
+        return State { value: prev_state.value + delta };
     }
 
     entry bump(int delta) {
         int auth_out_count = OpAuthOutputCount(this.activeInputIndex);
 
-        State prev_state = { value: value };
+        State prev_state = State { value: value };
         (State cov_new_state) = covenant_policy_bump(prev_state, delta);
         require(auth_out_count == 1);
 

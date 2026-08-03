@@ -87,11 +87,11 @@ contract Advanced(int limit, pubkey owner) {
 
     entry main() {
         (int left, int right) = compute(1 + 2 * 3);
-        {balance: int current} = readState();
+        State {balance: int current} = readState();
         int[] values = [1, 2];
         values = values.append(current);
         byte[] tail = this.activeScriptPubKey.slice(1, this.activeScriptPubKey.length);
-        validateOutputState(0, {balance: current});
+        validateOutputState(0, State {balance: current});
         for (i, 0, limit, limit) {
             console.log("loop", i + current);
         }
@@ -108,7 +108,7 @@ contract Advanced(int limit, pubkey owner) {
     let reformatted = format_contract_ast(&reparsed);
 
     assert_eq!(reformatted, formatted);
-    assert!(formatted.contains("{balance: int current} = readState();"));
+    assert!(formatted.contains("State {balance: int current} = readState();"));
     assert!(formatted.contains("byte[] tail = this.activeScriptPubKey.slice(1, this.activeScriptPubKey.length);"));
     assert!(formatted.contains("return(tail.split(1).1);"));
 }
@@ -144,9 +144,9 @@ fn compiled_formatted_contract_preserves_exact_ast_with_state_and_return() {
     int amount = 7;
 
     entry main(): (byte[]) {
-        {amount: int current} = readInputState(this.activeInputIndex);
+        State {amount: int current} = readInputState(this.activeInputIndex);
         byte[] tail = this.activeScriptPubKey.slice(1, this.activeScriptPubKey.length);
-        validateOutputState(0, {amount: current});
+        validateOutputState(0, State {amount: current});
         require(this.age >= 10, "age");
         return(tail.split(1).1);
     }

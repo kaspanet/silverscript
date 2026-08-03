@@ -19,7 +19,7 @@ contract Decls(int max_outs, int init_value) {
     entry fanout(State[] next_states) {
         int auth_out_count = OpAuthOutputCount(this.activeInputIndex);
 
-        State prev_state = { value: value };
+        State prev_state = State { value: value };
         (State[] cov_new_states) = covenant_policy_fanout(prev_state, next_states);
         require(auth_out_count <= max_outs);
         require(auth_out_count == cov_new_states.length);

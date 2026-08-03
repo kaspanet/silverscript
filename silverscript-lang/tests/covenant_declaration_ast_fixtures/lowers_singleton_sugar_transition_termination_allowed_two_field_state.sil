@@ -27,7 +27,7 @@ contract Matrix(int init_amount, byte[32] init_owner) {
     entry step(State[] next_states) {
         int auth_out_count = OpAuthOutputCount(this.activeInputIndex);
 
-        State prev_state = { amount: amount, owner: owner };
+        State prev_state = State { amount: amount, owner: owner };
         (State[] cov_new_states) = covenant_policy_step(prev_state, next_states);
         require(auth_out_count <= 1);
         require(auth_out_count == cov_new_states.length);

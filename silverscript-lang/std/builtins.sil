@@ -16,7 +16,7 @@
  *
  * Example:
  * ```js
- * validateOutputState(0, { count: count + 1, owner: owner });
+ * validateOutputState(0, State { count: count + 1, owner: owner });
  * ```
  *
  * Pseudo logic:
@@ -42,7 +42,7 @@ function validateOutputState(int outputIndex, object newState);
  *
  * Example:
  * ```js
- * Receipt receipt = { orderId: orderId, buyer: buyer, amount: amount };
+ * Receipt receipt = Receipt { orderId: orderId, buyer: buyer, amount: amount };
  * validateOutputStateWithTemplate(1, receipt, receiptPrefix, receiptSuffix, receiptHash);
  * ```
  *
@@ -75,7 +75,7 @@ function validateOutputStateWithTemplate(
  *
  * Example:
  * ```js
- * Receipt nextReceipt = { orderId: orderId, buyer: buyer, amount: amount };
+ * Receipt nextReceipt = Receipt { orderId: orderId, buyer: buyer, amount: amount };
  * validateOutputStateWithInputTemplate(1, nextReceipt, 2, receiptPrefixLen, receiptSuffixLen, receiptHash);
  * ```
  *
@@ -111,7 +111,7 @@ function validateOutputStateWithInputTemplate(
  *
  * Example:
  * ```js
- * {x: int inX, y: byte[2] inY} = readInputState(1);
+ * State {x: int inX, y: byte[2] inY} = readInputState(1);
  * require(inX > 7);
  * ```
  *
