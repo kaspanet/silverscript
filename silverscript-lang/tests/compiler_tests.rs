@@ -8722,6 +8722,158 @@ fn checksigfromstack_requires_datasig_and_32_byte_digest_types() {
 }
 
 #[test]
+fn g16_verify_lowers_to_groth16_precompile() {
+    let source = r#"
+        contract Groth16(byte[] verifying_key, byte[] proof, byte[32] public_input0, byte[32] public_input1) {
+            entry verify() {
+                g16.verify(verifying_key, proof, public_input0, public_input1);
+            }
+        }
+    "#;
+    let (verifying_key, proof, public_inputs) = kaspa_txscript::zk_precompiles::tests::helpers::load_groth_fields();
+    let compiled = compile_contract(
+        source,
+        &[
+            Expr::dynamic_bytes(verifying_key.clone()),
+            Expr::dynamic_bytes(proof.clone()),
+            public_inputs[0].clone().into(),
+            public_inputs[1].clone().into(),
+        ],
+        CompileOptions::default(),
+    )
+    .expect("compile succeeds");
+
+    let body = script_builder()
+        .add_data_with_push_opcode(&public_inputs[1])
+        .unwrap()
+        .add_data_with_push_opcode(&public_inputs[0])
+        .unwrap()
+        .add_i64(2)
+        .unwrap()
+        .add_data_with_push_opcode(&proof)
+        .unwrap()
+        .add_data_with_push_opcode(&verifying_key)
+        .unwrap()
+        .add_data_with_push_opcode(&[kaspa_txscript::zk_precompiles::tags::ZkTag::Groth16 as u8])
+        .unwrap()
+        .add_op(OpZkPrecompile)
+        .unwrap()
+        .add_op(OpDrop)
+        .unwrap()
+        .add_op(OpTrue)
+        .unwrap()
+        .drain();
+    assert_eq!(compiled.bytecode, wrap_with_dispatch(body, selector_for(&compiled, "verify")));
+}
+
+#[test]
+fn g16_verify_validates_arity_and_argument_types() {
+    let missing_proof = r#"
+        contract Groth16() {
+            entry verify(byte[] verifying_key) {
+                g16.verify(verifying_key);
+            }
+        }
+    "#;
+    let err = compile_contract(missing_proof, &[], CompileOptions::default()).expect_err("proof is required");
+    assert!(err.to_string().contains("expects at least 2 arguments"), "unexpected error: {err}");
+
+    let cases = [
+        ("1, bytes_arg, public_input", "argument 'verifyingKey' expects byte[], got int"),
+        ("bytes_arg, 1, public_input", "argument 'proof' expects byte[], got int"),
+        ("bytes_arg, bytes_arg, bytes_arg", "argument 'publicInput0' expects byte[32], got byte[]"),
+    ];
+    for (args, expected) in cases {
+        let source = format!(
+            r#"
+                contract Groth16() {{
+                    entry verify(byte[] bytes_arg, byte[32] public_input) {{
+                        g16.verify({args});
+                    }}
+                }}
+            "#
+        );
+        let err = compile_contract(&source, &[], CompileOptions::default()).expect_err("invalid argument should fail");
+        assert!(err.to_string().contains(expected), "unexpected error for {args}: {err}");
+    }
+
+    let constant_sized_public_input = r#"
+        contract Groth16() {
+            int constant INPUT_SIZE = 32;
+
+            entry verify(byte[] verifying_key, byte[] proof, byte[INPUT_SIZE] public_input) {
+                g16.verify(verifying_key, proof, public_input);
+            }
+        }
+    "#;
+    compile_contract(constant_sized_public_input, &[], CompileOptions::default()).expect("contract constants should satisfy byte[32]");
+}
+
+#[test]
+fn g16_verify_is_void_and_accepts_zero_public_inputs() {
+    let direct_call = r#"
+        contract Groth16() {
+            entry verify(byte[] verifying_key, byte[] proof) {
+                g16.verify(verifying_key, proof);
+            }
+        }
+    "#;
+    compile_contract(direct_call, &[], CompileOptions::default()).expect("zero-public-input call should compile");
+
+    let expression_use = r#"
+        contract Groth16() {
+            entry verify(byte[] verifying_key, byte[] proof) {
+                require(g16.verify(verifying_key, proof));
+            }
+        }
+    "#;
+    let err = compile_contract(expression_use, &[], CompileOptions::default()).expect_err("g16.verify should not return a value");
+    assert!(err.to_string().contains("does not return a value"), "unexpected error: {err}");
+}
+
+#[test]
+fn g16_verify_executes_with_fixture_and_rejects_tampered_input() {
+    let source = r#"
+        contract Groth16() {
+            entry verify(
+                byte[] verifying_key,
+                byte[] proof,
+                byte[32] public_input0,
+                byte[32] public_input1,
+                byte[32] public_input2,
+                byte[32] public_input3,
+                byte[32] public_input4,
+            ) {
+                g16.verify(
+                    verifying_key,
+                    proof,
+                    public_input0,
+                    public_input1,
+                    public_input2,
+                    public_input3,
+                    public_input4,
+                );
+            }
+        }
+    "#;
+    let (verifying_key, proof, public_inputs) = kaspa_txscript::zk_precompiles::tests::helpers::load_groth_fields();
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let build_args = |inputs: &[Vec<u8>]| -> Vec<Expr<'static>> {
+        let mut args = vec![Expr::dynamic_bytes(verifying_key.clone()), Expr::dynamic_bytes(proof.clone())];
+        args.extend(inputs.iter().cloned().map(Into::into));
+        args
+    };
+
+    let sigscript = compiled.build_sig_script("verify", build_args(&public_inputs)).expect("sigscript builds");
+    assert!(run_bytecode_with_sigscript(compiled.bytecode.clone(), sigscript).is_ok(), "valid Groth16 proof should pass");
+
+    let mut tampered_inputs = public_inputs;
+    tampered_inputs[0][0] ^= 0x01;
+    let sigscript = compiled.build_sig_script("verify", build_args(&tampered_inputs)).expect("sigscript builds");
+    assert!(run_bytecode_with_sigscript(compiled.bytecode.clone(), sigscript).is_err(), "tampered public input should fail");
+}
+
+#[test]
 fn r0_succinct_verify_lowers_hash_aliases_to_zk_precompile() {
     let cases = ["r0.succinct.poseidon2.verify", "r0.succinct.verify"];
 

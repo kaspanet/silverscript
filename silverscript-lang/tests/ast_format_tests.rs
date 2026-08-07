@@ -114,6 +114,21 @@ contract Advanced(int limit, pubkey owner) {
 }
 
 #[test]
+fn formats_g16_verify_call() {
+    let source = r#"contract Groth16(byte[] verifying_key, byte[] proof, byte[32] public_input) {
+    entry verify() {
+        g16.verify(verifying_key, proof, public_input);
+    }
+}
+"#;
+
+    let ast = parse_contract_ast(source).expect("parse succeeds");
+    let formatted = format_contract_ast(&ast);
+
+    assert!(formatted.contains("g16.verify(verifying_key, proof, public_input);"));
+}
+
+#[test]
 fn compiled_formatted_contract_preserves_exact_ast_for_basic_contract() {
     let source = r#"contract ExactBasic() {
     int constant LIMIT = 3;

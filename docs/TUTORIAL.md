@@ -889,6 +889,17 @@ entry verify(datasig oracleSig, byte[] oracleMessage, byte[33] oraclePk) {
 }
 ```
 
+**`g16.verify(byte[] verifyingKey, byte[] proof, byte[32] ...publicInputs)`**
+
+Verify a Groth16 proof with a compressed verifying key, compressed proof, and
+zero or more 32-byte public inputs. Verification failure aborts script execution:
+
+```javascript
+entry verify(byte[] verifyingKey, byte[] proof, byte[32] publicInput0, byte[32] publicInput1) {
+    g16.verify(verifyingKey, proof, publicInput0, publicInput1);
+}
+```
+
 ### Type Conversions
 
 Use `as byte[N]` to convert an integer to a fixed-size byte array:

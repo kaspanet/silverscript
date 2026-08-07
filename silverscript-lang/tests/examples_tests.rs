@@ -384,6 +384,28 @@ fn compiles_r0_g16_example_and_verifies() {
 }
 
 #[test]
+fn compiles_g16_verify_example_and_verifies() {
+    let source = load_example_source("g16_verify.sil");
+    let (verifying_key, proof, public_inputs) = kaspa_txscript::zk_precompiles::tests::helpers::load_groth_fields();
+    let compiled = compile_contract(&source, &[], CompileOptions::default()).expect("compile succeeds");
+    let mut args: Vec<Expr<'static>> = vec![Expr::dynamic_bytes(verifying_key), Expr::dynamic_bytes(proof)];
+    args.extend(public_inputs.into_iter().map(Into::into));
+    let sigscript = compiled.build_sig_script("verify", args).expect("sigscript builds");
+
+    let result = run_contract_with_tx(
+        compiled.bytecode.clone(),
+        compiled.bytecode.clone(),
+        compiled.bytecode.clone(),
+        2000,
+        500,
+        500,
+        sigscript,
+        0,
+    );
+    assert!(result.is_ok(), "Groth16 example failed: {}", result.unwrap_err());
+}
+
+#[test]
 fn compiles_r0_succinct_example_and_verifies() {
     let source = load_example_source("r0_succinct.sil");
     let (control_id, seal, claim, hashfn, control_index, control_digests, journal, image_id) =

@@ -2409,7 +2409,9 @@ fn parse_function_name<'i>(pair: Pair<'i, Rule>) -> Result<Identifier<'i>, Compi
             let name_pair = pair.into_inner().next().ok_or_else(|| CompilerError::Unsupported("missing function name".to_string()))?;
             parse_function_name(name_pair)
         }
-        Rule::r0_groth16_verify_name | Rule::r0_succinct_verify_name => Ok(Identifier { name: pair.as_str().to_string(), span }),
+        Rule::r0_groth16_verify_name | Rule::r0_succinct_verify_name | Rule::g16_verify_name => {
+            Ok(Identifier { name: pair.as_str().to_string(), span })
+        }
         _ => Err(CompilerError::Unsupported(format!("unexpected function name: {:?}", pair.as_rule())).with_span(&span)),
     }
 }
