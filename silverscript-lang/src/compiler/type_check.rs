@@ -292,6 +292,7 @@ pub(super) fn check_call<'i>(
         return Err(CompilerError::Unsupported(format!("function '{name}' not found")));
     };
     if name == "g16.verify" {
+        // g16.verify requires special treatment since it has variable amount of arguments
         check_g16_verify_args(args, ctx)?;
     } else {
         let parameters = builtin_parameters(name)
