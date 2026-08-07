@@ -63,23 +63,6 @@ pub(super) fn build_function_abi_entries<'i>(contract: &ContractAst<'i>) -> Vec<
         .collect()
 }
 
-pub(super) fn fixed_type_size<'i>(type_ref: &TypeRef, constants: &HashMap<String, Expr<'i>>) -> Option<usize> {
-    if type_ref.is_array() {
-        let element_type = type_ref.array_element_type()?;
-        let array_len = array_type_size(type_ref, constants)?;
-        return fixed_type_size(&element_type, constants)?.checked_mul(array_len);
-    }
-
-    match type_ref.base {
-        TypeBase::Int => Some(8),
-        TypeBase::Bool => Some(1),
-        TypeBase::Byte => Some(1),
-        TypeBase::Pubkey | TypeBase::Sig | TypeBase::Datasig => type_ref.base.fixed_byte_sequence_len(),
-        TypeBase::String => None,
-        TypeBase::Tuple(_) | TypeBase::Custom(_) => None,
-    }
-}
-
 pub(super) fn array_element_size<'i>(type_ref: &TypeRef, constants: &HashMap<String, Expr<'i>>) -> Option<i64> {
     let element_type = type_ref.array_element_type()?;
     i64::try_from(fixed_type_size(&element_type, constants)?).ok()
