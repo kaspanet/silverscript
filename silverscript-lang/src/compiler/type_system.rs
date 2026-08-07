@@ -23,6 +23,20 @@ pub(crate) fn array_size<'i>(type_ref: &TypeRef, constants: &HashMap<String, Exp
     dimension_value(type_ref.array_size()?, constants)
 }
 
+pub(crate) fn fixed_type_size<'i>(type_ref: &TypeRef, constants: &HashMap<String, Expr<'i>>) -> Option<usize> {
+    if type_ref.is_array() {
+        let element_type = type_ref.array_element_type()?;
+        return fixed_type_size(&element_type, constants)?.checked_mul(array_size(type_ref, constants)?);
+    }
+
+    match type_ref.base {
+        TypeBase::Int => Some(8),
+        TypeBase::Bool | TypeBase::Byte => Some(1),
+        TypeBase::Pubkey | TypeBase::Sig | TypeBase::Datasig => type_ref.base.fixed_byte_sequence_len(),
+        TypeBase::String | TypeBase::Tuple(_) | TypeBase::Custom(_) => None,
+    }
+}
+
 pub(crate) fn concat_types<'i>(left: &TypeRef, right: &TypeRef, constants: &HashMap<String, Expr<'i>>) -> Option<TypeRef> {
     let element = left.array_element_type()?;
     if !type_refs_equal(&element, &right.array_element_type()?, constants) {

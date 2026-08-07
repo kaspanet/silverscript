@@ -43,7 +43,7 @@ pub(super) use structs::{
     StructRegistry, build_struct_registry, ensure_known_struct_or_builtin_type, flatten_constructor_args_env, flatten_type_leaves,
     flattened_struct_field_specs_for_type, is_struct, is_struct_array, lower_structs_contract, struct_name, validate_struct_graph,
 };
-pub(super) use type_system::{append_type, array_size as array_type_size, concat_types, type_refs_equal};
+pub(super) use type_system::{append_type, array_size as array_type_size, concat_types, fixed_type_size, type_refs_equal};
 use validate_output_state::lower_validate_output_state;
 
 /// Prefix used for synthetic argument bindings during inline function expansion.

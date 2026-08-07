@@ -136,9 +136,25 @@ fn validate_function_signatures<'i>(
     constants: &HashMap<String, Expr<'i>>,
     options: CompileOptions,
 ) -> Result<(), CompilerError> {
+    let mut function_names = HashSet::new();
+    for function in &contract.functions {
+        if !function_names.insert(function.name.as_str()) {
+            return Err(CompilerError::Unsupported(format!("duplicate function name '{}'", function.name)));
+        }
+    }
     let functions = contract.functions.iter().map(|function| (function.name.clone(), function)).collect::<HashMap<_, _>>();
 
     for function in &contract.functions {
+        if function.entrypoint {
+            for param in &function.params {
+                if contract.fields.iter().any(|field| field.name == param.name) {
+                    return Err(CompilerError::Unsupported(format!(
+                        "entrypoint parameter '{}' conflicts with contract field of the same name",
+                        param.name
+                    )));
+                }
+            }
+        }
         for param in &function.params {
             ensure_array_elements_have_known_size(&param.type_ref, structs, constants, &param.type_ref.type_name())?;
         }
@@ -702,34 +718,35 @@ fn ensure_array_elements_have_known_size<'i>(
     constants: &HashMap<String, Expr<'i>>,
     type_name: &str,
 ) -> Result<(), CompilerError> {
-    if type_ref.is_array() && fixed_type_size(type_ref.array_element_type().as_ref().unwrap_or(type_ref), structs, constants).is_none()
+    if type_ref.is_array()
+        && fixed_type_size_with_structs(type_ref.array_element_type().as_ref().unwrap_or(type_ref), structs, constants).is_none()
     {
         return Err(CompilerError::Unsupported(format!("array element type must have known size: {type_name}")));
     }
     Ok(())
 }
 
-fn fixed_type_size<'i>(type_ref: &TypeRef, structs: &StructRegistry, constants: &HashMap<String, Expr<'i>>) -> Option<usize> {
+fn fixed_type_size_with_structs<'i>(
+    type_ref: &TypeRef,
+    structs: &StructRegistry,
+    constants: &HashMap<String, Expr<'i>>,
+) -> Option<usize> {
     if type_ref.is_array() {
         let element_type = type_ref.array_element_type()?;
         let array_len = array_type_size(type_ref, constants)?;
-        return fixed_type_size(&element_type, structs, constants)?.checked_mul(array_len);
+        return fixed_type_size_with_structs(&element_type, structs, constants)?.checked_mul(array_len);
     }
 
     match &type_ref.base {
-        TypeBase::Int => Some(8),
-        TypeBase::Bool | TypeBase::Byte => Some(1),
-        TypeBase::Pubkey | TypeBase::Sig | TypeBase::Datasig => type_ref.base.fixed_byte_sequence_len(),
-        TypeBase::String => None,
         TypeBase::Custom(name) => {
             let struct_spec = structs.get(name)?;
             let mut total = 0usize;
             for field in &struct_spec.fields {
-                total = total.checked_add(fixed_type_size(&field.type_ref, structs, constants)?)?;
+                total = total.checked_add(fixed_type_size_with_structs(&field.type_ref, structs, constants)?)?;
             }
             Some(total)
         }
-        TypeBase::Tuple(_) => None,
+        _ => fixed_type_size(type_ref, constants),
     }
 }
 

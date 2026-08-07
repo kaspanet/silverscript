@@ -13321,3 +13321,139 @@ fn blake3_with_key_requires_a_fixed_32_byte_key() {
     let err = compile_contract(numeric_data, &[], CompileOptions::default()).expect_err("numeric Blake3 data should be rejected");
     assert!(err.to_string().contains("argument 'data' expects byte[], got int"), "unexpected error: {err}");
 }
+
+#[test]
+fn rejects_misaligned_dynamic_array_entrypoint_payload() {
+    let source = r#"
+        contract DynamicArrayAlignment() {
+            entry main(int[] values) {
+                require(values.length == 0);
+            }
+        }
+    "#;
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("dynamic int array should compile");
+    let opcodes = script_to_str(&compiled.bytecode).expect("compiled bytecode should stringify");
+    assert!(opcodes.contains("OpMod"), "dynamic array validation should check payload alignment: {opcodes}");
+
+    // Bypass build_sig_script to model an untrusted spender pushing one byte for
+    // an int[] whose elements require eight bytes each.
+    let sigscript = script_builder().add_data_with_push_opcode(&[1]).unwrap().drain();
+    let result = run_bytecode_with_sigscript(compiled.bytecode, sigscript);
+    assert!(result.is_err(), "a dynamic int array payload must contain a whole number of elements");
+}
+
+#[test]
+fn derived_dynamic_array_length_counts_elements() {
+    let source = r#"
+        contract DerivedArrayLength() {
+            entry main(int[] values) {
+                require(values.slice(0, 1).length == 1);
+            }
+        }
+    "#;
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("dynamic int array slice should compile");
+    let sigscript = compiled.build_sig_script("main", vec![vec![10i64, 20i64].into()]).expect("sigscript builds");
+    let result = run_bytecode_with_sigscript(compiled.bytecode, sigscript);
+    assert!(result.is_ok(), "slice length should be measured in int elements, not encoded bytes: {result:?}");
+}
+
+#[test]
+fn rejects_fixed_array_cast_with_incompatible_encoded_sizes() {
+    let source = r#"
+        contract ArrayCastRepresentation() {
+            entry main() {
+                byte[2] values = byte[2](int[2]{1, 2});
+                require(values.length == 2);
+            }
+        }
+    "#;
+    let err = compile_contract(source, &[], CompileOptions::default())
+        .expect_err("casting two encoded ints to two bytes should be rejected");
+    assert!(err.to_string().contains("cannot cast int[2] to byte[2]"), "unexpected error: {err}");
+}
+
+#[test]
+fn allows_fixed_array_cast_with_compatible_encoded_size() {
+    let source = r#"
+        contract ArrayCastRepresentation() {
+            entry main() {
+                byte[16] values = byte[16](int[2]{1, 2});
+                require(values[0] == 1);
+                require(values[8] == 2);
+            }
+        }
+    "#;
+    let compiled = compile_contract(source, &[], CompileOptions::default())
+        .expect("fixed arrays with equal encoded sizes should be cast-compatible");
+    let opcodes = script_to_str(&compiled.bytecode).expect("compiled bytecode should stringify");
+    assert!(!opcodes.contains("OpNum2Bin"), "an equal-size array cast should remain a passthrough: {opcodes}");
+    let result = run_bytecode_with_selector(compiled.bytecode, None);
+    assert!(result.is_ok(), "the reinterpreted byte array should preserve the int payload bytes: {result:?}");
+}
+
+#[test]
+fn rejects_ordered_comparisons_for_non_numeric_operands() {
+    for operator in ["<", "<=", ">", ">="] {
+        let source = format!(
+            r#"
+                contract OrderedComparison() {{
+                    entry main() {{
+                        require("aaaaaaaaa" {operator} "bbbbbbbbb");
+                    }}
+                }}
+            "#
+        );
+        let err = compile_contract(&source, &[], CompileOptions::default())
+            .err()
+            .unwrap_or_else(|| panic!("string operands for {operator} should be rejected"));
+        assert!(err.to_string().contains("ordered comparison requires numeric operands"), "unexpected error for {operator}: {err}");
+    }
+}
+
+#[test]
+fn rejects_entrypoint_parameter_that_shadows_contract_field() {
+    let source = r#"
+        contract FieldParameterCollision() {
+            int field = 5;
+
+            entry spend(int field) {
+                require(field == 7);
+            }
+        }
+    "#;
+    let err = compile_contract(source, &[], CompileOptions::default())
+        .expect_err("an entrypoint parameter must not shadow a contract field");
+    assert!(err.to_string().contains("parameter 'field' conflicts with contract field"), "unexpected error: {err}");
+}
+
+#[test]
+fn rejects_duplicate_function_names() {
+    for duplicate in [
+        r#"
+            entry spend() {
+                require(true);
+            }
+
+            entry spend(int value) {
+                require(value > 0);
+            }
+        "#,
+        r#"
+            function helper(int value) {
+                require(value > 0);
+            }
+
+            function helper(bool value) {
+                require(value);
+            }
+
+            entry spend() {
+                require(true);
+            }
+        "#,
+    ] {
+        let source = format!("contract DuplicateFunctions() {{{duplicate}}}");
+        let err = compile_contract(&source, &[], CompileOptions::default()).expect_err("duplicate function names should be rejected");
+        assert!(err.to_string().contains("duplicate function name"), "unexpected error: {err}");
+    }
+}

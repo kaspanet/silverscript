@@ -103,18 +103,23 @@ fn compile_fixed_size_param_validations<'i>(
         if !param.type_ref.is_array() {
             continue;
         }
-        let Some(expected_size) = fixed_type_size(&param.type_ref, constants) else {
-            continue;
-        };
-        let expected_size = i64::try_from(expected_size)
-            .map_err(|_| CompilerError::Unsupported(format!("entrypoint parameter '{}' is too large", param.name)))?;
 
         let mut stack_depth = 0;
         let copied = stack_bindings.emit_copy_binding_to_top(&param.name, &mut stack_depth, builder)?;
         debug_assert!(copied, "entrypoint parameter must have a stack binding");
 
         builder.add_op(OpSize)?;
-        builder.add_i64(expected_size)?;
+        if let Some(expected_size) = fixed_type_size(&param.type_ref, constants) {
+            let expected_size = i64::try_from(expected_size)
+                .map_err(|_| CompilerError::Unsupported(format!("entrypoint parameter '{}' is too large", param.name)))?;
+            builder.add_i64(expected_size)?;
+        } else {
+            let element_size = array_element_size(&param.type_ref, constants)
+                .expect("type_check must validate dynamic array element types have known size");
+            builder.add_i64(element_size)?;
+            builder.add_op(OpMod)?;
+            builder.add_i64(0)?;
+        }
         builder.add_op(OpNumEqualVerify)?;
         builder.add_op(OpDrop)?;
     }

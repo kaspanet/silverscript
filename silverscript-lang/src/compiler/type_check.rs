@@ -9,7 +9,10 @@ use super::builtin_types::{
     indexed_introspection_type, introspection_type,
 };
 use super::structs::{StructRegistry, flattened_struct_field_specs_for_type, is_struct, struct_name};
-use super::{CompilerError, STATE_TYPE_NAME, TypeMap, append_type, array_type_size, concat_types, parse_type_ref, type_refs_equal};
+use super::{
+    CompilerError, STATE_TYPE_NAME, TypeMap, append_type, array_type_size, concat_types, fixed_type_size, parse_type_ref,
+    type_refs_equal,
+};
 
 pub(super) struct TypeCheckContext<'a, 'i> {
     pub types: &'a TypeMap,
@@ -281,7 +284,7 @@ pub(super) fn check_call<'i>(
         if cast_type.is_array()
             && source_type.is_array()
             && let (Some(target_size), Some(source_size)) =
-                (array_type_size(&cast_type, ctx.constants), array_type_size(&source_type, ctx.constants))
+                (fixed_type_size(&cast_type, ctx.constants), fixed_type_size(&source_type, ctx.constants))
             && target_size != source_size
         {
             return Err(CompilerError::Unsupported(format!("cannot cast {} to {}", source_type.type_name(), cast_type.type_name())));
@@ -377,7 +380,19 @@ fn check_binary<'i>(
         })?
     };
     match op {
-        BinaryOp::Eq | BinaryOp::Ne | BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge => Ok(scalar_type(TypeBase::Bool)),
+        BinaryOp::Eq | BinaryOp::Ne => Ok(scalar_type(TypeBase::Bool)),
+        BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge => {
+            let left_is_numeric = left_type.is_int() || left_type.is_byte();
+            let right_is_numeric = right_type.is_int() || right_type.is_byte();
+            if !left_is_numeric || !right_is_numeric {
+                return Err(CompilerError::Unsupported(format!(
+                    "ordered comparison requires numeric operands, got {} and {}",
+                    left_type.type_name(),
+                    right_type.type_name()
+                )));
+            }
+            Ok(scalar_type(TypeBase::Bool))
+        }
         BinaryOp::Or | BinaryOp::And => {
             let bool_type = scalar_type(TypeBase::Bool);
             ensure_expected(&left_type, Some(&bool_type), ctx.constants)?;

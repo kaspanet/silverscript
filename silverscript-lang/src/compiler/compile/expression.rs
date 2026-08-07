@@ -643,18 +643,14 @@ fn compile_length_expr<'i>(ctx: &mut CompileExprContext<'_, '_, 'i>, expr: &Expr
         ctx.push_int(size as i64)?;
         return Ok(());
     }
-    if let ExprKind::Identifier(name) = &expr.kind {
-        if let Some(type_ref) = ctx.env.types.get(name) {
-            if let Some(element_size) = array_element_size(type_ref, ctx.env.contract_constants) {
-                compile_expr_with_context(ctx, expr, Some(type_ref))?;
-                ctx.emit_op(OpSize, 1)?;
-                ctx.emit_op(OpSwap, 0)?;
-                ctx.emit_op(OpDrop, -1)?;
-                ctx.push_int(element_size)?;
-                ctx.emit_op(OpDiv, -1)?;
-                return Ok(());
-            }
-        }
+    if let Some(element_size) = array_element_size(&expr_type, ctx.env.contract_constants) {
+        compile_expr_with_context(ctx, expr, Some(&expr_type))?;
+        ctx.emit_op(OpSize, 1)?;
+        ctx.emit_op(OpSwap, 0)?;
+        ctx.emit_op(OpDrop, -1)?;
+        ctx.push_int(element_size)?;
+        ctx.emit_op(OpDiv, -1)?;
+        return Ok(());
     }
     compile_expr_with_context(ctx, expr, None)?;
     ctx.emit_op(OpSize, 1)?;
