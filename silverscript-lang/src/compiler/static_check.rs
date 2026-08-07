@@ -118,13 +118,13 @@ pub(crate) fn validate_return_types<'i>(
 
 fn validate_contract_struct_usage<'i>(contract: &ContractAst<'i>, structs: &StructRegistry) -> Result<(), CompilerError> {
     for param in &contract.params {
-        ensure_known_or_builtin_type(&param.type_ref, structs, "contract parameter")?;
+        ensure_known_struct_or_builtin_type(&param.type_ref, structs, "contract parameter")?;
     }
     for field in &contract.fields {
-        ensure_known_or_builtin_type(&field.type_ref, structs, "contract field")?;
+        ensure_known_struct_or_builtin_type(&field.type_ref, structs, "contract field")?;
     }
     for constant in &contract.constants {
-        ensure_known_or_builtin_type(&constant.type_ref, structs, "constant")?;
+        ensure_known_struct_or_builtin_type(&constant.type_ref, structs, "constant")?;
     }
 
     Ok(())
@@ -593,7 +593,7 @@ fn validate_struct_destructure_bindings<'i>(
     let mut seen_names = HashSet::new();
 
     for binding in bindings {
-        ensure_known_or_builtin_type(&binding.type_ref, structs, "struct destructuring")?;
+        ensure_known_struct_or_builtin_type(&binding.type_ref, structs, "struct destructuring")?;
         if !seen_fields.insert(binding.field_name.clone()) {
             return Err(CompilerError::Unsupported(format!("duplicate struct field '{}'", binding.field_name)));
         }

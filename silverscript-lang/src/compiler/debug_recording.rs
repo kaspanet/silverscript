@@ -1136,7 +1136,7 @@ fn inline_param_leaf_bindings(type_ref: &TypeRef, structs: &StructRegistry) -> O
     let leaf_bindings = flatten_type_leaves(type_ref, structs)
         .ok()?
         .into_iter()
-        .map(|(field_path, leaf_type)| DebugLeafBinding { field_path, type_name: leaf_type.type_name(), stack_binding: None })
+        .map(|leaf| DebugLeafBinding { field_path: leaf.path, type_name: leaf.type_ref.type_name(), stack_binding: None })
         .collect::<Vec<_>>();
     Some(leaf_bindings)
 }
@@ -1213,15 +1213,15 @@ fn record_structured_binding_spec(
         visible_names.and_then(|names| names.get(lowered_base_name)).cloned().unwrap_or_else(|| lowered_base_name.to_string());
     let base_type_name = type_ref.type_name();
 
-    for (field_path, leaf_type) in flatten_type_leaves(type_ref, structs)? {
-        let lowered_leaf_name = flattened_struct_field_name(lowered_base_name, &field_path);
+    for leaf in flatten_type_leaves(type_ref, structs)? {
+        let lowered_leaf_name = flattened_struct_field_name(lowered_base_name, &leaf.path);
         specs.insert(
             lowered_leaf_name,
             StructuredLeafSpec {
                 visible_base_name: visible_base_name.clone(),
                 base_type_name: base_type_name.clone(),
-                field_path,
-                leaf_type_name: leaf_type.type_name(),
+                field_path: leaf.path,
+                leaf_type_name: leaf.type_ref.type_name(),
             },
         );
     }
@@ -1244,7 +1244,7 @@ fn build_param_mappings<'i>(
         if is_struct(&param.type_ref, structs) || is_struct_array(&param.type_ref, structs) {
             let leaf_specs = flatten_type_leaves(&param.type_ref, structs)?
                 .into_iter()
-                .map(|(field_path, leaf_type)| (field_path, leaf_type.type_name()))
+                .map(|leaf| (leaf.path, leaf.type_ref.type_name()))
                 .collect::<Vec<_>>();
             for (field_path, _) in &leaf_specs {
                 flattened_param_names.push(flattened_struct_field_name(&param.name, field_path));

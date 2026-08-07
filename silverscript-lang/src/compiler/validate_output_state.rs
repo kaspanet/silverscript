@@ -299,7 +299,7 @@ fn input_template_parts<'i>(
     structs: &StructRegistry,
     constants: &HashMap<String, Expr<'i>>,
 ) -> Result<(Expr<'i>, Expr<'i>), CompilerError> {
-    let layout_field_types = flatten_type_leaves(state_type, structs)?.into_iter().map(|(_, type_ref)| type_ref).collect::<Vec<_>>();
+    let layout_field_types = flatten_type_leaves(state_type, structs)?.into_iter().map(|leaf| leaf.type_ref).collect::<Vec<_>>();
     let state_len = encoded_state_len_for_layout_field_types(&layout_field_types, constants).map_err(|_| {
         CompilerError::Unsupported("validateOutputStateWithInputTemplate requires a fixed-size state layout".to_string())
     })?;
@@ -444,9 +444,9 @@ fn flatten_struct_expr<'i>(
     let leaves = flatten_type_leaves(&actual_type, structs)?;
     Ok(leaves
         .into_iter()
-        .map(|(leaf_path, _)| {
+        .map(|leaf| {
             let mut full_path = path.clone();
-            full_path.extend(leaf_path);
+            full_path.extend(leaf.path);
             field_access_chain(&base, &full_path)
         })
         .collect())

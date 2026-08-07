@@ -40,7 +40,7 @@ use read_input_state::lower_read_input_state_calls;
 use static_check::validate_expr_matches_type;
 pub use structs::flattened_struct_name;
 pub(super) use structs::{
-    StructRegistry, build_struct_registry, ensure_known_or_builtin_type, flatten_constructor_args_env, flatten_type_leaves,
+    StructRegistry, build_struct_registry, ensure_known_struct_or_builtin_type, flatten_constructor_args_env, flatten_type_leaves,
     flattened_struct_field_specs_for_type, is_struct, is_struct_array, lower_structs_contract, struct_name, validate_struct_graph,
 };
 pub(super) use type_system::{append_type, array_size as array_type_size, concat_types, type_refs_equal};
