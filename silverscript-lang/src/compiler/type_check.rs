@@ -275,6 +275,17 @@ pub(super) fn check_call<'i>(
     {
         check_arity(name, args, 1)?;
         let source_type = check_expr(&args[0], None, ctx)?;
+        if cast_type.is_byte() && source_type.is_int() {
+            match &args[0].kind {
+                ExprKind::Int(value) => {
+                    u8::try_from(*value)
+                        .map_err(|_| CompilerError::Unsupported(format!("integer literal {value} is out of range for byte")))?;
+                }
+                _ => {
+                    return Err(CompilerError::Unsupported("cannot cast non-literal int expression to byte".to_string()));
+                }
+            }
+        }
         if matches!(cast_type.base, TypeBase::Byte) && cast_type.is_array() && source_type.is_int() {
             return Err(CompilerError::Unsupported(format!(
                 "cannot cast int to {}; use 'value as byte[N]' instead",

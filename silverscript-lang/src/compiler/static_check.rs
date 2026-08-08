@@ -2,6 +2,41 @@ use super::*;
 use semver::{Comparator, Op, Version, VersionReq};
 use std::collections::{HashMap, HashSet};
 
+pub(super) fn validate_declaration_names(contract: &ContractAst<'_>) -> Result<(), CompilerError> {
+    let mut names = HashSet::new();
+    for param in &contract.params {
+        if !names.insert(param.name.as_str()) {
+            return Err(
+                CompilerError::Unsupported(format!("duplicate contract parameter name '{}'", param.name)).with_span(&param.name_span)
+            );
+        }
+    }
+
+    names.clear();
+    for constant in &contract.constants {
+        if !names.insert(constant.name.as_str()) {
+            return Err(
+                CompilerError::Unsupported(format!("duplicate constant name '{}'", constant.name)).with_span(&constant.name_span)
+            );
+        }
+    }
+
+    for function in &contract.functions {
+        names.clear();
+        for param in &function.params {
+            if !names.insert(param.name.as_str()) {
+                return Err(CompilerError::Unsupported(format!(
+                    "duplicate parameter name '{}' in function '{}'",
+                    param.name, function.name
+                ))
+                .with_span(&param.name_span));
+            }
+        }
+    }
+
+    Ok(())
+}
+
 pub(super) fn static_check_contract<'i>(
     contract: &ContractAst<'i>,
     constructor_args: &[Expr<'i>],

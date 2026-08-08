@@ -1,4 +1,6 @@
 mod common;
+use std::panic::{AssertUnwindSafe, catch_unwind};
+
 use kaspa_addresses::{Address, Prefix, Version};
 use kaspa_consensus_core::Hash;
 use kaspa_consensus_core::hashing::sighash::SigHashReusedValuesUnsync;
@@ -15,7 +17,7 @@ use kaspa_txscript::{
     EngineCtx, EngineFlags, SeqCommitAccessor, TxScriptEngine, parse_script, pay_to_address_script, pay_to_script_hash_script,
     pay_to_script_hash_signature_script_with_flags, script_to_str, serialize_i64,
 };
-use silverscript_lang::ast::{Expr, ExprKind, Statement, format_contract_ast, parse_contract_ast, parse_type_ref};
+use silverscript_lang::ast::{ContractAst, Expr, ExprKind, Statement, format_contract_ast, parse_contract_ast, parse_type_ref};
 use silverscript_lang::compiler::{
     COMPILER_VERSION, CompileOptions, CompiledContract, CovenantDeclCallOptions, FunctionAbiEntry, FunctionInputAbi, compile_contract,
     compile_contract_ast, compile_debug_expr, function_branch_index, generated_covenant_auth_entrypoint_name, struct_object,
@@ -11271,6 +11273,64 @@ fn byte_array_to_int_cast_compiles_without_extra_opcodes_and_executes() {
 }
 
 #[test]
+fn scalar_int_and_byte_cast_directionality() {
+    for expression in ["value", "value + 1"] {
+        let source = format!(
+            r#"
+            contract Test() {{
+                entry test(int value) {{
+                    byte narrowed = byte({expression});
+                    require(narrowed == narrowed);
+                }}
+            }}
+            "#
+        );
+        let err = compile_contract(&source, &[], CompileOptions::default())
+            .expect_err("non-literal int expressions must not cast to scalar byte");
+        assert!(err.to_string().contains("cannot cast non-literal int expression to byte"), "unexpected error: {err}");
+    }
+
+    let literal_source = r#"
+        contract Test() {
+            entry test() {
+                byte zero = byte(0);
+                byte value = byte(42);
+                byte max = byte(255);
+                require(zero == byte(0));
+                require(value == byte(42));
+                require(max == byte(255));
+            }
+        }
+    "#;
+    compile_contract(literal_source, &[], CompileOptions::default()).expect("in-range int literals may cast to byte");
+
+    let out_of_range_source = r#"
+        contract Test() {
+            entry test() {
+                byte invalid = byte(256);
+                require(invalid == invalid);
+            }
+        }
+    "#;
+    let err = compile_contract(out_of_range_source, &[], CompileOptions::default())
+        .expect_err("out-of-range int literal must not cast to byte");
+    assert!(err.to_string().contains("integer literal 256 is out of range for byte"), "unexpected error: {err}");
+
+    let widening_source = r#"
+        contract Test() {
+            entry test(byte value) {
+                int widened = int(value);
+                require(widened == 42);
+            }
+        }
+    "#;
+    let compiled = compile_contract(widening_source, &[], CompileOptions::default()).expect("byte-to-int cast must compile");
+    assert!(!compiled.bytecode.contains(&OpBin2Num), "int(byte) remains a pass-through cast");
+    let sigscript = compiled.build_sig_script("test", vec![Expr::byte(42)]).expect("byte argument encodes");
+    assert!(run_bytecode_with_sigscript(compiled.bytecode, sigscript).is_ok(), "byte-to-int cast must execute");
+}
+
+#[test]
 fn empty_array_statement_expr_evaluation_compiles_to_empty_array_data() {
     let source = r#"
         contract Test() {
@@ -13455,5 +13515,227 @@ fn rejects_duplicate_function_names() {
         let source = format!("contract DuplicateFunctions() {{{duplicate}}}");
         let err = compile_contract(&source, &[], CompileOptions::default()).expect_err("duplicate function names should be rejected");
         assert!(err.to_string().contains("duplicate function name"), "unexpected error: {err}");
+    }
+}
+
+#[test]
+fn rejects_duplicate_declaration_names() {
+    let cases = [
+        (
+            "contract DuplicateCtor(int value, int value) { entry spend() { require(true); } }",
+            vec![Expr::int(1), Expr::int(2)],
+            "value",
+            "duplicate contract parameter name 'value'",
+        ),
+        (
+            "contract DuplicateEntry() { entry spend(int value, int value) { require(value == value); } }",
+            vec![],
+            "value",
+            "duplicate parameter name 'value' in function 'spend'",
+        ),
+        (
+            "contract DuplicateHelper() { function helper(int value, int value) { require(true); } entry spend() { require(true); } }",
+            vec![],
+            "value",
+            "duplicate parameter name 'value' in function 'helper'",
+        ),
+        (
+            "contract DuplicateConstant() { int constant VALUE = 1; int constant VALUE = 2; entry spend() { require(true); } }",
+            vec![],
+            "VALUE",
+            "duplicate constant name 'VALUE'",
+        ),
+    ];
+
+    for (source, constructor_args, duplicate_name, expected_error) in cases {
+        let source_error = compile_contract(source, &constructor_args, CompileOptions::default())
+            .expect_err("source compilation must reject duplicate declarations");
+        assert_eq!(source_error.root().to_string(), format!("unsupported feature: {expected_error}"));
+        let span = source_error.span().expect("source error identifies the second declaration");
+        assert_eq!(&source[span.start..span.end], duplicate_name);
+
+        let ast = parse_contract_ast(source).expect("duplicate declarations remain representable in the public AST");
+        let ast_error = compile_contract_ast(&ast, &constructor_args, CompileOptions::default())
+            .expect_err("public AST compilation must reject duplicate declarations");
+        assert_eq!(ast_error.root().to_string(), source_error.root().to_string());
+    }
+}
+
+#[derive(Clone, Debug)]
+enum ConformancePureExpr {
+    Int(i64),
+    Add(Box<Self>, Box<Self>),
+    Sub(Box<Self>, Box<Self>),
+    Mul(Box<Self>, Box<Self>),
+    Eq(Box<Self>, Box<Self>),
+    Lt(Box<Self>, Box<Self>),
+    And(Box<Self>, Box<Self>),
+    Or(Box<Self>, Box<Self>),
+    Not(Box<Self>),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ConformanceValue {
+    Int(i64),
+    Bool(bool),
+}
+
+impl ConformancePureExpr {
+    fn eval(&self) -> ConformanceValue {
+        match self {
+            Self::Int(value) => ConformanceValue::Int(*value),
+            Self::Add(left, right) => ConformanceValue::Int(conformance_int(left.eval()) + conformance_int(right.eval())),
+            Self::Sub(left, right) => ConformanceValue::Int(conformance_int(left.eval()) - conformance_int(right.eval())),
+            Self::Mul(left, right) => ConformanceValue::Int(conformance_int(left.eval()) * conformance_int(right.eval())),
+            Self::Eq(left, right) => ConformanceValue::Bool(left.eval() == right.eval()),
+            Self::Lt(left, right) => ConformanceValue::Bool(conformance_int(left.eval()) < conformance_int(right.eval())),
+            Self::And(left, right) => ConformanceValue::Bool(conformance_bool(left.eval()) && conformance_bool(right.eval())),
+            Self::Or(left, right) => ConformanceValue::Bool(conformance_bool(left.eval()) || conformance_bool(right.eval())),
+            Self::Not(value) => ConformanceValue::Bool(!conformance_bool(value.eval())),
+        }
+    }
+
+    fn source(&self) -> String {
+        match self {
+            Self::Int(value) => value.to_string(),
+            Self::Add(left, right) => format!("({} + {})", left.source(), right.source()),
+            Self::Sub(left, right) => format!("({} - {})", left.source(), right.source()),
+            Self::Mul(left, right) => format!("({} * {})", left.source(), right.source()),
+            Self::Eq(left, right) => format!("({} == {})", left.source(), right.source()),
+            Self::Lt(left, right) => format!("({} < {})", left.source(), right.source()),
+            Self::And(left, right) => format!("({} && {})", left.source(), right.source()),
+            Self::Or(left, right) => format!("({} || {})", left.source(), right.source()),
+            Self::Not(value) => format!("!({})", value.source()),
+        }
+    }
+}
+
+fn conformance_int(value: ConformanceValue) -> i64 {
+    match value {
+        ConformanceValue::Int(value) => value,
+        ConformanceValue::Bool(_) => panic!("generator produced an ill-typed integer expression"),
+    }
+}
+
+fn conformance_bool(value: ConformanceValue) -> bool {
+    match value {
+        ConformanceValue::Bool(value) => value,
+        ConformanceValue::Int(_) => panic!("generator produced an ill-typed boolean expression"),
+    }
+}
+
+fn next_conformance_seed(seed: &mut u64) -> u64 {
+    *seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+    *seed
+}
+
+fn generate_conformance_int(seed: &mut u64, depth: usize) -> ConformancePureExpr {
+    if depth == 0 {
+        return ConformancePureExpr::Int((next_conformance_seed(seed) % 17) as i64 - 8);
+    }
+    let left = Box::new(generate_conformance_int(seed, depth - 1));
+    let right = Box::new(generate_conformance_int(seed, depth - 1));
+    match next_conformance_seed(seed) % 3 {
+        0 => ConformancePureExpr::Add(left, right),
+        1 => ConformancePureExpr::Sub(left, right),
+        _ => ConformancePureExpr::Mul(left, right),
+    }
+}
+
+fn generate_conformance_bool(seed: &mut u64, depth: usize) -> ConformancePureExpr {
+    if depth == 0 {
+        let left = Box::new(generate_conformance_int(seed, 1));
+        let right = Box::new(generate_conformance_int(seed, 1));
+        return if next_conformance_seed(seed) & 1 == 0 {
+            ConformancePureExpr::Eq(left, right)
+        } else {
+            ConformancePureExpr::Lt(left, right)
+        };
+    }
+    match next_conformance_seed(seed) % 3 {
+        0 => ConformancePureExpr::Not(Box::new(generate_conformance_bool(seed, depth - 1))),
+        1 => ConformancePureExpr::And(
+            Box::new(generate_conformance_bool(seed, depth - 1)),
+            Box::new(generate_conformance_bool(seed, depth - 1)),
+        ),
+        _ => ConformancePureExpr::Or(
+            Box::new(generate_conformance_bool(seed, depth - 1)),
+            Box::new(generate_conformance_bool(seed, depth - 1)),
+        ),
+    }
+}
+
+fn compile_and_execute_conformance_assertion(assertion: &str) {
+    let source = format!("contract Generated() {{ entry spend() {{ require({assertion}); }} }}");
+    let compiled = compile_contract(&source, &[], CompileOptions::default()).expect("generated well-typed program compiles");
+    run_bytecode_with_selector(compiled.bytecode, None).expect("reference result agrees with local VM");
+}
+
+#[test]
+fn bounded_reference_evaluator_matches_local_vm() {
+    let mut seed = 0x05ee_dc0d_ed15_ca11_u64;
+    for _case in 0..64 {
+        let expr = generate_conformance_bool(&mut seed, 2);
+        let expected = conformance_bool(expr.eval());
+        compile_and_execute_conformance_assertion(&format!("{} == {expected}", expr.source()));
+    }
+}
+
+#[test]
+fn bounded_metamorphic_variants_preserve_behavior() {
+    let variants = [
+        "int alpha = 2 + 3; require(alpha == 5);",
+        "int renamed = 2 + 3; require(renamed == 5);",
+        "int alpha = 5; require(alpha == 5);",
+        "int alpha = helper(2, 3); require(alpha == 5);",
+        "int alpha = false ? (1 / 0) : 5; require(alpha == 5);",
+    ];
+    for body in variants {
+        let helper = if body.contains("helper") { "function helper(int a, int b): int { return a + b; }" } else { "" };
+        let source = format!("contract Meta() {{ {helper} entry spend() {{ {body} }} }}");
+        let compiled = compile_contract(&source, &[], CompileOptions::default()).expect("metamorphic variant compiles");
+        run_bytecode_with_selector(compiled.bytecode, None).expect("metamorphic variant executes");
+    }
+}
+
+#[test]
+fn formatting_and_ast_round_trip_preserve_artifact() {
+    let source = "contract RoundTrip(int seed) { int state = seed; entry spend() { require(state == 4); } }";
+    let args = [Expr::int(4)];
+    let original = compile_contract(source, &args, CompileOptions::default()).expect("source compiles");
+    let ast = parse_contract_ast(source).expect("source parses");
+    let formatted = format_contract_ast(&ast);
+    let reparsed = parse_contract_ast(&formatted).expect("formatted source parses");
+    let from_ast = compile_contract_ast(&reparsed, &args, CompileOptions::default()).expect("public AST path compiles");
+    assert_eq!(original.bytecode, from_ast.bytecode);
+    assert_eq!(original.abi, from_ast.abi);
+    assert_eq!(original.state_layout, from_ast.state_layout);
+}
+
+#[test]
+fn debug_recording_does_not_change_executable_artifact() {
+    let source = "contract DebugInvariant() { entry spend() { int x = 2 + 3; require(x == 5); } }";
+    let plain = compile_contract(source, &[], CompileOptions::default()).expect("plain compile");
+    let debug = compile_contract(source, &[], CompileOptions { record_debug_infos: true, ..CompileOptions::default() })
+        .expect("debug compile");
+    assert_eq!(plain.abi, debug.abi);
+    assert_eq!(plain.state_layout, debug.state_layout);
+    assert!(plain.debug_info.is_none());
+    assert!(debug.debug_info.is_some());
+    run_bytecode_with_selector(plain.bytecode, None).expect("plain artifact executes");
+    run_bytecode_with_selector(debug.bytecode, None).expect("debug artifact executes with equivalent semantics");
+}
+
+#[test]
+fn public_ast_robustness_seeds_return_without_panicking() {
+    let seeds = [
+        r#"{"name":"NoFunctions","params":[],"constants":[],"functions":[]}"#,
+        r#"{"name":"UnknownType","params":[],"constants":[],"functions":[{"name":"spend","params":[{"type_ref":{"base":"Missing"},"name":"x"}],"entrypoint":true,"body":[]}] }"#,
+        r#"{"name":"BadReturn","params":[],"constants":[],"functions":[{"name":"spend","params":[],"entrypoint":true,"return_types":[{"base":"int"}],"body":[]}] }"#,
+    ];
+    for seed in seeds {
+        let ast: ContractAst<'_> = serde_json::from_str(seed).expect("seed is valid public AST JSON");
+        let outcome = catch_unwind(AssertUnwindSafe(|| compile_contract_ast(&ast, &[], CompileOptions::default())));
+        assert!(outcome.is_ok(), "public AST compilation panicked for seed: {seed}");
     }
 }

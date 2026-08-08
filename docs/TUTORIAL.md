@@ -818,6 +818,11 @@ entry casts(byte[32] data, byte[65] sigBytes, byte[32] keyBytes, byte[] someData
 }
 ```
 
+The scalar `byte(...)` conversion accepts an existing `byte` value or an integer
+literal in the range `0..=255`. It does not narrow variables or other non-literal
+`int` expressions. Converting a scalar `byte` to `int` with `int(byteValue)` is
+allowed.
+
 **Example:**
 
 ```javascript

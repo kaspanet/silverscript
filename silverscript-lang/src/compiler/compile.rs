@@ -4,7 +4,7 @@ use super::infer_array::lower_inferred_array_sizes;
 use super::inline_functions::lower_inline_functions;
 use super::locals::lower_local_aliases;
 use super::stack_bindings::StackBindings;
-use super::static_check::static_check_contract;
+use super::static_check::{static_check_contract, validate_declaration_names};
 use super::ternary::lower_ternaries;
 use super::*;
 use kaspa_txscript::EngineFlags;
@@ -41,6 +41,8 @@ pub(super) fn compile_contract_impl<'i>(
     options: CompileOptions,
     source: Option<&'i str>,
 ) -> Result<CompiledContract<'i>, CompilerError> {
+    validate_declaration_names(contract)?;
+
     let mut constants: HashMap<String, Expr<'i>> =
         contract.constants.iter().map(|constant| (constant.name.clone(), constant.expr.clone())).collect();
     for (param, value) in contract.params.iter().zip(constructor_args.iter()) {
