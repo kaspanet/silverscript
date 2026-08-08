@@ -11148,6 +11148,45 @@ fn int_as_fixed_bytes_has_a_fixed_result_type_and_uses_num2bin() {
 }
 
 #[test]
+fn int_as_byte_uses_num2bin_and_executes() {
+    let source = r#"
+        contract Test() {
+            entry test(int x) {
+                byte encoded = x as byte;
+                require(encoded == byte(42));
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("int as byte compiles");
+    let opcodes = script_to_str(&compiled.bytecode).expect("compiled bytecode stringifies");
+    assert_eq!(opcodes.matches("OpNum2Bin").count(), 1, "int as byte must emit one OpNum2Bin: {opcodes}");
+
+    let sigscript = compiled.build_sig_script("test", vec![Expr::int(42)]).expect("int argument encodes");
+    assert!(run_bytecode_with_sigscript(compiled.bytecode, sigscript).is_ok(), "one-byte numeric conversion should execute");
+}
+
+#[test]
+fn int_as_byte_fails_at_runtime_when_value_does_not_fit() {
+    let source = r#"
+        contract Test() {
+            entry test(int x) {
+                byte encoded = x as byte;
+                require(encoded == encoded);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("int as byte compiles");
+    let sigscript = compiled.build_sig_script("test", vec![Expr::int(128)]).expect("int argument encodes");
+    let err = run_bytecode_with_sigscript(compiled.bytecode, sigscript).expect_err("128 needs two script-number bytes");
+    assert_eq!(
+        err,
+        kaspa_txscript_errors::TxScriptError::Serialization(kaspa_txscript_errors::SerializationError::NumberTooLong(128, 1))
+    );
+}
+
+#[test]
 fn int_as_fixed_bytes_accepts_a_compile_time_size_constant() {
     let source = r#"
         contract Test() {
@@ -11167,7 +11206,7 @@ fn int_as_fixed_bytes_accepts_a_compile_time_size_constant() {
 fn int_as_fixed_bytes_rejects_invalid_source_target_and_size() {
     let cases = [
         ("byte[] data = byte[](0x01); byte[_] encoded = data as byte[4];", "source must be int"),
-        ("int x = 1; byte[] encoded = x as byte[];", "requires a fixed byte[N] target"),
+        ("int x = 1; byte[] encoded = x as byte[];", "requires byte or a fixed byte[N] target"),
         ("int x = 1; byte[_] encoded = x as byte[_];", "cannot infer fixed array size"),
         ("int x = 1; byte[_] encoded = x as byte[9];", "must be between 1 and 8"),
     ];

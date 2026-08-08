@@ -169,7 +169,7 @@ contract ChessPawn(
                 if (moving_is_black) {
                     arrived_num = arrived_num + 8;
                 }
-                arrived_piece = byte(arrived_num);
+                arrived_piece = arrived_num as byte;
             } else {
                 require(promo_piece == 0);
             }

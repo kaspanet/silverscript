@@ -238,14 +238,18 @@ pub(super) fn check_call<'i>(
     if let Some(cast_type) = as_cast_type(name) {
         check_arity("as", args, 1)?;
         if !matches!(cast_type.base, TypeBase::Byte)
-            || !matches!(cast_type.array_dims.as_slice(), [ArrayDim::Fixed(_) | ArrayDim::Constant(_)])
+            || !(cast_type.is_byte() || matches!(cast_type.array_dims.as_slice(), [ArrayDim::Fixed(_) | ArrayDim::Constant(_)]))
         {
-            return Err(CompilerError::Unsupported("'as' conversion requires a fixed byte[N] target".to_string()));
+            return Err(CompilerError::Unsupported("'as' conversion requires byte or a fixed byte[N] target".to_string()));
         }
         check_expr(&args[0], Some(&scalar_type(TypeBase::Int)), ctx)
-            .map_err(|_| CompilerError::Unsupported("'as byte[N]' source must be int".to_string()))?;
-        let size = array_type_size(&cast_type, ctx.constants)
-            .ok_or_else(|| CompilerError::Unsupported("byte size in 'as byte[N]' must be known at compile time".to_string()))?;
+            .map_err(|_| CompilerError::Unsupported("'as byte' source must be int".to_string()))?;
+        let size = if cast_type.is_byte() {
+            1
+        } else {
+            array_type_size(&cast_type, ctx.constants)
+                .ok_or_else(|| CompilerError::Unsupported("byte size in 'as byte[N]' must be known at compile time".to_string()))?
+        };
         if size == 0 || size > 8 {
             return Err(CompilerError::Unsupported("byte size in 'as byte[N]' must be between 1 and 8".to_string()));
         }

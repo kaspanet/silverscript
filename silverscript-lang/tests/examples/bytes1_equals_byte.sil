@@ -2,7 +2,7 @@ pragma silverscript ^0.1.0;
 
 contract Bytes1EqualsByte() {
     entry hello(int a, byte b) {
-        byte c = byte(a);
+        byte c = a as byte;
         require(b == c);
     }
 }

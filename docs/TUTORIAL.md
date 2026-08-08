@@ -823,6 +823,10 @@ literal in the range `0..=255`. It does not narrow variables or other non-litera
 `int` expressions. Converting a scalar `byte` to `int` with `int(byteValue)` is
 allowed.
 
+Use `value as byte` to encode a runtime `int` as one byte. It fails at runtime when the value does
+not fit the VM's one-byte signed-magnitude script-number encoding (for example,
+`128`).
+
 **Example:**
 
 ```javascript

@@ -107,8 +107,12 @@ fn compile_as_cast<'i>(ctx: &mut CompileExprContext<'_, '_, 'i>, args: &[Expr<'i
     let [source] = args else {
         return Err(CompilerError::Unsupported("'as' conversion expects one source expression".to_string()));
     };
-    let size = array_type_size(cast_type, ctx.env.constants)
-        .ok_or_else(|| CompilerError::Unsupported("byte size in 'as byte[N]' must be known at compile time".to_string()))?;
+    let size = if cast_type.is_byte() {
+        1
+    } else {
+        array_type_size(cast_type, ctx.env.constants)
+            .ok_or_else(|| CompilerError::Unsupported("byte size in 'as byte[N]' must be known at compile time".to_string()))?
+    };
     compile_call_arg_with_context(ctx, source)?;
     ctx.push_int(i64::try_from(size).map_err(|_| CompilerError::Unsupported("byte size is too large".to_string()))?)?;
     ctx.emit_op(OpNum2Bin, -1)?;
