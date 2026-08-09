@@ -1188,36 +1188,73 @@ fn byte_equality_with_out_of_range_rhs_int_literal_is_rejected() {
 }
 
 #[test]
-fn rejects_adding_byte_values() {
-    let source = r#"
-        contract Bytes() {
-            entry main() {
-                byte x = 5;
-                byte y = 7;
-                require(x + y > 0);
-            }
-        }
-    "#;
+fn rejects_arithmetic_operations_on_byte_expressions() {
+    for operator in ["+", "-", "*", "/", "%"] {
+        let literal_source = format!(
+            r#"
+                contract ByteLiterals() {{
+                    entry main() {{
+                        int result = byte(6) {operator} byte(2);
+                        require(result == 0);
+                    }}
+                }}
+            "#
+        );
+        compile_contract(&literal_source, &[], CompileOptions::default())
+            .expect_err(&format!("byte literals should not support {operator} arithmetic"));
 
-    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("byte addition should be rejected");
-    assert!(err.to_string().contains("byte values do not support '+'"), "unexpected error: {err}");
+        let variable_source = format!(
+            r#"
+                contract ByteVariables() {{
+                    entry main() {{
+                        byte b1 = 6;
+                        byte b2 = 2;
+                        int result = b1 {operator} b2;
+                        require(result == 0);
+                    }}
+                }}
+            "#
+        );
+        compile_contract(&variable_source, &[], CompileOptions::default())
+            .expect_err(&format!("byte variables should not support {operator} arithmetic"));
+    }
 }
 
 #[test]
-fn rejects_assigning_sum_of_byte_values_to_byte() {
+fn rejects_negating_a_byte_expression() {
     let source = r#"
         contract Bytes() {
             entry main() {
-                byte x = 5;
-                byte y = 7;
-                byte z = x + y;
-                require(OpBin2Num(z) == 12);
+                byte value = 5;
+                int result = -value;
+                require(result == 0);
             }
         }
     "#;
 
-    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("byte addition assignment should be rejected");
-    assert!(err.to_string().contains("byte values do not support '+'"), "unexpected error: {err}");
+    compile_contract(source, &[], CompileOptions::default()).expect_err("negating a byte should be rejected");
+}
+
+#[test]
+fn allows_arithmetic_after_signed_or_unsigned_byte_conversion() {
+    let source = r#"
+        contract Bytes() {
+            entry main() {
+                byte b1 = 5;
+                byte b2 = 7;
+                int signedResult = signed(b1) + signed(b2);
+                int unsignedResult = unsigned(b1) + unsigned(b2);
+                require(signedResult == 12);
+                require(unsignedResult == 12);
+            }
+        }
+    "#;
+
+    let compiled =
+        compile_contract(source, &[], CompileOptions::default()).expect("explicit byte conversions should allow arithmetic");
+    let opcodes = script_to_str(&compiled.bytecode).expect("compiled bytecode stringifies");
+    assert_eq!(opcodes.matches("OpAdd").count(), 2, "converted byte arithmetic must emit OpAdd: {opcodes}");
+    assert!(run_bytecode_with_selector(compiled.bytecode, None).is_ok(), "converted byte arithmetic should execute");
 }
 
 #[test]
@@ -11261,6 +11298,8 @@ fn builtin_function_arguments_are_type_checked() {
         ("length", "length(1) >= 0", "argument 'data' expects byte[], got int"),
         ("sha256", "sha256(1).length == 32", "argument 'data' expects byte[], got int"),
         ("blake3", "blake3(false).length == 32", "argument 'data' expects byte[], got bool"),
+        ("signed conversion", "signed(false) == 0", "argument 'value' expects byte, got bool"),
+        ("unsigned conversion", "unsigned(false) == 0", "argument 'value' expects byte, got bool"),
         ("checkSig", "checkSig(1, 2)", "argument 'signature' expects sig, got int"),
         ("transaction index", "OpOutpointTxId(false).length == 32", "argument 'idx' expects int, got bool"),
         ("transaction substring", "OpTxPayloadSubstr(false, 1).length >= 0", "argument 'start' expects int, got bool"),
@@ -11354,19 +11393,70 @@ fn scalar_int_and_byte_cast_directionality() {
     let err = compile_contract(out_of_range_source, &[], CompileOptions::default())
         .expect_err("out-of-range int literal must not cast to byte");
     assert!(err.to_string().contains("integer literal 256 is out of range for byte"), "unexpected error: {err}");
+}
 
-    let widening_source = r#"
+#[test]
+fn int_cast_rejects_scalar_byte_expressions() {
+    let variable_source = r#"
         contract Test() {
             entry test(byte value) {
                 int widened = int(value);
-                require(widened == 42);
+                require(widened == widened);
             }
         }
     "#;
-    let compiled = compile_contract(widening_source, &[], CompileOptions::default()).expect("byte-to-int cast must compile");
-    assert!(!compiled.bytecode.contains(&OpBin2Num), "int(byte) remains a pass-through cast");
-    let sigscript = compiled.build_sig_script("test", vec![Expr::byte(42)]).expect("byte argument encodes");
-    assert!(run_bytecode_with_sigscript(compiled.bytecode, sigscript).is_ok(), "byte-to-int cast must execute");
+    let err = compile_contract(variable_source, &[], CompileOptions::default()).expect_err("int(byte variable) must be rejected");
+    assert!(err.to_string().contains("use signed() or unsigned()"), "unexpected error: {err}");
+
+    let literal_source = r#"
+        contract Test() {
+            entry test() {
+                int widened = int(byte(42));
+                require(widened == widened);
+            }
+        }
+    "#;
+    let err = compile_contract(literal_source, &[], CompileOptions::default()).expect_err("int(byte expression) must be rejected");
+    assert!(err.to_string().contains("use signed() or unsigned()"), "unexpected error: {err}");
+}
+
+#[test]
+fn signed_byte_cast_is_a_passthrough_with_signed_numeric_semantics() {
+    let source = r#"
+        contract Test() {
+            entry test(byte value) {
+                int converted = signed(value);
+                require(converted == -127);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("signed(byte) compiles");
+    let opcodes = script_to_str(&compiled.bytecode).expect("compiled bytecode stringifies");
+    assert!(!opcodes.contains("OpCat"), "signed(byte) must be a passthrough: {opcodes}");
+    assert!(!opcodes.contains("OpBin2Num"), "signed(byte) must not normalize its operand: {opcodes}");
+
+    let sigscript = compiled.build_sig_script("test", vec![Expr::byte(255)]).expect("byte argument encodes");
+    assert!(run_bytecode_with_sigscript(compiled.bytecode, sigscript).is_ok(), "0xff must have signed value -127");
+}
+
+#[test]
+fn unsigned_byte_cast_appends_zero_and_preserves_255() {
+    let source = r#"
+        contract Test() {
+            entry test() {
+                int i = 255;
+                byte b = 255;
+                require(unsigned(b) == i);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("unsigned(byte) compiles");
+    let opcodes = script_to_str(&compiled.bytecode).expect("compiled bytecode stringifies");
+    assert_eq!(opcodes.matches("OpCat").count(), 1, "unsigned(byte) must append one zero byte: {opcodes}");
+    assert!(!opcodes.contains("OpBin2Num"), "unsigned(byte) must use concatenation rather than normalization: {opcodes}");
+    assert!(run_bytecode_with_selector(compiled.bytecode, None).is_ok(), "unsigned(0xff) must equal 255");
 }
 
 #[test]

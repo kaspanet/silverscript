@@ -279,6 +279,9 @@ pub(super) fn check_call<'i>(
     {
         check_arity(name, args, 1)?;
         let source_type = check_expr(&args[0], None, ctx)?;
+        if cast_type.is_int() && source_type.is_byte() {
+            return Err(CompilerError::Unsupported("cannot cast byte to int; use signed() or unsigned() instead".to_string()));
+        }
         if cast_type.is_byte() && source_type.is_int() {
             match &args[0].kind {
                 ExprKind::Int(value) => {
@@ -416,9 +419,6 @@ fn check_binary<'i>(
         }
         BinaryOp::Add if left_type.is_array() && right_type.is_array() => concat_types(&left_type, &right_type, ctx.constants)
             .ok_or_else(|| CompilerError::Unsupported("array concatenation requires identical element types".to_string())),
-        BinaryOp::Add if left_type.is_byte() || right_type.is_byte() => {
-            Err(CompilerError::Unsupported("byte values do not support '+'".to_string()))
-        }
         BinaryOp::Add if left_type.is_string() && right_type.is_string() => Ok(scalar_type(TypeBase::String)),
         BinaryOp::BitOr | BinaryOp::BitXor | BinaryOp::BitAnd => {
             if left_type.is_byte() && right_type.is_byte() {
