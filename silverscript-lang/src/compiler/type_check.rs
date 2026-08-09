@@ -238,14 +238,18 @@ pub(super) fn check_call<'i>(
     if let Some(cast_type) = as_cast_type(name) {
         check_arity("as", args, 1)?;
         if !matches!(cast_type.base, TypeBase::Byte)
-            || !matches!(cast_type.array_dims.as_slice(), [ArrayDim::Fixed(_) | ArrayDim::Constant(_)])
+            || !(cast_type.is_byte() || matches!(cast_type.array_dims.as_slice(), [ArrayDim::Fixed(_) | ArrayDim::Constant(_)]))
         {
-            return Err(CompilerError::Unsupported("'as' conversion requires a fixed byte[N] target".to_string()));
+            return Err(CompilerError::Unsupported("'as' conversion requires byte or a fixed byte[N] target".to_string()));
         }
         check_expr(&args[0], Some(&scalar_type(TypeBase::Int)), ctx)
-            .map_err(|_| CompilerError::Unsupported("'as byte[N]' source must be int".to_string()))?;
-        let size = array_type_size(&cast_type, ctx.constants)
-            .ok_or_else(|| CompilerError::Unsupported("byte size in 'as byte[N]' must be known at compile time".to_string()))?;
+            .map_err(|_| CompilerError::Unsupported("'as byte' source must be int".to_string()))?;
+        let size = if cast_type.is_byte() {
+            1
+        } else {
+            array_type_size(&cast_type, ctx.constants)
+                .ok_or_else(|| CompilerError::Unsupported("byte size in 'as byte[N]' must be known at compile time".to_string()))?
+        };
         if size == 0 || size > 8 {
             return Err(CompilerError::Unsupported("byte size in 'as byte[N]' must be between 1 and 8".to_string()));
         }
@@ -275,6 +279,20 @@ pub(super) fn check_call<'i>(
     {
         check_arity(name, args, 1)?;
         let source_type = check_expr(&args[0], None, ctx)?;
+        if cast_type.is_int() && source_type.is_byte() {
+            return Err(CompilerError::Unsupported("cannot cast byte to int; use signed() or unsigned() instead".to_string()));
+        }
+        if cast_type.is_byte() && source_type.is_int() {
+            match &args[0].kind {
+                ExprKind::Int(value) => {
+                    u8::try_from(*value)
+                        .map_err(|_| CompilerError::Unsupported(format!("integer literal {value} is out of range for byte")))?;
+                }
+                _ => {
+                    return Err(CompilerError::Unsupported("cannot cast non-literal int expression to byte".to_string()));
+                }
+            }
+        }
         if matches!(cast_type.base, TypeBase::Byte) && cast_type.is_array() && source_type.is_int() {
             return Err(CompilerError::Unsupported(format!(
                 "cannot cast int to {}; use 'value as byte[N]' instead",
@@ -401,9 +419,6 @@ fn check_binary<'i>(
         }
         BinaryOp::Add if left_type.is_array() && right_type.is_array() => concat_types(&left_type, &right_type, ctx.constants)
             .ok_or_else(|| CompilerError::Unsupported("array concatenation requires identical element types".to_string())),
-        BinaryOp::Add if left_type.is_byte() || right_type.is_byte() => {
-            Err(CompilerError::Unsupported("byte values do not support '+'".to_string()))
-        }
         BinaryOp::Add if left_type.is_string() && right_type.is_string() => Ok(scalar_type(TypeBase::String)),
         BinaryOp::BitOr | BinaryOp::BitXor | BinaryOp::BitAnd => {
             if left_type.is_byte() && right_type.is_byte() {

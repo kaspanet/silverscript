@@ -19,6 +19,8 @@ pub(super) fn compile_call_expr<'i>(
         "sha256" => compile_sha256_call(ctx, args),
         "length" => compile_length_call(ctx, args),
         "byte" => compile_byte_sequence_cast_call(ctx, "byte[1]", args),
+        "signed" => compile_typed_builtin_args(ctx, "signed", args),
+        "unsigned" => compile_unsigned_call(ctx, args),
         "int" | "bool" | "string" | "sig" | "pubkey" | "datasig" => compile_passthrough_cast_call(ctx, name, args),
         name if parse_type_ref(name)
             .is_ok_and(|type_ref| matches!(type_ref.base, TypeBase::Byte) && type_ref.array_dims.len() == 1) =>
@@ -107,8 +109,12 @@ fn compile_as_cast<'i>(ctx: &mut CompileExprContext<'_, '_, 'i>, args: &[Expr<'i
     let [source] = args else {
         return Err(CompilerError::Unsupported("'as' conversion expects one source expression".to_string()));
     };
-    let size = array_type_size(cast_type, ctx.env.constants)
-        .ok_or_else(|| CompilerError::Unsupported("byte size in 'as byte[N]' must be known at compile time".to_string()))?;
+    let size = if cast_type.is_byte() {
+        1
+    } else {
+        array_type_size(cast_type, ctx.env.constants)
+            .ok_or_else(|| CompilerError::Unsupported("byte size in 'as byte[N]' must be known at compile time".to_string()))?
+    };
     compile_call_arg_with_context(ctx, source)?;
     ctx.push_int(i64::try_from(size).map_err(|_| CompilerError::Unsupported("byte size is too large".to_string()))?)?;
     ctx.emit_op(OpNum2Bin, -1)?;
@@ -131,6 +137,13 @@ fn compile_passthrough_cast_call<'i>(
         return Err(CompilerError::Unsupported(format!("{name}() expects a single argument")));
     }
     compile_call_arg_with_context(ctx, &args[0])
+}
+
+fn compile_unsigned_call<'i>(ctx: &mut CompileExprContext<'_, '_, 'i>, args: &[Expr<'i>]) -> Result<(), CompilerError> {
+    compile_typed_builtin_args(ctx, "unsigned", args)?;
+    ctx.push_data(&[0])?;
+    ctx.emit_op(OpCat, -1)?;
+    Ok(())
 }
 
 fn compile_byte_sequence_cast_call<'i>(

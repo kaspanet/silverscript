@@ -1,4 +1,6 @@
 mod common;
+use std::panic::{AssertUnwindSafe, catch_unwind};
+
 use kaspa_addresses::{Address, Prefix, Version};
 use kaspa_consensus_core::Hash;
 use kaspa_consensus_core::hashing::sighash::SigHashReusedValuesUnsync;
@@ -15,7 +17,7 @@ use kaspa_txscript::{
     EngineCtx, EngineFlags, SeqCommitAccessor, TxScriptEngine, parse_script, pay_to_address_script, pay_to_script_hash_script,
     pay_to_script_hash_signature_script_with_flags, script_to_str, serialize_i64,
 };
-use silverscript_lang::ast::{Expr, ExprKind, Statement, format_contract_ast, parse_contract_ast, parse_type_ref};
+use silverscript_lang::ast::{ContractAst, Expr, ExprKind, Statement, format_contract_ast, parse_contract_ast, parse_type_ref};
 use silverscript_lang::compiler::{
     COMPILER_VERSION, CompileOptions, CompiledContract, CovenantDeclCallOptions, FunctionAbiEntry, FunctionInputAbi, compile_contract,
     compile_contract_ast, compile_debug_expr, function_branch_index, generated_covenant_auth_entrypoint_name, struct_object,
@@ -1186,36 +1188,73 @@ fn byte_equality_with_out_of_range_rhs_int_literal_is_rejected() {
 }
 
 #[test]
-fn rejects_adding_byte_values() {
-    let source = r#"
-        contract Bytes() {
-            entry main() {
-                byte x = 5;
-                byte y = 7;
-                require(x + y > 0);
-            }
-        }
-    "#;
+fn rejects_arithmetic_operations_on_byte_expressions() {
+    for operator in ["+", "-", "*", "/", "%"] {
+        let literal_source = format!(
+            r#"
+                contract ByteLiterals() {{
+                    entry main() {{
+                        int result = byte(6) {operator} byte(2);
+                        require(result == 0);
+                    }}
+                }}
+            "#
+        );
+        compile_contract(&literal_source, &[], CompileOptions::default())
+            .expect_err(&format!("byte literals should not support {operator} arithmetic"));
 
-    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("byte addition should be rejected");
-    assert!(err.to_string().contains("byte values do not support '+'"), "unexpected error: {err}");
+        let variable_source = format!(
+            r#"
+                contract ByteVariables() {{
+                    entry main() {{
+                        byte b1 = 6;
+                        byte b2 = 2;
+                        int result = b1 {operator} b2;
+                        require(result == 0);
+                    }}
+                }}
+            "#
+        );
+        compile_contract(&variable_source, &[], CompileOptions::default())
+            .expect_err(&format!("byte variables should not support {operator} arithmetic"));
+    }
 }
 
 #[test]
-fn rejects_assigning_sum_of_byte_values_to_byte() {
+fn rejects_negating_a_byte_expression() {
     let source = r#"
         contract Bytes() {
             entry main() {
-                byte x = 5;
-                byte y = 7;
-                byte z = x + y;
-                require(OpBin2Num(z) == 12);
+                byte value = 5;
+                int result = -value;
+                require(result == 0);
             }
         }
     "#;
 
-    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("byte addition assignment should be rejected");
-    assert!(err.to_string().contains("byte values do not support '+'"), "unexpected error: {err}");
+    compile_contract(source, &[], CompileOptions::default()).expect_err("negating a byte should be rejected");
+}
+
+#[test]
+fn allows_arithmetic_after_signed_or_unsigned_byte_conversion() {
+    let source = r#"
+        contract Bytes() {
+            entry main() {
+                byte b1 = 5;
+                byte b2 = 7;
+                int signedResult = signed(b1) + signed(b2);
+                int unsignedResult = unsigned(b1) + unsigned(b2);
+                require(signedResult == 12);
+                require(unsignedResult == 12);
+            }
+        }
+    "#;
+
+    let compiled =
+        compile_contract(source, &[], CompileOptions::default()).expect("explicit byte conversions should allow arithmetic");
+    let opcodes = script_to_str(&compiled.bytecode).expect("compiled bytecode stringifies");
+    assert_eq!(opcodes.matches("OpAdd").count(), 2, "converted byte arithmetic must emit OpAdd: {opcodes}");
+    assert!(run_bytecode_with_selector(compiled.bytecode, None).is_ok(), "converted byte arithmetic should execute");
 }
 
 #[test]
@@ -11146,6 +11185,45 @@ fn int_as_fixed_bytes_has_a_fixed_result_type_and_uses_num2bin() {
 }
 
 #[test]
+fn int_as_byte_uses_num2bin_and_executes() {
+    let source = r#"
+        contract Test() {
+            entry test(int x) {
+                byte encoded = x as byte;
+                require(encoded == byte(42));
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("int as byte compiles");
+    let opcodes = script_to_str(&compiled.bytecode).expect("compiled bytecode stringifies");
+    assert_eq!(opcodes.matches("OpNum2Bin").count(), 1, "int as byte must emit one OpNum2Bin: {opcodes}");
+
+    let sigscript = compiled.build_sig_script("test", vec![Expr::int(42)]).expect("int argument encodes");
+    assert!(run_bytecode_with_sigscript(compiled.bytecode, sigscript).is_ok(), "one-byte numeric conversion should execute");
+}
+
+#[test]
+fn int_as_byte_fails_at_runtime_when_value_does_not_fit() {
+    let source = r#"
+        contract Test() {
+            entry test(int x) {
+                byte encoded = x as byte;
+                require(encoded == encoded);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("int as byte compiles");
+    let sigscript = compiled.build_sig_script("test", vec![Expr::int(128)]).expect("int argument encodes");
+    let err = run_bytecode_with_sigscript(compiled.bytecode, sigscript).expect_err("128 needs two script-number bytes");
+    assert_eq!(
+        err,
+        kaspa_txscript_errors::TxScriptError::Serialization(kaspa_txscript_errors::SerializationError::NumberTooLong(128, 1))
+    );
+}
+
+#[test]
 fn int_as_fixed_bytes_accepts_a_compile_time_size_constant() {
     let source = r#"
         contract Test() {
@@ -11165,7 +11243,7 @@ fn int_as_fixed_bytes_accepts_a_compile_time_size_constant() {
 fn int_as_fixed_bytes_rejects_invalid_source_target_and_size() {
     let cases = [
         ("byte[] data = byte[](0x01); byte[_] encoded = data as byte[4];", "source must be int"),
-        ("int x = 1; byte[] encoded = x as byte[];", "requires a fixed byte[N] target"),
+        ("int x = 1; byte[] encoded = x as byte[];", "requires byte or a fixed byte[N] target"),
         ("int x = 1; byte[_] encoded = x as byte[_];", "cannot infer fixed array size"),
         ("int x = 1; byte[_] encoded = x as byte[9];", "must be between 1 and 8"),
     ];
@@ -11220,6 +11298,8 @@ fn builtin_function_arguments_are_type_checked() {
         ("length", "length(1) >= 0", "argument 'data' expects byte[], got int"),
         ("sha256", "sha256(1).length == 32", "argument 'data' expects byte[], got int"),
         ("blake3", "blake3(false).length == 32", "argument 'data' expects byte[], got bool"),
+        ("signed conversion", "signed(false) == 0", "argument 'value' expects byte, got bool"),
+        ("unsigned conversion", "unsigned(false) == 0", "argument 'value' expects byte, got bool"),
         ("checkSig", "checkSig(1, 2)", "argument 'signature' expects sig, got int"),
         ("transaction index", "OpOutpointTxId(false).length == 32", "argument 'idx' expects int, got bool"),
         ("transaction substring", "OpTxPayloadSubstr(false, 1).length >= 0", "argument 'start' expects int, got bool"),
@@ -11268,6 +11348,115 @@ fn byte_array_to_int_cast_compiles_without_extra_opcodes_and_executes() {
 
     let sigscript = script_builder().add_data_with_push_opcode(&[42]).unwrap().drain();
     assert!(run_bytecode_with_sigscript(compiled.bytecode, sigscript).is_ok(), "int(data) should produce a usable integer value");
+}
+
+#[test]
+fn scalar_int_and_byte_cast_directionality() {
+    for expression in ["value", "value + 1"] {
+        let source = format!(
+            r#"
+            contract Test() {{
+                entry test(int value) {{
+                    byte narrowed = byte({expression});
+                    require(narrowed == narrowed);
+                }}
+            }}
+            "#
+        );
+        let err = compile_contract(&source, &[], CompileOptions::default())
+            .expect_err("non-literal int expressions must not cast to scalar byte");
+        assert!(err.to_string().contains("cannot cast non-literal int expression to byte"), "unexpected error: {err}");
+    }
+
+    let literal_source = r#"
+        contract Test() {
+            entry test() {
+                byte zero = byte(0);
+                byte value = byte(42);
+                byte max = byte(255);
+                require(zero == byte(0));
+                require(value == byte(42));
+                require(max == byte(255));
+            }
+        }
+    "#;
+    compile_contract(literal_source, &[], CompileOptions::default()).expect("in-range int literals may cast to byte");
+
+    let out_of_range_source = r#"
+        contract Test() {
+            entry test() {
+                byte invalid = byte(256);
+                require(invalid == invalid);
+            }
+        }
+    "#;
+    let err = compile_contract(out_of_range_source, &[], CompileOptions::default())
+        .expect_err("out-of-range int literal must not cast to byte");
+    assert!(err.to_string().contains("integer literal 256 is out of range for byte"), "unexpected error: {err}");
+}
+
+#[test]
+fn int_cast_rejects_scalar_byte_expressions() {
+    let variable_source = r#"
+        contract Test() {
+            entry test(byte value) {
+                int widened = int(value);
+                require(widened == widened);
+            }
+        }
+    "#;
+    let err = compile_contract(variable_source, &[], CompileOptions::default()).expect_err("int(byte variable) must be rejected");
+    assert!(err.to_string().contains("use signed() or unsigned()"), "unexpected error: {err}");
+
+    let literal_source = r#"
+        contract Test() {
+            entry test() {
+                int widened = int(byte(42));
+                require(widened == widened);
+            }
+        }
+    "#;
+    let err = compile_contract(literal_source, &[], CompileOptions::default()).expect_err("int(byte expression) must be rejected");
+    assert!(err.to_string().contains("use signed() or unsigned()"), "unexpected error: {err}");
+}
+
+#[test]
+fn signed_byte_cast_is_a_passthrough_with_signed_numeric_semantics() {
+    let source = r#"
+        contract Test() {
+            entry test(byte value) {
+                int converted = signed(value);
+                require(converted == -127);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("signed(byte) compiles");
+    let opcodes = script_to_str(&compiled.bytecode).expect("compiled bytecode stringifies");
+    assert!(!opcodes.contains("OpCat"), "signed(byte) must be a passthrough: {opcodes}");
+    assert!(!opcodes.contains("OpBin2Num"), "signed(byte) must not normalize its operand: {opcodes}");
+
+    let sigscript = compiled.build_sig_script("test", vec![Expr::byte(255)]).expect("byte argument encodes");
+    assert!(run_bytecode_with_sigscript(compiled.bytecode, sigscript).is_ok(), "0xff must have signed value -127");
+}
+
+#[test]
+fn unsigned_byte_cast_appends_zero_and_preserves_255() {
+    let source = r#"
+        contract Test() {
+            entry test() {
+                int i = 255;
+                byte b = 255;
+                require(unsigned(b) == i);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("unsigned(byte) compiles");
+    let opcodes = script_to_str(&compiled.bytecode).expect("compiled bytecode stringifies");
+    assert_eq!(opcodes.matches("OpCat").count(), 1, "unsigned(byte) must append one zero byte: {opcodes}");
+    assert!(!opcodes.contains("OpBin2Num"), "unsigned(byte) must use concatenation rather than normalization: {opcodes}");
+    assert!(run_bytecode_with_selector(compiled.bytecode, None).is_ok(), "unsigned(0xff) must equal 255");
 }
 
 #[test]
@@ -13455,5 +13644,227 @@ fn rejects_duplicate_function_names() {
         let source = format!("contract DuplicateFunctions() {{{duplicate}}}");
         let err = compile_contract(&source, &[], CompileOptions::default()).expect_err("duplicate function names should be rejected");
         assert!(err.to_string().contains("duplicate function name"), "unexpected error: {err}");
+    }
+}
+
+#[test]
+fn rejects_duplicate_declaration_names() {
+    let cases = [
+        (
+            "contract DuplicateCtor(int value, int value) { entry spend() { require(true); } }",
+            vec![Expr::int(1), Expr::int(2)],
+            "value",
+            "duplicate contract parameter name 'value'",
+        ),
+        (
+            "contract DuplicateEntry() { entry spend(int value, int value) { require(value == value); } }",
+            vec![],
+            "value",
+            "duplicate parameter name 'value' in function 'spend'",
+        ),
+        (
+            "contract DuplicateHelper() { function helper(int value, int value) { require(true); } entry spend() { require(true); } }",
+            vec![],
+            "value",
+            "duplicate parameter name 'value' in function 'helper'",
+        ),
+        (
+            "contract DuplicateConstant() { int constant VALUE = 1; int constant VALUE = 2; entry spend() { require(true); } }",
+            vec![],
+            "VALUE",
+            "duplicate constant name 'VALUE'",
+        ),
+    ];
+
+    for (source, constructor_args, duplicate_name, expected_error) in cases {
+        let source_error = compile_contract(source, &constructor_args, CompileOptions::default())
+            .expect_err("source compilation must reject duplicate declarations");
+        assert_eq!(source_error.root().to_string(), format!("unsupported feature: {expected_error}"));
+        let span = source_error.span().expect("source error identifies the second declaration");
+        assert_eq!(&source[span.start..span.end], duplicate_name);
+
+        let ast = parse_contract_ast(source).expect("duplicate declarations remain representable in the public AST");
+        let ast_error = compile_contract_ast(&ast, &constructor_args, CompileOptions::default())
+            .expect_err("public AST compilation must reject duplicate declarations");
+        assert_eq!(ast_error.root().to_string(), source_error.root().to_string());
+    }
+}
+
+#[derive(Clone, Debug)]
+enum ConformancePureExpr {
+    Int(i64),
+    Add(Box<Self>, Box<Self>),
+    Sub(Box<Self>, Box<Self>),
+    Mul(Box<Self>, Box<Self>),
+    Eq(Box<Self>, Box<Self>),
+    Lt(Box<Self>, Box<Self>),
+    And(Box<Self>, Box<Self>),
+    Or(Box<Self>, Box<Self>),
+    Not(Box<Self>),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ConformanceValue {
+    Int(i64),
+    Bool(bool),
+}
+
+impl ConformancePureExpr {
+    fn eval(&self) -> ConformanceValue {
+        match self {
+            Self::Int(value) => ConformanceValue::Int(*value),
+            Self::Add(left, right) => ConformanceValue::Int(conformance_int(left.eval()) + conformance_int(right.eval())),
+            Self::Sub(left, right) => ConformanceValue::Int(conformance_int(left.eval()) - conformance_int(right.eval())),
+            Self::Mul(left, right) => ConformanceValue::Int(conformance_int(left.eval()) * conformance_int(right.eval())),
+            Self::Eq(left, right) => ConformanceValue::Bool(left.eval() == right.eval()),
+            Self::Lt(left, right) => ConformanceValue::Bool(conformance_int(left.eval()) < conformance_int(right.eval())),
+            Self::And(left, right) => ConformanceValue::Bool(conformance_bool(left.eval()) && conformance_bool(right.eval())),
+            Self::Or(left, right) => ConformanceValue::Bool(conformance_bool(left.eval()) || conformance_bool(right.eval())),
+            Self::Not(value) => ConformanceValue::Bool(!conformance_bool(value.eval())),
+        }
+    }
+
+    fn source(&self) -> String {
+        match self {
+            Self::Int(value) => value.to_string(),
+            Self::Add(left, right) => format!("({} + {})", left.source(), right.source()),
+            Self::Sub(left, right) => format!("({} - {})", left.source(), right.source()),
+            Self::Mul(left, right) => format!("({} * {})", left.source(), right.source()),
+            Self::Eq(left, right) => format!("({} == {})", left.source(), right.source()),
+            Self::Lt(left, right) => format!("({} < {})", left.source(), right.source()),
+            Self::And(left, right) => format!("({} && {})", left.source(), right.source()),
+            Self::Or(left, right) => format!("({} || {})", left.source(), right.source()),
+            Self::Not(value) => format!("!({})", value.source()),
+        }
+    }
+}
+
+fn conformance_int(value: ConformanceValue) -> i64 {
+    match value {
+        ConformanceValue::Int(value) => value,
+        ConformanceValue::Bool(_) => panic!("generator produced an ill-typed integer expression"),
+    }
+}
+
+fn conformance_bool(value: ConformanceValue) -> bool {
+    match value {
+        ConformanceValue::Bool(value) => value,
+        ConformanceValue::Int(_) => panic!("generator produced an ill-typed boolean expression"),
+    }
+}
+
+fn next_conformance_seed(seed: &mut u64) -> u64 {
+    *seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+    *seed
+}
+
+fn generate_conformance_int(seed: &mut u64, depth: usize) -> ConformancePureExpr {
+    if depth == 0 {
+        return ConformancePureExpr::Int((next_conformance_seed(seed) % 17) as i64 - 8);
+    }
+    let left = Box::new(generate_conformance_int(seed, depth - 1));
+    let right = Box::new(generate_conformance_int(seed, depth - 1));
+    match next_conformance_seed(seed) % 3 {
+        0 => ConformancePureExpr::Add(left, right),
+        1 => ConformancePureExpr::Sub(left, right),
+        _ => ConformancePureExpr::Mul(left, right),
+    }
+}
+
+fn generate_conformance_bool(seed: &mut u64, depth: usize) -> ConformancePureExpr {
+    if depth == 0 {
+        let left = Box::new(generate_conformance_int(seed, 1));
+        let right = Box::new(generate_conformance_int(seed, 1));
+        return if next_conformance_seed(seed) & 1 == 0 {
+            ConformancePureExpr::Eq(left, right)
+        } else {
+            ConformancePureExpr::Lt(left, right)
+        };
+    }
+    match next_conformance_seed(seed) % 3 {
+        0 => ConformancePureExpr::Not(Box::new(generate_conformance_bool(seed, depth - 1))),
+        1 => ConformancePureExpr::And(
+            Box::new(generate_conformance_bool(seed, depth - 1)),
+            Box::new(generate_conformance_bool(seed, depth - 1)),
+        ),
+        _ => ConformancePureExpr::Or(
+            Box::new(generate_conformance_bool(seed, depth - 1)),
+            Box::new(generate_conformance_bool(seed, depth - 1)),
+        ),
+    }
+}
+
+fn compile_and_execute_conformance_assertion(assertion: &str) {
+    let source = format!("contract Generated() {{ entry spend() {{ require({assertion}); }} }}");
+    let compiled = compile_contract(&source, &[], CompileOptions::default()).expect("generated well-typed program compiles");
+    run_bytecode_with_selector(compiled.bytecode, None).expect("reference result agrees with local VM");
+}
+
+#[test]
+fn bounded_reference_evaluator_matches_local_vm() {
+    let mut seed = 0x05ee_dc0d_ed15_ca11_u64;
+    for _case in 0..64 {
+        let expr = generate_conformance_bool(&mut seed, 2);
+        let expected = conformance_bool(expr.eval());
+        compile_and_execute_conformance_assertion(&format!("{} == {expected}", expr.source()));
+    }
+}
+
+#[test]
+fn bounded_metamorphic_variants_preserve_behavior() {
+    let variants = [
+        "int alpha = 2 + 3; require(alpha == 5);",
+        "int renamed = 2 + 3; require(renamed == 5);",
+        "int alpha = 5; require(alpha == 5);",
+        "int alpha = helper(2, 3); require(alpha == 5);",
+        "int alpha = false ? (1 / 0) : 5; require(alpha == 5);",
+    ];
+    for body in variants {
+        let helper = if body.contains("helper") { "function helper(int a, int b): int { return a + b; }" } else { "" };
+        let source = format!("contract Meta() {{ {helper} entry spend() {{ {body} }} }}");
+        let compiled = compile_contract(&source, &[], CompileOptions::default()).expect("metamorphic variant compiles");
+        run_bytecode_with_selector(compiled.bytecode, None).expect("metamorphic variant executes");
+    }
+}
+
+#[test]
+fn formatting_and_ast_round_trip_preserve_artifact() {
+    let source = "contract RoundTrip(int seed) { int state = seed; entry spend() { require(state == 4); } }";
+    let args = [Expr::int(4)];
+    let original = compile_contract(source, &args, CompileOptions::default()).expect("source compiles");
+    let ast = parse_contract_ast(source).expect("source parses");
+    let formatted = format_contract_ast(&ast);
+    let reparsed = parse_contract_ast(&formatted).expect("formatted source parses");
+    let from_ast = compile_contract_ast(&reparsed, &args, CompileOptions::default()).expect("public AST path compiles");
+    assert_eq!(original.bytecode, from_ast.bytecode);
+    assert_eq!(original.abi, from_ast.abi);
+    assert_eq!(original.state_layout, from_ast.state_layout);
+}
+
+#[test]
+fn debug_recording_does_not_change_executable_artifact() {
+    let source = "contract DebugInvariant() { entry spend() { int x = 2 + 3; require(x == 5); } }";
+    let plain = compile_contract(source, &[], CompileOptions::default()).expect("plain compile");
+    let debug = compile_contract(source, &[], CompileOptions { record_debug_infos: true, ..CompileOptions::default() })
+        .expect("debug compile");
+    assert_eq!(plain.abi, debug.abi);
+    assert_eq!(plain.state_layout, debug.state_layout);
+    assert!(plain.debug_info.is_none());
+    assert!(debug.debug_info.is_some());
+    run_bytecode_with_selector(plain.bytecode, None).expect("plain artifact executes");
+    run_bytecode_with_selector(debug.bytecode, None).expect("debug artifact executes with equivalent semantics");
+}
+
+#[test]
+fn public_ast_robustness_seeds_return_without_panicking() {
+    let seeds = [
+        r#"{"name":"NoFunctions","params":[],"constants":[],"functions":[]}"#,
+        r#"{"name":"UnknownType","params":[],"constants":[],"functions":[{"name":"spend","params":[{"type_ref":{"base":"Missing"},"name":"x"}],"entrypoint":true,"body":[]}] }"#,
+        r#"{"name":"BadReturn","params":[],"constants":[],"functions":[{"name":"spend","params":[],"entrypoint":true,"return_types":[{"base":"int"}],"body":[]}] }"#,
+    ];
+    for seed in seeds {
+        let ast: ContractAst<'_> = serde_json::from_str(seed).expect("seed is valid public AST JSON");
+        let outcome = catch_unwind(AssertUnwindSafe(|| compile_contract_ast(&ast, &[], CompileOptions::default())));
+        assert!(outcome.is_ok(), "public AST compilation panicked for seed: {seed}");
     }
 }

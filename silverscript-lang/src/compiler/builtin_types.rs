@@ -57,7 +57,7 @@ pub(super) fn indexed_introspection_type(kind: IndexedIntrospectionKind) -> Type
 
 pub(super) fn builtin_return(name: &str) -> Option<BuiltinReturn> {
     let value_type = match name {
-        "int" => scalar(TypeBase::Int),
+        "int" | "signed" | "unsigned" => scalar(TypeBase::Int),
         "bool" => scalar(TypeBase::Bool),
         "byte" => scalar(TypeBase::Byte),
         "string" => scalar(TypeBase::String),
@@ -133,6 +133,7 @@ pub(super) fn constructor_parameters(name: &str) -> Option<Vec<(&'static str, Ty
 
 pub(super) fn builtin_parameters(name: &str) -> Option<Vec<(&'static str, TypeRef)>> {
     Some(match name {
+        "signed" | "unsigned" => vec![("value", scalar(TypeBase::Byte))],
         "length" | "sha256" | "blake2b" | "blake3" => vec![("data", byte_array(ArrayDim::Dynamic))],
         "blake2bWithKey" => vec![("data", byte_array(ArrayDim::Dynamic)), ("key", byte_array(ArrayDim::Dynamic))],
         "blake3WithKey" => vec![("data", byte_array(ArrayDim::Dynamic)), ("key", byte_array(ArrayDim::Fixed(32)))],

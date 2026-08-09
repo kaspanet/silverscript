@@ -818,6 +818,17 @@ entry casts(byte[32] data, byte[65] sigBytes, byte[32] keyBytes, byte[] someData
 }
 ```
 
+The scalar `byte(...)` conversion accepts an existing `byte` value or an integer
+literal in the range `0..=255`. It does not narrow variables or other non-literal
+`int` expressions. `int(byteValue)` is not allowed for scalar `byte` expressions;
+use `signed(byteValue)` or `unsigned(byteValue)` to select the intended numeric
+interpretation. Scalar `byte` expressions cannot be used directly with
+arithmetic operators.
+
+Use `value as byte` to encode a runtime `int` as one byte. It fails at runtime when the value does
+not fit the VM's one-byte signed-magnitude script-number encoding (for example,
+`128`).
+
 **Example:**
 
 ```javascript
@@ -918,6 +929,27 @@ Convert boolean to integer (true = 1, false = 0):
 
 ```javascript
 int x = int(false);  // 0
+```
+
+**`signed(byte value): int`**
+
+Interpret a scalar byte as a one-byte signed-magnitude script number. This is a
+pass-through cast and does not change its byte encoding:
+
+```javascript
+byte b = 0xff;
+int x = signed(b);  // -127
+```
+
+**`unsigned(byte value): int`**
+
+Interpret the byte's full unsigned value by appending a zero byte to its numeric
+encoding:
+
+```javascript
+int i = 255;
+byte b = 255;
+require(unsigned(b) == i);
 ```
 
 ---
