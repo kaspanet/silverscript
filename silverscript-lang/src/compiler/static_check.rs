@@ -54,8 +54,11 @@ pub(super) fn static_check_contract<'i>(
     let structs = build_struct_registry(contract)?;
     validate_struct_graph(&structs)?;
     validate_contract_struct_usage(contract, &structs)?;
-    let constants: HashMap<String, Expr<'i>> =
+    let mut constants: HashMap<String, Expr<'i>> =
         contract.constants.iter().map(|constant| (constant.name.clone(), constant.expr.clone())).collect();
+    for (param, value) in contract.params.iter().zip(constructor_args) {
+        constants.insert(param.name.clone(), value.clone());
+    }
     validate_contract_field_initializers(contract, &structs, &constants)?;
     validate_function_signatures(contract, &structs, &constants, options)?;
 
@@ -753,6 +756,17 @@ fn ensure_array_elements_have_known_size<'i>(
     constants: &HashMap<String, Expr<'i>>,
     type_name: &str,
 ) -> Result<(), CompilerError> {
+    for dimension in &type_ref.array_dims {
+        let ArrayDim::Constant(name) = dimension else {
+            continue;
+        };
+        let expr =
+            constants.get(name).ok_or_else(|| CompilerError::UndefinedIdentifier(format!("array dimension constant '{name}'")))?;
+        let value = eval_const_int(expr, constants)?;
+        usize::try_from(value)
+            .map_err(|_| CompilerError::InvalidLiteral(format!("array dimension '{name}' must be a non-negative integer")))?;
+    }
+
     if type_ref.is_array()
         && fixed_type_size_with_structs(type_ref.array_element_type().as_ref().unwrap_or(type_ref), structs, constants).is_none()
     {

@@ -8687,8 +8687,8 @@ fn checksigfromstack_requires_datasig_and_32_byte_digest_types() {
 
     let local_size_identifier = r#"
         contract DataSig(datasig signature, pubkey publicKey) {
+            int constant N = 3;
             entry main() {
-                int N = 32;
                 byte[N] digest = byte[N](0x010203);
                 require(checkMsgSig(signature, digest, publicKey));
             }
@@ -11183,6 +11183,27 @@ fn accepts_array_type_with_constant_size() {
         }
     "#;
     compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds with int[SIZE]");
+}
+
+#[test]
+fn rejects_cyclic_constant_array_dimensions() {
+    let cases = ["int constant A = A;".to_string(), "int constant A = B; int constant B = A;".to_string()];
+
+    for constants in cases {
+        let source = format!(
+            r#"
+                contract ConstantCycle() {{
+                    {constants}
+
+                    entry spend(int[A] values) {{
+                        require(true);
+                    }}
+                }}
+            "#
+        );
+        let err = compile_contract(&source, &[], CompileOptions::default()).expect_err("constant cycle must be rejected");
+        assert!(err.to_string().contains("cyclic identifier reference"), "unexpected error: {err}");
+    }
 }
 
 #[test]

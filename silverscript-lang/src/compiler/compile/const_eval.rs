@@ -1,21 +1,43 @@
 use super::*;
 
 pub(crate) fn eval_const_int<'i>(expr: &Expr<'i>, constants: &HashMap<String, Expr<'i>>) -> Result<i64, CompilerError> {
+    let mut visiting = HashSet::new();
+    let mut resolved = HashMap::new();
+    eval_const_int_inner(expr, constants, &mut visiting, &mut resolved)
+}
+
+fn eval_const_int_inner<'i>(
+    expr: &Expr<'i>,
+    constants: &HashMap<String, Expr<'i>>,
+    visiting: &mut HashSet<String>,
+    resolved: &mut HashMap<String, i64>,
+) -> Result<i64, CompilerError> {
     match &expr.kind {
         ExprKind::Int(value) => Ok(*value),
         ExprKind::DateLiteral(value) => Ok(*value),
-        ExprKind::Identifier(name) => match constants.get(name) {
-            Some(value) => eval_const_int(value, constants),
-            None => Err(CompilerError::Unsupported(format!("'{name}' is not a constant integer"))),
-        },
+        ExprKind::Identifier(name) => {
+            if let Some(value) = resolved.get(name) {
+                return Ok(*value);
+            }
+            let value =
+                constants.get(name).ok_or_else(|| CompilerError::Unsupported(format!("'{name}' is not a constant integer")))?;
+            if !visiting.insert(name.clone()) {
+                return Err(CompilerError::CyclicIdentifier(name.clone()));
+            }
+            let result = eval_const_int_inner(value, constants, visiting, resolved);
+            visiting.remove(name);
+            let result = result?;
+            resolved.insert(name.clone(), result);
+            Ok(result)
+        }
         ExprKind::Unary { op: UnaryOp::Neg, expr } => {
-            let value = eval_const_int(expr, constants)?;
+            let value = eval_const_int_inner(expr, constants, visiting, resolved)?;
             value.checked_neg().ok_or_else(|| CompilerError::InvalidLiteral(format!("constant integer overflow: -({value})")))
         }
         ExprKind::Unary { .. } => Err(CompilerError::Unsupported("constant expression must evaluate to an integer".to_string())),
         ExprKind::Binary { op, left, right } => {
-            let lhs = eval_const_int(left, constants)?;
-            let rhs = eval_const_int(right, constants)?;
+            let lhs = eval_const_int_inner(left, constants, visiting, resolved)?;
+            let rhs = eval_const_int_inner(right, constants, visiting, resolved)?;
             match op {
                 BinaryOp::Add => lhs
                     .checked_add(rhs)
@@ -240,6 +262,19 @@ mod tests {
         for (expr, expected) in cases {
             let err = eval_const_int(&expr, &constants).expect_err("overflow should be rejected");
             assert!(err.to_string().contains(&expected), "unexpected error: {err}");
+        }
+    }
+
+    #[test]
+    fn eval_const_int_rejects_self_and_mutual_cycles() {
+        let cases = [
+            HashMap::from([("A".to_string(), Expr::identifier("A"))]),
+            HashMap::from([("A".to_string(), Expr::identifier("B")), ("B".to_string(), Expr::identifier("A"))]),
+        ];
+
+        for constants in cases {
+            let err = eval_const_int(&Expr::identifier("A"), &constants).expect_err("constant cycle should be rejected");
+            assert!(matches!(err, CompilerError::CyclicIdentifier(_)), "unexpected error: {err}");
         }
     }
 }
