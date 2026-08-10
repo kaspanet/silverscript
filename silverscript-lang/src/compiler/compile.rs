@@ -2,7 +2,6 @@ use super::array_append::{lower_array_append_expr, lower_array_appends};
 use super::covenant_declarations::lower_covenant_declarations;
 use super::infer_array::lower_inferred_array_sizes;
 use super::inline_functions::lower_inline_functions;
-use super::locals::lower_local_aliases;
 use super::stack_bindings::StackBindings;
 use super::static_check::{static_check_contract, validate_declaration_names};
 use super::ternary::lower_ternaries;
@@ -61,7 +60,9 @@ pub(super) fn compile_contract_impl<'i>(
     let struct_lowered_contract = lower_structs_contract(&validate_output_state_lowered_contract, &structs, &constants)?;
     let append_lowered_contract = lower_array_appends(&struct_lowered_contract, &constants)?;
     let for_lowered_contract = lower_for_loops(&append_lowered_contract, &constants)?;
-    let lowered_contract = if options.record_debug_infos { for_lowered_contract } else { lower_local_aliases(&for_lowered_contract)? };
+    // TODO: Re-enable this once we make sure we don't optimize away fallible statements.
+    // let lowered_contract = if options.record_debug_infos { for_lowered_contract } else { lower_local_aliases(&for_lowered_contract)? };
+    let lowered_contract = for_lowered_contract;
     let mut lowered_constants = flatten_constructor_args_env(&covenant_lowered_contract.params, constructor_args, &structs)?;
     lowered_constants.extend(lowered_contract.constants.iter().map(|constant| (constant.name.clone(), constant.expr.clone())));
 
