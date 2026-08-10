@@ -5374,6 +5374,42 @@ fn rejects_non_constant_for_loop_max_iterations() {
 }
 
 #[test]
+fn limits_for_loop_max_iterations_to_ten_thousand() {
+    let cases = [("0", "1", "constant bounds"), ("start", "end", "runtime bounds")];
+
+    for (start, end, description) in cases {
+        let source = format!(
+            r#"
+                contract Loops() {{
+                    entry main(int start, int end) {{
+                        for (i, {start}, {end}, 10001) {{
+                            require(i >= 0);
+                        }}
+                    }}
+                }}
+            "#
+        );
+
+        let err = compile_contract(&source, &[], CompileOptions::default()).expect_err("compile should fail");
+        assert!(
+            err.to_string().contains("for loop max iterations must not exceed 10000"),
+            "unexpected error for {description}: {err}"
+        );
+    }
+
+    let source = r#"
+        contract Loops() {
+            entry main() {
+                for (i, 0, 1, 10000) {
+                    require(i == 0);
+                }
+            }
+        }
+    "#;
+    compile_contract(source, &[], CompileOptions::default()).expect("the maximum permitted loop bound should compile");
+}
+
+#[test]
 fn rejects_constant_for_loop_range_above_max_iterations() {
     let source = r#"
         contract Loops() {
