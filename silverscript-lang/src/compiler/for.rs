@@ -2,6 +2,8 @@ use super::*;
 use crate::ast::{ContractAst, Expr, FunctionAst, Statement, TypeBase, TypeRef};
 use crate::span;
 
+const MAX_FOR_LOOP_ITERATIONS: i64 = 10_000;
+
 pub(super) fn lower_for_loops<'i>(
     contract: &ContractAst<'i>,
     constants: &HashMap<String, Expr<'i>>,
@@ -82,6 +84,9 @@ impl<'a, 'i> ForLowerer<'a, 'i> {
         };
         if max_iterations < 0 {
             return Err(CompilerError::Unsupported("for loop max iterations must be a non-negative compile-time integer".to_string()));
+        }
+        if max_iterations > MAX_FOR_LOOP_ITERATIONS {
+            return Err(CompilerError::Unsupported(format!("for loop max iterations must not exceed {MAX_FOR_LOOP_ITERATIONS}")));
         }
 
         if let (Ok(start_value), Ok(end_value)) = (eval_const_int(start, self.constants), eval_const_int(end, self.constants)) {

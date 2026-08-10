@@ -43,7 +43,7 @@ pub(super) fn compile_entrypoint_function<'i>(
         types.insert(field.name.clone(), field.type_ref.clone());
     }
     let mut builder = script_builder();
-    compile_fixed_size_param_validations(function, constants, &stack_bindings, &mut builder)?;
+    compile_param_size_validations(function, constants, &stack_bindings, &mut builder)?;
     let mut return_exprs: Vec<Expr> = Vec::new();
 
     let body_len = function.body.len();
@@ -93,14 +93,22 @@ pub(super) fn compile_entrypoint_function<'i>(
     Ok((function.name.clone(), bytecode))
 }
 
-fn compile_fixed_size_param_validations<'i>(
+fn compile_param_size_validations<'i>(
     function: &FunctionAst<'i>,
     constants: &HashMap<String, Expr<'i>>,
     stack_bindings: &StackBindings,
     builder: &mut ScriptBuilder,
 ) -> Result<(), CompilerError> {
     for param in &function.params {
-        if !param.type_ref.is_array() {
+        let exact_size = if param.type_ref.is_array() {
+            fixed_type_size(&param.type_ref, constants)
+        } else if param.type_ref.is_byte() {
+            Some(1)
+        } else {
+            param.type_ref.base.fixed_byte_sequence_len()
+        };
+        let is_dynamic_array = param.type_ref.is_array() && exact_size.is_none();
+        if exact_size.is_none() && !is_dynamic_array && !param.type_ref.is_int() {
             continue;
         }
 
@@ -109,18 +117,27 @@ fn compile_fixed_size_param_validations<'i>(
         debug_assert!(copied, "entrypoint parameter must have a stack binding");
 
         builder.add_op(OpSize)?;
-        if let Some(expected_size) = fixed_type_size(&param.type_ref, constants) {
+        if let Some(expected_size) = exact_size {
             let expected_size = i64::try_from(expected_size)
                 .map_err(|_| CompilerError::Unsupported(format!("entrypoint parameter '{}' is too large", param.name)))?;
             builder.add_i64(expected_size)?;
-        } else {
+            builder.add_op(OpNumEqualVerify)?;
+        } else if is_dynamic_array {
             let element_size = array_element_size(&param.type_ref, constants)
                 .expect("type_check must validate dynamic array element types have known size");
             builder.add_i64(element_size)?;
             builder.add_op(OpMod)?;
             builder.add_i64(0)?;
+            builder.add_op(OpNumEqualVerify)?;
+        } else {
+            // The int case.
+
+            // VM script numbers may use zero through eight bytes. Reject a
+            // ninth byte before any numeric opcode attempts to decode it.
+            builder.add_i64(9)?;
+            builder.add_op(OpLessThan)?;
+            builder.add_op(OpVerify)?;
         }
-        builder.add_op(OpNumEqualVerify)?;
         builder.add_op(OpDrop)?;
     }
 

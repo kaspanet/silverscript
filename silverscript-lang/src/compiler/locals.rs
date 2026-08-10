@@ -1,3 +1,5 @@
+#![allow(dead_code, reason = "local alias lowering is temporarily disabled until fallible statements are preserved")]
+
 use std::collections::{HashMap, HashSet};
 
 use crate::ast::{ContractAst, Expr, ExprKind, FunctionAst, StateFieldExpr, Statement, TypeRef};

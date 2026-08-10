@@ -116,14 +116,10 @@ pub fn compile_contract<'i>(
     options: CompileOptions,
 ) -> Result<CompiledContract<'i>, CompilerError> {
     let contract = parse_contract_ast(source)?;
-    let result = compile_contract_impl(&contract, constructor_args, options, Some(source));
-    let repeated_result = compile_contract_impl(&contract, constructor_args, options, Some(source));
-    assert_eq!(
-        result.as_ref().map_err(ToString::to_string),
-        repeated_result.as_ref().map_err(ToString::to_string),
-        "compiling the same contract twice must produce identical results"
-    );
-    result
+    let compiled = compile_contract_impl(&contract, constructor_args, options, Some(source))?;
+    let repeated_compiled = compile_contract_impl(&contract, constructor_args, options, Some(source))?;
+    assert_eq!(&compiled, &repeated_compiled, "compiling the same contract twice must produce identical results");
+    Ok(compiled)
 }
 
 pub fn compile_contract_ast<'i>(
@@ -410,7 +406,7 @@ fn push_sigscript_non_array_arg<'i>(builder: &mut ScriptBuilder, arg: Expr<'i>) 
             builder.add_data(value.as_bytes())?;
         }
         ExprKind::Byte(value) => {
-            builder.add_data(&[value])?;
+            builder.add_data_with_push_opcode(&[value])?;
         }
         // This is not intended for byte-arrays, but for pubkey, datasig, etc.
         ExprKind::Array { values, .. } if values.iter().all(|value| matches!(&value.kind, ExprKind::Byte(_))) => {

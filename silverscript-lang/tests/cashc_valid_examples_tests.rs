@@ -195,6 +195,17 @@ fn execute_tx(
     vm.execute()
 }
 
+fn add_inspected_input(tx: &mut MutableTransaction<Transaction>, expected_pkh: &[u8]) {
+    tx.tx.inputs.push(TransactionInput {
+        previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([8u8; 32]), index: 1 },
+        signature_script: vec![],
+        sequence: 0,
+        compute_commit: SigopCount(1).into(),
+    });
+    let inspected_script = ScriptBuilder::new().add_data(expected_pkh).expect("build inspected input script").drain();
+    tx.entries.push(Some(UtxoEntry::new(1_000, ScriptPublicKey::new(0, inspected_script.into()), 0, false, None)));
+}
+
 #[test]
 fn runs_cashc_valid_examples() {
     let examples = [
@@ -431,9 +442,9 @@ fn runs_cashc_valid_examples() {
                 assert!(result.is_ok(), "{example} failed: {}", result.unwrap_err());
             }
             "double_split.sil" => {
-                // Satisfiable with the default tx context in this runtime.
-                let constructor_args = vec![vec![0u8; 20].into()];
-                let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
+                let expected_pkh = vec![0u8; 20];
+                let compiled =
+                    compile_contract(&source, &[expected_pkh.clone().into()], CompileOptions::default()).expect("compile succeeds");
                 let selector = selector_for_compiled(&compiled, "spend");
                 let sigscript = build_sigscript(&[], selector);
                 let (mut tx, utxo, reused) = build_tx_context(
@@ -444,6 +455,7 @@ fn runs_cashc_valid_examples() {
                     1,
                 );
                 tx.tx.inputs[0].signature_script = sigscript;
+                add_inspected_input(&mut tx, &expected_pkh);
                 let result = execute_tx(tx, utxo, reused);
                 assert!(result.is_ok(), "{example} failed: {}", result.unwrap_err());
             }
@@ -915,9 +927,9 @@ fn runs_cashc_valid_examples() {
                 assert!(result.is_ok(), "{example} failed: {}", result.unwrap_err());
             }
             "slice.sil" | "slice_variable_parameter.sil" => {
-                // Valid in this runtime with current slice lowering.
-                let constructor_args = vec![vec![0u8; 20].into()];
-                let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
+                let expected_pkh = vec![0u8; 20];
+                let compiled =
+                    compile_contract(&source, &[expected_pkh.clone().into()], CompileOptions::default()).expect("compile succeeds");
                 let selector = selector_for_compiled(&compiled, "spend");
                 let sigscript = build_sigscript(&[], selector);
                 let (mut tx, utxo, reused) = build_tx_context(
@@ -928,6 +940,7 @@ fn runs_cashc_valid_examples() {
                     1,
                 );
                 tx.tx.inputs[0].signature_script = sigscript;
+                add_inspected_input(&mut tx, &expected_pkh);
                 let result = execute_tx(tx, utxo, reused);
                 assert!(result.is_ok(), "{example} failed: {}", result.unwrap_err());
             }
