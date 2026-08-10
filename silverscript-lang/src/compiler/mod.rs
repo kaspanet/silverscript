@@ -116,14 +116,10 @@ pub fn compile_contract<'i>(
     options: CompileOptions,
 ) -> Result<CompiledContract<'i>, CompilerError> {
     let contract = parse_contract_ast(source)?;
-    let result = compile_contract_impl(&contract, constructor_args, options, Some(source));
-    let repeated_result = compile_contract_impl(&contract, constructor_args, options, Some(source));
-    assert_eq!(
-        result.as_ref().map_err(ToString::to_string),
-        repeated_result.as_ref().map_err(ToString::to_string),
-        "compiling the same contract twice must produce identical results"
-    );
-    result
+    let compiled = compile_contract_impl(&contract, constructor_args, options, Some(source))?;
+    let repeated_compiled = compile_contract_impl(&contract, constructor_args, options, Some(source))?;
+    assert_eq!(&compiled, &repeated_compiled, "compiling the same contract twice must produce identical results");
+    Ok(compiled)
 }
 
 pub fn compile_contract_ast<'i>(
