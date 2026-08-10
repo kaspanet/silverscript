@@ -410,7 +410,7 @@ fn push_sigscript_non_array_arg<'i>(builder: &mut ScriptBuilder, arg: Expr<'i>) 
             builder.add_data(value.as_bytes())?;
         }
         ExprKind::Byte(value) => {
-            builder.add_data(&[value])?;
+            builder.add_data_with_push_opcode(&[value])?;
         }
         // This is not intended for byte-arrays, but for pubkey, datasig, etc.
         ExprKind::Array { values, .. } if values.iter().all(|value| matches!(&value.kind, ExprKind::Byte(_))) => {

@@ -795,15 +795,15 @@ fn branch_heavy_if_else_logic_matches_rust_model_across_cases() {
     // Snapshot these metrics exactly so compiler codegen changes must consciously
     // acknowledge their size impact on a branch-heavy stress case.
     assert_eq!(
-        bytecode_len, 318,
+        bytecode_len, 372,
         "branch_maze metrics: bytecode_len={bytecode_len} instruction_count={instruction_count} charged_op_count={charged_op_count}"
     );
     assert_eq!(
-        instruction_count, 318,
+        instruction_count, 372,
         "branch_maze metrics: bytecode_len={bytecode_len} instruction_count={instruction_count} charged_op_count={charged_op_count}"
     );
     assert_eq!(
-        charged_op_count, 227,
+        charged_op_count, 267,
         "branch_maze metrics: bytecode_len={bytecode_len} instruction_count={instruction_count} charged_op_count={charged_op_count}"
     );
     let cases = [(7, 2, 5, 4), (7, 2, -3, 4), (2, 7, 5, 4), (2, 7, 5, 3), (4, 4, 9, 2), (-3, 1, 6, -2), (10, -1, -4, 7), (0, 0, 0, 0)];
@@ -935,15 +935,15 @@ fn sorting_network_over_fixed_array_matches_rust_model_across_cases() {
     let (instruction_count, charged_op_count) = bytecode_op_counts(&compiled.bytecode);
     println!("sorting_network {bytecode_len} / {instruction_count} / {charged_op_count}");
     assert_eq!(
-        bytecode_len, 763,
+        bytecode_len, 817,
         "sorting_network metrics: bytecode_len={bytecode_len} instruction_count={instruction_count} charged_op_count={charged_op_count}"
     );
     assert_eq!(
-        instruction_count, 762,
+        instruction_count, 816,
         "sorting_network metrics: bytecode_len={bytecode_len} instruction_count={instruction_count} charged_op_count={charged_op_count}"
     );
     assert_eq!(
-        charged_op_count, 595,
+        charged_op_count, 635,
         "sorting_network metrics: bytecode_len={bytecode_len} instruction_count={instruction_count} charged_op_count={charged_op_count}"
     );
 
@@ -10938,6 +10938,124 @@ fn entrypoints_validate_fixed_array_argument_sizes_at_runtime() {
 
     let asm = script_to_str(&compiled.bytecode).expect("stringifies");
     assert_eq!(asm.matches("OpSize").count(), 2, "each entrypoint should validate its fixed-array argument: {asm}");
+}
+
+#[test]
+fn entrypoints_validate_fixed_width_scalar_argument_sizes_at_runtime() {
+    let cases = [("byte", 1usize), ("pubkey", 32), ("sig", 65), ("datasig", 64)];
+
+    for (type_name, expected_size) in cases {
+        let source = format!(
+            r#"
+                contract ScalarSize() {{
+                    entry main({type_name} value) {{
+                        require(true);
+                    }}
+                }}
+            "#
+        );
+        let compiled = compile_contract(&source, &[], CompileOptions::default()).expect("fixed-width scalar should compile");
+        let expected = script_builder()
+            .add_op(OpDup)
+            .unwrap()
+            .add_op(OpSize)
+            .unwrap()
+            .add_i64(expected_size as i64)
+            .unwrap()
+            .add_op(OpNumEqualVerify)
+            .unwrap()
+            .add_op(OpDrop)
+            .unwrap()
+            .add_op(OpTrue)
+            .unwrap()
+            .add_op(OpVerify)
+            .unwrap()
+            .add_op(OpDrop)
+            .unwrap()
+            .add_op(OpTrue)
+            .unwrap()
+            .drain();
+        assert_eq!(compiled.bytecode, expected, "unexpected ABI validation bytecode for {type_name}");
+
+        let sigscript = |size: usize| script_builder().add_data_with_push_opcode(&vec![1; size]).unwrap().drain();
+        assert!(
+            run_bytecode_with_sigscript(compiled.bytecode.clone(), sigscript(expected_size)).is_ok(),
+            "{type_name} should accept exactly {expected_size} bytes"
+        );
+        if type_name == "byte" {
+            let zero_sigscript = compiled.build_sig_script("main", vec![Expr::byte(0)]).expect("zero byte sigscript builds");
+            assert!(
+                run_bytecode_with_sigscript(compiled.bytecode.clone(), zero_sigscript).is_ok(),
+                "the typed builder must preserve byte(0) as a one-byte stack item"
+            );
+        }
+        assert!(
+            run_bytecode_with_sigscript(compiled.bytecode.clone(), sigscript(expected_size - 1)).is_err(),
+            "{type_name} should reject a short value"
+        );
+        assert!(
+            run_bytecode_with_sigscript(compiled.bytecode, sigscript(expected_size + 1)).is_err(),
+            "{type_name} should reject a long value"
+        );
+    }
+}
+
+#[test]
+fn entrypoint_int_argument_accepts_below_nine_bytes_and_rejects_nine() {
+    let source = r#"
+        contract IntSize() {
+            entry main(int value) {
+                require(true);
+            }
+        }
+    "#;
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("int parameter should compile");
+    let expected = script_builder()
+        .add_op(OpDup)
+        .unwrap()
+        .add_op(OpSize)
+        .unwrap()
+        .add_i64(9)
+        .unwrap()
+        .add_op(OpLessThan)
+        .unwrap()
+        .add_op(OpVerify)
+        .unwrap()
+        .add_op(OpDrop)
+        .unwrap()
+        .add_op(OpTrue)
+        .unwrap()
+        .add_op(OpVerify)
+        .unwrap()
+        .add_op(OpDrop)
+        .unwrap()
+        .add_op(OpTrue)
+        .unwrap()
+        .drain();
+    assert_eq!(compiled.bytecode, expected);
+
+    let sigscript = |size: usize| script_builder().add_data_with_push_opcode(&vec![1; size]).unwrap().drain();
+    assert!(run_bytecode_with_sigscript(compiled.bytecode.clone(), sigscript(0)).is_ok());
+    assert!(run_bytecode_with_sigscript(compiled.bytecode.clone(), sigscript(8)).is_ok());
+    assert!(run_bytecode_with_sigscript(compiled.bytecode, sigscript(9)).is_err());
+}
+
+#[test]
+fn entrypoint_bool_argument_has_no_size_validation() {
+    let source = r#"
+        contract BoolSize() {
+            entry main(bool value) {
+                require(true);
+            }
+        }
+    "#;
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("bool parameter should compile");
+    let expected =
+        script_builder().add_op(OpTrue).unwrap().add_op(OpVerify).unwrap().add_op(OpDrop).unwrap().add_op(OpTrue).unwrap().drain();
+    assert_eq!(compiled.bytecode, expected);
+
+    let oversized_bool = script_builder().add_data_with_push_opcode(&[1; 9]).unwrap().drain();
+    assert!(run_bytecode_with_sigscript(compiled.bytecode, oversized_bool).is_ok());
 }
 
 #[test]
