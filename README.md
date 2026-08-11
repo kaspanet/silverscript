@@ -44,6 +44,11 @@ See [TUTORIAL.md](docs/TUTORIAL.md) for a full language and usage tutorial, [DEC
 
 See [CREDITS.md](CREDITS.md) for acknowledgements and credits.
 
+## Security
+
+To report a security vulnerability privately, follow the instructions in the
+[security policy](SECURITY.md).
+
 ## Notes
 
 - Kaspa dependencies are pulled from https://github.com/kaspanet/rusty-kaspa.
