@@ -450,7 +450,21 @@ fn validate_tuple_assignment_statement_shape<'i>(
     right_name: &str,
     expr: &Expr<'i>,
 ) -> Result<(), CompilerError> {
-    ctx.check_expr(expr, None)?;
+    let ExprKind::Split { source, index, span, .. } = &expr.kind else {
+        let actual = ctx.check_expr(expr, None)?;
+        if actual.tuple_elements().is_some() {
+            return Err(CompilerError::Unsupported(
+                "function returns a tuple and cannot be used directly in expressions; access a tuple field instead".to_string(),
+            ));
+        }
+        return Err(CompilerError::Unsupported("tuple assignment only supports split()".to_string()));
+    };
+    let left_expr =
+        Expr::new(ExprKind::Split { source: source.clone(), index: index.clone(), part: SplitPart::Left, span: *span }, expr.span);
+    let right_expr =
+        Expr::new(ExprKind::Split { source: source.clone(), index: index.clone(), part: SplitPart::Right, span: *span }, expr.span);
+    ctx.check_expr(&left_expr, Some(left_type_ref))?;
+    ctx.check_expr(&right_expr, Some(right_type_ref))?;
     ensure_array_elements_have_known_size(left_type_ref, ctx.structs, ctx.constants, &left_type_ref.type_name())?;
     ensure_array_elements_have_known_size(right_type_ref, ctx.structs, ctx.constants, &right_type_ref.type_name())?;
     insert_type_binding(ctx.types, left_name, left_type_ref);

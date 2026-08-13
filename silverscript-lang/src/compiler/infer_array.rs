@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use super::builtin_types::{builtin_return_type, constructor_return_type, indexed_introspection_type, introspection_type};
+use super::type_check::split_part_type;
 use super::*;
 use crate::ast::{ArrayDim, ConstantAst, ContractAst, ContractFieldAst, FunctionAst, ParamAst, Statement, TypeBase, TypeRef};
 
@@ -147,6 +148,50 @@ fn lower_statement<'i>(
                 _ => unreachable!(),
             })
         }
+        Statement::TupleAssignment {
+            left_type_ref,
+            left_name,
+            right_type_ref,
+            right_name,
+            expr,
+            span,
+            left_type_span,
+            left_name_span,
+            right_type_span,
+            right_name_span,
+        } => {
+            let (left_initializer, right_initializer) = match &expr.kind {
+                ExprKind::Split { source, index, span, .. } => (
+                    Some(Expr::new(
+                        ExprKind::Split { source: source.clone(), index: index.clone(), part: SplitPart::Left, span: *span },
+                        expr.span,
+                    )),
+                    Some(Expr::new(
+                        ExprKind::Split { source: source.clone(), index: index.clone(), part: SplitPart::Right, span: *span },
+                        expr.span,
+                    )),
+                ),
+                _ => (None, None),
+            };
+            let lowered_left = infer_type(left_type_ref, left_initializer.as_ref(), types, constants, functions)
+                .ok_or_else(|| CompilerError::Unsupported(format!("cannot infer fixed array size from variable '{left_name}'")))?;
+            let lowered_right = infer_type(right_type_ref, right_initializer.as_ref(), types, constants, functions)
+                .ok_or_else(|| CompilerError::Unsupported(format!("cannot infer fixed array size from variable '{right_name}'")))?;
+            types.insert(left_name.clone(), lowered_left.clone());
+            types.insert(right_name.clone(), lowered_right.clone());
+            Ok(Statement::TupleAssignment {
+                left_type_ref: lowered_left,
+                left_name: left_name.clone(),
+                right_type_ref: lowered_right,
+                right_name: right_name.clone(),
+                expr: expr.clone(),
+                span: *span,
+                left_type_span: *left_type_span,
+                left_name_span: *left_name_span,
+                right_type_span: *right_type_span,
+                right_name_span: *right_name_span,
+            })
+        }
         Statement::FunctionCallAssign { bindings, name, args, span, name_span } => {
             let lowered_bindings = bindings
                 .iter()
@@ -264,6 +309,10 @@ pub(super) fn infer_expr_type<'i>(
         ExprKind::Append { source, args, .. } => {
             let source_type = infer_expr_type(source, types, constants, functions)?;
             append_type(&source_type, args.len(), constants)
+        }
+        ExprKind::Split { source, index, part, .. } => {
+            let source_type = infer_expr_type(source, types, constants, functions)?;
+            split_part_type(&source_type, index, *part, constants).ok()
         }
         ExprKind::Introspection(kind) => Some(introspection_type(*kind)),
         ExprKind::IndexedIntrospection { kind, .. } => Some(indexed_introspection_type(*kind)),

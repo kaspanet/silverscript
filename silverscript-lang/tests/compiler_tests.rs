@@ -13134,8 +13134,9 @@ fn runs_split_on_non_byte_array() {
         contract SplitNonByteArray() {
             entry main() {
                 int[] values = int[]{10, 20, 30, 40};
-                (int[] left, int[] right) = values.split(1);
-                require(left == int[]{10});
+                (int[1] left, int[] right) = values.split(1);
+                require(left.length == 1);
+                require(left[0] == 10);
                 require(right == int[]{20, 30, 40});
             }
         }
@@ -13145,6 +13146,133 @@ fn runs_split_on_non_byte_array() {
     let selector = selector_for(&compiled, "main");
     let result = run_bytecode_with_selector(compiled.bytecode, selector);
     assert!(result.is_ok(), "split on int[] should execute successfully: {}", result.unwrap_err());
+}
+
+#[test]
+fn runtime_split_index_produces_dynamic_array_parts() {
+    let source = r#"
+        contract SplitDynamicIndex() {
+            entry main(int[] values, int n) {
+                (int[] left, int[] right) = values.split(n);
+                require(left == int[]{10, 20});
+                require(right == int[]{30, 40});
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("runtime split index should produce dynamic parts");
+    let sigscript = compiled.build_sig_script("main", vec![vec![10i64, 20, 30, 40].into(), Expr::int(2)]).expect("sigscript builds");
+    let result = run_bytecode_with_sigscript(compiled.bytecode, sigscript);
+    assert!(result.is_ok(), "runtime-index split should execute successfully: {result:?}");
+}
+
+#[test]
+fn constant_split_index_produces_fixed_left_and_dynamic_right_for_dynamic_source() {
+    let source = r#"
+        contract SplitConstantIndex() {
+            int constant N = 2;
+
+            entry main(int[] values) {
+                (int[N] left, int[] right) = values.split(N);
+                require(left.length == 2);
+                require(left[0] == 10);
+                require(left[1] == 20);
+                require(right.length == 2);
+                require(right[0] == 30);
+                require(right[1] == 40);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("constant split index should fix the left size");
+    let sigscript = compiled.build_sig_script("main", vec![vec![10i64, 20, 30, 40].into()]).expect("sigscript builds");
+    let result = run_bytecode_with_sigscript(compiled.bytecode, sigscript);
+    assert!(result.is_ok(), "constant-index split of a dynamic source should execute successfully: {result:?}");
+}
+
+#[test]
+fn constant_split_index_produces_fixed_parts_for_fixed_source() {
+    let source = r#"
+        contract SplitFixedSource() {
+            int constant N = 1;
+
+            entry main() {
+                int[4] values = int[4]{10, 20, 30, 40};
+                int[N] left = values.split(N).0;
+                int[3] right = values.split(N).1;
+                require(left.length == 1);
+                require(left[0] == 10);
+                require(right.length == 3);
+                require(right[0] == 20);
+                require(right[1] == 30);
+                require(right[2] == 40);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("fixed source split should infer both sizes");
+    let result = run_bytecode_with_selector(compiled.bytecode, None);
+    assert!(result.is_ok(), "constant-index split of a fixed source should execute successfully: {result:?}");
+}
+
+#[test]
+fn rejects_split_bindings_that_do_not_match_inferred_part_types() {
+    let runtime_index = r#"
+        contract SplitRuntimeMismatch() {
+            entry main(int[] values, int n) {
+                (int[1] left, int[] right) = values.split(n);
+            }
+        }
+    "#;
+    let err = compile_contract(runtime_index, &[], CompileOptions::default())
+        .expect_err("a runtime split index must not produce a fixed-size binding");
+    assert!(err.to_string().contains("type mismatch"), "unexpected error: {err}");
+
+    let fixed_source = r#"
+        contract SplitFixedMismatch() {
+            entry main() {
+                int[4] values = int[4]{10, 20, 30, 40};
+                (int[2] left, int[1] right) = values.split(2);
+            }
+        }
+    "#;
+    let err = compile_contract(fixed_source, &[], CompileOptions::default())
+        .expect_err("both fixed split bindings must match their inferred sizes");
+    assert!(err.to_string().contains("type mismatch"), "unexpected error: {err}");
+}
+
+#[test]
+fn rejects_split_tuple_bindings_with_different_element_types() {
+    let source = r#"
+        pragma silverscript ^0.1.0;
+        contract C() {
+            entry f(byte[4] data) {
+                (int a, int b) = data.split(2);
+                require(a == 1);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default())
+        .expect_err("byte array split parts must not be reinterpreted as integers");
+    assert!(err.to_string().contains("type mismatch"), "unexpected error: {err}");
+}
+
+#[test]
+fn rejects_split_tuple_bindings_with_incorrect_fixed_sizes() {
+    let source = r#"
+        pragma silverscript ^0.1.0;
+        contract C() {
+            entry f(byte[4] data) {
+                (byte[3] p, byte[1] q) = data.split(2);
+                require(p.length == 3);
+            }
+        }
+    "#;
+
+    let err =
+        compile_contract(source, &[], CompileOptions::default()).expect_err("split bindings must use the actual inferred part sizes");
+    assert!(err.to_string().contains("type mismatch"), "unexpected error: {err}");
 }
 
 #[test]
@@ -13180,11 +13308,12 @@ fn runs_split_and_slice_on_struct_array() {
                     S {number: 20, tag: byte[_](0x0304)},
                     S {number: 30, tag: byte[_](0x0506)}
                 };
-                S[] left = values.split(1).0;
+                S[1] left = values.split(1).0;
                 S[] right = values.split(1).1;
                 S[] part = values.slice(1, 3);
 
-                require(left == S[]{S {number: 10, tag: byte[_](0x0102)}});
+                require(left.length == 1);
+                require(left == S[_]{S {number: 10, tag: byte[_](0x0102)}});
                 require(right == S[]{
                     S {number: 20, tag: byte[_](0x0304)},
                     S {number: 30, tag: byte[_](0x0506)}
@@ -13269,9 +13398,9 @@ fn allows_sequence_operations_on_string_and_fixed_byte_types() {
         contract ByteSequenceOperations() {
             entry main(string text, pubkey publicKey, sig signature, datasig dataSignature) {
                 (string textLeft, string textRight) = text.split(1);
-                (byte[] pubkeyLeft, byte[] pubkeyRight) = publicKey.split(1);
-                (byte[] sigLeft, byte[] sigRight) = signature.split(1);
-                (byte[] datasigLeft, byte[] datasigRight) = dataSignature.split(1);
+                (byte[1] pubkeyLeft, byte[31] pubkeyRight) = publicKey.split(1);
+                (byte[1] sigLeft, byte[64] sigRight) = signature.split(1);
+                (byte[1] datasigLeft, byte[63] datasigRight) = dataSignature.split(1);
                 string textSlice = text.slice(0, 1);
                 byte[] pubkeySlice = publicKey.slice(0, 1);
                 byte[] sigSlice = signature.slice(0, 1);
@@ -13281,6 +13410,69 @@ fn allows_sequence_operations_on_string_and_fixed_byte_types() {
     "#;
 
     compile_contract(source, &[], CompileOptions::default()).expect("sequence operations should accept strings and fixed-byte types");
+}
+
+#[test]
+fn runtime_split_index_produces_dynamic_parts_for_fixed_byte_types() {
+    let source = r#"
+        contract RuntimeFixedByteSequenceSplit() {
+            entry main(pubkey publicKey, sig signature, datasig dataSignature, int n) {
+                (byte[] pubkeyLeft, byte[] pubkeyRight) = publicKey.split(n);
+                (byte[] sigLeft, byte[] sigRight) = signature.split(n);
+                (byte[] datasigLeft, byte[] datasigRight) = dataSignature.split(n);
+            }
+        }
+    "#;
+
+    compile_contract(source, &[], CompileOptions::default())
+        .expect("runtime split indices should produce dynamic parts for fixed-byte types");
+}
+
+#[test]
+fn infers_fixed_array_sizes_from_fixed_byte_split_parts() {
+    let source = r#"
+        contract InferredFixedByteSequenceSplit() {
+            entry main(pubkey publicKey) {
+                byte[_] left = publicKey.split(4).0;
+                byte[_] right = publicKey.split(4).1;
+                require(left.length == 4);
+                require(right.length == 28);
+            }
+        }
+    "#;
+
+    compile_contract(source, &[], CompileOptions::default())
+        .expect("inferred array declarations should use fixed-byte split result sizes");
+}
+
+#[test]
+fn infers_fixed_array_size_for_tuple_split_binding() {
+    let source = r#"
+        contract InferredTupleSplitBinding() {
+            entry main(byte[] values) {
+                (byte[_] left, byte[] right) = values.split(4);
+                require(left.length == 4);
+            }
+        }
+    "#;
+
+    compile_contract(source, &[], CompileOptions::default())
+        .expect("an inferred tuple binding should use the corresponding split result size");
+}
+
+#[test]
+fn rejects_fixed_byte_split_bindings_that_do_not_match_inferred_sizes() {
+    let source = r#"
+        contract FixedByteSequenceSplitMismatch() {
+            entry main(pubkey publicKey) {
+                (byte[1] left, byte[30] right) = publicKey.split(1);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default())
+        .expect_err("constant fixed-byte split parts must have their inferred sizes");
+    assert!(err.to_string().contains("type mismatch"), "unexpected error: {err}");
 }
 
 #[test]
