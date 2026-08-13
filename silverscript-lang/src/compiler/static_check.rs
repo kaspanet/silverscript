@@ -21,6 +21,17 @@ pub(super) fn validate_declaration_names(contract: &ContractAst<'_>) -> Result<(
         }
     }
 
+    let mut contract_names = HashSet::new();
+    for (name, span) in contract
+        .params
+        .iter()
+        .map(|param| (param.name.as_str(), &param.name_span))
+        .chain(contract.constants.iter().map(|constant| (constant.name.as_str(), &constant.name_span)))
+        .chain(contract.fields.iter().map(|field| (field.name.as_str(), &field.name_span)))
+    {
+        insert_variable_name(&mut contract_names, name, span)?;
+    }
+
     for function in &contract.functions {
         names.clear();
         for param in &function.params {
@@ -32,8 +43,70 @@ pub(super) fn validate_declaration_names(contract: &ContractAst<'_>) -> Result<(
                 .with_span(&param.name_span));
             }
         }
+
+        let mut function_names = contract_names.clone();
+        for param in &function.params {
+            insert_variable_name(&mut function_names, &param.name, &param.name_span)?;
+        }
+        validate_statement_declaration_names(&function.body, &mut function_names)?;
     }
 
+    Ok(())
+}
+
+fn insert_variable_name<'i>(names: &mut HashSet<&'i str>, name: &'i str, span: &span::Span<'i>) -> Result<(), CompilerError> {
+    if !names.insert(name) {
+        return Err(CompilerError::Unsupported(format!("variable '{name}' is already defined")).with_span(span));
+    }
+    Ok(())
+}
+
+fn validate_statement_declaration_names<'i>(
+    statements: &'i [Statement<'i>],
+    names: &mut HashSet<&'i str>,
+) -> Result<(), CompilerError> {
+    for statement in statements {
+        match statement {
+            Statement::VariableDefinition { name, name_span, .. } => insert_variable_name(names, name, name_span)?,
+            Statement::TupleAssignment { left_name, left_name_span, right_name, right_name_span, .. } => {
+                insert_variable_name(names, left_name, left_name_span)?;
+                insert_variable_name(names, right_name, right_name_span)?;
+            }
+            Statement::FunctionCallAssign { bindings, .. } => {
+                for binding in bindings {
+                    insert_variable_name(names, &binding.name, &binding.name_span)?;
+                }
+            }
+            Statement::StateFunctionCallAssign { bindings, .. } | Statement::StructDestructure { bindings, .. } => {
+                for binding in bindings {
+                    insert_variable_name(names, &binding.name, &binding.name_span)?;
+                }
+            }
+            Statement::Block { body, .. } => {
+                let mut block_names = names.clone();
+                validate_statement_declaration_names(body, &mut block_names)?;
+            }
+            Statement::If { then_branch, else_branch, .. } => {
+                let mut then_names = names.clone();
+                validate_statement_declaration_names(then_branch, &mut then_names)?;
+                if let Some(else_branch) = else_branch {
+                    let mut else_names = names.clone();
+                    validate_statement_declaration_names(else_branch, &mut else_names)?;
+                }
+            }
+            Statement::For { ident, ident_span, body, .. } => {
+                let mut loop_names = names.clone();
+                insert_variable_name(&mut loop_names, ident, ident_span)?;
+                validate_statement_declaration_names(body, &mut loop_names)?;
+            }
+            Statement::FunctionCall { .. }
+            | Statement::Assign { .. }
+            | Statement::TimeOp { .. }
+            | Statement::Require { .. }
+            | Statement::Return { .. }
+            | Statement::Console { .. } => {}
+        }
+    }
     Ok(())
 }
 

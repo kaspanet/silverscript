@@ -1917,6 +1917,7 @@ fn recursively_infers_fixed_array_size_from_inferred_array_identifier() {
 }
 
 #[test]
+#[ignore = "TODO: Re-enable once shadowing is enabled"]
 fn inferred_array_in_branch_does_not_shadow_outer_inference_scope() {
     let source = r#"
         contract Arrays() {
@@ -11687,6 +11688,7 @@ fn empty_array_statement_expr_evaluation_compiles_to_empty_array_data() {
 }
 
 #[test]
+#[ignore = "TODO: Re-enable once shadowing is enabled"]
 fn function_param_shadows_constructor_constant_with_same_name() {
     // When a constructor constant and a function parameter share the same name,
     // the function parameter value must be used (not the constant).
@@ -11709,6 +11711,180 @@ fn function_param_shadows_constructor_constant_with_same_name() {
     let sigscript_wrong = compiled.build_sig_script("main", vec![Expr::int(2)]).expect("sigscript builds");
     let result_wrong = run_bytecode_with_sigscript(compiled.bytecode, sigscript_wrong);
     assert!(result_wrong.is_err(), "require(3==4) should fail, proving the param value matters");
+}
+
+#[test]
+fn allows_same_variable_name_in_different_functions() {
+    let source = r#"
+        contract SeparateFunctionScopes() {
+            function check_positive(int value) {
+                int result = value + 1;
+                require(result > 0);
+            }
+
+            function check_negative(int value) {
+                int result = value - 1;
+                require(result < 0);
+            }
+
+            entry main() {
+                check_positive(1);
+                check_negative(-1);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default())
+        .expect("separate functions should have independent variable namespaces");
+    assert!(run_bytecode_with_selector(compiled.bytecode, None).is_ok());
+}
+
+#[test]
+fn allows_same_variable_name_in_non_overlapping_sibling_scopes() {
+    let source = r#"
+        contract SiblingScopes() {
+            entry main() {
+                if (true) {
+                    int value = 1;
+                    require(value == 1);
+                } else {
+                    int value = 2;
+                    require(value == 2);
+                }
+
+                {
+                    int temporary = 3;
+                    require(temporary == 3);
+                }
+                {
+                    int temporary = 4;
+                    require(temporary == 4);
+                }
+
+                for (i, 0, 1, 1) {
+                    require(i == 0);
+                }
+                for (i, 0, 1, 1) {
+                    require(i == 0);
+                }
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default())
+        .expect("non-overlapping sibling scopes should have independent variable namespaces");
+    assert!(run_bytecode_with_selector(compiled.bytecode, None).is_ok());
+}
+
+#[test]
+fn rejects_function_param_that_shadows_contract_constant_with_same_name() {
+    let source = r#"
+        pragma silverscript ^0.1.0;
+        contract C() {
+            int constant N = 2;
+            entry f(int N) {
+                int s = 0;
+                for (i, 0, N, 10) {
+                    s = s + 1;
+                }
+                require(s == N);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default())
+        .expect_err("a function parameter must not shadow a contract constant");
+    assert!(err.to_string().contains("variable 'N' is already defined"), "unexpected error: {err}");
+    let span = err.span().expect("the conflicting parameter should be identified");
+    assert_eq!(&source[span.start..span.end], "N");
+}
+
+#[test]
+fn rejects_duplicate_variable_definition_in_same_scope() {
+    let source = r#"
+        contract DuplicateLocal() {
+            entry main() {
+                int value = 1;
+                int value = 2;
+                require(value > 0);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default())
+        .expect_err("duplicate variable definitions in the same scope should be rejected");
+    assert!(err.to_string().contains("variable 'value' is already defined"), "unexpected error: {err}");
+    let span = err.span().expect("the duplicate declaration should be identified");
+    assert_eq!(&source[span.start..span.end], "value");
+}
+
+#[test]
+fn rejects_shadowing_in_nested_function_scopes() {
+    let cases = [
+        r#"
+            contract ParameterShadowing() {
+                entry main(int value) {
+                    int value = 1;
+                }
+            }
+        "#,
+        r#"
+            contract BlockShadowing() {
+                entry main() {
+                    int value = 1;
+                    { int value = 2; }
+                }
+            }
+        "#,
+        r#"
+            contract BranchShadowing() {
+                entry main(bool condition) {
+                    int value = 1;
+                    if (condition) { int value = 2; }
+                }
+            }
+        "#,
+        r#"
+            contract LoopShadowing() {
+                entry main(int i) {
+                    for (i, 0, 1, 1) { require(i == 0); }
+                }
+            }
+        "#,
+        r#"
+            contract TupleShadowing() {
+                entry main() {
+                    byte[] left = byte[](0xaa);
+                    byte[] source = byte[](0x0102);
+                    { (byte[] left, byte[] right) = source.split(1); }
+                }
+            }
+        "#,
+        r#"
+            contract FunctionResultShadowing() {
+                function pair() : (int, int) { return(1, 2); }
+                entry main() {
+                    int value = 3;
+                    { (int value, int other) = pair(); }
+                }
+            }
+        "#,
+        r#"
+            contract StructBindingShadowing() {
+                struct S { int field; }
+                entry main() {
+                    int value = 3;
+                    S source = S {field: 1};
+                    { S {field: int value} = source; }
+                }
+            }
+        "#,
+    ];
+
+    for source in cases {
+        let err = compile_contract(source, &[], CompileOptions::default()).expect_err("shadowing should be rejected");
+        assert!(err.to_string().contains("is already defined"), "unexpected error: {err}");
+    }
 }
 
 #[test]
@@ -12484,6 +12660,7 @@ fn rejects_using_branch_local_outside_its_scope() {
 }
 
 #[test]
+#[ignore = "TODO: Re-enable once shadowing is enabled"]
 fn runs_branch_local_shadowing_and_preserves_outer_scope() {
     let source = r#"
         contract BranchShadowing() {
@@ -12511,6 +12688,7 @@ fn runs_branch_local_shadowing_and_preserves_outer_scope() {
 }
 
 #[test]
+#[ignore = "TODO: Re-enable once shadowing is enabled"]
 fn runs_for_loop_local_shadowing_and_preserves_outer_scope() {
     let source = r#"
         contract LoopShadowing() {
@@ -12532,6 +12710,7 @@ fn runs_for_loop_local_shadowing_and_preserves_outer_scope() {
 }
 
 #[test]
+#[ignore = "TODO: Re-enable once shadowing is enabled"]
 fn runs_standalone_block_local_shadowing_and_preserves_outer_scope() {
     let source = r#"
         contract BlockShadowing() {
@@ -12553,6 +12732,7 @@ fn runs_standalone_block_local_shadowing_and_preserves_outer_scope() {
 }
 
 #[test]
+#[ignore = "TODO: Re-enable once shadowing is enabled"]
 fn runs_function_parameter_shadowing() {
     let source = r#"
         contract ParameterShadowing() {
@@ -12570,6 +12750,7 @@ fn runs_function_parameter_shadowing() {
 }
 
 #[test]
+#[ignore = "TODO: Re-enable once shadowing is enabled"]
 fn runs_inlined_function_parameter_shadowing() {
     let source = r#"
         contract InlineParameterShadowing() {
@@ -12592,6 +12773,7 @@ fn runs_inlined_function_parameter_shadowing() {
 }
 
 #[test]
+#[ignore = "TODO: Re-enable once shadowing is enabled"]
 fn runs_standalone_block_tuple_binding_shadowing() {
     let source = r#"
         contract TupleBlockShadowing() {
@@ -12770,6 +12952,7 @@ fn allows_sequence_operations_on_string_and_fixed_byte_types() {
 }
 
 #[test]
+#[ignore = "TODO: Re-enable once shadowing is enabled"]
 fn runs_standalone_block_function_result_binding_shadowing() {
     let source = r#"
         contract FunctionResultBlockShadowing() {
@@ -12796,6 +12979,7 @@ fn runs_standalone_block_function_result_binding_shadowing() {
 }
 
 #[test]
+#[ignore = "TODO: Re-enable once shadowing is enabled"]
 fn runs_standalone_block_state_binding_shadowing() {
     let source = r#"
         contract StateBindingBlockShadowing(int initialValue) {
@@ -12827,6 +13011,7 @@ fn runs_standalone_block_state_binding_shadowing() {
 }
 
 #[test]
+#[ignore = "TODO: Re-enable once shadowing is enabled"]
 fn runs_standalone_block_struct_destructure_binding_shadowing() {
     let source = r#"
         contract StructBindingBlockShadowing() {
@@ -12854,6 +13039,7 @@ fn runs_standalone_block_struct_destructure_binding_shadowing() {
 }
 
 #[test]
+#[ignore = "TODO: Re-enable once shadowing is enabled"]
 fn branch_shadowing_initializer_reads_outer_binding() {
     let source = r#"
         contract BranchInitializerShadowing() {
@@ -12876,6 +13062,7 @@ fn branch_shadowing_initializer_reads_outer_binding() {
 }
 
 #[test]
+#[ignore = "TODO: Re-enable once shadowing is enabled"]
 fn branch_reference_before_shadowing_declaration_reads_outer_binding() {
     let source = r#"
         contract BranchReferenceBeforeShadowing() {
@@ -12899,6 +13086,7 @@ fn branch_reference_before_shadowing_declaration_reads_outer_binding() {
 }
 
 #[test]
+#[ignore = "TODO: Re-enable once shadowing is enabled"]
 fn for_loop_shadowing_initializer_reads_outer_binding() {
     let source = r#"
         contract LoopInitializerShadowing() {
@@ -12921,6 +13109,7 @@ fn for_loop_shadowing_initializer_reads_outer_binding() {
 }
 
 #[test]
+#[ignore = "TODO: Re-enable once shadowing is enabled"]
 fn for_loop_reference_before_shadowing_declaration_reads_outer_binding() {
     let source = r#"
         contract LoopReferenceBeforeShadowing() {
@@ -13812,7 +14001,7 @@ fn rejects_entrypoint_parameter_that_shadows_contract_field() {
     "#;
     let err = compile_contract(source, &[], CompileOptions::default())
         .expect_err("an entrypoint parameter must not shadow a contract field");
-    assert!(err.to_string().contains("parameter 'field' conflicts with contract field"), "unexpected error: {err}");
+    assert!(err.to_string().contains("variable 'field' is already defined"), "unexpected error: {err}");
 }
 
 #[test]
