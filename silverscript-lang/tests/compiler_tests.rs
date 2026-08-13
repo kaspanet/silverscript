@@ -12073,6 +12073,26 @@ fn rejects_function_param_that_shadows_contract_constant_with_same_name() {
 }
 
 #[test]
+fn rejects_contract_constant_that_shadows_constructor_parameter_used_as_array_size() {
+    let source = r#"
+        pragma silverscript ^0.1.0;
+        contract C(int A) {
+            int constant A = 2;
+            entry f() {
+                byte[A] b = byte[A](0x11223344);
+                require(b.length == 4);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[Expr::int(4)], CompileOptions::default())
+        .expect_err("a contract constant must not shadow a constructor parameter");
+    assert!(err.to_string().contains("variable 'A' is already defined"), "unexpected error: {err}");
+    let span = err.span().expect("the conflicting constant should be identified");
+    assert_eq!(&source[span.start..span.end], "A");
+}
+
+#[test]
 fn rejects_duplicate_variable_definition_in_same_scope() {
     let source = r#"
         contract DuplicateLocal() {
