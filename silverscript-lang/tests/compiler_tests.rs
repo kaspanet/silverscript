@@ -3338,6 +3338,61 @@ fn build_sig_script_rejects_structurally_identical_array_element_type() {
 }
 
 #[test]
+fn runtime_supports_struct_array_append_value_length_without_assignment() {
+    let source = r#"
+        contract C() {
+            struct S {
+                int a;
+                byte[2] b;
+            }
+
+            entry main(S[] source) {
+                require(source.append(S {a: 9, b: byte[_](0x0304)}).length == 2);
+                require(source.length == 1);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let sigscript = compiled.build_sig_script("main", vec![struct_array_arg(vec![(7, vec![0x01, 0x02])])]).expect("sigscript builds");
+    let result = run_bytecode_with_sigscript(compiled.bytecode, sigscript);
+
+    assert!(result.is_ok(), "struct[] append result length should be usable without assignment: {result:?}");
+}
+
+#[test]
+fn runtime_supports_struct_array_append_assignment_from_different_source() {
+    let source = r#"
+        contract C() {
+            struct S {
+                int a;
+                byte[2] b;
+            }
+
+            entry main(S[] source) {
+                S[] destination = S[]{S {a: 100, b: byte[_](0xaabb)}};
+                destination = source.append(S {a: 9, b: byte[_](0x0304)});
+
+                require(source.length == 1);
+                require(source[0].a == 7);
+                require(source[0].b == byte[_](0x0102));
+                require(destination.length == 2);
+                require(destination[0].a == 7);
+                require(destination[0].b == byte[_](0x0102));
+                require(destination[1].a == 9);
+                require(destination[1].b == byte[_](0x0304));
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let sigscript = compiled.build_sig_script("main", vec![struct_array_arg(vec![(7, vec![0x01, 0x02])])]).expect("sigscript builds");
+    let result = run_bytecode_with_sigscript(compiled.bytecode, sigscript);
+
+    assert!(result.is_ok(), "struct[] append assignment from a different source should execute successfully: {result:?}");
+}
+
+#[test]
 fn runtime_supports_struct_array_append_value_expression() {
     let source = r#"
         contract C() {
@@ -4923,6 +4978,23 @@ fn runs_array_append_runtime_examples() {
     let sigscript = script_builder().drain();
     let result = run_bytecode_with_sigscript(compiled.bytecode, sigscript);
     assert!(result.is_ok(), "array append runtime example failed: {}", result.unwrap_err());
+}
+
+#[test]
+fn runs_array_append_value_length_without_assignment() {
+    let source = r#"
+        contract Arrays() {
+            entry main() {
+                int[] values = int[]{1};
+                require(values.append(2).length == 2);
+                require(values.length == 1);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let result = run_bytecode_with_selector(compiled.bytecode, None);
+    assert!(result.is_ok(), "array append result length should be usable without assignment: {result:?}");
 }
 
 #[test]

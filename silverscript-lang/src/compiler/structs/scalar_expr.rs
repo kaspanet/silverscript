@@ -182,22 +182,13 @@ pub(super) fn lower_scalar_expr<'i>(
         )),
         ExprKind::UnarySuffix { source, kind, span: suffix_span } => {
             if matches!(kind, crate::ast::UnarySuffixKind::Length)
-                && let ExprKind::Identifier(name) = &source.kind
-                && let Some(type_ref) = scope.type_of(name)
-                && is_struct_array(type_ref, structs)
+                && let Some(type_ref) = struct_array_expr_type(source, scope, structs)
             {
-                let first_leaf = flatten_type_leaves(type_ref, structs)?
+                let first_leaf = lower_struct_array_expr(source, &type_ref, scope, lowerer)?
                     .into_iter()
                     .next()
                     .ok_or_else(|| CompilerError::Unsupported("struct array must contain fields".to_string()))?;
-                return Ok(Expr::new(
-                    ExprKind::UnarySuffix {
-                        source: Box::new(Expr::identifier(flattened_struct_name(name, &first_leaf.path))),
-                        kind: *kind,
-                        span: *suffix_span,
-                    },
-                    span,
-                ));
+                return Ok(Expr::new(ExprKind::UnarySuffix { source: Box::new(first_leaf), kind: *kind, span: *suffix_span }, span));
             }
             Ok(Expr::new(
                 ExprKind::UnarySuffix {
@@ -210,4 +201,16 @@ pub(super) fn lower_scalar_expr<'i>(
         }
         _ => Ok(expr.clone()),
     }
+}
+
+fn struct_array_expr_type(expr: &Expr<'_>, scope: &LoweringScope, structs: &StructRegistry) -> Option<TypeRef> {
+    let type_ref = match &expr.kind {
+        ExprKind::Identifier(name) => scope.type_of(name).cloned(),
+        ExprKind::Array { type_ref, .. } => Some(type_ref.clone()),
+        ExprKind::Append { source, .. } | ExprKind::Split { source, .. } | ExprKind::Slice { source, .. } => {
+            struct_array_expr_type(source, scope, structs)
+        }
+        _ => None,
+    }?;
+    is_struct_array(&type_ref, structs).then_some(type_ref)
 }

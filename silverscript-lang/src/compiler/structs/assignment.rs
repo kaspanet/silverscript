@@ -74,7 +74,10 @@ fn lower_atomic_reassignment<'i>(
     name_span: span::Span<'i>,
 ) -> Vec<Statement<'i>> {
     if lowered_assignments.len() <= 1 {
-        return lowered_assignments.into_iter().map(|(name, _, expr)| Statement::Assign { name, expr, span: statement_span, name_span }).collect();
+        return lowered_assignments
+            .into_iter()
+            .map(|(name, _, expr)| Statement::Assign { name, expr, span: statement_span, name_span })
+            .collect();
     }
 
     let mut body = Vec::with_capacity(lowered_assignments.len() * 2);
