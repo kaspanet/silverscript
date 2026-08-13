@@ -4655,6 +4655,184 @@ fn array_literal_codegen_uses_declared_element_type() {
 }
 
 #[test]
+fn bool_array_literal_normalizes_runtime_elements_to_one_byte() {
+    let source = r#"
+        contract Arrays() {
+            entry main(bool x) {
+                bool[] values = bool[]{x, false};
+                require(byte[2](values) == byte[_](0x0100));
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let sigscript = compiled.build_sig_script("main", vec![Expr::bool(true)]).expect("sigscript builds");
+    let result = run_bytecode_with_sigscript(compiled.bytecode, sigscript);
+    assert!(result.is_ok(), "bool[] literal elements should each occupy one byte: {result:?}");
+}
+
+#[test]
+fn runtime_and_compile_time_false_have_identical_bool_array_encoding() {
+    let source = r#"
+        pragma silverscript ^0.1.0;
+        contract BoolArrayRuntime() {
+            entry check(bool x) {
+                bool[] runtimeArr = bool[]{x, false};
+                bool[] constArr = bool[]{true, false};
+                require(runtimeArr.length == 2);
+                require(constArr.length == 2);
+                require(runtimeArr == constArr);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let sigscript = compiled.build_sig_script("check", vec![Expr::bool(true)]).expect("sigscript builds");
+    let result = run_bytecode_with_sigscript(compiled.bytecode, sigscript);
+    assert!(result.is_ok(), "runtime and compile-time false should have identical bool[] encoding: {result:?}");
+}
+
+#[test]
+fn bool_array_append_normalizes_runtime_elements_to_one_byte() {
+    let source = r#"
+        contract Arrays() {
+            entry main(bool x) {
+                bool[] values = bool[]{};
+                bool[] result = values.append(x, false);
+                require(byte[2](result) == byte[_](0x0100));
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let sigscript = compiled.build_sig_script("main", vec![Expr::bool(true)]).expect("sigscript builds");
+    let result = run_bytecode_with_sigscript(compiled.bytecode, sigscript);
+    assert!(result.is_ok(), "bool[] append elements should each occupy one byte: {result:?}");
+}
+
+#[test]
+fn int_array_literal_normalizes_runtime_elements_to_eight_bytes() {
+    let source = r#"
+        contract Arrays() {
+            entry main(int x) {
+                int[] values = int[]{x, 0};
+                require(byte[16](values) == byte[_](0x01000000000000000000000000000000));
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let sigscript = compiled.build_sig_script("main", vec![Expr::int(1)]).expect("sigscript builds");
+    let result = run_bytecode_with_sigscript(compiled.bytecode, sigscript);
+    assert!(result.is_ok(), "int[] literal elements should each occupy eight bytes: {result:?}");
+}
+
+#[test]
+fn int_array_append_normalizes_runtime_elements_to_eight_bytes() {
+    let source = r#"
+        contract Arrays() {
+            entry main(int x) {
+                int[] values = int[]{};
+                int[] result = values.append(x, 0);
+                require(byte[16](result) == byte[_](0x01000000000000000000000000000000));
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let sigscript = compiled.build_sig_script("main", vec![Expr::int(1)]).expect("sigscript builds");
+    let result = run_bytecode_with_sigscript(compiled.bytecode, sigscript);
+    assert!(result.is_ok(), "int[] append elements should each occupy eight bytes: {result:?}");
+}
+
+#[test]
+fn struct_array_bool_and_int_leaves_use_fixed_width_encoding() {
+    let source = r#"
+        contract Arrays() {
+            struct S { bool flag; int number; }
+
+            entry main(bool flag, int number) {
+                S[] values = S[]{S {flag: flag, number: number}};
+                values = values.append(S {flag: false, number: 0});
+
+                require(values.length == 2);
+                require(values[0].flag);
+                require(!values[1].flag);
+                require(values[0].number == 1);
+                require(values[1].number == 0);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let sigscript = compiled.build_sig_script("main", vec![Expr::bool(true), Expr::int(1)]).expect("sigscript builds");
+    let result = run_bytecode_with_sigscript(compiled.bytecode, sigscript);
+    assert!(result.is_ok(), "flattened struct array leaves should retain bool/int element widths: {result:?}");
+}
+
+#[test]
+fn nested_bool_and_int_array_literals_use_fixed_width_encoding() {
+    let source = r#"
+        contract Arrays() {
+            entry main(bool flag, int number) {
+                bool[2][] flags = bool[2][]{bool[2]{flag, false}};
+                int[2][] numbers = int[2][]{int[2]{number, 0}};
+
+                require(byte[2](flags) == byte[_](0x0100));
+                require(byte[16](numbers) == byte[_](0x01000000000000000000000000000000));
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let sigscript = compiled.build_sig_script("main", vec![Expr::bool(true), Expr::int(1)]).expect("sigscript builds");
+    let result = run_bytecode_with_sigscript(compiled.bytecode, sigscript);
+    assert!(result.is_ok(), "nested array literals should normalize their scalar elements: {result:?}");
+}
+
+#[test]
+fn constant_and_contract_field_arrays_use_fixed_width_encoding() {
+    let source = r#"
+        contract Arrays() {
+            bool[2] constant FLAGS = bool[2]{true, false};
+            int[2] constant NUMBERS = int[2]{1, 0};
+            bool[2] fieldFlags = bool[2]{true, false};
+            int[2] fieldNumbers = int[2]{1, 0};
+
+            entry main() {
+                require(byte[2](FLAGS) == byte[_](0x0100));
+                require(byte[16](NUMBERS) == byte[_](0x01000000000000000000000000000000));
+                require(byte[2](fieldFlags) == byte[_](0x0100));
+                require(byte[16](fieldNumbers) == byte[_](0x01000000000000000000000000000000));
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let result = run_bytecode_with_selector(compiled.bytecode, None);
+    assert!(result.is_ok(), "compile-time array encoders should use the canonical scalar widths: {result:?}");
+}
+
+#[test]
+fn bool_and_int_array_sigscript_arguments_use_fixed_width_encoding() {
+    let source = r#"
+        contract Arrays() {
+            entry main(bool[2] flags, int[2] numbers) {
+                require(byte[2](flags) == byte[_](0x0100));
+                require(byte[16](numbers) == byte[_](0x01000000000000000000000000000000));
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let flags = Expr::array(parse_type_ref("bool[2]").expect("type parses"), vec![Expr::bool(true), Expr::bool(false)]);
+    let numbers = Expr::array(parse_type_ref("int[2]").expect("type parses"), vec![Expr::int(1), Expr::int(0)]);
+    let sigscript = compiled.build_sig_script("main", vec![flags, numbers]).expect("sigscript builds");
+    let result = run_bytecode_with_sigscript(compiled.bytecode, sigscript);
+    assert!(result.is_ok(), "signature-script array encoding should use the canonical scalar widths: {result:?}");
+}
+
+#[test]
 fn compiles_int_array_length_to_expected_script() {
     let source = r#"
         contract Arrays() {
