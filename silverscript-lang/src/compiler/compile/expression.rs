@@ -181,11 +181,10 @@ fn compile_array_literal_element<'i>(
             Ok(())
         }
         (TypeBase::Bool, []) => {
-            let cast_expr = Expr::new(
-                ExprKind::Call { name: "byte[1]".to_string(), args: vec![value.clone()], name_span: span::Span::default() },
-                span::Span::default(),
-            );
-            compile_expr_with_context(ctx, &cast_expr, None)
+            compile_expr_with_context(ctx, value, Some(element_type))?;
+            ctx.push_int(1)?;
+            ctx.emit_op(OpNum2Bin, -1)?;
+            Ok(())
         }
         _ => compile_expr_with_context(ctx, value, Some(element_type)),
     }

@@ -2251,7 +2251,7 @@ fn collect_structured_field_access<'i>(expr: &'i Expr<'i>) -> Option<(Structured
 }
 
 fn first_lowered_structured_leaf_name<'i>(scope_state: &ScopeState<'i>, base_name: &str) -> Option<String> {
-    let prefix = format!("__struct_{base_name}_");
+    let prefix = format!("{}_", flattened_struct_name(base_name, &[]));
     scope_state.keys().find(|name| name.starts_with(&prefix)).cloned()
 }
 
@@ -2895,8 +2895,9 @@ mod tests {
         assert_eq!(crate::presentation::format_value(&next.type_name, &next.value), "{amount: 7, code: 0x1234}");
 
         let scope_state = session.scope_state(StepId::ROOT).expect("scope state");
-        assert!(scope_state.contains_key("__struct_next_amount"));
-        assert!(scope_state.get("__struct_next_amount").is_some_and(|binding| binding.hidden));
+        let next_amount = flattened_struct_name("next", &["amount".to_string()]);
+        assert!(scope_state.contains_key(&next_amount));
+        assert!(scope_state.get(&next_amount).is_some_and(|binding| binding.hidden));
     }
 
     #[test]
@@ -2931,13 +2932,15 @@ mod tests {
 
         let field_expr = parse_expression_ast("next.amount").expect("parse field");
         let lowered_field = lower_expr_for_eval(&field_expr, &scope_state).expect("lower field access");
-        assert!(matches!(lowered_field.kind, ExprKind::Identifier(ref name) if name == "__struct_next_amount"));
+        let next_amount = flattened_struct_name("next", &["amount".to_string()]);
+        assert!(matches!(lowered_field.kind, ExprKind::Identifier(ref name) if name == &next_amount));
 
         let indexed_expr = parse_expression_ast("next_states[0].amount").expect("parse indexed field");
         let lowered_indexed = lower_expr_for_eval(&indexed_expr, &scope_state).expect("lower indexed field access");
+        let next_states_amount = flattened_struct_name("next_states", &["amount".to_string()]);
         match lowered_indexed.kind {
             ExprKind::ArrayIndex { source, index } => {
-                assert!(matches!(source.kind, ExprKind::Identifier(ref name) if name == "__struct_next_states_amount"));
+                assert!(matches!(source.kind, ExprKind::Identifier(ref name) if name == &next_states_amount));
                 assert!(matches!(index.kind, ExprKind::Int(0)));
             }
             other => panic!("expected lowered array index, got {other:?}"),
@@ -2947,7 +2950,7 @@ mod tests {
         let lowered_length = lower_expr_for_eval(&length_expr, &scope_state).expect("lower structured length");
         match lowered_length.kind {
             ExprKind::UnarySuffix { source, kind, .. } => {
-                assert!(matches!(source.kind, ExprKind::Identifier(ref name) if name == "__struct_next_states_amount"));
+                assert!(matches!(source.kind, ExprKind::Identifier(ref name) if name == &next_states_amount));
                 assert!(matches!(kind, UnarySuffixKind::Length));
             }
             other => panic!("expected lowered length suffix, got {other:?}"),

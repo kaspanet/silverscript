@@ -52,9 +52,9 @@ pub(super) fn compile_contract_impl<'i>(
     let inferred_lowered_contract = lower_inferred_array_sizes(contract, &constants)?;
     static_check_contract(&inferred_lowered_contract, constructor_args, options)?;
     let covenant_lowered_contract = lower_covenant_declarations(&inferred_lowered_contract, &constants)?;
-    let read_input_state_lowered_contract = lower_read_input_state_calls(&covenant_lowered_contract)?;
-    let ternary_lowered_contract = lower_ternaries(&read_input_state_lowered_contract, &constants)?;
-    let inline_lowered_contract = lower_inline_functions(&ternary_lowered_contract, &mut debug_recorder)?;
+    let ternary_lowered_contract = lower_ternaries(&covenant_lowered_contract, &constants)?;
+    let read_input_state_lowered_contract = lower_read_input_state_calls(&ternary_lowered_contract)?;
+    let inline_lowered_contract = lower_inline_functions(&read_input_state_lowered_contract, &mut debug_recorder)?;
     let structs = build_struct_registry(&inline_lowered_contract)?;
     let validate_output_state_lowered_contract = lower_validate_output_state(&inline_lowered_contract, &structs, &constants)?;
     let struct_lowered_contract = lower_structs_contract(&validate_output_state_lowered_contract, &structs, &constants)?;
@@ -63,6 +63,7 @@ pub(super) fn compile_contract_impl<'i>(
     // TODO: Re-enable this once we make sure we don't optimize away fallible statements.
     // let lowered_contract = if options.record_debug_infos { for_lowered_contract } else { lower_local_aliases(&for_lowered_contract)? };
     let lowered_contract = for_lowered_contract;
+    validate_declaration_names(&lowered_contract)?; // This is a sanity check to ensure that lowering didn't introduce any duplicate names.
     let mut lowered_constants = flatten_constructor_args_env(&covenant_lowered_contract.params, constructor_args, &structs)?;
     lowered_constants.extend(lowered_contract.constants.iter().map(|constant| (constant.name.clone(), constant.expr.clone())));
 

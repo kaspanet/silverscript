@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 
 use crate::ast::{
-    ArrayDim, BinaryOp, ContractFieldAst, Expr, ExprKind, FunctionAst, TypeBase, TypeRef, UnaryOp, UnarySuffixKind, as_cast_type,
+    ArrayDim, BinaryOp, ContractFieldAst, Expr, ExprKind, FunctionAst, SplitPart, TypeBase, TypeRef, UnaryOp, UnarySuffixKind,
+    as_cast_type,
 };
 
 use super::builtin_types::{
@@ -10,8 +11,8 @@ use super::builtin_types::{
 };
 use super::structs::{StructRegistry, flattened_struct_field_specs_for_type, is_struct, struct_name};
 use super::{
-    CompilerError, STATE_TYPE_NAME, TypeMap, append_type, array_type_size, concat_types, fixed_type_size, parse_type_ref,
-    type_refs_equal,
+    CompilerError, STATE_TYPE_NAME, TypeMap, append_type, array_type_size, concat_types, eval_const_int, fixed_type_size,
+    parse_type_ref, type_refs_equal,
 };
 
 pub(super) struct TypeCheckContext<'a, 'i> {
@@ -38,10 +39,10 @@ pub(super) fn check_expr<'i>(
         ExprKind::Call { name, args, .. } => check_call(name, args, expected, ctx)?
             .ok_or_else(|| CompilerError::Unsupported(format!("function '{name}' does not return a value")))?,
         ExprKind::New { name, args, .. } => check_constructor(name, args, ctx)?,
-        ExprKind::Split { source, index, .. } => {
+        ExprKind::Split { source, index, part, .. } => {
             let source_type = check_expr(source, None, ctx)?;
             check_expr(index, Some(&scalar_type(TypeBase::Int)), ctx)?;
-            sequence_part_type(&source_type, "split")?
+            split_part_type(&source_type, index, *part, ctx.constants)?
         }
         ExprKind::Slice { source, start, end, .. } => {
             let source_type = check_expr(source, None, ctx)?;
@@ -299,10 +300,10 @@ pub(super) fn check_call<'i>(
                 cast_type.type_name()
             )));
         }
-        if cast_type.is_array()
-            && source_type.is_array()
+        validate_scalar_cast_compatibility(&cast_type, &source_type, ctx.constants)?;
+        if (cast_type.is_array() || cast_type.base.fixed_byte_sequence_len().is_some())
             && let (Some(target_size), Some(source_size)) =
-                (fixed_type_size(&cast_type, ctx.constants), fixed_type_size(&source_type, ctx.constants))
+                (fixed_type_size(&cast_type, ctx.constants), known_cast_source_size(&args[0], &source_type, ctx.constants))
             && target_size != source_size
         {
             return Err(CompilerError::Unsupported(format!("cannot cast {} to {}", source_type.type_name(), cast_type.type_name())));
@@ -324,6 +325,46 @@ pub(super) fn check_call<'i>(
         BuiltinReturn::Value(type_ref) => Ok(Some(type_ref)),
         BuiltinReturn::Void => Ok(None),
     }
+}
+
+fn validate_scalar_cast_compatibility<'i>(
+    cast_type: &TypeRef,
+    source_type: &TypeRef,
+    constants: &HashMap<String, Expr<'i>>,
+) -> Result<(), CompilerError> {
+    let compatible = if cast_type.is_int() {
+        source_type.is_int()
+            || source_type.is_bool()
+            || matches!(source_type.base, TypeBase::Byte)
+                && source_type.array_dims.len() == 1
+                && array_type_size(source_type, constants).is_some_and(|size| size <= 8)
+    } else if cast_type.is_bool() {
+        source_type.is_byte()
+    } else if cast_type.is_string() {
+        source_type.is_string()
+            || source_type.is_byte()
+            || matches!(source_type.base, TypeBase::Byte) && source_type.is_array()
+            || source_type.base.fixed_byte_sequence_len().is_some()
+    } else if cast_type.base.fixed_byte_sequence_len().is_some() {
+        source_type.is_byte()
+            || source_type.is_array()
+            || source_type.is_string()
+            || source_type.base.fixed_byte_sequence_len().is_some()
+    } else {
+        true
+    };
+    if compatible {
+        Ok(())
+    } else {
+        Err(CompilerError::Unsupported(format!("cannot cast {} to {}", source_type.type_name(), cast_type.type_name())))
+    }
+}
+
+fn known_cast_source_size<'i>(expr: &Expr<'i>, source_type: &TypeRef, constants: &HashMap<String, Expr<'i>>) -> Option<usize> {
+    fixed_type_size(source_type, constants).or(match &expr.kind {
+        ExprKind::String(value) => Some(value.len()),
+        _ => None,
+    })
 }
 
 fn check_g16_verify_args<'i>(args: &[Expr<'i>], ctx: &TypeCheckContext<'_, 'i>) -> Result<(), CompilerError> {
@@ -519,6 +560,43 @@ fn sequence_part_type(type_ref: &TypeRef, operation: &str) -> Result<TypeRef, Co
         return Ok(TypeRef { base: TypeBase::Byte, array_dims: vec![ArrayDim::Dynamic] });
     }
     Err(CompilerError::Unsupported(format!("{operation} source must be an array, string, or fixed-byte type")))
+}
+
+pub(super) fn split_part_type<'i>(
+    source_type: &TypeRef,
+    index: &Expr<'i>,
+    part: SplitPart,
+    constants: &HashMap<String, Expr<'i>>,
+) -> Result<TypeRef, CompilerError> {
+    if source_type.is_string() {
+        return Ok(source_type.clone());
+    }
+
+    let (mut element_type, source_size) = if source_type.is_array() {
+        let element_type =
+            source_type.array_element_type().ok_or_else(|| CompilerError::Unsupported("split source must be an array".to_string()))?;
+        (element_type, array_type_size(source_type, constants))
+    } else if let Some(source_size) = source_type.base.fixed_byte_sequence_len() {
+        (scalar_type(TypeBase::Byte), Some(source_size))
+    } else {
+        return Err(CompilerError::Unsupported("split source must be an array, string, or fixed-byte type".to_string()));
+    };
+    let constant_index = eval_const_int(index, constants).ok().and_then(|value| usize::try_from(value).ok());
+    let dimension = match (constant_index, part) {
+        (Some(index), SplitPart::Left) => ArrayDim::Fixed(index),
+        (Some(index), SplitPart::Right) => match source_size {
+            Some(source_size) if index <= source_size => ArrayDim::Fixed(source_size - index),
+            Some(source_size) => {
+                return Err(CompilerError::Unsupported(format!(
+                    "split index {index} is out of bounds for array of length {source_size}"
+                )));
+            }
+            None => ArrayDim::Dynamic,
+        },
+        (None, _) => ArrayDim::Dynamic,
+    };
+    element_type.array_dims.push(dimension);
+    Ok(element_type)
 }
 
 fn check_constructor<'i>(name: &str, args: &[Expr<'i>], ctx: &TypeCheckContext<'_, 'i>) -> Result<TypeRef, CompilerError> {

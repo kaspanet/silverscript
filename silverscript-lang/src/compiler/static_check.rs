@@ -1,8 +1,16 @@
+use super::builtin_types::is_builtin_name;
 use super::*;
 use semver::{Comparator, Op, Version, VersionReq};
 use std::collections::{HashMap, HashSet};
 
 pub(super) fn validate_declaration_names(contract: &ContractAst<'_>) -> Result<(), CompilerError> {
+    for function in &contract.functions {
+        if is_builtin_name(&function.name) {
+            return Err(CompilerError::Unsupported(format!("function name '{}' is reserved for a builtin", function.name))
+                .with_span(&function.name_span));
+        }
+    }
+
     let mut names = HashSet::new();
     for param in &contract.params {
         if !names.insert(param.name.as_str()) {
@@ -21,6 +29,17 @@ pub(super) fn validate_declaration_names(contract: &ContractAst<'_>) -> Result<(
         }
     }
 
+    let mut contract_names = HashSet::new();
+    for (name, span) in contract
+        .params
+        .iter()
+        .map(|param| (param.name.as_str(), &param.name_span))
+        .chain(contract.constants.iter().map(|constant| (constant.name.as_str(), &constant.name_span)))
+        .chain(contract.fields.iter().map(|field| (field.name.as_str(), &field.name_span)))
+    {
+        insert_variable_name(&mut contract_names, name, span)?;
+    }
+
     for function in &contract.functions {
         names.clear();
         for param in &function.params {
@@ -32,8 +51,111 @@ pub(super) fn validate_declaration_names(contract: &ContractAst<'_>) -> Result<(
                 .with_span(&param.name_span));
             }
         }
+
+        let mut function_names = contract_names.clone();
+        for param in &function.params {
+            insert_variable_name(&mut function_names, &param.name, &param.name_span)?;
+        }
+        validate_statement_declaration_names(&function.body, &mut function_names)?;
+        validate_loop_variable_assignments(&function.body, &HashSet::new())?;
     }
 
+    Ok(())
+}
+
+fn insert_variable_name<'i>(names: &mut HashSet<&'i str>, name: &'i str, span: &span::Span<'i>) -> Result<(), CompilerError> {
+    if is_builtin_name(name) {
+        return Err(CompilerError::Unsupported(format!("variable name '{name}' is reserved for a builtin")).with_span(span));
+    }
+    if !names.insert(name) {
+        return Err(CompilerError::Unsupported(format!("variable '{name}' is already defined")).with_span(span));
+    }
+    Ok(())
+}
+
+fn validate_statement_declaration_names<'i>(
+    statements: &'i [Statement<'i>],
+    names: &mut HashSet<&'i str>,
+) -> Result<(), CompilerError> {
+    for statement in statements {
+        match statement {
+            Statement::VariableDefinition { name, name_span, .. } => insert_variable_name(names, name, name_span)?,
+            Statement::TupleAssignment { left_name, left_name_span, right_name, right_name_span, .. } => {
+                insert_variable_name(names, left_name, left_name_span)?;
+                insert_variable_name(names, right_name, right_name_span)?;
+            }
+            Statement::FunctionCallAssign { bindings, .. } => {
+                for binding in bindings {
+                    insert_variable_name(names, &binding.name, &binding.name_span)?;
+                }
+            }
+            Statement::StateFunctionCallAssign { bindings, .. } | Statement::StructDestructure { bindings, .. } => {
+                for binding in bindings {
+                    insert_variable_name(names, &binding.name, &binding.name_span)?;
+                }
+            }
+            Statement::Block { body, .. } => {
+                let mut block_names = names.clone();
+                validate_statement_declaration_names(body, &mut block_names)?;
+            }
+            Statement::If { then_branch, else_branch, .. } => {
+                let mut then_names = names.clone();
+                validate_statement_declaration_names(then_branch, &mut then_names)?;
+                if let Some(else_branch) = else_branch {
+                    let mut else_names = names.clone();
+                    validate_statement_declaration_names(else_branch, &mut else_names)?;
+                }
+            }
+            Statement::For { ident, ident_span, body, .. } => {
+                let mut loop_names = names.clone();
+                insert_variable_name(&mut loop_names, ident, ident_span)?;
+                validate_statement_declaration_names(body, &mut loop_names)?;
+            }
+            Statement::FunctionCall { .. }
+            | Statement::Assign { .. }
+            | Statement::TimeOp { .. }
+            | Statement::Require { .. }
+            | Statement::Return { .. }
+            | Statement::Console { .. } => {}
+        }
+    }
+    Ok(())
+}
+
+fn validate_loop_variable_assignments<'i>(
+    statements: &'i [Statement<'i>],
+    loop_variables: &HashSet<&'i str>,
+) -> Result<(), CompilerError> {
+    for statement in statements {
+        match statement {
+            Statement::Assign { name, name_span, .. } if loop_variables.contains(name.as_str()) => {
+                return Err(CompilerError::Unsupported(format!("cannot assign to loop variable '{name}'")).with_span(name_span));
+            }
+            Statement::Block { body, .. } => validate_loop_variable_assignments(body, loop_variables)?,
+            Statement::If { then_branch, else_branch, .. } => {
+                validate_loop_variable_assignments(then_branch, loop_variables)?;
+                if let Some(else_branch) = else_branch {
+                    validate_loop_variable_assignments(else_branch, loop_variables)?;
+                }
+            }
+            Statement::For { ident, body, .. } => {
+                let mut nested_loop_variables = loop_variables.clone();
+                nested_loop_variables.insert(ident);
+                validate_loop_variable_assignments(body, &nested_loop_variables)?;
+            }
+            Statement::VariableDefinition { .. }
+            | Statement::TupleAssignment { .. }
+            | Statement::FunctionCall { .. }
+            | Statement::FunctionCallAssign { .. }
+            | Statement::StateFunctionCallAssign { .. }
+            | Statement::StructDestructure { .. }
+            | Statement::Assign { .. }
+            | Statement::TimeOp { .. }
+            | Statement::Require { .. }
+            | Statement::Return { .. }
+            | Statement::Console { .. } => {}
+        }
+    }
     Ok(())
 }
 
@@ -377,7 +499,21 @@ fn validate_tuple_assignment_statement_shape<'i>(
     right_name: &str,
     expr: &Expr<'i>,
 ) -> Result<(), CompilerError> {
-    ctx.check_expr(expr, None)?;
+    let ExprKind::Split { source, index, span, .. } = &expr.kind else {
+        let actual = ctx.check_expr(expr, None)?;
+        if actual.tuple_elements().is_some() {
+            return Err(CompilerError::Unsupported(
+                "function returns a tuple and cannot be used directly in expressions; access a tuple field instead".to_string(),
+            ));
+        }
+        return Err(CompilerError::Unsupported("tuple assignment only supports split()".to_string()));
+    };
+    let left_expr =
+        Expr::new(ExprKind::Split { source: source.clone(), index: index.clone(), part: SplitPart::Left, span: *span }, expr.span);
+    let right_expr =
+        Expr::new(ExprKind::Split { source: source.clone(), index: index.clone(), part: SplitPart::Right, span: *span }, expr.span);
+    ctx.check_expr(&left_expr, Some(left_type_ref))?;
+    ctx.check_expr(&right_expr, Some(right_type_ref))?;
     ensure_array_elements_have_known_size(left_type_ref, ctx.structs, ctx.constants, &left_type_ref.type_name())?;
     ensure_array_elements_have_known_size(right_type_ref, ctx.structs, ctx.constants, &right_type_ref.type_name())?;
     insert_type_binding(ctx.types, left_name, left_type_ref);

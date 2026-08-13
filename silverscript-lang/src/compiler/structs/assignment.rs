@@ -19,13 +19,12 @@ pub(super) fn lower_assignment<'i>(
         && let ExprKind::Append { source, args, .. } = &expr.kind
         && matches!(&source.kind, ExprKind::Identifier(source_name) if source_name == name)
     {
-        return lower_struct_array_append(name, &type_ref, args, *span, *name_span, scope, lowerer);
+        let lowered = lower_struct_array_append(name, &type_ref, args, *span, scope, lowerer)?;
+        return Ok(lower_atomic_reassignment(lowered, *span, *name_span));
     }
 
-    Ok(lower_named_expr(name, &type_ref, expr, scope, lowerer)?
-        .into_iter()
-        .map(|(name, _, expr)| Statement::Assign { name, expr, span: *span, name_span: *name_span })
-        .collect())
+    let lowered = lower_named_expr(name, &type_ref, expr, scope, lowerer)?;
+    Ok(lower_atomic_reassignment(lowered, *span, *name_span))
 }
 
 fn lower_struct_array_append<'i>(
@@ -33,10 +32,9 @@ fn lower_struct_array_append<'i>(
     array_type: &TypeRef,
     args: &[Expr<'i>],
     statement_span: span::Span<'i>,
-    name_span: span::Span<'i>,
     scope: &LoweringScope,
     lowerer: &StructLowerer<'_, 'i>,
-) -> Result<Vec<Statement<'i>>, CompilerError> {
+) -> Result<Vec<(String, TypeRef, Expr<'i>)>, CompilerError> {
     let element_type =
         array_type.array_element_type().ok_or_else(|| CompilerError::Unsupported("array element type not supported".to_string()))?;
     let leaves = flatten_type_leaves(&element_type, lowerer.structs)?;
@@ -52,20 +50,53 @@ fn lower_struct_array_append<'i>(
         }
     }
 
-    leaves
+    let targets = flatten_named_type(name, array_type, lowerer.structs)?;
+    if targets.len() != args_by_leaf.len() {
+        return Err(CompilerError::Unsupported("internal error: flattened struct array does not match its type".to_string()));
+    }
+
+    targets
         .into_iter()
         .zip(args_by_leaf)
-        .map(|(leaf, args)| {
-            let leaf_name = flattened_struct_name(name, &leaf.path);
-            Ok(Statement::Assign {
-                name: leaf_name.clone(),
-                expr: Expr::new(
-                    ExprKind::Append { source: Box::new(Expr::identifier(&leaf_name)), args, span: span::Span::default() },
-                    statement_span,
-                ),
-                span: statement_span,
-                name_span,
-            })
+        .map(|((leaf_name, leaf_type), args)| {
+            let expr = Expr::new(
+                ExprKind::Append { source: Box::new(Expr::identifier(&leaf_name)), args, span: span::Span::default() },
+                statement_span,
+            );
+            Ok((leaf_name, leaf_type, expr))
         })
         .collect()
+}
+
+fn lower_atomic_reassignment<'i>(
+    lowered_assignments: Vec<(String, TypeRef, Expr<'i>)>,
+    statement_span: span::Span<'i>,
+    name_span: span::Span<'i>,
+) -> Vec<Statement<'i>> {
+    if lowered_assignments.len() <= 1 {
+        return lowered_assignments
+            .into_iter()
+            .map(|(name, _, expr)| Statement::Assign { name, expr, span: statement_span, name_span })
+            .collect();
+    }
+
+    let mut body = Vec::with_capacity(lowered_assignments.len() * 2);
+    let mut rebindings = Vec::with_capacity(lowered_assignments.len());
+    for (index, (name, type_ref, expr)) in lowered_assignments.into_iter().enumerate() {
+        let temporary = format!("__struct_assignment_{index}");
+        body.push(Statement::VariableDefinition {
+            type_ref,
+            modifiers: Vec::new(),
+            name: temporary.clone(),
+            expr: Some(expr),
+            span: statement_span,
+            type_span: span::Span::default(),
+            modifier_spans: Vec::new(),
+            name_span: span::Span::default(),
+        });
+        rebindings.push(Statement::Assign { name, expr: Expr::identifier(&temporary), span: statement_span, name_span });
+    }
+    body.extend(rebindings);
+
+    vec![Statement::Block { body, span: statement_span }]
 }

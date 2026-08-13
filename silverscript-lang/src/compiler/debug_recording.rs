@@ -10,7 +10,8 @@ use crate::debug_info::{
 
 use super::stack_bindings::StackBindings;
 use super::{
-    CompileOptions, CompilerError, StructRegistry, TypeMap, build_struct_registry, flatten_type_leaves, is_struct, is_struct_array,
+    CompileOptions, CompilerError, StructRegistry, TypeMap, build_struct_registry, flatten_type_leaves, flattened_struct_name,
+    is_struct, is_struct_array,
 };
 
 /// High-level compiler/debug bridge.
@@ -767,11 +768,9 @@ fn build_structured_root_debug_update<'i>(
     let active = recorder.active.as_ref()?;
     let function_name = active.active_function_name.as_deref()?;
     let specs = active.structured_leaf_specs_by_function.get(function_name)?;
-    let fallback_prefix = format!("__struct_{lowered_base_name}_");
-
     let mut leaf_bindings = specs
         .iter()
-        .filter(|(leaf_name, _)| leaf_name.starts_with(&fallback_prefix))
+        .filter(|(leaf_name, spec)| **leaf_name == flattened_struct_name(lowered_base_name, &spec.field_path))
         .map(|(leaf_name, spec)| DebugLeafBinding {
             field_path: spec.field_path.clone(),
             type_name: spec.leaf_type_name.clone(),
@@ -786,7 +785,10 @@ fn build_structured_root_debug_update<'i>(
     }
 
     leaf_bindings.sort_by(|left, right| left.field_path.cmp(&right.field_path));
-    let first_spec = specs.iter().find(|(leaf_name, _)| leaf_name.starts_with(&fallback_prefix)).map(|(_, spec)| spec)?;
+    let first_spec = specs
+        .iter()
+        .find(|(leaf_name, spec)| **leaf_name == flattened_struct_name(lowered_base_name, &spec.field_path))
+        .map(|(_, spec)| spec)?;
 
     Some(DebugVariableUpdate {
         name: first_spec.visible_base_name.clone(),
@@ -1306,12 +1308,7 @@ enum ParamBindingSpec {
 }
 
 fn flattened_struct_field_name(base: &str, field_path: &[String]) -> String {
-    let mut out = format!("__struct_{base}");
-    for part in field_path {
-        out.push('_');
-        out.push_str(part);
-    }
-    out
+    flattened_struct_name(base, field_path)
 }
 
 #[cfg(test)]

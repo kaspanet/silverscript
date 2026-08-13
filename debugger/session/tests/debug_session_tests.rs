@@ -196,6 +196,7 @@ contract BP() {
 }
 
 #[test]
+#[ignore = "TODO: Re-enable once shadowing is enabled"]
 fn debug_session_dedupes_shadowed_constructor_constants() -> Result<(), Box<dyn Error>> {
     let source = r#"pragma silverscript ^0.1.0;
 
@@ -222,6 +223,7 @@ contract Shadow(int x) {
 }
 
 #[test]
+#[ignore = "TODO: Re-enable once shadowing is enabled"]
 fn debug_session_prefers_function_param_value_over_shadowed_constructor_constant() -> Result<(), Box<dyn Error>> {
     let source = r#"pragma silverscript ^0.1.0;
 

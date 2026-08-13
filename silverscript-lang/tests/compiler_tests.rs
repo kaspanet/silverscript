@@ -342,6 +342,29 @@ fn supports_struct_contract_params_fields_and_constants() {
 }
 
 #[test]
+fn nested_struct_field_path_does_not_alias_underscored_field_name() {
+    let source = r#"
+        contract C() {
+            struct Inner { int b; }
+            struct Outer {
+                Inner a;
+                int a_b;
+            }
+
+            entry main(Outer o) {
+                require(o.a.b == o.a_b);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let outer = struct_object("Outer", vec![("a", struct_object("Inner", vec![("b", Expr::int(1))])), ("a_b", Expr::int(2))]);
+    let sigscript = compiled.build_sig_script("main", vec![outer]).expect("sigscript builds");
+    let result = run_bytecode_with_sigscript(compiled.bytecode, sigscript);
+    assert!(result.is_err(), "different nested and underscored fields must make the require fail");
+}
+
+#[test]
 fn resolve_contract_state_values_resolves_constructor_args_constants_and_prior_fields() {
     let source = r#"
         contract ResolveState(int initAmount, byte[2] initTag) {
@@ -1917,6 +1940,7 @@ fn recursively_infers_fixed_array_size_from_inferred_array_identifier() {
 }
 
 #[test]
+#[ignore = "TODO: Re-enable once shadowing is enabled"]
 fn inferred_array_in_branch_does_not_shadow_outer_inference_scope() {
     let source = r#"
         contract Arrays() {
@@ -1999,6 +2023,87 @@ fn rejects_cast_between_different_fixed_byte_array_sizes() {
 
     let err = compile_contract(source, &[], CompileOptions::default()).expect_err("byte[32] to byte[31] cast should be rejected");
     assert!(err.to_string().contains("cannot cast byte[32] to byte[31]"), "unexpected error: {err}");
+}
+
+#[test]
+fn rejects_cast_from_wrong_sized_fixed_bytes_to_signature() {
+    let source = r#"
+        pragma silverscript ^0.1.0;
+        contract T() {
+            entry f(byte[10] x, pubkey pk) {
+                sig s = sig(x);
+                require(checkSig(s, pk));
+            }
+        }
+    "#;
+
+    let err =
+        compile_contract(source, &[], CompileOptions::default()).expect_err("a ten-byte value cannot be cast to a 65-byte signature");
+    assert!(err.to_string().contains("cannot cast byte[10] to sig"), "unexpected error: {err}");
+}
+
+#[test]
+fn rejects_compile_time_incompatible_scalar_casts() {
+    let cases = [
+        ("pubkey pk = pubkey(5);", "cannot cast int to pubkey"),
+        ("sig s = sig(5);", "cannot cast int to sig"),
+        ("datasig d = datasig(\"not a sig\");", "cannot cast string to datasig"),
+        ("int x = int(\"abc\");", "cannot cast string to int"),
+        ("string s = string(5);", "cannot cast int to string"),
+    ];
+
+    for (statement, expected_error) in cases {
+        let source = format!("pragma silverscript ^0.1.0; contract T() {{ entry f() {{ {statement} require(true); }} }}");
+        let err = compile_contract(&source, &[], CompileOptions::default())
+            .expect_err("a compile-time incompatible scalar cast must be rejected");
+        assert!(err.to_string().contains(expected_error), "unexpected error for `{statement}`: {err}");
+    }
+}
+
+#[test]
+fn int_cast_rejects_non_byte_arrays() {
+    let cases = [
+        "int[] values = int[]{1}; int result = int(values);",
+        "bool[] values = bool[]{true}; int result = int(values);",
+        "byte[1][1] values = byte[1][1]{byte[1](0x01)}; int result = int(values);",
+    ];
+
+    for statements in cases {
+        let source = format!("contract T() {{ entry f() {{ {statements} require(result == result); }} }}");
+        let err = compile_contract(&source, &[], CompileOptions::default())
+            .expect_err("int casts must only accept one-dimensional byte arrays");
+        assert!(err.to_string().contains("cannot cast") && err.to_string().contains("to int"), "unexpected error: {err}");
+    }
+}
+
+#[test]
+fn bool_cast_accepts_only_a_singular_byte_as_its_source() {
+    let source = r#"
+        contract ByteBoolCast() {
+            entry main() {
+                bool set = bool(byte(1));
+                bool unset = bool(byte(0));
+                require(set);
+                require(!unset);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("byte-to-bool casts should compile");
+    let opcodes = script_to_str(&compiled.bytecode).expect("compiled bytecode stringifies");
+    assert!(!opcodes.contains("OpIf"), "byte-to-bool casts should be passthroughs: {opcodes}");
+    let result = run_bytecode_with_selector(compiled.bytecode, None);
+    assert!(result.is_ok(), "byte-to-bool casts should preserve VM truthiness: {result:?}");
+}
+
+#[test]
+fn bool_cast_rejects_every_non_byte_source_type() {
+    for type_name in ["bool", "int", "byte[]", "byte[1]", "byte[1][1]", "int[]", "bool[]", "string", "pubkey", "sig", "datasig"] {
+        let source =
+            format!("contract T() {{ entry f({type_name} values) {{ bool result = bool(values); require(result == result); }} }}");
+        let err = compile_contract(&source, &[], CompileOptions::default()).expect_err("bool casts must only accept singular bytes");
+        assert!(err.to_string().contains(&format!("cannot cast {type_name} to bool")), "unexpected error: {err}");
+    }
 }
 
 #[test]
@@ -3314,6 +3419,61 @@ fn build_sig_script_rejects_structurally_identical_array_element_type() {
 }
 
 #[test]
+fn runtime_supports_struct_array_append_value_length_without_assignment() {
+    let source = r#"
+        contract C() {
+            struct S {
+                int a;
+                byte[2] b;
+            }
+
+            entry main(S[] source) {
+                require(source.append(S {a: 9, b: byte[_](0x0304)}).length == 2);
+                require(source.length == 1);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let sigscript = compiled.build_sig_script("main", vec![struct_array_arg(vec![(7, vec![0x01, 0x02])])]).expect("sigscript builds");
+    let result = run_bytecode_with_sigscript(compiled.bytecode, sigscript);
+
+    assert!(result.is_ok(), "struct[] append result length should be usable without assignment: {result:?}");
+}
+
+#[test]
+fn runtime_supports_struct_array_append_assignment_from_different_source() {
+    let source = r#"
+        contract C() {
+            struct S {
+                int a;
+                byte[2] b;
+            }
+
+            entry main(S[] source) {
+                S[] destination = S[]{S {a: 100, b: byte[_](0xaabb)}};
+                destination = source.append(S {a: 9, b: byte[_](0x0304)});
+
+                require(source.length == 1);
+                require(source[0].a == 7);
+                require(source[0].b == byte[_](0x0102));
+                require(destination.length == 2);
+                require(destination[0].a == 7);
+                require(destination[0].b == byte[_](0x0102));
+                require(destination[1].a == 9);
+                require(destination[1].b == byte[_](0x0304));
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let sigscript = compiled.build_sig_script("main", vec![struct_array_arg(vec![(7, vec![0x01, 0x02])])]).expect("sigscript builds");
+    let result = run_bytecode_with_sigscript(compiled.bytecode, sigscript);
+
+    assert!(result.is_ok(), "struct[] append assignment from a different source should execute successfully: {result:?}");
+}
+
+#[test]
 fn runtime_supports_struct_array_append_value_expression() {
     let source = r#"
         contract C() {
@@ -3618,7 +3778,7 @@ fn rejects_struct_literal_with_wrong_field_type_in_function_call() {
 
     let err = compile_contract(source, &[], CompileOptions::default()).expect_err("compile should fail");
     assert!(
-        err.to_string().contains("function argument '__struct_x_a' expects int")
+        err.to_string().contains("function argument '__struct__1_x_1_a' expects int")
             || err.to_string().contains("expects int")
             || err.to_string().contains("expects S")
     );
@@ -4576,6 +4736,184 @@ fn array_literal_codegen_uses_declared_element_type() {
 }
 
 #[test]
+fn bool_array_literal_normalizes_runtime_elements_to_one_byte() {
+    let source = r#"
+        contract Arrays() {
+            entry main(bool x) {
+                bool[] values = bool[]{x, false};
+                require(byte[2](values) == byte[_](0x0100));
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let sigscript = compiled.build_sig_script("main", vec![Expr::bool(true)]).expect("sigscript builds");
+    let result = run_bytecode_with_sigscript(compiled.bytecode, sigscript);
+    assert!(result.is_ok(), "bool[] literal elements should each occupy one byte: {result:?}");
+}
+
+#[test]
+fn runtime_and_compile_time_false_have_identical_bool_array_encoding() {
+    let source = r#"
+        pragma silverscript ^0.1.0;
+        contract BoolArrayRuntime() {
+            entry check(bool x) {
+                bool[] runtimeArr = bool[]{x, false};
+                bool[] constArr = bool[]{true, false};
+                require(runtimeArr.length == 2);
+                require(constArr.length == 2);
+                require(runtimeArr == constArr);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let sigscript = compiled.build_sig_script("check", vec![Expr::bool(true)]).expect("sigscript builds");
+    let result = run_bytecode_with_sigscript(compiled.bytecode, sigscript);
+    assert!(result.is_ok(), "runtime and compile-time false should have identical bool[] encoding: {result:?}");
+}
+
+#[test]
+fn bool_array_append_normalizes_runtime_elements_to_one_byte() {
+    let source = r#"
+        contract Arrays() {
+            entry main(bool x) {
+                bool[] values = bool[]{};
+                bool[] result = values.append(x, false);
+                require(byte[2](result) == byte[_](0x0100));
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let sigscript = compiled.build_sig_script("main", vec![Expr::bool(true)]).expect("sigscript builds");
+    let result = run_bytecode_with_sigscript(compiled.bytecode, sigscript);
+    assert!(result.is_ok(), "bool[] append elements should each occupy one byte: {result:?}");
+}
+
+#[test]
+fn int_array_literal_normalizes_runtime_elements_to_eight_bytes() {
+    let source = r#"
+        contract Arrays() {
+            entry main(int x) {
+                int[] values = int[]{x, 0};
+                require(byte[16](values) == byte[_](0x01000000000000000000000000000000));
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let sigscript = compiled.build_sig_script("main", vec![Expr::int(1)]).expect("sigscript builds");
+    let result = run_bytecode_with_sigscript(compiled.bytecode, sigscript);
+    assert!(result.is_ok(), "int[] literal elements should each occupy eight bytes: {result:?}");
+}
+
+#[test]
+fn int_array_append_normalizes_runtime_elements_to_eight_bytes() {
+    let source = r#"
+        contract Arrays() {
+            entry main(int x) {
+                int[] values = int[]{};
+                int[] result = values.append(x, 0);
+                require(byte[16](result) == byte[_](0x01000000000000000000000000000000));
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let sigscript = compiled.build_sig_script("main", vec![Expr::int(1)]).expect("sigscript builds");
+    let result = run_bytecode_with_sigscript(compiled.bytecode, sigscript);
+    assert!(result.is_ok(), "int[] append elements should each occupy eight bytes: {result:?}");
+}
+
+#[test]
+fn struct_array_bool_and_int_leaves_use_fixed_width_encoding() {
+    let source = r#"
+        contract Arrays() {
+            struct S { bool flag; int number; }
+
+            entry main(bool flag, int number) {
+                S[] values = S[]{S {flag: flag, number: number}};
+                values = values.append(S {flag: false, number: 0});
+
+                require(values.length == 2);
+                require(values[0].flag);
+                require(!values[1].flag);
+                require(values[0].number == 1);
+                require(values[1].number == 0);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let sigscript = compiled.build_sig_script("main", vec![Expr::bool(true), Expr::int(1)]).expect("sigscript builds");
+    let result = run_bytecode_with_sigscript(compiled.bytecode, sigscript);
+    assert!(result.is_ok(), "flattened struct array leaves should retain bool/int element widths: {result:?}");
+}
+
+#[test]
+fn nested_bool_and_int_array_literals_use_fixed_width_encoding() {
+    let source = r#"
+        contract Arrays() {
+            entry main(bool flag, int number) {
+                bool[2][] flags = bool[2][]{bool[2]{flag, false}};
+                int[2][] numbers = int[2][]{int[2]{number, 0}};
+
+                require(byte[2](flags) == byte[_](0x0100));
+                require(byte[16](numbers) == byte[_](0x01000000000000000000000000000000));
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let sigscript = compiled.build_sig_script("main", vec![Expr::bool(true), Expr::int(1)]).expect("sigscript builds");
+    let result = run_bytecode_with_sigscript(compiled.bytecode, sigscript);
+    assert!(result.is_ok(), "nested array literals should normalize their scalar elements: {result:?}");
+}
+
+#[test]
+fn constant_and_contract_field_arrays_use_fixed_width_encoding() {
+    let source = r#"
+        contract Arrays() {
+            bool[2] constant FLAGS = bool[2]{true, false};
+            int[2] constant NUMBERS = int[2]{1, 0};
+            bool[2] fieldFlags = bool[2]{true, false};
+            int[2] fieldNumbers = int[2]{1, 0};
+
+            entry main() {
+                require(byte[2](FLAGS) == byte[_](0x0100));
+                require(byte[16](NUMBERS) == byte[_](0x01000000000000000000000000000000));
+                require(byte[2](fieldFlags) == byte[_](0x0100));
+                require(byte[16](fieldNumbers) == byte[_](0x01000000000000000000000000000000));
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let result = run_bytecode_with_selector(compiled.bytecode, None);
+    assert!(result.is_ok(), "compile-time array encoders should use the canonical scalar widths: {result:?}");
+}
+
+#[test]
+fn bool_and_int_array_sigscript_arguments_use_fixed_width_encoding() {
+    let source = r#"
+        contract Arrays() {
+            entry main(bool[2] flags, int[2] numbers) {
+                require(byte[2](flags) == byte[_](0x0100));
+                require(byte[16](numbers) == byte[_](0x01000000000000000000000000000000));
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let flags = Expr::array(parse_type_ref("bool[2]").expect("type parses"), vec![Expr::bool(true), Expr::bool(false)]);
+    let numbers = Expr::array(parse_type_ref("int[2]").expect("type parses"), vec![Expr::int(1), Expr::int(0)]);
+    let sigscript = compiled.build_sig_script("main", vec![flags, numbers]).expect("sigscript builds");
+    let result = run_bytecode_with_sigscript(compiled.bytecode, sigscript);
+    assert!(result.is_ok(), "signature-script array encoding should use the canonical scalar widths: {result:?}");
+}
+
+#[test]
 fn compiles_int_array_length_to_expected_script() {
     let source = r#"
         contract Arrays() {
@@ -4899,6 +5237,23 @@ fn runs_array_append_runtime_examples() {
     let sigscript = script_builder().drain();
     let result = run_bytecode_with_sigscript(compiled.bytecode, sigscript);
     assert!(result.is_ok(), "array append runtime example failed: {}", result.unwrap_err());
+}
+
+#[test]
+fn runs_array_append_value_length_without_assignment() {
+    let source = r#"
+        contract Arrays() {
+            entry main() {
+                int[] values = int[]{1};
+                require(values.append(2).length == 2);
+                require(values.length == 1);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let result = run_bytecode_with_selector(compiled.bytecode, None);
+    assert!(result.is_ok(), "array append result length should be usable without assignment: {result:?}");
 }
 
 #[test]
@@ -5423,6 +5778,42 @@ fn rejects_constant_for_loop_range_above_max_iterations() {
 
     let err = compile_contract(source, &[], CompileOptions::default()).expect_err("compile should fail");
     assert!(err.to_string().contains("for loop range must not exceed max iterations"), "unexpected error: {err}");
+}
+
+#[test]
+fn rejects_assignment_to_loop_variable_for_constant_and_runtime_bounds() {
+    let cases = [
+        r#"
+            contract ConstantLoop() {
+                entry main() {
+                    int s = 0;
+                    for (i, 0, 3, 3) {
+                        i = i + 100;
+                        s = s + i;
+                    }
+                }
+            }
+        "#,
+        r#"
+            contract RuntimeLoop() {
+                entry main(int start, int end) {
+                    int s = 0;
+                    for (i, start, end, 3) {
+                        i = i + 100;
+                        s = s + i;
+                    }
+                }
+            }
+        "#,
+    ];
+
+    for source in cases {
+        let err = compile_contract(source, &[], CompileOptions::default())
+            .expect_err("assigning to a loop variable must be rejected before loop lowering");
+        assert!(err.to_string().contains("cannot assign to loop variable 'i'"), "unexpected error: {err}");
+        let span = err.span().expect("the assignment target should be identified");
+        assert_eq!(&source[span.start..span.end], "i");
+    }
 }
 
 #[test]
@@ -8255,8 +8646,8 @@ fn rejects_read_input_state_with_template_outside_direct_binding() {
                 require(remote.x > 0);
             }
 
-            entry main(int prefixLen, int suffixLen, byte[32] templateHash) {
-                check(readInputStateWithTemplate(1, prefixLen, suffixLen, templateHash));
+            entry main(int prefixLen, int suffixLen, byte[32] expectedTemplateHash) {
+                check(readInputStateWithTemplate(1, prefixLen, suffixLen, expectedTemplateHash));
             }
         }
     "#;
@@ -8278,9 +8669,9 @@ fn rejects_read_input_state_with_template_as_expression_call_argument() {
                 return remote;
             }
 
-            entry main(int prefixLen, int suffixLen, byte[32] templateHash) {
+            entry main(int prefixLen, int suffixLen, byte[32] expectedTemplateHash) {
                 RemoteState remote = identity(
-                    readInputStateWithTemplate(1, prefixLen, suffixLen, templateHash)
+                    readInputStateWithTemplate(1, prefixLen, suffixLen, expectedTemplateHash)
                 );
                 require(remote.x > 0);
             }
@@ -8295,9 +8686,9 @@ fn rejects_read_input_state_with_template_as_expression_call_argument() {
 #[test]
 fn read_input_state_with_template_checks_argument_types() {
     let cases = [
-        ("true, prefixLen, suffixLen, templateHash", "input_idx"),
-        ("1, true, suffixLen, templateHash", "template_prefix_len"),
-        ("1, prefixLen, true, templateHash", "template_suffix_len"),
+        ("true, prefixLen, suffixLen, expectedTemplateHash", "input_idx"),
+        ("1, true, suffixLen, expectedTemplateHash", "template_prefix_len"),
+        ("1, prefixLen, true, expectedTemplateHash", "template_suffix_len"),
         ("1, prefixLen, suffixLen, prefixLen", "expected_template_hash"),
     ];
 
@@ -8309,7 +8700,7 @@ fn read_input_state_with_template_checks_argument_types() {
                         int x;
                     }}
 
-                    entry main(int prefixLen, int suffixLen, byte[32] templateHash) {{
+                    entry main(int prefixLen, int suffixLen, byte[32] expectedTemplateHash) {{
                         RemoteState remote = readInputStateWithTemplate({args});
                         require(remote.x > 0);
                     }}
@@ -10343,7 +10734,7 @@ fn executes_opcode_builtins_basic() {
             r#"
                 contract Test() {
                     entry main() {
-                        require(OpTxInputIsCoinbase(0) == bool(0));
+                        require(OpTxInputIsCoinbase(0) == false);
                     }
                 }
             "#,
@@ -11530,21 +11921,32 @@ fn builtin_function_arguments_are_type_checked() {
 }
 
 #[test]
-fn byte_array_to_int_cast_compiles_without_extra_opcodes_and_executes() {
+fn fixed_byte_array_up_to_eight_bytes_casts_to_int_without_extra_opcodes() {
     let source = r#"
         contract Test() {
-            entry test(byte[] data) {
+            entry test(byte[2] data) {
                 int number = int(data);
                 require(number == 42);
             }
         }
     "#;
 
-    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("byte[] to int cast compiles");
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("byte[2] to int cast compiles");
     assert!(!compiled.bytecode.contains(&OpBin2Num), "int(data) must not emit OpBin2Num");
 
-    let sigscript = script_builder().add_data_with_push_opcode(&[42]).unwrap().drain();
-    assert!(run_bytecode_with_sigscript(compiled.bytecode, sigscript).is_ok(), "int(data) should produce a usable integer value");
+    let sigscript = compiled.build_sig_script("test", vec![vec![42u8, 0].into()]).expect("sigscript builds");
+    assert!(run_bytecode_with_sigscript(compiled.bytecode, sigscript).is_ok(), "int(byte[2]) should produce a usable integer value");
+}
+
+#[test]
+fn int_cast_rejects_dynamic_and_oversized_byte_arrays() {
+    for type_name in ["byte[]", "byte[9]"] {
+        let source =
+            format!("contract Test() {{ entry test({type_name} data) {{ int number = int(data); require(number == number); }} }}");
+        let err = compile_contract(&source, &[], CompileOptions::default())
+            .expect_err("int casts require a fixed byte array no wider than eight bytes");
+        assert!(err.to_string().contains(&format!("cannot cast {type_name} to int")), "unexpected error: {err}");
+    }
 }
 
 #[test]
@@ -11687,6 +12089,7 @@ fn empty_array_statement_expr_evaluation_compiles_to_empty_array_data() {
 }
 
 #[test]
+#[ignore = "TODO: Re-enable once shadowing is enabled"]
 fn function_param_shadows_constructor_constant_with_same_name() {
     // When a constructor constant and a function parameter share the same name,
     // the function parameter value must be used (not the constant).
@@ -11709,6 +12112,200 @@ fn function_param_shadows_constructor_constant_with_same_name() {
     let sigscript_wrong = compiled.build_sig_script("main", vec![Expr::int(2)]).expect("sigscript builds");
     let result_wrong = run_bytecode_with_sigscript(compiled.bytecode, sigscript_wrong);
     assert!(result_wrong.is_err(), "require(3==4) should fail, proving the param value matters");
+}
+
+#[test]
+fn allows_same_variable_name_in_different_functions() {
+    let source = r#"
+        contract SeparateFunctionScopes() {
+            function check_positive(int value) {
+                int result = value + 1;
+                require(result > 0);
+            }
+
+            function check_negative(int value) {
+                int result = value - 1;
+                require(result < 0);
+            }
+
+            entry main() {
+                check_positive(1);
+                check_negative(-1);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default())
+        .expect("separate functions should have independent variable namespaces");
+    assert!(run_bytecode_with_selector(compiled.bytecode, None).is_ok());
+}
+
+#[test]
+fn allows_same_variable_name_in_non_overlapping_sibling_scopes() {
+    let source = r#"
+        contract SiblingScopes() {
+            entry main() {
+                if (true) {
+                    int value = 1;
+                    require(value == 1);
+                } else {
+                    int value = 2;
+                    require(value == 2);
+                }
+
+                {
+                    int temporary = 3;
+                    require(temporary == 3);
+                }
+                {
+                    int temporary = 4;
+                    require(temporary == 4);
+                }
+
+                for (i, 0, 1, 1) {
+                    require(i == 0);
+                }
+                for (i, 0, 1, 1) {
+                    require(i == 0);
+                }
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default())
+        .expect("non-overlapping sibling scopes should have independent variable namespaces");
+    assert!(run_bytecode_with_selector(compiled.bytecode, None).is_ok());
+}
+
+#[test]
+fn rejects_function_param_that_shadows_contract_constant_with_same_name() {
+    let source = r#"
+        pragma silverscript ^0.1.0;
+        contract C() {
+            int constant N = 2;
+            entry f(int N) {
+                int s = 0;
+                for (i, 0, N, 10) {
+                    s = s + 1;
+                }
+                require(s == N);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default())
+        .expect_err("a function parameter must not shadow a contract constant");
+    assert!(err.to_string().contains("variable 'N' is already defined"), "unexpected error: {err}");
+    let span = err.span().expect("the conflicting parameter should be identified");
+    assert_eq!(&source[span.start..span.end], "N");
+}
+
+#[test]
+fn rejects_contract_constant_that_shadows_constructor_parameter_used_as_array_size() {
+    let source = r#"
+        pragma silverscript ^0.1.0;
+        contract C(int A) {
+            int constant A = 2;
+            entry f() {
+                byte[A] b = byte[A](0x11223344);
+                require(b.length == 4);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[Expr::int(4)], CompileOptions::default())
+        .expect_err("a contract constant must not shadow a constructor parameter");
+    assert!(err.to_string().contains("variable 'A' is already defined"), "unexpected error: {err}");
+    let span = err.span().expect("the conflicting constant should be identified");
+    assert_eq!(&source[span.start..span.end], "A");
+}
+
+#[test]
+fn rejects_duplicate_variable_definition_in_same_scope() {
+    let source = r#"
+        contract DuplicateLocal() {
+            entry main() {
+                int value = 1;
+                int value = 2;
+                require(value > 0);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default())
+        .expect_err("duplicate variable definitions in the same scope should be rejected");
+    assert!(err.to_string().contains("variable 'value' is already defined"), "unexpected error: {err}");
+    let span = err.span().expect("the duplicate declaration should be identified");
+    assert_eq!(&source[span.start..span.end], "value");
+}
+
+#[test]
+fn rejects_shadowing_in_nested_function_scopes() {
+    let cases = [
+        r#"
+            contract ParameterShadowing() {
+                entry main(int value) {
+                    int value = 1;
+                }
+            }
+        "#,
+        r#"
+            contract BlockShadowing() {
+                entry main() {
+                    int value = 1;
+                    { int value = 2; }
+                }
+            }
+        "#,
+        r#"
+            contract BranchShadowing() {
+                entry main(bool condition) {
+                    int value = 1;
+                    if (condition) { int value = 2; }
+                }
+            }
+        "#,
+        r#"
+            contract LoopShadowing() {
+                entry main(int i) {
+                    for (i, 0, 1, 1) { require(i == 0); }
+                }
+            }
+        "#,
+        r#"
+            contract TupleShadowing() {
+                entry main() {
+                    byte[] left = byte[](0xaa);
+                    byte[] source = byte[](0x0102);
+                    { (byte[] left, byte[] right) = source.split(1); }
+                }
+            }
+        "#,
+        r#"
+            contract FunctionResultShadowing() {
+                function pair() : (int, int) { return(1, 2); }
+                entry main() {
+                    int value = 3;
+                    { (int value, int other) = pair(); }
+                }
+            }
+        "#,
+        r#"
+            contract StructBindingShadowing() {
+                struct S { int field; }
+                entry main() {
+                    int value = 3;
+                    S source = S {field: 1};
+                    { S {field: int value} = source; }
+                }
+            }
+        "#,
+    ];
+
+    for source in cases {
+        let err = compile_contract(source, &[], CompileOptions::default()).expect_err("shadowing should be rejected");
+        assert!(err.to_string().contains("is already defined"), "unexpected error: {err}");
+    }
 }
 
 #[test]
@@ -11811,6 +12408,45 @@ fn ternary_expression_does_not_execute_unselected_branch() {
     assert!(
         run_bytecode_with_sigscript(compiled.bytecode, failing_else).is_err(),
         "zero divisor in the selected else branch should execute and fail"
+    );
+}
+
+#[test]
+fn ternary_does_not_read_input_state_in_unselected_then_branch() {
+    let source = r#"
+        pragma silverscript ^0.1.0;
+        contract TernaryHoist(int initX) {
+            int x = initX;
+
+            function get(State st): int {
+                return st.x;
+            }
+
+            entry main(bool useRemote) {
+                int v = useRemote ? get(readInputState(9)) : 42;
+                require(v == 42);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[Expr::int(7)], CompileOptions::default()).expect("ternary contract should compile");
+    let asm = script_to_str(&compiled.bytecode).expect("ternary script should stringify");
+    let if_index = asm.find("OpIf").expect("ternary should emit OpIf");
+    let read_index = asm.find("OpTxInputScriptSigLen").expect("selected branch should contain the input-state read");
+    let else_index = asm.find("OpElse").expect("ternary should emit OpElse");
+    assert!(
+        if_index < read_index && read_index < else_index,
+        "input-state access should remain inside the ternary's then branch: {asm}"
+    );
+
+    let select_local = compiled.build_sig_script("main", vec![Expr::bool(false)]).expect("sigscript builds");
+    let result = run_bytecode_with_sigscript(compiled.bytecode.clone(), select_local);
+    assert!(result.is_ok(), "input 9 in the unselected branch must not be read: {}", result.unwrap_err());
+
+    let select_remote = compiled.build_sig_script("main", vec![Expr::bool(true)]).expect("sigscript builds");
+    assert!(
+        run_bytecode_with_sigscript(compiled.bytecode, select_remote).is_err(),
+        "input 9 in the selected branch should be read and fail"
     );
 }
 
@@ -12484,6 +13120,7 @@ fn rejects_using_branch_local_outside_its_scope() {
 }
 
 #[test]
+#[ignore = "TODO: Re-enable once shadowing is enabled"]
 fn runs_branch_local_shadowing_and_preserves_outer_scope() {
     let source = r#"
         contract BranchShadowing() {
@@ -12511,6 +13148,7 @@ fn runs_branch_local_shadowing_and_preserves_outer_scope() {
 }
 
 #[test]
+#[ignore = "TODO: Re-enable once shadowing is enabled"]
 fn runs_for_loop_local_shadowing_and_preserves_outer_scope() {
     let source = r#"
         contract LoopShadowing() {
@@ -12532,6 +13170,7 @@ fn runs_for_loop_local_shadowing_and_preserves_outer_scope() {
 }
 
 #[test]
+#[ignore = "TODO: Re-enable once shadowing is enabled"]
 fn runs_standalone_block_local_shadowing_and_preserves_outer_scope() {
     let source = r#"
         contract BlockShadowing() {
@@ -12553,6 +13192,7 @@ fn runs_standalone_block_local_shadowing_and_preserves_outer_scope() {
 }
 
 #[test]
+#[ignore = "TODO: Re-enable once shadowing is enabled"]
 fn runs_function_parameter_shadowing() {
     let source = r#"
         contract ParameterShadowing() {
@@ -12570,6 +13210,7 @@ fn runs_function_parameter_shadowing() {
 }
 
 #[test]
+#[ignore = "TODO: Re-enable once shadowing is enabled"]
 fn runs_inlined_function_parameter_shadowing() {
     let source = r#"
         contract InlineParameterShadowing() {
@@ -12592,6 +13233,7 @@ fn runs_inlined_function_parameter_shadowing() {
 }
 
 #[test]
+#[ignore = "TODO: Re-enable once shadowing is enabled"]
 fn runs_standalone_block_tuple_binding_shadowing() {
     let source = r#"
         contract TupleBlockShadowing() {
@@ -12620,8 +13262,9 @@ fn runs_split_on_non_byte_array() {
         contract SplitNonByteArray() {
             entry main() {
                 int[] values = int[]{10, 20, 30, 40};
-                (int[] left, int[] right) = values.split(1);
-                require(left == int[]{10});
+                (int[1] left, int[] right) = values.split(1);
+                require(left.length == 1);
+                require(left[0] == 10);
                 require(right == int[]{20, 30, 40});
             }
         }
@@ -12631,6 +13274,133 @@ fn runs_split_on_non_byte_array() {
     let selector = selector_for(&compiled, "main");
     let result = run_bytecode_with_selector(compiled.bytecode, selector);
     assert!(result.is_ok(), "split on int[] should execute successfully: {}", result.unwrap_err());
+}
+
+#[test]
+fn runtime_split_index_produces_dynamic_array_parts() {
+    let source = r#"
+        contract SplitDynamicIndex() {
+            entry main(int[] values, int n) {
+                (int[] left, int[] right) = values.split(n);
+                require(left == int[]{10, 20});
+                require(right == int[]{30, 40});
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("runtime split index should produce dynamic parts");
+    let sigscript = compiled.build_sig_script("main", vec![vec![10i64, 20, 30, 40].into(), Expr::int(2)]).expect("sigscript builds");
+    let result = run_bytecode_with_sigscript(compiled.bytecode, sigscript);
+    assert!(result.is_ok(), "runtime-index split should execute successfully: {result:?}");
+}
+
+#[test]
+fn constant_split_index_produces_fixed_left_and_dynamic_right_for_dynamic_source() {
+    let source = r#"
+        contract SplitConstantIndex() {
+            int constant N = 2;
+
+            entry main(int[] values) {
+                (int[N] left, int[] right) = values.split(N);
+                require(left.length == 2);
+                require(left[0] == 10);
+                require(left[1] == 20);
+                require(right.length == 2);
+                require(right[0] == 30);
+                require(right[1] == 40);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("constant split index should fix the left size");
+    let sigscript = compiled.build_sig_script("main", vec![vec![10i64, 20, 30, 40].into()]).expect("sigscript builds");
+    let result = run_bytecode_with_sigscript(compiled.bytecode, sigscript);
+    assert!(result.is_ok(), "constant-index split of a dynamic source should execute successfully: {result:?}");
+}
+
+#[test]
+fn constant_split_index_produces_fixed_parts_for_fixed_source() {
+    let source = r#"
+        contract SplitFixedSource() {
+            int constant N = 1;
+
+            entry main() {
+                int[4] values = int[4]{10, 20, 30, 40};
+                int[N] left = values.split(N).0;
+                int[3] right = values.split(N).1;
+                require(left.length == 1);
+                require(left[0] == 10);
+                require(right.length == 3);
+                require(right[0] == 20);
+                require(right[1] == 30);
+                require(right[2] == 40);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("fixed source split should infer both sizes");
+    let result = run_bytecode_with_selector(compiled.bytecode, None);
+    assert!(result.is_ok(), "constant-index split of a fixed source should execute successfully: {result:?}");
+}
+
+#[test]
+fn rejects_split_bindings_that_do_not_match_inferred_part_types() {
+    let runtime_index = r#"
+        contract SplitRuntimeMismatch() {
+            entry main(int[] values, int n) {
+                (int[1] left, int[] right) = values.split(n);
+            }
+        }
+    "#;
+    let err = compile_contract(runtime_index, &[], CompileOptions::default())
+        .expect_err("a runtime split index must not produce a fixed-size binding");
+    assert!(err.to_string().contains("type mismatch"), "unexpected error: {err}");
+
+    let fixed_source = r#"
+        contract SplitFixedMismatch() {
+            entry main() {
+                int[4] values = int[4]{10, 20, 30, 40};
+                (int[2] left, int[1] right) = values.split(2);
+            }
+        }
+    "#;
+    let err = compile_contract(fixed_source, &[], CompileOptions::default())
+        .expect_err("both fixed split bindings must match their inferred sizes");
+    assert!(err.to_string().contains("type mismatch"), "unexpected error: {err}");
+}
+
+#[test]
+fn rejects_split_tuple_bindings_with_different_element_types() {
+    let source = r#"
+        pragma silverscript ^0.1.0;
+        contract C() {
+            entry f(byte[4] data) {
+                (int a, int b) = data.split(2);
+                require(a == 1);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default())
+        .expect_err("byte array split parts must not be reinterpreted as integers");
+    assert!(err.to_string().contains("type mismatch"), "unexpected error: {err}");
+}
+
+#[test]
+fn rejects_split_tuple_bindings_with_incorrect_fixed_sizes() {
+    let source = r#"
+        pragma silverscript ^0.1.0;
+        contract C() {
+            entry f(byte[4] data) {
+                (byte[3] p, byte[1] q) = data.split(2);
+                require(p.length == 3);
+            }
+        }
+    "#;
+
+    let err =
+        compile_contract(source, &[], CompileOptions::default()).expect_err("split bindings must use the actual inferred part sizes");
+    assert!(err.to_string().contains("type mismatch"), "unexpected error: {err}");
 }
 
 #[test]
@@ -12666,11 +13436,12 @@ fn runs_split_and_slice_on_struct_array() {
                     S {number: 20, tag: byte[_](0x0304)},
                     S {number: 30, tag: byte[_](0x0506)}
                 };
-                S[] left = values.split(1).0;
+                S[1] left = values.split(1).0;
                 S[] right = values.split(1).1;
                 S[] part = values.slice(1, 3);
 
-                require(left == S[]{S {number: 10, tag: byte[_](0x0102)}});
+                require(left.length == 1);
+                require(left == S[_]{S {number: 10, tag: byte[_](0x0102)}});
                 require(right == S[]{
                     S {number: 20, tag: byte[_](0x0304)},
                     S {number: 30, tag: byte[_](0x0506)}
@@ -12755,9 +13526,9 @@ fn allows_sequence_operations_on_string_and_fixed_byte_types() {
         contract ByteSequenceOperations() {
             entry main(string text, pubkey publicKey, sig signature, datasig dataSignature) {
                 (string textLeft, string textRight) = text.split(1);
-                (byte[] pubkeyLeft, byte[] pubkeyRight) = publicKey.split(1);
-                (byte[] sigLeft, byte[] sigRight) = signature.split(1);
-                (byte[] datasigLeft, byte[] datasigRight) = dataSignature.split(1);
+                (byte[1] pubkeyLeft, byte[31] pubkeyRight) = publicKey.split(1);
+                (byte[1] sigLeft, byte[64] sigRight) = signature.split(1);
+                (byte[1] datasigLeft, byte[63] datasigRight) = dataSignature.split(1);
                 string textSlice = text.slice(0, 1);
                 byte[] pubkeySlice = publicKey.slice(0, 1);
                 byte[] sigSlice = signature.slice(0, 1);
@@ -12770,6 +13541,70 @@ fn allows_sequence_operations_on_string_and_fixed_byte_types() {
 }
 
 #[test]
+fn runtime_split_index_produces_dynamic_parts_for_fixed_byte_types() {
+    let source = r#"
+        contract RuntimeFixedByteSequenceSplit() {
+            entry main(pubkey publicKey, sig signature, datasig dataSignature, int n) {
+                (byte[] pubkeyLeft, byte[] pubkeyRight) = publicKey.split(n);
+                (byte[] sigLeft, byte[] sigRight) = signature.split(n);
+                (byte[] datasigLeft, byte[] datasigRight) = dataSignature.split(n);
+            }
+        }
+    "#;
+
+    compile_contract(source, &[], CompileOptions::default())
+        .expect("runtime split indices should produce dynamic parts for fixed-byte types");
+}
+
+#[test]
+fn infers_fixed_array_sizes_from_fixed_byte_split_parts() {
+    let source = r#"
+        contract InferredFixedByteSequenceSplit() {
+            entry main(pubkey publicKey) {
+                byte[_] left = publicKey.split(4).0;
+                byte[_] right = publicKey.split(4).1;
+                require(left.length == 4);
+                require(right.length == 28);
+            }
+        }
+    "#;
+
+    compile_contract(source, &[], CompileOptions::default())
+        .expect("inferred array declarations should use fixed-byte split result sizes");
+}
+
+#[test]
+fn infers_fixed_array_size_for_tuple_split_binding() {
+    let source = r#"
+        contract InferredTupleSplitBinding() {
+            entry main(byte[] values) {
+                (byte[_] left, byte[] right) = values.split(4);
+                require(left.length == 4);
+            }
+        }
+    "#;
+
+    compile_contract(source, &[], CompileOptions::default())
+        .expect("an inferred tuple binding should use the corresponding split result size");
+}
+
+#[test]
+fn rejects_fixed_byte_split_bindings_that_do_not_match_inferred_sizes() {
+    let source = r#"
+        contract FixedByteSequenceSplitMismatch() {
+            entry main(pubkey publicKey) {
+                (byte[1] left, byte[30] right) = publicKey.split(1);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default())
+        .expect_err("constant fixed-byte split parts must have their inferred sizes");
+    assert!(err.to_string().contains("type mismatch"), "unexpected error: {err}");
+}
+
+#[test]
+#[ignore = "TODO: Re-enable once shadowing is enabled"]
 fn runs_standalone_block_function_result_binding_shadowing() {
     let source = r#"
         contract FunctionResultBlockShadowing() {
@@ -12796,6 +13631,7 @@ fn runs_standalone_block_function_result_binding_shadowing() {
 }
 
 #[test]
+#[ignore = "TODO: Re-enable once shadowing is enabled"]
 fn runs_standalone_block_state_binding_shadowing() {
     let source = r#"
         contract StateBindingBlockShadowing(int initialValue) {
@@ -12827,6 +13663,7 @@ fn runs_standalone_block_state_binding_shadowing() {
 }
 
 #[test]
+#[ignore = "TODO: Re-enable once shadowing is enabled"]
 fn runs_standalone_block_struct_destructure_binding_shadowing() {
     let source = r#"
         contract StructBindingBlockShadowing() {
@@ -12854,6 +13691,7 @@ fn runs_standalone_block_struct_destructure_binding_shadowing() {
 }
 
 #[test]
+#[ignore = "TODO: Re-enable once shadowing is enabled"]
 fn branch_shadowing_initializer_reads_outer_binding() {
     let source = r#"
         contract BranchInitializerShadowing() {
@@ -12876,6 +13714,7 @@ fn branch_shadowing_initializer_reads_outer_binding() {
 }
 
 #[test]
+#[ignore = "TODO: Re-enable once shadowing is enabled"]
 fn branch_reference_before_shadowing_declaration_reads_outer_binding() {
     let source = r#"
         contract BranchReferenceBeforeShadowing() {
@@ -12899,6 +13738,7 @@ fn branch_reference_before_shadowing_declaration_reads_outer_binding() {
 }
 
 #[test]
+#[ignore = "TODO: Re-enable once shadowing is enabled"]
 fn for_loop_shadowing_initializer_reads_outer_binding() {
     let source = r#"
         contract LoopInitializerShadowing() {
@@ -12921,6 +13761,7 @@ fn for_loop_shadowing_initializer_reads_outer_binding() {
 }
 
 #[test]
+#[ignore = "TODO: Re-enable once shadowing is enabled"]
 fn for_loop_reference_before_shadowing_declaration_reads_outer_binding() {
     let source = r#"
         contract LoopReferenceBeforeShadowing() {
@@ -13199,6 +14040,73 @@ fn compile_time_if_branch_stores_struct_fields_once_and_reuses_them() {
     assert_eq!(script[if_pos + 1..else_pos].iter().copied().filter(|op| *op == OpDrop).count(), 2);
     assert_eq!(script[endif_pos + 1..].iter().copied().filter(|op| *op == OpDrop).count(), 1);
     assert_eq!(script[endif_pos + 1..].iter().copied().filter(|op| *op == OpRoll).count(), 0);
+}
+
+#[test]
+fn struct_reassignment_snapshots_all_fields_before_rebinding() {
+    let source = r#"
+        contract C() {
+            struct S { int a; int b; }
+
+            entry main() {
+                S s = S {a: 10, b: 20};
+                s = S {a: s.b, b: s.a};
+                require(s.a == 20);
+                require(s.b == 10);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("struct field swap should compile");
+    let result = run_bytecode_with_selector(compiled.bytecode, None);
+    assert!(result.is_ok(), "struct field swap should execute atomically: {result:?}");
+}
+
+#[test]
+fn nested_struct_reassignment_snapshots_all_leaves_before_rebinding() {
+    let source = r#"
+        contract C() {
+            struct Inner { int x; int y; }
+            struct Outer { Inner inner; int z; }
+
+            entry main() {
+                Outer value = Outer {inner: Inner {x: 1, y: 2}, z: 3};
+                value = Outer {inner: Inner {x: value.inner.y, y: value.z}, z: value.inner.x};
+                require(value.inner.x == 2);
+                require(value.inner.y == 3);
+                require(value.z == 1);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("nested struct rotation should compile");
+    let result = run_bytecode_with_selector(compiled.bytecode, None);
+    assert!(result.is_ok(), "nested struct rotation should execute atomically: {result:?}");
+}
+
+#[test]
+fn struct_array_self_append_snapshots_all_leaf_expressions_before_rebinding() {
+    let source = r#"
+        contract C() {
+            struct S { int a; int b; }
+
+            entry main(S[] values) {
+                values = values.append(S {a: values.length, b: values.length});
+                require(values.length == 2);
+                require(values[1].a == 1);
+                require(values[1].b == 1);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("struct array append should compile");
+    let argument = Expr::array(
+        parse_type_ref("S[]").expect("array type parses"),
+        vec![struct_object("S", vec![("a", Expr::int(7)), ("b", Expr::int(8))])],
+    );
+    let sigscript = compiled.build_sig_script("main", vec![argument]).expect("sigscript builds");
+    let result = run_bytecode_with_sigscript(compiled.bytecode, sigscript);
+    assert!(result.is_ok(), "struct array leaf expressions should observe the pre-append value: {result:?}");
 }
 
 #[test]
@@ -13812,7 +14720,7 @@ fn rejects_entrypoint_parameter_that_shadows_contract_field() {
     "#;
     let err = compile_contract(source, &[], CompileOptions::default())
         .expect_err("an entrypoint parameter must not shadow a contract field");
-    assert!(err.to_string().contains("parameter 'field' conflicts with contract field"), "unexpected error: {err}");
+    assert!(err.to_string().contains("variable 'field' is already defined"), "unexpected error: {err}");
 }
 
 #[test]
@@ -13844,6 +14752,50 @@ fn rejects_duplicate_function_names() {
         let source = format!("contract DuplicateFunctions() {{{duplicate}}}");
         let err = compile_contract(&source, &[], CompileOptions::default()).expect_err("duplicate function names should be rejected");
         assert!(err.to_string().contains("duplicate function name"), "unexpected error: {err}");
+    }
+}
+
+#[test]
+fn rejects_user_function_with_builtin_name() {
+    let source = r#"
+        pragma silverscript ^0.1.0;
+        contract Test(int init_amount) {
+            int amount = init_amount;
+
+            function validateOutputState(int idx, State s) {
+                require(idx == 12345);
+            }
+
+            entry main(int out_idx, int out_amount) {
+                validateOutputState(out_idx, State { amount: out_amount });
+                require(true);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[Expr::int(0)], CompileOptions::default())
+        .expect_err("user-defined functions must not use builtin names");
+    assert!(err.to_string().contains("function name 'validateOutputState' is reserved for a builtin"), "unexpected error: {err}");
+    let span = err.span().expect("the reserved function name should be identified");
+    assert_eq!(&source[span.start..span.end], "validateOutputState");
+}
+
+#[test]
+fn rejects_builtin_names_for_variables() {
+    let cases = [
+        "contract T(int sha256) { entry main() { require(true); } }",
+        "contract T() { int constant readInputState = 1; entry main() { require(true); } }",
+        "contract T() { int OpTxGas = 1; entry main() { require(true); } }",
+        "contract T() { entry main(int validateOutputState) { require(true); } }",
+        "contract T() { entry main() { int ScriptPubKeyP2PK = 1; require(true); } }",
+        "contract T() { entry main() { for (blake2b, 0, 1, 1) { require(true); } } }",
+    ];
+
+    for source in cases {
+        let constructor_args = if source.contains("int sha256") { vec![Expr::int(0)] } else { vec![] };
+        let err =
+            compile_contract(source, &constructor_args, CompileOptions::default()).expect_err("variables must not use builtin names");
+        assert!(err.to_string().contains("is reserved for a builtin"), "unexpected error for `{source}`: {err}");
     }
 }
 
