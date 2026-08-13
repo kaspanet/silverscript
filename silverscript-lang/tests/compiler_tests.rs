@@ -2026,6 +2026,87 @@ fn rejects_cast_between_different_fixed_byte_array_sizes() {
 }
 
 #[test]
+fn rejects_cast_from_wrong_sized_fixed_bytes_to_signature() {
+    let source = r#"
+        pragma silverscript ^0.1.0;
+        contract T() {
+            entry f(byte[10] x, pubkey pk) {
+                sig s = sig(x);
+                require(checkSig(s, pk));
+            }
+        }
+    "#;
+
+    let err =
+        compile_contract(source, &[], CompileOptions::default()).expect_err("a ten-byte value cannot be cast to a 65-byte signature");
+    assert!(err.to_string().contains("cannot cast byte[10] to sig"), "unexpected error: {err}");
+}
+
+#[test]
+fn rejects_compile_time_incompatible_scalar_casts() {
+    let cases = [
+        ("pubkey pk = pubkey(5);", "cannot cast int to pubkey"),
+        ("sig s = sig(5);", "cannot cast int to sig"),
+        ("datasig d = datasig(\"not a sig\");", "cannot cast string to datasig"),
+        ("int x = int(\"abc\");", "cannot cast string to int"),
+        ("string s = string(5);", "cannot cast int to string"),
+    ];
+
+    for (statement, expected_error) in cases {
+        let source = format!("pragma silverscript ^0.1.0; contract T() {{ entry f() {{ {statement} require(true); }} }}");
+        let err = compile_contract(&source, &[], CompileOptions::default())
+            .expect_err("a compile-time incompatible scalar cast must be rejected");
+        assert!(err.to_string().contains(expected_error), "unexpected error for `{statement}`: {err}");
+    }
+}
+
+#[test]
+fn int_cast_rejects_non_byte_arrays() {
+    let cases = [
+        "int[] values = int[]{1}; int result = int(values);",
+        "bool[] values = bool[]{true}; int result = int(values);",
+        "byte[1][1] values = byte[1][1]{byte[1](0x01)}; int result = int(values);",
+    ];
+
+    for statements in cases {
+        let source = format!("contract T() {{ entry f() {{ {statements} require(result == result); }} }}");
+        let err = compile_contract(&source, &[], CompileOptions::default())
+            .expect_err("int casts must only accept one-dimensional byte arrays");
+        assert!(err.to_string().contains("cannot cast") && err.to_string().contains("to int"), "unexpected error: {err}");
+    }
+}
+
+#[test]
+fn bool_cast_accepts_only_a_singular_byte_as_its_source() {
+    let source = r#"
+        contract ByteBoolCast() {
+            entry main() {
+                bool set = bool(byte(1));
+                bool unset = bool(byte(0));
+                require(set);
+                require(!unset);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("byte-to-bool casts should compile");
+    let opcodes = script_to_str(&compiled.bytecode).expect("compiled bytecode stringifies");
+    assert!(!opcodes.contains("OpIf"), "byte-to-bool casts should be passthroughs: {opcodes}");
+    let result = run_bytecode_with_selector(compiled.bytecode, None);
+    assert!(result.is_ok(), "byte-to-bool casts should preserve VM truthiness: {result:?}");
+}
+
+#[test]
+fn bool_cast_rejects_every_non_byte_source_type() {
+    for type_name in ["bool", "int", "byte[]", "byte[1]", "byte[1][1]", "int[]", "bool[]", "string", "pubkey", "sig", "datasig"] {
+        let source =
+            format!("contract T() {{ entry f({type_name} values) {{ bool result = bool(values); require(result == result); }} }}");
+        let err = compile_contract(&source, &[], CompileOptions::default()).expect_err("bool casts must only accept singular bytes");
+        assert!(err.to_string().contains(&format!("cannot cast {type_name} to bool")), "unexpected error: {err}");
+    }
+}
+
+#[test]
 fn rejects_cast_between_different_fixed_non_byte_array_sizes() {
     let source = r#"
         contract Arrays() {
@@ -10617,7 +10698,7 @@ fn executes_opcode_builtins_basic() {
             r#"
                 contract Test() {
                     entry main() {
-                        require(OpTxInputIsCoinbase(0) == bool(0));
+                        require(OpTxInputIsCoinbase(0) == false);
                     }
                 }
             "#,
@@ -11804,21 +11885,32 @@ fn builtin_function_arguments_are_type_checked() {
 }
 
 #[test]
-fn byte_array_to_int_cast_compiles_without_extra_opcodes_and_executes() {
+fn fixed_byte_array_up_to_eight_bytes_casts_to_int_without_extra_opcodes() {
     let source = r#"
         contract Test() {
-            entry test(byte[] data) {
+            entry test(byte[2] data) {
                 int number = int(data);
                 require(number == 42);
             }
         }
     "#;
 
-    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("byte[] to int cast compiles");
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("byte[2] to int cast compiles");
     assert!(!compiled.bytecode.contains(&OpBin2Num), "int(data) must not emit OpBin2Num");
 
-    let sigscript = script_builder().add_data_with_push_opcode(&[42]).unwrap().drain();
-    assert!(run_bytecode_with_sigscript(compiled.bytecode, sigscript).is_ok(), "int(data) should produce a usable integer value");
+    let sigscript = compiled.build_sig_script("test", vec![vec![42u8, 0].into()]).expect("sigscript builds");
+    assert!(run_bytecode_with_sigscript(compiled.bytecode, sigscript).is_ok(), "int(byte[2]) should produce a usable integer value");
+}
+
+#[test]
+fn int_cast_rejects_dynamic_and_oversized_byte_arrays() {
+    for type_name in ["byte[]", "byte[9]"] {
+        let source =
+            format!("contract Test() {{ entry test({type_name} data) {{ int number = int(data); require(number == number); }} }}");
+        let err = compile_contract(&source, &[], CompileOptions::default())
+            .expect_err("int casts require a fixed byte array no wider than eight bytes");
+        assert!(err.to_string().contains(&format!("cannot cast {type_name} to int")), "unexpected error: {err}");
+    }
 }
 
 #[test]

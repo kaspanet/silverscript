@@ -800,7 +800,7 @@ int size = data.length;  // 2
 SilverScript supports explicit type casting:
 
 ```javascript
-entry casts(byte[32] data, byte[65] sigBytes, byte[32] keyBytes, byte[] someData) {
+entry casts(byte[32] data, byte[65] sigBytes, byte[32] keyBytes, byte[8] someData) {
     // Cast between byte-compatible types
     byte[] fromString = byte[]("hello");
 
@@ -816,13 +816,14 @@ entry casts(byte[32] data, byte[65] sigBytes, byte[32] keyBytes, byte[] someData
     sig signature = sig(signatureBytes);
 
     // Cast to int
-    int number = int(someData);
+    int number = int(someData); // source must be byte[N] where N <= 8
 }
 ```
 
 The scalar `byte(...)` conversion accepts an existing `byte` value or an integer
 literal in the range `0..=255`. It does not narrow variables or other non-literal
-`int` expressions. `int(byteValue)` is not allowed for scalar `byte` expressions;
+`int` expressions. `int(byteValue)` is not allowed for scalar `byte` expressions,
+and `int(bytes)` requires a fixed `byte[N]` source where `N <= 8`;
 use `signed(byteValue)` or `unsigned(byteValue)` to select the intended numeric
 interpretation. Scalar `byte` expressions cannot be used directly with
 arithmetic operators.

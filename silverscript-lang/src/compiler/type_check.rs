@@ -300,10 +300,10 @@ pub(super) fn check_call<'i>(
                 cast_type.type_name()
             )));
         }
-        if cast_type.is_array()
-            && source_type.is_array()
+        validate_scalar_cast_compatibility(&cast_type, &source_type, ctx.constants)?;
+        if (cast_type.is_array() || cast_type.base.fixed_byte_sequence_len().is_some())
             && let (Some(target_size), Some(source_size)) =
-                (fixed_type_size(&cast_type, ctx.constants), fixed_type_size(&source_type, ctx.constants))
+                (fixed_type_size(&cast_type, ctx.constants), known_cast_source_size(&args[0], &source_type, ctx.constants))
             && target_size != source_size
         {
             return Err(CompilerError::Unsupported(format!("cannot cast {} to {}", source_type.type_name(), cast_type.type_name())));
@@ -325,6 +325,46 @@ pub(super) fn check_call<'i>(
         BuiltinReturn::Value(type_ref) => Ok(Some(type_ref)),
         BuiltinReturn::Void => Ok(None),
     }
+}
+
+fn validate_scalar_cast_compatibility<'i>(
+    cast_type: &TypeRef,
+    source_type: &TypeRef,
+    constants: &HashMap<String, Expr<'i>>,
+) -> Result<(), CompilerError> {
+    let compatible = if cast_type.is_int() {
+        source_type.is_int()
+            || source_type.is_bool()
+            || matches!(source_type.base, TypeBase::Byte)
+                && source_type.array_dims.len() == 1
+                && array_type_size(source_type, constants).is_some_and(|size| size <= 8)
+    } else if cast_type.is_bool() {
+        source_type.is_byte()
+    } else if cast_type.is_string() {
+        source_type.is_string()
+            || source_type.is_byte()
+            || matches!(source_type.base, TypeBase::Byte) && source_type.is_array()
+            || source_type.base.fixed_byte_sequence_len().is_some()
+    } else if cast_type.base.fixed_byte_sequence_len().is_some() {
+        source_type.is_byte()
+            || source_type.is_array()
+            || source_type.is_string()
+            || source_type.base.fixed_byte_sequence_len().is_some()
+    } else {
+        true
+    };
+    if compatible {
+        Ok(())
+    } else {
+        Err(CompilerError::Unsupported(format!("cannot cast {} to {}", source_type.type_name(), cast_type.type_name())))
+    }
+}
+
+fn known_cast_source_size<'i>(expr: &Expr<'i>, source_type: &TypeRef, constants: &HashMap<String, Expr<'i>>) -> Option<usize> {
+    fixed_type_size(source_type, constants).or_else(|| match &expr.kind {
+        ExprKind::String(value) => Some(value.len()),
+        _ => None,
+    })
 }
 
 fn check_g16_verify_args<'i>(args: &[Expr<'i>], ctx: &TypeCheckContext<'_, 'i>) -> Result<(), CompilerError> {
