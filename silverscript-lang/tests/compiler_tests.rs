@@ -2418,6 +2418,55 @@ fn rejects_entrypoint_return_by_default() {
 }
 
 #[test]
+fn allowed_entrypoint_return_requires_a_return_statement() {
+    let source = r#"
+        contract EntryReturn() {
+            entry main() : int {
+                require(true);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions { allow_entrypoint_return: true, ..CompileOptions::default() })
+        .expect_err("a return-typed entrypoint must return a value");
+    assert!(err.to_string().contains("function 'main' declares return types but has no return statement"), "unexpected error: {err}");
+}
+
+#[test]
+fn allowed_entrypoint_return_checks_the_return_value_type() {
+    let source = r#"
+        contract EntryReturn() {
+            entry main() : int {
+                return false;
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions { allow_entrypoint_return: true, ..CompileOptions::default() })
+        .expect_err("an entrypoint return value must match its declared type");
+    assert!(err.to_string().contains("return value expects int"), "unexpected error: {err}");
+}
+
+#[test]
+fn helper_with_declared_return_type_requires_a_return_statement() {
+    let source = r#"
+        contract HelperReturn() {
+            function value() : int {
+                require(true);
+            }
+
+            entry main() {
+                value();
+                require(true);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("a return-typed helper must return a value");
+    assert!(err.to_string().contains("function 'value' declares return types but has no return statement"), "unexpected error: {err}");
+}
+
+#[test]
 fn build_sig_script_rejects_mismatched_bytes_length() {
     let source = r#"
         contract C() {

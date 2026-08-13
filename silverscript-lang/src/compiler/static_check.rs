@@ -327,6 +327,12 @@ fn validate_function_signatures<'i>(
         }
 
         let has_return = function.body.iter().any(statement_contains_return);
+        if !function.return_types.is_empty() && !has_return {
+            return Err(CompilerError::Unsupported(format!(
+                "function '{}' declares return types but has no return statement",
+                function.name
+            )));
+        }
         if has_return {
             if !matches!(function.body.last(), Some(Statement::Return { .. })) {
                 return Err(CompilerError::Unsupported("return statement must be the last statement".to_string()));
