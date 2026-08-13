@@ -108,7 +108,7 @@ fn compile_param_size_validations<'i>(
             param.type_ref.base.fixed_byte_sequence_len()
         };
         let is_dynamic_array = param.type_ref.is_array() && exact_size.is_none();
-        if exact_size.is_none() && !is_dynamic_array && !param.type_ref.is_int() {
+        if exact_size.is_none() && !is_dynamic_array && !param.type_ref.is_int() && !param.type_ref.is_bool() {
             continue;
         }
 
@@ -130,11 +130,12 @@ fn compile_param_size_validations<'i>(
             builder.add_i64(0)?;
             builder.add_op(OpNumEqualVerify)?;
         } else {
-            // The int case.
-
-            // VM script numbers may use zero through eight bytes. Reject a
-            // ninth byte before any numeric opcode attempts to decode it.
-            builder.add_i64(9)?;
+            // VM script numbers may use zero through eight bytes. Bools use
+            // the empty encoding for false and a single byte for true. Reject
+            // wider values before their interpretation can depend on the
+            // opcode consuming them.
+            let exclusive_max_size = if param.type_ref.is_bool() { 2 } else { 9 };
+            builder.add_i64(exclusive_max_size)?;
             builder.add_op(OpLessThan)?;
             builder.add_op(OpVerify)?;
         }

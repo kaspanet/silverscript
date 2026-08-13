@@ -9978,6 +9978,30 @@ fn canonicalizes_bool_comparison_operands_for_equality_and_inequality() {
         let body = script_builder()
             .add_op(OpOver)
             .unwrap()
+            .add_op(OpSize)
+            .unwrap()
+            .add_i64(2)
+            .unwrap()
+            .add_op(OpLessThan)
+            .unwrap()
+            .add_op(OpVerify)
+            .unwrap()
+            .add_op(OpDrop)
+            .unwrap()
+            .add_op(OpDup)
+            .unwrap()
+            .add_op(OpSize)
+            .unwrap()
+            .add_i64(2)
+            .unwrap()
+            .add_op(OpLessThan)
+            .unwrap()
+            .add_op(OpVerify)
+            .unwrap()
+            .add_op(OpDrop)
+            .unwrap()
+            .add_op(OpOver)
+            .unwrap()
             .add_op(OpOver)
             .unwrap()
             .add_op(OpNot)
@@ -11517,7 +11541,7 @@ fn entrypoint_int_argument_accepts_below_nine_bytes_and_rejects_nine() {
 }
 
 #[test]
-fn entrypoint_bool_argument_has_no_size_validation() {
+fn entrypoint_bool_argument_accepts_at_most_one_byte() {
     let source = r#"
         contract BoolSize() {
             entry main(bool value) {
@@ -11526,12 +11550,35 @@ fn entrypoint_bool_argument_has_no_size_validation() {
         }
     "#;
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("bool parameter should compile");
-    let expected =
-        script_builder().add_op(OpTrue).unwrap().add_op(OpVerify).unwrap().add_op(OpDrop).unwrap().add_op(OpTrue).unwrap().drain();
+    let expected = script_builder()
+        .add_op(OpDup)
+        .unwrap()
+        .add_op(OpSize)
+        .unwrap()
+        .add_i64(2)
+        .unwrap()
+        .add_op(OpLessThan)
+        .unwrap()
+        .add_op(OpVerify)
+        .unwrap()
+        .add_op(OpDrop)
+        .unwrap()
+        .add_op(OpTrue)
+        .unwrap()
+        .add_op(OpVerify)
+        .unwrap()
+        .add_op(OpDrop)
+        .unwrap()
+        .add_op(OpTrue)
+        .unwrap()
+        .drain();
     assert_eq!(compiled.bytecode, expected);
 
-    let oversized_bool = script_builder().add_data_with_push_opcode(&[1; 9]).unwrap().drain();
-    assert!(run_bytecode_with_sigscript(compiled.bytecode, oversized_bool).is_ok());
+    let sigscript = |size: usize| script_builder().add_data_with_push_opcode(&vec![1; size]).unwrap().drain();
+    assert!(run_bytecode_with_sigscript(compiled.bytecode.clone(), sigscript(0)).is_ok());
+    assert!(run_bytecode_with_sigscript(compiled.bytecode.clone(), sigscript(1)).is_ok());
+    assert!(run_bytecode_with_sigscript(compiled.bytecode.clone(), sigscript(2)).is_err());
+    assert!(run_bytecode_with_sigscript(compiled.bytecode, sigscript(9)).is_err());
 }
 
 #[test]
