@@ -7,12 +7,19 @@ pub(crate) struct Leaf {
 }
 
 pub fn flattened_struct_name(base: &str, path: &[String]) -> String {
-    let mut out = format!("__struct_{base}");
+    let mut out = String::from("__struct__");
+    push_length_prefixed_name_part(&mut out, base);
     for part in path {
         out.push('_');
-        out.push_str(part);
+        push_length_prefixed_name_part(&mut out, part);
     }
     out
+}
+
+fn push_length_prefixed_name_part(out: &mut String, part: &str) {
+    out.push_str(&part.len().to_string());
+    out.push('_');
+    out.push_str(part);
 }
 
 pub(super) fn flatten_struct_fields(
@@ -101,5 +108,14 @@ mod tests {
                 (vec!["active".to_string()], "bool[]".to_string()),
             ]
         );
+    }
+
+    #[test]
+    fn flattened_names_distinguish_nested_paths_from_underscored_fields() {
+        let nested = flattened_struct_name("o", &["a".to_string(), "b".to_string()]);
+        let underscored = flattened_struct_name("o", &["a_b".to_string()]);
+
+        assert_eq!(nested, "__struct__1_o_1_a_1_b");
+        assert_eq!(underscored, "__struct__1_o_3_a_b");
     }
 }

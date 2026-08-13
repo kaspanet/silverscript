@@ -342,6 +342,29 @@ fn supports_struct_contract_params_fields_and_constants() {
 }
 
 #[test]
+fn nested_struct_field_path_does_not_alias_underscored_field_name() {
+    let source = r#"
+        contract C() {
+            struct Inner { int b; }
+            struct Outer {
+                Inner a;
+                int a_b;
+            }
+
+            entry main(Outer o) {
+                require(o.a.b == o.a_b);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let outer = struct_object("Outer", vec![("a", struct_object("Inner", vec![("b", Expr::int(1))])), ("a_b", Expr::int(2))]);
+    let sigscript = compiled.build_sig_script("main", vec![outer]).expect("sigscript builds");
+    let result = run_bytecode_with_sigscript(compiled.bytecode, sigscript);
+    assert!(result.is_err(), "different nested and underscored fields must make the require fail");
+}
+
+#[test]
 fn resolve_contract_state_values_resolves_constructor_args_constants_and_prior_fields() {
     let source = r#"
         contract ResolveState(int initAmount, byte[2] initTag) {
@@ -3619,7 +3642,7 @@ fn rejects_struct_literal_with_wrong_field_type_in_function_call() {
 
     let err = compile_contract(source, &[], CompileOptions::default()).expect_err("compile should fail");
     assert!(
-        err.to_string().contains("function argument '__struct_x_a' expects int")
+        err.to_string().contains("function argument '__struct__1_x_1_a' expects int")
             || err.to_string().contains("expects int")
             || err.to_string().contains("expects S")
     );
