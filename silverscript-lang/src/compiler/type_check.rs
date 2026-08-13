@@ -361,7 +361,7 @@ fn validate_scalar_cast_compatibility<'i>(
 }
 
 fn known_cast_source_size<'i>(expr: &Expr<'i>, source_type: &TypeRef, constants: &HashMap<String, Expr<'i>>) -> Option<usize> {
-    fixed_type_size(source_type, constants).or_else(|| match &expr.kind {
+    fixed_type_size(source_type, constants).or(match &expr.kind {
         ExprKind::String(value) => Some(value.len()),
         _ => None,
     })
