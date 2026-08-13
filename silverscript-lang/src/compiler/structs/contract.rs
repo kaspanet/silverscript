@@ -157,11 +157,13 @@ mod tests {
         let structs = build_struct_registry(&contract).expect("struct registry should build");
         let lowered = lower_structs_contract(&contract, &structs, &HashMap::new()).expect("struct array append should lower");
 
-        let append_assignments = lowered.functions[0]
-            .body
+        let Statement::Block { body, .. } = &lowered.functions[0].body[0] else {
+            panic!("multi-leaf struct array append should lower through an atomic block");
+        };
+        let append_assignments = body
             .iter()
             .filter_map(|statement| {
-                let Statement::Assign { name, expr, .. } = statement else {
+                let Statement::VariableDefinition { name, expr: Some(expr), .. } = statement else {
                     return None;
                 };
                 let ExprKind::Append { args, .. } = &expr.kind else {
@@ -172,6 +174,13 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(append_assignments.len(), 2, "one append assignment should be emitted per struct leaf");
+        assert!(append_assignments.iter().all(|(name, _)| name.starts_with("__struct_assignment_")));
         assert!(append_assignments.iter().all(|(_, args)| args.len() == 2), "each leaf append should contain both values");
+        assert!(
+            matches!(&body[2], Statement::Assign { expr, .. } if matches!(&expr.kind, ExprKind::Identifier(name) if name == "__struct_assignment_0"))
+        );
+        assert!(
+            matches!(&body[3], Statement::Assign { expr, .. } if matches!(&expr.kind, ExprKind::Identifier(name) if name == "__struct_assignment_1"))
+        );
     }
 }

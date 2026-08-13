@@ -13453,6 +13453,73 @@ fn compile_time_if_branch_stores_struct_fields_once_and_reuses_them() {
 }
 
 #[test]
+fn struct_reassignment_snapshots_all_fields_before_rebinding() {
+    let source = r#"
+        contract C() {
+            struct S { int a; int b; }
+
+            entry main() {
+                S s = S {a: 10, b: 20};
+                s = S {a: s.b, b: s.a};
+                require(s.a == 20);
+                require(s.b == 10);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("struct field swap should compile");
+    let result = run_bytecode_with_selector(compiled.bytecode, None);
+    assert!(result.is_ok(), "struct field swap should execute atomically: {result:?}");
+}
+
+#[test]
+fn nested_struct_reassignment_snapshots_all_leaves_before_rebinding() {
+    let source = r#"
+        contract C() {
+            struct Inner { int x; int y; }
+            struct Outer { Inner inner; int z; }
+
+            entry main() {
+                Outer value = Outer {inner: Inner {x: 1, y: 2}, z: 3};
+                value = Outer {inner: Inner {x: value.inner.y, y: value.z}, z: value.inner.x};
+                require(value.inner.x == 2);
+                require(value.inner.y == 3);
+                require(value.z == 1);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("nested struct rotation should compile");
+    let result = run_bytecode_with_selector(compiled.bytecode, None);
+    assert!(result.is_ok(), "nested struct rotation should execute atomically: {result:?}");
+}
+
+#[test]
+fn struct_array_self_append_snapshots_all_leaf_expressions_before_rebinding() {
+    let source = r#"
+        contract C() {
+            struct S { int a; int b; }
+
+            entry main(S[] values) {
+                values = values.append(S {a: values.length, b: values.length});
+                require(values.length == 2);
+                require(values[1].a == 1);
+                require(values[1].b == 1);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("struct array append should compile");
+    let argument = Expr::array(
+        parse_type_ref("S[]").expect("array type parses"),
+        vec![struct_object("S", vec![("a", Expr::int(7)), ("b", Expr::int(8))])],
+    );
+    let sigscript = compiled.build_sig_script("main", vec![argument]).expect("sigscript builds");
+    let result = run_bytecode_with_sigscript(compiled.bytecode, sigscript);
+    assert!(result.is_ok(), "struct array leaf expressions should observe the pre-append value: {result:?}");
+}
+
+#[test]
 fn partially_reassigned_struct_field_does_not_recompute_unchanged_fields() {
     let source = r#"
         contract ConsumePartialStructField() {
