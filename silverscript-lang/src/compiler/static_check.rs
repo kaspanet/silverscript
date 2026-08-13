@@ -1,8 +1,16 @@
+use super::builtin_types::is_builtin_name;
 use super::*;
 use semver::{Comparator, Op, Version, VersionReq};
 use std::collections::{HashMap, HashSet};
 
 pub(super) fn validate_declaration_names(contract: &ContractAst<'_>) -> Result<(), CompilerError> {
+    for function in &contract.functions {
+        if is_builtin_name(&function.name) {
+            return Err(CompilerError::Unsupported(format!("function name '{}' is reserved for a builtin", function.name))
+                .with_span(&function.name_span));
+        }
+    }
+
     let mut names = HashSet::new();
     for param in &contract.params {
         if !names.insert(param.name.as_str()) {
@@ -55,6 +63,9 @@ pub(super) fn validate_declaration_names(contract: &ContractAst<'_>) -> Result<(
 }
 
 fn insert_variable_name<'i>(names: &mut HashSet<&'i str>, name: &'i str, span: &span::Span<'i>) -> Result<(), CompilerError> {
+    if is_builtin_name(name) {
+        return Err(CompilerError::Unsupported(format!("variable name '{name}' is reserved for a builtin")).with_span(span));
+    }
     if !names.insert(name) {
         return Err(CompilerError::Unsupported(format!("variable '{name}' is already defined")).with_span(span));
     }

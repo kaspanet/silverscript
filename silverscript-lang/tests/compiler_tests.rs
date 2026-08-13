@@ -8610,8 +8610,8 @@ fn rejects_read_input_state_with_template_outside_direct_binding() {
                 require(remote.x > 0);
             }
 
-            entry main(int prefixLen, int suffixLen, byte[32] templateHash) {
-                check(readInputStateWithTemplate(1, prefixLen, suffixLen, templateHash));
+            entry main(int prefixLen, int suffixLen, byte[32] expectedTemplateHash) {
+                check(readInputStateWithTemplate(1, prefixLen, suffixLen, expectedTemplateHash));
             }
         }
     "#;
@@ -8633,9 +8633,9 @@ fn rejects_read_input_state_with_template_as_expression_call_argument() {
                 return remote;
             }
 
-            entry main(int prefixLen, int suffixLen, byte[32] templateHash) {
+            entry main(int prefixLen, int suffixLen, byte[32] expectedTemplateHash) {
                 RemoteState remote = identity(
-                    readInputStateWithTemplate(1, prefixLen, suffixLen, templateHash)
+                    readInputStateWithTemplate(1, prefixLen, suffixLen, expectedTemplateHash)
                 );
                 require(remote.x > 0);
             }
@@ -8650,9 +8650,9 @@ fn rejects_read_input_state_with_template_as_expression_call_argument() {
 #[test]
 fn read_input_state_with_template_checks_argument_types() {
     let cases = [
-        ("true, prefixLen, suffixLen, templateHash", "input_idx"),
-        ("1, true, suffixLen, templateHash", "template_prefix_len"),
-        ("1, prefixLen, true, templateHash", "template_suffix_len"),
+        ("true, prefixLen, suffixLen, expectedTemplateHash", "input_idx"),
+        ("1, true, suffixLen, expectedTemplateHash", "template_prefix_len"),
+        ("1, prefixLen, true, expectedTemplateHash", "template_suffix_len"),
         ("1, prefixLen, suffixLen, prefixLen", "expected_template_hash"),
     ];
 
@@ -8664,7 +8664,7 @@ fn read_input_state_with_template_checks_argument_types() {
                         int x;
                     }}
 
-                    entry main(int prefixLen, int suffixLen, byte[32] templateHash) {{
+                    entry main(int prefixLen, int suffixLen, byte[32] expectedTemplateHash) {{
                         RemoteState remote = readInputStateWithTemplate({args});
                         require(remote.x > 0);
                     }}
@@ -14716,6 +14716,50 @@ fn rejects_duplicate_function_names() {
         let source = format!("contract DuplicateFunctions() {{{duplicate}}}");
         let err = compile_contract(&source, &[], CompileOptions::default()).expect_err("duplicate function names should be rejected");
         assert!(err.to_string().contains("duplicate function name"), "unexpected error: {err}");
+    }
+}
+
+#[test]
+fn rejects_user_function_with_builtin_name() {
+    let source = r#"
+        pragma silverscript ^0.1.0;
+        contract Test(int init_amount) {
+            int amount = init_amount;
+
+            function validateOutputState(int idx, State s) {
+                require(idx == 12345);
+            }
+
+            entry main(int out_idx, int out_amount) {
+                validateOutputState(out_idx, State { amount: out_amount });
+                require(true);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[Expr::int(0)], CompileOptions::default())
+        .expect_err("user-defined functions must not use builtin names");
+    assert!(err.to_string().contains("function name 'validateOutputState' is reserved for a builtin"), "unexpected error: {err}");
+    let span = err.span().expect("the reserved function name should be identified");
+    assert_eq!(&source[span.start..span.end], "validateOutputState");
+}
+
+#[test]
+fn rejects_builtin_names_for_variables() {
+    let cases = [
+        "contract T(int sha256) { entry main() { require(true); } }",
+        "contract T() { int constant readInputState = 1; entry main() { require(true); } }",
+        "contract T() { int OpTxGas = 1; entry main() { require(true); } }",
+        "contract T() { entry main(int validateOutputState) { require(true); } }",
+        "contract T() { entry main() { int ScriptPubKeyP2PK = 1; require(true); } }",
+        "contract T() { entry main() { for (blake2b, 0, 1, 1) { require(true); } } }",
+    ];
+
+    for source in cases {
+        let constructor_args = if source.contains("int sha256") { vec![Expr::int(0)] } else { vec![] };
+        let err =
+            compile_contract(source, &constructor_args, CompileOptions::default()).expect_err("variables must not use builtin names");
+        assert!(err.to_string().contains("is reserved for a builtin"), "unexpected error for `{source}`: {err}");
     }
 }
 

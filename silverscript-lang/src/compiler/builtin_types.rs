@@ -131,6 +131,10 @@ pub(super) fn constructor_parameters(name: &str) -> Option<Vec<(&'static str, Ty
     })
 }
 
+pub(super) fn is_builtin_name(name: &str) -> bool {
+    builtin_return(name).is_some() || builtin_parameters(name).is_some() || constructor_return_type(name).is_some()
+}
+
 pub(super) fn builtin_parameters(name: &str) -> Option<Vec<(&'static str, TypeRef)>> {
     Some(match name {
         "signed" | "unsigned" => vec![("value", scalar(TypeBase::Byte))],
