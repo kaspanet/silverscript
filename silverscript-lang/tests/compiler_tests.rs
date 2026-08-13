@@ -12014,6 +12014,45 @@ fn ternary_expression_does_not_execute_unselected_branch() {
 }
 
 #[test]
+fn ternary_does_not_read_input_state_in_unselected_then_branch() {
+    let source = r#"
+        pragma silverscript ^0.1.0;
+        contract TernaryHoist(int initX) {
+            int x = initX;
+
+            function get(State st): int {
+                return st.x;
+            }
+
+            entry main(bool useRemote) {
+                int v = useRemote ? get(readInputState(9)) : 42;
+                require(v == 42);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[Expr::int(7)], CompileOptions::default()).expect("ternary contract should compile");
+    let asm = script_to_str(&compiled.bytecode).expect("ternary script should stringify");
+    let if_index = asm.find("OpIf").expect("ternary should emit OpIf");
+    let read_index = asm.find("OpTxInputScriptSigLen").expect("selected branch should contain the input-state read");
+    let else_index = asm.find("OpElse").expect("ternary should emit OpElse");
+    assert!(
+        if_index < read_index && read_index < else_index,
+        "input-state access should remain inside the ternary's then branch: {asm}"
+    );
+
+    let select_local = compiled.build_sig_script("main", vec![Expr::bool(false)]).expect("sigscript builds");
+    let result = run_bytecode_with_sigscript(compiled.bytecode.clone(), select_local);
+    assert!(result.is_ok(), "input 9 in the unselected branch must not be read: {}", result.unwrap_err());
+
+    let select_remote = compiled.build_sig_script("main", vec![Expr::bool(true)]).expect("sigscript builds");
+    assert!(
+        run_bytecode_with_sigscript(compiled.bytecode, select_remote).is_err(),
+        "input 9 in the selected branch should be read and fail"
+    );
+}
+
+#[test]
 fn ternary_expression_does_not_execute_function_call_in_unselected_else_branch() {
     let source = r#"
         contract TernaryCallShortCircuit() {
