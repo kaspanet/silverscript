@@ -57,6 +57,7 @@ pub(super) fn validate_declaration_names(contract: &ContractAst<'_>) -> Result<(
             insert_variable_name(&mut function_names, &param.name, &param.name_span)?;
         }
         validate_statement_declaration_names(&function.body, &mut function_names)?;
+        validate_loop_variable_assignments(&function.body, &HashSet::new())?;
     }
 
     Ok(())
@@ -111,6 +112,43 @@ fn validate_statement_declaration_names<'i>(
                 validate_statement_declaration_names(body, &mut loop_names)?;
             }
             Statement::FunctionCall { .. }
+            | Statement::Assign { .. }
+            | Statement::TimeOp { .. }
+            | Statement::Require { .. }
+            | Statement::Return { .. }
+            | Statement::Console { .. } => {}
+        }
+    }
+    Ok(())
+}
+
+fn validate_loop_variable_assignments<'i>(
+    statements: &'i [Statement<'i>],
+    loop_variables: &HashSet<&'i str>,
+) -> Result<(), CompilerError> {
+    for statement in statements {
+        match statement {
+            Statement::Assign { name, name_span, .. } if loop_variables.contains(name.as_str()) => {
+                return Err(CompilerError::Unsupported(format!("cannot assign to loop variable '{name}'")).with_span(name_span));
+            }
+            Statement::Block { body, .. } => validate_loop_variable_assignments(body, loop_variables)?,
+            Statement::If { then_branch, else_branch, .. } => {
+                validate_loop_variable_assignments(then_branch, loop_variables)?;
+                if let Some(else_branch) = else_branch {
+                    validate_loop_variable_assignments(else_branch, loop_variables)?;
+                }
+            }
+            Statement::For { ident, body, .. } => {
+                let mut nested_loop_variables = loop_variables.clone();
+                nested_loop_variables.insert(ident);
+                validate_loop_variable_assignments(body, &nested_loop_variables)?;
+            }
+            Statement::VariableDefinition { .. }
+            | Statement::TupleAssignment { .. }
+            | Statement::FunctionCall { .. }
+            | Statement::FunctionCallAssign { .. }
+            | Statement::StateFunctionCallAssign { .. }
+            | Statement::StructDestructure { .. }
             | Statement::Assign { .. }
             | Statement::TimeOp { .. }
             | Statement::Require { .. }

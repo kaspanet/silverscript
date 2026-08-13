@@ -5781,6 +5781,42 @@ fn rejects_constant_for_loop_range_above_max_iterations() {
 }
 
 #[test]
+fn rejects_assignment_to_loop_variable_for_constant_and_runtime_bounds() {
+    let cases = [
+        r#"
+            contract ConstantLoop() {
+                entry main() {
+                    int s = 0;
+                    for (i, 0, 3, 3) {
+                        i = i + 100;
+                        s = s + i;
+                    }
+                }
+            }
+        "#,
+        r#"
+            contract RuntimeLoop() {
+                entry main(int start, int end) {
+                    int s = 0;
+                    for (i, start, end, 3) {
+                        i = i + 100;
+                        s = s + i;
+                    }
+                }
+            }
+        "#,
+    ];
+
+    for source in cases {
+        let err = compile_contract(source, &[], CompileOptions::default())
+            .expect_err("assigning to a loop variable must be rejected before loop lowering");
+        assert!(err.to_string().contains("cannot assign to loop variable 'i'"), "unexpected error: {err}");
+        let span = err.span().expect("the assignment target should be identified");
+        assert_eq!(&source[span.start..span.end], "i");
+    }
+}
+
+#[test]
 fn rejects_overflow_in_constant_for_loop_bounds() {
     let cases = [
         ("9223372036854775807 + 1", "constant integer overflow: 9223372036854775807 + 1"),
