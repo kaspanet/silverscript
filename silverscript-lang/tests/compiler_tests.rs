@@ -13617,6 +13617,41 @@ fn runs_struct_array_equality_and_inequality_comparisons() {
 }
 
 #[test]
+fn struct_array_comparisons_accept_structured_expressions_on_either_side() {
+    let source = r#"
+        contract StructArrayComparisonSymmetry() {
+            struct S { int value; }
+
+            function identity(S[] values): S[] {
+                return(values);
+            }
+
+            entry main() {
+                S[] one = S[]{S {value: 7}};
+                S[] two = S[]{S {value: 7}, S {value: 8}};
+
+                require(S[]{S {value: 7}} == one);
+                require(S[]{S {value: 8}} != one);
+                require(S[]{S {value: 7}, S {value: 8}} == one.append(S {value: 8}));
+                require(S[]{S {value: 7}} == two.slice(0, 1));
+                require(S[_]{S {value: 7}} == two.split(1).0);
+                require(S[]{S {value: 7}} == identity(one));
+
+                require(one == S[]{S {value: 7}});
+                require(one.append(S {value: 8}) == S[]{S {value: 7}, S {value: 8}});
+                require(two.slice(0, 1) == S[]{S {value: 7}});
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default())
+        .expect("struct-array comparisons should be symmetric for supported structured expressions");
+    let selector = selector_for(&compiled, "main");
+    let result = run_bytecode_with_selector(compiled.bytecode, selector);
+    assert!(result.is_ok(), "symmetric struct-array comparisons should execute successfully: {}", result.unwrap_err());
+}
+
+#[test]
 fn allows_sequence_operations_on_string_and_fixed_byte_types() {
     let source = r#"
         contract ByteSequenceOperations() {

@@ -76,28 +76,30 @@ pub(super) fn lower_scalar_expr<'i>(
             Ok(Expr::new(ExprKind::Unary { op: *op, expr: Box::new(lower_scalar_expr(expr, scope, lowerer)?) }, span))
         }
         ExprKind::Binary { op, left, right } => {
-            if matches!(op, BinaryOp::Eq | BinaryOp::Ne)
-                && let ExprKind::Identifier(left_name) = &left.kind
-                && let Some(left_type) = scope.type_of(left_name)
-                && is_struct_array(left_type, structs)
-            {
-                if let ExprKind::Identifier(right_name) = &right.kind
-                    && scope.type_of(right_name).is_some_and(|right_type| right_type != left_type)
-                {
-                    return Err(CompilerError::Unsupported("struct array comparison requires matching types".to_string()));
+            if matches!(op, BinaryOp::Eq | BinaryOp::Ne) {
+                let left_type = struct_array_expr_type(left, scope, structs, lowerer.contract_constants)?;
+                let right_type = struct_array_expr_type(right, scope, structs, lowerer.contract_constants)?;
+                if let Some(expected_type) = left_type.as_ref().or(right_type.as_ref()) {
+                    if left_type
+                        .as_ref()
+                        .zip(right_type.as_ref())
+                        .is_some_and(|(left, right)| !type_refs_equal(left, right, lowerer.contract_constants))
+                    {
+                        return Err(CompilerError::Unsupported("struct array comparison requires matching types".to_string()));
+                    }
+                    let left_leaves = lower_struct_array_expr(left, expected_type, scope, lowerer)?;
+                    let right_leaves = lower_struct_array_expr(right, expected_type, scope, lowerer)?;
+                    let comparison_op = *op;
+                    let combination_op = if *op == BinaryOp::Eq { BinaryOp::And } else { BinaryOp::Or };
+                    let comparisons = left_leaves.into_iter().zip(right_leaves).map(|(left, right)| {
+                        Expr::new(ExprKind::Binary { op: comparison_op, left: Box::new(left), right: Box::new(right) }, span)
+                    });
+                    return comparisons
+                        .reduce(|left, right| {
+                            Expr::new(ExprKind::Binary { op: combination_op, left: Box::new(left), right: Box::new(right) }, span)
+                        })
+                        .ok_or_else(|| CompilerError::Unsupported("cannot compare empty struct arrays".to_string()));
                 }
-                let left_leaves = lower_struct_array_expr(left, left_type, scope, lowerer)?;
-                let right_leaves = lower_struct_array_expr(right, left_type, scope, lowerer)?;
-                let comparison_op = *op;
-                let combination_op = if *op == BinaryOp::Eq { BinaryOp::And } else { BinaryOp::Or };
-                let comparisons = left_leaves.into_iter().zip(right_leaves).map(|(left, right)| {
-                    Expr::new(ExprKind::Binary { op: comparison_op, left: Box::new(left), right: Box::new(right) }, span)
-                });
-                return comparisons
-                    .reduce(|left, right| {
-                        Expr::new(ExprKind::Binary { op: combination_op, left: Box::new(left), right: Box::new(right) }, span)
-                    })
-                    .ok_or_else(|| CompilerError::Unsupported("cannot compare empty struct arrays".to_string()));
             }
 
             Ok(Expr::new(
@@ -182,7 +184,7 @@ pub(super) fn lower_scalar_expr<'i>(
         )),
         ExprKind::UnarySuffix { source, kind, span: suffix_span } => {
             if matches!(kind, crate::ast::UnarySuffixKind::Length)
-                && let Some(type_ref) = struct_array_expr_type(source, scope, structs)
+                && let Some(type_ref) = struct_array_expr_type(source, scope, structs, lowerer.contract_constants)?
             {
                 let first_leaf = lower_struct_array_expr(source, &type_ref, scope, lowerer)?
                     .into_iter()
@@ -203,14 +205,26 @@ pub(super) fn lower_scalar_expr<'i>(
     }
 }
 
-fn struct_array_expr_type(expr: &Expr<'_>, scope: &LoweringScope, structs: &StructRegistry) -> Option<TypeRef> {
+fn struct_array_expr_type(
+    expr: &Expr<'_>,
+    scope: &LoweringScope,
+    structs: &StructRegistry,
+    constants: &HashMap<String, Expr<'_>>,
+) -> Result<Option<TypeRef>, CompilerError> {
     let type_ref = match &expr.kind {
         ExprKind::Identifier(name) => scope.type_of(name).cloned(),
         ExprKind::Array { type_ref, .. } => Some(type_ref.clone()),
-        ExprKind::Append { source, .. } | ExprKind::Split { source, .. } | ExprKind::Slice { source, .. } => {
-            struct_array_expr_type(source, scope, structs)
-        }
+        ExprKind::Append { source, args, .. } => struct_array_expr_type(source, scope, structs, constants)?
+            .and_then(|source_type| append_type(&source_type, args.len(), constants)),
+        ExprKind::Split { source, index, part, .. } => struct_array_expr_type(source, scope, structs, constants)?
+            .map(|source_type| crate::compiler::type_check::split_part_type(&source_type, index, *part, constants))
+            .transpose()?,
+        ExprKind::Slice { source, .. } => struct_array_expr_type(source, scope, structs, constants)?.and_then(|source_type| {
+            let mut element_type = source_type.array_element_type()?;
+            element_type.array_dims.push(ArrayDim::Dynamic);
+            Some(element_type)
+        }),
         _ => None,
-    }?;
-    is_struct_array(&type_ref, structs).then_some(type_ref)
+    };
+    Ok(type_ref.filter(|type_ref| is_struct_array(type_ref, structs)))
 }
