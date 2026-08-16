@@ -565,38 +565,17 @@ fn sequence_part_type(type_ref: &TypeRef, operation: &str) -> Result<TypeRef, Co
 pub(super) fn split_part_type<'i>(
     source_type: &TypeRef,
     index: &Expr<'i>,
-    part: SplitPart,
+    _part: SplitPart,
     constants: &HashMap<String, Expr<'i>>,
 ) -> Result<TypeRef, CompilerError> {
-    if source_type.is_string() {
-        return Ok(source_type.clone());
+    if let Ok(index) = eval_const_int(index, constants)
+        && let Some(source_size) = array_type_size(source_type, constants).or_else(|| source_type.base.fixed_byte_sequence_len())
+        && (index < 0 || usize::try_from(index).is_ok_and(|index| index > source_size))
+    {
+        return Err(CompilerError::Unsupported(format!("split index {index} is out of bounds for array of length {source_size}")));
     }
 
-    let (mut element_type, source_size) = if source_type.is_array() {
-        let element_type =
-            source_type.array_element_type().ok_or_else(|| CompilerError::Unsupported("split source must be an array".to_string()))?;
-        (element_type, array_type_size(source_type, constants))
-    } else if let Some(source_size) = source_type.base.fixed_byte_sequence_len() {
-        (scalar_type(TypeBase::Byte), Some(source_size))
-    } else {
-        return Err(CompilerError::Unsupported("split source must be an array, string, or fixed-byte type".to_string()));
-    };
-    let constant_index = eval_const_int(index, constants).ok().and_then(|value| usize::try_from(value).ok());
-    let dimension = match (constant_index, part) {
-        (Some(index), SplitPart::Left) => ArrayDim::Fixed(index),
-        (Some(index), SplitPart::Right) => match source_size {
-            Some(source_size) if index <= source_size => ArrayDim::Fixed(source_size - index),
-            Some(source_size) => {
-                return Err(CompilerError::Unsupported(format!(
-                    "split index {index} is out of bounds for array of length {source_size}"
-                )));
-            }
-            None => ArrayDim::Dynamic,
-        },
-        (None, _) => ArrayDim::Dynamic,
-    };
-    element_type.array_dims.push(dimension);
-    Ok(element_type)
+    sequence_part_type(source_type, "split")
 }
 
 fn check_constructor<'i>(name: &str, args: &[Expr<'i>], ctx: &TypeCheckContext<'_, 'i>) -> Result<TypeRef, CompilerError> {

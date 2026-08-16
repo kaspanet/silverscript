@@ -759,14 +759,13 @@ byte[] combined = a + b;  // 0x12345678
 
 **Split:**
 
-`split(int)` divides a byte array at a specific index and returns a two-value
-tuple. A constant split index gives the left part a fixed size; the right part
-is fixed too when the source size is known. Use `.0` for the left part and `.1`
-for the right part:
+`split(int)` divides an array at a specific index and returns a two-value tuple.
+Both parts are dynamic arrays with the same element type as the source. Use `.0`
+for the left part and `.1` for the right part:
 
 ```javascript
 byte[] data = byte[](0x1234567890abcdef);
-byte[4] left = data.split(4).0;  // 0x12345678
+byte[] left = data.split(4).0;   // 0x12345678
 byte[] right = data.split(4).1;  // 0x90abcdef
 ```
 
@@ -774,7 +773,7 @@ You can also destructure both parts at once:
 
 ```javascript
 byte[] data = byte[](0x1234567890abcdef);
-(byte[4] left, byte[] right) = data.split(4);
+(byte[] left, byte[] right) = data.split(4);
 ```
 
 **Slice:**
@@ -1249,7 +1248,7 @@ function getPair(): (int, int) {
 }
 
 entry example(byte[32] data) {
-    (byte[16] left, byte[16] right) = data.split(16);
+    (byte[] left, byte[] right) = data.split(16);
     (int x, int y) = getPair();
 }
 ```
@@ -1284,19 +1283,18 @@ entry example() {
 
 **Split:**
 
-Divide `byte[]` into two parts at a given index. A constant index gives the
-left part a fixed size, while the right part remains dynamic unless the source
-also has a fixed size. The result is accessed like other tuple returns:
+Divide an array into two dynamic parts at a given index. Both parts retain the
+source array's element type. The result is accessed like other tuple returns:
 
 ```javascript
 byte[] data = byte[](0x1122334455667788);
 
 // Split at byte 4
-byte[4] left = data.split(4).0;  // 0x11223344
+byte[] left = data.split(4).0;   // 0x11223344
 byte[] right = data.split(4).1;  // 0x55667788
 
 // Destructure both parts with types
-(byte[4] a, byte[] b) = data.split(4);
+(byte[] a, byte[] b) = data.split(4);
 ```
 
 **Slice:**
