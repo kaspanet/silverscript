@@ -402,23 +402,43 @@ impl<'i, 'd> Inliner<'i, 'd> {
             lowered.extend(self.lower_statement(statement, &mut local_scope, visited_functions)?);
         }
 
-        if let (Some(bindings), Some(return_exprs)) = (bindings, return_exprs) {
-            for (binding, expr) in bindings.iter().zip(return_exprs.iter()) {
-                let (prelude, renamed_expr) = self.lower_expr(expr, &local_scope, visited_functions)?;
-                lowered.extend(prelude);
-                self.push_lowered_statement(
-                    &mut lowered,
-                    Statement::VariableDefinition {
-                        type_ref: binding.type_ref.clone(),
+        if let Some(return_exprs) = return_exprs {
+            if let Some(bindings) = bindings {
+                for (binding, expr) in bindings.iter().zip(return_exprs.iter()) {
+                    let (prelude, renamed_expr) = self.lower_expr(expr, &local_scope, visited_functions)?;
+                    lowered.extend(prelude);
+                    self.push_lowered_statement(
+                        &mut lowered,
+                        Statement::VariableDefinition {
+                            type_ref: binding.type_ref.clone(),
+                            modifiers: Vec::new(),
+                            name: binding.name.clone(),
+                            expr: Some(renamed_expr),
+                            span,
+                            type_span: binding.type_span,
+                            modifier_spans: Vec::new(),
+                            name_span: binding.name_span,
+                        },
+                    );
+                }
+            } else {
+                for (index, (return_type, expr)) in function.return_types.iter().zip(return_exprs).enumerate() {
+                    let (mut discard_body, renamed_expr) = self.lower_expr(expr, &local_scope, visited_functions)?;
+                    // A value-returning helper called as a statement still has to evaluate its return expressions:
+                    // they may fault or perform observable VM operations. Bind each unused result inside a block so
+                    // normal block cleanup explicitly drops it immediately after evaluation.
+                    discard_body.push(Statement::VariableDefinition {
+                        type_ref: return_type.clone(),
                         modifiers: Vec::new(),
-                        name: binding.name.clone(),
+                        name: self.fresh_visible_name(&format!("__discarded_return_{index}")),
                         expr: Some(renamed_expr),
-                        span,
-                        type_span: binding.type_span,
+                        span: expr.span,
+                        type_span: function.return_type_spans.get(index).copied().unwrap_or_default(),
                         modifier_spans: Vec::new(),
-                        name_span: binding.name_span,
-                    },
-                );
+                        name_span: span::Span::default(),
+                    });
+                    self.push_lowered_statement(&mut lowered, Statement::Block { body: discard_body, span: expr.span });
+                }
             }
         }
 

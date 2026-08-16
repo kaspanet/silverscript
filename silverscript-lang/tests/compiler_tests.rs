@@ -2418,6 +2418,55 @@ fn rejects_entrypoint_return_by_default() {
 }
 
 #[test]
+fn allowed_entrypoint_return_requires_a_return_statement() {
+    let source = r#"
+        contract EntryReturn() {
+            entry main() : int {
+                require(true);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions { allow_entrypoint_return: true, ..CompileOptions::default() })
+        .expect_err("a return-typed entrypoint must return a value");
+    assert!(err.to_string().contains("function 'main' declares return types but has no return statement"), "unexpected error: {err}");
+}
+
+#[test]
+fn allowed_entrypoint_return_checks_the_return_value_type() {
+    let source = r#"
+        contract EntryReturn() {
+            entry main() : int {
+                return false;
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions { allow_entrypoint_return: true, ..CompileOptions::default() })
+        .expect_err("an entrypoint return value must match its declared type");
+    assert!(err.to_string().contains("return value expects int"), "unexpected error: {err}");
+}
+
+#[test]
+fn helper_with_declared_return_type_requires_a_return_statement() {
+    let source = r#"
+        contract HelperReturn() {
+            function value() : int {
+                require(true);
+            }
+
+            entry main() {
+                value();
+                require(true);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("a return-typed helper must return a value");
+    assert!(err.to_string().contains("function 'value' declares return types but has no return statement"), "unexpected error: {err}");
+}
+
+#[test]
 fn build_sig_script_rejects_mismatched_bytes_length() {
     let source = r#"
         contract C() {
@@ -4003,7 +4052,7 @@ fn compiles_function_call_assignment_and_verifies() {
 }
 
 #[test]
-fn compiles_function_call_statement_elides_unused_return_expression() {
+fn function_call_statement_evaluates_and_drops_unused_return_expression() {
     let source = r#"
         contract Calls() {
             function f(int a) : (int) {
@@ -4019,7 +4068,8 @@ fn compiles_function_call_statement_elides_unused_return_expression() {
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
     let selector = selector_for(&compiled, "main");
-    assert!(!compiled.bytecode.contains(&OpAdd), "unused inline return expressions should be elided entirely");
+    let asm = script_to_str(&compiled.bytecode).expect("script should stringify");
+    assert!(asm.contains("OpAdd OpDrop"), "unused inline return expression should be evaluated and dropped: {asm}");
     assert!(run_bytecode_with_selector(compiled.bytecode, selector).is_ok());
 }
 
@@ -5314,6 +5364,65 @@ fn runs_slice_reconstruction_and_compare_runtime_example() {
     let sigscript = script_builder().drain();
     let result = run_bytecode_with_sigscript(compiled.bytecode, sigscript);
     assert!(result.is_ok(), "slice reconstruction runtime should succeed: {}", result.unwrap_err());
+}
+
+#[test]
+fn rejects_invalid_constant_slice_bounds() {
+    let cases = [
+        (
+            "dynamic array negative start",
+            "contract C() { entry main(int[] value) { int[] part = value.slice(-1, 0); } }",
+            "out of bounds",
+        ),
+        (
+            "dynamic array negative end",
+            "contract C() { entry main(int[] value) { int[] part = value.slice(0, -1); } }",
+            "out of bounds",
+        ),
+        ("slice start after end", "contract C() { entry main(int[] value) { int[] part = value.slice(2, 1); } }", "greater than end"),
+        (
+            "fixed array end beyond length",
+            "contract C() { entry main(int[4] value) { int[] part = value.slice(0, 5); } }",
+            "out of bounds",
+        ),
+        (
+            "fixed array start beyond length",
+            "contract C() { entry main(int[4] value, int end) { int[] part = value.slice(5, end); } }",
+            "out of bounds",
+        ),
+        (
+            "pubkey end beyond length",
+            "contract C() { entry main(pubkey value) { byte[] part = value.slice(0, 33); } }",
+            "out of bounds",
+        ),
+        ("sig end beyond length", "contract C() { entry main(sig value) { byte[] part = value.slice(0, 66); } }", "out of bounds"),
+        (
+            "datasig end beyond length",
+            "contract C() { entry main(datasig value) { byte[] part = value.slice(0, 65); } }",
+            "out of bounds",
+        ),
+    ];
+
+    for (case, source, expected) in cases {
+        let error = compile_contract(source, &[], CompileOptions::default()).expect_err(case);
+        assert!(error.to_string().contains(expected), "unexpected error for {case}: {error}");
+    }
+}
+
+#[test]
+fn allows_constant_slice_bounds_at_sequence_end() {
+    let source = r#"
+        contract SliceBoundary() {
+            entry main(int[4] values, pubkey publicKey, sig signature, datasig dataSignature) {
+                int[] arrayTail = values.slice(4, 4);
+                byte[] pubkeyTail = publicKey.slice(32, 32);
+                byte[] sigTail = signature.slice(65, 65);
+                byte[] datasigTail = dataSignature.slice(64, 64);
+            }
+        }
+    "#;
+
+    compile_contract(source, &[], CompileOptions::default()).expect("empty slices at a sequence's end should compile");
 }
 
 #[test]
@@ -9537,6 +9646,51 @@ fn value_returning_builtin_statement_discards_result() {
     assert!(asm.ends_with("OpSHA256 OpDrop OpTrue"), "builtin statement result should be discarded: {asm}");
 }
 
+#[test]
+fn discarded_helper_return_expressions_are_evaluated_and_dropped() {
+    let source = r#"
+        contract DiscardedHelperReturn() {
+            function hashes() : (byte[32], byte[32]) {
+                return(sha256(byte[]("first")), sha256(byte[]("second")));
+            }
+
+            entry main() {
+                hashes();
+                require(true);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("discarded helper returns should compile");
+    let asm = script_to_str(&compiled.bytecode).expect("script should stringify");
+    assert_eq!(asm.matches("OpSHA256").count(), 2, "both return expressions must be evaluated: {asm}");
+    assert_eq!(asm.matches("OpDrop").count(), 2, "both discarded return values must be dropped: {asm}");
+}
+
+#[test]
+fn discarded_nested_helper_return_expression_is_evaluated() {
+    let source = r#"
+        contract NestedDiscardedHelperReturn() {
+            function fail() : int {
+                return(1 / 0);
+            }
+
+            function outer() : int {
+                return(fail());
+            }
+
+            entry main() {
+                outer();
+                require(true);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("nested discarded return should compile");
+    let result = run_bytecode_with_selector(compiled.bytecode, None);
+    assert!(result.is_err(), "the nested discarded division by zero must execute");
+}
+
 fn assert_r0_type_error(source: &str, expected: &str) {
     let err = compile_contract(source, &[], CompileOptions::default()).expect_err("incorrect R0 builtin argument type should fail");
     assert!(err.to_string().contains(expected), "expected error containing '{expected}', got: {err}");
@@ -9927,6 +10081,30 @@ fn canonicalizes_bool_comparison_operands_for_equality_and_inequality() {
             "#
         );
         let body = script_builder()
+            .add_op(OpOver)
+            .unwrap()
+            .add_op(OpSize)
+            .unwrap()
+            .add_i64(2)
+            .unwrap()
+            .add_op(OpLessThan)
+            .unwrap()
+            .add_op(OpVerify)
+            .unwrap()
+            .add_op(OpDrop)
+            .unwrap()
+            .add_op(OpDup)
+            .unwrap()
+            .add_op(OpSize)
+            .unwrap()
+            .add_i64(2)
+            .unwrap()
+            .add_op(OpLessThan)
+            .unwrap()
+            .add_op(OpVerify)
+            .unwrap()
+            .add_op(OpDrop)
+            .unwrap()
             .add_op(OpOver)
             .unwrap()
             .add_op(OpOver)
@@ -11468,7 +11646,7 @@ fn entrypoint_int_argument_accepts_below_nine_bytes_and_rejects_nine() {
 }
 
 #[test]
-fn entrypoint_bool_argument_has_no_size_validation() {
+fn entrypoint_bool_argument_accepts_at_most_one_byte() {
     let source = r#"
         contract BoolSize() {
             entry main(bool value) {
@@ -11477,12 +11655,35 @@ fn entrypoint_bool_argument_has_no_size_validation() {
         }
     "#;
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("bool parameter should compile");
-    let expected =
-        script_builder().add_op(OpTrue).unwrap().add_op(OpVerify).unwrap().add_op(OpDrop).unwrap().add_op(OpTrue).unwrap().drain();
+    let expected = script_builder()
+        .add_op(OpDup)
+        .unwrap()
+        .add_op(OpSize)
+        .unwrap()
+        .add_i64(2)
+        .unwrap()
+        .add_op(OpLessThan)
+        .unwrap()
+        .add_op(OpVerify)
+        .unwrap()
+        .add_op(OpDrop)
+        .unwrap()
+        .add_op(OpTrue)
+        .unwrap()
+        .add_op(OpVerify)
+        .unwrap()
+        .add_op(OpDrop)
+        .unwrap()
+        .add_op(OpTrue)
+        .unwrap()
+        .drain();
     assert_eq!(compiled.bytecode, expected);
 
-    let oversized_bool = script_builder().add_data_with_push_opcode(&[1; 9]).unwrap().drain();
-    assert!(run_bytecode_with_sigscript(compiled.bytecode, oversized_bool).is_ok());
+    let sigscript = |size: usize| script_builder().add_data_with_push_opcode(&vec![1; size]).unwrap().drain();
+    assert!(run_bytecode_with_sigscript(compiled.bytecode.clone(), sigscript(0)).is_ok());
+    assert!(run_bytecode_with_sigscript(compiled.bytecode.clone(), sigscript(1)).is_ok());
+    assert!(run_bytecode_with_sigscript(compiled.bytecode.clone(), sigscript(2)).is_err());
+    assert!(run_bytecode_with_sigscript(compiled.bytecode, sigscript(9)).is_err());
 }
 
 #[test]
@@ -13262,7 +13463,7 @@ fn runs_split_on_non_byte_array() {
         contract SplitNonByteArray() {
             entry main() {
                 int[] values = int[]{10, 20, 30, 40};
-                (int[1] left, int[] right) = values.split(1);
+                (int[] left, int[] right) = values.split(1);
                 require(left.length == 1);
                 require(left[0] == 10);
                 require(right == int[]{20, 30, 40});
@@ -13295,13 +13496,13 @@ fn runtime_split_index_produces_dynamic_array_parts() {
 }
 
 #[test]
-fn constant_split_index_produces_fixed_left_and_dynamic_right_for_dynamic_source() {
+fn constant_split_index_produces_dynamic_parts_for_dynamic_source() {
     let source = r#"
         contract SplitConstantIndex() {
             int constant N = 2;
 
             entry main(int[] values) {
-                (int[N] left, int[] right) = values.split(N);
+                (int[] left, int[] right) = values.split(N);
                 require(left.length == 2);
                 require(left[0] == 10);
                 require(left[1] == 20);
@@ -13312,22 +13513,23 @@ fn constant_split_index_produces_fixed_left_and_dynamic_right_for_dynamic_source
         }
     "#;
 
-    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("constant split index should fix the left size");
+    let compiled =
+        compile_contract(source, &[], CompileOptions::default()).expect("constant split index should preserve dynamic parts");
     let sigscript = compiled.build_sig_script("main", vec![vec![10i64, 20, 30, 40].into()]).expect("sigscript builds");
     let result = run_bytecode_with_sigscript(compiled.bytecode, sigscript);
     assert!(result.is_ok(), "constant-index split of a dynamic source should execute successfully: {result:?}");
 }
 
 #[test]
-fn constant_split_index_produces_fixed_parts_for_fixed_source() {
+fn constant_split_index_produces_dynamic_parts_for_fixed_source() {
     let source = r#"
         contract SplitFixedSource() {
             int constant N = 1;
 
             entry main() {
                 int[4] values = int[4]{10, 20, 30, 40};
-                int[N] left = values.split(N).0;
-                int[3] right = values.split(N).1;
+                int[] left = values.split(N).0;
+                int[] right = values.split(N).1;
                 require(left.length == 1);
                 require(left[0] == 10);
                 require(right.length == 3);
@@ -13338,9 +13540,41 @@ fn constant_split_index_produces_fixed_parts_for_fixed_source() {
         }
     "#;
 
-    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("fixed source split should infer both sizes");
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("fixed source split should return dynamic parts");
     let result = run_bytecode_with_selector(compiled.bytecode, None);
     assert!(result.is_ok(), "constant-index split of a fixed source should execute successfully: {result:?}");
+}
+
+#[test]
+fn rejects_constant_split_indices_outside_sequence_bounds() {
+    let cases = [
+        ("dynamic array negative index", "contract C() { entry main(int[] value) { int[] part = value.split(-1).0; } }"),
+        ("fixed array index beyond end", "contract C() { entry main(int[4] value) { int[] part = value.split(5).1; } }"),
+        ("pubkey index beyond end", "contract C() { entry main(pubkey value) { byte[] part = value.split(33).0; } }"),
+        ("sig index beyond end", "contract C() { entry main(sig value) { byte[] part = value.split(66).1; } }"),
+        ("datasig index beyond end", "contract C() { entry main(datasig value) { byte[] part = value.split(65).0; } }"),
+    ];
+
+    for (case, source) in cases {
+        let error = compile_contract(source, &[], CompileOptions::default()).expect_err(case);
+        assert!(error.to_string().contains("out of bounds"), "unexpected error for {case}: {error}");
+    }
+}
+
+#[test]
+fn allows_constant_split_indices_at_sequence_end() {
+    let source = r#"
+        contract SplitBoundary() {
+            entry main(int[4] values, pubkey publicKey, sig signature, datasig dataSignature) {
+                int[] arrayTail = values.split(4).1;
+                byte[] pubkeyTail = publicKey.split(32).1;
+                byte[] sigTail = signature.split(65).1;
+                byte[] datasigTail = dataSignature.split(64).1;
+            }
+        }
+    "#;
+
+    compile_contract(source, &[], CompileOptions::default()).expect("splitting at a sequence's end should compile");
 }
 
 #[test]
@@ -13436,12 +13670,12 @@ fn runs_split_and_slice_on_struct_array() {
                     S {number: 20, tag: byte[_](0x0304)},
                     S {number: 30, tag: byte[_](0x0506)}
                 };
-                S[1] left = values.split(1).0;
+                S[] left = values.split(1).0;
                 S[] right = values.split(1).1;
                 S[] part = values.slice(1, 3);
 
                 require(left.length == 1);
-                require(left == S[_]{S {number: 10, tag: byte[_](0x0102)}});
+                require(left == S[]{S {number: 10, tag: byte[_](0x0102)}});
                 require(right == S[]{
                     S {number: 20, tag: byte[_](0x0304)},
                     S {number: 30, tag: byte[_](0x0506)}
@@ -13521,14 +13755,49 @@ fn runs_struct_array_equality_and_inequality_comparisons() {
 }
 
 #[test]
+fn struct_array_comparisons_accept_structured_expressions_on_either_side() {
+    let source = r#"
+        contract StructArrayComparisonSymmetry() {
+            struct S { int value; }
+
+            function identity(S[] values): S[] {
+                return(values);
+            }
+
+            entry main() {
+                S[] one = S[]{S {value: 7}};
+                S[] two = S[]{S {value: 7}, S {value: 8}};
+
+                require(S[]{S {value: 7}} == one);
+                require(S[]{S {value: 8}} != one);
+                require(S[]{S {value: 7}, S {value: 8}} == one.append(S {value: 8}));
+                require(S[]{S {value: 7}} == two.slice(0, 1));
+                require(S[]{S {value: 7}} == two.split(1).0);
+                require(S[]{S {value: 7}} == identity(one));
+
+                require(one == S[]{S {value: 7}});
+                require(one.append(S {value: 8}) == S[]{S {value: 7}, S {value: 8}});
+                require(two.slice(0, 1) == S[]{S {value: 7}});
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default())
+        .expect("struct-array comparisons should be symmetric for supported structured expressions");
+    let selector = selector_for(&compiled, "main");
+    let result = run_bytecode_with_selector(compiled.bytecode, selector);
+    assert!(result.is_ok(), "symmetric struct-array comparisons should execute successfully: {}", result.unwrap_err());
+}
+
+#[test]
 fn allows_sequence_operations_on_string_and_fixed_byte_types() {
     let source = r#"
         contract ByteSequenceOperations() {
             entry main(string text, pubkey publicKey, sig signature, datasig dataSignature) {
                 (string textLeft, string textRight) = text.split(1);
-                (byte[1] pubkeyLeft, byte[31] pubkeyRight) = publicKey.split(1);
-                (byte[1] sigLeft, byte[64] sigRight) = signature.split(1);
-                (byte[1] datasigLeft, byte[63] datasigRight) = dataSignature.split(1);
+                (byte[] pubkeyLeft, byte[] pubkeyRight) = publicKey.split(1);
+                (byte[] sigLeft, byte[] sigRight) = signature.split(1);
+                (byte[] datasigLeft, byte[] datasigRight) = dataSignature.split(1);
                 string textSlice = text.slice(0, 1);
                 byte[] pubkeySlice = publicKey.slice(0, 1);
                 byte[] sigSlice = signature.slice(0, 1);
@@ -13557,49 +13826,47 @@ fn runtime_split_index_produces_dynamic_parts_for_fixed_byte_types() {
 }
 
 #[test]
-fn infers_fixed_array_sizes_from_fixed_byte_split_parts() {
+fn fixed_byte_split_parts_are_dynamic_arrays() {
     let source = r#"
         contract InferredFixedByteSequenceSplit() {
             entry main(pubkey publicKey) {
-                byte[_] left = publicKey.split(4).0;
-                byte[_] right = publicKey.split(4).1;
+                byte[] left = publicKey.split(4).0;
+                byte[] right = publicKey.split(4).1;
                 require(left.length == 4);
                 require(right.length == 28);
             }
         }
     "#;
 
-    compile_contract(source, &[], CompileOptions::default())
-        .expect("inferred array declarations should use fixed-byte split result sizes");
+    compile_contract(source, &[], CompileOptions::default()).expect("fixed-byte split results should be dynamic byte arrays");
 }
 
 #[test]
-fn infers_fixed_array_size_for_tuple_split_binding() {
+fn inferred_tuple_split_binding_is_dynamic() {
     let source = r#"
         contract InferredTupleSplitBinding() {
             entry main(byte[] values) {
-                (byte[_] left, byte[] right) = values.split(4);
+                (byte[] left, byte[] right) = values.split(4);
                 require(left.length == 4);
             }
         }
     "#;
 
-    compile_contract(source, &[], CompileOptions::default())
-        .expect("an inferred tuple binding should use the corresponding split result size");
+    compile_contract(source, &[], CompileOptions::default()).expect("tuple split bindings should use dynamic arrays");
 }
 
 #[test]
-fn rejects_fixed_byte_split_bindings_that_do_not_match_inferred_sizes() {
+fn rejects_fixed_bindings_for_dynamic_split_parts() {
     let source = r#"
         contract FixedByteSequenceSplitMismatch() {
             entry main(pubkey publicKey) {
-                (byte[1] left, byte[30] right) = publicKey.split(1);
+                (byte[1] left, byte[31] right) = publicKey.split(1);
             }
         }
     "#;
 
     let err = compile_contract(source, &[], CompileOptions::default())
-        .expect_err("constant fixed-byte split parts must have their inferred sizes");
+        .expect_err("split parts are dynamic even when their runtime sizes are known");
     assert!(err.to_string().contains("type mismatch"), "unexpected error: {err}");
 }
 

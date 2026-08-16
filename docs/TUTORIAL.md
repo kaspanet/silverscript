@@ -759,14 +759,13 @@ byte[] combined = a + b;  // 0x12345678
 
 **Split:**
 
-`split(int)` divides a byte array at a specific index and returns a two-value
-tuple. A constant split index gives the left part a fixed size; the right part
-is fixed too when the source size is known. Use `.0` for the left part and `.1`
-for the right part:
+`split(int)` divides an array at a specific index and returns a two-value tuple.
+Both parts are dynamic arrays with the same element type as the source. Use `.0`
+for the left part and `.1` for the right part:
 
 ```javascript
 byte[] data = byte[](0x1234567890abcdef);
-byte[4] left = data.split(4).0;  // 0x12345678
+byte[] left = data.split(4).0;   // 0x12345678
 byte[] right = data.split(4).1;  // 0x90abcdef
 ```
 
@@ -774,7 +773,7 @@ You can also destructure both parts at once:
 
 ```javascript
 byte[] data = byte[](0x1234567890abcdef);
-(byte[4] left, byte[] right) = data.split(4);
+(byte[] left, byte[] right) = data.split(4);
 ```
 
 **Slice:**
@@ -827,6 +826,30 @@ and `int(bytes)` requires a fixed `byte[N]` source where `N <= 8`;
 use `signed(byteValue)` or `unsigned(byteValue)` to select the intended numeric
 interpretation. Scalar `byte` expressions cannot be used directly with
 arithmetic operators.
+
+### Casts are unchecked type assertions
+
+Representation-preserving casts assume that the runtime value already has the
+representation required by the target type. They do not emit a runtime length or
+format check. The compiler rejects incompatibilities it can prove at compile
+time, but a cast from a dynamically sized value to a fixed-size or opaque byte
+type trusts the programmer's assertion.
+
+For example, check a dynamic value before treating it as `byte[32]`:
+
+```javascript
+entry checkedCast(byte[] data) {
+    require(data.length == 32);
+    byte[32] hash = byte[32](data);
+}
+```
+
+Without the explicit `require`, `byte[32](data)` does not prove that `data`
+contains 32 bytes. Code using casts to `byte[N]`, `pubkey`, `sig`, or `datasig`
+is responsible for validating any runtime size or format properties on which it
+relies. After a cast, compile-time properties such as a fixed array's `.length`
+come from the asserted target type and are not evidence that the runtime value
+was checked.
 
 Use `value as byte` to encode a runtime `int` as one byte. It fails at runtime when the value does
 not fit the VM's one-byte signed-magnitude script-number encoding (for example,
@@ -1249,7 +1272,7 @@ function getPair(): (int, int) {
 }
 
 entry example(byte[32] data) {
-    (byte[16] left, byte[16] right) = data.split(16);
+    (byte[] left, byte[] right) = data.split(16);
     (int x, int y) = getPair();
 }
 ```
@@ -1284,19 +1307,18 @@ entry example() {
 
 **Split:**
 
-Divide `byte[]` into two parts at a given index. A constant index gives the
-left part a fixed size, while the right part remains dynamic unless the source
-also has a fixed size. The result is accessed like other tuple returns:
+Divide an array into two dynamic parts at a given index. Both parts retain the
+source array's element type. The result is accessed like other tuple returns:
 
 ```javascript
 byte[] data = byte[](0x1122334455667788);
 
 // Split at byte 4
-byte[4] left = data.split(4).0;  // 0x11223344
+byte[] left = data.split(4).0;   // 0x11223344
 byte[] right = data.split(4).1;  // 0x55667788
 
 // Destructure both parts with types
-(byte[4] a, byte[] b) = data.split(4);
+(byte[] a, byte[] b) = data.split(4);
 ```
 
 **Slice:**

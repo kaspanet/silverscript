@@ -7,10 +7,9 @@ contract HodlVault(
     int priceTarget
 ) {
     entry spend(sig ownerSig, datasig oracleSig, byte[] oracleMessage) {
-        byte[_] blockHeightBin = oracleMessage.split(4).0;
-        byte[_] priceBin = byte[4](oracleMessage.split(4).1);
-        int blockHeight = int(blockHeightBin);
-        int price = int(priceBin);
+        (byte[] blockHeightBin, byte[] priceBin) = oracleMessage.split(4);
+        int blockHeight = int(byte[4](blockHeightBin));
+        int price = int(byte[4](priceBin));
 
         require(blockHeight >= minBlock);
         require(tx.time >= blockHeight);
