@@ -49,7 +49,7 @@ pub(super) fn check_expr<'i>(
             let int_type = scalar_type(TypeBase::Int);
             check_expr(start, Some(&int_type), ctx)?;
             check_expr(end, Some(&int_type), ctx)?;
-            sequence_part_type(&source_type, "slice")?
+            slice_part_type(&source_type, start, end, ctx.constants)?
         }
         ExprKind::Append { source, args, .. } => {
             let source_type = check_expr(source, None, ctx)?;
@@ -562,20 +562,57 @@ fn sequence_part_type(type_ref: &TypeRef, operation: &str) -> Result<TypeRef, Co
     Err(CompilerError::Unsupported(format!("{operation} source must be an array, string, or fixed-byte type")))
 }
 
+fn known_sequence_length<'i>(type_ref: &TypeRef, constants: &HashMap<String, Expr<'i>>) -> Option<usize> {
+    array_type_size(type_ref, constants).or_else(|| type_ref.base.fixed_byte_sequence_len())
+}
+
+fn validate_constant_sequence_index<'i>(
+    operation: &str,
+    index_name: &str,
+    index: &Expr<'i>,
+    source_type: &TypeRef,
+    constants: &HashMap<String, Expr<'i>>,
+) -> Result<Option<i64>, CompilerError> {
+    let Ok(index) = eval_const_int(index, constants) else { return Ok(None) };
+    if index < 0 {
+        return Err(CompilerError::Unsupported(format!("{operation} {index_name} {index} is out of bounds")));
+    }
+    if let Some(source_size) = known_sequence_length(source_type, constants)
+        && usize::try_from(index).is_ok_and(|index| index > source_size)
+    {
+        return Err(CompilerError::Unsupported(format!(
+            "{operation} {index_name} {index} is out of bounds for sequence of length {source_size}"
+        )));
+    }
+    Ok(Some(index))
+}
+
+fn slice_part_type<'i>(
+    source_type: &TypeRef,
+    start: &Expr<'i>,
+    end: &Expr<'i>,
+    constants: &HashMap<String, Expr<'i>>,
+) -> Result<TypeRef, CompilerError> {
+    let result_type = sequence_part_type(source_type, "slice")?;
+    let start = validate_constant_sequence_index("slice", "start", start, source_type, constants)?;
+    let end = validate_constant_sequence_index("slice", "end", end, source_type, constants)?;
+    if let (Some(start), Some(end)) = (start, end)
+        && start > end
+    {
+        return Err(CompilerError::Unsupported(format!("slice start {start} is greater than end {end}")));
+    }
+    Ok(result_type)
+}
+
 pub(super) fn split_part_type<'i>(
     source_type: &TypeRef,
     index: &Expr<'i>,
     _part: SplitPart,
     constants: &HashMap<String, Expr<'i>>,
 ) -> Result<TypeRef, CompilerError> {
-    if let Ok(index) = eval_const_int(index, constants)
-        && let Some(source_size) = array_type_size(source_type, constants).or_else(|| source_type.base.fixed_byte_sequence_len())
-        && (index < 0 || usize::try_from(index).is_ok_and(|index| index > source_size))
-    {
-        return Err(CompilerError::Unsupported(format!("split index {index} is out of bounds for array of length {source_size}")));
-    }
-
-    sequence_part_type(source_type, "split")
+    let result_type = sequence_part_type(source_type, "split")?;
+    validate_constant_sequence_index("split", "index", index, source_type, constants)?;
+    Ok(result_type)
 }
 
 fn check_constructor<'i>(name: &str, args: &[Expr<'i>], ctx: &TypeCheckContext<'_, 'i>) -> Result<TypeRef, CompilerError> {

@@ -5367,6 +5367,65 @@ fn runs_slice_reconstruction_and_compare_runtime_example() {
 }
 
 #[test]
+fn rejects_invalid_constant_slice_bounds() {
+    let cases = [
+        (
+            "dynamic array negative start",
+            "contract C() { entry main(int[] value) { int[] part = value.slice(-1, 0); } }",
+            "out of bounds",
+        ),
+        (
+            "dynamic array negative end",
+            "contract C() { entry main(int[] value) { int[] part = value.slice(0, -1); } }",
+            "out of bounds",
+        ),
+        ("slice start after end", "contract C() { entry main(int[] value) { int[] part = value.slice(2, 1); } }", "greater than end"),
+        (
+            "fixed array end beyond length",
+            "contract C() { entry main(int[4] value) { int[] part = value.slice(0, 5); } }",
+            "out of bounds",
+        ),
+        (
+            "fixed array start beyond length",
+            "contract C() { entry main(int[4] value, int end) { int[] part = value.slice(5, end); } }",
+            "out of bounds",
+        ),
+        (
+            "pubkey end beyond length",
+            "contract C() { entry main(pubkey value) { byte[] part = value.slice(0, 33); } }",
+            "out of bounds",
+        ),
+        ("sig end beyond length", "contract C() { entry main(sig value) { byte[] part = value.slice(0, 66); } }", "out of bounds"),
+        (
+            "datasig end beyond length",
+            "contract C() { entry main(datasig value) { byte[] part = value.slice(0, 65); } }",
+            "out of bounds",
+        ),
+    ];
+
+    for (case, source, expected) in cases {
+        let error = compile_contract(source, &[], CompileOptions::default()).expect_err(case);
+        assert!(error.to_string().contains(expected), "unexpected error for {case}: {error}");
+    }
+}
+
+#[test]
+fn allows_constant_slice_bounds_at_sequence_end() {
+    let source = r#"
+        contract SliceBoundary() {
+            entry main(int[4] values, pubkey publicKey, sig signature, datasig dataSignature) {
+                int[] arrayTail = values.slice(4, 4);
+                byte[] pubkeyTail = publicKey.slice(32, 32);
+                byte[] sigTail = signature.slice(65, 65);
+                byte[] datasigTail = dataSignature.slice(64, 64);
+            }
+        }
+    "#;
+
+    compile_contract(source, &[], CompileOptions::default()).expect("empty slices at a sequence's end should compile");
+}
+
+#[test]
 fn allows_concat_of_int_arrays_with_plus() {
     let source = r#"
         contract Arrays() {
@@ -13484,6 +13543,38 @@ fn constant_split_index_produces_dynamic_parts_for_fixed_source() {
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("fixed source split should return dynamic parts");
     let result = run_bytecode_with_selector(compiled.bytecode, None);
     assert!(result.is_ok(), "constant-index split of a fixed source should execute successfully: {result:?}");
+}
+
+#[test]
+fn rejects_constant_split_indices_outside_sequence_bounds() {
+    let cases = [
+        ("dynamic array negative index", "contract C() { entry main(int[] value) { int[] part = value.split(-1).0; } }"),
+        ("fixed array index beyond end", "contract C() { entry main(int[4] value) { int[] part = value.split(5).1; } }"),
+        ("pubkey index beyond end", "contract C() { entry main(pubkey value) { byte[] part = value.split(33).0; } }"),
+        ("sig index beyond end", "contract C() { entry main(sig value) { byte[] part = value.split(66).1; } }"),
+        ("datasig index beyond end", "contract C() { entry main(datasig value) { byte[] part = value.split(65).0; } }"),
+    ];
+
+    for (case, source) in cases {
+        let error = compile_contract(source, &[], CompileOptions::default()).expect_err(case);
+        assert!(error.to_string().contains("out of bounds"), "unexpected error for {case}: {error}");
+    }
+}
+
+#[test]
+fn allows_constant_split_indices_at_sequence_end() {
+    let source = r#"
+        contract SplitBoundary() {
+            entry main(int[4] values, pubkey publicKey, sig signature, datasig dataSignature) {
+                int[] arrayTail = values.split(4).1;
+                byte[] pubkeyTail = publicKey.split(32).1;
+                byte[] sigTail = signature.split(65).1;
+                byte[] datasigTail = dataSignature.split(64).1;
+            }
+        }
+    "#;
+
+    compile_contract(source, &[], CompileOptions::default()).expect("splitting at a sequence's end should compile");
 }
 
 #[test]
