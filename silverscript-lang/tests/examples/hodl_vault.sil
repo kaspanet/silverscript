@@ -8,8 +8,8 @@ contract HodlVault(
 ) {
     entry spend(sig ownerSig, datasig oracleSig, byte[] oracleMessage) {
         (byte[] blockHeightBin, byte[] priceBin) = oracleMessage.split(4);
-        int blockHeight = int(blockHeightBin);
-        int price = int(priceBin);
+        int blockHeight = int(byte[4](blockHeightBin));
+        int price = int(byte[4](priceBin));
 
         require(blockHeight >= minBlock);
         require(tx.time >= blockHeight);
