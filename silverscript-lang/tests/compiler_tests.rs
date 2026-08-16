@@ -4052,7 +4052,7 @@ fn compiles_function_call_assignment_and_verifies() {
 }
 
 #[test]
-fn compiles_function_call_statement_elides_unused_return_expression() {
+fn function_call_statement_evaluates_and_drops_unused_return_expression() {
     let source = r#"
         contract Calls() {
             function f(int a) : (int) {
@@ -4068,7 +4068,8 @@ fn compiles_function_call_statement_elides_unused_return_expression() {
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
     let selector = selector_for(&compiled, "main");
-    assert!(!compiled.bytecode.contains(&OpAdd), "unused inline return expressions should be elided entirely");
+    let asm = script_to_str(&compiled.bytecode).expect("script should stringify");
+    assert!(asm.contains("OpAdd OpDrop"), "unused inline return expression should be evaluated and dropped: {asm}");
     assert!(run_bytecode_with_selector(compiled.bytecode, selector).is_ok());
 }
 
@@ -9584,6 +9585,51 @@ fn value_returning_builtin_statement_discards_result() {
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("value-returning builtin statement should compile");
     let asm = script_to_str(&compiled.bytecode).expect("builtin statement script should stringify");
     assert!(asm.ends_with("OpSHA256 OpDrop OpTrue"), "builtin statement result should be discarded: {asm}");
+}
+
+#[test]
+fn discarded_helper_return_expressions_are_evaluated_and_dropped() {
+    let source = r#"
+        contract DiscardedHelperReturn() {
+            function hashes() : (byte[32], byte[32]) {
+                return(sha256(byte[]("first")), sha256(byte[]("second")));
+            }
+
+            entry main() {
+                hashes();
+                require(true);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("discarded helper returns should compile");
+    let asm = script_to_str(&compiled.bytecode).expect("script should stringify");
+    assert_eq!(asm.matches("OpSHA256").count(), 2, "both return expressions must be evaluated: {asm}");
+    assert_eq!(asm.matches("OpDrop").count(), 2, "both discarded return values must be dropped: {asm}");
+}
+
+#[test]
+fn discarded_nested_helper_return_expression_is_evaluated() {
+    let source = r#"
+        contract NestedDiscardedHelperReturn() {
+            function fail() : int {
+                return(1 / 0);
+            }
+
+            function outer() : int {
+                return(fail());
+            }
+
+            entry main() {
+                outer();
+                require(true);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("nested discarded return should compile");
+    let result = run_bytecode_with_selector(compiled.bytecode, None);
+    assert!(result.is_err(), "the nested discarded division by zero must execute");
 }
 
 fn assert_r0_type_error(source: &str, expected: &str) {
