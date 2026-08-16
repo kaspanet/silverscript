@@ -827,6 +827,30 @@ use `signed(byteValue)` or `unsigned(byteValue)` to select the intended numeric
 interpretation. Scalar `byte` expressions cannot be used directly with
 arithmetic operators.
 
+### Casts are unchecked type assertions
+
+Representation-preserving casts assume that the runtime value already has the
+representation required by the target type. They do not emit a runtime length or
+format check. The compiler rejects incompatibilities it can prove at compile
+time, but a cast from a dynamically sized value to a fixed-size or opaque byte
+type trusts the programmer's assertion.
+
+For example, check a dynamic value before treating it as `byte[32]`:
+
+```javascript
+entry checkedCast(byte[] data) {
+    require(data.length == 32);
+    byte[32] hash = byte[32](data);
+}
+```
+
+Without the explicit `require`, `byte[32](data)` does not prove that `data`
+contains 32 bytes. Code using casts to `byte[N]`, `pubkey`, `sig`, or `datasig`
+is responsible for validating any runtime size or format properties on which it
+relies. After a cast, compile-time properties such as a fixed array's `.length`
+come from the asserted target type and are not evidence that the runtime value
+was checked.
+
 Use `value as byte` to encode a runtime `int` as one byte. It fails at runtime when the value does
 not fit the VM's one-byte signed-magnitude script-number encoding (for example,
 `128`).
