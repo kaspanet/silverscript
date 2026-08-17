@@ -4787,19 +4787,23 @@ fn array_literal_codegen_uses_declared_element_type() {
 
 #[test]
 fn bool_array_literal_normalizes_runtime_elements_to_one_byte() {
-    let source = r#"
-        contract Arrays() {
-            entry main(bool x) {
-                bool[] values = bool[]{x, false};
-                require(byte[2](values) == byte[_](0x0100));
-            }
-        }
-    "#;
+    for (witness, expected) in [(2, "0100"), (0x80, "0000")] {
+        let source = format!(
+            r#"
+                contract Arrays() {{
+                    entry main(bool x) {{
+                        bool[] values = bool[]{{x, false}};
+                        require(byte[2](values) == byte[_](0x{expected}));
+                    }}
+                }}
+            "#
+        );
 
-    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
-    let sigscript = compiled.build_sig_script("main", vec![Expr::bool(true)]).expect("sigscript builds");
-    let result = run_bytecode_with_sigscript(compiled.bytecode, sigscript);
-    assert!(result.is_ok(), "bool[] literal elements should each occupy one byte: {result:?}");
+        let compiled = compile_contract(&source, &[], CompileOptions::default()).expect("compile succeeds");
+        let sigscript = script_builder().add_data_with_push_opcode(&[witness]).unwrap().drain();
+        let result = run_bytecode_with_sigscript(compiled.bytecode, sigscript);
+        assert!(result.is_ok(), "bool[] literal witness {witness:#04x} should normalize to 0x{expected}: {result:?}");
+    }
 }
 
 #[test]
@@ -4836,9 +4840,9 @@ fn bool_array_append_normalizes_runtime_elements_to_one_byte() {
     "#;
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
-    let sigscript = compiled.build_sig_script("main", vec![Expr::bool(true)]).expect("sigscript builds");
+    let sigscript = script_builder().add_data_with_push_opcode(&[2]).unwrap().drain();
     let result = run_bytecode_with_sigscript(compiled.bytecode, sigscript);
-    assert!(result.is_ok(), "bool[] append elements should each occupy one byte: {result:?}");
+    assert!(result.is_ok(), "truthy bool[] append elements should be normalized to 0x01: {result:?}");
 }
 
 #[test]
@@ -10109,15 +10113,11 @@ fn canonicalizes_bool_comparison_operands_for_equality_and_inequality() {
             .unwrap()
             .add_op(OpOver)
             .unwrap()
-            .add_op(OpNot)
-            .unwrap()
-            .add_op(OpNot)
+            .add_op(Op0NotEqual)
             .unwrap()
             .add_op(OpSwap)
             .unwrap()
-            .add_op(OpNot)
-            .unwrap()
-            .add_op(OpNot)
+            .add_op(Op0NotEqual)
             .unwrap()
             .add_op(compare_op)
             .unwrap()
@@ -10406,15 +10406,11 @@ fn compiles_opcode_builtins() {
                 .unwrap()
                 .add_i64(0)
                 .unwrap()
-                .add_op(OpNot)
-                .unwrap()
-                .add_op(OpNot)
+                .add_op(Op0NotEqual)
                 .unwrap()
                 .add_op(OpSwap)
                 .unwrap()
-                .add_op(OpNot)
-                .unwrap()
-                .add_op(OpNot)
+                .add_op(Op0NotEqual)
                 .unwrap()
                 .add_op(OpNumEqual)
                 .unwrap()
