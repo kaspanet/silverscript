@@ -439,13 +439,19 @@ fn check_binary<'i>(
         })?
     };
     match op {
-        BinaryOp::Eq | BinaryOp::Ne => Ok(scalar_type(TypeBase::Bool)),
-        BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge => {
-            let left_is_numeric = left_type.is_int() || left_type.is_byte();
-            let right_is_numeric = right_type.is_int() || right_type.is_byte();
-            if !left_is_numeric || !right_is_numeric {
+        BinaryOp::Eq | BinaryOp::Ne => {
+            if left_type.is_array() && !supports_array_comparison(&left_type) {
                 return Err(CompilerError::Unsupported(format!(
-                    "ordered comparison requires numeric operands, got {} and {}",
+                    "array comparison is only supported for byte arrays and arrays of fixed-byte sequence types, got {}",
+                    left_type.type_name()
+                )));
+            }
+            Ok(scalar_type(TypeBase::Bool))
+        }
+        BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge => {
+            if !left_type.is_int() || !right_type.is_int() {
+                return Err(CompilerError::Unsupported(format!(
+                    "ordered comparison requires int operands, got {} and {}",
                     left_type.type_name(),
                     right_type.type_name()
                 )));
@@ -490,6 +496,10 @@ fn check_binary<'i>(
             Ok(int_type)
         }
     }
+}
+
+fn supports_array_comparison(type_ref: &TypeRef) -> bool {
+    matches!(type_ref.base, TypeBase::Byte) || type_ref.base.fixed_byte_sequence_len().is_some()
 }
 
 fn check_struct_literal<'i>(

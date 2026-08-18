@@ -1639,7 +1639,7 @@ fn disallow_comparing_dynamic_and_fixed_int_arrays_without_cast() {
 }
 
 #[test]
-fn allows_comparing_dynamic_and_fixed_int_arrays_with_cast() {
+fn rejects_comparing_int_arrays_even_with_matching_casts() {
     let source = r#"
         contract Arrays() {
             entry main() {
@@ -1650,7 +1650,8 @@ fn allows_comparing_dynamic_and_fixed_int_arrays_with_cast() {
         }
     "#;
 
-    assert!(compile_contract(source, &[], CompileOptions::default()).is_ok(), "int[] == int[](int[1]) should compile");
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("int[] comparison should be rejected");
+    assert!(err.to_string().contains("array comparison is only supported"), "unexpected error: {err}");
 }
 
 #[test]
@@ -1763,9 +1764,20 @@ fn infers_fixed_sizes_for_multiple_array_element_types() {
                     pubkey(0x0303030303030303030303030303030303030303030303030303030303030303),
                     pubkey(0x0404040404040404040404040404040404040404040404040404040404040404)
                 };
-                require(ints == ints_expected);
-                require(flags == flags_expected);
-                require(keys == keys_expected);
+                require(ints.length == 4);
+                require(ints_expected.length == 4);
+                require(ints[0] == ints_expected[0]);
+                require(ints[1] == ints_expected[1]);
+                require(ints[2] == ints_expected[2]);
+                require(ints[3] == ints_expected[3]);
+                require(flags.length == 2);
+                require(flags_expected.length == 2);
+                require(flags[0] == flags_expected[0]);
+                require(flags[1] == flags_expected[1]);
+                require(keys.length == 2);
+                require(keys_expected.length == 2);
+                require(keys[0] == keys_expected[0]);
+                require(keys[1] == keys_expected[1]);
             }
         }
     "#;
@@ -4787,19 +4799,23 @@ fn array_literal_codegen_uses_declared_element_type() {
 
 #[test]
 fn bool_array_literal_normalizes_runtime_elements_to_one_byte() {
-    let source = r#"
-        contract Arrays() {
-            entry main(bool x) {
-                bool[] values = bool[]{x, false};
-                require(byte[2](values) == byte[_](0x0100));
-            }
-        }
-    "#;
+    for (witness, expected) in [(2, "0100"), (0x80, "0000")] {
+        let source = format!(
+            r#"
+                contract Arrays() {{
+                    entry main(bool x) {{
+                        bool[] values = bool[]{{x, false}};
+                        require(byte[2](values) == byte[_](0x{expected}));
+                    }}
+                }}
+            "#
+        );
 
-    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
-    let sigscript = compiled.build_sig_script("main", vec![Expr::bool(true)]).expect("sigscript builds");
-    let result = run_bytecode_with_sigscript(compiled.bytecode, sigscript);
-    assert!(result.is_ok(), "bool[] literal elements should each occupy one byte: {result:?}");
+        let compiled = compile_contract(&source, &[], CompileOptions::default()).expect("compile succeeds");
+        let sigscript = script_builder().add_data_with_push_opcode(&[witness]).unwrap().drain();
+        let result = run_bytecode_with_sigscript(compiled.bytecode, sigscript);
+        assert!(result.is_ok(), "bool[] literal witness {witness:#04x} should normalize to 0x{expected}: {result:?}");
+    }
 }
 
 #[test]
@@ -4812,7 +4828,7 @@ fn runtime_and_compile_time_false_have_identical_bool_array_encoding() {
                 bool[] constArr = bool[]{true, false};
                 require(runtimeArr.length == 2);
                 require(constArr.length == 2);
-                require(runtimeArr == constArr);
+                require(byte[2](runtimeArr) == byte[2](constArr));
             }
         }
     "#;
@@ -4836,9 +4852,9 @@ fn bool_array_append_normalizes_runtime_elements_to_one_byte() {
     "#;
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
-    let sigscript = compiled.build_sig_script("main", vec![Expr::bool(true)]).expect("sigscript builds");
+    let sigscript = script_builder().add_data_with_push_opcode(&[2]).unwrap().drain();
     let result = run_bytecode_with_sigscript(compiled.bytecode, sigscript);
-    assert!(result.is_ok(), "bool[] append elements should each occupy one byte: {result:?}");
+    assert!(result.is_ok(), "truthy bool[] append elements should be normalized to 0x01: {result:?}");
 }
 
 #[test]
@@ -5700,6 +5716,53 @@ fn fails_array_equality_comparison() {
 }
 
 #[test]
+fn allows_comparison_of_byte_and_fixed_byte_sequence_arrays() {
+    let source = r#"
+        contract Arrays() {
+            entry main(
+                byte[] bytes,
+                byte[2][] byteRows,
+                pubkey[] publicKeys,
+                pubkey[2][] publicKeyRows,
+                sig[] signatures,
+                datasig[] dataSignatures
+            ) {
+                require(bytes == bytes);
+                require(byteRows == byteRows);
+                require(publicKeys == publicKeys);
+                require(publicKeyRows == publicKeyRows);
+                require(signatures == signatures);
+                require(dataSignatures == dataSignatures);
+            }
+        }
+    "#;
+
+    compile_contract(source, &[], CompileOptions::default())
+        .expect("byte arrays and arrays of fixed-byte sequence types should support comparison");
+}
+
+#[test]
+fn rejects_comparison_of_non_byte_arrays() {
+    let cases = [
+        ("int array equality", "contract C() { entry main(int[] values) { require(values == values); } }", "int[]"),
+        ("bool array inequality", "contract C() { entry main(bool[] values) { require(values != values); } }", "bool[]"),
+        ("multidimensional int array", "contract C() { entry main(int[2][] values) { require(values == values); } }", "int[2][]"),
+        (
+            "struct array equality",
+            "contract C() { struct S { int value; } entry main(S[] values) { require(values == values); } }",
+            "S[]",
+        ),
+    ];
+
+    for (name, source, type_name) in cases {
+        let err = compile_contract(source, &[], CompileOptions::default()).expect_err(name);
+        let message = err.to_string();
+        assert!(message.contains("array comparison is only supported"), "{name}: unexpected error: {err}");
+        assert!(message.contains(type_name), "{name}: missing rejected type in error: {err}");
+    }
+}
+
+#[test]
 fn allows_array_inequality_with_different_sizes() {
     let source = r#"
         contract Arrays() {
@@ -5987,6 +6050,51 @@ fn runs_runtime_bounded_for_loop_example() {
     let sigscript = compiled.build_sig_script("main", vec![4.into(), 2.into(), 0.into(), (-1).into()]).expect("sigscript builds");
     let result = run_bytecode_with_sigscript(compiled.bytecode, sigscript);
     assert!(result.is_ok(), "runtime-bounded for-loop should skip iterations when start >= end: {}", result.unwrap_err());
+}
+
+#[test]
+fn runtime_for_loop_snapshots_compound_bound_expressions_before_the_body() {
+    let source = r#"
+        contract RuntimeLoopBounds() {
+            entry main(int start, int end) {
+                int count = 0;
+                int total = 0;
+
+                for (i, start + 1, end + 1, 3) {
+                    count = count + 1;
+                    total = total + i;
+                    start = 100;
+                    end = -100;
+                }
+
+                require(count == 3);
+                require(total == 6);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let sigscript = compiled.build_sig_script("main", vec![0.into(), 3.into()]).expect("sigscript builds");
+    let result = run_bytecode_with_sigscript(compiled.bytecode, sigscript);
+    assert!(result.is_ok(), "mutating variables used by bound expressions must not change the snapshotted range: {result:?}");
+}
+
+#[test]
+fn runtime_for_loop_evaluates_each_bound_expression_once() {
+    let source = r#"
+        contract RuntimeLoopBoundEvaluation() {
+            entry main() {
+                for (i, tx.inputs.length - 1, tx.outputs.length + 1, 3) {
+                    require(i >= 0);
+                }
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let opcodes = script_to_str(&compiled.bytecode).expect("compiled bytecode should stringify");
+    assert_eq!(opcodes.matches("OpTxInputCount").count(), 1, "the start expression must be evaluated once: {opcodes}");
+    assert_eq!(opcodes.matches("OpTxOutputCount").count(), 1, "the end expression must be evaluated once: {opcodes}");
 }
 
 #[test]
@@ -10109,15 +10217,11 @@ fn canonicalizes_bool_comparison_operands_for_equality_and_inequality() {
             .unwrap()
             .add_op(OpOver)
             .unwrap()
-            .add_op(OpNot)
-            .unwrap()
-            .add_op(OpNot)
+            .add_op(Op0NotEqual)
             .unwrap()
             .add_op(OpSwap)
             .unwrap()
-            .add_op(OpNot)
-            .unwrap()
-            .add_op(OpNot)
+            .add_op(Op0NotEqual)
             .unwrap()
             .add_op(compare_op)
             .unwrap()
@@ -10406,15 +10510,11 @@ fn compiles_opcode_builtins() {
                 .unwrap()
                 .add_i64(0)
                 .unwrap()
-                .add_op(OpNot)
-                .unwrap()
-                .add_op(OpNot)
+                .add_op(Op0NotEqual)
                 .unwrap()
                 .add_op(OpSwap)
                 .unwrap()
-                .add_op(OpNot)
-                .unwrap()
-                .add_op(OpNot)
+                .add_op(Op0NotEqual)
                 .unwrap()
                 .add_op(OpNumEqual)
                 .unwrap()
@@ -11814,6 +11914,67 @@ fn accepts_array_type_with_constant_size() {
 }
 
 #[test]
+fn rejects_contract_constant_initializer_type_mismatches() {
+    let cases = [
+        ("int constant VALUE = true;", "scalar mismatch"),
+        ("bool constant VALUE = 1;", "reverse scalar mismatch"),
+        ("int[2] constant VALUE = bool[2]{true, false};", "array element mismatch"),
+        ("int[2] constant VALUE = int[1]{1};", "fixed array size mismatch"),
+        ("string[] constant VALUE = string[]{\"value\"};", "unknown-width array element"),
+        (
+            "struct Pair { int amount; bool enabled; } Pair constant VALUE = Pair {amount: true, enabled: false};",
+            "struct field mismatch",
+        ),
+    ];
+
+    for (declaration, description) in cases {
+        let source = format!(
+            r#"
+                contract ConstantType() {{
+                    {declaration}
+                    entry main() {{ require(true); }}
+                }}
+            "#
+        );
+        compile_contract(&source, &[], CompileOptions::default()).expect_err(&format!("{description} should fail compilation"));
+    }
+}
+
+#[test]
+fn accepts_well_typed_constant_dependencies_on_constructor_params_and_constants() {
+    let source = r#"
+        contract ConstantDependencies(int base) {
+            int constant NEXT = base + 1;
+            int constant RESULT = NEXT + 1;
+
+            entry main() {
+                require(RESULT == base + 2);
+            }
+        }
+    "#;
+
+    let compiled =
+        compile_contract(source, &[3.into()], CompileOptions::default()).expect("well-typed constant dependencies should compile");
+    let result = run_bytecode_with_sigscript(compiled.bytecode, Vec::new());
+    assert!(result.is_ok(), "constant dependencies should retain their runtime value: {result:?}");
+}
+
+#[test]
+fn mismatched_contract_constant_reports_the_initializer_span() {
+    let source = r#"
+        contract ConstantType() {
+            int constant VALUE = true;
+            entry main() { require(true); }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("the mismatched constant must fail compilation");
+    assert!(err.to_string().contains("constant 'VALUE' expects int"), "unexpected error: {err}");
+    let span = err.span().expect("the constant initializer should be identified");
+    assert_eq!(&source[span.start..span.end], "true");
+}
+
+#[test]
 fn rejects_cyclic_constant_array_dimensions() {
     let cases = ["int constant A = A;".to_string(), "int constant A = B; int constant B = A;".to_string()];
 
@@ -12441,6 +12602,94 @@ fn rejects_duplicate_variable_definition_in_same_scope() {
 }
 
 #[test]
+fn rejects_constant_declarations_inside_functions() {
+    let cases = [
+        "int constant value = 1;",
+        "{ bool constant value = true; }",
+        "if (true) { byte[1] constant value = byte[1](0x01); }",
+        "for (i, 0, 1, 1) { int constant value = i; }",
+    ];
+
+    for declaration in cases {
+        let source = format!(
+            r#"
+                contract LocalConstant() {{
+                    entry main() {{
+                        {declaration}
+                        require(true);
+                    }}
+                }}
+            "#
+        );
+        let err = compile_contract(&source, &[], CompileOptions::default())
+            .expect_err("constant declarations inside functions must fail compilation");
+        assert!(err.to_string().contains("constant declarations are only allowed at contract level"), "unexpected error: {err}");
+        let span = err.span().expect("the local constant modifier should be identified");
+        assert_eq!(&source[span.start..span.end], "constant");
+    }
+}
+
+#[test]
+fn rejects_assignments_to_contract_constants() {
+    let cases = [
+        ("int constant VALUE = 1;", "VALUE = 2;", "VALUE"),
+        ("int[2] constant VALUES = int[2]{1, 2};", "VALUES = int[2]{3, 4};", "VALUES"),
+        (
+            "struct Pair { int left; int right; } Pair constant PAIR = Pair {left: 1, right: 2};",
+            "PAIR = Pair {left: 3, right: 4};",
+            "PAIR",
+        ),
+    ];
+
+    for (declaration, assignment, name) in cases {
+        let source = format!(
+            r#"
+                contract ConstantAssignment() {{
+                    {declaration}
+                    entry main() {{
+                        {{ {assignment} }}
+                        require(true);
+                    }}
+                }}
+            "#
+        );
+        let err = compile_contract(&source, &[], CompileOptions::default())
+            .expect_err("assigning to a contract constant must fail compilation");
+        assert!(err.to_string().contains(&format!("cannot assign to contract constant '{name}'")), "unexpected error: {err}");
+        let span = err.span().expect("the constant assignment target should be identified");
+        assert_eq!(&source[span.start..span.end], name);
+    }
+}
+
+#[test]
+fn rejects_assignments_to_state_fields() {
+    let cases = [
+        ("int value = 1;", "value = 2;", "value"),
+        ("int[2] values = int[2]{1, 2};", "values = int[2]{3, 4};", "values"),
+        ("struct Pair { int left; int right; } Pair pair = Pair {left: 1, right: 2};", "pair = Pair {left: 3, right: 4};", "pair"),
+    ];
+
+    for (declaration, assignment, name) in cases {
+        let source = format!(
+            r#"
+                contract StateFieldAssignment() {{
+                    {declaration}
+                    entry main() {{
+                        {{ {assignment} }}
+                        require(true);
+                    }}
+                }}
+            "#
+        );
+        let err =
+            compile_contract(&source, &[], CompileOptions::default()).expect_err("assigning to a state field must fail compilation");
+        assert!(err.to_string().contains(&format!("cannot assign to state field '{name}'")), "unexpected error: {err}");
+        let span = err.span().expect("the state field assignment target should be identified");
+        assert_eq!(&source[span.start..span.end], name);
+    }
+}
+
+#[test]
 fn rejects_shadowing_in_nested_function_scopes() {
     let cases = [
         r#"
@@ -12796,7 +13045,7 @@ fn ternary_lowering_initializes_generated_results_for_supported_types() {
                     : Pair {number: 1, flag: false};
                 require(int_result >= 0);
                 require(bool_result || !bool_result);
-                require(byte_result >= 0);
+                require(byte_result == value || byte_result == 1);
                 require(string_result.length > 0);
                 require(fixed_array_result.length == 2);
                 require(dynamic_array_result.length == 2);
@@ -13466,7 +13715,10 @@ fn runs_split_on_non_byte_array() {
                 (int[] left, int[] right) = values.split(1);
                 require(left.length == 1);
                 require(left[0] == 10);
-                require(right == int[]{20, 30, 40});
+                require(right.length == 3);
+                require(right[0] == 20);
+                require(right[1] == 30);
+                require(right[2] == 40);
             }
         }
     "#;
@@ -13483,8 +13735,12 @@ fn runtime_split_index_produces_dynamic_array_parts() {
         contract SplitDynamicIndex() {
             entry main(int[] values, int n) {
                 (int[] left, int[] right) = values.split(n);
-                require(left == int[]{10, 20});
-                require(right == int[]{30, 40});
+                require(left.length == 2);
+                require(left[0] == 10);
+                require(left[1] == 20);
+                require(right.length == 2);
+                require(right[0] == 30);
+                require(right[1] == 40);
             }
         }
     "#;
@@ -13644,7 +13900,9 @@ fn runs_slice_on_non_byte_array() {
             entry main() {
                 int[] values = int[]{10, 20, 30, 40};
                 int[] part = values.slice(1, 3);
-                require(part == int[]{20, 30});
+                require(part.length == 2);
+                require(part[0] == 20);
+                require(part[1] == 30);
             }
         }
     "#;
@@ -13675,15 +13933,18 @@ fn runs_split_and_slice_on_struct_array() {
                 S[] part = values.slice(1, 3);
 
                 require(left.length == 1);
-                require(left == S[]{S {number: 10, tag: byte[_](0x0102)}});
-                require(right == S[]{
-                    S {number: 20, tag: byte[_](0x0304)},
-                    S {number: 30, tag: byte[_](0x0506)}
-                });
-                require(part == S[]{
-                    S {number: 20, tag: byte[_](0x0304)},
-                    S {number: 30, tag: byte[_](0x0506)}
-                });
+                require(left[0].number == 10);
+                require(left[0].tag == byte[_](0x0102));
+                require(right.length == 2);
+                require(right[0].number == 20);
+                require(right[0].tag == byte[_](0x0304));
+                require(right[1].number == 30);
+                require(right[1].tag == byte[_](0x0506));
+                require(part.length == 2);
+                require(part[0].number == 20);
+                require(part[0].tag == byte[_](0x0304));
+                require(part[1].number == 30);
+                require(part[1].tag == byte[_](0x0506));
             }
         }
     "#;
@@ -13695,98 +13956,39 @@ fn runs_split_and_slice_on_struct_array() {
 }
 
 #[test]
-fn runs_struct_array_equality_and_inequality_comparisons() {
-    let source = r#"
-        contract StructArrayComparisons() {
-            struct Details {
-                bool active;
-                int score;
-            }
-
-            struct Item {
-                int id;
-                byte[2] tag;
-                Details details;
-            }
-
-            entry main() {
-                Item[] values = Item[]{
-                    Item {id: 1, tag: byte[_](0x0102), details: Details {active: true, score: 10}},
-                    Item {id: 2, tag: byte[_](0x0304), details: Details {active: false, score: 20}}
-                };
-                Item[] same = Item[]{
-                    Item {id: 1, tag: byte[_](0x0102), details: Details {active: true, score: 10}},
-                    Item {id: 2, tag: byte[_](0x0304), details: Details {active: false, score: 20}}
-                };
-                Item[] differentId = Item[]{
-                    Item {id: 1, tag: byte[_](0x0102), details: Details {active: true, score: 10}},
-                    Item {id: 3, tag: byte[_](0x0304), details: Details {active: false, score: 20}}
-                };
-                Item[] differentTag = Item[]{
-                    Item {id: 1, tag: byte[_](0x0102), details: Details {active: true, score: 10}},
-                    Item {id: 2, tag: byte[_](0x0506), details: Details {active: false, score: 20}}
-                };
-                Item[] differentNestedField = Item[]{
-                    Item {id: 1, tag: byte[_](0x0102), details: Details {active: true, score: 10}},
-                    Item {id: 2, tag: byte[_](0x0304), details: Details {active: true, score: 20}}
-                };
-                Item[] shorter = Item[]{
-                    Item {id: 1, tag: byte[_](0x0102), details: Details {active: true, score: 10}}
-                };
-                Item[] empty;
-
-                require(values == same);
-                require(!(values != same));
-                require(values != differentId);
-                require(values != differentTag);
-                require(values != differentNestedField);
-                require(values != shorter);
-                require(!(values == differentId));
-                require(empty == Item[]{});
-                require(empty != values);
-            }
-        }
-    "#;
-
-    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("struct array comparisons should compile");
-    let selector = selector_for(&compiled, "main");
-    let result = run_bytecode_with_selector(compiled.bytecode, selector);
-    assert!(result.is_ok(), "struct array comparisons should execute successfully: {}", result.unwrap_err());
+fn rejects_struct_array_equality_and_inequality_comparisons() {
+    for operator in ["==", "!="] {
+        let source = format!(
+            r#"
+                contract StructArrayComparisons() {{
+                    struct Item {{ int id; byte[2] tag; }}
+                    entry main(Item[] values) {{
+                        require(values {operator} values);
+                    }}
+                }}
+            "#
+        );
+        let err = compile_contract(&source, &[], CompileOptions::default()).expect_err("struct-array comparison should fail");
+        assert!(err.to_string().contains("array comparison is only supported"), "unexpected error: {err}");
+    }
 }
 
 #[test]
-fn struct_array_comparisons_accept_structured_expressions_on_either_side() {
-    let source = r#"
-        contract StructArrayComparisonSymmetry() {
-            struct S { int value; }
-
-            function identity(S[] values): S[] {
-                return(values);
-            }
-
-            entry main() {
-                S[] one = S[]{S {value: 7}};
-                S[] two = S[]{S {value: 7}, S {value: 8}};
-
-                require(S[]{S {value: 7}} == one);
-                require(S[]{S {value: 8}} != one);
-                require(S[]{S {value: 7}, S {value: 8}} == one.append(S {value: 8}));
-                require(S[]{S {value: 7}} == two.slice(0, 1));
-                require(S[]{S {value: 7}} == two.split(1).0);
-                require(S[]{S {value: 7}} == identity(one));
-
-                require(one == S[]{S {value: 7}});
-                require(one.append(S {value: 8}) == S[]{S {value: 7}, S {value: 8}});
-                require(two.slice(0, 1) == S[]{S {value: 7}});
-            }
-        }
-    "#;
-
-    let compiled = compile_contract(source, &[], CompileOptions::default())
-        .expect("struct-array comparisons should be symmetric for supported structured expressions");
-    let selector = selector_for(&compiled, "main");
-    let result = run_bytecode_with_selector(compiled.bytecode, selector);
-    assert!(result.is_ok(), "symmetric struct-array comparisons should execute successfully: {}", result.unwrap_err());
+fn rejects_struct_array_comparisons_with_structured_expressions_on_either_side() {
+    for comparison in ["S[]{S {value: 7}} == values", "values == S[]{S {value: 7}}"] {
+        let source = format!(
+            r#"
+                contract StructArrayComparisonSymmetry() {{
+                    struct S {{ int value; }}
+                    entry main(S[] values) {{
+                        require({comparison});
+                    }}
+                }}
+            "#
+        );
+        let err = compile_contract(&source, &[], CompileOptions::default()).expect_err("struct-array comparison should fail");
+        assert!(err.to_string().contains("array comparison is only supported"), "unexpected error: {err}");
+    }
 }
 
 #[test]
@@ -14956,21 +15158,23 @@ fn allows_fixed_array_cast_with_compatible_encoded_size() {
 }
 
 #[test]
-fn rejects_ordered_comparisons_for_non_numeric_operands() {
-    for operator in ["<", "<=", ">", ">="] {
-        let source = format!(
-            r#"
-                contract OrderedComparison() {{
-                    entry main() {{
-                        require("aaaaaaaaa" {operator} "bbbbbbbbb");
+fn rejects_ordered_comparisons_for_non_int_operands() {
+    for (type_name, left, right) in [("string", "\"aaaaaaaaa\"", "\"bbbbbbbbb\""), ("byte", "byte(0xff)", "byte(0x01)")] {
+        for operator in ["<", "<=", ">", ">="] {
+            let source = format!(
+                r#"
+                    contract OrderedComparison() {{
+                        entry main() {{
+                            require({left} {operator} {right});
+                        }}
                     }}
-                }}
-            "#
-        );
-        let err = compile_contract(&source, &[], CompileOptions::default())
-            .err()
-            .unwrap_or_else(|| panic!("string operands for {operator} should be rejected"));
-        assert!(err.to_string().contains("ordered comparison requires numeric operands"), "unexpected error for {operator}: {err}");
+                "#
+            );
+            let err = compile_contract(&source, &[], CompileOptions::default())
+                .err()
+                .unwrap_or_else(|| panic!("{type_name} operands for {operator} should be rejected"));
+            assert!(err.to_string().contains("ordered comparison requires int operands"), "unexpected error for {operator}: {err}");
+        }
     }
 }
 

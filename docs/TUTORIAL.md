@@ -408,6 +408,11 @@ bool gt = (a > b);    // true (greater than)
 bool ge = (a >= b);   // true (greater than or equal)
 ```
 
+The ordered operators `<`, `<=`, `>`, and `>=` accept only `int` operands.
+Convert a `byte` explicitly with `unsigned(byteValue)` or `signed(byteValue)`
+before ordering it. Equality and inequality remain available for other
+compatible types.
+
 ### Logical Operators
 
 ```javascript
@@ -733,6 +738,19 @@ byte[2][_] z = x + y;
 require(z.length == 3);
 require(z[2] == byte[2](0x0506));
 ```
+
+**Array comparison:**
+
+`==` and `!=` are supported only when the array's base type has an unambiguous
+byte representation:
+
+- byte arrays at any supported dimension, such as `byte[]`, `byte[32][]`, and
+  `byte[2][3]`;
+- arrays of fixed-byte sequence types (`pubkey`, `sig`, and `datasig`), including
+  multidimensional forms such as `pubkey[2][]`.
+
+Arrays of `int`, `bool`, structs, and other element types cannot be compared as
+whole values. Compare their lengths and elements explicitly instead.
 
 ### String Operations
 
@@ -1252,14 +1270,7 @@ contract MyContract() {
 }
 ```
 
-Constants can also be declared inside functions:
-
-```javascript
-entry example() {
-    string constant greeting = "Hello";
-    require(sha256(byte[](greeting)) != byte[32](0x0000000000000000000000000000000000000000000000000000000000000000));
-}
-```
+Constants can only be declared at contract level.
 
 ### Tuple Unpacking
 

@@ -182,6 +182,7 @@ fn compile_array_literal_element<'i>(
         }
         (TypeBase::Bool, []) => {
             compile_expr_with_context(ctx, value, Some(element_type))?;
+            ctx.emit_op(Op0NotEqual, 0)?;
             ctx.push_int(1)?;
             ctx.emit_op(OpNum2Bin, -1)?;
             Ok(())
@@ -380,11 +381,9 @@ fn compile_binary_expr<'i>(
 
     if bool_eq {
         // Normalize operands to 0 or 1, so that we can use OpNumEqual and OpNumNotEqual for both equality and inequality.
-        ctx.emit_op(OpNot, 0)?;
-        ctx.emit_op(OpNot, 0)?;
+        ctx.emit_op(Op0NotEqual, 0)?;
         ctx.emit_op(OpSwap, 0)?;
-        ctx.emit_op(OpNot, 0)?;
-        ctx.emit_op(OpNot, 0)?;
+        ctx.emit_op(Op0NotEqual, 0)?;
     }
 
     match op {
@@ -658,12 +657,11 @@ fn compile_length_expr<'i>(ctx: &mut CompileExprContext<'_, '_, 'i>, expr: &Expr
     Ok(())
 }
 
-fn is_byte_encoded_type(type_ref: &TypeRef) -> bool {
-    type_ref.is_array() || type_ref.is_byte() || type_ref.is_string() || type_ref.base.fixed_byte_sequence_len().is_some()
-}
-
 fn uses_bytewise_equality(type_ref: &TypeRef) -> bool {
-    is_byte_encoded_type(type_ref)
+    type_ref.is_byte()
+        || type_ref.is_string()
+        || type_ref.base.fixed_byte_sequence_len().is_some()
+        || (type_ref.is_array() && (matches!(type_ref.base, TypeBase::Byte) || type_ref.base.fixed_byte_sequence_len().is_some()))
 }
 
 fn uses_concat_for_add(type_ref: &TypeRef) -> bool {
