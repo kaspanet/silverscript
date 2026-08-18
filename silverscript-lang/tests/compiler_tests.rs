@@ -1639,7 +1639,7 @@ fn disallow_comparing_dynamic_and_fixed_int_arrays_without_cast() {
 }
 
 #[test]
-fn allows_comparing_dynamic_and_fixed_int_arrays_with_cast() {
+fn rejects_comparing_int_arrays_even_with_matching_casts() {
     let source = r#"
         contract Arrays() {
             entry main() {
@@ -1650,7 +1650,8 @@ fn allows_comparing_dynamic_and_fixed_int_arrays_with_cast() {
         }
     "#;
 
-    assert!(compile_contract(source, &[], CompileOptions::default()).is_ok(), "int[] == int[](int[1]) should compile");
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("int[] comparison should be rejected");
+    assert!(err.to_string().contains("array comparison is only supported"), "unexpected error: {err}");
 }
 
 #[test]
@@ -1763,9 +1764,20 @@ fn infers_fixed_sizes_for_multiple_array_element_types() {
                     pubkey(0x0303030303030303030303030303030303030303030303030303030303030303),
                     pubkey(0x0404040404040404040404040404040404040404040404040404040404040404)
                 };
-                require(ints == ints_expected);
-                require(flags == flags_expected);
-                require(keys == keys_expected);
+                require(ints.length == 4);
+                require(ints_expected.length == 4);
+                require(ints[0] == ints_expected[0]);
+                require(ints[1] == ints_expected[1]);
+                require(ints[2] == ints_expected[2]);
+                require(ints[3] == ints_expected[3]);
+                require(flags.length == 2);
+                require(flags_expected.length == 2);
+                require(flags[0] == flags_expected[0]);
+                require(flags[1] == flags_expected[1]);
+                require(keys.length == 2);
+                require(keys_expected.length == 2);
+                require(keys[0] == keys_expected[0]);
+                require(keys[1] == keys_expected[1]);
             }
         }
     "#;
@@ -4816,7 +4828,7 @@ fn runtime_and_compile_time_false_have_identical_bool_array_encoding() {
                 bool[] constArr = bool[]{true, false};
                 require(runtimeArr.length == 2);
                 require(constArr.length == 2);
-                require(runtimeArr == constArr);
+                require(byte[2](runtimeArr) == byte[2](constArr));
             }
         }
     "#;
@@ -5701,6 +5713,53 @@ fn fails_array_equality_comparison() {
     let sigscript = script_builder().drain();
     let result = run_bytecode_with_sigscript(compiled.bytecode, sigscript);
     assert!(result.is_err());
+}
+
+#[test]
+fn allows_comparison_of_byte_and_fixed_byte_sequence_arrays() {
+    let source = r#"
+        contract Arrays() {
+            entry main(
+                byte[] bytes,
+                byte[2][] byteRows,
+                pubkey[] publicKeys,
+                pubkey[2][] publicKeyRows,
+                sig[] signatures,
+                datasig[] dataSignatures
+            ) {
+                require(bytes == bytes);
+                require(byteRows == byteRows);
+                require(publicKeys == publicKeys);
+                require(publicKeyRows == publicKeyRows);
+                require(signatures == signatures);
+                require(dataSignatures == dataSignatures);
+            }
+        }
+    "#;
+
+    compile_contract(source, &[], CompileOptions::default())
+        .expect("byte arrays and arrays of fixed-byte sequence types should support comparison");
+}
+
+#[test]
+fn rejects_comparison_of_non_byte_arrays() {
+    let cases = [
+        ("int array equality", "contract C() { entry main(int[] values) { require(values == values); } }", "int[]"),
+        ("bool array inequality", "contract C() { entry main(bool[] values) { require(values != values); } }", "bool[]"),
+        ("multidimensional int array", "contract C() { entry main(int[2][] values) { require(values == values); } }", "int[2][]"),
+        (
+            "struct array equality",
+            "contract C() { struct S { int value; } entry main(S[] values) { require(values == values); } }",
+            "S[]",
+        ),
+    ];
+
+    for (name, source, type_name) in cases {
+        let err = compile_contract(source, &[], CompileOptions::default()).expect_err(name);
+        let message = err.to_string();
+        assert!(message.contains("array comparison is only supported"), "{name}: unexpected error: {err}");
+        assert!(message.contains(type_name), "{name}: missing rejected type in error: {err}");
+    }
 }
 
 #[test]
@@ -13462,7 +13521,10 @@ fn runs_split_on_non_byte_array() {
                 (int[] left, int[] right) = values.split(1);
                 require(left.length == 1);
                 require(left[0] == 10);
-                require(right == int[]{20, 30, 40});
+                require(right.length == 3);
+                require(right[0] == 20);
+                require(right[1] == 30);
+                require(right[2] == 40);
             }
         }
     "#;
@@ -13479,8 +13541,12 @@ fn runtime_split_index_produces_dynamic_array_parts() {
         contract SplitDynamicIndex() {
             entry main(int[] values, int n) {
                 (int[] left, int[] right) = values.split(n);
-                require(left == int[]{10, 20});
-                require(right == int[]{30, 40});
+                require(left.length == 2);
+                require(left[0] == 10);
+                require(left[1] == 20);
+                require(right.length == 2);
+                require(right[0] == 30);
+                require(right[1] == 40);
             }
         }
     "#;
@@ -13640,7 +13706,9 @@ fn runs_slice_on_non_byte_array() {
             entry main() {
                 int[] values = int[]{10, 20, 30, 40};
                 int[] part = values.slice(1, 3);
-                require(part == int[]{20, 30});
+                require(part.length == 2);
+                require(part[0] == 20);
+                require(part[1] == 30);
             }
         }
     "#;
@@ -13671,15 +13739,18 @@ fn runs_split_and_slice_on_struct_array() {
                 S[] part = values.slice(1, 3);
 
                 require(left.length == 1);
-                require(left == S[]{S {number: 10, tag: byte[_](0x0102)}});
-                require(right == S[]{
-                    S {number: 20, tag: byte[_](0x0304)},
-                    S {number: 30, tag: byte[_](0x0506)}
-                });
-                require(part == S[]{
-                    S {number: 20, tag: byte[_](0x0304)},
-                    S {number: 30, tag: byte[_](0x0506)}
-                });
+                require(left[0].number == 10);
+                require(left[0].tag == byte[_](0x0102));
+                require(right.length == 2);
+                require(right[0].number == 20);
+                require(right[0].tag == byte[_](0x0304));
+                require(right[1].number == 30);
+                require(right[1].tag == byte[_](0x0506));
+                require(part.length == 2);
+                require(part[0].number == 20);
+                require(part[0].tag == byte[_](0x0304));
+                require(part[1].number == 30);
+                require(part[1].tag == byte[_](0x0506));
             }
         }
     "#;
@@ -13691,98 +13762,39 @@ fn runs_split_and_slice_on_struct_array() {
 }
 
 #[test]
-fn runs_struct_array_equality_and_inequality_comparisons() {
-    let source = r#"
-        contract StructArrayComparisons() {
-            struct Details {
-                bool active;
-                int score;
-            }
-
-            struct Item {
-                int id;
-                byte[2] tag;
-                Details details;
-            }
-
-            entry main() {
-                Item[] values = Item[]{
-                    Item {id: 1, tag: byte[_](0x0102), details: Details {active: true, score: 10}},
-                    Item {id: 2, tag: byte[_](0x0304), details: Details {active: false, score: 20}}
-                };
-                Item[] same = Item[]{
-                    Item {id: 1, tag: byte[_](0x0102), details: Details {active: true, score: 10}},
-                    Item {id: 2, tag: byte[_](0x0304), details: Details {active: false, score: 20}}
-                };
-                Item[] differentId = Item[]{
-                    Item {id: 1, tag: byte[_](0x0102), details: Details {active: true, score: 10}},
-                    Item {id: 3, tag: byte[_](0x0304), details: Details {active: false, score: 20}}
-                };
-                Item[] differentTag = Item[]{
-                    Item {id: 1, tag: byte[_](0x0102), details: Details {active: true, score: 10}},
-                    Item {id: 2, tag: byte[_](0x0506), details: Details {active: false, score: 20}}
-                };
-                Item[] differentNestedField = Item[]{
-                    Item {id: 1, tag: byte[_](0x0102), details: Details {active: true, score: 10}},
-                    Item {id: 2, tag: byte[_](0x0304), details: Details {active: true, score: 20}}
-                };
-                Item[] shorter = Item[]{
-                    Item {id: 1, tag: byte[_](0x0102), details: Details {active: true, score: 10}}
-                };
-                Item[] empty;
-
-                require(values == same);
-                require(!(values != same));
-                require(values != differentId);
-                require(values != differentTag);
-                require(values != differentNestedField);
-                require(values != shorter);
-                require(!(values == differentId));
-                require(empty == Item[]{});
-                require(empty != values);
-            }
-        }
-    "#;
-
-    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("struct array comparisons should compile");
-    let selector = selector_for(&compiled, "main");
-    let result = run_bytecode_with_selector(compiled.bytecode, selector);
-    assert!(result.is_ok(), "struct array comparisons should execute successfully: {}", result.unwrap_err());
+fn rejects_struct_array_equality_and_inequality_comparisons() {
+    for operator in ["==", "!="] {
+        let source = format!(
+            r#"
+                contract StructArrayComparisons() {{
+                    struct Item {{ int id; byte[2] tag; }}
+                    entry main(Item[] values) {{
+                        require(values {operator} values);
+                    }}
+                }}
+            "#
+        );
+        let err = compile_contract(&source, &[], CompileOptions::default()).expect_err("struct-array comparison should fail");
+        assert!(err.to_string().contains("array comparison is only supported"), "unexpected error: {err}");
+    }
 }
 
 #[test]
-fn struct_array_comparisons_accept_structured_expressions_on_either_side() {
-    let source = r#"
-        contract StructArrayComparisonSymmetry() {
-            struct S { int value; }
-
-            function identity(S[] values): S[] {
-                return(values);
-            }
-
-            entry main() {
-                S[] one = S[]{S {value: 7}};
-                S[] two = S[]{S {value: 7}, S {value: 8}};
-
-                require(S[]{S {value: 7}} == one);
-                require(S[]{S {value: 8}} != one);
-                require(S[]{S {value: 7}, S {value: 8}} == one.append(S {value: 8}));
-                require(S[]{S {value: 7}} == two.slice(0, 1));
-                require(S[]{S {value: 7}} == two.split(1).0);
-                require(S[]{S {value: 7}} == identity(one));
-
-                require(one == S[]{S {value: 7}});
-                require(one.append(S {value: 8}) == S[]{S {value: 7}, S {value: 8}});
-                require(two.slice(0, 1) == S[]{S {value: 7}});
-            }
-        }
-    "#;
-
-    let compiled = compile_contract(source, &[], CompileOptions::default())
-        .expect("struct-array comparisons should be symmetric for supported structured expressions");
-    let selector = selector_for(&compiled, "main");
-    let result = run_bytecode_with_selector(compiled.bytecode, selector);
-    assert!(result.is_ok(), "symmetric struct-array comparisons should execute successfully: {}", result.unwrap_err());
+fn rejects_struct_array_comparisons_with_structured_expressions_on_either_side() {
+    for comparison in ["S[]{S {value: 7}} == values", "values == S[]{S {value: 7}}"] {
+        let source = format!(
+            r#"
+                contract StructArrayComparisonSymmetry() {{
+                    struct S {{ int value; }}
+                    entry main(S[] values) {{
+                        require({comparison});
+                    }}
+                }}
+            "#
+        );
+        let err = compile_contract(&source, &[], CompileOptions::default()).expect_err("struct-array comparison should fail");
+        assert!(err.to_string().contains("array comparison is only supported"), "unexpected error: {err}");
+    }
 }
 
 #[test]

@@ -657,12 +657,11 @@ fn compile_length_expr<'i>(ctx: &mut CompileExprContext<'_, '_, 'i>, expr: &Expr
     Ok(())
 }
 
-fn is_byte_encoded_type(type_ref: &TypeRef) -> bool {
-    type_ref.is_array() || type_ref.is_byte() || type_ref.is_string() || type_ref.base.fixed_byte_sequence_len().is_some()
-}
-
 fn uses_bytewise_equality(type_ref: &TypeRef) -> bool {
-    is_byte_encoded_type(type_ref)
+    type_ref.is_byte()
+        || type_ref.is_string()
+        || type_ref.base.fixed_byte_sequence_len().is_some()
+        || (type_ref.is_array() && (matches!(type_ref.base, TypeBase::Byte) || type_ref.base.fixed_byte_sequence_len().is_some()))
 }
 
 fn uses_concat_for_add(type_ref: &TypeRef) -> bool {

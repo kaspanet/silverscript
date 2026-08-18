@@ -734,6 +734,19 @@ require(z.length == 3);
 require(z[2] == byte[2](0x0506));
 ```
 
+**Array comparison:**
+
+`==` and `!=` are supported only when the array's base type has an unambiguous
+byte representation:
+
+- byte arrays at any supported dimension, such as `byte[]`, `byte[32][]`, and
+  `byte[2][3]`;
+- arrays of fixed-byte sequence types (`pubkey`, `sig`, and `datasig`), including
+  multidimensional forms such as `pubkey[2][]`.
+
+Arrays of `int`, `bool`, structs, and other element types cannot be compared as
+whole values. Compare their lengths and elements explicitly instead.
+
 ### String Operations
 
 **Concatenation:**
