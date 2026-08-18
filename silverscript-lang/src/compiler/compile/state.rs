@@ -489,7 +489,11 @@ where
         let prefix = data_prefix(field_size)?;
         emitter.push_data(&prefix)?;
         compile_expr(new_value, Some(&type_ref), &env, &mut emitter)?;
-        if type_ref.is_int() || type_ref.is_bool() {
+        if type_ref.is_bool() {
+            emitter.emit_op(Op0NotEqual, 0)?;
+            emitter.push_int(field_size as i64)?;
+            emitter.emit_op(OpNum2Bin, -1)?;
+        } else if type_ref.is_int() {
             emitter.push_int(field_size as i64)?;
             emitter.emit_op(OpNum2Bin, -1)?;
         }

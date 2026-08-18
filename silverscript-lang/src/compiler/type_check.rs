@@ -238,6 +238,11 @@ pub(super) fn check_call<'i>(
     }
     if let Some(cast_type) = as_cast_type(name) {
         check_arity("as", args, 1)?;
+        if cast_type.is_int() {
+            check_expr(&args[0], Some(&scalar_type(TypeBase::Bool)), ctx)
+                .map_err(|_| CompilerError::Unsupported("'as int' source must be bool".to_string()))?;
+            return Ok(Some(cast_type));
+        }
         if !matches!(cast_type.base, TypeBase::Byte)
             || !(cast_type.is_byte() || matches!(cast_type.array_dims.as_slice(), [ArrayDim::Fixed(_) | ArrayDim::Constant(_)]))
         {
@@ -280,6 +285,9 @@ pub(super) fn check_call<'i>(
     {
         check_arity(name, args, 1)?;
         let source_type = check_expr(&args[0], None, ctx)?;
+        if cast_type.is_int() && source_type.is_bool() {
+            return Err(CompilerError::Unsupported("cannot cast bool to int with int(); use 'value as int' instead".to_string()));
+        }
         if cast_type.is_int() && source_type.is_byte() {
             return Err(CompilerError::Unsupported("cannot cast byte to int; use signed() or unsigned() instead".to_string()));
         }
@@ -334,7 +342,6 @@ fn validate_scalar_cast_compatibility<'i>(
 ) -> Result<(), CompilerError> {
     let compatible = if cast_type.is_int() {
         source_type.is_int()
-            || source_type.is_bool()
             || matches!(source_type.base, TypeBase::Byte)
                 && source_type.array_dims.len() == 1
                 && array_type_size(source_type, constants).is_some_and(|size| size <= 8)

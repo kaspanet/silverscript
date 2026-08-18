@@ -967,13 +967,16 @@ byte[8] encodedAmount = amount as byte[8];
 The source value must be an `int`, and `N` must be known at compile time and
 between 1 and 8. The conversion expression has type `byte[N]`.
 
-**`int(bool value): int`**
+**`boolValue as int`**
 
 Convert boolean to integer (true = 1, false = 0):
 
 ```javascript
-int x = int(false);  // 0
+int x = false as int;  // 0
 ```
+
+The conversion normalizes every truthy boolean representation to `1` and every
+false boolean representation to `0`.
 
 **`signed(byte value): int`**
 

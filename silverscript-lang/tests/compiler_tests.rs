@@ -6800,6 +6800,35 @@ fn runs_validate_output_state() {
 }
 
 #[test]
+fn validate_output_state_normalizes_runtime_bool_fields() {
+    let source = r#"
+        contract C(bool initial) {
+            bool flag = initial;
+
+            entry main(bool next) {
+                validateOutputState(0, State {flag: next});
+            }
+        }
+    "#;
+
+    let input_compiled = compile_contract(source, &[Expr::bool(false)], CompileOptions::default()).expect("input contract compiles");
+    let raw_truthy_arg = script_builder().add_data_with_push_opcode(&[2]).unwrap().drain();
+    let signature_script =
+        pay_to_script_hash_signature_script(input_compiled.bytecode.clone(), raw_truthy_arg).expect("P2SH signature script builds");
+    let input = test_input(0, signature_script);
+
+    let output_compiled = compile_contract(source, &[Expr::bool(true)], CompileOptions::default()).expect("output contract compiles");
+    let input_spk = pay_to_script_hash_script(&input_compiled.bytecode);
+    let output =
+        TransactionOutput { value: 1000, script_public_key: pay_to_script_hash_script(&output_compiled.bytecode), covenant: None };
+    let tx = Transaction::new(1, vec![input], vec![output.clone()], 0, Default::default(), 0, vec![]);
+    let utxo_entry = UtxoEntry::new(output.value, input_spk, 0, tx.is_coinbase(), None);
+
+    let result = execute_input(tx, vec![utxo_entry], 0);
+    assert!(result.is_ok(), "truthy 0x02 must serialize as the same boolean state as canonical true: {result:?}");
+}
+
+#[test]
 fn runs_validate_output_state_with_state_variable() {
     let source = r#"
         contract C(int initX, byte[2] initY) {
@@ -12111,6 +12140,48 @@ fn rejects_integer_to_byte_array_casts() {
     "#;
     let err = compile_contract(source, &[], CompileOptions::default()).expect_err("sized byte[] cast should be rejected");
     assert!(err.to_string().contains("byte[]() expects 1 arguments"), "unexpected error: {err}");
+}
+
+#[test]
+fn bool_as_int_normalizes_vm_truthiness() {
+    let source = r#"
+        contract Test() {
+            entry main(bool value) {
+                int normalized = value as int;
+                require(normalized == 1);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("bool as int compiles");
+    let opcodes = script_to_str(&compiled.bytecode).expect("compiled bytecode stringifies");
+    assert_eq!(opcodes.matches("Op0NotEqual").count(), 1, "bool as int must normalize VM truthiness exactly once: {opcodes}");
+
+    let raw_truthy_arg = script_builder().add_data_with_push_opcode(&[2]).unwrap().drain();
+    let result = run_bytecode_with_sigscript(compiled.bytecode, raw_truthy_arg);
+    assert!(result.is_ok(), "truthy 0x02 must normalize to integer 1: {result:?}");
+}
+
+#[test]
+fn function_style_int_cast_rejects_bool_expressions() {
+    let source = r#"
+        contract Test() {
+            entry main(bool value) {
+                int converted = int(value);
+                require(converted == 1);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("int(bool) must be rejected");
+    assert!(err.to_string().contains("cannot cast bool to int with int(); use 'value as int' instead"), "unexpected error: {err}");
+}
+
+#[test]
+fn as_int_rejects_non_bool_expressions() {
+    let source = "contract Test() { entry main(int value) { int converted = value as int; require(converted == value); } }";
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("only bool expressions may use as int");
+    assert!(err.to_string().contains("'as int' source must be bool"), "unexpected error: {err}");
 }
 
 #[test]

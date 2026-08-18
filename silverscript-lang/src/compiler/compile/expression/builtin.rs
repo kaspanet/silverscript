@@ -109,6 +109,12 @@ fn compile_as_cast<'i>(ctx: &mut CompileExprContext<'_, '_, 'i>, args: &[Expr<'i
     let [source] = args else {
         return Err(CompilerError::Unsupported("'as' conversion expects one source expression".to_string()));
     };
+    if cast_type.is_int() {
+        // The only valid 'as int' conversion is from bool, which is checked by the type checker. The compiler just needs to emit the Op0NotEqual opcode to normalize the boolean value.
+        compile_call_arg_with_context(ctx, source)?;
+        ctx.emit_op(Op0NotEqual, 0)?;
+        return Ok(());
+    }
     let size = if cast_type.is_byte() {
         1
     } else {
