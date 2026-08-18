@@ -1,8 +1,9 @@
 pragma silverscript ^0.1.0;
 
 contract Test() {
+    string constant m = "hello";
+
     entry hello() {
-        string constant m = "hello";
         require(m == "hello");
     }
 }

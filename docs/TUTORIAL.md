@@ -1270,14 +1270,7 @@ contract MyContract() {
 }
 ```
 
-Constants can also be declared inside functions:
-
-```javascript
-entry example() {
-    string constant greeting = "Hello";
-    require(sha256(byte[](greeting)) != byte[32](0x0000000000000000000000000000000000000000000000000000000000000000));
-}
-```
+Constants can only be declared at contract level.
 
 ### Tuple Unpacking
 

@@ -79,7 +79,14 @@ fn validate_statement_declaration_names<'i>(
 ) -> Result<(), CompilerError> {
     for statement in statements {
         match statement {
-            Statement::VariableDefinition { name, name_span, .. } => insert_variable_name(names, name, name_span)?,
+            Statement::VariableDefinition { name, name_span, modifiers, modifier_spans, .. } => {
+                if let Some(index) = modifiers.iter().position(|modifier| modifier == "constant") {
+                    let modifier_span = modifier_spans.get(index).unwrap_or(name_span);
+                    return Err(CompilerError::Unsupported("constant declarations are only allowed at contract level".to_string())
+                        .with_span(modifier_span));
+                }
+                insert_variable_name(names, name, name_span)?;
+            }
             Statement::TupleAssignment { left_name, left_name_span, right_name, right_name_span, .. } => {
                 insert_variable_name(names, left_name, left_name_span)?;
                 insert_variable_name(names, right_name, right_name_span)?;
@@ -342,6 +349,7 @@ fn validate_function_signatures<'i>(
         }
     }
     let functions = contract.functions.iter().map(|function| (function.name.clone(), function)).collect::<HashMap<_, _>>();
+    let constant_names = contract.constants.iter().map(|constant| constant.name.clone()).collect::<HashSet<_>>();
 
     for function in &contract.functions {
         if function.entrypoint {
@@ -393,6 +401,7 @@ fn validate_function_signatures<'i>(
             constants,
             &functions,
             &contract.fields,
+            &constant_names,
         )?;
     }
 
@@ -432,8 +441,10 @@ fn validate_statement_shapes<'i>(
     constants: &HashMap<String, Expr<'i>>,
     functions: &HashMap<String, &FunctionAst<'i>>,
     contract_fields: &[ContractFieldAst<'i>],
+    constant_names: &HashSet<String>,
 ) -> Result<(), CompilerError> {
-    let mut ctx = ValidateStatementShapesContext { types, return_types, structs, constants, functions, contract_fields };
+    let mut ctx =
+        ValidateStatementShapesContext { types, return_types, structs, constants, functions, contract_fields, constant_names };
 
     for stmt in statements {
         match stmt {
@@ -457,7 +468,7 @@ fn validate_statement_shapes<'i>(
             Statement::Require { expr, .. } => validate_require_statement_shape(&mut ctx, expr)?,
             Statement::TimeOp { expr, .. } => validate_time_op_statement_shape(&mut ctx, expr)?,
             Statement::Console { args, .. } => validate_console_statement_shape(&mut ctx, args)?,
-            Statement::Assign { name, expr, .. } => validate_assign_statement_shape(&mut ctx, name, expr)?,
+            Statement::Assign { name, expr, name_span, .. } => validate_assign_statement_shape(&mut ctx, name, expr, name_span)?,
             Statement::Block { body, .. } => validate_block_statement_shape(&mut ctx, body)?,
             Statement::If { condition, then_branch, else_branch, .. } => {
                 validate_if_statement_shape(&mut ctx, condition, then_branch, else_branch.as_deref())?
@@ -478,6 +489,7 @@ struct ValidateStatementShapesContext<'a, 'i> {
     constants: &'a HashMap<String, Expr<'i>>,
     functions: &'a HashMap<String, &'a FunctionAst<'i>>,
     contract_fields: &'a [ContractFieldAst<'i>],
+    constant_names: &'a HashSet<String>,
 }
 
 impl<'a, 'i> ValidateStatementShapesContext<'a, 'i> {
@@ -747,7 +759,14 @@ fn validate_assign_statement_shape<'i>(
     ctx: &mut ValidateStatementShapesContext<'_, 'i>,
     name: &str,
     expr: &Expr<'i>,
+    name_span: &span::Span<'i>,
 ) -> Result<(), CompilerError> {
+    if ctx.constant_names.contains(name) {
+        return Err(CompilerError::Unsupported(format!("cannot assign to contract constant '{name}'")).with_span(name_span));
+    }
+    if ctx.contract_fields.iter().any(|field| field.name == name) {
+        return Err(CompilerError::Unsupported(format!("cannot assign to state field '{name}'")).with_span(name_span));
+    }
     if let Some(type_ref) = ctx.types.get(name).cloned() {
         let type_name = type_ref.type_name();
         ctx.check_expr(expr, Some(&type_ref)).map_err(|err| {
@@ -773,6 +792,7 @@ fn validate_if_statement_shape<'i>(
         ctx.constants,
         ctx.functions,
         ctx.contract_fields,
+        ctx.constant_names,
     )?;
     if let Some(else_branch) = else_branch {
         let mut else_types = ctx.types.clone();
@@ -784,6 +804,7 @@ fn validate_if_statement_shape<'i>(
             ctx.constants,
             ctx.functions,
             ctx.contract_fields,
+            ctx.constant_names,
         )?;
     }
     Ok(())
@@ -794,7 +815,16 @@ fn validate_block_statement_shape<'i>(
     body: &[Statement<'i>],
 ) -> Result<(), CompilerError> {
     let mut block_types = ctx.types.clone();
-    validate_statement_shapes(body, &mut block_types, ctx.return_types, ctx.structs, ctx.constants, ctx.functions, ctx.contract_fields)
+    validate_statement_shapes(
+        body,
+        &mut block_types,
+        ctx.return_types,
+        ctx.structs,
+        ctx.constants,
+        ctx.functions,
+        ctx.contract_fields,
+        ctx.constant_names,
+    )
 }
 
 fn validate_for_statement_shape<'i>(
@@ -811,7 +841,16 @@ fn validate_for_statement_shape<'i>(
     ctx.check_expr(max_iterations, Some(&int_type))?;
     let mut body_types = ctx.types.clone();
     body_types.insert(ident.to_string(), int_type);
-    validate_statement_shapes(body, &mut body_types, ctx.return_types, ctx.structs, ctx.constants, ctx.functions, ctx.contract_fields)
+    validate_statement_shapes(
+        body,
+        &mut body_types,
+        ctx.return_types,
+        ctx.structs,
+        ctx.constants,
+        ctx.functions,
+        ctx.contract_fields,
+        ctx.constant_names,
+    )
 }
 
 fn validate_struct_destructure_bindings<'i>(

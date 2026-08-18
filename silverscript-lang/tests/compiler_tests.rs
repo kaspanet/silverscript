@@ -11975,22 +11975,6 @@ fn mismatched_contract_constant_reports_the_initializer_span() {
 }
 
 #[test]
-fn rejects_function_local_constant_initializer_type_mismatch() {
-    let source = r#"
-        contract ConstantType() {
-            entry main() {
-                int constant value = true;
-                require(true);
-            }
-        }
-    "#;
-
-    let err =
-        compile_contract(source, &[], CompileOptions::default()).expect_err("the mismatched local constant must fail compilation");
-    assert!(err.to_string().contains("variable 'value' expects int"), "unexpected error: {err}");
-}
-
-#[test]
 fn rejects_cyclic_constant_array_dimensions() {
     let cases = ["int constant A = A;".to_string(), "int constant A = B; int constant B = A;".to_string()];
 
@@ -12615,6 +12599,94 @@ fn rejects_duplicate_variable_definition_in_same_scope() {
     assert!(err.to_string().contains("variable 'value' is already defined"), "unexpected error: {err}");
     let span = err.span().expect("the duplicate declaration should be identified");
     assert_eq!(&source[span.start..span.end], "value");
+}
+
+#[test]
+fn rejects_constant_declarations_inside_functions() {
+    let cases = [
+        "int constant value = 1;",
+        "{ bool constant value = true; }",
+        "if (true) { byte[1] constant value = byte[1](0x01); }",
+        "for (i, 0, 1, 1) { int constant value = i; }",
+    ];
+
+    for declaration in cases {
+        let source = format!(
+            r#"
+                contract LocalConstant() {{
+                    entry main() {{
+                        {declaration}
+                        require(true);
+                    }}
+                }}
+            "#
+        );
+        let err = compile_contract(&source, &[], CompileOptions::default())
+            .expect_err("constant declarations inside functions must fail compilation");
+        assert!(err.to_string().contains("constant declarations are only allowed at contract level"), "unexpected error: {err}");
+        let span = err.span().expect("the local constant modifier should be identified");
+        assert_eq!(&source[span.start..span.end], "constant");
+    }
+}
+
+#[test]
+fn rejects_assignments_to_contract_constants() {
+    let cases = [
+        ("int constant VALUE = 1;", "VALUE = 2;", "VALUE"),
+        ("int[2] constant VALUES = int[2]{1, 2};", "VALUES = int[2]{3, 4};", "VALUES"),
+        (
+            "struct Pair { int left; int right; } Pair constant PAIR = Pair {left: 1, right: 2};",
+            "PAIR = Pair {left: 3, right: 4};",
+            "PAIR",
+        ),
+    ];
+
+    for (declaration, assignment, name) in cases {
+        let source = format!(
+            r#"
+                contract ConstantAssignment() {{
+                    {declaration}
+                    entry main() {{
+                        {{ {assignment} }}
+                        require(true);
+                    }}
+                }}
+            "#
+        );
+        let err = compile_contract(&source, &[], CompileOptions::default())
+            .expect_err("assigning to a contract constant must fail compilation");
+        assert!(err.to_string().contains(&format!("cannot assign to contract constant '{name}'")), "unexpected error: {err}");
+        let span = err.span().expect("the constant assignment target should be identified");
+        assert_eq!(&source[span.start..span.end], name);
+    }
+}
+
+#[test]
+fn rejects_assignments_to_state_fields() {
+    let cases = [
+        ("int value = 1;", "value = 2;", "value"),
+        ("int[2] values = int[2]{1, 2};", "values = int[2]{3, 4};", "values"),
+        ("struct Pair { int left; int right; } Pair pair = Pair {left: 1, right: 2};", "pair = Pair {left: 3, right: 4};", "pair"),
+    ];
+
+    for (declaration, assignment, name) in cases {
+        let source = format!(
+            r#"
+                contract StateFieldAssignment() {{
+                    {declaration}
+                    entry main() {{
+                        {{ {assignment} }}
+                        require(true);
+                    }}
+                }}
+            "#
+        );
+        let err =
+            compile_contract(&source, &[], CompileOptions::default()).expect_err("assigning to a state field must fail compilation");
+        assert!(err.to_string().contains(&format!("cannot assign to state field '{name}'")), "unexpected error: {err}");
+        let span = err.span().expect("the state field assignment target should be identified");
+        assert_eq!(&source[span.start..span.end], name);
+    }
 }
 
 #[test]
