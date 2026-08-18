@@ -11914,6 +11914,83 @@ fn accepts_array_type_with_constant_size() {
 }
 
 #[test]
+fn rejects_contract_constant_initializer_type_mismatches() {
+    let cases = [
+        ("int constant VALUE = true;", "scalar mismatch"),
+        ("bool constant VALUE = 1;", "reverse scalar mismatch"),
+        ("int[2] constant VALUE = bool[2]{true, false};", "array element mismatch"),
+        ("int[2] constant VALUE = int[1]{1};", "fixed array size mismatch"),
+        ("string[] constant VALUE = string[]{\"value\"};", "unknown-width array element"),
+        (
+            "struct Pair { int amount; bool enabled; } Pair constant VALUE = Pair {amount: true, enabled: false};",
+            "struct field mismatch",
+        ),
+    ];
+
+    for (declaration, description) in cases {
+        let source = format!(
+            r#"
+                contract ConstantType() {{
+                    {declaration}
+                    entry main() {{ require(true); }}
+                }}
+            "#
+        );
+        compile_contract(&source, &[], CompileOptions::default()).expect_err(&format!("{description} should fail compilation"));
+    }
+}
+
+#[test]
+fn accepts_well_typed_constant_dependencies_on_constructor_params_and_constants() {
+    let source = r#"
+        contract ConstantDependencies(int base) {
+            int constant NEXT = base + 1;
+            int constant RESULT = NEXT + 1;
+
+            entry main() {
+                require(RESULT == base + 2);
+            }
+        }
+    "#;
+
+    let compiled =
+        compile_contract(source, &[3.into()], CompileOptions::default()).expect("well-typed constant dependencies should compile");
+    let result = run_bytecode_with_sigscript(compiled.bytecode, Vec::new());
+    assert!(result.is_ok(), "constant dependencies should retain their runtime value: {result:?}");
+}
+
+#[test]
+fn mismatched_contract_constant_reports_the_initializer_span() {
+    let source = r#"
+        contract ConstantType() {
+            int constant VALUE = true;
+            entry main() { require(true); }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("the mismatched constant must fail compilation");
+    assert!(err.to_string().contains("constant 'VALUE' expects int"), "unexpected error: {err}");
+    let span = err.span().expect("the constant initializer should be identified");
+    assert_eq!(&source[span.start..span.end], "true");
+}
+
+#[test]
+fn rejects_function_local_constant_initializer_type_mismatch() {
+    let source = r#"
+        contract ConstantType() {
+            entry main() {
+                int constant value = true;
+                require(true);
+            }
+        }
+    "#;
+
+    let err =
+        compile_contract(source, &[], CompileOptions::default()).expect_err("the mismatched local constant must fail compilation");
+    assert!(err.to_string().contains("variable 'value' expects int"), "unexpected error: {err}");
+}
+
+#[test]
 fn rejects_cyclic_constant_array_dimensions() {
     let cases = ["int constant A = A;".to_string(), "int constant A = B; int constant B = A;".to_string()];
 

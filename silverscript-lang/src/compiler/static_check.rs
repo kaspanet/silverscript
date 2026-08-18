@@ -181,6 +181,7 @@ pub(super) fn static_check_contract<'i>(
     for (param, value) in contract.params.iter().zip(constructor_args) {
         constants.insert(param.name.clone(), value.clone());
     }
+    validate_constant_initializers(contract, &structs, &constants)?;
     validate_contract_field_initializers(contract, &structs, &constants)?;
     validate_function_signatures(contract, &structs, &constants, options)?;
 
@@ -191,6 +192,44 @@ pub(super) fn static_check_contract<'i>(
         {
             return Err(CompilerError::Unsupported(format!("constructor argument '{}' expects {}", param.name, param_type_name)));
         }
+    }
+
+    Ok(())
+}
+
+fn validate_constant_initializers<'i>(
+    contract: &ContractAst<'i>,
+    structs: &StructRegistry,
+    constants: &HashMap<String, Expr<'i>>,
+) -> Result<(), CompilerError> {
+    let mut types = HashMap::new();
+    for param in &contract.params {
+        types.insert(param.name.clone(), param.type_ref.clone());
+    }
+    for constant in &contract.constants {
+        types.insert(constant.name.clone(), constant.type_ref.clone());
+    }
+    let functions = contract.functions.iter().map(|function| (function.name.clone(), function)).collect::<HashMap<_, _>>();
+
+    for constant in &contract.constants {
+        let type_name = constant.type_ref.type_name();
+        ensure_array_elements_have_known_size(&constant.type_ref, structs, constants, &type_name)
+            .map_err(|err| err.with_span(&constant.type_span))?;
+        validate_expr_matches_type(&constant.expr, &constant.type_ref, &types, structs, constants, &functions, &contract.fields)
+            .map_err(|err| {
+                map_declared_type_error(
+                    err,
+                    "constant",
+                    &constant.name,
+                    &type_name,
+                    &constant.expr,
+                    &constant.type_ref,
+                    &types,
+                    structs,
+                    constants,
+                )
+                .with_span(&constant.expr.span)
+            })?;
     }
 
     Ok(())
