@@ -94,18 +94,44 @@ impl<'a, 'i> ForLowerer<'a, 'i> {
         }
 
         let lowered_body = self.lower_block(body)?;
+        // Runtime bound expressions establish the loop range at entry. Keep
+        // their values stable even if the body mutates variables they read.
+        let start_name = self.fresh_name(&format!("{ident}_start"));
+        let end_name = self.fresh_name(&format!("{ident}_end"));
         let accumulator_name = self.fresh_name(ident);
         let accumulator_type_ref = TypeRef { base: TypeBase::Int, array_dims: Vec::new() };
-        let mut lowered = vec![Statement::VariableDefinition {
-            type_ref: accumulator_type_ref.clone(),
-            modifiers: Vec::new(),
-            name: accumulator_name.clone(),
-            expr: Some(start.clone()),
-            span,
-            type_span: ident_span,
-            modifier_spans: Vec::new(),
-            name_span: ident_span,
-        }];
+        let mut lowered = vec![
+            Statement::VariableDefinition {
+                type_ref: accumulator_type_ref.clone(),
+                modifiers: Vec::new(),
+                name: start_name.clone(),
+                expr: Some(start.clone()),
+                span,
+                type_span: ident_span,
+                modifier_spans: Vec::new(),
+                name_span: ident_span,
+            },
+            Statement::VariableDefinition {
+                type_ref: accumulator_type_ref.clone(),
+                modifiers: Vec::new(),
+                name: end_name.clone(),
+                expr: Some(end.clone()),
+                span,
+                type_span: ident_span,
+                modifier_spans: Vec::new(),
+                name_span: ident_span,
+            },
+            Statement::VariableDefinition {
+                type_ref: accumulator_type_ref.clone(),
+                modifiers: Vec::new(),
+                name: accumulator_name.clone(),
+                expr: Some(Expr::identifier(&start_name)),
+                span,
+                type_span: ident_span,
+                modifier_spans: Vec::new(),
+                name_span: ident_span,
+            },
+        ];
 
         // This is a sanity check to prevent situations where end-start > max_iterations.
         // TODO: Consider moving check to debug-mode compilation.
@@ -114,7 +140,11 @@ impl<'a, 'i> ForLowerer<'a, 'i> {
                 ExprKind::Binary {
                     op: BinaryOp::Le,
                     left: Box::new(Expr::new(
-                        ExprKind::Binary { op: BinaryOp::Sub, left: Box::new(end.clone()), right: Box::new(start.clone()) },
+                        ExprKind::Binary {
+                            op: BinaryOp::Sub,
+                            left: Box::new(Expr::identifier(&end_name)),
+                            right: Box::new(Expr::identifier(&start_name)),
+                        },
                         span,
                     )),
                     right: Box::new(Expr::int(max_iterations)),
@@ -131,7 +161,7 @@ impl<'a, 'i> ForLowerer<'a, 'i> {
                 ExprKind::Binary {
                     op: BinaryOp::Lt,
                     left: Box::new(Expr::identifier(&accumulator_name)),
-                    right: Box::new(end.clone()),
+                    right: Box::new(Expr::identifier(&end_name)),
                 },
                 span,
             );

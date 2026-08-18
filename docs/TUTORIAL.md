@@ -408,6 +408,11 @@ bool gt = (a > b);    // true (greater than)
 bool ge = (a >= b);   // true (greater than or equal)
 ```
 
+The ordered operators `<`, `<=`, `>`, and `>=` accept only `int` operands.
+Convert a `byte` explicitly with `unsigned(byteValue)` or `signed(byteValue)`
+before ordering it. Equality and inequality remain available for other
+compatible types.
+
 ### Logical Operators
 
 ```javascript

@@ -6053,6 +6053,51 @@ fn runs_runtime_bounded_for_loop_example() {
 }
 
 #[test]
+fn runtime_for_loop_snapshots_compound_bound_expressions_before_the_body() {
+    let source = r#"
+        contract RuntimeLoopBounds() {
+            entry main(int start, int end) {
+                int count = 0;
+                int total = 0;
+
+                for (i, start + 1, end + 1, 3) {
+                    count = count + 1;
+                    total = total + i;
+                    start = 100;
+                    end = -100;
+                }
+
+                require(count == 3);
+                require(total == 6);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let sigscript = compiled.build_sig_script("main", vec![0.into(), 3.into()]).expect("sigscript builds");
+    let result = run_bytecode_with_sigscript(compiled.bytecode, sigscript);
+    assert!(result.is_ok(), "mutating variables used by bound expressions must not change the snapshotted range: {result:?}");
+}
+
+#[test]
+fn runtime_for_loop_evaluates_each_bound_expression_once() {
+    let source = r#"
+        contract RuntimeLoopBoundEvaluation() {
+            entry main() {
+                for (i, tx.inputs.length - 1, tx.outputs.length + 1, 3) {
+                    require(i >= 0);
+                }
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let opcodes = script_to_str(&compiled.bytecode).expect("compiled bytecode should stringify");
+    assert_eq!(opcodes.matches("OpTxInputCount").count(), 1, "the start expression must be evaluated once: {opcodes}");
+    assert_eq!(opcodes.matches("OpTxOutputCount").count(), 1, "the end expression must be evaluated once: {opcodes}");
+}
+
+#[test]
 fn rejects_runtime_for_loop_range_above_max_iterations() {
     let source = r#"
         contract RuntimeLoop() {
@@ -12851,7 +12896,7 @@ fn ternary_lowering_initializes_generated_results_for_supported_types() {
                     : Pair {number: 1, flag: false};
                 require(int_result >= 0);
                 require(bool_result || !bool_result);
-                require(byte_result >= 0);
+                require(byte_result == value || byte_result == 1);
                 require(string_result.length > 0);
                 require(fixed_array_result.length == 2);
                 require(dynamic_array_result.length == 2);
@@ -14964,21 +15009,23 @@ fn allows_fixed_array_cast_with_compatible_encoded_size() {
 }
 
 #[test]
-fn rejects_ordered_comparisons_for_non_numeric_operands() {
-    for operator in ["<", "<=", ">", ">="] {
-        let source = format!(
-            r#"
-                contract OrderedComparison() {{
-                    entry main() {{
-                        require("aaaaaaaaa" {operator} "bbbbbbbbb");
+fn rejects_ordered_comparisons_for_non_int_operands() {
+    for (type_name, left, right) in [("string", "\"aaaaaaaaa\"", "\"bbbbbbbbb\""), ("byte", "byte(0xff)", "byte(0x01)")] {
+        for operator in ["<", "<=", ">", ">="] {
+            let source = format!(
+                r#"
+                    contract OrderedComparison() {{
+                        entry main() {{
+                            require({left} {operator} {right});
+                        }}
                     }}
-                }}
-            "#
-        );
-        let err = compile_contract(&source, &[], CompileOptions::default())
-            .err()
-            .unwrap_or_else(|| panic!("string operands for {operator} should be rejected"));
-        assert!(err.to_string().contains("ordered comparison requires numeric operands"), "unexpected error for {operator}: {err}");
+                "#
+            );
+            let err = compile_contract(&source, &[], CompileOptions::default())
+                .err()
+                .unwrap_or_else(|| panic!("{type_name} operands for {operator} should be rejected"));
+            assert!(err.to_string().contains("ordered comparison requires int operands"), "unexpected error for {operator}: {err}");
+        }
     }
 }
 

@@ -449,11 +449,9 @@ fn check_binary<'i>(
             Ok(scalar_type(TypeBase::Bool))
         }
         BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge => {
-            let left_is_numeric = left_type.is_int() || left_type.is_byte();
-            let right_is_numeric = right_type.is_int() || right_type.is_byte();
-            if !left_is_numeric || !right_is_numeric {
+            if !left_type.is_int() || !right_type.is_int() {
                 return Err(CompilerError::Unsupported(format!(
-                    "ordered comparison requires numeric operands, got {} and {}",
+                    "ordered comparison requires int operands, got {} and {}",
                     left_type.type_name(),
                     right_type.type_name()
                 )));
