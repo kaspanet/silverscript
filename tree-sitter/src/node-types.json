@@ -756,6 +756,29 @@
     }
   },
   {
+    "type": "lock_requirement_statement",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "expression",
+          "named": true
+        },
+        {
+          "type": "require_message",
+          "named": true
+        },
+        {
+          "type": "tx_var",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
     "type": "logical_and",
     "named": true,
     "fields": {},
@@ -1244,6 +1267,10 @@
           "named": true
         },
         {
+          "type": "lock_requirement_statement",
+          "named": true
+        },
+        {
           "type": "require_statement",
           "named": true
         },
@@ -1257,10 +1284,6 @@
         },
         {
           "type": "struct_destructure_assignment",
-          "named": true
-        },
-        {
-          "type": "time_op_statement",
           "named": true
         },
         {
@@ -1378,29 +1401,6 @@
       "types": [
         {
           "type": "factor",
-          "named": true
-        }
-      ]
-    }
-  },
-  {
-    "type": "time_op_statement",
-    "named": true,
-    "fields": {},
-    "children": {
-      "multiple": true,
-      "required": true,
-      "types": [
-        {
-          "type": "expression",
-          "named": true
-        },
-        {
-          "type": "require_message",
-          "named": true
-        },
-        {
-          "type": "tx_var",
           "named": true
         }
       ]
@@ -1840,10 +1840,6 @@
     "named": false
   },
   {
-    "type": "sequence",
-    "named": false
-  },
-  {
     "type": "sig",
     "named": false
   },
@@ -1868,6 +1864,10 @@
     "named": false
   },
   {
+    "type": "temporal",
+    "named": false
+  },
+  {
     "type": "this.activeInputIndex",
     "named": false
   },
@@ -1876,7 +1876,7 @@
     "named": false
   },
   {
-    "type": "this.age",
+    "type": "this.ageDaa",
     "named": false
   },
   {
@@ -1896,11 +1896,11 @@
     "named": true
   },
   {
-    "type": "tx.inputs.length",
+    "type": "tx.daa",
     "named": false
   },
   {
-    "type": "tx.locktime",
+    "type": "tx.inputs.length",
     "named": false
   },
   {

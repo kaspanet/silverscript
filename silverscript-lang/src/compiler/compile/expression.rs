@@ -50,7 +50,7 @@ fn compile_expr_with_context<'i>(
     expected_type: Option<&TypeRef>,
 ) -> Result<(), CompilerError> {
     match &expr.kind {
-        ExprKind::Int(value) => compile_int_expr(ctx, *value, expected_type),
+        ExprKind::Int(value) | ExprKind::Temporal(value) => compile_int_expr(ctx, *value, expected_type),
         ExprKind::Bool(value) => compile_bool_expr(ctx, *value),
         ExprKind::Byte(byte) => compile_byte_expr(ctx, *byte),
         ExprKind::Array { type_ref, values } => compile_array_expr(ctx, values, Some(type_ref)),
@@ -174,7 +174,7 @@ fn compile_array_literal_element<'i>(
     element_type: &TypeRef,
 ) -> Result<(), CompilerError> {
     match (&element_type.base, element_type.array_dims.as_slice()) {
-        (TypeBase::Int, []) => {
+        (TypeBase::Int | TypeBase::Temporal, []) => {
             compile_expr_with_context(ctx, value, Some(element_type))?;
             ctx.push_int(8)?;
             ctx.emit_op(OpNum2Bin, -1)?;
@@ -320,7 +320,7 @@ fn emit_p2sh_locking_script(ctx: &mut CompileExprContext<'_, '_, '_>) -> Result<
 fn compile_unary_expr<'i>(ctx: &mut CompileExprContext<'_, '_, 'i>, op: UnaryOp, expr: &Expr<'i>) -> Result<(), CompilerError> {
     let operand_type = scalar_type(match op {
         UnaryOp::Not => TypeBase::Bool,
-        UnaryOp::Neg => TypeBase::Int,
+        UnaryOp::Neg => infer_expr_type(expr, ctx.env.constants, ctx.env.types)?.base,
     });
     compile_expr_with_context(ctx, expr, Some(&operand_type))?;
     match op {
@@ -362,10 +362,10 @@ fn compile_binary_expr<'i>(
         compile_expr_with_context(ctx, right, right_value_type.as_ref())?;
     } else {
         let bool_type = scalar_type(TypeBase::Bool);
-        let int_type = scalar_type(TypeBase::Int);
+        let numeric_type = left_value_type.clone().filter(TypeRef::is_int_like);
         let operand_type = match op {
             BinaryOp::Or | BinaryOp::And => Some(&bool_type),
-            BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Mod => Some(&int_type),
+            BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Mod => numeric_type.as_ref(),
             BinaryOp::BitOr | BinaryOp::BitXor | BinaryOp::BitAnd => left_value_type.as_ref(),
             BinaryOp::Eq | BinaryOp::Ne | BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge => None,
         };
@@ -539,9 +539,6 @@ fn compile_introspection_expr<'i>(ctx: &mut CompileExprContext<'_, '_, 'i>, op: 
         IntrospectionKind::TxVersion => {
             ctx.emit_op(OpTxVersion, 1)?;
         }
-        IntrospectionKind::TxLockTime => {
-            ctx.emit_op(OpTxLockTime, 1)?;
-        }
     }
     Ok(())
 }
@@ -572,9 +569,6 @@ fn compile_indexed_introspection_expr<'i>(
         }
         IndexedIntrospectionKind::InputOutpointIndex => {
             ctx.emit_op(OpOutpointIndex, 0)?;
-        }
-        IndexedIntrospectionKind::InputSequence => {
-            ctx.emit_op(OpTxInputSeq, 0)?;
         }
         IndexedIntrospectionKind::OutputValue => {
             ctx.emit_op(OpTxOutputAmount, 0)?;

@@ -175,12 +175,25 @@ fn lower_statement<'i>(statement: &Statement<'i>, context: &mut LoweringContext)
         Statement::Assign { name, expr, span, name_span } => {
             Statement::Assign { name: name.clone(), expr: lower_expr(expr, &mut prefix, context), span: *span, name_span: *name_span }
         }
-        Statement::TimeOp { tx_var, expr, message, span, tx_var_span, message_span } => Statement::TimeOp {
-            tx_var: *tx_var,
+        Statement::RequireAgeDaa { expr, message, span, target_span, message_span } => Statement::RequireAgeDaa {
             expr: lower_expr(expr, &mut prefix, context),
             message: message.clone(),
             span: *span,
-            tx_var_span: *tx_var_span,
+            target_span: *target_span,
+            message_span: *message_span,
+        },
+        Statement::RequireTxDaa { expr, message, span, target_span, message_span } => Statement::RequireTxDaa {
+            expr: lower_expr(expr, &mut prefix, context),
+            message: message.clone(),
+            span: *span,
+            target_span: *target_span,
+            message_span: *message_span,
+        },
+        Statement::RequireTxTime { expr, message, span, target_span, message_span } => Statement::RequireTxTime {
+            expr: lower_expr(expr, &mut prefix, context),
+            message: message.clone(),
+            span: *span,
+            target_span: *target_span,
             message_span: *message_span,
         },
         Statement::Require { expr, message, span, message_span } => Statement::Require {

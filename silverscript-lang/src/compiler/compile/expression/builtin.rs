@@ -21,7 +21,7 @@ pub(super) fn compile_call_expr<'i>(
         "byte" => compile_byte_sequence_cast_call(ctx, "byte[1]", args),
         "signed" => compile_typed_builtin_args(ctx, "signed", args),
         "unsigned" => compile_unsigned_call(ctx, args),
-        "int" | "bool" | "string" | "sig" | "pubkey" | "datasig" => compile_passthrough_cast_call(ctx, name, args),
+        "int" | "temporal" | "bool" | "string" | "sig" | "pubkey" | "datasig" => compile_passthrough_cast_call(ctx, name, args),
         name if parse_type_ref(name)
             .is_ok_and(|type_ref| matches!(type_ref.base, TypeBase::Byte) && type_ref.array_dims.len() == 1) =>
         {
@@ -50,6 +50,7 @@ fn opcode_builtin(name: &str) -> Option<u8> {
         "OpTxSubnetId" => OpTxSubnetId,
         "OpTxGas" => OpTxGas,
         "OpTxPayloadLen" => OpTxPayloadLen,
+        "OpTxLockTime" => OpTxLockTime,
         "OpTxPayloadSubstr" => OpTxPayloadSubstr,
         "OpOutpointTxId" => OpOutpointTxId,
         "OpOutpointIndex" => OpOutpointIndex,

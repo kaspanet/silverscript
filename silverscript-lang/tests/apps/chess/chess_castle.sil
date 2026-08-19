@@ -215,7 +215,7 @@ contract ChessCastle(
         // Worker timeout is permissionless. Once a bad route strands funds in a
         // worker state, anyone may prove the worker UTXO is old enough and
         // return the game to mux with the objective timeout outcome.
-        require(this.age >= move_timeout);
+        require(this.ageDaa >= move_timeout);
 
         int next_status = status;
         if (draw_state == 1 /*CLAIMED*/) {

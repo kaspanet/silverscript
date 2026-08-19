@@ -11,12 +11,12 @@ contract SimulatingState(
         byte[34] recipientScriptPubKey = new ScriptPubKeyP2PK(recipient);
         require(tx.outputs[0].scriptPubKey == byte[](recipientScriptPubKey));
 
-        // Check that time has passed and that time locks are enabled
+        // Check that the DAA score has passed and that locktime is enabled
         int initial = int(initialBlock);
-        require(tx.time >= initial);
+        require(tx.daa >= initial);
 
         // Calculate the amount that has accrued since last claim
-        int passedBlocks = tx.locktime - initial;
+        int passedBlocks = OpTxLockTime() - initial;
         int pledge = passedBlocks * pledgePerBlock;
 
         // Calculate the leftover amount
@@ -35,10 +35,10 @@ contract SimulatingState(
             require(tx.outputs[1].value == changeValue);
 
             // Cut out old initialBlock (OP_PUSHBYTES_8 <initialBlock>)
-            // Insert new initialBlock (OP_PUSHBYTES_8 <tx.locktime>)
+            // Insert new initialBlock (OP_PUSHBYTES_8 <OpTxLockTime()>)
             // Note that constructor parameters are added in reverse order,
             // so initialBlock is the first statement in the contract bytecode.
-            byte[] newContract = byte[](0x08) + tx.locktime as byte[8] + this.activeScriptPubKey.split(9).1;
+            byte[] newContract = byte[](0x08) + OpTxLockTime() as byte[8] + this.activeScriptPubKey.split(9).1;
 
             // Create the locking bytecode for the new contract and check that
             // the change output sends to that contract

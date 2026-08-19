@@ -37,8 +37,7 @@ pub(super) fn introspection_type(op: IntrospectionKind) -> TypeRef {
         | IntrospectionKind::ThisBytecodeSize
         | IntrospectionKind::TxInputsLength
         | IntrospectionKind::TxOutputsLength
-        | IntrospectionKind::TxVersion
-        | IntrospectionKind::TxLockTime => scalar(TypeBase::Int),
+        | IntrospectionKind::TxVersion => scalar(TypeBase::Int),
     }
 }
 
@@ -48,7 +47,6 @@ pub(super) fn indexed_introspection_type(kind: IndexedIntrospectionKind) -> Type
         | IndexedIntrospectionKind::InputSigScript
         | IndexedIntrospectionKind::OutputScriptPubKey => byte_array(ArrayDim::Dynamic),
         IndexedIntrospectionKind::InputOutpointTxId => byte_array(ArrayDim::Fixed(32)),
-        IndexedIntrospectionKind::InputSequence => byte_array(ArrayDim::Fixed(8)),
         IndexedIntrospectionKind::InputValue
         | IndexedIntrospectionKind::InputOutpointIndex
         | IndexedIntrospectionKind::OutputValue => scalar(TypeBase::Int),
@@ -58,6 +56,7 @@ pub(super) fn indexed_introspection_type(kind: IndexedIntrospectionKind) -> Type
 pub(super) fn builtin_return(name: &str) -> Option<BuiltinReturn> {
     let value_type = match name {
         "int" | "signed" | "unsigned" => scalar(TypeBase::Int),
+        "temporal" => scalar(TypeBase::Temporal),
         "bool" => scalar(TypeBase::Bool),
         "byte" => scalar(TypeBase::Byte),
         "string" => scalar(TypeBase::String),
@@ -68,6 +67,7 @@ pub(super) fn builtin_return(name: &str) -> Option<BuiltinReturn> {
         | "OpTxInputDaaScore"
         | "OpTxGas"
         | "OpTxPayloadLen"
+        | "OpTxLockTime"
         | "OpTxInputIndex"
         | "OpTxInputScriptSigLen"
         | "OpTxInputSpkLen"
@@ -153,7 +153,7 @@ pub(super) fn builtin_parameters(name: &str) -> Option<Vec<(&'static str, TypeRe
             ("digest", byte_array(ArrayDim::Fixed(32))),
             ("publicKey", byte_array(ArrayDim::Fixed(33))),
         ],
-        "OpTxSubnetId" | "OpTxGas" | "OpTxPayloadLen" | "OpTxInputIndex" => vec![],
+        "OpTxSubnetId" | "OpTxGas" | "OpTxPayloadLen" | "OpTxLockTime" | "OpTxInputIndex" => vec![],
         "OpOutpointTxId"
         | "OpOutpointIndex"
         | "OpTxInputScriptSigLen"

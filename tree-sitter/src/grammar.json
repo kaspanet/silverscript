@@ -527,7 +527,7 @@
         },
         {
           "type": "SYMBOL",
-          "name": "time_op_statement"
+          "name": "lock_requirement_statement"
         },
         {
           "type": "SYMBOL",
@@ -1017,7 +1017,7 @@
         }
       ]
     },
-    "time_op_statement": {
+    "lock_requirement_statement": {
       "type": "SEQ",
       "members": [
         {
@@ -2275,10 +2275,6 @@
         },
         {
           "type": "STRING",
-          "value": "sequence"
-        },
-        {
-          "type": "STRING",
           "value": "sigScript"
         }
       ]
@@ -2395,6 +2391,10 @@
         {
           "type": "STRING",
           "value": "int"
+        },
+        {
+          "type": "STRING",
+          "value": "temporal"
         },
         {
           "type": "STRING",
@@ -2647,7 +2647,11 @@
       "members": [
         {
           "type": "STRING",
-          "value": "this.age"
+          "value": "this.ageDaa"
+        },
+        {
+          "type": "STRING",
+          "value": "tx.daa"
         },
         {
           "type": "STRING",
@@ -2685,10 +2689,6 @@
         {
           "type": "STRING",
           "value": "tx.version"
-        },
-        {
-          "type": "STRING",
-          "value": "tx.locktime"
         }
       ]
     },

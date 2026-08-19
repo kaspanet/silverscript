@@ -46,6 +46,9 @@ fn dummy_expr_for_type(type_name: &str) -> Expr<'static> {
     if type_name == "int" {
         return 0i64.into();
     }
+    if type_name == "temporal" {
+        return Expr::temporal(kaspa_txscript::LOCK_TIME_THRESHOLD as i64);
+    }
     if type_name == "bool" {
         return false.into();
     }
@@ -496,7 +499,7 @@ fn runs_cashc_valid_examples() {
                 let constructor_args = vec![];
                 let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
                 let selector = selector_for_compiled(&compiled, "hello");
-                let sigscript = build_sigscript(&[ArgValue::Int(20), ArgValue::Int(1_209_600)], selector);
+                let sigscript = build_sigscript(&[ArgValue::Int(20_000), ArgValue::Int(1_209_600_000)], selector);
                 let (mut tx, utxo, reused) = build_tx_context(
                     compiled.bytecode.clone(),
                     vec![(1_000, compiled.bytecode.clone()), (1_000, compiled.bytecode.clone())],
@@ -552,7 +555,8 @@ fn runs_cashc_valid_examples() {
                 let recipient = random_keypair();
                 let recipient_pk = recipient.x_only_public_key().0.serialize().to_vec();
                 let sender_pk = vec![0u8; 32];
-                let constructor_args = vec![sender_pk.into(), recipient_pk.clone().into(), 0i64.into()];
+                let constructor_args =
+                    vec![sender_pk.into(), recipient_pk.clone().into(), Expr::temporal(kaspa_txscript::LOCK_TIME_THRESHOLD as i64)];
                 let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
                 let selector = selector_for_compiled(&compiled, "transfer");
                 let (mut tx, utxo, reused) = build_tx_context(

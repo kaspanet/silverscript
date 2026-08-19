@@ -179,16 +179,39 @@ impl<'a, 'i> TernaryLowerer<'a, 'i> {
                 lowered.extend(prelude);
                 lowered.push(Statement::Require { expr, message: message.clone(), span: *span, message_span: *message_span });
             }
-            Statement::TimeOp { tx_var, expr, message, span, tx_var_span, message_span } => {
+            Statement::RequireAgeDaa { expr, message, span, target_span, message_span } => {
                 let expected = TypeRef { base: TypeBase::Int, array_dims: Vec::new() };
                 let (prelude, expr) = self.lower_expr(expr, Some(&expected), types)?;
                 lowered.extend(prelude);
-                lowered.push(Statement::TimeOp {
-                    tx_var: *tx_var,
+                lowered.push(Statement::RequireAgeDaa {
                     expr,
                     message: message.clone(),
                     span: *span,
-                    tx_var_span: *tx_var_span,
+                    target_span: *target_span,
+                    message_span: *message_span,
+                });
+            }
+            Statement::RequireTxDaa { expr, message, span, target_span, message_span } => {
+                let expected = TypeRef { base: TypeBase::Int, array_dims: Vec::new() };
+                let (prelude, expr) = self.lower_expr(expr, Some(&expected), types)?;
+                lowered.extend(prelude);
+                lowered.push(Statement::RequireTxDaa {
+                    expr,
+                    message: message.clone(),
+                    span: *span,
+                    target_span: *target_span,
+                    message_span: *message_span,
+                });
+            }
+            Statement::RequireTxTime { expr, message, span, target_span, message_span } => {
+                let expected = TypeRef { base: TypeBase::Temporal, array_dims: Vec::new() };
+                let (prelude, expr) = self.lower_expr(expr, Some(&expected), types)?;
+                lowered.extend(prelude);
+                lowered.push(Statement::RequireTxTime {
+                    expr,
+                    message: message.clone(),
+                    span: *span,
+                    target_span: *target_span,
                     message_span: *message_span,
                 });
             }
@@ -417,6 +440,7 @@ impl<'a, 'i> TernaryLowerer<'a, 'i> {
                 ))
             }
             ExprKind::Int(_)
+            | ExprKind::Temporal(_)
             | ExprKind::Bool(_)
             | ExprKind::Byte(_)
             | ExprKind::String(_)
@@ -463,6 +487,7 @@ impl<'a, 'i> TernaryLowerer<'a, 'i> {
 
         let kind = match &type_ref.base {
             TypeBase::Int => ExprKind::Int(0),
+            TypeBase::Temporal => ExprKind::Temporal(0),
             TypeBase::Bool => ExprKind::Bool(false),
             TypeBase::String => ExprKind::String(String::new()),
             TypeBase::Byte => ExprKind::Byte(0),

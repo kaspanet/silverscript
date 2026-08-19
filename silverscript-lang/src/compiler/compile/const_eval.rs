@@ -13,8 +13,11 @@ fn eval_const_int_inner<'i>(
     resolved: &mut HashMap<String, i64>,
 ) -> Result<i64, CompilerError> {
     match &expr.kind {
-        ExprKind::Int(value) => Ok(*value),
+        ExprKind::Int(value) | ExprKind::Temporal(value) => Ok(*value),
         ExprKind::DateLiteral(value) => Ok(*value),
+        ExprKind::Call { name, args, .. } if matches!(name.as_str(), "int" | "temporal") && args.len() == 1 => {
+            eval_const_int_inner(&args[0], constants, visiting, resolved)
+        }
         ExprKind::Identifier(name) => {
             if let Some(value) = resolved.get(name) {
                 return Ok(*value);

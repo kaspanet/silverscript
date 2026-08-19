@@ -30,7 +30,7 @@ pub(crate) fn fixed_type_size<'i>(type_ref: &TypeRef, constants: &HashMap<String
     }
 
     match type_ref.base {
-        TypeBase::Int => Some(8),
+        TypeBase::Int | TypeBase::Temporal => Some(8),
         TypeBase::Bool | TypeBase::Byte => Some(1),
         TypeBase::Pubkey | TypeBase::Sig | TypeBase::Datasig => type_ref.base.fixed_byte_sequence_len(),
         TypeBase::String | TypeBase::Tuple(_) | TypeBase::Custom(_) => None,

@@ -922,8 +922,8 @@ fn compiles_transfer_with_timeout_and_verifies() {
     let recipient = random_keypair();
     let sender_pk = sender.x_only_public_key().0.serialize();
     let recipient_pk = recipient.x_only_public_key().0.serialize();
-    let timeout = 1_000i64;
-    let constructor_args = vec![sender_pk.to_vec().into(), recipient_pk.to_vec().into(), timeout.into()];
+    let timeout = kaspa_txscript::LOCK_TIME_THRESHOLD as i64;
+    let constructor_args = vec![sender_pk.to_vec().into(), recipient_pk.to_vec().into(), Expr::temporal(timeout)];
 
     let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
 

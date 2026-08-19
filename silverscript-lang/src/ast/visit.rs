@@ -237,9 +237,11 @@ pub fn walk_statement_mut<'i, V: AstVisitorMut<'i> + ?Sized>(visitor: &mut V, st
             visitor.visit_name(name, NameKind::AssignmentTarget);
             visitor.visit_expr(expr);
         }
-        Statement::TimeOp { expr, span, tx_var_span, message_span, .. } => {
+        Statement::RequireAgeDaa { expr, span, target_span, message_span, .. }
+        | Statement::RequireTxDaa { expr, span, target_span, message_span, .. }
+        | Statement::RequireTxTime { expr, span, target_span, message_span, .. } => {
             visitor.visit_span(span);
-            visitor.visit_span(tx_var_span);
+            visitor.visit_span(target_span);
             if let Some(span) = message_span {
                 visitor.visit_span(span);
             }
@@ -374,6 +376,7 @@ pub fn walk_expr_mut<'i, V: AstVisitorMut<'i> + ?Sized>(visitor: &mut V, expr: &
             visitor.visit_span(field_span);
         }
         ExprKind::Int(_)
+        | ExprKind::Temporal(_)
         | ExprKind::Bool(_)
         | ExprKind::Byte(_)
         | ExprKind::String(_)

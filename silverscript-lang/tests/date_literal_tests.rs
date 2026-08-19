@@ -18,7 +18,7 @@ fn parses_date_literal_basic_iso() {
         pragma silverscript ^0.1.0;
         contract Test() {
             function test() {
-                int d = date("2021-02-17T01:30:00");
+                temporal d = date("2021-02-17T01:30:00");
             }
         }
     "#;
@@ -26,7 +26,7 @@ fn parses_date_literal_basic_iso() {
     let Expr { kind: ExprKind::DateLiteral(parsed), .. } = expr else {
         panic!("expected date literal");
     };
-    let expected = NaiveDateTime::parse_from_str("2021-02-17T01:30:00", "%Y-%m-%dT%H:%M:%S").unwrap().and_utc().timestamp();
+    let expected = NaiveDateTime::parse_from_str("2021-02-17T01:30:00", "%Y-%m-%dT%H:%M:%S").unwrap().and_utc().timestamp_millis();
     assert_eq!(parsed, expected);
 }
 
@@ -50,7 +50,7 @@ fn rejects_invalid_iso_date_format() {
         pragma silverscript ^0.1.0;
         contract Test() {
             function test() {
-                int d = date("02-16-2021 05:30:00 PM");
+                temporal d = date("02-16-2021 05:30:00 PM");
             }
         }
     "#;
