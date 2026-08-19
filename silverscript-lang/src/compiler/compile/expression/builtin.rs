@@ -50,6 +50,7 @@ fn opcode_builtin(name: &str) -> Option<u8> {
         "OpTxSubnetId" => OpTxSubnetId,
         "OpTxGas" => OpTxGas,
         "OpTxPayloadLen" => OpTxPayloadLen,
+        "OpTxLockTime" => OpTxLockTime,
         "OpTxPayloadSubstr" => OpTxPayloadSubstr,
         "OpOutpointTxId" => OpOutpointTxId,
         "OpOutpointIndex" => OpOutpointIndex,

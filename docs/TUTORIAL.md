@@ -1095,9 +1095,6 @@ int outputCount = tx.outputs.length;
 
 // Transaction version
 int version = tx.version;
-
-// Transaction locktime
-int locktime = tx.locktime;
 ```
 
 **Time-based Fields:**
@@ -1113,11 +1110,9 @@ require(tx.daa >= 1000000);
 require(tx.time >= date("2030-01-01T00:00:00"));
 ```
 
-`tx.locktime` exposes the raw transaction field as an `int`. Use
-`temporal(tx.locktime)` when intentionally treating that raw value as a temporal
-expression. The special `tx.daa` and `tx.time` forms are available only in their
-respective `require(... >= threshold)` statements and enforce the consensus
-locktime domain before calling CLTV.
+The special `tx.daa` and `tx.time` forms are available only in their respective
+`require(... >= threshold)` statements and enforce the consensus locktime domain
+before calling CLTV.
 
 ### Input Introspection
 
@@ -1130,7 +1125,6 @@ int inputValue = tx.inputs[i].value;
 byte[] inputScript = tx.inputs[i].scriptPubKey;
 byte[32] outpointTxId = tx.inputs[i].outpointTxId;
 int outpointIndex = tx.inputs[i].outpointIndex;
-byte[8] sequence = tx.inputs[i].sequence;
 ```
 
 **Example:**

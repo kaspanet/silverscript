@@ -539,9 +539,6 @@ fn compile_introspection_expr<'i>(ctx: &mut CompileExprContext<'_, '_, 'i>, op: 
         IntrospectionKind::TxVersion => {
             ctx.emit_op(OpTxVersion, 1)?;
         }
-        IntrospectionKind::TxLockTime => {
-            ctx.emit_op(OpTxLockTime, 1)?;
-        }
     }
     Ok(())
 }
@@ -572,9 +569,6 @@ fn compile_indexed_introspection_expr<'i>(
         }
         IndexedIntrospectionKind::InputOutpointIndex => {
             ctx.emit_op(OpOutpointIndex, 0)?;
-        }
-        IndexedIntrospectionKind::InputSequence => {
-            ctx.emit_op(OpTxInputSeq, 0)?;
         }
         IndexedIntrospectionKind::OutputValue => {
             ctx.emit_op(OpTxOutputAmount, 0)?;

@@ -1502,13 +1502,14 @@ fn allow_comparing_dynamic_and_fixed_byte_arrays_with_cast_in_contract_scope() {
 }
 
 #[test]
-fn fixed_size_builtin_results_assign_to_exact_byte_array_types() {
+fn opcode_builtins_return_their_declared_types() {
     let source = r#"
         contract Builtins() {
             entry main(pubkey pk, byte[] redeem_script) {
                 byte[20] subnet_id = OpTxSubnetId();
                 byte[32] outpoint_tx_id = OpOutpointTxId(0);
                 byte[8] input_sequence = OpTxInputSeq(0);
+                int lock_time = OpTxLockTime();
                 byte[32] sequence_commitment = OpChainblockSeqCommit(
                     byte[_](0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f)
                 );
@@ -1524,7 +1525,7 @@ fn fixed_size_builtin_results_assign_to_exact_byte_array_types() {
 }
 
 #[test]
-fn indexed_introspection_fields_emit_and_execute_all_supported_opcodes() {
+fn introspection_fields_and_direct_lock_opcodes_emit_and_execute() {
     let source = r#"
         contract Introspection() {
             entry main() {
@@ -1533,9 +1534,10 @@ fn indexed_introspection_fields_emit_and_execute_all_supported_opcodes() {
                 require(tx.inputs[0].sigScript.length == 0);
                 require(tx.inputs[0].outpointTxId == byte[32]("0123456789abcdef0123456789abcdef"));
                 require(tx.inputs[0].outpointIndex == 7);
-                require(tx.inputs[0].sequence == byte[8]("sequence"));
                 require(tx.outputs[0].value == 1000);
                 require(tx.outputs[0].scriptPubKey.length >= 0);
+                require(OpTxLockTime() == 0);
+                require(OpTxInputSeq(0) == byte[8]("sequence"));
             }
         }
     "#;
@@ -1549,6 +1551,7 @@ fn indexed_introspection_fields_emit_and_execute_all_supported_opcodes() {
         "OpTxInputScriptSigSubstr",
         "OpOutpointTxId",
         "OpOutpointIndex",
+        "OpTxLockTime",
         "OpTxInputSeq",
         "OpTxOutputAmount",
         "OpTxOutputSpk",
@@ -1587,7 +1590,6 @@ fn rejects_assigning_fixed_size_builtin_results_to_wrong_byte_array_sizes() {
         ("OpOutpointTxId", "byte[31] value = OpOutpointTxId(0);"),
         ("OpTxInputSeq", "byte[7] value = OpTxInputSeq(0);"),
         ("outpointTxId introspection", "byte[31] value = tx.inputs[0].outpointTxId;"),
-        ("sequence introspection", "byte[7] value = tx.inputs[0].sequence;"),
         (
             "OpChainblockSeqCommit",
             "byte[31] value = OpChainblockSeqCommit(byte[32](0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f));",
@@ -1617,6 +1619,28 @@ fn rejects_assigning_fixed_size_builtin_results_to_wrong_byte_array_sizes() {
         let err =
             compile_contract(&source, &[], CompileOptions::default()).expect_err(&format!("{name} should reject the wrong size"));
         assert!(err.to_string().contains("variable 'value' expects byte["), "{name}: unexpected error: {err}");
+    }
+}
+
+#[test]
+fn op_tx_lock_time_returns_int() {
+    let source = "contract C() { entry main() { temporal value = OpTxLockTime(); } }";
+    let error = compile_contract(source, &[], CompileOptions::default()).expect_err("OpTxLockTime must not return temporal");
+    assert!(error.to_string().contains("variable 'value' expects temporal"), "unexpected error: {error}");
+
+    let source = "contract C() { entry main() { require(OpTxLockTime(0) >= 0); } }";
+    let error = compile_contract(source, &[], CompileOptions::default()).expect_err("OpTxLockTime must not accept arguments");
+    assert!(error.to_string().contains("expects 0 arguments"), "unexpected error: {error}");
+}
+
+#[test]
+fn rejects_removed_locktime_and_sequence_fields() {
+    for statement in ["int value = tx.locktime;", "byte[8] value = tx.inputs[0].sequence;"] {
+        let source = format!("contract C() {{ entry main() {{ {statement} }} }}");
+        assert!(
+            compile_contract(&source, &[], CompileOptions::default()).is_err(),
+            "removed introspection field must be rejected: {statement}"
+        );
     }
 }
 
@@ -12588,6 +12612,7 @@ fn builtin_function_arguments_are_type_checked() {
         ("unsigned conversion", "unsigned(false) == 0", "argument 'value' expects byte, got bool"),
         ("checkSig", "checkSig(1, 2)", "argument 'signature' expects sig, got int"),
         ("transaction index", "OpOutpointTxId(false).length == 32", "argument 'idx' expects int, got bool"),
+        ("input sequence index", "OpTxInputSeq(false).length == 8", "argument 'idx' expects int, got bool"),
         ("transaction substring", "OpTxPayloadSubstr(false, 1).length >= 0", "argument 'start' expects int, got bool"),
         ("transaction substring end", "OpTxPayloadSubstr(0, false).length >= 0", "argument 'end' expects int, got bool"),
         ("input signature substring end", "OpTxInputScriptSigSubstr(0, 0, false).length >= 0", "argument 'end' expects int, got bool"),

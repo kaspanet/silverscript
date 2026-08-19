@@ -854,7 +854,6 @@ pub enum IntrospectionKind {
     TxInputsLength,
     TxOutputsLength,
     TxVersion,
-    TxLockTime,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -865,7 +864,6 @@ pub enum IndexedIntrospectionKind {
     InputSigScript,
     InputOutpointTxId,
     InputOutpointIndex,
-    InputSequence,
     OutputValue,
     OutputScriptPubKey,
 }
@@ -1332,7 +1330,6 @@ fn introspection_str(op: IntrospectionKind) -> &'static str {
         IntrospectionKind::TxInputsLength => "tx.inputs.length",
         IntrospectionKind::TxOutputsLength => "tx.outputs.length",
         IntrospectionKind::TxVersion => "tx.version",
-        IntrospectionKind::TxLockTime => "tx.locktime",
     }
 }
 
@@ -1342,8 +1339,7 @@ fn indexed_introspection_root(kind: IndexedIntrospectionKind) -> &'static str {
         | IndexedIntrospectionKind::InputScriptPubKey
         | IndexedIntrospectionKind::InputSigScript
         | IndexedIntrospectionKind::InputOutpointTxId
-        | IndexedIntrospectionKind::InputOutpointIndex
-        | IndexedIntrospectionKind::InputSequence => "tx.inputs",
+        | IndexedIntrospectionKind::InputOutpointIndex => "tx.inputs",
         IndexedIntrospectionKind::OutputValue | IndexedIntrospectionKind::OutputScriptPubKey => "tx.outputs",
     }
 }
@@ -1355,7 +1351,6 @@ fn indexed_introspection_field(kind: IndexedIntrospectionKind) -> &'static str {
         IndexedIntrospectionKind::InputSigScript => ".sigScript",
         IndexedIntrospectionKind::InputOutpointTxId => ".outpointTxId",
         IndexedIntrospectionKind::InputOutpointIndex => ".outpointIndex",
-        IndexedIntrospectionKind::InputSequence => ".sequence",
     }
 }
 
@@ -2650,7 +2645,6 @@ fn parse_introspection<'i>(raw: &str, span: Span<'i>) -> Result<Expr<'i>, Compil
         "tx.inputs.length" => IntrospectionKind::TxInputsLength,
         "tx.outputs.length" => IntrospectionKind::TxOutputsLength,
         "tx.version" => IntrospectionKind::TxVersion,
-        "tx.locktime" => IntrospectionKind::TxLockTime,
         _ => return Err(CompilerError::Unsupported(format!("unknown introspection field: {raw}"))),
     };
     Ok(Expr::new(ExprKind::Introspection(op), span))
@@ -2672,7 +2666,6 @@ fn parse_indexed_introspection<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, Com
             ".sigScript" => IndexedIntrospectionKind::InputSigScript,
             ".outpointTxId" => IndexedIntrospectionKind::InputOutpointTxId,
             ".outpointIndex" => IndexedIntrospectionKind::InputOutpointIndex,
-            ".sequence" => IndexedIntrospectionKind::InputSequence,
             _ => return Err(CompilerError::Unsupported(format!("input field '{field_raw}' not supported"))),
         }
     } else if text.starts_with("tx.outputs") {

@@ -1840,10 +1840,6 @@
     "named": false
   },
   {
-    "type": "sequence",
-    "named": false
-  },
-  {
     "type": "sig",
     "named": false
   },
@@ -1905,10 +1901,6 @@
   },
   {
     "type": "tx.inputs.length",
-    "named": false
-  },
-  {
-    "type": "tx.locktime",
     "named": false
   },
   {

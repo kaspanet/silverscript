@@ -399,7 +399,6 @@ export default grammar({
         "scriptPubKey",
         "outpointTxId",
         "outpointIndex",
-        "sequence",
         "sigScript",
       ),
 
@@ -469,7 +468,6 @@ export default grammar({
         "tx.inputs.length",
         "tx.outputs.length",
         "tx.version",
-        "tx.locktime",
       ),
 
     identifier: (_) => token(prec(-1, /[A-Za-z][A-Za-z0-9_]*/)),

@@ -139,7 +139,7 @@ indexed_introspection = {
 }
 
 output_field = { "." ~ ("value" | "scriptPubKey") }
-input_field = { "." ~ ("value" | "scriptPubKey" | "outpointTxId" | "outpointIndex" | "sequence" | "sigScript") }
+input_field = { "." ~ ("value" | "scriptPubKey" | "outpointTxId" | "outpointIndex" | "sigScript") }
 
 typed_array = { type_name ~ "{" ~ (expression ~ ("," ~ expression)* ~ ","?)? ~ "}" }
 
@@ -182,7 +182,6 @@ Introspection = {
     | "tx.inputs.length"
     | "tx.outputs.length"
     | "tx.version"
-    | "tx.locktime"
 }
 
 Identifier = @{ !keyword_boundary ~ ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "_")* }
@@ -194,7 +193,7 @@ keyword = {
     | "console.log" | "new" | "as" | "true" | "false" | "constant" | "date"
     | "int" | "temporal" | "bool" | "string" | "pubkey" | "sig" | "datasig" | "byte"
     | "this.ageDaa" | "tx.daa" | "tx.time" | "this.activeInputIndex" | "this.activeScriptPubKey" | "this.bytecodeSizeDataPrefix" | "this.bytecodeSize"
-    | "tx.inputs.length" | "tx.outputs.length" | "tx.version" | "tx.locktime"
+    | "tx.inputs.length" | "tx.outputs.length" | "tx.version"
 }
 
 WHITESPACE = _{ " " | "\t" | "\r" | "\n" | "\u{000C}" | COMMENT }

@@ -13,7 +13,7 @@ contract Mecenas(
         int initial = int(initialBlock);
         require(tx.daa >= initial);
 
-        int passedBlocks = tx.locktime - initial;
+        int passedBlocks = OpTxLockTime() - initial;
         int pledge = passedBlocks * pledgePerBlock;
 
         int minerFee = 1000;
@@ -26,7 +26,7 @@ contract Mecenas(
             require(tx.outputs[0].value == pledge);
             require(tx.outputs[1].value == changeValue);
 
-            byte[] bcValue = byte[](0x08) + tx.locktime as byte[8] + this.activeScriptPubKey.split(9).1;
+            byte[] bcValue = byte[](0x08) + OpTxLockTime() as byte[8] + this.activeScriptPubKey.split(9).1;
             byte[35] lockValue = new ScriptPubKeyP2SH(blake2b(bcValue));
             require(tx.outputs[1].scriptPubKey == byte[](lockValue));
         }

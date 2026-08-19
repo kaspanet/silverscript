@@ -107,6 +107,7 @@ fn parse_byte_array_arg(type_ref: &TypeRef, raw: &str) -> Result<Expr<'static>, 
 fn parse_scalar_arg(type_ref: &TypeRef, raw: &str) -> Result<Expr<'static>, String> {
     match type_ref.base {
         TypeBase::Int => Ok(Expr::int(parse_int_arg(raw)?)),
+        TypeBase::Temporal => Ok(Expr::temporal(parse_int_arg(raw)?)),
         TypeBase::Bool => match raw {
             "true" => Ok(Expr::bool(true)),
             "false" => Ok(Expr::bool(false)),
@@ -210,6 +211,9 @@ fn parse_json_value_for_type(value: &Value, type_ref: &TypeRef, shapes: &StructS
     match value {
         Value::String(raw) => parse_scalar_arg(type_ref, raw),
         Value::Number(raw) if type_ref.is_int() => Ok(Expr::int(raw.as_i64().ok_or_else(|| "invalid int value".to_string())?)),
+        Value::Number(raw) if type_ref.is_temporal() => {
+            Ok(Expr::temporal(raw.as_i64().ok_or_else(|| "invalid temporal value".to_string())?))
+        }
         Value::Number(raw) if type_ref.is_byte() => {
             let byte_value = raw.as_u64().ok_or_else(|| "invalid byte value".to_string())?;
             let byte = u8::try_from(byte_value).map_err(|_| format!("byte expects value in 0..=255, got {byte_value}"))?;
@@ -342,10 +346,29 @@ mod tests {
                 entry inspect_state_array(State[] next_states) {
                     require(next_states.length == 2);
                 }
+
+                entry inspect_time(temporal at, temporal[] checkpoints) {
+                    require(at >= checkpoints[0]);
+                }
             }
             "#,
         )
         .expect("parse contract")
+    }
+
+    #[test]
+    fn parses_temporal_scalar_and_array_args() {
+        let contract = debug_shapes_contract();
+        let args = parse_call_args(&contract, "inspect_time", &["1_234".to_string(), "[1000,2000]".to_string()])
+            .expect("parse temporal args");
+
+        assert!(matches!(args[0].kind, ExprKind::Temporal(1_234)));
+        let ExprKind::Array { values, .. } = &args[1].kind else {
+            panic!("expected temporal array");
+        };
+        assert!(
+            matches!(values.as_slice(), [first, second] if matches!(first.kind, ExprKind::Temporal(1_000)) && matches!(second.kind, ExprKind::Temporal(2_000)))
+        );
     }
 
     #[test]

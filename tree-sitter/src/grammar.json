@@ -2275,10 +2275,6 @@
         },
         {
           "type": "STRING",
-          "value": "sequence"
-        },
-        {
-          "type": "STRING",
           "value": "sigScript"
         }
       ]
@@ -2693,10 +2689,6 @@
         {
           "type": "STRING",
           "value": "tx.version"
-        },
-        {
-          "type": "STRING",
-          "value": "tx.locktime"
         }
       ]
     },
