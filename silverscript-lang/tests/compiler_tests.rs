@@ -116,14 +116,27 @@ fn selector_sigscript(selector: Option<i64>) -> Vec<u8> {
 }
 
 fn run_bytecode_with_sigscript(bytecode: Vec<u8>, sigscript: Vec<u8>) -> Result<(), kaspa_txscript_errors::TxScriptError> {
+    run_bytecode_with_sigscript_and_time(bytecode, sigscript, 0, 0)
+}
+
+fn run_bytecode_with_sigscript_and_time(
+    bytecode: Vec<u8>,
+    sigscript: Vec<u8>,
+    lock_time: u64,
+    sequence: u64,
+) -> Result<(), kaspa_txscript_errors::TxScriptError> {
     let reused_values = SigHashReusedValuesUnsync::new();
     let sig_cache = Cache::new(10_000);
 
-    let input =
-        TransactionInput::new(TransactionOutpoint { transaction_id: TransactionId::from_bytes([1u8; 32]), index: 0 }, sigscript, 0, 0);
+    let input = TransactionInput::new(
+        TransactionOutpoint { transaction_id: TransactionId::from_bytes([1u8; 32]), index: 0 },
+        sigscript,
+        sequence,
+        0,
+    );
     let output =
         TransactionOutput { value: 1000, script_public_key: ScriptPublicKey::new(0, bytecode.clone().into()), covenant: None };
-    let tx = Transaction::new(1, vec![input.clone()], vec![output.clone()], 0, Default::default(), 0, vec![]);
+    let tx = Transaction::new(1, vec![input.clone()], vec![output.clone()], lock_time, Default::default(), 0, vec![]);
     let utxo_entry = UtxoEntry::new(output.value, output.script_public_key.clone(), 0, tx.is_coinbase(), None);
     let populated_tx = PopulatedTransaction::new(&tx, vec![utxo_entry.clone()]);
 
@@ -11278,11 +11291,11 @@ fn compiles_if_else_and_verifies() {
 }
 
 #[test]
-fn compiles_time_op_csv_and_verifies() {
+fn compiles_require_age_daa_to_csv_and_verifies() {
     let source = r#"
         contract Test() {
             entry main() {
-                require(this.age >= 10);
+                require(this.ageDaa >= 10);
             }
         }
     "#;
@@ -11290,7 +11303,24 @@ fn compiles_time_op_csv_and_verifies() {
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
     let selector = selector_for(&compiled, "main");
 
-    let body = script_builder().add_i64(10).unwrap().add_op(OpCheckSequenceVerify).unwrap().add_op(OpTrue).unwrap().drain();
+    let body = script_builder()
+        .add_i64(10)
+        .unwrap()
+        .add_op(OpDup)
+        .unwrap()
+        .add_i64(0)
+        .unwrap()
+        .add_i64(1_i64 << 32)
+        .unwrap()
+        .add_op(OpWithin)
+        .unwrap()
+        .add_op(OpVerify)
+        .unwrap()
+        .add_op(OpCheckSequenceVerify)
+        .unwrap()
+        .add_op(OpTrue)
+        .unwrap()
+        .drain();
     let expected = wrap_with_dispatch(body, selector);
 
     assert_eq!(compiled.bytecode, expected);
@@ -11298,8 +11328,238 @@ fn compiles_time_op_csv_and_verifies() {
 }
 
 #[test]
-fn rejects_unsupported_time_op_comparisons() {
-    for condition in ["this.age > 10", "this.age < 10", "this.age <= 10", "tx.time > 10", "tx.time < 10", "tx.time <= 10"] {
+fn compiles_require_tx_daa_to_bounded_cltv_and_verifies() {
+    let source = r#"
+        contract Test() {
+            entry main() {
+                require(tx.daa >= 10);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let selector = selector_for(&compiled, "main");
+    let body = script_builder()
+        .add_i64(10)
+        .unwrap()
+        .add_op(OpDup)
+        .unwrap()
+        .add_i64(0)
+        .unwrap()
+        .add_i64(kaspa_txscript::LOCK_TIME_THRESHOLD as i64)
+        .unwrap()
+        .add_op(OpWithin)
+        .unwrap()
+        .add_op(OpVerify)
+        .unwrap()
+        .add_op(OpCheckLockTimeVerify)
+        .unwrap()
+        .add_op(OpTrue)
+        .unwrap()
+        .drain();
+    let expected = wrap_with_dispatch(body, selector);
+
+    assert_eq!(compiled.bytecode, expected);
+    assert!(run_bytecode_with_tx(compiled.bytecode, selector, 10, 0).is_ok());
+}
+
+#[test]
+fn compiles_require_tx_time_to_lower_bounded_cltv_and_verifies() {
+    let threshold = kaspa_txscript::LOCK_TIME_THRESHOLD as i64;
+    let source = format!(
+        r#"
+        contract Test() {{
+            entry main() {{
+                require(tx.time >= temporal({threshold}));
+            }}
+        }}
+    "#
+    );
+
+    let compiled = compile_contract(&source, &[], CompileOptions::default()).expect("compile succeeds");
+    let selector = selector_for(&compiled, "main");
+    let body = script_builder()
+        .add_i64(threshold)
+        .unwrap()
+        .add_op(OpDup)
+        .unwrap()
+        .add_i64(threshold)
+        .unwrap()
+        .add_op(OpGreaterThanOrEqual)
+        .unwrap()
+        .add_op(OpVerify)
+        .unwrap()
+        .add_op(OpCheckLockTimeVerify)
+        .unwrap()
+        .add_op(OpTrue)
+        .unwrap()
+        .drain();
+    let expected = wrap_with_dispatch(body, selector);
+
+    assert_eq!(compiled.bytecode, expected);
+    assert!(run_bytecode_with_tx(compiled.bytecode, selector, threshold as u64, 0).is_ok());
+}
+
+#[test]
+fn signed_arithmetic_and_comparisons_match_rust_for_small_values() {
+    let operators: [(&str, fn(i64, i64) -> i64); 5] =
+        [("+", |a, b| a + b), ("-", |a, b| a - b), ("*", |a, b| a * b), ("/", |a, b| a / b), ("%", |a, b| a % b)];
+    for (operator, oracle) in operators {
+        let source = format!("contract C() {{ entry main(int a, int b, int expected) {{ require(a {operator} b == expected); }} }}");
+        let compiled = compile_contract(&source, &[], CompileOptions::default()).expect("arithmetic contract compiles");
+        for a in -20..=20 {
+            for b in -20..=20 {
+                if matches!(operator, "/" | "%") && b == 0 {
+                    continue;
+                }
+                let sigscript = compiled
+                    .build_sig_script("main", vec![Expr::int(a), Expr::int(b), Expr::int(oracle(a, b))])
+                    .expect("arithmetic signature script builds");
+                run_bytecode_with_sigscript(compiled.bytecode.clone(), sigscript)
+                    .unwrap_or_else(|error| panic!("operator={operator} a={a} b={b}: {error:?}"));
+            }
+        }
+    }
+
+    let comparisons: [(&str, fn(i64, i64) -> bool); 6] = [
+        ("==", |a, b| a == b),
+        ("!=", |a, b| a != b),
+        ("<", |a, b| a < b),
+        ("<=", |a, b| a <= b),
+        (">", |a, b| a > b),
+        (">=", |a, b| a >= b),
+    ];
+    for (operator, oracle) in comparisons {
+        let expected = oracle(-7, 3);
+        let source = format!("contract C() {{ entry main(int a, int b) {{ require((a {operator} b) == {expected}); }} }}");
+        let compiled = compile_contract(&source, &[], CompileOptions::default()).expect("comparison contract compiles");
+        let sigscript =
+            compiled.build_sig_script("main", vec![Expr::int(-7), Expr::int(3)]).expect("comparison signature script builds");
+        run_bytecode_with_sigscript(compiled.bytecode, sigscript).expect("comparison agrees with Rust");
+    }
+}
+
+#[test]
+fn boolean_operators_use_vm_truthiness_for_noncanonical_values() {
+    let witnesses: &[&[u8]] = &[&[], &[0], &[0x80], &[1], &[2], &[0xff]];
+    for operator in ["&&", "||", "==", "!="] {
+        for &left in witnesses {
+            for &right in witnesses {
+                let left_truthy = !left.is_empty() && left != [0] && left != [0x80];
+                let right_truthy = !right.is_empty() && right != [0] && right != [0x80];
+                let expected = match operator {
+                    "&&" => left_truthy && right_truthy,
+                    "||" => left_truthy || right_truthy,
+                    "==" => left_truthy == right_truthy,
+                    "!=" => left_truthy != right_truthy,
+                    _ => unreachable!(),
+                };
+                let source = format!("contract C() {{ entry main(bool a, bool b) {{ require((a {operator} b) == {expected}); }} }}");
+                let compiled = compile_contract(&source, &[], CompileOptions::default()).expect("boolean contract compiles");
+                let sigscript =
+                    script_builder().add_data_with_push_opcode(left).unwrap().add_data_with_push_opcode(right).unwrap().drain();
+                run_bytecode_with_sigscript(compiled.bytecode, sigscript).unwrap_or_else(|error| {
+                    panic!("operator={operator} left={left:?} right={right:?} expected={expected}: {error:?}")
+                });
+            }
+        }
+    }
+}
+
+#[test]
+fn relative_age_rejects_out_of_range_static_and_dynamic_values() {
+    for invalid in [-1_i64, 1_i64 << 32] {
+        let source = format!("contract C() {{ entry main() {{ require(this.ageDaa >= {invalid}); }} }}");
+        let error = compile_contract(&source, &[], CompileOptions::default()).expect_err("known out-of-range age must be rejected");
+        assert!(error.to_string().contains("0 <= value < 2^32"), "unexpected error: {error}");
+    }
+
+    let largest_in_range = "contract C() { entry main() { require(this.ageDaa >= 4294967295); } }";
+    let compiled = compile_contract(largest_in_range, &[], CompileOptions::default()).expect("2^32 - 1 remains valid");
+    let sigscript = compiled.build_sig_script("main", vec![]).expect("signature script builds");
+    run_bytecode_with_sigscript_and_time(compiled.bytecode, sigscript, 0, 0)
+        .expect_err("the largest 32-bit requirement must reject sequence zero");
+
+    let dynamic_source = "contract C() { entry main(int age) { require(this.ageDaa >= age); } }";
+    let compiled = compile_contract(dynamic_source, &[], CompileOptions::default()).expect("dynamic age contract compiles");
+    for invalid in [-1, 1_i64 << 32] {
+        let sigscript = compiled.build_sig_script("main", vec![Expr::int(invalid)]).expect("signature script builds");
+        run_bytecode_with_sigscript_and_time(compiled.bytecode.clone(), sigscript, 0, 0)
+            .expect_err("out-of-range runtime age must be rejected before CSV");
+    }
+    let sigscript = compiled.build_sig_script("main", vec![Expr::int(0)]).expect("signature script builds");
+    run_bytecode_with_sigscript_and_time(compiled.bytecode, sigscript, 0, 0).expect("zero age must remain valid");
+}
+
+#[test]
+fn absolute_daa_and_time_locks_enforce_consensus_domains() {
+    let threshold = kaspa_txscript::LOCK_TIME_THRESHOLD as i64;
+
+    for source in [
+        "contract C() { entry main() { require(tx.daa >= -1); } }".to_string(),
+        format!("contract C() {{ entry main() {{ require(tx.daa >= {threshold}); }} }}"),
+    ] {
+        let error = compile_contract(&source, &[], CompileOptions::default()).expect_err("known out-of-domain DAA value must fail");
+        assert!(error.to_string().contains("0 <= value < LOCK_TIME_THRESHOLD"), "unexpected DAA error: {error}");
+    }
+    let largest_daa = format!("contract C() {{ entry main() {{ require(tx.daa >= {}); }} }}", threshold - 1);
+    compile_contract(&largest_daa, &[], CompileOptions::default()).expect("largest DAA-domain value compiles");
+
+    let early_time = format!("contract C() {{ entry main() {{ require(tx.time >= temporal({})); }} }}", threshold - 1);
+    let error = compile_contract(&early_time, &[], CompileOptions::default()).expect_err("known DAA-domain timestamp must fail");
+    assert!(error.to_string().contains("at least LOCK_TIME_THRESHOLD"), "unexpected time error: {error}");
+    let first_time = format!("contract C() {{ entry main() {{ require(tx.time >= temporal({threshold})); }} }}");
+    compile_contract(&first_time, &[], CompileOptions::default()).expect("first timestamp-domain value compiles");
+
+    let dynamic_daa =
+        compile_contract("contract C() { entry main(int value) { require(tx.daa >= value); } }", &[], CompileOptions::default())
+            .expect("dynamic DAA contract compiles");
+    for invalid in [-1, threshold] {
+        let sigscript = dynamic_daa.build_sig_script("main", vec![Expr::int(invalid)]).expect("DAA sigscript builds");
+        run_bytecode_with_sigscript_and_time(dynamic_daa.bytecode.clone(), sigscript, threshold as u64 - 1, 0)
+            .expect_err("runtime DAA domain guard must reject the value");
+    }
+    let sigscript = dynamic_daa.build_sig_script("main", vec![Expr::int(42)]).expect("DAA sigscript builds");
+    run_bytecode_with_sigscript_and_time(dynamic_daa.bytecode, sigscript, 42, 0).expect("valid DAA lock must satisfy CLTV");
+
+    let dynamic_time =
+        compile_contract("contract C() { entry main(temporal value) { require(tx.time >= value); } }", &[], CompileOptions::default())
+            .expect("dynamic time contract compiles");
+    let invalid_sigscript = dynamic_time.build_sig_script("main", vec![Expr::temporal(threshold - 1)]).expect("time sigscript builds");
+    run_bytecode_with_sigscript_and_time(dynamic_time.bytecode.clone(), invalid_sigscript, threshold as u64, 0)
+        .expect_err("runtime timestamp domain guard must reject a DAA-domain value");
+    let valid_sigscript = dynamic_time.build_sig_script("main", vec![Expr::temporal(threshold)]).expect("time sigscript builds");
+    run_bytecode_with_sigscript_and_time(dynamic_time.bytecode, valid_sigscript, threshold as u64, 0)
+        .expect("valid timestamp lock must satisfy CLTV");
+}
+
+#[test]
+fn temporal_literals_use_milliseconds_and_are_separate_from_daa_age() {
+    let relative_source = "contract C() { entry main() { require(this.ageDaa >= 1 days); } }";
+    compile_contract(relative_source, &[], CompileOptions::default()).expect_err("this.ageDaa must reject temporal expressions");
+
+    let date_source = r#"contract C() { entry main() { require(tx.time >= date("2030-01-01T00:00:00")); } }"#;
+    let unix_milliseconds = 1_893_456_000_000;
+    assert!(unix_milliseconds >= 500_000_000_000, "the consensus threshold must classify this as a timestamp");
+    let compiled = compile_contract(date_source, &[], CompileOptions::default()).expect("date contract compiles");
+    let sigscript = compiled.build_sig_script("main", vec![]).expect("signature script builds");
+    run_bytecode_with_sigscript_and_time(compiled.bytecode, sigscript, unix_milliseconds, 0)
+        .expect("the millisecond timestamp must satisfy CLTV");
+}
+
+#[test]
+fn rejects_unsupported_lock_requirement_comparisons() {
+    for condition in [
+        "this.ageDaa > 10",
+        "this.ageDaa < 10",
+        "this.ageDaa <= 10",
+        "tx.daa > 10",
+        "tx.daa < 10",
+        "tx.daa <= 10",
+        "tx.time > temporal(10)",
+        "tx.time < temporal(10)",
+        "tx.time <= temporal(10)",
+    ] {
         let source = format!(
             r#"
                 contract Test() {{
@@ -11318,16 +11578,21 @@ fn rejects_unsupported_time_op_comparisons() {
 }
 
 #[test]
-fn rejects_time_variables_outside_time_op_require() {
+fn rejects_lock_targets_outside_supported_requirements() {
     for statement in [
-        "require(this.age == 10);",
-        "require(tx.time == 10);",
-        "require(10 <= this.age);",
-        "require(10 <= tx.time);",
-        "int value = this.age;",
+        "require(this.ageDaa == 10);",
+        "require(tx.daa == 10);",
+        "require(tx.time == temporal(10));",
+        "require(10 <= this.ageDaa);",
+        "require(10 <= tx.daa);",
+        "require(temporal(10) <= tx.time);",
+        "int value = this.ageDaa;",
+        "int value = tx.daa;",
         "int value = tx.time;",
-        "if (this.age >= 10) { require(true); }",
-        "if (tx.time >= 10) { require(true); }",
+        "if (this.ageDaa >= 10) { require(true); }",
+        "if (tx.daa >= 10) { require(true); }",
+        "if (tx.time >= temporal(10)) { require(true); }",
+        "require(this.age_daa >= 10);",
         "require(this.time >= 10);",
     ] {
         let source = format!(
@@ -15229,7 +15494,7 @@ fn allows_fixed_array_cast_with_compatible_encoded_size() {
 }
 
 #[test]
-fn rejects_ordered_comparisons_for_non_int_operands() {
+fn rejects_ordered_comparisons_for_non_numeric_operands() {
     for (type_name, left, right) in [("string", "\"aaaaaaaaa\"", "\"bbbbbbbbb\""), ("byte", "byte(0xff)", "byte(0x01)")] {
         for operator in ["<", "<=", ">", ">="] {
             let source = format!(
@@ -15244,7 +15509,10 @@ fn rejects_ordered_comparisons_for_non_int_operands() {
             let err = compile_contract(&source, &[], CompileOptions::default())
                 .err()
                 .unwrap_or_else(|| panic!("{type_name} operands for {operator} should be rejected"));
-            assert!(err.to_string().contains("ordered comparison requires int operands"), "unexpected error for {operator}: {err}");
+            assert!(
+                err.to_string().contains("ordered comparison requires matching int or temporal operands"),
+                "unexpected error for {operator}: {err}"
+            );
         }
     }
 }

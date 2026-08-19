@@ -108,7 +108,7 @@ fn compile_param_size_validations<'i>(
             param.type_ref.base.fixed_byte_sequence_len()
         };
         let is_dynamic_array = param.type_ref.is_array() && exact_size.is_none();
-        if exact_size.is_none() && !is_dynamic_array && !param.type_ref.is_int() && !param.type_ref.is_bool() {
+        if exact_size.is_none() && !is_dynamic_array && !param.type_ref.is_int_like() && !param.type_ref.is_bool() {
             continue;
         }
 
@@ -154,7 +154,9 @@ fn compile_statement<'i>(ctx: &mut CompileStatementContext<'_, 'i>, stmt: &State
             compile_variable_definition_statement(ctx, type_ref, name, expr.as_ref())
         }
         Statement::Require { expr, .. } => compile_require_statement(ctx, expr),
-        Statement::TimeOp { tx_var, expr, .. } => compile_time_op_statement(ctx, tx_var, expr),
+        Statement::RequireAgeDaa { expr, .. } => compile_require_age_daa_statement(ctx, expr),
+        Statement::RequireTxDaa { expr, .. } => compile_require_tx_daa_statement(ctx, expr),
+        Statement::RequireTxTime { expr, .. } => compile_require_tx_time_statement(ctx, expr),
         Statement::Block { body, .. } => compile_block_statement(ctx, body).map(|_| Vec::new()),
         Statement::If { condition, then_branch, else_branch, .. } => {
             compile_if_statement(ctx, stmt, condition, then_branch, else_branch.as_deref()).map(|_| Vec::new())
@@ -280,17 +282,47 @@ fn compile_require_statement<'i>(ctx: &mut CompileStatementContext<'_, 'i>, expr
     Ok(Vec::new())
 }
 
-fn compile_time_op_statement<'i>(
+fn compile_require_age_daa_statement<'i>(
     ctx: &mut CompileStatementContext<'_, 'i>,
-    tx_var: &TimeVar,
     expr: &Expr<'i>,
 ) -> Result<Vec<String>, CompilerError> {
-    let int_type = TypeRef { base: TypeBase::Int, array_dims: Vec::new() };
-    ctx.compile_expr(expr, Some(&int_type))?;
-    ctx.builder.add_op(match tx_var {
-        TimeVar::ThisAge => OpCheckSequenceVerify,
-        TimeVar::TxTime => OpCheckLockTimeVerify,
-    })?;
+    let expected_type = TypeRef { base: TypeBase::Int, array_dims: Vec::new() };
+    ctx.compile_expr(expr, Some(&expected_type))?;
+    ctx.builder.add_op(OpDup)?;
+    ctx.builder.add_i64(0)?;
+    ctx.builder.add_i64(1_i64 << 32)?;
+    ctx.builder.add_op(OpWithin)?;
+    ctx.builder.add_op(OpVerify)?;
+    ctx.builder.add_op(OpCheckSequenceVerify)?;
+    Ok(Vec::new())
+}
+
+fn compile_require_tx_daa_statement<'i>(
+    ctx: &mut CompileStatementContext<'_, 'i>,
+    expr: &Expr<'i>,
+) -> Result<Vec<String>, CompilerError> {
+    let expected_type = TypeRef { base: TypeBase::Int, array_dims: Vec::new() };
+    ctx.compile_expr(expr, Some(&expected_type))?;
+    ctx.builder.add_op(OpDup)?;
+    ctx.builder.add_i64(0)?;
+    ctx.builder.add_i64(kaspa_txscript::LOCK_TIME_THRESHOLD as i64)?;
+    ctx.builder.add_op(OpWithin)?;
+    ctx.builder.add_op(OpVerify)?;
+    ctx.builder.add_op(OpCheckLockTimeVerify)?;
+    Ok(Vec::new())
+}
+
+fn compile_require_tx_time_statement<'i>(
+    ctx: &mut CompileStatementContext<'_, 'i>,
+    expr: &Expr<'i>,
+) -> Result<Vec<String>, CompilerError> {
+    let expected_type = TypeRef { base: TypeBase::Temporal, array_dims: Vec::new() };
+    ctx.compile_expr(expr, Some(&expected_type))?;
+    ctx.builder.add_op(OpDup)?;
+    ctx.builder.add_i64(kaspa_txscript::LOCK_TIME_THRESHOLD as i64)?;
+    ctx.builder.add_op(OpGreaterThanOrEqual)?;
+    ctx.builder.add_op(OpVerify)?;
+    ctx.builder.add_op(OpCheckLockTimeVerify)?;
     Ok(Vec::new())
 }
 

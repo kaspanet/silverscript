@@ -2,7 +2,7 @@ pragma silverscript ^0.1.0;
 
 contract Test() {
     entry test() {
-        int d = date("2021-02-17T01:30:00"); //YYYY-MM-DDThh:mm:ss
-        require(d == 0);
+        temporal d = date("2021-02-17T01:30:00"); //YYYY-MM-DDThh:mm:ss
+        require(d == temporal(0));
     }
 }

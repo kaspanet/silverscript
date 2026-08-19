@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::ast::{
     ArrayDim, BinaryOp, ConstantAst, ContractAst, ContractFieldAst, Expr, ExprKind, FunctionAst, IndexedIntrospectionKind,
-    IntrospectionKind, ParamAst, STATE_TYPE_NAME, SplitPart, StateFieldExpr, Statement, StructBindingAst, TimeVar, TypeBase, TypeRef,
-    UnaryOp, UnarySuffixKind, as_cast_call_name, as_cast_type, parse_contract_ast, parse_type_ref,
+    IntrospectionKind, ParamAst, STATE_TYPE_NAME, SplitPart, StateFieldExpr, Statement, StructBindingAst, TypeBase, TypeRef, UnaryOp,
+    UnarySuffixKind, as_cast_call_name, as_cast_type, parse_contract_ast, parse_type_ref,
 };
 use crate::debug_info::{DebugInfo, DebugNamedValue};
 pub use crate::errors::{CompilerError, ErrorSpan};
@@ -396,7 +396,7 @@ fn push_array_sigscript_arg<'i>(
 
 fn push_sigscript_non_array_arg<'i>(builder: &mut ScriptBuilder, arg: Expr<'i>) -> Result<(), CompilerError> {
     match arg.kind {
-        ExprKind::Int(value) => {
+        ExprKind::Int(value) | ExprKind::Temporal(value) => {
             builder.add_i64(value)?;
         }
         ExprKind::Bool(value) => {

@@ -179,12 +179,25 @@ fn lower_statement<'i>(
             span: *span,
             name_span: *name_span,
         }),
-        Statement::TimeOp { tx_var, expr, message, span, tx_var_span, message_span } => Ok(Statement::TimeOp {
-            tx_var: *tx_var,
+        Statement::RequireAgeDaa { expr, message, span, target_span, message_span } => Ok(Statement::RequireAgeDaa {
             expr: lower_expr(expr, types, constants, functions)?,
             message: message.clone(),
             span: *span,
-            tx_var_span: *tx_var_span,
+            target_span: *target_span,
+            message_span: *message_span,
+        }),
+        Statement::RequireTxDaa { expr, message, span, target_span, message_span } => Ok(Statement::RequireTxDaa {
+            expr: lower_expr(expr, types, constants, functions)?,
+            message: message.clone(),
+            span: *span,
+            target_span: *target_span,
+            message_span: *message_span,
+        }),
+        Statement::RequireTxTime { expr, message, span, target_span, message_span } => Ok(Statement::RequireTxTime {
+            expr: lower_expr(expr, types, constants, functions)?,
+            message: message.clone(),
+            span: *span,
+            target_span: *target_span,
             message_span: *message_span,
         }),
         Statement::Require { expr, message, span, message_span } => Ok(Statement::Require {

@@ -3,7 +3,7 @@ pragma silverscript ^0.1.0;
 contract TransferWithTimeout(
     pubkey sender,
     pubkey recipient,
-    int timeout
+    temporal timeout
 ) {
     entry transfer(sig recipientSig) {
         require(checkSig(recipientSig, recipient));

@@ -137,12 +137,25 @@ fn lower_statements<'i>(
                     name_span: *name_span,
                 });
             }
-            Statement::TimeOp { tx_var, expr, message, span, tx_var_span, message_span } => lowered.push(Statement::TimeOp {
-                tx_var: *tx_var,
+            Statement::RequireAgeDaa { expr, message, span, target_span, message_span } => lowered.push(Statement::RequireAgeDaa {
                 expr: substitute_expr(expr, &local_aliases)?,
                 message: message.clone(),
                 span: *span,
-                tx_var_span: *tx_var_span,
+                target_span: *target_span,
+                message_span: *message_span,
+            }),
+            Statement::RequireTxDaa { expr, message, span, target_span, message_span } => lowered.push(Statement::RequireTxDaa {
+                expr: substitute_expr(expr, &local_aliases)?,
+                message: message.clone(),
+                span: *span,
+                target_span: *target_span,
+                message_span: *message_span,
+            }),
+            Statement::RequireTxTime { expr, message, span, target_span, message_span } => lowered.push(Statement::RequireTxTime {
+                expr: substitute_expr(expr, &local_aliases)?,
+                message: message.clone(),
+                span: *span,
+                target_span: *target_span,
                 message_span: *message_span,
             }),
             Statement::Require { expr, message, span, message_span } => lowered.push(Statement::Require {
@@ -346,7 +359,9 @@ fn collect_statement_identifier_uses<'i>(stmt: &Statement<'i>, uses: &mut HashMa
         }
         Statement::TupleAssignment { expr, .. }
         | Statement::Assign { expr, .. }
-        | Statement::TimeOp { expr, .. }
+        | Statement::RequireAgeDaa { expr, .. }
+        | Statement::RequireTxDaa { expr, .. }
+        | Statement::RequireTxTime { expr, .. }
         | Statement::Require { expr, .. }
         | Statement::StructDestructure { expr, .. } => collect_expr_identifier_uses(expr, uses),
         Statement::Block { body, .. } => {
@@ -439,6 +454,7 @@ fn collect_expr_identifier_uses<'i>(expr: &Expr<'i>, uses: &mut HashMap<String, 
         ExprKind::IndexedIntrospection { index, .. } => collect_expr_identifier_uses(index, uses),
         ExprKind::UnarySuffix { source, .. } | ExprKind::FieldAccess { source, .. } => collect_expr_identifier_uses(source, uses),
         ExprKind::Int(_)
+        | ExprKind::Temporal(_)
         | ExprKind::DateLiteral(_)
         | ExprKind::Bool(_)
         | ExprKind::Byte(_)
@@ -471,6 +487,7 @@ fn expr_references_any(expr: &Expr<'_>, names: &HashSet<String>) -> bool {
         ExprKind::IndexedIntrospection { index, .. } => expr_references_any(index, names),
         ExprKind::UnarySuffix { source, .. } | ExprKind::FieldAccess { source, .. } => expr_references_any(source, names),
         ExprKind::Int(_)
+        | ExprKind::Temporal(_)
         | ExprKind::DateLiteral(_)
         | ExprKind::Bool(_)
         | ExprKind::Byte(_)

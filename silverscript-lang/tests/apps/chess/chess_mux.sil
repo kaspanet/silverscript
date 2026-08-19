@@ -248,7 +248,7 @@ contract ChessMux(
 
         // Timeout uses the input's relative age directly. Consensus sequence-lock
         // validation enforces that the spent mux UTXO is old enough.
-        require(this.age >= move_timeout);
+        require(this.ageDaa >= move_timeout);
 
         // Ordinary timeout loses for the side that owed the next signed route.
         // Draw-state 1 is the one exception: silence accepts the draw claim.

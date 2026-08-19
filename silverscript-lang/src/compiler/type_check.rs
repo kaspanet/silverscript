@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::ast::{
     ArrayDim, BinaryOp, ContractFieldAst, Expr, ExprKind, FunctionAst, SplitPart, TypeBase, TypeRef, UnaryOp, UnarySuffixKind,
-    as_cast_type,
+    as_cast_type, is_temporal_unit,
 };
 
 use super::builtin_types::{
@@ -30,7 +30,10 @@ pub(super) fn check_expr<'i>(
 ) -> Result<TypeRef, CompilerError> {
     let actual = match &expr.kind {
         ExprKind::Int(value) if expected.is_some_and(TypeRef::is_byte) && (0..=255).contains(value) => scalar_type(TypeBase::Byte),
-        ExprKind::Int(_) | ExprKind::DateLiteral(_) | ExprKind::NumberWithUnit { .. } => scalar_type(TypeBase::Int),
+        ExprKind::Int(_) => scalar_type(TypeBase::Int),
+        ExprKind::Temporal(_) | ExprKind::DateLiteral(_) => scalar_type(TypeBase::Temporal),
+        ExprKind::NumberWithUnit { unit, .. } if is_temporal_unit(unit) => scalar_type(TypeBase::Temporal),
+        ExprKind::NumberWithUnit { .. } => scalar_type(TypeBase::Int),
         ExprKind::Bool(_) => scalar_type(TypeBase::Bool),
         ExprKind::Byte(_) => scalar_type(TypeBase::Byte),
         ExprKind::String(_) => scalar_type(TypeBase::String),
@@ -78,9 +81,14 @@ pub(super) fn check_expr<'i>(
                 bool_type
             }
             UnaryOp::Neg => {
-                let int_type = scalar_type(TypeBase::Int);
-                check_expr(expr, Some(&int_type), ctx)?;
-                int_type
+                let operand_type = check_expr(expr, None, ctx)?;
+                if !operand_type.is_int_like() {
+                    return Err(CompilerError::Unsupported(format!(
+                        "negation requires an integer like operand (int or temporal), got {}",
+                        operand_type.type_name()
+                    )));
+                }
+                operand_type
             }
         },
         ExprKind::Binary { op, left, right } => check_binary(*op, left, right, ctx)?,
@@ -341,10 +349,12 @@ fn validate_scalar_cast_compatibility<'i>(
     constants: &HashMap<String, Expr<'i>>,
 ) -> Result<(), CompilerError> {
     let compatible = if cast_type.is_int() {
-        source_type.is_int()
+        source_type.is_int_like()
             || matches!(source_type.base, TypeBase::Byte)
                 && source_type.array_dims.len() == 1
                 && array_type_size(source_type, constants).is_some_and(|size| size <= 8)
+    } else if cast_type.is_temporal() {
+        source_type.is_int_like()
     } else if cast_type.is_bool() {
         source_type.is_byte()
     } else if cast_type.is_string() {
@@ -456,9 +466,9 @@ fn check_binary<'i>(
             Ok(scalar_type(TypeBase::Bool))
         }
         BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge => {
-            if !left_type.is_int() || !right_type.is_int() {
+            if !left_type.is_int_like() || !type_refs_equal(&left_type, &right_type, ctx.constants) {
                 return Err(CompilerError::Unsupported(format!(
-                    "ordered comparison requires int operands, got {} and {}",
+                    "ordered comparison requires matching int or temporal operands, got {} and {}",
                     left_type.type_name(),
                     right_type.type_name()
                 )));
@@ -497,10 +507,14 @@ fn check_binary<'i>(
             Ok(left_type)
         }
         BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Mod => {
-            let int_type = scalar_type(TypeBase::Int);
-            ensure_expected(&left_type, Some(&int_type), ctx.constants)?;
-            ensure_expected(&right_type, Some(&int_type), ctx.constants)?;
-            Ok(int_type)
+            if !left_type.is_int_like() || !type_refs_equal(&left_type, &right_type, ctx.constants) {
+                return Err(CompilerError::Unsupported(format!(
+                    "arithmetic requires matching int or temporal operands, got {} and {}",
+                    left_type.type_name(),
+                    right_type.type_name()
+                )));
+            }
+            Ok(left_type)
         }
     }
 }

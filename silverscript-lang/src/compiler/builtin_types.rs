@@ -58,6 +58,7 @@ pub(super) fn indexed_introspection_type(kind: IndexedIntrospectionKind) -> Type
 pub(super) fn builtin_return(name: &str) -> Option<BuiltinReturn> {
     let value_type = match name {
         "int" | "signed" | "unsigned" => scalar(TypeBase::Int),
+        "temporal" => scalar(TypeBase::Temporal),
         "bool" => scalar(TypeBase::Bool),
         "byte" => scalar(TypeBase::Byte),
         "string" => scalar(TypeBase::String),

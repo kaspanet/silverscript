@@ -2,7 +2,7 @@ pragma silverscript ^0.1.0;
 
 contract LastWill(byte[32] inheritor, byte[32] cold, byte[32] hot) {
     entry inherit(pubkey pk, sig s) {
-        require(this.age >= 180);
+        require(this.ageDaa >= 180);
         require(blake2b(byte[](pk)) == inheritor);
         require(checkSig(s, pk));
     }

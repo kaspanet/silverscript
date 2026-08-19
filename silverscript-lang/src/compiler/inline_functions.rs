@@ -255,17 +255,44 @@ impl<'i, 'd> Inliner<'i, 'd> {
                     Statement::Assign { name: self.rename_name(name, scope), expr: renamed_expr, span: *span, name_span: *name_span },
                 );
             }
-            Statement::TimeOp { tx_var, expr, message, span, tx_var_span, message_span } => {
+            Statement::RequireAgeDaa { expr, message, span, target_span, message_span } => {
                 let (prelude, renamed_expr) = self.lower_expr(expr, scope, visited_functions)?;
                 lowered.extend(prelude);
                 self.push_lowered_statement(
                     &mut lowered,
-                    Statement::TimeOp {
-                        tx_var: *tx_var,
+                    Statement::RequireAgeDaa {
                         expr: renamed_expr,
                         message: message.clone(),
                         span: *span,
-                        tx_var_span: *tx_var_span,
+                        target_span: *target_span,
+                        message_span: *message_span,
+                    },
+                );
+            }
+            Statement::RequireTxDaa { expr, message, span, target_span, message_span } => {
+                let (prelude, renamed_expr) = self.lower_expr(expr, scope, visited_functions)?;
+                lowered.extend(prelude);
+                self.push_lowered_statement(
+                    &mut lowered,
+                    Statement::RequireTxDaa {
+                        expr: renamed_expr,
+                        message: message.clone(),
+                        span: *span,
+                        target_span: *target_span,
+                        message_span: *message_span,
+                    },
+                );
+            }
+            Statement::RequireTxTime { expr, message, span, target_span, message_span } => {
+                let (prelude, renamed_expr) = self.lower_expr(expr, scope, visited_functions)?;
+                lowered.extend(prelude);
+                self.push_lowered_statement(
+                    &mut lowered,
+                    Statement::RequireTxTime {
+                        expr: renamed_expr,
+                        message: message.clone(),
+                        span: *span,
+                        target_span: *target_span,
                         message_span: *message_span,
                     },
                 );
@@ -473,6 +500,7 @@ impl<'i, 'd> Inliner<'i, 'd> {
         let span = expr.span;
         match &expr.kind {
             ExprKind::Int(value) => Ok((Vec::new(), Expr::new(ExprKind::Int(*value), span))),
+            ExprKind::Temporal(value) => Ok((Vec::new(), Expr::new(ExprKind::Temporal(*value), span))),
             ExprKind::Bool(value) => Ok((Vec::new(), Expr::new(ExprKind::Bool(*value), span))),
             ExprKind::Byte(value) => Ok((Vec::new(), Expr::new(ExprKind::Byte(*value), span))),
             ExprKind::String(value) => Ok((Vec::new(), Expr::new(ExprKind::String(value.clone()), span))),

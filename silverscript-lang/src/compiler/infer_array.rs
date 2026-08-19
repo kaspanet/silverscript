@@ -275,9 +275,12 @@ pub(super) fn infer_expr_type<'i>(
     functions: &HashMap<String, &FunctionAst<'i>>,
 ) -> Option<TypeRef> {
     match &expr.kind {
-        ExprKind::Int(_) | ExprKind::DateLiteral(_) | ExprKind::NumberWithUnit { .. } => {
-            Some(TypeRef { base: TypeBase::Int, array_dims: Vec::new() })
+        ExprKind::Int(_) => Some(TypeRef { base: TypeBase::Int, array_dims: Vec::new() }),
+        ExprKind::NumberWithUnit { unit, .. } if crate::ast::is_temporal_unit(unit) => {
+            Some(TypeRef { base: TypeBase::Temporal, array_dims: Vec::new() })
         }
+        ExprKind::NumberWithUnit { .. } => Some(TypeRef { base: TypeBase::Int, array_dims: Vec::new() }),
+        ExprKind::Temporal(_) | ExprKind::DateLiteral(_) => Some(TypeRef { base: TypeBase::Temporal, array_dims: Vec::new() }),
         ExprKind::Bool(_) => Some(TypeRef { base: TypeBase::Bool, array_dims: Vec::new() }),
         ExprKind::String(_) => Some(TypeRef { base: TypeBase::String, array_dims: Vec::new() }),
         ExprKind::Byte(_) => Some(TypeRef { base: TypeBase::Byte, array_dims: Vec::new() }),

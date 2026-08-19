@@ -12,7 +12,7 @@ contract HodlVault(
         int price = int(byte[4](priceBin));
 
         require(blockHeight >= minBlock);
-        require(tx.time >= blockHeight);
+        require(tx.daa >= blockHeight);
         require(price >= priceTarget);
 
         require(checkMsgSig(oracleSig, sha256(oracleMessage), oraclePk));

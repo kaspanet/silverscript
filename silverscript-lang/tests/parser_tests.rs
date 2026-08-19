@@ -47,6 +47,9 @@ fn parses_int_as_fixed_byte_array() {
 #[test]
 fn type_predicates_only_match_scalars() {
     assert!(parse_type_ref("int").unwrap().is_int());
+    assert!(parse_type_ref("temporal").unwrap().is_temporal());
+    assert!(parse_type_ref("int").unwrap().is_int_like());
+    assert!(parse_type_ref("temporal").unwrap().is_int_like());
     assert!(parse_type_ref("bool").unwrap().is_bool());
     assert!(parse_type_ref("string").unwrap().is_string());
     assert!(parse_type_ref("pubkey").unwrap().is_pubkey());
@@ -57,6 +60,9 @@ fn type_predicates_only_match_scalars() {
     assert!(parse_type_ref("Record").unwrap().is_custom());
 
     assert!(!parse_type_ref("int[]").unwrap().is_int());
+    assert!(!parse_type_ref("temporal[]").unwrap().is_temporal());
+    assert!(!parse_type_ref("int[]").unwrap().is_int_like());
+    assert!(!parse_type_ref("bool").unwrap().is_int_like());
     assert!(!parse_type_ref("byte[1]").unwrap().is_byte());
     assert!(!parse_type_ref("Record[]").unwrap().is_custom());
 }
@@ -135,11 +141,11 @@ fn try_from_nested_byte_vec_requires_equal_nonempty_elements() {
 }
 
 #[test]
-fn parses_timeops_and_console() {
+fn parses_lock_requirement_and_console() {
     let input = r#"
         contract TimeLock(pubkey owner) {
             function unlock(sig s) {
-                require(this.age >= 10 days, "too early");
+                require(this.ageDaa >= 10, "too early");
                 console.log("ok", 1 + 2, checkSig(s, owner));
             }
         }
@@ -150,11 +156,43 @@ fn parses_timeops_and_console() {
 }
 
 #[test]
+fn parses_lock_requirements_as_distinct_statement_variants() {
+    let source = r#"
+        contract Locks() {
+            entry main(int daa, temporal timestamp) {
+                require(this.ageDaa >= daa);
+                require(tx.daa >= daa);
+                require(tx.time >= timestamp);
+            }
+        }
+    "#;
+
+    let ast = parse_contract_ast(source).expect("lock requirements parse");
+    let body = &ast.functions[0].body;
+    assert!(matches!(body[0], Statement::RequireAgeDaa { .. }));
+    assert!(matches!(body[1], Statement::RequireTxDaa { .. }));
+    assert!(matches!(body[2], Statement::RequireTxTime { .. }));
+
+    let kinds = body
+        .iter()
+        .map(|statement| serde_json::to_value(statement).expect("statement serializes")["kind"].as_str().unwrap().to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(kinds, ["require_age_daa", "require_tx_daa", "require_tx_time"]);
+}
+
+#[test]
+fn legacy_age_daa_spelling_is_not_a_lock_requirement() {
+    let source = "contract Locks() { entry main() { require(this.age_daa >= 1); } }";
+    let ast = parse_contract_ast(source).expect("legacy spelling remains syntactically an ordinary field access");
+    assert!(matches!(ast.functions[0].body[0], Statement::Require { .. }));
+}
+
+#[test]
 fn rejects_number_unit_overflow() {
     let input = r#"
         contract TimeLock() {
             entry main() {
-                require(this.age >= 9223372036854775807 weeks);
+                require(tx.time >= 9223372036854775807 weeks);
             }
         }
     "#;

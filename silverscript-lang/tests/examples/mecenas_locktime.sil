@@ -11,7 +11,7 @@ contract Mecenas(
         require(tx.outputs[0].scriptPubKey == byte[](recipientScriptPubKey));
 
         int initial = int(initialBlock);
-        require(tx.time >= initial);
+        require(tx.daa >= initial);
 
         int passedBlocks = tx.locktime - initial;
         int pledge = passedBlocks * pledgePerBlock;

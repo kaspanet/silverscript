@@ -28,7 +28,7 @@ fn tutorial_rust_build_sigscript_multiple_entrypoints_example() {
     let source = r#"
         pragma silverscript ^0.1.0;
 
-        contract TransferWithTimeout(pubkey sender, pubkey recipient, int timeout) {
+        contract TransferWithTimeout(pubkey sender, pubkey recipient, temporal timeout) {
             entry transfer(sig recipientSig) {
                 require(checkSig(recipientSig, recipient));
             }
@@ -42,9 +42,10 @@ fn tutorial_rust_build_sigscript_multiple_entrypoints_example() {
 
     let sender_pk = vec![3u8; 32];
     let recipient_pk = vec![4u8; 32];
-    let timeout = 1_640_000_000i64;
-    let compiled = compile_contract(source, &[sender_pk.into(), recipient_pk.into(), timeout.into()], CompileOptions::default())
-        .expect("multi-entrypoint example should compile");
+    let timeout = 1_640_000_000_000i64;
+    let compiled =
+        compile_contract(source, &[sender_pk.into(), recipient_pk.into(), Expr::temporal(timeout)], CompileOptions::default())
+            .expect("multi-entrypoint example should compile");
 
     assert!(!compiled.without_selector, "multiple entrypoints should require a selector");
 

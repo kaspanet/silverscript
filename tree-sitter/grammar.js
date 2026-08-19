@@ -127,7 +127,7 @@ export default grammar({
         $.call_statement,
         $.return_statement,
         $.assign_statement,
-        $.time_op_statement,
+        $.lock_requirement_statement,
         $.require_statement,
         $.if_statement,
         $.for_statement,
@@ -191,7 +191,7 @@ export default grammar({
     assign_statement: ($) =>
       seq(field("name", $.identifier), "=", field("value", $.expression), ";"),
 
-    time_op_statement: ($) =>
+    lock_requirement_statement: ($) =>
       seq(
         "require",
         "(",
@@ -413,7 +413,7 @@ export default grammar({
     array_type: ($) => prec.right(seq($.base_type, repeat1($.array_suffix))),
 
     base_type: ($) =>
-      choice("int", "bool", "string", "pubkey", "sig", "datasig", "byte", $.identifier),
+      choice("int", "temporal", "bool", "string", "pubkey", "sig", "datasig", "byte", $.identifier),
 
     attribute: (_) => token(seq("#[", /[^\]\n]+/, "]")),
 
@@ -458,7 +458,7 @@ export default grammar({
 
     hex_literal: (_) => token(/0[xX][0-9a-fA-F]*/),
 
-    tx_var: (_) => choice("this.age", "tx.time"),
+    tx_var: (_) => choice("this.ageDaa", "tx.daa", "tx.time"),
 
     introspection: (_) =>
       choice(

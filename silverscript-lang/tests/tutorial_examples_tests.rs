@@ -53,6 +53,7 @@ fn dummy_value(type_ref: &TypeRef) -> Result<Expr<'static>, String> {
 
     Ok(match &type_ref.base {
         TypeBase::Int => Expr::int(0),
+        TypeBase::Temporal => Expr::temporal(kaspa_txscript::LOCK_TIME_THRESHOLD as i64),
         TypeBase::Bool => Expr::bool(false),
         TypeBase::Byte => Expr::byte(0),
         TypeBase::String => Expr::string(String::new()),

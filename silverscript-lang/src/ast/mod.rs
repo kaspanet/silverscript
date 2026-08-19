@@ -186,6 +186,7 @@ pub struct TypeRef {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TypeBase {
     Int,
+    Temporal,
     Bool,
     String,
     Pubkey,
@@ -213,6 +214,7 @@ impl TypeBase {
     pub fn type_name(&self) -> String {
         match self {
             TypeBase::Int => "int".to_string(),
+            TypeBase::Temporal => "temporal".to_string(),
             TypeBase::Bool => "bool".to_string(),
             TypeBase::String => "string".to_string(),
             TypeBase::Pubkey => "pubkey".to_string(),
@@ -244,6 +246,7 @@ impl<'de> Deserialize<'de> for TypeBase {
         let value = String::deserialize(deserializer)?;
         Ok(match value.as_str() {
             "int" => TypeBase::Int,
+            "temporal" => TypeBase::Temporal,
             "bool" => TypeBase::Bool,
             "string" => TypeBase::String,
             "pubkey" => TypeBase::Pubkey,
@@ -278,6 +281,14 @@ pub(crate) fn as_cast_type(name: &str) -> Option<TypeRef> {
 impl TypeRef {
     pub fn is_int(&self) -> bool {
         self.array_dims.is_empty() && matches!(self.base, TypeBase::Int)
+    }
+
+    pub fn is_temporal(&self) -> bool {
+        self.array_dims.is_empty() && matches!(self.base, TypeBase::Temporal)
+    }
+
+    pub fn is_int_like(&self) -> bool {
+        self.array_dims.is_empty() && matches!(self.base, TypeBase::Int | TypeBase::Temporal)
     }
 
     pub fn is_bool(&self) -> bool {
@@ -441,14 +452,33 @@ pub enum Statement<'i> {
         #[serde(skip_deserializing)]
         name_span: Span<'i>,
     },
-    TimeOp {
-        tx_var: TimeVar,
+    RequireAgeDaa {
         expr: Expr<'i>,
         message: Option<String>,
         #[serde(skip_deserializing)]
         span: Span<'i>,
         #[serde(skip_deserializing)]
-        tx_var_span: Span<'i>,
+        target_span: Span<'i>,
+        #[serde(skip_deserializing)]
+        message_span: Option<Span<'i>>,
+    },
+    RequireTxDaa {
+        expr: Expr<'i>,
+        message: Option<String>,
+        #[serde(skip_deserializing)]
+        span: Span<'i>,
+        #[serde(skip_deserializing)]
+        target_span: Span<'i>,
+        #[serde(skip_deserializing)]
+        message_span: Option<Span<'i>>,
+    },
+    RequireTxTime {
+        expr: Expr<'i>,
+        message: Option<String>,
+        #[serde(skip_deserializing)]
+        span: Span<'i>,
+        #[serde(skip_deserializing)]
+        target_span: Span<'i>,
         #[serde(skip_deserializing)]
         message_span: Option<Span<'i>>,
     },
@@ -512,7 +542,9 @@ impl<'i> Statement<'i> {
             | Statement::StructDestructure { span, .. }
             | Statement::Assign { span, .. }
             | Statement::Return { span, .. }
-            | Statement::TimeOp { span, .. }
+            | Statement::RequireAgeDaa { span, .. }
+            | Statement::RequireTxDaa { span, .. }
+            | Statement::RequireTxTime { span, .. }
             | Statement::Require { span, .. }
             | Statement::Block { span, .. }
             | Statement::If { span, .. }
@@ -520,13 +552,6 @@ impl<'i> Statement<'i> {
             | Statement::Console { span, .. } => *span,
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TimeVar {
-    ThisAge,
-    TxTime,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -547,6 +572,10 @@ impl<'i> Expr<'i> {
 
     pub fn int(value: i64) -> Self {
         Self::new(ExprKind::Int(value), Span::default())
+    }
+
+    pub fn temporal(value: i64) -> Self {
+        Self::new(ExprKind::Temporal(value), Span::default())
     }
 
     pub fn bool(value: bool) -> Self {
@@ -598,7 +627,10 @@ impl<'i> Expr<'i> {
 
 fn intrinsic_expr_type(expr: &Expr<'_>) -> Option<TypeRef> {
     let base = match &expr.kind {
-        ExprKind::Int(_) | ExprKind::DateLiteral(_) | ExprKind::NumberWithUnit { .. } => TypeBase::Int,
+        ExprKind::Int(_) => TypeBase::Int,
+        ExprKind::Temporal(_) | ExprKind::DateLiteral(_) => TypeBase::Temporal,
+        ExprKind::NumberWithUnit { unit, .. } if is_temporal_unit(unit) => TypeBase::Temporal,
+        ExprKind::NumberWithUnit { .. } => TypeBase::Int,
         ExprKind::Bool(_) => TypeBase::Bool,
         ExprKind::Byte(_) => TypeBase::Byte,
         ExprKind::String(_) => TypeBase::String,
@@ -676,6 +708,7 @@ impl<'i> TryFrom<Vec<Vec<u8>>> for Expr<'i> {
 #[serde(tag = "kind", content = "data", rename_all = "snake_case")]
 pub enum ExprKind<'i> {
     Int(i64),
+    Temporal(i64),
     Bool(bool),
     Byte(u8),
     String(String),
@@ -989,10 +1022,9 @@ impl SourceFormatter {
             Statement::Assign { name, expr, .. } => {
                 self.line(&format!("{} = {};", name, format_expr(expr)));
             }
-            Statement::TimeOp { tx_var, expr, message, .. } => {
-                let message = message.as_ref().map(|message| format!(", {}", format_string_literal(message))).unwrap_or_default();
-                self.line(&format!("require({} >= {}{});", format_time_var(*tx_var), format_expr(expr), message));
-            }
+            Statement::RequireAgeDaa { expr, message, .. } => self.write_lock_requirement("this.ageDaa", expr, message),
+            Statement::RequireTxDaa { expr, message, .. } => self.write_lock_requirement("tx.daa", expr, message),
+            Statement::RequireTxTime { expr, message, .. } => self.write_lock_requirement("tx.time", expr, message),
             Statement::Require { expr, message, .. } => {
                 let message = message.as_ref().map(|message| format!(", {}", format_string_literal(message))).unwrap_or_default();
                 self.line(&format!("require({}{});", format_expr(expr), message));
@@ -1048,6 +1080,11 @@ impl SourceFormatter {
                 self.line(&format!("console.log({});", format_console_args(args)));
             }
         }
+    }
+
+    fn write_lock_requirement(&mut self, target: &str, expr: &Expr<'_>, message: &Option<String>) {
+        let message = message.as_ref().map(|message| format!(", {}", format_string_literal(message))).unwrap_or_default();
+        self.line(&format!("require({target} >= {}{message});", format_expr(expr)));
     }
 
     fn line(&mut self, content: &str) {
@@ -1119,10 +1156,11 @@ fn format_expr_with_prec(expr: &Expr<'_>, parent_prec: u8, right_child: bool) ->
     let prec = expr_precedence(&expr.kind);
     let rendered = match &expr.kind {
         ExprKind::Int(value) => value.to_string(),
+        ExprKind::Temporal(value) => format!("temporal({value})"),
         ExprKind::Bool(value) => value.to_string(),
         ExprKind::Byte(value) => format!("0x{value:02x}"),
         ExprKind::String(value) => format_string_literal(value),
-        ExprKind::DateLiteral(value) => value.to_string(),
+        ExprKind::DateLiteral(value) => format!("temporal({value})"),
         ExprKind::Identifier(value) => value.clone(),
         ExprKind::Array { type_ref, values } => format_array(type_ref, values),
         ExprKind::Call { name, args, .. } => {
@@ -1220,13 +1258,6 @@ fn format_string_literal(value: &str) -> String {
         return format!("'{value}'");
     }
     format!("\"{}\"", value.replace('"', "\\\""))
-}
-
-fn format_time_var(var: TimeVar) -> &'static str {
-    match var {
-        TimeVar::ThisAge => "this.age",
-        TimeVar::TxTime => "tx.time",
-    }
 }
 
 const PREC_POSTFIX: u8 = 11;
@@ -1379,6 +1410,7 @@ fn parse_type_name_pair(pair: Pair<'_, Rule>) -> Result<TypeRef, CompilerError> 
     let mut inner = pair.into_inner();
     let base = match inner.next().ok_or_else(|| CompilerError::Unsupported("missing base type".to_string()))?.as_str() {
         "int" => TypeBase::Int,
+        "temporal" => TypeBase::Temporal,
         "bool" => TypeBase::Bool,
         "string" => TypeBase::String,
         "pubkey" => TypeBase::Pubkey,
@@ -1854,25 +1886,25 @@ fn parse_statement<'i>(pair: Pair<'i, Rule>) -> Result<Statement<'i>, CompilerEr
             };
             Ok(Statement::Return { exprs, span })
         }
-        Rule::time_op_statement => {
+        Rule::lock_requirement_statement => {
             let mut inner = pair.into_inner();
-            let tx_var =
-                inner.next().ok_or_else(|| CompilerError::Unsupported("missing time op variable".to_string()).with_span(&span))?;
-            let expr_pair =
-                inner.next().ok_or_else(|| CompilerError::Unsupported("missing time op expression".to_string()).with_span(&span))?;
+            let tx_var = inner
+                .next()
+                .ok_or_else(|| CompilerError::Unsupported("missing lock requirement target".to_string()).with_span(&span))?;
+            let expr_pair = inner
+                .next()
+                .ok_or_else(|| CompilerError::Unsupported("missing lock requirement expression".to_string()).with_span(&span))?;
             let message = inner.next().map(parse_require_message).transpose().map_err(|err| err.with_span(&span))?;
 
             let expr = parse_expression(expr_pair).map_err(|err| err.with_span(&span))?;
-            let tx_var_span = Span::from(tx_var.as_span());
-            let tx_var_value = match tx_var.as_str() {
-                "this.age" => TimeVar::ThisAge,
-                "tx.time" => TimeVar::TxTime,
-                other => {
-                    return Err(CompilerError::Unsupported(format!("unsupported time variable: {other}")).with_span(&tx_var_span));
-                }
-            };
+            let target_span = Span::from(tx_var.as_span());
             let (message, message_span) = message.unzip();
-            Ok(Statement::TimeOp { tx_var: tx_var_value, expr, message, span, tx_var_span, message_span })
+            match tx_var.as_str() {
+                "this.ageDaa" => Ok(Statement::RequireAgeDaa { expr, message, span, target_span, message_span }),
+                "tx.daa" => Ok(Statement::RequireTxDaa { expr, message, span, target_span, message_span }),
+                "tx.time" => Ok(Statement::RequireTxTime { expr, message, span, target_span, message_span }),
+                other => Err(CompilerError::Unsupported(format!("unsupported lock target: {other}")).with_span(&target_span)),
+            }
         }
         Rule::require_statement => {
             let mut inner = pair.into_inner();
@@ -2561,11 +2593,11 @@ fn apply_number_unit<'i>(expr: Expr<'i>, unit: &str) -> Result<Expr<'i>, Compile
         _ => return Err(CompilerError::InvalidLiteral("number literal is not an int".to_string())),
     };
     let multiplier = match unit {
-        "seconds" => 1,
-        "minutes" => 60,
-        "hours" => 60 * 60,
-        "days" => 24 * 60 * 60,
-        "weeks" => 7 * 24 * 60 * 60,
+        "seconds" => 1_000,
+        "minutes" => 60_000,
+        "hours" => 60 * 60_000,
+        "days" => 24 * 60 * 60_000,
+        "weeks" => 7 * 24 * 60 * 60_000,
         "litras" => 1,
         "grains" => 100_000,
         "kas" => 100_000_000,
@@ -2574,7 +2606,12 @@ fn apply_number_unit<'i>(expr: Expr<'i>, unit: &str) -> Result<Expr<'i>, Compile
     let scaled = value
         .checked_mul(multiplier)
         .ok_or_else(|| CompilerError::InvalidLiteral(format!("number literal overflow for unit '{unit}'")))?;
-    Ok(Expr::new(ExprKind::Int(scaled), span))
+    let kind = if is_temporal_unit(unit) { ExprKind::Temporal(scaled) } else { ExprKind::Int(scaled) };
+    Ok(Expr::new(kind, span))
+}
+
+pub(crate) fn is_temporal_unit(unit: &str) -> bool {
+    matches!(unit, "seconds" | "minutes" | "hours" | "days" | "weeks")
 }
 
 fn parse_date_literal<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {
@@ -2588,7 +2625,7 @@ fn parse_date_literal<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerErro
     let timestamp = NaiveDateTime::parse_from_str(&value, "%Y-%m-%dT%H:%M:%S")
         .map_err(|_| CompilerError::InvalidLiteral(format!("invalid date literal '{value}'")))?
         .and_utc()
-        .timestamp();
+        .timestamp_millis();
     Ok(Expr::new(ExprKind::DateLiteral(timestamp), span))
 }
 

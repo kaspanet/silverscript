@@ -120,7 +120,9 @@ fn validate_statement_declaration_names<'i>(
             }
             Statement::FunctionCall { .. }
             | Statement::Assign { .. }
-            | Statement::TimeOp { .. }
+            | Statement::RequireAgeDaa { .. }
+            | Statement::RequireTxDaa { .. }
+            | Statement::RequireTxTime { .. }
             | Statement::Require { .. }
             | Statement::Return { .. }
             | Statement::Console { .. } => {}
@@ -157,7 +159,9 @@ fn validate_loop_variable_assignments<'i>(
             | Statement::StateFunctionCallAssign { .. }
             | Statement::StructDestructure { .. }
             | Statement::Assign { .. }
-            | Statement::TimeOp { .. }
+            | Statement::RequireAgeDaa { .. }
+            | Statement::RequireTxDaa { .. }
+            | Statement::RequireTxTime { .. }
             | Statement::Require { .. }
             | Statement::Return { .. }
             | Statement::Console { .. } => {}
@@ -466,7 +470,9 @@ fn validate_statement_shapes<'i>(
             }
             Statement::Return { exprs, .. } => validate_return_statement_shape(&mut ctx, exprs)?,
             Statement::Require { expr, .. } => validate_require_statement_shape(&mut ctx, expr)?,
-            Statement::TimeOp { expr, .. } => validate_time_op_statement_shape(&mut ctx, expr)?,
+            Statement::RequireAgeDaa { expr, .. } => validate_require_age_daa_statement_shape(&mut ctx, expr)?,
+            Statement::RequireTxDaa { expr, .. } => validate_require_tx_daa_statement_shape(&mut ctx, expr)?,
+            Statement::RequireTxTime { expr, .. } => validate_require_tx_time_statement_shape(&mut ctx, expr)?,
             Statement::Console { args, .. } => validate_console_statement_shape(&mut ctx, args)?,
             Statement::Assign { name, expr, name_span, .. } => validate_assign_statement_shape(&mut ctx, name, expr, name_span)?,
             Statement::Block { body, .. } => validate_block_statement_shape(&mut ctx, body)?,
@@ -738,11 +744,49 @@ fn validate_require_statement_shape<'i>(
     ctx.check_expr(expr, Some(&TypeRef { base: TypeBase::Bool, array_dims: Vec::new() })).map(|_| ())
 }
 
-fn validate_time_op_statement_shape<'i>(
+fn validate_require_age_daa_statement_shape<'i>(
     ctx: &mut ValidateStatementShapesContext<'_, 'i>,
     expr: &Expr<'i>,
 ) -> Result<(), CompilerError> {
-    ctx.check_expr(expr, Some(&TypeRef { base: TypeBase::Int, array_dims: Vec::new() })).map(|_| ())
+    ctx.check_expr(expr, Some(&TypeRef { base: TypeBase::Int, array_dims: Vec::new() }))?;
+    if let Ok(value) = eval_const_int(expr, ctx.constants) {
+        if !(0..(1_i64 << 32)).contains(&value) {
+            return Err(CompilerError::Unsupported(format!("this.ageDaa value must satisfy 0 <= value < 2^32, got {value}")));
+        }
+    }
+    Ok(())
+}
+
+fn validate_require_tx_daa_statement_shape<'i>(
+    ctx: &mut ValidateStatementShapesContext<'_, 'i>,
+    expr: &Expr<'i>,
+) -> Result<(), CompilerError> {
+    ctx.check_expr(expr, Some(&TypeRef { base: TypeBase::Int, array_dims: Vec::new() }))?;
+    if let Ok(value) = eval_const_int(expr, ctx.constants) {
+        let lock_time_threshold = kaspa_txscript::LOCK_TIME_THRESHOLD as i64;
+        if !(0..lock_time_threshold).contains(&value) {
+            return Err(CompilerError::Unsupported(format!(
+                "tx.daa value must satisfy 0 <= value < LOCK_TIME_THRESHOLD ({lock_time_threshold}), got {value}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_require_tx_time_statement_shape<'i>(
+    ctx: &mut ValidateStatementShapesContext<'_, 'i>,
+    expr: &Expr<'i>,
+) -> Result<(), CompilerError> {
+    ctx.check_expr(expr, Some(&TypeRef { base: TypeBase::Temporal, array_dims: Vec::new() }))?;
+    if let Ok(value) = eval_const_int(expr, ctx.constants) {
+        let lock_time_threshold = kaspa_txscript::LOCK_TIME_THRESHOLD as i64;
+        if value < lock_time_threshold {
+            return Err(CompilerError::Unsupported(format!(
+                "tx.time value must be at least LOCK_TIME_THRESHOLD ({lock_time_threshold}), got {value}"
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn validate_console_statement_shape<'i>(

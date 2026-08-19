@@ -32,3 +32,27 @@ test("distinguishes indexed and unindexed introspection", async () => {
   assert.match(syntaxTree, /\(indexed_introspection\b/);
   assert.doesNotMatch(syntaxTree, /nullary/);
 });
+
+test("parses temporal values and lock domains", async () => {
+  const parser = new Parser();
+  const { default: language } = await import("./index.js");
+  parser.setLanguage(language);
+
+  const tree = parser.parse(`
+    contract Locks(temporal unlockAt, int daaAge) {
+      entry absolute() {
+        require(tx.time >= unlockAt);
+      }
+      entry absoluteDaa() {
+        require(tx.daa >= daaAge);
+      }
+      entry relative() {
+        require(this.ageDaa >= daaAge);
+      }
+    }
+  `);
+
+  assert.equal(tree.rootNode.hasError, false);
+  assert.match(tree.rootNode.toString(), /\(base_type\)/);
+  assert.match(tree.rootNode.toString(), /\(tx_var\)/);
+});

@@ -83,9 +83,9 @@ pub(super) fn encode_value_with_constant_size<'i>(
         _ => value,
     };
     match (&type_ref.base, type_ref.array_dims.as_slice()) {
-        (TypeBase::Int, []) => {
+        (TypeBase::Int | TypeBase::Temporal, []) => {
             let number = match &value.kind {
-                ExprKind::Int(number) | ExprKind::DateLiteral(number) => *number,
+                ExprKind::Int(number) | ExprKind::Temporal(number) | ExprKind::DateLiteral(number) => *number,
                 _ => return Err(CompilerError::Unsupported("array literal element type mismatch".to_string())),
             };
             serialize_i64(number, Some(8usize))

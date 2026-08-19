@@ -25,7 +25,9 @@ pub(super) fn statement_uses_bytecode_size(stmt: &Statement<'_>) -> bool {
         Statement::StateFunctionCallAssign { name, args, .. } => name == "readInputState" || args.iter().any(expr_uses_bytecode_size),
         Statement::StructDestructure { expr, .. } => expr_uses_bytecode_size(expr),
         Statement::Assign { expr, .. } => expr_uses_bytecode_size(expr),
-        Statement::TimeOp { expr, .. } => expr_uses_bytecode_size(expr),
+        Statement::RequireAgeDaa { expr, .. } | Statement::RequireTxDaa { expr, .. } | Statement::RequireTxTime { expr, .. } => {
+            expr_uses_bytecode_size(expr)
+        }
         Statement::Require { expr, .. } => expr_uses_bytecode_size(expr),
         Statement::Block { body, .. } => body.iter().any(statement_uses_bytecode_size),
         Statement::If { condition, then_branch, else_branch, .. } => {
@@ -67,6 +69,7 @@ pub(super) fn expr_uses_bytecode_size<'i>(expr: &Expr<'i>) -> bool {
         ExprKind::ArrayIndex { source, index } => expr_uses_bytecode_size(source) || expr_uses_bytecode_size(index),
         ExprKind::IndexedIntrospection { index, .. } => expr_uses_bytecode_size(index),
         ExprKind::Int(_)
+        | ExprKind::Temporal(_)
         | ExprKind::Bool(_)
         | ExprKind::Byte(_)
         | ExprKind::String(_)

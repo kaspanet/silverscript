@@ -1,7 +1,7 @@
 pragma silverscript ^0.1.0;
 
 contract Test() {
-    entry hello(int a, int b) {
+    entry hello(temporal a, temporal b) {
         if (a == b - 2 minutes) {
             require(false);
         } else if (b == 2 weeks)

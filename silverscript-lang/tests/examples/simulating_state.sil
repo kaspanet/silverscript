@@ -11,9 +11,9 @@ contract SimulatingState(
         byte[34] recipientScriptPubKey = new ScriptPubKeyP2PK(recipient);
         require(tx.outputs[0].scriptPubKey == byte[](recipientScriptPubKey));
 
-        // Check that time has passed and that time locks are enabled
+        // Check that the DAA score has passed and that locktime is enabled
         int initial = int(initialBlock);
-        require(tx.time >= initial);
+        require(tx.daa >= initial);
 
         // Calculate the amount that has accrued since last claim
         int passedBlocks = tx.locktime - initial;

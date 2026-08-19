@@ -493,7 +493,7 @@ where
             emitter.emit_op(Op0NotEqual, 0)?;
             emitter.push_int(field_size as i64)?;
             emitter.emit_op(OpNum2Bin, -1)?;
-        } else if type_ref.is_int() {
+        } else if type_ref.is_int_like() {
             emitter.push_int(field_size as i64)?;
             emitter.emit_op(OpNum2Bin, -1)?;
         }

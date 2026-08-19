@@ -88,12 +88,25 @@ pub(super) fn lower_statements<'i>(
                 lowered.extend(lower_struct_destructure_statement(struct_name, bindings, expr, *span, scope, lowerer)?);
             }
             Statement::Assign { .. } => lowered.extend(lower_assignment(stmt, scope, lowerer)?),
-            Statement::TimeOp { tx_var, expr, message, span, tx_var_span, message_span } => lowered.push(Statement::TimeOp {
-                tx_var: *tx_var,
+            Statement::RequireAgeDaa { expr, message, span, target_span, message_span } => lowered.push(Statement::RequireAgeDaa {
                 expr: lower_scalar_expr(expr, scope, lowerer)?,
                 message: message.clone(),
                 span: *span,
-                tx_var_span: *tx_var_span,
+                target_span: *target_span,
+                message_span: *message_span,
+            }),
+            Statement::RequireTxDaa { expr, message, span, target_span, message_span } => lowered.push(Statement::RequireTxDaa {
+                expr: lower_scalar_expr(expr, scope, lowerer)?,
+                message: message.clone(),
+                span: *span,
+                target_span: *target_span,
+                message_span: *message_span,
+            }),
+            Statement::RequireTxTime { expr, message, span, target_span, message_span } => lowered.push(Statement::RequireTxTime {
+                expr: lower_scalar_expr(expr, scope, lowerer)?,
+                message: message.clone(),
+                span: *span,
+                target_span: *target_span,
                 message_span: *message_span,
             }),
             Statement::Require { expr, message, span, message_span } => lowered.push(Statement::Require {
