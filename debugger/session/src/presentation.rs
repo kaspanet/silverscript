@@ -34,6 +34,7 @@ pub fn format_value(type_name: &str, value: &DebugValue) -> String {
     let element_type = type_name.strip_suffix("[]");
     match (type_name, value) {
         ("int", DebugValue::Int(number)) => number.to_string(),
+        ("temporal", DebugValue::Temporal(number)) => number.to_string(),
         ("bool", DebugValue::Bool(value)) => value.to_string(),
         ("string", DebugValue::String(value)) => value.clone(),
         (_, DebugValue::Unknown(reason)) => unavailable_reason(reason),
@@ -50,6 +51,7 @@ pub fn format_value(type_name: &str, value: &DebugValue) -> String {
             for chunk in bytes.chunks(element_size) {
                 let decoded = match element_type {
                     "int" => DebugValue::Int(decode_i64(chunk).unwrap_or(0)),
+                    "temporal" => DebugValue::Temporal(decode_i64(chunk).unwrap_or(0)),
                     "bool" => DebugValue::Bool(decode_i64(chunk).unwrap_or(0) != 0),
                     _ => DebugValue::Bytes(chunk.to_vec()),
                 };
@@ -59,6 +61,7 @@ pub fn format_value(type_name: &str, value: &DebugValue) -> String {
         }
         (_, DebugValue::Bytes(bytes)) => format!("0x{}", encode_hex(bytes)),
         (_, DebugValue::Int(number)) => number.to_string(),
+        (_, DebugValue::Temporal(number)) => number.to_string(),
         (_, DebugValue::Bool(value)) => value.to_string(),
         (_, DebugValue::String(value)) => value.clone(),
         (_, DebugValue::Object(fields)) => {
