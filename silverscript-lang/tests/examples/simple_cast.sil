@@ -2,7 +2,7 @@ pragma silverscript ^0.1.0;
 
 contract Test(int x, string y) {
     entry hello(sig s, pubkey pk) {
-        int myVariable = 10 - int(true);
+        int myVariable = 10 - true as int;
         int myOtherVariable = 20 + myVariable % 2;
         require(myOtherVariable > x);
 
