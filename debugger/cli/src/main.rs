@@ -79,6 +79,7 @@ fn compile_contract_for_raw_ctor_args<'i>(
 fn expr_to_debug_value(expr: &Expr<'_>) -> Result<DebugValue, String> {
     match &expr.kind {
         ExprKind::Int(value) => Ok(DebugValue::Int(*value)),
+        ExprKind::Temporal(value) | ExprKind::DateLiteral(value) => Ok(DebugValue::Temporal(*value)),
         ExprKind::Bool(value) => Ok(DebugValue::Bool(*value)),
         ExprKind::Byte(value) => Ok(DebugValue::Bytes(vec![*value])),
         ExprKind::String(value) => Ok(DebugValue::String(value.clone())),
@@ -102,6 +103,14 @@ fn expr_to_debug_value(expr: &Expr<'_>) -> Result<DebugValue, String> {
                 .map(|field| Ok((field.name.clone(), expr_to_debug_value(&field.expr)?)))
                 .collect::<Result<Vec<_>, String>>()?,
         )),
+        ExprKind::Call { name, args, .. } if name == "temporal" && args.len() == 1 => match expr_to_debug_value(&args[0])? {
+            DebugValue::Int(value) | DebugValue::Temporal(value) => Ok(DebugValue::Temporal(value)),
+            value => Ok(value),
+        },
+        ExprKind::Call { name, args, .. } if name == "int" && args.len() == 1 => match expr_to_debug_value(&args[0])? {
+            DebugValue::Int(value) | DebugValue::Temporal(value) => Ok(DebugValue::Int(value)),
+            value => Ok(value),
+        },
         ExprKind::Call { name, args, .. } if parse_type_ref(name).is_ok() && args.len() == 1 => expr_to_debug_value(&args[0]),
         other => Err(format!("unsupported resolved state expression in debugger: {other:?}")),
     }
@@ -110,6 +119,7 @@ fn expr_to_debug_value(expr: &Expr<'_>) -> Result<DebugValue, String> {
 fn debug_value_to_expr(value: &DebugValue, struct_name: Option<&str>) -> Option<Expr<'static>> {
     Some(match value {
         DebugValue::Int(value) => Expr::int(*value),
+        DebugValue::Temporal(value) => Expr::temporal(*value),
         DebugValue::Bool(value) => Expr::new(ExprKind::Bool(*value), Default::default()),
         DebugValue::Bytes(bytes) => Expr::bytes(bytes.clone()),
         DebugValue::String(value) => Expr::new(ExprKind::String(value.clone()), Default::default()),
@@ -1024,5 +1034,14 @@ mod tests {
         assert!(!is_state_array_type(&TypeRef { base: state(), array_dims: Vec::new() }));
         assert!(!is_state_array_type(&TypeRef { base: state(), array_dims: vec![ArrayDim::Fixed(2)] }));
         assert!(!is_state_array_type(&TypeRef { base: state(), array_dims: vec![ArrayDim::Dynamic, ArrayDim::Dynamic] }));
+    }
+
+    #[test]
+    fn resolved_numeric_casts_preserve_their_target_debug_type() {
+        let temporal = expr_to_debug_value(&Expr::call("temporal", vec![Expr::int(1234)])).expect("convert temporal cast");
+        assert!(matches!(temporal, DebugValue::Temporal(1234)));
+
+        let integer = expr_to_debug_value(&Expr::call("int", vec![Expr::temporal(1234)])).expect("convert int cast");
+        assert!(matches!(integer, DebugValue::Int(1234)));
     }
 }

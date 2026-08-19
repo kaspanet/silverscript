@@ -29,6 +29,7 @@ pub fn encode_hex(bytes: &[u8]) -> String {
 pub fn fixed_array_element_size(type_name: &str) -> Option<usize> {
     match type_name {
         "int" => Some(8),
+        "temporal" => Some(8),
         "bool" => Some(1),
         "byte" => Some(1),
         other => other.strip_prefix("bytes").and_then(|value| value.parse::<usize>().ok()).or_else(|| {

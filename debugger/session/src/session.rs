@@ -41,6 +41,7 @@ pub struct ShadowTxContext<'a> {
 #[derive(Debug, Clone)]
 pub enum DebugValue {
     Int(i64),
+    Temporal(i64),
     Bool(bool),
     Bytes(Vec<u8>),
     String(String),
@@ -1807,6 +1808,7 @@ impl<'a, 'i> DebugSession<'a, 'i> {
     ) -> Option<DebugValue> {
         match &expr.kind {
             ExprKind::Int(value) => Some(DebugValue::Int(*value)),
+            ExprKind::Temporal(value) | ExprKind::DateLiteral(value) => Some(DebugValue::Temporal(*value)),
             ExprKind::Bool(value) => Some(DebugValue::Bool(*value)),
             ExprKind::Byte(value) => Some(DebugValue::Bytes(vec![*value])),
             ExprKind::String(value) => Some(DebugValue::String(value.clone())),
@@ -1885,6 +1887,7 @@ fn decode_value_by_type(type_name: &str, bytes: Vec<u8>) -> Result<DebugValue, S
 
     match type_name {
         "int" => Ok(DebugValue::Int(decode_i64(&bytes)?)),
+        "temporal" => Ok(DebugValue::Temporal(decode_i64(&bytes)?)),
         "bool" => Ok(DebugValue::Bool(decode_i64(&bytes)? != 0)),
         "string" => match String::from_utf8(bytes.clone()) {
             Ok(value) => Ok(DebugValue::String(value)),
@@ -2017,12 +2020,13 @@ fn struct_name_from_type_ref(type_ref: &TypeRef) -> Option<&str> {
 
 fn struct_name_from_type_name(type_name: &str) -> Option<&str> {
     let base = type_name.split('[').next()?;
-    (!matches!(base, "int" | "bool" | "byte" | "string" | "pubkey" | "sig" | "datasig" | "void")).then_some(base)
+    (!matches!(base, "int" | "temporal" | "bool" | "byte" | "string" | "pubkey" | "sig" | "datasig" | "void")).then_some(base)
 }
 
 fn debug_value_to_expr<'i>(value: &DebugValue, struct_name: Option<&str>) -> Option<Expr<'i>> {
     match value {
         DebugValue::Int(value) => Some(Expr::int(*value)),
+        DebugValue::Temporal(value) => Some(Expr::temporal(*value)),
         DebugValue::Bool(value) => Some(Expr::bool(*value)),
         DebugValue::Bytes(bytes) => Some(Expr::bytes(bytes.clone())),
         DebugValue::String(value) => Some(Expr::new(ExprKind::String(value.clone()), span::Span::default())),
@@ -2444,6 +2448,24 @@ mod tests {
         assert_eq!(decode_i64(&[1]).unwrap(), 1);
         assert_eq!(decode_i64(&[0x81]).unwrap(), -1);
         assert_eq!(decode_i64(&[0, 0x80]).unwrap(), 0);
+    }
+
+    #[test]
+    fn decode_temporal_scalar_and_array_values() {
+        let scalar = decode_value_by_type("temporal", vec![0xd2, 0x04]).expect("decode temporal scalar");
+        assert!(matches!(scalar, DebugValue::Temporal(1234)));
+
+        let mut encoded_array = vec![0u8; 16];
+        encoded_array[0] = 1;
+        encoded_array[8] = 0xd0;
+        encoded_array[9] = 0x07;
+        let array = decode_value_by_type("temporal[]", encoded_array).expect("decode temporal array");
+        assert!(matches!(
+            array,
+            DebugValue::Array(ref values)
+                if matches!(values.as_slice(), [DebugValue::Temporal(1), DebugValue::Temporal(2000)])
+        ));
+        assert_eq!(crate::presentation::format_value("temporal[]", &array), "[1, 2000]");
     }
 
     #[test]

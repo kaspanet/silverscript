@@ -533,6 +533,83 @@ fn cli_debugger_eval_command_reports_results_and_errors() {
 }
 
 #[test]
+fn cli_debugger_runs_contract_with_temporal_state() {
+    let (script_path, _test_file_path) = write_fixture_files(
+        "temporal_state.sil",
+        "unused.test.json",
+        r#"pragma silverscript ^0.1.0;
+
+contract TemporalState(temporal start) {
+    temporal saved = start;
+    temporal fixed = date("1970-01-01T00:00:02");
+
+    entry check() {
+        require(saved == start);
+        require(fixed == temporal(2000));
+    }
+}
+"#,
+        r#"{"tests": []}"#,
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cli-debugger"))
+        .arg(&script_path)
+        .arg("--function")
+        .arg("check")
+        .arg("--ctor-arg")
+        .arg("1234")
+        .arg("--run")
+        .output()
+        .expect("run temporal state contract");
+
+    assert!(
+        output.status.success(),
+        "expected temporal state contract to run, status={:?}, stderr={}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("PASS"));
+}
+
+#[test]
+fn cli_debugger_renders_temporal_local_as_number() {
+    let (script_path, _test_file_path) = write_fixture_files(
+        "temporal_local.sil",
+        "unused.test.json",
+        r#"pragma silverscript ^0.1.0;
+
+contract TemporalLocal() {
+    entry check() {
+        temporal observed = temporal(1234);
+        require(observed == temporal(1234));
+    }
+}
+"#,
+        r#"{"tests": []}"#,
+    );
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_cli-debugger"))
+        .arg(&script_path)
+        .arg("--function")
+        .arg("check")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("start temporal local debug session");
+
+    child.stdin.as_mut().expect("stdin available").write_all(b"n\nvars\nq\n").expect("write debugger commands");
+    let output = child.wait_with_output().expect("wait for temporal local debug session");
+
+    assert!(output.status.success(), "cli-debugger exited with status {:?}", output.status.code());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.is_empty(), "unexpected stderr: {stderr}");
+    assert!(stdout.contains("observed (temporal) = 1234"), "missing numeric temporal value: {stdout}");
+    assert!(!stdout.contains("observed (temporal) = 0xd204"), "temporal value was rendered as bytes: {stdout}");
+}
+
+#[test]
 fn cli_debugger_interactive_defers_console_logs_until_after_stepping_past_log_statement() {
     let (script_path, _test_file_path) = write_logging_test_fixture();
 
