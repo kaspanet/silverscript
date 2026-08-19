@@ -11426,7 +11426,10 @@ fn compiles_require_tx_time_to_lower_bounded_cltv_and_verifies() {
 
 #[test]
 fn signed_arithmetic_and_comparisons_match_rust_for_small_values() {
-    let operators: [(&str, fn(i64, i64) -> i64); 5] =
+    type SignedArithmeticCase = (&'static str, fn(i64, i64) -> i64);
+    type SignedComparisonCase = (&'static str, fn(i64, i64) -> bool);
+
+    let operators: [SignedArithmeticCase; 5] =
         [("+", |a, b| a + b), ("-", |a, b| a - b), ("*", |a, b| a * b), ("/", |a, b| a / b), ("%", |a, b| a % b)];
     for (operator, oracle) in operators {
         let source = format!("contract C() {{ entry main(int a, int b, int expected) {{ require(a {operator} b == expected); }} }}");
@@ -11445,7 +11448,7 @@ fn signed_arithmetic_and_comparisons_match_rust_for_small_values() {
         }
     }
 
-    let comparisons: [(&str, fn(i64, i64) -> bool); 6] = [
+    let comparisons: [SignedComparisonCase; 6] = [
         ("==", |a, b| a == b),
         ("!=", |a, b| a != b),
         ("<", |a, b| a < b),
