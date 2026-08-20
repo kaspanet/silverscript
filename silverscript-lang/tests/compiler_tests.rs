@@ -70,14 +70,14 @@ fn pay_to_script_hash_signature_script(
     )
 }
 
-fn run_bytecode_with_selector(bytecode: Vec<u8>, selector: Option<DispatchTag>) -> Result<(), kaspa_txscript_errors::TxScriptError> {
+fn run_bytecode_with_selector(bytecode: Vec<u8>, selector: DispatchTag) -> Result<(), kaspa_txscript_errors::TxScriptError> {
     let sigscript = selector_sigscript(selector);
     run_bytecode_with_sigscript(bytecode, sigscript)
 }
 
 fn run_bytecode_with_tx(
     bytecode: Vec<u8>,
-    selector: Option<DispatchTag>,
+    selector: DispatchTag,
     lock_time: u64,
     sequence: u64,
 ) -> Result<(), kaspa_txscript_errors::TxScriptError> {
@@ -108,11 +108,9 @@ fn run_bytecode_with_tx(
     vm.execute()
 }
 
-fn selector_sigscript(selector: Option<DispatchTag>) -> Vec<u8> {
+fn selector_sigscript(selector: DispatchTag) -> Vec<u8> {
     let mut builder = script_builder();
-    if let Some(selector) = selector {
-        builder.add_data(&selector).unwrap();
-    }
+    builder.add_data(&selector).unwrap();
     builder.drain()
 }
 
@@ -832,15 +830,15 @@ fn branch_heavy_if_else_logic_matches_rust_model_across_cases() {
     // Snapshot these metrics exactly so compiler codegen changes must consciously
     // acknowledge their size impact on a branch-heavy stress case.
     assert_eq!(
-        bytecode_len, 372,
+        bytecode_len, 386,
         "branch_maze metrics: bytecode_len={bytecode_len} instruction_count={instruction_count} charged_op_count={charged_op_count}"
     );
     assert_eq!(
-        instruction_count, 372,
+        instruction_count, 382,
         "branch_maze metrics: bytecode_len={bytecode_len} instruction_count={instruction_count} charged_op_count={charged_op_count}"
     );
     assert_eq!(
-        charged_op_count, 267,
+        charged_op_count, 276,
         "branch_maze metrics: bytecode_len={bytecode_len} instruction_count={instruction_count} charged_op_count={charged_op_count}"
     );
     let cases = [(7, 2, 5, 4), (7, 2, -3, 4), (2, 7, 5, 4), (2, 7, 5, 3), (4, 4, 9, 2), (-3, 1, 6, -2), (10, -1, -4, 7), (0, 0, 0, 0)];
@@ -972,15 +970,15 @@ fn sorting_network_over_fixed_array_matches_rust_model_across_cases() {
     let (instruction_count, charged_op_count) = bytecode_op_counts(&compiled.bytecode);
     println!("sorting_network {bytecode_len} / {instruction_count} / {charged_op_count}");
     assert_eq!(
-        bytecode_len, 817,
+        bytecode_len, 831,
         "sorting_network metrics: bytecode_len={bytecode_len} instruction_count={instruction_count} charged_op_count={charged_op_count}"
     );
     assert_eq!(
-        instruction_count, 816,
+        instruction_count, 826,
         "sorting_network metrics: bytecode_len={bytecode_len} instruction_count={instruction_count} charged_op_count={charged_op_count}"
     );
     assert_eq!(
-        charged_op_count, 635,
+        charged_op_count, 644,
         "sorting_network metrics: bytecode_len={bytecode_len} instruction_count={instruction_count} charged_op_count={charged_op_count}"
     );
 
@@ -1098,9 +1096,7 @@ fn build_sig_script_builds_expected_script() {
     let mut builder = script_builder();
     builder.add_data_with_push_opcode(&[1u8, 2, 3, 4]).unwrap();
     builder.add_i64(7).unwrap();
-    if let Some(selector) = selector {
-        builder.add_data(&selector).unwrap();
-    }
+    builder.add_data(&selector).unwrap();
     let expected = builder.drain();
 
     assert_eq!(sigscript, expected);
@@ -1118,7 +1114,7 @@ fn byte_variable_from_int_literal_uses_raw_byte_push() {
     "#;
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("byte int literal should compile");
-    let expected = script_builder()
+    let body = script_builder()
         .add_data_with_push_opcode(&[5u8])
         .unwrap()
         .add_op(OpDup)
@@ -1136,8 +1132,10 @@ fn byte_variable_from_int_literal_uses_raw_byte_push() {
         .add_op(OpTrue)
         .unwrap()
         .drain();
+    let expected = wrap_with_dispatch(body, selector_for(&compiled, "main"));
     assert_eq!(compiled.bytecode, expected);
-    assert!(run_bytecode_with_selector(compiled.bytecode, None).is_ok(), "byte int literal script should execute");
+    let selector = selector_for(&compiled, "main");
+    assert!(run_bytecode_with_selector(compiled.bytecode, selector).is_ok(), "byte int literal script should execute");
 }
 
 #[test]
@@ -1183,7 +1181,7 @@ fn byte_equality_with_rhs_int_literal_uses_raw_byte_push() {
     "#;
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("byte equality with rhs literal should compile");
-    let expected = script_builder()
+    let body = script_builder()
         .add_data_with_push_opcode(&[1u8])
         .unwrap()
         .add_op(OpDup)
@@ -1199,8 +1197,10 @@ fn byte_equality_with_rhs_int_literal_uses_raw_byte_push() {
         .add_op(OpTrue)
         .unwrap()
         .drain();
+    let expected = wrap_with_dispatch(body, selector_for(&compiled, "main"));
     assert_eq!(compiled.bytecode, expected);
-    assert!(run_bytecode_with_selector(compiled.bytecode, None).is_ok(), "byte equality with rhs literal should execute");
+    let selector = selector_for(&compiled, "main");
+    assert!(run_bytecode_with_selector(compiled.bytecode, selector).is_ok(), "byte equality with rhs literal should execute");
 }
 
 #[test]
@@ -1299,7 +1299,8 @@ fn allows_arithmetic_after_signed_or_unsigned_byte_conversion() {
         compile_contract(source, &[], CompileOptions::default()).expect("explicit byte conversions should allow arithmetic");
     let opcodes = script_to_str(&compiled.bytecode).expect("compiled bytecode stringifies");
     assert_eq!(opcodes.matches("OpAdd").count(), 2, "converted byte arithmetic must emit OpAdd: {opcodes}");
-    assert!(run_bytecode_with_selector(compiled.bytecode, None).is_ok(), "converted byte arithmetic should execute");
+    let selector = selector_for(&compiled, "main");
+    assert!(run_bytecode_with_selector(compiled.bytecode, selector).is_ok(), "converted byte arithmetic should execute");
 }
 
 #[test]
@@ -1342,7 +1343,8 @@ fn allows_bitwise_operations_on_bytes() {
 
         let compiled = compile_contract(&source, &[], CompileOptions::default())
             .unwrap_or_else(|err| panic!("byte operands for {operator} should compile: {err}"));
-        let result = run_bytecode_with_selector(compiled.bytecode, None);
+        let selector = selector_for(&compiled, "main");
+        let result = run_bytecode_with_selector(compiled.bytecode, selector);
         assert!(result.is_ok(), "byte operands for {operator} should execute: {result:?}");
     }
 }
@@ -1532,7 +1534,7 @@ fn introspection_fields_and_direct_lock_opcodes_emit_and_execute() {
             entry main() {
                 require(tx.inputs[0].value == 5000);
                 require(tx.inputs[0].scriptPubKey.length >= 0);
-                require(tx.inputs[0].sigScript.length == 0);
+                require(tx.inputs[0].sigScript.length == 5);
                 require(tx.inputs[0].outpointTxId == byte[32]("0123456789abcdef0123456789abcdef"));
                 require(tx.inputs[0].outpointIndex == 7);
                 require(tx.outputs[0].value == 1000);
@@ -1560,7 +1562,8 @@ fn introspection_fields_and_direct_lock_opcodes_emit_and_execute() {
         assert!(opcodes.contains(opcode), "missing {opcode} in {opcodes}");
     }
 
-    let (tx, mut entries) = build_basic_opcode_tx(vec![]);
+    let sigscript = selector_sigscript(selector_for(&compiled, "main"));
+    let (tx, mut entries) = build_basic_opcode_tx(sigscript);
     entries[0].script_public_key = ScriptPublicKey::new(0, compiled.bytecode.clone().into());
     let reused_values = SigHashReusedValuesUnsync::new();
     let sig_cache = Cache::new(10_000);
@@ -2056,7 +2059,8 @@ fn byte_array_to_fixed_byte_array_cast_compiles_without_num2bin() {
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("byte[] to byte[32] cast should compile");
     assert!(!compiled.bytecode.iter().copied().any(|op| op == OpNum2Bin), "byte[] to byte[32] cast should not emit OpNum2Bin");
-    assert!(run_bytecode_with_selector(compiled.bytecode, None).is_ok(), "byte[] to byte[32] cast should execute");
+    let selector = selector_for(&compiled, "main");
+    assert!(run_bytecode_with_selector(compiled.bytecode, selector).is_ok(), "byte[] to byte[32] cast should execute");
 }
 
 #[test]
@@ -2141,8 +2145,9 @@ fn bool_cast_accepts_only_a_singular_byte_as_its_source() {
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("byte-to-bool casts should compile");
     let opcodes = script_to_str(&compiled.bytecode).expect("compiled bytecode stringifies");
-    assert!(!opcodes.contains("OpIf"), "byte-to-bool casts should be passthroughs: {opcodes}");
-    let result = run_bytecode_with_selector(compiled.bytecode, None);
+    assert_eq!(opcodes.matches("OpIf").count(), 1, "byte-to-bool casts should not add branching beyond dispatch: {opcodes}");
+    let selector = selector_for(&compiled, "main");
+    let result = run_bytecode_with_selector(compiled.bytecode, selector);
     assert!(result.is_ok(), "byte-to-bool casts should preserve VM truthiness: {result:?}");
 }
 
@@ -2186,7 +2191,8 @@ fn encodes_non_byte_array_literal_cast_in_contract_field() {
     "#;
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("non-byte array literal cast should compile");
-    assert!(run_bytecode_with_selector(compiled.bytecode, None).is_ok(), "encoded non-byte array literal cast should execute");
+    let selector = selector_for(&compiled, "main");
+    assert!(run_bytecode_with_selector(compiled.bytecode, selector).is_ok(), "encoded non-byte array literal cast should execute");
 }
 
 #[test]
@@ -2542,7 +2548,7 @@ fn build_sig_script_rejects_mismatched_bytes_length() {
 }
 
 #[test]
-fn build_sig_script_omits_selector_without_selector() {
+fn build_sig_script_appends_selector_for_single_entrypoint() {
     let source = r#"
         contract Single() {
             entry spend(int a, byte[4] b) {
@@ -2552,10 +2558,11 @@ fn build_sig_script_omits_selector_without_selector() {
         }
     "#;
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
-    assert!(compiled.without_dispatch_tag);
     let sigscript = compiled.build_sig_script("spend", vec![1.into(), vec![2u8; 4].into()]).expect("sigscript builds");
+    let selector = compiled.abi.iter().find(|entry| entry.name == "spend").expect("entrypoint resolved").dispatch_tag();
 
-    let expected = script_builder().add_i64(1).unwrap().add_data_with_push_opcode(&[2u8; 4]).unwrap().drain();
+    let expected =
+        script_builder().add_i64(1).unwrap().add_data_with_push_opcode(&[2u8; 4]).unwrap().add_data(&selector).unwrap().drain();
     assert_eq!(sigscript, expected);
 }
 
@@ -2638,7 +2645,14 @@ fn build_sig_script_supports_struct_entrypoint_arguments() {
     let arg = struct_object("S", vec![("a", Expr::int(0)), ("b", Expr::string("12345"))]);
     let sigscript = compiled.build_sig_script("main", vec![arg]).expect("sigscript builds");
 
-    let expected = script_builder().add_i64(0).unwrap().add_data_with_push_opcode(b"12345").unwrap().drain();
+    let expected = script_builder()
+        .add_i64(0)
+        .unwrap()
+        .add_data_with_push_opcode(b"12345")
+        .unwrap()
+        .add_data(&selector_for(&compiled, "main"))
+        .unwrap()
+        .drain();
     assert_eq!(sigscript, expected);
 }
 
@@ -2660,7 +2674,14 @@ fn build_sig_script_supports_state_entrypoint_arguments() {
     let arg = struct_object("State", vec![("x", Expr::int(9)), ("y", Expr::bytes(vec![0x34, 0x12]))]);
     let sigscript = compiled.build_sig_script("main", vec![arg]).expect("sigscript builds");
 
-    let expected = script_builder().add_i64(9).unwrap().add_data_with_push_opcode(&[0x34, 0x12]).unwrap().drain();
+    let expected = script_builder()
+        .add_i64(9)
+        .unwrap()
+        .add_data_with_push_opcode(&[0x34, 0x12])
+        .unwrap()
+        .add_data(&selector_for(&compiled, "main"))
+        .unwrap()
+        .drain();
     assert_eq!(sigscript, expected);
 }
 
@@ -2686,7 +2707,8 @@ fn build_sig_script_supports_sig_array_arguments() {
 
     let mut encoded = sig_a;
     encoded.extend(sig_b);
-    let expected = script_builder().add_data_with_push_opcode(&encoded).unwrap().drain();
+    let expected =
+        script_builder().add_data_with_push_opcode(&encoded).unwrap().add_data(&selector_for(&compiled, "main")).unwrap().drain();
     assert_eq!(sigscript, expected);
 }
 
@@ -2736,6 +2758,7 @@ fn replace_compiled_interface<'i>(
     entrypoint_name: &str,
     inputs: &[(&str, &str)],
 ) {
+    let old_dispatch_tag = compiled.abi[0].dispatch_tag();
     compiled.ast = parse_contract_ast(source).expect("interface parses");
     compiled.abi = vec![FunctionAbiEntry {
         name: entrypoint_name.to_string(),
@@ -2744,6 +2767,13 @@ fn replace_compiled_interface<'i>(
             .map(|(name, type_name)| FunctionInputAbi { name: (*name).to_string(), type_name: (*type_name).to_string() })
             .collect(),
     }];
+    let new_dispatch_tag = compiled.abi[0].dispatch_tag();
+    let tag_offset = compiled
+        .bytecode
+        .windows(old_dispatch_tag.len())
+        .position(|window| window == old_dispatch_tag)
+        .expect("original dispatch tag exists");
+    compiled.bytecode[tag_offset..tag_offset + new_dispatch_tag.len()].copy_from_slice(&new_dispatch_tag);
 }
 
 #[test]
@@ -4831,7 +4861,8 @@ fn array_literal_codegen_uses_declared_element_type() {
 
     let compiled = compile_contract(source, &[], CompileOptions { record_debug_infos: true, ..CompileOptions::default() })
         .expect("compile succeeds");
-    let result = run_bytecode_with_sigscript(compiled.bytecode, script_builder().drain());
+    let sigscript = selector_sigscript(selector_for(&compiled, "main"));
+    let result = run_bytecode_with_sigscript(compiled.bytecode, sigscript);
     assert!(result.is_ok(), "array literals should use their declared element type: {}", result.unwrap_err());
 }
 
@@ -4850,7 +4881,12 @@ fn bool_array_literal_normalizes_runtime_elements_to_one_byte() {
         );
 
         let compiled = compile_contract(&source, &[], CompileOptions::default()).expect("compile succeeds");
-        let sigscript = script_builder().add_data_with_push_opcode(&[witness]).unwrap().drain();
+        let sigscript = script_builder()
+            .add_data_with_push_opcode(&[witness])
+            .unwrap()
+            .add_data(&selector_for(&compiled, "main"))
+            .unwrap()
+            .drain();
         let result = run_bytecode_with_sigscript(compiled.bytecode, sigscript);
         assert!(result.is_ok(), "bool[] literal witness {witness:#04x} should normalize to 0x{expected}: {result:?}");
     }
@@ -4890,7 +4926,8 @@ fn bool_array_append_normalizes_runtime_elements_to_one_byte() {
     "#;
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
-    let sigscript = script_builder().add_data_with_push_opcode(&[2]).unwrap().drain();
+    let sigscript =
+        script_builder().add_data_with_push_opcode(&[2]).unwrap().add_data(&selector_for(&compiled, "main")).unwrap().drain();
     let result = run_bytecode_with_sigscript(compiled.bytecode, sigscript);
     assert!(result.is_ok(), "truthy bool[] append elements should be normalized to 0x01: {result:?}");
 }
@@ -4994,7 +5031,8 @@ fn constant_and_contract_field_arrays_use_fixed_width_encoding() {
     "#;
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
-    let result = run_bytecode_with_selector(compiled.bytecode, None);
+    let selector = selector_for(&compiled, "main");
+    let result = run_bytecode_with_selector(compiled.bytecode, selector);
     assert!(result.is_ok(), "compile-time array encoders should use the canonical scalar widths: {result:?}");
 }
 
@@ -5057,6 +5095,7 @@ fn compiles_int_array_length_to_expected_script() {
         .unwrap()
         .drain();
 
+    let expected = wrap_with_dispatch(expected, selector_for(&compiled, "main"));
     assert_eq!(compiled.bytecode, expected);
 }
 
@@ -5109,6 +5148,7 @@ fn compiles_int_array_append_to_expected_script() {
         .unwrap()
         .drain();
 
+    let expected = wrap_with_dispatch(expected, selector_for(&compiled, "main"));
     assert_eq!(compiled.bytecode, expected);
 }
 
@@ -5261,7 +5301,11 @@ fn branchy_three_slot_splice_repro_matches_current_codegen_shape() {
     assert!(compiled.bytecode.len() < 1000, "script should stay compact, got {}", compiled.bytecode.len());
     assert!(asm.matches("OpPick").count() < 120, "OpPick count should stay bounded, got {}", asm.matches("OpPick").count());
     assert!(asm.matches("OpSubstr").count() <= 24, "OpSubstr count should stay near master, got {}", asm.matches("OpSubstr").count());
-    assert!(asm.matches("OpDup").count() < 16, "OpDup count should stay near master, got {}", asm.matches("OpDup").count());
+    assert!(
+        asm.matches("OpDup").count() <= 16,
+        "OpDup count including dispatch should stay near master, got {}",
+        asm.matches("OpDup").count()
+    );
 }
 
 #[test]
@@ -5317,6 +5361,7 @@ fn compiles_int_array_index_to_expected_script() {
         .unwrap()
         .drain();
 
+    let expected = wrap_with_dispatch(expected, selector_for(&compiled, "main"));
     assert_eq!(compiled.bytecode, expected);
 }
 
@@ -5338,7 +5383,7 @@ fn runs_array_append_runtime_examples() {
     "#;
     let options = CompileOptions::default();
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
-    let sigscript = script_builder().drain();
+    let sigscript = selector_sigscript(selector_for(&compiled, "main"));
     let result = run_bytecode_with_sigscript(compiled.bytecode, sigscript);
     assert!(result.is_ok(), "array append runtime example failed: {}", result.unwrap_err());
 }
@@ -5356,7 +5401,8 @@ fn runs_array_append_value_length_without_assignment() {
     "#;
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
-    let result = run_bytecode_with_selector(compiled.bytecode, None);
+    let selector = selector_for(&compiled, "main");
+    let result = run_bytecode_with_selector(compiled.bytecode, selector);
     assert!(result.is_ok(), "array append result length should be usable without assignment: {result:?}");
 }
 
@@ -5373,7 +5419,7 @@ fn runs_int_array_append_length_runtime_example() {
     "#;
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
-    let sigscript = script_builder().drain();
+    let sigscript = selector_sigscript(selector_for(&compiled, "main"));
     let result = run_bytecode_with_sigscript(compiled.bytecode, sigscript);
     assert!(result.is_ok(), "int[] append length runtime example failed: {}", result.unwrap_err());
 }
@@ -5391,7 +5437,7 @@ fn runs_slice_with_explicit_end_bounds() {
         }
     "#;
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
-    let sigscript = script_builder().drain();
+    let sigscript = selector_sigscript(selector_for(&compiled, "main"));
     let result = run_bytecode_with_sigscript(compiled.bytecode, sigscript);
     assert!(result.is_ok(), "slice runtime should succeed: {}", result.unwrap_err());
 }
@@ -5415,7 +5461,7 @@ fn runs_slice_reconstruction_and_compare_runtime_example() {
     "#;
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
-    let sigscript = script_builder().drain();
+    let sigscript = selector_sigscript(selector_for(&compiled, "main"));
     let result = run_bytecode_with_sigscript(compiled.bytecode, sigscript);
     assert!(result.is_ok(), "slice reconstruction runtime should succeed: {}", result.unwrap_err());
 }
@@ -5499,7 +5545,7 @@ fn allows_concat_of_int_arrays_with_plus() {
 
     let options = CompileOptions::default();
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
-    let sigscript = script_builder().drain();
+    let sigscript = selector_sigscript(selector_for(&compiled, "main"));
     let result = run_bytecode_with_sigscript(compiled.bytecode, sigscript);
     assert!(result.is_ok(), "int[] concatenation runtime failed: {}", result.unwrap_err());
 }
@@ -5521,7 +5567,7 @@ fn allows_concat_of_byte_arrays_with_plus() {
 
     let options = CompileOptions::default();
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
-    let sigscript = script_builder().drain();
+    let sigscript = selector_sigscript(selector_for(&compiled, "main"));
     let result = run_bytecode_with_sigscript(compiled.bytecode, sigscript);
     assert!(result.is_ok(), "byte[] concatenation runtime failed: {}", result.unwrap_err());
 }
@@ -5538,7 +5584,8 @@ fn concatenated_byte_array_literal_has_element_length() {
     "#;
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
-    let result = run_bytecode_with_sigscript(compiled.bytecode, script_builder().drain());
+    let sigscript = selector_sigscript(selector_for(&compiled, "main"));
+    let result = run_bytecode_with_sigscript(compiled.bytecode, sigscript);
     assert!(result.is_ok(), "byte[] literal concatenation should have two elements: {}", result.unwrap_err());
 }
 
@@ -5561,7 +5608,7 @@ fn allows_concat_of_fixed_size_byte_array_elements_with_plus() {
 
     let options = CompileOptions::default();
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
-    let sigscript = script_builder().drain();
+    let sigscript = selector_sigscript(selector_for(&compiled, "main"));
     let result = run_bytecode_with_sigscript(compiled.bytecode, sigscript);
     assert!(result.is_ok(), "byte[N][] concatenation runtime failed: {}", result.unwrap_err());
 }
@@ -5583,7 +5630,8 @@ fn composite_array_index_uses_its_result_type_for_bytewise_operations() {
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
     assert!(!compiled.bytecode.contains(&OpNum2Bin), "an indexed byte array element is already byte-encoded");
 
-    let result = run_bytecode_with_sigscript(compiled.bytecode, script_builder().drain());
+    let sigscript = selector_sigscript(selector_for(&compiled, "main"));
+    let result = run_bytecode_with_sigscript(compiled.bytecode, sigscript);
     assert!(result.is_ok(), "composite array indexing should use bytewise operations: {}", result.unwrap_err());
 }
 
@@ -5607,7 +5655,7 @@ fn allows_concat_of_bool_arrays_with_plus() {
 
     let options = CompileOptions::default();
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
-    let sigscript = script_builder().drain();
+    let sigscript = selector_sigscript(selector_for(&compiled, "main"));
     let result = run_bytecode_with_sigscript(compiled.bytecode, sigscript);
     assert!(result.is_ok(), "bool[] concatenation runtime failed: {}", result.unwrap_err());
 }
@@ -5633,7 +5681,7 @@ fn allows_concat_of_pubkey_arrays_with_plus() {
 
     let options = CompileOptions::default();
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
-    let sigscript = script_builder().drain();
+    let sigscript = selector_sigscript(selector_for(&compiled, "main"));
     let result = run_bytecode_with_sigscript(compiled.bytecode, sigscript);
     assert!(result.is_ok(), "pubkey[] concatenation runtime failed: {}", result.unwrap_err());
 }
@@ -5689,6 +5737,7 @@ fn compiles_bytes20_array_append_without_num2bin() {
         .unwrap()
         .drain();
 
+    let expected = wrap_with_dispatch(expected, selector_for(&compiled, "main"));
     assert_eq!(compiled.bytecode, expected);
 }
 
@@ -5708,7 +5757,7 @@ fn runs_bytes20_array_runtime_example() {
     "#;
     let options = CompileOptions::default();
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
-    let sigscript = script_builder().drain();
+    let sigscript = selector_sigscript(selector_for(&compiled, "main"));
     let result = run_bytecode_with_sigscript(compiled.bytecode, sigscript);
     assert!(result.is_ok(), "byte[20] array runtime example failed: {}", result.unwrap_err());
 }
@@ -5728,7 +5777,7 @@ fn allows_array_equality_comparison() {
     "#;
     let options = CompileOptions::default();
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
-    let sigscript = script_builder().drain();
+    let sigscript = selector_sigscript(selector_for(&compiled, "main"));
     let result = run_bytecode_with_sigscript(compiled.bytecode, sigscript);
     assert!(result.is_ok(), "array equality runtime failed: {}", result.unwrap_err());
 }
@@ -5748,7 +5797,7 @@ fn fails_array_equality_comparison() {
     "#;
     let options = CompileOptions::default();
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
-    let sigscript = script_builder().drain();
+    let sigscript = selector_sigscript(selector_for(&compiled, "main"));
     let result = run_bytecode_with_sigscript(compiled.bytecode, sigscript);
     assert!(result.is_err());
 }
@@ -5816,7 +5865,7 @@ fn allows_array_inequality_with_different_sizes() {
     "#;
     let options = CompileOptions::default();
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
-    let sigscript = script_builder().drain();
+    let sigscript = selector_sigscript(selector_for(&compiled, "main"));
     let result = run_bytecode_with_sigscript(compiled.bytecode, sigscript);
     assert!(result.is_ok(), "array inequality runtime failed: {}", result.unwrap_err());
 }
@@ -5838,7 +5887,7 @@ fn runs_array_for_loop_example() {
     "#;
     let options = CompileOptions::default();
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
-    let sigscript = script_builder().drain();
+    let sigscript = selector_sigscript(selector_for(&compiled, "main"));
     let result = run_bytecode_with_sigscript(compiled.bytecode, sigscript);
     assert!(result.is_ok(), "array for-loop runtime failed: {}", result.unwrap_err());
 }
@@ -6167,7 +6216,7 @@ fn allows_array_assignment_with_compatible_types() {
     "#;
     let options = CompileOptions::default();
     let compiled = compile_contract(source, &[], options).expect("compile succeeds");
-    let sigscript = script_builder().drain();
+    let sigscript = selector_sigscript(selector_for(&compiled, "main"));
     let result = run_bytecode_with_sigscript(compiled.bytecode, sigscript);
     assert!(result.is_ok(), "array assignment runtime failed: {}", result.unwrap_err());
 }
@@ -6404,36 +6453,28 @@ fn build_covenant_opcode_tx(sigscript: Vec<u8>, covenant_id_a: Hash, covenant_id
     (tx, entries)
 }
 
-fn selector_for(compiled: &CompiledContract<'_>, function_name: &str) -> Option<DispatchTag> {
-    if compiled.without_dispatch_tag {
-        None
-    } else {
-        Some(compiled.abi.iter().find(|entry| entry.name == function_name).expect("entrypoint resolved").dispatch_tag())
-    }
+fn selector_for(compiled: &CompiledContract<'_>, function_name: &str) -> DispatchTag {
+    compiled.abi.iter().find(|entry| entry.name == function_name).expect("entrypoint resolved").dispatch_tag()
 }
 
-fn wrap_with_dispatch(body: Vec<u8>, selector: Option<DispatchTag>) -> Vec<u8> {
-    if let Some(selector) = selector {
-        let mut builder = script_builder();
-        builder.add_op(OpDup).unwrap();
-        builder.add_data(&selector).unwrap();
-        builder.add_op(OpEqual).unwrap();
-        builder.add_op(OpIf).unwrap();
-        builder.add_op(OpDrop).unwrap();
-        builder.add_ops(&body).unwrap();
-        builder.add_op(OpElse).unwrap();
-        builder.add_op(OpDrop).unwrap();
-        builder.add_op(OpFalse).unwrap();
-        builder.add_op(OpVerify).unwrap();
-        builder.add_op(OpEndIf).unwrap();
-        builder.drain()
-    } else {
-        body
-    }
+fn wrap_with_dispatch(body: Vec<u8>, selector: DispatchTag) -> Vec<u8> {
+    let mut builder = script_builder();
+    builder.add_op(OpToAltStack).unwrap();
+    builder.add_op(OpFromAltStack).unwrap();
+    builder.add_op(OpDup).unwrap();
+    builder.add_data(&selector).unwrap();
+    builder.add_op(OpEqual).unwrap();
+    builder.add_op(OpIf).unwrap();
+    builder.add_op(OpDrop).unwrap();
+    builder.add_ops(&body).unwrap();
+    builder.add_op(OpElse).unwrap();
+    builder.add_op(OpReturn).unwrap();
+    builder.add_op(OpEndIf).unwrap();
+    builder.drain()
 }
 
 #[test]
-fn compiles_without_selector_single_function() {
+fn compiles_with_kcc1_dispatch_tag_for_single_entrypoint() {
     let source = r#"
         contract Test() {
             entry main() {
@@ -6444,9 +6485,8 @@ fn compiles_without_selector_single_function() {
 
     let contract = parse_contract_ast(source).expect("ast parsed");
     let compiled = compile_contract_ast(&contract, &[], CompileOptions::default()).expect("compile succeeds");
-    assert!(compiled.without_dispatch_tag);
 
-    let expected = script_builder()
+    let body = script_builder()
         .add_i64(1)
         .unwrap()
         .add_i64(2)
@@ -6462,6 +6502,8 @@ fn compiles_without_selector_single_function() {
         .add_op(OpTrue)
         .unwrap()
         .drain();
+    let selector = selector_for(&compiled, "main");
+    let expected = wrap_with_dispatch(body, selector);
 
     assert_eq!(compiled.bytecode, expected);
 }
@@ -6477,7 +6519,6 @@ fn compiles_with_kcc1_dispatch_tag_for_multiple_entrypoints() {
 
     let contract = parse_contract_ast(source).expect("ast parsed");
     let compiled = compile_contract_ast(&contract, &[], CompileOptions::default()).expect("compile succeeds");
-    assert!(!compiled.without_dispatch_tag);
     let selector = compiled.abi.iter().find(|entry| entry.name == "a").expect("entrypoint resolved").dispatch_tag();
     let sigscript = compiled.build_sig_script("a", vec![]).expect("sigscript builds");
     let expected = script_builder().add_data(&selector).unwrap().drain();
@@ -6663,11 +6704,13 @@ fn compiles_contract_fields_as_script_prolog() {
     "#;
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
-    let expected = script_builder()
+    let state = script_builder()
         .add_data_with_push_opcode(&5i64.to_le_bytes())
         .unwrap()
         .add_data_with_push_opcode(&[0x12, 0x34])
         .unwrap()
+        .drain();
+    let body = script_builder()
         .add_op(OpOver)
         .unwrap()
         .add_i64(5)
@@ -6681,6 +6724,33 @@ fn compiles_contract_fields_as_script_prolog() {
         .add_op(OpDrop)
         .unwrap()
         .add_op(OpTrue)
+        .unwrap()
+        .drain();
+    let selector = selector_for(&compiled, "main");
+    let expected = script_builder()
+        .add_op(OpToAltStack)
+        .unwrap()
+        .add_ops(&state)
+        .unwrap()
+        .add_op(OpFromAltStack)
+        .unwrap()
+        .add_op(OpDup)
+        .unwrap()
+        .add_data(&selector)
+        .unwrap()
+        .add_op(OpEqual)
+        .unwrap()
+        .add_op(OpIf)
+        .unwrap()
+        .add_op(OpDrop)
+        .unwrap()
+        .add_ops(&body)
+        .unwrap()
+        .add_op(OpElse)
+        .unwrap()
+        .add_op(OpReturn)
+        .unwrap()
+        .add_op(OpEndIf)
         .unwrap()
         .drain();
 
@@ -6725,7 +6795,6 @@ fn runs_selector_dispatch_with_contract_fields() {
     "#;
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
-    assert!(!compiled.without_dispatch_tag, "test requires selector dispatch");
 
     let sigscript_a = compiled.build_sig_script("a", vec![]).expect("sigscript a builds");
     let sigscript_b = compiled.build_sig_script("b", vec![]).expect("sigscript b builds");
@@ -6806,7 +6875,31 @@ fn compiles_validate_output_state_to_expected_script() {
         .add_op(OpCat)
         .unwrap()
 
-        // ---- Extract REST_OF_SCRIPT from current input signature script ----
+        // ---- Preserve the dispatch prefix before the state segment ----
+        .add_op(OpTxInputIndex)
+        .unwrap()
+        .add_op(OpDup)
+        .unwrap()
+        .add_op(OpTxInputScriptSigLen)
+        .unwrap()
+        .add_i64(compiled.bytecode.len() as i64)
+        .unwrap()
+        .add_op(OpSub)
+        .unwrap()
+        .add_op(OpDup)
+        .unwrap()
+        .add_i64(compiled.state_layout.start as i64)
+        .unwrap()
+        .add_op(OpAdd)
+        .unwrap()
+        .add_op(OpTxInputScriptSigSubstr)
+        .unwrap()
+        .add_op(OpSwap)
+        .unwrap()
+        .add_op(OpCat)
+        .unwrap()
+
+        // ---- Extract the bytecode suffix after the state segment ----
         // current input index
         .add_op(OpTxInputIndex)
         .unwrap()
@@ -6820,8 +6913,8 @@ fn compiles_validate_output_state_to_expected_script() {
         .add_op(OpDup)
         .unwrap()
         // Precompute contract_fields_end_offset - bytecode_size, where
-        // contract_fields_end_offset = len(<x><y>) = 12.
-        .add_i64(12 - compiled.bytecode.len() as i64)
+        // contract_fields_end_offset = dispatch prefix + len(<x><y>) = 13.
+        .add_i64(13 - compiled.bytecode.len() as i64)
         .unwrap()
         // start offset of REST_OF_SCRIPT inside sigscript
         .add_op(OpAdd)
@@ -6898,6 +6991,35 @@ fn compiles_validate_output_state_to_expected_script() {
         .unwrap()
         .drain();
 
+    let (state, body) = expected.split_at(compiled.state_layout.len);
+    let selector = selector_for(&compiled, "main");
+    let expected = script_builder()
+        .add_op(OpToAltStack)
+        .unwrap()
+        .add_ops(state)
+        .unwrap()
+        .add_op(OpFromAltStack)
+        .unwrap()
+        .add_op(OpDup)
+        .unwrap()
+        .add_data(&selector)
+        .unwrap()
+        .add_op(OpEqual)
+        .unwrap()
+        .add_op(OpIf)
+        .unwrap()
+        .add_op(OpDrop)
+        .unwrap()
+        .add_ops(body)
+        .unwrap()
+        .add_op(OpElse)
+        .unwrap()
+        .add_op(OpReturn)
+        .unwrap()
+        .add_op(OpEndIf)
+        .unwrap()
+        .drain();
+
     let actual_ops = script_to_str(&compiled.bytecode).expect("compiled bytecode stringifies");
     assert_eq!(compiled.bytecode, expected, "actual opcodes: {actual_ops}");
 }
@@ -6918,7 +7040,9 @@ fn runs_validate_output_state() {
     let input_compiled =
         compile_contract(source, &[5.into(), vec![1u8, 2u8].into()], CompileOptions::default()).expect("compile succeeds");
 
-    let input = test_input(0, sigscript_push_bytecode(&input_compiled.bytecode));
+    let sigscript = input_compiled.build_sig_script("main", vec![]).expect("sigscript builds");
+    let sigscript = pay_to_script_hash_signature_script(input_compiled.bytecode.clone(), sigscript).unwrap();
+    let input = test_input(0, sigscript);
 
     let output_compiled =
         compile_contract(source, &[6.into(), vec![0x34u8, 0x12u8].into()], CompileOptions::default()).expect("compile succeeds");
@@ -6945,7 +7069,8 @@ fn validate_output_state_normalizes_runtime_bool_fields() {
     "#;
 
     let input_compiled = compile_contract(source, &[Expr::bool(false)], CompileOptions::default()).expect("input contract compiles");
-    let raw_truthy_arg = script_builder().add_data_with_push_opcode(&[2]).unwrap().drain();
+    let raw_truthy_arg =
+        script_builder().add_data_with_push_opcode(&[2]).unwrap().add_data(&selector_for(&input_compiled, "main")).unwrap().drain();
     let signature_script =
         pay_to_script_hash_signature_script(input_compiled.bytecode.clone(), raw_truthy_arg).expect("P2SH signature script builds");
     let input = test_input(0, signature_script);
@@ -6978,7 +7103,9 @@ fn runs_validate_output_state_with_state_variable() {
     let input_compiled =
         compile_contract(source, &[5.into(), vec![1u8, 2u8].into()], CompileOptions::default()).expect("compile succeeds");
 
-    let input = test_input(0, sigscript_push_bytecode(&input_compiled.bytecode));
+    let sigscript = input_compiled.build_sig_script("main", vec![]).expect("sigscript builds");
+    let sigscript = pay_to_script_hash_signature_script(input_compiled.bytecode.clone(), sigscript).unwrap();
+    let input = test_input(0, sigscript);
 
     let output_compiled =
         compile_contract(source, &[6.into(), vec![0x34u8, 0x12u8].into()], CompileOptions::default()).expect("compile succeeds");
@@ -7014,7 +7141,7 @@ fn run_read_input_state_with_template_case_with_input_spk(
     let reader_compiled =
         compile_contract(reader_source, reader_constructor_args, CompileOptions::default()).expect("compile reader succeeds");
 
-    let input0 = test_input(0, vec![]);
+    let input0 = test_input(0, selector_sigscript(selector_for(&reader_compiled, "main")));
     let input1 = test_input(1, sigscript_push_bytecode(&target_input_compiled.bytecode));
     let output = TransactionOutput {
         value: 1000,
@@ -7953,7 +8080,7 @@ fn read_input_state_runtime_preserves_supported_field_types_across_contract_shap
 }
 
 #[test]
-fn read_input_state_runtime_preserves_supported_field_types_without_selector_dispatch() {
+fn read_input_state_runtime_preserves_supported_field_types_with_single_entrypoint_dispatch() {
     let run_case = |source: &str, args: Vec<Expr<'_>>, label: &str| {
         let compiled = compile_contract(source, &args, CompileOptions::default()).unwrap_or_else(|err| panic!("{label}: {err:?}"));
         let sigscript = compiled.build_sig_script("main", vec![]).expect("sigscript builds");
@@ -8163,7 +8290,9 @@ fn debug_validate_output_state_accepts_current_byte32_fields() {
     )
     .expect("compile succeeds");
 
-    let input = test_input(0, sigscript_push_bytecode(&input_compiled.bytecode));
+    let sigscript = input_compiled.build_sig_script("main", vec![]).expect("sigscript builds");
+    let sigscript = pay_to_script_hash_signature_script(input_compiled.bytecode.clone(), sigscript).unwrap();
+    let input = test_input(0, sigscript);
     let input_spk = pay_to_script_hash_script(&input_compiled.bytecode);
     let output_spk = pay_to_script_hash_script(&output_compiled.bytecode);
     let output = TransactionOutput { value: 1000, script_public_key: output_spk, covenant: None };
@@ -8291,7 +8420,8 @@ fn byte_hex_literal_is_a_scalar_numeral() {
     "#;
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("scalar byte hex literal should compile");
-    assert!(run_bytecode_with_selector(compiled.bytecode, None).is_ok());
+    let selector = selector_for(&compiled, "main");
+    assert!(run_bytecode_with_selector(compiled.bytecode, selector).is_ok());
 }
 
 #[test]
@@ -8310,7 +8440,8 @@ fn hex_literals_are_numerals_for_int_and_byte() {
     "#;
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("hex numerals should compile");
-    assert!(run_bytecode_with_selector(compiled.bytecode, None).is_ok());
+    let selector = selector_for(&compiled, "main");
+    assert!(run_bytecode_with_selector(compiled.bytecode, selector).is_ok());
 }
 
 #[test]
@@ -8339,7 +8470,8 @@ fn hex_literal_over_eight_bytes_requires_an_immediate_byte_array_cast() {
     let source = format!("contract C() {{ entry main() {{ byte[_] value = byte[_]({raw}); require(value == byte[9]({raw})); }} }}");
     let compiled =
         compile_contract(&source, &[], CompileOptions::default()).expect("immediately cast nine-byte literal should compile");
-    assert!(run_bytecode_with_selector(compiled.bytecode, None).is_ok());
+    let selector = selector_for(&compiled, "main");
+    assert!(run_bytecode_with_selector(compiled.bytecode, selector).is_ok());
 }
 
 #[test]
@@ -8363,7 +8495,8 @@ fn fixed_byte_sequence_types_accept_immediate_hex_literals() {
     );
 
     let compiled = compile_contract(&source, &[], CompileOptions::default()).expect("direct fixed byte-sequence casts should compile");
-    assert!(run_bytecode_with_selector(compiled.bytecode, None).is_ok());
+    let selector = selector_for(&compiled, "main");
+    assert!(run_bytecode_with_selector(compiled.bytecode, selector).is_ok());
 }
 
 #[test]
@@ -8561,8 +8694,11 @@ fn compiles_read_input_state_to_expected_script() {
     let asm = script_to_str(&compiled.bytecode).expect("stringifies");
     assert_eq!(asm.matches("OpTxInputScriptSigSubstr").count(), 2, "should read two state fields");
     assert_eq!(asm.matches("OpGreaterThan").count(), 1, "should compare x numerically");
-    assert_eq!(asm.matches("OpEqual").count(), 1, "should compare y bytewise");
-    assert!(compiled.bytecode.ends_with(&[OpDrop, OpDrop, OpTrue]), "expected stack cleanup for active state");
+    assert_eq!(asm.matches("OpEqual").count(), 2, "should compare y bytewise in addition to dispatch");
+    assert!(
+        compiled.bytecode.windows(6).any(|ops| ops == [OpDrop, OpDrop, OpTrue, OpElse, OpReturn, OpEndIf]),
+        "expected stack cleanup for active state before the dispatch epilogue"
+    );
 }
 
 #[test]
@@ -8585,7 +8721,7 @@ fn runs_read_input_state() {
     let input1_compiled =
         compile_contract(source, &[8.into(), vec![0x34u8, 0x12u8].into()], CompileOptions::default()).expect("compile succeeds");
 
-    let input0 = test_input(0, vec![]);
+    let input0 = test_input(0, selector_sigscript(selector_for(&active_compiled, "main")));
     let input1 = test_input(1, sigscript_push_bytecode(&input1_compiled.bytecode));
 
     let output = TransactionOutput {
@@ -8620,7 +8756,7 @@ fn runs_read_input_state_into_state_variable() {
     let input1_compiled =
         compile_contract(source, &[8.into(), vec![0x34u8, 0x12u8].into()], CompileOptions::default()).expect("compile succeeds");
 
-    let input0 = test_input(0, vec![]);
+    let input0 = test_input(0, selector_sigscript(selector_for(&active_compiled, "main")));
     let input1 = test_input(1, sigscript_push_bytecode(&input1_compiled.bytecode));
 
     let output = TransactionOutput {
@@ -8658,7 +8794,7 @@ fn runs_read_input_state_as_internal_function_argument() {
     let input1_compiled =
         compile_contract(source, &[8.into(), vec![0x34u8, 0x12u8].into()], CompileOptions::default()).expect("compile succeeds");
 
-    let input0 = test_input(0, vec![]);
+    let input0 = test_input(0, selector_sigscript(selector_for(&active_compiled, "main")));
     let input1 = test_input(1, sigscript_push_bytecode(&input1_compiled.bytecode));
     let output = TransactionOutput {
         value: 1000,
@@ -9138,7 +9274,9 @@ fn validate_output_state_lowers_nested_state_literal_in_state_field_order() {
         compile_contract(source, &[5.into(), 3.into(), 4.into()], CompileOptions::default()).expect("compile succeeds");
     let output_compiled =
         compile_contract(source, &[6.into(), 7.into(), 8.into()], CompileOptions::default()).expect("compile succeeds");
-    let input = test_input(0, sigscript_push_bytecode(&input_compiled.bytecode));
+    let sigscript = input_compiled.build_sig_script("main", vec![]).expect("sigscript builds");
+    let sigscript = pay_to_script_hash_signature_script(input_compiled.bytecode.clone(), sigscript).unwrap();
+    let input = test_input(0, sigscript);
     let input_spk = pay_to_script_hash_script(&input_compiled.bytecode);
     let output_spk = pay_to_script_hash_script(&output_compiled.bytecode);
     let output = TransactionOutput { value: 1000, script_public_key: output_spk, covenant: None };
@@ -9172,7 +9310,9 @@ fn validate_output_state_with_state_identifier() {
         compile_contract(source, &[5.into(), 3.into(), 4.into()], CompileOptions::default()).expect("compile succeeds");
     let output_compiled =
         compile_contract(source, &[6.into(), 7.into(), 8.into()], CompileOptions::default()).expect("compile succeeds");
-    let input = test_input(0, sigscript_push_bytecode(&input_compiled.bytecode));
+    let sigscript = input_compiled.build_sig_script("main", vec![]).expect("sigscript builds");
+    let sigscript = pay_to_script_hash_signature_script(input_compiled.bytecode.clone(), sigscript).unwrap();
+    let input = test_input(0, sigscript);
     let input_spk = pay_to_script_hash_script(&input_compiled.bytecode);
     let output_spk = pay_to_script_hash_script(&output_compiled.bytecode);
     let output = TransactionOutput { value: 1000, script_public_key: output_spk, covenant: None };
@@ -9283,7 +9423,9 @@ fn fails_validate_output_state_with_wrong_output_index() {
     let expected_output_state =
         compile_contract(source, &[6.into(), vec![0x34u8, 0x12u8].into()], CompileOptions::default()).expect("compile succeeds");
 
-    let input = test_input(0, sigscript_push_bytecode(&input_compiled.bytecode));
+    let sigscript = input_compiled.build_sig_script("main", vec![]).expect("sigscript builds");
+    let sigscript = pay_to_script_hash_signature_script(input_compiled.bytecode.clone(), sigscript).unwrap();
+    let input = test_input(0, sigscript);
 
     let input_spk = pay_to_script_hash_script(&input_compiled.bytecode);
     let matching_spk = pay_to_script_hash_script(&expected_output_state.bytecode);
@@ -9316,7 +9458,9 @@ fn fails_validate_output_state_with_mismatched_next_state_fields() {
     let wrong_output_state =
         compile_contract(source, &[7.into(), vec![0x34u8, 0x12u8].into()], CompileOptions::default()).expect("compile succeeds");
 
-    let input = test_input(0, sigscript_push_bytecode(&input_compiled.bytecode));
+    let sigscript = input_compiled.build_sig_script("main", vec![]).expect("sigscript builds");
+    let sigscript = pay_to_script_hash_signature_script(input_compiled.bytecode.clone(), sigscript).unwrap();
+    let input = test_input(0, sigscript);
 
     let input_spk = pay_to_script_hash_script(&input_compiled.bytecode);
     let wrong_output_spk = pay_to_script_hash_script(&wrong_output_state.bytecode);
@@ -9435,6 +9579,7 @@ fn checksigfromstack_lowers_to_matching_opcode() {
         .add_op(OpTrue)
         .unwrap()
         .drain();
+    let expected = wrap_with_dispatch(expected, selector_for(&compiled, "main"));
     assert_eq!(compiled.bytecode, expected);
 }
 
@@ -9471,6 +9616,7 @@ fn checksigfromstackecdsa_lowers_to_matching_opcode() {
         .add_op(OpTrue)
         .unwrap()
         .drain();
+    let expected = wrap_with_dispatch(expected, selector_for(&compiled, "main"));
     assert_eq!(compiled.bytecode, expected);
 }
 
@@ -9809,6 +9955,7 @@ fn r0_succinct_verify_lowers_hash_aliases_to_zk_precompile() {
             .add_op(OpTrue)
             .unwrap()
             .drain();
+        let expected = wrap_with_dispatch(expected, selector_for(&compiled, "main"));
         let asm = script_to_str(&compiled.bytecode).expect("R0 succinct script should stringify");
         assert!(asm.contains("OpZkPrecompile OpDrop"), "void verifier result should be dropped: {asm}");
         assert_eq!(compiled.bytecode, expected, "{call_name} lowered unexpectedly");
@@ -9864,10 +10011,11 @@ fn r0_g16_verify_lowers_with_sdk_verifier_fragment() {
     kaspa_txscript_zk_sdk::append_r0_groth16_verifier_dynamic_image_id(&mut expected_builder).unwrap();
     expected_builder.add_op(OpDrop).unwrap();
     expected_builder.add_op(OpTrue).unwrap();
+    let expected = wrap_with_dispatch(expected_builder.drain(), selector_for(&compiled, "main"));
 
     let asm = script_to_str(&compiled.bytecode).expect("R0 Groth16 script should stringify");
     assert!(asm.contains("OpZkPrecompile OpDrop"), "void verifier result should be dropped: {asm}");
-    assert_eq!(compiled.bytecode, expected_builder.drain());
+    assert_eq!(compiled.bytecode, expected);
 }
 
 #[test]
@@ -9913,7 +10061,7 @@ fn value_returning_builtin_statement_discards_result() {
     "#;
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("value-returning builtin statement should compile");
     let asm = script_to_str(&compiled.bytecode).expect("builtin statement script should stringify");
-    assert!(asm.ends_with("OpSHA256 OpDrop OpTrue"), "builtin statement result should be discarded: {asm}");
+    assert!(asm.contains("OpSHA256 OpDrop OpTrue"), "builtin statement result should be discarded: {asm}");
 }
 
 #[test]
@@ -9934,7 +10082,7 @@ fn discarded_helper_return_expressions_are_evaluated_and_dropped() {
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("discarded helper returns should compile");
     let asm = script_to_str(&compiled.bytecode).expect("script should stringify");
     assert_eq!(asm.matches("OpSHA256").count(), 2, "both return expressions must be evaluated: {asm}");
-    assert_eq!(asm.matches("OpDrop").count(), 2, "both discarded return values must be dropped: {asm}");
+    assert_eq!(asm.matches("OpDrop").count(), 3, "both discarded return values plus the dispatch tag must be dropped: {asm}");
 }
 
 #[test]
@@ -9957,7 +10105,8 @@ fn discarded_nested_helper_return_expression_is_evaluated() {
     "#;
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("nested discarded return should compile");
-    let result = run_bytecode_with_selector(compiled.bytecode, None);
+    let selector = selector_for(&compiled, "main");
+    let result = run_bytecode_with_selector(compiled.bytecode, selector);
     assert!(result.is_err(), "the nested discarded division by zero must execute");
 }
 
@@ -11276,7 +11425,8 @@ fn template_hash_matches_canonical_rust_and_sil_vectors() {
         );
 
         let compiled = compile_contract(&source, &[], CompileOptions::default()).expect("templateHash should compile");
-        let result = run_bytecode_with_selector(compiled.bytecode, None);
+        let selector = selector_for(&compiled, "main");
+        let result = run_bytecode_with_selector(compiled.bytecode, selector);
         assert!(result.is_ok(), "templateHash should match canonical vector {expected_hex}: {result:?}");
     }
 }
@@ -11292,7 +11442,8 @@ fn template_hash_binds_prefix_suffix_boundary() {
     "#;
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("templateHash should compile");
-    let result = run_bytecode_with_selector(compiled.bytecode, None);
+    let selector = selector_for(&compiled, "main");
+    let result = run_bytecode_with_selector(compiled.bytecode, selector);
     assert!(result.is_ok(), "templateHash should commit to the prefix/suffix boundary: {result:?}");
 }
 
@@ -11579,8 +11730,14 @@ fn boolean_operators_use_vm_truthiness_for_noncanonical_values() {
                 };
                 let source = format!("contract C() {{ entry main(bool a, bool b) {{ require((a {operator} b) == {expected}); }} }}");
                 let compiled = compile_contract(&source, &[], CompileOptions::default()).expect("boolean contract compiles");
-                let sigscript =
-                    script_builder().add_data_with_push_opcode(left).unwrap().add_data_with_push_opcode(right).unwrap().drain();
+                let sigscript = script_builder()
+                    .add_data_with_push_opcode(left)
+                    .unwrap()
+                    .add_data_with_push_opcode(right)
+                    .unwrap()
+                    .add_data(&selector_for(&compiled, "main"))
+                    .unwrap()
+                    .drain();
                 run_bytecode_with_sigscript(compiled.bytecode, sigscript).unwrap_or_else(|error| {
                     panic!("operator={operator} left={left:?} right={right:?} expected={expected}: {error:?}")
                 });
@@ -11825,6 +11982,7 @@ fn return_reused_local_is_stored_once_and_reused() {
         .unwrap()
         .drain();
 
+    let expected = wrap_with_dispatch(expected, selector_for(&compiled, "main"));
     assert_eq!(compiled.bytecode, expected);
 }
 
@@ -11843,9 +12001,7 @@ fn compiles_sigscript_inputs_and_verifies() {
     let mut builder = script_builder();
     builder.add_i64(3).unwrap();
     builder.add_i64(4).unwrap();
-    if let Some(selector) = selector {
-        builder.add_data(&selector).unwrap();
-    }
+    builder.add_data(&selector).unwrap();
     let sigscript = builder.drain();
 
     let result = run_bytecode_with_sigscript(compiled.bytecode, sigscript);
@@ -11969,9 +12125,7 @@ fn compiles_sigscript_reused_inputs_and_verifies() {
     let selector = selector_for(&compiled, "main");
     let mut builder = script_builder();
     builder.add_i64(3).unwrap();
-    if let Some(selector) = selector {
-        builder.add_data(&selector).unwrap();
-    }
+    builder.add_data(&selector).unwrap();
     let sigscript = builder.drain();
 
     let result = run_bytecode_with_sigscript(compiled.bytecode, sigscript);
@@ -11993,9 +12147,7 @@ fn compiles_sigscript_inputs_and_fails_on_wrong_sum() {
     let mut builder = script_builder();
     builder.add_i64(2).unwrap();
     builder.add_i64(4).unwrap();
-    if let Some(selector) = selector {
-        builder.add_data(&selector).unwrap();
-    }
+    builder.add_data(&selector).unwrap();
     let sigscript = builder.drain();
 
     let result = run_bytecode_with_sigscript(compiled.bytecode, sigscript);
@@ -12016,9 +12168,7 @@ fn compiles_sigscript_reused_inputs_and_fails_on_wrong_value() {
     let selector = selector_for(&compiled, "main");
     let mut builder = script_builder();
     builder.add_i64(4).unwrap();
-    if let Some(selector) = selector {
-        builder.add_data(&selector).unwrap();
-    }
+    builder.add_data(&selector).unwrap();
     let sigscript = builder.drain();
 
     let result = run_bytecode_with_sigscript(compiled.bytecode, sigscript);
@@ -12046,9 +12196,7 @@ fn entrypoints_validate_fixed_array_argument_sizes_at_runtime() {
     let sigscript = |entrypoint: &str, value: &[u8]| {
         let mut builder = script_builder();
         builder.add_data_with_push_opcode(value).unwrap();
-        if let Some(selector) = selector_for(&compiled, entrypoint) {
-            builder.add_data(&selector).unwrap();
-        }
+        builder.add_data(&selector_for(&compiled, entrypoint)).unwrap();
         builder.drain()
     };
 
@@ -12077,7 +12225,7 @@ fn entrypoints_validate_fixed_width_scalar_argument_sizes_at_runtime() {
             "#
         );
         let compiled = compile_contract(&source, &[], CompileOptions::default()).expect("fixed-width scalar should compile");
-        let expected = script_builder()
+        let body = script_builder()
             .add_op(OpDup)
             .unwrap()
             .add_op(OpSize)
@@ -12097,9 +12245,12 @@ fn entrypoints_validate_fixed_width_scalar_argument_sizes_at_runtime() {
             .add_op(OpTrue)
             .unwrap()
             .drain();
+        let selector = selector_for(&compiled, "main");
+        let expected = wrap_with_dispatch(body, selector);
         assert_eq!(compiled.bytecode, expected, "unexpected ABI validation bytecode for {type_name}");
 
-        let sigscript = |size: usize| script_builder().add_data_with_push_opcode(&vec![1; size]).unwrap().drain();
+        let sigscript =
+            |size: usize| script_builder().add_data_with_push_opcode(&vec![1; size]).unwrap().add_data(&selector).unwrap().drain();
         assert!(
             run_bytecode_with_sigscript(compiled.bytecode.clone(), sigscript(expected_size)).is_ok(),
             "{type_name} should accept exactly {expected_size} bytes"
@@ -12132,7 +12283,7 @@ fn entrypoint_int_argument_accepts_below_nine_bytes_and_rejects_nine() {
         }
     "#;
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("int parameter should compile");
-    let expected = script_builder()
+    let body = script_builder()
         .add_op(OpDup)
         .unwrap()
         .add_op(OpSize)
@@ -12154,9 +12305,12 @@ fn entrypoint_int_argument_accepts_below_nine_bytes_and_rejects_nine() {
         .add_op(OpTrue)
         .unwrap()
         .drain();
+    let selector = selector_for(&compiled, "main");
+    let expected = wrap_with_dispatch(body, selector);
     assert_eq!(compiled.bytecode, expected);
 
-    let sigscript = |size: usize| script_builder().add_data_with_push_opcode(&vec![1; size]).unwrap().drain();
+    let sigscript =
+        |size: usize| script_builder().add_data_with_push_opcode(&vec![1; size]).unwrap().add_data(&selector).unwrap().drain();
     assert!(run_bytecode_with_sigscript(compiled.bytecode.clone(), sigscript(0)).is_ok());
     assert!(run_bytecode_with_sigscript(compiled.bytecode.clone(), sigscript(8)).is_ok());
     assert!(run_bytecode_with_sigscript(compiled.bytecode, sigscript(9)).is_err());
@@ -12172,7 +12326,7 @@ fn entrypoint_bool_argument_accepts_at_most_one_byte() {
         }
     "#;
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("bool parameter should compile");
-    let expected = script_builder()
+    let body = script_builder()
         .add_op(OpDup)
         .unwrap()
         .add_op(OpSize)
@@ -12194,9 +12348,12 @@ fn entrypoint_bool_argument_accepts_at_most_one_byte() {
         .add_op(OpTrue)
         .unwrap()
         .drain();
+    let selector = selector_for(&compiled, "main");
+    let expected = wrap_with_dispatch(body, selector);
     assert_eq!(compiled.bytecode, expected);
 
-    let sigscript = |size: usize| script_builder().add_data_with_push_opcode(&vec![1; size]).unwrap().drain();
+    let sigscript =
+        |size: usize| script_builder().add_data_with_push_opcode(&vec![1; size]).unwrap().add_data(&selector).unwrap().drain();
     assert!(run_bytecode_with_sigscript(compiled.bytecode.clone(), sigscript(0)).is_ok());
     assert!(run_bytecode_with_sigscript(compiled.bytecode.clone(), sigscript(1)).is_ok());
     assert!(run_bytecode_with_sigscript(compiled.bytecode.clone(), sigscript(2)).is_err());
@@ -12372,7 +12529,8 @@ fn accepts_well_typed_constant_dependencies_on_constructor_params_and_constants(
 
     let compiled =
         compile_contract(source, &[3.into()], CompileOptions::default()).expect("well-typed constant dependencies should compile");
-    let result = run_bytecode_with_sigscript(compiled.bytecode, Vec::new());
+    let sigscript = selector_sigscript(selector_for(&compiled, "main"));
+    let result = run_bytecode_with_sigscript(compiled.bytecode, sigscript);
     assert!(result.is_ok(), "constant dependencies should retain their runtime value: {result:?}");
 }
 
@@ -12545,7 +12703,8 @@ fn bool_as_int_normalizes_vm_truthiness() {
     let opcodes = script_to_str(&compiled.bytecode).expect("compiled bytecode stringifies");
     assert_eq!(opcodes.matches("Op0NotEqual").count(), 1, "bool as int must normalize VM truthiness exactly once: {opcodes}");
 
-    let raw_truthy_arg = script_builder().add_data_with_push_opcode(&[2]).unwrap().drain();
+    let raw_truthy_arg =
+        script_builder().add_data_with_push_opcode(&[2]).unwrap().add_data(&selector_for(&compiled, "main")).unwrap().drain();
     let result = run_bytecode_with_sigscript(compiled.bytecode, raw_truthy_arg);
     assert!(result.is_ok(), "truthy 0x02 must normalize to integer 1: {result:?}");
 }
@@ -12587,10 +12746,8 @@ fn int_as_fixed_bytes_has_a_fixed_result_type_and_uses_num2bin() {
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("fixed-size integer conversions compile");
     assert_eq!(compiled.bytecode.iter().filter(|&&op| op == OpNum2Bin).count(), 4);
-    assert!(
-        run_bytecode_with_sigscript(compiled.bytecode, script_builder().add_i64(42).unwrap().drain()).is_ok(),
-        "fixed-size integer conversions should execute"
-    );
+    let sigscript = script_builder().add_i64(42).unwrap().add_data(&selector_for(&compiled, "test")).unwrap().drain();
+    assert!(run_bytecode_with_sigscript(compiled.bytecode, sigscript).is_ok(), "fixed-size integer conversions should execute");
 }
 
 #[test]
@@ -12877,7 +13034,8 @@ fn unsigned_byte_cast_appends_zero_and_preserves_255() {
     let opcodes = script_to_str(&compiled.bytecode).expect("compiled bytecode stringifies");
     assert_eq!(opcodes.matches("OpCat").count(), 1, "unsigned(byte) must append one zero byte: {opcodes}");
     assert!(!opcodes.contains("OpBin2Num"), "unsigned(byte) must use concatenation rather than normalization: {opcodes}");
-    assert!(run_bytecode_with_selector(compiled.bytecode, None).is_ok(), "unsigned(0xff) must equal 255");
+    let selector = selector_for(&compiled, "test");
+    assert!(run_bytecode_with_selector(compiled.bytecode, selector).is_ok(), "unsigned(0xff) must equal 255");
 }
 
 #[test]
@@ -12905,9 +13063,8 @@ fn empty_array_statement_expr_evaluation_compiles_to_empty_array_data() {
         .unwrap()
         .drain();
 
+    let expected = wrap_with_dispatch(expected, selector_for(&compiled, "main"));
     assert_eq!(compiled.bytecode, expected);
-    assert_eq!(compiled.bytecode[0], OpFalse);
-    assert_eq!(compiled.bytecode[1], OpFalse);
 }
 
 #[test]
@@ -12959,7 +13116,8 @@ fn allows_same_variable_name_in_different_functions() {
 
     let compiled = compile_contract(source, &[], CompileOptions::default())
         .expect("separate functions should have independent variable namespaces");
-    assert!(run_bytecode_with_selector(compiled.bytecode, None).is_ok());
+    let selector = selector_for(&compiled, "main");
+    assert!(run_bytecode_with_selector(compiled.bytecode, selector).is_ok());
 }
 
 #[test]
@@ -12996,7 +13154,8 @@ fn allows_same_variable_name_in_non_overlapping_sibling_scopes() {
 
     let compiled = compile_contract(source, &[], CompileOptions::default())
         .expect("non-overlapping sibling scopes should have independent variable namespaces");
-    assert!(run_bytecode_with_selector(compiled.bytecode, None).is_ok());
+    let selector = selector_for(&compiled, "main");
+    assert!(run_bytecode_with_selector(compiled.bytecode, selector).is_ok());
 }
 
 #[test]
@@ -14257,7 +14416,8 @@ fn constant_split_index_produces_dynamic_parts_for_fixed_source() {
     "#;
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("fixed source split should return dynamic parts");
-    let result = run_bytecode_with_selector(compiled.bytecode, None);
+    let selector = selector_for(&compiled, "main");
+    let result = run_bytecode_with_selector(compiled.bytecode, selector);
     assert!(result.is_ok(), "constant-index split of a fixed source should execute successfully: {result:?}");
 }
 
@@ -14909,16 +15069,17 @@ fn compile_time_if_branch_stores_local_var_once_and_reuses_it() {
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
 
     let script = &compiled.bytecode;
-    let if_pos = script.iter().position(|op| *op == OpIf).expect("if present");
-    let else_pos = script.iter().position(|op| *op == OpElse).expect("else present");
-    let endif_pos = script.iter().position(|op| *op == OpEndIf).expect("endif present");
+    let if_pos = script.iter().rposition(|op| *op == OpIf).expect("body if present");
+    let else_pos = if_pos + script[if_pos..].iter().position(|op| *op == OpElse).expect("body else present");
+    let endif_pos = else_pos + script[else_pos..].iter().position(|op| *op == OpEndIf).expect("body endif present");
+    let dispatch_else_pos = script.iter().rposition(|op| *op == OpElse).expect("dispatch else present");
     assert_eq!(script[if_pos + 1..else_pos].iter().copied().filter(|op| *op == OpDup).count(), 3);
     assert_eq!(script[if_pos + 1..else_pos].iter().copied().filter(|op| *op == OpOver).count(), 0);
     assert_eq!(script[if_pos + 1..else_pos].iter().copied().filter(|op| *op == OpPick).count(), 0);
     assert_eq!(script[if_pos + 1..else_pos].iter().copied().filter(|op| *op == OpAdd).count(), 1);
     assert_eq!(script[if_pos + 1..else_pos].iter().copied().filter(|op| *op == OpDrop).count(), 1);
-    assert_eq!(script[endif_pos + 1..].iter().copied().filter(|op| *op == OpDrop).count(), 1);
-    assert_eq!(script[endif_pos + 1..].iter().copied().filter(|op| *op == OpRoll).count(), 0);
+    assert_eq!(script[endif_pos + 1..dispatch_else_pos].iter().copied().filter(|op| *op == OpDrop).count(), 1);
+    assert_eq!(script[endif_pos + 1..dispatch_else_pos].iter().copied().filter(|op| *op == OpRoll).count(), 0);
 }
 
 #[test]
@@ -14958,17 +15119,18 @@ fn compile_time_if_branch_stores_struct_fields_once_and_reuses_them() {
     );
 
     let script = &compiled.bytecode;
-    let if_pos = script.iter().position(|op| *op == OpIf).expect("if present");
-    let else_pos = script.iter().position(|op| *op == OpElse).expect("else present");
-    let endif_pos = script.iter().position(|op| *op == OpEndIf).expect("endif present");
+    let if_pos = script.iter().rposition(|op| *op == OpIf).expect("body if present");
+    let else_pos = if_pos + script[if_pos..].iter().position(|op| *op == OpElse).expect("body else present");
+    let endif_pos = else_pos + script[else_pos..].iter().position(|op| *op == OpEndIf).expect("body endif present");
+    let dispatch_else_pos = script.iter().rposition(|op| *op == OpElse).expect("dispatch else present");
     assert_eq!(script[if_pos + 1..else_pos].iter().copied().filter(|op| *op == OpDup).count(), 3);
     assert_eq!(script[if_pos + 1..else_pos].iter().copied().filter(|op| *op == OpOver).count(), 3);
     assert_eq!(script[if_pos + 1..else_pos].iter().copied().filter(|op| *op == OpPick).count(), 1);
     assert_eq!(script[if_pos + 1..else_pos].iter().copied().filter(|op| *op == OpAdd).count(), 1);
     assert_eq!(script[if_pos + 1..else_pos].iter().copied().filter(|op| *op == OpMul).count(), 1);
     assert_eq!(script[if_pos + 1..else_pos].iter().copied().filter(|op| *op == OpDrop).count(), 2);
-    assert_eq!(script[endif_pos + 1..].iter().copied().filter(|op| *op == OpDrop).count(), 1);
-    assert_eq!(script[endif_pos + 1..].iter().copied().filter(|op| *op == OpRoll).count(), 0);
+    assert_eq!(script[endif_pos + 1..dispatch_else_pos].iter().copied().filter(|op| *op == OpDrop).count(), 1);
+    assert_eq!(script[endif_pos + 1..dispatch_else_pos].iter().copied().filter(|op| *op == OpRoll).count(), 0);
 }
 
 #[test]
@@ -14987,7 +15149,8 @@ fn struct_reassignment_snapshots_all_fields_before_rebinding() {
     "#;
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("struct field swap should compile");
-    let result = run_bytecode_with_selector(compiled.bytecode, None);
+    let selector = selector_for(&compiled, "main");
+    let result = run_bytecode_with_selector(compiled.bytecode, selector);
     assert!(result.is_ok(), "struct field swap should execute atomically: {result:?}");
 }
 
@@ -15009,7 +15172,8 @@ fn nested_struct_reassignment_snapshots_all_leaves_before_rebinding() {
     "#;
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("nested struct rotation should compile");
-    let result = run_bytecode_with_selector(compiled.bytecode, None);
+    let selector = selector_for(&compiled, "main");
+    let result = run_bytecode_with_selector(compiled.bytecode, selector);
     assert!(result.is_ok(), "nested struct rotation should execute atomically: {result:?}");
 }
 
@@ -15350,7 +15514,9 @@ fn validate_output_state_preserves_nested_struct_field_paths() {
 
     let input_compiled = compile_contract(source, &[1.into(), 2.into()], CompileOptions::default()).expect("compile succeeds");
     let output_compiled = compile_contract(source, &[3.into(), 4.into()], CompileOptions::default()).expect("compile succeeds");
-    let input = test_input(0, sigscript_push_bytecode(&input_compiled.bytecode));
+    let sigscript = input_compiled.build_sig_script("route", vec![]).expect("sigscript builds");
+    let sigscript = pay_to_script_hash_signature_script(input_compiled.bytecode.clone(), sigscript).unwrap();
+    let input = test_input(0, sigscript);
     let input_spk = pay_to_script_hash_script(&input_compiled.bytecode);
     let output_spk = pay_to_script_hash_script(&output_compiled.bytecode);
     let output = TransactionOutput { value: 1000, script_public_key: output_spk, covenant: None };
@@ -15485,7 +15651,8 @@ fn blake2b_builtins_lower_and_execute_correctly() {
     let compiled = compile_contract(&source, &[], CompileOptions::default()).expect("Blake2b builtins compile");
     assert!(compiled.bytecode.contains(&OpBlake2b));
     assert!(compiled.bytecode.contains(&OpBlake2bWithKey));
-    let result = run_bytecode_with_selector(compiled.bytecode, None);
+    let selector = selector_for(&compiled, "main");
+    let result = run_bytecode_with_selector(compiled.bytecode, selector);
     assert!(result.is_ok(), "Blake2b builtins should execute correctly: {result:?}");
 }
 
@@ -15512,7 +15679,8 @@ fn blake3_builtins_lower_and_execute_correctly() {
     let compiled = compile_contract(&source, &[], CompileOptions::default()).expect("Blake3 builtins compile");
     assert!(compiled.bytecode.contains(&OpBlake3));
     assert!(compiled.bytecode.contains(&OpBlake3WithKey));
-    let result = run_bytecode_with_selector(compiled.bytecode, None);
+    let selector = selector_for(&compiled, "main");
+    let result = run_bytecode_with_selector(compiled.bytecode, selector);
     assert!(result.is_ok(), "Blake3 builtins should call the engine correctly: {result:?}");
 }
 
@@ -15563,7 +15731,8 @@ fn rejects_misaligned_dynamic_array_entrypoint_payload() {
 
     // Bypass build_sig_script to model an untrusted spender pushing one byte for
     // an int[] whose elements require eight bytes each.
-    let sigscript = script_builder().add_data_with_push_opcode(&[1]).unwrap().drain();
+    let sigscript =
+        script_builder().add_data_with_push_opcode(&[1]).unwrap().add_data(&selector_for(&compiled, "main")).unwrap().drain();
     let result = run_bytecode_with_sigscript(compiled.bytecode, sigscript);
     assert!(result.is_err(), "a dynamic int array payload must contain a whole number of elements");
 }
@@ -15613,7 +15782,8 @@ fn allows_fixed_array_cast_with_compatible_encoded_size() {
         .expect("fixed arrays with equal encoded sizes should be cast-compatible");
     let opcodes = script_to_str(&compiled.bytecode).expect("compiled bytecode should stringify");
     assert!(!opcodes.contains("OpNum2Bin"), "an equal-size array cast should remain a passthrough: {opcodes}");
-    let result = run_bytecode_with_selector(compiled.bytecode, None);
+    let selector = selector_for(&compiled, "main");
+    let result = run_bytecode_with_selector(compiled.bytecode, selector);
     assert!(result.is_ok(), "the reinterpreted byte array should preserve the int payload bytes: {result:?}");
 }
 
@@ -15883,7 +16053,8 @@ fn generate_conformance_bool(seed: &mut u64, depth: usize) -> ConformancePureExp
 fn compile_and_execute_conformance_assertion(assertion: &str) {
     let source = format!("contract Generated() {{ entry spend() {{ require({assertion}); }} }}");
     let compiled = compile_contract(&source, &[], CompileOptions::default()).expect("generated well-typed program compiles");
-    run_bytecode_with_selector(compiled.bytecode, None).expect("reference result agrees with local VM");
+    let selector = selector_for(&compiled, "spend");
+    run_bytecode_with_selector(compiled.bytecode, selector).expect("reference result agrees with local VM");
 }
 
 #[test]
@@ -15909,7 +16080,8 @@ fn bounded_metamorphic_variants_preserve_behavior() {
         let helper = if body.contains("helper") { "function helper(int a, int b): int { return a + b; }" } else { "" };
         let source = format!("contract Meta() {{ {helper} entry spend() {{ {body} }} }}");
         let compiled = compile_contract(&source, &[], CompileOptions::default()).expect("metamorphic variant compiles");
-        run_bytecode_with_selector(compiled.bytecode, None).expect("metamorphic variant executes");
+        let selector = selector_for(&compiled, "spend");
+        run_bytecode_with_selector(compiled.bytecode, selector).expect("metamorphic variant executes");
     }
 }
 
@@ -15937,8 +16109,10 @@ fn debug_recording_does_not_change_executable_artifact() {
     assert_eq!(plain.state_layout, debug.state_layout);
     assert!(plain.debug_info.is_none());
     assert!(debug.debug_info.is_some());
-    run_bytecode_with_selector(plain.bytecode, None).expect("plain artifact executes");
-    run_bytecode_with_selector(debug.bytecode, None).expect("debug artifact executes with equivalent semantics");
+    let selector = selector_for(&plain, "spend");
+    run_bytecode_with_selector(plain.bytecode, selector).expect("plain artifact executes");
+    let selector = selector_for(&debug, "spend");
+    run_bytecode_with_selector(debug.bytecode, selector).expect("debug artifact executes with equivalent semantics");
 }
 
 #[test]

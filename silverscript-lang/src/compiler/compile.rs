@@ -72,18 +72,17 @@ pub(super) fn compile_contract_impl<'i>(
         return Err(CompilerError::Unsupported("contract has no entries".to_string()));
     }
 
-    let without_dispatch_tag = entrypoint_functions.len() == 1;
-
     let function_abi_entries = build_function_abi_entries(&covenant_lowered_contract, &constants)?;
-    if !without_dispatch_tag {
-        let mut entrypoints_by_tag = HashMap::<DispatchTag, &str>::new();
-        for entrypoint in &function_abi_entries {
-            let tag = entrypoint.dispatch_tag();
-            if let Some(existing) = entrypoints_by_tag.insert(tag, entrypoint.name.as_str()) {
-                return Err(CompilerError::EntrypointDispatchTagCollision { f1: existing.to_string(), f2: entrypoint.name.clone() });
-            }
+
+    // dispatch tag: verify no collisions and insert tags to global state
+    let mut entrypoints_by_tag = HashMap::<DispatchTag, &str>::new();
+    for entrypoint in &function_abi_entries {
+        let tag = entrypoint.dispatch_tag();
+        if let Some(existing) = entrypoints_by_tag.insert(tag, entrypoint.name.as_str()) {
+            return Err(CompilerError::EntrypointDispatchTagCollision { f1: existing.to_string(), f2: entrypoint.name.clone() });
         }
     }
+
     let uses_bytecode_size = contract_uses_bytecode_size(&lowered_contract);
 
     let mut bytecode_size = if uses_bytecode_size { Some(100i64) } else { None };
@@ -95,7 +94,6 @@ pub(super) fn compile_contract_impl<'i>(
             &lowered_contract,
             &lowered_constants,
             bytecode_size,
-            without_dispatch_tag,
             &function_abi_entries,
             &structs,
             &mut debug_recorder,
@@ -107,7 +105,6 @@ pub(super) fn compile_contract_impl<'i>(
                 &lowered_contract,
                 &covenant_lowered_contract,
                 function_abi_entries.clone(),
-                without_dispatch_tag,
                 bytecode,
                 state_layout,
                 debug_info,
@@ -120,7 +117,6 @@ pub(super) fn compile_contract_impl<'i>(
                 &lowered_contract,
                 &covenant_lowered_contract,
                 function_abi_entries.clone(),
-                without_dispatch_tag,
                 bytecode,
                 state_layout,
                 debug_info,
@@ -136,7 +132,6 @@ fn compile_contract_bytecode_iteration<'i>(
     lowered_contract: &ContractAst<'i>,
     lowered_constants: &HashMap<String, Expr<'i>>,
     bytecode_size: Option<i64>,
-    without_dispatch_tag: bool,
     function_abi_entries: &[FunctionAbiEntry],
     structs: &StructRegistry,
     debug_recorder: &mut DebugRecorder<'i>,
@@ -144,7 +139,7 @@ fn compile_contract_bytecode_iteration<'i>(
     let (_contract_fields, field_prolog_bytecode) =
         compile_contract_fields(&lowered_contract.fields, lowered_constants, bytecode_size)?;
 
-    let dispatch_prefix_len = if without_dispatch_tag { 0 } else { 1 };
+    let dispatch_prefix_len = 1;
     let contract_fields_end_offset = dispatch_prefix_len + field_prolog_bytecode.len();
     let state_layout = CompiledStateLayout { start: dispatch_prefix_len, len: field_prolog_bytecode.len() };
     let compiled_entrypoints = compile_entrypoint_bytecodes(
@@ -155,13 +150,7 @@ fn compile_contract_bytecode_iteration<'i>(
         bytecode_size,
         debug_recorder,
     )?;
-    let bytecode = build_contract_bytecode(
-        debug_recorder,
-        without_dispatch_tag,
-        &field_prolog_bytecode,
-        &compiled_entrypoints,
-        function_abi_entries,
-    )?;
+    let bytecode = build_contract_bytecode(debug_recorder, &field_prolog_bytecode, &compiled_entrypoints, function_abi_entries)?;
     Ok((bytecode, state_layout))
 }
 
@@ -195,20 +184,10 @@ fn compile_entrypoint_bytecodes<'i>(
 
 fn build_contract_bytecode(
     debug_recorder: &mut DebugRecorder<'_>,
-    without_dispatch_tag: bool,
     field_prolog_bytecode: &[u8],
     compiled_entrypoints: &[(String, Vec<u8>)],
     function_abi_entries: &[FunctionAbiEntry],
 ) -> Result<Vec<u8>, CompilerError> {
-    if without_dispatch_tag {
-        let (name, entrypoint_bytecode) =
-            compiled_entrypoints.first().ok_or_else(|| CompilerError::Unsupported("contract has no entries".to_string()))?;
-        debug_recorder.set_entrypoint_start(name, field_prolog_bytecode.len());
-        let mut bytecode = field_prolog_bytecode.to_vec();
-        bytecode.extend(entrypoint_bytecode.clone());
-        return Ok(bytecode);
-    }
-
     // Preserve the dispatch tag while encoding contract state once so
     // reflection helpers can rewrite a single contiguous state segment.
     let mut builder = script_builder();
@@ -246,7 +225,6 @@ fn build_compiled_contract<'i>(
     lowered_contract: &ContractAst<'i>,
     covenant_lowered_contract: &ContractAst<'i>,
     function_abi_entries: Vec<FunctionAbiEntry>,
-    without_dispatch_tag: bool,
     bytecode: Vec<u8>,
     state_layout: CompiledStateLayout,
     debug_info: Option<DebugInfo<'i>>,
@@ -257,7 +235,6 @@ fn build_compiled_contract<'i>(
         bytecode,
         ast: covenant_lowered_contract.clone(),
         abi: function_abi_entries,
-        without_dispatch_tag,
         state_layout,
         debug_info,
     }

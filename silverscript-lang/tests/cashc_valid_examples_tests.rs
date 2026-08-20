@@ -105,7 +105,7 @@ fn random_keypair() -> Keypair {
     }
 }
 
-fn build_sigscript(args: &[ArgValue], selector: Option<DispatchTag>) -> Vec<u8> {
+fn build_sigscript(args: &[ArgValue], selector: DispatchTag) -> Vec<u8> {
     let mut builder = ScriptBuilder::new();
     for arg in args {
         match arg {
@@ -123,18 +123,12 @@ fn build_sigscript(args: &[ArgValue], selector: Option<DispatchTag>) -> Vec<u8> 
             }
         }
     }
-    if let Some(selector) = selector {
-        builder.add_data(&selector).unwrap();
-    }
+    builder.add_data(&selector).unwrap();
     builder.drain()
 }
 
-fn selector_for_compiled(compiled: &CompiledContract<'_>, function_name: &str) -> Option<DispatchTag> {
-    if compiled.without_dispatch_tag {
-        None
-    } else {
-        Some(compiled.abi.iter().find(|entry| entry.name == function_name).expect("entrypoint resolved").dispatch_tag())
-    }
+fn selector_for_compiled(compiled: &CompiledContract<'_>, function_name: &str) -> DispatchTag {
+    compiled.abi.iter().find(|entry| entry.name == function_name).expect("entrypoint resolved").dispatch_tag()
 }
 
 fn build_p2pk_script(pubkey: &[u8]) -> Vec<u8> {

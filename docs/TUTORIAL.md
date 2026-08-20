@@ -337,7 +337,7 @@ entry spend(sig s, pubkey pk) {
 }
 ```
 
-A contract must have at least one entry. Contracts with multiple entrypoints use KCC-01 dispatch tags automatically.
+A contract must have at least one entry. All contracts use KCC-01 dispatch tags technique.
 
 ### Function Parameters and Return Types
 

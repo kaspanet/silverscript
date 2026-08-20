@@ -688,10 +688,10 @@ fn size_snapshots() -> Vec<SizeSnapshot> {
         SizeSnapshot {
             name: "chess_settle.sil",
             ctor: settle_constructor_args,
-            expected_bytecode_len: 2816,
-            expected_sigscript_len: 10369,
-            expected_instruction_count: 2121,
-            expected_charged_op_count: 1385,
+            expected_bytecode_len: 2830,
+            expected_sigscript_len: 10388,
+            expected_instruction_count: 2131,
+            expected_charged_op_count: 1394,
         },
         SizeSnapshot {
             name: "chess_pawn.sil",

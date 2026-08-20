@@ -118,7 +118,6 @@ pub struct CompiledContract<'i> {
     pub bytecode: Vec<u8>,
     pub ast: ContractAst<'i>,
     pub abi: Vec<FunctionAbiEntry>,
-    pub without_dispatch_tag: bool,
     pub state_layout: CompiledStateLayout,
     pub debug_info: Option<DebugInfo<'i>>,
 }
@@ -246,9 +245,9 @@ impl<'i> CompiledContract<'i> {
                 CompilerError::Unsupported(format!("function argument '{}' expects {} ({err})", input.name, input.type_name))
             })?;
         }
-        if !self.without_dispatch_tag {
-            builder.add_data(&function.dispatch_tag())?;
-        }
+
+        builder.add_data(&function.dispatch_tag())?;
+
         Ok(builder.drain())
     }
 
