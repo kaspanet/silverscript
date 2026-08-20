@@ -20,7 +20,7 @@ use debugger_session::{
     session::{DebugSession, DebugValue, ShadowTxContext},
 };
 use silverscript_lang::ast::{Expr, parse_contract_ast, parse_type_ref};
-use silverscript_lang::compiler::{CompileOptions, compile_contract, struct_object};
+use silverscript_lang::compiler::{CompileOptions, FunctionAbiEntriesExt, compile_contract, struct_object};
 use silverscript_lang::debug_info::StepKind;
 
 const IF_STATEMENT_CONTRACT: &str = r#"pragma silverscript ^0.1.0;
@@ -82,11 +82,7 @@ where
     let flags = EngineFlags { covenants_enabled: true, ..Default::default() };
     let engine = debugger_session::session::DebugEngine::new(ctx, flags);
 
-    let entry = compiled
-        .abi
-        .iter()
-        .find(|entry| entry.name == function_name)
-        .ok_or_else(|| format!("function '{function_name}' not found"))?;
+    let entry = compiled.abi.find_by_name(function_name).ok_or_else(|| format!("function '{function_name}' not found"))?;
 
     assert_eq!(entry.inputs.len(), function_args.len());
 

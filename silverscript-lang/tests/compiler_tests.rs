@@ -19,9 +19,9 @@ use kaspa_txscript::{
 };
 use silverscript_lang::ast::{ContractAst, Expr, ExprKind, Statement, format_contract_ast, parse_contract_ast, parse_type_ref};
 use silverscript_lang::compiler::{
-    COMPILER_VERSION, CompileOptions, CompiledContract, CompilerError, CovenantDeclCallOptions, DispatchTag, FunctionAbiEntry,
-    FunctionInputAbi, compile_contract, compile_contract_ast, compile_debug_expr, generated_covenant_auth_entrypoint_name,
-    struct_object,
+    COMPILER_VERSION, CompileOptions, CompiledContract, CompilerError, CovenantDeclCallOptions, DispatchTag, FunctionAbiEntriesExt,
+    FunctionAbiEntry, FunctionInputAbi, compile_contract, compile_contract_ast, compile_debug_expr,
+    generated_covenant_auth_entrypoint_name, struct_object,
 };
 use silverscript_lang::debug_info::StepKind;
 use silverscript_lang::template::template_hash;
@@ -2559,7 +2559,7 @@ fn build_sig_script_appends_selector_for_single_entrypoint() {
     "#;
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
     let sigscript = compiled.build_sig_script("spend", vec![1.into(), vec![2u8; 4].into()]).expect("sigscript builds");
-    let selector = compiled.abi.iter().find(|entry| entry.name == "spend").expect("entrypoint resolved").dispatch_tag();
+    let selector = compiled.abi.find_by_name("spend").expect("entrypoint resolved").dispatch_tag();
 
     let expected =
         script_builder().add_i64(1).unwrap().add_data_with_push_opcode(&[2u8; 4]).unwrap().add_data(&selector).unwrap().drain();
@@ -6454,7 +6454,7 @@ fn build_covenant_opcode_tx(sigscript: Vec<u8>, covenant_id_a: Hash, covenant_id
 }
 
 fn selector_for(compiled: &CompiledContract<'_>, function_name: &str) -> DispatchTag {
-    compiled.abi.iter().find(|entry| entry.name == function_name).expect("entrypoint resolved").dispatch_tag()
+    compiled.abi.find_by_name(function_name).expect("entrypoint resolved").dispatch_tag()
 }
 
 fn wrap_with_dispatch(body: Vec<u8>, selector: DispatchTag) -> Vec<u8> {
@@ -6519,7 +6519,7 @@ fn compiles_with_kcc1_dispatch_tag_for_multiple_entrypoints() {
 
     let contract = parse_contract_ast(source).expect("ast parsed");
     let compiled = compile_contract_ast(&contract, &[], CompileOptions::default()).expect("compile succeeds");
-    let selector = compiled.abi.iter().find(|entry| entry.name == "a").expect("entrypoint resolved").dispatch_tag();
+    let selector = compiled.abi.find_by_name("a").expect("entrypoint resolved").dispatch_tag();
     let sigscript = compiled.build_sig_script("a", vec![]).expect("sigscript builds");
     let expected = script_builder().add_data(&selector).unwrap().drain();
     assert_eq!(sigscript, expected);
@@ -6543,7 +6543,7 @@ fn dispatch_tag_and_argument_encoding_match_kcc1_vector() {
     "#;
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
-    let step = compiled.abi.iter().find(|entry| entry.name == "step").expect("step entrypoint exists");
+    let step = compiled.abi.find_by_name("step").expect("step entrypoint exists");
     assert_eq!(step.inputs[1].type_name, "byte[4]");
     assert_eq!(step.dispatch_tag(), [0x2c, 0x49, 0xed, 0x65]);
 

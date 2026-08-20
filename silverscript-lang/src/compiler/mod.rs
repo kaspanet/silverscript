@@ -105,6 +105,16 @@ impl FunctionAbiEntry {
     }
 }
 
+pub trait FunctionAbiEntriesExt {
+    fn find_by_name(&self, name: &str) -> Option<&FunctionAbiEntry>;
+}
+
+impl FunctionAbiEntriesExt for [FunctionAbiEntry] {
+    fn find_by_name(&self, name: &str) -> Option<&FunctionAbiEntry> {
+        self.iter().find(|entry| entry.name == name)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CompiledStateLayout {
     pub start: usize,
@@ -226,8 +236,7 @@ impl<'i> CompiledContract<'i> {
             self.ast.constants.iter().map(|constant| (constant.name.clone(), constant.expr.clone())).collect();
         let function = self
             .abi
-            .iter()
-            .find(|entry| entry.name == function_name)
+            .find_by_name(function_name)
             .ok_or_else(|| CompilerError::Unsupported(format!("function '{}' not found", function_name)))?;
 
         if function.inputs.len() != args.len() {
@@ -258,12 +267,12 @@ impl<'i> CompiledContract<'i> {
         options: CovenantDeclCallOptions,
     ) -> Result<Vec<u8>, CompilerError> {
         let auth_entrypoint = generated_covenant_auth_entrypoint_name(function_name);
-        if self.abi.iter().any(|entry| entry.name == auth_entrypoint) {
+        if self.abi.find_by_name(&auth_entrypoint).is_some() {
             return self.build_sig_script(&auth_entrypoint, args);
         }
 
         let leader_entrypoint = generated_covenant_leader_entrypoint_name(function_name);
-        if self.abi.iter().any(|entry| entry.name == leader_entrypoint) {
+        if self.abi.find_by_name(&leader_entrypoint).is_some() {
             let entrypoint = if options.is_leader { leader_entrypoint } else { generated_covenant_delegate_entrypoint_name() };
             return self.build_sig_script(&entrypoint, args);
         }

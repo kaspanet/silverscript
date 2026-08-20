@@ -13,7 +13,7 @@ use kaspa_txscript::script_builder::ScriptBuilder;
 use kaspa_txscript::{EngineCtx, EngineFlags, TxScriptEngine};
 use rand::RngCore;
 use silverscript_lang::ast::ContractAst;
-use silverscript_lang::compiler::{COMPILER_VERSION, CompiledContract, DispatchTag};
+use silverscript_lang::compiler::{COMPILER_VERSION, CompiledContract, DispatchTag, FunctionAbiEntriesExt};
 
 fn contract_fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join("silverc-test-files").join(name)
@@ -123,7 +123,7 @@ fn silverc_accepts_constructor_args_and_output_flag() {
     let compiled: CompiledContract = serde_json::from_str(&json).expect("parse compiled contract");
     assert_eq!(compiled.contract_name, "WithCtor");
     assert_eq!(compiled.compiler_version, COMPILER_VERSION);
-    let selector = compiled.abi.iter().find(|entry| entry.name == "main").expect("entrypoint resolved").dispatch_tag();
+    let selector = compiled.abi.find_by_name("main").expect("entrypoint resolved").dispatch_tag();
     assert!(run_bytecode_with_selector(compiled.bytecode, selector).is_ok());
 }
 

@@ -195,14 +195,14 @@ fn build_contract_bytecode(
     builder.add_ops(field_prolog_bytecode)?;
     builder.add_op(OpFromAltStack)?;
     let total = compiled_entrypoints.len();
+
+    let dispatch_tag_by_entry_name =
+        function_abi_entries.iter().map(|entry| (entry.name.as_str(), entry.dispatch_tag())).collect::<HashMap<_, _>>();
+
     for (entrypoint_index, (name, bytecode)) in compiled_entrypoints.iter().enumerate() {
-        let dispatch_tag = function_abi_entries
-            .iter()
-            .find(|entrypoint| entrypoint.name == *name)
-            .expect("compiled entrypoint must have an ABI entry")
-            .dispatch_tag();
+        let dispatch_tag = dispatch_tag_by_entry_name.get(name.as_str()).expect("compiled entrypoint must have an ABI entry");
         builder.add_op(OpDup)?;
-        builder.add_data(&dispatch_tag)?;
+        builder.add_data(dispatch_tag)?;
         builder.add_op(OpEqual)?;
         builder.add_op(OpIf)?;
         builder.add_op(OpDrop)?;
