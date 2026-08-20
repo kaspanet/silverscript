@@ -244,7 +244,7 @@ fn compile_template_hash_call<'i>(ctx: &mut CompileExprContext<'_, '_, 'i>, args
         binary_expr(BinaryOp::Add, encoded_suffix_len, suffix.clone()),
     );
     compile_call_arg_with_context(ctx, &preimage)?;
-    ctx.emit_op(OpBlake2b, 0)?;
+    ctx.emit_op(OpBlake3, 0)?;
     Ok(())
 }
 
