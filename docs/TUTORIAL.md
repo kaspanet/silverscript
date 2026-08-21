@@ -194,8 +194,7 @@ let reclaim_sigscript = compiled.build_sig_script(
 The `build_sig_script` method automatically:
 - Validates argument count and types
 - Encodes arguments properly for the Kaspa script stack
-- Appends the KCC-01 function-signature dispatch tag for contracts with multiple entrypoints
-- Omits the dispatch tag for contracts with a single entrypoint
+- Appends the KCC-01 function-signature dispatch tag
 
 ---
 
