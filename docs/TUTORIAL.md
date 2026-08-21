@@ -972,11 +972,21 @@ entry hash(byte[] data) {
 
 **`checkSig(sig signature, pubkey publicKey): bool`**
 
-Verify a signature against a public key:
+Verify a transaction signature (with its sighash byte) against a schnorr public key
 
 ```javascript
 entry verify(sig s, pubkey pk) {
     require(checkSig(s, pk));
+}
+```
+
+**`checkSigECDSA(sig signature, byte[33] publicKey): bool`**
+
+Verify a transaction signature (with its sighash byte) against a compressed ECDSA public key
+
+```javascript
+entry verify(sig s, byte[33] pk) {
+    require(checkSigECDSA(s, pk));
 }
 ```
 

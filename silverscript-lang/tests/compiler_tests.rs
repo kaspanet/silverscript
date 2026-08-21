@@ -9604,6 +9604,35 @@ fn checksig_result_can_be_used_in_bool_comparisons() {
 }
 
 #[test]
+fn checksigecdsa_lowers_to_matching_opcode() {
+    let source = r#"
+        contract ECDSA(sig signature, byte[33] publicKey) {
+            entry main() {
+                require(checkSigECDSA(signature, publicKey));
+            }
+        }
+    "#;
+    let signature = vec![0x11; 65];
+    let public_key = vec![0x22; 33];
+    let compiled = compile_contract(source, &[signature.clone().into(), public_key.clone().into()], CompileOptions::default())
+        .expect("compile succeeds");
+
+    let expected = script_builder()
+        .add_data_with_push_opcode(&signature)
+        .unwrap()
+        .add_data_with_push_opcode(&public_key)
+        .unwrap()
+        .add_op(OpCheckSigECDSA)
+        .unwrap()
+        .add_op(OpVerify)
+        .unwrap()
+        .add_op(OpTrue)
+        .unwrap()
+        .drain();
+    assert_eq!(compiled.bytecode, expected);
+}
+
+#[test]
 fn checksigfromstack_lowers_to_matching_opcode() {
     let source = r#"
         contract DataSig(datasig signature, byte[32] digest, pubkey publicKey) {

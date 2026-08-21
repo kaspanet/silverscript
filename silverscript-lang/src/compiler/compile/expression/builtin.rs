@@ -34,6 +34,7 @@ pub(super) fn compile_call_expr<'i>(
         "blake3WithKey" => compile_blake3_with_key_call(ctx, args),
         "templateHash" => compile_template_hash_call(ctx, args),
         "checkSig" => compile_checksig_call(ctx, args),
+        "checkSigECDSA" => compile_checksig_ecdsa_call(ctx, args),
         "checkMsgSig" => compile_checksigfromstack_call(ctx, name, args, OpCheckSigFromStack),
         "checkSigFromStackECDSA" => compile_checksigfromstack_call(ctx, name, args, OpCheckSigFromStackECDSA),
         "g16.verify" => compile_g16_verify_call(ctx, args),
@@ -254,6 +255,15 @@ fn compile_checksig_call<'i>(ctx: &mut CompileExprContext<'_, '_, 'i>, args: &[E
     }
     compile_typed_builtin_args(ctx, "checkSig", args)?;
     ctx.emit_op(OpCheckSig, -1)?;
+    Ok(())
+}
+
+fn compile_checksig_ecdsa_call<'i>(ctx: &mut CompileExprContext<'_, '_, 'i>, args: &[Expr<'i>]) -> Result<(), CompilerError> {
+    if args.len() != 2 {
+        return Err(CompilerError::Unsupported("checkSigECDSA() expects 2 arguments".to_string()));
+    }
+    compile_typed_builtin_args(ctx, "checkSigECDSA", args)?;
+    ctx.emit_op(OpCheckSigECDSA, -1)?;
     Ok(())
 }
 
