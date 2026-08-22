@@ -539,7 +539,7 @@ fn compile_contract_emits_debug_info_scaffold_when_recording_enabled() {
 #[test]
 fn compile_contract_debug_info_scaffold_records_dispatch_tag_entrypoint_ranges() {
     let source = r#"
-        contract Debugdispatch_tag() {
+        contract DebugDispatchTag() {
             entry a(int x) {
                 require(x >= 0);
             }
@@ -557,7 +557,7 @@ fn compile_contract_debug_info_scaffold_records_dispatch_tag_entrypoint_ranges()
     let function_a = debug_info.functions.iter().find(|function| function.name == "a").expect("function range for a");
     let function_b = debug_info.functions.iter().find(|function| function.name == "b").expect("function range for b");
 
-    assert!(function_a.bytecode_start > 0, "dispatch_tag mode should prepend dispatcher ops");
+    assert!(function_a.bytecode_start > 0, "dispatch tag should prepend dispatcher ops");
     assert!(function_a.bytecode_start < function_b.bytecode_start, "entrypoint ranges should follow compile order");
     assert!(function_a.bytecode_end <= function_b.bytecode_start, "entrypoint ranges should not overlap");
 }
@@ -1132,7 +1132,7 @@ fn byte_variable_from_int_literal_uses_raw_byte_push() {
         .add_op(OpTrue)
         .unwrap()
         .drain();
-    let expected = wrap_with_dispatch(body, dispatch_tag_for(&compiled, "main"));
+    let expected = wrap_with_single_dispatch(body, dispatch_tag_for(&compiled, "main"));
     assert_eq!(compiled.bytecode, expected);
     let dispatch_tag = dispatch_tag_for(&compiled, "main");
     assert!(run_bytecode_with_dispatch_tag(compiled.bytecode, dispatch_tag).is_ok(), "byte int literal script should execute");
@@ -1197,7 +1197,7 @@ fn byte_equality_with_rhs_int_literal_uses_raw_byte_push() {
         .add_op(OpTrue)
         .unwrap()
         .drain();
-    let expected = wrap_with_dispatch(body, dispatch_tag_for(&compiled, "main"));
+    let expected = wrap_with_single_dispatch(body, dispatch_tag_for(&compiled, "main"));
     assert_eq!(compiled.bytecode, expected);
     let dispatch_tag = dispatch_tag_for(&compiled, "main");
     assert!(run_bytecode_with_dispatch_tag(compiled.bytecode, dispatch_tag).is_ok(), "byte equality with rhs literal should execute");
@@ -5098,7 +5098,7 @@ fn compiles_int_array_length_to_expected_script() {
         .unwrap()
         .drain();
 
-    let expected = wrap_with_dispatch(expected, dispatch_tag_for(&compiled, "main"));
+    let expected = wrap_with_single_dispatch(expected, dispatch_tag_for(&compiled, "main"));
     assert_eq!(compiled.bytecode, expected);
 }
 
@@ -5151,7 +5151,7 @@ fn compiles_int_array_append_to_expected_script() {
         .unwrap()
         .drain();
 
-    let expected = wrap_with_dispatch(expected, dispatch_tag_for(&compiled, "main"));
+    let expected = wrap_with_single_dispatch(expected, dispatch_tag_for(&compiled, "main"));
     assert_eq!(compiled.bytecode, expected);
 }
 
@@ -5364,7 +5364,7 @@ fn compiles_int_array_index_to_expected_script() {
         .unwrap()
         .drain();
 
-    let expected = wrap_with_dispatch(expected, dispatch_tag_for(&compiled, "main"));
+    let expected = wrap_with_single_dispatch(expected, dispatch_tag_for(&compiled, "main"));
     assert_eq!(compiled.bytecode, expected);
 }
 
@@ -5740,7 +5740,7 @@ fn compiles_bytes20_array_append_without_num2bin() {
         .unwrap()
         .drain();
 
-    let expected = wrap_with_dispatch(expected, dispatch_tag_for(&compiled, "main"));
+    let expected = wrap_with_single_dispatch(expected, dispatch_tag_for(&compiled, "main"));
     assert_eq!(compiled.bytecode, expected);
 }
 
@@ -6460,20 +6460,51 @@ fn dispatch_tag_for(compiled: &CompiledContract<'_>, function_name: &str) -> Dis
     compiled.abi.find_by_name(function_name).expect("entrypoint resolved").dispatch_tag()
 }
 
-fn wrap_with_dispatch(body: Vec<u8>, dispatch_tag: DispatchTag) -> Vec<u8> {
+fn wrap_with_single_dispatch(body: Vec<u8>, dispatch_tag: DispatchTag) -> Vec<u8> {
+    wrap_with_single_dispatch_and_state(&[], &body, dispatch_tag)
+}
+
+fn wrap_with_single_dispatch_and_state(state: &[u8], body: &[u8], dispatch_tag: DispatchTag) -> Vec<u8> {
     let mut builder = script_builder();
     builder.add_op(OpToAltStack).unwrap();
+    builder.add_ops(state).unwrap();
     builder.add_op(OpFromAltStack).unwrap();
     builder.add_op(OpDup).unwrap();
     builder.add_data(&dispatch_tag).unwrap();
     builder.add_op(OpEqual).unwrap();
     builder.add_op(OpIf).unwrap();
     builder.add_op(OpDrop).unwrap();
-    builder.add_ops(&body).unwrap();
+    builder.add_ops(body).unwrap();
     builder.add_op(OpElse).unwrap();
     builder.add_op(OpReturn).unwrap();
     builder.add_op(OpEndIf).unwrap();
     builder.drain()
+}
+
+fn stateless_single_dispatch_body_opcodes(compiled: &CompiledContract<'_>, function_name: &str) -> Vec<u8> {
+    let dispatch_tag = dispatch_tag_for(compiled, function_name);
+    let prefix = script_builder()
+        .add_op(OpToAltStack)
+        .unwrap()
+        .add_op(OpFromAltStack)
+        .unwrap()
+        .add_op(OpDup)
+        .unwrap()
+        .add_data(&dispatch_tag)
+        .unwrap()
+        .add_op(OpEqual)
+        .unwrap()
+        .add_op(OpIf)
+        .unwrap()
+        .add_op(OpDrop)
+        .unwrap()
+        .drain();
+    let body = compiled.bytecode.strip_prefix(prefix.as_slice()).expect("single-dispatch prefix should be present");
+    let body = body.strip_suffix(&[OpElse, OpReturn, OpEndIf]).expect("single-dispatch suffix should be present");
+
+    parse_script::<PopulatedTransaction<'static>, SigHashReusedValuesUnsync>(body)
+        .map(|opcode| opcode.expect("entrypoint bytecode should parse").value())
+        .collect()
 }
 
 #[test]
@@ -6506,7 +6537,7 @@ fn compiles_with_kcc1_dispatch_tag_for_single_entrypoint() {
         .unwrap()
         .drain();
     let dispatch_tag = dispatch_tag_for(&compiled, "main");
-    let expected = wrap_with_dispatch(body, dispatch_tag);
+    let expected = wrap_with_single_dispatch(body, dispatch_tag);
 
     assert_eq!(compiled.bytecode, expected);
 }
@@ -6515,16 +6546,85 @@ fn compiles_with_kcc1_dispatch_tag_for_single_entrypoint() {
 fn compiles_with_kcc1_dispatch_tag_for_multiple_entrypoints() {
     let source = r#"
         contract Test() {
-            entry a() { require(true); }
-            entry b() { require(true); }
+            entry a() { require(1 == 1); }
+            entry b() { require(2 == 2); }
         }
     "#;
 
     let contract = parse_contract_ast(source).expect("ast parsed");
     let compiled = compile_contract_ast(&contract, &[], CompileOptions::default()).expect("compile succeeds");
-    let dispatch_tag = compiled.abi.find_by_name("a").expect("entrypoint resolved").dispatch_tag();
+    let dispatch_tag_a = compiled.abi.find_by_name("a").expect("entrypoint resolved").dispatch_tag();
+    let dispatch_tag_b = compiled.abi.find_by_name("b").expect("entrypoint resolved").dispatch_tag();
+
+    let body_a = script_builder()
+        .add_i64(1)
+        .unwrap()
+        .add_i64(1)
+        .unwrap()
+        .add_op(OpNumEqual)
+        .unwrap()
+        .add_op(OpVerify)
+        .unwrap()
+        .add_op(OpTrue)
+        .unwrap()
+        .drain();
+    let body_b = script_builder()
+        .add_i64(2)
+        .unwrap()
+        .add_i64(2)
+        .unwrap()
+        .add_op(OpNumEqual)
+        .unwrap()
+        .add_op(OpVerify)
+        .unwrap()
+        .add_op(OpTrue)
+        .unwrap()
+        .drain();
+    let expected_bytecode = script_builder()
+        .add_op(OpToAltStack)
+        .unwrap()
+        .add_op(OpFromAltStack)
+        .unwrap()
+        .add_op(OpDup)
+        .unwrap()
+        .add_data(&dispatch_tag_a)
+        .unwrap()
+        .add_op(OpEqual)
+        .unwrap()
+        .add_op(OpIf)
+        .unwrap()
+        .add_op(OpDrop)
+        .unwrap()
+        .add_ops(&body_a)
+        .unwrap()
+        .add_op(OpElse)
+        .unwrap()
+        .add_op(OpDup)
+        .unwrap()
+        .add_data(&dispatch_tag_b)
+        .unwrap()
+        .add_op(OpEqual)
+        .unwrap()
+        .add_op(OpIf)
+        .unwrap()
+        .add_op(OpDrop)
+        .unwrap()
+        .add_ops(&body_b)
+        .unwrap()
+        .add_op(OpElse)
+        .unwrap()
+        .add_op(OpReturn)
+        .unwrap()
+        .add_op(OpEndIf)
+        .unwrap()
+        .add_op(OpEndIf)
+        .unwrap()
+        .drain();
+
+    assert_eq!(compiled.bytecode, expected_bytecode);
+
     let sigscript = compiled.build_sig_script("a", vec![]).expect("sigscript builds");
-    let expected = script_builder().add_data(&dispatch_tag).unwrap().drain();
+    let expected = script_builder().add_data(&dispatch_tag_a).unwrap().drain();
     assert_eq!(sigscript, expected);
     assert!(run_bytecode_with_sigscript(compiled.bytecode, sigscript).is_ok());
 }
@@ -6653,7 +6753,7 @@ fn compiles_basic_arithmetic_and_verifies() {
         .unwrap()
         .drain();
 
-    let expected = wrap_with_dispatch(body, dispatch_tag);
+    let expected = wrap_with_single_dispatch(body, dispatch_tag);
 
     assert_eq!(compiled.bytecode, expected);
     assert!(run_bytecode_with_dispatch_tag(compiled.bytecode, dispatch_tag).is_ok());
@@ -6687,7 +6787,7 @@ fn compiles_contract_constants_and_verifies() {
         .unwrap()
         .drain();
 
-    let expected = wrap_with_dispatch(body, dispatch_tag);
+    let expected = wrap_with_single_dispatch(body, dispatch_tag);
 
     assert_eq!(compiled.bytecode, expected);
     assert!(run_bytecode_with_dispatch_tag(compiled.bytecode, dispatch_tag).is_ok());
@@ -6730,32 +6830,7 @@ fn compiles_contract_fields_as_script_prolog() {
         .unwrap()
         .drain();
     let dispatch_tag = dispatch_tag_for(&compiled, "main");
-    let expected = script_builder()
-        .add_op(OpToAltStack)
-        .unwrap()
-        .add_ops(&state)
-        .unwrap()
-        .add_op(OpFromAltStack)
-        .unwrap()
-        .add_op(OpDup)
-        .unwrap()
-        .add_data(&dispatch_tag)
-        .unwrap()
-        .add_op(OpEqual)
-        .unwrap()
-        .add_op(OpIf)
-        .unwrap()
-        .add_op(OpDrop)
-        .unwrap()
-        .add_ops(&body)
-        .unwrap()
-        .add_op(OpElse)
-        .unwrap()
-        .add_op(OpReturn)
-        .unwrap()
-        .add_op(OpEndIf)
-        .unwrap()
-        .drain();
+    let expected = wrap_with_single_dispatch_and_state(&state, &body, dispatch_tag);
 
     assert_eq!(compiled.bytecode, expected);
 }
@@ -6996,32 +7071,7 @@ fn compiles_validate_output_state_to_expected_script() {
 
     let (state, body) = expected.split_at(compiled.state_layout.len);
     let dispatch_tag = dispatch_tag_for(&compiled, "main");
-    let expected = script_builder()
-        .add_op(OpToAltStack)
-        .unwrap()
-        .add_ops(state)
-        .unwrap()
-        .add_op(OpFromAltStack)
-        .unwrap()
-        .add_op(OpDup)
-        .unwrap()
-        .add_data(&dispatch_tag)
-        .unwrap()
-        .add_op(OpEqual)
-        .unwrap()
-        .add_op(OpIf)
-        .unwrap()
-        .add_op(OpDrop)
-        .unwrap()
-        .add_ops(body)
-        .unwrap()
-        .add_op(OpElse)
-        .unwrap()
-        .add_op(OpReturn)
-        .unwrap()
-        .add_op(OpEndIf)
-        .unwrap()
-        .drain();
+    let expected = wrap_with_single_dispatch_and_state(state, body, dispatch_tag);
 
     let actual_ops = script_to_str(&compiled.bytecode).expect("compiled bytecode stringifies");
     assert_eq!(compiled.bytecode, expected, "actual opcodes: {actual_ops}");
@@ -8703,7 +8753,7 @@ fn compiles_read_input_state_to_expected_script() {
     assert_eq!(asm.matches("OpGreaterThan").count(), 1, "should compare x numerically");
     assert_eq!(asm.matches("OpEqual").count(), 2, "should compare y bytewise in addition to dispatch");
     assert!(
-        compiled.bytecode.windows(6).any(|ops| ops == [OpDrop, OpDrop, OpTrue, OpElse, OpReturn, OpEndIf]),
+        compiled.bytecode.ends_with(&[OpDrop, OpDrop, OpTrue, OpElse, OpReturn, OpEndIf]),
         "expected stack cleanup for active state before the dispatch epilogue"
     );
 }
@@ -9536,7 +9586,7 @@ fn rejects_validate_output_state_with_unknown_state_field() {
 fn assert_compiled_body(source: &str, body: Vec<u8>) {
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
     let dispatch_tag = dispatch_tag_for(&compiled, "main");
-    let expected = wrap_with_dispatch(body, dispatch_tag);
+    let expected = wrap_with_single_dispatch(body, dispatch_tag);
     assert_eq!(compiled.bytecode, expected);
 }
 
@@ -9586,7 +9636,7 @@ fn checksigfromstack_lowers_to_matching_opcode() {
         .add_op(OpTrue)
         .unwrap()
         .drain();
-    let expected = wrap_with_dispatch(expected, dispatch_tag_for(&compiled, "main"));
+    let expected = wrap_with_single_dispatch(expected, dispatch_tag_for(&compiled, "main"));
     assert_eq!(compiled.bytecode, expected);
 }
 
@@ -9623,7 +9673,7 @@ fn checksigfromstackecdsa_lowers_to_matching_opcode() {
         .add_op(OpTrue)
         .unwrap()
         .drain();
-    let expected = wrap_with_dispatch(expected, dispatch_tag_for(&compiled, "main"));
+    let expected = wrap_with_single_dispatch(expected, dispatch_tag_for(&compiled, "main"));
     assert_eq!(compiled.bytecode, expected);
 }
 
@@ -9782,7 +9832,7 @@ fn g16_verify_lowers_to_groth16_precompile() {
         .add_op(OpTrue)
         .unwrap()
         .drain();
-    assert_eq!(compiled.bytecode, wrap_with_dispatch(body, dispatch_tag_for(&compiled, "verify")));
+    assert_eq!(compiled.bytecode, wrap_with_single_dispatch(body, dispatch_tag_for(&compiled, "verify")));
 }
 
 #[test]
@@ -9962,7 +10012,7 @@ fn r0_succinct_verify_lowers_hash_aliases_to_zk_precompile() {
             .add_op(OpTrue)
             .unwrap()
             .drain();
-        let expected = wrap_with_dispatch(expected, dispatch_tag_for(&compiled, "main"));
+        let expected = wrap_with_single_dispatch(expected, dispatch_tag_for(&compiled, "main"));
         let asm = script_to_str(&compiled.bytecode).expect("R0 succinct script should stringify");
         assert!(asm.contains("OpZkPrecompile OpDrop"), "void verifier result should be dropped: {asm}");
         assert_eq!(compiled.bytecode, expected, "{call_name} lowered unexpectedly");
@@ -10018,7 +10068,7 @@ fn r0_g16_verify_lowers_with_sdk_verifier_fragment() {
     kaspa_txscript_zk_sdk::append_r0_groth16_verifier_dynamic_image_id(&mut expected_builder).unwrap();
     expected_builder.add_op(OpDrop).unwrap();
     expected_builder.add_op(OpTrue).unwrap();
-    let expected = wrap_with_dispatch(expected_builder.drain(), dispatch_tag_for(&compiled, "main"));
+    let expected = wrap_with_single_dispatch(expected_builder.drain(), dispatch_tag_for(&compiled, "main"));
 
     let asm = script_to_str(&compiled.bytecode).expect("R0 Groth16 script should stringify");
     assert!(asm.contains("OpZkPrecompile OpDrop"), "void verifier result should be dropped: {asm}");
@@ -10068,7 +10118,10 @@ fn value_returning_builtin_statement_discards_result() {
     "#;
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("value-returning builtin statement should compile");
     let asm = script_to_str(&compiled.bytecode).expect("builtin statement script should stringify");
-    assert!(asm.contains("OpSHA256 OpDrop OpTrue"), "builtin statement result should be discarded: {asm}");
+    assert!(
+        asm.ends_with("OpSHA256 OpDrop OpTrue OpElse OpReturn OpEndIf"),
+        "builtin statement result should be discarded before the dispatch epilogue: {asm}"
+    );
 }
 
 #[test]
@@ -11562,7 +11615,7 @@ fn compiles_if_else_and_verifies() {
         .unwrap()
         .drain();
 
-    let expected = wrap_with_dispatch(body, dispatch_tag);
+    let expected = wrap_with_single_dispatch(body, dispatch_tag);
 
     assert_eq!(compiled.bytecode, expected);
     assert!(run_bytecode_with_dispatch_tag(compiled.bytecode, dispatch_tag).is_ok());
@@ -11599,7 +11652,7 @@ fn compiles_require_age_daa_to_csv_and_verifies() {
         .add_op(OpTrue)
         .unwrap()
         .drain();
-    let expected = wrap_with_dispatch(body, dispatch_tag);
+    let expected = wrap_with_single_dispatch(body, dispatch_tag);
 
     assert_eq!(compiled.bytecode, expected);
     assert!(run_bytecode_with_tx(compiled.bytecode, dispatch_tag, 0, 20).is_ok());
@@ -11635,7 +11688,7 @@ fn compiles_require_tx_daa_to_bounded_cltv_and_verifies() {
         .add_op(OpTrue)
         .unwrap()
         .drain();
-    let expected = wrap_with_dispatch(body, dispatch_tag);
+    let expected = wrap_with_single_dispatch(body, dispatch_tag);
 
     assert_eq!(compiled.bytecode, expected);
     assert!(run_bytecode_with_tx(compiled.bytecode, dispatch_tag, 10, 0).is_ok());
@@ -11672,7 +11725,7 @@ fn compiles_require_tx_time_to_lower_bounded_cltv_and_verifies() {
         .add_op(OpTrue)
         .unwrap()
         .drain();
-    let expected = wrap_with_dispatch(body, dispatch_tag);
+    let expected = wrap_with_single_dispatch(body, dispatch_tag);
 
     assert_eq!(compiled.bytecode, expected);
     assert!(run_bytecode_with_tx(compiled.bytecode, dispatch_tag, threshold as u64, 0).is_ok());
@@ -11944,7 +11997,7 @@ fn compiles_reused_variables_and_verifies() {
         .unwrap()
         .drain();
 
-    let expected = wrap_with_dispatch(body, dispatch_tag);
+    let expected = wrap_with_single_dispatch(body, dispatch_tag);
 
     assert_eq!(compiled.bytecode, expected);
     assert!(run_bytecode_with_dispatch_tag(compiled.bytecode, dispatch_tag).is_ok());
@@ -11989,7 +12042,7 @@ fn return_reused_local_is_stored_once_and_reused() {
         .unwrap()
         .drain();
 
-    let expected = wrap_with_dispatch(expected, dispatch_tag_for(&compiled, "main"));
+    let expected = wrap_with_single_dispatch(expected, dispatch_tag_for(&compiled, "main"));
     assert_eq!(compiled.bytecode, expected);
 }
 
@@ -12253,7 +12306,7 @@ fn entrypoints_validate_fixed_width_scalar_argument_sizes_at_runtime() {
             .unwrap()
             .drain();
         let dispatch_tag = dispatch_tag_for(&compiled, "main");
-        let expected = wrap_with_dispatch(body, dispatch_tag);
+        let expected = wrap_with_single_dispatch(body, dispatch_tag);
         assert_eq!(compiled.bytecode, expected, "unexpected ABI validation bytecode for {type_name}");
 
         let sigscript =
@@ -12313,7 +12366,7 @@ fn entrypoint_int_argument_accepts_below_nine_bytes_and_rejects_nine() {
         .unwrap()
         .drain();
     let dispatch_tag = dispatch_tag_for(&compiled, "main");
-    let expected = wrap_with_dispatch(body, dispatch_tag);
+    let expected = wrap_with_single_dispatch(body, dispatch_tag);
     assert_eq!(compiled.bytecode, expected);
 
     let sigscript =
@@ -12356,7 +12409,7 @@ fn entrypoint_bool_argument_accepts_at_most_one_byte() {
         .unwrap()
         .drain();
     let dispatch_tag = dispatch_tag_for(&compiled, "main");
-    let expected = wrap_with_dispatch(body, dispatch_tag);
+    let expected = wrap_with_single_dispatch(body, dispatch_tag);
     assert_eq!(compiled.bytecode, expected);
 
     let sigscript =
@@ -13057,7 +13110,7 @@ fn empty_array_statement_expr_evaluation_compiles_to_empty_array_data() {
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
 
-    let expected = script_builder()
+    let body = script_builder()
         .add_data_with_push_opcode(&[])
         .unwrap()
         .add_data_with_push_opcode(&[])
@@ -13070,7 +13123,10 @@ fn empty_array_statement_expr_evaluation_compiles_to_empty_array_data() {
         .unwrap()
         .drain();
 
-    let expected = wrap_with_dispatch(expected, dispatch_tag_for(&compiled, "main"));
+    assert_eq!(body[0], OpFalse);
+    assert_eq!(body[1], OpFalse);
+
+    let expected = wrap_with_single_dispatch(body, dispatch_tag_for(&compiled, "main"));
     assert_eq!(compiled.bytecode, expected);
 }
 
@@ -13941,7 +13997,7 @@ fn inline_argument_alias_reuses_existing_local_without_extra_snapshot() {
         .unwrap()
         .drain();
 
-    let expected = wrap_with_dispatch(body, dispatch_tag);
+    let expected = wrap_with_single_dispatch(body, dispatch_tag);
 
     assert_eq!(compiled.bytecode, expected);
     assert_eq!(compiled.bytecode.iter().copied().filter(|op| *op == OpDup).count(), 3);
@@ -14004,7 +14060,7 @@ fn inline_argument_alias_snapshots_entrypoint_param_once_per_inlined_call() {
         .unwrap()
         .drain();
 
-    let expected = wrap_with_dispatch(body, dispatch_tag);
+    let expected = wrap_with_single_dispatch(body, dispatch_tag);
 
     assert_eq!(compiled.bytecode, expected);
     assert_eq!(compiled.bytecode.iter().copied().filter(|op| *op == OpDup).count(), 2);
@@ -14069,7 +14125,7 @@ fn local_alias_snapshots_existing_stack_value_once() {
         .unwrap()
         .drain();
 
-    let expected = wrap_with_dispatch(body, dispatch_tag);
+    let expected = wrap_with_single_dispatch(body, dispatch_tag);
 
     assert_eq!(compiled.bytecode, expected);
     assert_eq!(compiled.bytecode.iter().copied().filter(|op| *op == OpMul).count(), 1);
@@ -15075,18 +15131,17 @@ fn compile_time_if_branch_stores_local_var_once_and_reuses_it() {
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
 
-    let script = &compiled.bytecode;
-    let if_pos = script.iter().rposition(|op| *op == OpIf).expect("body if present");
-    let else_pos = if_pos + script[if_pos..].iter().position(|op| *op == OpElse).expect("body else present");
-    let endif_pos = else_pos + script[else_pos..].iter().position(|op| *op == OpEndIf).expect("body endif present");
-    let dispatch_else_pos = script.iter().rposition(|op| *op == OpElse).expect("dispatch else present");
-    assert_eq!(script[if_pos + 1..else_pos].iter().copied().filter(|op| *op == OpDup).count(), 3);
-    assert_eq!(script[if_pos + 1..else_pos].iter().copied().filter(|op| *op == OpOver).count(), 0);
-    assert_eq!(script[if_pos + 1..else_pos].iter().copied().filter(|op| *op == OpPick).count(), 0);
-    assert_eq!(script[if_pos + 1..else_pos].iter().copied().filter(|op| *op == OpAdd).count(), 1);
-    assert_eq!(script[if_pos + 1..else_pos].iter().copied().filter(|op| *op == OpDrop).count(), 1);
-    assert_eq!(script[endif_pos + 1..dispatch_else_pos].iter().copied().filter(|op| *op == OpDrop).count(), 1);
-    assert_eq!(script[endif_pos + 1..dispatch_else_pos].iter().copied().filter(|op| *op == OpRoll).count(), 0);
+    let opcodes = stateless_single_dispatch_body_opcodes(&compiled, "main");
+    let if_pos = opcodes.iter().position(|op| *op == OpIf).expect("if present");
+    let else_pos = opcodes.iter().position(|op| *op == OpElse).expect("else present");
+    let endif_pos = opcodes.iter().position(|op| *op == OpEndIf).expect("endif present");
+    assert_eq!(opcodes[if_pos + 1..else_pos].iter().copied().filter(|op| *op == OpDup).count(), 3);
+    assert_eq!(opcodes[if_pos + 1..else_pos].iter().copied().filter(|op| *op == OpOver).count(), 0);
+    assert_eq!(opcodes[if_pos + 1..else_pos].iter().copied().filter(|op| *op == OpPick).count(), 0);
+    assert_eq!(opcodes[if_pos + 1..else_pos].iter().copied().filter(|op| *op == OpAdd).count(), 1);
+    assert_eq!(opcodes[if_pos + 1..else_pos].iter().copied().filter(|op| *op == OpDrop).count(), 1);
+    assert_eq!(opcodes[endif_pos + 1..].iter().copied().filter(|op| *op == OpDrop).count(), 1);
+    assert_eq!(opcodes[endif_pos + 1..].iter().copied().filter(|op| *op == OpRoll).count(), 0);
 }
 
 #[test]
@@ -15113,31 +15168,30 @@ fn compile_time_if_branch_stores_struct_fields_once_and_reuses_them() {
     "#;
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let opcodes = stateless_single_dispatch_body_opcodes(&compiled, "main");
 
     assert_eq!(
-        compiled.bytecode.iter().copied().filter(|op| *op == OpAdd).count(),
+        opcodes.iter().copied().filter(|op| *op == OpAdd).count(),
         1,
         "s.a should be computed once and reused across both require statements"
     );
     assert_eq!(
-        compiled.bytecode.iter().copied().filter(|op| *op == OpMul).count(),
+        opcodes.iter().copied().filter(|op| *op == OpMul).count(),
         1,
         "s.b should be computed once and reused across both require statements"
     );
 
-    let script = &compiled.bytecode;
-    let if_pos = script.iter().rposition(|op| *op == OpIf).expect("body if present");
-    let else_pos = if_pos + script[if_pos..].iter().position(|op| *op == OpElse).expect("body else present");
-    let endif_pos = else_pos + script[else_pos..].iter().position(|op| *op == OpEndIf).expect("body endif present");
-    let dispatch_else_pos = script.iter().rposition(|op| *op == OpElse).expect("dispatch else present");
-    assert_eq!(script[if_pos + 1..else_pos].iter().copied().filter(|op| *op == OpDup).count(), 3);
-    assert_eq!(script[if_pos + 1..else_pos].iter().copied().filter(|op| *op == OpOver).count(), 3);
-    assert_eq!(script[if_pos + 1..else_pos].iter().copied().filter(|op| *op == OpPick).count(), 1);
-    assert_eq!(script[if_pos + 1..else_pos].iter().copied().filter(|op| *op == OpAdd).count(), 1);
-    assert_eq!(script[if_pos + 1..else_pos].iter().copied().filter(|op| *op == OpMul).count(), 1);
-    assert_eq!(script[if_pos + 1..else_pos].iter().copied().filter(|op| *op == OpDrop).count(), 2);
-    assert_eq!(script[endif_pos + 1..dispatch_else_pos].iter().copied().filter(|op| *op == OpDrop).count(), 1);
-    assert_eq!(script[endif_pos + 1..dispatch_else_pos].iter().copied().filter(|op| *op == OpRoll).count(), 0);
+    let if_pos = opcodes.iter().position(|op| *op == OpIf).expect("if present");
+    let else_pos = opcodes.iter().position(|op| *op == OpElse).expect("else present");
+    let endif_pos = opcodes.iter().position(|op| *op == OpEndIf).expect("endif present");
+    assert_eq!(opcodes[if_pos + 1..else_pos].iter().copied().filter(|op| *op == OpDup).count(), 3);
+    assert_eq!(opcodes[if_pos + 1..else_pos].iter().copied().filter(|op| *op == OpOver).count(), 3);
+    assert_eq!(opcodes[if_pos + 1..else_pos].iter().copied().filter(|op| *op == OpPick).count(), 1);
+    assert_eq!(opcodes[if_pos + 1..else_pos].iter().copied().filter(|op| *op == OpAdd).count(), 1);
+    assert_eq!(opcodes[if_pos + 1..else_pos].iter().copied().filter(|op| *op == OpMul).count(), 1);
+    assert_eq!(opcodes[if_pos + 1..else_pos].iter().copied().filter(|op| *op == OpDrop).count(), 2);
+    assert_eq!(opcodes[endif_pos + 1..].iter().copied().filter(|op| *op == OpDrop).count(), 1);
+    assert_eq!(opcodes[endif_pos + 1..].iter().copied().filter(|op| *op == OpRoll).count(), 0);
 }
 
 #[test]
