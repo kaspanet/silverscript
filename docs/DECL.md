@@ -23,7 +23,7 @@ Only policy functions are annotated.
 Canonical form:
 
 ```js
-#[covenant(binding = auth|cov, from = X, to = Y, mode = verification|transition, groups = multiple|single, termination = disallowed|allowed)]
+#[covenant(binding = auth|cov, from = X, to = Y, mode = verification|transition, groups = multiple|single, termination = disallowed|allowed, name = public_name, delegate_name = public_delegate_name)]
 ```
 
 Common form (with inferred defaults):
@@ -48,6 +48,15 @@ entry recover(...) {
 }
 ```
 
+Optional contract-wide delegate verification body:
+
+```js
+#[covenant.delegate]
+function authorizeDelegate(byte[] witness) {
+    verifyOwner(owner, ownerScheme, witness);
+}
+```
+
 Rules:
 
 1. `binding = auth` means auth-context lowering (`OpAuth*`).
@@ -64,6 +73,19 @@ Rules:
     other covenant declarations must also use `binding = cov`.
 12. A handwritten entrypoint in a leader contract is rejected unless it carries
     `#[covenant.allow(rule = manual_entrypoint_in_leader_contract)]`.
+13. `name` overrides the public name of the generated auth or leader wrapper.
+14. `delegate_name` is valid only on `binding = cov` declarations and overrides
+    the public name of the one shared delegate wrapper. All cov-bound
+    declarations in a contract must resolve to the same delegate name, including
+    the `__delegate` default.
+15. A contract may contain at most one `#[covenant.delegate]` function. It must
+    be a non-entrypoint verification function with no return values, and the
+    annotation accepts no properties. A delegate body is rejected unless the
+    contract also has at least one `binding = cov` declaration.
+
+`name` and `delegate_name` values are identifiers, not strings. Generated
+public names undergo the same duplicate-function and reserved-name validation
+as handwritten names.
 
 ### 1:N verification
 
@@ -106,6 +128,31 @@ contract C(int max_ins, int max_outs) {
 #[covenant(binding = cov, from = max_ins, to = max_outs, mode = transition)]
 function transition(State[] prev_states, int fee) : (State[] new_states) {
     // compute and return new_states
+}
+```
+
+### KCC20-shaped transfer interface
+
+Here `State` is the contract's implicit KCC20 state type. The final ABI is
+`transfer(State[],byte[])` and `transfer_delegator(byte[])`:
+
+```js
+#[covenant(
+    binding = cov,
+    from = max_token_inputs,
+    to = max_token_outputs,
+    name = transfer,
+    delegate_name = transfer_delegator
+)]
+function transferPolicy(State[] prev_states, State[] next_states, byte[] witness) {
+    // Validate the complete shared transition and the leader's local owner.
+    verifyOwner(owner, ownerScheme, witness);
+}
+
+#[covenant.delegate]
+function authorizeDelegate(byte[] witness) {
+    // `owner` and `ownerScheme` are fields of this active input's instance.
+    verifyOwner(owner, ownerScheme, witness);
 }
 ```
 
@@ -206,18 +253,53 @@ No explicit `cov_id != false` check is needed; `OpCovOutputCount(cov_id)` fails 
 
 Given policy function `f`:
 
-1. `1:N` generates one entrypoint:
+1. An auth-bound declaration generates one entrypoint:
 
-    * `__f`
+    * `__covenant_entrypoint_auth_f` by default; or
+    * the declaration's `name` value.
 2. The first `N:M` declaration makes the contract a leader contract. Each
    declaration generates its own leader entrypoint, while the contract has one
    shared delegate entrypoint:
 
-    * `__leader_f`
-    * `__delegate`
+    * `__leader_f` by default, or the declaration's `name` value;
+    * `__delegate` by default, or the common `delegate_name` value.
 
-`__delegate` does not call policy. It enforces contract-level delegation-path
-invariants only and is shared by every cov-bound declaration in the contract.
+Public ABI dispatch tags are calculated after lowering, from the final public
+name and final exposed parameter types:
+
+```text
+blake3("entryName(type1,type2,...)")[0..4]
+```
+
+Consequently, a name override changes the protocol-visible dispatch tag.
+Compiler-internal policy names remain derived from source policy names and do
+not use public overrides. Covenant sigscript helpers and debugger routing resolve
+the final public wrapper names.
+
+### Shared delegate body
+
+Every cov-bound declaration in a contract uses the same generated delegate
+wrapper and, when present, the same `#[covenant.delegate]` body. The wrapper:
+
+1. derives the active input's covenant ID;
+2. rejects the first input in that covenant-ID group;
+3. calls the delegate body with the wrapper's ABI arguments.
+
+The delegate body's parameters become the public delegate entrypoint's
+parameters in the same order and with the same types. Its body may read current
+contract fields directly; no `State` argument is injected. It must return no
+values.
+
+There is deliberately no declaration property that selects a delegate body.
+Allowing each leader route to choose independently would let delegators invoke
+the weakest policy unless every leader authenticated the route selected by
+every input.
+
+For source compatibility, a leader contract with no `#[covenant.delegate]`
+body still receives the inert default delegate. That wrapper checks only that
+the active input is not the group leader and has no parameters. Protocols whose
+delegators have local obligations, including the default KCC20 transfer
+configuration, must declare a delegate body.
 
 ## Leader contracts
 
@@ -225,7 +307,8 @@ A `binding = cov` declaration generates its own leader entrypoint. A leader
 contract generates exactly one shared delegate entrypoint, regardless of how
 many cov-bound declarations it contains. The leader runs at covenant input zero
 and validates the shared covenant transition. A delegate runs at another
-covenant input and relies on input zero to perform that validation.
+covenant input, runs the shared delegate body if declared, and relies on input
+zero to perform the complete shared-transition validation.
 
 This makes delegation a contract-wide property. A generated delegate
 authenticates the contract at input zero, but cannot determine which entrypoint
@@ -292,6 +375,12 @@ contract VaultNM(
 
         require(in_sum >= out_sum);
     }
+
+    #[covenant.delegate]
+    function authorizeDelegate(sig owner_sig) {
+        // Example local delegate authorization.
+        require(checkSig(owner_sig, pubkey(owner)));
+    }
 }
 ```
 
@@ -314,6 +403,7 @@ contract VaultNM(
     // Compiler-lowered policy function (renamed to avoid collision with generated entrypoints)
     // same body as source:
     function __covenant_policy_conserve_and_bump(State[] prev_states, State[] new_states, sig leader_sig) { ... }
+    function __covenant_delegate_policy_authorizeDelegate(sig owner_sig) { ... }
 
     // Generated for N:M leader path
     entry __leader_conserve_and_bump(State[] new_states, sig leader_sig) {
@@ -355,10 +445,11 @@ contract VaultNM(
     }
 
     // Generated for N:M delegate path
-    entry __delegate() {
+    entry __delegate(sig owner_sig) {
         byte[32] cov_id = OpInputCovenantId(this.activeInputIndex);
         // delegate path must not be leader
         require(OpCovInputIdx(cov_id, 0) != this.activeInputIndex);
+        __covenant_delegate_policy_authorizeDelegate(owner_sig);
     }
 }
 ```
@@ -420,3 +511,22 @@ contract SeqCommitMirror(byte[32] init_seqcommit) {
 2. Internally the compiler can lower `State`/`State[]` into any representation; this doc only fixes the user-facing API.
 3. Existing `readInputState`/`validateOutputState` remain the codegen backbone; `validateOutputStateWithTemplate` is available for manual cross-template routing, not declaration lowering.
 4. `N:M` lowering keeps one transition group per transaction.
+
+## Homogeneous-template assumption
+
+Stateful covenant declarations assume that every selected input and every
+continuation output in the active covenant-ID group uses this contract's exact
+program template and implicit `State` layout. In particular:
+
+1. generated prior-state reconstruction uses raw `readInputState` with this
+   contract's field offsets and types;
+2. generated continuation checks use same-template `validateOutputState`;
+3. a shared covenant ID is therefore treated by this abstraction as one
+   homogeneous contract family, even though the underlying covenant mechanism
+   can represent more general arrangements.
+
+Reading an input with another layout can misinterpret its bytes, and a
+continuation with another template will fail same-template validation. A
+heterogeneous covenant family must use handwritten validation with the
+templated state builtins, authenticate each participating template and layout,
+and must not rely on covenant-declaration state wrappers for that route.

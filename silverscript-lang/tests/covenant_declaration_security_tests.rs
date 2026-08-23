@@ -98,6 +98,37 @@ const COV_N_TO_M_DIFFERENT_SCRIPT_SOURCE: &str = r#"
     }
 "#;
 
+const KCC20_SHAPED_SOURCE: &str = r#"
+    contract Token(byte[1] initial_owner, int initial_amount) {
+        byte[1] owner = initial_owner;
+        int amount = initial_amount;
+
+        function verifyOwner(byte[1] expected_owner, byte[] witness) {
+            require(witness.length == 1);
+            require(expected_owner == byte[1](witness));
+        }
+
+        #[covenant(
+            binding = cov,
+            from = 2,
+            to = 2,
+            name = transfer,
+            delegate_name = transfer_delegator
+        )]
+        function transferPolicy(State[] prev_states, State[] next_states, byte[] witness) {
+            require(prev_states.length == 2);
+            require(next_states.length == 2);
+            require(prev_states[0].amount + prev_states[1].amount == next_states[0].amount + next_states[1].amount);
+            verifyOwner(owner, witness);
+        }
+
+        #[covenant.delegate]
+        function authorizeDelegate(byte[] witness) {
+            verifyOwner(owner, witness);
+        }
+    }
+"#;
+
 const AUTH_SINGLETON_ARRAY_RUNTIME_SOURCE: &str = r#"
     contract Counter(int init_value) {
         int value = init_value;
@@ -147,6 +178,15 @@ fn state_array_arg(values: Vec<i64>) -> Expr<'static> {
 
 fn state_arg(value: i64) -> Expr<'static> {
     struct_object("State", vec![("value", Expr::int(value))])
+}
+
+fn compile_kcc20_state(owner: u8, amount: i64) -> CompiledContract<'static> {
+    compile_contract(KCC20_SHAPED_SOURCE, &[Expr::bytes(vec![owner]), Expr::int(amount)], CompileOptions::default())
+        .expect("KCC20-shaped contract compiles")
+}
+
+fn kcc20_state_arg(owner: u8, amount: i64) -> Expr<'static> {
+    struct_object("State", vec![("owner", Expr::bytes(vec![owner])), ("amount", Expr::int(amount))])
 }
 
 fn cov_decl_nm_leader_sigscript(compiled: &CompiledContract<'_>, next_values: Vec<i64>) -> Vec<u8> {
@@ -405,6 +445,46 @@ fn many_to_many_happy_path_succeeds() {
 
     execute_input_with_covenants(tx.clone(), entries.clone(), 0).expect("leader path should accept valid many-to-many transition");
     execute_input_with_covenants(tx, entries, 1).expect("delegate path should accept valid many-to-many transition");
+}
+
+#[test]
+fn shared_delegate_body_authenticates_each_inputs_local_state() {
+    let in0 = compile_kcc20_state(1, 10);
+    let in1 = compile_kcc20_state(2, 7);
+    let out0 = compile_kcc20_state(3, 8);
+    let out1 = compile_kcc20_state(4, 9);
+    let next_states =
+        Expr::array(parse_type_ref("State[]").expect("State[] parses"), vec![kcc20_state_arg(3, 8), kcc20_state_arg(4, 9)]);
+
+    let leader_sigscript = covenant_decl_sigscript(&in0, "transferPolicy", vec![next_states, Expr::dynamic_bytes(vec![1])], true);
+    let delegate_sigscript = covenant_decl_sigscript(&in1, "transferPolicy", vec![Expr::dynamic_bytes(vec![2])], false);
+    let outputs = vec![covenant_output(&out0, 0, COV_A), covenant_output(&out1, 1, COV_A)];
+    let tx = Transaction::new(
+        1,
+        vec![tx_input(0, leader_sigscript), tx_input(1, delegate_sigscript)],
+        outputs.clone(),
+        0,
+        Default::default(),
+        0,
+        vec![],
+    );
+    let entries = vec![covenant_utxo(&in0, COV_A), covenant_utxo(&in1, COV_A)];
+
+    execute_input_with_covenants(tx.clone(), entries.clone(), 0).expect("leader authenticates its local owner");
+    execute_input_with_covenants(tx, entries.clone(), 1).expect("delegate authenticates its own local owner");
+
+    let wrong_delegate_sigscript = covenant_decl_sigscript(&in1, "transferPolicy", vec![Expr::dynamic_bytes(vec![1])], false);
+    let wrong_tx = Transaction::new(
+        1,
+        vec![tx_input(0, redeem_only_sigscript(&in0)), tx_input(1, wrong_delegate_sigscript)],
+        outputs,
+        0,
+        Default::default(),
+        0,
+        vec![],
+    );
+    let err = execute_input_with_covenants(wrong_tx, entries, 1).expect_err("delegate must reject another input's owner witness");
+    assert_verify_like_error(err);
 }
 
 #[test]

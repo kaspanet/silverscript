@@ -51,6 +51,7 @@ use validate_output_state::lower_validate_output_state;
 pub const SYNTHETIC_ARG_PREFIX: &str = "__arg";
 pub const COMPILER_VERSION: &str = "0.1.0";
 const COVENANT_POLICY_PREFIX: &str = "__covenant_policy";
+const COVENANT_DELEGATE_POLICY_PREFIX: &str = "__covenant_delegate_policy";
 pub const COVENANT_ENTRYPOINT_AUTH_PREFIX: &str = "__covenant_entrypoint_auth";
 pub(super) type TypeMap = HashMap<String, TypeRef>;
 
@@ -61,6 +62,10 @@ pub struct CovenantDeclCallOptions {
 
 fn generated_covenant_policy_name(function_name: &str) -> String {
     format!("{COVENANT_POLICY_PREFIX}_{function_name}")
+}
+
+fn generated_covenant_delegate_policy_name(function_name: &str) -> String {
+    format!("{COVENANT_DELEGATE_POLICY_PREFIX}_{function_name}")
 }
 
 pub fn generated_covenant_auth_entrypoint_name(function_name: &str) -> String {
@@ -260,19 +265,54 @@ impl<'i> CompiledContract<'i> {
         args: Vec<Expr<'i>>,
         options: CovenantDeclCallOptions,
     ) -> Result<Vec<u8>, CompilerError> {
-        let auth_entrypoint = generated_covenant_auth_entrypoint_name(function_name);
-        if self.entry_by_name(&auth_entrypoint).is_some() {
-            return self.build_sig_script(&auth_entrypoint, args);
-        }
-
-        let leader_entrypoint = generated_covenant_leader_entrypoint_name(function_name);
-        if self.entry_by_name(&leader_entrypoint).is_some() {
-            let entrypoint = if options.is_leader { leader_entrypoint } else { generated_covenant_delegate_entrypoint_name() };
-            return self.build_sig_script(&entrypoint, args);
-        }
-
-        Err(CompilerError::Unsupported(format!("covenant declaration '{}' not found", function_name)))
+        let entrypoint = self
+            .covenant_decl_entrypoint_name(function_name, options.is_leader)
+            .ok_or_else(|| CompilerError::Unsupported(format!("covenant declaration '{}' not found", function_name)))?;
+        self.build_sig_script(entrypoint, args)
     }
+
+    /// Resolves a source covenant declaration to its final public ABI entrypoint.
+    /// For cov-bound declarations, `is_leader` selects the leader or shared
+    /// delegate wrapper. Auth-bound declarations resolve to the same wrapper in
+    /// either case.
+    pub fn covenant_decl_entrypoint_name(&self, function_name: &str, is_leader: bool) -> Option<&str> {
+        let policy_name = generated_covenant_policy_name(function_name);
+        let wrapper =
+            self.ast.functions.iter().find(|function| function.entrypoint && function_directly_calls(function, &policy_name))?;
+
+        let cov_bound = function_defines_local(wrapper, "__cov_in_count");
+        if !cov_bound || is_leader {
+            return Some(wrapper.name.as_str());
+        }
+
+        self.ast
+            .functions
+            .iter()
+            .find(|function| function.entrypoint && is_generated_covenant_delegate(function))
+            .map(|function| function.name.as_str())
+    }
+}
+
+fn function_directly_calls(function: &FunctionAst<'_>, callee: &str) -> bool {
+    function.body.iter().any(|statement| match statement {
+        Statement::FunctionCall { name, .. } | Statement::FunctionCallAssign { name, .. } => name == callee,
+        _ => false,
+    })
+}
+
+fn function_defines_local(function: &FunctionAst<'_>, local: &str) -> bool {
+    function.body.iter().any(|statement| matches!(statement, Statement::VariableDefinition { name, .. } if name == local))
+}
+
+fn is_generated_covenant_delegate(function: &FunctionAst<'_>) -> bool {
+    matches!(
+        function.body.as_slice(),
+        [
+            Statement::VariableDefinition { name, .. },
+            Statement::Require { .. },
+            ..
+        ] if name == "__cov_id" && !function_defines_local(function, "__cov_in_count")
+    )
 }
 
 fn push_typed_sigscript_arg<'i>(

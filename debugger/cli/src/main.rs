@@ -209,7 +209,7 @@ fn build_covenant_input_sigscript<'i>(
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let entrypoint_name = target.generated_entrypoint_name_for(is_leader);
     let typed_args = if target.binding == DebugCovenantBinding::Cov && !is_leader {
-        Vec::new()
+        parse_call_args(&compiled.ast, &entrypoint_name, raw_args)?
     } else {
         let function = compiled
             .ast

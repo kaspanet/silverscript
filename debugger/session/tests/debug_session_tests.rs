@@ -1750,6 +1750,41 @@ fn covenant_debug_value(value: i64) -> DebugValue {
     DebugValue::Object(vec![("value".to_string(), DebugValue::Int(value))])
 }
 
+#[test]
+fn covenant_debugger_resolves_overridden_public_entrypoint_names() -> Result<(), Box<dyn Error>> {
+    let source = r#"
+        contract Routed() {
+            #[covenant(
+                binding = cov,
+                from = 2,
+                to = 2,
+                name = transfer,
+                delegate_name = transfer_delegator
+            )]
+            function transferPolicy(int amount) {
+                require(amount >= 0);
+            }
+
+            #[covenant.delegate]
+            function authorizeDelegate(byte[] witness) {
+                require(witness.length > 0);
+            }
+        }
+    "#;
+
+    let parsed = parse_contract_ast(source)?;
+    let compiled = compile_contract(source, &[], CompileOptions::default())?;
+    let target = resolve_covenant_call_target(&parsed, &compiled, "transferPolicy").ok_or("missing covenant call target")?;
+
+    assert_eq!(target.generated_entrypoint_name, "transfer");
+    assert_eq!(target.generated_entrypoint_name_for(true), "transfer");
+    assert_eq!(target.generated_entrypoint_name_for(false), "transfer_delegator");
+    assert!(target.matches_generated_name("transfer"));
+    assert!(target.matches_generated_name("transfer_delegator"));
+    assert!(resolve_covenant_call_target(&parsed, &compiled, "authorizeDelegate").is_none());
+    Ok(())
+}
+
 fn push_redeem_script(bytecode: &[u8]) -> Vec<u8> {
     ScriptBuilder::new().add_data(bytecode).expect("push redeem script").drain()
 }

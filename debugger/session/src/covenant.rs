@@ -1,10 +1,7 @@
 use std::collections::HashSet;
 
 use silverscript_lang::ast::{ContractAst, FunctionAst};
-use silverscript_lang::compiler::{
-    CompiledContract, generated_covenant_auth_entrypoint_name, generated_covenant_delegate_entrypoint_name,
-    generated_covenant_leader_entrypoint_name,
-};
+use silverscript_lang::compiler::CompiledContract;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CovenantBinding {
@@ -31,6 +28,7 @@ pub struct ResolvedCovenantCallTarget {
     pub mode: CovenantMode,
     pub source_binding: Option<CovenantSourceBinding>,
     pub generated_entrypoint_name: String,
+    pub delegate_entrypoint_name: Option<String>,
     pub policy_function_name: String,
     pub generated_function_names: HashSet<String>,
 }
@@ -46,12 +44,12 @@ impl ResolvedCovenantCallTarget {
 
     pub fn generated_entrypoint_name_for(&self, is_leader: bool) -> String {
         match self.binding {
-            CovenantBinding::Auth => generated_covenant_auth_entrypoint_name(&self.source_name),
+            CovenantBinding::Auth => self.generated_entrypoint_name.clone(),
             CovenantBinding::Cov => {
                 if is_leader {
-                    generated_covenant_leader_entrypoint_name(&self.source_name)
+                    self.generated_entrypoint_name.clone()
                 } else {
-                    generated_covenant_delegate_entrypoint_name()
+                    self.delegate_entrypoint_name.clone().expect("a resolved cov-bound declaration has a shared delegate entrypoint")
                 }
             }
         }
@@ -66,39 +64,15 @@ pub fn resolve_covenant_call_target<'i>(
     let function =
         contract.functions.iter().find(|function| function.name == function_name && is_covenant_source_function(function))?;
 
-    let auth_entrypoint_name = generated_covenant_auth_entrypoint_name(function_name);
-    let leader_entrypoint_name = generated_covenant_leader_entrypoint_name(function_name);
-    let has_auth_entrypoint = abi_contains_function(compiled, &auth_entrypoint_name);
-    let has_leader_entrypoint = abi_contains_function(compiled, &leader_entrypoint_name);
-
-    let binding = if has_auth_entrypoint {
-        CovenantBinding::Auth
-    } else if has_leader_entrypoint {
-        CovenantBinding::Cov
-    } else {
-        return None;
-    };
-
-    let generated_entrypoint_name = match binding {
-        CovenantBinding::Auth => auth_entrypoint_name.clone(),
-        CovenantBinding::Cov => {
-            if !has_leader_entrypoint {
-                return None;
-            }
-            leader_entrypoint_name.clone()
-        }
-    };
+    let generated_entrypoint_name = compiled.covenant_decl_entrypoint_name(function_name, true)?.to_string();
+    let nonleader_entrypoint_name = compiled.covenant_decl_entrypoint_name(function_name, false)?.to_string();
+    let binding = if generated_entrypoint_name == nonleader_entrypoint_name { CovenantBinding::Auth } else { CovenantBinding::Cov };
+    let delegate_entrypoint_name = (binding == CovenantBinding::Cov).then_some(nonleader_entrypoint_name);
 
     let mut generated_function_names = HashSet::from([generated_covenant_policy_name(function_name)]);
-    if has_auth_entrypoint {
-        generated_function_names.insert(auth_entrypoint_name);
-    }
-    if has_leader_entrypoint {
-        generated_function_names.insert(leader_entrypoint_name);
-    }
-
-    if binding == CovenantBinding::Cov {
-        generated_function_names.insert(generated_covenant_delegate_entrypoint_name());
+    generated_function_names.insert(generated_entrypoint_name.clone());
+    if let Some(delegate_entrypoint_name) = &delegate_entrypoint_name {
+        generated_function_names.insert(delegate_entrypoint_name.clone());
     }
 
     Some(ResolvedCovenantCallTarget {
@@ -110,17 +84,22 @@ pub fn resolve_covenant_call_target<'i>(
             .first()
             .map(|param| CovenantSourceBinding { param_name: param.name.clone(), param_type_name: param.type_ref.type_name() }),
         generated_entrypoint_name,
+        delegate_entrypoint_name,
         policy_function_name: generated_covenant_policy_name(function_name),
         generated_function_names,
     })
 }
 
-fn abi_contains_function(compiled: &CompiledContract<'_>, function_name: &str) -> bool {
-    compiled.entry_by_name(function_name).is_some()
-}
-
 fn is_covenant_source_function(function: &FunctionAst<'_>) -> bool {
-    function.attributes.iter().any(|attribute| attribute.path.first().is_some_and(|segment| segment == "covenant"))
+    function.attributes.iter().any(|attribute| {
+        matches!(
+            attribute.path.as_slice(),
+            [head] if head == "covenant"
+        ) || matches!(
+            attribute.path.as_slice(),
+            [head, tail] if head == "covenant" && (tail == "singleton" || tail == "fanout")
+        )
+    })
 }
 
 fn generated_covenant_policy_name(function_name: &str) -> String {
