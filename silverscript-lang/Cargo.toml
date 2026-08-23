@@ -36,6 +36,6 @@ kaspa-addresses.workspace = true
 kaspa-consensus.workspace = true
 kaspa-muhash.workspace = true
 borsh = "1.7.0"
-risc0-zkvm = "3.0.4"
+risc0-zkvm = { version = "3.0.4", default-features = false }
 sha2 = "0.10"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

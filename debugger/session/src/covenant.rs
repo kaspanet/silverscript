@@ -116,7 +116,7 @@ pub fn resolve_covenant_call_target<'i>(
 }
 
 fn abi_contains_function(compiled: &CompiledContract<'_>, function_name: &str) -> bool {
-    compiled.abi.iter().any(|entry| entry.name == function_name)
+    compiled.entry_by_name(function_name).is_some()
 }
 
 fn is_covenant_source_function(function: &FunctionAst<'_>) -> bool {

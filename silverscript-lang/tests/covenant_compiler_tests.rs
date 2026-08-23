@@ -14,7 +14,6 @@ fn lowers_auth_covenant_declaration_to_hidden_entrypoint_name() {
     "#;
 
     let compiled = compile_contract(source, &[Expr::int(3)], CompileOptions::default()).expect("compile succeeds");
-    assert!(compiled.without_selector);
     assert_eq!(compiled.abi.len(), 1);
     assert_eq!(compiled.abi[0].name, generated_covenant_auth_entrypoint_name("spend"));
     assert!(compiled.ast.functions.iter().any(|f| f.name == "__covenant_policy_spend" && !f.entrypoint));
@@ -34,7 +33,6 @@ fn infers_auth_binding_from_from_equal_one_when_binding_omitted() {
     "#;
 
     let compiled = compile_contract(source, &[Expr::int(3)], CompileOptions::default()).expect("compile succeeds");
-    assert!(compiled.without_selector);
     assert_eq!(compiled.abi.len(), 1);
     assert_eq!(compiled.abi[0].name, generated_covenant_auth_entrypoint_name("spend"));
     assert!(compiled.ast.functions.iter().any(|f| f.name == "__covenant_policy_spend" && !f.entrypoint));
@@ -237,7 +235,6 @@ fn lowers_singleton_sugar_to_auth_one_to_one_defaults() {
     "#;
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
-    assert!(compiled.without_selector);
     assert_eq!(compiled.abi[0].name, generated_covenant_auth_entrypoint_name("spend"));
     assert!(compiled.bytecode.contains(&OpAuthOutputCount));
 }
@@ -254,7 +251,6 @@ fn lowers_fanout_sugar_to_auth_with_to_bound() {
     "#;
 
     let compiled = compile_contract(source, &[Expr::int(3)], CompileOptions::default()).expect("compile succeeds");
-    assert!(compiled.without_selector);
     assert_eq!(compiled.abi[0].name, generated_covenant_auth_entrypoint_name("split"));
     assert!(compiled.bytecode.contains(&OpAuthOutputCount));
 }
@@ -667,7 +663,7 @@ fn leader_contract_allows_acknowledged_manual_entrypoint() {
 
     let compiled = compile_contract(source, &[Expr::int(2), Expr::int(4)], CompileOptions::default())
         .expect("acknowledged manual entrypoint compiles");
-    assert!(compiled.abi.iter().any(|entry| entry.name == "recover"));
+    assert!(compiled.entry_by_name("recover").is_some());
     let recover = compiled.ast.functions.iter().find(|function| function.name == "recover").expect("recover remains an entrypoint");
     assert!(recover.attributes.is_empty(), "allow acknowledgment must not survive lowering");
 }

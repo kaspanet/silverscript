@@ -72,9 +72,17 @@ pub(super) fn compile_contract_impl<'i>(
         return Err(CompilerError::Unsupported("contract has no entries".to_string()));
     }
 
-    let without_selector = entrypoint_functions.len() == 1;
+    let function_abi_entries = build_function_abi_entries(&covenant_lowered_contract, &constants)?;
 
-    let function_abi_entries = build_function_abi_entries(&covenant_lowered_contract);
+    // dispatch tag: verify no collisions and insert tags to global state
+    let mut entrypoints_by_tag = HashMap::<DispatchTag, &str>::new();
+    for entrypoint in &function_abi_entries {
+        let tag = entrypoint.dispatch_tag();
+        if let Some(existing) = entrypoints_by_tag.insert(tag, entrypoint.name.as_str()) {
+            return Err(CompilerError::EntrypointDispatchTagCollision { f1: existing.to_string(), f2: entrypoint.name.clone() });
+        }
+    }
+
     let uses_bytecode_size = contract_uses_bytecode_size(&lowered_contract);
 
     let mut bytecode_size = if uses_bytecode_size { Some(100i64) } else { None };
@@ -86,7 +94,7 @@ pub(super) fn compile_contract_impl<'i>(
             &lowered_contract,
             &lowered_constants,
             bytecode_size,
-            without_selector,
+            &function_abi_entries,
             &structs,
             &mut debug_recorder,
         )?;
@@ -97,7 +105,6 @@ pub(super) fn compile_contract_impl<'i>(
                 &lowered_contract,
                 &covenant_lowered_contract,
                 function_abi_entries.clone(),
-                without_selector,
                 bytecode,
                 state_layout,
                 debug_info,
@@ -110,7 +117,6 @@ pub(super) fn compile_contract_impl<'i>(
                 &lowered_contract,
                 &covenant_lowered_contract,
                 function_abi_entries.clone(),
-                without_selector,
                 bytecode,
                 state_layout,
                 debug_info,
@@ -126,16 +132,16 @@ fn compile_contract_bytecode_iteration<'i>(
     lowered_contract: &ContractAst<'i>,
     lowered_constants: &HashMap<String, Expr<'i>>,
     bytecode_size: Option<i64>,
-    without_selector: bool,
+    function_abi_entries: &[FunctionAbiEntry],
     structs: &StructRegistry,
     debug_recorder: &mut DebugRecorder<'i>,
 ) -> Result<(Vec<u8>, CompiledStateLayout), CompilerError> {
     let (_contract_fields, field_prolog_bytecode) =
         compile_contract_fields(&lowered_contract.fields, lowered_constants, bytecode_size)?;
 
-    let selector_prefix_len = if without_selector { 0 } else { 1 };
-    let contract_fields_end_offset = selector_prefix_len + field_prolog_bytecode.len();
-    let state_layout = CompiledStateLayout { start: selector_prefix_len, len: field_prolog_bytecode.len() };
+    let dispatch_prefix_len = 1;
+    let contract_fields_end_offset = dispatch_prefix_len + field_prolog_bytecode.len();
+    let state_layout = CompiledStateLayout { start: dispatch_prefix_len, len: field_prolog_bytecode.len() };
     let compiled_entrypoints = compile_entrypoint_bytecodes(
         lowered_contract,
         contract_fields_end_offset,
@@ -144,7 +150,7 @@ fn compile_contract_bytecode_iteration<'i>(
         bytecode_size,
         debug_recorder,
     )?;
-    let bytecode = build_contract_bytecode(debug_recorder, without_selector, &field_prolog_bytecode, &compiled_entrypoints)?;
+    let bytecode = build_contract_bytecode(debug_recorder, &field_prolog_bytecode, &compiled_entrypoints, function_abi_entries)?;
     Ok((bytecode, state_layout))
 }
 
@@ -178,30 +184,26 @@ fn compile_entrypoint_bytecodes<'i>(
 
 fn build_contract_bytecode(
     debug_recorder: &mut DebugRecorder<'_>,
-    without_selector: bool,
     field_prolog_bytecode: &[u8],
     compiled_entrypoints: &[(String, Vec<u8>)],
+    function_abi_entries: &[FunctionAbiEntry],
 ) -> Result<Vec<u8>, CompilerError> {
-    if without_selector {
-        let (name, entrypoint_bytecode) =
-            compiled_entrypoints.first().ok_or_else(|| CompilerError::Unsupported("contract has no entries".to_string()))?;
-        debug_recorder.set_entrypoint_start(name, field_prolog_bytecode.len());
-        let mut bytecode = field_prolog_bytecode.to_vec();
-        bytecode.extend(entrypoint_bytecode.clone());
-        return Ok(bytecode);
-    }
-
-    // Preserve the selector while encoding contract state once so
+    // Preserve the dispatch tag while encoding contract state once so
     // reflection helpers can rewrite a single contiguous state segment.
     let mut builder = script_builder();
     builder.add_op(OpToAltStack)?;
     builder.add_ops(field_prolog_bytecode)?;
     builder.add_op(OpFromAltStack)?;
     let total = compiled_entrypoints.len();
+
+    let dispatch_tag_by_entry_name =
+        function_abi_entries.iter().map(|entry| (entry.name.as_str(), entry.dispatch_tag())).collect::<HashMap<_, _>>();
+
     for (entrypoint_index, (name, bytecode)) in compiled_entrypoints.iter().enumerate() {
+        let dispatch_tag = dispatch_tag_by_entry_name.get(name.as_str()).expect("compiled entrypoint must have an ABI entry");
         builder.add_op(OpDup)?;
-        builder.add_i64(entrypoint_index as i64)?;
-        builder.add_op(OpNumEqual)?;
+        builder.add_data(dispatch_tag)?;
+        builder.add_op(OpEqual)?;
         builder.add_op(OpIf)?;
         builder.add_op(OpDrop)?;
         debug_recorder.set_entrypoint_start(name, builder.script().len());
@@ -223,7 +225,6 @@ fn build_compiled_contract<'i>(
     lowered_contract: &ContractAst<'i>,
     covenant_lowered_contract: &ContractAst<'i>,
     function_abi_entries: Vec<FunctionAbiEntry>,
-    without_selector: bool,
     bytecode: Vec<u8>,
     state_layout: CompiledStateLayout,
     debug_info: Option<DebugInfo<'i>>,
@@ -234,20 +235,9 @@ fn build_compiled_contract<'i>(
         bytecode,
         ast: covenant_lowered_contract.clone(),
         abi: function_abi_entries,
-        without_selector,
         state_layout,
         debug_info,
     }
-}
-
-pub fn function_branch_index<'i>(contract: &ContractAst<'i>, function_name: &str) -> Result<i64, CompilerError> {
-    contract
-        .functions
-        .iter()
-        .filter(|func| func.entrypoint)
-        .position(|func| func.name == function_name)
-        .map(|index| index as i64)
-        .ok_or_else(|| CompilerError::Unsupported(format!("function '{function_name}' not found")))
 }
 
 /// Compiles a pre-resolved expression for debugger shadow evaluation.

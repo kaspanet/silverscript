@@ -31,9 +31,9 @@ mod type_system;
 mod validate_output_state;
 
 use compile::compile_contract_impl;
+pub use compile::compile_debug_expr;
 pub(super) use compile::eval_const_int;
 pub(crate) use compile::resolve_constant_references;
-pub use compile::{compile_debug_expr, function_branch_index};
 pub(crate) use debug_recording::DebugRecorder;
 use r#for::lower_for_loops;
 use read_input_state::lower_read_input_state_calls;
@@ -92,6 +92,19 @@ pub struct FunctionAbiEntry {
     pub inputs: Vec<FunctionInputAbi>,
 }
 
+pub type DispatchTag = [u8; 4];
+
+impl FunctionAbiEntry {
+    pub fn dispatch_tag(&self) -> DispatchTag {
+        let type_names = self.inputs.iter().map(|input| input.type_name.as_str()).collect::<Vec<_>>().join(",");
+        let signature = format!("{}({type_names})", self.name);
+        let hash = blake3::hash(signature.as_bytes());
+        let mut tag = [0u8; 4];
+        tag.copy_from_slice(&hash.as_bytes()[..4]);
+        tag
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CompiledStateLayout {
     pub start: usize,
@@ -105,7 +118,6 @@ pub struct CompiledContract<'i> {
     pub bytecode: Vec<u8>,
     pub ast: ContractAst<'i>,
     pub abi: Vec<FunctionAbiEntry>,
-    pub without_selector: bool,
     pub state_layout: CompiledStateLayout,
     pub debug_info: Option<DebugInfo<'i>>,
 }
@@ -202,6 +214,10 @@ pub fn struct_object<'i>(name: &str, fields: Vec<(&str, Expr<'i>)>) -> Expr<'i> 
 }
 
 impl<'i> CompiledContract<'i> {
+    pub fn entry_by_name(&self, name: &str) -> Option<&FunctionAbiEntry> {
+        self.abi.iter().find(|entry| entry.name == name)
+    }
+
     /// Calculate the canonical hash of this contract's state template.
     pub fn template_hash(&self) -> [u8; 32] {
         let state_end = self.state_layout.start + self.state_layout.len;
@@ -213,9 +229,7 @@ impl<'i> CompiledContract<'i> {
         let constants: HashMap<_, _> =
             self.ast.constants.iter().map(|constant| (constant.name.clone(), constant.expr.clone())).collect();
         let function = self
-            .abi
-            .iter()
-            .find(|entry| entry.name == function_name)
+            .entry_by_name(function_name)
             .ok_or_else(|| CompilerError::Unsupported(format!("function '{}' not found", function_name)))?;
 
         if function.inputs.len() != args.len() {
@@ -233,10 +247,9 @@ impl<'i> CompiledContract<'i> {
                 CompilerError::Unsupported(format!("function argument '{}' expects {} ({err})", input.name, input.type_name))
             })?;
         }
-        if !self.without_selector {
-            let selector = function_branch_index(&self.ast, function_name)?;
-            builder.add_i64(selector)?;
-        }
+
+        builder.add_data(&function.dispatch_tag())?;
+
         Ok(builder.drain())
     }
 
@@ -247,12 +260,12 @@ impl<'i> CompiledContract<'i> {
         options: CovenantDeclCallOptions,
     ) -> Result<Vec<u8>, CompilerError> {
         let auth_entrypoint = generated_covenant_auth_entrypoint_name(function_name);
-        if self.abi.iter().any(|entry| entry.name == auth_entrypoint) {
+        if self.entry_by_name(&auth_entrypoint).is_some() {
             return self.build_sig_script(&auth_entrypoint, args);
         }
 
         let leader_entrypoint = generated_covenant_leader_entrypoint_name(function_name);
-        if self.abi.iter().any(|entry| entry.name == leader_entrypoint) {
+        if self.entry_by_name(&leader_entrypoint).is_some() {
             let entrypoint = if options.is_leader { leader_entrypoint } else { generated_covenant_delegate_entrypoint_name() };
             return self.build_sig_script(&entrypoint, args);
         }
