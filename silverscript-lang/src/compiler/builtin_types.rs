@@ -80,7 +80,7 @@ pub(super) fn builtin_return(name: &str) -> Option<BuiltinReturn> {
         | "OpCovOutputCount"
         | "OpCovOutputIdx" => scalar(TypeBase::Int),
         "length" => scalar(TypeBase::Int),
-        "OpTxInputIsCoinbase" | "checkSig" | "checkSigECDSA" | "checkMsgSig" | "checkSigFromStackECDSA" => scalar(TypeBase::Bool),
+        "OpTxInputIsCoinbase" | "checkSig" | "checkSigEcdsa" | "checkMsgSig" | "checkMsgSigEcdsa" => scalar(TypeBase::Bool),
         "g16.verify"
         | "r0.g16.verify"
         | "r0.succinct.verify"
@@ -143,13 +143,13 @@ pub(super) fn builtin_parameters(name: &str) -> Option<Vec<(&'static str, TypeRe
         "blake3WithKey" => vec![("data", byte_array(ArrayDim::Dynamic)), ("key", byte_array(ArrayDim::Fixed(32)))],
         "templateHash" => vec![("templatePrefix", byte_array(ArrayDim::Dynamic)), ("templateSuffix", byte_array(ArrayDim::Dynamic))],
         "checkSig" => vec![("signature", scalar(TypeBase::Sig)), ("publicKey", scalar(TypeBase::Pubkey))],
-        "checkSigECDSA" => vec![("signature", scalar(TypeBase::Sig)), ("publicKey", byte_array(ArrayDim::Fixed(33)))],
+        "checkSigEcdsa" => vec![("signature", scalar(TypeBase::Sig)), ("publicKey", byte_array(ArrayDim::Fixed(33)))],
         "checkMsgSig" => vec![
             ("signature", scalar(TypeBase::Datasig)),
             ("digest", byte_array(ArrayDim::Fixed(32))),
             ("publicKey", scalar(TypeBase::Pubkey)),
         ],
-        "checkSigFromStackECDSA" => vec![
+        "checkMsgSigEcdsa" => vec![
             ("signature", scalar(TypeBase::Datasig)),
             ("digest", byte_array(ArrayDim::Fixed(32))),
             ("publicKey", byte_array(ArrayDim::Fixed(33))),

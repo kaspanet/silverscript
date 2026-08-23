@@ -980,13 +980,13 @@ entry verify(sig s, pubkey pk) {
 }
 ```
 
-**`checkSigECDSA(sig signature, byte[33] publicKey): bool`**
+**`checkSigEcdsa(sig signature, byte[33] publicKey): bool`**
 
 Verify a transaction signature (with its sighash byte) against a compressed ECDSA public key
 
 ```javascript
 entry verify(sig s, byte[33] pk) {
-    require(checkSigECDSA(s, pk));
+    require(checkSigEcdsa(s, pk));
 }
 ```
 
@@ -1002,14 +1002,14 @@ entry verify(datasig oracleSig, byte[] oracleMessage, pubkey oraclePk) {
 }
 ```
 
-**`checkSigFromStackECDSA(datasig signature, byte[32] digest, byte[33] publicKey): bool`**
+**`checkMsgSigEcdsa(datasig signature, byte[32] digest, byte[33] publicKey): bool`**
 
 Verify a compact 64-byte ECDSA signature against a 32-byte digest and compressed
 33-byte ECDSA public key:
 
 ```javascript
 entry verify(datasig oracleSig, byte[] oracleMessage, byte[33] oraclePk) {
-    require(checkSigFromStackECDSA(oracleSig, sha256(oracleMessage), oraclePk));
+    require(checkMsgSigEcdsa(oracleSig, sha256(oracleMessage), oraclePk));
 }
 ```
 
