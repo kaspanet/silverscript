@@ -22,6 +22,12 @@ pub struct CovenantSourceBinding {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CovenantDelegateBodyTarget {
+    pub source_name: String,
+    pub policy_function_name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedCovenantCallTarget {
     pub source_name: String,
     pub binding: CovenantBinding,
@@ -29,6 +35,7 @@ pub struct ResolvedCovenantCallTarget {
     pub source_binding: Option<CovenantSourceBinding>,
     pub generated_entrypoint_name: String,
     pub delegate_entrypoint_name: Option<String>,
+    pub delegate_body: Option<CovenantDelegateBodyTarget>,
     pub policy_function_name: String,
     pub generated_function_names: HashSet<String>,
 }
@@ -40,6 +47,15 @@ impl ResolvedCovenantCallTarget {
 
     pub fn matches_generated_name(&self, function_name: &str) -> bool {
         self.generated_function_names.contains(function_name)
+    }
+
+    pub fn display_name_for(&self, function_name: &str) -> Option<&str> {
+        if let Some(body) = &self.delegate_body {
+            if body.policy_function_name == function_name {
+                return Some(body.source_name.as_str());
+            }
+        }
+        (self.policy_function_name == function_name || self.matches_generated_name(function_name)).then_some(self.source_name.as_str())
     }
 
     pub fn generated_entrypoint_name_for(&self, is_leader: bool) -> String {
@@ -68,6 +84,13 @@ pub fn resolve_covenant_call_target<'i>(
     let nonleader_entrypoint_name = compiled.covenant_decl_entrypoint_name(function_name, false)?.to_string();
     let binding = if generated_entrypoint_name == nonleader_entrypoint_name { CovenantBinding::Auth } else { CovenantBinding::Cov };
     let delegate_entrypoint_name = (binding == CovenantBinding::Cov).then_some(nonleader_entrypoint_name);
+    let delegate_body = (binding == CovenantBinding::Cov)
+        .then(|| contract.functions.iter().find(|function| is_covenant_delegate_source_function(function)))
+        .flatten()
+        .map(|function| CovenantDelegateBodyTarget {
+            source_name: function.name.clone(),
+            policy_function_name: generated_covenant_delegate_policy_name(&function.name),
+        });
 
     let mut generated_function_names = HashSet::from([generated_covenant_policy_name(function_name)]);
     generated_function_names.insert(generated_entrypoint_name.clone());
@@ -85,8 +108,18 @@ pub fn resolve_covenant_call_target<'i>(
             .map(|param| CovenantSourceBinding { param_name: param.name.clone(), param_type_name: param.type_ref.type_name() }),
         generated_entrypoint_name,
         delegate_entrypoint_name,
+        delegate_body,
         policy_function_name: generated_covenant_policy_name(function_name),
         generated_function_names,
+    })
+}
+
+fn is_covenant_delegate_source_function(function: &FunctionAst<'_>) -> bool {
+    function.attributes.iter().any(|attribute| {
+        matches!(
+            attribute.path.as_slice(),
+            [head, tail] if head == "covenant" && tail == "delegate"
+        )
     })
 }
 
@@ -104,4 +137,8 @@ fn is_covenant_source_function(function: &FunctionAst<'_>) -> bool {
 
 fn generated_covenant_policy_name(function_name: &str) -> String {
     format!("__covenant_policy_{function_name}")
+}
+
+fn generated_covenant_delegate_policy_name(function_name: &str) -> String {
+    format!("__covenant_delegate_policy_{function_name}")
 }

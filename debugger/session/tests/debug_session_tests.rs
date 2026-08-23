@@ -1781,12 +1781,110 @@ fn covenant_debugger_resolves_overridden_public_entrypoint_names() -> Result<(),
     assert_eq!(target.generated_entrypoint_name_for(false), "transfer_delegator");
     assert!(target.matches_generated_name("transfer"));
     assert!(target.matches_generated_name("transfer_delegator"));
+    let delegate_body = target.delegate_body.as_ref().ok_or("missing delegate body target")?;
+    assert_eq!(delegate_body.source_name, "authorizeDelegate");
+    assert_eq!(delegate_body.policy_function_name, "__covenant_delegate_policy_authorizeDelegate");
+    assert_eq!(target.display_name_for(&delegate_body.policy_function_name), Some("authorizeDelegate"));
     assert!(resolve_covenant_call_target(&parsed, &compiled, "authorizeDelegate").is_none());
     Ok(())
 }
 
 fn push_redeem_script(bytecode: &[u8]) -> Vec<u8> {
     ScriptBuilder::new().add_data(bytecode).expect("push redeem script").drain()
+}
+
+#[test]
+fn debug_session_displays_source_name_inside_covenant_delegate_body() -> Result<(), Box<dyn Error>> {
+    let source = r#"pragma silverscript ^0.1.0;
+
+contract Routed() {
+    #[covenant(
+        binding = cov,
+        from = 2,
+        to = 1,
+        name = transfer,
+        delegate_name = transfer_delegator
+    )]
+    function transferPolicy(int amount) {
+        require(amount >= 0);
+    }
+
+    #[covenant.delegate]
+    function authorizeDelegate(byte[] witness) {
+        require(witness.length > 0);
+        require(witness.length < 2);
+    }
+}
+"#;
+
+    let parsed_contract = parse_contract_ast(source)?;
+    let compile_opts = CompileOptions { record_debug_infos: true, ..Default::default() };
+    let compiled = compile_contract(source, &[], compile_opts)?;
+    let target = resolve_covenant_call_target(&parsed_contract, &compiled, "transferPolicy").ok_or("missing covenant call target")?;
+    let delegate_sigscript =
+        compiled.build_sig_script(&target.generated_entrypoint_name_for(false), vec![Expr::dynamic_bytes(vec![7])])?;
+    let mut input_sigscript = delegate_sigscript.clone();
+    input_sigscript.extend_from_slice(&push_redeem_script(&compiled.bytecode));
+
+    let inputs = vec![
+        TransactionInput {
+            previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([0x66u8; 32]), index: 0 },
+            signature_script: input_sigscript.clone(),
+            sequence: 0,
+            compute_commit: SigopCount(0).into(),
+        },
+        TransactionInput {
+            previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([0x77u8; 32]), index: 0 },
+            signature_script: input_sigscript,
+            sequence: 0,
+            compute_commit: SigopCount(0).into(),
+        },
+    ];
+    let output = TransactionOutput { value: 1000, script_public_key: ScriptPublicKey::new(0, vec![OpTrue].into()), covenant: None };
+    let tx = Transaction::new(1, inputs, vec![output], 0, Default::default(), 0, vec![]);
+    let covenant_id = Hash::from_bytes([0x88u8; 32]);
+    let utxos = vec![
+        UtxoEntry::new(1000, pay_to_script_hash_script(&compiled.bytecode), 0, tx.is_coinbase(), Some(covenant_id)),
+        UtxoEntry::new(1000, pay_to_script_hash_script(&compiled.bytecode), 0, tx.is_coinbase(), Some(covenant_id)),
+    ];
+    let populated_tx = PopulatedTransaction::new(&tx, utxos);
+    let cov_ctx = CovenantsContext::from_tx(&populated_tx)?;
+
+    let sig_cache = Cache::new(10_000);
+    let reused_values = SigHashReusedValuesUnsync::new();
+    let ctx = EngineCtx::new(&sig_cache).with_reused(&reused_values).with_covenants_ctx(&cov_ctx);
+    let input_ref = &tx.inputs[1];
+    let utxo_ref = populated_tx.utxo(1).ok_or("missing active delegate utxo")?;
+    let engine = debugger_session::session::DebugEngine::from_transaction_input(
+        &populated_tx,
+        input_ref,
+        1,
+        utxo_ref,
+        ctx,
+        EngineFlags { covenants_enabled: true, ..Default::default() },
+    );
+    let shadow_ctx =
+        ShadowTxContext { tx: &populated_tx, input: input_ref, input_index: 1, utxo_entry: utxo_ref, covenants_ctx: &cov_ctx };
+    let mut session = DebugSession::full(&delegate_sigscript, &compiled.bytecode, source, compiled.debug_info.clone(), engine)?
+        .with_shadow_tx_context(shadow_ctx)
+        .with_covenant_mode(None, Some(target));
+
+    session.run_to_first_executed_statement()?;
+    assert_eq!(session.current_function_name().as_deref(), Some("transferPolicy"));
+
+    let mut visited = Vec::new();
+    for _ in 0..8 {
+        session.step_into()?.ok_or("expected to step into the delegate body")?;
+        let function_name = session.current_function_name();
+        visited.push((function_name.clone(), session.current_span().map(|span| span.line)));
+        if function_name.as_deref() == Some("authorizeDelegate") {
+            break;
+        }
+    }
+    assert_eq!(session.current_function_name().as_deref(), Some("authorizeDelegate"));
+    assert_eq!(session.call_stack().last().map(String::as_str), Some("authorizeDelegate"));
+    assert_eq!(session.current_span().map(|span| span.line), Some(18), "visited steps: {visited:?}");
+    Ok(())
 }
 
 fn with_cov_rebalance_session<F>(mut f: F) -> Result<(), Box<dyn Error>>

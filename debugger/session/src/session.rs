@@ -676,14 +676,8 @@ impl<'a, 'i> DebugSession<'a, 'i> {
     }
 
     fn display_function_name(&self, function_name: &str) -> String {
-        if self
-            .active_covenant_call()
-            .is_some_and(|call| call.policy_function_name == function_name || call.matches_generated_name(function_name))
-        {
-            return self
-                .active_covenant_call()
-                .map(ResolvedCovenantCallTarget::display_name)
-                .unwrap_or_else(|| function_name.to_string());
+        if let Some(display_name) = self.active_covenant_call().and_then(|call| call.display_name_for(function_name)) {
+            return display_name.to_string();
         }
         function_name.to_string()
     }
