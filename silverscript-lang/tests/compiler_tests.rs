@@ -9629,6 +9629,7 @@ fn check_sig_ecdsa_lowers_to_matching_opcode() {
         .add_op(OpTrue)
         .unwrap()
         .drain();
+    let expected = wrap_with_single_dispatch(&compiled, expected);
     assert_eq!(compiled.bytecode, expected);
 }
 
