@@ -19,9 +19,9 @@ use kaspa_txscript::{
 };
 use silverscript_lang::ast::{ContractAst, Expr, ExprKind, Statement, format_contract_ast, parse_contract_ast, parse_type_ref};
 use silverscript_lang::compiler::{
-    COMPILER_VERSION, CompileOptions, CompiledContract, CompilerError, CovenantDeclCallOptions, DispatchTag, FunctionAbiEntriesExt,
-    FunctionAbiEntry, FunctionInputAbi, compile_contract, compile_contract_ast, compile_debug_expr,
-    generated_covenant_auth_entrypoint_name, struct_object,
+    COMPILER_VERSION, CompileOptions, CompiledContract, CompilerError, CovenantDeclCallOptions, DispatchTag, FunctionAbiEntry,
+    FunctionInputAbi, compile_contract, compile_contract_ast, compile_debug_expr, generated_covenant_auth_entrypoint_name,
+    struct_object,
 };
 use silverscript_lang::debug_info::StepKind;
 use silverscript_lang::template::template_hash;
@@ -1132,7 +1132,7 @@ fn byte_variable_from_int_literal_uses_raw_byte_push() {
         .add_op(OpTrue)
         .unwrap()
         .drain();
-    let expected = wrap_with_single_dispatch(body, dispatch_tag_for(&compiled, "main"));
+    let expected = wrap_with_single_dispatch(&compiled, body);
     assert_eq!(compiled.bytecode, expected);
     let dispatch_tag = dispatch_tag_for(&compiled, "main");
     assert!(run_bytecode_with_dispatch_tag(compiled.bytecode, dispatch_tag).is_ok(), "byte int literal script should execute");
@@ -1197,7 +1197,7 @@ fn byte_equality_with_rhs_int_literal_uses_raw_byte_push() {
         .add_op(OpTrue)
         .unwrap()
         .drain();
-    let expected = wrap_with_single_dispatch(body, dispatch_tag_for(&compiled, "main"));
+    let expected = wrap_with_single_dispatch(&compiled, body);
     assert_eq!(compiled.bytecode, expected);
     let dispatch_tag = dispatch_tag_for(&compiled, "main");
     assert!(run_bytecode_with_dispatch_tag(compiled.bytecode, dispatch_tag).is_ok(), "byte equality with rhs literal should execute");
@@ -2562,7 +2562,7 @@ fn build_sig_script_appends_dispatch_tag_for_single_entrypoint() {
     "#;
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
     let sigscript = compiled.build_sig_script("spend", vec![1.into(), vec![2u8; 4].into()]).expect("sigscript builds");
-    let dispatch_tag = compiled.abi.find_by_name("spend").expect("entrypoint resolved").dispatch_tag();
+    let dispatch_tag = compiled.entry_by_name("spend").expect("entrypoint resolved").dispatch_tag();
 
     let expected =
         script_builder().add_i64(1).unwrap().add_data_with_push_opcode(&[2u8; 4]).unwrap().add_data(&dispatch_tag).unwrap().drain();
@@ -5098,7 +5098,7 @@ fn compiles_int_array_length_to_expected_script() {
         .unwrap()
         .drain();
 
-    let expected = wrap_with_single_dispatch(expected, dispatch_tag_for(&compiled, "main"));
+    let expected = wrap_with_single_dispatch(&compiled, expected);
     assert_eq!(compiled.bytecode, expected);
 }
 
@@ -5151,7 +5151,7 @@ fn compiles_int_array_append_to_expected_script() {
         .unwrap()
         .drain();
 
-    let expected = wrap_with_single_dispatch(expected, dispatch_tag_for(&compiled, "main"));
+    let expected = wrap_with_single_dispatch(&compiled, expected);
     assert_eq!(compiled.bytecode, expected);
 }
 
@@ -5364,7 +5364,7 @@ fn compiles_int_array_index_to_expected_script() {
         .unwrap()
         .drain();
 
-    let expected = wrap_with_single_dispatch(expected, dispatch_tag_for(&compiled, "main"));
+    let expected = wrap_with_single_dispatch(&compiled, expected);
     assert_eq!(compiled.bytecode, expected);
 }
 
@@ -5740,7 +5740,7 @@ fn compiles_bytes20_array_append_without_num2bin() {
         .unwrap()
         .drain();
 
-    let expected = wrap_with_single_dispatch(expected, dispatch_tag_for(&compiled, "main"));
+    let expected = wrap_with_single_dispatch(&compiled, expected);
     assert_eq!(compiled.bytecode, expected);
 }
 
@@ -6457,14 +6457,18 @@ fn build_covenant_opcode_tx(sigscript: Vec<u8>, covenant_id_a: Hash, covenant_id
 }
 
 fn dispatch_tag_for(compiled: &CompiledContract<'_>, function_name: &str) -> DispatchTag {
-    compiled.abi.find_by_name(function_name).expect("entrypoint resolved").dispatch_tag()
+    compiled.entry_by_name(function_name).expect("entrypoint resolved").dispatch_tag()
 }
 
-fn wrap_with_single_dispatch(body: Vec<u8>, dispatch_tag: DispatchTag) -> Vec<u8> {
-    wrap_with_single_dispatch_and_state(&[], &body, dispatch_tag)
+fn wrap_with_single_dispatch(compiled: &CompiledContract<'_>, body: Vec<u8>) -> Vec<u8> {
+    wrap_with_single_dispatch_and_state(compiled, &[], &body)
 }
 
-fn wrap_with_single_dispatch_and_state(state: &[u8], body: &[u8], dispatch_tag: DispatchTag) -> Vec<u8> {
+fn wrap_with_single_dispatch_and_state(compiled: &CompiledContract<'_>, state: &[u8], body: &[u8]) -> Vec<u8> {
+    let [entrypoint] = compiled.abi.as_slice() else {
+        panic!("single-dispatch wrapper requires exactly one ABI entrypoint");
+    };
+    let dispatch_tag = entrypoint.dispatch_tag();
     let mut builder = script_builder();
     builder.add_op(OpToAltStack).unwrap();
     builder.add_ops(state).unwrap();
@@ -6536,8 +6540,7 @@ fn compiles_with_kcc1_dispatch_tag_for_single_entrypoint() {
         .add_op(OpTrue)
         .unwrap()
         .drain();
-    let dispatch_tag = dispatch_tag_for(&compiled, "main");
-    let expected = wrap_with_single_dispatch(body, dispatch_tag);
+    let expected = wrap_with_single_dispatch(&compiled, body);
 
     assert_eq!(compiled.bytecode, expected);
 }
@@ -6553,8 +6556,8 @@ fn compiles_with_kcc1_dispatch_tag_for_multiple_entrypoints() {
 
     let contract = parse_contract_ast(source).expect("ast parsed");
     let compiled = compile_contract_ast(&contract, &[], CompileOptions::default()).expect("compile succeeds");
-    let dispatch_tag_a = compiled.abi.find_by_name("a").expect("entrypoint resolved").dispatch_tag();
-    let dispatch_tag_b = compiled.abi.find_by_name("b").expect("entrypoint resolved").dispatch_tag();
+    let dispatch_tag_a = compiled.entry_by_name("a").expect("entrypoint resolved").dispatch_tag();
+    let dispatch_tag_b = compiled.entry_by_name("b").expect("entrypoint resolved").dispatch_tag();
 
     let body_a = script_builder()
         .add_i64(1)
@@ -6646,7 +6649,7 @@ fn dispatch_tag_and_argument_encoding_match_kcc1_vector() {
     "#;
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
-    let step = compiled.abi.find_by_name("step").expect("step entrypoint exists");
+    let step = compiled.entry_by_name("step").expect("step entrypoint exists");
     assert_eq!(step.inputs[1].type_name, "byte[4]");
     assert_eq!(step.dispatch_tag(), [0x2c, 0x49, 0xed, 0x65]);
 
@@ -6753,7 +6756,7 @@ fn compiles_basic_arithmetic_and_verifies() {
         .unwrap()
         .drain();
 
-    let expected = wrap_with_single_dispatch(body, dispatch_tag);
+    let expected = wrap_with_single_dispatch(&compiled, body);
 
     assert_eq!(compiled.bytecode, expected);
     assert!(run_bytecode_with_dispatch_tag(compiled.bytecode, dispatch_tag).is_ok());
@@ -6787,7 +6790,7 @@ fn compiles_contract_constants_and_verifies() {
         .unwrap()
         .drain();
 
-    let expected = wrap_with_single_dispatch(body, dispatch_tag);
+    let expected = wrap_with_single_dispatch(&compiled, body);
 
     assert_eq!(compiled.bytecode, expected);
     assert!(run_bytecode_with_dispatch_tag(compiled.bytecode, dispatch_tag).is_ok());
@@ -6829,8 +6832,7 @@ fn compiles_contract_fields_as_script_prolog() {
         .add_op(OpTrue)
         .unwrap()
         .drain();
-    let dispatch_tag = dispatch_tag_for(&compiled, "main");
-    let expected = wrap_with_single_dispatch_and_state(&state, &body, dispatch_tag);
+    let expected = wrap_with_single_dispatch_and_state(&compiled, &state, &body);
 
     assert_eq!(compiled.bytecode, expected);
 }
@@ -7070,8 +7072,7 @@ fn compiles_validate_output_state_to_expected_script() {
         .drain();
 
     let (state, body) = expected.split_at(compiled.state_layout.len);
-    let dispatch_tag = dispatch_tag_for(&compiled, "main");
-    let expected = wrap_with_single_dispatch_and_state(state, body, dispatch_tag);
+    let expected = wrap_with_single_dispatch_and_state(&compiled, state, body);
 
     let actual_ops = script_to_str(&compiled.bytecode).expect("compiled bytecode stringifies");
     assert_eq!(compiled.bytecode, expected, "actual opcodes: {actual_ops}");
@@ -9585,8 +9586,7 @@ fn rejects_validate_output_state_with_unknown_state_field() {
 
 fn assert_compiled_body(source: &str, body: Vec<u8>) {
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
-    let dispatch_tag = dispatch_tag_for(&compiled, "main");
-    let expected = wrap_with_single_dispatch(body, dispatch_tag);
+    let expected = wrap_with_single_dispatch(&compiled, body);
     assert_eq!(compiled.bytecode, expected);
 }
 
@@ -9636,7 +9636,7 @@ fn checksigfromstack_lowers_to_matching_opcode() {
         .add_op(OpTrue)
         .unwrap()
         .drain();
-    let expected = wrap_with_single_dispatch(expected, dispatch_tag_for(&compiled, "main"));
+    let expected = wrap_with_single_dispatch(&compiled, expected);
     assert_eq!(compiled.bytecode, expected);
 }
 
@@ -9673,7 +9673,7 @@ fn checksigfromstackecdsa_lowers_to_matching_opcode() {
         .add_op(OpTrue)
         .unwrap()
         .drain();
-    let expected = wrap_with_single_dispatch(expected, dispatch_tag_for(&compiled, "main"));
+    let expected = wrap_with_single_dispatch(&compiled, expected);
     assert_eq!(compiled.bytecode, expected);
 }
 
@@ -9832,7 +9832,7 @@ fn g16_verify_lowers_to_groth16_precompile() {
         .add_op(OpTrue)
         .unwrap()
         .drain();
-    assert_eq!(compiled.bytecode, wrap_with_single_dispatch(body, dispatch_tag_for(&compiled, "verify")));
+    assert_eq!(compiled.bytecode, wrap_with_single_dispatch(&compiled, body));
 }
 
 #[test]
@@ -10012,7 +10012,7 @@ fn r0_succinct_verify_lowers_hash_aliases_to_zk_precompile() {
             .add_op(OpTrue)
             .unwrap()
             .drain();
-        let expected = wrap_with_single_dispatch(expected, dispatch_tag_for(&compiled, "main"));
+        let expected = wrap_with_single_dispatch(&compiled, expected);
         let asm = script_to_str(&compiled.bytecode).expect("R0 succinct script should stringify");
         assert!(asm.contains("OpZkPrecompile OpDrop"), "void verifier result should be dropped: {asm}");
         assert_eq!(compiled.bytecode, expected, "{call_name} lowered unexpectedly");
@@ -10068,7 +10068,7 @@ fn r0_g16_verify_lowers_with_sdk_verifier_fragment() {
     kaspa_txscript_zk_sdk::append_r0_groth16_verifier_dynamic_image_id(&mut expected_builder).unwrap();
     expected_builder.add_op(OpDrop).unwrap();
     expected_builder.add_op(OpTrue).unwrap();
-    let expected = wrap_with_single_dispatch(expected_builder.drain(), dispatch_tag_for(&compiled, "main"));
+    let expected = wrap_with_single_dispatch(&compiled, expected_builder.drain());
 
     let asm = script_to_str(&compiled.bytecode).expect("R0 Groth16 script should stringify");
     assert!(asm.contains("OpZkPrecompile OpDrop"), "void verifier result should be dropped: {asm}");
@@ -11615,7 +11615,7 @@ fn compiles_if_else_and_verifies() {
         .unwrap()
         .drain();
 
-    let expected = wrap_with_single_dispatch(body, dispatch_tag);
+    let expected = wrap_with_single_dispatch(&compiled, body);
 
     assert_eq!(compiled.bytecode, expected);
     assert!(run_bytecode_with_dispatch_tag(compiled.bytecode, dispatch_tag).is_ok());
@@ -11652,7 +11652,7 @@ fn compiles_require_age_daa_to_csv_and_verifies() {
         .add_op(OpTrue)
         .unwrap()
         .drain();
-    let expected = wrap_with_single_dispatch(body, dispatch_tag);
+    let expected = wrap_with_single_dispatch(&compiled, body);
 
     assert_eq!(compiled.bytecode, expected);
     assert!(run_bytecode_with_tx(compiled.bytecode, dispatch_tag, 0, 20).is_ok());
@@ -11688,7 +11688,7 @@ fn compiles_require_tx_daa_to_bounded_cltv_and_verifies() {
         .add_op(OpTrue)
         .unwrap()
         .drain();
-    let expected = wrap_with_single_dispatch(body, dispatch_tag);
+    let expected = wrap_with_single_dispatch(&compiled, body);
 
     assert_eq!(compiled.bytecode, expected);
     assert!(run_bytecode_with_tx(compiled.bytecode, dispatch_tag, 10, 0).is_ok());
@@ -11725,7 +11725,7 @@ fn compiles_require_tx_time_to_lower_bounded_cltv_and_verifies() {
         .add_op(OpTrue)
         .unwrap()
         .drain();
-    let expected = wrap_with_single_dispatch(body, dispatch_tag);
+    let expected = wrap_with_single_dispatch(&compiled, body);
 
     assert_eq!(compiled.bytecode, expected);
     assert!(run_bytecode_with_tx(compiled.bytecode, dispatch_tag, threshold as u64, 0).is_ok());
@@ -11997,7 +11997,7 @@ fn compiles_reused_variables_and_verifies() {
         .unwrap()
         .drain();
 
-    let expected = wrap_with_single_dispatch(body, dispatch_tag);
+    let expected = wrap_with_single_dispatch(&compiled, body);
 
     assert_eq!(compiled.bytecode, expected);
     assert!(run_bytecode_with_dispatch_tag(compiled.bytecode, dispatch_tag).is_ok());
@@ -12042,7 +12042,7 @@ fn return_reused_local_is_stored_once_and_reused() {
         .unwrap()
         .drain();
 
-    let expected = wrap_with_single_dispatch(expected, dispatch_tag_for(&compiled, "main"));
+    let expected = wrap_with_single_dispatch(&compiled, expected);
     assert_eq!(compiled.bytecode, expected);
 }
 
@@ -12306,7 +12306,7 @@ fn entrypoints_validate_fixed_width_scalar_argument_sizes_at_runtime() {
             .unwrap()
             .drain();
         let dispatch_tag = dispatch_tag_for(&compiled, "main");
-        let expected = wrap_with_single_dispatch(body, dispatch_tag);
+        let expected = wrap_with_single_dispatch(&compiled, body);
         assert_eq!(compiled.bytecode, expected, "unexpected ABI validation bytecode for {type_name}");
 
         let sigscript =
@@ -12366,7 +12366,7 @@ fn entrypoint_int_argument_accepts_below_nine_bytes_and_rejects_nine() {
         .unwrap()
         .drain();
     let dispatch_tag = dispatch_tag_for(&compiled, "main");
-    let expected = wrap_with_single_dispatch(body, dispatch_tag);
+    let expected = wrap_with_single_dispatch(&compiled, body);
     assert_eq!(compiled.bytecode, expected);
 
     let sigscript =
@@ -12409,7 +12409,7 @@ fn entrypoint_bool_argument_accepts_at_most_one_byte() {
         .unwrap()
         .drain();
     let dispatch_tag = dispatch_tag_for(&compiled, "main");
-    let expected = wrap_with_single_dispatch(body, dispatch_tag);
+    let expected = wrap_with_single_dispatch(&compiled, body);
     assert_eq!(compiled.bytecode, expected);
 
     let sigscript =
@@ -13123,10 +13123,7 @@ fn empty_array_statement_expr_evaluation_compiles_to_empty_array_data() {
         .unwrap()
         .drain();
 
-    assert_eq!(body[0], OpFalse);
-    assert_eq!(body[1], OpFalse);
-
-    let expected = wrap_with_single_dispatch(body, dispatch_tag_for(&compiled, "main"));
+    let expected = wrap_with_single_dispatch(&compiled, body);
     assert_eq!(compiled.bytecode, expected);
 }
 
@@ -13964,7 +13961,6 @@ fn inline_argument_alias_reuses_existing_local_without_extra_snapshot() {
     "#;
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("inline alias reuse should compile");
-    let dispatch_tag = dispatch_tag_for(&compiled, "main");
 
     let body = script_builder()
         .add_op(OpDup)
@@ -13997,7 +13993,7 @@ fn inline_argument_alias_reuses_existing_local_without_extra_snapshot() {
         .unwrap()
         .drain();
 
-    let expected = wrap_with_single_dispatch(body, dispatch_tag);
+    let expected = wrap_with_single_dispatch(&compiled, body);
 
     assert_eq!(compiled.bytecode, expected);
     assert_eq!(compiled.bytecode.iter().copied().filter(|op| *op == OpDup).count(), 3);
@@ -14035,7 +14031,6 @@ fn inline_argument_alias_snapshots_entrypoint_param_once_per_inlined_call() {
     "#;
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("inline param alias reuse should compile");
-    let dispatch_tag = dispatch_tag_for(&compiled, "main");
 
     let body = script_builder()
         .add_op(OpDup)
@@ -14060,7 +14055,7 @@ fn inline_argument_alias_snapshots_entrypoint_param_once_per_inlined_call() {
         .unwrap()
         .drain();
 
-    let expected = wrap_with_single_dispatch(body, dispatch_tag);
+    let expected = wrap_with_single_dispatch(&compiled, body);
 
     assert_eq!(compiled.bytecode, expected);
     assert_eq!(compiled.bytecode.iter().copied().filter(|op| *op == OpDup).count(), 2);
@@ -14092,7 +14087,6 @@ fn local_alias_snapshots_existing_stack_value_once() {
     "#;
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("local alias reuse should compile");
-    let dispatch_tag = dispatch_tag_for(&compiled, "main");
 
     let body = script_builder()
         .add_op(OpDup)
@@ -14125,7 +14119,7 @@ fn local_alias_snapshots_existing_stack_value_once() {
         .unwrap()
         .drain();
 
-    let expected = wrap_with_single_dispatch(body, dispatch_tag);
+    let expected = wrap_with_single_dispatch(&compiled, body);
 
     assert_eq!(compiled.bytecode, expected);
     assert_eq!(compiled.bytecode.iter().copied().filter(|op| *op == OpMul).count(), 1);

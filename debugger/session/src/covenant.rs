@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use silverscript_lang::ast::{ContractAst, FunctionAst};
 use silverscript_lang::compiler::{
-    CompiledContract, FunctionAbiEntriesExt, generated_covenant_auth_entrypoint_name, generated_covenant_delegate_entrypoint_name,
+    CompiledContract, generated_covenant_auth_entrypoint_name, generated_covenant_delegate_entrypoint_name,
     generated_covenant_leader_entrypoint_name,
 };
 
@@ -116,7 +116,7 @@ pub fn resolve_covenant_call_target<'i>(
 }
 
 fn abi_contains_function(compiled: &CompiledContract<'_>, function_name: &str) -> bool {
-    compiled.abi.find_by_name(function_name).is_some()
+    compiled.entry_by_name(function_name).is_some()
 }
 
 fn is_covenant_source_function(function: &FunctionAst<'_>) -> bool {

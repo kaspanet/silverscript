@@ -1,6 +1,6 @@
 use kaspa_txscript::opcodes::codes::{OpAuthOutputCount, OpCovInputCount, OpCovInputIdx, OpCovOutputCount, OpInputCovenantId};
 use silverscript_lang::ast::Expr;
-use silverscript_lang::compiler::{CompileOptions, FunctionAbiEntriesExt, compile_contract, generated_covenant_auth_entrypoint_name};
+use silverscript_lang::compiler::{CompileOptions, compile_contract, generated_covenant_auth_entrypoint_name};
 
 #[test]
 fn lowers_auth_covenant_declaration_to_hidden_entrypoint_name() {
@@ -663,7 +663,7 @@ fn leader_contract_allows_acknowledged_manual_entrypoint() {
 
     let compiled = compile_contract(source, &[Expr::int(2), Expr::int(4)], CompileOptions::default())
         .expect("acknowledged manual entrypoint compiles");
-    assert!(compiled.abi.find_by_name("recover").is_some());
+    assert!(compiled.entry_by_name("recover").is_some());
     let recover = compiled.ast.functions.iter().find(|function| function.name == "recover").expect("recover remains an entrypoint");
     assert!(recover.attributes.is_empty(), "allow acknowledgment must not survive lowering");
 }

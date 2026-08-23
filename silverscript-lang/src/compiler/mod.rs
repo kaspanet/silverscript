@@ -105,16 +105,6 @@ impl FunctionAbiEntry {
     }
 }
 
-pub trait FunctionAbiEntriesExt {
-    fn find_by_name(&self, name: &str) -> Option<&FunctionAbiEntry>;
-}
-
-impl FunctionAbiEntriesExt for [FunctionAbiEntry] {
-    fn find_by_name(&self, name: &str) -> Option<&FunctionAbiEntry> {
-        self.iter().find(|entry| entry.name == name)
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CompiledStateLayout {
     pub start: usize,
@@ -224,6 +214,10 @@ pub fn struct_object<'i>(name: &str, fields: Vec<(&str, Expr<'i>)>) -> Expr<'i> 
 }
 
 impl<'i> CompiledContract<'i> {
+    pub fn entry_by_name(&self, name: &str) -> Option<&FunctionAbiEntry> {
+        self.abi.iter().find(|entry| entry.name == name)
+    }
+
     /// Calculate the canonical hash of this contract's state template.
     pub fn template_hash(&self) -> [u8; 32] {
         let state_end = self.state_layout.start + self.state_layout.len;
@@ -235,8 +229,7 @@ impl<'i> CompiledContract<'i> {
         let constants: HashMap<_, _> =
             self.ast.constants.iter().map(|constant| (constant.name.clone(), constant.expr.clone())).collect();
         let function = self
-            .abi
-            .find_by_name(function_name)
+            .entry_by_name(function_name)
             .ok_or_else(|| CompilerError::Unsupported(format!("function '{}' not found", function_name)))?;
 
         if function.inputs.len() != args.len() {
@@ -267,12 +260,12 @@ impl<'i> CompiledContract<'i> {
         options: CovenantDeclCallOptions,
     ) -> Result<Vec<u8>, CompilerError> {
         let auth_entrypoint = generated_covenant_auth_entrypoint_name(function_name);
-        if self.abi.find_by_name(&auth_entrypoint).is_some() {
+        if self.entry_by_name(&auth_entrypoint).is_some() {
             return self.build_sig_script(&auth_entrypoint, args);
         }
 
         let leader_entrypoint = generated_covenant_leader_entrypoint_name(function_name);
-        if self.abi.find_by_name(&leader_entrypoint).is_some() {
+        if self.entry_by_name(&leader_entrypoint).is_some() {
             let entrypoint = if options.is_leader { leader_entrypoint } else { generated_covenant_delegate_entrypoint_name() };
             return self.build_sig_script(&entrypoint, args);
         }

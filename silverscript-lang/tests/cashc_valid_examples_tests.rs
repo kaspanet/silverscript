@@ -13,7 +13,7 @@ use kaspa_txscript::{EngineCtx, EngineFlags, TxScriptEngine, pay_to_script_hash_
 use rand::{RngCore, thread_rng};
 use secp256k1::{Keypair, Message, Secp256k1, SecretKey};
 use silverscript_lang::ast::Expr;
-use silverscript_lang::compiler::{CompileOptions, CompiledContract, DispatchTag, FunctionAbiEntriesExt, compile_contract};
+use silverscript_lang::compiler::{CompileOptions, CompiledContract, DispatchTag, compile_contract};
 use std::fs;
 
 fn load_example_source(name: &str) -> String {
@@ -128,7 +128,7 @@ fn build_sigscript(args: &[ArgValue], dispatch_tag: DispatchTag) -> Vec<u8> {
 }
 
 fn dispatch_tag_for_compiled(compiled: &CompiledContract<'_>, function_name: &str) -> DispatchTag {
-    compiled.abi.find_by_name(function_name).expect("entrypoint resolved").dispatch_tag()
+    compiled.entry_by_name(function_name).expect("entrypoint resolved").dispatch_tag()
 }
 
 fn build_p2pk_script(pubkey: &[u8]) -> Vec<u8> {
