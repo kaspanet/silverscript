@@ -21,6 +21,33 @@ fn flatten_param<'i>(param: &ParamAst<'i>, structs: &StructRegistry) -> Result<V
         .collect())
 }
 
+pub(crate) fn dynamic_struct_array_param_groups(
+    contract: &ContractAst<'_>,
+    structs: &StructRegistry,
+) -> Result<StructArrayParamGroups, CompilerError> {
+    let mut groups_by_entrypoint = HashMap::new();
+
+    for function in contract.functions.iter().filter(|function| function.entrypoint) {
+        let mut groups = Vec::new();
+        for param in &function.params {
+            if !is_struct_array(&param.type_ref, structs) || !matches!(param.type_ref.array_dims.as_slice(), [ArrayDim::Dynamic]) {
+                continue;
+            }
+
+            let leaf_names = flatten_param(param, structs)?.into_iter().map(|leaf| leaf.name).collect::<Vec<_>>();
+            if leaf_names.len() > 1 {
+                groups.push(leaf_names);
+            }
+        }
+
+        if !groups.is_empty() {
+            groups_by_entrypoint.insert(function.name.clone(), groups);
+        }
+    }
+
+    Ok(groups_by_entrypoint)
+}
+
 pub(crate) fn flatten_constructor_args_env<'i>(
     params: &[ParamAst<'i>],
     constructor_args: &[Expr<'i>],

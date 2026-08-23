@@ -11,6 +11,7 @@ pub(super) fn compile_entrypoint_function<'i>(
     constants: &HashMap<String, Expr<'i>>,
     structs: &StructRegistry,
     bytecode_size: Option<i64>,
+    struct_array_param_groups: &[Vec<String>],
     debug_recorder: &mut DebugRecorder<'i>,
 ) -> Result<(String, Vec<u8>), CompilerError> {
     debug_recorder.begin_entrypoint(function, contract_fields, structs)?;
@@ -43,7 +44,7 @@ pub(super) fn compile_entrypoint_function<'i>(
         types.insert(field.name.clone(), field.type_ref.clone());
     }
     let mut builder = script_builder();
-    compile_param_size_validations(function, constants, &stack_bindings, &mut builder)?;
+    compile_param_size_validations(function, constants, struct_array_param_groups, &stack_bindings, &mut builder)?;
     let mut return_exprs: Vec<Expr> = Vec::new();
 
     let body_len = function.body.len();
@@ -96,6 +97,7 @@ pub(super) fn compile_entrypoint_function<'i>(
 fn compile_param_size_validations<'i>(
     function: &FunctionAst<'i>,
     constants: &HashMap<String, Expr<'i>>,
+    struct_array_param_groups: &[Vec<String>],
     stack_bindings: &StackBindings,
     builder: &mut ScriptBuilder,
 ) -> Result<(), CompilerError> {
@@ -142,6 +144,51 @@ fn compile_param_size_validations<'i>(
         builder.add_op(OpDrop)?;
     }
 
+    for leaf_names in struct_array_param_groups {
+        let Some((first, rest)) = leaf_names.split_first() else {
+            continue;
+        };
+        let mut transient_stack_depth = 0;
+        emit_dynamic_array_length(function, first, constants, stack_bindings, &mut transient_stack_depth, builder)?;
+        for leaf_name in rest {
+            builder.add_op(OpDup)?;
+            transient_stack_depth += 1;
+            emit_dynamic_array_length(function, leaf_name, constants, stack_bindings, &mut transient_stack_depth, builder)?;
+            builder.add_op(OpNumEqualVerify)?;
+            transient_stack_depth -= 2;
+        }
+        debug_assert_eq!(transient_stack_depth, 1);
+        builder.add_op(OpDrop)?;
+    }
+
+    Ok(())
+}
+
+fn emit_dynamic_array_length<'i>(
+    function: &FunctionAst<'i>,
+    param_name: &str,
+    constants: &HashMap<String, Expr<'i>>,
+    stack_bindings: &StackBindings,
+    stack_depth: &mut i64,
+    builder: &mut ScriptBuilder,
+) -> Result<(), CompilerError> {
+    let param = function
+        .params
+        .iter()
+        .find(|param| param.name == param_name)
+        .expect("struct lowering must retain every grouped leaf parameter");
+    let element_size =
+        array_element_size(&param.type_ref, constants).expect("type checking must validate dynamic struct-array leaf element sizes");
+
+    let copied = stack_bindings.emit_copy_binding_to_top(param_name, stack_depth, builder)?;
+    debug_assert!(copied, "entrypoint parameter must have a stack binding");
+    builder.add_op(OpSize)?;
+    builder.add_op(OpSwap)?;
+    builder.add_op(OpDrop)?;
+    if element_size != 1 {
+        builder.add_i64(element_size)?;
+        builder.add_op(OpDiv)?;
+    }
     Ok(())
 }
 

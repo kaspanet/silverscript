@@ -57,6 +57,7 @@ pub(super) fn compile_contract_impl<'i>(
     let inline_lowered_contract = lower_inline_functions(&read_input_state_lowered_contract, &mut debug_recorder)?;
     let structs = build_struct_registry(&inline_lowered_contract)?;
     let validate_output_state_lowered_contract = lower_validate_output_state(&inline_lowered_contract, &structs, &constants)?;
+    let struct_array_param_groups = dynamic_struct_array_param_groups(&validate_output_state_lowered_contract, &structs)?;
     let struct_lowered_contract = lower_structs_contract(&validate_output_state_lowered_contract, &structs, &constants)?;
     let append_lowered_contract = lower_array_appends(&struct_lowered_contract, &constants)?;
     let for_lowered_contract = lower_for_loops(&append_lowered_contract, &constants)?;
@@ -96,6 +97,7 @@ pub(super) fn compile_contract_impl<'i>(
             bytecode_size,
             &function_abi_entries,
             &structs,
+            &struct_array_param_groups,
             &mut debug_recorder,
         )?;
 
@@ -134,6 +136,7 @@ fn compile_contract_bytecode_iteration<'i>(
     bytecode_size: Option<i64>,
     function_abi_entries: &[FunctionAbiEntry],
     structs: &StructRegistry,
+    struct_array_param_groups: &StructArrayParamGroups,
     debug_recorder: &mut DebugRecorder<'i>,
 ) -> Result<(Vec<u8>, CompiledStateLayout), CompilerError> {
     let (_contract_fields, state_push_bytecode) = compile_contract_fields(&lowered_contract.fields, lowered_constants, bytecode_size)?;
@@ -145,8 +148,15 @@ fn compile_contract_bytecode_iteration<'i>(
     };
     let state_end = state_start + state_push_bytecode.len();
     let state_layout = CompiledStateLayout { start: state_start, len: state_push_bytecode.len() };
-    let compiled_entrypoints =
-        compile_entrypoint_bytecodes(lowered_contract, state_end, lowered_constants, structs, bytecode_size, debug_recorder)?;
+    let compiled_entrypoints = compile_entrypoint_bytecodes(
+        lowered_contract,
+        state_end,
+        lowered_constants,
+        structs,
+        struct_array_param_groups,
+        bytecode_size,
+        debug_recorder,
+    )?;
     let bytecode = build_contract_bytecode(debug_recorder, &state_push_bytecode, &compiled_entrypoints, function_abi_entries)?;
     Ok((bytecode, state_layout))
 }
@@ -156,6 +166,7 @@ fn compile_entrypoint_bytecodes<'i>(
     state_end: usize,
     lowered_constants: &HashMap<String, Expr<'i>>,
     structs: &StructRegistry,
+    struct_array_param_groups: &StructArrayParamGroups,
     bytecode_size: Option<i64>,
     debug_recorder: &mut DebugRecorder<'i>,
 ) -> Result<Vec<(String, Vec<u8>)>, CompilerError> {
@@ -171,6 +182,7 @@ fn compile_entrypoint_bytecodes<'i>(
                 lowered_constants,
                 structs,
                 bytecode_size,
+                struct_array_param_groups.get(&func.name).map(Vec::as_slice).unwrap_or_default(),
                 debug_recorder,
             )?;
             compiled_entrypoints.push(compiled);
