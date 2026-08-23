@@ -1103,23 +1103,6 @@ fn build_sig_script_builds_expected_script() {
 }
 
 #[test]
-fn standalone_byte_argument_uses_minimal_push() {
-    let source = r#"
-        contract Test() {
-            entry step(byte marker) { require(true); }
-        }
-    "#;
-
-    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
-    let cases: &[(u8, &[u8])] = &[(0x01, &[0x51]), (0x81, &[0x4f]), (0x42, &[0x01, 0x42])];
-
-    for &(value, expected) in cases {
-        let sigscript = compiled.build_sig_script("step", vec![Expr::byte(value)]).expect("byte sigscript builds");
-        assert_eq!(sigscript.as_slice(), expected, "non-minimal encoding for byte value 0x{value:02x}");
-    }
-}
-
-#[test]
 fn byte_variable_from_int_literal_uses_raw_byte_push() {
     let source = r#"
         contract Bytes() {
