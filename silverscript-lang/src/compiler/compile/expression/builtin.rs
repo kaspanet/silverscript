@@ -34,8 +34,9 @@ pub(super) fn compile_call_expr<'i>(
         "blake3WithKey" => compile_blake3_with_key_call(ctx, args),
         "templateHash" => compile_template_hash_call(ctx, args),
         "checkSig" => compile_checksig_call(ctx, args),
-        "checkMsgSig" => compile_checksigfromstack_call(ctx, name, args, OpCheckSigFromStack),
-        "checkSigFromStackECDSA" => compile_checksigfromstack_call(ctx, name, args, OpCheckSigFromStackECDSA),
+        "checkSigEcdsa" => compile_checksig_ecdsa_call(ctx, args),
+        "checkMsgSig" => compile_check_msg_sig_call(ctx, name, args, OpCheckSigFromStack),
+        "checkMsgSigEcdsa" => compile_check_msg_sig_call(ctx, name, args, OpCheckSigFromStackECDSA),
         "g16.verify" => compile_g16_verify_call(ctx, args),
         "r0.g16.verify" => compile_r0_groth16_verify_call(ctx, args),
         "r0.succinct.verify" | "r0.succinct.blake2b.verify" | "r0.succinct.poseidon2.verify" | "r0.succinct.sha256.verify" => {
@@ -257,7 +258,16 @@ fn compile_checksig_call<'i>(ctx: &mut CompileExprContext<'_, '_, 'i>, args: &[E
     Ok(())
 }
 
-fn compile_checksigfromstack_call<'i>(
+fn compile_checksig_ecdsa_call<'i>(ctx: &mut CompileExprContext<'_, '_, 'i>, args: &[Expr<'i>]) -> Result<(), CompilerError> {
+    if args.len() != 2 {
+        return Err(CompilerError::Unsupported("checkSigEcdsa() expects 2 arguments".to_string()));
+    }
+    compile_typed_builtin_args(ctx, "checkSigEcdsa", args)?;
+    ctx.emit_op(OpCheckSigECDSA, -1)?;
+    Ok(())
+}
+
+fn compile_check_msg_sig_call<'i>(
     ctx: &mut CompileExprContext<'_, '_, 'i>,
     name: &str,
     args: &[Expr<'i>],

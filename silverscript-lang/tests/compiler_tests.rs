@@ -9604,6 +9604,36 @@ fn checksig_result_can_be_used_in_bool_comparisons() {
 }
 
 #[test]
+fn check_sig_ecdsa_lowers_to_matching_opcode() {
+    let source = r#"
+        contract ECDSA(sig signature, byte[33] publicKey) {
+            entry main() {
+                require(checkSigEcdsa(signature, publicKey));
+            }
+        }
+    "#;
+    let signature = vec![0x11; 65];
+    let public_key = vec![0x22; 33];
+    let compiled = compile_contract(source, &[signature.clone().into(), public_key.clone().into()], CompileOptions::default())
+        .expect("compile succeeds");
+
+    let expected = script_builder()
+        .add_data_with_push_opcode(&signature)
+        .unwrap()
+        .add_data_with_push_opcode(&public_key)
+        .unwrap()
+        .add_op(OpCheckSigECDSA)
+        .unwrap()
+        .add_op(OpVerify)
+        .unwrap()
+        .add_op(OpTrue)
+        .unwrap()
+        .drain();
+    let expected = wrap_with_single_dispatch(&compiled, expected);
+    assert_eq!(compiled.bytecode, expected);
+}
+
+#[test]
 fn checksigfromstack_lowers_to_matching_opcode() {
     let source = r#"
         contract DataSig(datasig signature, byte[32] digest, pubkey publicKey) {
@@ -9641,11 +9671,11 @@ fn checksigfromstack_lowers_to_matching_opcode() {
 }
 
 #[test]
-fn checksigfromstackecdsa_lowers_to_matching_opcode() {
+fn check_msg_sig_ecdsa_lowers_to_matching_opcode() {
     let source = r#"
         contract DataSig(datasig signature, byte[32] digest, byte[33] publicKey) {
             entry main() {
-                require(checkSigFromStackECDSA(signature, digest, publicKey));
+                require(checkMsgSigEcdsa(signature, digest, publicKey));
             }
         }
     "#;
@@ -9774,7 +9804,7 @@ fn checksigfromstack_requires_datasig_and_32_byte_digest_types() {
     let schnorr_pubkey_for_ecdsa = r#"
         contract DataSig(datasig signature, byte[32] digest, pubkey publicKey) {
             entry main() {
-                require(checkSigFromStackECDSA(signature, digest, publicKey));
+                require(checkMsgSigEcdsa(signature, digest, publicKey));
             }
         }
     "#;
@@ -10514,11 +10544,11 @@ fn checksigfromstack_false_result_can_be_asserted() {
 }
 
 #[test]
-fn checksigfromstackecdsa_executes_ecdsa_signature_verification() {
+fn check_msg_sig_ecdsa_executes_ecdsa_signature_verification() {
     let source = r#"
         contract DataSig(datasig signature, byte[32] digest, byte[33] publicKey) {
             entry main() {
-                require(checkSigFromStackECDSA(signature, digest, publicKey));
+                require(checkMsgSigEcdsa(signature, digest, publicKey));
             }
         }
     "#;

@@ -16,8 +16,7 @@
 
 (instantiation
   (identifier) @type.builtin
-  (#match? @type.builtin
-    "^(ScriptPubKeyP2PK|ScriptPubKeyP2SH|ScriptPubKeyP2SHFromRedeemScript)$"))
+  (#match? @type.builtin "^(ScriptPubKeyP2PK|ScriptPubKeyP2SH|ScriptPubKeyP2SHFromRedeemScript)$"))
 
 (instantiation
   (identifier) @type)
@@ -74,7 +73,7 @@
 (function_call
   (identifier) @function.builtin
   (#match? @function.builtin
-    "^(readInputState|readInputStateWithTemplate|validateOutputState|validateOutputStateWithTemplate|validateOutputStateWithInputTemplate|verifyOutputState|verifyOutputStates|sha256|OpTxSubnetId|OpTxGas|OpTxPayloadLen|OpTxPayloadSubstr|OpOutpointTxId|OpOutpointIndex|OpTxInputScriptSigLen|OpTxInputScriptSigSubstr|OpTxInputSeq|OpTxInputIsCoinbase|OpTxInputSpkLen|OpTxInputSpkSubstr|OpTxOutputSpkLen|OpTxOutputSpkSubstr|OpAuthOutputCount|OpAuthOutputIdx|OpInputCovenantId|OpOutputCovenantId|OpCovInputCount|OpCovInputIdx|OpCovOutputCount|OpCovOutputIdx|OpNum2Bin|OpBin2Num|OpChainblockSeqCommit|checkMsgSig|checkSigFromStackECDSA|checkSig|checkMultiSig|blake2b|blake2bWithKey|blake3|blake3WithKey|templateHash)$"))
+    "^(readInputState|readInputStateWithTemplate|validateOutputState|validateOutputStateWithTemplate|validateOutputStateWithInputTemplate|verifyOutputState|verifyOutputStates|sha256|OpTxSubnetId|OpTxGas|OpTxPayloadLen|OpTxPayloadSubstr|OpOutpointTxId|OpOutpointIndex|OpTxInputScriptSigLen|OpTxInputScriptSigSubstr|OpTxInputSeq|OpTxInputIsCoinbase|OpTxInputSpkLen|OpTxInputSpkSubstr|OpTxOutputSpkLen|OpTxOutputSpkSubstr|OpAuthOutputCount|OpAuthOutputIdx|OpInputCovenantId|OpOutputCovenantId|OpCovInputCount|OpCovInputIdx|OpCovOutputCount|OpCovOutputIdx|OpNum2Bin|OpBin2Num|OpChainblockSeqCommit|checkMsgSig|checkMsgSigEcdsa|checkSigEcdsa|checkSig|checkMultiSig|blake2b|blake2bWithKey|blake3|blake3WithKey|templateHash)$"))
 
 (call_statement
   (member_access

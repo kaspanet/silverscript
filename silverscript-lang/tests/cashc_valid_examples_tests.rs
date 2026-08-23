@@ -237,7 +237,7 @@ fn runs_cashc_valid_examples() {
         "reassignment.sil",
         "simple_cast.sil",
         "simple_checksigfromstack.sil",
-        "simple_checksigfromstack_ecdsa.sil",
+        "simple_check_msg_sig_ecdsa.sil",
         "simple_constant.sil",
         "simple_covenant.sil",
         "simple_functions.sil",
@@ -742,7 +742,7 @@ fn runs_cashc_valid_examples() {
                 forged_sig[0] ^= 0x01;
                 assert!(run(forged_sig).is_err(), "{example}: forged data signature should fail");
             }
-            "simple_checksigfromstack_ecdsa.sil" => {
+            "simple_check_msg_sig_ecdsa.sil" => {
                 use sha2::{Digest, Sha256};
 
                 let keypair = random_keypair();
@@ -1137,7 +1137,7 @@ fn compiles_cashc_valid_examples() {
         "reassignment.sil",
         "simple_cast.sil",
         "simple_checksigfromstack.sil",
-        "simple_checksigfromstack_ecdsa.sil",
+        "simple_check_msg_sig_ecdsa.sil",
         "simple_constant.sil",
         "simple_covenant.sil",
         "simple_functions.sil",
