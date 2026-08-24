@@ -830,15 +830,15 @@ fn branch_heavy_if_else_logic_matches_rust_model_across_cases() {
     // Snapshot these metrics exactly so compiler codegen changes must consciously
     // acknowledge their size impact on a branch-heavy stress case.
     assert_eq!(
-        bytecode_len, 386,
+        bytecode_len, 384,
         "branch_maze metrics: bytecode_len={bytecode_len} instruction_count={instruction_count} charged_op_count={charged_op_count}"
     );
     assert_eq!(
-        instruction_count, 382,
+        instruction_count, 380,
         "branch_maze metrics: bytecode_len={bytecode_len} instruction_count={instruction_count} charged_op_count={charged_op_count}"
     );
     assert_eq!(
-        charged_op_count, 276,
+        charged_op_count, 274,
         "branch_maze metrics: bytecode_len={bytecode_len} instruction_count={instruction_count} charged_op_count={charged_op_count}"
     );
     let cases = [(7, 2, 5, 4), (7, 2, -3, 4), (2, 7, 5, 4), (2, 7, 5, 3), (4, 4, 9, 2), (-3, 1, 6, -2), (10, -1, -4, 7), (0, 0, 0, 0)];
@@ -970,15 +970,15 @@ fn sorting_network_over_fixed_array_matches_rust_model_across_cases() {
     let (instruction_count, charged_op_count) = bytecode_op_counts(&compiled.bytecode);
     println!("sorting_network {bytecode_len} / {instruction_count} / {charged_op_count}");
     assert_eq!(
-        bytecode_len, 831,
+        bytecode_len, 829,
         "sorting_network metrics: bytecode_len={bytecode_len} instruction_count={instruction_count} charged_op_count={charged_op_count}"
     );
     assert_eq!(
-        instruction_count, 826,
+        instruction_count, 824,
         "sorting_network metrics: bytecode_len={bytecode_len} instruction_count={instruction_count} charged_op_count={charged_op_count}"
     );
     assert_eq!(
-        charged_op_count, 644,
+        charged_op_count, 642,
         "sorting_network metrics: bytecode_len={bytecode_len} instruction_count={instruction_count} charged_op_count={charged_op_count}"
     );
 
@@ -6470,9 +6470,11 @@ fn wrap_with_single_dispatch_and_state(compiled: &CompiledContract<'_>, state: &
     };
     let dispatch_tag = entrypoint.dispatch_tag();
     let mut builder = script_builder();
-    builder.add_op(OpToAltStack).unwrap();
-    builder.add_ops(state).unwrap();
-    builder.add_op(OpFromAltStack).unwrap();
+    if !state.is_empty() {
+        builder.add_op(OpToAltStack).unwrap();
+        builder.add_ops(state).unwrap();
+        builder.add_op(OpFromAltStack).unwrap();
+    }
     builder.add_op(OpDup).unwrap();
     builder.add_data(&dispatch_tag).unwrap();
     builder.add_op(OpEqual).unwrap();
@@ -6488,10 +6490,6 @@ fn wrap_with_single_dispatch_and_state(compiled: &CompiledContract<'_>, state: &
 fn stateless_single_dispatch_body_opcodes(compiled: &CompiledContract<'_>, function_name: &str) -> Vec<u8> {
     let dispatch_tag = dispatch_tag_for(compiled, function_name);
     let prefix = script_builder()
-        .add_op(OpToAltStack)
-        .unwrap()
-        .add_op(OpFromAltStack)
-        .unwrap()
         .add_op(OpDup)
         .unwrap()
         .add_data(&dispatch_tag)
@@ -6543,10 +6541,14 @@ fn compiles_with_kcc1_dispatch_tag_for_single_entrypoint() {
     let expected = wrap_with_single_dispatch(&compiled, body);
 
     assert_eq!(compiled.bytecode, expected);
+    assert_eq!(compiled.state_layout.start, 0);
+    assert_eq!(compiled.state_layout.len, 0);
+    assert!(!compiled.bytecode.contains(&OpToAltStack));
+    assert!(!compiled.bytecode.contains(&OpFromAltStack));
 }
 
 #[test]
-fn compiles_with_kcc1_dispatch_tag_for_multiple_entrypoints() {
+fn compiles_stateless_multiple_entrypoints_with_kcc1_dispatch_tags() {
     let source = r#"
         contract Test() {
             entry a() { require(1 == 1); }
@@ -6584,10 +6586,6 @@ fn compiles_with_kcc1_dispatch_tag_for_multiple_entrypoints() {
         .unwrap()
         .drain();
     let expected_bytecode = script_builder()
-        .add_op(OpToAltStack)
-        .unwrap()
-        .add_op(OpFromAltStack)
-        .unwrap()
         .add_op(OpDup)
         .unwrap()
         .add_data(&dispatch_tag_a)
@@ -6625,6 +6623,10 @@ fn compiles_with_kcc1_dispatch_tag_for_multiple_entrypoints() {
         .drain();
 
     assert_eq!(compiled.bytecode, expected_bytecode);
+    assert_eq!(compiled.state_layout.start, 0);
+    assert_eq!(compiled.state_layout.len, 0);
+    assert!(!compiled.bytecode.contains(&OpToAltStack));
+    assert!(!compiled.bytecode.contains(&OpFromAltStack));
 
     let sigscript = compiled.build_sig_script("a", vec![]).expect("sigscript builds");
     let expected = script_builder().add_data(&dispatch_tag_a).unwrap().drain();
@@ -6875,6 +6877,10 @@ fn runs_dispatch_tag_dispatch_with_contract_fields() {
     "#;
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    assert_eq!(compiled.state_layout.start, 1);
+    assert!(compiled.state_layout.len > 0);
+    assert_eq!(compiled.bytecode.first().copied(), Some(OpToAltStack));
+    assert!(compiled.bytecode.contains(&OpFromAltStack));
 
     let sigscript_a = compiled.build_sig_script("a", vec![]).expect("sigscript a builds");
     let sigscript_b = compiled.build_sig_script("b", vec![]).expect("sigscript b builds");
@@ -6992,8 +6998,8 @@ fn compiles_validate_output_state_to_expected_script() {
         // duplicate sigscript length; one copy becomes substr length
         .add_op(OpDup)
         .unwrap()
-        // Precompute contract_fields_end_offset - bytecode_size, where
-        // contract_fields_end_offset = dispatch prefix + len(<x><y>) = 13.
+        // Precompute state_end - bytecode_size, where
+        // state_end = dispatch prefix + len(<x><y>) = 13.
         .add_i64(13 - compiled.bytecode.len() as i64)
         .unwrap()
         // start offset of REST_OF_SCRIPT inside sigscript
