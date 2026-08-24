@@ -3538,6 +3538,27 @@ fn runtime_rejects_mismatched_dynamic_struct_array_leaf_counts_before_append() {
 }
 
 #[test]
+fn codegen_reuses_dynamic_struct_array_leaf_sizes_for_cardinality_validation() {
+    let source = r#"
+        contract C() {
+            struct Item {
+                int number;
+                byte[2] tag;
+            }
+
+            entry main(Item[] items) {
+                require(true);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let opcodes = script_to_str(&compiled.bytecode).expect("compiled bytecode stringifies");
+
+    assert_eq!(opcodes.matches("OpSize").count(), 2, "each flattened struct-array leaf should be sized once: {opcodes}");
+}
+
+#[test]
 fn runtime_validates_cardinality_for_deeply_nested_struct_array_leaves() {
     let source = r#"
         contract C() {
