@@ -24,7 +24,7 @@ pub(super) struct StructLowerer<'a, 'i> {
     pub functions: &'a HashMap<String, FunctionAst<'i>>,
     pub contract_fields: &'a [ContractFieldAst<'i>],
     pub contract_constants: &'a HashMap<String, Expr<'i>>,
-    pub contract_fields_end_offset: usize,
+    pub state_end: usize,
 }
 
 impl<'a, 'i> StructLowerer<'a, 'i> {
@@ -33,8 +33,8 @@ impl<'a, 'i> StructLowerer<'a, 'i> {
         functions: &'a HashMap<String, FunctionAst<'i>>,
         contract_fields: &'a [ContractFieldAst<'i>],
         contract_constants: &'a HashMap<String, Expr<'i>>,
-        contract_fields_end_offset: usize,
+        state_end: usize,
     ) -> Self {
-        Self { structs, functions, contract_fields, contract_constants, contract_fields_end_offset }
+        Self { structs, functions, contract_fields, contract_constants, state_end }
     }
 }

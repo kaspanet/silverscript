@@ -24,7 +24,7 @@ fn lower_struct_expr<'i>(
     let structs = lowerer.structs;
     let contract_fields = lowerer.contract_fields;
     let contract_constants = lowerer.contract_constants;
-    let contract_fields_end_offset = lowerer.contract_fields_end_offset;
+    let state_end = lowerer.state_end;
     let expected_struct_name = struct_name(expected_type, structs)
         .ok_or_else(|| CompilerError::Unsupported(format!("expected struct type '{}'", expected_type.type_name())))?;
     match &expr.kind {
@@ -45,7 +45,7 @@ fn lower_struct_expr<'i>(
                     &args[0],
                     field,
                     contract_fields,
-                    contract_fields_end_offset,
+                    state_end,
                     field_chunk_offset,
                     contract_constants,
                 )?);

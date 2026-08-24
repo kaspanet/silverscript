@@ -32,11 +32,11 @@ pub(in crate::compiler) fn read_input_state_field_expr_symbolic<'i>(
     input_idx: &Expr<'i>,
     field: &ContractFieldAst<'i>,
     contract_fields: &[ContractFieldAst<'i>],
-    contract_fields_end_offset: usize,
+    state_end: usize,
     field_chunk_offset: usize,
     contract_constants: &HashMap<String, Expr<'i>>,
 ) -> Result<Expr<'i>, CompilerError> {
-    let state_start_offset = state_start_offset(contract_fields_end_offset, contract_fields, contract_constants)?;
+    let state_start_offset = state_start_offset(state_end, contract_fields, contract_constants)?;
     let bytecode_size_expr = Expr::new(ExprKind::Introspection(IntrospectionKind::ThisBytecodeSize), span::Span::default());
     read_input_state_field_expr(
         input_idx,
@@ -77,14 +77,12 @@ pub(in crate::compiler) fn encoded_state_len_for_layout_field_types<'i>(
 }
 
 pub(super) fn state_start_offset<'i>(
-    contract_fields_end_offset: usize,
+    state_end: usize,
     contract_fields: &[ContractFieldAst<'i>],
     contract_constants: &HashMap<String, Expr<'i>>,
 ) -> Result<usize, CompilerError> {
     let total_state_len = encoded_state_len(contract_fields, contract_constants)?;
-    contract_fields_end_offset
-        .checked_sub(total_state_len)
-        .ok_or_else(|| CompilerError::Unsupported("state offset underflow".to_string()))
+    state_end.checked_sub(total_state_len).ok_or_else(|| CompilerError::Unsupported("state offset underflow".to_string()))
 }
 
 pub(super) fn templated_input_bytecode_size_expr<'i>(
@@ -238,7 +236,7 @@ pub(super) fn compile_validate_output_state_inner_statement(
     types: &TypeMap,
     builder: &mut ScriptBuilder,
     contract_fields: &[ContractFieldAst<'_>],
-    contract_fields_end_offset: usize,
+    state_end: usize,
     bytecode_size: Option<i64>,
     contract_constants: &HashMap<String, Expr<'_>>,
 ) -> Result<(), CompilerError> {
@@ -278,7 +276,7 @@ pub(super) fn compile_validate_output_state_inner_statement(
     )?;
 
     let total_state_len = encoded_state_len(contract_fields, contract_constants)?;
-    let state_start_offset = contract_fields_end_offset
+    let state_start_offset = state_end
         .checked_sub(total_state_len)
         .ok_or_else(|| CompilerError::Unsupported("validateOutputState state offset underflow".to_string()))?;
 
@@ -309,8 +307,8 @@ pub(super) fn compile_validate_output_state_inner_statement(
     emitter.emit_op(OpTxInputScriptSigLen, 0)?;
     emitter.emit_op(OpDup, 1)?;
 
-    // Compute `suffix_start = input_sigscript_len + contract_fields_end_offset - bytecode_size_value`.`
-    emitter.push_int(contract_fields_end_offset as i64 - bytecode_size_value)?;
+    // Compute `suffix_start = input_sigscript_len + state_end - bytecode_size_value`.`
+    emitter.push_int(state_end as i64 - bytecode_size_value)?;
     emitter.emit_op(OpAdd, -1)?;
     emitter.emit_op(OpSwap, 0)?;
     emitter.emit_op(OpTxInputScriptSigSubstr, -2)?;

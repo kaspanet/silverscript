@@ -52,7 +52,7 @@ pub(super) fn compile_entrypoint_function<'i>(
         stack_bindings: &mut stack_bindings,
         builder: &mut builder,
         contract_fields,
-        contract_fields_end_offset: state_end,
+        state_end,
         contract_constants: constants,
         structs,
         bytecode_size,
@@ -190,7 +190,7 @@ struct CompileStatementContext<'a, 'i> {
     stack_bindings: &'a mut StackBindings,
     builder: &'a mut ScriptBuilder,
     contract_fields: &'a [ContractFieldAst<'i>],
-    contract_fields_end_offset: usize,
+    state_end: usize,
     contract_constants: &'a HashMap<String, Expr<'i>>,
     structs: &'a StructRegistry,
     bytecode_size: Option<i64>,
@@ -235,7 +235,7 @@ impl<'a, 'i> CompileStatementContext<'a, 'i> {
             stack_bindings,
             builder: self.builder,
             contract_fields: self.contract_fields,
-            contract_fields_end_offset: self.contract_fields_end_offset,
+            state_end: self.state_end,
             contract_constants: self.contract_constants,
             structs: self.structs,
             bytecode_size: self.bytecode_size,
@@ -369,7 +369,7 @@ fn compile_function_call_statement<'i>(
             ctx.types,
             ctx.builder,
             ctx.contract_fields,
-            ctx.contract_fields_end_offset,
+            ctx.state_end,
             ctx.bytecode_size,
             ctx.contract_constants,
         )
@@ -420,7 +420,7 @@ fn compile_state_function_call_assign_statement<'i>(
             name,
             args,
             ctx.contract_fields,
-            ctx.contract_fields_end_offset,
+            ctx.state_end,
             ctx.structs,
         );
     }
@@ -476,7 +476,7 @@ fn compile_read_input_state_statement<'i>(
     name: &str,
     args: &[Expr<'i>],
     contract_fields: &[ContractFieldAst<'i>],
-    contract_fields_end_offset: usize,
+    state_end: usize,
     structs: &StructRegistry,
 ) -> Result<Vec<String>, CompilerError> {
     let mut added_stack_locals = Vec::new();
@@ -504,7 +504,7 @@ fn compile_read_input_state_statement<'i>(
                 .bytecode_size
                 .ok_or_else(|| CompilerError::Unsupported("readInputState requires this.bytecodeSize".to_string()))?;
             let total_state_len = encoded_state_len(contract_fields, ctx.contract_constants)?;
-            let state_start_offset = contract_fields_end_offset
+            let state_start_offset = state_end
                 .checked_sub(total_state_len)
                 .ok_or_else(|| CompilerError::Unsupported("readInputState state offset underflow".to_string()))?;
 

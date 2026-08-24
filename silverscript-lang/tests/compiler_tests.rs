@@ -6998,8 +6998,8 @@ fn compiles_validate_output_state_to_expected_script() {
         // duplicate sigscript length; one copy becomes substr length
         .add_op(OpDup)
         .unwrap()
-        // Precompute contract_fields_end_offset - bytecode_size, where
-        // contract_fields_end_offset = dispatch prefix + len(<x><y>) = 13.
+        // Precompute state_end - bytecode_size, where
+        // state_end = dispatch prefix + len(<x><y>) = 13.
         .add_i64(13 - compiled.bytecode.len() as i64)
         .unwrap()
         // start offset of REST_OF_SCRIPT inside sigscript
