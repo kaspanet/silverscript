@@ -23,7 +23,8 @@ pub enum NameKind {
 }
 
 pub trait AstVisitorMut<'i> {
-    fn visit_name(&mut self, _name: &mut String, _kind: NameKind) {}
+    /// Visits a classified name together with its exact source span.
+    fn visit_name(&mut self, _name: &mut String, _kind: NameKind, _span: Span<'i>) {}
     fn visit_span(&mut self, _span: &mut Span<'i>) {}
 
     fn visit_contract(&mut self, contract: &mut ContractAst<'i>) {
@@ -71,8 +72,12 @@ pub fn visit_contract_mut<'i, V: AstVisitorMut<'i> + ?Sized>(visitor: &mut V, co
     visitor.visit_contract(contract);
 }
 
+pub fn visit_function_mut<'i, V: AstVisitorMut<'i> + ?Sized>(visitor: &mut V, function: &mut FunctionAst<'i>) {
+    visitor.visit_function(function);
+}
+
 pub fn walk_contract_mut<'i, V: AstVisitorMut<'i> + ?Sized>(visitor: &mut V, contract: &mut ContractAst<'i>) {
-    visitor.visit_name(&mut contract.name, NameKind::Contract);
+    visitor.visit_name(&mut contract.name, NameKind::Contract, contract.name_span);
     visitor.visit_span(&mut contract.span);
     visitor.visit_span(&mut contract.name_span);
     for param in &mut contract.params {
@@ -90,7 +95,7 @@ pub fn walk_contract_mut<'i, V: AstVisitorMut<'i> + ?Sized>(visitor: &mut V, con
 }
 
 pub fn walk_contract_field_mut<'i, V: AstVisitorMut<'i> + ?Sized>(visitor: &mut V, field: &mut ContractFieldAst<'i>) {
-    visitor.visit_name(&mut field.name, NameKind::ContractField);
+    visitor.visit_name(&mut field.name, NameKind::ContractField, field.name_span);
     visitor.visit_span(&mut field.span);
     visitor.visit_span(&mut field.type_span);
     visitor.visit_span(&mut field.name_span);
@@ -98,7 +103,7 @@ pub fn walk_contract_field_mut<'i, V: AstVisitorMut<'i> + ?Sized>(visitor: &mut 
 }
 
 pub fn walk_constant_mut<'i, V: AstVisitorMut<'i> + ?Sized>(visitor: &mut V, constant: &mut ConstantAst<'i>) {
-    visitor.visit_name(&mut constant.name, NameKind::Constant);
+    visitor.visit_name(&mut constant.name, NameKind::Constant, constant.name_span);
     visitor.visit_span(&mut constant.span);
     visitor.visit_span(&mut constant.type_span);
     visitor.visit_span(&mut constant.name_span);
@@ -106,7 +111,7 @@ pub fn walk_constant_mut<'i, V: AstVisitorMut<'i> + ?Sized>(visitor: &mut V, con
 }
 
 pub fn walk_function_mut<'i, V: AstVisitorMut<'i> + ?Sized>(visitor: &mut V, function: &mut FunctionAst<'i>) {
-    visitor.visit_name(&mut function.name, NameKind::Function);
+    visitor.visit_name(&mut function.name, NameKind::Function, function.name_span);
     visitor.visit_span(&mut function.span);
     visitor.visit_span(&mut function.name_span);
     visitor.visit_span(&mut function.body_span);
@@ -126,11 +131,11 @@ pub fn walk_function_mut<'i, V: AstVisitorMut<'i> + ?Sized>(visitor: &mut V, fun
 
 pub fn walk_function_attribute_mut<'i, V: AstVisitorMut<'i> + ?Sized>(visitor: &mut V, attribute: &mut FunctionAttributeAst<'i>) {
     visitor.visit_span(&mut attribute.span);
+    for (segment, span) in attribute.path.iter_mut().zip(attribute.path_spans.iter().copied()) {
+        visitor.visit_name(segment, NameKind::AttributePathSegment, span);
+    }
     for span in &mut attribute.path_spans {
         visitor.visit_span(span);
-    }
-    for segment in &mut attribute.path {
-        visitor.visit_name(segment, NameKind::AttributePathSegment);
     }
     for arg in &mut attribute.args {
         visitor.visit_function_attribute_arg(arg);
@@ -138,22 +143,26 @@ pub fn walk_function_attribute_mut<'i, V: AstVisitorMut<'i> + ?Sized>(visitor: &
 }
 
 pub fn walk_function_attribute_arg_mut<'i, V: AstVisitorMut<'i> + ?Sized>(visitor: &mut V, arg: &mut FunctionAttributeArgAst<'i>) {
-    visitor.visit_name(&mut arg.name, NameKind::AttributeArg);
+    visitor.visit_name(&mut arg.name, NameKind::AttributeArg, arg.name_span);
     visitor.visit_span(&mut arg.span);
     visitor.visit_span(&mut arg.name_span);
     visitor.visit_expr(&mut arg.expr);
 }
 
 pub fn walk_param_mut<'i, V: AstVisitorMut<'i> + ?Sized>(visitor: &mut V, param: &mut ParamAst<'i>) {
-    visitor.visit_name(&mut param.name, NameKind::Parameter);
+    walk_param_with_kind_mut(visitor, param, NameKind::Parameter);
+}
+
+fn walk_param_with_kind_mut<'i, V: AstVisitorMut<'i> + ?Sized>(visitor: &mut V, param: &mut ParamAst<'i>, kind: NameKind) {
+    visitor.visit_name(&mut param.name, kind, param.name_span);
     visitor.visit_span(&mut param.span);
     visitor.visit_span(&mut param.type_span);
     visitor.visit_span(&mut param.name_span);
 }
 
 pub fn walk_state_binding_mut<'i, V: AstVisitorMut<'i> + ?Sized>(visitor: &mut V, binding: &mut StructBindingAst<'i>) {
-    visitor.visit_name(&mut binding.field_name, NameKind::StateField);
-    visitor.visit_name(&mut binding.name, NameKind::StateBinding);
+    visitor.visit_name(&mut binding.field_name, NameKind::StateField, binding.field_span);
+    visitor.visit_name(&mut binding.name, NameKind::StateBinding, binding.name_span);
     visitor.visit_span(&mut binding.span);
     visitor.visit_span(&mut binding.field_span);
     visitor.visit_span(&mut binding.type_span);
@@ -163,13 +172,13 @@ pub fn walk_state_binding_mut<'i, V: AstVisitorMut<'i> + ?Sized>(visitor: &mut V
 pub fn walk_statement_mut<'i, V: AstVisitorMut<'i> + ?Sized>(visitor: &mut V, statement: &mut Statement<'i>) {
     match statement {
         Statement::VariableDefinition { name, expr, span, type_span, modifier_spans, name_span, .. } => {
+            visitor.visit_name(name, NameKind::LocalBinding, *name_span);
             visitor.visit_span(span);
             visitor.visit_span(type_span);
             for span in modifier_spans {
                 visitor.visit_span(span);
             }
             visitor.visit_span(name_span);
-            visitor.visit_name(name, NameKind::LocalBinding);
             if let Some(expr) = expr {
                 visitor.visit_expr(expr);
             }
@@ -185,41 +194,41 @@ pub fn walk_statement_mut<'i, V: AstVisitorMut<'i> + ?Sized>(visitor: &mut V, st
             right_name_span,
             ..
         } => {
+            visitor.visit_name(left_name, NameKind::LocalBinding, *left_name_span);
+            visitor.visit_name(right_name, NameKind::LocalBinding, *right_name_span);
             visitor.visit_span(span);
             visitor.visit_span(left_type_span);
             visitor.visit_span(left_name_span);
             visitor.visit_span(right_type_span);
             visitor.visit_span(right_name_span);
-            visitor.visit_name(left_name, NameKind::AssignmentTarget);
-            visitor.visit_name(right_name, NameKind::AssignmentTarget);
             visitor.visit_expr(expr);
         }
         Statement::FunctionCall { name, args, span, name_span } => {
+            visitor.visit_name(name, NameKind::CallTarget, *name_span);
             visitor.visit_span(span);
             visitor.visit_span(name_span);
-            visitor.visit_name(name, NameKind::CallTarget);
             for arg in args {
                 visitor.visit_expr(arg);
             }
         }
         Statement::FunctionCallAssign { bindings, name, args, span, name_span } => {
+            visitor.visit_name(name, NameKind::CallTarget, *name_span);
             visitor.visit_span(span);
             visitor.visit_span(name_span);
             for binding in bindings {
-                visitor.visit_param(binding);
+                walk_param_with_kind_mut(visitor, binding, NameKind::LocalBinding);
             }
-            visitor.visit_name(name, NameKind::CallTarget);
             for arg in args {
                 visitor.visit_expr(arg);
             }
         }
         Statement::StateFunctionCallAssign { target_struct: _, bindings, name, args, span, name_span } => {
+            visitor.visit_name(name, NameKind::CallTarget, *name_span);
             visitor.visit_span(span);
             visitor.visit_span(name_span);
             for binding in bindings {
                 visitor.visit_state_binding(binding);
             }
-            visitor.visit_name(name, NameKind::CallTarget);
             for arg in args {
                 visitor.visit_expr(arg);
             }
@@ -232,9 +241,9 @@ pub fn walk_statement_mut<'i, V: AstVisitorMut<'i> + ?Sized>(visitor: &mut V, st
             visitor.visit_expr(expr);
         }
         Statement::Assign { name, expr, span, name_span } => {
+            visitor.visit_name(name, NameKind::AssignmentTarget, *name_span);
             visitor.visit_span(span);
             visitor.visit_span(name_span);
-            visitor.visit_name(name, NameKind::AssignmentTarget);
             visitor.visit_expr(expr);
         }
         Statement::RequireAgeDaa { expr, span, target_span, message_span, .. }
@@ -277,10 +286,10 @@ pub fn walk_statement_mut<'i, V: AstVisitorMut<'i> + ?Sized>(visitor: &mut V, st
             }
         }
         Statement::For { ident, start, end, max_iterations, body, span, ident_span, body_span } => {
+            visitor.visit_name(ident, NameKind::LoopBinding, *ident_span);
             visitor.visit_span(span);
             visitor.visit_span(ident_span);
             visitor.visit_span(body_span);
-            visitor.visit_name(ident, NameKind::LoopBinding);
             visitor.visit_expr(start);
             visitor.visit_expr(end);
             visitor.visit_expr(max_iterations);
@@ -304,17 +313,18 @@ pub fn walk_statement_mut<'i, V: AstVisitorMut<'i> + ?Sized>(visitor: &mut V, st
 }
 
 pub fn walk_expr_mut<'i, V: AstVisitorMut<'i> + ?Sized>(visitor: &mut V, expr: &mut Expr<'i>) {
+    let expr_span = expr.span;
     visitor.visit_span(&mut expr.span);
     match &mut expr.kind {
-        ExprKind::Identifier(name) => visitor.visit_name(name, NameKind::IdentifierExpr),
+        ExprKind::Identifier(name) => visitor.visit_name(name, NameKind::IdentifierExpr, expr_span),
         ExprKind::Array { values: items, .. } => {
             for item in items {
                 visitor.visit_expr(item);
             }
         }
         ExprKind::Call { name, args, name_span } | ExprKind::New { name, args, name_span } => {
+            visitor.visit_name(name, NameKind::CallTarget, *name_span);
             visitor.visit_span(name_span);
-            visitor.visit_name(name, NameKind::CallTarget);
             for arg in args {
                 visitor.visit_expr(arg);
             }
@@ -364,7 +374,7 @@ pub fn walk_expr_mut<'i, V: AstVisitorMut<'i> + ?Sized>(visitor: &mut V, expr: &
         ExprKind::StructLiteral { fields, name_span, .. } => {
             visitor.visit_span(name_span);
             for field in fields {
-                visitor.visit_name(&mut field.name, NameKind::StateField);
+                visitor.visit_name(&mut field.name, NameKind::StateField, field.name_span);
                 visitor.visit_span(&mut field.span);
                 visitor.visit_span(&mut field.name_span);
                 visitor.visit_expr(&mut field.expr);
@@ -372,7 +382,7 @@ pub fn walk_expr_mut<'i, V: AstVisitorMut<'i> + ?Sized>(visitor: &mut V, expr: &
         }
         ExprKind::FieldAccess { source, field, field_span } => {
             visitor.visit_expr(source);
-            visitor.visit_name(field, NameKind::StateField);
+            visitor.visit_name(field, NameKind::StateField, *field_span);
             visitor.visit_span(field_span);
         }
         ExprKind::Int(_)

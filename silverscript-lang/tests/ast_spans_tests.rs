@@ -1,10 +1,66 @@
-use silverscript_lang::ast::{ExprKind, Statement, parse_contract_ast};
+use silverscript_lang::ast::visit::{AstVisitorMut, NameKind, visit_function_mut};
+use silverscript_lang::ast::{ExprKind, Statement, parse_contract_ast, parse_function_ast};
+use silverscript_lang::span::Span;
 
 fn assert_span_text(source: &str, actual: &str, expected: &str) {
     let start = source.find(expected).expect("expected text must exist in source");
     let end = start + expected.len();
     assert_eq!(actual, expected);
     assert_eq!(&source[start..end], expected);
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct NameOccurrence {
+    name: String,
+    kind: NameKind,
+    source: String,
+}
+
+#[derive(Default)]
+struct NameOccurrenceCollector {
+    occurrences: Vec<NameOccurrence>,
+}
+
+impl<'i> AstVisitorMut<'i> for NameOccurrenceCollector {
+    fn visit_name(&mut self, name: &mut String, kind: NameKind, span: Span<'i>) {
+        self.occurrences.push(NameOccurrence { name: name.clone(), kind, source: span.as_str().to_string() });
+    }
+}
+
+#[test]
+fn parses_standalone_functions_and_visits_name_spans() {
+    let source = r#"function inspect(Turn turn) : int {
+        int value = helper(turn.cycles);
+        int left, int right = pair();
+        (int total) = sum(left, right);
+        value = value + 1;
+        return(total);
+    }"#;
+    let mut function = parse_function_ast(source).expect("standalone function should parse");
+    let mut collector = NameOccurrenceCollector::default();
+    visit_function_mut(&mut collector, &mut function);
+
+    assert_eq!(
+        collector.occurrences,
+        vec![
+            NameOccurrence { name: "inspect".to_string(), kind: NameKind::Function, source: "inspect".to_string() },
+            NameOccurrence { name: "turn".to_string(), kind: NameKind::Parameter, source: "turn".to_string() },
+            NameOccurrence { name: "value".to_string(), kind: NameKind::LocalBinding, source: "value".to_string() },
+            NameOccurrence { name: "helper".to_string(), kind: NameKind::CallTarget, source: "helper".to_string() },
+            NameOccurrence { name: "turn".to_string(), kind: NameKind::IdentifierExpr, source: "turn".to_string() },
+            NameOccurrence { name: "cycles".to_string(), kind: NameKind::StateField, source: "cycles".to_string() },
+            NameOccurrence { name: "left".to_string(), kind: NameKind::LocalBinding, source: "left".to_string() },
+            NameOccurrence { name: "right".to_string(), kind: NameKind::LocalBinding, source: "right".to_string() },
+            NameOccurrence { name: "pair".to_string(), kind: NameKind::CallTarget, source: "pair".to_string() },
+            NameOccurrence { name: "sum".to_string(), kind: NameKind::CallTarget, source: "sum".to_string() },
+            NameOccurrence { name: "total".to_string(), kind: NameKind::LocalBinding, source: "total".to_string() },
+            NameOccurrence { name: "left".to_string(), kind: NameKind::IdentifierExpr, source: "left".to_string() },
+            NameOccurrence { name: "right".to_string(), kind: NameKind::IdentifierExpr, source: "right".to_string() },
+            NameOccurrence { name: "value".to_string(), kind: NameKind::AssignmentTarget, source: "value".to_string() },
+            NameOccurrence { name: "value".to_string(), kind: NameKind::IdentifierExpr, source: "value".to_string() },
+            NameOccurrence { name: "total".to_string(), kind: NameKind::IdentifierExpr, source: "total".to_string() },
+        ]
+    );
 }
 
 #[test]

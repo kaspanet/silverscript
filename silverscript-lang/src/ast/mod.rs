@@ -5,7 +5,10 @@ use pest::iterators::Pair;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::errors::CompilerError;
-use crate::parser::{Rule, parse_expression as parse_expression_rule, parse_source_file, parse_type_name as parse_type_name_rule};
+use crate::parser::{
+    Rule, parse_expression as parse_expression_rule, parse_function as parse_function_rule, parse_source_file,
+    parse_type_name as parse_type_name_rule,
+};
 pub use crate::span::{Span, SpanUtils};
 
 pub mod visit;
@@ -1467,6 +1470,17 @@ pub fn parse_contract_ast<'i>(source: &'i str) -> Result<ContractAst<'i>, Compil
     }
 
     contract.ok_or_else(|| CompilerError::Unsupported("no contract definition".to_string()))
+}
+
+/// Parses one standalone function or entrypoint definition.
+pub fn parse_function_ast<'i>(source: &'i str) -> Result<FunctionAst<'i>, CompilerError> {
+    let mut pairs = parse_function_rule(source)?;
+    let source_pair = pairs.next().ok_or_else(|| CompilerError::Unsupported("empty function source".to_string()))?;
+    let function_pair = source_pair
+        .into_inner()
+        .find(|pair| pair.as_rule() == Rule::function_definition)
+        .ok_or_else(|| CompilerError::Unsupported("no function definition".to_string()))?;
+    parse_function_definition(function_pair)
 }
 
 pub fn parse_expression_ast<'i>(source: &'i str) -> Result<Expr<'i>, CompilerError> {

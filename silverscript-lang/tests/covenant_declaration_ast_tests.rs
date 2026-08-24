@@ -23,7 +23,7 @@ fn canonicalize_generated_name(name: &str) -> String {
 struct GeneratedNameCanonicalizer;
 
 impl<'i> AstVisitorMut<'i> for GeneratedNameCanonicalizer {
-    fn visit_name(&mut self, name: &mut String, _kind: NameKind) {
+    fn visit_name(&mut self, name: &mut String, _kind: NameKind, _span: Span<'i>) {
         *name = canonicalize_generated_name(name);
     }
 
