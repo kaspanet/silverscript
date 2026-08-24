@@ -138,25 +138,22 @@ fn compile_contract_bytecode_iteration<'i>(
 ) -> Result<(Vec<u8>, CompiledStateLayout), CompilerError> {
     let (_contract_fields, state_push_bytecode) = compile_contract_fields(&lowered_contract.fields, lowered_constants, bytecode_size)?;
 
-    let dispatch_prefix_len = 1;
-    let contract_fields_end_offset = dispatch_prefix_len + state_push_bytecode.len();
-    let state_start = if state_push_bytecode.is_empty() { 0 } else { dispatch_prefix_len };
+    let state_start = if state_push_bytecode.is_empty() {
+        0
+    } else {
+        1 // The 1 accounts for OpToAltStack.
+    };
+    let state_end = state_start + state_push_bytecode.len();
     let state_layout = CompiledStateLayout { start: state_start, len: state_push_bytecode.len() };
-    let compiled_entrypoints = compile_entrypoint_bytecodes(
-        lowered_contract,
-        contract_fields_end_offset,
-        lowered_constants,
-        structs,
-        bytecode_size,
-        debug_recorder,
-    )?;
+    let compiled_entrypoints =
+        compile_entrypoint_bytecodes(lowered_contract, state_end, lowered_constants, structs, bytecode_size, debug_recorder)?;
     let bytecode = build_contract_bytecode(debug_recorder, &state_push_bytecode, &compiled_entrypoints, function_abi_entries)?;
     Ok((bytecode, state_layout))
 }
 
 fn compile_entrypoint_bytecodes<'i>(
     lowered_contract: &ContractAst<'i>,
-    contract_fields_end_offset: usize,
+    state_end: usize,
     lowered_constants: &HashMap<String, Expr<'i>>,
     structs: &StructRegistry,
     bytecode_size: Option<i64>,
@@ -170,7 +167,7 @@ fn compile_entrypoint_bytecodes<'i>(
                 &lowered_contract.params,
                 &lowered_contract.fields,
                 &lowered_contract.constants,
-                contract_fields_end_offset,
+                state_end,
                 lowered_constants,
                 structs,
                 bytecode_size,
