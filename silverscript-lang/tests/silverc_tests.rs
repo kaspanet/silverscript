@@ -80,9 +80,11 @@ fn silverc_defaults_output_path_and_empty_ctor_args() {
 
     let out_path = dir.join("basic.json");
     let json = fs::read_to_string(&out_path).expect("read output");
+    let artifact: serde_json::Value = serde_json::from_str(&json).expect("parse compiled contract JSON");
     let compiled: CompiledContract = serde_json::from_str(&json).expect("parse compiled contract");
     assert_eq!(compiled.contract_name, "Basic");
     assert_eq!(compiled.compiler_version, COMPILER_VERSION);
+    assert_eq!(artifact["abi"][0]["dispatch_tag"], faster_hex::hex_string(&compiled.abi[0].dispatch_tag()));
 }
 
 #[test]

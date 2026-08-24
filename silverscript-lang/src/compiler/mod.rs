@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use kaspa_txscript::EngineFlags;
 use kaspa_txscript::script_builder::ScriptBuilder;
+use serde::ser::SerializeStruct;
 use serde::{Deserialize, Serialize};
 
 use crate::ast::{
@@ -86,7 +87,7 @@ pub struct FunctionInputAbi {
     pub type_name: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct FunctionAbiEntry {
     pub name: String,
     pub inputs: Vec<FunctionInputAbi>,
@@ -102,6 +103,19 @@ impl FunctionAbiEntry {
         let mut tag = [0u8; 4];
         tag.copy_from_slice(&hash.as_bytes()[..4]);
         tag
+    }
+}
+
+impl Serialize for FunctionAbiEntry {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut entry = serializer.serialize_struct("FunctionAbiEntry", 3)?;
+        entry.serialize_field("name", &self.name)?;
+        entry.serialize_field("inputs", &self.inputs)?;
+        entry.serialize_field("dispatch_tag", &faster_hex::hex_string(&self.dispatch_tag()))?;
+        entry.end()
     }
 }
 
