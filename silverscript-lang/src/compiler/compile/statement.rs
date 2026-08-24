@@ -104,6 +104,8 @@ fn compile_param_size_validations<'i>(
     let grouped_leaf_names = struct_array_param_groups.iter().flatten().map(String::as_str).collect::<HashSet<_>>();
 
     for param in &function.params {
+        // Grouped leaves are always dynamic arrays. Their OP_MOD shape check
+        // is fused with the cardinality check below so OP_SIZE can be reused.
         if grouped_leaf_names.contains(param.name.as_str()) {
             continue;
         }
