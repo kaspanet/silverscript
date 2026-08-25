@@ -83,6 +83,10 @@ Rules:
     annotation accepts no properties. A delegate body is rejected unless the
     contract also has at least one `binding = cov` declaration.
 
+Covenant declaration policies and delegate bodies are compiler-invoked hooks
+and cannot be called directly from source. Extract shared logic into an
+unannotated helper function instead.
+
 `name` and `delegate_name` values are identifiers, not strings. Generated
 public names undergo the same duplicate-function and reserved-name validation
 as handwritten names.

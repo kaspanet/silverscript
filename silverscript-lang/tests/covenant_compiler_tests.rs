@@ -829,6 +829,50 @@ fn delegate_and_leader_internal_policy_names_use_disjoint_namespaces() {
 }
 
 #[test]
+fn rejects_direct_calls_to_the_delegate_body() {
+    let source = r#"
+        contract Decls() {
+            #[covenant(binding = cov, from = 2, to = 2)]
+            function transfer(byte[] witness) {
+                authorizeDelegate(witness);
+            }
+
+            #[covenant.delegate]
+            function authorizeDelegate(byte[] witness) {
+                require(witness.length > 0);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("delegate bodies are compiler hooks");
+    let message = err.to_string();
+    assert!(message.contains("covenant-annotated function 'authorizeDelegate' cannot be called directly"));
+    assert!(message.contains("extract shared logic into an unannotated helper function"));
+}
+
+#[test]
+fn rejects_direct_calls_to_a_covenant_policy() {
+    let source = r#"
+        contract Decls() {
+            #[covenant(binding = cov, from = 2, to = 2)]
+            function transferPolicy(int amount) {
+                require(amount >= 0);
+            }
+
+            #[covenant.allow(rule = manual_entrypoint_in_leader_contract)]
+            entry recover(int amount) {
+                transferPolicy(amount);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("covenant policies are compiler hooks");
+    let message = err.to_string();
+    assert!(message.contains("covenant-annotated function 'transferPolicy' cannot be called directly"));
+    assert!(message.contains("extract shared logic into an unannotated helper function"));
+}
+
+#[test]
 fn rejects_conflicting_shared_delegate_names() {
     let source = r#"
         contract Decls() {
