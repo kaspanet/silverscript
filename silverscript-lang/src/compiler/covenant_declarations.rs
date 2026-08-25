@@ -41,7 +41,7 @@ struct CovenantDeclaration<'i> {
 }
 
 pub(super) struct CovenantDeclarationAbiNames {
-    pub entrypoints: HashMap<String, String>,
+    pub entrypoints: BTreeMap<String, String>,
     pub delegate_entrypoint: Option<String>,
 }
 
@@ -50,7 +50,7 @@ pub(super) fn lower_covenant_declarations<'i>(
     constants: &HashMap<String, Expr<'i>>,
 ) -> Result<(ContractAst<'i>, CovenantDeclarationAbiNames), CompilerError> {
     let mut lowered = Vec::new();
-    let mut covenant_entrypoints = HashMap::new();
+    let mut covenant_entrypoints = BTreeMap::new();
     let mut cov_declaration = None;
     let mut shared_delegate_source = None;
     let mut shared_delegate_entrypoint = None;

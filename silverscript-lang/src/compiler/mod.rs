@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use kaspa_txscript::EngineFlags;
 use kaspa_txscript::script_builder::ScriptBuilder;
@@ -125,8 +125,10 @@ pub struct CompiledContract<'i> {
     pub ast: ContractAst<'i>,
     pub abi: Vec<FunctionAbiEntry>,
     /// Public leader/auth ABI entries keyed by their pre-lowering covenant declaration names.
-    pub cov_decl_to_abi: HashMap<String, FunctionAbiEntry>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub cov_decl_to_abi: BTreeMap<String, FunctionAbiEntry>,
     /// The shared delegate ABI entry generated for a cov-bound contract.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delegate_entry_abi: Option<FunctionAbiEntry>,
     pub state_layout: CompiledStateLayout,
     pub debug_info: Option<DebugInfo<'i>>,
@@ -269,9 +271,14 @@ impl<'i> CompiledContract<'i> {
         args: Vec<Expr<'i>>,
         options: CovenantDeclCallOptions,
     ) -> Result<Vec<u8>, CompilerError> {
-        let entrypoint = self
-            .covenant_decl_entrypoint_name(function_name, options.is_leader)
-            .ok_or_else(|| CompilerError::Unsupported(format!("covenant declaration '{}' not found", function_name)))?;
+        let entrypoint = self.covenant_decl_entrypoint_name(function_name, options.is_leader).ok_or_else(|| {
+            let metadata_hint = if self.cov_decl_to_abi.is_empty() {
+                "; the compiled artifact may use an outdated schema without covenant declaration ABI metadata"
+            } else {
+                ""
+            };
+            CompilerError::Unsupported(format!("covenant declaration '{function_name}' not found{metadata_hint}"))
+        })?;
         self.build_sig_script(entrypoint, args)
     }
 

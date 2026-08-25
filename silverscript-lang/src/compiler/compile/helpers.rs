@@ -3,7 +3,7 @@ use crate::compiler::covenant_declarations::CovenantDeclarationAbiNames;
 
 pub(super) struct BuiltAbi {
     pub(super) function_abi_entries: Vec<FunctionAbiEntry>,
-    pub(super) cov_decl_to_abi: HashMap<String, FunctionAbiEntry>,
+    pub(super) cov_decl_to_abi: BTreeMap<String, FunctionAbiEntry>,
     pub(super) delegate_entry_abi: Option<FunctionAbiEntry>,
 }
 
@@ -66,7 +66,7 @@ pub(super) fn build_abi<'i>(
         .collect::<HashMap<_, _>>();
     let delegate_entrypoint = covenant_abi_names.delegate_entrypoint.as_deref();
     let mut function_abi_entries = Vec::new();
-    let mut cov_decl_to_abi = HashMap::new();
+    let mut cov_decl_to_abi = BTreeMap::new();
     let mut delegate_entry_abi = None;
 
     for func in contract.functions.iter().filter(|func| func.entrypoint) {

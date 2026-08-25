@@ -10,7 +10,7 @@ use kaspa_txscript::EngineFlags;
 use kaspa_txscript::opcodes::codes::*;
 use kaspa_txscript::script_builder::ScriptBuilder;
 use kaspa_txscript::serialize_i64;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 mod analysis;
 mod const_eval;
@@ -240,7 +240,7 @@ fn build_compiled_contract<'i>(
     lowered_contract: &ContractAst<'i>,
     covenant_lowered_contract: &ContractAst<'i>,
     function_abi_entries: Vec<FunctionAbiEntry>,
-    cov_decl_to_abi: &HashMap<String, FunctionAbiEntry>,
+    cov_decl_to_abi: &BTreeMap<String, FunctionAbiEntry>,
     delegate_entry_abi: Option<&FunctionAbiEntry>,
     bytecode: Vec<u8>,
     state_layout: CompiledStateLayout,
