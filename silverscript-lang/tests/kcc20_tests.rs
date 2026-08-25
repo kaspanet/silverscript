@@ -71,14 +71,6 @@ fn kcc20_state_array_arg_with_minter<'i>(values: Vec<(Vec<u8>, i64, bool)>) -> E
     )
 }
 
-fn sig_array_arg<'i>(values: Vec<Vec<u8>>) -> Expr<'i> {
-    Expr::array(parse_type_ref("sig[]").unwrap(), values.into_iter().map(Expr::bytes).collect())
-}
-
-fn witness_array_arg<'i>(values: Vec<u8>) -> Expr<'i> {
-    Expr::dynamic_bytes(values)
-}
-
 fn kcc20_state_arg<'i>(owner_identifier: Vec<u8>, identifier_type: u8, amount: i64, is_minter: bool) -> Expr<'i> {
     struct_object(
         "KCC20State",
@@ -196,11 +188,7 @@ fn kcc20_can_split_then_merge_tokens_with_two_way_fanout() {
     let handoff_sigscript = covenant_decl_sigscript(
         &genesis,
         "transfer",
-        vec![
-            kcc20_state_array_arg(vec![(handoff_owner_bytes.clone(), 1_000)]),
-            sig_array_arg(vec![handoff_sig]),
-            witness_array_arg(vec![0]),
-        ],
+        vec![kcc20_state_array_arg(vec![(handoff_owner_bytes.clone(), 1_000)]), Expr::bytes(handoff_sig), Expr::byte(0)],
         true,
     );
     let handoff_tx = Transaction::new(
@@ -252,8 +240,8 @@ fn kcc20_can_split_then_merge_tokens_with_two_way_fanout() {
         "transfer",
         vec![
             kcc20_state_array_arg(vec![(split_owner_a_bytes.clone(), 400), (split_owner_b_bytes.clone(), 600)]),
-            sig_array_arg(vec![split_sig]),
-            witness_array_arg(vec![0]),
+            Expr::bytes(split_sig),
+            Expr::byte(0),
         ],
         true,
     );
@@ -292,18 +280,14 @@ fn kcc20_can_split_then_merge_tokens_with_two_way_fanout() {
         vec![],
     );
     let merge_sig_a = sign_tx_input(merge_unsigned_tx.clone(), merge_entries.clone(), 0, &split_owner_a);
-    let merge_sig_b = sign_tx_input(merge_unsigned_tx, merge_entries.clone(), 0, &split_owner_b);
+    let merge_sig_b = sign_tx_input(merge_unsigned_tx, merge_entries.clone(), 1, &split_owner_b);
     let merge_leader_sigscript = covenant_decl_sigscript(
         &split_a,
         "transfer",
-        vec![
-            kcc20_state_array_arg(vec![(merged_owner_bytes, 1_000)]),
-            sig_array_arg(vec![merge_sig_a, merge_sig_b]),
-            witness_array_arg(vec![0, 1]),
-        ],
+        vec![kcc20_state_array_arg(vec![(merged_owner_bytes, 1_000)]), Expr::bytes(merge_sig_a), Expr::byte(0)],
         true,
     );
-    let merge_delegate_sigscript = covenant_decl_sigscript(&split_b, "transfer", vec![], false);
+    let merge_delegate_sigscript = covenant_decl_sigscript(&split_b, "transfer", vec![Expr::bytes(merge_sig_b), Expr::byte(1)], false);
     let merge_tx = Transaction::new(
         1,
         vec![
@@ -363,11 +347,7 @@ fn kcc20_rejects_merge_when_one_signature_is_wrong() {
     let handoff_sigscript = covenant_decl_sigscript(
         &genesis,
         "transfer",
-        vec![
-            kcc20_state_array_arg(vec![(handoff_owner_bytes.clone(), 1_000)]),
-            sig_array_arg(vec![handoff_sig]),
-            witness_array_arg(vec![0]),
-        ],
+        vec![kcc20_state_array_arg(vec![(handoff_owner_bytes.clone(), 1_000)]), Expr::bytes(handoff_sig), Expr::byte(0)],
         true,
     );
     let handoff_tx = Transaction::new(
@@ -419,8 +399,8 @@ fn kcc20_rejects_merge_when_one_signature_is_wrong() {
         "transfer",
         vec![
             kcc20_state_array_arg(vec![(split_owner_a_bytes.clone(), 400), (split_owner_b_bytes.clone(), 600)]),
-            sig_array_arg(vec![split_sig]),
-            witness_array_arg(vec![0]),
+            Expr::bytes(split_sig),
+            Expr::byte(0),
         ],
         true,
     );
@@ -458,18 +438,14 @@ fn kcc20_rejects_merge_when_one_signature_is_wrong() {
         vec![],
     );
     let merge_sig_a = sign_tx_input(merge_unsigned_tx.clone(), merge_entries.clone(), 0, &split_owner_a);
-    let wrong_sig_b = sign_tx_input(merge_unsigned_tx, merge_entries.clone(), 0, &wrong_signer);
+    let wrong_sig_b = sign_tx_input(merge_unsigned_tx, merge_entries.clone(), 1, &wrong_signer);
     let merge_leader_sigscript = covenant_decl_sigscript(
         &split_a,
         "transfer",
-        vec![
-            kcc20_state_array_arg(vec![(merged_owner_bytes, 1_000)]),
-            sig_array_arg(vec![merge_sig_a, wrong_sig_b]),
-            witness_array_arg(vec![0, 1]),
-        ],
+        vec![kcc20_state_array_arg(vec![(merged_owner_bytes, 1_000)]), Expr::bytes(merge_sig_a), Expr::byte(0)],
         true,
     );
-    let merge_delegate_sigscript = covenant_decl_sigscript(&split_b, "transfer", vec![], false);
+    let merge_delegate_sigscript = covenant_decl_sigscript(&split_b, "transfer", vec![Expr::bytes(wrong_sig_b), Expr::byte(1)], false);
     let merge_tx = Transaction::new(
         1,
         vec![
@@ -483,7 +459,9 @@ fn kcc20_rejects_merge_when_one_signature_is_wrong() {
         vec![],
     );
 
-    let err = execute_input_with_covenants(merge_tx, merge_entries, 0)
+    execute_input_with_covenants(merge_tx.clone(), merge_entries.clone(), 0)
+        .expect("KCC20 merge leader should accept its valid local signature");
+    let err = execute_input_with_covenants(merge_tx, merge_entries, 1)
         .expect_err("KCC20 merge should reject when one signature does not match the previous owner");
     assert_verify_like_error(err);
 }
@@ -526,11 +504,7 @@ fn kcc20_rejects_split_when_amounts_do_not_match() {
     let handoff_sigscript = covenant_decl_sigscript(
         &genesis,
         "transfer",
-        vec![
-            kcc20_state_array_arg(vec![(handoff_owner_bytes.clone(), 1_000)]),
-            sig_array_arg(vec![handoff_sig]),
-            witness_array_arg(vec![0]),
-        ],
+        vec![kcc20_state_array_arg(vec![(handoff_owner_bytes.clone(), 1_000)]), Expr::bytes(handoff_sig), Expr::byte(0)],
         true,
     );
     let handoff_tx = Transaction::new(
@@ -582,8 +556,8 @@ fn kcc20_rejects_split_when_amounts_do_not_match() {
         "transfer",
         vec![
             kcc20_state_array_arg(vec![(split_owner_a_bytes, 400), (split_owner_b_bytes, 500)]),
-            sig_array_arg(vec![split_sig]),
-            witness_array_arg(vec![0]),
+            Expr::bytes(split_sig),
+            Expr::byte(0),
         ],
         true,
     );
@@ -648,8 +622,8 @@ fn kcc20_minter_can_split_then_mint_then_burn() {
         "transfer",
         vec![
             kcc20_state_array_arg_with_minter(vec![(minter_owner_bytes.clone(), 400, true), (other_owner_bytes.clone(), 600, false)]),
-            sig_array_arg(vec![split_sig]),
-            witness_array_arg(vec![0]),
+            Expr::bytes(split_sig),
+            Expr::byte(0),
         ],
         true,
     );
@@ -691,8 +665,8 @@ fn kcc20_minter_can_split_then_mint_then_burn() {
         "transfer",
         vec![
             kcc20_state_array_arg_with_minter(vec![(other_owner_bytes.clone(), 700, false)]),
-            sig_array_arg(vec![forged_other_sig]),
-            witness_array_arg(vec![0]),
+            Expr::bytes(forged_other_sig),
+            Expr::byte(0),
         ],
         true,
     );
@@ -733,8 +707,8 @@ fn kcc20_minter_can_split_then_mint_then_burn() {
         "transfer",
         vec![
             kcc20_state_array_arg_with_minter(vec![(other_owner_bytes.clone(), 600, true)]),
-            sig_array_arg(vec![forged_other_minter_sig]),
-            witness_array_arg(vec![0]),
+            Expr::bytes(forged_other_minter_sig),
+            Expr::byte(0),
         ],
         true,
     );
@@ -775,11 +749,7 @@ fn kcc20_minter_can_split_then_mint_then_burn() {
     let mint_sigscript = covenant_decl_sigscript(
         &split_minter,
         "transfer",
-        vec![
-            kcc20_state_array_arg_with_minter(vec![(minter_owner_bytes.clone(), 900, true)]),
-            sig_array_arg(vec![mint_sig]),
-            witness_array_arg(vec![0]),
-        ],
+        vec![kcc20_state_array_arg_with_minter(vec![(minter_owner_bytes.clone(), 900, true)]), Expr::bytes(mint_sig), Expr::byte(0)],
         true,
     );
     let mint_tx = Transaction::new(
@@ -814,11 +784,7 @@ fn kcc20_minter_can_split_then_mint_then_burn() {
     let burn_sigscript = covenant_decl_sigscript(
         &minted_minter,
         "transfer",
-        vec![
-            kcc20_state_array_arg_with_minter(vec![(minter_owner_bytes, 500, true)]),
-            sig_array_arg(vec![burn_sig]),
-            witness_array_arg(vec![0]),
-        ],
+        vec![kcc20_state_array_arg_with_minter(vec![(minter_owner_bytes, 500, true)]), Expr::bytes(burn_sig), Expr::byte(0)],
         true,
     );
     let burn_tx = Transaction::new(
@@ -863,11 +829,7 @@ fn kcc20_minter_can_mint_in_single_transaction() {
     let mint_sigscript = covenant_decl_sigscript(
         &genesis,
         "transfer",
-        vec![
-            kcc20_state_array_arg_with_minter(vec![(genesis_owner_bytes, 1_500, true)]),
-            sig_array_arg(vec![mint_sig]),
-            witness_array_arg(vec![0]),
-        ],
+        vec![kcc20_state_array_arg_with_minter(vec![(genesis_owner_bytes, 1_500, true)]), Expr::bytes(mint_sig), Expr::byte(0)],
         true,
     );
     let mint_tx = Transaction::new(
@@ -1043,8 +1005,8 @@ fn kcc20_covenant_minter() {
                     (minter_cov_id.as_bytes().to_vec(), IDENTIFIER_COVENANT_ID, 0, true),
                     (owner_bytes.clone(), 0, minted_amount, false),
                 ]),
-                sig_array_arg(vec![]),
-                witness_array_arg(vec![1]),
+                Expr::bytes(vec![0; 65]),
+                Expr::byte(1),
             ],
             true,
         );
@@ -1142,8 +1104,8 @@ fn kcc20_covenant_minter() {
         "transfer",
         vec![
             kcc20_state_array_arg(vec![(alternate_owner_bytes.clone(), FIRST_MINTED_AMOUNT)]),
-            sig_array_arg(vec![recipient_transfer_sig]),
-            witness_array_arg(vec![0]),
+            Expr::bytes(recipient_transfer_sig),
+            Expr::byte(0),
         ],
         true,
     );
@@ -1291,8 +1253,8 @@ fn kcc20_non_minter_can_spend_script_hash_and_covenant_id_owned_outputs() {
                 (multisig_script_hash.clone(), IDENTIFIER_SCRIPT_HASH, 400, false),
                 (covenant_owner_bytes.clone(), IDENTIFIER_COVENANT_ID, 600, false),
             ]),
-            sig_array_arg(vec![split_sig]),
-            witness_array_arg(vec![0]),
+            Expr::bytes(split_sig),
+            Expr::byte(0),
         ],
         true,
     );
@@ -1331,7 +1293,7 @@ fn kcc20_non_minter_can_spend_script_hash_and_covenant_id_owned_outputs() {
         covenant_decl_sigscript(
             state,
             "transfer",
-            vec![kcc20_state_array_arg(vec![(destination_owner, amount)]), sig_array_arg(vec![]), witness_array_arg(vec![witness])],
+            vec![kcc20_state_array_arg(vec![(destination_owner, amount)]), Expr::bytes(vec![0; 65]), Expr::byte(witness)],
             true,
         )
     };

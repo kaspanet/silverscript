@@ -8,18 +8,16 @@ contract KCC20(byte[32] genesisPk, int genesisAmount, byte genesisIdentifierType
     int amount = genesisAmount;
     bool isMinter = genesisIsMinter;
 
-    function checkSigs(State[] prevStates, sig[] sigs, byte[] witnesses) {
-        for(i, 0, prevStates.length, maxCovIns) {
-            if(prevStates[i].identifierType == IDENTIFIER_PUBKEY){
-                require(checkSig(sigs[i], pubkey(prevStates[i].ownerIdentifier)));
-            } else if(prevStates[i].identifierType == IDENTIFIER_SCRIPT_HASH){
-                byte[] spk = byte[](new ScriptPubKeyP2SH(prevStates[i].ownerIdentifier));
-                require(tx.inputs[unsigned(witnesses[i])].scriptPubKey == spk);
-            } else if(prevStates[i].identifierType == IDENTIFIER_COVENANT_ID){
-                require(OpInputCovenantId(unsigned(witnesses[i])) == prevStates[i].ownerIdentifier);
-            } else {
-                require(false);
-            }
+    function checkInputSig(sig s, byte witness) {
+        if(identifierType == IDENTIFIER_PUBKEY){
+            require(checkSig(s, pubkey(ownerIdentifier)));
+        } else if(identifierType == IDENTIFIER_SCRIPT_HASH){
+            byte[] spk = byte[](new ScriptPubKeyP2SH(ownerIdentifier));
+            require(tx.inputs[unsigned(witness)].scriptPubKey == spk);
+        } else if(identifierType == IDENTIFIER_COVENANT_ID){
+            require(OpInputCovenantId(unsigned(witness)) == ownerIdentifier);
+        } else {
+            require(false);
         }
     }
 
@@ -48,9 +46,14 @@ contract KCC20(byte[32] genesisPk, int genesisAmount, byte genesisIdentifierType
     }
 
     #[covenant(binding = cov, from = maxCovIns, to = maxCovOuts)]
-    function transfer(State[] prevStates, State[] newStates, sig[] sigs, byte[] witnesses) {
-        checkSigs(prevStates, sigs, witnesses);
+    function transfer(State[] prevStates, State[] newStates, sig s, byte witness) {
+        checkInputSig(s, witness);
         checkAmounts(prevStates, newStates);
         checkMintingTransfer(newStates);
+    }
+
+    #[covenant.delegate]
+    function authorizeDelegate(sig s, byte witness) {
+        checkInputSig(s, witness);
     }
 }
