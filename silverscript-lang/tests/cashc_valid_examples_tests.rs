@@ -128,7 +128,7 @@ fn build_sigscript(args: &[ArgValue], dispatch_tag: DispatchTag) -> Vec<u8> {
 }
 
 fn dispatch_tag_for_compiled(compiled: &CompiledContract<'_>, function_name: &str) -> DispatchTag {
-    compiled.entry_by_name(function_name).expect("entrypoint resolved").dispatch_tag()
+    compiled.entry_by_name(function_name).expect("entrypoint resolved").dispatch_tag
 }
 
 fn build_p2pk_script(pubkey: &[u8]) -> Vec<u8> {

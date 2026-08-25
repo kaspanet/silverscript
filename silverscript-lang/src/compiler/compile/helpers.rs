@@ -54,9 +54,54 @@ pub(super) fn infer_expr_type<'i>(
     type_check::check_expr(expr, None, &ctx)
 }
 
+/// assumption: no inferred dimensions array param on entrypoint parameters before calling this function
+fn write_dispatch_type_name<'i>(
+    type_ref: &TypeRef,
+    structs: &StructRegistry,
+    constants: &HashMap<String, Expr<'i>>,
+    signature: &mut String,
+) -> Result<(), CompilerError> {
+    match &type_ref.base {
+        TypeBase::Custom(name) => {
+            let item = structs
+                .get(name)
+                .ok_or_else(|| CompilerError::Unsupported(format!("unknown struct '{name}' in entrypoint dispatch type")))?;
+            signature.push('{');
+            for (index, field) in item.fields.iter().enumerate() {
+                if index != 0 {
+                    signature.push(',');
+                }
+                write_dispatch_type_name(&field.type_ref, structs, constants, signature)?;
+            }
+            signature.push('}');
+        }
+        _ => signature.push_str(&type_ref.base.type_name()),
+    }
+
+    for dimension in &type_ref.array_dims {
+        match dimension {
+            ArrayDim::Dynamic => signature.push_str("[]"),
+            ArrayDim::Fixed(size) => signature.push_str(&format!("[{size}]")),
+            ArrayDim::Constant(name) => {
+                let value = constants
+                    .get(name)
+                    .ok_or_else(|| CompilerError::UndefinedIdentifier(name.clone()))
+                    .and_then(|expr| eval_const_int(expr, constants))?;
+                let size = usize::try_from(value)
+                    .map_err(|_| CompilerError::Unsupported(format!("array size constant '{name}' must be a non-negative integer")))?;
+                signature.push_str(&format!("[{size}]"));
+            }
+            ArrayDim::Inferred => panic!("inferred array dimensions must be rejected before writing a dispatch type name"),
+        }
+    }
+
+    Ok(())
+}
+
 pub(super) fn build_abi<'i>(
     contract: &ContractAst<'i>,
     constants: &HashMap<String, Expr<'i>>,
+    structs: &StructRegistry,
     covenant_abi_names: &CovenantDeclarationAbiNames,
 ) -> Result<BuiltAbi, CompilerError> {
     let source_name_by_entrypoint = covenant_abi_names
@@ -70,7 +115,7 @@ pub(super) fn build_abi<'i>(
     let mut delegate_entry_abi = None;
 
     for func in contract.functions.iter().filter(|func| func.entrypoint) {
-        let inputs = func
+        let input_specs = func
             .params
             .iter()
             .map(|param| {
@@ -93,10 +138,21 @@ pub(super) fn build_abi<'i>(
                         *dimension = ArrayDim::Fixed(size);
                     }
                 }
-                Ok(FunctionInputAbi { name: param.name.clone(), type_name: type_ref.type_name() })
+                let type_name = type_ref.type_name();
+                let mut signature_type = String::new();
+                write_dispatch_type_name(&type_ref, structs, constants, &mut signature_type)?;
+                Ok((FunctionInputAbi { name: param.name.clone(), type_name }, signature_type))
             })
             .collect::<Result<Vec<_>, CompilerError>>()?;
-        let entry = FunctionAbiEntry { name: func.name.clone(), inputs };
+        let (inputs, signature_types): (Vec<_>, Vec<_>) = input_specs.into_iter().unzip();
+
+        // dispatch tag creation
+        let signature = format!("{}({})", func.name, signature_types.join(","));
+        let hash = blake3::hash(signature.as_bytes());
+        let mut dispatch_tag = [0u8; 4];
+        dispatch_tag.copy_from_slice(&hash.as_bytes()[..4]);
+
+        let entry = FunctionAbiEntry { name: func.name.clone(), inputs, dispatch_tag };
 
         if let Some(source_name) = source_name_by_entrypoint.get(func.name.as_str()) {
             cov_decl_to_abi.insert((*source_name).to_string(), entry.clone());

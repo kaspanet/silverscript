@@ -746,8 +746,8 @@ fn lowers_kcc20_shaped_public_names_and_shared_delegate_body() {
     assert_eq!(abi, vec![("transfer", vec!["State[]", "byte[]"]), ("transfer_delegator", vec!["byte[]"]),]);
 
     let transfer = compiled.entry_by_name("transfer").expect("public transfer exists");
-    let expected_hash = blake3::hash(b"transfer(State[],byte[])");
-    assert_eq!(transfer.dispatch_tag(), expected_hash.as_bytes()[..4]);
+    let expected_hash = blake3::hash(b"transfer({byte[1],int}[],byte[])");
+    assert_eq!(transfer.dispatch_tag, expected_hash.as_bytes()[..4]);
 
     let delegate_args = vec![Expr::dynamic_bytes(vec![7])];
     let routed = compiled

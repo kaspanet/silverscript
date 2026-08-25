@@ -86,6 +86,7 @@ fn silverc_defaults_output_path_and_empty_ctor_args() {
     let compiled: CompiledContract = serde_json::from_str(&json).expect("parse compiled contract");
     assert_eq!(compiled.contract_name, "Basic");
     assert_eq!(compiled.compiler_version, COMPILER_VERSION);
+    assert_eq!(artifact["abi"][0]["dispatch_tag"], faster_hex::hex_string(&compiled.abi[0].dispatch_tag));
 }
 
 #[test]
@@ -126,7 +127,7 @@ fn silverc_accepts_constructor_args_and_output_flag() {
     let compiled: CompiledContract = serde_json::from_str(&json).expect("parse compiled contract");
     assert_eq!(compiled.contract_name, "WithCtor");
     assert_eq!(compiled.compiler_version, COMPILER_VERSION);
-    let selector = compiled.entry_by_name("main").expect("entrypoint resolved").dispatch_tag();
+    let selector = compiled.entry_by_name("main").expect("entrypoint resolved").dispatch_tag;
     assert!(run_bytecode_with_selector(compiled.bytecode, selector).is_ok());
 }
 

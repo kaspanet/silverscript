@@ -2562,7 +2562,7 @@ fn build_sig_script_appends_dispatch_tag_for_single_entrypoint() {
     "#;
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
     let sigscript = compiled.build_sig_script("spend", vec![1.into(), vec![2u8; 4].into()]).expect("sigscript builds");
-    let dispatch_tag = compiled.entry_by_name("spend").expect("entrypoint resolved").dispatch_tag();
+    let dispatch_tag = compiled.entry_by_name("spend").expect("entrypoint resolved").dispatch_tag;
 
     let expected =
         script_builder().add_i64(1).unwrap().add_data_with_push_opcode(&[2u8; 4]).unwrap().add_data(&dispatch_tag).unwrap().drain();
@@ -2761,16 +2761,19 @@ fn replace_compiled_interface<'i>(
     entrypoint_name: &str,
     inputs: &[(&str, &str)],
 ) {
-    let old_dispatch_tag = compiled.abi[0].dispatch_tag();
+    let old_dispatch_tag = compiled.abi[0].dispatch_tag;
     compiled.ast = parse_contract_ast(source).expect("interface parses");
+    // Do not rely on the dispatch tag in tests using this synthetic interface.
+    let dispatch_tag = [0u8; 4];
     compiled.abi = vec![FunctionAbiEntry {
         name: entrypoint_name.to_string(),
         inputs: inputs
             .iter()
             .map(|(name, type_name)| FunctionInputAbi { name: (*name).to_string(), type_name: (*type_name).to_string() })
             .collect(),
+        dispatch_tag,
     }];
-    let new_dispatch_tag = compiled.abi[0].dispatch_tag();
+    let new_dispatch_tag = compiled.abi[0].dispatch_tag;
     let tag_offset = compiled
         .bytecode
         .windows(old_dispatch_tag.len())
@@ -6605,7 +6608,7 @@ fn build_covenant_opcode_tx(sigscript: Vec<u8>, covenant_id_a: Hash, covenant_id
 }
 
 fn dispatch_tag_for(compiled: &CompiledContract<'_>, function_name: &str) -> DispatchTag {
-    compiled.entry_by_name(function_name).expect("entrypoint resolved").dispatch_tag()
+    compiled.entry_by_name(function_name).expect("entrypoint resolved").dispatch_tag
 }
 
 fn wrap_with_single_dispatch(compiled: &CompiledContract<'_>, body: Vec<u8>) -> Vec<u8> {
@@ -6616,7 +6619,7 @@ fn wrap_with_single_dispatch_and_state(compiled: &CompiledContract<'_>, state: &
     let [entrypoint] = compiled.abi.as_slice() else {
         panic!("single-dispatch wrapper requires exactly one ABI entrypoint");
     };
-    let dispatch_tag = entrypoint.dispatch_tag();
+    let dispatch_tag = entrypoint.dispatch_tag;
     let mut builder = script_builder();
     if !state.is_empty() {
         builder.add_op(OpToAltStack).unwrap();
@@ -6706,8 +6709,8 @@ fn compiles_stateless_multiple_entrypoints_with_kcc1_dispatch_tags() {
 
     let contract = parse_contract_ast(source).expect("ast parsed");
     let compiled = compile_contract_ast(&contract, &[], CompileOptions::default()).expect("compile succeeds");
-    let dispatch_tag_a = compiled.entry_by_name("a").expect("entrypoint resolved").dispatch_tag();
-    let dispatch_tag_b = compiled.entry_by_name("b").expect("entrypoint resolved").dispatch_tag();
+    let dispatch_tag_a = compiled.entry_by_name("a").expect("entrypoint resolved").dispatch_tag;
+    let dispatch_tag_b = compiled.entry_by_name("b").expect("entrypoint resolved").dispatch_tag;
 
     let body_a = script_builder()
         .add_i64(1)
@@ -6801,7 +6804,7 @@ fn dispatch_tag_and_argument_encoding_match_kcc1_vector() {
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
     let step = compiled.entry_by_name("step").expect("step entrypoint exists");
     assert_eq!(step.inputs[1].type_name, "byte[4]");
-    assert_eq!(step.dispatch_tag(), [0x2c, 0x49, 0xed, 0x65]);
+    assert_eq!(step.dispatch_tag, [0x2c, 0x49, 0xed, 0x65]);
 
     let sigscript = compiled
         .build_sig_script("step", vec![Expr::int(17), Expr::bytes(vec![1, 2, 3, 4]), Expr::bool(true), Expr::byte(1)])
@@ -6811,43 +6814,30 @@ fn dispatch_tag_and_argument_encoding_match_kcc1_vector() {
 }
 
 #[test]
-fn dispatch_tag_hashes_exact_utf8_signature_bytes() {
-    // KCC identifiers are currently ASCII-only. These manually constructed ABI entries
-    // still pin the UTF-8 hashing semantics if that restriction is relaxed in the future.
-    let cases = [
-        (
-            FunctionAbiEntry {
-                name: "café".to_string(),
-                inputs: vec![FunctionInputAbi { name: "value".to_string(), type_name: "int".to_string() }],
-            },
-            b"caf\xc3\xa9(int)".as_slice(),
-            [0x76, 0xbb, 0x38, 0x88],
-        ),
-        (
-            FunctionAbiEntry { name: "轉帳".to_string(), inputs: vec![] },
-            b"\xe8\xbd\x89\xe5\xb8\xb3()".as_slice(),
-            [0x9a, 0x67, 0x99, 0xc5],
-        ),
-        (
-            FunctionAbiEntry {
-                name: "🚀".to_string(),
-                inputs: vec![FunctionInputAbi { name: "value".to_string(), type_name: "int".to_string() }],
-            },
-            b"\xf0\x9f\x9a\x80(int)".as_slice(),
-            [0xfa, 0x79, 0x41, 0x20],
-        ),
-    ];
+fn record_dispatch_tag_matches_kcc1_structural_type_vector() {
+    let source = r#"
+        contract CoffeeMachine() {
+            int constant RECIPE_CODE_LEN = 4;
 
-    for (entrypoint, utf8_signature, expected_tag) in cases {
-        assert_eq!(&blake3::hash(utf8_signature).as_bytes()[..4], expected_tag);
-        assert_eq!(entrypoint.dispatch_tag(), expected_tag);
-    }
+            struct CoffeeOrder {
+                byte[RECIPE_CODE_LEN] recipe_code;
+                byte sugar_level;
+                bool with_milk;
+            }
 
-    let composed = FunctionAbiEntry { name: "café".to_string(), inputs: vec![] };
-    let decomposed = FunctionAbiEntry { name: "cafe\u{301}".to_string(), inputs: vec![] };
-    assert_eq!(composed.dispatch_tag(), [0xde, 0x33, 0x57, 0x99]);
-    assert_eq!(decomposed.dispatch_tag(), [0x3f, 0x0c, 0x9d, 0xa1]);
-    assert_ne!(composed.dispatch_tag(), decomposed.dispatch_tag(), "dispatch signatures must not normalize Unicode");
+            entry dispense(CoffeeOrder[] orders) {
+                require(orders.length >= 0);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let dispense = compiled.entry_by_name("dispense").expect("dispense entrypoint exists");
+    assert_eq!(dispense.inputs[0].type_name, "CoffeeOrder[]");
+    assert_eq!(dispense.dispatch_tag, [0x67, 0x6b, 0x1a, 0x86]);
+
+    let json = serde_json::to_string(dispense).expect("ABI entry serializes");
+    assert_eq!(serde_json::from_str::<serde_json::Value>(&json).unwrap()["dispatch_tag"], "676b1a86");
 }
 
 #[test]
