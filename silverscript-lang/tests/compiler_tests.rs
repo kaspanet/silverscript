@@ -6841,6 +6841,33 @@ fn record_dispatch_tag_matches_kcc1_structural_type_vector() {
 }
 
 #[test]
+fn dispatch_tag_hashes_exact_utf8_signature_bytes() {
+    // KCC identifiers are currently ASCII-only. Mutating parsed ASTs still pins the
+    // UTF-8 hashing semantics if that restriction is relaxed in the future.
+    let cases = [
+        ("café", true, b"caf\xc3\xa9(int)".as_slice(), [0x76, 0xbb, 0x38, 0x88]),
+        ("轉帳", false, b"\xe8\xbd\x89\xe5\xb8\xb3()".as_slice(), [0x9a, 0x67, 0x99, 0xc5]),
+        ("🚀", true, b"\xf0\x9f\x9a\x80(int)".as_slice(), [0xfa, 0x79, 0x41, 0x20]),
+        ("café", false, b"caf\xc3\xa9()".as_slice(), [0xde, 0x33, 0x57, 0x99]),
+        ("cafe\u{301}", false, b"cafe\xcc\x81()".as_slice(), [0x3f, 0x0c, 0x9d, 0xa1]),
+    ];
+
+    for (name, has_input, utf8_signature, expected_tag) in cases {
+        let source = if has_input {
+            "contract Test() { entry placeholder(int value) { require(true); } }"
+        } else {
+            "contract Test() { entry placeholder() { require(true); } }"
+        };
+        let mut contract = parse_contract_ast(source).expect("contract parses");
+        contract.functions[0].name = name.to_string();
+
+        let compiled = compile_contract_ast(&contract, &[], CompileOptions::default()).expect("contract compiles");
+        assert_eq!(&blake3::hash(utf8_signature).as_bytes()[..4], expected_tag);
+        assert_eq!(compiled.entry_by_name(name).expect("entrypoint exists").dispatch_tag, expected_tag);
+    }
+}
+
+#[test]
 fn rejects_colliding_kcc1_dispatch_tags() {
     let source = r#"
         contract Test() {
