@@ -270,6 +270,11 @@ pub(super) fn check_call<'i>(
         return Ok(Some(cast_type));
     }
     if let Some(function) = ctx.functions.get(name).copied() {
+        if function.attributes.iter().any(|attribute| attribute.path.first().is_some_and(|head| head == "covenant")) {
+            return Err(CompilerError::Unsupported(format!(
+                "covenant-annotated function '{name}' cannot be called directly; extract shared logic into an unannotated helper function"
+            )));
+        }
         if function.entrypoint {
             return Err(CompilerError::Unsupported(format!("entry '{name}' cannot be called")));
         }

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use kaspa_txscript::EngineFlags;
 use kaspa_txscript::script_builder::ScriptBuilder;
@@ -51,6 +51,7 @@ use validate_output_state::lower_validate_output_state;
 pub const SYNTHETIC_ARG_PREFIX: &str = "__arg";
 pub const COMPILER_VERSION: &str = "0.1.0";
 const COVENANT_POLICY_PREFIX: &str = "__covenant_policy";
+const COVENANT_DELEGATE_POLICY_PREFIX: &str = "__covenant_delegate_policy";
 pub const COVENANT_ENTRYPOINT_AUTH_PREFIX: &str = "__covenant_entrypoint_auth";
 pub(super) type TypeMap = HashMap<String, TypeRef>;
 
@@ -61,6 +62,10 @@ pub struct CovenantDeclCallOptions {
 
 fn generated_covenant_policy_name(function_name: &str) -> String {
     format!("{COVENANT_POLICY_PREFIX}_{function_name}")
+}
+
+fn generated_covenant_delegate_policy_name(function_name: &str) -> String {
+    format!("{COVENANT_DELEGATE_POLICY_PREFIX}_{function_name}")
 }
 
 pub fn generated_covenant_auth_entrypoint_name(function_name: &str) -> String {
@@ -119,6 +124,12 @@ pub struct CompiledContract<'i> {
     pub bytecode: Vec<u8>,
     pub ast: ContractAst<'i>,
     pub abi: Vec<FunctionAbiEntry>,
+    /// Public leader/auth ABI entries keyed by their pre-lowering covenant declaration names.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub cov_decl_to_abi: BTreeMap<String, FunctionAbiEntry>,
+    /// The shared delegate ABI entry generated for a cov-bound contract.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delegate_entry_abi: Option<FunctionAbiEntry>,
     pub state_layout: CompiledStateLayout,
     pub debug_info: Option<DebugInfo<'i>>,
 }
@@ -260,18 +271,28 @@ impl<'i> CompiledContract<'i> {
         args: Vec<Expr<'i>>,
         options: CovenantDeclCallOptions,
     ) -> Result<Vec<u8>, CompilerError> {
-        let auth_entrypoint = generated_covenant_auth_entrypoint_name(function_name);
-        if self.entry_by_name(&auth_entrypoint).is_some() {
-            return self.build_sig_script(&auth_entrypoint, args);
+        let entrypoint = self.covenant_decl_entrypoint_name(function_name, options.is_leader).ok_or_else(|| {
+            let metadata_hint = if self.cov_decl_to_abi.is_empty() {
+                "; the compiled artifact may use an outdated schema without covenant declaration ABI metadata"
+            } else {
+                ""
+            };
+            CompilerError::Unsupported(format!("covenant declaration '{function_name}' not found{metadata_hint}"))
+        })?;
+        self.build_sig_script(entrypoint, args)
+    }
+
+    /// Resolves a source covenant declaration to its final public ABI entrypoint.
+    /// For cov-bound declarations, `is_leader` selects the leader or shared
+    /// delegate wrapper. Auth-bound declarations resolve to the same wrapper in
+    /// either case.
+    pub fn covenant_decl_entrypoint_name(&self, function_name: &str, is_leader: bool) -> Option<&str> {
+        let entry = self.cov_decl_to_abi.get(function_name)?;
+        if is_leader || self.delegate_entry_abi.is_none() {
+            return Some(entry.name.as_str());
         }
 
-        let leader_entrypoint = generated_covenant_leader_entrypoint_name(function_name);
-        if self.entry_by_name(&leader_entrypoint).is_some() {
-            let entrypoint = if options.is_leader { leader_entrypoint } else { generated_covenant_delegate_entrypoint_name() };
-            return self.build_sig_script(&entrypoint, args);
-        }
-
-        Err(CompilerError::Unsupported(format!("covenant declaration '{}' not found", function_name)))
+        self.delegate_entry_abi.as_ref().map(|entry| entry.name.as_str())
     }
 }
 

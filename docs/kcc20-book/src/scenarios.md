@@ -1408,14 +1408,18 @@ fn kcc20_non_minter_can_spend_script_hash_and_covenant_id_owned_outputs() {
     let covenant_id_auxiliary_outpoint = TransactionOutpoint { transaction_id: TransactionId::from_bytes([3; 32]), index: 0 };
 
     {
-        let covenant_id_wrong_witness_tx = build_spend_tx(
+        let covenant_id_wrong_covenant_entries = vec![
+            covenant_id_spend_entries[0].clone(),
+            UtxoEntry::new(500, pay_to_script_hash_script(&[0x51]), 0, false, Some(COV_B)),
+        ];
+        let covenant_id_wrong_covenant_tx = build_spend_tx(
             1,
             Some(covenant_id_auxiliary_outpoint),
-            build_kcc20_sigscript(&split_states[1], covenant_spend_destination_owner_bytes.clone(), 600, 0),
+            build_kcc20_sigscript(&split_states[1], covenant_spend_destination_owner_bytes.clone(), 600, 1),
             covenant_id_spend_outputs.clone(),
         );
-        let err = execute_input_with_covenants(covenant_id_wrong_witness_tx, covenant_id_spend_entries.clone(), 0)
-            .expect_err("KCC20 covenant-id-owned tokens should reject the wrong witness index");
+        let err = execute_input_with_covenants(covenant_id_wrong_covenant_tx, covenant_id_wrong_covenant_entries, 0)
+            .expect_err("KCC20 covenant-id-owned tokens should reject a different covenant ID");
         assert_verify_like_error(err);
     }
 
@@ -1462,9 +1466,9 @@ fn kcc20_non_minter_can_spend_script_hash_and_covenant_id_owned_outputs() {
 
 This example explores the two non-pubkey ownership modes in KCC20.
 
-It first creates one script-hash-owned branch and one covenant-ID-owned branch. It then checks, for each mode:
+It first creates one script-hash-owned branch and one covenant-ID-owned branch. It then checks the relevant failure modes for each:
 
-- the wrong witness input is rejected
+- a mismatched witness or covenant ID is rejected
 - a missing matching input is rejected
 - the wrong kind of owner input is rejected
 - the correct matching input is accepted
@@ -1479,7 +1483,7 @@ script-hash-owned branch:
   matching script    -> accept
 
 covenant-ID-owned branch:
-  wrong witness      -> reject
+  wrong covenant ID  -> reject
   missing covenant   -> reject
   wrong owner kind   -> reject
   matching covenant  -> accept

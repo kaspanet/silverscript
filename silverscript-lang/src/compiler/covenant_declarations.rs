@@ -34,21 +34,50 @@ struct CovenantDeclaration<'i> {
     groups: CovenantGroups,
     singleton: bool,
     termination: CovenantTermination,
+    entrypoint_name: Option<String>,
+    delegate_entrypoint_name: Option<String>,
     from_expr: Expr<'i>,
     to_expr: Expr<'i>,
+}
+
+pub(super) struct CovenantDeclarationAbiNames {
+    pub entrypoints: BTreeMap<String, String>,
+    pub delegate_entrypoint: Option<String>,
 }
 
 pub(super) fn lower_covenant_declarations<'i>(
     contract: &ContractAst<'i>,
     constants: &HashMap<String, Expr<'i>>,
-) -> Result<ContractAst<'i>, CompilerError> {
+) -> Result<(ContractAst<'i>, CovenantDeclarationAbiNames), CompilerError> {
     let mut lowered = Vec::new();
+    let mut covenant_entrypoints = BTreeMap::new();
     let mut cov_declaration = None;
     let mut shared_delegate_source = None;
+    let mut shared_delegate_entrypoint = None;
+    let mut delegate_policy: Option<FunctionAst<'i>> = None;
+    let mut delegate_body_name = None;
     let mut auth_declaration = None;
     let mut manual_entrypoint = None;
 
     for function in &contract.functions {
+        if is_covenant_delegate_body(function) {
+            validate_covenant_delegate_body(function)?;
+            if let Some(existing) = &delegate_body_name {
+                return Err(CompilerError::Unsupported(format!(
+                    "contract '{}' declares more than one #[covenant.delegate] body ('{}' and '{}')",
+                    contract.name, existing, function.name
+                )));
+            }
+
+            let mut policy = function.clone();
+            policy.name = generated_covenant_delegate_policy_name(&function.name);
+            policy.attributes.clear();
+            delegate_body_name = Some(function.name.clone());
+            delegate_policy = Some(policy.clone());
+            lowered.push(policy);
+            continue;
+        }
+
         if allows_manual_entrypoint_in_leader_contract(function)? {
             let mut lowered_function = function.clone();
             lowered_function.attributes.clear();
@@ -78,28 +107,52 @@ pub(super) fn lower_covenant_declarations<'i>(
         match declaration.binding {
             CovenantBinding::Auth => {
                 auth_declaration.get_or_insert_with(|| function.name.clone());
-                let entrypoint_name = generated_covenant_auth_entrypoint_name(&function.name);
+                let entrypoint_name =
+                    declaration.entrypoint_name.clone().unwrap_or_else(|| generated_covenant_auth_entrypoint_name(&function.name));
+                covenant_entrypoints.insert(function.name.clone(), entrypoint_name.clone());
                 let mut wrapper = build_auth_wrapper(&policy, &policy_name, declaration.clone(), entrypoint_name, &contract.fields)?;
                 wrapper.params = preserved_entrypoint_params(function, declaration, true, &contract.fields);
                 lowered.push(wrapper);
             }
             CovenantBinding::Cov => {
                 cov_declaration.get_or_insert_with(|| function.name.clone());
-                let leader_name = generated_covenant_leader_entrypoint_name(&function.name);
+                let leader_name =
+                    declaration.entrypoint_name.clone().unwrap_or_else(|| generated_covenant_leader_entrypoint_name(&function.name));
+                covenant_entrypoints.insert(function.name.clone(), leader_name.clone());
                 let mut leader_wrapper =
                     build_cov_leader_wrapper(&policy, &policy_name, declaration.clone(), leader_name, &contract.fields)?;
                 leader_wrapper.params = preserved_entrypoint_params(function, declaration.clone(), true, &contract.fields);
                 lowered.push(leader_wrapper);
 
                 shared_delegate_source.get_or_insert(policy);
+                let delegate_entrypoint_name =
+                    declaration.delegate_entrypoint_name.clone().unwrap_or_else(generated_covenant_delegate_entrypoint_name);
+                if let Some((existing_name, existing_declaration)) = &shared_delegate_entrypoint {
+                    if existing_name != &delegate_entrypoint_name {
+                        return Err(CompilerError::Unsupported(format!(
+                            "covenant declarations '{}' and '{}' select conflicting shared delegate entrypoint names '{}' and '{}'",
+                            existing_declaration, function.name, existing_name, delegate_entrypoint_name
+                        )));
+                    }
+                } else {
+                    shared_delegate_entrypoint = Some((delegate_entrypoint_name, function.name.clone()));
+                }
             }
         }
     }
 
-    if let Some(policy) = shared_delegate_source {
-        let delegate_name = generated_covenant_delegate_entrypoint_name();
-        lowered.push(build_cov_delegate_wrapper(&policy, delegate_name));
-    }
+    let delegate_entrypoint = if let Some(policy) = shared_delegate_source {
+        let delegate_name = shared_delegate_entrypoint.expect("a cov-bound declaration always selects a delegate entrypoint").0;
+        lowered.push(build_cov_delegate_wrapper(&policy, delegate_policy.as_ref(), delegate_name.clone()));
+        Some(delegate_name)
+    } else if delegate_policy.is_some() {
+        return Err(CompilerError::Unsupported(format!(
+            "#[covenant.delegate] body '{}' requires at least one binding=cov covenant declaration",
+            delegate_body_name.expect("a delegate policy preserves its source name")
+        )));
+    } else {
+        None
+    };
 
     if let Some(cov_declaration) = cov_declaration {
         if let Some(auth_declaration) = auth_declaration {
@@ -118,7 +171,33 @@ pub(super) fn lower_covenant_declarations<'i>(
 
     let mut lowered_contract = contract.clone();
     lowered_contract.functions = lowered;
-    Ok(lowered_contract)
+    Ok((lowered_contract, CovenantDeclarationAbiNames { entrypoints: covenant_entrypoints, delegate_entrypoint }))
+}
+
+fn is_covenant_delegate_body(function: &FunctionAst<'_>) -> bool {
+    function
+        .attributes
+        .iter()
+        .any(|attribute| matches!(attribute.path.as_slice(), [head, tail] if head == "covenant" && tail == "delegate"))
+}
+
+fn validate_covenant_delegate_body(function: &FunctionAst<'_>) -> Result<(), CompilerError> {
+    if function.attributes.len() != 1 {
+        return Err(CompilerError::Unsupported("#[covenant.delegate] must be the only attribute on the delegate body".to_string()));
+    }
+    if function.entrypoint {
+        return Err(CompilerError::Unsupported("#[covenant.delegate] must be applied to a function, not an entrypoint".to_string()));
+    }
+    if !function.attributes[0].args.is_empty() {
+        return Err(CompilerError::Unsupported("#[covenant.delegate] does not accept arguments".to_string()));
+    }
+    if !function.return_types.is_empty() {
+        return Err(CompilerError::Unsupported(format!(
+            "#[covenant.delegate] body '{}' must be verification-only and return no values",
+            function.name
+        )));
+    }
+    Ok(())
 }
 
 fn allows_manual_entrypoint_in_leader_contract(function: &FunctionAst<'_>) -> Result<bool, CompilerError> {
@@ -195,7 +274,8 @@ fn parse_covenant_declaration<'i>(
         }
     }
 
-    let allowed_keys: HashSet<&str> = ["binding", "from", "to", "mode", "groups", "termination"].into_iter().collect();
+    let allowed_keys: HashSet<&str> =
+        ["binding", "from", "to", "mode", "groups", "termination", "name", "delegate_name"].into_iter().collect();
     for arg in &attribute.args {
         if !allowed_keys.contains(arg.name.as_str()) {
             return Err(CompilerError::Unsupported(format!("unknown covenant attribute argument '{}'", arg.name)));
@@ -321,6 +401,15 @@ fn parse_covenant_declaration<'i>(
     if binding == CovenantBinding::Cov && groups == CovenantGroups::Multiple {
         return Err(CompilerError::Unsupported("binding=cov with groups=multiple is not supported yet".to_string()));
     }
+    if binding == CovenantBinding::Auth && args_by_name.contains_key("delegate_name") {
+        return Err(CompilerError::Unsupported(
+            "covenant attribute argument 'delegate_name' is valid only with binding=cov".to_string(),
+        ));
+    }
+
+    let entrypoint_name = args_by_name.get("name").map(|expr| parse_attr_ident_arg("name", Some(expr))).transpose()?;
+    let delegate_entrypoint_name =
+        args_by_name.get("delegate_name").map(|expr| parse_attr_ident_arg("delegate_name", Some(expr))).transpose()?;
 
     if mode == CovenantMode::Verification && !function.return_types.is_empty() {
         return Err(CompilerError::Unsupported("verification mode policy functions must not declare return values".to_string()));
@@ -352,6 +441,8 @@ fn parse_covenant_declaration<'i>(
         groups,
         singleton: syntax == CovenantSyntax::Singleton,
         termination,
+        entrypoint_name,
+        delegate_entrypoint_name,
         from_expr: from_expr.clone(),
         to_expr: to_expr.clone(),
     })
@@ -742,10 +833,14 @@ fn build_cov_leader_wrapper<'i>(
     Ok(generated_entrypoint(policy, entrypoint_name, leader_params, body))
 }
 
-fn build_cov_delegate_wrapper<'i>(policy: &FunctionAst<'i>, entrypoint_name: String) -> FunctionAst<'i> {
+fn build_cov_delegate_wrapper<'i>(
+    leader_policy: &FunctionAst<'i>,
+    delegate_policy: Option<&FunctionAst<'i>>,
+    entrypoint_name: String,
+) -> FunctionAst<'i> {
     let active_input = active_input_index_expr();
     let cov_id_name = "__cov_id";
-    let body = vec![
+    let mut body = vec![
         var_def_statement(bytes32_type(), cov_id_name, Expr::call("OpInputCovenantId", vec![active_input.clone()])),
         require_statement(binary_expr(
             BinaryOp::Ne,
@@ -753,7 +848,16 @@ fn build_cov_delegate_wrapper<'i>(policy: &FunctionAst<'i>, entrypoint_name: Str
             active_input,
         )),
     ];
-    generated_entrypoint(policy, entrypoint_name, Vec::new(), body)
+    let (source, params) = if let Some(delegate_policy) = delegate_policy {
+        body.push(call_statement(
+            &delegate_policy.name,
+            delegate_policy.params.iter().map(|param| identifier_expr(&param.name)).collect(),
+        ));
+        (delegate_policy, delegate_policy.params.clone())
+    } else {
+        (leader_policy, Vec::new())
+    };
+    generated_entrypoint(source, entrypoint_name, params, body)
 }
 
 fn generated_entrypoint<'i>(

@@ -688,6 +688,9 @@ fn allows_multiple_cov_covenant_declarations() {
         .expect("multiple cov-bound declarations compile");
     let abi_names: Vec<&str> = compiled.abi.iter().map(|entry| entry.name.as_str()).collect();
     assert_eq!(abi_names, vec!["__leader_merge", "__leader_rebalance", "__delegate"]);
+    assert_eq!(compiled.cov_decl_to_abi.get("merge"), compiled.entry_by_name("__leader_merge"));
+    assert_eq!(compiled.cov_decl_to_abi.get("rebalance"), compiled.entry_by_name("__leader_rebalance"));
+    assert_eq!(compiled.delegate_entry_abi.as_ref(), compiled.entry_by_name("__delegate"));
 
     let merge_delegate =
         compiled.build_sig_script_for_covenant_decl("merge", vec![], Default::default()).expect("merge routes to the shared delegate");
@@ -697,4 +700,290 @@ fn allows_multiple_cov_covenant_declarations() {
     let shared_delegate = compiled.build_sig_script("__delegate", vec![]).expect("shared delegate sigscript builds");
     assert_eq!(merge_delegate, shared_delegate);
     assert_eq!(rebalance_delegate, shared_delegate);
+}
+
+#[test]
+fn lowers_kcc20_shaped_public_names_and_shared_delegate_body() {
+    let source = r#"
+        contract Token(byte[1] initial_owner, int initial_amount) {
+            byte[1] owner = initial_owner;
+            int amount = initial_amount;
+
+            function verifyOwner(byte[1] expected_owner, byte[] witness) {
+                require(witness.length == 1);
+                require(expected_owner == byte[1](witness));
+            }
+
+            #[covenant(
+                binding = cov,
+                from = 2,
+                to = 2,
+                mode = verification,
+                name = transfer,
+                delegate_name = transfer_delegator
+            )]
+            function transferPolicy(State[] prev_states, State[] next_states, byte[] witness) {
+                require(prev_states.length == 2);
+                require(next_states.length == 2);
+                verifyOwner(owner, witness);
+            }
+
+            #[covenant.delegate]
+            function authorizeDelegate(byte[] witness) {
+                verifyOwner(owner, witness);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[Expr::bytes(vec![7]), Expr::int(10)], CompileOptions::default())
+        .expect("KCC20-shaped declaration compiles");
+
+    let abi = compiled
+        .abi
+        .iter()
+        .map(|entry| (entry.name.as_str(), entry.inputs.iter().map(|input| input.type_name.as_str()).collect::<Vec<_>>()))
+        .collect::<Vec<_>>();
+    assert_eq!(abi, vec![("transfer", vec!["State[]", "byte[]"]), ("transfer_delegator", vec!["byte[]"]),]);
+
+    let transfer = compiled.entry_by_name("transfer").expect("public transfer exists");
+    let expected_hash = blake3::hash(b"transfer(State[],byte[])");
+    assert_eq!(transfer.dispatch_tag(), expected_hash.as_bytes()[..4]);
+
+    let delegate_args = vec![Expr::dynamic_bytes(vec![7])];
+    let routed = compiled
+        .build_sig_script_for_covenant_decl("transferPolicy", delegate_args.clone(), Default::default())
+        .expect("declaration helper resolves the overridden delegate name");
+    let direct = compiled.build_sig_script("transfer_delegator", delegate_args).expect("public delegate sigscript builds");
+    assert_eq!(routed, direct);
+    assert_eq!(compiled.cov_decl_to_abi.get("transferPolicy"), compiled.entry_by_name("transfer"));
+    assert_eq!(compiled.delegate_entry_abi.as_ref(), compiled.entry_by_name("transfer_delegator"));
+    assert_eq!(compiled.covenant_decl_entrypoint_name("transferPolicy", true), Some("transfer"));
+    assert_eq!(compiled.covenant_decl_entrypoint_name("transferPolicy", false), Some("transfer_delegator"));
+}
+
+#[test]
+fn supports_public_name_override_for_auth_bound_declaration() {
+    let source = r#"
+        contract Decls() {
+            #[covenant.singleton(name = spend)]
+            function spendPolicy(int amount) {
+                require(amount >= 0);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    assert_eq!(compiled.abi[0].name, "spend");
+    assert_eq!(compiled.cov_decl_to_abi.get("spendPolicy"), compiled.entry_by_name("spend"));
+    assert_eq!(compiled.delegate_entry_abi, None);
+    assert_eq!(compiled.covenant_decl_entrypoint_name("spendPolicy", false), Some("spend"));
+}
+
+#[test]
+fn rejects_duplicate_delegate_bodies() {
+    let source = r#"
+        contract Decls() {
+            #[covenant(binding = cov, from = 2, to = 2)]
+            function merge(int nonce) { require(nonce >= 0); }
+
+            #[covenant.delegate]
+            function authorizeA(byte[] witness) { require(witness.length >= 0); }
+
+            #[covenant.delegate]
+            function authorizeB(byte[] witness) { require(witness.length >= 0); }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("duplicate delegate bodies must fail");
+    assert!(err.to_string().contains("more than one #[covenant.delegate] body"), "unexpected error: {err}");
+}
+
+#[test]
+fn rejects_delegate_body_without_cov_bound_declaration() {
+    let source = r#"
+        contract Decls() {
+            #[covenant.delegate]
+            function authorize(byte[] witness) { require(witness.length >= 0); }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("unused delegate body must fail");
+    assert!(err.to_string().contains("requires at least one binding=cov"), "unexpected error: {err}");
+}
+
+#[test]
+fn delegate_and_leader_internal_policy_names_use_disjoint_namespaces() {
+    let source = r#"
+        contract Decls() {
+            #[covenant(binding = cov, from = 2, to = 2)]
+            function delegate_authorize(int nonce) { require(nonce >= 0); }
+
+            #[covenant.delegate]
+            function authorize(byte[] witness) { require(witness.length >= 0); }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("internal policy names do not collide");
+    assert!(compiled.ast.functions.iter().any(|function| function.name == "__covenant_policy_delegate_authorize"));
+    assert!(compiled.ast.functions.iter().any(|function| function.name == "__covenant_delegate_policy_authorize"));
+}
+
+#[test]
+fn rejects_direct_calls_to_the_delegate_body() {
+    let source = r#"
+        contract Decls() {
+            #[covenant(binding = cov, from = 2, to = 2)]
+            function transfer(byte[] witness) {
+                authorizeDelegate(witness);
+            }
+
+            #[covenant.delegate]
+            function authorizeDelegate(byte[] witness) {
+                require(witness.length > 0);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("delegate bodies are compiler hooks");
+    let message = err.to_string();
+    assert!(message.contains("covenant-annotated function 'authorizeDelegate' cannot be called directly"));
+    assert!(message.contains("extract shared logic into an unannotated helper function"));
+}
+
+#[test]
+fn rejects_direct_calls_to_a_covenant_policy() {
+    let source = r#"
+        contract Decls() {
+            #[covenant(binding = cov, from = 2, to = 2)]
+            function transferPolicy(int amount) {
+                require(amount >= 0);
+            }
+
+            #[covenant.allow(rule = manual_entrypoint_in_leader_contract)]
+            entry recover(int amount) {
+                transferPolicy(amount);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("covenant policies are compiler hooks");
+    let message = err.to_string();
+    assert!(message.contains("covenant-annotated function 'transferPolicy' cannot be called directly"));
+    assert!(message.contains("extract shared logic into an unannotated helper function"));
+}
+
+#[test]
+fn rejects_conflicting_shared_delegate_names() {
+    let source = r#"
+        contract Decls() {
+            #[covenant(binding = cov, from = 2, to = 2, delegate_name = merge_delegator)]
+            function merge(int nonce) { require(nonce >= 0); }
+
+            #[covenant(binding = cov, from = 2, to = 2, delegate_name = rebalance_delegator)]
+            function rebalance(int nonce) { require(nonce >= 0); }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("delegate names must agree");
+    assert!(err.to_string().contains("conflicting shared delegate entrypoint names"), "unexpected error: {err}");
+}
+
+#[test]
+fn rejects_invalid_delegate_body_signatures() {
+    let cases = [
+        r#"
+            contract Decls() {
+                #[covenant(binding = cov, from = 2, to = 2)]
+                function merge(int nonce) { require(nonce >= 0); }
+                #[covenant.delegate]
+                entry authorize(byte[] witness) { require(witness.length >= 0); }
+            }
+        "#,
+        r#"
+            contract Decls() {
+                #[covenant(binding = cov, from = 2, to = 2)]
+                function merge(int nonce) { require(nonce >= 0); }
+                #[covenant.delegate]
+                function authorize(byte[] witness) : (int) { return(witness.length); }
+            }
+        "#,
+        r#"
+            contract Decls() {
+                #[covenant(binding = cov, from = 2, to = 2)]
+                function merge(int nonce) { require(nonce >= 0); }
+                #[covenant.delegate(name = delegated)]
+                function authorize(byte[] witness) { require(witness.length >= 0); }
+            }
+        "#,
+    ];
+
+    for source in cases {
+        let err = compile_contract(source, &[], CompileOptions::default()).expect_err("invalid delegate signature must fail");
+        assert!(err.to_string().contains("#[covenant.delegate]"), "unexpected error: {err}");
+    }
+}
+
+#[test]
+fn rejects_generated_public_name_collision() {
+    let source = r#"
+        contract Decls() {
+            #[covenant(binding = cov, from = 2, to = 2, name = transfer)]
+            function transferPolicy(int nonce) { require(nonce >= 0); }
+
+            #[covenant.allow(rule = manual_entrypoint_in_leader_contract)]
+            entry transfer() {
+                byte[32] cov_id = OpInputCovenantId(this.activeInputIndex);
+                require(OpCovInputCount(cov_id) == 1);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("generated public name collision must fail");
+    assert!(err.to_string().contains("duplicate function name 'transfer'"), "unexpected error: {err}");
+}
+
+#[test]
+fn rejects_generated_public_name_collisions_with_helpers() {
+    let cases = [
+        r#"
+            contract Decls() {
+                function spend() {}
+
+                #[covenant.singleton(name = spend)]
+                function transfer(int nonce) { require(nonce >= 0); }
+            }
+        "#,
+        r#"
+            contract Decls() {
+                function spend() {}
+
+                #[covenant(binding = cov, from = 2, to = 2, delegate_name = spend)]
+                function transfer(int nonce) { require(nonce >= 0); }
+            }
+        "#,
+    ];
+
+    for source in cases {
+        let err = compile_contract(source, &[], CompileOptions::default())
+            .expect_err("generated public names must not collide with helper functions");
+        assert!(err.to_string().contains("duplicate function name 'spend'"), "unexpected error: {err}");
+    }
+}
+
+#[test]
+fn rejects_per_leader_delegate_policy_selection() {
+    let source = r#"
+        contract Decls() {
+            function weak(byte[] witness) { require(witness.length >= 0); }
+
+            #[covenant(binding = cov, from = 2, to = 2, delegate_policy = weak)]
+            function merge(int nonce) { require(nonce >= 0); }
+
+            #[covenant.delegate]
+            function strong(byte[] witness) { require(witness.length > 0); }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("leaders cannot select delegate policies");
+    assert!(err.to_string().contains("unknown covenant attribute argument 'delegate_policy'"), "unexpected error: {err}");
 }

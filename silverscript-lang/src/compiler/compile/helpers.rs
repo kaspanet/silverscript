@@ -1,4 +1,11 @@
 use super::*;
+use crate::compiler::covenant_declarations::CovenantDeclarationAbiNames;
+
+pub(super) struct BuiltAbi {
+    pub(super) function_abi_entries: Vec<FunctionAbiEntry>,
+    pub(super) cov_decl_to_abi: BTreeMap<String, FunctionAbiEntry>,
+    pub(super) delegate_entry_abi: Option<FunctionAbiEntry>,
+}
 
 pub(super) fn compile_contract_fields<'i>(
     fields: &[ContractFieldAst<'i>],
@@ -47,44 +54,73 @@ pub(super) fn infer_expr_type<'i>(
     type_check::check_expr(expr, None, &ctx)
 }
 
-pub(super) fn build_function_abi_entries<'i>(
+pub(super) fn build_abi<'i>(
     contract: &ContractAst<'i>,
     constants: &HashMap<String, Expr<'i>>,
-) -> Result<Vec<FunctionAbiEntry>, CompilerError> {
-    contract
-        .functions
+    covenant_abi_names: &CovenantDeclarationAbiNames,
+) -> Result<BuiltAbi, CompilerError> {
+    let source_name_by_entrypoint = covenant_abi_names
+        .entrypoints
         .iter()
-        .filter(|func| func.entrypoint)
-        .map(|func| {
-            let inputs = func
-                .params
-                .iter()
-                .map(|param| {
-                    let mut type_ref = param.type_ref.clone();
-                    for dimension in &mut type_ref.array_dims {
-                        if matches!(dimension, ArrayDim::Inferred) {
-                            return Err(CompilerError::NonCanonicalEntrypointParameter {
-                                function: func.name.clone(),
-                                param: param.name.clone(),
-                            });
-                        }
-                        if let ArrayDim::Constant(name) = dimension {
-                            let value = constants
-                                .get(name)
-                                .ok_or_else(|| CompilerError::UndefinedIdentifier(name.clone()))
-                                .and_then(|expr| eval_const_int(expr, constants))?;
-                            let size = usize::try_from(value).map_err(|_| {
-                                CompilerError::Unsupported(format!("array size constant '{name}' must be a non-negative integer"))
-                            })?;
-                            *dimension = ArrayDim::Fixed(size);
-                        }
+        .map(|(source_name, entrypoint_name)| (entrypoint_name.as_str(), source_name.as_str()))
+        .collect::<HashMap<_, _>>();
+    let delegate_entrypoint = covenant_abi_names.delegate_entrypoint.as_deref();
+    let mut function_abi_entries = Vec::new();
+    let mut cov_decl_to_abi = BTreeMap::new();
+    let mut delegate_entry_abi = None;
+
+    for func in contract.functions.iter().filter(|func| func.entrypoint) {
+        let inputs = func
+            .params
+            .iter()
+            .map(|param| {
+                let mut type_ref = param.type_ref.clone();
+                for dimension in &mut type_ref.array_dims {
+                    if matches!(dimension, ArrayDim::Inferred) {
+                        return Err(CompilerError::NonCanonicalEntrypointParameter {
+                            function: func.name.clone(),
+                            param: param.name.clone(),
+                        });
                     }
-                    Ok(FunctionInputAbi { name: param.name.clone(), type_name: type_ref.type_name() })
-                })
-                .collect::<Result<Vec<_>, CompilerError>>()?;
-            Ok(FunctionAbiEntry { name: func.name.clone(), inputs })
-        })
-        .collect()
+                    if let ArrayDim::Constant(name) = dimension {
+                        let value = constants
+                            .get(name)
+                            .ok_or_else(|| CompilerError::UndefinedIdentifier(name.clone()))
+                            .and_then(|expr| eval_const_int(expr, constants))?;
+                        let size = usize::try_from(value).map_err(|_| {
+                            CompilerError::Unsupported(format!("array size constant '{name}' must be a non-negative integer"))
+                        })?;
+                        *dimension = ArrayDim::Fixed(size);
+                    }
+                }
+                Ok(FunctionInputAbi { name: param.name.clone(), type_name: type_ref.type_name() })
+            })
+            .collect::<Result<Vec<_>, CompilerError>>()?;
+        let entry = FunctionAbiEntry { name: func.name.clone(), inputs };
+
+        if let Some(source_name) = source_name_by_entrypoint.get(func.name.as_str()) {
+            cov_decl_to_abi.insert((*source_name).to_string(), entry.clone());
+        }
+        if delegate_entrypoint == Some(func.name.as_str()) {
+            delegate_entry_abi = Some(entry.clone());
+        }
+        function_abi_entries.push(entry);
+    }
+
+    if let Some((source_name, entrypoint_name)) =
+        covenant_abi_names.entrypoints.iter().find(|(source_name, _)| !cov_decl_to_abi.contains_key(*source_name))
+    {
+        return Err(CompilerError::Unsupported(format!(
+            "generated covenant entrypoint '{entrypoint_name}' for declaration '{source_name}' is missing from the ABI"
+        )));
+    }
+    if let Some(entrypoint_name) = delegate_entrypoint.filter(|_| delegate_entry_abi.is_none()) {
+        return Err(CompilerError::Unsupported(format!(
+            "generated covenant delegate entrypoint '{entrypoint_name}' is missing from the ABI"
+        )));
+    }
+
+    Ok(BuiltAbi { function_abi_entries, cov_decl_to_abi, delegate_entry_abi })
 }
 
 pub(super) fn array_element_size<'i>(type_ref: &TypeRef, constants: &HashMap<String, Expr<'i>>) -> Option<i64> {
