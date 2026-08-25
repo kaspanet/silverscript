@@ -15,7 +15,7 @@ contract KCC20(byte[32] genesisPk, int genesisAmount, byte genesisIdentifierType
             byte[] spk = byte[](new ScriptPubKeyP2SH(ownerIdentifier));
             require(tx.inputs[unsigned(witness)].scriptPubKey == spk);
         } else if(identifierType == IDENTIFIER_COVENANT_ID){
-            require(OpInputCovenantId(unsigned(witness)) == ownerIdentifier);
+            require(OpCovInputCount(ownerIdentifier) > 0);
         } else {
             require(false);
         }
