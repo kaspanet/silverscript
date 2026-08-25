@@ -892,6 +892,34 @@ fn rejects_generated_public_name_collision() {
 }
 
 #[test]
+fn rejects_generated_public_name_collisions_with_helpers() {
+    let cases = [
+        r#"
+            contract Decls() {
+                function spend() {}
+
+                #[covenant.singleton(name = spend)]
+                function transfer(int nonce) { require(nonce >= 0); }
+            }
+        "#,
+        r#"
+            contract Decls() {
+                function spend() {}
+
+                #[covenant(binding = cov, from = 2, to = 2, delegate_name = spend)]
+                function transfer(int nonce) { require(nonce >= 0); }
+            }
+        "#,
+    ];
+
+    for source in cases {
+        let err = compile_contract(source, &[], CompileOptions::default())
+            .expect_err("generated public names must not collide with helper functions");
+        assert!(err.to_string().contains("duplicate function name 'spend'"), "unexpected error: {err}");
+    }
+}
+
+#[test]
 fn rejects_per_leader_delegate_policy_selection() {
     let source = r#"
         contract Decls() {

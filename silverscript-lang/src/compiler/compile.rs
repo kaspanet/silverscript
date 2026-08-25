@@ -52,6 +52,7 @@ pub(super) fn compile_contract_impl<'i>(
     let inferred_lowered_contract = lower_inferred_array_sizes(contract, &constants)?;
     static_check_contract(&inferred_lowered_contract, constructor_args, options)?;
     let covenant_lowered_contract = lower_covenant_declarations(&inferred_lowered_contract, &constants)?;
+    validate_declaration_names(&covenant_lowered_contract)?;
     let ternary_lowered_contract = lower_ternaries(&covenant_lowered_contract, &constants)?;
     let read_input_state_lowered_contract = lower_read_input_state_calls(&ternary_lowered_contract)?;
     let inline_lowered_contract = lower_inline_functions(&read_input_state_lowered_contract, &mut debug_recorder)?;
