@@ -359,6 +359,73 @@ contract CovDebugDemo(int initial_value) {
     )
 }
 
+fn write_covenant_distinct_delegate_args_fixture() -> (std::path::PathBuf, std::path::PathBuf) {
+    write_fixture_files(
+        "cov_distinct_delegate_args.sil",
+        "cov_distinct_delegate_args.test.json",
+        r#"pragma silverscript ^0.1.0;
+
+contract CovDistinctDelegateArgs() {
+    #[covenant(binding = cov, from = 2, to = 2)]
+    function transfer(int amount, bool allowed) {
+        require(amount >= 0);
+        require(allowed);
+    }
+
+    #[covenant.delegate]
+    function authorizeDelegate(byte[] witness) {
+        require(witness.length > 0);
+    }
+}
+"#,
+        r#"{
+  "tests": [
+    {
+      "name": "leader_uses_only_leader_args",
+      "function": "transfer",
+      "args": [1, true],
+      "expect": "pass",
+      "tx": {
+        "active_input_index": 0,
+        "inputs": [
+          {
+            "utxo_value": 5000,
+            "covenant_id": "0x1111111111111111111111111111111111111111111111111111111111111111"
+          },
+          {
+            "utxo_value": 5000,
+            "covenant_id": "0x1111111111111111111111111111111111111111111111111111111111111111"
+          }
+        ],
+        "outputs": []
+      }
+    },
+    {
+      "name": "delegate_uses_only_delegate_args",
+      "function": "transfer",
+      "args": ["0x01"],
+      "expect": "pass",
+      "tx": {
+        "active_input_index": 1,
+        "inputs": [
+          {
+            "utxo_value": 5000,
+            "covenant_id": "0x1111111111111111111111111111111111111111111111111111111111111111"
+          },
+          {
+            "utxo_value": 5000,
+            "covenant_id": "0x1111111111111111111111111111111111111111111111111111111111111111"
+          }
+        ],
+        "outputs": []
+      }
+    }
+  ]
+}
+"#,
+    )
+}
+
 fn write_state_first_auth_transition_fixture() -> (std::path::PathBuf, std::path::PathBuf) {
     write_fixture_files(
         "state_first_transition.sil",
@@ -1165,6 +1232,31 @@ fn cli_debugger_runs_source_level_covenant_tests() {
         );
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(stdout.contains("PASS"), "missing PASS output for {test_name}: {stdout}");
+    }
+}
+
+#[test]
+fn cli_debugger_does_not_reuse_active_args_for_covenant_companions() {
+    let (script_path, test_file_path) = write_covenant_distinct_delegate_args_fixture();
+
+    for test_name in ["leader_uses_only_leader_args", "delegate_uses_only_delegate_args"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_cli-debugger"))
+            .arg(&script_path)
+            .arg("--run")
+            .arg("--test-file")
+            .arg(&test_file_path)
+            .arg("--test-name")
+            .arg(test_name)
+            .output()
+            .expect("run covenant debug test with distinct leader and delegate args");
+
+        assert!(
+            output.status.success(),
+            "expected success for {test_name}, status={:?}, stdout={}, stderr={}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 }
 
