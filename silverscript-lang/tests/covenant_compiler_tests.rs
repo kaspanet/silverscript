@@ -688,6 +688,9 @@ fn allows_multiple_cov_covenant_declarations() {
         .expect("multiple cov-bound declarations compile");
     let abi_names: Vec<&str> = compiled.abi.iter().map(|entry| entry.name.as_str()).collect();
     assert_eq!(abi_names, vec!["__leader_merge", "__leader_rebalance", "__delegate"]);
+    assert_eq!(compiled.cov_decl_to_abi.get("merge"), compiled.entry_by_name("__leader_merge"));
+    assert_eq!(compiled.cov_decl_to_abi.get("rebalance"), compiled.entry_by_name("__leader_rebalance"));
+    assert_eq!(compiled.delegate_entry_abi.as_ref(), compiled.entry_by_name("__delegate"));
 
     let merge_delegate =
         compiled.build_sig_script_for_covenant_decl("merge", vec![], Default::default()).expect("merge routes to the shared delegate");
@@ -752,6 +755,8 @@ fn lowers_kcc20_shaped_public_names_and_shared_delegate_body() {
         .expect("declaration helper resolves the overridden delegate name");
     let direct = compiled.build_sig_script("transfer_delegator", delegate_args).expect("public delegate sigscript builds");
     assert_eq!(routed, direct);
+    assert_eq!(compiled.cov_decl_to_abi.get("transferPolicy"), compiled.entry_by_name("transfer"));
+    assert_eq!(compiled.delegate_entry_abi.as_ref(), compiled.entry_by_name("transfer_delegator"));
     assert_eq!(compiled.covenant_decl_entrypoint_name("transferPolicy", true), Some("transfer"));
     assert_eq!(compiled.covenant_decl_entrypoint_name("transferPolicy", false), Some("transfer_delegator"));
 }
@@ -769,6 +774,8 @@ fn supports_public_name_override_for_auth_bound_declaration() {
 
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
     assert_eq!(compiled.abi[0].name, "spend");
+    assert_eq!(compiled.cov_decl_to_abi.get("spendPolicy"), compiled.entry_by_name("spend"));
+    assert_eq!(compiled.delegate_entry_abi, None);
     assert_eq!(compiled.covenant_decl_entrypoint_name("spendPolicy", false), Some("spend"));
 }
 

@@ -40,11 +40,17 @@ struct CovenantDeclaration<'i> {
     to_expr: Expr<'i>,
 }
 
+pub(super) struct CovenantDeclarationAbiNames {
+    pub entrypoints: HashMap<String, String>,
+    pub delegate_entrypoint: Option<String>,
+}
+
 pub(super) fn lower_covenant_declarations<'i>(
     contract: &ContractAst<'i>,
     constants: &HashMap<String, Expr<'i>>,
-) -> Result<ContractAst<'i>, CompilerError> {
+) -> Result<(ContractAst<'i>, CovenantDeclarationAbiNames), CompilerError> {
     let mut lowered = Vec::new();
+    let mut covenant_entrypoints = HashMap::new();
     let mut cov_declaration = None;
     let mut shared_delegate_source = None;
     let mut shared_delegate_entrypoint = None;
@@ -103,6 +109,7 @@ pub(super) fn lower_covenant_declarations<'i>(
                 auth_declaration.get_or_insert_with(|| function.name.clone());
                 let entrypoint_name =
                     declaration.entrypoint_name.clone().unwrap_or_else(|| generated_covenant_auth_entrypoint_name(&function.name));
+                covenant_entrypoints.insert(function.name.clone(), entrypoint_name.clone());
                 let mut wrapper = build_auth_wrapper(&policy, &policy_name, declaration.clone(), entrypoint_name, &contract.fields)?;
                 wrapper.params = preserved_entrypoint_params(function, declaration, true, &contract.fields);
                 lowered.push(wrapper);
@@ -111,6 +118,7 @@ pub(super) fn lower_covenant_declarations<'i>(
                 cov_declaration.get_or_insert_with(|| function.name.clone());
                 let leader_name =
                     declaration.entrypoint_name.clone().unwrap_or_else(|| generated_covenant_leader_entrypoint_name(&function.name));
+                covenant_entrypoints.insert(function.name.clone(), leader_name.clone());
                 let mut leader_wrapper =
                     build_cov_leader_wrapper(&policy, &policy_name, declaration.clone(), leader_name, &contract.fields)?;
                 leader_wrapper.params = preserved_entrypoint_params(function, declaration.clone(), true, &contract.fields);
@@ -133,15 +141,18 @@ pub(super) fn lower_covenant_declarations<'i>(
         }
     }
 
-    if let Some(policy) = shared_delegate_source {
+    let delegate_entrypoint = if let Some(policy) = shared_delegate_source {
         let delegate_name = shared_delegate_entrypoint.expect("a cov-bound declaration always selects a delegate entrypoint").0;
-        lowered.push(build_cov_delegate_wrapper(&policy, delegate_policy.as_ref(), delegate_name));
+        lowered.push(build_cov_delegate_wrapper(&policy, delegate_policy.as_ref(), delegate_name.clone()));
+        Some(delegate_name)
     } else if delegate_policy.is_some() {
         return Err(CompilerError::Unsupported(format!(
             "#[covenant.delegate] body '{}' requires at least one binding=cov covenant declaration",
             delegate_body_name.expect("a delegate policy preserves its source name")
         )));
-    }
+    } else {
+        None
+    };
 
     if let Some(cov_declaration) = cov_declaration {
         if let Some(auth_declaration) = auth_declaration {
@@ -160,7 +171,7 @@ pub(super) fn lower_covenant_declarations<'i>(
 
     let mut lowered_contract = contract.clone();
     lowered_contract.functions = lowered;
-    Ok(lowered_contract)
+    Ok((lowered_contract, CovenantDeclarationAbiNames { entrypoints: covenant_entrypoints, delegate_entrypoint }))
 }
 
 fn is_covenant_delegate_body(function: &FunctionAst<'_>) -> bool {

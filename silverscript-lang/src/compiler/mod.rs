@@ -124,6 +124,10 @@ pub struct CompiledContract<'i> {
     pub bytecode: Vec<u8>,
     pub ast: ContractAst<'i>,
     pub abi: Vec<FunctionAbiEntry>,
+    /// Public leader/auth ABI entries keyed by their pre-lowering covenant declaration names.
+    pub cov_decl_to_abi: HashMap<String, FunctionAbiEntry>,
+    /// The shared delegate ABI entry generated for a cov-bound contract.
+    pub delegate_entry_abi: Option<FunctionAbiEntry>,
     pub state_layout: CompiledStateLayout,
     pub debug_info: Option<DebugInfo<'i>>,
 }
@@ -276,43 +280,13 @@ impl<'i> CompiledContract<'i> {
     /// delegate wrapper. Auth-bound declarations resolve to the same wrapper in
     /// either case.
     pub fn covenant_decl_entrypoint_name(&self, function_name: &str, is_leader: bool) -> Option<&str> {
-        let policy_name = generated_covenant_policy_name(function_name);
-        let wrapper =
-            self.ast.functions.iter().find(|function| function.entrypoint && function_directly_calls(function, &policy_name))?;
-
-        let cov_bound = function_defines_local(wrapper, "__cov_in_count");
-        if !cov_bound || is_leader {
-            return Some(wrapper.name.as_str());
+        let entry = self.cov_decl_to_abi.get(function_name)?;
+        if is_leader || self.delegate_entry_abi.is_none() {
+            return Some(entry.name.as_str());
         }
 
-        self.ast
-            .functions
-            .iter()
-            .find(|function| function.entrypoint && is_generated_covenant_delegate(function))
-            .map(|function| function.name.as_str())
+        self.delegate_entry_abi.as_ref().map(|entry| entry.name.as_str())
     }
-}
-
-fn function_directly_calls(function: &FunctionAst<'_>, callee: &str) -> bool {
-    function.body.iter().any(|statement| match statement {
-        Statement::FunctionCall { name, .. } | Statement::FunctionCallAssign { name, .. } => name == callee,
-        _ => false,
-    })
-}
-
-fn function_defines_local(function: &FunctionAst<'_>, local: &str) -> bool {
-    function.body.iter().any(|statement| matches!(statement, Statement::VariableDefinition { name, .. } if name == local))
-}
-
-fn is_generated_covenant_delegate(function: &FunctionAst<'_>) -> bool {
-    matches!(
-        function.body.as_slice(),
-        [
-            Statement::VariableDefinition { name, .. },
-            Statement::Require { .. },
-            ..
-        ] if name == "__cov_id" && !function_defines_local(function, "__cov_in_count")
-    )
 }
 
 fn push_typed_sigscript_arg<'i>(
