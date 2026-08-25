@@ -1,6 +1,12 @@
 use super::*;
 use crate::compiler::covenant_declarations::CovenantDeclarationAbiNames;
 
+pub(super) struct BuiltAbi {
+    pub(super) function_abi_entries: Vec<FunctionAbiEntry>,
+    pub(super) cov_decl_to_abi: HashMap<String, FunctionAbiEntry>,
+    pub(super) delegate_entry_abi: Option<FunctionAbiEntry>,
+}
+
 pub(super) fn compile_contract_fields<'i>(
     fields: &[ContractFieldAst<'i>],
     base_constants: &HashMap<String, Expr<'i>>,
@@ -52,14 +58,14 @@ pub(super) fn build_abi<'i>(
     contract: &ContractAst<'i>,
     constants: &HashMap<String, Expr<'i>>,
     covenant_abi_names: &CovenantDeclarationAbiNames,
-) -> Result<(Vec<FunctionAbiEntry>, HashMap<String, FunctionAbiEntry>, Option<FunctionAbiEntry>), CompilerError> {
+) -> Result<BuiltAbi, CompilerError> {
     let source_name_by_entrypoint = covenant_abi_names
         .entrypoints
         .iter()
         .map(|(source_name, entrypoint_name)| (entrypoint_name.as_str(), source_name.as_str()))
         .collect::<HashMap<_, _>>();
     let delegate_entrypoint = covenant_abi_names.delegate_entrypoint.as_deref();
-    let mut entries = Vec::new();
+    let mut function_abi_entries = Vec::new();
     let mut cov_decl_to_abi = HashMap::new();
     let mut delegate_entry_abi = None;
 
@@ -98,7 +104,7 @@ pub(super) fn build_abi<'i>(
         if delegate_entrypoint == Some(func.name.as_str()) {
             delegate_entry_abi = Some(entry.clone());
         }
-        entries.push(entry);
+        function_abi_entries.push(entry);
     }
 
     if let Some((source_name, entrypoint_name)) =
@@ -114,7 +120,7 @@ pub(super) fn build_abi<'i>(
         )));
     }
 
-    Ok((entries, cov_decl_to_abi, delegate_entry_abi))
+    Ok(BuiltAbi { function_abi_entries, cov_decl_to_abi, delegate_entry_abi })
 }
 
 pub(super) fn array_element_size<'i>(type_ref: &TypeRef, constants: &HashMap<String, Expr<'i>>) -> Option<i64> {

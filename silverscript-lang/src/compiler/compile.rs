@@ -69,7 +69,7 @@ pub(super) fn compile_contract_impl<'i>(
     let mut lowered_constants = flatten_constructor_args_env(&covenant_lowered_contract.params, constructor_args, &structs)?;
     lowered_constants.extend(lowered_contract.constants.iter().map(|constant| (constant.name.clone(), constant.expr.clone())));
 
-    let (function_abi_entries, cov_decl_to_abi, delegate_entry_abi) =
+    let BuiltAbi { function_abi_entries, cov_decl_to_abi, delegate_entry_abi } =
         build_abi(&covenant_lowered_contract, &constants, &covenant_abi_names)?;
     if function_abi_entries.is_empty() {
         return Err(CompilerError::Unsupported("contract has no entries".to_string()));
