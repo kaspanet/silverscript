@@ -3,8 +3,8 @@ use std::collections::{HashMap, HashSet};
 use super::compile::read_input_state_field_expr_symbolic;
 use super::*;
 use crate::ast::{
-    ConstantAst, ContractAst, ContractFieldAst, Expr, ExprKind, FunctionAst, ParamAst, STATE_TYPE_NAME, Statement, StructBindingAst,
-    TypeBase, TypeRef,
+    ArrayDim, ConstantAst, ContractAst, ContractFieldAst, Expr, ExprKind, FunctionAst, ParamAst, STATE_TYPE_NAME, Statement,
+    StructBindingAst, TypeBase, TypeRef,
 };
 use crate::span;
 
@@ -22,7 +22,7 @@ mod statement;
 use assignment::lower_assignment;
 pub(crate) use context::LoweringScope;
 use context::StructLowerer;
-pub(crate) use contract::{flatten_constructor_args_env, lower_structs_contract};
+pub(crate) use contract::{dynamic_struct_array_param_groups, flatten_constructor_args_env, lower_structs_contract};
 use declaration::lower_variable_definition;
 use destructure::lower_struct_destructure_statement;
 use expr_lowering::{
@@ -40,3 +40,5 @@ pub(crate) use schema::{
     struct_name, validate_struct_graph,
 };
 use statement::lower_statements;
+
+pub(crate) type StructArrayParamGroups = HashMap<String, Vec<Vec<String>>>;

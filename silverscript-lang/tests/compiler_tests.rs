@@ -3494,6 +3494,154 @@ fn runtime_supports_direct_struct_array_entrypoint_signature() {
 }
 
 #[test]
+fn runtime_rejects_mismatched_dynamic_struct_array_leaf_counts_before_append() {
+    let source = r#"
+        contract C() {
+            struct Item {
+                int number;
+                byte[2] tag;
+            }
+
+            entry main(Item[] items, byte[2] appendedTag, byte[2] expectedTag) {
+                require(appendedTag != expectedTag);
+                int len = items.length;
+                Item[] result = items.append(Item {number: 8, tag: appendedTag});
+                require(result[len].number == 8);
+                require(result[len].tag == expectedTag);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+
+    // This cannot encode an Item[]: the number leaf contains one element,
+    // while the tag leaf contains two. Without a cardinality guard, append
+    // makes result[1] combine the appended number with the attacker's second
+    // tag and all source-level requirements succeed.
+    let number_leaf = [7, 0, 0, 0, 0, 0, 0, 0];
+    let tag_leaf = [0x01, 0x02, 0x05, 0x06];
+    let sigscript = script_builder()
+        .add_data(&number_leaf)
+        .unwrap()
+        .add_data(&tag_leaf)
+        .unwrap()
+        .add_data(&[0x03, 0x04])
+        .unwrap()
+        .add_data(&[0x05, 0x06])
+        .unwrap()
+        .add_data(&dispatch_tag_for(&compiled, "main"))
+        .unwrap()
+        .drain();
+
+    let result = run_bytecode_with_sigscript(compiled.bytecode, sigscript);
+    assert!(result.is_err(), "mismatched struct-array leaf counts must fail before the entrypoint body");
+}
+
+#[test]
+fn codegen_reuses_dynamic_struct_array_leaf_sizes_for_cardinality_validation() {
+    let source = r#"
+        contract C() {
+            struct Item {
+                int number;
+                byte[2] tag;
+            }
+
+            entry main(Item[] items) {
+                require(true);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let opcodes = script_to_str(&compiled.bytecode).expect("compiled bytecode stringifies");
+
+    assert_eq!(opcodes.matches("OpSize").count(), 2, "each flattened struct-array leaf should be sized once: {opcodes}");
+}
+
+#[test]
+fn runtime_validates_cardinality_for_deeply_nested_struct_array_leaves() {
+    let source = r#"
+        contract C() {
+            struct Leaf {
+                int[2][3] matrix;
+                byte[4] code;
+            }
+            struct Middle {
+                Leaf leaf;
+                bool[4][2] flags;
+            }
+            struct Item {
+                Middle middle;
+                int[2] totals;
+            }
+
+            entry main(Item[] items) {
+                require(items.length == 1);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let dispatch_tag = dispatch_tag_for(&compiled, "main");
+    let build_sigscript = |code_leaf_len: usize| {
+        script_builder()
+            // One outer Item for each leaf. Their respective strides are
+            // 48 (int[2][3]), 4 (byte[4]), 8 (bool[4][2]), and 16 (int[2]).
+            .add_data(&[0; 48])
+            .unwrap()
+            .add_data(&vec![0; code_leaf_len])
+            .unwrap()
+            .add_data(&[0; 8])
+            .unwrap()
+            .add_data(&[0; 16])
+            .unwrap()
+            .add_data(&dispatch_tag)
+            .unwrap()
+            .drain()
+    };
+
+    let valid = run_bytecode_with_sigscript(compiled.bytecode.clone(), build_sigscript(4));
+    assert!(valid.is_ok(), "equal leaf cardinalities across nested fixed-width layouts should execute: {valid:?}");
+
+    let malformed = run_bytecode_with_sigscript(compiled.bytecode, build_sigscript(8));
+    assert!(malformed.is_err(), "a surplus element in a deeply nested leaf must be rejected");
+}
+
+#[test]
+fn runtime_keeps_cardinality_groups_separate_for_multiple_struct_array_params() {
+    let source = r#"
+        contract C() {
+            struct Item {
+                int number;
+                byte[2] tag;
+            }
+
+            entry main(Item[] first, Item[] second) {
+                require(first.length == 1);
+                require(second.length == 2);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let first = Expr::array(
+        parse_type_ref("Item[]").unwrap(),
+        vec![struct_object("Item", vec![("number", Expr::int(1)), ("tag", Expr::bytes(vec![1, 2]))])],
+    );
+    let second = Expr::array(
+        parse_type_ref("Item[]").unwrap(),
+        vec![
+            struct_object("Item", vec![("number", Expr::int(2)), ("tag", Expr::bytes(vec![3, 4]))]),
+            struct_object("Item", vec![("number", Expr::int(3)), ("tag", Expr::bytes(vec![5, 6]))]),
+        ],
+    );
+    let sigscript = compiled.build_sig_script("main", vec![first, second]).expect("sigscript builds");
+    let result = run_bytecode_with_sigscript(compiled.bytecode, sigscript);
+
+    assert!(result.is_ok(), "separate struct-array parameters may have different lengths: {result:?}");
+}
+
+#[test]
 fn build_sig_script_enforces_fixed_struct_array_length() {
     let source = r#"
         contract C() {
