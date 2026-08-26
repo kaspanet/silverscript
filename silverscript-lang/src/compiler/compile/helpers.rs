@@ -44,7 +44,7 @@ pub(super) fn infer_expr_type<'i>(
     let structs = StructRegistry::new();
     let functions = HashMap::new();
     let ctx = type_check::TypeCheckContext { types, structs: &structs, constants, functions: &functions, contract_fields: &[] };
-    type_check::check_expr(expr, None, &ctx)
+    type_check::infer_expr_type(expr, &ctx)
 }
 
 pub(super) fn build_function_abi_entries<'i>(

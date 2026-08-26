@@ -1,6 +1,5 @@
 use super::*;
 use crate::ast::{ConstantAst, ContractAst, ContractFieldAst, Expr, ExprKind, FunctionAst, StateFieldExpr, Statement};
-use crate::compiler::infer_array::infer_expr_type;
 
 pub(super) fn lower_array_appends<'i>(
     contract: &ContractAst<'i>,
@@ -260,8 +259,11 @@ fn lower_expr<'i>(
     let span = expr.span;
     match &expr.kind {
         ExprKind::Append { source, args, .. } => {
-            let source_type = infer_expr_type(source, types, constants, functions)?
-                .ok_or_else(|| CompilerError::Unsupported("cannot determine append source type".to_string()))?;
+            // Input-state calls and structs have already been lowered, so type inference no longer needs contract-field metadata
+            // or struct definitions.
+            let structs = StructRegistry::new();
+            let type_context = type_check::TypeCheckContext { types, structs: &structs, constants, functions, contract_fields: &[] };
+            let source_type = type_check::infer_expr_type(source, &type_context)?;
             let mut appended_type = source_type
                 .array_element_type()
                 .ok_or_else(|| CompilerError::Unsupported("append target must be an array".to_string()))?;

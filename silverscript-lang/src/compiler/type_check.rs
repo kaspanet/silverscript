@@ -23,6 +23,14 @@ pub(super) struct TypeCheckContext<'a, 'i> {
     pub contract_fields: &'a [ContractFieldAst<'i>],
 }
 
+/// Determines an expression's type using the canonical type checker.
+///
+/// TODO: Have static checking produce a typed IR whose type annotations are preserved through lowering, so later passes do not
+/// need to re-check expressions merely to recover their types.
+pub(super) fn infer_expr_type<'i>(expr: &Expr<'i>, ctx: &TypeCheckContext<'_, 'i>) -> Result<TypeRef, CompilerError> {
+    check_expr(expr, None, ctx)
+}
+
 pub(super) fn check_expr<'i>(
     expr: &Expr<'i>,
     expected: Option<&TypeRef>,

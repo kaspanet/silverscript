@@ -274,7 +274,7 @@ fn infer_type<'i>(
     }
 }
 
-pub(super) fn infer_expr_type<'i>(
+fn infer_expr_type<'i>(
     expr: &Expr<'i>,
     types: &TypeMap,
     constants: &HashMap<String, Expr<'i>>,
