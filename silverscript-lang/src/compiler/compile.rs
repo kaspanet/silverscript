@@ -74,6 +74,7 @@ pub(super) fn compile_contract_impl<'i>(
     }
 
     let function_abi_entries = build_function_abi_entries(&covenant_lowered_contract, &constants)?;
+    let artifact_contract = resolve_artifact_struct_type_refs(&covenant_lowered_contract, &constants)?;
 
     // dispatch tag: verify no collisions and insert tags to global state
     let mut entrypoints_by_tag = HashMap::<DispatchTag, &str>::new();
@@ -105,7 +106,7 @@ pub(super) fn compile_contract_impl<'i>(
         if !uses_bytecode_size {
             return Ok(build_compiled_contract(
                 &lowered_contract,
-                &covenant_lowered_contract,
+                &artifact_contract,
                 function_abi_entries.clone(),
                 bytecode,
                 state_layout,
@@ -117,7 +118,7 @@ pub(super) fn compile_contract_impl<'i>(
         if Some(actual_size) == bytecode_size {
             return Ok(build_compiled_contract(
                 &lowered_contract,
-                &covenant_lowered_contract,
+                &artifact_contract,
                 function_abi_entries.clone(),
                 bytecode,
                 state_layout,

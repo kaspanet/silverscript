@@ -60,31 +60,62 @@ pub(super) fn build_function_abi_entries<'i>(
                 .params
                 .iter()
                 .map(|param| {
-                    let mut type_ref = param.type_ref.clone();
-                    for dimension in &mut type_ref.array_dims {
-                        if matches!(dimension, ArrayDim::Inferred) {
-                            return Err(CompilerError::NonCanonicalEntrypointParameter {
-                                function: func.name.clone(),
-                                param: param.name.clone(),
-                            });
-                        }
-                        if let ArrayDim::Constant(name) = dimension {
-                            let value = constants
-                                .get(name)
-                                .ok_or_else(|| CompilerError::UndefinedIdentifier(name.clone()))
-                                .and_then(|expr| eval_const_int(expr, constants))?;
-                            let size = usize::try_from(value).map_err(|_| {
-                                CompilerError::Unsupported(format!("array size constant '{name}' must be a non-negative integer"))
-                            })?;
-                            *dimension = ArrayDim::Fixed(size);
-                        }
-                    }
+                    let type_ref = resolve_abi_type_ref(&param.type_ref, constants, &func.name, &param.name)?;
                     Ok(FunctionInputAbi { name: param.name.clone(), type_name: type_ref.type_name() })
                 })
                 .collect::<Result<Vec<_>, CompilerError>>()?;
             Ok(FunctionAbiEntry { name: func.name.clone(), inputs })
         })
         .collect()
+}
+
+pub(super) fn resolve_artifact_struct_type_refs<'i>(
+    contract: &ContractAst<'i>,
+    constants: &HashMap<String, Expr<'i>>,
+) -> Result<ContractAst<'i>, CompilerError> {
+    let mut resolved = contract.clone();
+    for item in &mut resolved.structs {
+        for field in &mut item.fields {
+            field.type_ref =
+                resolve_abi_type_ref(&field.type_ref, constants, "artifact struct schema", &format!("{}.{}", item.name, field.name))?;
+        }
+    }
+    Ok(resolved)
+}
+
+pub(super) fn resolve_abi_type_ref<'i>(
+    type_ref: &TypeRef,
+    constants: &HashMap<String, Expr<'i>>,
+    function_name: &str,
+    parameter_name: &str,
+) -> Result<TypeRef, CompilerError> {
+    let mut resolved = type_ref.clone();
+    if let TypeBase::Tuple(elements) = &mut resolved.base {
+        for element in elements {
+            *element = resolve_abi_type_ref(element, constants, function_name, parameter_name)?;
+        }
+    }
+    for dimension in &mut resolved.array_dims {
+        match dimension {
+            ArrayDim::Inferred => {
+                return Err(CompilerError::NonCanonicalEntrypointParameter {
+                    function: function_name.to_string(),
+                    param: parameter_name.to_string(),
+                });
+            }
+            ArrayDim::Constant(name) => {
+                let value = constants
+                    .get(name)
+                    .ok_or_else(|| CompilerError::UndefinedIdentifier(name.clone()))
+                    .and_then(|expr| eval_const_int(expr, constants))?;
+                let size = usize::try_from(value)
+                    .map_err(|_| CompilerError::Unsupported(format!("array size constant '{name}' must be a non-negative integer")))?;
+                *dimension = ArrayDim::Fixed(size);
+            }
+            ArrayDim::Dynamic | ArrayDim::Fixed(_) => {}
+        }
+    }
+    Ok(resolved)
 }
 
 pub(super) fn array_element_size<'i>(type_ref: &TypeRef, constants: &HashMap<String, Expr<'i>>) -> Result<Option<i64>, CompilerError> {

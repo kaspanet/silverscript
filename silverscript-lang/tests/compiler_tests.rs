@@ -16710,6 +16710,59 @@ fn artifact_state_resolution_supports_constructor_sized_arrays() {
 }
 
 #[test]
+fn artifact_sigscript_builder_supports_constructor_sized_struct_array_fields() {
+    let source = r#"
+        contract C(int N) {
+            struct Item {
+                byte[N] data;
+            }
+
+            entry main(Item[] items) {
+                require(items.length == 1);
+            }
+        }
+    "#;
+    let compiled = compile_contract(source, &[Expr::int(3)], CompileOptions::default()).expect("contract compiles");
+    let input = &compiled.entry_by_name("main").expect("entrypoint exists").inputs[0];
+    assert_eq!(input.type_name, "Item[]");
+    assert_eq!(compiled.ast.structs[0].fields[0].type_ref, parse_type_ref("byte[3]").expect("resolved field type parses"));
+
+    let json = serde_json::to_string(&compiled).expect("compiled artifact serializes");
+    let compiled: CompiledContract<'_> = serde_json::from_str(&json).expect("compiled artifact deserializes");
+    assert_eq!(compiled.ast.structs[0].fields[0].type_ref, parse_type_ref("byte[3]").expect("resolved field type survives JSON"));
+    let item = struct_object("Item", vec![("data", Expr::bytes(vec![0xaa, 0xbb, 0xcc]))]);
+    let items = Expr::array(parse_type_ref("Item[]").expect("array type parses"), vec![item]);
+    let sigscript = compiled.build_sig_script("main", vec![items]).expect("resolved ABI encodes the valid argument");
+
+    run_bytecode_with_sigscript(compiled.bytecode, sigscript).expect("artifact-built invocation executes");
+}
+
+#[test]
+fn artifact_sigscript_builder_rejects_wrong_constructor_sized_struct_fields() {
+    let source = r#"
+        contract C(int N) {
+            struct Item {
+                byte[N] data;
+            }
+
+            entry main(Item item) {
+                require(item.data.length == N);
+            }
+        }
+    "#;
+    let compiled = compile_contract(source, &[Expr::int(3)], CompileOptions::default()).expect("contract compiles");
+    let valid = struct_object("Item", vec![("data", Expr::bytes(vec![0xaa, 0xbb, 0xcc]))]);
+    compiled.build_sig_script("main", vec![valid]).expect("the valid constructor-sized struct argument encodes");
+
+    for data in [vec![0xaa, 0xbb], vec![0xaa, 0xbb, 0xcc, 0xdd]] {
+        let malformed = struct_object("Item", vec![("data", Expr::bytes(data))]);
+        compiled
+            .build_sig_script("main", vec![malformed])
+            .expect_err("the resolved ABI must reject an incorrectly sized nested field");
+    }
+}
+
+#[test]
 fn overflowing_fixed_array_size_is_rejected_at_the_untrusted_abi_boundary() {
     let source = r#"
         contract C() {

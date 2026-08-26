@@ -220,8 +220,10 @@ impl<'i> CompiledContract<'i> {
 
     pub fn build_sig_script(&self, function_name: &str, args: Vec<Expr<'i>>) -> Result<Vec<u8>, CompilerError> {
         let structs = build_struct_registry(&self.ast)?;
-        let constants: HashMap<_, _> =
-            self.ast.constants.iter().map(|constant| (constant.name.clone(), constant.expr.clone())).collect();
+        // ABI parameter types and artifact struct fields have already had
+        // constant array dimensions resolved to fixed dimensions during
+        // compilation, so argument validation does not need a constants map.
+        let constants = HashMap::new();
         let function = self
             .entry_by_name(function_name)
             .ok_or_else(|| CompilerError::Unsupported(format!("function '{}' not found", function_name)))?;
