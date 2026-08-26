@@ -185,12 +185,28 @@ pub(super) fn static_check_contract<'i>(
     }
 
     let structs = build_struct_registry(contract)?;
+    for item in &contract.structs {
+        if item.fields.is_empty() {
+            return Err(CompilerError::Unsupported(format!("struct '{}' must contain at least one field", item.name))
+                .with_span(&item.name_span));
+        }
+    }
     validate_struct_graph(&structs)?;
     validate_contract_struct_usage(contract, &structs)?;
     let mut constants: HashMap<String, Expr<'i>> =
         contract.constants.iter().map(|constant| (constant.name.clone(), constant.expr.clone())).collect();
     for (param, value) in contract.params.iter().zip(constructor_args) {
         constants.insert(param.name.clone(), value.clone());
+    }
+    for param in &contract.params {
+        ensure_array_elements_have_known_size(&param.type_ref, &structs, &constants, &param.type_ref.type_name())
+            .map_err(|err| err.with_span(&param.type_span))?;
+    }
+    for item in &contract.structs {
+        for field in &item.fields {
+            ensure_array_elements_have_known_size(&field.type_ref, &structs, &constants, &field.type_ref.type_name())
+                .map_err(|err| err.with_span(&field.type_span))?;
+        }
     }
     validate_constant_initializers(contract, &structs, &constants)?;
     validate_contract_field_initializers(contract, &structs, &constants)?;
@@ -1023,14 +1039,28 @@ fn ensure_array_elements_have_known_size<'i>(
     type_name: &str,
 ) -> Result<(), CompilerError> {
     for dimension in &type_ref.array_dims {
-        let ArrayDim::Constant(name) = dimension else {
-            continue;
-        };
-        let expr =
-            constants.get(name).ok_or_else(|| CompilerError::UndefinedIdentifier(format!("array dimension constant '{name}'")))?;
-        let value = eval_const_int(expr, constants)?;
-        usize::try_from(value)
-            .map_err(|_| CompilerError::InvalidLiteral(format!("array dimension '{name}' must be a non-negative integer")))?;
+        match dimension {
+            ArrayDim::Fixed(0) => {
+                return Err(CompilerError::InvalidLiteral(format!("array dimensions must be greater than zero: {type_name}")));
+            }
+            ArrayDim::Constant(name) => {
+                let expr = constants
+                    .get(name)
+                    .ok_or_else(|| CompilerError::UndefinedIdentifier(format!("array dimension constant '{name}'")))?;
+                let value = eval_const_int(expr, constants)?;
+                let size = usize::try_from(value)
+                    .map_err(|_| CompilerError::InvalidLiteral(format!("array dimension '{name}' must be a non-negative integer")))?;
+                if size == 0 {
+                    return Err(CompilerError::InvalidLiteral(format!("array dimension '{name}' must be greater than zero")));
+                }
+            }
+            ArrayDim::Dynamic | ArrayDim::Inferred | ArrayDim::Fixed(_) => {}
+        }
+    }
+    if let TypeBase::Tuple(elements) = &type_ref.base {
+        for element in elements {
+            ensure_array_elements_have_known_size(element, structs, constants, &element.type_name())?;
+        }
     }
 
     if type_ref.is_array()

@@ -16719,6 +16719,80 @@ fn variable_definition_rejects_undeclared_type_even_when_unused() {
 }
 
 #[test]
+fn dynamic_array_abi_rejects_zero_width_elements() {
+    let cases = [
+        r#"
+            contract ZeroWidthArray() {
+                entry main(byte[0][] values) {
+                    require(true);
+                }
+            }
+        "#,
+        r#"
+            contract ConstantZeroWidthArray() {
+                int constant N = 0;
+
+                entry main(byte[N][] values) {
+                    require(true);
+                }
+            }
+        "#,
+        r#"
+            contract ZeroWidthStructField() {
+                struct Item {
+                    byte[0] data;
+                }
+
+                entry main() {
+                    require(true);
+                }
+            }
+        "#,
+        r#"
+            contract InferredZeroWidthArray() {
+                entry main() {
+                    byte[_] values = byte[]{};
+                    require(true);
+                }
+            }
+        "#,
+    ];
+
+    for source in cases {
+        let err = compile_contract(source, &[], CompileOptions::default())
+            .expect_err("every fixed array dimension must be greater than zero");
+        assert!(err.to_string().contains("must be greater than zero"), "unexpected error: {err}");
+    }
+
+    let constructor_source = r#"
+        contract ZeroWidthConstructor(byte[0] value) {
+            entry main() {
+                require(true);
+            }
+        }
+    "#;
+    let err = compile_contract(constructor_source, &[Expr::bytes(Vec::new())], CompileOptions::default())
+        .expect_err("constructor parameter dimensions must be greater than zero");
+    assert!(err.to_string().contains("must be greater than zero"), "unexpected error: {err}");
+}
+
+#[test]
+fn dynamic_record_array_abi_rejects_empty_recursive_layouts() {
+    let source = r#"
+        contract EmptyRecordArray() {
+            struct Empty {}
+
+            entry main(Empty[] values) {
+                require(true);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("a struct must contain at least one field");
+    assert!(err.to_string().contains("struct 'Empty' must contain at least one field"), "unexpected error: {err}");
+}
+
+#[test]
 fn artifact_state_resolution_supports_constructor_sized_arrays() {
     let source = r#"
         contract C(int N, byte[N] initial) {
