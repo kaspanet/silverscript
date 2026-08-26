@@ -79,7 +79,7 @@ impl<'a, 'i> ForLowerer<'a, 'i> {
     ) -> Result<Vec<Statement<'i>>, CompilerError> {
         let max_iterations = match eval_const_int(max_iterations, self.constants) {
             Ok(value) => value,
-            Err(CompilerError::InvalidLiteral(message)) => return Err(CompilerError::InvalidLiteral(message)),
+            Err(err @ (CompilerError::InvalidLiteral(_) | CompilerError::ArithmeticOverflow(_))) => return Err(err),
             Err(_) => return Err(CompilerError::Unsupported("for loop max iterations must be a compile-time integer".to_string())),
         };
         if max_iterations < 0 {

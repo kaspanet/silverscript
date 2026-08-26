@@ -50,7 +50,7 @@ pub(in crate::compiler) fn read_input_state_field_expr_symbolic<'i>(
 }
 
 fn fixed_state_payload_len<'i>(type_ref: &TypeRef, contract_constants: &HashMap<String, Expr<'i>>) -> Result<usize, CompilerError> {
-    fixed_type_size(type_ref, contract_constants)
+    fixed_type_size(type_ref, contract_constants)?
         .ok_or_else(|| CompilerError::Unsupported(format!("readInputState does not support field type {}", type_ref.type_name())))
 }
 
@@ -59,21 +59,28 @@ pub(in crate::compiler) fn encoded_type_chunk_size<'i>(
     contract_constants: &HashMap<String, Expr<'i>>,
 ) -> Result<usize, CompilerError> {
     let payload_size = fixed_state_payload_len(type_ref, contract_constants)?;
-    Ok(data_prefix(payload_size)?.len() + payload_size)
+    let prefix_size = data_prefix(payload_size)?.len();
+    checked_add(prefix_size, payload_size)
 }
 
 pub(super) fn encoded_state_len<'i>(
     contract_fields: &[ContractFieldAst<'i>],
     contract_constants: &HashMap<String, Expr<'i>>,
 ) -> Result<usize, CompilerError> {
-    contract_fields.iter().try_fold(0usize, |acc, field| Ok(acc + encoded_type_chunk_size(&field.type_ref, contract_constants)?))
+    contract_fields.iter().try_fold(0usize, |acc, field| {
+        let field_size = encoded_type_chunk_size(&field.type_ref, contract_constants)?;
+        checked_add(acc, field_size)
+    })
 }
 
 pub(in crate::compiler) fn encoded_state_len_for_layout_field_types<'i>(
     layout_field_types: &[TypeRef],
     contract_constants: &HashMap<String, Expr<'i>>,
 ) -> Result<usize, CompilerError> {
-    layout_field_types.iter().try_fold(0usize, |acc, type_ref| Ok(acc + encoded_type_chunk_size(type_ref, contract_constants)?))
+    layout_field_types.iter().try_fold(0usize, |acc, type_ref| {
+        let field_size = encoded_type_chunk_size(type_ref, contract_constants)?;
+        checked_add(acc, field_size)
+    })
 }
 
 pub(super) fn state_start_offset<'i>(
@@ -82,7 +89,7 @@ pub(super) fn state_start_offset<'i>(
     contract_constants: &HashMap<String, Expr<'i>>,
 ) -> Result<usize, CompilerError> {
     let total_state_len = encoded_state_len(contract_fields, contract_constants)?;
-    state_end.checked_sub(total_state_len).ok_or_else(|| CompilerError::Unsupported("state offset underflow".to_string()))
+    checked_sub(state_end, total_state_len)
 }
 
 pub(super) fn templated_input_bytecode_size_expr<'i>(
@@ -108,13 +115,13 @@ pub(super) fn read_input_state_field_expr<'i>(
     contract_constants: &HashMap<String, Expr<'i>>,
     builtin_name: &str,
 ) -> Result<Expr<'i>, CompilerError> {
-    let field_payload_len = fixed_state_payload_len(field_type, contract_constants)
-        .map_err(|_| CompilerError::Unsupported(format!("{builtin_name} does not support field type {}", field_type.type_name())))?;
-    let field_payload_offset = binary_expr(
-        BinaryOp::Add,
-        state_start_offset_expr,
-        Expr::int((field_chunk_offset + data_prefix(field_payload_len)?.len()) as i64),
-    );
+    let field_payload_len = fixed_state_payload_len(field_type, contract_constants).map_err(|err| match err {
+        CompilerError::ArithmeticOverflow(_) => err,
+        _ => CompilerError::Unsupported(format!("{builtin_name} does not support field type {}", field_type.type_name())),
+    })?;
+    let field_prefix_len = data_prefix(field_payload_len)?.len();
+    let field_data_offset = checked_add(field_chunk_offset, field_prefix_len)?;
+    let field_payload_offset = binary_expr(BinaryOp::Add, state_start_offset_expr, Expr::int(field_data_offset as i64));
     let start = binary_expr(BinaryOp::Add, input_sigscript_base_expr(input_idx, bytecode_size_expr), field_payload_offset);
     let end = binary_expr(BinaryOp::Add, start.clone(), Expr::int(field_payload_len as i64));
     let substr = input_sigscript_substr_expr(input_idx, start, end);
@@ -276,9 +283,7 @@ pub(super) fn compile_validate_output_state_inner_statement(
     )?;
 
     let total_state_len = encoded_state_len(contract_fields, contract_constants)?;
-    let state_start_offset = state_end
-        .checked_sub(total_state_len)
-        .ok_or_else(|| CompilerError::Unsupported("validateOutputState state offset underflow".to_string()))?;
+    let state_start_offset = checked_sub(state_end, total_state_len)?;
 
     let bytecode_size_value =
         bytecode_size.ok_or_else(|| CompilerError::Unsupported("validateOutputState requires this.bytecodeSize".to_string()))?;

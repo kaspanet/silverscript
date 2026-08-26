@@ -12,6 +12,8 @@ pub enum CompilerError {
     Unsupported(String),
     #[error("invalid literal: {0}")]
     InvalidLiteral(String),
+    #[error("arithmetic overflow: {0}")]
+    ArithmeticOverflow(String),
     #[error("undefined identifier: {0}")]
     UndefinedIdentifier(String),
     #[error("cyclic identifier reference: {0}")]

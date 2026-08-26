@@ -9,6 +9,7 @@ use crate::ast::{
     IntrospectionKind, ParamAst, STATE_TYPE_NAME, SplitPart, StateFieldExpr, Statement, StructBindingAst, TypeBase, TypeRef, UnaryOp,
     UnarySuffixKind, as_cast_call_name, as_cast_type, parse_contract_ast, parse_type_ref,
 };
+pub(crate) use crate::checked_arithmetic::{checked_add, checked_div, checked_mul, checked_neg, checked_rem, checked_sub};
 use crate::debug_info::{DebugInfo, DebugNamedValue};
 pub use crate::errors::{CompilerError, ErrorSpan};
 use crate::span;

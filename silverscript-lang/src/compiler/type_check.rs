@@ -64,7 +64,7 @@ pub(super) fn check_expr<'i>(
                     CompilerError::Unsupported(format!("array append element type mismatch: expected {}", element_type.type_name()))
                 })?;
             }
-            append_type(&source_type, args.len(), ctx.constants)
+            append_type(&source_type, args.len(), ctx.constants)?
                 .ok_or_else(|| CompilerError::Unsupported("cannot determine appended array type".to_string()))?
         }
         ExprKind::ArrayIndex { source, index } => {
@@ -201,10 +201,10 @@ fn check_typed_array_literal<'i>(
             }
             return Err(CompilerError::Unsupported("array element type mismatch".to_string()));
         }
-        if matches!(expected.array_size(), Some(ArrayDim::Dynamic)) && !matches!(literal_type.array_size(), Some(ArrayDim::Dynamic)) {
+        if expected.is_dynamic_array() && !literal_type.is_dynamic_array() {
             return Err(CompilerError::Unsupported("type mismatch".to_string()));
         }
-        if array_type_size(expected, ctx.constants).is_some() && matches!(literal_type.array_size(), Some(ArrayDim::Dynamic)) {
+        if array_type_size(expected, ctx.constants).is_some() && literal_type.is_dynamic_array() {
             return Err(CompilerError::Unsupported("type mismatch".to_string()));
         }
         if let Some(expected_size) = array_type_size(expected, ctx.constants)
@@ -317,12 +317,18 @@ pub(super) fn check_call<'i>(
             )));
         }
         validate_scalar_cast_compatibility(&cast_type, &source_type, ctx.constants)?;
-        if (cast_type.is_array() || cast_type.base.fixed_byte_sequence_len().is_some())
-            && let (Some(target_size), Some(source_size)) =
-                (fixed_type_size(&cast_type, ctx.constants), known_cast_source_size(&args[0], &source_type, ctx.constants))
-            && target_size != source_size
-        {
-            return Err(CompilerError::Unsupported(format!("cannot cast {} to {}", source_type.type_name(), cast_type.type_name())));
+        if cast_type.is_array() || cast_type.base.fixed_byte_sequence_len().is_some() {
+            let target_size = fixed_type_size(&cast_type, ctx.constants)?;
+            let source_size = known_cast_source_size(&args[0], &source_type, ctx.constants)?;
+            if let (Some(target_size), Some(source_size)) = (target_size, source_size)
+                && target_size != source_size
+            {
+                return Err(CompilerError::Unsupported(format!(
+                    "cannot cast {} to {}",
+                    source_type.type_name(),
+                    cast_type.type_name()
+                )));
+            }
         }
         return Ok(Some(cast_type));
     }
@@ -377,11 +383,15 @@ fn validate_scalar_cast_compatibility<'i>(
     }
 }
 
-fn known_cast_source_size<'i>(expr: &Expr<'i>, source_type: &TypeRef, constants: &HashMap<String, Expr<'i>>) -> Option<usize> {
-    fixed_type_size(source_type, constants).or(match &expr.kind {
+fn known_cast_source_size<'i>(
+    expr: &Expr<'i>,
+    source_type: &TypeRef,
+    constants: &HashMap<String, Expr<'i>>,
+) -> Result<Option<usize>, CompilerError> {
+    Ok(fixed_type_size(source_type, constants)?.or(match &expr.kind {
         ExprKind::String(value) => Some(value.len()),
         _ => None,
-    })
+    }))
 }
 
 fn check_g16_verify_args<'i>(args: &[Expr<'i>], ctx: &TypeCheckContext<'_, 'i>) -> Result<(), CompilerError> {
@@ -481,7 +491,7 @@ fn check_binary<'i>(
             ensure_expected(&right_type, Some(&bool_type), ctx.constants)?;
             Ok(bool_type)
         }
-        BinaryOp::Add if left_type.is_array() && right_type.is_array() => concat_types(&left_type, &right_type, ctx.constants)
+        BinaryOp::Add if left_type.is_array() && right_type.is_array() => concat_types(&left_type, &right_type, ctx.constants)?
             .ok_or_else(|| CompilerError::Unsupported("array concatenation requires identical element types".to_string())),
         BinaryOp::Add if left_type.is_string() && right_type.is_string() => Ok(scalar_type(TypeBase::String)),
         BinaryOp::BitOr | BinaryOp::BitXor | BinaryOp::BitAnd => {

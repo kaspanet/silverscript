@@ -14,7 +14,7 @@ pub(super) fn compile_contract_fields<'i>(
         let mut resolve_visiting = HashSet::new();
         let resolved = resolve_constant_references(field.expr.clone(), base_constants, &mut resolve_visiting)?;
 
-        if fixed_type_size(&field.type_ref, base_constants).is_some() {
+        if fixed_type_size(&field.type_ref, base_constants)?.is_some() {
             let encoded = encode_value_with_constant_size(&resolved, &field.type_ref, base_constants)?;
             builder.add_data_with_push_opcode(&encoded)?;
         } else {
@@ -87,9 +87,12 @@ pub(super) fn build_function_abi_entries<'i>(
         .collect()
 }
 
-pub(super) fn array_element_size<'i>(type_ref: &TypeRef, constants: &HashMap<String, Expr<'i>>) -> Option<i64> {
-    let element_type = type_ref.array_element_type()?;
-    i64::try_from(fixed_type_size(&element_type, constants)?).ok()
+pub(super) fn array_element_size<'i>(type_ref: &TypeRef, constants: &HashMap<String, Expr<'i>>) -> Result<Option<i64>, CompilerError> {
+    let Some(element_type) = type_ref.array_element_type() else { return Ok(None) };
+    let Some(size) = fixed_type_size(&element_type, constants)? else { return Ok(None) };
+    let size = i64::try_from(size)
+        .map_err(|_| CompilerError::ArithmeticOverflow(format!("array element size {size} does not fit in i64")))?;
+    Ok(Some(size))
 }
 
 pub(super) fn encode_value_with_constant_size<'i>(
@@ -197,9 +200,22 @@ pub(in crate::compiler) fn encode_array_literal<'i>(
         .array_element_type()
         .ok_or_else(|| CompilerError::Unsupported("array element type must have known size".to_string()))?;
     let mut out = Vec::new();
-    debug_assert!(fixed_type_size(&element_type, constants).is_some(), "type_check must validate array element type has known size");
+    debug_assert!(fixed_type_size(&element_type, constants)?.is_some(), "type_check must validate array element type has known size");
     for value in values {
         out.extend(encode_value_with_constant_size(value, &element_type, constants)?);
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn array_element_size_reports_i64_conversion_overflow() {
+        let type_ref = TypeRef { base: TypeBase::Byte, array_dims: vec![ArrayDim::Fixed(usize::MAX), ArrayDim::Dynamic] };
+
+        let err = array_element_size(&type_ref, &HashMap::new()).expect_err("an element size larger than i64 must be rejected");
+        assert!(matches!(err, CompilerError::ArithmeticOverflow(_)), "unexpected error: {err}");
+    }
 }

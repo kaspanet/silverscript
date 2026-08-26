@@ -1032,7 +1032,7 @@ fn ensure_array_elements_have_known_size<'i>(
     }
 
     if type_ref.is_array()
-        && fixed_type_size_with_structs(type_ref.array_element_type().as_ref().unwrap_or(type_ref), structs, constants).is_none()
+        && fixed_type_size_with_structs(type_ref.array_element_type().as_ref().unwrap_or(type_ref), structs, constants)?.is_none()
     {
         return Err(CompilerError::Unsupported(format!("array element type must have known size: {type_name}")));
     }
@@ -1043,21 +1043,25 @@ fn fixed_type_size_with_structs<'i>(
     type_ref: &TypeRef,
     structs: &StructRegistry,
     constants: &HashMap<String, Expr<'i>>,
-) -> Option<usize> {
+) -> Result<Option<usize>, CompilerError> {
     if type_ref.is_array() {
-        let element_type = type_ref.array_element_type()?;
-        let array_len = array_type_size(type_ref, constants)?;
-        return fixed_type_size_with_structs(&element_type, structs, constants)?.checked_mul(array_len);
+        let Some(element_type) = type_ref.array_element_type() else { return Ok(None) };
+        let Some(array_len) = array_type_size(type_ref, constants) else { return Ok(None) };
+        let Some(element_size) = fixed_type_size_with_structs(&element_type, structs, constants)? else { return Ok(None) };
+        return checked_mul(element_size, array_len).map(Some);
     }
 
     match &type_ref.base {
         TypeBase::Custom(name) => {
-            let struct_spec = structs.get(name)?;
+            let Some(struct_spec) = structs.get(name) else { return Ok(None) };
             let mut total = 0usize;
             for field in &struct_spec.fields {
-                total = total.checked_add(fixed_type_size_with_structs(&field.type_ref, structs, constants)?)?;
+                let Some(field_size) = fixed_type_size_with_structs(&field.type_ref, structs, constants)? else {
+                    return Ok(None);
+                };
+                total = checked_add(total, field_size)?;
             }
-            Some(total)
+            Ok(Some(total))
         }
         _ => fixed_type_size(type_ref, constants),
     }

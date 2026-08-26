@@ -137,11 +137,12 @@ fn compile_array_expr<'i>(
         ctx.push_data(&[])?;
         return Ok(());
     }
-    let array_type = expected_type
-        .filter(|type_ref| type_ref.is_array())
-        .cloned()
-        .or_else(|| infer_array_literal_type(values, ctx.env.constants, ctx.env.types))
-        .ok_or_else(|| CompilerError::Unsupported("array literal type cannot be inferred".to_string()))?;
+    let array_type = if let Some(expected_type) = expected_type.filter(|type_ref| type_ref.is_array()) {
+        expected_type.clone()
+    } else {
+        infer_array_literal_type(values, ctx.env.constants, ctx.env.types)?
+            .ok_or_else(|| CompilerError::Unsupported("array literal type cannot be inferred".to_string()))?
+    };
 
     // First we try to encode the array literal as a single constant value. If that fails, we fall back to compiling it as a runtime expression.
     if let Ok(encoded) = encode_array_literal(values, &array_type, ctx.env.constants) {
@@ -191,9 +192,16 @@ fn compile_array_literal_element<'i>(
     }
 }
 
-fn infer_array_literal_type<'i>(values: &[Expr<'i>], constants: &HashMap<String, Expr<'i>>, types: &TypeMap) -> Option<TypeRef> {
-    let first_type = infer_expr_type(values.first()?, constants, types).ok()?;
-    fixed_type_size(&first_type, constants)?;
+fn infer_array_literal_type<'i>(
+    values: &[Expr<'i>],
+    constants: &HashMap<String, Expr<'i>>,
+    types: &TypeMap,
+) -> Result<Option<TypeRef>, CompilerError> {
+    let Some(first) = values.first() else { return Ok(None) };
+    let Ok(first_type) = infer_expr_type(first, constants, types) else { return Ok(None) };
+    if fixed_type_size(&first_type, constants)?.is_none() {
+        return Ok(None);
+    }
     if values
         .iter()
         .skip(1)
@@ -201,9 +209,9 @@ fn infer_array_literal_type<'i>(values: &[Expr<'i>], constants: &HashMap<String,
     {
         let mut array_type = first_type;
         array_type.array_dims.push(ArrayDim::Dynamic);
-        Some(array_type)
+        Ok(Some(array_type))
     } else {
-        None
+        Ok(None)
     }
 }
 
@@ -464,7 +472,7 @@ fn compile_array_index_expr<'i>(
         .array_element_type()
         .ok_or_else(|| CompilerError::Unsupported(format!("array index requires array source, got {}", source_type.type_name())))?;
     let element_size = i64::try_from(
-        fixed_type_size(&element_type, ctx.env.constants)
+        fixed_type_size(&element_type, ctx.env.constants)?
             .ok_or_else(|| CompilerError::Unsupported("array element type must have known size".to_string()))?,
     )
     .map_err(|_| CompilerError::Unsupported("array element size is too large".to_string()))?;
@@ -487,7 +495,7 @@ fn compile_slice_expr<'i>(
     end: &Expr<'i>,
 ) -> Result<(), CompilerError> {
     let source_type = infer_expr_type(source, ctx.env.constants, ctx.env.types)?;
-    let element_size = array_element_size(&source_type, ctx.env.contract_constants);
+    let element_size = array_element_size(&source_type, ctx.env.contract_constants)?;
     let int_type = scalar_type(TypeBase::Int);
     compile_expr_with_context(ctx, source, Some(&source_type))?;
     compile_expr_with_context(ctx, start, Some(&int_type))?;
@@ -596,7 +604,7 @@ fn compile_split_part<'i>(
     part: SplitPart,
 ) -> Result<(), CompilerError> {
     let source_type = infer_expr_type(source, ctx.env.constants, ctx.env.types)?;
-    let element_size = array_element_size(&source_type, ctx.env.contract_constants);
+    let element_size = array_element_size(&source_type, ctx.env.contract_constants)?;
     let int_type = scalar_type(TypeBase::Int);
     compile_expr_with_context(ctx, source, Some(&source_type))?;
     match part {
@@ -635,7 +643,7 @@ fn compile_length_expr<'i>(ctx: &mut CompileExprContext<'_, '_, 'i>, expr: &Expr
         ctx.push_int(size as i64)?;
         return Ok(());
     }
-    if let Some(element_size) = array_element_size(&expr_type, ctx.env.contract_constants) {
+    if let Some(element_size) = array_element_size(&expr_type, ctx.env.contract_constants)? {
         compile_expr_with_context(ctx, expr, Some(&expr_type))?;
         ctx.emit_op(OpSize, 1)?;
         ctx.emit_op(OpSwap, 0)?;

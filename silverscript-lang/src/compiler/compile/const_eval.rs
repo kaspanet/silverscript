@@ -35,35 +35,27 @@ fn eval_const_int_inner<'i>(
         }
         ExprKind::Unary { op: UnaryOp::Neg, expr } => {
             let value = eval_const_int_inner(expr, constants, visiting, resolved)?;
-            value.checked_neg().ok_or_else(|| CompilerError::InvalidLiteral(format!("constant integer overflow: -({value})")))
+            checked_neg(value)
         }
         ExprKind::Unary { .. } => Err(CompilerError::Unsupported("constant expression must evaluate to an integer".to_string())),
         ExprKind::Binary { op, left, right } => {
             let lhs = eval_const_int_inner(left, constants, visiting, resolved)?;
             let rhs = eval_const_int_inner(right, constants, visiting, resolved)?;
             match op {
-                BinaryOp::Add => lhs
-                    .checked_add(rhs)
-                    .ok_or_else(|| CompilerError::InvalidLiteral(format!("constant integer overflow: {lhs} + {rhs}"))),
-                BinaryOp::Sub => lhs
-                    .checked_sub(rhs)
-                    .ok_or_else(|| CompilerError::InvalidLiteral(format!("constant integer overflow: {lhs} - {rhs}"))),
-                BinaryOp::Mul => lhs
-                    .checked_mul(rhs)
-                    .ok_or_else(|| CompilerError::InvalidLiteral(format!("constant integer overflow: {lhs} * {rhs}"))),
+                BinaryOp::Add => checked_add(lhs, rhs),
+                BinaryOp::Sub => checked_sub(lhs, rhs),
+                BinaryOp::Mul => checked_mul(lhs, rhs),
                 BinaryOp::Div => {
                     if rhs == 0 {
                         return Err(CompilerError::InvalidLiteral("division by zero in constant expression".to_string()));
                     }
-                    lhs.checked_div(rhs)
-                        .ok_or_else(|| CompilerError::InvalidLiteral(format!("constant integer overflow: {lhs} / {rhs}")))
+                    checked_div(lhs, rhs)
                 }
                 BinaryOp::Mod => {
                     if rhs == 0 {
                         return Err(CompilerError::InvalidLiteral("modulo by zero in constant expression".to_string()));
                     }
-                    lhs.checked_rem(rhs)
-                        .ok_or_else(|| CompilerError::InvalidLiteral(format!("constant integer overflow: {lhs} % {rhs}")))
+                    checked_rem(lhs, rhs)
                 }
                 _ => Err(CompilerError::Unsupported("constant expression must evaluate to an integer".to_string())),
             }
@@ -222,14 +214,14 @@ mod tests {
                     ExprKind::Binary { op: BinaryOp::Add, left: Box::new(Expr::int(i64::MAX)), right: Box::new(Expr::int(1)) },
                     Default::default(),
                 ),
-                format!("constant integer overflow: {} + 1", i64::MAX),
+                format!("arithmetic overflow: {} + 1", i64::MAX),
             ),
             (
                 Expr::new(
                     ExprKind::Binary { op: BinaryOp::Sub, left: Box::new(Expr::int(-i64::MAX)), right: Box::new(Expr::int(2)) },
                     Default::default(),
                 ),
-                format!("constant integer overflow: {} - 2", -i64::MAX),
+                format!("arithmetic overflow: {} - 2", -i64::MAX),
             ),
             (
                 Expr::new(
@@ -240,30 +232,31 @@ mod tests {
                     },
                     Default::default(),
                 ),
-                "constant integer overflow: 3037000500 * 3037000500".to_string(),
+                "arithmetic overflow: 3037000500 * 3037000500".to_string(),
             ),
             (
                 Expr::new(ExprKind::Unary { op: UnaryOp::Neg, expr: Box::new(Expr::int(i64::MIN)) }, Default::default()),
-                format!("constant integer overflow: -({})", i64::MIN),
+                format!("arithmetic overflow: -({})", i64::MIN),
             ),
             (
                 Expr::new(
                     ExprKind::Binary { op: BinaryOp::Div, left: Box::new(Expr::int(i64::MIN)), right: Box::new(Expr::int(-1)) },
                     Default::default(),
                 ),
-                format!("constant integer overflow: {} / -1", i64::MIN),
+                format!("arithmetic overflow: {} / -1", i64::MIN),
             ),
             (
                 Expr::new(
                     ExprKind::Binary { op: BinaryOp::Mod, left: Box::new(Expr::int(i64::MIN)), right: Box::new(Expr::int(-1)) },
                     Default::default(),
                 ),
-                format!("constant integer overflow: {} % -1", i64::MIN),
+                format!("arithmetic overflow: {} % -1", i64::MIN),
             ),
         ];
 
         for (expr, expected) in cases {
             let err = eval_const_int(&expr, &constants).expect_err("overflow should be rejected");
+            assert!(matches!(err, CompilerError::ArithmeticOverflow(_)), "unexpected error variant: {err}");
             assert!(err.to_string().contains(&expected), "unexpected error: {err}");
         }
     }

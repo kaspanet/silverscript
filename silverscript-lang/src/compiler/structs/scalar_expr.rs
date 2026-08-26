@@ -214,8 +214,10 @@ fn struct_array_expr_type(
     let type_ref = match &expr.kind {
         ExprKind::Identifier(name) => scope.type_of(name).cloned(),
         ExprKind::Array { type_ref, .. } => Some(type_ref.clone()),
-        ExprKind::Append { source, args, .. } => struct_array_expr_type(source, scope, structs, constants)?
-            .and_then(|source_type| append_type(&source_type, args.len(), constants)),
+        ExprKind::Append { source, args, .. } => {
+            let Some(source_type) = struct_array_expr_type(source, scope, structs, constants)? else { return Ok(None) };
+            append_type(&source_type, args.len(), constants)?
+        }
         ExprKind::Split { source, index, part, .. } => struct_array_expr_type(source, scope, structs, constants)?
             .map(|source_type| crate::compiler::type_check::split_part_type(&source_type, index, *part, constants))
             .transpose()?,

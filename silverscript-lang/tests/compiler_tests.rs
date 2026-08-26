@@ -6229,12 +6229,12 @@ fn rejects_assignment_to_loop_variable_for_constant_and_runtime_bounds() {
 #[test]
 fn rejects_overflow_in_constant_for_loop_bounds() {
     let cases = [
-        ("9223372036854775807 + 1", "constant integer overflow: 9223372036854775807 + 1"),
-        ("(-9223372036854775807) - 2", "constant integer overflow: -9223372036854775807 - 2"),
-        ("3037000500 * 3037000500", "constant integer overflow: 3037000500 * 3037000500"),
-        ("-(-9223372036854775807 - 1)", "constant integer overflow: -(-9223372036854775808)"),
-        ("(-9223372036854775807 - 1) / -1", "constant integer overflow: -9223372036854775808 / -1"),
-        ("(-9223372036854775807 - 1) % -1", "constant integer overflow: -9223372036854775808 % -1"),
+        ("9223372036854775807 + 1", "arithmetic overflow: 9223372036854775807 + 1"),
+        ("(-9223372036854775807) - 2", "arithmetic overflow: -9223372036854775807 - 2"),
+        ("3037000500 * 3037000500", "arithmetic overflow: 3037000500 * 3037000500"),
+        ("-(-9223372036854775807 - 1)", "arithmetic overflow: -(-9223372036854775808)"),
+        ("(-9223372036854775807 - 1) / -1", "arithmetic overflow: -9223372036854775808 / -1"),
+        ("(-9223372036854775807 - 1) % -1", "arithmetic overflow: -9223372036854775808 % -1"),
     ];
 
     for (expr, expected) in cases {

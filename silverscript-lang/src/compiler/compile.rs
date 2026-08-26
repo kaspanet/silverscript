@@ -141,12 +141,12 @@ fn compile_contract_bytecode_iteration<'i>(
 ) -> Result<(Vec<u8>, CompiledStateLayout), CompilerError> {
     let (_contract_fields, state_push_bytecode) = compile_contract_fields(&lowered_contract.fields, lowered_constants, bytecode_size)?;
 
-    let state_start = if state_push_bytecode.is_empty() {
+    let state_start: usize = if state_push_bytecode.is_empty() {
         0
     } else {
         1 // The 1 accounts for OpToAltStack.
     };
-    let state_end = state_start + state_push_bytecode.len();
+    let state_end = checked_add(state_start, state_push_bytecode.len())?;
     let state_layout = CompiledStateLayout { start: state_start, len: state_push_bytecode.len() };
     let compiled_entrypoints = compile_entrypoint_bytecodes(
         lowered_contract,

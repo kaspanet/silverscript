@@ -260,7 +260,7 @@ fn lower_expr<'i>(
     let span = expr.span;
     match &expr.kind {
         ExprKind::Append { source, args, .. } => {
-            let source_type = infer_expr_type(source, types, constants, functions)
+            let source_type = infer_expr_type(source, types, constants, functions)?
                 .ok_or_else(|| CompilerError::Unsupported("cannot determine append source type".to_string()))?;
             let mut appended_type = source_type
                 .array_element_type()
