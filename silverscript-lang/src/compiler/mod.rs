@@ -96,24 +96,10 @@ pub struct FunctionInputAbi {
 pub struct FunctionAbiEntry {
     pub name: String,
     pub inputs: Vec<FunctionInputAbi>,
-    #[serde(serialize_with = "faster_hex::nopfx_lowercase::serialize", deserialize_with = "deserialize_dispatch_tag")]
     pub dispatch_tag: DispatchTag,
 }
 
 pub type DispatchTag = [u8; 4];
-
-fn deserialize_dispatch_tag<'de, D>(deserializer: D) -> Result<DispatchTag, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let encoded = String::deserialize(deserializer)?;
-    if encoded.len() != 8 {
-        return Err(serde::de::Error::custom("dispatch tag must contain exactly 8 hexadecimal characters"));
-    }
-    let mut dispatch_tag = [0u8; 4];
-    faster_hex::hex_decode(encoded.as_bytes(), &mut dispatch_tag).map_err(serde::de::Error::custom)?;
-    Ok(dispatch_tag)
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CompiledStateLayout {

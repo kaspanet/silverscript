@@ -6837,7 +6837,7 @@ fn record_dispatch_tag_matches_kcc1_structural_type_vector() {
     assert_eq!(dispense.dispatch_tag, [0x67, 0x6b, 0x1a, 0x86]);
 
     let json = serde_json::to_string(dispense).expect("ABI entry serializes");
-    assert_eq!(serde_json::from_str::<serde_json::Value>(&json).unwrap()["dispatch_tag"], "676b1a86");
+    assert_eq!(serde_json::from_str::<serde_json::Value>(&json).unwrap()["dispatch_tag"], serde_json::json!([103, 107, 26, 134]));
 }
 
 #[test]
