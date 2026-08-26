@@ -1555,6 +1555,40 @@ fn script_pubkey_constructors_return_correct_fixed_dimension_types() {
 }
 
 #[test]
+fn fixed_size_hash_builtins_return_their_declared_lengths() {
+    let source = r#"
+        contract FixedSizeHashes() {
+            entry main() {
+                byte[32] sha256_hash = sha256(byte[]("message"));
+                byte[32] blake2b_hash = blake2b(byte[]("message"));
+                byte[32] blake2b_keyed_hash = blake2bWithKey(
+                    byte[]("message"),
+                    byte[]("0123456789abcdef0123456789abcdef")
+                );
+                byte[32] blake3_hash = blake3(byte[]("message"));
+                byte[32] blake3_keyed_hash = blake3WithKey(
+                    byte[]("message"),
+                    byte[32]("0123456789abcdef0123456789abcdef")
+                );
+                byte[32] template_hash = templateHash(byte[]("prefix"), byte[]("suffix"));
+
+                require(byte[](sha256_hash).length == 32);
+                require(byte[](blake2b_hash).length == 32);
+                require(byte[](blake2b_keyed_hash).length == 32);
+                require(byte[](blake3_hash).length == 32);
+                require(byte[](blake3_keyed_hash).length == 32);
+                require(byte[](template_hash).length == 32);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("fixed-size hash builtins should compile");
+    let sigscript = compiled.build_sig_script("main", vec![]).expect("signature script should build");
+    run_bytecode_with_sigscript(compiled.bytecode, sigscript)
+        .expect("fixed-size hash builtin results should have their declared lengths after conversion to byte[]");
+}
+
+#[test]
 fn introspection_fields_and_direct_lock_opcodes_emit_and_execute() {
     let source = r#"
         contract Introspection() {
@@ -1562,7 +1596,9 @@ fn introspection_fields_and_direct_lock_opcodes_emit_and_execute() {
                 require(tx.inputs[0].value == 5000);
                 require(tx.inputs[0].scriptPubKey.length >= 0);
                 require(tx.inputs[0].sigScript.length == 5);
-                require(tx.inputs[0].outpointTxId == byte[32]("0123456789abcdef0123456789abcdef"));
+                byte[32] outpoint_tx_id = tx.inputs[0].outpointTxId;
+                require(byte[](outpoint_tx_id).length == 32);
+                require(outpoint_tx_id == byte[32]("0123456789abcdef0123456789abcdef"));
                 require(tx.inputs[0].outpointIndex == 7);
                 require(tx.outputs[0].value == 1000);
                 require(tx.outputs[0].scriptPubKey.length >= 0);
@@ -11492,7 +11528,9 @@ fn executes_opcode_builtins_basic() {
             r#"
                 contract Test() {
                     entry main() {
-                        require(byte[](OpTxSubnetId()) == byte[]("abcdefghijklmnopqrst"));
+                        byte[20] subnet_id = OpTxSubnetId();
+                        require(byte[](subnet_id).length == 20);
+                        require(byte[](subnet_id) == byte[]("abcdefghijklmnopqrst"));
                     }
                 }
             "#,
@@ -11532,7 +11570,9 @@ fn executes_opcode_builtins_basic() {
             r#"
                 contract Test() {
                     entry main() {
-                        require(byte[](OpOutpointTxId(0)) == byte[]("0123456789abcdef0123456789abcdef"));
+                        byte[32] outpoint_tx_id = OpOutpointTxId(0);
+                        require(byte[](outpoint_tx_id).length == 32);
+                        require(byte[](outpoint_tx_id) == byte[]("0123456789abcdef0123456789abcdef"));
                     }
                 }
             "#,
@@ -11574,7 +11614,9 @@ fn executes_opcode_builtins_basic() {
             r#"
                 contract Test() {
                     entry main() {
-                        require(byte[](OpTxInputSeq(0)) == byte[]("sequence"));
+                        byte[8] input_sequence = OpTxInputSeq(0);
+                        require(byte[](input_sequence).length == 8);
+                        require(byte[](input_sequence) == byte[]("sequence"));
                     }
                 }
             "#,
@@ -11723,11 +11765,18 @@ fn executes_opcode_builtins_covenants() {
     let source = r#"
         contract Test() {
             entry main() {
+                byte[32] input_covenant_id = OpInputCovenantId(0);
+                byte[32] output_covenant_id_a = OpOutputCovenantId(0);
+                byte[32] output_covenant_id_b = OpOutputCovenantId(1);
+
+                require(byte[](input_covenant_id).length == 32);
+                require(byte[](output_covenant_id_a).length == 32);
+                require(byte[](output_covenant_id_b).length == 32);
                 require(OpAuthOutputCount(0) == 2);
                 require(OpAuthOutputIdx(0, 1) == 2);
-                require(byte[](OpInputCovenantId(0)) == byte[]("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"));
-                require(byte[](OpOutputCovenantId(0)) == byte[]("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"));
-                require(byte[](OpOutputCovenantId(1)) == byte[]("BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"));
+                require(byte[](input_covenant_id) == byte[]("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"));
+                require(byte[](output_covenant_id_a) == byte[]("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"));
+                require(byte[](output_covenant_id_b) == byte[]("BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"));
                 require(OpCovInputCount(byte[32]("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")) == 2);
                 require(OpCovInputIdx(byte[32]("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"), 1) == 2);
                 require(OpCovOutputCount(byte[32]("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")) == 2);
@@ -11767,7 +11816,10 @@ fn executes_opcode_chainblock_seq_commit() {
     let source = r#"
         contract Test() {
             entry main() {
-                require(byte[](OpChainblockSeqCommit(byte[32]("0123456789abcdef0123456789abcdef"))) == byte[]("fedcba9876543210fedcba9876543210"));
+                byte[32] sequence_commitment =
+                    OpChainblockSeqCommit(byte[32]("0123456789abcdef0123456789abcdef"));
+                require(byte[](sequence_commitment).length == 32);
+                require(byte[](sequence_commitment) == byte[]("fedcba9876543210fedcba9876543210"));
             }
         }
     "#;
