@@ -21,7 +21,7 @@ mod state;
 mod statement;
 
 use analysis::*;
-pub(crate) use const_eval::{eval_const_int, resolve_constant_references};
+pub(crate) use const_eval::{eval_const_int, eval_optional_const_int, resolve_constant_references};
 use emitter::*;
 use expression::*;
 pub(super) use helpers::encode_array_literal;

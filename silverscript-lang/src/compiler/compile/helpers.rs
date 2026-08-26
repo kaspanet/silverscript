@@ -113,7 +113,7 @@ pub(super) fn encode_value_with_constant_size<'i>(
         (TypeBase::Int | TypeBase::Temporal, []) => {
             let number = match &value.kind {
                 ExprKind::Int(number) | ExprKind::Temporal(number) | ExprKind::DateLiteral(number) => *number,
-                _ => return Err(CompilerError::Unsupported("array literal element type mismatch".to_string())),
+                _ => return Err(array_literal_encoding_error(value)),
             };
             serialize_i64(number, Some(8usize))
                 .map(|bytes| bytes.to_vec())
@@ -121,7 +121,7 @@ pub(super) fn encode_value_with_constant_size<'i>(
         }
         (TypeBase::Bool, []) => {
             let ExprKind::Bool(flag) = &value.kind else {
-                return Err(CompilerError::Unsupported("array literal element type mismatch".to_string()));
+                return Err(array_literal_encoding_error(value));
             };
             Ok(vec![u8::from(*flag)])
         }
@@ -131,13 +131,13 @@ pub(super) fn encode_value_with_constant_size<'i>(
                 ExprKind::Int(value) => {
                     (*value).try_into().map_err(|_| CompilerError::Unsupported("array literal element type mismatch".to_string()))?
                 }
-                _ => return Err(CompilerError::Unsupported("array literal element type mismatch".to_string())),
+                _ => return Err(array_literal_encoding_error(value)),
             };
             Ok(vec![byte])
         }
         (base @ (TypeBase::Pubkey | TypeBase::Sig | TypeBase::Datasig), []) => {
             let ExprKind::Array { values: bytes_exprs, .. } = &value.kind else {
-                return Err(CompilerError::Unsupported("array literal element type mismatch".to_string()));
+                return Err(array_literal_encoding_error(value));
             };
             if Some(bytes_exprs.len()) != base.fixed_byte_sequence_len() {
                 return Err(CompilerError::Unsupported("array literal element type mismatch".to_string()));
@@ -146,16 +146,16 @@ pub(super) fn encode_value_with_constant_size<'i>(
                 .iter()
                 .map(|value| match &value.kind {
                     ExprKind::Byte(byte) => Ok(*byte),
-                    _ => Err(CompilerError::Unsupported("array literal element type mismatch".to_string())),
+                    _ => Err(array_literal_encoding_error(value)),
                 })
                 .collect()
         }
         _ => {
             // Handle fixed-size byte arrays like byte[N]
-            if let (Some(inner_type), Some(size)) = (type_ref.array_element_type(), array_type_size(type_ref, constants)) {
+            if let (Some(inner_type), Some(size)) = (type_ref.array_element_type(), array_type_size(type_ref, constants)?) {
                 if inner_type.is_byte() {
                     let ExprKind::Array { values, .. } = &value.kind else {
-                        return Err(CompilerError::Unsupported("array literal element type mismatch".to_string()));
+                        return Err(array_literal_encoding_error(value));
                     };
                     if values.len() != size {
                         return Err(CompilerError::Unsupported("array literal element type mismatch".to_string()));
@@ -173,7 +173,7 @@ pub(super) fn encode_value_with_constant_size<'i>(
                 let element_type = type_ref
                     .array_element_type()
                     .ok_or_else(|| CompilerError::Unsupported("array element type must have known size".to_string()))?;
-                let expected_len = array_type_size(type_ref, constants)
+                let expected_len = array_type_size(type_ref, constants)?
                     .ok_or_else(|| CompilerError::Unsupported("array literal element type mismatch".to_string()))?;
                 if values.len() != expected_len {
                     return Err(CompilerError::Unsupported("array literal element type mismatch".to_string()));
@@ -186,8 +186,23 @@ pub(super) fn encode_value_with_constant_size<'i>(
                 return Ok(encoded);
             }
 
-            Err(CompilerError::Unsupported("array literal element type mismatch".to_string()))
+            Err(array_literal_encoding_error(value))
         }
+    }
+}
+
+fn array_literal_encoding_error(value: &Expr<'_>) -> CompilerError {
+    match &value.kind {
+        ExprKind::Int(_)
+        | ExprKind::Temporal(_)
+        | ExprKind::Bool(_)
+        | ExprKind::Byte(_)
+        | ExprKind::String(_)
+        | ExprKind::DateLiteral(_)
+        | ExprKind::Array { .. }
+        | ExprKind::StructLiteral { .. }
+        | ExprKind::NumberWithUnit { .. } => CompilerError::Unsupported("array literal element type mismatch".to_string()),
+        _ => CompilerError::RuntimeEvaluationRequired,
     }
 }
 
@@ -217,5 +232,19 @@ mod tests {
 
         let err = array_element_size(&type_ref, &HashMap::new()).expect_err("an element size larger than i64 must be rejected");
         assert!(matches!(err, CompilerError::ArithmeticOverflow(_)), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn constant_value_encoding_only_requests_runtime_fallback_for_runtime_expressions() {
+        let int_type = TypeRef { base: TypeBase::Int, array_dims: Vec::new() };
+        let constants = HashMap::new();
+
+        let err = encode_value_with_constant_size(&Expr::identifier("runtime_value"), &int_type, &constants)
+            .expect_err("a runtime value cannot be encoded ahead of time");
+        assert!(matches!(err, CompilerError::RuntimeEvaluationRequired), "unexpected error: {err}");
+
+        let err = encode_value_with_constant_size(&Expr::bool(true), &int_type, &constants)
+            .expect_err("an invalid literal must not request runtime fallback");
+        assert!(matches!(err, CompilerError::Unsupported(_)), "unexpected error: {err}");
     }
 }

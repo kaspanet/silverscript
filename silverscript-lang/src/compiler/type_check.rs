@@ -11,7 +11,7 @@ use super::builtin_types::{
 };
 use super::structs::{StructRegistry, flattened_struct_field_specs_for_type, is_struct, struct_name};
 use super::{
-    CompilerError, STATE_TYPE_NAME, TypeMap, append_type, array_type_size, concat_types, eval_const_int, fixed_type_size,
+    CompilerError, STATE_TYPE_NAME, TypeMap, append_type, array_type_size, concat_types, eval_optional_const_int, fixed_type_size,
     parse_type_ref, type_refs_equal,
 };
 
@@ -109,7 +109,7 @@ pub(super) fn check_expr<'i>(
             } else {
                 let then_type = check_expr(then_expr, None, ctx)?;
                 let else_type = check_expr(else_expr, None, ctx)?;
-                if !type_refs_equal(&then_type, &else_type, ctx.constants) {
+                if !type_refs_equal(&then_type, &else_type, ctx.constants)? {
                     return Err(CompilerError::Unsupported(format!(
                         "ternary branch type mismatch: then expression is {}, else expression is {}",
                         then_type.type_name(),
@@ -182,10 +182,10 @@ fn check_typed_array_literal<'i>(
         .ok_or_else(|| CompilerError::Unsupported("array literal requires an array type".to_string()))?;
     check_array_literal_with_element_type(values, &literal_element_type, ctx)
         .map_err(|_| CompilerError::Unsupported("array element type mismatch".to_string()))?;
-    if let Some(literal_size) = array_type_size(literal_type, ctx.constants)
+    if let Some(literal_size) = array_type_size(literal_type, ctx.constants)?
         && literal_size != values.len()
     {
-        return Err(CompilerError::Unsupported("size mismatch".to_string()));
+        return Err(CompilerError::SizeMismatch);
     }
 
     if let Some(expected) = expected {
@@ -197,11 +197,10 @@ fn check_typed_array_literal<'i>(
             {
                 return Ok(expected.clone());
             }
-            return Err(CompilerError::Unsupported("type mismatch".to_string()));
+            return Err(CompilerError::TypeMismatch);
         }
-        let expected_element_type =
-            expected.array_element_type().ok_or_else(|| CompilerError::Unsupported("type mismatch".to_string()))?;
-        if !type_refs_equal(&literal_element_type, &expected_element_type, ctx.constants) {
+        let expected_element_type = expected.array_element_type().ok_or(CompilerError::TypeMismatch)?;
+        if !type_refs_equal(&literal_element_type, &expected_element_type, ctx.constants)? {
             if let (TypeBase::Custom(expected_name), TypeBase::Custom(actual_name)) =
                 (&expected_element_type.base, &literal_element_type.base)
             {
@@ -210,15 +209,15 @@ fn check_typed_array_literal<'i>(
             return Err(CompilerError::Unsupported("array element type mismatch".to_string()));
         }
         if expected.is_dynamic_array() && !literal_type.is_dynamic_array() {
-            return Err(CompilerError::Unsupported("type mismatch".to_string()));
+            return Err(CompilerError::TypeMismatch);
         }
-        if array_type_size(expected, ctx.constants).is_some() && literal_type.is_dynamic_array() {
-            return Err(CompilerError::Unsupported("type mismatch".to_string()));
+        if array_type_size(expected, ctx.constants)?.is_some() && literal_type.is_dynamic_array() {
+            return Err(CompilerError::TypeMismatch);
         }
-        if let Some(expected_size) = array_type_size(expected, ctx.constants)
+        if let Some(expected_size) = array_type_size(expected, ctx.constants)?
             && expected_size != values.len()
         {
-            return Err(CompilerError::Unsupported("size mismatch".to_string()));
+            return Err(CompilerError::SizeMismatch);
         }
         return Ok(expected.clone());
     }
@@ -269,7 +268,7 @@ pub(super) fn check_call<'i>(
         let size = if cast_type.is_byte() {
             1
         } else {
-            array_type_size(&cast_type, ctx.constants)
+            array_type_size(&cast_type, ctx.constants)?
                 .ok_or_else(|| CompilerError::Unsupported("byte size in 'as byte[N]' must be known at compile time".to_string()))?
         };
         if size == 0 || size > 8 {
@@ -366,7 +365,7 @@ fn validate_scalar_cast_compatibility<'i>(
         source_type.is_int_like()
             || matches!(source_type.base, TypeBase::Byte)
                 && source_type.array_dims.len() == 1
-                && array_type_size(source_type, constants).is_some_and(|size| size <= 8)
+                && array_type_size(source_type, constants)?.is_some_and(|size| size <= 8)
     } else if cast_type.is_temporal() {
         source_type.is_int_like()
     } else if cast_type.is_bool() {
@@ -484,7 +483,7 @@ fn check_binary<'i>(
             Ok(scalar_type(TypeBase::Bool))
         }
         BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge => {
-            if !left_type.is_int_like() || !type_refs_equal(&left_type, &right_type, ctx.constants) {
+            if !left_type.is_int_like() || !type_refs_equal(&left_type, &right_type, ctx.constants)? {
                 return Err(CompilerError::Unsupported(format!(
                     "ordered comparison requires matching int or temporal operands, got {} and {}",
                     left_type.type_name(),
@@ -515,7 +514,7 @@ fn check_binary<'i>(
                     right_type.type_name()
                 )));
             }
-            if !type_refs_equal(&left_type, &right_type, ctx.constants) {
+            if !type_refs_equal(&left_type, &right_type, ctx.constants)? {
                 return Err(CompilerError::Unsupported(format!(
                     "bitwise operations require byte arrays of equal size, got {} and {}",
                     left_type.type_name(),
@@ -525,7 +524,7 @@ fn check_binary<'i>(
             Ok(left_type)
         }
         BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Mod => {
-            if !left_type.is_int_like() || !type_refs_equal(&left_type, &right_type, ctx.constants) {
+            if !left_type.is_int_like() || !type_refs_equal(&left_type, &right_type, ctx.constants)? {
                 return Err(CompilerError::Unsupported(format!(
                     "arithmetic requires matching int or temporal operands, got {} and {}",
                     left_type.type_name(),
@@ -580,10 +579,13 @@ fn ensure_expected<'i>(
     expected: Option<&TypeRef>,
     constants: &HashMap<String, Expr<'i>>,
 ) -> Result<(), CompilerError> {
-    if expected.is_none_or(|expected| type_refs_equal(actual, expected, constants)) {
+    if match expected {
+        Some(expected) => type_refs_equal(actual, expected, constants)?,
+        None => true,
+    } {
         Ok(())
     } else {
-        Err(CompilerError::Unsupported("type mismatch".to_string()))
+        Err(CompilerError::TypeMismatch)
     }
 }
 
@@ -611,8 +613,8 @@ fn sequence_part_type(type_ref: &TypeRef, operation: &str) -> Result<TypeRef, Co
     Err(CompilerError::Unsupported(format!("{operation} source must be an array, string, or fixed-byte type")))
 }
 
-fn known_sequence_length<'i>(type_ref: &TypeRef, constants: &HashMap<String, Expr<'i>>) -> Option<usize> {
-    array_type_size(type_ref, constants).or_else(|| type_ref.base.fixed_byte_sequence_len())
+fn known_sequence_length<'i>(type_ref: &TypeRef, constants: &HashMap<String, Expr<'i>>) -> Result<Option<usize>, CompilerError> {
+    Ok(array_type_size(type_ref, constants)?.or_else(|| type_ref.base.fixed_byte_sequence_len()))
 }
 
 fn validate_constant_sequence_index<'i>(
@@ -622,11 +624,11 @@ fn validate_constant_sequence_index<'i>(
     source_type: &TypeRef,
     constants: &HashMap<String, Expr<'i>>,
 ) -> Result<Option<i64>, CompilerError> {
-    let Ok(index) = eval_const_int(index, constants) else { return Ok(None) };
+    let Some(index) = eval_optional_const_int(index, constants)? else { return Ok(None) };
     if index < 0 {
         return Err(CompilerError::Unsupported(format!("{operation} {index_name} {index} is out of bounds")));
     }
-    if let Some(source_size) = known_sequence_length(source_type, constants)
+    if let Some(source_size) = known_sequence_length(source_type, constants)?
         && usize::try_from(index).is_ok_and(|index| index > source_size)
     {
         return Err(CompilerError::Unsupported(format!(

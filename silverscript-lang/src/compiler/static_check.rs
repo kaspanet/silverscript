@@ -526,15 +526,12 @@ fn validate_variable_definition_statement_shape<'i>(
 ) -> Result<(), CompilerError> {
     let type_name = type_ref.type_name();
     ensure_array_elements_have_known_size(type_ref, ctx.structs, ctx.constants, &type_name)?;
-    if expr.is_none() && type_ref.is_array() && array_type_size(type_ref, ctx.constants).is_some() {
+    if expr.is_none() && type_ref.is_array() && array_type_size(type_ref, ctx.constants)?.is_some() {
         return Err(CompilerError::Unsupported("variable definition requires initializer".to_string()));
     }
     if let Some(expr) = expr {
         ctx.check_expr(expr, Some(type_ref)).map_err(|err| {
-            if type_ref.is_array()
-                && matches!(expr.kind, ExprKind::Array { .. })
-                && !matches!(&err, CompilerError::Unsupported(message) if message == "size mismatch")
-            {
+            if type_ref.is_array() && matches!(expr.kind, ExprKind::Array { .. }) && !matches!(&err, CompilerError::SizeMismatch) {
                 return CompilerError::Unsupported(format!("array element type mismatch for type {type_name}"));
             }
             map_declared_type_error(
@@ -718,7 +715,7 @@ fn validate_function_call_assign_statement_shape<'i>(
         return Err(CompilerError::Unsupported("function call assignment return count mismatch".to_string()));
     }
     for (binding, return_type) in bindings.iter().zip(&return_types) {
-        if !type_refs_equal(&binding.type_ref, return_type, ctx.constants) {
+        if !type_refs_equal(&binding.type_ref, return_type, ctx.constants)? {
             return Err(CompilerError::Unsupported(format!(
                 "function return binding '{}' expects {}",
                 binding.name,
@@ -749,7 +746,7 @@ fn validate_require_age_daa_statement_shape<'i>(
     expr: &Expr<'i>,
 ) -> Result<(), CompilerError> {
     ctx.check_expr(expr, Some(&TypeRef { base: TypeBase::Int, array_dims: Vec::new() }))?;
-    if let Ok(value) = eval_const_int(expr, ctx.constants) {
+    if let Some(value) = eval_optional_const_int(expr, ctx.constants)? {
         if !(0..(1_i64 << 32)).contains(&value) {
             return Err(CompilerError::Unsupported(format!("this.ageDaa value must satisfy 0 <= value < 2^32, got {value}")));
         }
@@ -762,7 +759,7 @@ fn validate_require_tx_daa_statement_shape<'i>(
     expr: &Expr<'i>,
 ) -> Result<(), CompilerError> {
     ctx.check_expr(expr, Some(&TypeRef { base: TypeBase::Int, array_dims: Vec::new() }))?;
-    if let Ok(value) = eval_const_int(expr, ctx.constants) {
+    if let Some(value) = eval_optional_const_int(expr, ctx.constants)? {
         let lock_time_threshold = kaspa_txscript::LOCK_TIME_THRESHOLD as i64;
         if !(0..lock_time_threshold).contains(&value) {
             return Err(CompilerError::Unsupported(format!(
@@ -778,7 +775,7 @@ fn validate_require_tx_time_statement_shape<'i>(
     expr: &Expr<'i>,
 ) -> Result<(), CompilerError> {
     ctx.check_expr(expr, Some(&TypeRef { base: TypeBase::Temporal, array_dims: Vec::new() }))?;
-    if let Ok(value) = eval_const_int(expr, ctx.constants) {
+    if let Some(value) = eval_optional_const_int(expr, ctx.constants)? {
         let lock_time_threshold = kaspa_txscript::LOCK_TIME_THRESHOLD as i64;
         if value < lock_time_threshold {
             return Err(CompilerError::Unsupported(format!(
@@ -928,7 +925,7 @@ fn validate_struct_destructure_bindings<'i>(
         let Some(binding) = bindings.iter().find(|binding| binding.field_name == field.name) else {
             return Err(CompilerError::Unsupported("struct destructuring must bind all fields exactly once".to_string()));
         };
-        if !type_refs_equal(&binding.type_ref, &field.type_ref, constants) {
+        if !type_refs_equal(&binding.type_ref, &field.type_ref, constants)? {
             return Err(CompilerError::Unsupported(format!("struct field '{}' expects {}", field.name, field.type_ref.type_name())));
         }
         if let Some(state_reader) = state_reader
@@ -1004,7 +1001,7 @@ fn map_declared_type_error<'i>(
     constants: &HashMap<String, Expr<'i>>,
 ) -> CompilerError {
     match err {
-        CompilerError::Unsupported(message) if message == "type mismatch" => {
+        CompilerError::TypeMismatch => {
             let hint = expr_matches_return_type_hint(expr, type_ref, types, structs, constants)
                 .map(|hint| format!("; {hint}"))
                 .unwrap_or_default();
@@ -1046,7 +1043,7 @@ fn fixed_type_size_with_structs<'i>(
 ) -> Result<Option<usize>, CompilerError> {
     if type_ref.is_array() {
         let Some(element_type) = type_ref.array_element_type() else { return Ok(None) };
-        let Some(array_len) = array_type_size(type_ref, constants) else { return Ok(None) };
+        let Some(array_len) = array_type_size(type_ref, constants)? else { return Ok(None) };
         let Some(element_size) = fixed_type_size_with_structs(&element_type, structs, constants)? else { return Ok(None) };
         return checked_mul(element_size, array_len).map(Some);
     }

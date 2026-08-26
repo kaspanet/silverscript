@@ -475,7 +475,7 @@ impl<'a, 'i> TernaryLowerer<'a, 'i> {
                 .ok_or_else(|| CompilerError::Unsupported("ternary result array element type is missing".to_string()))?;
             let len = match type_ref.array_size() {
                 Some(ArrayDim::Dynamic) => 0,
-                Some(ArrayDim::Fixed(_) | ArrayDim::Constant(_)) => array_type_size(type_ref, self.constants)
+                Some(ArrayDim::Fixed(_) | ArrayDim::Constant(_)) => array_type_size(type_ref, self.constants)?
                     .ok_or_else(|| CompilerError::Unsupported(format!("cannot determine size of {}", type_ref.type_name())))?,
                 Some(ArrayDim::Inferred) | None => {
                     return Err(CompilerError::Unsupported(format!("cannot create default {}", type_ref.type_name())));

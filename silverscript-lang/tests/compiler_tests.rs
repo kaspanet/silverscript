@@ -452,6 +452,26 @@ fn resolve_contract_state_values_rejects_constructor_arg_type_mismatch() {
 }
 
 #[test]
+fn resolve_contract_state_values_checks_constructor_dependent_array_dimensions() {
+    let source = r#"
+        contract ResolveState(int N, byte[N] initial) {
+            byte[N] stored = initial;
+
+            entry spend() {
+                require(true);
+            }
+        }
+    "#;
+
+    let contract = parse_contract_ast(source).expect("contract parses");
+    let err = contract
+        .resolve_contract_state_values(&[Expr::int(2), Expr::bytes(vec![0xab])])
+        .expect_err("a constructor-sized array must use the resolved preceding constructor parameter");
+
+    assert!(err.to_string().contains("constructor argument 'initial' expects byte[N]"), "unexpected error: {err}");
+}
+
+#[test]
 fn resolve_contract_state_values_rejects_resolved_field_type_mismatch() {
     let source = r#"
         contract ResolveState(byte[2] initTag) {
@@ -5715,6 +5735,16 @@ fn rejects_invalid_constant_slice_bounds() {
             "contract C() { entry main(datasig value) { byte[] part = value.slice(0, 65); } }",
             "out of bounds",
         ),
+        (
+            "constant slice bound division by zero",
+            "contract C() { entry main(byte[] value) { byte[] part = value.slice(0, 1 / 0); } }",
+            "division by zero in constant expression",
+        ),
+        (
+            "constant slice bound overflow",
+            "contract C() { entry main(byte[] value) { byte[] part = value.slice(0, 9223372036854775807 + 1); } }",
+            "arithmetic overflow",
+        ),
     ];
 
     for (case, source, expected) in cases {
@@ -6315,6 +6345,31 @@ fn rejects_overflow_in_constant_for_loop_bounds() {
 
         let err = compile_contract(&source, &[], CompileOptions::default()).expect_err("compile should fail");
         assert!(err.to_string().contains(expected), "unexpected error: {err}");
+    }
+}
+
+#[test]
+fn rejects_invalid_constant_for_loop_start_and_end_expressions() {
+    let cases = [("1 / 0", "division by zero in constant expression"), ("9223372036854775807 + 1", "arithmetic overflow")];
+
+    for (expr, expected) in cases {
+        for (start, end) in [(expr, "1"), ("0", expr)] {
+            let source = format!(
+                r#"
+                    contract Loops() {{
+                        entry main() {{
+                            for (i, {start}, {end}, 1) {{
+                                require(i >= 0);
+                            }}
+                        }}
+                    }}
+                "#
+            );
+
+            let err = compile_contract(&source, &[], CompileOptions::default())
+                .expect_err("an invalid constant loop bound must be rejected instead of lowered as a runtime expression");
+            assert!(err.to_string().contains(expected), "unexpected error: {err}");
+        }
     }
 }
 
@@ -12137,6 +12192,24 @@ fn absolute_daa_and_time_locks_enforce_consensus_domains() {
 }
 
 #[test]
+fn lock_requirements_reject_invalid_constant_expressions() {
+    let cases = [
+        "contract C() { entry main() { require(this.ageDaa >= 9223372036854775807 + 1); } }",
+        "contract C() { entry main() { require(tx.daa >= 9223372036854775807 + 1); } }",
+        "contract C() { entry main() { require(tx.time >= temporal(9223372036854775807 / 0)); } }",
+    ];
+
+    for source in cases {
+        let err = compile_contract(source, &[], CompileOptions::default())
+            .expect_err("an invalid constant lock target must not be treated as a runtime expression");
+        assert!(
+            matches!(err.root(), CompilerError::ArithmeticOverflow(_) | CompilerError::InvalidLiteral(_)),
+            "unexpected error: {err}"
+        );
+    }
+}
+
+#[test]
 fn temporal_literals_use_milliseconds_and_are_separate_from_daa_age() {
     let relative_source = "contract C() { entry main() { require(this.ageDaa >= 1 days); } }";
     compile_contract(relative_source, &[], CompileOptions::default()).expect_err("this.ageDaa must reject temporal expressions");
@@ -12761,10 +12834,8 @@ fn rejects_fixed_size_array_init_with_too_few_elements() {
             }
         }
     "#;
-    let result = compile_contract(source, &[], CompileOptions::default());
-    assert!(result.is_err(), "Should reject array with too few elements");
-    let err_msg = format!("{:?}", result.unwrap_err());
-    assert!(err_msg.contains("type mismatch") || err_msg.contains("size mismatch"), "Error should mention type or size mismatch");
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("should reject array with too few elements");
+    assert!(matches!(err.root(), CompilerError::SizeMismatch), "unexpected error: {err:?}");
 }
 
 #[test]
@@ -12776,10 +12847,8 @@ fn rejects_fixed_size_array_init_with_too_many_elements() {
             }
         }
     "#;
-    let result = compile_contract(source, &[], CompileOptions::default());
-    assert!(result.is_err(), "Should reject array with too many elements");
-    let err_msg = format!("{:?}", result.unwrap_err());
-    assert!(err_msg.contains("type mismatch") || err_msg.contains("size mismatch"), "Error should mention type or size mismatch");
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("should reject array with too many elements");
+    assert!(matches!(err.root(), CompilerError::SizeMismatch), "unexpected error: {err:?}");
 }
 
 #[test]

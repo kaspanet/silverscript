@@ -61,14 +61,14 @@ fn infer_fixed_array_type_from_initializer<'i>(
     let Some(init_type) = infer_expr_type(init, types, constants, functions)? else { return Ok(None) };
 
     let Some(init_element_type) = init_type.array_element_type() else { return Ok(None) };
-    if !init_type.is_array() || !type_refs_equal(&init_element_type, &element_type, constants) {
+    if !init_type.is_array() || !type_refs_equal(&init_element_type, &element_type, constants)? {
         return Ok(None);
     }
 
     let size = if let ExprKind::Array { values, .. } = &init.kind {
         values.len()
     } else {
-        let Some(size) = array_type_size(&init_type, constants) else { return Ok(None) };
+        let Some(size) = array_type_size(&init_type, constants)? else { return Ok(None) };
         size
     };
     let mut inferred = element_type;
@@ -313,7 +313,7 @@ fn infer_expr_type<'i>(
         ExprKind::Ternary { then_expr, else_expr, .. } => {
             let Some(then_type) = infer_expr_type(then_expr, types, constants, functions)? else { return Ok(None) };
             let Some(else_type) = infer_expr_type(else_expr, types, constants, functions)? else { return Ok(None) };
-            type_refs_equal(&then_type, &else_type, constants).then_some(then_type)
+            type_refs_equal(&then_type, &else_type, constants)?.then_some(then_type)
         }
         ExprKind::Append { source, args, .. } => {
             let Some(source_type) = infer_expr_type(source, types, constants, functions)? else { return Ok(None) };

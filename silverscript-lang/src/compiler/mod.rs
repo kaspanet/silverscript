@@ -33,8 +33,8 @@ mod validate_output_state;
 
 use compile::compile_contract_impl;
 pub use compile::compile_debug_expr;
-pub(super) use compile::eval_const_int;
 pub(crate) use compile::resolve_constant_references;
+pub(super) use compile::{eval_const_int, eval_optional_const_int};
 pub(crate) use debug_recording::DebugRecorder;
 use r#for::lower_for_loops;
 use read_input_state::lower_read_input_state_calls;
@@ -158,7 +158,7 @@ impl<'i> ContractAst<'i> {
 
         for (param, value) in self.params.iter().zip(constructor_args.iter()) {
             let type_name = param.type_ref.type_name();
-            if validate_expr_matches_type(value, &param.type_ref, &HashMap::new(), &structs, &constants, &HashMap::new(), &self.fields)
+            if validate_expr_matches_type(value, &param.type_ref, &HashMap::new(), &structs, &env, &HashMap::new(), &self.fields)
                 .is_err()
             {
                 return Err(CompilerError::Unsupported(format!("constructor argument '{}' expects {}", param.name, type_name)));
@@ -174,16 +174,8 @@ impl<'i> ContractAst<'i> {
 
             let type_name = field.type_ref.type_name();
             let resolved = resolve_constant_references(field.expr.clone(), &env, &mut std::collections::HashSet::new())?;
-            if validate_expr_matches_type(
-                &resolved,
-                &field.type_ref,
-                &HashMap::new(),
-                &structs,
-                &constants,
-                &HashMap::new(),
-                &self.fields,
-            )
-            .is_err()
+            if validate_expr_matches_type(&resolved, &field.type_ref, &HashMap::new(), &structs, &env, &HashMap::new(), &self.fields)
+                .is_err()
             {
                 return Err(CompilerError::Unsupported(format!("contract field '{}' expects {}", field.name, type_name)));
             }

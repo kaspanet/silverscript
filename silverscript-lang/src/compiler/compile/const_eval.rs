@@ -6,6 +6,21 @@ pub(crate) fn eval_const_int<'i>(expr: &Expr<'i>, constants: &HashMap<String, Ex
     eval_const_int_inner(expr, constants, &mut visiting, &mut resolved)
 }
 
+/// Evaluates an integer expression when it is compile-time constant.
+///
+/// A non-constant runtime expression is represented by `None`; failures while evaluating an otherwise constant expression must
+/// remain compiler errors.
+pub(crate) fn eval_optional_const_int<'i>(
+    expr: &Expr<'i>,
+    constants: &HashMap<String, Expr<'i>>,
+) -> Result<Option<i64>, CompilerError> {
+    match eval_const_int(expr, constants) {
+        Ok(value) => Ok(Some(value)),
+        Err(CompilerError::NonConstantInteger(_)) => Ok(None),
+        Err(err) => Err(err),
+    }
+}
+
 fn eval_const_int_inner<'i>(
     expr: &Expr<'i>,
     constants: &HashMap<String, Expr<'i>>,
@@ -23,7 +38,7 @@ fn eval_const_int_inner<'i>(
                 return Ok(*value);
             }
             let value =
-                constants.get(name).ok_or_else(|| CompilerError::Unsupported(format!("'{name}' is not a constant integer")))?;
+                constants.get(name).ok_or_else(|| CompilerError::NonConstantInteger(format!("'{name}' is not a constant integer")))?;
             if !visiting.insert(name.clone()) {
                 return Err(CompilerError::CyclicIdentifier(name.clone()));
             }
@@ -37,7 +52,9 @@ fn eval_const_int_inner<'i>(
             let value = eval_const_int_inner(expr, constants, visiting, resolved)?;
             checked_neg(value)
         }
-        ExprKind::Unary { .. } => Err(CompilerError::Unsupported("constant expression must evaluate to an integer".to_string())),
+        ExprKind::Unary { .. } => {
+            Err(CompilerError::NonConstantInteger("constant expression must evaluate to an integer".to_string()))
+        }
         ExprKind::Binary { op, left, right } => {
             let lhs = eval_const_int_inner(left, constants, visiting, resolved)?;
             let rhs = eval_const_int_inner(right, constants, visiting, resolved)?;
@@ -57,10 +74,10 @@ fn eval_const_int_inner<'i>(
                     }
                     checked_rem(lhs, rhs)
                 }
-                _ => Err(CompilerError::Unsupported("constant expression must evaluate to an integer".to_string())),
+                _ => Err(CompilerError::NonConstantInteger("constant expression must evaluate to an integer".to_string())),
             }
         }
-        _ => Err(CompilerError::Unsupported("constant expression must evaluate to an integer".to_string())),
+        _ => Err(CompilerError::NonConstantInteger("constant expression must evaluate to an integer".to_string())),
     }
 }
 
@@ -259,6 +276,29 @@ mod tests {
             assert!(matches!(err, CompilerError::ArithmeticOverflow(_)), "unexpected error variant: {err}");
             assert!(err.to_string().contains(&expected), "unexpected error: {err}");
         }
+    }
+
+    #[test]
+    fn optional_constant_evaluation_only_uses_none_for_runtime_expressions() {
+        let constants = HashMap::new();
+        let runtime_value = Expr::identifier("runtime_value");
+        let err = eval_const_int(&runtime_value, &constants).expect_err("runtime expression must have a distinct error");
+        assert!(matches!(err, CompilerError::NonConstantInteger(_)), "unexpected error: {err}");
+        assert_eq!(eval_optional_const_int(&runtime_value, &constants).unwrap(), None);
+
+        let overflow = Expr::new(
+            ExprKind::Binary { op: BinaryOp::Add, left: Box::new(Expr::int(i64::MAX)), right: Box::new(Expr::int(1)) },
+            Default::default(),
+        );
+        let err = eval_optional_const_int(&overflow, &constants).expect_err("constant overflow must not become None");
+        assert!(matches!(err, CompilerError::ArithmeticOverflow(_)), "unexpected error: {err}");
+
+        let division_by_zero = Expr::new(
+            ExprKind::Binary { op: BinaryOp::Div, left: Box::new(Expr::int(1)), right: Box::new(Expr::int(0)) },
+            Default::default(),
+        );
+        let err = eval_optional_const_int(&division_by_zero, &constants).expect_err("invalid constant must not become None");
+        assert!(matches!(err, CompilerError::InvalidLiteral(_)), "unexpected error: {err}");
     }
 
     #[test]

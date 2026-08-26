@@ -10,6 +10,14 @@ pub enum CompilerError {
     Parse(#[from] ParseDiagnostic),
     #[error("unsupported feature: {0}")]
     Unsupported(String),
+    #[error("expression is not a compile-time integer: {0}")]
+    NonConstantInteger(String),
+    #[error("expression requires runtime evaluation")]
+    RuntimeEvaluationRequired,
+    #[error("type mismatch")]
+    TypeMismatch,
+    #[error("size mismatch")]
+    SizeMismatch,
     #[error("invalid literal: {0}")]
     InvalidLiteral(String),
     #[error("arithmetic overflow: {0}")]

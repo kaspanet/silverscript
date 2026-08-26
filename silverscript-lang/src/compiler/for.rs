@@ -79,8 +79,10 @@ impl<'a, 'i> ForLowerer<'a, 'i> {
     ) -> Result<Vec<Statement<'i>>, CompilerError> {
         let max_iterations = match eval_const_int(max_iterations, self.constants) {
             Ok(value) => value,
-            Err(err @ (CompilerError::InvalidLiteral(_) | CompilerError::ArithmeticOverflow(_))) => return Err(err),
-            Err(_) => return Err(CompilerError::Unsupported("for loop max iterations must be a compile-time integer".to_string())),
+            Err(CompilerError::NonConstantInteger(_)) => {
+                return Err(CompilerError::Unsupported("for loop max iterations must be a compile-time integer".to_string()));
+            }
+            Err(err) => return Err(err),
         };
         if max_iterations < 0 {
             return Err(CompilerError::Unsupported("for loop max iterations must be a non-negative compile-time integer".to_string()));
@@ -89,8 +91,20 @@ impl<'a, 'i> ForLowerer<'a, 'i> {
             return Err(CompilerError::Unsupported(format!("for loop max iterations must not exceed {MAX_FOR_LOOP_ITERATIONS}")));
         }
 
-        if let (Ok(start_value), Ok(end_value)) = (eval_const_int(start, self.constants), eval_const_int(end, self.constants)) {
-            return self.lower_constant_for_statement(ident, start_value, end_value, max_iterations as usize, body, span, ident_span);
+        {
+            let start_value = eval_optional_const_int(start, self.constants)?;
+            let end_value = eval_optional_const_int(end, self.constants)?;
+            if let (Some(start_value), Some(end_value)) = (start_value, end_value) {
+                return self.lower_constant_for_statement(
+                    ident,
+                    start_value,
+                    end_value,
+                    max_iterations as usize,
+                    body,
+                    span,
+                    ident_span,
+                );
+            }
         }
 
         let lowered_body = self.lower_block(body)?;
