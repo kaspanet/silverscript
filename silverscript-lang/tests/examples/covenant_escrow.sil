@@ -11,8 +11,8 @@ contract Escrow(byte[32] arbiter, pubkey buyer, pubkey seller) {
         require(tx.outputs[0].value == amount);
 
         // Check that the transaction sends to either the buyer or the seller
-        byte[34] buyerLock = new ScriptPubKeyP2PK(buyer);
-        byte[34] sellerLock = new ScriptPubKeyP2PK(seller);
+        byte[36] buyerLock = new ScriptPubKeyP2PK(buyer);
+        byte[36] sellerLock = new ScriptPubKeyP2PK(seller);
         bool sendsToBuyer = tx.outputs[0].scriptPubKey == byte[](buyerLock);
         bool sendsToSeller = tx.outputs[0].scriptPubKey == byte[](sellerLock);
         require(sendsToBuyer || sendsToSeller);

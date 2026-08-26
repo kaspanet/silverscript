@@ -1173,36 +1173,36 @@ Covenants are contracts that enforce conditions on how funds can be spent. They 
 
 ### Creating ScriptPubKey
 
-**`new ScriptPubKeyP2PK(pubkey pk): byte[34]`**
+**`new ScriptPubKeyP2PK(pubkey pk): byte[36]`**
 
 Create a Pay-to-Public-Key scriptPubKey:
 
 ```javascript
 entry checkOutput(pubkey recipientPubkey) {
-    byte[34] outputScriptPubKey = new ScriptPubKeyP2PK(recipientPubkey);
+    byte[36] outputScriptPubKey = new ScriptPubKeyP2PK(recipientPubkey);
     require(tx.outputs[0].scriptPubKey == byte[](outputScriptPubKey));
 }
 ```
 
-**`new ScriptPubKeyP2SH(byte[32] scriptHash): byte[35]`**
+**`new ScriptPubKeyP2SH(byte[32] scriptHash): byte[37]`**
 
 Create a Pay-to-Script-Hash scriptPubKey:
 
 ```javascript
 entry checkOutput(byte[] redeemScript) {
     byte[32] redeemScriptHash = blake2b(redeemScript);
-    byte[35] outputScriptPubKey = new ScriptPubKeyP2SH(redeemScriptHash);
+    byte[37] outputScriptPubKey = new ScriptPubKeyP2SH(redeemScriptHash);
     require(tx.outputs[0].scriptPubKey == byte[](outputScriptPubKey));
 }
 ```
 
-**`new ScriptPubKeyP2SHFromRedeemScript(byte[] redeemScript): byte[35]`**
+**`new ScriptPubKeyP2SHFromRedeemScript(byte[] redeemScript): byte[37]`**
 
 Create a P2SH scriptPubKey directly from a redeem script:
 
 ```javascript
 entry build(byte[] redeemScript) {
-    byte[35] outputScriptPubKey = new ScriptPubKeyP2SHFromRedeemScript(redeemScript);
+    byte[37] outputScriptPubKey = new ScriptPubKeyP2SHFromRedeemScript(redeemScript);
     require(outputScriptPubKey == outputScriptPubKey);
 }
 ```
@@ -1299,7 +1299,7 @@ pragma silverscript ^0.1.0;
 contract SimpleCovenant(pubkey recipient) {
     entry spend() {
         // First output must go to the recipient
-        byte[34] recipientScriptPubKey = new ScriptPubKeyP2PK(recipient);
+        byte[36] recipientScriptPubKey = new ScriptPubKeyP2PK(recipient);
         require(tx.outputs[0].scriptPubKey == byte[](recipientScriptPubKey));
     }
 }
@@ -1316,7 +1316,7 @@ contract RecurringPayment(pubkey recipient, int paymentAmount, int period) {
         require(this.ageDaa >= period);
         
         // First output must pay the recipient
-        byte[34] recipientScriptPubKey = new ScriptPubKeyP2PK(recipient);
+        byte[36] recipientScriptPubKey = new ScriptPubKeyP2PK(recipient);
         require(tx.outputs[0].scriptPubKey == byte[](recipientScriptPubKey));
         require(tx.outputs[0].value >= paymentAmount);
         
@@ -1503,7 +1503,7 @@ contract Mecenas(pubkey recipient, byte[32] funder, int pledge, int period) {
         require(this.ageDaa >= period);
 
         // Check that the first output sends to the recipient
-        byte[34] recipientScriptPubKey = new ScriptPubKeyP2PK(recipient);
+        byte[36] recipientScriptPubKey = new ScriptPubKeyP2PK(recipient);
         require(tx.outputs[0].scriptPubKey == byte[](recipientScriptPubKey));
 
         // Calculate the value that's left

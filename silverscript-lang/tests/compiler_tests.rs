@@ -35,9 +35,9 @@ fn script_builder() -> ScriptBuilder {
 #[test]
 fn constructors_validate_argument_types() {
     let cases = [
-        ("ScriptPubKeyP2PK", "1", "publicKey", "pubkey", "byte[34]"),
-        ("ScriptPubKeyP2SH", "byte[31](byte[]{0x00})", "scriptHash", "byte[32]", "byte[35]"),
-        ("ScriptPubKeyP2SHFromRedeemScript", "1", "redeemScript", "byte[]", "byte[35]"),
+        ("ScriptPubKeyP2PK", "1", "publicKey", "pubkey", "byte[36]"),
+        ("ScriptPubKeyP2SH", "byte[31](byte[]{0x00})", "scriptHash", "byte[32]", "byte[37]"),
+        ("ScriptPubKeyP2SHFromRedeemScript", "1", "redeemScript", "byte[]", "byte[37]"),
     ];
 
     for (constructor, argument, parameter, expected, result_type) in cases {
@@ -1516,15 +1516,42 @@ fn opcode_builtins_return_their_declared_types() {
                 byte[32] sequence_commitment = OpChainblockSeqCommit(
                     byte[_](0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f)
                 );
-                byte[34] p2pk = new ScriptPubKeyP2PK(pk);
-                byte[35] p2sh = new ScriptPubKeyP2SH(outpoint_tx_id);
-                byte[35] p2sh_from_redeem_script = new ScriptPubKeyP2SHFromRedeemScript(redeem_script);
+                byte[36] p2pk = new ScriptPubKeyP2PK(pk);
+                byte[37] p2sh = new ScriptPubKeyP2SH(outpoint_tx_id);
+                byte[37] p2sh_from_redeem_script = new ScriptPubKeyP2SHFromRedeemScript(redeem_script);
                 require(true);
             }
         }
     "#;
 
     compile_contract(source, &[], CompileOptions::default()).expect("fixed-size builtin results should assign to their exact types");
+}
+
+#[test]
+fn script_pubkey_constructors_return_correct_fixed_dimension_types() {
+    let source = r#"
+        contract ScriptPubKeyDimensions() {
+            entry main() {
+                byte[36] p2pk = new ScriptPubKeyP2PK(
+                    pubkey(0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f)
+                );
+                byte[37] p2sh = new ScriptPubKeyP2SH(
+                    byte[32](0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f)
+                );
+                byte[37] p2sh_from_redeem_script =
+                    new ScriptPubKeyP2SHFromRedeemScript(byte[]("redeem"));
+
+                require(byte[](p2pk).length == 36);
+                require(byte[](p2sh).length == 37);
+                require(byte[](p2sh_from_redeem_script).length == 37);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("script-pubkey constructors should compile");
+    let sigscript = compiled.build_sig_script("main", vec![]).expect("signature script should build");
+    run_bytecode_with_sigscript(compiled.bytecode, sigscript)
+        .expect("script-pubkey constructor results should have their declared lengths after conversion to byte[]");
 }
 
 #[test]
@@ -1600,13 +1627,13 @@ fn rejects_assigning_fixed_size_builtin_results_to_wrong_byte_array_sizes() {
         ),
         (
             "ScriptPubKeyP2PK",
-            "byte[33] value = new ScriptPubKeyP2PK(pubkey(0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f));",
+            "byte[35] value = new ScriptPubKeyP2PK(pubkey(0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f));",
         ),
         (
             "ScriptPubKeyP2SH",
-            "byte[34] value = new ScriptPubKeyP2SH(byte[32](0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f));",
+            "byte[36] value = new ScriptPubKeyP2SH(byte[32](0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f));",
         ),
-        ("ScriptPubKeyP2SHFromRedeemScript", "byte[34] value = new ScriptPubKeyP2SHFromRedeemScript(byte[](\"redeem\"));"),
+        ("ScriptPubKeyP2SHFromRedeemScript", "byte[36] value = new ScriptPubKeyP2SHFromRedeemScript(byte[](\"redeem\"));"),
     ];
 
     for (name, statement) in cases {
@@ -16366,4 +16393,211 @@ fn public_ast_robustness_seeds_return_without_panicking() {
         let outcome = catch_unwind(AssertUnwindSafe(|| compile_contract_ast(&ast, &[], CompileOptions::default())));
         assert!(outcome.is_ok(), "public AST compilation panicked for seed: {seed}");
     }
+}
+
+#[test]
+fn artifact_state_resolution_supports_constructor_sized_arrays() {
+    let source = r#"
+        contract C(int N, byte[N] initial) {
+            byte[N] stored = initial;
+
+            entry main() {
+                require(stored.length == N);
+            }
+        }
+    "#;
+    let constructor_args = [Expr::int(2), Expr::bytes(vec![0xaa, 0xbb])];
+    let compiled = compile_contract(source, &constructor_args, CompileOptions::default()).expect("contract compiles");
+
+    let state = compiled
+        .ast
+        .resolve_contract_state_values(&constructor_args)
+        .expect("the compiled artifact should resolve with the same constructor arguments accepted by compilation");
+    assert_eq!(state.len(), 1);
+    assert_eq!(state[0].value, constructor_args[1]);
+}
+
+#[test]
+fn overflowing_fixed_array_size_is_rejected_at_the_untrusted_abi_boundary() {
+    let source = r#"
+        contract C() {
+            int constant N = 2305843009213693952;
+
+            entry main(int[N] values) {
+                require(values.length == N);
+            }
+        }
+    "#;
+    // N * sizeof(int) is 2^64 and overflows usize on the supported 64-bit host. A fixed parameter with that impossible encoded
+    // width must be rejected rather than weakened into the dynamic-array rule that accepts any multiple of eight bytes.
+    let err = compile_contract(source, &[], CompileOptions::default())
+        .expect_err("an impossible fixed-width entrypoint parameter must be rejected");
+    assert!(matches!(err.root(), CompilerError::ArithmeticOverflow(_)), "unexpected error: {err}");
+}
+
+#[test]
+fn append_accepts_a_slice_result_as_its_array_source() {
+    let source = r#"
+        contract SliceAppend() {
+            entry main(byte[] values) {
+                byte[] result = values.slice(0, values.length).append(byte(7));
+                require(result.length == values.length + 1);
+            }
+        }
+    "#;
+
+    compile_contract(source, &[], CompileOptions::default())
+        .expect("a statically typed byte[] slice should remain a valid append source after lowering");
+}
+
+#[test]
+fn append_accepts_a_nested_array_element_as_its_array_source() {
+    let source = r#"
+        contract NestedArrayAppend() {
+            entry main(int[2][] rows) {
+                int[3] result = rows[0].append(7);
+                require(result.length == 3);
+            }
+        }
+    "#;
+
+    compile_contract(source, &[], CompileOptions::default())
+        .expect("a statically typed nested-array element should remain a valid append source after lowering");
+}
+
+fn execute_handcrafted_p2sh(
+    compiled: &CompiledContract<'_>,
+    unlocking_prefix: Vec<u8>,
+) -> Result<(), kaspa_txscript_errors::TxScriptError> {
+    let flags = EngineFlags { covenants_enabled: true, ..Default::default() };
+    let signature_script = pay_to_script_hash_signature_script_with_flags(compiled.bytecode.clone(), unlocking_prefix, flags)
+        .expect("redeem script push should build");
+    let input = TransactionInput::new(
+        TransactionOutpoint { transaction_id: TransactionId::from_bytes([1; 32]), index: 0 },
+        signature_script,
+        0,
+        0,
+    );
+    let spent_output =
+        TransactionOutput { value: 1_000, script_public_key: pay_to_script_hash_script(&compiled.bytecode), covenant: None };
+    let tx = Transaction::new(1, vec![input.clone()], vec![spent_output.clone()], 0, SubnetworkId::default(), 0, vec![]);
+    let utxo = UtxoEntry::new(spent_output.value, spent_output.script_public_key, 0, tx.is_coinbase(), None);
+    let populated = PopulatedTransaction::new(&tx, vec![utxo.clone()]);
+    let reused_values = SigHashReusedValuesUnsync::new();
+    let sig_cache = Cache::new(10_000);
+    let mut vm = TxScriptEngine::from_transaction_input(
+        &populated,
+        &input,
+        0,
+        &utxo,
+        EngineCtx::new(&sig_cache).with_reused(&reused_values),
+        flags,
+    );
+    vm.execute()
+}
+
+fn compile_sigscript_boundary_contract() -> CompiledContract<'static> {
+    let source = r#"
+        contract Boundary(int committed) {
+            int stored = committed;
+
+            entry main(int left, int right) {
+                require(stored == 9);
+                require(left == 11);
+                require(right == 22);
+            }
+        }
+    "#;
+    compile_contract(source, &[Expr::int(9)], CompileOptions::default()).expect("boundary contract compiles")
+}
+
+fn valid_sigscript_boundary_prefix(compiled: &CompiledContract<'_>) -> Vec<u8> {
+    script_builder().add_i64(11).unwrap().add_i64(22).unwrap().add_data(&dispatch_tag_for(compiled, "main")).unwrap().drain()
+}
+
+#[test]
+fn handcrafted_p2sh_sigscript_accepts_exact_argument_stack() {
+    let compiled = compile_sigscript_boundary_contract();
+    execute_handcrafted_p2sh(&compiled, valid_sigscript_boundary_prefix(&compiled)).expect("exact argument stack must execute");
+}
+
+#[test]
+fn handcrafted_p2sh_sigscript_rejects_surplus_items_beneath_arguments() {
+    let compiled = compile_sigscript_boundary_contract();
+    let tag = dispatch_tag_for(&compiled, "main");
+    let cases = [
+        script_builder().add_i64(0).unwrap().add_i64(11).unwrap().add_i64(22).unwrap().add_data(&tag).unwrap().drain(),
+        script_builder().add_i64(99).unwrap().add_i64(11).unwrap().add_i64(22).unwrap().add_data(&tag).unwrap().drain(),
+        script_builder()
+            .add_data_with_push_opcode(&[0x55; 32])
+            .unwrap()
+            .add_i64(11)
+            .unwrap()
+            .add_i64(22)
+            .unwrap()
+            .add_data(&tag)
+            .unwrap()
+            .drain(),
+    ];
+
+    for unlocking_prefix in cases {
+        let err = execute_handcrafted_p2sh(&compiled, unlocking_prefix).expect_err("surplus stack item must not be accepted");
+        assert!(
+            matches!(err, kaspa_txscript_errors::TxScriptError::CleanStack(_)),
+            "surplus item should survive only to clean-stack rejection: {err:?}"
+        );
+    }
+}
+
+#[test]
+fn handcrafted_p2sh_sigscript_rejects_missing_reordered_and_trailing_items() {
+    let compiled = compile_sigscript_boundary_contract();
+    let tag = dispatch_tag_for(&compiled, "main");
+    let missing_leading = script_builder().add_i64(22).unwrap().add_data(&tag).unwrap().drain();
+    let reordered = script_builder().add_i64(22).unwrap().add_i64(11).unwrap().add_data(&tag).unwrap().drain();
+    let item_after_tag =
+        script_builder().add_i64(11).unwrap().add_i64(22).unwrap().add_data(&tag).unwrap().add_i64(1).unwrap().drain();
+
+    for unlocking_prefix in [missing_leading, reordered, item_after_tag] {
+        execute_handcrafted_p2sh(&compiled, unlocking_prefix).expect_err("malformed argument/dispatch position must fail");
+    }
+}
+
+#[test]
+fn handcrafted_p2sh_sigscript_rejects_unknown_tag_non_push_opcode_and_oversized_int() {
+    let compiled = compile_sigscript_boundary_contract();
+    let tag = dispatch_tag_for(&compiled, "main");
+    let unknown_tag = script_builder().add_i64(11).unwrap().add_i64(22).unwrap().add_data(&[0xde, 0xad, 0xbe, 0xef]).unwrap().drain();
+    execute_handcrafted_p2sh(&compiled, unknown_tag).expect_err("unknown dispatch tag must fail");
+
+    let mut non_push = vec![OpDup];
+    non_push.extend(valid_sigscript_boundary_prefix(&compiled));
+    let err = execute_handcrafted_p2sh(&compiled, non_push).expect_err("signature script must be push-only");
+    assert!(matches!(err, kaspa_txscript_errors::TxScriptError::SignatureScriptNotPushOnly), "unexpected non-push error: {err:?}");
+
+    let oversized = script_builder()
+        .add_data_with_push_opcode(&[11, 0, 0, 0, 0, 0, 0, 0, 0])
+        .unwrap()
+        .add_i64(22)
+        .unwrap()
+        .add_data(&tag)
+        .unwrap()
+        .drain();
+    execute_handcrafted_p2sh(&compiled, oversized).expect_err("nine-byte int must fail the compiler-emitted size guard");
+}
+
+#[test]
+fn handcrafted_p2sh_sigscript_preserves_nonminimal_but_valid_int_semantics() {
+    let compiled = compile_sigscript_boundary_contract();
+    let left = [11, 0, 0, 0, 0, 0, 0, 0];
+    let right = [22, 0, 0, 0, 0, 0, 0, 0];
+    let prefix = script_builder()
+        .add_data_with_push_opcode(&left)
+        .unwrap()
+        .add_data_with_push_opcode(&right)
+        .unwrap()
+        .add_data(&dispatch_tag_for(&compiled, "main"))
+        .unwrap()
+        .drain();
+    execute_handcrafted_p2sh(&compiled, prefix).expect("Rusty Kaspa permits nonminimal numeric encodings up to eight bytes");
 }
