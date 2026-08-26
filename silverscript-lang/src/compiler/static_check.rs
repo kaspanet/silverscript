@@ -328,13 +328,13 @@ pub(crate) fn validate_return_types<'i>(
 
 fn validate_contract_struct_usage<'i>(contract: &ContractAst<'i>, structs: &StructRegistry) -> Result<(), CompilerError> {
     for param in &contract.params {
-        ensure_known_struct_or_builtin_type(&param.type_ref, structs, "contract parameter")?;
+        ensure_known_type_without_struct_arrays(&param.type_ref, structs, "contract parameter")?;
     }
     for field in &contract.fields {
-        ensure_known_struct_or_builtin_type(&field.type_ref, structs, "contract field")?;
+        ensure_known_type_without_struct_arrays(&field.type_ref, structs, "contract field")?;
     }
     for constant in &contract.constants {
-        ensure_known_struct_or_builtin_type(&constant.type_ref, structs, "constant")?;
+        ensure_known_type_without_struct_arrays(&constant.type_ref, structs, "constant")?;
     }
 
     Ok(())
@@ -367,9 +367,12 @@ fn validate_function_signatures<'i>(
             }
         }
         for param in &function.params {
+            ensure_known_type(&param.type_ref, structs, "function parameter").map_err(|err| err.with_span(&param.type_span))?;
             ensure_array_elements_have_known_size(&param.type_ref, structs, constants, &param.type_ref.type_name())?;
         }
-        for return_type in &function.return_types {
+        for (index, return_type) in function.return_types.iter().enumerate() {
+            ensure_known_type(return_type, structs, "function return type")
+                .map_err(|err| err.with_span(function.return_type_spans.get(index).unwrap_or(&function.name_span)))?;
             ensure_array_elements_have_known_size(return_type, structs, constants, &return_type.type_name())?;
         }
 
@@ -452,8 +455,8 @@ fn validate_statement_shapes<'i>(
 
     for stmt in statements {
         match stmt {
-            Statement::VariableDefinition { type_ref, name, expr, .. } => {
-                validate_variable_definition_statement_shape(&mut ctx, type_ref, name, expr.as_ref())?
+            Statement::VariableDefinition { type_ref, name, expr, type_span, .. } => {
+                validate_variable_definition_statement_shape(&mut ctx, type_ref, name, expr.as_ref(), type_span)?
             }
             Statement::TupleAssignment { left_type_ref, left_name, right_type_ref, right_name, expr, .. } => {
                 validate_tuple_assignment_statement_shape(&mut ctx, left_type_ref, left_name, right_type_ref, right_name, expr)?
@@ -523,7 +526,9 @@ fn validate_variable_definition_statement_shape<'i>(
     type_ref: &TypeRef,
     name: &str,
     expr: Option<&Expr<'i>>,
+    type_span: &span::Span<'i>,
 ) -> Result<(), CompilerError> {
+    ensure_known_type(type_ref, ctx.structs, "variable").map_err(|err| err.with_span(type_span))?;
     let type_name = type_ref.type_name();
     ensure_array_elements_have_known_size(type_ref, ctx.structs, ctx.constants, &type_name)?;
     if expr.is_none() && type_ref.is_array() && array_type_size(type_ref, ctx.constants)?.is_some() {
@@ -908,7 +913,7 @@ fn validate_struct_destructure_bindings<'i>(
     let mut seen_names = HashSet::new();
 
     for binding in bindings {
-        ensure_known_struct_or_builtin_type(&binding.type_ref, structs, "struct destructuring")?;
+        ensure_known_type_without_struct_arrays(&binding.type_ref, structs, "struct destructuring")?;
         if !seen_fields.insert(binding.field_name.clone()) {
             return Err(CompilerError::Unsupported(format!("duplicate struct field '{}'", binding.field_name)));
         }

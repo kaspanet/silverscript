@@ -16688,6 +16688,37 @@ fn public_ast_robustness_seeds_return_without_panicking() {
 }
 
 #[test]
+fn entrypoint_abi_rejects_undeclared_record_types_even_when_unused() {
+    let source = r#"
+        contract UnknownRecordAbi() {
+            entry main(Missing value) {
+                require(true);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default())
+        .expect_err("every custom type published in the entrypoint ABI must resolve to a declared struct");
+    assert!(err.to_string().contains("unknown type 'Missing' in function parameter"), "unexpected error: {err}");
+}
+
+#[test]
+fn variable_definition_rejects_undeclared_type_even_when_unused() {
+    let source = r#"
+        contract UnknownLocalType() {
+            entry main() {
+                Missing value;
+                require(true);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default())
+        .expect_err("an unused local variable must still have a declared type");
+    assert!(err.to_string().contains("unknown type 'Missing' in variable"), "unexpected error: {err}");
+}
+
+#[test]
 fn artifact_state_resolution_supports_constructor_sized_arrays() {
     let source = r#"
         contract C(int N, byte[N] initial) {
