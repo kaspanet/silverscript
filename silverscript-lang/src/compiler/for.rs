@@ -215,7 +215,10 @@ impl<'a, 'i> ForLowerer<'a, 'i> {
         span: span::Span<'i>,
         ident_span: span::Span<'i>,
     ) -> Result<Vec<Statement<'i>>, CompilerError> {
-        if i128::from(end) - i128::from(start) > max_iterations as i128 {
+        // Keep constant lowering compatible with the runtime guard `require(end - start <= max_iterations)`: if the runtime
+        // subtraction cannot be represented as an i64, the equivalent constant loop must fail compilation.
+        let range = checked_sub(end, start)?;
+        if range > max_iterations as i64 {
             return Err(CompilerError::Unsupported("for loop range must not exceed max iterations".to_string()));
         }
 

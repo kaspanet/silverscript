@@ -16722,3 +16722,38 @@ fn handcrafted_p2sh_sigscript_preserves_nonminimal_but_valid_int_semantics() {
         .drain();
     execute_handcrafted_p2sh(&compiled, prefix).expect("Rusty Kaspa permits nonminimal numeric encodings up to eight bytes");
 }
+
+#[test]
+fn runtime_empty_loop_with_extreme_reversed_bounds_matches_constant_lowering() {
+    let constant_source = r#"
+        contract ConstantLoopBounds() {
+            entry main() {
+                for (i, 9223372036854775807, -9223372036854775807, 1) {
+                    require(false);
+                }
+                require(true);
+            }
+        }
+    "#;
+    let err = compile_contract(constant_source, &[], CompileOptions::default())
+        .expect_err("an overflowing constant loop range must fail compilation");
+    assert!(matches!(err.root(), CompilerError::ArithmeticOverflow(_)), "unexpected error: {err}");
+    assert!(err.to_string().contains("arithmetic overflow: -9223372036854775807 - 9223372036854775807"), "unexpected error: {err}");
+
+    let runtime_source = r#"
+        contract RuntimeLoopBounds() {
+            entry main(int start, int end) {
+                for (i, start, end, 1) {
+                    require(false);
+                }
+                require(true);
+            }
+        }
+    "#;
+    let compiled = compile_contract(runtime_source, &[], CompileOptions::default()).expect("runtime-bound contract compiles");
+    let sigscript =
+        compiled.build_sig_script("main", vec![Expr::int(i64::MAX), Expr::int(-i64::MAX)]).expect("runtime sigscript builds");
+    let err =
+        run_bytecode_with_sigscript(compiled.bytecode, sigscript).expect_err("the equivalent runtime range subtraction must overflow");
+    assert!(matches!(err, kaspa_txscript_errors::TxScriptError::NumberTooBig(_)), "unexpected runtime error: {err:?}");
+}
