@@ -2163,6 +2163,26 @@ fn rejects_cast_between_different_fixed_byte_array_sizes() {
 }
 
 #[test]
+fn fixed_byte_scalars_accept_dynamic_and_compatible_fixed_byte_array_casts() {
+    let source = r#"
+        contract T() {
+            entry f(byte[] dynamicBytes, byte[32] pubkeyBytes, byte[65] sigBytes, byte[64] datasigBytes) {
+                pubkey dynamicPubkey = pubkey(dynamicBytes);
+                sig dynamicSig = sig(dynamicBytes);
+                datasig dynamicDatasig = datasig(dynamicBytes);
+
+                pubkey fixedPubkey = pubkey(pubkeyBytes);
+                sig fixedSig = sig(sigBytes);
+                datasig fixedDatasig = datasig(datasigBytes);
+            }
+        }
+    "#;
+
+    compile_contract(source, &[], CompileOptions::default())
+        .expect("dynamic and correctly sized fixed byte arrays should cast to fixed-byte scalar types");
+}
+
+#[test]
 fn rejects_cast_from_wrong_sized_fixed_bytes_to_signature() {
     let source = r#"
         pragma silverscript ^0.1.0;
@@ -2177,6 +2197,16 @@ fn rejects_cast_from_wrong_sized_fixed_bytes_to_signature() {
     let err =
         compile_contract(source, &[], CompileOptions::default()).expect_err("a ten-byte value cannot be cast to a 65-byte signature");
     assert!(err.to_string().contains("cannot cast byte[10] to sig"), "unexpected error: {err}");
+}
+
+#[test]
+fn rejects_cast_from_wrong_sized_fixed_bytes_to_fixed_byte_scalars() {
+    for (source_type, target_type) in [("byte[31]", "pubkey"), ("byte[64]", "sig"), ("byte[63]", "datasig")] {
+        let source = format!("contract T() {{ entry f({source_type} bytes) {{ {target_type} value = {target_type}(bytes); }} }}");
+        let err = compile_contract(&source, &[], CompileOptions::default())
+            .expect_err("a fixed byte array with the wrong size must not cast to a fixed-byte scalar");
+        assert!(err.to_string().contains(&format!("cannot cast {source_type} to {target_type}")), "unexpected error: {err}");
+    }
 }
 
 #[test]
@@ -2279,6 +2309,82 @@ fn encodes_non_byte_array_literal_cast_in_contract_field() {
         run_bytecode_with_dispatch_tag(compiled.bytecode, dispatch_tag).is_ok(),
         "encoded non-byte array literal cast should execute"
     );
+}
+
+#[test]
+fn allows_same_rank_multidimensional_array_cast_refinement() {
+    let source = r#"
+        contract Arrays() {
+            entry main(int[2][] rows) {
+                int[2][1] fixedRows = int[2][1](rows);
+                require(fixedRows.length == 1);
+            }
+        }
+    "#;
+
+    compile_contract(source, &[], CompileOptions::default())
+        .expect("a multidimensional array cast may fix a dynamic dimension without changing rank");
+}
+
+#[test]
+fn allows_array_cast_to_less_specific_dimensions() {
+    let source = r#"
+        contract Arrays() {
+            entry main(int[2][1] rows) {
+                int[2][] dynamicRows = int[2][](rows);
+                require(dynamicRows.length == 1);
+            }
+        }
+    "#;
+
+    compile_contract(source, &[], CompileOptions::default())
+        .expect("a multidimensional array cast may make a fixed dimension dynamic without changing rank");
+}
+
+#[test]
+fn allows_array_cast_without_dimension_changes() {
+    let source = r#"
+        contract Arrays() {
+            entry main(int[2][1] rows) {
+                int[2][1] sameRows = int[2][1](rows);
+                require(sameRows.length == 1);
+            }
+        }
+    "#;
+
+    compile_contract(source, &[], CompileOptions::default()).expect("an array cast may preserve every dimension");
+}
+
+#[test]
+fn rejects_array_cast_that_changes_rank() {
+    let source = r#"
+        contract Arrays() {
+            entry main(int[2][] rows) {
+                int[2] row = int[2](rows);
+                require(row.length == 2);
+            }
+        }
+    "#;
+
+    let err =
+        compile_contract(source, &[], CompileOptions::default()).expect_err("an array cast must preserve the number of dimensions");
+    assert!(err.to_string().contains("cannot cast int[2][] to int[2]"), "unexpected error: {err}");
+}
+
+#[test]
+fn rejects_array_cast_with_incompatible_fixed_dimensions() {
+    let source = r#"
+        contract Arrays() {
+            entry main(int[2][3] rows) {
+                int[3][2] reshapedRows = int[3][2](rows);
+                require(reshapedRows.length == 2);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default())
+        .expect_err("equal total size must not permit incompatible fixed dimensions");
+    assert!(err.to_string().contains("cannot cast int[2][3] to int[3][2]"), "unexpected error: {err}");
 }
 
 #[test]
@@ -13366,6 +13472,39 @@ fn scalar_int_and_byte_cast_directionality() {
 }
 
 #[test]
+fn scalar_byte_cast_cannot_escape_validate_output_state_push() {
+    let direct_cast_source = r#"
+        contract ByteCast() {
+            entry main(string value) {
+                require(byte(value) == byte(1));
+            }
+        }
+    "#;
+    let err =
+        compile_contract(direct_cast_source, &[], CompileOptions::default()).expect_err("a string must not cast to a scalar byte");
+    assert!(err.to_string().contains("cannot cast string to byte"), "unexpected error: {err}");
+
+    let source = r#"
+        contract ByteCastState(byte initial) {
+            byte marker = initial;
+
+            entry roll(string next_marker) {
+                validateOutputState(0, State {
+                    marker: byte(next_marker)
+                });
+            }
+
+            entry accept() {
+                require(marker == byte(1));
+            }
+        }
+    "#;
+
+    compile_contract(source, &[Expr::byte(0)], CompileOptions::default())
+        .expect_err("a string must not cast to a scalar byte and escape the generated one-byte state push");
+}
+
+#[test]
 fn int_cast_rejects_scalar_byte_expressions() {
     let variable_source = r#"
         contract Test() {
@@ -16172,6 +16311,38 @@ fn allows_fixed_array_cast_with_compatible_encoded_size() {
     let dispatch_tag = dispatch_tag_for(&compiled, "main");
     let result = run_bytecode_with_dispatch_tag(compiled.bytecode, dispatch_tag);
     assert!(result.is_ok(), "the reinterpreted byte array should preserve the int payload bytes: {result:?}");
+}
+
+#[test]
+fn array_casts_require_the_same_base_type() {
+    let incompatible_element_source = r#"
+        contract ArrayCastRepresentation() {
+            entry main() {
+                int[1] values = int[1](bool[8]{true, false, false, false, false, false, false, false});
+                require(values.length == 1);
+            }
+        }
+    "#;
+    let err = compile_contract(incompatible_element_source, &[], CompileOptions::default())
+        .expect_err("equal encoded size must not permit a bool-array to int-array cast");
+    assert!(err.to_string().contains("cannot cast bool[8] to int[1]"), "unexpected error: {err}");
+}
+
+#[test]
+fn allows_signature_array_dimension_casts_in_both_directions() {
+    let source = r#"
+        contract ArrayCastRepresentation() {
+            entry main(sig[] dynamicSignatures, sig[1] fixedSignatures) {
+                sig[1] refined = sig[1](dynamicSignatures);
+                sig[] derefined = sig[](fixedSignatures);
+                require(refined.length == 1);
+                require(derefined.length == 1);
+            }
+        }
+    "#;
+
+    compile_contract(source, &[], CompileOptions::default())
+        .expect("same-base signature arrays may cast between dynamic and fixed dimensions");
 }
 
 #[test]
