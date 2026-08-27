@@ -6887,6 +6887,11 @@ fn dispatch_tag_for(compiled: &CompiledContract<'_>, function_name: &str) -> Dis
     compiled.entry_by_name(function_name).expect("entrypoint resolved").dispatch_tag
 }
 
+fn dispatch_tag_for_preimage(preimage: &str) -> DispatchTag {
+    let hash = blake3::hash(preimage.as_bytes());
+    hash.as_bytes()[..4].try_into().expect("a BLAKE3 hash contains a four-byte dispatch tag")
+}
+
 fn wrap_with_single_dispatch(compiled: &CompiledContract<'_>, body: Vec<u8>) -> Vec<u8> {
     wrap_with_single_dispatch_and_state(compiled, &[], &body)
 }
@@ -7114,6 +7119,40 @@ fn record_dispatch_tag_matches_kcc1_structural_type_vector() {
 
     let json = serde_json::to_string(dispense).expect("ABI entry serializes");
     assert_eq!(serde_json::from_str::<serde_json::Value>(&json).unwrap()["dispatch_tag"], serde_json::json!([103, 107, 26, 134]));
+}
+
+#[test]
+fn nested_record_dispatch_tags_hash_structural_type_preimages() {
+    let source = r#"
+        contract Test() {
+            int constant N = 3;
+
+            struct Inner {
+                int value;
+                byte[N] payload;
+            }
+
+            struct Outer {
+                Inner child;
+                bool[2] flags;
+            }
+
+            entry scalar(Outer value) { require(true); }
+            entry dynamic(Outer[] values) { require(values.length >= 0); }
+            entry fixed(Outer[2] values) { require(values.length == 2); }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let vectors = [
+        ("scalar", "scalar({{int,byte[3]},bool[2]})"),
+        ("dynamic", "dynamic({{int,byte[3]},bool[2]}[])"),
+        ("fixed", "fixed({{int,byte[3]},bool[2]}[2])"),
+    ];
+
+    for (entrypoint, preimage) in vectors {
+        assert_eq!(dispatch_tag_for(&compiled, entrypoint), dispatch_tag_for_preimage(preimage), "preimage: {preimage}");
+    }
 }
 
 #[test]
