@@ -1,4 +1,5 @@
 mod common;
+use std::collections::BTreeMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use kaspa_addresses::{Address, Prefix, Version};
@@ -18,11 +19,12 @@ use kaspa_txscript::{
     EngineCtx, EngineFlags, SeqCommitAccessor, TxScriptEngine, parse_script, pay_to_address_script, pay_to_script_hash_script,
     pay_to_script_hash_signature_script_with_flags, script_to_str, serialize_i64,
 };
+use silverscript_abi::{ArtifactValue, encode_contract_entry_sig_script};
 use silverscript_lang::ast::{ContractAst, Expr, ExprKind, Statement, format_contract_ast, parse_contract_ast, parse_type_ref};
 use silverscript_lang::compiler::{
     COMPILER_VERSION, CompileOptions, CompiledContract, CompilerError, CovenantDeclCallOptions, DispatchTag, FunctionAbiEntry,
     FunctionInputAbi, compile_contract, compile_contract_ast, compile_debug_expr, generated_covenant_auth_entrypoint_name,
-    struct_object,
+    sil_abi_artifact, struct_object,
 };
 use silverscript_lang::debug_info::StepKind;
 use silverscript_lang::template::template_hash;
@@ -7153,6 +7155,80 @@ fn nested_record_dispatch_tags_hash_structural_type_preimages() {
     for (entrypoint, preimage) in vectors {
         assert_eq!(dispatch_tag_for(&compiled, entrypoint), dispatch_tag_for_preimage(preimage), "preimage: {preimage}");
     }
+}
+
+#[test]
+fn silverscript_abi_encodes_and_runs_nested_struct_entry_arguments() {
+    let source = r#"
+        contract AbiStructs(int expectedAmount) {
+            struct Coordinates {
+                int x;
+                int y;
+            }
+
+            struct Item {
+                int amount;
+                Coordinates location;
+                byte[4] code;
+                bool active;
+            }
+
+            entry main(Item selected, Item[] items, Item[2] fixedItems) {
+                Coordinates selectedLocation = selected.location;
+                require(selected.amount == expectedAmount);
+                require(selectedLocation.x == 1);
+                require(selectedLocation.y == 2);
+                require(selected.code == byte[4](0x01020304));
+                require(selected.active);
+
+                require(items.length == 2);
+                require(items[0].amount == 10);
+                require(items[0].code == byte[4](0x11121314));
+                require(!items[0].active);
+                require(items[1].amount == 20);
+                require(items[1].code == byte[4](0x21222324));
+                require(items[1].active);
+
+                require(fixedItems[0].amount == 30);
+                require(fixedItems[0].code == byte[4](0x31323334));
+                require(fixedItems[0].active);
+                require(fixedItems[1].amount == 40);
+                require(fixedItems[1].code == byte[4](0x41424344));
+                require(!fixedItems[1].active);
+            }
+        }
+    "#;
+
+    let constructor_args = [Expr::int(7)];
+    let compiled = compile_contract(source, &constructor_args, CompileOptions::default()).expect("contract compiles");
+    let abi = sil_abi_artifact(source, &constructor_args).expect("source compiles to a complete portable ABI artifact");
+    abi.verify().expect("portable ABI matches the compiled contract");
+
+    let coordinates = |x, y| {
+        ArtifactValue::Object(BTreeMap::from([("x".to_string(), ArtifactValue::Int(x)), ("y".to_string(), ArtifactValue::Int(y))]))
+    };
+    let item = |amount, x, y, code: [u8; 4], active| {
+        ArtifactValue::Object(BTreeMap::from([
+            ("amount".to_string(), ArtifactValue::Int(amount)),
+            ("location".to_string(), coordinates(x, y)),
+            ("code".to_string(), ArtifactValue::Bytes(code.to_vec())),
+            ("active".to_string(), ArtifactValue::Bool(active)),
+        ]))
+    };
+    let args = vec![
+        item(7, 1, 2, [1, 2, 3, 4], true),
+        ArtifactValue::Array(vec![
+            item(10, 11, 12, [0x11, 0x12, 0x13, 0x14], false),
+            item(20, 21, 22, [0x21, 0x22, 0x23, 0x24], true),
+        ]),
+        ArtifactValue::Array(vec![
+            item(30, 31, 32, [0x31, 0x32, 0x33, 0x34], true),
+            item(40, 41, 42, [0x41, 0x42, 0x43, 0x44], false),
+        ]),
+    ];
+    let sigscript = encode_contract_entry_sig_script(&abi, "AbiStructs", "main", &args).expect("ABI encodes sigscript");
+
+    run_bytecode_with_sigscript(compiled.bytecode, sigscript).expect("ABI-generated sigscript executes");
 }
 
 #[test]

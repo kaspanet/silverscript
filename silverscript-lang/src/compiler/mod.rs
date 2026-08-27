@@ -13,6 +13,7 @@ pub(crate) use crate::checked_arithmetic::{checked_add, checked_div, checked_mul
 use crate::debug_info::{DebugInfo, DebugNamedValue};
 pub use crate::errors::{CompilerError, ErrorSpan};
 use crate::span;
+mod abi;
 mod array_append;
 mod builtin_types;
 mod compile;
@@ -31,6 +32,7 @@ mod type_check;
 mod type_system;
 mod validate_output_state;
 
+pub use abi::sil_abi_artifact;
 use compile::compile_contract_impl;
 pub use compile::compile_debug_expr;
 pub(crate) use compile::resolve_constant_references;

@@ -3855,6 +3855,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "silverscript-abi",
  "thiserror 1.0.69",
  "tokio",
 ]
