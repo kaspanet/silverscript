@@ -8,7 +8,7 @@ use crate::checked_arithmetic::{checked_mul, checked_pow};
 use crate::errors::CompilerError;
 use crate::parser::{
     Rule, parse_expression as parse_expression_rule, parse_function as parse_function_rule, parse_source_file,
-    parse_type_name as parse_type_name_rule,
+    parse_statement as parse_statement_rule, parse_type_name as parse_type_name_rule,
 };
 pub use crate::span::{Span, SpanUtils};
 
@@ -1493,6 +1493,14 @@ pub fn parse_function_ast<'i>(source: &'i str) -> Result<FunctionAst<'i>, Compil
         .find(|pair| pair.as_rule() == Rule::function_definition)
         .ok_or_else(|| CompilerError::Unsupported("no function definition".to_string()))?;
     parse_function_definition(function_pair)
+}
+
+/// Parses exactly one standalone statement.
+pub fn parse_statement_ast<'i>(source: &'i str) -> Result<Statement<'i>, CompilerError> {
+    let mut pairs = parse_statement_rule(source)?;
+    let source_pair = pairs.next().ok_or_else(|| CompilerError::Unsupported("empty statement source".to_string()))?;
+    let statement_pair = source_pair.into_inner().next().ok_or_else(|| CompilerError::Unsupported("no statement".to_string()))?;
+    parse_statement(statement_pair)
 }
 
 pub fn parse_expression_ast<'i>(source: &'i str) -> Result<Expr<'i>, CompilerError> {

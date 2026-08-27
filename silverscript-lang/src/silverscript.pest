@@ -1,5 +1,6 @@
 source_file = { SOI ~ pragma_directive? ~ contract_definition ~ EOI }
 function_source = { SOI ~ function_definition ~ EOI }
+statement_source = { SOI ~ statement ~ EOI }
 
 pragma_directive = { "pragma" ~ pragma_name ~ pragma_value ~ ";" }
 pragma_name = { "silverscript" }

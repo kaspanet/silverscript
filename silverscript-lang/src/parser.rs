@@ -18,6 +18,11 @@ pub fn parse_function(input: &str) -> Result<Pairs<'_, Rule>, ParseDiagnostic> {
     SilverScriptParser::parse(Rule::function_source, input).map_err(|err| crate::diagnostic::interpret_parse_error(input, &err))
 }
 
+pub fn parse_statement(input: &str) -> Result<Pairs<'_, Rule>, ParseDiagnostic> {
+    pest::set_error_detail(true);
+    SilverScriptParser::parse(Rule::statement_source, input).map_err(|err| crate::diagnostic::interpret_parse_error(input, &err))
+}
+
 pub fn parse_expression(input: &str) -> Result<Pairs<'_, Rule>, ParseDiagnostic> {
     pest::set_error_detail(true);
     SilverScriptParser::parse(Rule::expression, input).map_err(|err| crate::diagnostic::interpret_parse_error(input, &err))

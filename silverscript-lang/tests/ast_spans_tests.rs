@@ -1,5 +1,5 @@
 use silverscript_lang::ast::visit::{AstVisitorMut, NameKind, visit_function_mut};
-use silverscript_lang::ast::{ExprKind, Statement, parse_contract_ast, parse_expression_ast, parse_function_ast};
+use silverscript_lang::ast::{ExprKind, Statement, parse_contract_ast, parse_expression_ast, parse_function_ast, parse_statement_ast};
 use silverscript_lang::span::Span;
 
 fn assert_span_text(source: &str, actual: &str, expected: &str) {
@@ -63,6 +63,44 @@ fn parses_standalone_functions_and_visits_name_spans() {
             NameOccurrence { name: "total".to_string(), kind: NameKind::IdentifierExpr, source: "total".to_string() },
         ]
     );
+}
+
+#[test]
+fn parses_standalone_statements_with_original_source_spans() {
+    let source = "  /* before */ value = (signed(value) + signed(step)) as byte; // after\n";
+    let statement = parse_statement_ast(source).expect("standalone statement should parse");
+
+    let Statement::Assign { name, expr, span, name_span } = statement else {
+        panic!("expected an assignment");
+    };
+    assert_eq!(name, "value");
+    assert_eq!(span.as_str(), "value = (signed(value) + signed(step)) as byte;");
+    assert_eq!(name_span.as_str(), "value");
+    assert_eq!(expr.span.as_str(), "(signed(value) + signed(step)) as byte");
+    assert_eq!(span.get_input(), source);
+    assert_eq!(name_span.get_input(), source);
+    assert_eq!(expr.span.get_input(), source);
+}
+
+#[test]
+fn parses_supported_standalone_statement_shapes() {
+    let sources = [
+        "int value = 1;",
+        "CounterState { value: int current } = readInputState(0);",
+        "{ int value = 1; value = 2; }",
+        "if (ready) { value = 1; } else value = 2;",
+    ];
+
+    for source in sources {
+        parse_statement_ast(source).unwrap_or_else(|err| panic!("`{source}` should parse as one statement: {err}"));
+    }
+}
+
+#[test]
+fn rejects_incomplete_or_multiple_standalone_statements() {
+    for source in ["", "value = 1", "value = 1; other = 2;", "value + 1"] {
+        assert!(parse_statement_ast(source).is_err(), "`{source}` must not parse as exactly one statement");
+    }
 }
 
 impl<'i> AstVisitorMut<'i> for SpanResetter {
