@@ -97,20 +97,10 @@ pub struct FunctionInputAbi {
 pub struct FunctionAbiEntry {
     pub name: String,
     pub inputs: Vec<FunctionInputAbi>,
+    pub dispatch_tag: DispatchTag,
 }
 
 pub type DispatchTag = [u8; 4];
-
-impl FunctionAbiEntry {
-    pub fn dispatch_tag(&self) -> DispatchTag {
-        let type_names = self.inputs.iter().map(|input| input.type_name.as_str()).collect::<Vec<_>>().join(",");
-        let signature = format!("{}({type_names})", self.name);
-        let hash = blake3::hash(signature.as_bytes());
-        let mut tag = [0u8; 4];
-        tag.copy_from_slice(&hash.as_bytes()[..4]);
-        tag
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CompiledStateLayout {
@@ -256,7 +246,7 @@ impl<'i> CompiledContract<'i> {
             })?;
         }
 
-        builder.add_data(&function.dispatch_tag())?;
+        builder.add_data(&function.dispatch_tag)?;
 
         Ok(builder.drain())
     }

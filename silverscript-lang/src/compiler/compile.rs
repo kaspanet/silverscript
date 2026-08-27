@@ -79,7 +79,7 @@ pub(super) fn compile_contract_impl<'i>(
     lowered_constants.extend(lowered_contract.constants.iter().map(|constant| (constant.name.clone(), constant.expr.clone())));
 
     let BuiltAbi { function_abi_entries, cov_decl_to_abi, delegate_entry_abi } =
-        build_abi(&covenant_lowered_contract, &constants, &covenant_abi_names)?;
+        build_abi(&covenant_lowered_contract, &constants, &structs, &covenant_abi_names)?;
     if function_abi_entries.is_empty() {
         return Err(CompilerError::Unsupported("contract has no entries".to_string()));
     }
@@ -90,7 +90,7 @@ pub(super) fn compile_contract_impl<'i>(
     // dispatch tag: verify no collisions and insert tags to global state
     let mut entrypoints_by_tag = HashMap::<DispatchTag, &str>::new();
     for entrypoint in &function_abi_entries {
-        let tag = entrypoint.dispatch_tag();
+        let tag = entrypoint.dispatch_tag;
         if let Some(existing) = entrypoints_by_tag.insert(tag, entrypoint.name.as_str()) {
             return Err(CompilerError::EntrypointDispatchTagCollision { f1: existing.to_string(), f2: entrypoint.name.clone() });
         }
@@ -326,7 +326,7 @@ fn build_contract_bytecode(
     let total = compiled_entrypoints.len();
 
     let dispatch_tag_by_entry_name =
-        function_abi_entries.iter().map(|entry| (entry.name.as_str(), entry.dispatch_tag())).collect::<HashMap<_, _>>();
+        function_abi_entries.iter().map(|entry| (entry.name.as_str(), entry.dispatch_tag)).collect::<HashMap<_, _>>();
 
     for (entrypoint_index, (name, bytecode)) in compiled_entrypoints.iter().enumerate() {
         let dispatch_tag = dispatch_tag_by_entry_name.get(name.as_str()).expect("compiled entrypoint must have an ABI entry");
