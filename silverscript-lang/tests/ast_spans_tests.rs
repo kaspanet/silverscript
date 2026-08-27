@@ -1,5 +1,5 @@
 use silverscript_lang::ast::visit::{AstVisitorMut, NameKind, visit_function_mut};
-use silverscript_lang::ast::{ExprKind, Statement, parse_contract_ast, parse_function_ast};
+use silverscript_lang::ast::{ExprKind, Statement, parse_contract_ast, parse_expression_ast, parse_function_ast};
 use silverscript_lang::span::Span;
 
 fn assert_span_text(source: &str, actual: &str, expected: &str) {
@@ -60,6 +60,37 @@ fn parses_standalone_functions_and_visits_name_spans() {
             NameOccurrence { name: "value".to_string(), kind: NameKind::IdentifierExpr, source: "value".to_string() },
             NameOccurrence { name: "total".to_string(), kind: NameKind::IdentifierExpr, source: "total".to_string() },
         ]
+    );
+}
+
+#[test]
+fn composed_expression_spans_remain_syntactically_complete() {
+    let sources = [
+        "(signed(next_status) + signed(increment)) as byte",
+        "(value).field",
+        "(values)[index]",
+        "(values)[index].length",
+        "(value).length",
+        "(left + right) * factor",
+        "left + (right * factor)",
+    ];
+
+    for source in sources {
+        let expr = parse_expression_ast(source).unwrap_or_else(|err| panic!("`{source}` should parse: {err}"));
+        assert_eq!(expr.span.as_str(), source, "composite expression span should be valid and complete");
+    }
+}
+
+#[test]
+fn redundant_parentheses_do_not_widen_identifier_name_spans() {
+    let mut expr = parse_expression_ast("((value))").expect("parenthesized identifier should parse");
+    let mut collector = NameOccurrenceCollector::default();
+    collector.visit_expr(&mut expr);
+
+    assert_eq!(expr.span.as_str(), "value");
+    assert_eq!(
+        collector.occurrences,
+        vec![NameOccurrence { name: "value".to_string(), kind: NameKind::IdentifierExpr, source: "value".to_string() }]
     );
 }
 

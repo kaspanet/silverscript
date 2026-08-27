@@ -2159,15 +2159,16 @@ fn parse_unary<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {
 fn parse_postfix<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {
     let mut inner = pair.into_inner();
     let primary = inner.next().ok_or_else(|| CompilerError::Unsupported("missing primary in postfix".to_string()))?;
+    let mut source_span = Span::from(primary.as_span());
     let mut expr = parse_primary(primary)?;
     for postfix in inner {
         let postfix_span = Span::from(postfix.as_span());
+        let span = source_span.join(&postfix_span);
         match postfix.as_rule() {
             Rule::split_call => {
                 let mut split_inner = postfix.into_inner();
                 let index_expr = split_inner.next().ok_or_else(|| CompilerError::Unsupported("missing split index".to_string()))?;
                 let index = Box::new(parse_expression(index_expr)?);
-                let span = expr.span.join(&postfix_span);
                 expr = Expr::new(ExprKind::Split { source: Box::new(expr), index, part: SplitPart::Left, span: postfix_span }, span);
             }
             Rule::slice_call => {
@@ -2176,7 +2177,6 @@ fn parse_postfix<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {
                 let end_expr = slice_inner.next().ok_or_else(|| CompilerError::Unsupported("missing slice end".to_string()))?;
                 let start = Box::new(parse_expression(start_expr)?);
                 let end = Box::new(parse_expression(end_expr)?);
-                let span = expr.span.join(&postfix_span);
                 expr = Expr::new(ExprKind::Slice { source: Box::new(expr), start, end, span: postfix_span }, span);
             }
             Rule::append_call => {
@@ -2189,14 +2189,12 @@ fn parse_postfix<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {
                         CompilerError::Unsupported("append requires at least one expression".to_string()).with_span(&postfix_span)
                     );
                 }
-                let span = expr.span.join(&postfix_span);
                 expr = Expr::new(ExprKind::Append { source: Box::new(expr), args, span: postfix_span }, span);
             }
             Rule::tuple_index => {
                 let mut index_inner = postfix.into_inner();
                 let index_pair = index_inner.next().ok_or_else(|| CompilerError::Unsupported("missing tuple index".to_string()))?;
                 let index_expr = parse_expression(index_pair)?;
-                let span = expr.span.join(&postfix_span);
                 if matches!(&expr.kind, ExprKind::Split { .. }) {
                     return Err(CompilerError::Unsupported("split() results must be accessed with .0 or .1".to_string())
                         .with_span(&postfix_span));
@@ -2208,7 +2206,6 @@ fn parse_postfix<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {
                     ".length" => UnarySuffixKind::Length,
                     other => return Err(CompilerError::Unsupported(format!("unknown unary suffix '{other}'"))),
                 };
-                let span = expr.span.join(&postfix_span);
                 expr = Expr::new(ExprKind::UnarySuffix { source: Box::new(expr), kind, span: postfix_span }, span);
             }
             Rule::tuple_field_access => {
@@ -2216,7 +2213,6 @@ fn parse_postfix<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {
                 let index = raw
                     .parse::<usize>()
                     .map_err(|_| CompilerError::Unsupported(format!("invalid tuple field index '{raw}'")).with_span(&postfix_span))?;
-                let span = expr.span.join(&postfix_span);
                 if let ExprKind::Split { source, index: split_index, span: split_span, .. } = &expr.kind {
                     let part = match index {
                         0 => SplitPart::Left,
@@ -2246,7 +2242,6 @@ fn parse_postfix<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {
                 let field_pair =
                     postfix.into_inner().next().ok_or_else(|| CompilerError::Unsupported("missing field access name".to_string()))?;
                 let Identifier { name: field, span: field_span } = parse_identifier(field_pair)?;
-                let span = expr.span.join(&postfix_span);
                 expr = Expr::new(ExprKind::FieldAccess { source: Box::new(expr), field, field_span }, span);
             }
             Rule::as_cast => {
@@ -2254,13 +2249,13 @@ fn parse_postfix<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {
                 let type_pair = cast_inner.next().ok_or_else(|| CompilerError::Unsupported("missing type after 'as'".to_string()))?;
                 let type_span = Span::from(type_pair.as_span());
                 let type_ref = parse_type_name_pair(type_pair)?;
-                let span = expr.span.join(&postfix_span);
                 expr = Expr::new(ExprKind::Call { name: as_cast_call_name(&type_ref), args: vec![expr], name_span: type_span }, span);
             }
             _ => {
                 return Err(CompilerError::Unsupported("postfix operators are not supported".to_string()));
             }
         }
+        source_span = span;
     }
     Ok(expr)
 }
@@ -2710,14 +2705,17 @@ where
 {
     let mut inner = pair.into_inner();
     let first = inner.next().ok_or_else(|| CompilerError::Unsupported("missing infix operand".to_string()))?;
+    let mut source_span = Span::from(first.as_span());
     let mut expr = parse_operand(first)?;
 
     while let Some(op_pair) = inner.next() {
         let rhs = inner.next().ok_or_else(|| CompilerError::Unsupported("missing infix rhs".to_string()))?;
         let op = map_op(op_pair)?;
+        let rhs_span = Span::from(rhs.as_span());
         let rhs_expr = parse_operand(rhs)?;
-        let span = expr.span.join(&rhs_expr.span);
+        let span = source_span.join(&rhs_span);
         expr = Expr::new(ExprKind::Binary { op, left: Box::new(expr), right: Box::new(rhs_expr) }, span);
+        source_span = span;
     }
 
     Ok(expr)
