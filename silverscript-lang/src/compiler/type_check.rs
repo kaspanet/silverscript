@@ -398,22 +398,17 @@ fn validate_array_cast_compatibility<'i>(
     // targets: any source type may be viewed as a flat byte sequence. This
     // only grants type compatibility; the size check below still rejects known
     // fixed-size mismatches (for example, byte[32] to byte[31]).
-    let compatible = if matches!(cast_type.base, TypeBase::Byte) && cast_type.array_dims.len() == 1 {
-        true
+    let is_flat_byte_target = matches!(cast_type.base, TypeBase::Byte) && cast_type.array_dims.len() == 1;
     // Supported same-rank array dimension casts:
     // - Arrays may change dimension specificity.
     // - The source and target must have the same base type and number of dimensions.
     // - Dynamic and inferred dimensions may be cast to or from fixed dimensions.
     // - Fixed and constant dimensions must resolve to the same size.
-    } else if source_type.is_array()
-        && cast_type.base == source_type.base
-        && cast_type.array_dims.len() == source_type.array_dims.len()
-        && array_dimensions_are_compatible(source_type, cast_type, constants)?
-    {
-        true
-    } else {
-        false
-    };
+    let compatible = is_flat_byte_target
+        || source_type.is_array()
+            && cast_type.base == source_type.base
+            && cast_type.array_dims.len() == source_type.array_dims.len()
+            && array_dimensions_are_compatible(source_type, cast_type, constants)?;
     if !compatible {
         return Err(CompilerError::Unsupported(format!("cannot cast {} to {}", source_type.type_name(), cast_type.type_name())));
     }

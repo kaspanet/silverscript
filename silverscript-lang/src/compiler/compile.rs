@@ -241,35 +241,6 @@ fn maximum_canonical_data_push_size(payload_size: usize) -> Result<usize, Compil
     checked_add(payload_size, prefix_size)
 }
 
-#[cfg(test)]
-mod signature_script_limit_tests {
-    use super::*;
-
-    #[test]
-    fn conservative_argument_sizes_use_maximum_scalar_widths_and_one_dynamic_element() {
-        let constants = HashMap::new();
-        let cases = [
-            ("int", 9),
-            ("temporal", 9),
-            ("bool", 1),
-            ("byte", 2),
-            ("string", 2),
-            ("byte[1]", 2),
-            ("byte[]", 2),
-            ("int[]", 9),
-            ("byte[2][]", 3),
-            ("pubkey[]", 33),
-        ];
-
-        for (type_name, expected_size) in cases {
-            let type_ref = parse_type_ref(type_name).unwrap_or_else(|err| panic!("{type_name} should parse: {err}"));
-            let actual = conservative_sigscript_argument_size(&type_ref, &constants)
-                .unwrap_or_else(|err| panic!("{type_name} should have a conservative size: {err}"));
-            assert_eq!(actual, expected_size, "unexpected conservative size for {type_name}");
-        }
-    }
-}
-
 fn compile_contract_bytecode_iteration<'i>(
     lowered_contract: &ContractAst<'i>,
     lowered_constants: &HashMap<String, Expr<'i>>,
@@ -409,4 +380,33 @@ pub fn compile_debug_expr<'i>(
     let mut emitter = ScriptEmitter::new(&mut builder, 0);
     compile_expr(&expr, Some(&type_ref), &env, &mut emitter)?;
     Ok((builder.drain(), type_ref.type_name()))
+}
+
+#[cfg(test)]
+mod signature_script_limit_tests {
+    use super::*;
+
+    #[test]
+    fn conservative_argument_sizes_use_maximum_scalar_widths_and_one_dynamic_element() {
+        let constants = HashMap::new();
+        let cases = [
+            ("int", 9),
+            ("temporal", 9),
+            ("bool", 1),
+            ("byte", 2),
+            ("string", 2),
+            ("byte[1]", 2),
+            ("byte[]", 2),
+            ("int[]", 9),
+            ("byte[2][]", 3),
+            ("pubkey[]", 33),
+        ];
+
+        for (type_name, expected_size) in cases {
+            let type_ref = parse_type_ref(type_name).unwrap_or_else(|err| panic!("{type_name} should parse: {err}"));
+            let actual = conservative_sigscript_argument_size(&type_ref, &constants)
+                .unwrap_or_else(|err| panic!("{type_name} should have a conservative size: {err}"));
+            assert_eq!(actual, expected_size, "unexpected conservative size for {type_name}");
+        }
+    }
 }
