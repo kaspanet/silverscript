@@ -17269,3 +17269,38 @@ fn compiler_rejects_fixed_abi_payloads_that_cannot_fit_a_signature_script() {
         other => panic!("unexpected error: {other}"),
     }
 }
+
+#[test]
+fn signature_script_builder_requires_explicit_byte_values() {
+    let source = r#"
+        contract ByteArgument() {
+            entry main(byte value) {
+                require(true);
+            }
+
+            entry array(byte[] values) {
+                require(values.length == 1);
+            }
+        }
+    "#;
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("byte contract compiles");
+
+    for value in [0, 0x80, 0xff] {
+        let err = compiled
+            .build_sig_script("main", vec![Expr::int(value)])
+            .expect_err("integer AST values must not be reinterpreted as ABI bytes");
+        assert!(err.to_string().contains("expects byte"), "unexpected error for {value:#04x}: {err}");
+    }
+
+    let sigscript = compiled.build_sig_script("main", vec![Expr::byte(0xff)]).expect("an explicit byte value builds");
+    run_bytecode_with_sigscript(compiled.bytecode.clone(), sigscript).expect("the explicit byte invocation executes");
+
+    let contextual_array = Expr::array(parse_type_ref("byte[]").expect("byte array type parses"), vec![Expr::int(1)]);
+    let err = compiled
+        .build_sig_script("array", vec![contextual_array])
+        .expect_err("integer AST elements must not be reinterpreted as ABI bytes");
+    assert!(err.to_string().contains("expects byte[]"), "unexpected array error: {err}");
+
+    let sigscript = compiled.build_sig_script("array", vec![Expr::dynamic_bytes(vec![1])]).expect("explicit byte elements build");
+    run_bytecode_with_sigscript(compiled.bytecode, sigscript).expect("the explicit byte-array invocation executes");
+}

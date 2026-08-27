@@ -301,10 +301,32 @@ fn validate_sigscript_arg<'i>(
     structs: &StructRegistry,
     constants: &HashMap<String, Expr<'i>>,
 ) -> Result<(), CompilerError> {
+    // Signature-script construction receives already classified AST values.
+    // Unlike source-language checking, do not reinterpret an integer literal
+    // as a byte: callers must use Expr::byte so encoding retains byte semantics.
+    validate_explicit_sigscript_bytes(arg, type_ref)?;
+
     let types = HashMap::new();
     let functions = HashMap::new();
     let type_context = type_check::TypeCheckContext { types: &types, structs, constants, functions: &functions, contract_fields: &[] };
     type_check::check_expr(arg, Some(type_ref), &type_context)?;
+    Ok(())
+}
+
+fn validate_explicit_sigscript_bytes(arg: &Expr<'_>, type_ref: &TypeRef) -> Result<(), CompilerError> {
+    if !matches!(type_ref.base, TypeBase::Byte) {
+        return Ok(());
+    }
+
+    if type_ref.is_byte() {
+        return if matches!(arg.kind, ExprKind::Byte(_)) { Ok(()) } else { Err(CompilerError::TypeMismatch) };
+    }
+
+    if let (Some(element_type), ExprKind::Array { values, .. }) = (type_ref.array_element_type(), &arg.kind) {
+        for value in values {
+            validate_explicit_sigscript_bytes(value, &element_type)?;
+        }
+    }
     Ok(())
 }
 
