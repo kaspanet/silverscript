@@ -91,21 +91,20 @@ If your contract has constructor parameters, you can provide their values via a 
 silverc contract.sil --constructor-args args.json
 ```
 
-The `args.json` file should contain an array of constructor argument expressions. For example:
+The `args.json` file should contain an array of portable ABI values. For example:
 
 ```json
 [
-  {"kind": "byte[]", "data": [1, 2, 3, 4]},
-  {"kind": "int", "data": 12345}
+  {"kind": "bytes", "value": [1, 2, 3, 4]},
+  {"kind": "int", "value": 12345}
 ]
 ```
 
-The compiled JSON output includes:
-- `contract_name`: The name of the contract
-- `compiler_version`: The SilverScript compiler version that produced the artifact
-- `bytecode`: The compiled bytecode (as an array of bytes)
-- `ast`: The abstract syntax tree of the parsed contract
-- `abi`: An array of entries with their parameter types
+The output is a portable `SilAbiArtifact` JSON document containing:
+
+- `schema_version`: The portable ABI schema version
+- `states`: Struct definitions referenced by contract inputs and runtime state
+- `contracts`: The compiled contract, its entries, dispatch tags, script, template hash, and state span
 
 ### Programmatic Compilation
 

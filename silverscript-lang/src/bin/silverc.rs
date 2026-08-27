@@ -3,8 +3,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use clap::Parser;
-use silverscript_lang::ast::{Expr, parse_contract_ast};
-use silverscript_lang::compiler::{CompileOptions, compile_contract};
+use silverscript_abi::ArtifactValue;
+use silverscript_lang::ast::parse_contract_ast;
+use silverscript_lang::compiler::sil_abi_artifact;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -71,16 +72,15 @@ fn run() -> Result<(), String> {
 
     let constructor_args = if let Some(path) = &cli.constructor_args {
         let json = fs::read_to_string(path).map_err(|err| format!("failed to read {}: {err}", path.display()))?;
-        serde_json::from_str::<Vec<Expr>>(&json)
+        serde_json::from_str::<Vec<ArtifactValue>>(&json)
             .map_err(|err| format!("failed to parse constructor args {}: {err}", path.display()))?
     } else {
         Vec::new()
     };
 
-    let compiled =
-        compile_contract(&source, &constructor_args, CompileOptions::default()).map_err(|err| format!("compile error: {err}"))?;
+    let artifact = sil_abi_artifact(&source, &constructor_args).map_err(|err| format!("compile error: {err}"))?;
 
-    let json = serde_json::to_string_pretty(&compiled).map_err(|err| format!("failed to serialize output: {err}"))?;
+    let json = serde_json::to_string_pretty(&artifact).map_err(|err| format!("failed to serialize output: {err}"))?;
     let target = resolve_output_target(&cli, &cli.src, false);
     emit_output(&json, target)?;
 

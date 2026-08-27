@@ -1,16 +1,115 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use silverscript_abi::{
-    CompiledContractArtifact, FieldArtifact, ParamArtifact, RuntimeFieldArtifact, RuntimeStateArtifact, SIL_ABI_SCHEMA_VERSION,
-    SilAbiArtifact, SilContractArtifact, SilEntryArtifact, StateArtifact, StateSpanArtifact, TypeArtifact, encode_hex,
+    ArtifactValue, CompiledContractArtifact, FieldArtifact, ParamArtifact, RuntimeFieldArtifact, RuntimeStateArtifact,
+    SIL_ABI_SCHEMA_VERSION, SilAbiArtifact, SilContractArtifact, SilEntryArtifact, StateArtifact, StateSpanArtifact, TypeArtifact,
+    encode_hex,
 };
 
 use super::*;
 
+fn artifact_values_to_constructor_args<'i>(
+    values: &[ArtifactValue],
+    contract: &ContractAst<'i>,
+) -> Result<Vec<Expr<'i>>, CompilerError> {
+    if values.len() != contract.params.len() {
+        return Err(CompilerError::Unsupported(format!(
+            "constructor argument count mismatch: expected {}, got {}",
+            contract.params.len(),
+            values.len()
+        )));
+    }
+
+    values.iter().zip(&contract.params).map(|(value, param)| artifact_value_to_expr(value, &param.type_ref, contract)).collect()
+}
+
+/// Converts a portable ABI value to a concrete expression of the declared SilverScript type.
+pub fn artifact_value_to_expr<'i>(
+    value: &ArtifactValue,
+    expected_type: &TypeRef,
+    contract: &ContractAst<'i>,
+) -> Result<Expr<'i>, CompilerError> {
+    if expected_type.is_array() {
+        if matches!(expected_type.base, TypeBase::Byte) && expected_type.array_dims.len() == 1 {
+            let ArtifactValue::Bytes(bytes) = value else {
+                return Err(artifact_value_type_mismatch(value, expected_type));
+            };
+            return Ok(Expr::array(expected_type.clone(), bytes.iter().copied().map(Expr::byte).collect()));
+        }
+
+        let ArtifactValue::Array(values) = value else {
+            return Err(artifact_value_type_mismatch(value, expected_type));
+        };
+        let element_type = expected_type
+            .array_element_type()
+            .ok_or_else(|| CompilerError::Unsupported(format!("invalid array type '{}'", expected_type.type_name())))?;
+        let values = values
+            .iter()
+            .map(|value| artifact_value_to_expr(value, &element_type, contract))
+            .collect::<Result<Vec<_>, CompilerError>>()?;
+        return Ok(Expr::array(expected_type.clone(), values));
+    }
+
+    match (&expected_type.base, value) {
+        (TypeBase::Int, ArtifactValue::Int(value)) => Ok(Expr::int(*value)),
+        (TypeBase::Temporal, ArtifactValue::Int(value)) => Ok(Expr::temporal(*value)),
+        (TypeBase::Bool, ArtifactValue::Bool(value)) => Ok(Expr::bool(*value)),
+        (TypeBase::Byte, ArtifactValue::Byte(value)) => Ok(Expr::byte(*value)),
+        (TypeBase::String, ArtifactValue::Text(value)) => Ok(Expr::string(value)),
+        (TypeBase::Pubkey | TypeBase::Sig | TypeBase::Datasig, ArtifactValue::Bytes(value)) => Ok(Expr::bytes(value.clone())),
+        (TypeBase::Custom(name), ArtifactValue::Object(values)) => {
+            let struct_ = contract
+                .structs
+                .iter()
+                .find(|struct_| struct_.name == *name)
+                .ok_or_else(|| CompilerError::Unsupported(format!("unknown struct '{name}'")))?;
+            let expected_fields = struct_.fields.iter().map(|field| field.name.as_str()).collect::<HashSet<_>>();
+            if let Some(field) = values.keys().find(|field| !expected_fields.contains(field.as_str())) {
+                return Err(CompilerError::Unsupported(format!("unknown field '{name}.{field}'")));
+            }
+            let fields = struct_
+                .fields
+                .iter()
+                .map(|field| {
+                    let value = values
+                        .get(&field.name)
+                        .ok_or_else(|| CompilerError::Unsupported(format!("missing field '{name}.{}'", field.name)))?;
+                    Ok(StateFieldExpr {
+                        name: field.name.clone(),
+                        expr: artifact_value_to_expr(value, &field.type_ref, contract)?,
+                        span: Default::default(),
+                        name_span: Default::default(),
+                    })
+                })
+                .collect::<Result<Vec<_>, CompilerError>>()?;
+            Ok(Expr::new(ExprKind::StructLiteral { name: name.clone(), fields, name_span: Default::default() }, Default::default()))
+        }
+        (TypeBase::Tuple(_), _) => {
+            Err(CompilerError::Unsupported(format!("portable ABI values do not support tuple type '{}'", expected_type.type_name())))
+        }
+        _ => Err(artifact_value_type_mismatch(value, expected_type)),
+    }
+}
+
+fn artifact_value_type_mismatch(value: &ArtifactValue, expected_type: &TypeRef) -> CompilerError {
+    let actual = match value {
+        ArtifactValue::Int(_) => "int",
+        ArtifactValue::Bool(_) => "bool",
+        ArtifactValue::Byte(_) => "byte",
+        ArtifactValue::Bytes(_) => "bytes",
+        ArtifactValue::Text(_) => "string",
+        ArtifactValue::Array(_) => "array",
+        ArtifactValue::Object(_) => "object",
+    };
+    CompilerError::Unsupported(format!("cannot convert artifact {actual} to {}", expected_type.type_name()))
+}
+
 /// Compiles one SilverScript contract into a complete portable ABI artifact.
-pub fn sil_abi_artifact<'i>(source: &'i str, constructor_args: &[Expr<'i>]) -> Result<SilAbiArtifact, CompilerError> {
-    let compiled = compile_contract(source, constructor_args, CompileOptions::default())?;
-    let constants = artifact_constants(&compiled, constructor_args);
+pub fn sil_abi_artifact(source: &str, constructor_args: &[ArtifactValue]) -> Result<SilAbiArtifact, CompilerError> {
+    let contract = parse_contract_ast(source)?;
+    let constructor_args = artifact_values_to_constructor_args(constructor_args, &contract)?;
+    let compiled = compile_contract(source, &constructor_args, CompileOptions::default())?;
+    let constants = artifact_constants(&compiled, &constructor_args);
     let states = compiled
         .ast
         .structs
@@ -24,7 +123,7 @@ pub fn sil_abi_artifact<'i>(source: &'i str, constructor_args: &[Expr<'i>]) -> R
             Ok(StateArtifact { name: struct_.name.clone(), fields })
         })
         .collect::<Result<Vec<_>, CompilerError>>()?;
-    let contract = contract_artifact_from_compiled(&compiled, constructor_args)?;
+    let contract = contract_artifact_from_compiled(&compiled, &constructor_args)?;
 
     Ok(SilAbiArtifact { schema_version: SIL_ABI_SCHEMA_VERSION, states, contracts: vec![contract] })
 }

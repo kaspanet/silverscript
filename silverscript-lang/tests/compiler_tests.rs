@@ -19,7 +19,7 @@ use kaspa_txscript::{
     EngineCtx, EngineFlags, SeqCommitAccessor, TxScriptEngine, parse_script, pay_to_address_script, pay_to_script_hash_script,
     pay_to_script_hash_signature_script_with_flags, script_to_str, serialize_i64,
 };
-use silverscript_abi::{ArtifactValue, encode_contract_entry_sig_script};
+use silverscript_abi::{ArtifactValue, decode_hex, encode_contract_entry_sig_script};
 use silverscript_lang::ast::{ContractAst, Expr, ExprKind, Statement, format_contract_ast, parse_contract_ast, parse_type_ref};
 use silverscript_lang::compiler::{
     COMPILER_VERSION, CompileOptions, CompiledContract, CompilerError, CovenantDeclCallOptions, DispatchTag, FunctionAbiEntry,
@@ -7200,8 +7200,9 @@ fn silverscript_abi_encodes_and_runs_nested_struct_entry_arguments() {
     "#;
 
     let constructor_args = [Expr::int(7)];
+    let artifact_constructor_args = [ArtifactValue::Int(7)];
     let compiled = compile_contract(source, &constructor_args, CompileOptions::default()).expect("contract compiles");
-    let abi = sil_abi_artifact(source, &constructor_args).expect("source compiles to a complete portable ABI artifact");
+    let abi = sil_abi_artifact(source, &artifact_constructor_args).expect("source compiles to a complete portable ABI artifact");
     abi.verify().expect("portable ABI matches the compiled contract");
 
     let coordinates = |x, y| {
@@ -7229,6 +7230,50 @@ fn silverscript_abi_encodes_and_runs_nested_struct_entry_arguments() {
     let sigscript = encode_contract_entry_sig_script(&abi, "AbiStructs", "main", &args).expect("ABI encodes sigscript");
 
     run_bytecode_with_sigscript(compiled.bytecode, sigscript).expect("ABI-generated sigscript executes");
+}
+
+#[test]
+fn artifact_values_compile_nested_constructor_arguments() {
+    let source = r#"
+        contract ArtifactConstructors(Config config, int[] values, byte[] payload, string label) {
+            struct Flags {
+                bool enabled;
+            }
+
+            struct Config {
+                int count;
+                Flags flags;
+            }
+
+            entry main() {
+                require(config.count == 7);
+                require(config.flags.enabled);
+                require(values.length == 2);
+                require(values[0] == 11);
+                require(values[1] == 12);
+                require(payload.length == 2);
+                require(payload[0] == 0xaa);
+                require(payload[1] == 0xbb);
+                require(label == "ready");
+            }
+        }
+    "#;
+    let args = vec![
+        ArtifactValue::Object(BTreeMap::from([
+            ("count".to_string(), ArtifactValue::Int(7)),
+            ("flags".to_string(), ArtifactValue::Object(BTreeMap::from([("enabled".to_string(), ArtifactValue::Bool(true))]))),
+        ])),
+        ArtifactValue::Array(vec![ArtifactValue::Int(11), ArtifactValue::Int(12)]),
+        ArtifactValue::Bytes(vec![0xaa, 0xbb]),
+        ArtifactValue::Text("ready".to_string()),
+    ];
+
+    let abi = sil_abi_artifact(source, &args).expect("portable ABI constructor values compile");
+    abi.verify().expect("portable ABI verifies");
+    let contract = abi.contract("ArtifactConstructors").expect("contract exists");
+    let bytecode = decode_hex(&contract.compiled.script_hex).expect("compiled script decodes");
+    let dispatch_tag = contract.entry("main").expect("entry exists").dispatch_tag.into_bytes();
+    run_bytecode_with_dispatch_tag(bytecode, dispatch_tag).expect("compiled constructor values execute");
 }
 
 #[test]
