@@ -191,12 +191,28 @@ pub(super) fn static_check_contract<'i>(
     }
 
     let structs = build_struct_registry(contract)?;
+    for item in &contract.structs {
+        if item.fields.is_empty() {
+            return Err(CompilerError::Unsupported(format!("struct '{}' must contain at least one field", item.name))
+                .with_span(&item.name_span));
+        }
+    }
     validate_struct_graph(&structs)?;
     validate_contract_struct_usage(contract, &structs)?;
     let mut constants: HashMap<String, Expr<'i>> =
         contract.constants.iter().map(|constant| (constant.name.clone(), constant.expr.clone())).collect();
     for (param, value) in contract.params.iter().zip(constructor_args) {
         constants.insert(param.name.clone(), value.clone());
+    }
+    for param in &contract.params {
+        ensure_array_elements_have_known_size(&param.type_ref, &structs, &constants, &param.type_ref.type_name())
+            .map_err(|err| err.with_span(&param.type_span))?;
+    }
+    for item in &contract.structs {
+        for field in &item.fields {
+            ensure_array_elements_have_known_size(&field.type_ref, &structs, &constants, &field.type_ref.type_name())
+                .map_err(|err| err.with_span(&field.type_span))?;
+        }
     }
     validate_constant_initializers(contract, &structs, &constants)?;
     validate_contract_field_initializers(contract, &structs, &constants)?;
@@ -212,6 +228,29 @@ pub(super) fn static_check_contract<'i>(
     }
 
     Ok(())
+}
+
+pub(super) fn validate_concrete_constructor_argument(param: &ParamAst<'_>, value: &Expr<'_>) -> Result<(), CompilerError> {
+    if is_concrete_constructor_value(value) {
+        return Ok(());
+    }
+
+    Err(CompilerError::Unsupported(format!("constructor argument '{}' must be a concrete value", param.name)).with_span(&value.span))
+}
+
+fn is_concrete_constructor_value(value: &Expr<'_>) -> bool {
+    match &value.kind {
+        ExprKind::Int(_)
+        | ExprKind::Temporal(_)
+        | ExprKind::Bool(_)
+        | ExprKind::Byte(_)
+        | ExprKind::String(_)
+        | ExprKind::DateLiteral(_) => true,
+        // Composite values are concrete only when every nested value is.
+        ExprKind::Array { values, .. } => values.iter().all(is_concrete_constructor_value),
+        ExprKind::StructLiteral { fields, .. } => fields.iter().all(|field| is_concrete_constructor_value(&field.expr)),
+        _ => false,
+    }
 }
 
 fn validate_constant_initializers<'i>(
@@ -334,13 +373,13 @@ pub(crate) fn validate_return_types<'i>(
 
 fn validate_contract_struct_usage<'i>(contract: &ContractAst<'i>, structs: &StructRegistry) -> Result<(), CompilerError> {
     for param in &contract.params {
-        ensure_known_struct_or_builtin_type(&param.type_ref, structs, "contract parameter")?;
+        ensure_known_type_without_struct_arrays(&param.type_ref, structs, "contract parameter")?;
     }
     for field in &contract.fields {
-        ensure_known_struct_or_builtin_type(&field.type_ref, structs, "contract field")?;
+        ensure_known_type_without_struct_arrays(&field.type_ref, structs, "contract field")?;
     }
     for constant in &contract.constants {
-        ensure_known_struct_or_builtin_type(&constant.type_ref, structs, "constant")?;
+        ensure_known_type_without_struct_arrays(&constant.type_ref, structs, "constant")?;
     }
 
     Ok(())
@@ -373,9 +412,12 @@ fn validate_function_signatures<'i>(
             }
         }
         for param in &function.params {
+            ensure_known_type(&param.type_ref, structs, "function parameter").map_err(|err| err.with_span(&param.type_span))?;
             ensure_array_elements_have_known_size(&param.type_ref, structs, constants, &param.type_ref.type_name())?;
         }
-        for return_type in &function.return_types {
+        for (index, return_type) in function.return_types.iter().enumerate() {
+            ensure_known_type(return_type, structs, "function return type")
+                .map_err(|err| err.with_span(function.return_type_spans.get(index).unwrap_or(&function.name_span)))?;
             ensure_array_elements_have_known_size(return_type, structs, constants, &return_type.type_name())?;
         }
 
@@ -458,8 +500,8 @@ fn validate_statement_shapes<'i>(
 
     for stmt in statements {
         match stmt {
-            Statement::VariableDefinition { type_ref, name, expr, .. } => {
-                validate_variable_definition_statement_shape(&mut ctx, type_ref, name, expr.as_ref())?
+            Statement::VariableDefinition { type_ref, name, expr, type_span, .. } => {
+                validate_variable_definition_statement_shape(&mut ctx, type_ref, name, expr.as_ref(), type_span)?
             }
             Statement::TupleAssignment { left_type_ref, left_name, right_type_ref, right_name, expr, .. } => {
                 validate_tuple_assignment_statement_shape(&mut ctx, left_type_ref, left_name, right_type_ref, right_name, expr)?
@@ -529,18 +571,17 @@ fn validate_variable_definition_statement_shape<'i>(
     type_ref: &TypeRef,
     name: &str,
     expr: Option<&Expr<'i>>,
+    type_span: &span::Span<'i>,
 ) -> Result<(), CompilerError> {
+    ensure_known_type(type_ref, ctx.structs, "variable").map_err(|err| err.with_span(type_span))?;
     let type_name = type_ref.type_name();
     ensure_array_elements_have_known_size(type_ref, ctx.structs, ctx.constants, &type_name)?;
-    if expr.is_none() && type_ref.is_array() && array_type_size(type_ref, ctx.constants).is_some() {
+    if expr.is_none() && type_ref.is_array() && array_type_size(type_ref, ctx.constants)?.is_some() {
         return Err(CompilerError::Unsupported("variable definition requires initializer".to_string()));
     }
     if let Some(expr) = expr {
         ctx.check_expr(expr, Some(type_ref)).map_err(|err| {
-            if type_ref.is_array()
-                && matches!(expr.kind, ExprKind::Array { .. })
-                && !matches!(&err, CompilerError::Unsupported(message) if message == "size mismatch")
-            {
+            if type_ref.is_array() && matches!(expr.kind, ExprKind::Array { .. }) && !matches!(&err, CompilerError::SizeMismatch) {
                 return CompilerError::Unsupported(format!("array element type mismatch for type {type_name}"));
             }
             map_declared_type_error(
@@ -724,7 +765,7 @@ fn validate_function_call_assign_statement_shape<'i>(
         return Err(CompilerError::Unsupported("function call assignment return count mismatch".to_string()));
     }
     for (binding, return_type) in bindings.iter().zip(&return_types) {
-        if !type_refs_equal(&binding.type_ref, return_type, ctx.constants) {
+        if !type_refs_equal(&binding.type_ref, return_type, ctx.constants)? {
             return Err(CompilerError::Unsupported(format!(
                 "function return binding '{}' expects {}",
                 binding.name,
@@ -755,7 +796,7 @@ fn validate_require_age_daa_statement_shape<'i>(
     expr: &Expr<'i>,
 ) -> Result<(), CompilerError> {
     ctx.check_expr(expr, Some(&TypeRef { base: TypeBase::Int, array_dims: Vec::new() }))?;
-    if let Ok(value) = eval_const_int(expr, ctx.constants) {
+    if let Some(value) = eval_optional_const_int(expr, ctx.constants)? {
         if !(0..(1_i64 << 32)).contains(&value) {
             return Err(CompilerError::Unsupported(format!("this.ageDaa value must satisfy 0 <= value < 2^32, got {value}")));
         }
@@ -768,7 +809,7 @@ fn validate_require_tx_daa_statement_shape<'i>(
     expr: &Expr<'i>,
 ) -> Result<(), CompilerError> {
     ctx.check_expr(expr, Some(&TypeRef { base: TypeBase::Int, array_dims: Vec::new() }))?;
-    if let Ok(value) = eval_const_int(expr, ctx.constants) {
+    if let Some(value) = eval_optional_const_int(expr, ctx.constants)? {
         let lock_time_threshold = kaspa_txscript::LOCK_TIME_THRESHOLD as i64;
         if !(0..lock_time_threshold).contains(&value) {
             return Err(CompilerError::Unsupported(format!(
@@ -784,7 +825,7 @@ fn validate_require_tx_time_statement_shape<'i>(
     expr: &Expr<'i>,
 ) -> Result<(), CompilerError> {
     ctx.check_expr(expr, Some(&TypeRef { base: TypeBase::Temporal, array_dims: Vec::new() }))?;
-    if let Ok(value) = eval_const_int(expr, ctx.constants) {
+    if let Some(value) = eval_optional_const_int(expr, ctx.constants)? {
         let lock_time_threshold = kaspa_txscript::LOCK_TIME_THRESHOLD as i64;
         if value < lock_time_threshold {
             return Err(CompilerError::Unsupported(format!(
@@ -917,7 +958,7 @@ fn validate_struct_destructure_bindings<'i>(
     let mut seen_names = HashSet::new();
 
     for binding in bindings {
-        ensure_known_struct_or_builtin_type(&binding.type_ref, structs, "struct destructuring")?;
+        ensure_known_type_without_struct_arrays(&binding.type_ref, structs, "struct destructuring")?;
         if !seen_fields.insert(binding.field_name.clone()) {
             return Err(CompilerError::Unsupported(format!("duplicate struct field '{}'", binding.field_name)));
         }
@@ -934,7 +975,7 @@ fn validate_struct_destructure_bindings<'i>(
         let Some(binding) = bindings.iter().find(|binding| binding.field_name == field.name) else {
             return Err(CompilerError::Unsupported("struct destructuring must bind all fields exactly once".to_string()));
         };
-        if !type_refs_equal(&binding.type_ref, &field.type_ref, constants) {
+        if !type_refs_equal(&binding.type_ref, &field.type_ref, constants)? {
             return Err(CompilerError::Unsupported(format!("struct field '{}' expects {}", field.name, field.type_ref.type_name())));
         }
         if let Some(state_reader) = state_reader
@@ -1010,7 +1051,7 @@ fn map_declared_type_error<'i>(
     constants: &HashMap<String, Expr<'i>>,
 ) -> CompilerError {
     match err {
-        CompilerError::Unsupported(message) if message == "type mismatch" => {
+        CompilerError::TypeMismatch => {
             let hint = expr_matches_return_type_hint(expr, type_ref, types, structs, constants)
                 .map(|hint| format!("; {hint}"))
                 .unwrap_or_default();
@@ -1027,18 +1068,32 @@ fn ensure_array_elements_have_known_size<'i>(
     type_name: &str,
 ) -> Result<(), CompilerError> {
     for dimension in &type_ref.array_dims {
-        let ArrayDim::Constant(name) = dimension else {
-            continue;
-        };
-        let expr =
-            constants.get(name).ok_or_else(|| CompilerError::UndefinedIdentifier(format!("array dimension constant '{name}'")))?;
-        let value = eval_const_int(expr, constants)?;
-        usize::try_from(value)
-            .map_err(|_| CompilerError::InvalidLiteral(format!("array dimension '{name}' must be a non-negative integer")))?;
+        match dimension {
+            ArrayDim::Fixed(0) => {
+                return Err(CompilerError::InvalidLiteral(format!("array dimensions must be greater than zero: {type_name}")));
+            }
+            ArrayDim::Constant(name) => {
+                let expr = constants
+                    .get(name)
+                    .ok_or_else(|| CompilerError::UndefinedIdentifier(format!("array dimension constant '{name}'")))?;
+                let value = eval_const_int(expr, constants)?;
+                let size = usize::try_from(value)
+                    .map_err(|_| CompilerError::InvalidLiteral(format!("array dimension '{name}' must be a non-negative integer")))?;
+                if size == 0 {
+                    return Err(CompilerError::InvalidLiteral(format!("array dimension '{name}' must be greater than zero")));
+                }
+            }
+            ArrayDim::Dynamic | ArrayDim::Inferred | ArrayDim::Fixed(_) => {}
+        }
+    }
+    if let TypeBase::Tuple(elements) = &type_ref.base {
+        for element in elements {
+            ensure_array_elements_have_known_size(element, structs, constants, &element.type_name())?;
+        }
     }
 
     if type_ref.is_array()
-        && fixed_type_size_with_structs(type_ref.array_element_type().as_ref().unwrap_or(type_ref), structs, constants).is_none()
+        && fixed_type_size_with_structs(type_ref.array_element_type().as_ref().unwrap_or(type_ref), structs, constants)?.is_none()
     {
         return Err(CompilerError::Unsupported(format!("array element type must have known size: {type_name}")));
     }
@@ -1049,21 +1104,25 @@ fn fixed_type_size_with_structs<'i>(
     type_ref: &TypeRef,
     structs: &StructRegistry,
     constants: &HashMap<String, Expr<'i>>,
-) -> Option<usize> {
+) -> Result<Option<usize>, CompilerError> {
     if type_ref.is_array() {
-        let element_type = type_ref.array_element_type()?;
-        let array_len = array_type_size(type_ref, constants)?;
-        return fixed_type_size_with_structs(&element_type, structs, constants)?.checked_mul(array_len);
+        let Some(element_type) = type_ref.array_element_type() else { return Ok(None) };
+        let Some(array_len) = array_type_size(type_ref, constants)? else { return Ok(None) };
+        let Some(element_size) = fixed_type_size_with_structs(&element_type, structs, constants)? else { return Ok(None) };
+        return checked_mul(element_size, array_len).map(Some);
     }
 
     match &type_ref.base {
         TypeBase::Custom(name) => {
-            let struct_spec = structs.get(name)?;
+            let Some(struct_spec) = structs.get(name) else { return Ok(None) };
             let mut total = 0usize;
             for field in &struct_spec.fields {
-                total = total.checked_add(fixed_type_size_with_structs(&field.type_ref, structs, constants)?)?;
+                let Some(field_size) = fixed_type_size_with_structs(&field.type_ref, structs, constants)? else {
+                    return Ok(None);
+                };
+                total = checked_add(total, field_size)?;
             }
-            Some(total)
+            Ok(Some(total))
         }
         _ => fixed_type_size(type_ref, constants),
     }

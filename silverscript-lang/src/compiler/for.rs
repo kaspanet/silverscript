@@ -79,8 +79,10 @@ impl<'a, 'i> ForLowerer<'a, 'i> {
     ) -> Result<Vec<Statement<'i>>, CompilerError> {
         let max_iterations = match eval_const_int(max_iterations, self.constants) {
             Ok(value) => value,
-            Err(CompilerError::InvalidLiteral(message)) => return Err(CompilerError::InvalidLiteral(message)),
-            Err(_) => return Err(CompilerError::Unsupported("for loop max iterations must be a compile-time integer".to_string())),
+            Err(CompilerError::NonConstantInteger(_)) => {
+                return Err(CompilerError::Unsupported("for loop max iterations must be a compile-time integer".to_string()));
+            }
+            Err(err) => return Err(err),
         };
         if max_iterations < 0 {
             return Err(CompilerError::Unsupported("for loop max iterations must be a non-negative compile-time integer".to_string()));
@@ -89,8 +91,20 @@ impl<'a, 'i> ForLowerer<'a, 'i> {
             return Err(CompilerError::Unsupported(format!("for loop max iterations must not exceed {MAX_FOR_LOOP_ITERATIONS}")));
         }
 
-        if let (Ok(start_value), Ok(end_value)) = (eval_const_int(start, self.constants), eval_const_int(end, self.constants)) {
-            return self.lower_constant_for_statement(ident, start_value, end_value, max_iterations as usize, body, span, ident_span);
+        {
+            let start_value = eval_optional_const_int(start, self.constants)?;
+            let end_value = eval_optional_const_int(end, self.constants)?;
+            if let (Some(start_value), Some(end_value)) = (start_value, end_value) {
+                return self.lower_constant_for_statement(
+                    ident,
+                    start_value,
+                    end_value,
+                    max_iterations as usize,
+                    body,
+                    span,
+                    ident_span,
+                );
+            }
         }
 
         let lowered_body = self.lower_block(body)?;
@@ -201,7 +215,10 @@ impl<'a, 'i> ForLowerer<'a, 'i> {
         span: span::Span<'i>,
         ident_span: span::Span<'i>,
     ) -> Result<Vec<Statement<'i>>, CompilerError> {
-        if i128::from(end) - i128::from(start) > max_iterations as i128 {
+        // Keep constant lowering compatible with the runtime guard `require(end - start <= max_iterations)`: if the runtime
+        // subtraction cannot be represented as an i64, the equivalent constant loop must fail compilation.
+        let range = checked_sub(end, start)?;
+        if range > max_iterations as i64 {
             return Err(CompilerError::Unsupported("for loop range must not exceed max iterations".to_string()));
         }
 

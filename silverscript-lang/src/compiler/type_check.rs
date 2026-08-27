@@ -11,7 +11,7 @@ use super::builtin_types::{
 };
 use super::structs::{StructRegistry, flattened_struct_field_specs_for_type, is_struct, struct_name};
 use super::{
-    CompilerError, STATE_TYPE_NAME, TypeMap, append_type, array_type_size, concat_types, eval_const_int, fixed_type_size,
+    CompilerError, STATE_TYPE_NAME, TypeMap, append_type, array_type_size, concat_types, eval_optional_const_int, fixed_type_size,
     parse_type_ref, type_refs_equal,
 };
 
@@ -21,6 +21,14 @@ pub(super) struct TypeCheckContext<'a, 'i> {
     pub constants: &'a HashMap<String, Expr<'i>>,
     pub functions: &'a HashMap<String, &'a FunctionAst<'i>>,
     pub contract_fields: &'a [ContractFieldAst<'i>],
+}
+
+/// Determines an expression's type using the canonical type checker.
+///
+/// TODO: Have static checking produce a typed IR whose type annotations are preserved through lowering, so later passes do not
+/// need to re-check expressions merely to recover their types.
+pub(super) fn infer_expr_type<'i>(expr: &Expr<'i>, ctx: &TypeCheckContext<'_, 'i>) -> Result<TypeRef, CompilerError> {
+    check_expr(expr, None, ctx)
 }
 
 pub(super) fn check_expr<'i>(
@@ -64,7 +72,7 @@ pub(super) fn check_expr<'i>(
                     CompilerError::Unsupported(format!("array append element type mismatch: expected {}", element_type.type_name()))
                 })?;
             }
-            append_type(&source_type, args.len(), ctx.constants)
+            append_type(&source_type, args.len(), ctx.constants)?
                 .ok_or_else(|| CompilerError::Unsupported("cannot determine appended array type".to_string()))?
         }
         ExprKind::ArrayIndex { source, index } => {
@@ -101,7 +109,7 @@ pub(super) fn check_expr<'i>(
             } else {
                 let then_type = check_expr(then_expr, None, ctx)?;
                 let else_type = check_expr(else_expr, None, ctx)?;
-                if !type_refs_equal(&then_type, &else_type, ctx.constants) {
+                if !type_refs_equal(&then_type, &else_type, ctx.constants)? {
                     return Err(CompilerError::Unsupported(format!(
                         "ternary branch type mismatch: then expression is {}, else expression is {}",
                         then_type.type_name(),
@@ -174,10 +182,10 @@ fn check_typed_array_literal<'i>(
         .ok_or_else(|| CompilerError::Unsupported("array literal requires an array type".to_string()))?;
     check_array_literal_with_element_type(values, &literal_element_type, ctx)
         .map_err(|_| CompilerError::Unsupported("array element type mismatch".to_string()))?;
-    if let Some(literal_size) = array_type_size(literal_type, ctx.constants)
+    if let Some(literal_size) = array_type_size(literal_type, ctx.constants)?
         && literal_size != values.len()
     {
-        return Err(CompilerError::Unsupported("size mismatch".to_string()));
+        return Err(CompilerError::SizeMismatch);
     }
 
     if let Some(expected) = expected {
@@ -189,11 +197,10 @@ fn check_typed_array_literal<'i>(
             {
                 return Ok(expected.clone());
             }
-            return Err(CompilerError::Unsupported("type mismatch".to_string()));
+            return Err(CompilerError::TypeMismatch);
         }
-        let expected_element_type =
-            expected.array_element_type().ok_or_else(|| CompilerError::Unsupported("type mismatch".to_string()))?;
-        if !type_refs_equal(&literal_element_type, &expected_element_type, ctx.constants) {
+        let expected_element_type = expected.array_element_type().ok_or(CompilerError::TypeMismatch)?;
+        if !type_refs_equal(&literal_element_type, &expected_element_type, ctx.constants)? {
             if let (TypeBase::Custom(expected_name), TypeBase::Custom(actual_name)) =
                 (&expected_element_type.base, &literal_element_type.base)
             {
@@ -201,16 +208,16 @@ fn check_typed_array_literal<'i>(
             }
             return Err(CompilerError::Unsupported("array element type mismatch".to_string()));
         }
-        if matches!(expected.array_size(), Some(ArrayDim::Dynamic)) && !matches!(literal_type.array_size(), Some(ArrayDim::Dynamic)) {
-            return Err(CompilerError::Unsupported("type mismatch".to_string()));
+        if expected.is_dynamic_array() && !literal_type.is_dynamic_array() {
+            return Err(CompilerError::TypeMismatch);
         }
-        if array_type_size(expected, ctx.constants).is_some() && matches!(literal_type.array_size(), Some(ArrayDim::Dynamic)) {
-            return Err(CompilerError::Unsupported("type mismatch".to_string()));
+        if array_type_size(expected, ctx.constants)?.is_some() && literal_type.is_dynamic_array() {
+            return Err(CompilerError::TypeMismatch);
         }
-        if let Some(expected_size) = array_type_size(expected, ctx.constants)
+        if let Some(expected_size) = array_type_size(expected, ctx.constants)?
             && expected_size != values.len()
         {
-            return Err(CompilerError::Unsupported("size mismatch".to_string()));
+            return Err(CompilerError::SizeMismatch);
         }
         return Ok(expected.clone());
     }
@@ -261,7 +268,7 @@ pub(super) fn check_call<'i>(
         let size = if cast_type.is_byte() {
             1
         } else {
-            array_type_size(&cast_type, ctx.constants)
+            array_type_size(&cast_type, ctx.constants)?
                 .ok_or_else(|| CompilerError::Unsupported("byte size in 'as byte[N]' must be known at compile time".to_string()))?
         };
         if size == 0 || size > 8 {
@@ -321,13 +328,10 @@ pub(super) fn check_call<'i>(
                 cast_type.type_name()
             )));
         }
-        validate_scalar_cast_compatibility(&cast_type, &source_type, ctx.constants)?;
-        if (cast_type.is_array() || cast_type.base.fixed_byte_sequence_len().is_some())
-            && let (Some(target_size), Some(source_size)) =
-                (fixed_type_size(&cast_type, ctx.constants), known_cast_source_size(&args[0], &source_type, ctx.constants))
-            && target_size != source_size
-        {
-            return Err(CompilerError::Unsupported(format!("cannot cast {} to {}", source_type.type_name(), cast_type.type_name())));
+        if cast_type.is_array() {
+            validate_array_cast_compatibility(&cast_type, &args[0], &source_type, ctx.constants)?;
+        } else {
+            validate_scalar_cast_compatibility(&cast_type, &source_type, ctx.constants)?;
         }
         return Ok(Some(cast_type));
     }
@@ -357,36 +361,101 @@ fn validate_scalar_cast_compatibility<'i>(
         source_type.is_int_like()
             || matches!(source_type.base, TypeBase::Byte)
                 && source_type.array_dims.len() == 1
-                && array_type_size(source_type, constants).is_some_and(|size| size <= 8)
+                && array_type_size(source_type, constants)?.is_some_and(|size| size <= 8)
     } else if cast_type.is_temporal() {
         source_type.is_int_like()
     } else if cast_type.is_bool() {
         source_type.is_byte()
+    } else if cast_type.is_byte() {
+        // Integer sources have already been restricted above to in-range
+        // literals. All other scalar byte casts must preserve a one-byte
+        // runtime representation.
+        source_type.is_byte() || source_type.is_int()
     } else if cast_type.is_string() {
         source_type.is_string()
             || source_type.is_byte()
             || matches!(source_type.base, TypeBase::Byte) && source_type.is_array()
             || source_type.base.fixed_byte_sequence_len().is_some()
-    } else if cast_type.base.fixed_byte_sequence_len().is_some() {
-        source_type.is_byte()
-            || source_type.is_array()
-            || source_type.is_string()
-            || source_type.base.fixed_byte_sequence_len().is_some()
+    } else if let Some(target_size) = cast_type.base.fixed_byte_sequence_len() {
+        // A dynamic byte array may be asserted as a fixed-byte scalar because
+        // its length is not known statically. A statically sized source is
+        // accepted only when its size matches the scalar's encoded width.
+        let compatible_source = source_type.is_byte()
+            || matches!(source_type.base, TypeBase::Byte) && source_type.array_dims.len() == 1
+            || source_type.base.fixed_byte_sequence_len().is_some();
+        compatible_source && fixed_type_size(source_type, constants)?.is_none_or(|source_size| source_size == target_size)
     } else {
-        true
+        false
     };
-    if compatible {
-        Ok(())
-    } else {
-        Err(CompilerError::Unsupported(format!("cannot cast {} to {}", source_type.type_name(), cast_type.type_name())))
+    if !compatible {
+        return Err(CompilerError::Unsupported(format!("cannot cast {} to {}", source_type.type_name(), cast_type.type_name())));
     }
+    Ok(())
 }
 
-fn known_cast_source_size<'i>(expr: &Expr<'i>, source_type: &TypeRef, constants: &HashMap<String, Expr<'i>>) -> Option<usize> {
-    fixed_type_size(source_type, constants).or(match &expr.kind {
+fn validate_array_cast_compatibility<'i>(
+    cast_type: &TypeRef,
+    source_expr: &Expr<'i>,
+    source_type: &TypeRef,
+    constants: &HashMap<String, Expr<'i>>,
+) -> Result<(), CompilerError> {
+    // `byte[]`, `byte[N]`, and `byte[_]` are universal representation-cast
+    // targets: any source type may be viewed as a flat byte sequence. This
+    // only grants type compatibility; the size check below still rejects known
+    // fixed-size mismatches (for example, byte[32] to byte[31]).
+    let is_flat_byte_target = matches!(cast_type.base, TypeBase::Byte) && cast_type.array_dims.len() == 1;
+    // Supported same-rank array dimension casts:
+    // - Arrays may change dimension specificity.
+    // - The source and target must have the same base type and number of dimensions.
+    // - Dynamic and inferred dimensions may be cast to or from fixed dimensions.
+    // - Fixed and constant dimensions must resolve to the same size.
+    let compatible = is_flat_byte_target
+        || source_type.is_array()
+            && cast_type.base == source_type.base
+            && cast_type.array_dims.len() == source_type.array_dims.len()
+            && array_dimensions_are_compatible(source_type, cast_type, constants)?;
+    if !compatible {
+        return Err(CompilerError::Unsupported(format!("cannot cast {} to {}", source_type.type_name(), cast_type.type_name())));
+    }
+    let target_size = fixed_type_size(cast_type, constants)?;
+    let source_size = known_cast_source_size(source_expr, source_type, constants)?;
+    if let (Some(target_size), Some(source_size)) = (target_size, source_size)
+        && target_size != source_size
+    {
+        return Err(CompilerError::Unsupported(format!("cannot cast {} to {}", source_type.type_name(), cast_type.type_name())));
+    }
+    Ok(())
+}
+
+fn array_dimensions_are_compatible<'i>(
+    source_type: &TypeRef,
+    cast_type: &TypeRef,
+    constants: &HashMap<String, Expr<'i>>,
+) -> Result<bool, CompilerError> {
+    for (source_dimension, cast_dimension) in source_type.array_dims.iter().zip(&cast_type.array_dims) {
+        let matching = type_refs_equal(
+            &TypeRef { base: TypeBase::Byte, array_dims: vec![source_dimension.clone()] },
+            &TypeRef { base: TypeBase::Byte, array_dims: vec![cast_dimension.clone()] },
+            constants,
+        )?;
+        let unspecified = matches!(source_dimension, ArrayDim::Dynamic | ArrayDim::Inferred)
+            || matches!(cast_dimension, ArrayDim::Dynamic | ArrayDim::Inferred);
+        if !matching && !unspecified {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn known_cast_source_size<'i>(
+    expr: &Expr<'i>,
+    source_type: &TypeRef,
+    constants: &HashMap<String, Expr<'i>>,
+) -> Result<Option<usize>, CompilerError> {
+    Ok(fixed_type_size(source_type, constants)?.or(match &expr.kind {
         ExprKind::String(value) => Some(value.len()),
         _ => None,
-    })
+    }))
 }
 
 fn check_g16_verify_args<'i>(args: &[Expr<'i>], ctx: &TypeCheckContext<'_, 'i>) -> Result<(), CompilerError> {
@@ -468,10 +537,20 @@ fn check_binary<'i>(
                     left_type.type_name()
                 )));
             }
+            if is_struct(&left_type, ctx.structs) {
+                for leaf_type in flattened_struct_field_specs_for_type(&left_type, ctx.structs)? {
+                    if leaf_type.is_array() && !supports_array_comparison(&leaf_type) {
+                        return Err(CompilerError::Unsupported(format!(
+                            "struct comparison is not supported for field type {}",
+                            leaf_type.type_name()
+                        )));
+                    }
+                }
+            }
             Ok(scalar_type(TypeBase::Bool))
         }
         BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge => {
-            if !left_type.is_int_like() || !type_refs_equal(&left_type, &right_type, ctx.constants) {
+            if !left_type.is_int_like() || !type_refs_equal(&left_type, &right_type, ctx.constants)? {
                 return Err(CompilerError::Unsupported(format!(
                     "ordered comparison requires matching int or temporal operands, got {} and {}",
                     left_type.type_name(),
@@ -486,7 +565,7 @@ fn check_binary<'i>(
             ensure_expected(&right_type, Some(&bool_type), ctx.constants)?;
             Ok(bool_type)
         }
-        BinaryOp::Add if left_type.is_array() && right_type.is_array() => concat_types(&left_type, &right_type, ctx.constants)
+        BinaryOp::Add if left_type.is_array() && right_type.is_array() => concat_types(&left_type, &right_type, ctx.constants)?
             .ok_or_else(|| CompilerError::Unsupported("array concatenation requires identical element types".to_string())),
         BinaryOp::Add if left_type.is_string() && right_type.is_string() => Ok(scalar_type(TypeBase::String)),
         BinaryOp::BitOr | BinaryOp::BitXor | BinaryOp::BitAnd => {
@@ -502,7 +581,7 @@ fn check_binary<'i>(
                     right_type.type_name()
                 )));
             }
-            if !type_refs_equal(&left_type, &right_type, ctx.constants) {
+            if !type_refs_equal(&left_type, &right_type, ctx.constants)? {
                 return Err(CompilerError::Unsupported(format!(
                     "bitwise operations require byte arrays of equal size, got {} and {}",
                     left_type.type_name(),
@@ -512,7 +591,7 @@ fn check_binary<'i>(
             Ok(left_type)
         }
         BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Mod => {
-            if !left_type.is_int_like() || !type_refs_equal(&left_type, &right_type, ctx.constants) {
+            if !left_type.is_int_like() || !type_refs_equal(&left_type, &right_type, ctx.constants)? {
                 return Err(CompilerError::Unsupported(format!(
                     "arithmetic requires matching int or temporal operands, got {} and {}",
                     left_type.type_name(),
@@ -567,10 +646,13 @@ fn ensure_expected<'i>(
     expected: Option<&TypeRef>,
     constants: &HashMap<String, Expr<'i>>,
 ) -> Result<(), CompilerError> {
-    if expected.is_none_or(|expected| type_refs_equal(actual, expected, constants)) {
+    if match expected {
+        Some(expected) => type_refs_equal(actual, expected, constants)?,
+        None => true,
+    } {
         Ok(())
     } else {
-        Err(CompilerError::Unsupported("type mismatch".to_string()))
+        Err(CompilerError::TypeMismatch)
     }
 }
 
@@ -598,8 +680,8 @@ fn sequence_part_type(type_ref: &TypeRef, operation: &str) -> Result<TypeRef, Co
     Err(CompilerError::Unsupported(format!("{operation} source must be an array, string, or fixed-byte type")))
 }
 
-fn known_sequence_length<'i>(type_ref: &TypeRef, constants: &HashMap<String, Expr<'i>>) -> Option<usize> {
-    array_type_size(type_ref, constants).or_else(|| type_ref.base.fixed_byte_sequence_len())
+fn known_sequence_length<'i>(type_ref: &TypeRef, constants: &HashMap<String, Expr<'i>>) -> Result<Option<usize>, CompilerError> {
+    Ok(array_type_size(type_ref, constants)?.or_else(|| type_ref.base.fixed_byte_sequence_len()))
 }
 
 fn validate_constant_sequence_index<'i>(
@@ -609,11 +691,11 @@ fn validate_constant_sequence_index<'i>(
     source_type: &TypeRef,
     constants: &HashMap<String, Expr<'i>>,
 ) -> Result<Option<i64>, CompilerError> {
-    let Ok(index) = eval_const_int(index, constants) else { return Ok(None) };
+    let Some(index) = eval_optional_const_int(index, constants)? else { return Ok(None) };
     if index < 0 {
         return Err(CompilerError::Unsupported(format!("{operation} {index_name} {index} is out of bounds")));
     }
-    if let Some(source_size) = known_sequence_length(source_type, constants)
+    if let Some(source_size) = known_sequence_length(source_type, constants)?
         && usize::try_from(index).is_ok_and(|index| index > source_size)
     {
         return Err(CompilerError::Unsupported(format!(

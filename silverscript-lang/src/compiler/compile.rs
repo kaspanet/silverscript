@@ -3,13 +3,14 @@ use super::covenant_declarations::lower_covenant_declarations;
 use super::infer_array::lower_inferred_array_sizes;
 use super::inline_functions::lower_inline_functions;
 use super::stack_bindings::StackBindings;
-use super::static_check::{static_check_contract, validate_declaration_names};
+use super::static_check::{static_check_contract, validate_concrete_constructor_argument, validate_declaration_names};
 use super::ternary::lower_ternaries;
 use super::*;
-use kaspa_txscript::EngineFlags;
+use kaspa_consensus_core::config::params::MAINNET_PARAMS;
 use kaspa_txscript::opcodes::codes::*;
 use kaspa_txscript::script_builder::ScriptBuilder;
 use kaspa_txscript::serialize_i64;
+use kaspa_txscript::{EngineFlags, MAX_STACK_SIZE};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 mod analysis;
@@ -21,7 +22,7 @@ mod state;
 mod statement;
 
 use analysis::*;
-pub(crate) use const_eval::{eval_const_int, resolve_constant_references};
+pub(crate) use const_eval::{eval_const_int, eval_optional_const_int, resolve_constant_references};
 use emitter::*;
 use expression::*;
 pub(super) use helpers::encode_array_literal;
@@ -41,6 +42,14 @@ pub(super) fn compile_contract_impl<'i>(
     source: Option<&'i str>,
 ) -> Result<CompiledContract<'i>, CompilerError> {
     validate_declaration_names(contract)?;
+    // Constructor arguments enter the constant environment below, so reject
+    // evaluatable expression forms before any inference or lowering can use them.
+    if contract.params.len() != constructor_args.len() {
+        return Err(CompilerError::Unsupported("constructor argument count mismatch".to_string()));
+    }
+    for (param, value) in contract.params.iter().zip(constructor_args) {
+        validate_concrete_constructor_argument(param, value)?;
+    }
 
     let mut constants: HashMap<String, Expr<'i>> =
         contract.constants.iter().map(|constant| (constant.name.clone(), constant.expr.clone())).collect();
@@ -74,6 +83,9 @@ pub(super) fn compile_contract_impl<'i>(
     if function_abi_entries.is_empty() {
         return Err(CompilerError::Unsupported("contract has no entries".to_string()));
     }
+    let entrypoint_functions: Vec<&FunctionAst<'i>> = lowered_contract.functions.iter().filter(|func| func.entrypoint).collect();
+    validate_entrypoint_stack_limits(&entrypoint_functions)?;
+    let artifact_contract = resolve_artifact_struct_type_refs(&covenant_lowered_contract, &constants)?;
 
     // dispatch tag: verify no collisions and insert tags to global state
     let mut entrypoints_by_tag = HashMap::<DispatchTag, &str>::new();
@@ -105,7 +117,7 @@ pub(super) fn compile_contract_impl<'i>(
         if !uses_bytecode_size {
             return Ok(build_compiled_contract(
                 &lowered_contract,
-                &covenant_lowered_contract,
+                &artifact_contract,
                 function_abi_entries.clone(),
                 &cov_decl_to_abi,
                 delegate_entry_abi.as_ref(),
@@ -119,7 +131,7 @@ pub(super) fn compile_contract_impl<'i>(
         if Some(actual_size) == bytecode_size {
             return Ok(build_compiled_contract(
                 &lowered_contract,
-                &covenant_lowered_contract,
+                &artifact_contract,
                 function_abi_entries.clone(),
                 &cov_decl_to_abi,
                 delegate_entry_abi.as_ref(),
@@ -134,6 +146,106 @@ pub(super) fn compile_contract_impl<'i>(
     Err(CompilerError::Unsupported("bytecode size did not stabilize".to_string()))
 }
 
+fn validate_entrypoint_stack_limits(entrypoints: &[&FunctionAst<'_>]) -> Result<(), CompilerError> {
+    for entrypoint in entrypoints {
+        // At the end of P2SH signature-script execution, the stack contains
+        // every flattened argument, the dispatch tag, and the redeem script.
+        let initial_stack_items = checked_add(entrypoint.params.len(), 2)?;
+        if initial_stack_items > MAX_STACK_SIZE {
+            return Err(CompilerError::EntrypointStackTooLarge {
+                function: entrypoint.name.clone(),
+                actual: initial_stack_items,
+                maximum: MAX_STACK_SIZE,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validate_signature_script_limits<'i>(
+    bytecode: &[u8],
+    entrypoints: &[&FunctionAst<'i>],
+    constants: &HashMap<String, Expr<'i>>,
+) -> Result<(), CompilerError> {
+    let max_signature_script_len = MAINNET_PARAMS.new_max_signature_script_len;
+    if bytecode.len() > max_signature_script_len {
+        return Err(CompilerError::RedeemScriptTooLarge { actual: bytecode.len(), maximum: max_signature_script_len });
+    }
+
+    let redeem_script_push_size = ScriptBuilder::canonical_data_size(bytecode);
+    let dispatch_tag_push_size = maximum_canonical_data_push_size(std::mem::size_of::<DispatchTag>())?;
+    for entrypoint in entrypoints {
+        let mut estimated_size = checked_add(redeem_script_push_size, dispatch_tag_push_size)?;
+        for param in &entrypoint.params {
+            estimated_size = checked_add(estimated_size, conservative_sigscript_argument_size(&param.type_ref, constants)?)?;
+        }
+        if estimated_size > max_signature_script_len {
+            return Err(CompilerError::EntrypointSignatureScriptTooLarge {
+                function: entrypoint.name.clone(),
+                estimated: estimated_size,
+                maximum: max_signature_script_len,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn conservative_sigscript_argument_size<'i>(
+    type_ref: &TypeRef,
+    constants: &HashMap<String, Expr<'i>>,
+) -> Result<usize, CompilerError> {
+    if type_ref.is_array() {
+        let payload_size = match fixed_type_size(type_ref, constants)? {
+            Some(payload_size) => payload_size,
+            None => {
+                // Dynamic arrays are estimated with one element. Use the full
+                // fixed-width encoding of that element as a worst-case estimate for the dynamic array's payload size.
+                let element_type = type_ref.array_element_type().expect("array type has an element type");
+                fixed_type_size(&element_type, constants)?.ok_or_else(|| {
+                    CompilerError::Unsupported(format!("cannot determine dynamic ABI element size for {}", type_ref.type_name()))
+                })?
+            }
+        };
+        return maximum_canonical_data_push_size(payload_size);
+    }
+
+    match type_ref.base {
+        // Int-like values can occupy the full eight-byte ScriptNum payload.
+        TypeBase::Int | TypeBase::Temporal => maximum_canonical_data_push_size(8),
+        TypeBase::Bool => Ok(1),
+        TypeBase::Byte => maximum_canonical_data_push_size(1),
+        // Treat strings as containing at least one byte for this conservative
+        // feasibility estimate.
+        TypeBase::String => maximum_canonical_data_push_size(1),
+        TypeBase::Pubkey | TypeBase::Sig | TypeBase::Datasig => {
+            let payload_size = type_ref
+                .base
+                .fixed_byte_sequence_len()
+                .ok_or_else(|| CompilerError::Unsupported(format!("cannot determine ABI size for {}", type_ref.type_name())))?;
+            maximum_canonical_data_push_size(payload_size)
+        }
+        TypeBase::Tuple(_) | TypeBase::Custom(_) => {
+            Err(CompilerError::Unsupported(format!("cannot determine flattened ABI size for {}", type_ref.type_name())))
+        }
+    }
+}
+
+fn maximum_canonical_data_push_size(payload_size: usize) -> Result<usize, CompilerError> {
+    if payload_size == 0 {
+        return Ok(1);
+    }
+    let prefix_size = if payload_size <= OpData75 as usize {
+        1
+    } else if payload_size <= u8::MAX as usize {
+        2
+    } else if payload_size <= u16::MAX as usize {
+        3
+    } else {
+        5
+    };
+    checked_add(payload_size, prefix_size)
+}
+
 fn compile_contract_bytecode_iteration<'i>(
     lowered_contract: &ContractAst<'i>,
     lowered_constants: &HashMap<String, Expr<'i>>,
@@ -145,12 +257,12 @@ fn compile_contract_bytecode_iteration<'i>(
 ) -> Result<(Vec<u8>, CompiledStateLayout), CompilerError> {
     let (_contract_fields, state_push_bytecode) = compile_contract_fields(&lowered_contract.fields, lowered_constants, bytecode_size)?;
 
-    let state_start = if state_push_bytecode.is_empty() {
+    let state_start: usize = if state_push_bytecode.is_empty() {
         0
     } else {
         1 // The 1 accounts for OpToAltStack.
     };
-    let state_end = state_start + state_push_bytecode.len();
+    let state_end = checked_add(state_start, state_push_bytecode.len())?;
     let state_layout = CompiledStateLayout { start: state_start, len: state_push_bytecode.len() };
     let compiled_entrypoints = compile_entrypoint_bytecodes(
         lowered_contract,
@@ -162,6 +274,8 @@ fn compile_contract_bytecode_iteration<'i>(
         debug_recorder,
     )?;
     let bytecode = build_contract_bytecode(debug_recorder, &state_push_bytecode, &compiled_entrypoints, function_abi_entries)?;
+    let entrypoints = lowered_contract.functions.iter().filter(|function| function.entrypoint).collect::<Vec<_>>();
+    validate_signature_script_limits(&bytecode, &entrypoints, lowered_constants)?;
     Ok((bytecode, state_layout))
 }
 
@@ -275,4 +389,33 @@ pub fn compile_debug_expr<'i>(
     let mut emitter = ScriptEmitter::new(&mut builder, 0);
     compile_expr(&expr, Some(&type_ref), &env, &mut emitter)?;
     Ok((builder.drain(), type_ref.type_name()))
+}
+
+#[cfg(test)]
+mod signature_script_limit_tests {
+    use super::*;
+
+    #[test]
+    fn conservative_argument_sizes_use_maximum_scalar_widths_and_one_dynamic_element() {
+        let constants = HashMap::new();
+        let cases = [
+            ("int", 9),
+            ("temporal", 9),
+            ("bool", 1),
+            ("byte", 2),
+            ("string", 2),
+            ("byte[1]", 2),
+            ("byte[]", 2),
+            ("int[]", 9),
+            ("byte[2][]", 3),
+            ("pubkey[]", 33),
+        ];
+
+        for (type_name, expected_size) in cases {
+            let type_ref = parse_type_ref(type_name).unwrap_or_else(|err| panic!("{type_name} should parse: {err}"));
+            let actual = conservative_sigscript_argument_size(&type_ref, &constants)
+                .unwrap_or_else(|err| panic!("{type_name} should have a conservative size: {err}"));
+            assert_eq!(actual, expected_size, "unexpected conservative size for {type_name}");
+        }
+    }
 }

@@ -79,25 +79,33 @@ pub(super) fn is_struct_like(type_ref: &TypeRef, structs: &StructRegistry) -> bo
     is_struct(type_ref, structs) || is_struct_array(type_ref, structs)
 }
 
-pub(crate) fn ensure_known_struct_or_builtin_type(
+pub(crate) fn ensure_known_type_without_struct_arrays(
     type_ref: &TypeRef,
     structs: &StructRegistry,
     context: &str,
 ) -> Result<(), CompilerError> {
+    ensure_known_type(type_ref, structs, context)?;
     if !type_ref.is_array() {
-        match &type_ref.base {
-            TypeBase::Custom(name) if !structs.contains_key(name) => {
-                return Err(CompilerError::Unsupported(format!("unknown type '{}' in {context}", name)));
-            }
-            _ => {}
-        }
+        return Ok(());
     } else if let TypeBase::Custom(name) = &type_ref.base {
-        if structs.contains_key(name) {
-            return Err(CompilerError::Unsupported(format!("arrays of struct type '{}' are not supported", name)));
-        }
-        return Err(CompilerError::Unsupported(format!("unknown type '{}' in {context}", name)));
+        return Err(CompilerError::Unsupported(format!("arrays of struct type '{}' are not supported", name)));
     }
     Ok(())
+}
+
+pub(crate) fn ensure_known_type(type_ref: &TypeRef, structs: &StructRegistry, context: &str) -> Result<(), CompilerError> {
+    match &type_ref.base {
+        TypeBase::Custom(name) if !structs.contains_key(name) => {
+            Err(CompilerError::Unsupported(format!("unknown type '{}' in {context}", name)))
+        }
+        TypeBase::Tuple(elements) => {
+            for element in elements {
+                ensure_known_type(element, structs, context)?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
 }
 
 pub(crate) fn validate_struct_graph(structs: &StructRegistry) -> Result<(), CompilerError> {
@@ -115,7 +123,7 @@ pub(crate) fn validate_struct_graph(structs: &StructRegistry) -> Result<(), Comp
         }
         let item = structs.get(name).ok_or_else(|| CompilerError::Unsupported(format!("unknown struct '{name}'")))?;
         for field in &item.fields {
-            ensure_known_struct_or_builtin_type(&field.type_ref, structs, "struct field")?;
+            ensure_known_type_without_struct_arrays(&field.type_ref, structs, "struct field")?;
             if let Some(child) = struct_name(&field.type_ref, structs) {
                 visit(child, structs, visiting, visited)?;
             }

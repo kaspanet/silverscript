@@ -5,7 +5,7 @@ contract Mecenas(pubkey recipient, byte[32] funder, int pledge, int period) {
         require(this.ageDaa >= period);
 
         // Check that the first output sends to the recipient
-        byte[34] recipientScriptPubKey = new ScriptPubKeyP2PK(recipient);
+        byte[36] recipientScriptPubKey = new ScriptPubKeyP2PK(recipient);
         require(tx.outputs[0].scriptPubKey == byte[](recipientScriptPubKey));
 
         // Calculate the value that's left

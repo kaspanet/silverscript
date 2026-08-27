@@ -1,4 +1,5 @@
 pub mod ast;
+pub(crate) mod checked_arithmetic;
 pub mod compiler;
 pub mod debug_info;
 pub mod diagnostic;

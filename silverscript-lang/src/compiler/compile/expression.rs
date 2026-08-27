@@ -137,16 +137,22 @@ fn compile_array_expr<'i>(
         ctx.push_data(&[])?;
         return Ok(());
     }
-    let array_type = expected_type
-        .filter(|type_ref| type_ref.is_array())
-        .cloned()
-        .or_else(|| infer_array_literal_type(values, ctx.env.constants, ctx.env.types))
-        .ok_or_else(|| CompilerError::Unsupported("array literal type cannot be inferred".to_string()))?;
+    let array_type = if let Some(expected_type) = expected_type.filter(|type_ref| type_ref.is_array()) {
+        expected_type.clone()
+    } else {
+        infer_array_literal_type(values, ctx.env.constants, ctx.env.types)?
+            .ok_or_else(|| CompilerError::Unsupported("array literal type cannot be inferred".to_string()))?
+    };
 
-    // First we try to encode the array literal as a single constant value. If that fails, we fall back to compiling it as a runtime expression.
-    if let Ok(encoded) = encode_array_literal(values, &array_type, ctx.env.constants) {
-        ctx.push_data(&encoded)?;
-        return Ok(());
+    // A non-constant element cannot be encoded ahead of time and uses runtime lowering. Actual encoding failures must not be
+    // mistaken for that expected fallback.
+    match encode_array_literal(values, &array_type, ctx.env.constants) {
+        Ok(encoded) => {
+            ctx.push_data(&encoded)?;
+            return Ok(());
+        }
+        Err(CompilerError::RuntimeEvaluationRequired) => {}
+        Err(err) => return Err(err),
     }
     compile_runtime_array_literal(ctx, values, &array_type)
 }
@@ -191,20 +197,25 @@ fn compile_array_literal_element<'i>(
     }
 }
 
-fn infer_array_literal_type<'i>(values: &[Expr<'i>], constants: &HashMap<String, Expr<'i>>, types: &TypeMap) -> Option<TypeRef> {
-    let first_type = infer_expr_type(values.first()?, constants, types).ok()?;
-    fixed_type_size(&first_type, constants)?;
-    if values
-        .iter()
-        .skip(1)
-        .all(|value| infer_expr_type(value, constants, types).is_ok_and(|type_ref| type_refs_equal(&type_ref, &first_type, constants)))
-    {
-        let mut array_type = first_type;
-        array_type.array_dims.push(ArrayDim::Dynamic);
-        Some(array_type)
-    } else {
-        None
+fn infer_array_literal_type<'i>(
+    values: &[Expr<'i>],
+    constants: &HashMap<String, Expr<'i>>,
+    types: &TypeMap,
+) -> Result<Option<TypeRef>, CompilerError> {
+    let Some(first) = values.first() else { return Ok(None) };
+    let first_type = infer_expr_type(first, constants, types)?;
+    if fixed_type_size(&first_type, constants)?.is_none() {
+        return Ok(None);
     }
+    for value in values.iter().skip(1) {
+        let type_ref = infer_expr_type(value, constants, types)?;
+        if !type_refs_equal(&type_ref, &first_type, constants)? {
+            return Ok(None);
+        }
+    }
+    let mut array_type = first_type;
+    array_type.array_dims.push(ArrayDim::Dynamic);
+    Ok(Some(array_type))
 }
 
 fn compile_state_object_expr() -> Result<(), CompilerError> {
@@ -260,7 +271,10 @@ fn compile_ternary_expr<'i>(
     compile_expr_with_context(ctx, condition, Some(&bool_type))?;
     ctx.emit_op(OpIf, -1)?;
     let depth_before = ctx.emitter.stack_depth();
-    let branch_type = expected_type.cloned().or_else(|| infer_expr_type(then_expr, ctx.env.constants, ctx.env.types).ok());
+    let branch_type = match expected_type {
+        Some(type_ref) => Some(type_ref.clone()),
+        None => Some(infer_expr_type(then_expr, ctx.env.constants, ctx.env.types)?),
+    };
     compile_expr_with_context(ctx, then_expr, branch_type.as_ref())?;
     ctx.emit_op(OpElse, 0)?;
     ctx.emitter.set_stack_depth(depth_before);
@@ -336,7 +350,7 @@ fn compile_binary_expr<'i>(
     left: &Expr<'i>,
     right: &Expr<'i>,
 ) -> Result<(), CompilerError> {
-    let left_value_type = infer_expr_type(left, ctx.env.constants, ctx.env.types).ok();
+    let left_value_type = Some(infer_expr_type(left, ctx.env.constants, ctx.env.types)?);
     let right_value_type = if matches!(op, BinaryOp::Add)
         && let Some(element_type) = left_value_type.as_ref().and_then(TypeRef::array_element_type)
         && let ExprKind::Array { values, .. } = &right.kind
@@ -345,7 +359,7 @@ fn compile_binary_expr<'i>(
         type_ref.array_dims.push(ArrayDim::Fixed(values.len()));
         Some(type_ref)
     } else {
-        infer_expr_type(right, ctx.env.constants, ctx.env.types).ok()
+        Some(infer_expr_type(right, ctx.env.constants, ctx.env.types)?)
     };
     debug_assert!(
         !matches!(op, BinaryOp::Add)
@@ -464,7 +478,7 @@ fn compile_array_index_expr<'i>(
         .array_element_type()
         .ok_or_else(|| CompilerError::Unsupported(format!("array index requires array source, got {}", source_type.type_name())))?;
     let element_size = i64::try_from(
-        fixed_type_size(&element_type, ctx.env.constants)
+        fixed_type_size(&element_type, ctx.env.constants)?
             .ok_or_else(|| CompilerError::Unsupported("array element type must have known size".to_string()))?,
     )
     .map_err(|_| CompilerError::Unsupported("array element size is too large".to_string()))?;
@@ -487,7 +501,7 @@ fn compile_slice_expr<'i>(
     end: &Expr<'i>,
 ) -> Result<(), CompilerError> {
     let source_type = infer_expr_type(source, ctx.env.constants, ctx.env.types)?;
-    let element_size = array_element_size(&source_type, ctx.env.contract_constants);
+    let element_size = array_element_size(&source_type, ctx.env.contract_constants)?;
     let int_type = scalar_type(TypeBase::Int);
     compile_expr_with_context(ctx, source, Some(&source_type))?;
     compile_expr_with_context(ctx, start, Some(&int_type))?;
@@ -596,7 +610,7 @@ fn compile_split_part<'i>(
     part: SplitPart,
 ) -> Result<(), CompilerError> {
     let source_type = infer_expr_type(source, ctx.env.constants, ctx.env.types)?;
-    let element_size = array_element_size(&source_type, ctx.env.contract_constants);
+    let element_size = array_element_size(&source_type, ctx.env.contract_constants)?;
     let int_type = scalar_type(TypeBase::Int);
     compile_expr_with_context(ctx, source, Some(&source_type))?;
     match part {
@@ -626,7 +640,7 @@ fn compile_split_part<'i>(
 
 fn compile_length_expr<'i>(ctx: &mut CompileExprContext<'_, '_, 'i>, expr: &Expr<'i>) -> Result<(), CompilerError> {
     let expr_type = infer_expr_type(expr, ctx.env.constants, ctx.env.types)?;
-    if let Some(size) = array_type_size(&expr_type, ctx.env.contract_constants) {
+    if let Some(size) = array_type_size(&expr_type, ctx.env.contract_constants)? {
         let is_literal_or_identifier = matches!(expr.kind, ExprKind::Identifier(_) | ExprKind::Array { .. });
         if !is_literal_or_identifier {
             compile_expr_with_context(ctx, expr, Some(&expr_type))?;
@@ -635,7 +649,7 @@ fn compile_length_expr<'i>(ctx: &mut CompileExprContext<'_, '_, 'i>, expr: &Expr
         ctx.push_int(size as i64)?;
         return Ok(());
     }
-    if let Some(element_size) = array_element_size(&expr_type, ctx.env.contract_constants) {
+    if let Some(element_size) = array_element_size(&expr_type, ctx.env.contract_constants)? {
         compile_expr_with_context(ctx, expr, Some(&expr_type))?;
         ctx.emit_op(OpSize, 1)?;
         ctx.emit_op(OpSwap, 0)?;
@@ -662,22 +676,33 @@ fn uses_concat_for_add(type_ref: &TypeRef) -> bool {
     type_ref.is_array() || type_ref.is_string()
 }
 
-fn byte_sequence_cast_size<'i>(type_ref: &TypeRef, constants: &HashMap<String, Expr<'i>>) -> Option<Option<i64>> {
+fn byte_sequence_cast_size<'i>(
+    type_ref: &TypeRef,
+    constants: &HashMap<String, Expr<'i>>,
+) -> Result<Option<Option<i64>>, CompilerError> {
     if type_ref.is_string() {
-        return Some(None);
+        return Ok(Some(None));
     }
     if type_ref.is_byte() {
-        return Some(Some(1));
+        return Ok(Some(Some(1)));
     }
     if !type_ref.is_array()
         && let Some(size) = type_ref.base.fixed_byte_sequence_len()
     {
-        return i64::try_from(size).ok().map(Some);
+        let size = i64::try_from(size)
+            .map_err(|_| CompilerError::ArithmeticOverflow(format!("byte sequence size {size} does not fit in i64")))?;
+        return Ok(Some(Some(size)));
     }
-    match type_ref.array_element_type() {
-        Some(element) if element.is_byte() => Some(array_type_size(type_ref, constants).and_then(|size| i64::try_from(size).ok())),
+    Ok(match type_ref.array_element_type() {
+        Some(element) if element.is_byte() => match array_type_size(type_ref, constants)? {
+            Some(size) => Some(Some(
+                i64::try_from(size)
+                    .map_err(|_| CompilerError::ArithmeticOverflow(format!("byte sequence size {size} does not fit in i64")))?,
+            )),
+            None => Some(None),
+        },
         _ => None,
-    }
+    })
 }
 
 pub(super) fn data_prefix(data_len: usize) -> Result<Vec<u8>, CompilerError> {

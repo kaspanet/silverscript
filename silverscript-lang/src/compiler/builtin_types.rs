@@ -116,8 +116,8 @@ pub(super) fn builtin_return_type(name: &str) -> Option<TypeRef> {
 
 pub(super) fn constructor_return_type(name: &str) -> Option<TypeRef> {
     Some(match name {
-        "ScriptPubKeyP2PK" => byte_array(ArrayDim::Fixed(34)),
-        "ScriptPubKeyP2SH" | "ScriptPubKeyP2SHFromRedeemScript" => byte_array(ArrayDim::Fixed(35)),
+        "ScriptPubKeyP2PK" => byte_array(ArrayDim::Fixed(36)),
+        "ScriptPubKeyP2SH" | "ScriptPubKeyP2SHFromRedeemScript" => byte_array(ArrayDim::Fixed(37)),
         _ => return None,
     })
 }

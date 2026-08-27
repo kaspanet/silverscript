@@ -120,7 +120,7 @@ fn compile_as_cast<'i>(ctx: &mut CompileExprContext<'_, '_, 'i>, args: &[Expr<'i
     let size = if cast_type.is_byte() {
         1
     } else {
-        array_type_size(cast_type, ctx.env.constants)
+        array_type_size(cast_type, ctx.env.constants)?
             .ok_or_else(|| CompilerError::Unsupported("byte size in 'as byte[N]' must be known at compile time".to_string()))?
     };
     compile_call_arg_with_context(ctx, source)?;
@@ -180,7 +180,7 @@ fn compile_byte_sequence_cast_call<'i>(
         return ctx.push_data(&[byte]);
     }
     let source_type = infer_expr_type(&args[0], ctx.env.constants, ctx.env.types)?;
-    if let Some(source_size) = byte_sequence_cast_size(&source_type, ctx.env.constants)
+    if let Some(source_size) = byte_sequence_cast_size(&source_type, ctx.env.constants)?
         && let Some(source_size) = source_size
         && source_size != size
     {
