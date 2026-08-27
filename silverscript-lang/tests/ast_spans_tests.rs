@@ -21,6 +21,8 @@ struct NameOccurrenceCollector {
     occurrences: Vec<NameOccurrence>,
 }
 
+struct SpanResetter;
+
 impl<'i> AstVisitorMut<'i> for NameOccurrenceCollector {
     fn visit_name(&mut self, name: &mut String, kind: NameKind, span: Span<'i>) {
         self.occurrences.push(NameOccurrence { name: name.clone(), kind, source: span.as_str().to_string() });
@@ -63,6 +65,12 @@ fn parses_standalone_functions_and_visits_name_spans() {
     );
 }
 
+impl<'i> AstVisitorMut<'i> for SpanResetter {
+    fn visit_span(&mut self, span: &mut Span<'i>) {
+        *span = Span::default();
+    }
+}
+
 #[test]
 fn composed_expression_spans_remain_syntactically_complete() {
     let sources = [
@@ -92,6 +100,53 @@ fn redundant_parentheses_do_not_widen_identifier_name_spans() {
         collector.occurrences,
         vec![NameOccurrence { name: "value".to_string(), kind: NameKind::IdentifierExpr, source: "value".to_string() }]
     );
+}
+
+#[test]
+fn exposes_exact_spans_for_struct_types_and_typed_arrays() {
+    let source = r#"function inspect() {
+        CounterState   {value: int current} = readInputState(0);
+        CounterState   {value: int copy} = current_state;
+        CounterState[] values = CounterState[]   {CounterState {value: 1}};
+    }"#;
+    let mut function = parse_function_ast(source).expect("standalone function should parse");
+
+    let Statement::StateFunctionCallAssign { target_struct, target_struct_span, .. } = &function.body[0] else {
+        panic!("expected a state function call assignment");
+    };
+    assert_eq!(target_struct, "CounterState");
+    assert_eq!(target_struct_span.as_str(), "CounterState");
+
+    let Statement::StructDestructure { struct_name, struct_name_span, .. } = &function.body[1] else {
+        panic!("expected a struct destructure assignment");
+    };
+    assert_eq!(struct_name, "CounterState");
+    assert_eq!(struct_name_span.as_str(), "CounterState");
+
+    let Statement::VariableDefinition { expr: Some(expr), .. } = &function.body[2] else {
+        panic!("expected a variable definition with an initializer");
+    };
+    let ExprKind::Array { type_span, .. } = &expr.kind else {
+        panic!("expected a typed array expression");
+    };
+    assert_eq!(type_span.as_str(), "CounterState[]");
+
+    visit_function_mut(&mut SpanResetter, &mut function);
+    let Statement::StateFunctionCallAssign { target_struct_span, .. } = &function.body[0] else {
+        unreachable!("statement shape was already checked");
+    };
+    let Statement::StructDestructure { struct_name_span, .. } = &function.body[1] else {
+        unreachable!("statement shape was already checked");
+    };
+    let Statement::VariableDefinition { expr: Some(expr), .. } = &function.body[2] else {
+        unreachable!("statement shape was already checked");
+    };
+    let ExprKind::Array { type_span, .. } = &expr.kind else {
+        unreachable!("expression shape was already checked");
+    };
+    assert!(target_struct_span.as_str().is_empty());
+    assert!(struct_name_span.as_str().is_empty());
+    assert!(type_span.as_str().is_empty());
 }
 
 #[test]

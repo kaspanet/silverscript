@@ -2178,8 +2178,12 @@ where
             },
             span,
         )),
-        ExprKind::Array { type_ref, values } => Ok(Expr::new(
-            ExprKind::Array { type_ref: type_ref.clone(), values: values.iter().map(&mut *map_child).collect::<Result<Vec<_>, _>>()? },
+        ExprKind::Array { type_ref, values, type_span } => Ok(Expr::new(
+            ExprKind::Array {
+                type_ref: type_ref.clone(),
+                values: values.iter().map(&mut *map_child).collect::<Result<Vec<_>, _>>()?,
+                type_span: *type_span,
+            },
             span,
         )),
         ExprKind::StructLiteral { name, fields, name_span } => Ok(Expr::new(

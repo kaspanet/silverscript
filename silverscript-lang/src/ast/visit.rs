@@ -222,9 +222,10 @@ pub fn walk_statement_mut<'i, V: AstVisitorMut<'i> + ?Sized>(visitor: &mut V, st
                 visitor.visit_expr(arg);
             }
         }
-        Statement::StateFunctionCallAssign { target_struct: _, bindings, name, args, span, name_span } => {
+        Statement::StateFunctionCallAssign { target_struct: _, bindings, name, args, span, target_struct_span, name_span } => {
             visitor.visit_name(name, NameKind::CallTarget, *name_span);
             visitor.visit_span(span);
+            visitor.visit_span(target_struct_span);
             visitor.visit_span(name_span);
             for binding in bindings {
                 visitor.visit_state_binding(binding);
@@ -233,8 +234,9 @@ pub fn walk_statement_mut<'i, V: AstVisitorMut<'i> + ?Sized>(visitor: &mut V, st
                 visitor.visit_expr(arg);
             }
         }
-        Statement::StructDestructure { bindings, expr, span, .. } => {
+        Statement::StructDestructure { bindings, expr, span, struct_name_span, .. } => {
             visitor.visit_span(span);
+            visitor.visit_span(struct_name_span);
             for binding in bindings {
                 visitor.visit_state_binding(binding);
             }
@@ -317,7 +319,8 @@ pub fn walk_expr_mut<'i, V: AstVisitorMut<'i> + ?Sized>(visitor: &mut V, expr: &
     visitor.visit_span(&mut expr.span);
     match &mut expr.kind {
         ExprKind::Identifier(name) => visitor.visit_name(name, NameKind::IdentifierExpr, expr_span),
-        ExprKind::Array { values: items, .. } => {
+        ExprKind::Array { values: items, type_span, .. } => {
+            visitor.visit_span(type_span);
             for item in items {
                 visitor.visit_expr(item);
             }

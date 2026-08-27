@@ -131,7 +131,7 @@ impl<'a, 'i> TernaryLowerer<'a, 'i> {
                     name_span: *name_span,
                 });
             }
-            Statement::StateFunctionCallAssign { bindings, name, args, span, name_span, target_struct } => {
+            Statement::StateFunctionCallAssign { bindings, name, args, span, target_struct_span, name_span, target_struct } => {
                 let (prelude, args) = self.lower_exprs(args, types)?;
                 lowered.extend(prelude);
                 for binding in bindings {
@@ -142,11 +142,12 @@ impl<'a, 'i> TernaryLowerer<'a, 'i> {
                     name: name.clone(),
                     args,
                     span: *span,
+                    target_struct_span: *target_struct_span,
                     name_span: *name_span,
                     target_struct: target_struct.clone(),
                 });
             }
-            Statement::StructDestructure { struct_name, bindings, expr, span } => {
+            Statement::StructDestructure { struct_name, bindings, expr, span, struct_name_span } => {
                 let (prelude, expr) = self.lower_expr(expr, None, types)?;
                 lowered.extend(prelude);
                 for binding in bindings {
@@ -157,6 +158,7 @@ impl<'a, 'i> TernaryLowerer<'a, 'i> {
                     bindings: bindings.clone(),
                     expr,
                     span: *span,
+                    struct_name_span: *struct_name_span,
                 });
             }
             Statement::FunctionCall { name, args, span, name_span } => {
@@ -336,7 +338,7 @@ impl<'a, 'i> TernaryLowerer<'a, 'i> {
 
                 Ok((prelude, Expr::new(ExprKind::Identifier(result_name), span)))
             }
-            ExprKind::Array { type_ref, values } => {
+            ExprKind::Array { type_ref, values, type_span } => {
                 let element_type = expected.or(Some(type_ref)).and_then(TypeRef::array_element_type);
                 let mut prelude = Vec::new();
                 let mut lowered_values = Vec::with_capacity(values.len());
@@ -345,7 +347,10 @@ impl<'a, 'i> TernaryLowerer<'a, 'i> {
                     prelude.extend(more_prelude);
                     lowered_values.push(value);
                 }
-                Ok((prelude, Expr::new(ExprKind::Array { type_ref: type_ref.clone(), values: lowered_values }, span)))
+                Ok((
+                    prelude,
+                    Expr::new(ExprKind::Array { type_ref: type_ref.clone(), values: lowered_values, type_span: *type_span }, span),
+                ))
             }
             ExprKind::Call { name, args, name_span } => {
                 let (prelude, args) = self.lower_exprs(args, types)?;
@@ -482,7 +487,7 @@ impl<'a, 'i> TernaryLowerer<'a, 'i> {
                 }
             };
             let values = (0..len).map(|_| self.default_expr(&element_type, span)).collect::<Result<Vec<_>, CompilerError>>()?;
-            return Ok(Expr::new(ExprKind::Array { type_ref: type_ref.clone(), values }, span));
+            return Ok(Expr::new(ExprKind::Array { type_ref: type_ref.clone(), values, type_span: span::Span::default() }, span));
         }
 
         let kind = match &type_ref.base {
@@ -496,7 +501,11 @@ impl<'a, 'i> TernaryLowerer<'a, 'i> {
                     .base
                     .fixed_byte_sequence_len()
                     .ok_or_else(|| CompilerError::Unsupported(format!("cannot create default {}", type_ref.type_name())))?;
-                ExprKind::Array { type_ref: type_ref.clone(), values: (0..len).map(|_| Expr::new(ExprKind::Byte(0), span)).collect() }
+                ExprKind::Array {
+                    type_ref: type_ref.clone(),
+                    values: (0..len).map(|_| Expr::new(ExprKind::Byte(0), span)).collect(),
+                    type_span: span::Span::default(),
+                }
             }
             TypeBase::Custom(name) => {
                 let item = self

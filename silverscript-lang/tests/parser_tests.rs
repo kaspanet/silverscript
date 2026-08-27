@@ -99,7 +99,7 @@ fn scalar_byte_cast_remains_scalar_in_the_ast() {
 #[test]
 fn try_from_expr_vec_infers_a_fixed_array_type() {
     let expr = Expr::try_from(vec![Expr::int(1), Expr::int(2)]).expect("homogeneous array type should be inferred");
-    let ExprKind::Array { type_ref, values } = expr.kind else {
+    let ExprKind::Array { type_ref, values, .. } = expr.kind else {
         panic!("expected an array expression");
     };
 
@@ -135,7 +135,7 @@ fn array_constructor_resolves_inferred_dimension_to_fixed() {
 #[test]
 fn try_from_nested_byte_vec_requires_equal_nonempty_elements() {
     let expr = Expr::try_from(vec![vec![1u8, 2], vec![3, 4]]).expect("uniform nested byte array should be inferred");
-    let ExprKind::Array { type_ref, values } = expr.kind else {
+    let ExprKind::Array { type_ref, values, .. } = expr.kind else {
         panic!("expected an array expression");
     };
 
@@ -253,7 +253,7 @@ fn typed_array_literal_stores_its_declared_type_on_the_array_expr() {
     let Statement::VariableDefinition { expr: Some(expr), .. } = &contract.functions[0].body[0] else {
         panic!("expected a variable definition with an initializer");
     };
-    let ExprKind::Array { type_ref, values } = &expr.kind else {
+    let ExprKind::Array { type_ref, values, .. } = &expr.kind else {
         panic!("expected a typed array expression");
     };
 
@@ -311,7 +311,7 @@ fn byte_array_hex_cast_becomes_a_typed_array_expr() {
     let Statement::VariableDefinition { expr: Some(expr), .. } = &contract.functions[0].body[0] else {
         panic!("expected a variable definition with an initializer");
     };
-    let ExprKind::Array { type_ref, values } = &expr.kind else {
+    let ExprKind::Array { type_ref, values, .. } = &expr.kind else {
         panic!("expected the hex cast to lower directly to a typed array expression");
     };
 
@@ -333,7 +333,7 @@ fn fixed_byte_sequence_hex_casts_contain_fixed_byte_array_exprs() {
             panic!("expected a scalar cast call");
         };
         assert_eq!(name, type_name);
-        let [Expr { kind: ExprKind::Array { type_ref, values }, .. }] = args.as_slice() else {
+        let [Expr { kind: ExprKind::Array { type_ref, values, .. }, .. }] = args.as_slice() else {
             panic!("expected a single typed byte-array argument");
         };
         assert_eq!(type_ref, &parse_type_ref(&format!("byte[{size}]")).unwrap());

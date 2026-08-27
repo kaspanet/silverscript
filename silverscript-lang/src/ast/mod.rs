@@ -444,6 +444,8 @@ pub enum Statement<'i> {
         #[serde(skip_deserializing)]
         span: Span<'i>,
         #[serde(skip_deserializing)]
+        target_struct_span: Span<'i>,
+        #[serde(skip_deserializing)]
         name_span: Span<'i>,
     },
     StructDestructure {
@@ -452,6 +454,8 @@ pub enum Statement<'i> {
         expr: Expr<'i>,
         #[serde(skip_deserializing)]
         span: Span<'i>,
+        #[serde(skip_deserializing)]
+        struct_name_span: Span<'i>,
     },
     Assign {
         name: String,
@@ -621,7 +625,7 @@ impl<'i> Expr<'i> {
         if matches!(type_ref.array_dims.last(), Some(ArrayDim::Inferred)) {
             *type_ref.array_dims.last_mut().unwrap() = ArrayDim::Fixed(values.len());
         }
-        Self::new(ExprKind::Array { type_ref, values }, Span::default())
+        Self::new(ExprKind::Array { type_ref, values, type_span: Span::default() }, Span::default())
     }
 
     pub fn inferred_array(values: Vec<Expr<'i>>) -> Option<Self> {
@@ -726,6 +730,8 @@ pub enum ExprKind<'i> {
     Array {
         type_ref: TypeRef,
         values: Vec<Expr<'i>>,
+        #[serde(skip_deserializing)]
+        type_span: Span<'i>,
     },
     Call {
         name: String,
@@ -1169,7 +1175,7 @@ fn format_expr_with_prec(expr: &Expr<'_>, parent_prec: u8, right_child: bool) ->
         ExprKind::String(value) => format_string_literal(value),
         ExprKind::DateLiteral(value) => format!("temporal({value})"),
         ExprKind::Identifier(value) => value.clone(),
-        ExprKind::Array { type_ref, values } => format_array(type_ref, values),
+        ExprKind::Array { type_ref, values, .. } => format_array(type_ref, values),
         ExprKind::Call { name, args, .. } => {
             if let (Some(type_ref), [source]) = (as_cast_type(name), args.as_slice()) {
                 format!("{} as {}", format_expr_with_prec(source, PREC_POSTFIX, false), type_ref.type_name())
@@ -1837,7 +1843,7 @@ fn parse_statement<'i>(pair: Pair<'i, Rule>) -> Result<Statement<'i>, CompilerEr
             let struct_pair = inner
                 .next()
                 .ok_or_else(|| CompilerError::Unsupported("missing destructuring struct name".to_string()).with_span(&span))?;
-            let Identifier { name: target_struct, .. } = parse_identifier(struct_pair)?;
+            let Identifier { name: target_struct, span: target_struct_span } = parse_identifier(struct_pair)?;
             let mut bindings = Vec::new();
             while let Some(p) = inner.peek() {
                 if p.as_rule() != Rule::state_typed_binding {
@@ -1850,14 +1856,14 @@ fn parse_statement<'i>(pair: Pair<'i, Rule>) -> Result<Statement<'i>, CompilerEr
                 inner.next().ok_or_else(|| CompilerError::Unsupported("missing function call".to_string()).with_span(&span))?;
             let (Identifier { name, span: name_span }, args) =
                 parse_function_call_parts(call_pair).map_err(|err| err.with_span(&span))?;
-            Ok(Statement::StateFunctionCallAssign { target_struct, bindings, name, args, span, name_span })
+            Ok(Statement::StateFunctionCallAssign { target_struct, bindings, name, args, span, target_struct_span, name_span })
         }
         Rule::struct_destructure_assignment => {
             let mut inner = pair.into_inner();
             let struct_pair = inner
                 .next()
                 .ok_or_else(|| CompilerError::Unsupported("missing destructuring struct name".to_string()).with_span(&span))?;
-            let Identifier { name: struct_name, .. } = parse_identifier(struct_pair)?;
+            let Identifier { name: struct_name, span: struct_name_span } = parse_identifier(struct_pair)?;
             let mut bindings = Vec::new();
             while let Some(p) = inner.peek() {
                 if p.as_rule() != Rule::state_typed_binding {
@@ -1870,7 +1876,7 @@ fn parse_statement<'i>(pair: Pair<'i, Rule>) -> Result<Statement<'i>, CompilerEr
                 .next()
                 .ok_or_else(|| CompilerError::Unsupported("missing destructuring expression".to_string()).with_span(&span))?;
             let expr = parse_expression(expr_pair).map_err(|err| err.with_span(&span))?;
-            Ok(Statement::StructDestructure { struct_name, bindings, expr, span })
+            Ok(Statement::StructDestructure { struct_name, bindings, expr, span, struct_name_span })
         }
         Rule::call_statement => {
             let mut inner = pair.into_inner();
@@ -2413,6 +2419,7 @@ fn parse_typed_array<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError
     let span = Span::from(pair.as_span());
     let mut inner = pair.into_inner();
     let type_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing array literal type".to_string()))?;
+    let type_span = Span::from(type_pair.as_span());
     let mut type_ref = parse_type_name_pair(type_pair)?;
     let mut values = Vec::new();
     for expr_pair in inner {
@@ -2429,7 +2436,7 @@ fn parse_typed_array<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError
         }
         ArrayDim::Fixed(_) => {}
     }
-    Ok(Expr::new(ExprKind::Array { type_ref, values }, span))
+    Ok(Expr::new(ExprKind::Array { type_ref, values, type_span }, span))
 }
 
 fn parse_function_call_parts<'i>(pair: Pair<'i, Rule>) -> Result<(Identifier<'i>, Vec<Expr<'i>>), CompilerError> {
@@ -2506,7 +2513,7 @@ fn parse_cast<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {
             if matches!(type_ref.array_size(), Some(ArrayDim::Inferred)) {
                 type_ref.array_dims[0] = ArrayDim::Fixed(values.len());
             }
-            return Ok(Expr::new(ExprKind::Array { type_ref, values }, span));
+            return Ok(Expr::new(ExprKind::Array { type_ref, values, type_span }, span));
         }
         if let Some(expected_len) = cast_type.base.fixed_byte_sequence_len() {
             if values.len() != expected_len {
@@ -2520,6 +2527,7 @@ fn parse_cast<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {
                 ExprKind::Array {
                     type_ref: TypeRef { base: TypeBase::Byte, array_dims: vec![ArrayDim::Fixed(expected_len)] },
                     values,
+                    type_span: Span::default(),
                 },
                 byte_span,
             );

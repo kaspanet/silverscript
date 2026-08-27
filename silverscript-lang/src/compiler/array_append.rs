@@ -146,7 +146,7 @@ fn lower_statement<'i>(
                 name_span: *name_span,
             })
         }
-        Statement::StateFunctionCallAssign { target_struct, bindings, name, args, span, name_span } => {
+        Statement::StateFunctionCallAssign { target_struct, bindings, name, args, span, target_struct_span, name_span } => {
             let lowered_args = args.iter().map(|arg| lower_expr(arg, types, constants, functions)).collect::<Result<Vec<_>, _>>()?;
             for binding in bindings {
                 types.insert(binding.name.clone(), binding.type_ref.clone());
@@ -157,10 +157,11 @@ fn lower_statement<'i>(
                 name: name.clone(),
                 args: lowered_args,
                 span: *span,
+                target_struct_span: *target_struct_span,
                 name_span: *name_span,
             })
         }
-        Statement::StructDestructure { struct_name, bindings, expr, span } => {
+        Statement::StructDestructure { struct_name, bindings, expr, span, struct_name_span } => {
             let lowered_expr = lower_expr(expr, types, constants, functions)?;
             for binding in bindings {
                 types.insert(binding.name.clone(), binding.type_ref.clone());
@@ -170,6 +171,7 @@ fn lower_statement<'i>(
                 bindings: bindings.clone(),
                 expr: lowered_expr,
                 span: *span,
+                struct_name_span: *struct_name_span,
             })
         }
         Statement::Assign { name, expr, span, name_span } => Ok(Statement::Assign {
@@ -279,6 +281,7 @@ fn lower_expr<'i>(
                                 .iter()
                                 .map(|arg| lower_expr(arg, types, constants, functions))
                                 .collect::<Result<Vec<_>, _>>()?,
+                            type_span: span::Span::default(),
                         },
                         span::Span::default(),
                     )),
@@ -286,10 +289,11 @@ fn lower_expr<'i>(
                 span,
             ))
         }
-        ExprKind::Array { type_ref, values } => Ok(Expr::new(
+        ExprKind::Array { type_ref, values, type_span } => Ok(Expr::new(
             ExprKind::Array {
                 type_ref: type_ref.clone(),
                 values: values.iter().map(|value| lower_expr(value, types, constants, functions)).collect::<Result<Vec<_>, _>>()?,
+                type_span: *type_span,
             },
             span,
         )),
@@ -423,7 +427,7 @@ mod tests {
         let ExprKind::Binary { op: BinaryOp::Add, right, .. } = &expr.kind else {
             panic!("append should lower to addition");
         };
-        let ExprKind::Array { type_ref, values } = &right.kind else {
+        let ExprKind::Array { type_ref, values, .. } = &right.kind else {
             panic!("append arguments should lower to an array");
         };
 

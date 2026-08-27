@@ -68,7 +68,7 @@ pub(super) fn lower_statements<'i>(
                     name_span: *name_span,
                 });
             }
-            Statement::StateFunctionCallAssign { target_struct, bindings, name, args, span, name_span } => {
+            Statement::StateFunctionCallAssign { target_struct, bindings, name, args, span, target_struct_span, name_span } => {
                 for binding in bindings {
                     scope.declare(binding.name.clone(), binding.type_ref.clone());
                 }
@@ -78,10 +78,11 @@ pub(super) fn lower_statements<'i>(
                     name: name.clone(),
                     args: args.iter().map(|arg| lower_scalar_expr(arg, scope, lowerer)).collect::<Result<Vec<_>, _>>()?,
                     span: *span,
+                    target_struct_span: *target_struct_span,
                     name_span: *name_span,
                 });
             }
-            Statement::StructDestructure { struct_name, bindings, expr, span } => {
+            Statement::StructDestructure { struct_name, bindings, expr, span, .. } => {
                 for binding in bindings {
                     scope.declare(binding.name.clone(), binding.type_ref.clone());
                 }
