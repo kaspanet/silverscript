@@ -210,7 +210,7 @@ fn build_covenant_input_sigscript<'i>(
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let entrypoint_name = target.generated_entrypoint_name_for(is_leader);
     let typed_args = if target.binding == DebugCovenantBinding::Cov && !is_leader {
-        Vec::new()
+        parse_call_args(&compiled.ast, &entrypoint_name, raw_args)?
     } else {
         let function = compiled
             .ast
@@ -911,22 +911,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 active_sigscript.clone()
             }
-        } else if let Some(target) = covenant_target.as_ref()
-            && target.binding == DebugCovenantBinding::Cov
-            && input_covenant_ids[input_idx] == active_covenant_id
-            && input_redeem_scripts[input_idx].is_some()
-        {
-            let is_leader = Some(input_idx) == companion_leader_index;
-            let input_ctor_raw = tx.inputs[input_idx].constructor_args.clone().unwrap_or_else(|| raw_ctor_args.clone());
-            let input_compiled = compile_contract_for_raw_ctor_args(&source, &parsed_contract, &input_ctor_raw)?;
-            let auto_action = build_covenant_input_sigscript(
-                &input_compiled,
-                target,
-                is_leader,
-                &raw_args,
-                covenant_group_output_states.as_deref(),
-            )?;
-            combine_action_and_redeem(&auto_action, input_redeem_scripts[input_idx].as_ref().expect("checked is_some above"))?
         } else if let Some(redeem) = input_redeem_scripts[input_idx].as_ref() {
             sigscript_push_bytecode(redeem)
         } else {

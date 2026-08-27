@@ -1,5 +1,5 @@
 use kaspa_consensus_core::hashing::sighash::SigHashReusedValuesUnsync;
-use kaspa_consensus_core::hashing::sighash::calc_schnorr_signature_hash;
+use kaspa_consensus_core::hashing::sighash::{calc_ecdsa_signature_hash, calc_schnorr_signature_hash};
 use kaspa_consensus_core::hashing::sighash_type::SIG_HASH_ALL;
 use kaspa_consensus_core::mass::units::SigopCount;
 use kaspa_consensus_core::tx::{
@@ -888,30 +888,89 @@ fn compiles_p2pkh_example_and_verifies() {
 
     let reused_values = SigHashReusedValuesUnsync::new();
     let sig_hash = calc_schnorr_signature_hash(&tx.as_verifiable(), 0, SIG_HASH_ALL, &reused_values);
-    let msg = secp256k1::Message::from_digest_slice(sig_hash.as_bytes().as_slice()).unwrap();
+    let msg = secp256k1::Message::from_digest(sig_hash.into());
     let sig = owner.sign_schnorr(msg);
     let mut signature = Vec::new();
     signature.extend_from_slice(sig.as_ref().as_slice());
     signature.push(SIG_HASH_ALL.to_u8());
 
-    // Test spend() function call (build sigscript for spend()).
-    let sigscript =
-        compiled.build_sig_script("spend", vec![pubkey_bytes.to_vec().into(), signature.clone().into()]).expect("sigscript builds");
-    tx.tx.inputs[0].signature_script = sigscript;
+    let mut run = |signature: Vec<u8>| {
+        tx.tx.inputs[0].signature_script =
+            compiled.build_sig_script("spend", vec![pubkey_bytes.to_vec().into(), signature.into()]).expect("sigscript builds");
 
-    let tx = tx.as_verifiable();
-    let sig_cache = Cache::new(10_000);
-    let mut vm = TxScriptEngine::from_transaction_input(
-        &tx,
-        &tx.inputs()[0],
-        0,
-        &utxo_entry,
-        EngineCtx::new(&sig_cache).with_reused(&reused_values),
-        EngineFlags { covenants_enabled: true, ..Default::default() },
-    );
+        let verifiable_tx = tx.as_verifiable();
+        let sig_cache = Cache::new(100);
+        let mut vm = TxScriptEngine::from_transaction_input(
+            &verifiable_tx,
+            &verifiable_tx.inputs()[0],
+            0,
+            &utxo_entry,
+            EngineCtx::new(&sig_cache).with_reused(&reused_values),
+            EngineFlags { covenants_enabled: true, ..Default::default() },
+        );
+        vm.execute()
+    };
 
-    let result = vm.execute();
-    assert!(result.is_ok(), "p2pkh example failed: {}", result.unwrap_err());
+    assert!(run(signature.clone()).is_ok(), "valid p2pkh Schnorr signature should pass");
+    signature[0] ^= 0x01;
+    assert!(run(signature).is_err(), "forged p2pkh Schnorr signature should fail");
+}
+
+#[test]
+fn compiles_p2pkh_ecdsa_example_and_verifies() {
+    let source = load_example_source("p2pkh_ecdsa.sil");
+
+    let owner = random_keypair();
+    let pubkey_bytes = owner.public_key().serialize();
+    let pkh = blake2b_simd::Params::new().hash_length(32).to_state().update(pubkey_bytes.as_slice()).finalize().as_bytes().to_vec();
+    let constructor_args = [pkh.into()];
+
+    let compiled = compile_contract(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
+
+    let input = TransactionInput {
+        previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([5u8; 32]), index: 0 },
+        signature_script: vec![],
+        sequence: 0,
+        compute_commit: SigopCount(1).into(),
+    };
+    let output = TransactionOutput {
+        value: 7000,
+        script_public_key: ScriptPublicKey::new(0, compiled.bytecode.clone().into()),
+        covenant: None,
+    };
+
+    let tx = Transaction::new(1, vec![input], vec![output.clone()], 0, Default::default(), 0, vec![]);
+    let utxo_entry =
+        UtxoEntry::new(output.value, ScriptPublicKey::new(0, compiled.bytecode.clone().into()), 0, tx.is_coinbase(), None);
+    let mut tx = MutableTransaction::with_entries(tx, vec![utxo_entry.clone()]);
+
+    let reused_values = SigHashReusedValuesUnsync::new();
+    let sig_hash = calc_ecdsa_signature_hash(&tx.as_verifiable(), 0, SIG_HASH_ALL, &reused_values);
+    let msg = secp256k1::Message::from_digest(sig_hash.into());
+    let sig = owner.secret_key().sign_ecdsa(msg);
+    let mut signature = sig.serialize_compact().to_vec();
+    signature.push(SIG_HASH_ALL.to_u8());
+
+    let mut run = |signature: Vec<u8>| {
+        tx.tx.inputs[0].signature_script =
+            compiled.build_sig_script("spend", vec![pubkey_bytes.to_vec().into(), signature.into()]).expect("sigscript builds");
+
+        let verifiable_tx = tx.as_verifiable();
+        let sig_cache = Cache::new(100);
+        let mut vm = TxScriptEngine::from_transaction_input(
+            &verifiable_tx,
+            &verifiable_tx.inputs()[0],
+            0,
+            &utxo_entry,
+            EngineCtx::new(&sig_cache).with_reused(&reused_values),
+            EngineFlags { covenants_enabled: true, ..Default::default() },
+        );
+        vm.execute()
+    };
+
+    assert!(run(signature.clone()).is_ok(), "valid p2pkh ECDSA signature should pass");
+    signature[0] ^= 0x01;
+    assert!(run(signature).is_err(), "forged p2pkh ECDSA signature should fail");
 }
 
 #[test]

@@ -11,7 +11,7 @@ use kaspa_txscript::opcodes::codes::*;
 use kaspa_txscript::script_builder::ScriptBuilder;
 use kaspa_txscript::serialize_i64;
 use kaspa_txscript::{EngineFlags, MAX_STACK_SIZE};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 mod analysis;
 mod const_eval;
@@ -60,7 +60,8 @@ pub(super) fn compile_contract_impl<'i>(
     let mut debug_recorder = DebugRecorder::new(options, contract)?;
     let inferred_lowered_contract = lower_inferred_array_sizes(contract, &constants)?;
     static_check_contract(&inferred_lowered_contract, constructor_args, options)?;
-    let covenant_lowered_contract = lower_covenant_declarations(&inferred_lowered_contract, &constants)?;
+    let (covenant_lowered_contract, covenant_abi_names) = lower_covenant_declarations(&inferred_lowered_contract, &constants)?;
+    validate_declaration_names(&covenant_lowered_contract)?;
     let ternary_lowered_contract = lower_ternaries(&covenant_lowered_contract, &constants)?;
     let read_input_state_lowered_contract = lower_read_input_state_calls(&ternary_lowered_contract)?;
     let inline_lowered_contract = lower_inline_functions(&read_input_state_lowered_contract, &mut debug_recorder)?;
@@ -77,13 +78,13 @@ pub(super) fn compile_contract_impl<'i>(
     let mut lowered_constants = flatten_constructor_args_env(&covenant_lowered_contract.params, constructor_args, &structs)?;
     lowered_constants.extend(lowered_contract.constants.iter().map(|constant| (constant.name.clone(), constant.expr.clone())));
 
-    let entrypoint_functions: Vec<&FunctionAst<'i>> = lowered_contract.functions.iter().filter(|func| func.entrypoint).collect();
-    if entrypoint_functions.is_empty() {
+    let BuiltAbi { function_abi_entries, cov_decl_to_abi, delegate_entry_abi } =
+        build_abi(&covenant_lowered_contract, &constants, &covenant_abi_names)?;
+    if function_abi_entries.is_empty() {
         return Err(CompilerError::Unsupported("contract has no entries".to_string()));
     }
+    let entrypoint_functions: Vec<&FunctionAst<'i>> = lowered_contract.functions.iter().filter(|func| func.entrypoint).collect();
     validate_entrypoint_stack_limits(&entrypoint_functions)?;
-
-    let function_abi_entries = build_function_abi_entries(&covenant_lowered_contract, &constants)?;
     let artifact_contract = resolve_artifact_struct_type_refs(&covenant_lowered_contract, &constants)?;
 
     // dispatch tag: verify no collisions and insert tags to global state
@@ -118,6 +119,8 @@ pub(super) fn compile_contract_impl<'i>(
                 &lowered_contract,
                 &artifact_contract,
                 function_abi_entries.clone(),
+                &cov_decl_to_abi,
+                delegate_entry_abi.as_ref(),
                 bytecode,
                 state_layout,
                 debug_info,
@@ -130,6 +133,8 @@ pub(super) fn compile_contract_impl<'i>(
                 &lowered_contract,
                 &artifact_contract,
                 function_abi_entries.clone(),
+                &cov_decl_to_abi,
+                delegate_entry_abi.as_ref(),
                 bytecode,
                 state_layout,
                 debug_info,
@@ -349,6 +354,8 @@ fn build_compiled_contract<'i>(
     lowered_contract: &ContractAst<'i>,
     covenant_lowered_contract: &ContractAst<'i>,
     function_abi_entries: Vec<FunctionAbiEntry>,
+    cov_decl_to_abi: &BTreeMap<String, FunctionAbiEntry>,
+    delegate_entry_abi: Option<&FunctionAbiEntry>,
     bytecode: Vec<u8>,
     state_layout: CompiledStateLayout,
     debug_info: Option<DebugInfo<'i>>,
@@ -359,6 +366,8 @@ fn build_compiled_contract<'i>(
         bytecode,
         ast: covenant_lowered_contract.clone(),
         abi: function_abi_entries,
+        cov_decl_to_abi: cov_decl_to_abi.clone(),
+        delegate_entry_abi: delegate_entry_abi.cloned(),
         state_layout,
         debug_info,
     }

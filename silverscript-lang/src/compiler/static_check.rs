@@ -4,10 +4,16 @@ use semver::{Comparator, Op, Version, VersionReq};
 use std::collections::{HashMap, HashSet};
 
 pub(super) fn validate_declaration_names(contract: &ContractAst<'_>) -> Result<(), CompilerError> {
+    let mut function_names = HashSet::new();
     for function in &contract.functions {
         if is_builtin_name(&function.name) {
             return Err(CompilerError::Unsupported(format!("function name '{}' is reserved for a builtin", function.name))
                 .with_span(&function.name_span));
+        }
+        if !function_names.insert(function.name.as_str()) {
+            return Err(
+                CompilerError::Unsupported(format!("duplicate function name '{}'", function.name)).with_span(&function.name_span)
+            );
         }
     }
 
