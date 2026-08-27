@@ -15,7 +15,7 @@ pub(super) fn lower_expr<'i>(
     Ok(vec![lower_scalar_expr(expr, scope, lowerer)?])
 }
 
-fn lower_struct_expr<'i>(
+pub(super) fn lower_struct_expr<'i>(
     expr: &Expr<'i>,
     expected_type: &TypeRef,
     scope: &LoweringScope,
@@ -77,6 +77,7 @@ fn lower_struct_expr<'i>(
             Ok(flattened)
         }
         ExprKind::ArrayIndex { source, index } => {
+            // TODO: Support indexing any struct-array expression, not only an identifier.
             let source_type = match &source.kind {
                 ExprKind::Identifier(name) => scope
                     .vars

@@ -15191,6 +15191,60 @@ fn rejects_struct_array_comparisons_with_structured_expressions_on_either_side()
 }
 
 #[test]
+fn scalar_struct_values_can_be_compared_directly() {
+    let source = r#"
+        contract StructEquality() {
+            struct Item {
+                int number;
+                byte tag;
+            }
+
+            entry main() {
+                Item left = Item {number: 7, tag: byte(1)};
+                Item same = Item {number: 7, tag: byte(1)};
+                Item different = Item {number: 8, tag: byte(2)};
+
+                // Identifier to identifier.
+                require(left == same);
+                require(left != different);
+
+                // Literal to literal.
+                require(Item {number: 7, tag: byte(1)} == Item {number: 7, tag: byte(1)});
+                require(Item {number: 7, tag: byte(1)} != Item {number: 8, tag: byte(2)});
+
+                // Identifier to literal, in both directions.
+                require(left == Item {number: 7, tag: byte(1)});
+                require(Item {number: 7, tag: byte(1)} == left);
+                require(left != Item {number: 8, tag: byte(2)});
+                require(Item {number: 8, tag: byte(2)} != left);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("scalar struct comparisons should compile");
+    let dispatch_tag = dispatch_tag_for(&compiled, "main");
+    let result = run_bytecode_with_dispatch_tag(compiled.bytecode, dispatch_tag);
+    assert!(result.is_ok(), "scalar struct comparisons should execute successfully: {result:?}");
+}
+
+#[test]
+fn rejects_scalar_struct_comparison_with_non_comparable_fields() {
+    let source = r#"
+        contract StructEquality() {
+            struct Item { int[] values; }
+
+            entry main(Item left, Item right) {
+                require(left == right);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default())
+        .expect_err("whole-struct comparison must preserve the comparison rules of each field");
+    assert!(err.to_string().contains("struct comparison is not supported for field type int[]"), "unexpected error: {err}");
+}
+
+#[test]
 fn allows_sequence_operations_on_string_and_fixed_byte_types() {
     let source = r#"
         contract ByteSequenceOperations() {

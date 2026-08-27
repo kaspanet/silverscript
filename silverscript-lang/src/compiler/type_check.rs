@@ -537,6 +537,16 @@ fn check_binary<'i>(
                     left_type.type_name()
                 )));
             }
+            if is_struct(&left_type, ctx.structs) {
+                for leaf_type in flattened_struct_field_specs_for_type(&left_type, ctx.structs)? {
+                    if leaf_type.is_array() && !supports_array_comparison(&leaf_type) {
+                        return Err(CompilerError::Unsupported(format!(
+                            "struct comparison is not supported for field type {}",
+                            leaf_type.type_name()
+                        )));
+                    }
+                }
+            }
             Ok(scalar_type(TypeBase::Bool))
         }
         BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge => {

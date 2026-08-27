@@ -27,7 +27,7 @@ use declaration::lower_variable_definition;
 use destructure::lower_struct_destructure_statement;
 use expr_lowering::{
     flatten_named_type, flatten_runtime_return_exprs, lower_call_args, lower_expr, lower_function_call_bindings, lower_named_expr,
-    lower_struct_array_expr,
+    lower_struct_array_expr, lower_struct_expr,
 };
 use layout::flatten_struct_fields;
 pub use layout::flattened_struct_name;
