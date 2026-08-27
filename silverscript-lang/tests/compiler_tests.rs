@@ -3,6 +3,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use kaspa_addresses::{Address, Prefix, Version};
 use kaspa_consensus_core::Hash;
+use kaspa_consensus_core::config::params::MAINNET_PARAMS;
 use kaspa_consensus_core::hashing::sighash::SigHashReusedValuesUnsync;
 use kaspa_consensus_core::subnets::SubnetworkId;
 use kaspa_consensus_core::tx::{
@@ -17190,4 +17191,81 @@ fn runtime_empty_loop_with_extreme_reversed_bounds_matches_constant_lowering() {
     let err =
         run_bytecode_with_sigscript(compiled.bytecode, sigscript).expect_err("the equivalent runtime range subtraction must overflow");
     assert!(matches!(err, kaspa_txscript_errors::TxScriptError::NumberTooBig(_)), "unexpected runtime error: {err:?}");
+}
+
+#[test]
+fn compiler_rejects_redeem_scripts_above_the_signature_script_limit() {
+    let source = r#"
+        contract OversizedLoop() {
+            entry main(int start, int end) {
+                for (i, start, end, 10000) {
+                    require(i >= start);
+                    require(i <= end);
+                    require(i != start - 1);
+                }
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default())
+        .expect_err("a redeem script that cannot fit in a signature script must be rejected");
+    match err.root() {
+        CompilerError::RedeemScriptTooLarge { actual, maximum } => {
+            assert!(*actual > *maximum);
+            assert_eq!(*maximum, MAINNET_PARAMS.new_max_signature_script_len);
+        }
+        other => panic!("unexpected error: {other}"),
+    }
+}
+
+#[test]
+fn compiler_rejects_entry_abis_that_cannot_fit_the_unlocking_stack() {
+    fn source_with_params(count: usize) -> String {
+        let params = (0..count).map(|index| format!("int p{index}")).collect::<Vec<_>>().join(", ");
+        format!(
+            r#"
+                contract StackBoundary() {{
+                    entry main({params}) {{
+                        require(true);
+                    }}
+                }}
+            "#
+        )
+    }
+
+    compile_contract(&source_with_params(242), &[], CompileOptions::default())
+        .expect("242 arguments, the dispatch tag, and the redeem script fit the 244-item stack limit");
+
+    let err = compile_contract(&source_with_params(243), &[], CompileOptions::default())
+        .expect_err("243 arguments plus the dispatch tag and redeem script must be rejected");
+    match err.root() {
+        CompilerError::EntrypointStackTooLarge { function, actual, maximum } => {
+            assert_eq!(function, "main");
+            assert_eq!(*actual, 245);
+            assert_eq!(*maximum, 244);
+        }
+        other => panic!("unexpected error: {other}"),
+    }
+}
+
+#[test]
+fn compiler_rejects_fixed_abi_payloads_that_cannot_fit_a_signature_script() {
+    let source = r#"
+        contract OversizedFixedArgument() {
+            entry main(byte[250000] payload) {
+                require(true);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default())
+        .expect_err("an ABI whose minimum signature script is too large must be rejected");
+    match err.root() {
+        CompilerError::EntrypointSignatureScriptTooLarge { function, estimated, maximum } => {
+            assert_eq!(function, "main");
+            assert!(*estimated > *maximum);
+            assert_eq!(*maximum, MAINNET_PARAMS.new_max_signature_script_len);
+        }
+        other => panic!("unexpected error: {other}"),
+    }
 }

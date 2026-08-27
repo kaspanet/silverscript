@@ -32,6 +32,14 @@ pub enum CompilerError {
     NonCanonicalEntrypointParameter { function: String, param: String },
     #[error("entrypoint dispatch tag collision between {f1} and {f2}")]
     EntrypointDispatchTagCollision { f1: String, f2: String },
+    #[error("compiled redeem script is {actual} bytes, exceeding the {maximum}-byte signature-script limit")]
+    RedeemScriptTooLarge { actual: usize, maximum: usize },
+    #[error("entrypoint '{function}' requires {actual} initial stack items, exceeding the consensus limit of {maximum}")]
+    EntrypointStackTooLarge { function: String, actual: usize, maximum: usize },
+    #[error(
+        "entrypoint '{function}' has a conservative signature-script size estimate of {estimated} bytes, exceeding the consensus limit of {maximum}"
+    )]
+    EntrypointSignatureScriptTooLarge { function: String, estimated: usize, maximum: usize },
     // QUESTION: not entierly sure about this pattern
     #[error("{source}")]
     Context {
