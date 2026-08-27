@@ -160,6 +160,20 @@ fn contract_artifact_from_compiled<'i>(
             Ok(SilEntryArtifact { name: function.name.clone(), dispatch_tag: compiled_entry.dispatch_tag.into(), params })
         })
         .collect::<Result<Vec<_>, CompilerError>>()?;
+    let artifact_entry = |entry: &FunctionAbiEntry| {
+        entries.iter().find(|artifact| artifact.name == entry.name).cloned().ok_or_else(|| {
+            CompilerError::Unsupported(format!(
+                "compiled contract '{}' has no portable ABI entry for generated function '{}'",
+                compiled.contract_name, entry.name
+            ))
+        })
+    };
+    let cov_decl_to_abi = compiled
+        .cov_decl_to_abi
+        .iter()
+        .map(|(name, entry)| Ok((name.clone(), artifact_entry(entry)?)))
+        .collect::<Result<_, CompilerError>>()?;
+    let delegate_entry_abi = compiled.delegate_entry_abi.as_ref().map(artifact_entry).transpose()?;
 
     let layout = compiled.state_layout;
     let state_end = checked_add(layout.start, layout.len)?;
@@ -178,6 +192,8 @@ fn contract_artifact_from_compiled<'i>(
         source_path: format!("sil/{}.sil", compiled.contract_name),
         runtime_state: RuntimeStateArtifact { source: STATE_TYPE_NAME.to_string(), fields: runtime_fields },
         entries,
+        cov_decl_to_abi,
+        delegate_entry_abi,
         compiled: CompiledContractArtifact {
             script_hex: encode_hex(&compiled.bytecode),
             template_hash_hex: encode_hex(&compiled.template_hash()),

@@ -225,12 +225,24 @@ pub struct SilContractArtifact {
     pub source_path: String,
     pub runtime_state: RuntimeStateArtifact,
     pub entries: Vec<SilEntryArtifact>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub cov_decl_to_abi: BTreeMap<String, SilEntryArtifact>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delegate_entry_abi: Option<SilEntryArtifact>,
     pub compiled: CompiledContractArtifact,
 }
 
 impl SilContractArtifact {
     pub fn entry(&self, name: &str) -> Option<&SilEntryArtifact> {
         self.entries.iter().find(|entry| entry.name == name)
+    }
+
+    pub fn cov_binding_leader_decl_entry(&self, name: &str) -> Option<&SilEntryArtifact> {
+        self.cov_decl_to_abi.get(name)
+    }
+
+    pub fn auth_decl_entry(&self, name: &str) -> Option<&SilEntryArtifact> {
+        self.cov_decl_to_abi.get(name)
     }
 }
 
@@ -1284,6 +1296,8 @@ mod tests {
                         params: Vec::new(),
                     },
                 ],
+                cov_decl_to_abi: BTreeMap::new(),
+                delegate_entry_abi: None,
                 compiled: CompiledContractArtifact {
                     script_hex: String::new(),
                     template_hash_hex: String::new(),

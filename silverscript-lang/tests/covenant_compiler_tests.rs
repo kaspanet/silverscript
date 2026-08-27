@@ -1,6 +1,7 @@
 use kaspa_txscript::opcodes::codes::{OpAuthOutputCount, OpCovInputCount, OpCovInputIdx, OpCovOutputCount, OpInputCovenantId};
+use silverscript_abi::{ArtifactValue, SilAbiArtifact};
 use silverscript_lang::ast::Expr;
-use silverscript_lang::compiler::{CompileOptions, compile_contract, generated_covenant_auth_entrypoint_name};
+use silverscript_lang::compiler::{CompileOptions, compile_contract, generated_covenant_auth_entrypoint_name, sil_abi_artifact};
 
 #[test]
 fn lowers_auth_covenant_declaration_to_hidden_entrypoint_name() {
@@ -703,6 +704,34 @@ fn allows_multiple_cov_covenant_declarations() {
 }
 
 #[test]
+fn portable_abi_preserves_covenant_declaration_and_delegate_entries() {
+    let source = r#"
+        contract Decls(int max_ins, int max_outs) {
+            #[covenant(binding = cov, from = max_ins, to = max_outs)]
+            function merge(int nonce) {
+                require(nonce >= 0);
+            }
+
+            #[covenant(binding = cov, from = max_ins, to = max_outs)]
+            function rebalance(int nonce) {
+                require(nonce >= 0);
+            }
+        }
+    "#;
+
+    let artifact = sil_abi_artifact(source, &[ArtifactValue::Int(2), ArtifactValue::Int(4)]).expect("portable covenant ABI compiles");
+    let json = serde_json::to_string(&artifact).expect("portable covenant ABI serializes");
+    let decoded: SilAbiArtifact = serde_json::from_str(&json).expect("portable covenant ABI deserializes");
+    let contract = decoded.contract("Decls").expect("contract exists");
+
+    assert_eq!(contract.cov_decl_to_abi["merge"].name, "__leader_merge");
+    assert_eq!(contract.cov_decl_to_abi["rebalance"].name, "__leader_rebalance");
+    assert_eq!(contract.delegate_entry_abi.as_ref().expect("delegate entry exists").name, "__delegate");
+    assert_eq!(contract.cov_binding_leader_decl_entry("merge").expect("leader entry resolves").name, "__leader_merge");
+    assert_eq!(contract.delegate_entry_abi.as_ref().expect("delegate entry resolves").name, "__delegate");
+}
+
+#[test]
 fn lowers_kcc20_shaped_public_names_and_shared_delegate_body() {
     let source = r#"
         contract Token(byte[1] initial_owner, int initial_amount) {
@@ -777,6 +806,10 @@ fn supports_public_name_override_for_auth_bound_declaration() {
     assert_eq!(compiled.cov_decl_to_abi.get("spendPolicy"), compiled.entry_by_name("spend"));
     assert_eq!(compiled.delegate_entry_abi, None);
     assert_eq!(compiled.covenant_decl_entrypoint_name("spendPolicy", false), Some("spend"));
+
+    let artifact = sil_abi_artifact(source, &[]).expect("portable auth ABI compiles");
+    let contract = artifact.contract("Decls").expect("contract exists");
+    assert_eq!(contract.auth_decl_entry("spendPolicy").expect("auth entry resolves").name, "spend");
 }
 
 #[test]
