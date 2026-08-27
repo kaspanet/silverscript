@@ -68,6 +68,15 @@ fn type_predicates_only_match_scalars() {
 }
 
 #[test]
+fn dynamic_array_predicate_checks_the_outermost_dimension() {
+    assert!(!parse_type_ref("int").unwrap().is_dynamic_array());
+    assert!(parse_type_ref("int[]").unwrap().is_dynamic_array());
+    assert!(!parse_type_ref("int[2]").unwrap().is_dynamic_array());
+    assert!(parse_type_ref("int[2][]").unwrap().is_dynamic_array());
+    assert!(!parse_type_ref("int[][2]").unwrap().is_dynamic_array());
+}
+
+#[test]
 fn scalar_byte_cast_remains_scalar_in_the_ast() {
     let input = r#"
         contract Convert() {

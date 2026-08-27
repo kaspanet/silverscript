@@ -111,13 +111,13 @@ fn compile_param_size_validations<'i>(
         }
 
         let exact_size = if param.type_ref.is_array() {
-            fixed_type_size(&param.type_ref, constants)
+            fixed_type_size(&param.type_ref, constants)?
         } else if param.type_ref.is_byte() {
             Some(1)
         } else {
             param.type_ref.base.fixed_byte_sequence_len()
         };
-        let is_dynamic_array = param.type_ref.is_array() && exact_size.is_none();
+        let is_dynamic_array = param.type_ref.is_dynamic_array();
         if exact_size.is_none() && !is_dynamic_array && !param.type_ref.is_int_like() && !param.type_ref.is_bool() {
             continue;
         }
@@ -133,7 +133,7 @@ fn compile_param_size_validations<'i>(
             builder.add_i64(expected_size)?;
             builder.add_op(OpNumEqualVerify)?;
         } else if is_dynamic_array {
-            let element_size = array_element_size(&param.type_ref, constants)
+            let element_size = array_element_size(&param.type_ref, constants)?
                 .expect("type_check must validate dynamic array element types have known size");
             builder.add_i64(element_size)?;
             builder.add_op(OpMod)?;
@@ -190,7 +190,7 @@ fn emit_checked_dynamic_array_length<'i>(
         .find(|param| param.name == param_name)
         .expect("struct lowering must retain every grouped leaf parameter");
     let element_size =
-        array_element_size(&param.type_ref, constants).expect("type checking must validate dynamic struct-array leaf element sizes");
+        array_element_size(&param.type_ref, constants)?.expect("type checking must validate dynamic struct-array leaf element sizes");
 
     let copied = stack_bindings.emit_copy_binding_to_top(param_name, stack_depth, builder)?;
     debug_assert!(copied, "entrypoint parameter must have a stack binding");
@@ -568,9 +568,7 @@ fn compile_read_input_state_statement<'i>(
                 .bytecode_size
                 .ok_or_else(|| CompilerError::Unsupported("readInputState requires this.bytecodeSize".to_string()))?;
             let total_state_len = encoded_state_len(contract_fields, ctx.contract_constants)?;
-            let state_start_offset = state_end
-                .checked_sub(total_state_len)
-                .ok_or_else(|| CompilerError::Unsupported("readInputState state offset underflow".to_string()))?;
+            let state_start_offset = checked_sub(state_end, total_state_len)?;
 
             let input_idx = args[0].clone();
             let mut field_chunk_offset = 0usize;
@@ -603,7 +601,8 @@ fn compile_read_input_state_statement<'i>(
                     binding_expr,
                 )?);
 
-                field_chunk_offset += encoded_type_chunk_size(&field.type_ref, ctx.contract_constants)?;
+                let field_chunk_size = encoded_type_chunk_size(&field.type_ref, ctx.contract_constants)?;
+                field_chunk_offset = checked_add(field_chunk_offset, field_chunk_size)?;
             }
 
             Ok(added_stack_locals)
@@ -677,7 +676,8 @@ fn compile_read_input_state_statement<'i>(
                     binding_expr,
                 )?);
 
-                field_chunk_offset += encoded_type_chunk_size(&field.type_ref, ctx.contract_constants)?;
+                let field_chunk_size = encoded_type_chunk_size(&field.type_ref, ctx.contract_constants)?;
+                field_chunk_offset = checked_add(field_chunk_offset, field_chunk_size)?;
             }
 
             Ok(added_stack_locals)

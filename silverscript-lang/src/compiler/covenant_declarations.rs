@@ -314,8 +314,13 @@ fn parse_covenant_declaration<'i>(
         }
     };
 
-    let from_value = eval_const_int(&from_expr, constants)
-        .map_err(|_| CompilerError::Unsupported("covenant 'from' must be a compile-time integer".to_string()))?;
+    let from_value = match eval_const_int(&from_expr, constants) {
+        Ok(value) => value,
+        Err(CompilerError::NonConstantInteger(_)) => {
+            return Err(CompilerError::Unsupported("covenant 'from' must be a compile-time integer".to_string()));
+        }
+        Err(err) => return Err(err),
+    };
     if from_value < 1 {
         return Err(CompilerError::Unsupported("covenant 'from' must be >= 1".to_string()));
     }
@@ -425,8 +430,13 @@ fn parse_covenant_declaration<'i>(
         None if infers_single_state_transition_to_one => Expr::int(1),
         None => return Err(CompilerError::Unsupported("missing covenant attribute argument 'to'".to_string())),
     };
-    let to_value = eval_const_int(&to_expr, constants)
-        .map_err(|_| CompilerError::Unsupported("covenant 'to' must be a compile-time integer".to_string()))?;
+    let to_value = match eval_const_int(&to_expr, constants) {
+        Ok(value) => value,
+        Err(CompilerError::NonConstantInteger(_)) => {
+            return Err(CompilerError::Unsupported("covenant 'to' must be a compile-time integer".to_string()));
+        }
+        Err(err) => return Err(err),
+    };
     if to_value < 1 {
         return Err(CompilerError::Unsupported("covenant 'to' must be >= 1".to_string()));
     }

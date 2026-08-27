@@ -9,6 +9,7 @@ use crate::ast::{
     IntrospectionKind, ParamAst, STATE_TYPE_NAME, SplitPart, StateFieldExpr, Statement, StructBindingAst, TypeBase, TypeRef, UnaryOp,
     UnarySuffixKind, as_cast_call_name, as_cast_type, parse_contract_ast, parse_type_ref,
 };
+pub(crate) use crate::checked_arithmetic::{checked_add, checked_div, checked_mul, checked_neg, checked_rem, checked_sub};
 use crate::debug_info::{DebugInfo, DebugNamedValue};
 pub use crate::errors::{CompilerError, ErrorSpan};
 use crate::span;
@@ -32,16 +33,16 @@ mod validate_output_state;
 
 use compile::compile_contract_impl;
 pub use compile::compile_debug_expr;
-pub(super) use compile::eval_const_int;
 pub(crate) use compile::resolve_constant_references;
+pub(super) use compile::{eval_const_int, eval_optional_const_int};
 pub(crate) use debug_recording::DebugRecorder;
 use r#for::lower_for_loops;
 use read_input_state::lower_read_input_state_calls;
-use static_check::validate_expr_matches_type;
+use static_check::{validate_concrete_constructor_argument, validate_expr_matches_type};
 pub use structs::flattened_struct_name;
 pub(super) use structs::{
-    StructArrayParamGroups, StructRegistry, build_struct_registry, dynamic_struct_array_param_groups,
-    ensure_known_struct_or_builtin_type, flatten_constructor_args_env, flatten_type_leaves, flattened_struct_field_specs_for_type,
+    StructArrayParamGroups, StructRegistry, build_struct_registry, dynamic_struct_array_param_groups, ensure_known_type,
+    ensure_known_type_without_struct_arrays, flatten_constructor_args_env, flatten_type_leaves, flattened_struct_field_specs_for_type,
     is_struct, is_struct_array, lower_structs_contract, struct_name, validate_struct_graph,
 };
 pub(super) use type_system::{append_type, array_size as array_type_size, concat_types, fixed_type_size, type_refs_equal};
@@ -157,8 +158,9 @@ impl<'i> ContractAst<'i> {
         let mut env = constants.clone();
 
         for (param, value) in self.params.iter().zip(constructor_args.iter()) {
+            validate_concrete_constructor_argument(param, value)?;
             let type_name = param.type_ref.type_name();
-            if validate_expr_matches_type(value, &param.type_ref, &HashMap::new(), &structs, &constants, &HashMap::new(), &self.fields)
+            if validate_expr_matches_type(value, &param.type_ref, &HashMap::new(), &structs, &env, &HashMap::new(), &self.fields)
                 .is_err()
             {
                 return Err(CompilerError::Unsupported(format!("constructor argument '{}' expects {}", param.name, type_name)));
@@ -174,16 +176,8 @@ impl<'i> ContractAst<'i> {
 
             let type_name = field.type_ref.type_name();
             let resolved = resolve_constant_references(field.expr.clone(), &env, &mut std::collections::HashSet::new())?;
-            if validate_expr_matches_type(
-                &resolved,
-                &field.type_ref,
-                &HashMap::new(),
-                &structs,
-                &constants,
-                &HashMap::new(),
-                &self.fields,
-            )
-            .is_err()
+            if validate_expr_matches_type(&resolved, &field.type_ref, &HashMap::new(), &structs, &env, &HashMap::new(), &self.fields)
+                .is_err()
             {
                 return Err(CompilerError::Unsupported(format!("contract field '{}' expects {}", field.name, type_name)));
             }
@@ -228,8 +222,10 @@ impl<'i> CompiledContract<'i> {
 
     pub fn build_sig_script(&self, function_name: &str, args: Vec<Expr<'i>>) -> Result<Vec<u8>, CompilerError> {
         let structs = build_struct_registry(&self.ast)?;
-        let constants: HashMap<_, _> =
-            self.ast.constants.iter().map(|constant| (constant.name.clone(), constant.expr.clone())).collect();
+        // ABI parameter types and artifact struct fields have already had
+        // constant array dimensions resolved to fixed dimensions during
+        // compilation, so argument validation does not need a constants map.
+        let constants = HashMap::new();
         let function = self
             .entry_by_name(function_name)
             .ok_or_else(|| CompilerError::Unsupported(format!("function '{}' not found", function_name)))?;
@@ -316,10 +312,32 @@ fn validate_sigscript_arg<'i>(
     structs: &StructRegistry,
     constants: &HashMap<String, Expr<'i>>,
 ) -> Result<(), CompilerError> {
+    // Signature-script construction receives already classified AST values.
+    // Unlike source-language checking, do not reinterpret an integer literal
+    // as a byte: callers must use Expr::byte so encoding retains byte semantics.
+    validate_explicit_sigscript_bytes(arg, type_ref)?;
+
     let types = HashMap::new();
     let functions = HashMap::new();
     let type_context = type_check::TypeCheckContext { types: &types, structs, constants, functions: &functions, contract_fields: &[] };
     type_check::check_expr(arg, Some(type_ref), &type_context)?;
+    Ok(())
+}
+
+fn validate_explicit_sigscript_bytes(arg: &Expr<'_>, type_ref: &TypeRef) -> Result<(), CompilerError> {
+    if !matches!(type_ref.base, TypeBase::Byte) {
+        return Ok(());
+    }
+
+    if type_ref.is_byte() {
+        return if matches!(arg.kind, ExprKind::Byte(_)) { Ok(()) } else { Err(CompilerError::TypeMismatch) };
+    }
+
+    if let (Some(element_type), ExprKind::Array { values, .. }) = (type_ref.array_element_type(), &arg.kind) {
+        for value in values {
+            validate_explicit_sigscript_bytes(value, &element_type)?;
+        }
+    }
     Ok(())
 }
 

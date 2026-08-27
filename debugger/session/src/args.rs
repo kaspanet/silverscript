@@ -101,7 +101,7 @@ fn validate_array_len(type_ref: &TypeRef, len: usize) -> Result<(), String> {
 fn parse_byte_array_arg(type_ref: &TypeRef, raw: &str) -> Result<Expr<'static>, String> {
     let bytes = parse_hex_bytes(raw)?;
     validate_byte_array_len(type_ref, bytes.len())?;
-    if matches!(type_ref.array_size(), Some(ArrayDim::Dynamic)) { Ok(Expr::dynamic_bytes(bytes)) } else { Ok(bytes_expr(bytes)) }
+    if type_ref.is_dynamic_array() { Ok(Expr::dynamic_bytes(bytes)) } else { Ok(bytes_expr(bytes)) }
 }
 
 fn parse_scalar_arg(type_ref: &TypeRef, raw: &str) -> Result<Expr<'static>, String> {

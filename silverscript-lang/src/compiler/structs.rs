@@ -27,7 +27,7 @@ use declaration::lower_variable_definition;
 use destructure::lower_struct_destructure_statement;
 use expr_lowering::{
     flatten_named_type, flatten_runtime_return_exprs, lower_call_args, lower_expr, lower_function_call_bindings, lower_named_expr,
-    lower_struct_array_expr,
+    lower_struct_array_expr, lower_struct_expr,
 };
 use layout::flatten_struct_fields;
 pub use layout::flattened_struct_name;
@@ -36,8 +36,8 @@ use scalar_expr::lower_scalar_expr;
 pub(crate) use scalar_expr::resolve_struct_access;
 use schema::is_struct_like;
 pub(crate) use schema::{
-    StructRegistry, build_struct_registry, ensure_known_struct_or_builtin_type, is_struct, is_struct_array, struct_array_name,
-    struct_name, validate_struct_graph,
+    StructRegistry, build_struct_registry, ensure_known_type, ensure_known_type_without_struct_arrays, is_struct, is_struct_array,
+    struct_array_name, struct_name, validate_struct_graph,
 };
 use statement::lower_statements;
 

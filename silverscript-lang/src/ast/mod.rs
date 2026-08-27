@@ -4,6 +4,7 @@ use chrono::NaiveDateTime;
 use pest::iterators::Pair;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+use crate::checked_arithmetic::{checked_mul, checked_pow};
 use crate::errors::CompilerError;
 use crate::parser::{
     Rule, parse_expression as parse_expression_rule, parse_function as parse_function_rule, parse_source_file,
@@ -341,6 +342,11 @@ impl TypeRef {
 
     pub fn is_array(&self) -> bool {
         !self.array_dims.is_empty()
+    }
+
+    /// Returns whether the outermost array dimension has a runtime-defined length.
+    pub fn is_dynamic_array(&self) -> bool {
+        matches!(self.array_size(), Some(ArrayDim::Dynamic))
     }
 
     // This returns the type of the array elements, or None if this is not an array type.
@@ -2397,8 +2403,8 @@ fn parse_number(raw: &str) -> Result<i64, CompilerError> {
 
         // rejects negative exponent
         let exp = exp_clean.parse::<u32>().map_err(|_| CompilerError::InvalidLiteral(format!("invalid number literal '{raw}'")))?;
-        let pow = 10i128.checked_pow(exp).ok_or_else(|| CompilerError::InvalidLiteral(format!("number literal overflow '{raw}'")))?;
-        value = value.checked_mul(pow).ok_or_else(|| CompilerError::InvalidLiteral(format!("number literal overflow '{raw}'")))?;
+        let pow = checked_pow(10i128, exp)?;
+        value = checked_mul(value, pow)?;
     }
 
     if value < i64::MIN as i128 || value > i64::MAX as i128 {
@@ -2612,9 +2618,7 @@ fn apply_number_unit<'i>(expr: Expr<'i>, unit: &str) -> Result<Expr<'i>, Compile
         "kas" => 100_000_000,
         _ => return Err(CompilerError::Unsupported(format!("number unit '{unit}' not supported"))),
     };
-    let scaled = value
-        .checked_mul(multiplier)
-        .ok_or_else(|| CompilerError::InvalidLiteral(format!("number literal overflow for unit '{unit}'")))?;
+    let scaled = checked_mul(value, multiplier)?;
     let kind = if is_temporal_unit(unit) { ExprKind::Temporal(scaled) } else { ExprKind::Int(scaled) };
     Ok(Expr::new(kind, span))
 }

@@ -24,7 +24,7 @@ use kaspa_txscript::covenants::CovenantsContext;
 use kaspa_txscript::script_builder::ScriptBuilder;
 use kaspa_txscript::{EngineCtx, EngineFlags, pay_to_script_hash_script};
 use silverscript_lang::ast::{
-    ArrayDim, ContractAst, Expr, ExprKind, STATE_TYPE_NAME, StateFieldExpr, TypeBase, TypeRef, parse_contract_ast, parse_type_ref,
+    ContractAst, Expr, ExprKind, STATE_TYPE_NAME, StateFieldExpr, TypeBase, TypeRef, parse_contract_ast, parse_type_ref,
 };
 use silverscript_lang::compiler::{CompileOptions, CompiledContract, compile_contract, compile_contract_ast};
 
@@ -154,7 +154,8 @@ fn is_state_type(type_ref: &TypeRef) -> bool {
 
 fn is_state_array_type(type_ref: &TypeRef) -> bool {
     matches!(&type_ref.base, TypeBase::Custom(name) if name == "State")
-        && matches!(type_ref.array_dims.as_slice(), [ArrayDim::Dynamic])
+        && type_ref.array_dims.len() == 1
+        && type_ref.is_dynamic_array()
 }
 
 fn synthesized_covenant_prefix_args(
@@ -1009,6 +1010,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use silverscript_lang::ast::ArrayDim;
 
     #[test]
     fn state_array_type_requires_one_dynamic_dimension() {

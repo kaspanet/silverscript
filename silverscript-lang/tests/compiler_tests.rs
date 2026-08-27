@@ -3,6 +3,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use kaspa_addresses::{Address, Prefix, Version};
 use kaspa_consensus_core::Hash;
+use kaspa_consensus_core::config::params::MAINNET_PARAMS;
 use kaspa_consensus_core::hashing::sighash::SigHashReusedValuesUnsync;
 use kaspa_consensus_core::subnets::SubnetworkId;
 use kaspa_consensus_core::tx::{
@@ -35,9 +36,9 @@ fn script_builder() -> ScriptBuilder {
 #[test]
 fn constructors_validate_argument_types() {
     let cases = [
-        ("ScriptPubKeyP2PK", "1", "publicKey", "pubkey", "byte[34]"),
-        ("ScriptPubKeyP2SH", "byte[31](byte[]{0x00})", "scriptHash", "byte[32]", "byte[35]"),
-        ("ScriptPubKeyP2SHFromRedeemScript", "1", "redeemScript", "byte[]", "byte[35]"),
+        ("ScriptPubKeyP2PK", "1", "publicKey", "pubkey", "byte[36]"),
+        ("ScriptPubKeyP2SH", "byte[31](byte[]{0x00})", "scriptHash", "byte[32]", "byte[37]"),
+        ("ScriptPubKeyP2SHFromRedeemScript", "1", "redeemScript", "byte[]", "byte[37]"),
     ];
 
     for (constructor, argument, parameter, expected, result_type) in cases {
@@ -354,6 +355,57 @@ fn supports_struct_contract_params_fields_and_constants() {
 }
 
 #[test]
+fn constructor_arguments_are_concrete_values_not_runtime_introspection() {
+    let source = r#"
+        contract RuntimeConstructor(int expected_lock_time) {
+            entry main() {
+                require(OpTxLockTime() == expected_lock_time);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[Expr::call("OpTxLockTime", vec![])], CompileOptions::default())
+        .expect_err("constructor arguments must not evaluate runtime expressions");
+    assert!(err.to_string().contains("constructor argument 'expected_lock_time' must be a concrete value"), "unexpected error: {err}");
+    let contract = parse_contract_ast(source).expect("contract parses");
+    contract
+        .resolve_contract_state_values(&[Expr::call("OpTxLockTime", vec![])])
+        .expect_err("state resolution must enforce the same concrete constructor boundary");
+
+    let struct_source = r#"
+        contract StructConstructor(Pair pair) {
+            struct Pair { int value; }
+
+            entry main() {
+                require(pair.value == 1);
+            }
+        }
+    "#;
+    let pair = struct_object("Pair", vec![("value", Expr::int(1))]);
+    compile_contract(struct_source, &[pair], CompileOptions::default())
+        .expect("structs containing only concrete values remain valid constructor arguments");
+
+    let runtime_pair = struct_object("Pair", vec![("value", Expr::call("OpTxLockTime", vec![]))]);
+    compile_contract(struct_source, &[runtime_pair], CompileOptions::default())
+        .expect_err("runtime expressions nested in constructor structs must be rejected");
+
+    let array_source = r#"
+        contract ArrayConstructor(int[] values) {
+            entry main() {
+                require(values.length == 1);
+            }
+        }
+    "#;
+    let literal_values = Expr::array(parse_type_ref("int[]").expect("array type parses"), vec![Expr::int(1)]);
+    compile_contract(array_source, &[literal_values], CompileOptions::default())
+        .expect("arrays containing only concrete values remain valid constructor arguments");
+
+    let runtime_values = Expr::array(parse_type_ref("int[]").expect("array type parses"), vec![Expr::call("OpTxLockTime", vec![])]);
+    compile_contract(array_source, &[runtime_values], CompileOptions::default())
+        .expect_err("runtime expressions nested in constructor arrays must be rejected");
+}
+
+#[test]
 fn nested_struct_field_path_does_not_alias_underscored_field_name() {
     let source = r#"
         contract C() {
@@ -449,6 +501,26 @@ fn resolve_contract_state_values_rejects_constructor_arg_type_mismatch() {
     let err = contract.resolve_contract_state_values(&[Expr::bool(true)]).expect_err("wrong constructor arg type should fail");
 
     assert!(err.to_string().contains("constructor argument 'initAmount' expects int"), "unexpected error: {err}");
+}
+
+#[test]
+fn resolve_contract_state_values_checks_constructor_dependent_array_dimensions() {
+    let source = r#"
+        contract ResolveState(int N, byte[N] initial) {
+            byte[N] stored = initial;
+
+            entry spend() {
+                require(true);
+            }
+        }
+    "#;
+
+    let contract = parse_contract_ast(source).expect("contract parses");
+    let err = contract
+        .resolve_contract_state_values(&[Expr::int(2), Expr::bytes(vec![0xab])])
+        .expect_err("a constructor-sized array must use the resolved preceding constructor parameter");
+
+    assert!(err.to_string().contains("constructor argument 'initial' expects byte[N]"), "unexpected error: {err}");
 }
 
 #[test]
@@ -1516,15 +1588,76 @@ fn opcode_builtins_return_their_declared_types() {
                 byte[32] sequence_commitment = OpChainblockSeqCommit(
                     byte[_](0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f)
                 );
-                byte[34] p2pk = new ScriptPubKeyP2PK(pk);
-                byte[35] p2sh = new ScriptPubKeyP2SH(outpoint_tx_id);
-                byte[35] p2sh_from_redeem_script = new ScriptPubKeyP2SHFromRedeemScript(redeem_script);
+                byte[36] p2pk = new ScriptPubKeyP2PK(pk);
+                byte[37] p2sh = new ScriptPubKeyP2SH(outpoint_tx_id);
+                byte[37] p2sh_from_redeem_script = new ScriptPubKeyP2SHFromRedeemScript(redeem_script);
                 require(true);
             }
         }
     "#;
 
     compile_contract(source, &[], CompileOptions::default()).expect("fixed-size builtin results should assign to their exact types");
+}
+
+#[test]
+fn script_pubkey_constructors_return_correct_fixed_dimension_types() {
+    let source = r#"
+        contract ScriptPubKeyDimensions() {
+            entry main() {
+                byte[36] p2pk = new ScriptPubKeyP2PK(
+                    pubkey(0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f)
+                );
+                byte[37] p2sh = new ScriptPubKeyP2SH(
+                    byte[32](0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f)
+                );
+                byte[37] p2sh_from_redeem_script =
+                    new ScriptPubKeyP2SHFromRedeemScript(byte[]("redeem"));
+
+                require(byte[](p2pk).length == 36);
+                require(byte[](p2sh).length == 37);
+                require(byte[](p2sh_from_redeem_script).length == 37);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("script-pubkey constructors should compile");
+    let sigscript = compiled.build_sig_script("main", vec![]).expect("signature script should build");
+    run_bytecode_with_sigscript(compiled.bytecode, sigscript)
+        .expect("script-pubkey constructor results should have their declared lengths after conversion to byte[]");
+}
+
+#[test]
+fn fixed_size_hash_builtins_return_their_declared_lengths() {
+    let source = r#"
+        contract FixedSizeHashes() {
+            entry main() {
+                byte[32] sha256_hash = sha256(byte[]("message"));
+                byte[32] blake2b_hash = blake2b(byte[]("message"));
+                byte[32] blake2b_keyed_hash = blake2bWithKey(
+                    byte[]("message"),
+                    byte[]("0123456789abcdef0123456789abcdef")
+                );
+                byte[32] blake3_hash = blake3(byte[]("message"));
+                byte[32] blake3_keyed_hash = blake3WithKey(
+                    byte[]("message"),
+                    byte[32]("0123456789abcdef0123456789abcdef")
+                );
+                byte[32] template_hash = templateHash(byte[]("prefix"), byte[]("suffix"));
+
+                require(byte[](sha256_hash).length == 32);
+                require(byte[](blake2b_hash).length == 32);
+                require(byte[](blake2b_keyed_hash).length == 32);
+                require(byte[](blake3_hash).length == 32);
+                require(byte[](blake3_keyed_hash).length == 32);
+                require(byte[](template_hash).length == 32);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("fixed-size hash builtins should compile");
+    let sigscript = compiled.build_sig_script("main", vec![]).expect("signature script should build");
+    run_bytecode_with_sigscript(compiled.bytecode, sigscript)
+        .expect("fixed-size hash builtin results should have their declared lengths after conversion to byte[]");
 }
 
 #[test]
@@ -1535,7 +1668,9 @@ fn introspection_fields_and_direct_lock_opcodes_emit_and_execute() {
                 require(tx.inputs[0].value == 5000);
                 require(tx.inputs[0].scriptPubKey.length >= 0);
                 require(tx.inputs[0].sigScript.length == 5);
-                require(tx.inputs[0].outpointTxId == byte[32]("0123456789abcdef0123456789abcdef"));
+                byte[32] outpoint_tx_id = tx.inputs[0].outpointTxId;
+                require(byte[](outpoint_tx_id).length == 32);
+                require(outpoint_tx_id == byte[32]("0123456789abcdef0123456789abcdef"));
                 require(tx.inputs[0].outpointIndex == 7);
                 require(tx.outputs[0].value == 1000);
                 require(tx.outputs[0].scriptPubKey.length >= 0);
@@ -1600,13 +1735,13 @@ fn rejects_assigning_fixed_size_builtin_results_to_wrong_byte_array_sizes() {
         ),
         (
             "ScriptPubKeyP2PK",
-            "byte[33] value = new ScriptPubKeyP2PK(pubkey(0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f));",
+            "byte[35] value = new ScriptPubKeyP2PK(pubkey(0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f));",
         ),
         (
             "ScriptPubKeyP2SH",
-            "byte[34] value = new ScriptPubKeyP2SH(byte[32](0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f));",
+            "byte[36] value = new ScriptPubKeyP2SH(byte[32](0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f));",
         ),
-        ("ScriptPubKeyP2SHFromRedeemScript", "byte[34] value = new ScriptPubKeyP2SHFromRedeemScript(byte[](\"redeem\"));"),
+        ("ScriptPubKeyP2SHFromRedeemScript", "byte[36] value = new ScriptPubKeyP2SHFromRedeemScript(byte[](\"redeem\"));"),
     ];
 
     for (name, statement) in cases {
@@ -2080,6 +2215,26 @@ fn rejects_cast_between_different_fixed_byte_array_sizes() {
 }
 
 #[test]
+fn fixed_byte_scalars_accept_dynamic_and_compatible_fixed_byte_array_casts() {
+    let source = r#"
+        contract T() {
+            entry f(byte[] dynamicBytes, byte[32] pubkeyBytes, byte[65] sigBytes, byte[64] datasigBytes) {
+                pubkey dynamicPubkey = pubkey(dynamicBytes);
+                sig dynamicSig = sig(dynamicBytes);
+                datasig dynamicDatasig = datasig(dynamicBytes);
+
+                pubkey fixedPubkey = pubkey(pubkeyBytes);
+                sig fixedSig = sig(sigBytes);
+                datasig fixedDatasig = datasig(datasigBytes);
+            }
+        }
+    "#;
+
+    compile_contract(source, &[], CompileOptions::default())
+        .expect("dynamic and correctly sized fixed byte arrays should cast to fixed-byte scalar types");
+}
+
+#[test]
 fn rejects_cast_from_wrong_sized_fixed_bytes_to_signature() {
     let source = r#"
         pragma silverscript ^0.1.0;
@@ -2094,6 +2249,16 @@ fn rejects_cast_from_wrong_sized_fixed_bytes_to_signature() {
     let err =
         compile_contract(source, &[], CompileOptions::default()).expect_err("a ten-byte value cannot be cast to a 65-byte signature");
     assert!(err.to_string().contains("cannot cast byte[10] to sig"), "unexpected error: {err}");
+}
+
+#[test]
+fn rejects_cast_from_wrong_sized_fixed_bytes_to_fixed_byte_scalars() {
+    for (source_type, target_type) in [("byte[31]", "pubkey"), ("byte[64]", "sig"), ("byte[63]", "datasig")] {
+        let source = format!("contract T() {{ entry f({source_type} bytes) {{ {target_type} value = {target_type}(bytes); }} }}");
+        let err = compile_contract(&source, &[], CompileOptions::default())
+            .expect_err("a fixed byte array with the wrong size must not cast to a fixed-byte scalar");
+        assert!(err.to_string().contains(&format!("cannot cast {source_type} to {target_type}")), "unexpected error: {err}");
+    }
 }
 
 #[test]
@@ -2196,6 +2361,82 @@ fn encodes_non_byte_array_literal_cast_in_contract_field() {
         run_bytecode_with_dispatch_tag(compiled.bytecode, dispatch_tag).is_ok(),
         "encoded non-byte array literal cast should execute"
     );
+}
+
+#[test]
+fn allows_same_rank_multidimensional_array_cast_refinement() {
+    let source = r#"
+        contract Arrays() {
+            entry main(int[2][] rows) {
+                int[2][1] fixedRows = int[2][1](rows);
+                require(fixedRows.length == 1);
+            }
+        }
+    "#;
+
+    compile_contract(source, &[], CompileOptions::default())
+        .expect("a multidimensional array cast may fix a dynamic dimension without changing rank");
+}
+
+#[test]
+fn allows_array_cast_to_less_specific_dimensions() {
+    let source = r#"
+        contract Arrays() {
+            entry main(int[2][1] rows) {
+                int[2][] dynamicRows = int[2][](rows);
+                require(dynamicRows.length == 1);
+            }
+        }
+    "#;
+
+    compile_contract(source, &[], CompileOptions::default())
+        .expect("a multidimensional array cast may make a fixed dimension dynamic without changing rank");
+}
+
+#[test]
+fn allows_array_cast_without_dimension_changes() {
+    let source = r#"
+        contract Arrays() {
+            entry main(int[2][1] rows) {
+                int[2][1] sameRows = int[2][1](rows);
+                require(sameRows.length == 1);
+            }
+        }
+    "#;
+
+    compile_contract(source, &[], CompileOptions::default()).expect("an array cast may preserve every dimension");
+}
+
+#[test]
+fn rejects_array_cast_that_changes_rank() {
+    let source = r#"
+        contract Arrays() {
+            entry main(int[2][] rows) {
+                int[2] row = int[2](rows);
+                require(row.length == 2);
+            }
+        }
+    "#;
+
+    let err =
+        compile_contract(source, &[], CompileOptions::default()).expect_err("an array cast must preserve the number of dimensions");
+    assert!(err.to_string().contains("cannot cast int[2][] to int[2]"), "unexpected error: {err}");
+}
+
+#[test]
+fn rejects_array_cast_with_incompatible_fixed_dimensions() {
+    let source = r#"
+        contract Arrays() {
+            entry main(int[2][3] rows) {
+                int[3][2] reshapedRows = int[3][2](rows);
+                require(reshapedRows.length == 2);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default())
+        .expect_err("equal total size must not permit incompatible fixed dimensions");
+    assert!(err.to_string().contains("cannot cast int[2][3] to int[3][2]"), "unexpected error: {err}");
 }
 
 #[test]
@@ -5655,6 +5896,16 @@ fn rejects_invalid_constant_slice_bounds() {
             "contract C() { entry main(datasig value) { byte[] part = value.slice(0, 65); } }",
             "out of bounds",
         ),
+        (
+            "constant slice bound division by zero",
+            "contract C() { entry main(byte[] value) { byte[] part = value.slice(0, 1 / 0); } }",
+            "division by zero in constant expression",
+        ),
+        (
+            "constant slice bound overflow",
+            "contract C() { entry main(byte[] value) { byte[] part = value.slice(0, 9223372036854775807 + 1); } }",
+            "arithmetic overflow",
+        ),
     ];
 
     for (case, source, expected) in cases {
@@ -6232,12 +6483,12 @@ fn rejects_assignment_to_loop_variable_for_constant_and_runtime_bounds() {
 #[test]
 fn rejects_overflow_in_constant_for_loop_bounds() {
     let cases = [
-        ("9223372036854775807 + 1", "constant integer overflow: 9223372036854775807 + 1"),
-        ("(-9223372036854775807) - 2", "constant integer overflow: -9223372036854775807 - 2"),
-        ("3037000500 * 3037000500", "constant integer overflow: 3037000500 * 3037000500"),
-        ("-(-9223372036854775807 - 1)", "constant integer overflow: -(-9223372036854775808)"),
-        ("(-9223372036854775807 - 1) / -1", "constant integer overflow: -9223372036854775808 / -1"),
-        ("(-9223372036854775807 - 1) % -1", "constant integer overflow: -9223372036854775808 % -1"),
+        ("9223372036854775807 + 1", "arithmetic overflow: 9223372036854775807 + 1"),
+        ("(-9223372036854775807) - 2", "arithmetic overflow: -9223372036854775807 - 2"),
+        ("3037000500 * 3037000500", "arithmetic overflow: 3037000500 * 3037000500"),
+        ("-(-9223372036854775807 - 1)", "arithmetic overflow: -(-9223372036854775808)"),
+        ("(-9223372036854775807 - 1) / -1", "arithmetic overflow: -9223372036854775808 / -1"),
+        ("(-9223372036854775807 - 1) % -1", "arithmetic overflow: -9223372036854775808 % -1"),
     ];
 
     for (expr, expected) in cases {
@@ -6255,6 +6506,31 @@ fn rejects_overflow_in_constant_for_loop_bounds() {
 
         let err = compile_contract(&source, &[], CompileOptions::default()).expect_err("compile should fail");
         assert!(err.to_string().contains(expected), "unexpected error: {err}");
+    }
+}
+
+#[test]
+fn rejects_invalid_constant_for_loop_start_and_end_expressions() {
+    let cases = [("1 / 0", "division by zero in constant expression"), ("9223372036854775807 + 1", "arithmetic overflow")];
+
+    for (expr, expected) in cases {
+        for (start, end) in [(expr, "1"), ("0", expr)] {
+            let source = format!(
+                r#"
+                    contract Loops() {{
+                        entry main() {{
+                            for (i, {start}, {end}, 1) {{
+                                require(i >= 0);
+                            }}
+                        }}
+                    }}
+                "#
+            );
+
+            let err = compile_contract(&source, &[], CompileOptions::default())
+                .expect_err("an invalid constant loop bound must be rejected instead of lowered as a runtime expression");
+            assert!(err.to_string().contains(expected), "unexpected error: {err}");
+        }
     }
 }
 
@@ -11482,7 +11758,9 @@ fn executes_opcode_builtins_basic() {
             r#"
                 contract Test() {
                     entry main() {
-                        require(byte[](OpTxSubnetId()) == byte[]("abcdefghijklmnopqrst"));
+                        byte[20] subnet_id = OpTxSubnetId();
+                        require(byte[](subnet_id).length == 20);
+                        require(byte[](subnet_id) == byte[]("abcdefghijklmnopqrst"));
                     }
                 }
             "#,
@@ -11522,7 +11800,9 @@ fn executes_opcode_builtins_basic() {
             r#"
                 contract Test() {
                     entry main() {
-                        require(byte[](OpOutpointTxId(0)) == byte[]("0123456789abcdef0123456789abcdef"));
+                        byte[32] outpoint_tx_id = OpOutpointTxId(0);
+                        require(byte[](outpoint_tx_id).length == 32);
+                        require(byte[](outpoint_tx_id) == byte[]("0123456789abcdef0123456789abcdef"));
                     }
                 }
             "#,
@@ -11564,7 +11844,9 @@ fn executes_opcode_builtins_basic() {
             r#"
                 contract Test() {
                     entry main() {
-                        require(byte[](OpTxInputSeq(0)) == byte[]("sequence"));
+                        byte[8] input_sequence = OpTxInputSeq(0);
+                        require(byte[](input_sequence).length == 8);
+                        require(byte[](input_sequence) == byte[]("sequence"));
                     }
                 }
             "#,
@@ -11713,11 +11995,18 @@ fn executes_opcode_builtins_covenants() {
     let source = r#"
         contract Test() {
             entry main() {
+                byte[32] input_covenant_id = OpInputCovenantId(0);
+                byte[32] output_covenant_id_a = OpOutputCovenantId(0);
+                byte[32] output_covenant_id_b = OpOutputCovenantId(1);
+
+                require(byte[](input_covenant_id).length == 32);
+                require(byte[](output_covenant_id_a).length == 32);
+                require(byte[](output_covenant_id_b).length == 32);
                 require(OpAuthOutputCount(0) == 2);
                 require(OpAuthOutputIdx(0, 1) == 2);
-                require(byte[](OpInputCovenantId(0)) == byte[]("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"));
-                require(byte[](OpOutputCovenantId(0)) == byte[]("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"));
-                require(byte[](OpOutputCovenantId(1)) == byte[]("BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"));
+                require(byte[](input_covenant_id) == byte[]("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"));
+                require(byte[](output_covenant_id_a) == byte[]("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"));
+                require(byte[](output_covenant_id_b) == byte[]("BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"));
                 require(OpCovInputCount(byte[32]("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")) == 2);
                 require(OpCovInputIdx(byte[32]("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"), 1) == 2);
                 require(OpCovOutputCount(byte[32]("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")) == 2);
@@ -11757,7 +12046,10 @@ fn executes_opcode_chainblock_seq_commit() {
     let source = r#"
         contract Test() {
             entry main() {
-                require(byte[](OpChainblockSeqCommit(byte[32]("0123456789abcdef0123456789abcdef"))) == byte[]("fedcba9876543210fedcba9876543210"));
+                byte[32] sequence_commitment =
+                    OpChainblockSeqCommit(byte[32]("0123456789abcdef0123456789abcdef"));
+                require(byte[](sequence_commitment).length == 32);
+                require(byte[](sequence_commitment) == byte[]("fedcba9876543210fedcba9876543210"));
             }
         }
     "#;
@@ -12072,6 +12364,24 @@ fn absolute_daa_and_time_locks_enforce_consensus_domains() {
     let valid_sigscript = dynamic_time.build_sig_script("main", vec![Expr::temporal(threshold)]).expect("time sigscript builds");
     run_bytecode_with_sigscript_and_time(dynamic_time.bytecode, valid_sigscript, threshold as u64, 0)
         .expect("valid timestamp lock must satisfy CLTV");
+}
+
+#[test]
+fn lock_requirements_reject_invalid_constant_expressions() {
+    let cases = [
+        "contract C() { entry main() { require(this.ageDaa >= 9223372036854775807 + 1); } }",
+        "contract C() { entry main() { require(tx.daa >= 9223372036854775807 + 1); } }",
+        "contract C() { entry main() { require(tx.time >= temporal(9223372036854775807 / 0)); } }",
+    ];
+
+    for source in cases {
+        let err = compile_contract(source, &[], CompileOptions::default())
+            .expect_err("an invalid constant lock target must not be treated as a runtime expression");
+        assert!(
+            matches!(err.root(), CompilerError::ArithmeticOverflow(_) | CompilerError::InvalidLiteral(_)),
+            "unexpected error: {err}"
+        );
+    }
 }
 
 #[test]
@@ -12699,10 +13009,8 @@ fn rejects_fixed_size_array_init_with_too_few_elements() {
             }
         }
     "#;
-    let result = compile_contract(source, &[], CompileOptions::default());
-    assert!(result.is_err(), "Should reject array with too few elements");
-    let err_msg = format!("{:?}", result.unwrap_err());
-    assert!(err_msg.contains("type mismatch") || err_msg.contains("size mismatch"), "Error should mention type or size mismatch");
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("should reject array with too few elements");
+    assert!(matches!(err.root(), CompilerError::SizeMismatch), "unexpected error: {err:?}");
 }
 
 #[test]
@@ -12714,10 +13022,8 @@ fn rejects_fixed_size_array_init_with_too_many_elements() {
             }
         }
     "#;
-    let result = compile_contract(source, &[], CompileOptions::default());
-    assert!(result.is_err(), "Should reject array with too many elements");
-    let err_msg = format!("{:?}", result.unwrap_err());
-    assert!(err_msg.contains("type mismatch") || err_msg.contains("size mismatch"), "Error should mention type or size mismatch");
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("should reject array with too many elements");
+    assert!(matches!(err.root(), CompilerError::SizeMismatch), "unexpected error: {err:?}");
 }
 
 #[test]
@@ -13232,6 +13538,39 @@ fn scalar_int_and_byte_cast_directionality() {
     let err = compile_contract(out_of_range_source, &[], CompileOptions::default())
         .expect_err("out-of-range int literal must not cast to byte");
     assert!(err.to_string().contains("integer literal 256 is out of range for byte"), "unexpected error: {err}");
+}
+
+#[test]
+fn scalar_byte_cast_cannot_escape_validate_output_state_push() {
+    let direct_cast_source = r#"
+        contract ByteCast() {
+            entry main(string value) {
+                require(byte(value) == byte(1));
+            }
+        }
+    "#;
+    let err =
+        compile_contract(direct_cast_source, &[], CompileOptions::default()).expect_err("a string must not cast to a scalar byte");
+    assert!(err.to_string().contains("cannot cast string to byte"), "unexpected error: {err}");
+
+    let source = r#"
+        contract ByteCastState(byte initial) {
+            byte marker = initial;
+
+            entry roll(string next_marker) {
+                validateOutputState(0, State {
+                    marker: byte(next_marker)
+                });
+            }
+
+            entry accept() {
+                require(marker == byte(1));
+            }
+        }
+    "#;
+
+    compile_contract(source, &[Expr::byte(0)], CompileOptions::default())
+        .expect_err("a string must not cast to a scalar byte and escape the generated one-byte state push");
 }
 
 #[test]
@@ -14870,6 +15209,60 @@ fn rejects_struct_array_comparisons_with_structured_expressions_on_either_side()
 }
 
 #[test]
+fn scalar_struct_values_can_be_compared_directly() {
+    let source = r#"
+        contract StructEquality() {
+            struct Item {
+                int number;
+                byte tag;
+            }
+
+            entry main() {
+                Item left = Item {number: 7, tag: byte(1)};
+                Item same = Item {number: 7, tag: byte(1)};
+                Item different = Item {number: 8, tag: byte(2)};
+
+                // Identifier to identifier.
+                require(left == same);
+                require(left != different);
+
+                // Literal to literal.
+                require(Item {number: 7, tag: byte(1)} == Item {number: 7, tag: byte(1)});
+                require(Item {number: 7, tag: byte(1)} != Item {number: 8, tag: byte(2)});
+
+                // Identifier to literal, in both directions.
+                require(left == Item {number: 7, tag: byte(1)});
+                require(Item {number: 7, tag: byte(1)} == left);
+                require(left != Item {number: 8, tag: byte(2)});
+                require(Item {number: 8, tag: byte(2)} != left);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("scalar struct comparisons should compile");
+    let dispatch_tag = dispatch_tag_for(&compiled, "main");
+    let result = run_bytecode_with_dispatch_tag(compiled.bytecode, dispatch_tag);
+    assert!(result.is_ok(), "scalar struct comparisons should execute successfully: {result:?}");
+}
+
+#[test]
+fn rejects_scalar_struct_comparison_with_non_comparable_fields() {
+    let source = r#"
+        contract StructEquality() {
+            struct Item { int[] values; }
+
+            entry main(Item left, Item right) {
+                require(left == right);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default())
+        .expect_err("whole-struct comparison must preserve the comparison rules of each field");
+    assert!(err.to_string().contains("struct comparison is not supported for field type int[]"), "unexpected error: {err}");
+}
+
+#[test]
 fn allows_sequence_operations_on_string_and_fixed_byte_types() {
     let source = r#"
         contract ByteSequenceOperations() {
@@ -16044,6 +16437,38 @@ fn allows_fixed_array_cast_with_compatible_encoded_size() {
 }
 
 #[test]
+fn array_casts_require_the_same_base_type() {
+    let incompatible_element_source = r#"
+        contract ArrayCastRepresentation() {
+            entry main() {
+                int[1] values = int[1](bool[8]{true, false, false, false, false, false, false, false});
+                require(values.length == 1);
+            }
+        }
+    "#;
+    let err = compile_contract(incompatible_element_source, &[], CompileOptions::default())
+        .expect_err("equal encoded size must not permit a bool-array to int-array cast");
+    assert!(err.to_string().contains("cannot cast bool[8] to int[1]"), "unexpected error: {err}");
+}
+
+#[test]
+fn allows_signature_array_dimension_casts_in_both_directions() {
+    let source = r#"
+        contract ArrayCastRepresentation() {
+            entry main(sig[] dynamicSignatures, sig[1] fixedSignatures) {
+                sig[1] refined = sig[1](dynamicSignatures);
+                sig[] derefined = sig[](fixedSignatures);
+                require(refined.length == 1);
+                require(derefined.length == 1);
+            }
+        }
+    "#;
+
+    compile_contract(source, &[], CompileOptions::default())
+        .expect("same-base signature arrays may cast between dynamic and fixed dimensions");
+}
+
+#[test]
 fn rejects_ordered_comparisons_for_non_numeric_operands() {
     for (type_name, left, right) in [("string", "\"aaaaaaaaa\"", "\"bbbbbbbbb\""), ("byte", "byte(0xff)", "byte(0x01)")] {
         for operator in ["<", "<=", ">", ">="] {
@@ -16383,4 +16808,516 @@ fn public_ast_robustness_seeds_return_without_panicking() {
         let outcome = catch_unwind(AssertUnwindSafe(|| compile_contract_ast(&ast, &[], CompileOptions::default())));
         assert!(outcome.is_ok(), "public AST compilation panicked for seed: {seed}");
     }
+}
+
+#[test]
+fn entrypoint_abi_rejects_undeclared_record_types_even_when_unused() {
+    let source = r#"
+        contract UnknownRecordAbi() {
+            entry main(Missing value) {
+                require(true);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default())
+        .expect_err("every custom type published in the entrypoint ABI must resolve to a declared struct");
+    assert!(err.to_string().contains("unknown type 'Missing' in function parameter"), "unexpected error: {err}");
+}
+
+#[test]
+fn variable_definition_rejects_undeclared_type_even_when_unused() {
+    let source = r#"
+        contract UnknownLocalType() {
+            entry main() {
+                Missing value;
+                require(true);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default())
+        .expect_err("an unused local variable must still have a declared type");
+    assert!(err.to_string().contains("unknown type 'Missing' in variable"), "unexpected error: {err}");
+}
+
+#[test]
+fn dynamic_array_abi_rejects_zero_width_elements() {
+    let cases = [
+        r#"
+            contract ZeroWidthArray() {
+                entry main(byte[0][] values) {
+                    require(true);
+                }
+            }
+        "#,
+        r#"
+            contract ConstantZeroWidthArray() {
+                int constant N = 0;
+
+                entry main(byte[N][] values) {
+                    require(true);
+                }
+            }
+        "#,
+        r#"
+            contract ZeroWidthStructField() {
+                struct Item {
+                    byte[0] data;
+                }
+
+                entry main() {
+                    require(true);
+                }
+            }
+        "#,
+        r#"
+            contract InferredZeroWidthArray() {
+                entry main() {
+                    byte[_] values = byte[]{};
+                    require(true);
+                }
+            }
+        "#,
+    ];
+
+    for source in cases {
+        let err = compile_contract(source, &[], CompileOptions::default())
+            .expect_err("every fixed array dimension must be greater than zero");
+        assert!(err.to_string().contains("must be greater than zero"), "unexpected error: {err}");
+    }
+
+    let constructor_source = r#"
+        contract ZeroWidthConstructor(byte[0] value) {
+            entry main() {
+                require(true);
+            }
+        }
+    "#;
+    let err = compile_contract(constructor_source, &[Expr::bytes(Vec::new())], CompileOptions::default())
+        .expect_err("constructor parameter dimensions must be greater than zero");
+    assert!(err.to_string().contains("must be greater than zero"), "unexpected error: {err}");
+}
+
+#[test]
+fn dynamic_record_array_abi_rejects_empty_recursive_layouts() {
+    let source = r#"
+        contract EmptyRecordArray() {
+            struct Empty {}
+
+            entry main(Empty[] values) {
+                require(true);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("a struct must contain at least one field");
+    assert!(err.to_string().contains("struct 'Empty' must contain at least one field"), "unexpected error: {err}");
+}
+
+#[test]
+fn artifact_state_resolution_supports_constructor_sized_arrays() {
+    let source = r#"
+        contract C(int N, byte[N] initial) {
+            byte[N] stored = initial;
+
+            entry main() {
+                require(stored.length == N);
+            }
+        }
+    "#;
+    let constructor_args = [Expr::int(2), Expr::bytes(vec![0xaa, 0xbb])];
+    let compiled = compile_contract(source, &constructor_args, CompileOptions::default()).expect("contract compiles");
+
+    let state = compiled
+        .ast
+        .resolve_contract_state_values(&constructor_args)
+        .expect("the compiled artifact should resolve with the same constructor arguments accepted by compilation");
+    assert_eq!(state.len(), 1);
+    assert_eq!(state[0].value, constructor_args[1]);
+}
+
+#[test]
+fn artifact_sigscript_builder_supports_constructor_sized_struct_array_fields() {
+    let source = r#"
+        contract C(int N) {
+            struct Item {
+                byte[N] data;
+            }
+
+            entry main(Item[] items) {
+                require(items.length == 1);
+            }
+        }
+    "#;
+    let compiled = compile_contract(source, &[Expr::int(3)], CompileOptions::default()).expect("contract compiles");
+    let input = &compiled.entry_by_name("main").expect("entrypoint exists").inputs[0];
+    assert_eq!(input.type_name, "Item[]");
+    assert_eq!(compiled.ast.structs[0].fields[0].type_ref, parse_type_ref("byte[3]").expect("resolved field type parses"));
+
+    let json = serde_json::to_string(&compiled).expect("compiled artifact serializes");
+    let compiled: CompiledContract<'_> = serde_json::from_str(&json).expect("compiled artifact deserializes");
+    assert_eq!(compiled.ast.structs[0].fields[0].type_ref, parse_type_ref("byte[3]").expect("resolved field type survives JSON"));
+    let item = struct_object("Item", vec![("data", Expr::bytes(vec![0xaa, 0xbb, 0xcc]))]);
+    let items = Expr::array(parse_type_ref("Item[]").expect("array type parses"), vec![item]);
+    let sigscript = compiled.build_sig_script("main", vec![items]).expect("resolved ABI encodes the valid argument");
+
+    run_bytecode_with_sigscript(compiled.bytecode, sigscript).expect("artifact-built invocation executes");
+}
+
+#[test]
+fn artifact_sigscript_builder_rejects_wrong_constructor_sized_struct_fields() {
+    let source = r#"
+        contract C(int N) {
+            struct Item {
+                byte[N] data;
+            }
+
+            entry main(Item item) {
+                require(item.data.length == N);
+            }
+        }
+    "#;
+    let compiled = compile_contract(source, &[Expr::int(3)], CompileOptions::default()).expect("contract compiles");
+    let valid = struct_object("Item", vec![("data", Expr::bytes(vec![0xaa, 0xbb, 0xcc]))]);
+    compiled.build_sig_script("main", vec![valid]).expect("the valid constructor-sized struct argument encodes");
+
+    for data in [vec![0xaa, 0xbb], vec![0xaa, 0xbb, 0xcc, 0xdd]] {
+        let malformed = struct_object("Item", vec![("data", Expr::bytes(data))]);
+        compiled
+            .build_sig_script("main", vec![malformed])
+            .expect_err("the resolved ABI must reject an incorrectly sized nested field");
+    }
+}
+
+#[test]
+fn overflowing_fixed_array_size_is_rejected_at_the_untrusted_abi_boundary() {
+    let source = r#"
+        contract C() {
+            int constant N = 2305843009213693952;
+
+            entry main(int[N] values) {
+                require(values.length == N);
+            }
+        }
+    "#;
+    // N * sizeof(int) is 2^64 and overflows usize on the supported 64-bit host. A fixed parameter with that impossible encoded
+    // width must be rejected rather than weakened into the dynamic-array rule that accepts any multiple of eight bytes.
+    let err = compile_contract(source, &[], CompileOptions::default())
+        .expect_err("an impossible fixed-width entrypoint parameter must be rejected");
+    assert!(matches!(err.root(), CompilerError::ArithmeticOverflow(_)), "unexpected error: {err}");
+}
+
+#[test]
+fn append_accepts_a_slice_result_as_its_array_source() {
+    let source = r#"
+        contract SliceAppend() {
+            entry main(byte[] values) {
+                byte[] result = values.slice(0, values.length).append(byte(7));
+                require(result.length == values.length + 1);
+            }
+        }
+    "#;
+
+    compile_contract(source, &[], CompileOptions::default())
+        .expect("a statically typed byte[] slice should remain a valid append source after lowering");
+}
+
+#[test]
+fn append_accepts_a_nested_array_element_as_its_array_source() {
+    let source = r#"
+        contract NestedArrayAppend() {
+            entry main(int[2][] rows) {
+                int[3] result = rows[0].append(7);
+                require(result.length == 3);
+            }
+        }
+    "#;
+
+    compile_contract(source, &[], CompileOptions::default())
+        .expect("a statically typed nested-array element should remain a valid append source after lowering");
+}
+
+fn execute_handcrafted_p2sh(
+    compiled: &CompiledContract<'_>,
+    unlocking_prefix: Vec<u8>,
+) -> Result<(), kaspa_txscript_errors::TxScriptError> {
+    let flags = EngineFlags { covenants_enabled: true, ..Default::default() };
+    let signature_script = pay_to_script_hash_signature_script_with_flags(compiled.bytecode.clone(), unlocking_prefix, flags)
+        .expect("redeem script push should build");
+    let input = TransactionInput::new(
+        TransactionOutpoint { transaction_id: TransactionId::from_bytes([1; 32]), index: 0 },
+        signature_script,
+        0,
+        0,
+    );
+    let spent_output =
+        TransactionOutput { value: 1_000, script_public_key: pay_to_script_hash_script(&compiled.bytecode), covenant: None };
+    let tx = Transaction::new(1, vec![input.clone()], vec![spent_output.clone()], 0, SubnetworkId::default(), 0, vec![]);
+    let utxo = UtxoEntry::new(spent_output.value, spent_output.script_public_key, 0, tx.is_coinbase(), None);
+    let populated = PopulatedTransaction::new(&tx, vec![utxo.clone()]);
+    let reused_values = SigHashReusedValuesUnsync::new();
+    let sig_cache = Cache::new(10_000);
+    let mut vm = TxScriptEngine::from_transaction_input(
+        &populated,
+        &input,
+        0,
+        &utxo,
+        EngineCtx::new(&sig_cache).with_reused(&reused_values),
+        flags,
+    );
+    vm.execute()
+}
+
+fn compile_sigscript_boundary_contract() -> CompiledContract<'static> {
+    let source = r#"
+        contract Boundary(int committed) {
+            int stored = committed;
+
+            entry main(int left, int right) {
+                require(stored == 9);
+                require(left == 11);
+                require(right == 22);
+            }
+        }
+    "#;
+    compile_contract(source, &[Expr::int(9)], CompileOptions::default()).expect("boundary contract compiles")
+}
+
+fn valid_sigscript_boundary_prefix(compiled: &CompiledContract<'_>) -> Vec<u8> {
+    script_builder().add_i64(11).unwrap().add_i64(22).unwrap().add_data(&dispatch_tag_for(compiled, "main")).unwrap().drain()
+}
+
+#[test]
+fn handcrafted_p2sh_sigscript_accepts_exact_argument_stack() {
+    let compiled = compile_sigscript_boundary_contract();
+    execute_handcrafted_p2sh(&compiled, valid_sigscript_boundary_prefix(&compiled)).expect("exact argument stack must execute");
+}
+
+#[test]
+fn handcrafted_p2sh_sigscript_rejects_surplus_items_beneath_arguments() {
+    let compiled = compile_sigscript_boundary_contract();
+    let tag = dispatch_tag_for(&compiled, "main");
+    let cases = [
+        script_builder().add_i64(0).unwrap().add_i64(11).unwrap().add_i64(22).unwrap().add_data(&tag).unwrap().drain(),
+        script_builder().add_i64(99).unwrap().add_i64(11).unwrap().add_i64(22).unwrap().add_data(&tag).unwrap().drain(),
+        script_builder()
+            .add_data_with_push_opcode(&[0x55; 32])
+            .unwrap()
+            .add_i64(11)
+            .unwrap()
+            .add_i64(22)
+            .unwrap()
+            .add_data(&tag)
+            .unwrap()
+            .drain(),
+    ];
+
+    for unlocking_prefix in cases {
+        let err = execute_handcrafted_p2sh(&compiled, unlocking_prefix).expect_err("surplus stack item must not be accepted");
+        assert!(
+            matches!(err, kaspa_txscript_errors::TxScriptError::CleanStack(_)),
+            "surplus item should survive only to clean-stack rejection: {err:?}"
+        );
+    }
+}
+
+#[test]
+fn handcrafted_p2sh_sigscript_rejects_missing_reordered_and_trailing_items() {
+    let compiled = compile_sigscript_boundary_contract();
+    let tag = dispatch_tag_for(&compiled, "main");
+    let missing_leading = script_builder().add_i64(22).unwrap().add_data(&tag).unwrap().drain();
+    let reordered = script_builder().add_i64(22).unwrap().add_i64(11).unwrap().add_data(&tag).unwrap().drain();
+    let item_after_tag =
+        script_builder().add_i64(11).unwrap().add_i64(22).unwrap().add_data(&tag).unwrap().add_i64(1).unwrap().drain();
+
+    for unlocking_prefix in [missing_leading, reordered, item_after_tag] {
+        execute_handcrafted_p2sh(&compiled, unlocking_prefix).expect_err("malformed argument/dispatch position must fail");
+    }
+}
+
+#[test]
+fn handcrafted_p2sh_sigscript_rejects_unknown_tag_non_push_opcode_and_oversized_int() {
+    let compiled = compile_sigscript_boundary_contract();
+    let tag = dispatch_tag_for(&compiled, "main");
+    let unknown_tag = script_builder().add_i64(11).unwrap().add_i64(22).unwrap().add_data(&[0xde, 0xad, 0xbe, 0xef]).unwrap().drain();
+    execute_handcrafted_p2sh(&compiled, unknown_tag).expect_err("unknown dispatch tag must fail");
+
+    let mut non_push = vec![OpDup];
+    non_push.extend(valid_sigscript_boundary_prefix(&compiled));
+    let err = execute_handcrafted_p2sh(&compiled, non_push).expect_err("signature script must be push-only");
+    assert!(matches!(err, kaspa_txscript_errors::TxScriptError::SignatureScriptNotPushOnly), "unexpected non-push error: {err:?}");
+
+    let oversized = script_builder()
+        .add_data_with_push_opcode(&[11, 0, 0, 0, 0, 0, 0, 0, 0])
+        .unwrap()
+        .add_i64(22)
+        .unwrap()
+        .add_data(&tag)
+        .unwrap()
+        .drain();
+    execute_handcrafted_p2sh(&compiled, oversized).expect_err("nine-byte int must fail the compiler-emitted size guard");
+}
+
+#[test]
+fn handcrafted_p2sh_sigscript_preserves_nonminimal_but_valid_int_semantics() {
+    let compiled = compile_sigscript_boundary_contract();
+    let left = [11, 0, 0, 0, 0, 0, 0, 0];
+    let right = [22, 0, 0, 0, 0, 0, 0, 0];
+    let prefix = script_builder()
+        .add_data_with_push_opcode(&left)
+        .unwrap()
+        .add_data_with_push_opcode(&right)
+        .unwrap()
+        .add_data(&dispatch_tag_for(&compiled, "main"))
+        .unwrap()
+        .drain();
+    execute_handcrafted_p2sh(&compiled, prefix).expect("Rusty Kaspa permits nonminimal numeric encodings up to eight bytes");
+}
+
+#[test]
+fn runtime_empty_loop_with_extreme_reversed_bounds_matches_constant_lowering() {
+    let constant_source = r#"
+        contract ConstantLoopBounds() {
+            entry main() {
+                for (i, 9223372036854775807, -9223372036854775807, 1) {
+                    require(false);
+                }
+                require(true);
+            }
+        }
+    "#;
+    let err = compile_contract(constant_source, &[], CompileOptions::default())
+        .expect_err("an overflowing constant loop range must fail compilation");
+    assert!(matches!(err.root(), CompilerError::ArithmeticOverflow(_)), "unexpected error: {err}");
+    assert!(err.to_string().contains("arithmetic overflow: -9223372036854775807 - 9223372036854775807"), "unexpected error: {err}");
+
+    let runtime_source = r#"
+        contract RuntimeLoopBounds() {
+            entry main(int start, int end) {
+                for (i, start, end, 1) {
+                    require(false);
+                }
+                require(true);
+            }
+        }
+    "#;
+    let compiled = compile_contract(runtime_source, &[], CompileOptions::default()).expect("runtime-bound contract compiles");
+    let sigscript =
+        compiled.build_sig_script("main", vec![Expr::int(i64::MAX), Expr::int(-i64::MAX)]).expect("runtime sigscript builds");
+    let err =
+        run_bytecode_with_sigscript(compiled.bytecode, sigscript).expect_err("the equivalent runtime range subtraction must overflow");
+    assert!(matches!(err, kaspa_txscript_errors::TxScriptError::NumberTooBig(_)), "unexpected runtime error: {err:?}");
+}
+
+#[test]
+fn compiler_rejects_redeem_scripts_above_the_signature_script_limit() {
+    let source = r#"
+        contract OversizedLoop() {
+            entry main(int start, int end) {
+                for (i, start, end, 10000) {
+                    require(i >= start);
+                    require(i <= end);
+                    require(i != start - 1);
+                }
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default())
+        .expect_err("a redeem script that cannot fit in a signature script must be rejected");
+    match err.root() {
+        CompilerError::RedeemScriptTooLarge { actual, maximum } => {
+            assert!(*actual > *maximum);
+            assert_eq!(*maximum, MAINNET_PARAMS.new_max_signature_script_len);
+        }
+        other => panic!("unexpected error: {other}"),
+    }
+}
+
+#[test]
+fn compiler_rejects_entry_abis_that_cannot_fit_the_unlocking_stack() {
+    fn source_with_params(count: usize) -> String {
+        let params = (0..count).map(|index| format!("int p{index}")).collect::<Vec<_>>().join(", ");
+        format!(
+            r#"
+                contract StackBoundary() {{
+                    entry main({params}) {{
+                        require(true);
+                    }}
+                }}
+            "#
+        )
+    }
+
+    compile_contract(&source_with_params(242), &[], CompileOptions::default())
+        .expect("242 arguments, the dispatch tag, and the redeem script fit the 244-item stack limit");
+
+    let err = compile_contract(&source_with_params(243), &[], CompileOptions::default())
+        .expect_err("243 arguments plus the dispatch tag and redeem script must be rejected");
+    match err.root() {
+        CompilerError::EntrypointStackTooLarge { function, actual, maximum } => {
+            assert_eq!(function, "main");
+            assert_eq!(*actual, 245);
+            assert_eq!(*maximum, 244);
+        }
+        other => panic!("unexpected error: {other}"),
+    }
+}
+
+#[test]
+fn compiler_rejects_fixed_abi_payloads_that_cannot_fit_a_signature_script() {
+    let source = r#"
+        contract OversizedFixedArgument() {
+            entry main(byte[250000] payload) {
+                require(true);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default())
+        .expect_err("an ABI whose minimum signature script is too large must be rejected");
+    match err.root() {
+        CompilerError::EntrypointSignatureScriptTooLarge { function, estimated, maximum } => {
+            assert_eq!(function, "main");
+            assert!(*estimated > *maximum);
+            assert_eq!(*maximum, MAINNET_PARAMS.new_max_signature_script_len);
+        }
+        other => panic!("unexpected error: {other}"),
+    }
+}
+
+#[test]
+fn signature_script_builder_requires_explicit_byte_values() {
+    let source = r#"
+        contract ByteArgument() {
+            entry main(byte value) {
+                require(true);
+            }
+
+            entry array(byte[] values) {
+                require(values.length == 1);
+            }
+        }
+    "#;
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("byte contract compiles");
+
+    for value in [0, 0x80, 0xff] {
+        let err = compiled
+            .build_sig_script("main", vec![Expr::int(value)])
+            .expect_err("integer AST values must not be reinterpreted as ABI bytes");
+        assert!(err.to_string().contains("expects byte"), "unexpected error for {value:#04x}: {err}");
+    }
+
+    let sigscript = compiled.build_sig_script("main", vec![Expr::byte(0xff)]).expect("an explicit byte value builds");
+    run_bytecode_with_sigscript(compiled.bytecode.clone(), sigscript).expect("the explicit byte invocation executes");
+
+    let contextual_array = Expr::array(parse_type_ref("byte[]").expect("byte array type parses"), vec![Expr::int(1)]);
+    let err = compiled
+        .build_sig_script("array", vec![contextual_array])
+        .expect_err("integer AST elements must not be reinterpreted as ABI bytes");
+    assert!(err.to_string().contains("expects byte[]"), "unexpected array error: {err}");
+
+    let sigscript = compiled.build_sig_script("array", vec![Expr::dynamic_bytes(vec![1])]).expect("explicit byte elements build");
+    run_bytecode_with_sigscript(compiled.bytecode, sigscript).expect("the explicit byte-array invocation executes");
 }
