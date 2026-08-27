@@ -1,6 +1,6 @@
 use silverscript_lang::ast::visit::{AstVisitorMut, NameKind, visit_contract_mut, visit_function_mut};
 use silverscript_lang::ast::{
-    ExprKind, Statement, TypeBase, parse_contract_ast, parse_expression_ast, parse_function_ast, parse_statement_ast,
+    ExprKind, FunctionAst, Statement, TypeBase, parse_contract_ast, parse_expression_ast, parse_function_ast, parse_statement_ast,
 };
 use silverscript_lang::span::Span;
 
@@ -35,6 +35,12 @@ struct TypeOccurrence {
 #[derive(Default)]
 struct TypeOccurrenceCollector {
     occurrences: Vec<TypeOccurrence>,
+}
+
+#[derive(Default)]
+struct SyntheticMetadataCollector {
+    type_names: Vec<(String, bool)>,
+    attribute_path_segments: Vec<(String, bool)>,
 }
 
 impl<'i> AstVisitorMut<'i> for NameOccurrenceCollector {
@@ -139,6 +145,38 @@ impl<'i> AstVisitorMut<'i> for TypeOccurrenceCollector {
     fn visit_span(&mut self, span: &mut Span<'i>) {
         *span = Span::default();
     }
+}
+
+impl<'i> AstVisitorMut<'i> for SyntheticMetadataCollector {
+    fn visit_name(&mut self, name: &mut String, kind: NameKind, span: Span<'i>) {
+        if kind == NameKind::AttributePathSegment {
+            self.attribute_path_segments.push((name.clone(), span == Span::default()));
+        }
+    }
+
+    fn visit_type(&mut self, type_ref: &silverscript_lang::ast::TypeRef, span: Span<'i>) {
+        self.type_names.push((type_ref.type_name(), span == Span::default()));
+    }
+}
+
+#[test]
+fn visits_deserialized_function_metadata_without_source_spans() {
+    let source = "#[covenant.singleton] function inspect() : (LeftResult, RightResult) {}";
+    let function = parse_function_ast(source).expect("function metadata fixture should parse");
+    let serialized = serde_json::to_string(&function).expect("function AST should serialize");
+    let mut function: FunctionAst<'_> = serde_json::from_str(&serialized).expect("function AST should deserialize");
+    let mut collector = SyntheticMetadataCollector::default();
+
+    visit_function_mut(&mut collector, &mut function);
+
+    assert_eq!(
+        collector.type_names,
+        [("LeftResult", true), ("RightResult", true)].map(|(name, synthetic)| (name.to_string(), synthetic))
+    );
+    assert_eq!(
+        collector.attribute_path_segments,
+        [("covenant", true), ("singleton", true)].map(|(name, synthetic)| (name.to_string(), synthetic))
+    );
 }
 
 #[test]

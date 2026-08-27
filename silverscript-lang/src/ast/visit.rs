@@ -164,7 +164,9 @@ pub fn walk_function_mut<'i, V: AstVisitorMut<'i> + ?Sized>(visitor: &mut V, fun
     visitor.visit_span(&mut function.span);
     visitor.visit_span(&mut function.name_span);
     visitor.visit_span(&mut function.body_span);
-    for (type_ref, span) in function.return_types.iter().zip(function.return_type_spans.iter().copied()) {
+    for (type_ref, span) in
+        function.return_types.iter().zip(function.return_type_spans.iter().copied().chain(std::iter::repeat(Span::default())))
+    {
         visit_type_ref(visitor, type_ref, span);
     }
     for span in &mut function.return_type_spans {
@@ -183,7 +185,9 @@ pub fn walk_function_mut<'i, V: AstVisitorMut<'i> + ?Sized>(visitor: &mut V, fun
 
 pub fn walk_function_attribute_mut<'i, V: AstVisitorMut<'i> + ?Sized>(visitor: &mut V, attribute: &mut FunctionAttributeAst<'i>) {
     visitor.visit_span(&mut attribute.span);
-    for (segment, span) in attribute.path.iter_mut().zip(attribute.path_spans.iter().copied()) {
+    for (segment, span) in
+        attribute.path.iter_mut().zip(attribute.path_spans.iter().copied().chain(std::iter::repeat(Span::default())))
+    {
         visitor.visit_name(segment, NameKind::AttributePathSegment, span);
     }
     for span in &mut attribute.path_spans {
