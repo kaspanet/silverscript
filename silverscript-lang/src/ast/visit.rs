@@ -1,12 +1,23 @@
 use super::{
     ConstantAst, ContractAst, ContractFieldAst, Expr, ExprKind, FunctionAst, FunctionAttributeArgAst, FunctionAttributeAst, ParamAst,
-    Statement, StructBindingAst,
+    Statement, StructAst, StructBindingAst, StructFieldAst, TypeBase, TypeRef,
 };
 use crate::span::Span;
+
+fn visit_type_ref<'i, V: AstVisitorMut<'i> + ?Sized>(visitor: &mut V, type_ref: &TypeRef, span: Span<'i>) {
+    visitor.visit_type(type_ref, span);
+}
+
+fn visit_struct_type_name<'i, V: AstVisitorMut<'i> + ?Sized>(visitor: &mut V, name: &str, span: Span<'i>) {
+    let type_ref = TypeRef { base: TypeBase::Custom(name.to_string()), array_dims: Vec::new() };
+    visitor.visit_type(&type_ref, span);
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NameKind {
     Contract,
+    Struct,
+    StructField,
     ContractField,
     Constant,
     Function,
@@ -25,6 +36,14 @@ pub enum NameKind {
 pub trait AstVisitorMut<'i> {
     /// Visits a classified name together with its exact source span.
     fn visit_name(&mut self, _name: &mut String, _kind: NameKind, _span: Span<'i>) {}
+    /// Visits a classified type. For parsed ASTs, its base type name starts at
+    /// `span.start()`.
+    fn visit_type(&mut self, _type_ref: &TypeRef, _span: Span<'i>) {}
+    /// Visits a stored source span without classifying what it belongs to.
+    ///
+    /// The span is mutable so visitors can relocate or reset every span reached
+    /// by the walker, for example after embedding a parsed fragment at a source
+    /// offset. Synthetic AST nodes may carry an empty `Span::default()` value.
     fn visit_span(&mut self, _span: &mut Span<'i>) {}
 
     fn visit_contract(&mut self, contract: &mut ContractAst<'i>) {
@@ -33,6 +52,14 @@ pub trait AstVisitorMut<'i> {
 
     fn visit_contract_field(&mut self, field: &mut ContractFieldAst<'i>) {
         walk_contract_field_mut(self, field);
+    }
+
+    fn visit_struct(&mut self, item: &mut StructAst<'i>) {
+        walk_struct_mut(self, item);
+    }
+
+    fn visit_struct_field(&mut self, field: &mut StructFieldAst<'i>) {
+        walk_struct_field_mut(self, field);
     }
 
     fn visit_constant(&mut self, constant: &mut ConstantAst<'i>) {
@@ -83,6 +110,9 @@ pub fn walk_contract_mut<'i, V: AstVisitorMut<'i> + ?Sized>(visitor: &mut V, con
     for param in &mut contract.params {
         visitor.visit_param(param);
     }
+    for item in &mut contract.structs {
+        visitor.visit_struct(item);
+    }
     for field in &mut contract.fields {
         visitor.visit_contract_field(field);
     }
@@ -94,7 +124,25 @@ pub fn walk_contract_mut<'i, V: AstVisitorMut<'i> + ?Sized>(visitor: &mut V, con
     }
 }
 
+pub fn walk_struct_mut<'i, V: AstVisitorMut<'i> + ?Sized>(visitor: &mut V, item: &mut StructAst<'i>) {
+    visitor.visit_name(&mut item.name, NameKind::Struct, item.name_span);
+    visitor.visit_span(&mut item.span);
+    visitor.visit_span(&mut item.name_span);
+    for field in &mut item.fields {
+        visitor.visit_struct_field(field);
+    }
+}
+
+pub fn walk_struct_field_mut<'i, V: AstVisitorMut<'i> + ?Sized>(visitor: &mut V, field: &mut StructFieldAst<'i>) {
+    visit_type_ref(visitor, &field.type_ref, field.type_span);
+    visitor.visit_name(&mut field.name, NameKind::StructField, field.name_span);
+    visitor.visit_span(&mut field.span);
+    visitor.visit_span(&mut field.type_span);
+    visitor.visit_span(&mut field.name_span);
+}
+
 pub fn walk_contract_field_mut<'i, V: AstVisitorMut<'i> + ?Sized>(visitor: &mut V, field: &mut ContractFieldAst<'i>) {
+    visit_type_ref(visitor, &field.type_ref, field.type_span);
     visitor.visit_name(&mut field.name, NameKind::ContractField, field.name_span);
     visitor.visit_span(&mut field.span);
     visitor.visit_span(&mut field.type_span);
@@ -103,6 +151,7 @@ pub fn walk_contract_field_mut<'i, V: AstVisitorMut<'i> + ?Sized>(visitor: &mut 
 }
 
 pub fn walk_constant_mut<'i, V: AstVisitorMut<'i> + ?Sized>(visitor: &mut V, constant: &mut ConstantAst<'i>) {
+    visit_type_ref(visitor, &constant.type_ref, constant.type_span);
     visitor.visit_name(&mut constant.name, NameKind::Constant, constant.name_span);
     visitor.visit_span(&mut constant.span);
     visitor.visit_span(&mut constant.type_span);
@@ -115,6 +164,9 @@ pub fn walk_function_mut<'i, V: AstVisitorMut<'i> + ?Sized>(visitor: &mut V, fun
     visitor.visit_span(&mut function.span);
     visitor.visit_span(&mut function.name_span);
     visitor.visit_span(&mut function.body_span);
+    for (type_ref, span) in function.return_types.iter().zip(function.return_type_spans.iter().copied()) {
+        visit_type_ref(visitor, type_ref, span);
+    }
     for span in &mut function.return_type_spans {
         visitor.visit_span(span);
     }
@@ -154,6 +206,7 @@ pub fn walk_param_mut<'i, V: AstVisitorMut<'i> + ?Sized>(visitor: &mut V, param:
 }
 
 fn walk_param_with_kind_mut<'i, V: AstVisitorMut<'i> + ?Sized>(visitor: &mut V, param: &mut ParamAst<'i>, kind: NameKind) {
+    visit_type_ref(visitor, &param.type_ref, param.type_span);
     visitor.visit_name(&mut param.name, kind, param.name_span);
     visitor.visit_span(&mut param.span);
     visitor.visit_span(&mut param.type_span);
@@ -161,6 +214,7 @@ fn walk_param_with_kind_mut<'i, V: AstVisitorMut<'i> + ?Sized>(visitor: &mut V, 
 }
 
 pub fn walk_state_binding_mut<'i, V: AstVisitorMut<'i> + ?Sized>(visitor: &mut V, binding: &mut StructBindingAst<'i>) {
+    visit_type_ref(visitor, &binding.type_ref, binding.type_span);
     visitor.visit_name(&mut binding.field_name, NameKind::StateField, binding.field_span);
     visitor.visit_name(&mut binding.name, NameKind::StateBinding, binding.name_span);
     visitor.visit_span(&mut binding.span);
@@ -171,7 +225,8 @@ pub fn walk_state_binding_mut<'i, V: AstVisitorMut<'i> + ?Sized>(visitor: &mut V
 
 pub fn walk_statement_mut<'i, V: AstVisitorMut<'i> + ?Sized>(visitor: &mut V, statement: &mut Statement<'i>) {
     match statement {
-        Statement::VariableDefinition { name, expr, span, type_span, modifier_spans, name_span, .. } => {
+        Statement::VariableDefinition { type_ref, name, expr, span, type_span, modifier_spans, name_span, .. } => {
+            visit_type_ref(visitor, type_ref, *type_span);
             visitor.visit_name(name, NameKind::LocalBinding, *name_span);
             visitor.visit_span(span);
             visitor.visit_span(type_span);
@@ -185,7 +240,9 @@ pub fn walk_statement_mut<'i, V: AstVisitorMut<'i> + ?Sized>(visitor: &mut V, st
         }
         Statement::TupleAssignment {
             left_name,
+            left_type_ref,
             right_name,
+            right_type_ref,
             expr,
             span,
             left_type_span,
@@ -194,6 +251,8 @@ pub fn walk_statement_mut<'i, V: AstVisitorMut<'i> + ?Sized>(visitor: &mut V, st
             right_name_span,
             ..
         } => {
+            visit_type_ref(visitor, left_type_ref, *left_type_span);
+            visit_type_ref(visitor, right_type_ref, *right_type_span);
             visitor.visit_name(left_name, NameKind::LocalBinding, *left_name_span);
             visitor.visit_name(right_name, NameKind::LocalBinding, *right_name_span);
             visitor.visit_span(span);
@@ -222,7 +281,8 @@ pub fn walk_statement_mut<'i, V: AstVisitorMut<'i> + ?Sized>(visitor: &mut V, st
                 visitor.visit_expr(arg);
             }
         }
-        Statement::StateFunctionCallAssign { target_struct: _, bindings, name, args, span, target_struct_span, name_span } => {
+        Statement::StateFunctionCallAssign { target_struct, bindings, name, args, span, target_struct_span, name_span } => {
+            visit_struct_type_name(visitor, target_struct, *target_struct_span);
             visitor.visit_name(name, NameKind::CallTarget, *name_span);
             visitor.visit_span(span);
             visitor.visit_span(target_struct_span);
@@ -234,7 +294,8 @@ pub fn walk_statement_mut<'i, V: AstVisitorMut<'i> + ?Sized>(visitor: &mut V, st
                 visitor.visit_expr(arg);
             }
         }
-        Statement::StructDestructure { bindings, expr, span, struct_name_span, .. } => {
+        Statement::StructDestructure { struct_name, bindings, expr, span, struct_name_span } => {
+            visit_struct_type_name(visitor, struct_name, *struct_name_span);
             visitor.visit_span(span);
             visitor.visit_span(struct_name_span);
             for binding in bindings {
@@ -319,7 +380,8 @@ pub fn walk_expr_mut<'i, V: AstVisitorMut<'i> + ?Sized>(visitor: &mut V, expr: &
     visitor.visit_span(&mut expr.span);
     match &mut expr.kind {
         ExprKind::Identifier(name) => visitor.visit_name(name, NameKind::IdentifierExpr, expr_span),
-        ExprKind::Array { values: items, type_span, .. } => {
+        ExprKind::Array { type_ref, values: items, type_span } => {
+            visit_type_ref(visitor, type_ref, *type_span);
             visitor.visit_span(type_span);
             for item in items {
                 visitor.visit_expr(item);
@@ -374,7 +436,8 @@ pub fn walk_expr_mut<'i, V: AstVisitorMut<'i> + ?Sized>(visitor: &mut V, expr: &
             visitor.visit_span(field_span);
             visitor.visit_expr(index);
         }
-        ExprKind::StructLiteral { fields, name_span, .. } => {
+        ExprKind::StructLiteral { name, fields, name_span } => {
+            visit_struct_type_name(visitor, name, *name_span);
             visitor.visit_span(name_span);
             for field in fields {
                 visitor.visit_name(&mut field.name, NameKind::StateField, field.name_span);
