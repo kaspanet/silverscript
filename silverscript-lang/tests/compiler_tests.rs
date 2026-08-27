@@ -354,6 +354,57 @@ fn supports_struct_contract_params_fields_and_constants() {
 }
 
 #[test]
+fn constructor_arguments_are_concrete_values_not_runtime_introspection() {
+    let source = r#"
+        contract RuntimeConstructor(int expected_lock_time) {
+            entry main() {
+                require(OpTxLockTime() == expected_lock_time);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[Expr::call("OpTxLockTime", vec![])], CompileOptions::default())
+        .expect_err("constructor arguments must not evaluate runtime expressions");
+    assert!(err.to_string().contains("constructor argument 'expected_lock_time' must be a concrete value"), "unexpected error: {err}");
+    let contract = parse_contract_ast(source).expect("contract parses");
+    contract
+        .resolve_contract_state_values(&[Expr::call("OpTxLockTime", vec![])])
+        .expect_err("state resolution must enforce the same concrete constructor boundary");
+
+    let struct_source = r#"
+        contract StructConstructor(Pair pair) {
+            struct Pair { int value; }
+
+            entry main() {
+                require(pair.value == 1);
+            }
+        }
+    "#;
+    let pair = struct_object("Pair", vec![("value", Expr::int(1))]);
+    compile_contract(struct_source, &[pair], CompileOptions::default())
+        .expect("structs containing only concrete values remain valid constructor arguments");
+
+    let runtime_pair = struct_object("Pair", vec![("value", Expr::call("OpTxLockTime", vec![]))]);
+    compile_contract(struct_source, &[runtime_pair], CompileOptions::default())
+        .expect_err("runtime expressions nested in constructor structs must be rejected");
+
+    let array_source = r#"
+        contract ArrayConstructor(int[] values) {
+            entry main() {
+                require(values.length == 1);
+            }
+        }
+    "#;
+    let literal_values = Expr::array(parse_type_ref("int[]").expect("array type parses"), vec![Expr::int(1)]);
+    compile_contract(array_source, &[literal_values], CompileOptions::default())
+        .expect("arrays containing only concrete values remain valid constructor arguments");
+
+    let runtime_values = Expr::array(parse_type_ref("int[]").expect("array type parses"), vec![Expr::call("OpTxLockTime", vec![])]);
+    compile_contract(array_source, &[runtime_values], CompileOptions::default())
+        .expect_err("runtime expressions nested in constructor arrays must be rejected");
+}
+
+#[test]
 fn nested_struct_field_path_does_not_alias_underscored_field_name() {
     let source = r#"
         contract C() {

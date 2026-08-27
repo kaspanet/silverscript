@@ -38,7 +38,7 @@ pub(super) use compile::{eval_const_int, eval_optional_const_int};
 pub(crate) use debug_recording::DebugRecorder;
 use r#for::lower_for_loops;
 use read_input_state::lower_read_input_state_calls;
-use static_check::validate_expr_matches_type;
+use static_check::{validate_concrete_constructor_argument, validate_expr_matches_type};
 pub use structs::flattened_struct_name;
 pub(super) use structs::{
     StructArrayParamGroups, StructRegistry, build_struct_registry, dynamic_struct_array_param_groups, ensure_known_type,
@@ -157,6 +157,7 @@ impl<'i> ContractAst<'i> {
         let mut env = constants.clone();
 
         for (param, value) in self.params.iter().zip(constructor_args.iter()) {
+            validate_concrete_constructor_argument(param, value)?;
             let type_name = param.type_ref.type_name();
             if validate_expr_matches_type(value, &param.type_ref, &HashMap::new(), &structs, &env, &HashMap::new(), &self.fields)
                 .is_err()

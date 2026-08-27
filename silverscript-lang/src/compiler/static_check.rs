@@ -224,6 +224,29 @@ pub(super) fn static_check_contract<'i>(
     Ok(())
 }
 
+pub(super) fn validate_concrete_constructor_argument(param: &ParamAst<'_>, value: &Expr<'_>) -> Result<(), CompilerError> {
+    if is_concrete_constructor_value(value) {
+        return Ok(());
+    }
+
+    Err(CompilerError::Unsupported(format!("constructor argument '{}' must be a concrete value", param.name)).with_span(&value.span))
+}
+
+fn is_concrete_constructor_value(value: &Expr<'_>) -> bool {
+    match &value.kind {
+        ExprKind::Int(_)
+        | ExprKind::Temporal(_)
+        | ExprKind::Bool(_)
+        | ExprKind::Byte(_)
+        | ExprKind::String(_)
+        | ExprKind::DateLiteral(_) => true,
+        // Composite values are concrete only when every nested value is.
+        ExprKind::Array { values, .. } => values.iter().all(is_concrete_constructor_value),
+        ExprKind::StructLiteral { fields, .. } => fields.iter().all(|field| is_concrete_constructor_value(&field.expr)),
+        _ => false,
+    }
+}
+
 fn validate_constant_initializers<'i>(
     contract: &ContractAst<'i>,
     structs: &StructRegistry,
