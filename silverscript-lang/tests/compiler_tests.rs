@@ -385,6 +385,29 @@ fn supports_struct_contract_params_fields_and_constants() {
 }
 
 #[test]
+fn portable_abi_verifies_struct_contract_field_state_layout() {
+    let source = r#"
+        contract StructState(Pair init_pair) {
+            struct Pair {
+                int amount;
+                byte[2] code;
+            }
+
+            Pair from_param = init_pair;
+
+            entry main() {
+                require(true);
+            }
+        }
+    "#;
+    let args = vec![artifact_object([("amount", 11.into()), ("code", vec![0xabu8, 0xcd].into())])];
+
+    let abi = compile_to_sil_abi_artifact(source, &args).expect("struct state contract compiles to a portable ABI");
+
+    abi.verify().expect("portable ABI runtime-state metadata matches the flattened state span");
+}
+
+#[test]
 fn constructor_arguments_are_concrete_values_not_runtime_introspection() {
     let source = r#"
         contract RuntimeConstructor(int expected_lock_time) {

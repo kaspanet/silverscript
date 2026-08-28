@@ -514,6 +514,7 @@ pub fn encode_entry_sig_script(
 }
 
 pub fn encode_runtime_state_script(
+    abi: &SilAbiArtifact,
     runtime_state: &RuntimeStateArtifact,
     values: &BTreeMap<String, ArtifactValue>,
 ) -> CodecResult<Vec<u8>> {
@@ -526,30 +527,257 @@ pub fn encode_runtime_state_script(
     let mut builder = script_builder();
     for field in &runtime_state.fields {
         let value = values.get(&field.name).ok_or_else(|| CodecError::MissingField(field.name.clone()))?;
-        let payload = encode_state_payload(&field.name, &field.ty, value)?;
-        builder.add_data_with_push_opcode(&payload)?;
+        for (leaf_ty, leaf_value) in flatten_state_value(abi, &field.name, &field.ty, value)? {
+            let payload = encode_state_payload(&field.name, &leaf_ty, &leaf_value)?;
+            builder.add_data_with_push_opcode(&payload)?;
+        }
     }
     Ok(builder.drain())
 }
 
 pub fn decode_runtime_state_script(
+    abi: &SilAbiArtifact,
     runtime_state: &RuntimeStateArtifact,
     state_script: &[u8],
 ) -> CodecResult<BTreeMap<String, ArtifactValue>> {
     let pushes = parse_pushes(state_script)?;
-    if pushes.len() < runtime_state.fields.len() {
-        return Err(CodecError::InvalidPush(format!("expected {} state pushes, got {}", runtime_state.fields.len(), pushes.len())));
+    let field_leaf_types =
+        runtime_state.fields.iter().map(|field| flatten_state_types(abi, &field.ty)).collect::<CodecResult<Vec<_>>>()?;
+    let expected_pushes = field_leaf_types.iter().map(Vec::len).sum::<usize>();
+    if pushes.len() < expected_pushes {
+        return Err(CodecError::InvalidPush(format!("expected {expected_pushes} state pushes, got {}", pushes.len())));
     }
-    if pushes.len() > runtime_state.fields.len() {
-        let offset = pushes[runtime_state.fields.len()].0;
+    if pushes.len() > expected_pushes {
+        let offset = pushes[expected_pushes].0;
         return Err(CodecError::TrailingStateBytes { offset, len: state_script.len() - offset });
     }
 
     let mut values = BTreeMap::new();
-    for (field, (_, payload)) in runtime_state.fields.iter().zip(pushes) {
-        values.insert(field.name.clone(), decode_state_payload(&field.name, &field.ty, &payload)?);
+    let mut pushes = pushes.into_iter();
+    for (field, leaf_types) in runtime_state.fields.iter().zip(field_leaf_types) {
+        let leaf_values = leaf_types
+            .iter()
+            .map(|leaf_ty| {
+                let (_, payload) = pushes.next().expect("state push count was checked");
+                decode_state_payload(&field.name, leaf_ty, &payload)
+            })
+            .collect::<CodecResult<Vec<_>>>()?;
+        let (value, consumed) = reconstruct_state_value(abi, &field.name, &field.ty, &leaf_values)?;
+        if consumed != leaf_values.len() {
+            return Err(CodecError::UnsupportedType(format!("invalid flattened state layout for {}", field.name)));
+        }
+        values.insert(field.name.clone(), value);
     }
     Ok(values)
+}
+
+fn flatten_state_types(abi: &SilAbiArtifact, ty: &TypeArtifact) -> CodecResult<Vec<TypeArtifact>> {
+    fn flatten(abi: &SilAbiArtifact, ty: &TypeArtifact, visiting: &mut BTreeSet<String>) -> CodecResult<Vec<TypeArtifact>> {
+        match ty {
+            TypeArtifact::Struct { name } => {
+                if !visiting.insert(name.clone()) {
+                    return Err(CodecError::UnsupportedType(format!("cyclic struct {name}")));
+                }
+                let structure = abi
+                    .structs
+                    .iter()
+                    .find(|structure| structure.name == *name)
+                    .ok_or_else(|| CodecError::UnknownStruct(name.clone()))?;
+                let mut leaves = Vec::new();
+                for field in &structure.fields {
+                    leaves.extend(flatten(abi, &field.ty, visiting)?);
+                }
+                visiting.remove(name);
+                Ok(leaves)
+            }
+            TypeArtifact::FixedArray { item, len } => {
+                let item_leaves = flatten(abi, item, visiting)?;
+                if item_leaves.as_slice() == std::slice::from_ref(item.as_ref()) {
+                    Ok(vec![ty.clone()])
+                } else {
+                    Ok(item_leaves.into_iter().map(|item| TypeArtifact::FixedArray { item: Box::new(item), len: *len }).collect())
+                }
+            }
+            TypeArtifact::DynamicArray { item } => {
+                let item_leaves = flatten(abi, item, visiting)?;
+                if item_leaves.as_slice() == std::slice::from_ref(item.as_ref()) {
+                    Ok(vec![ty.clone()])
+                } else {
+                    Ok(item_leaves.into_iter().map(|item| TypeArtifact::DynamicArray { item: Box::new(item) }).collect())
+                }
+            }
+            _ => Ok(vec![ty.clone()]),
+        }
+    }
+
+    flatten(abi, ty, &mut BTreeSet::new())
+}
+
+fn flatten_state_value(
+    abi: &SilAbiArtifact,
+    name: &str,
+    ty: &TypeArtifact,
+    value: &ArtifactValue,
+) -> CodecResult<Vec<(TypeArtifact, ArtifactValue)>> {
+    fn flatten(
+        abi: &SilAbiArtifact,
+        name: &str,
+        ty: &TypeArtifact,
+        value: &ArtifactValue,
+        visiting: &mut BTreeSet<String>,
+    ) -> CodecResult<Vec<(TypeArtifact, ArtifactValue)>> {
+        match ty {
+            TypeArtifact::Struct { name: struct_name } => {
+                if !visiting.insert(struct_name.clone()) {
+                    return Err(CodecError::UnsupportedType(format!("cyclic struct {struct_name}")));
+                }
+                let structure = abi
+                    .structs
+                    .iter()
+                    .find(|structure| structure.name == *struct_name)
+                    .ok_or_else(|| CodecError::UnknownStruct(struct_name.clone()))?;
+                let fields = object_fields(value)?;
+                assert_no_extra_fields(fields, &structure.fields)?;
+                let mut leaves = Vec::new();
+                for field in &structure.fields {
+                    let field_value = fields.get(&field.name).ok_or_else(|| CodecError::MissingField(field.name.clone()))?;
+                    leaves.extend(flatten(abi, &field.name, &field.ty, field_value, visiting)?);
+                }
+                visiting.remove(struct_name);
+                Ok(leaves)
+            }
+            TypeArtifact::FixedArray { item, len } => flatten_state_array(abi, name, item, Some(*len), value, visiting),
+            TypeArtifact::DynamicArray { item } => flatten_state_array(abi, name, item, None, value, visiting),
+            _ => Ok(vec![(ty.clone(), value.clone())]),
+        }
+    }
+
+    fn flatten_state_array(
+        abi: &SilAbiArtifact,
+        name: &str,
+        item: &TypeArtifact,
+        expected_len: Option<usize>,
+        value: &ArtifactValue,
+        visiting: &mut BTreeSet<String>,
+    ) -> CodecResult<Vec<(TypeArtifact, ArtifactValue)>> {
+        let item_leaf_types = flatten_state_types(abi, item)?;
+
+        // A single unchanged leaf means the item type does not contain a struct.
+        if item_leaf_types.as_slice() == std::slice::from_ref(item) {
+            let ty = match expected_len {
+                Some(len) => TypeArtifact::FixedArray { item: Box::new(item.clone()), len },
+                None => TypeArtifact::DynamicArray { item: Box::new(item.clone()) },
+            };
+            return Ok(vec![(ty, value.clone())]);
+        }
+
+        let values = expect_array(value)?;
+        if let Some(expected) = expected_len {
+            require_len(name, expected, values.len())?;
+        }
+        let mut grouped_values = vec![Vec::with_capacity(values.len()); item_leaf_types.len()];
+        for value in values {
+            let item_leaves = flatten(abi, name, item, value, visiting)?;
+            if item_leaves.len() != item_leaf_types.len() {
+                return Err(CodecError::UnsupportedType(format!("invalid flattened state layout for {name}")));
+            }
+            for ((expected_ty, values), (actual_ty, value)) in item_leaf_types.iter().zip(&mut grouped_values).zip(item_leaves) {
+                if expected_ty != &actual_ty {
+                    return Err(CodecError::UnsupportedType(format!("invalid flattened state layout for {name}")));
+                }
+                values.push(value);
+            }
+        }
+
+        Ok(item_leaf_types
+            .into_iter()
+            .zip(grouped_values)
+            .map(|(item, values)| {
+                let ty = match expected_len {
+                    Some(len) => TypeArtifact::FixedArray { item: Box::new(item), len },
+                    None => TypeArtifact::DynamicArray { item: Box::new(item) },
+                };
+                (ty, ArtifactValue::Array(values))
+            })
+            .collect())
+    }
+
+    flatten(abi, name, ty, value, &mut BTreeSet::new())
+}
+
+fn reconstruct_state_value(
+    abi: &SilAbiArtifact,
+    name: &str,
+    ty: &TypeArtifact,
+    leaves: &[ArtifactValue],
+) -> CodecResult<(ArtifactValue, usize)> {
+    match ty {
+        TypeArtifact::Struct { name: struct_name } => {
+            let structure = abi
+                .structs
+                .iter()
+                .find(|structure| structure.name == *struct_name)
+                .ok_or_else(|| CodecError::UnknownStruct(struct_name.clone()))?;
+            let mut fields = BTreeMap::new();
+            let mut consumed = 0;
+            for field in &structure.fields {
+                let (value, field_consumed) = reconstruct_state_value(abi, &field.name, &field.ty, &leaves[consumed..])?;
+                consumed += field_consumed;
+                fields.insert(field.name.clone(), value);
+            }
+            Ok((ArtifactValue::Object(fields), consumed))
+        }
+        TypeArtifact::FixedArray { item, len } => reconstruct_state_array(abi, name, item, Some(*len), leaves),
+        TypeArtifact::DynamicArray { item } => reconstruct_state_array(abi, name, item, None, leaves),
+        _ => leaves
+            .first()
+            .cloned()
+            .map(|value| (value, 1))
+            .ok_or_else(|| CodecError::InvalidPush(format!("missing flattened state value for {name}"))),
+    }
+}
+
+fn reconstruct_state_array(
+    abi: &SilAbiArtifact,
+    name: &str,
+    item: &TypeArtifact,
+    expected_len: Option<usize>,
+    leaves: &[ArtifactValue],
+) -> CodecResult<(ArtifactValue, usize)> {
+    let item_leaf_types = flatten_state_types(abi, item)?;
+    if item_leaf_types.as_slice() == std::slice::from_ref(item) {
+        return leaves
+            .first()
+            .cloned()
+            .map(|value| (value, 1))
+            .ok_or_else(|| CodecError::InvalidPush(format!("missing flattened state value for {name}")));
+    }
+    if item_leaf_types.is_empty() {
+        return Err(CodecError::UnsupportedType(format!("zero-field struct array {name}")));
+    }
+
+    let leaf_values = leaves
+        .get(..item_leaf_types.len())
+        .ok_or_else(|| CodecError::InvalidPush(format!("missing flattened state values for {name}")))?;
+    let arrays = leaf_values.iter().map(expect_array).collect::<CodecResult<Vec<_>>>()?;
+    let actual_len = arrays[0].len();
+    if let Some(expected) = expected_len {
+        require_len(name, expected, actual_len)?;
+    }
+    for array in &arrays[1..] {
+        require_len(name, actual_len, array.len())?;
+    }
+
+    let mut values = Vec::with_capacity(actual_len);
+    for index in 0..actual_len {
+        let item_leaves = arrays.iter().map(|array| array[index].clone()).collect::<Vec<_>>();
+        let (value, consumed) = reconstruct_state_value(abi, name, item, &item_leaves)?;
+        if consumed != item_leaves.len() {
+            return Err(CodecError::UnsupportedType(format!("invalid flattened state layout for {name}")));
+        }
+        values.push(value);
+    }
+    Ok((ArtifactValue::Array(values), item_leaf_types.len()))
 }
 
 pub fn encode_struct_payload(
@@ -619,10 +847,10 @@ fn verify_compiled_contract(abi: &SilAbiArtifact, contract: &SilContractArtifact
             });
         }
     }
-    let state_values = decode_runtime_state_script(&contract.runtime_state, state_script).map_err(|err| {
+    let state_values = decode_runtime_state_script(abi, &contract.runtime_state, state_script).map_err(|err| {
         SilAbiVerificationError::InvalidRuntimeStateEncoding { contract: contract.name.clone(), message: err.to_string() }
     })?;
-    let canonical_state = encode_runtime_state_script(&contract.runtime_state, &state_values).map_err(|err| {
+    let canonical_state = encode_runtime_state_script(abi, &contract.runtime_state, &state_values).map_err(|err| {
         SilAbiVerificationError::InvalidRuntimeStateEncoding { contract: contract.name.clone(), message: err.to_string() }
     })?;
     if canonical_state != state_script {
@@ -1155,13 +1383,16 @@ mod tests {
     #[test]
     fn verifies_compiled_contract_against_its_script() {
         let mut abi = tiny_sil_abi();
-        let contract = &mut abi.contracts[0];
         let prefix = [0xaa];
-        contract.runtime_state.fields = vec![RuntimeFieldArtifact { name: "value".to_string(), ty: TypeArtifact::Byte }];
-        let state =
-            encode_runtime_state_script(&contract.runtime_state, &BTreeMap::from([("value".to_string(), ArtifactValue::Byte(2))]))
-                .expect("state encodes");
+        abi.contracts[0].runtime_state.fields = vec![RuntimeFieldArtifact { name: "value".to_string(), ty: TypeArtifact::Byte }];
+        let state = encode_runtime_state_script(
+            &abi,
+            &abi.contracts[0].runtime_state,
+            &BTreeMap::from([("value".to_string(), ArtifactValue::Byte(2))]),
+        )
+        .expect("state encodes");
         let suffix = [0xbb, 0xcc];
+        let contract = &mut abi.contracts[0];
         contract.compiled.set_bytecode([prefix.as_slice(), state.as_slice(), suffix.as_slice()].concat());
         contract.compiled.set_template_hash(template_hash(&prefix, &suffix));
         contract.compiled.state_span = StateSpanArtifact { offset: prefix.len(), len: state.len() };
@@ -1213,13 +1444,16 @@ mod tests {
     #[test]
     fn rejects_state_spans_that_do_not_match_the_runtime_state() {
         let mut abi = tiny_sil_abi();
-        let contract = &mut abi.contracts[0];
-        contract.runtime_state.fields = vec![RuntimeFieldArtifact { name: "value".to_string(), ty: TypeArtifact::Byte }];
+        abi.contracts[0].runtime_state.fields = vec![RuntimeFieldArtifact { name: "value".to_string(), ty: TypeArtifact::Byte }];
         let prefix = [0xaa];
-        let state =
-            encode_runtime_state_script(&contract.runtime_state, &BTreeMap::from([("value".to_string(), ArtifactValue::Byte(2))]))
-                .expect("state encodes");
+        let state = encode_runtime_state_script(
+            &abi,
+            &abi.contracts[0].runtime_state,
+            &BTreeMap::from([("value".to_string(), ArtifactValue::Byte(2))]),
+        )
+        .expect("state encodes");
         let suffix = [0xbb];
+        let contract = &mut abi.contracts[0];
         contract.compiled.set_bytecode([prefix.as_slice(), state.as_slice(), suffix.as_slice()].concat());
 
         contract.compiled.state_span = StateSpanArtifact { offset: 0, len: prefix.len() + state.len() };
@@ -1337,8 +1571,8 @@ mod tests {
             ],
         };
         let values = BTreeMap::from([("at".to_string(), ArtifactValue::Int(-5)), ("history".to_string(), history)]);
-        let encoded = encode_runtime_state_script(&runtime_state, &values).expect("temporal state encodes");
-        assert_eq!(decode_runtime_state_script(&runtime_state, &encoded).expect("temporal state decodes"), values);
+        let encoded = encode_runtime_state_script(&artifact, &runtime_state, &values).expect("temporal state encodes");
+        assert_eq!(decode_runtime_state_script(&artifact, &runtime_state, &encoded).expect("temporal state decodes"), values);
     }
 
     #[test]
@@ -1444,6 +1678,7 @@ mod tests {
 
     #[test]
     fn round_trips_runtime_state_script() {
+        let abi = tiny_sil_abi();
         let runtime_state = RuntimeStateArtifact {
             source: "FooState".to_string(),
             fields: vec![
@@ -1458,19 +1693,84 @@ mod tests {
             ("flag".to_string(), ArtifactValue::Bool(true)),
         ]);
 
-        let encoded = encode_runtime_state_script(&runtime_state, &values).expect("state encodes");
-        let decoded = decode_runtime_state_script(&runtime_state, &encoded).expect("state decodes");
+        let encoded = encode_runtime_state_script(&abi, &runtime_state, &values).expect("state encodes");
+        let decoded = decode_runtime_state_script(&abi, &runtime_state, &encoded).expect("state decodes");
 
         assert_eq!(encode_hex(&encoded), format!("20{}0805000000000000800101", "07".repeat(32)));
         assert_eq!(decoded, values);
-        assert_eq!(encode_runtime_state_script(&runtime_state, &decoded).expect("state re-encodes"), encoded);
+        assert_eq!(encode_runtime_state_script(&abi, &runtime_state, &decoded).expect("state re-encodes"), encoded);
 
         let mut extra = values;
         extra.insert("extra".to_string(), ArtifactValue::Int(1));
         assert_eq!(
-            encode_runtime_state_script(&runtime_state, &extra).expect_err("extra fields should be rejected"),
+            encode_runtime_state_script(&abi, &runtime_state, &extra).expect_err("extra fields should be rejected"),
             CodecError::UnknownField("extra".to_string())
         );
+    }
+
+    #[test]
+    fn round_trips_nested_struct_and_struct_array_runtime_state() {
+        let mut abi = tiny_sil_abi();
+        abi.structs = vec![
+            StructArtifact {
+                name: "Inner".to_string(),
+                fields: vec![FieldArtifact { name: "marker".to_string(), ty: TypeArtifact::Byte }],
+            },
+            StructArtifact {
+                name: "Outer".to_string(),
+                fields: vec![
+                    FieldArtifact { name: "inner".to_string(), ty: TypeArtifact::Struct { name: "Inner".to_string() } },
+                    FieldArtifact { name: "active".to_string(), ty: TypeArtifact::Bool },
+                ],
+            },
+            StructArtifact {
+                name: "Pair".to_string(),
+                fields: vec![
+                    FieldArtifact { name: "amount".to_string(), ty: TypeArtifact::Int },
+                    FieldArtifact { name: "code".to_string(), ty: TypeArtifact::FixedBytes { len: 2 } },
+                ],
+            },
+        ];
+        let runtime_state = RuntimeStateArtifact {
+            source: "FooState".to_string(),
+            fields: vec![
+                RuntimeFieldArtifact { name: "current".to_string(), ty: TypeArtifact::Struct { name: "Outer".to_string() } },
+                RuntimeFieldArtifact {
+                    name: "pairs".to_string(),
+                    ty: TypeArtifact::FixedArray { item: Box::new(TypeArtifact::Struct { name: "Pair".to_string() }), len: 2 },
+                },
+            ],
+        };
+        let pair = |amount, code| {
+            ArtifactValue::Object(BTreeMap::from([
+                ("amount".to_string(), ArtifactValue::Int(amount)),
+                ("code".to_string(), ArtifactValue::Bytes(code)),
+            ]))
+        };
+        let values = BTreeMap::from([
+            (
+                "current".to_string(),
+                ArtifactValue::Object(BTreeMap::from([
+                    ("inner".to_string(), ArtifactValue::Object(BTreeMap::from([("marker".to_string(), ArtifactValue::Byte(7))]))),
+                    ("active".to_string(), ArtifactValue::Bool(true)),
+                ])),
+            ),
+            ("pairs".to_string(), ArtifactValue::Array(vec![pair(11, vec![0xaa, 0xbb]), pair(12, vec![0xcc, 0xdd])])),
+        ]);
+
+        let encoded = encode_runtime_state_script(&abi, &runtime_state, &values).expect("structured state encodes");
+        let pushes = parse_pushes(&encoded).expect("structured state uses push-only encoding");
+
+        assert_eq!(
+            pushes.into_iter().map(|(_, payload)| payload).collect::<Vec<_>>(),
+            vec![
+                vec![7],
+                vec![1],
+                [serialize_fixed_i64(11, 8).unwrap(), serialize_fixed_i64(12, 8).unwrap()].concat(),
+                vec![0xaa, 0xbb, 0xcc, 0xdd],
+            ]
+        );
+        assert_eq!(decode_runtime_state_script(&abi, &runtime_state, &encoded).expect("structured state decodes"), values);
     }
 
     fn tiny_sil_abi() -> SilAbiArtifact {
