@@ -14,7 +14,7 @@ use kaspa_txscript::{EngineCtx, EngineFlags, TxScriptEngine};
 use rand::RngCore;
 use silverscript_abi::SilAbiArtifact;
 use silverscript_lang::ast::ContractAst;
-use silverscript_lang::compiler::DispatchTag;
+use silverscript_lang::compiler::{COMPILER_VERSION, DispatchTag};
 
 fn contract_fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join("silverc-test-files").join(name)
@@ -81,10 +81,18 @@ fn silverc_defaults_output_path_and_empty_ctor_args() {
 
     let out_path = dir.join("basic.json");
     let json = fs::read_to_string(&out_path).expect("read output");
+    let json_value: serde_json::Value = serde_json::from_str(&json).expect("parse portable ABI artifact JSON");
     let artifact: SilAbiArtifact = serde_json::from_str(&json).expect("parse portable ABI artifact");
     artifact.verify().expect("portable ABI verifies");
     assert_eq!(artifact.contracts.len(), 1);
     assert!(artifact.contracts.contains_key("Basic"));
+    assert_eq!(json_value["compiler_version"], COMPILER_VERSION);
+    assert!(json_value["contracts"]["Basic"].get("cov_decl_to_abi").is_none());
+    assert!(json_value["contracts"]["Basic"].get("delegate_entry_abi").is_none());
+    assert_eq!(
+        json_value["contracts"]["Basic"]["entries"]["main"]["dispatch_tag"],
+        serde_json::json!(artifact.contract("Basic").unwrap().entry("main").unwrap().dispatch_tag)
+    );
 }
 
 #[test]
