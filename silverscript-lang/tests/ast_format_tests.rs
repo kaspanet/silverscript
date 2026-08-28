@@ -1,5 +1,5 @@
-use silverscript_lang::ast::{format_contract_ast, parse_contract_ast};
-use silverscript_lang::compiler::{CompileOptions, compile_contract};
+use silverscript_lang::ast::{Expr, Span, format_contract_ast, parse_contract_ast};
+use silverscript_lang::compiler::{CompileOptions, compile_contract, compile_contract_ast};
 
 fn assert_compiled_formatted_contract_preserves_ast(source: &str, options: CompileOptions) {
     let ast = parse_contract_ast(source).expect("parse succeeds");
@@ -172,4 +172,100 @@ fn compiled_formatted_contract_preserves_exact_ast_with_state_and_return() {
         source,
         CompileOptions { allow_entrypoint_return: true, ..CompileOptions::default() },
     );
+}
+
+#[test]
+fn formats_function_attributes_and_preserves_compilation() {
+    let source = r#"contract Decls(int max_outs) {
+    #[covenant(binding = auth, from = 1, to = max_outs, mode = verification)]
+    function spend(int amount) {
+        require(amount >= 0);
+    }
+}
+"#;
+
+    let ast = parse_contract_ast(source).expect("parse succeeds");
+    let formatted = format_contract_ast(&ast);
+    let reparsed = parse_contract_ast(&formatted).expect("formatted attributes parse");
+
+    assert!(formatted.contains("#[covenant(binding = auth, from = 1, to = max_outs, mode = verification)]"));
+    assert_eq!(
+        serde_json::to_value(&reparsed).expect("serialize reparsed ast"),
+        serde_json::to_value(&ast).expect("serialize original ast")
+    );
+
+    let args = [Expr::int(3)];
+    let from_source = compile_contract(source, &args, CompileOptions::default()).expect("source compiles");
+    let direct = compile_contract_ast(&ast, &args, CompileOptions::default()).expect("direct AST compiles");
+    let round_tripped =
+        compile_contract_ast(&reparsed, &args, CompileOptions::default()).expect("formatted and reparsed AST compiles");
+    assert_eq!(from_source.bytecode, direct.bytecode);
+    assert_eq!(from_source.abi, direct.abi);
+    assert_eq!(from_source.cov_decl_to_abi, direct.cov_decl_to_abi);
+    assert_eq!(from_source.delegate_entry_abi, direct.delegate_entry_abi);
+    assert_eq!(from_source.state_layout, direct.state_layout);
+    assert_eq!(direct.bytecode, round_tripped.bytecode);
+    assert_eq!(direct.abi, round_tripped.abi);
+    assert_eq!(direct.cov_decl_to_abi, round_tripped.cov_decl_to_abi);
+    assert_eq!(direct.delegate_entry_abi, round_tripped.delegate_entry_abi);
+    assert_eq!(direct.state_layout, round_tripped.state_layout);
+}
+
+#[test]
+fn formats_no_arg_and_qualified_function_attributes() {
+    let source = r#"contract Attributes() {
+    #[covenant.delegate]
+    function delegate() {
+        require(true);
+    }
+
+    #[covenant.allow(rule = manual_entrypoint_in_leader_contract)]
+    entry recover() {
+        require(true);
+    }
+}
+"#;
+
+    let ast = parse_contract_ast(source).expect("parse succeeds");
+    let formatted = format_contract_ast(&ast);
+    let reparsed = parse_contract_ast(&formatted).expect("formatted attributes parse");
+
+    assert!(formatted.contains("#[covenant.delegate]\n"));
+    assert!(formatted.contains("#[covenant.allow(rule = manual_entrypoint_in_leader_contract)]\n"));
+    assert_eq!(
+        serde_json::to_value(&reparsed).expect("serialize reparsed ast"),
+        serde_json::to_value(&ast).expect("serialize original ast")
+    );
+}
+
+#[test]
+fn synthetic_items_preserve_ast_vector_order_after_formatting() {
+    let source = r#"contract Generated() {
+    int first = 1;
+
+    entry spend() {
+        require(first == 1);
+    }
+}
+"#;
+
+    let mut ast = parse_contract_ast(source).expect("parse succeeds");
+    let mut synthetic_field = ast.fields[0].clone();
+    synthetic_field.name = "second".to_string();
+    synthetic_field.expr = Expr::int(2);
+    synthetic_field.span = Span::default();
+    synthetic_field.type_span = Span::default();
+    synthetic_field.name_span = Span::default();
+    ast.fields.push(synthetic_field);
+
+    let formatted = format_contract_ast(&ast);
+    let reparsed = parse_contract_ast(&formatted).expect("formatted mixed-source AST parses");
+    assert_eq!(reparsed.fields.iter().map(|field| field.name.as_str()).collect::<Vec<_>>(), vec!["first", "second"]);
+
+    let direct = compile_contract_ast(&ast, &[], CompileOptions::default()).expect("direct mixed-source AST compiles");
+    let round_tripped =
+        compile_contract_ast(&reparsed, &[], CompileOptions::default()).expect("formatted and reparsed mixed-source AST compiles");
+    assert_eq!(direct.bytecode, round_tripped.bytecode);
+    assert_eq!(direct.abi, round_tripped.abi);
+    assert_eq!(direct.state_layout, round_tripped.state_layout);
 }

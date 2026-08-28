@@ -966,6 +966,10 @@ impl SourceFormatter {
     }
 
     fn write_function(&mut self, function: &FunctionAst<'_>) {
+        for attribute in &function.attributes {
+            self.line(&format_function_attribute(attribute));
+        }
+
         let mut signature = String::new();
         if function.entrypoint {
             signature.push_str("entry ");
@@ -1114,10 +1118,12 @@ impl SourceFormatter {
 }
 
 fn ordered_contract_items<'a, 'i>(contract: &'a ContractAst<'i>) -> Vec<ContractItemRef<'a, 'i>> {
-    let has_real_spans = contract.structs.iter().any(|item| !item.span.is_empty())
-        || contract.fields.iter().any(|field| !field.span.is_empty())
-        || contract.constants.iter().any(|constant| !constant.span.is_empty())
-        || contract.functions.iter().any(|function| !function.span.is_empty());
+    // Require all items to be spanned: sorting a mixed AST would move synthetic
+    // zero-span items before parsed items and could change semantic vector order.
+    let all_spanned = contract.structs.iter().all(|item| !item.span.is_empty())
+        && contract.fields.iter().all(|field| !field.span.is_empty())
+        && contract.constants.iter().all(|constant| !constant.span.is_empty())
+        && contract.functions.iter().all(|function| !function.span.is_empty());
 
     let mut items =
         Vec::with_capacity(contract.structs.len() + contract.fields.len() + contract.constants.len() + contract.functions.len());
@@ -1134,11 +1140,21 @@ fn ordered_contract_items<'a, 'i>(contract: &'a ContractAst<'i>) -> Vec<Contract
         items.push((function.span.start(), ContractItemRef::Function(function)));
     }
 
-    if has_real_spans {
+    if all_spanned {
         items.sort_by_key(|(start, _)| *start);
     }
 
     items.into_iter().map(|(_, item)| item).collect()
+}
+
+fn format_function_attribute(attribute: &FunctionAttributeAst<'_>) -> String {
+    let path = attribute.path.join(".");
+    if attribute.args.is_empty() {
+        return format!("#[{path}]");
+    }
+
+    let args = attribute.args.iter().map(|arg| format!("{} = {}", arg.name, format_expr(&arg.expr))).collect::<Vec<_>>().join(", ");
+    format!("#[{path}({args})]")
 }
 
 fn format_params(params: &[ParamAst<'_>]) -> String {
