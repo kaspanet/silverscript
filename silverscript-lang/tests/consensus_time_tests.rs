@@ -1,3 +1,5 @@
+mod common;
+
 use kaspa_consensus::config::ConfigBuilder;
 use kaspa_consensus::consensus::test_consensus::TestConsensus;
 use kaspa_consensus::params::{DEVNET_PARAMS, ForkActivation};
@@ -14,8 +16,10 @@ use kaspa_consensus_core::tx::{
     UtxoEntry,
 };
 use kaspa_muhash::MuHash;
-use silverscript_lang::ast::Expr;
-use silverscript_lang::compiler::{CompileOptions, compile_contract};
+use silverscript_abi::ArtifactValue;
+use silverscript_lang::compiler::{CompileOptions, sil_abi_artifact_with_options};
+
+use common::{bytecode, encode_entry_sig_script, encode_single_entry_sig_script};
 
 const FUNDING_AMOUNT: u64 = 10_000_000_000;
 const AGE_OUTPUT_AMOUNT: u64 = 1_900_000_000;
@@ -57,11 +61,11 @@ async fn compiled_lock_domains_are_enforced_in_actual_consensus_blocks() {
     // Compile one contract for each lock domain. The tests below spend their
     // outputs in real consensus blocks rather than inspecting emitted opcodes.
     let age_source = "contract Age() { entry main(int age) { require(this.ageDaa >= age); } }";
-    let age = compile_contract(age_source, &[], CompileOptions::default()).expect("age contract compiles");
+    let age = sil_abi_artifact_with_options(age_source, &[], CompileOptions::default()).expect("age contract compiles");
     let time_source = "contract TimeLock() { entry main(temporal timestamp) { require(tx.time >= timestamp); } }";
-    let time = compile_contract(time_source, &[], CompileOptions::default()).expect("time contract compiles");
+    let time = sil_abi_artifact_with_options(time_source, &[], CompileOptions::default()).expect("time contract compiles");
     let daa_source = "contract DaaLock() { entry main(int daa) { require(tx.daa >= daa); } }";
-    let daa = compile_contract(daa_source, &[], CompileOptions::default()).expect("DAA contract compiles");
+    let daa = sil_abi_artifact_with_options(daa_source, &[], CompileOptions::default()).expect("DAA contract compiles");
 
     let funding_outpoint = TransactionOutpoint::new(TransactionId::from_bytes([1; 32]), 0);
     let age_overflow_outpoint = TransactionOutpoint::new(TransactionId::from_bytes([2; 32]), 0);
@@ -72,13 +76,16 @@ async fn compiled_lock_domains_are_enforced_in_actual_consensus_blocks() {
     // invalid candidate could make a later assertion depend on that candidate.
     let mut initial_utxos = vec![
         (funding_outpoint, UtxoEntry::new(FUNDING_AMOUNT, ScriptPublicKey::from_vec(0, vec![0x51]), 0, false, None)),
-        (age_overflow_outpoint, UtxoEntry::new(FUNDING_AMOUNT, ScriptPublicKey::new(0, age.bytecode.clone().into()), 0, false, None)),
+        (
+            age_overflow_outpoint,
+            UtxoEntry::new(FUNDING_AMOUNT, ScriptPublicKey::new(0, bytecode(&age).clone().into()), 0, false, None),
+        ),
     ];
     initial_utxos.extend(daa_outpoints.iter().copied().map(|outpoint| {
-        (outpoint, UtxoEntry::new(FUNDING_AMOUNT, ScriptPublicKey::new(0, daa.bytecode.clone().into()), 0, false, None))
+        (outpoint, UtxoEntry::new(FUNDING_AMOUNT, ScriptPublicKey::new(0, bytecode(&daa).clone().into()), 0, false, None))
     }));
     initial_utxos.extend(time_outpoints.iter().copied().map(|outpoint| {
-        (outpoint, UtxoEntry::new(FUNDING_AMOUNT, ScriptPublicKey::new(0, time.bytecode.clone().into()), 0, false, None))
+        (outpoint, UtxoEntry::new(FUNDING_AMOUNT, ScriptPublicKey::new(0, bytecode(&time).clone().into()), 0, false, None))
     }));
 
     let config = ConfigBuilder::new(DEVNET_PARAMS)
@@ -112,7 +119,7 @@ async fn compiled_lock_domains_are_enforced_in_actual_consensus_blocks() {
     let mut funding_tx = Transaction::new(
         0,
         vec![TransactionInput::new(funding_outpoint, vec![], 0, 0)],
-        (0..5).map(|_| TransactionOutput::new(AGE_OUTPUT_AMOUNT, ScriptPublicKey::new(0, age.bytecode.clone().into()))).collect(),
+        (0..5).map(|_| TransactionOutput::new(AGE_OUTPUT_AMOUNT, ScriptPublicKey::new(0, bytecode(&age).clone().into()))).collect(),
         0,
         SUBNETWORK_ID_NATIVE,
         0,
@@ -129,7 +136,7 @@ async fn compiled_lock_domains_are_enforced_in_actual_consensus_blocks() {
     let funding_daa_score = consensus.get_header(funding_block_hash).unwrap().daa_score;
     assert_eq!(funding_daa_score, config.genesis.daa_score + 4, "the funding transaction must be in the fifth post-genesis block");
 
-    let age_sigscript = age.build_sig_script("main", vec![Expr::int(4)]).expect("age sigscript builds");
+    let age_sigscript = encode_single_entry_sig_script(&age, &[ArtifactValue::Int(4)]).expect("age sigscript builds");
     let miner_data = MinerData::new(ScriptPublicKey::from_vec(0, vec![]), vec![]);
 
     // At ages 0, 1, 2, and 3, append the spend to an otherwise valid candidate
@@ -189,7 +196,7 @@ async fn compiled_lock_domains_are_enforced_in_actual_consensus_blocks() {
     let daa_start = consensus.get_header(tip).unwrap().daa_score;
     let daa_target = daa_start + 4;
     assert!(daa_target < kaspa_txscript::LOCK_TIME_THRESHOLD);
-    let daa_sigscript = daa.build_sig_script("main", vec![Expr::int(daa_target as i64)]).expect("DAA sigscript builds");
+    let daa_sigscript = encode_entry_sig_script(&daa, "main", &[ArtifactValue::Int(daa_target as i64)]).expect("DAA sigscript builds");
 
     // Candidate blocks at target - 4 through target - 1 must all fail. Add one
     // valid empty block after each attempt to advance the chain one DAA step.
@@ -224,8 +231,8 @@ async fn compiled_lock_domains_are_enforced_in_actual_consensus_blocks() {
     // Equality remains locked because finality requires lock_time < median time.
     let locked_time_millis = consensus.get_virtual_past_median_time();
     assert!(locked_time_millis >= kaspa_txscript::LOCK_TIME_THRESHOLD);
-    let locked_time_sigscript =
-        time.build_sig_script("main", vec![Expr::temporal(locked_time_millis as i64)]).expect("locked time sigscript builds");
+    let locked_time_sigscript = encode_entry_sig_script(&time, "main", &[ArtifactValue::Int(locked_time_millis as i64)])
+        .expect("locked time sigscript builds");
     let premature_time_tx = spending_transaction(time_outpoints[0], locked_time_sigscript, 0, locked_time_millis);
     let mut premature_time_block = consensus.build_utxo_valid_block_with_parents(300.into(), vec![tip], miner_data.clone(), vec![]);
     premature_time_block.transactions.push(premature_time_tx);
@@ -238,8 +245,8 @@ async fn compiled_lock_domains_are_enforced_in_actual_consensus_blocks() {
     // millisecond—not second—granularity end to end.
     let unlocked_time_millis = locked_time_millis - 1;
     assert_eq!(locked_time_millis - unlocked_time_millis, 1, "the acceptance boundary must be one millisecond wide");
-    let unlocked_time_sigscript =
-        time.build_sig_script("main", vec![Expr::temporal(unlocked_time_millis as i64)]).expect("unlocked time sigscript builds");
+    let unlocked_time_sigscript = encode_entry_sig_script(&time, "main", &[ArtifactValue::Int(unlocked_time_millis as i64)])
+        .expect("unlocked time sigscript builds");
     let time_tx = spending_transaction(time_outpoints[1], unlocked_time_sigscript, 0, unlocked_time_millis);
     let mut time_tx = MutableTransaction::from_tx(time_tx);
     consensus.validate_mempool_transaction(&mut time_tx, &TransactionValidationArgs::default()).unwrap();
@@ -250,7 +257,7 @@ async fn compiled_lock_domains_are_enforced_in_actual_consensus_blocks() {
 
     // Finally, prove the compiled this.ageDaa runtime guard also survives the
     // full consensus path: 2^32 is rejected even when supplied dynamically.
-    let overflow_sigscript = age.build_sig_script("main", vec![Expr::int(1_i64 << 32)]).expect("age sigscript builds");
+    let overflow_sigscript = encode_entry_sig_script(&age, "main", &[ArtifactValue::Int(1_i64 << 32)]).expect("age sigscript builds");
     let mut overflow_tx = MutableTransaction::from_tx(spending_transaction(age_overflow_outpoint, overflow_sigscript, 0, 0));
     let _ = consensus.validate_mempool_transaction(&mut overflow_tx, &TransactionValidationArgs::default());
     let overflow_tx = (*overflow_tx.tx).clone();

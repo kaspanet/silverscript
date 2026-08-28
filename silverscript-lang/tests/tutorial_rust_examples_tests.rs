@@ -1,5 +1,8 @@
-use silverscript_lang::ast::Expr;
-use silverscript_lang::compiler::{CompileOptions, compile_contract};
+mod common;
+
+use silverscript_lang::compiler::sil_abi_artifact;
+
+use common::encode_entry_sig_script;
 
 #[test]
 fn tutorial_rust_programmatic_compilation_example() {
@@ -13,14 +16,12 @@ fn tutorial_rust_programmatic_compilation_example() {
         }
     "#;
 
-    let constructor_args = vec![Expr::int(100)];
-    let compiled = compile_contract(source, &constructor_args, CompileOptions::default())
-        .expect("programmatic compilation example should compile");
+    let artifact = sil_abi_artifact(source, &[100.into()]).expect("programmatic compilation example should compile");
+    let contract = artifact.contract("MyContract").expect("contract exists");
 
-    assert_eq!(compiled.contract_name, "MyContract");
-    assert!(!compiled.bytecode.is_empty());
-    assert_eq!(compiled.abi.len(), 1);
-    assert_eq!(compiled.abi[0].name, "spend");
+    assert!(!contract.compiled.bytecode.is_empty());
+    assert_eq!(contract.entries.len(), 1);
+    assert_eq!(contract.entries[0].name, "spend");
 }
 
 #[test]
@@ -43,13 +44,13 @@ fn tutorial_rust_build_sigscript_multiple_entrypoints_example() {
     let sender_pk = vec![3u8; 32];
     let recipient_pk = vec![4u8; 32];
     let timeout = 1_640_000_000_000i64;
-    let compiled =
-        compile_contract(source, &[sender_pk.into(), recipient_pk.into(), Expr::temporal(timeout)], CompileOptions::default())
-            .expect("multi-entrypoint example should compile");
+    let artifact = sil_abi_artifact(source, &[sender_pk.into(), recipient_pk.into(), timeout.into()])
+        .expect("multi-entrypoint example should compile");
 
     let sig = vec![5u8; 65];
-    let transfer_sigscript = compiled.build_sig_script("transfer", vec![sig.clone().into()]).expect("transfer sigscript should build");
-    let reclaim_sigscript = compiled.build_sig_script("reclaim", vec![sig.into()]).expect("reclaim sigscript should build");
+    let transfer_sigscript =
+        encode_entry_sig_script(&artifact, "transfer", &[sig.clone().into()]).expect("transfer sigscript should build");
+    let reclaim_sigscript = encode_entry_sig_script(&artifact, "reclaim", &[sig.into()]).expect("reclaim sigscript should build");
 
     assert!(!transfer_sigscript.is_empty());
     assert!(!reclaim_sigscript.is_empty());

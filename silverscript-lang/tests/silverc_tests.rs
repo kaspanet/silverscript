@@ -127,6 +127,7 @@ fn silverc_accepts_constructor_args_and_output_flag() {
     let contract = artifact.contract("WithCtor").expect("contract resolved");
     let selector = contract.entry("main").expect("entrypoint resolved").dispatch_tag.into_bytes();
     let bytecode = decode_hex(&contract.compiled.script_hex).expect("compiled script decodes");
+    assert_eq!(contract.compiled.bytecode, bytecode);
     assert!(run_bytecode_with_selector(bytecode, selector).is_ok());
 }
 

@@ -13,15 +13,16 @@ use kaspa_txscript::pay_to_script_hash_script;
 use kaspa_txscript::standard::multisig_redeem_script;
 use rand::{RngCore, thread_rng};
 use secp256k1::{Keypair, Secp256k1, SecretKey};
-use silverscript_lang::ast::{Expr, parse_type_ref};
-use silverscript_lang::compiler::{CompileOptions, CompiledContract, compile_contract, struct_object};
+use silverscript_abi::ArtifactValue;
+use silverscript_lang::compiler::{CompileOptions, sil_abi_artifact_with_options};
+use std::collections::BTreeMap;
 use std::fs;
 
 mod common;
 
 use common::{
-    COV_A, COV_B, assert_verify_like_error, compiled_template_parts_and_hash, covenant_decl_sigscript, covenant_output, covenant_utxo,
-    execute_input_with_covenants,
+    COV_A, COV_B, assert_verify_like_error, bytecode, compiled_template_parts_and_hash, covenant_decl_sigscript, covenant_output,
+    covenant_utxo, execute_input_with_covenants,
 };
 
 fn load_example_source(name: &str) -> String {
@@ -41,91 +42,94 @@ fn random_keypair() -> Keypair {
     }
 }
 
-fn kcc20_state_array_arg<'i>(values: Vec<(Vec<u8>, i64)>) -> Expr<'i> {
+fn kcc20_state_array_arg(values: Vec<(Vec<u8>, i64)>) -> ArtifactValue {
     kcc20_state_array_arg_with_minter(values.into_iter().map(|(owner_identifier, amount)| (owner_identifier, amount, false)).collect())
 }
 
-fn kcc20_state_array_arg_full<'i>(values: Vec<(Vec<u8>, u8, i64, bool)>) -> Expr<'i> {
-    Expr::array(
-        parse_type_ref("State[]").unwrap(),
+fn kcc20_state_array_arg_full(values: Vec<(Vec<u8>, u8, i64, bool)>) -> ArtifactValue {
+    ArtifactValue::Array(
         values
             .into_iter()
             .map(|(owner_identifier, identifier_type, amount, is_minter)| {
-                struct_object(
-                    "State",
-                    vec![
-                        ("ownerIdentifier", Expr::bytes(owner_identifier)),
-                        ("identifierType", Expr::byte(identifier_type)),
-                        ("amount", Expr::int(amount)),
-                        ("isMinter", Expr::bool(is_minter)),
-                    ],
-                )
+                BTreeMap::from([
+                    ("ownerIdentifier".to_string(), owner_identifier.into()),
+                    ("identifierType".to_string(), identifier_type.into()),
+                    ("amount".to_string(), amount.into()),
+                    ("isMinter".to_string(), is_minter.into()),
+                ])
+                .into()
             })
             .collect(),
     )
 }
 
-fn kcc20_state_array_arg_with_minter<'i>(values: Vec<(Vec<u8>, i64, bool)>) -> Expr<'i> {
+fn kcc20_state_array_arg_with_minter(values: Vec<(Vec<u8>, i64, bool)>) -> ArtifactValue {
     kcc20_state_array_arg_full(
         values.into_iter().map(|(owner_identifier, amount, is_minter)| (owner_identifier, 0, amount, is_minter)).collect(),
     )
 }
 
-fn kcc20_state_arg<'i>(owner_identifier: Vec<u8>, identifier_type: u8, amount: i64, is_minter: bool) -> Expr<'i> {
-    struct_object(
-        "KCC20State",
-        vec![
-            ("ownerIdentifier", Expr::bytes(owner_identifier)),
-            ("identifierType", Expr::byte(identifier_type)),
-            ("amount", Expr::int(amount)),
-            ("isMinter", Expr::bool(is_minter)),
-        ],
-    )
+fn kcc20_state_arg(owner_identifier: Vec<u8>, identifier_type: u8, amount: i64, is_minter: bool) -> ArtifactValue {
+    BTreeMap::from([
+        ("ownerIdentifier".to_string(), owner_identifier.into()),
+        ("identifierType".to_string(), identifier_type.into()),
+        ("amount".to_string(), amount.into()),
+        ("isMinter".to_string(), is_minter.into()),
+    ])
+    .into()
 }
 
-fn kcc20_minter_state_arg<'i>(kcc20_covid: Vec<u8>, amount: i64, initialized: bool) -> Expr<'i> {
-    struct_object(
-        "State",
-        vec![("kcc20Covid", Expr::bytes(kcc20_covid)), ("amount", Expr::int(amount)), ("initialized", Expr::bool(initialized))],
-    )
+fn kcc20_minter_state_arg(kcc20_covid: Vec<u8>, amount: i64, initialized: bool) -> ArtifactValue {
+    BTreeMap::from([
+        ("kcc20Covid".to_string(), kcc20_covid.into()),
+        ("amount".to_string(), amount.into()),
+        ("initialized".to_string(), initialized.into()),
+    ])
+    .into()
 }
 
-fn compile_kcc20_state<'a>(source: &'a str, owner: Vec<u8>, amount: i64, max_cov_ins: i64, max_cov_outs: i64) -> CompiledContract<'a> {
+fn compile_kcc20_state(
+    source: &str,
+    owner: Vec<u8>,
+    amount: i64,
+    max_cov_ins: i64,
+    max_cov_outs: i64,
+) -> silverscript_abi::SilAbiArtifact {
     compile_kcc20_state_with_minter(source, owner, amount, false, max_cov_ins, max_cov_outs)
 }
 
-fn compile_kcc20_state_full<'a>(
-    source: &'a str,
+fn compile_kcc20_state_full(
+    source: &str,
     owner: Vec<u8>,
     amount: i64,
     identifier_type: u8,
     is_minter: bool,
     max_cov_ins: i64,
     max_cov_outs: i64,
-) -> CompiledContract<'a> {
-    compile_contract(
+) -> silverscript_abi::SilAbiArtifact {
+    sil_abi_artifact_with_options(
         source,
         &[
-            Expr::bytes(owner),
-            Expr::int(amount),
-            Expr::byte(identifier_type),
-            Expr::bool(is_minter),
-            Expr::int(max_cov_ins),
-            Expr::int(max_cov_outs),
+            ArtifactValue::Bytes(owner),
+            ArtifactValue::Int(amount),
+            ArtifactValue::Byte(identifier_type),
+            ArtifactValue::Bool(is_minter),
+            ArtifactValue::Int(max_cov_ins),
+            ArtifactValue::Int(max_cov_outs),
         ],
         CompileOptions::default(),
     )
     .expect("compile succeeds")
 }
 
-fn compile_kcc20_state_with_minter<'a>(
-    source: &'a str,
+fn compile_kcc20_state_with_minter(
+    source: &str,
     owner: Vec<u8>,
     amount: i64,
     is_minter: bool,
     max_cov_ins: i64,
     max_cov_outs: i64,
-) -> CompiledContract<'a> {
+) -> silverscript_abi::SilAbiArtifact {
     compile_kcc20_state_full(source, owner, amount, 0, is_minter, max_cov_ins, max_cov_outs)
 }
 
@@ -171,7 +175,7 @@ fn kcc20_can_split_then_merge_tokens_with_two_way_fanout() {
 
     let handoff_outputs = vec![TransactionOutput {
         value: 1_000,
-        script_public_key: pay_to_script_hash_script(&handoff.bytecode),
+        script_public_key: pay_to_script_hash_script(&bytecode(&handoff)),
         covenant: Some(CovenantBinding { authorizing_input: 0, covenant_id: COV_A }),
     }];
     let handoff_entries = vec![covenant_utxo(&genesis, COV_A)];
@@ -188,7 +192,11 @@ fn kcc20_can_split_then_merge_tokens_with_two_way_fanout() {
     let handoff_sigscript = covenant_decl_sigscript(
         &genesis,
         "transfer",
-        vec![kcc20_state_array_arg(vec![(handoff_owner_bytes.clone(), 1_000)]), Expr::bytes(handoff_sig), Expr::byte(0)],
+        vec![
+            kcc20_state_array_arg(vec![(handoff_owner_bytes.clone(), 1_000)]),
+            ArtifactValue::Bytes(handoff_sig),
+            ArtifactValue::Byte(0),
+        ],
         true,
     );
     let handoff_tx = Transaction::new(
@@ -209,12 +217,12 @@ fn kcc20_can_split_then_merge_tokens_with_two_way_fanout() {
     let split_outputs = vec![
         TransactionOutput {
             value: 700,
-            script_public_key: pay_to_script_hash_script(&split_a.bytecode),
+            script_public_key: pay_to_script_hash_script(&bytecode(&split_a)),
             covenant: Some(CovenantBinding { authorizing_input: 0, covenant_id: COV_A }),
         },
         TransactionOutput {
             value: 700,
-            script_public_key: pay_to_script_hash_script(&split_b.bytecode),
+            script_public_key: pay_to_script_hash_script(&bytecode(&split_b)),
             covenant: Some(CovenantBinding { authorizing_input: 0, covenant_id: COV_A }),
         },
     ];
@@ -240,8 +248,8 @@ fn kcc20_can_split_then_merge_tokens_with_two_way_fanout() {
         "transfer",
         vec![
             kcc20_state_array_arg(vec![(split_owner_a_bytes.clone(), 400), (split_owner_b_bytes.clone(), 600)]),
-            Expr::bytes(split_sig),
-            Expr::byte(0),
+            ArtifactValue::Bytes(split_sig),
+            ArtifactValue::Byte(0),
         ],
         true,
     );
@@ -260,12 +268,12 @@ fn kcc20_can_split_then_merge_tokens_with_two_way_fanout() {
     let merged = compile_kcc20_state(&source, merged_owner_bytes.clone(), 1_000, 2, 2);
     let merge_outputs = vec![TransactionOutput {
         value: 2_000,
-        script_public_key: pay_to_script_hash_script(&merged.bytecode),
+        script_public_key: pay_to_script_hash_script(&bytecode(&merged)),
         covenant: Some(CovenantBinding { authorizing_input: 0, covenant_id: COV_A }),
     }];
     let merge_entries = vec![
-        UtxoEntry::new(700, pay_to_script_hash_script(&split_a.bytecode), 0, split_tx.is_coinbase(), Some(COV_A)),
-        UtxoEntry::new(700, pay_to_script_hash_script(&split_b.bytecode), 0, split_tx.is_coinbase(), Some(COV_A)),
+        UtxoEntry::new(700, pay_to_script_hash_script(&bytecode(&split_a)), 0, split_tx.is_coinbase(), Some(COV_A)),
+        UtxoEntry::new(700, pay_to_script_hash_script(&bytecode(&split_b)), 0, split_tx.is_coinbase(), Some(COV_A)),
     ];
     let merge_unsigned_tx = Transaction::new(
         1,
@@ -284,10 +292,11 @@ fn kcc20_can_split_then_merge_tokens_with_two_way_fanout() {
     let merge_leader_sigscript = covenant_decl_sigscript(
         &split_a,
         "transfer",
-        vec![kcc20_state_array_arg(vec![(merged_owner_bytes, 1_000)]), Expr::bytes(merge_sig_a), Expr::byte(0)],
+        vec![kcc20_state_array_arg(vec![(merged_owner_bytes, 1_000)]), ArtifactValue::Bytes(merge_sig_a), ArtifactValue::Byte(0)],
         true,
     );
-    let merge_delegate_sigscript = covenant_decl_sigscript(&split_b, "transfer", vec![Expr::bytes(merge_sig_b), Expr::byte(1)], false);
+    let merge_delegate_sigscript =
+        covenant_decl_sigscript(&split_b, "transfer", vec![ArtifactValue::Bytes(merge_sig_b), ArtifactValue::Byte(1)], false);
     let merge_tx = Transaction::new(
         1,
         vec![
@@ -330,7 +339,7 @@ fn kcc20_rejects_merge_when_one_signature_is_wrong() {
 
     let handoff_outputs = vec![TransactionOutput {
         value: 1_000,
-        script_public_key: pay_to_script_hash_script(&handoff.bytecode),
+        script_public_key: pay_to_script_hash_script(&bytecode(&handoff)),
         covenant: Some(CovenantBinding { authorizing_input: 0, covenant_id: COV_A }),
     }];
     let handoff_entries = vec![covenant_utxo(&genesis, COV_A)];
@@ -347,7 +356,11 @@ fn kcc20_rejects_merge_when_one_signature_is_wrong() {
     let handoff_sigscript = covenant_decl_sigscript(
         &genesis,
         "transfer",
-        vec![kcc20_state_array_arg(vec![(handoff_owner_bytes.clone(), 1_000)]), Expr::bytes(handoff_sig), Expr::byte(0)],
+        vec![
+            kcc20_state_array_arg(vec![(handoff_owner_bytes.clone(), 1_000)]),
+            ArtifactValue::Bytes(handoff_sig),
+            ArtifactValue::Byte(0),
+        ],
         true,
     );
     let handoff_tx = Transaction::new(
@@ -368,12 +381,12 @@ fn kcc20_rejects_merge_when_one_signature_is_wrong() {
     let split_outputs = vec![
         TransactionOutput {
             value: 700,
-            script_public_key: pay_to_script_hash_script(&split_a.bytecode),
+            script_public_key: pay_to_script_hash_script(&bytecode(&split_a)),
             covenant: Some(CovenantBinding { authorizing_input: 0, covenant_id: COV_A }),
         },
         TransactionOutput {
             value: 700,
-            script_public_key: pay_to_script_hash_script(&split_b.bytecode),
+            script_public_key: pay_to_script_hash_script(&bytecode(&split_b)),
             covenant: Some(CovenantBinding { authorizing_input: 0, covenant_id: COV_A }),
         },
     ];
@@ -399,8 +412,8 @@ fn kcc20_rejects_merge_when_one_signature_is_wrong() {
         "transfer",
         vec![
             kcc20_state_array_arg(vec![(split_owner_a_bytes.clone(), 400), (split_owner_b_bytes.clone(), 600)]),
-            Expr::bytes(split_sig),
-            Expr::byte(0),
+            ArtifactValue::Bytes(split_sig),
+            ArtifactValue::Byte(0),
         ],
         true,
     );
@@ -418,12 +431,12 @@ fn kcc20_rejects_merge_when_one_signature_is_wrong() {
 
     let merge_outputs = vec![TransactionOutput {
         value: 2_000,
-        script_public_key: pay_to_script_hash_script(&merged.bytecode),
+        script_public_key: pay_to_script_hash_script(&bytecode(&merged)),
         covenant: Some(CovenantBinding { authorizing_input: 0, covenant_id: COV_A }),
     }];
     let merge_entries = vec![
-        UtxoEntry::new(700, pay_to_script_hash_script(&split_a.bytecode), 0, split_tx.is_coinbase(), Some(COV_A)),
-        UtxoEntry::new(700, pay_to_script_hash_script(&split_b.bytecode), 0, split_tx.is_coinbase(), Some(COV_A)),
+        UtxoEntry::new(700, pay_to_script_hash_script(&bytecode(&split_a)), 0, split_tx.is_coinbase(), Some(COV_A)),
+        UtxoEntry::new(700, pay_to_script_hash_script(&bytecode(&split_b)), 0, split_tx.is_coinbase(), Some(COV_A)),
     ];
     let merge_unsigned_tx = Transaction::new(
         1,
@@ -442,10 +455,11 @@ fn kcc20_rejects_merge_when_one_signature_is_wrong() {
     let merge_leader_sigscript = covenant_decl_sigscript(
         &split_a,
         "transfer",
-        vec![kcc20_state_array_arg(vec![(merged_owner_bytes, 1_000)]), Expr::bytes(merge_sig_a), Expr::byte(0)],
+        vec![kcc20_state_array_arg(vec![(merged_owner_bytes, 1_000)]), ArtifactValue::Bytes(merge_sig_a), ArtifactValue::Byte(0)],
         true,
     );
-    let merge_delegate_sigscript = covenant_decl_sigscript(&split_b, "transfer", vec![Expr::bytes(wrong_sig_b), Expr::byte(1)], false);
+    let merge_delegate_sigscript =
+        covenant_decl_sigscript(&split_b, "transfer", vec![ArtifactValue::Bytes(wrong_sig_b), ArtifactValue::Byte(1)], false);
     let merge_tx = Transaction::new(
         1,
         vec![
@@ -487,7 +501,7 @@ fn kcc20_rejects_split_when_amounts_do_not_match() {
 
     let handoff_outputs = vec![TransactionOutput {
         value: 1_000,
-        script_public_key: pay_to_script_hash_script(&handoff.bytecode),
+        script_public_key: pay_to_script_hash_script(&bytecode(&handoff)),
         covenant: Some(CovenantBinding { authorizing_input: 0, covenant_id: COV_A }),
     }];
     let handoff_entries = vec![covenant_utxo(&genesis, COV_A)];
@@ -504,7 +518,11 @@ fn kcc20_rejects_split_when_amounts_do_not_match() {
     let handoff_sigscript = covenant_decl_sigscript(
         &genesis,
         "transfer",
-        vec![kcc20_state_array_arg(vec![(handoff_owner_bytes.clone(), 1_000)]), Expr::bytes(handoff_sig), Expr::byte(0)],
+        vec![
+            kcc20_state_array_arg(vec![(handoff_owner_bytes.clone(), 1_000)]),
+            ArtifactValue::Bytes(handoff_sig),
+            ArtifactValue::Byte(0),
+        ],
         true,
     );
     let handoff_tx = Transaction::new(
@@ -525,12 +543,12 @@ fn kcc20_rejects_split_when_amounts_do_not_match() {
     let split_outputs = vec![
         TransactionOutput {
             value: 700,
-            script_public_key: pay_to_script_hash_script(&split_a.bytecode),
+            script_public_key: pay_to_script_hash_script(&bytecode(&split_a)),
             covenant: Some(CovenantBinding { authorizing_input: 0, covenant_id: COV_A }),
         },
         TransactionOutput {
             value: 700,
-            script_public_key: pay_to_script_hash_script(&split_b.bytecode),
+            script_public_key: pay_to_script_hash_script(&bytecode(&split_b)),
             covenant: Some(CovenantBinding { authorizing_input: 0, covenant_id: COV_A }),
         },
     ];
@@ -556,8 +574,8 @@ fn kcc20_rejects_split_when_amounts_do_not_match() {
         "transfer",
         vec![
             kcc20_state_array_arg(vec![(split_owner_a_bytes, 400), (split_owner_b_bytes, 500)]),
-            Expr::bytes(split_sig),
-            Expr::byte(0),
+            ArtifactValue::Bytes(split_sig),
+            ArtifactValue::Byte(0),
         ],
         true,
     );
@@ -597,12 +615,12 @@ fn kcc20_minter_can_split_then_mint_then_burn() {
     let split_outputs = vec![
         TransactionOutput {
             value: 1_000,
-            script_public_key: pay_to_script_hash_script(&split_minter.bytecode),
+            script_public_key: pay_to_script_hash_script(&bytecode(&split_minter)),
             covenant: Some(CovenantBinding { authorizing_input: 0, covenant_id: COV_A }),
         },
         TransactionOutput {
             value: 1_000,
-            script_public_key: pay_to_script_hash_script(&split_other.bytecode),
+            script_public_key: pay_to_script_hash_script(&bytecode(&split_other)),
             covenant: Some(CovenantBinding { authorizing_input: 0, covenant_id: COV_A }),
         },
     ];
@@ -622,8 +640,8 @@ fn kcc20_minter_can_split_then_mint_then_burn() {
         "transfer",
         vec![
             kcc20_state_array_arg_with_minter(vec![(minter_owner_bytes.clone(), 400, true), (other_owner_bytes.clone(), 600, false)]),
-            Expr::bytes(split_sig),
-            Expr::byte(0),
+            ArtifactValue::Bytes(split_sig),
+            ArtifactValue::Byte(0),
         ],
         true,
     );
@@ -645,11 +663,11 @@ fn kcc20_minter_can_split_then_mint_then_burn() {
     let forged_other = compile_kcc20_state(&source, other_owner_bytes.clone(), 700, 2, 2);
     let forged_other_outputs = vec![TransactionOutput {
         value: 1_000,
-        script_public_key: pay_to_script_hash_script(&forged_other.bytecode),
+        script_public_key: pay_to_script_hash_script(&bytecode(&forged_other)),
         covenant: Some(CovenantBinding { authorizing_input: 0, covenant_id: COV_A }),
     }];
     let forged_other_entries =
-        vec![UtxoEntry::new(1_000, pay_to_script_hash_script(&split_other.bytecode), 0, split_tx.is_coinbase(), Some(COV_A))];
+        vec![UtxoEntry::new(1_000, pay_to_script_hash_script(&bytecode(&split_other)), 0, split_tx.is_coinbase(), Some(COV_A))];
     let forged_other_unsigned_tx = Transaction::new(
         1,
         vec![tx_input_from_outpoint_v1(TransactionOutpoint { transaction_id: split_tx.id(), index: 1 }, vec![])],
@@ -665,8 +683,8 @@ fn kcc20_minter_can_split_then_mint_then_burn() {
         "transfer",
         vec![
             kcc20_state_array_arg_with_minter(vec![(other_owner_bytes.clone(), 700, false)]),
-            Expr::bytes(forged_other_sig),
-            Expr::byte(0),
+            ArtifactValue::Bytes(forged_other_sig),
+            ArtifactValue::Byte(0),
         ],
         true,
     );
@@ -687,11 +705,11 @@ fn kcc20_minter_can_split_then_mint_then_burn() {
     let forged_other_minter = compile_kcc20_state_with_minter(&source, other_owner_bytes.clone(), 600, true, 2, 2);
     let forged_other_minter_outputs = vec![TransactionOutput {
         value: 1_000,
-        script_public_key: pay_to_script_hash_script(&forged_other_minter.bytecode),
+        script_public_key: pay_to_script_hash_script(&bytecode(&forged_other_minter)),
         covenant: Some(CovenantBinding { authorizing_input: 0, covenant_id: COV_A }),
     }];
     let forged_other_minter_entries =
-        vec![UtxoEntry::new(1_000, pay_to_script_hash_script(&split_other.bytecode), 0, split_tx.is_coinbase(), Some(COV_A))];
+        vec![UtxoEntry::new(1_000, pay_to_script_hash_script(&bytecode(&split_other)), 0, split_tx.is_coinbase(), Some(COV_A))];
     let forged_other_minter_unsigned_tx = Transaction::new(
         1,
         vec![tx_input_from_outpoint_v1(TransactionOutpoint { transaction_id: split_tx.id(), index: 1 }, vec![])],
@@ -707,8 +725,8 @@ fn kcc20_minter_can_split_then_mint_then_burn() {
         "transfer",
         vec![
             kcc20_state_array_arg_with_minter(vec![(other_owner_bytes.clone(), 600, true)]),
-            Expr::bytes(forged_other_minter_sig),
-            Expr::byte(0),
+            ArtifactValue::Bytes(forged_other_minter_sig),
+            ArtifactValue::Byte(0),
         ],
         true,
     );
@@ -731,11 +749,11 @@ fn kcc20_minter_can_split_then_mint_then_burn() {
 
     let mint_outputs = vec![TransactionOutput {
         value: 1_000,
-        script_public_key: pay_to_script_hash_script(&minted_minter.bytecode),
+        script_public_key: pay_to_script_hash_script(&bytecode(&minted_minter)),
         covenant: Some(CovenantBinding { authorizing_input: 0, covenant_id: COV_A }),
     }];
     let mint_entries =
-        vec![UtxoEntry::new(1_000, pay_to_script_hash_script(&split_minter.bytecode), 0, split_tx.is_coinbase(), Some(COV_A))];
+        vec![UtxoEntry::new(1_000, pay_to_script_hash_script(&bytecode(&split_minter)), 0, split_tx.is_coinbase(), Some(COV_A))];
     let mint_unsigned_tx = Transaction::new(
         1,
         vec![tx_input_from_outpoint_v1(TransactionOutpoint { transaction_id: split_tx.id(), index: 0 }, vec![])],
@@ -749,7 +767,11 @@ fn kcc20_minter_can_split_then_mint_then_burn() {
     let mint_sigscript = covenant_decl_sigscript(
         &split_minter,
         "transfer",
-        vec![kcc20_state_array_arg_with_minter(vec![(minter_owner_bytes.clone(), 900, true)]), Expr::bytes(mint_sig), Expr::byte(0)],
+        vec![
+            kcc20_state_array_arg_with_minter(vec![(minter_owner_bytes.clone(), 900, true)]),
+            ArtifactValue::Bytes(mint_sig),
+            ArtifactValue::Byte(0),
+        ],
         true,
     );
     let mint_tx = Transaction::new(
@@ -766,11 +788,11 @@ fn kcc20_minter_can_split_then_mint_then_burn() {
 
     let burn_outputs = vec![TransactionOutput {
         value: 1_000,
-        script_public_key: pay_to_script_hash_script(&burned_minter.bytecode),
+        script_public_key: pay_to_script_hash_script(&bytecode(&burned_minter)),
         covenant: Some(CovenantBinding { authorizing_input: 0, covenant_id: COV_A }),
     }];
     let burn_entries =
-        vec![UtxoEntry::new(1_000, pay_to_script_hash_script(&minted_minter.bytecode), 0, mint_tx.is_coinbase(), Some(COV_A))];
+        vec![UtxoEntry::new(1_000, pay_to_script_hash_script(&bytecode(&minted_minter)), 0, mint_tx.is_coinbase(), Some(COV_A))];
     let burn_unsigned_tx = Transaction::new(
         1,
         vec![tx_input_from_outpoint_v1(TransactionOutpoint { transaction_id: mint_tx.id(), index: 0 }, vec![])],
@@ -784,7 +806,11 @@ fn kcc20_minter_can_split_then_mint_then_burn() {
     let burn_sigscript = covenant_decl_sigscript(
         &minted_minter,
         "transfer",
-        vec![kcc20_state_array_arg_with_minter(vec![(minter_owner_bytes, 500, true)]), Expr::bytes(burn_sig), Expr::byte(0)],
+        vec![
+            kcc20_state_array_arg_with_minter(vec![(minter_owner_bytes, 500, true)]),
+            ArtifactValue::Bytes(burn_sig),
+            ArtifactValue::Byte(0),
+        ],
         true,
     );
     let burn_tx = Transaction::new(
@@ -812,7 +838,7 @@ fn kcc20_minter_can_mint_in_single_transaction() {
 
     let mint_outputs = vec![TransactionOutput {
         value: 1_000,
-        script_public_key: pay_to_script_hash_script(&minted.bytecode),
+        script_public_key: pay_to_script_hash_script(&bytecode(&minted)),
         covenant: Some(CovenantBinding { authorizing_input: 0, covenant_id: COV_A }),
     }];
     let mint_entries = vec![covenant_utxo(&genesis, COV_A)];
@@ -829,7 +855,11 @@ fn kcc20_minter_can_mint_in_single_transaction() {
     let mint_sigscript = covenant_decl_sigscript(
         &genesis,
         "transfer",
-        vec![kcc20_state_array_arg_with_minter(vec![(genesis_owner_bytes, 1_500, true)]), Expr::bytes(mint_sig), Expr::byte(0)],
+        vec![
+            kcc20_state_array_arg_with_minter(vec![(genesis_owner_bytes, 1_500, true)]),
+            ArtifactValue::Bytes(mint_sig),
+            ArtifactValue::Byte(0),
+        ],
         true,
     );
     let mint_tx = Transaction::new(
@@ -890,16 +920,16 @@ fn kcc20_covenant_minter() {
         compiled_template_parts_and_hash(&kcc20_template_probe)
     };
     let compile_minter = |kcc20_covid: Hash, amount: i64, initialized: bool| {
-        compile_contract(
+        sil_abi_artifact_with_options(
             &kcc20_minter_source,
             &[
-                Expr::bytes(owner_bytes.clone()),             // owner
-                Expr::bytes(kcc20_covid.as_bytes().to_vec()), // initKCC20Covid
-                Expr::int(amount),                            // initAmount
-                Expr::bool(initialized),                      // initInitialized
-                Expr::int(template_prefix.len() as i64),      // templatePrefixLen
-                Expr::int(template_suffix.len() as i64),      // templateSuffixLen
-                Expr::bytes(expected_template_hash.clone()),  // expectedTemplateHash
+                ArtifactValue::Bytes(owner_bytes.clone()),             // owner
+                ArtifactValue::Bytes(kcc20_covid.as_bytes().to_vec()), // initKCC20Covid
+                ArtifactValue::Int(amount),                            // initAmount
+                ArtifactValue::Bool(initialized),                      // initInitialized
+                ArtifactValue::Int(template_prefix.len() as i64),      // templatePrefixLen
+                ArtifactValue::Int(template_suffix.len() as i64),      // templateSuffixLen
+                ArtifactValue::Bytes(expected_template_hash.clone()),  // expectedTemplateHash
             ],
             CompileOptions::default(),
         )
@@ -929,7 +959,7 @@ fn kcc20_covenant_minter() {
     let minter_genesis_input = tx_input_from_outpoint_v1(minter_genesis_outpoint, vec![]);
     let minter_genesis_utxo = UtxoEntry::new(1_500, funding_spk.clone(), 0, false, None);
     let minter_genesis_output_without_covenant =
-        TransactionOutput { value: 1_000, script_public_key: pay_to_script_hash_script(&pre_init.bytecode), covenant: None };
+        TransactionOutput { value: 1_000, script_public_key: pay_to_script_hash_script(&bytecode(&pre_init)), covenant: None };
     let minter_cov_id =
         hashing::covenant_id::covenant_id(minter_genesis_outpoint, std::iter::once((0, &minter_genesis_output_without_covenant)));
     let minter_genesis_outputs = vec![TransactionOutput {
@@ -972,11 +1002,11 @@ fn kcc20_covenant_minter() {
     // mint tx builder: spend A and C together
     // ============================================================
     let build_mint_tx = |prev_tx: &TestTx,
-                         prev_kcc20: &CompiledContract<'_>,
-                         prev_minter: &CompiledContract<'_>,
-                         next_minter_kcc20: &CompiledContract<'_>,
-                         next_recipient_kcc20: &CompiledContract<'_>,
-                         next_minter: &CompiledContract<'_>,
+                         prev_kcc20: &silverscript_abi::SilAbiArtifact,
+                         prev_minter: &silverscript_abi::SilAbiArtifact,
+                         next_minter_kcc20: &silverscript_abi::SilAbiArtifact,
+                         next_recipient_kcc20: &silverscript_abi::SilAbiArtifact,
+                         next_minter: &silverscript_abi::SilAbiArtifact,
                          minted_amount: i64,
                          next_minter_amount: i64| {
         let outputs = vec![
@@ -1005,8 +1035,8 @@ fn kcc20_covenant_minter() {
                     (minter_cov_id.as_bytes().to_vec(), IDENTIFIER_COVENANT_ID, 0, true),
                     (owner_bytes.clone(), 0, minted_amount, false),
                 ]),
-                Expr::bytes(vec![0; 65]),
-                Expr::byte(1),
+                ArtifactValue::Bytes(vec![0; 65]),
+                ArtifactValue::Byte(1),
             ],
             true,
         );
@@ -1015,7 +1045,7 @@ fn kcc20_covenant_minter() {
             "mint",
             vec![
                 kcc20_minter_state_arg(kcc20_covenant_id.as_bytes().to_vec(), next_minter_amount, true),
-                Expr::bytes(minter_sig),
+                ArtifactValue::Bytes(minter_sig),
                 kcc20_state_arg(minter_cov_id.as_bytes().to_vec(), IDENTIFIER_COVENANT_ID, 0, true),
                 kcc20_state_arg(owner_bytes.clone(), 0, minted_amount, false),
             ],
@@ -1049,7 +1079,7 @@ fn kcc20_covenant_minter() {
         "init",
         vec![
             kcc20_minter_state_arg(kcc20_covenant_id.as_bytes().to_vec(), MINTER_AMOUNT, true), // newState
-            Expr::bytes(asset_genesis_sig),                                                     // s
+            ArtifactValue::Bytes(asset_genesis_sig),                                            // s
         ],
         true,
     );
@@ -1104,8 +1134,8 @@ fn kcc20_covenant_minter() {
         "transfer",
         vec![
             kcc20_state_array_arg(vec![(alternate_owner_bytes.clone(), FIRST_MINTED_AMOUNT)]),
-            Expr::bytes(recipient_transfer_sig),
-            Expr::byte(0),
+            ArtifactValue::Bytes(recipient_transfer_sig),
+            ArtifactValue::Byte(0),
         ],
         true,
     );
@@ -1230,7 +1260,7 @@ fn kcc20_non_minter_can_spend_script_hash_and_covenant_id_owned_outputs() {
         .iter()
         .map(|state| TransactionOutput {
             value: 150,
-            script_public_key: pay_to_script_hash_script(&state.bytecode),
+            script_public_key: pay_to_script_hash_script(&bytecode(state)),
             covenant: Some(CovenantBinding { authorizing_input: 0, covenant_id: COV_A }),
         })
         .collect();
@@ -1253,8 +1283,8 @@ fn kcc20_non_minter_can_spend_script_hash_and_covenant_id_owned_outputs() {
                 (multisig_script_hash.clone(), IDENTIFIER_SCRIPT_HASH, 400, false),
                 (covenant_owner_bytes.clone(), IDENTIFIER_COVENANT_ID, 600, false),
             ]),
-            Expr::bytes(split_sig),
-            Expr::byte(0),
+            ArtifactValue::Bytes(split_sig),
+            ArtifactValue::Byte(0),
         ],
         true,
     );
@@ -1273,10 +1303,10 @@ fn kcc20_non_minter_can_spend_script_hash_and_covenant_id_owned_outputs() {
 
     execute_input_with_covenants(split_tx.clone(), split_entries, 0).expect("KCC20 non-minter split should succeed");
 
-    let build_single_output = |state: &CompiledContract<'_>| {
+    let build_single_output = |state: &silverscript_abi::SilAbiArtifact| {
         vec![TransactionOutput {
             value: 150,
-            script_public_key: pay_to_script_hash_script(&state.bytecode),
+            script_public_key: pay_to_script_hash_script(&bytecode(state)),
             covenant: Some(CovenantBinding { authorizing_input: 0, covenant_id: COV_A }),
         }]
     };
@@ -1289,11 +1319,15 @@ fn kcc20_non_minter_can_spend_script_hash_and_covenant_id_owned_outputs() {
             }
             Transaction::new(1, inputs, outputs, 0, Default::default(), 0, vec![])
         };
-    let build_kcc20_sigscript = |state: &CompiledContract<'_>, destination_owner: Vec<u8>, amount: i64, witness: u8| {
+    let build_kcc20_sigscript = |state: &silverscript_abi::SilAbiArtifact, destination_owner: Vec<u8>, amount: i64, witness: u8| {
         covenant_decl_sigscript(
             state,
             "transfer",
-            vec![kcc20_state_array_arg(vec![(destination_owner, amount)]), Expr::bytes(vec![0; 65]), Expr::byte(witness)],
+            vec![
+                kcc20_state_array_arg(vec![(destination_owner, amount)]),
+                ArtifactValue::Bytes(vec![0; 65]),
+                ArtifactValue::Byte(witness),
+            ],
             true,
         )
     };
@@ -1301,7 +1335,7 @@ fn kcc20_non_minter_can_spend_script_hash_and_covenant_id_owned_outputs() {
     let script_hash_spent = compile_kcc20_state(&source, multisig_spend_destination_owner_bytes.clone(), 400, 2, 2);
     let script_hash_spend_outputs = build_single_output(&script_hash_spent);
     let script_hash_spend_entries = vec![
-        UtxoEntry::new(150, pay_to_script_hash_script(&split_states[0].bytecode), 0, split_tx.is_coinbase(), Some(COV_A)),
+        UtxoEntry::new(150, pay_to_script_hash_script(&bytecode(&split_states[0])), 0, split_tx.is_coinbase(), Some(COV_A)),
         UtxoEntry::new(500, pay_to_script_hash_script(&multisig_redeem_script), 0, false, None),
     ];
     let script_hash_auxiliary_outpoint = TransactionOutpoint { transaction_id: TransactionId::from_bytes([2; 32]), index: 0 };
@@ -1364,7 +1398,7 @@ fn kcc20_non_minter_can_spend_script_hash_and_covenant_id_owned_outputs() {
     let covenant_id_spent = compile_kcc20_state(&source, covenant_spend_destination_owner_bytes.clone(), 600, 2, 2);
     let covenant_id_spend_outputs = build_single_output(&covenant_id_spent);
     let covenant_id_spend_entries = vec![
-        UtxoEntry::new(150, pay_to_script_hash_script(&split_states[1].bytecode), 0, split_tx.is_coinbase(), Some(COV_A)),
+        UtxoEntry::new(150, pay_to_script_hash_script(&bytecode(&split_states[1])), 0, split_tx.is_coinbase(), Some(COV_A)),
         UtxoEntry::new(500, pay_to_script_hash_script(&[0x51]), 0, false, Some(covenant_owner)),
     ];
     let covenant_id_auxiliary_outpoint = TransactionOutpoint { transaction_id: TransactionId::from_bytes([3; 32]), index: 0 };

@@ -1,17 +1,20 @@
+use std::collections::BTreeMap;
+
 use kaspa_consensus_core::Hash;
 use kaspa_consensus_core::tx::{Transaction, TransactionOutput, UtxoEntry};
 use kaspa_txscript_errors::TxScriptError;
-use silverscript_lang::ast::{Expr, parse_type_ref};
+use silverscript_abi::ArtifactValue;
+use silverscript_lang::ast::Expr;
 use silverscript_lang::compiler::{
     CompileOptions, CompiledContract, CovenantDeclCallOptions, compile_contract, generated_covenant_auth_entrypoint_name,
-    struct_object,
+    sil_abi_artifact_with_options,
 };
 
 mod common;
 
 use common::{
-    assert_verify_like_error, covenant_decl_sigscript, covenant_output, covenant_utxo, execute_input_with_covenants,
-    plain_covenant_output, plain_utxo, push_redeem_script, tx_input,
+    assert_verify_like_error, build_sig_script_for_covenant_decl, bytecode, covenant_decl_sigscript, covenant_output, covenant_utxo,
+    execute_input_with_covenants, plain_covenant_output, plain_utxo, push_redeem_script, tx_input,
 };
 
 const COV_A: Hash = Hash::from_bytes(*b"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
@@ -152,8 +155,8 @@ const AUTH_VERIFICATION_CARDINALITY_SOURCE: &str = r#"
     }
 "#;
 
-fn compile_state(source: &'static str, value: i64) -> CompiledContract<'static> {
-    compile_contract(source, &[Expr::int(value)], CompileOptions::default()).expect("compile succeeds")
+fn compile_state(source: &'static str, value: i64) -> silverscript_abi::SilAbiArtifact {
+    sil_abi_artifact_with_options(source, &[ArtifactValue::Int(value)], CompileOptions::default()).expect("compile succeeds")
 }
 
 fn function_param_type_names(compiled: &CompiledContract<'_>, function_name: &str) -> Vec<String> {
@@ -169,32 +172,33 @@ fn function_param_type_names(compiled: &CompiledContract<'_>, function_name: &st
         .collect()
 }
 
-fn state_array_arg(values: Vec<i64>) -> Expr<'static> {
-    Expr::array(
-        parse_type_ref("State[]").unwrap(),
-        values.into_iter().map(|value| struct_object("State", vec![("value", Expr::int(value))])).collect(),
+fn state_array_arg(values: Vec<i64>) -> ArtifactValue {
+    ArtifactValue::Array(values.into_iter().map(state_arg).collect())
+}
+
+fn state_arg(value: i64) -> ArtifactValue {
+    BTreeMap::from([("value".to_string(), value.into())]).into()
+}
+
+fn compile_kcc20_state(owner: u8, amount: i64) -> silverscript_abi::SilAbiArtifact {
+    sil_abi_artifact_with_options(
+        KCC20_SHAPED_SOURCE,
+        &[ArtifactValue::Bytes(vec![owner]), ArtifactValue::Int(amount)],
+        CompileOptions::default(),
     )
+    .expect("KCC20-shaped contract compiles")
 }
 
-fn state_arg(value: i64) -> Expr<'static> {
-    struct_object("State", vec![("value", Expr::int(value))])
+fn kcc20_state_arg(owner: u8, amount: i64) -> ArtifactValue {
+    BTreeMap::from([("owner".to_string(), vec![owner].into()), ("amount".to_string(), amount.into())]).into()
 }
 
-fn compile_kcc20_state(owner: u8, amount: i64) -> CompiledContract<'static> {
-    compile_contract(KCC20_SHAPED_SOURCE, &[Expr::bytes(vec![owner]), Expr::int(amount)], CompileOptions::default())
-        .expect("KCC20-shaped contract compiles")
-}
-
-fn kcc20_state_arg(owner: u8, amount: i64) -> Expr<'static> {
-    struct_object("State", vec![("owner", Expr::bytes(vec![owner])), ("amount", Expr::int(amount))])
-}
-
-fn cov_decl_nm_leader_sigscript(compiled: &CompiledContract<'_>, next_values: Vec<i64>) -> Vec<u8> {
+fn cov_decl_nm_leader_sigscript(compiled: &silverscript_abi::SilAbiArtifact, next_values: Vec<i64>) -> Vec<u8> {
     covenant_decl_sigscript(compiled, "rebalance", vec![state_array_arg(next_values)], true)
 }
 
-fn redeem_only_sigscript(compiled: &CompiledContract<'_>) -> Vec<u8> {
-    push_redeem_script(&compiled.bytecode)
+fn redeem_only_sigscript(compiled: &silverscript_abi::SilAbiArtifact) -> Vec<u8> {
+    push_redeem_script(&bytecode(compiled))
 }
 
 #[test]
@@ -231,7 +235,7 @@ fn singleton_transition_allows_correct_state_update() {
     let active = compile_state(AUTH_SINGLETON_TRANSITION_SOURCE, 10);
     let out = compile_state(AUTH_SINGLETON_TRANSITION_SOURCE, 13);
 
-    let input0 = tx_input(0, covenant_decl_sigscript(&active, "bump", vec![Expr::int(3)], false));
+    let input0 = tx_input(0, covenant_decl_sigscript(&active, "bump", vec![ArtifactValue::Int(3)], false));
     let outputs = vec![covenant_output(&out, 0, COV_A)];
     let tx = Transaction::new(1, vec![input0], outputs, 0, Default::default(), 0, vec![]);
     let entries = vec![covenant_utxo(&active, COV_A)];
@@ -245,7 +249,7 @@ fn singleton_transition_rejects_mismatched_output_state() {
     let active = compile_state(AUTH_SINGLETON_TRANSITION_SOURCE, 10);
     let wrong_out = compile_state(AUTH_SINGLETON_TRANSITION_SOURCE, 12);
 
-    let input0 = tx_input(0, covenant_decl_sigscript(&active, "bump", vec![Expr::int(3)], false));
+    let input0 = tx_input(0, covenant_decl_sigscript(&active, "bump", vec![ArtifactValue::Int(3)], false));
     let outputs = vec![covenant_output(&wrong_out, 0, COV_A)];
     let tx = Transaction::new(1, vec![input0], outputs, 0, Default::default(), 0, vec![]);
     let entries = vec![covenant_utxo(&active, COV_A)];
@@ -260,7 +264,7 @@ fn singleton_transition_rejects_two_authorized_outputs() {
     let out0 = compile_state(AUTH_SINGLETON_TRANSITION_SOURCE, 13);
     let out1 = compile_state(AUTH_SINGLETON_TRANSITION_SOURCE, 13);
 
-    let input0 = tx_input(0, covenant_decl_sigscript(&active, "bump", vec![Expr::int(3)], false));
+    let input0 = tx_input(0, covenant_decl_sigscript(&active, "bump", vec![ArtifactValue::Int(3)], false));
     let outputs = vec![covenant_output(&out0, 0, COV_A), covenant_output(&out1, 0, COV_A)];
     let tx = Transaction::new(1, vec![input0], outputs, 0, Default::default(), 0, vec![]);
     let entries = vec![covenant_utxo(&active, COV_A)];
@@ -273,7 +277,7 @@ fn singleton_transition_rejects_two_authorized_outputs() {
 fn singleton_transition_rejects_missing_authorized_output() {
     let active = compile_state(AUTH_SINGLETON_TRANSITION_SOURCE, 10);
 
-    let input0 = tx_input(0, covenant_decl_sigscript(&active, "bump", vec![Expr::int(3)], false));
+    let input0 = tx_input(0, covenant_decl_sigscript(&active, "bump", vec![ArtifactValue::Int(3)], false));
     let tx = Transaction::new(1, vec![input0], vec![], 0, Default::default(), 0, vec![]);
     let entries = vec![covenant_utxo(&active, COV_A)];
 
@@ -433,8 +437,8 @@ fn many_to_many_happy_path_succeeds() {
     let in1 = compile_state(COV_N_TO_M_SOURCE, 7);
     let out0 = compile_state(COV_N_TO_M_SOURCE, 10);
     let out1 = compile_state(COV_N_TO_M_SOURCE, 10);
-    assert_eq!(in0.bytecode, out0.bytecode, "leader input and output[0] script should match");
-    assert_eq!(in0.bytecode, out1.bytecode, "leader input and output[1] script should match");
+    assert_eq!(bytecode(&in0), bytecode(&out0), "leader input and output[0] script should match");
+    assert_eq!(bytecode(&in0), bytecode(&out1), "leader input and output[1] script should match");
 
     // Intended valid shape: two covenant inputs in the same id, two covenant outputs in the same id,
     // leader path on input 0 and delegate path on input 1.
@@ -453,11 +457,10 @@ fn shared_delegate_body_authenticates_each_inputs_local_state() {
     let in1 = compile_kcc20_state(2, 7);
     let out0 = compile_kcc20_state(3, 8);
     let out1 = compile_kcc20_state(4, 9);
-    let next_states =
-        Expr::array(parse_type_ref("State[]").expect("State[] parses"), vec![kcc20_state_arg(3, 8), kcc20_state_arg(4, 9)]);
+    let next_states = ArtifactValue::Array(vec![kcc20_state_arg(3, 8), kcc20_state_arg(4, 9)]);
 
-    let leader_sigscript = covenant_decl_sigscript(&in0, "transferPolicy", vec![next_states, Expr::dynamic_bytes(vec![1])], true);
-    let delegate_sigscript = covenant_decl_sigscript(&in1, "transferPolicy", vec![Expr::dynamic_bytes(vec![2])], false);
+    let leader_sigscript = covenant_decl_sigscript(&in0, "transferPolicy", vec![next_states, ArtifactValue::Bytes(vec![1])], true);
+    let delegate_sigscript = covenant_decl_sigscript(&in1, "transferPolicy", vec![ArtifactValue::Bytes(vec![2])], false);
     let outputs = vec![covenant_output(&out0, 0, COV_A), covenant_output(&out1, 1, COV_A)];
     let tx = Transaction::new(
         1,
@@ -473,7 +476,7 @@ fn shared_delegate_body_authenticates_each_inputs_local_state() {
     execute_input_with_covenants(tx.clone(), entries.clone(), 0).expect("leader authenticates its local owner");
     execute_input_with_covenants(tx, entries.clone(), 1).expect("delegate authenticates its own local owner");
 
-    let wrong_delegate_sigscript = covenant_decl_sigscript(&in1, "transferPolicy", vec![Expr::dynamic_bytes(vec![1])], false);
+    let wrong_delegate_sigscript = covenant_decl_sigscript(&in1, "transferPolicy", vec![ArtifactValue::Bytes(vec![1])], false);
     let wrong_tx = Transaction::new(
         1,
         vec![tx_input(0, redeem_only_sigscript(&in0)), tx_input(1, wrong_delegate_sigscript)],
@@ -561,18 +564,17 @@ fn many_to_many_leader_rejects_cov_output_with_different_script() {
 #[test]
 fn many_to_many_transition_leader_rejects_spoofed_prev_states() {
     let in0 = compile_state(COV_N_TO_M_TRANSITION_SOURCE, 10);
-    let honest = in0
-        .build_sig_script_for_covenant_decl("carry_forward", vec![], CovenantDeclCallOptions { is_leader: true })
+    let honest = build_sig_script_for_covenant_decl(&in0, "carry_forward", vec![], CovenantDeclCallOptions { is_leader: true })
         .expect("leader transition call should succeed without caller-supplied prev_states");
     assert!(!honest.is_empty(), "leader transition sigscript should not be empty");
 
-    let err = in0
-        .build_sig_script_for_covenant_decl(
-            "carry_forward",
-            vec![state_array_arg(vec![42, 43])],
-            CovenantDeclCallOptions { is_leader: true },
-        )
-        .expect_err("spoofed prev_states should no longer be accepted through the leader ABI");
+    let err = build_sig_script_for_covenant_decl(
+        &in0,
+        "carry_forward",
+        vec![state_array_arg(vec![42, 43])],
+        CovenantDeclCallOptions { is_leader: true },
+    )
+    .expect_err("spoofed prev_states should no longer be accepted through the leader ABI");
     assert!(matches!(err, silverscript_lang::compiler::CompilerError::Unsupported(_)), "unexpected error: {err:?}");
 }
 
@@ -610,12 +612,14 @@ fn runtime_accepts_state_entrypoint_argument_for_generated_wrapper() {
 fn runtime_passes_state_into_generated_policy_function() {
     let active = compile_state(AUTH_SINGLETON_ARRAY_RUNTIME_SOURCE, 10);
     let out = compile_state(AUTH_SINGLETON_ARRAY_RUNTIME_SOURCE, 11);
+    let lowered = compile_contract(AUTH_SINGLETON_ARRAY_RUNTIME_SOURCE, &[Expr::int(10)], CompileOptions::default())
+        .expect("lowered AST compiles");
 
     let wrapper_name = generated_covenant_auth_entrypoint_name("step");
-    let wrapper_param_types = function_param_type_names(&active, &wrapper_name);
+    let wrapper_param_types = function_param_type_names(&lowered, &wrapper_name);
     assert_eq!(wrapper_param_types, vec!["State".to_string()]);
 
-    let policy = active
+    let policy = lowered
         .ast
         .functions
         .iter()

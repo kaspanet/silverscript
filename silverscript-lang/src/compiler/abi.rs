@@ -106,9 +106,19 @@ fn artifact_value_type_mismatch(value: &ArtifactValue, expected_type: &TypeRef) 
 
 /// Compiles one SilverScript contract into a complete portable ABI artifact.
 pub fn sil_abi_artifact(source: &str, constructor_args: &[ArtifactValue]) -> Result<SilAbiArtifact, CompilerError> {
+    sil_abi_artifact_with_options(source, constructor_args, CompileOptions::default())
+}
+
+/// Compiles one SilverScript contract into a complete portable ABI artifact
+/// using the requested compiler options.
+pub fn sil_abi_artifact_with_options(
+    source: &str,
+    constructor_args: &[ArtifactValue],
+    options: CompileOptions,
+) -> Result<SilAbiArtifact, CompilerError> {
     let contract = parse_contract_ast(source)?;
     let constructor_args = artifact_values_to_constructor_args(constructor_args, &contract)?;
-    let compiled = compile_contract(source, &constructor_args, CompileOptions::default())?;
+    let compiled = compile_contract(source, &constructor_args, options)?;
     let constants = artifact_constants(&compiled, &constructor_args);
     let states = compiled
         .ast
@@ -125,7 +135,12 @@ pub fn sil_abi_artifact(source: &str, constructor_args: &[ArtifactValue]) -> Res
         .collect::<Result<Vec<_>, CompilerError>>()?;
     let contract = contract_artifact_from_compiled(&compiled, &constructor_args)?;
 
-    Ok(SilAbiArtifact { schema_version: SIL_ABI_SCHEMA_VERSION, states, contracts: vec![contract] })
+    Ok(SilAbiArtifact {
+        schema_version: SIL_ABI_SCHEMA_VERSION,
+        compiler_version: compiled.compiler_version,
+        states,
+        contracts: vec![contract],
+    })
 }
 
 fn contract_artifact_from_compiled<'i>(
@@ -187,6 +202,7 @@ fn contract_artifact_from_compiled<'i>(
         )));
     }
 
+    let template_hash = compiled.template_hash();
     Ok(SilContractArtifact {
         name: compiled.contract_name.clone(),
         source_path: format!("sil/{}.sil", compiled.contract_name),
@@ -195,8 +211,10 @@ fn contract_artifact_from_compiled<'i>(
         cov_decl_to_abi,
         delegate_entry_abi,
         compiled: CompiledContractArtifact {
+            bytecode: compiled.bytecode.clone(),
             script_hex: encode_hex(&compiled.bytecode),
-            template_hash_hex: encode_hex(&compiled.template_hash()),
+            template_hash,
+            template_hash_hex: encode_hex(&template_hash),
             state_span: StateSpanArtifact { offset: layout.start, len: layout.len },
         },
     })

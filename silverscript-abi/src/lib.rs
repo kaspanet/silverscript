@@ -192,6 +192,7 @@ impl TypeArtifact {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SilAbiArtifact {
     pub schema_version: u32,
+    pub compiler_version: String,
     pub states: Vec<StateArtifact>,
     pub contracts: Vec<SilContractArtifact>,
 }
@@ -268,12 +269,28 @@ pub struct SilEntryArtifact {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CompiledContractArtifact {
+    pub bytecode: Vec<u8>,
+    // TODO: Remove `script_hex` once all artifact consumers use `bytecode`.
     pub script_hex: String,
+    pub template_hash: [u8; 32],
+    // TODO: Remove `template_hash_hex` once all artifact consumers use `template_hash`.
     pub template_hash_hex: String,
     pub state_span: StateSpanArtifact,
 }
 
 impl CompiledContractArtifact {
+    #[cfg(test)]
+    fn set_bytecode(&mut self, bytecode: Vec<u8>) {
+        self.script_hex = encode_hex(&bytecode);
+        self.bytecode = bytecode;
+    }
+
+    #[cfg(test)]
+    fn set_template_hash(&mut self, template_hash: [u8; 32]) {
+        self.template_hash_hex = encode_hex(&template_hash);
+        self.template_hash = template_hash;
+    }
+
     /// Split decoded script bytes into the template prefix, runtime state, and
     /// template suffix declared by this artifact.
     pub fn script_parts<'a>(&self, script: &'a [u8]) -> Option<(&'a [u8], &'a [u8], &'a [u8])> {
@@ -289,7 +306,7 @@ pub struct CompiledTemplateArtifact {
     pub hash_hex: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StateSpanArtifact {
     pub offset: usize,
     pub len: usize,
@@ -301,6 +318,10 @@ pub enum SilAbiVerificationError {
     Version(#[from] ArtifactVersionError),
     #[error("contract `{contract}` has invalid compiled {field} hex: {message}")]
     InvalidCompiledHex { contract: String, field: &'static str, message: String },
+    #[error("contract `{contract}` bytecode does not match its script_hex encoding")]
+    BytecodeMismatch { contract: String },
+    #[error("contract `{contract}` template hash does not match its template_hash_hex encoding")]
+    TemplateHashEncodingMismatch { contract: String },
     #[error("contract `{contract}` has state span offset {offset} length {len}, but its compiled script has {script_len} bytes")]
     InvalidStateSpan { contract: String, offset: usize, len: usize, script_len: usize },
     #[error("contract `{contract}` runtime state field `{field}` has unsupported type `{ty}`")]
@@ -329,6 +350,66 @@ pub enum ArtifactValue {
     Text(String),
     Array(Vec<ArtifactValue>),
     Object(BTreeMap<String, ArtifactValue>),
+}
+
+impl From<i64> for ArtifactValue {
+    fn from(value: i64) -> Self {
+        Self::Int(value)
+    }
+}
+
+impl From<i32> for ArtifactValue {
+    fn from(value: i32) -> Self {
+        Self::Int(i64::from(value))
+    }
+}
+
+impl From<bool> for ArtifactValue {
+    fn from(value: bool) -> Self {
+        Self::Bool(value)
+    }
+}
+
+impl From<u8> for ArtifactValue {
+    fn from(value: u8) -> Self {
+        Self::Byte(value)
+    }
+}
+
+impl From<Vec<u8>> for ArtifactValue {
+    fn from(value: Vec<u8>) -> Self {
+        Self::Bytes(value)
+    }
+}
+
+impl From<Vec<i64>> for ArtifactValue {
+    fn from(value: Vec<i64>) -> Self {
+        Self::Array(value.into_iter().map(Self::Int).collect())
+    }
+}
+
+impl From<String> for ArtifactValue {
+    fn from(value: String) -> Self {
+        Self::Text(value)
+    }
+}
+
+impl From<&str> for ArtifactValue {
+    fn from(value: &str) -> Self {
+        Self::Text(value.to_string())
+    }
+}
+
+impl From<Vec<ArtifactValue>> for ArtifactValue {
+    fn from(value: Vec<ArtifactValue>) -> Self {
+        Self::Array(value)
+    }
+}
+
+impl From<BTreeMap<String, ArtifactValue>> for ArtifactValue {
+    fn from(value: BTreeMap<String, ArtifactValue>) -> Self {
+        Self::Object(value)
+    }
 }
 
 #[derive(Debug, Error, Clone, PartialEq)]
@@ -478,6 +559,9 @@ fn verify_compiled_contract(contract: &SilContractArtifact) -> std::result::Resu
         })
     };
     let script = decode("script", &contract.compiled.script_hex)?;
+    if script != contract.compiled.bytecode {
+        return Err(SilAbiVerificationError::BytecodeMismatch { contract: contract.name.clone() });
+    }
     let found_hash = decode("template hash", &contract.compiled.template_hash_hex)?;
 
     let mut entries_by_tag = BTreeMap::<DispatchTag, &str>::new();
@@ -523,9 +607,12 @@ fn verify_compiled_contract(contract: &SilContractArtifact) -> std::result::Resu
     if found_hash.len() != 32 {
         return Err(SilAbiVerificationError::InvalidTemplateHashLength { contract: contract.name.clone(), len: found_hash.len() });
     }
+    if found_hash != contract.compiled.template_hash {
+        return Err(SilAbiVerificationError::TemplateHashEncodingMismatch { contract: contract.name.clone() });
+    }
 
     let expected_hash = template_hash(prefix, suffix);
-    if found_hash != expected_hash {
+    if contract.compiled.template_hash != expected_hash {
         return Err(SilAbiVerificationError::TemplateHashMismatch {
             contract: contract.name.clone(),
             expected: encode_hex(&expected_hash),
@@ -975,6 +1062,27 @@ fn type_name(ty: &TypeArtifact) -> String {
 mod tests {
     use super::*;
 
+    #[test]
+    fn artifact_values_support_ergonomic_from_conversions() {
+        let values: Vec<ArtifactValue> = vec![1.into(), vec![2u8; 4].into(), true.into(), 3u8.into(), "ready".into()];
+        assert_eq!(
+            values,
+            vec![
+                ArtifactValue::Int(1),
+                ArtifactValue::Bytes(vec![2; 4]),
+                ArtifactValue::Bool(true),
+                ArtifactValue::Byte(3),
+                ArtifactValue::Text("ready".to_string()),
+            ]
+        );
+        assert_eq!(ArtifactValue::from(vec![ArtifactValue::Int(1)]), ArtifactValue::Array(vec![ArtifactValue::Int(1)]));
+        assert_eq!(ArtifactValue::from(vec![1i64, 2]), ArtifactValue::Array(vec![ArtifactValue::Int(1), ArtifactValue::Int(2)]));
+        assert_eq!(
+            ArtifactValue::from(BTreeMap::from([("value".to_string(), ArtifactValue::Int(1))])),
+            ArtifactValue::Object(BTreeMap::from([("value".to_string(), ArtifactValue::Int(1))]))
+        );
+    }
+
     // Locks the ABI copy to Sil's canonical implementation. Ideally, Sil will
     // expose this from a small shared core crate instead of requiring a copy.
     #[test]
@@ -1006,20 +1114,28 @@ mod tests {
             encode_runtime_state_script(&contract.runtime_state, &BTreeMap::from([("value".to_string(), ArtifactValue::Byte(2))]))
                 .expect("state encodes");
         let suffix = [0xbb, 0xcc];
-        contract.compiled.script_hex = encode_hex(&[prefix.as_slice(), state.as_slice(), suffix.as_slice()].concat());
-        contract.compiled.template_hash_hex = encode_hex(&template_hash(&prefix, &suffix));
+        contract.compiled.set_bytecode([prefix.as_slice(), state.as_slice(), suffix.as_slice()].concat());
+        contract.compiled.set_template_hash(template_hash(&prefix, &suffix));
         contract.compiled.state_span = StateSpanArtifact { offset: prefix.len(), len: state.len() };
 
         abi.verify().expect("compiled template matches its contract script");
 
-        abi.contracts[0].compiled.template_hash_hex = "00".repeat(32);
+        abi.contracts[0].compiled.bytecode.push(0xff);
+        assert_eq!(abi.verify(), Err(SilAbiVerificationError::BytecodeMismatch { contract: "Foo".to_string() }));
+        abi.contracts[0].compiled.bytecode.pop();
+
+        abi.contracts[0].compiled.template_hash[0] ^= 0xff;
+        assert_eq!(abi.verify(), Err(SilAbiVerificationError::TemplateHashEncodingMismatch { contract: "Foo".to_string() }));
+        abi.contracts[0].compiled.template_hash[0] ^= 0xff;
+
+        abi.contracts[0].compiled.set_template_hash([0; 32]);
         assert!(matches!(
             abi.verify(),
             Err(SilAbiVerificationError::TemplateHashMismatch { ref contract, .. }) if contract == "Foo"
         ));
 
-        abi.contracts[0].compiled.template_hash_hex = encode_hex(&template_hash(&prefix, &suffix));
-        abi.contracts[0].compiled.script_hex = encode_hex(&[&[0xff], state.as_slice(), suffix.as_slice()].concat());
+        abi.contracts[0].compiled.set_template_hash(template_hash(&prefix, &suffix));
+        abi.contracts[0].compiled.set_bytecode([&[0xff], state.as_slice(), suffix.as_slice()].concat());
         assert!(matches!(
             abi.verify(),
             Err(SilAbiVerificationError::TemplateHashMismatch { ref contract, .. }) if contract == "Foo"
@@ -1056,10 +1172,10 @@ mod tests {
             encode_runtime_state_script(&contract.runtime_state, &BTreeMap::from([("value".to_string(), ArtifactValue::Byte(2))]))
                 .expect("state encodes");
         let suffix = [0xbb];
-        contract.compiled.script_hex = encode_hex(&[prefix.as_slice(), state.as_slice(), suffix.as_slice()].concat());
+        contract.compiled.set_bytecode([prefix.as_slice(), state.as_slice(), suffix.as_slice()].concat());
 
         contract.compiled.state_span = StateSpanArtifact { offset: 0, len: prefix.len() + state.len() };
-        contract.compiled.template_hash_hex = encode_hex(&template_hash(&[], &suffix));
+        contract.compiled.set_template_hash(template_hash(&[], &suffix));
         assert!(matches!(
             abi.verify(),
             Err(SilAbiVerificationError::InvalidRuntimeStateEncoding { ref contract, .. }) if contract == "Foo"
@@ -1067,7 +1183,7 @@ mod tests {
 
         let contract = &mut abi.contracts[0];
         contract.compiled.state_span = StateSpanArtifact { offset: prefix.len(), len: state.len() - 1 };
-        contract.compiled.template_hash_hex = encode_hex(&template_hash(&prefix, &[state[state.len() - 1], suffix[0]]));
+        contract.compiled.set_template_hash(template_hash(&prefix, &[state[state.len() - 1], suffix[0]]));
         assert!(matches!(
             abi.verify(),
             Err(SilAbiVerificationError::InvalidRuntimeStateEncoding { ref contract, .. }) if contract == "Foo"
@@ -1082,8 +1198,8 @@ mod tests {
         let prefix = [0xaa];
         let state = [OP_PUSH_DATA_1, 1, 2];
         let suffix = [0xbb];
-        contract.compiled.script_hex = encode_hex(&[prefix.as_slice(), state.as_slice(), suffix.as_slice()].concat());
-        contract.compiled.template_hash_hex = encode_hex(&template_hash(&prefix, &suffix));
+        contract.compiled.set_bytecode([prefix.as_slice(), state.as_slice(), suffix.as_slice()].concat());
+        contract.compiled.set_template_hash(template_hash(&prefix, &suffix));
         contract.compiled.state_span = StateSpanArtifact { offset: prefix.len(), len: state.len() };
         assert_eq!(abi.verify(), Err(SilAbiVerificationError::NonCanonicalRuntimeStateEncoding { contract: "Foo".to_string() }));
 
@@ -1181,6 +1297,7 @@ mod tests {
         let json = r#"
         {
           "schema_version": 1,
+          "compiler_version": "0.1.0",
           "states": [
             {
               "name": "FooState",
@@ -1203,8 +1320,10 @@ mod tests {
                 }
               ],
               "compiled": {
+                "bytecode": [0],
                 "script_hex": "00",
-                "template_hash_hex": "00",
+                "template_hash": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                "template_hash_hex": "0000000000000000000000000000000000000000000000000000000000000000",
                 "state_span": { "offset": 0, "len": 1 }
               }
             }
@@ -1214,6 +1333,7 @@ mod tests {
 
         let abi: SilAbiArtifact = serde_json::from_str(json).expect("sil abi should deserialize");
         abi.check_schema_version().expect("sil abi schema version should be supported");
+        assert_eq!(abi.contract("Foo").expect("contract exists").compiled.bytecode, vec![0]);
         assert_eq!(
             abi.contract("Foo").and_then(|contract| contract.entry("step")).map(|entry| entry.dispatch_tag),
             Some(DispatchTag::from([0x2c, 0x49, 0xed, 0x65]))
@@ -1224,6 +1344,11 @@ mod tests {
         );
         let serialized = serde_json::to_value(&abi).expect("Sil ABI artifact serializes");
         assert_eq!(serialized["contracts"][0]["entries"][0]["dispatch_tag"], "2c49ed65");
+        assert_eq!(serialized["contracts"][0]["compiled"]["bytecode"], serde_json::json!([0]));
+        assert_eq!(
+            serialized["contracts"][0]["compiled"]["template_hash"],
+            serde_json::to_value([0u8; 32]).expect("template hash serializes")
+        );
     }
 
     #[test]
@@ -1274,6 +1399,7 @@ mod tests {
     fn tiny_sil_abi() -> SilAbiArtifact {
         SilAbiArtifact {
             schema_version: 1,
+            compiler_version: "0.1.0".to_string(),
             states: Vec::new(),
             contracts: vec![SilContractArtifact {
                 name: "Foo".to_string(),
@@ -1299,7 +1425,9 @@ mod tests {
                 cov_decl_to_abi: BTreeMap::new(),
                 delegate_entry_abi: None,
                 compiled: CompiledContractArtifact {
+                    bytecode: Vec::new(),
                     script_hex: String::new(),
+                    template_hash: [0; 32],
                     template_hash_hex: String::new(),
                     state_span: StateSpanArtifact { offset: 0, len: 0 },
                 },

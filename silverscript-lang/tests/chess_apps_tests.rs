@@ -1,3 +1,5 @@
+mod common;
+
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -20,14 +22,14 @@ use kaspa_txscript::{
 };
 use kaspa_txscript_errors::TxScriptError;
 use secp256k1::{Keypair, Message, Secp256k1, SecretKey};
-use silverscript_lang::ast::Expr;
-use silverscript_lang::compiler::{CompileOptions, CompiledContract, compile_contract};
+use silverscript_abi::ArtifactValue;
+use silverscript_lang::compiler::{CompileOptions, sil_abi_artifact_with_options};
 
 const DEFAULT_MOVE_TIMEOUT: i64 = 600;
 
 struct SizeSnapshot {
     name: &'static str,
-    ctor: fn() -> Vec<Expr<'static>>,
+    ctor: fn() -> Vec<ArtifactValue>,
     expected_bytecode_len: usize,
     // Total complete P2SH sigscript bytes in the runtime-tested transaction.
     expected_sigscript_len: usize,
@@ -108,16 +110,16 @@ fn source_cache() -> &'static Mutex<HashMap<String, &'static str>> {
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn compiled_contract_cache() -> &'static Mutex<HashMap<String, Arc<CompiledContract<'static>>>> {
-    static CACHE: OnceLock<Mutex<HashMap<String, Arc<CompiledContract<'static>>>>> = OnceLock::new();
+fn compiled_contract_cache() -> &'static Mutex<HashMap<String, Arc<silverscript_abi::SilAbiArtifact>>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, Arc<silverscript_abi::SilAbiArtifact>>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn compile_cache_key(source: &'static str, ctor: &[Expr<'static>]) -> String {
+fn compile_cache_key(source: &'static str, ctor: &[ArtifactValue]) -> String {
     format!("{:p}:{}:{}", source.as_ptr(), source.len(), serde_json::to_string(ctor).expect("serialize chess ctor args"))
 }
 
-fn compile_cached(source: &'static str, ctor: &[Expr<'static>]) -> Arc<CompiledContract<'static>> {
+fn compile_cached(source: &'static str, ctor: &[ArtifactValue]) -> Arc<silverscript_abi::SilAbiArtifact> {
     let key = compile_cache_key(source, ctor);
     {
         let cache = compiled_contract_cache().lock().expect("compile cache mutex poisoned");
@@ -126,7 +128,8 @@ fn compile_cached(source: &'static str, ctor: &[Expr<'static>]) -> Arc<CompiledC
         }
     }
 
-    let compiled = Arc::new(compile_contract(source, ctor, CompileOptions::default()).expect("compile chess contract succeeds"));
+    let compiled =
+        Arc::new(sil_abi_artifact_with_options(source, ctor, CompileOptions::default()).expect("compile chess contract succeeds"));
     let mut cache = compiled_contract_cache().lock().expect("compile cache mutex poisoned");
     cache.insert(key, Arc::clone(&compiled));
     compiled
@@ -219,8 +222,8 @@ fn hash_pair(left: Hash, right: Hash) -> Hash {
     blake2b_bytes(&[left.as_slice(), right.as_slice()].concat())
 }
 
-fn hash_expr(value: Hash) -> Expr<'static> {
-    Expr::bytes(hash_bytes(value))
+fn hash_value(value: Hash) -> ArtifactValue {
+    ArtifactValue::Bytes(hash_bytes(value))
 }
 
 fn repeated_hash(byte: u8) -> Hash {
@@ -272,8 +275,8 @@ fn full_castle_rights() -> [u8; 4] {
     [1, 1, 1, 1]
 }
 
-fn castle_rights_expr(rights: [u8; 4]) -> Expr<'static> {
-    Expr::bytes(rights.to_vec())
+fn castle_rights_value(rights: [u8; 4]) -> ArtifactValue {
+    ArtifactValue::Bytes(rights.to_vec())
 }
 
 fn move_piece(board: &mut [u8], from_x: usize, from_y: usize, to_x: usize, to_y: usize) {
@@ -315,12 +318,12 @@ fn routes_commitment(route_templates: &[u8]) -> Hash {
     blake2b_bytes(route_templates)
 }
 
-fn template_fixture(source: &'static str, ctor: &[Expr<'static>]) -> TemplateFixture {
+fn template_fixture(source: &'static str, ctor: &[ArtifactValue]) -> TemplateFixture {
     let compiled = compile_cached(source, ctor);
-    let layout = compiled.state_layout;
-    let prefix = compiled.bytecode[..layout.start].to_vec();
-    let suffix = compiled.bytecode[layout.start + layout.len..].to_vec();
-    let hash = Hash::from_bytes(compiled.template_hash());
+    let layout = common::state_layout(&compiled);
+    let prefix = common::bytecode(&compiled)[..layout.start].to_vec();
+    let suffix = common::bytecode(&compiled)[layout.start + layout.len..].to_vec();
+    let hash = Hash::from_bytes(common::template_hash(&compiled));
     TemplateFixture { source, prefix, suffix, hash }
 }
 
@@ -329,24 +332,28 @@ fn fixture() -> &'static MuxChessFixture {
     FIXTURE.get_or_init(|| {
         let dummy_board = standard_board();
         let game_ctor = vec![
-            Expr::bytes(vec![0x11u8; 32]),
-            Expr::bytes(vec![0x33u8; 32 * 9]),
-            Expr::bytes(vec![0x21u8; 32]),
-            Expr::bytes(vec![0x22u8; 32]),
-            Expr::bytes(dummy_board),
-            Expr::int(0),
-            Expr::int(0),
-            Expr::int(DEFAULT_MOVE_TIMEOUT),
-            castle_rights_expr(full_castle_rights()),
-            Expr::int(-1),
-            Expr::int(-1),
-            Expr::int(-1),
-            Expr::int(0),
-            Expr::int(0),
-            Expr::int(3),
+            ArtifactValue::Bytes(vec![0x11u8; 32]),
+            ArtifactValue::Bytes(vec![0x33u8; 32 * 9]),
+            ArtifactValue::Bytes(vec![0x21u8; 32]),
+            ArtifactValue::Bytes(vec![0x22u8; 32]),
+            ArtifactValue::Bytes(dummy_board),
+            ArtifactValue::Int(0),
+            ArtifactValue::Int(0),
+            ArtifactValue::Int(DEFAULT_MOVE_TIMEOUT),
+            castle_rights_value(full_castle_rights()),
+            ArtifactValue::Int(-1),
+            ArtifactValue::Int(-1),
+            ArtifactValue::Int(-1),
+            ArtifactValue::Int(0),
+            ArtifactValue::Int(0),
+            ArtifactValue::Int(3),
         ];
-        let settle_ctor =
-            vec![Expr::bytes(vec![0x44u8; 32]), Expr::bytes(vec![0x21u8; 32]), Expr::bytes(vec![0x22u8; 32]), Expr::int(0)];
+        let settle_ctor = vec![
+            ArtifactValue::Bytes(vec![0x44u8; 32]),
+            ArtifactValue::Bytes(vec![0x21u8; 32]),
+            ArtifactValue::Bytes(vec![0x22u8; 32]),
+            ArtifactValue::Int(0),
+        ];
 
         MuxChessFixture {
             mux: template_fixture(mux_source(), &game_ctor),
@@ -369,23 +376,23 @@ fn compile_state(
     white_hash: &Hash,
     black_hash: &Hash,
     state: GameStateArgs<'_>,
-) -> Arc<CompiledContract<'static>> {
+) -> Arc<silverscript_abi::SilAbiArtifact> {
     let ctor = vec![
-        hash_expr(fix.mux.hash),
-        Expr::bytes(packed_route_templates(fix)),
-        hash_expr(*white_hash),
-        hash_expr(*black_hash),
-        Expr::bytes(state.board.to_vec()),
-        Expr::int(state.turn),
-        Expr::int(state.status),
-        Expr::int(DEFAULT_MOVE_TIMEOUT),
-        castle_rights_expr(state.castle_rights),
-        Expr::int(state.en_passant_idx),
-        Expr::int(state.pending_src_idx),
-        Expr::int(state.pending_dst_idx),
-        Expr::int(state.pending_promo),
-        Expr::int(state.recent_castle),
-        Expr::int(state.draw_state),
+        hash_value(fix.mux.hash),
+        ArtifactValue::Bytes(packed_route_templates(fix)),
+        hash_value(*white_hash),
+        hash_value(*black_hash),
+        ArtifactValue::Bytes(state.board.to_vec()),
+        ArtifactValue::Int(state.turn),
+        ArtifactValue::Int(state.status),
+        ArtifactValue::Int(DEFAULT_MOVE_TIMEOUT),
+        castle_rights_value(state.castle_rights),
+        ArtifactValue::Int(state.en_passant_idx),
+        ArtifactValue::Int(state.pending_src_idx),
+        ArtifactValue::Int(state.pending_dst_idx),
+        ArtifactValue::Int(state.pending_promo),
+        ArtifactValue::Int(state.recent_castle),
+        ArtifactValue::Int(state.draw_state),
     ];
     compile_cached(source, &ctor)
 }
@@ -396,25 +403,25 @@ fn compile_settle_state(
     white_hash: &Hash,
     black_hash: &Hash,
     status: i64,
-) -> Arc<CompiledContract<'static>> {
-    let ctor = vec![hash_expr(*player_template), hash_expr(*white_hash), hash_expr(*black_hash), Expr::int(status)];
+) -> Arc<silverscript_abi::SilAbiArtifact> {
+    let ctor = vec![hash_value(*player_template), hash_value(*white_hash), hash_value(*black_hash), ArtifactValue::Int(status)];
     compile_cached(source, &ctor)
 }
 
-fn compile_player_state(source: &'static str, state: PlayerStateArgs<'_>) -> Arc<CompiledContract<'static>> {
+fn compile_player_state(source: &'static str, state: PlayerStateArgs<'_>) -> Arc<silverscript_abi::SilAbiArtifact> {
     let ctor = vec![
-        hash_expr(*state.league_template),
-        hash_expr(*state.player_template),
-        hash_expr(*state.mux_template),
-        hash_expr(*state.routes_commitment),
-        hash_expr(*state.owner_hash),
-        hash_expr(*state.player_id),
-        Expr::int(state.open_games),
-        Expr::int(state.rating),
-        Expr::int(state.games),
-        Expr::int(state.wins),
-        Expr::int(state.draws),
-        Expr::int(state.losses),
+        hash_value(*state.league_template),
+        hash_value(*state.player_template),
+        hash_value(*state.mux_template),
+        hash_value(*state.routes_commitment),
+        hash_value(*state.owner_hash),
+        hash_value(*state.player_id),
+        ArtifactValue::Int(state.open_games),
+        ArtifactValue::Int(state.rating),
+        ArtifactValue::Int(state.games),
+        ArtifactValue::Int(state.wins),
+        ArtifactValue::Int(state.draws),
+        ArtifactValue::Int(state.losses),
     ];
     compile_cached(source, &ctor)
 }
@@ -437,13 +444,13 @@ fn player_template_hash(fix: &MuxChessFixture) -> Hash {
             losses: 0,
         },
     );
-    Hash::from_bytes(compiled.template_hash())
+    Hash::from_bytes(common::template_hash(&compiled))
 }
 
-fn entry_sigscript(compiled: &CompiledContract<'_>, function: &str, args: Vec<Expr<'_>>) -> Vec<u8> {
-    let sigscript = compiled.build_sig_script(function, args).expect("sigscript builds");
+fn entry_sigscript(compiled: &silverscript_abi::SilAbiArtifact, function: &str, args: Vec<ArtifactValue>) -> Vec<u8> {
+    let sigscript = common::encode_entry_sig_script(compiled, function, &args).expect("sigscript builds");
     pay_to_script_hash_signature_script_with_flags(
-        compiled.bytecode.clone(),
+        common::bytecode(compiled).clone(),
         sigscript,
         EngineFlags { covenants_enabled: true, ..Default::default() },
     )
@@ -460,27 +467,27 @@ fn tx_input(index: u32, signature_script: Vec<u8>, sig_op_count: u8) -> Transact
 }
 
 fn covenant_output_with_value(
-    compiled: &CompiledContract<'_>,
+    compiled: &silverscript_abi::SilAbiArtifact,
     authorizing_input: u16,
     covenant_id: Hash,
     value: u64,
 ) -> TransactionOutput {
     TransactionOutput {
         value,
-        script_public_key: pay_to_script_hash_script(&compiled.bytecode),
+        script_public_key: pay_to_script_hash_script(&common::bytecode(compiled)),
         covenant: Some(CovenantBinding { authorizing_input, covenant_id }),
     }
 }
 
-fn covenant_output(compiled: &CompiledContract<'_>, authorizing_input: u16, covenant_id: Hash) -> TransactionOutput {
+fn covenant_output(compiled: &silverscript_abi::SilAbiArtifact, authorizing_input: u16, covenant_id: Hash) -> TransactionOutput {
     covenant_output_with_value(compiled, authorizing_input, covenant_id, 1_000)
 }
 
-fn covenant_utxo_with_value(compiled: &CompiledContract<'_>, covenant_id: Hash, value: u64) -> UtxoEntry {
-    UtxoEntry::new(value, pay_to_script_hash_script(&compiled.bytecode), 0, false, Some(covenant_id))
+fn covenant_utxo_with_value(compiled: &silverscript_abi::SilAbiArtifact, covenant_id: Hash, value: u64) -> UtxoEntry {
+    UtxoEntry::new(value, pay_to_script_hash_script(&common::bytecode(compiled)), 0, false, Some(covenant_id))
 }
 
-fn covenant_utxo(compiled: &CompiledContract<'_>, covenant_id: Hash) -> UtxoEntry {
+fn covenant_utxo(compiled: &silverscript_abi::SilAbiArtifact, covenant_id: Hash) -> UtxoEntry {
     covenant_utxo_with_value(compiled, covenant_id, 1_000)
 }
 
@@ -515,12 +522,12 @@ fn sign_tx_input_schnorr(tx: &Transaction, entries: &[UtxoEntry], input_idx: usi
 }
 
 fn run_route(
-    active: &CompiledContract<'_>,
+    active: &silverscript_abi::SilAbiArtifact,
     selector: i64,
     mv: MoveArgs,
     player: &Player,
     target: &TemplateFixture,
-    out: &CompiledContract<'_>,
+    out: &silverscript_abi::SilAbiArtifact,
     covenant_id: Hash,
 ) {
     let placeholder_sig = vec![0u8; 65];
@@ -535,11 +542,11 @@ fn run_route(
             mv.to_y.into(),
             mv.promo_piece.into(),
             0.into(),
-            Expr::bytes(placeholder_sig),
-            Expr::bytes(player.pubkey_bytes.clone()),
-            hash_expr(player.player_id),
-            Expr::dynamic_bytes(target.prefix.clone()),
-            Expr::dynamic_bytes(target.suffix.clone()),
+            ArtifactValue::Bytes(placeholder_sig),
+            ArtifactValue::Bytes(player.pubkey_bytes.clone()),
+            hash_value(player.player_id),
+            ArtifactValue::Bytes(target.prefix.clone()),
+            ArtifactValue::Bytes(target.suffix.clone()),
         ],
     );
     let outputs = vec![covenant_output(out, 0, covenant_id)];
@@ -557,11 +564,11 @@ fn run_route(
             mv.to_y.into(),
             mv.promo_piece.into(),
             0.into(),
-            Expr::bytes(sig),
-            Expr::bytes(player.pubkey_bytes.clone()),
-            hash_expr(player.player_id),
-            Expr::dynamic_bytes(target.prefix.clone()),
-            Expr::dynamic_bytes(target.suffix.clone()),
+            ArtifactValue::Bytes(sig),
+            ArtifactValue::Bytes(player.pubkey_bytes.clone()),
+            hash_value(player.player_id),
+            ArtifactValue::Bytes(target.prefix.clone()),
+            ArtifactValue::Bytes(target.suffix.clone()),
         ],
     );
     assert_sigscript_size("chess_mux.sil", &tx);
@@ -571,13 +578,13 @@ fn run_route(
 
 fn run_worker_apply(
     label: &str,
-    active: &CompiledContract<'_>,
-    next: &CompiledContract<'_>,
+    active: &silverscript_abi::SilAbiArtifact,
+    next: &silverscript_abi::SilAbiArtifact,
     covenant_id: Hash,
     mux: &TemplateFixture,
 ) {
     let sigscript =
-        entry_sigscript(active, "apply", vec![Expr::dynamic_bytes(mux.prefix.clone()), Expr::dynamic_bytes(mux.suffix.clone())]);
+        entry_sigscript(active, "apply", vec![ArtifactValue::Bytes(mux.prefix.clone()), ArtifactValue::Bytes(mux.suffix.clone())]);
     let outputs = vec![covenant_output(next, 0, covenant_id)];
     let entries = vec![covenant_utxo(active, covenant_id)];
     let tx = Transaction::new(1, vec![tx_input(0, sigscript, 0)], outputs, 0, Default::default(), 0, vec![]);
@@ -588,13 +595,16 @@ fn run_worker_apply(
 
 fn run_prep_apply(
     label: &str,
-    active: &CompiledContract<'_>,
-    next: &CompiledContract<'_>,
+    active: &silverscript_abi::SilAbiArtifact,
+    next: &silverscript_abi::SilAbiArtifact,
     covenant_id: Hash,
     target: &TemplateFixture,
 ) {
-    let sigscript =
-        entry_sigscript(active, "apply", vec![Expr::dynamic_bytes(target.prefix.clone()), Expr::dynamic_bytes(target.suffix.clone())]);
+    let sigscript = entry_sigscript(
+        active,
+        "apply",
+        vec![ArtifactValue::Bytes(target.prefix.clone()), ArtifactValue::Bytes(target.suffix.clone())],
+    );
     let outputs = vec![covenant_output(next, 0, covenant_id)];
     let entries = vec![covenant_utxo(active, covenant_id)];
     let tx = Transaction::new(1, vec![tx_input(0, sigscript, 0)], outputs, 0, Default::default(), 0, vec![]);
@@ -770,75 +780,80 @@ fn assert_sigscript_size(name: &str, tx: &Transaction) {
     assert_size_within_noise(&format!("{name} sigscript_len"), actual, expected);
 }
 
-fn pawn_constructor_args() -> Vec<Expr<'static>> {
+fn pawn_constructor_args() -> Vec<ArtifactValue> {
     vec![
-        Expr::bytes(vec![0x11u8; 32]),
-        Expr::bytes(sample_route_templates()),
-        Expr::bytes(vec![0x21u8; 32]),
-        Expr::bytes(vec![0x22u8; 32]),
-        Expr::bytes(standard_board()),
-        Expr::int(0),
-        Expr::int(0),
-        Expr::int(DEFAULT_MOVE_TIMEOUT),
-        Expr::bytes(vec![1u8; 4]),
-        Expr::int(-1),
-        Expr::int(12),
-        Expr::int(28),
-        Expr::int(0),
-        Expr::int(0),
-        Expr::int(3),
+        ArtifactValue::Bytes(vec![0x11u8; 32]),
+        ArtifactValue::Bytes(sample_route_templates()),
+        ArtifactValue::Bytes(vec![0x21u8; 32]),
+        ArtifactValue::Bytes(vec![0x22u8; 32]),
+        ArtifactValue::Bytes(standard_board()),
+        ArtifactValue::Int(0),
+        ArtifactValue::Int(0),
+        ArtifactValue::Int(DEFAULT_MOVE_TIMEOUT),
+        ArtifactValue::Bytes(vec![1u8; 4]),
+        ArtifactValue::Int(-1),
+        ArtifactValue::Int(12),
+        ArtifactValue::Int(28),
+        ArtifactValue::Int(0),
+        ArtifactValue::Int(0),
+        ArtifactValue::Int(3),
     ]
 }
 
-fn mux_constructor_args() -> Vec<Expr<'static>> {
+fn mux_constructor_args() -> Vec<ArtifactValue> {
     vec![
-        Expr::bytes(vec![0x11u8; 32]),
-        Expr::bytes(sample_route_templates()),
-        Expr::bytes(vec![0x21u8; 32]),
-        Expr::bytes(vec![0x22u8; 32]),
-        Expr::bytes(vec![0u8; 64]),
-        Expr::int(0),
-        Expr::int(0),
-        Expr::int(DEFAULT_MOVE_TIMEOUT),
-        Expr::bytes(vec![1u8; 4]),
-        Expr::int(-1),
-        Expr::int(-1),
-        Expr::int(-1),
-        Expr::int(0),
-        Expr::int(0),
-        Expr::int(3),
+        ArtifactValue::Bytes(vec![0x11u8; 32]),
+        ArtifactValue::Bytes(sample_route_templates()),
+        ArtifactValue::Bytes(vec![0x21u8; 32]),
+        ArtifactValue::Bytes(vec![0x22u8; 32]),
+        ArtifactValue::Bytes(vec![0u8; 64]),
+        ArtifactValue::Int(0),
+        ArtifactValue::Int(0),
+        ArtifactValue::Int(DEFAULT_MOVE_TIMEOUT),
+        ArtifactValue::Bytes(vec![1u8; 4]),
+        ArtifactValue::Int(-1),
+        ArtifactValue::Int(-1),
+        ArtifactValue::Int(-1),
+        ArtifactValue::Int(0),
+        ArtifactValue::Int(0),
+        ArtifactValue::Int(3),
     ]
 }
 
-fn settle_constructor_args() -> Vec<Expr<'static>> {
-    vec![Expr::bytes(vec![0x31u8; 32]), Expr::bytes(vec![0x21u8; 32]), Expr::bytes(vec![0x22u8; 32]), Expr::int(1)]
-}
-
-fn player_constructor_args() -> Vec<Expr<'static>> {
+fn settle_constructor_args() -> Vec<ArtifactValue> {
     vec![
-        Expr::bytes(vec![0x11u8; 32]),
-        Expr::bytes(vec![0x22u8; 32]),
-        Expr::bytes(vec![0x33u8; 32]),
-        Expr::bytes(sample_routes_commitment().as_bytes().to_vec()),
-        Expr::bytes(vec![0x44u8; 32]),
-        Expr::bytes(vec![0x55u8; 32]),
-        Expr::int(0),
-        Expr::int(1200),
-        Expr::int(7),
-        Expr::int(4),
-        Expr::int(2),
-        Expr::int(1),
+        ArtifactValue::Bytes(vec![0x31u8; 32]),
+        ArtifactValue::Bytes(vec![0x21u8; 32]),
+        ArtifactValue::Bytes(vec![0x22u8; 32]),
+        ArtifactValue::Int(1),
     ]
 }
 
-fn league_constructor_args() -> Vec<Expr<'static>> {
+fn player_constructor_args() -> Vec<ArtifactValue> {
     vec![
-        Expr::bytes(vec![0x11u8; 32]),
-        Expr::bytes(vec![0x22u8; 32]),
-        Expr::bytes(vec![0x33u8; 32]),
-        Expr::bytes(sample_routes_commitment().as_bytes().to_vec()),
-        Expr::int(1200),
-        Expr::bytes(vec![0x44u8; 32]),
+        ArtifactValue::Bytes(vec![0x11u8; 32]),
+        ArtifactValue::Bytes(vec![0x22u8; 32]),
+        ArtifactValue::Bytes(vec![0x33u8; 32]),
+        ArtifactValue::Bytes(sample_routes_commitment().as_bytes().to_vec()),
+        ArtifactValue::Bytes(vec![0x44u8; 32]),
+        ArtifactValue::Bytes(vec![0x55u8; 32]),
+        ArtifactValue::Int(0),
+        ArtifactValue::Int(1200),
+        ArtifactValue::Int(7),
+        ArtifactValue::Int(4),
+        ArtifactValue::Int(2),
+        ArtifactValue::Int(1),
+    ]
+}
+
+fn league_constructor_args() -> Vec<ArtifactValue> {
+    vec![
+        ArtifactValue::Bytes(vec![0x11u8; 32]),
+        ArtifactValue::Bytes(vec![0x22u8; 32]),
+        ArtifactValue::Bytes(vec![0x33u8; 32]),
+        ArtifactValue::Bytes(sample_routes_commitment().as_bytes().to_vec()),
+        ArtifactValue::Int(1200),
+        ArtifactValue::Bytes(vec![0x44u8; 32]),
     ]
 }
 
@@ -850,9 +865,9 @@ fn chess_apps_compile_and_probe_sizes_within_noise() {
         let source = local_contract_source(snapshot.name);
         let ctor = (snapshot.ctor)();
         let compiled = compile_cached(source, &ctor);
-        let (instruction_count, charged_op_count) = bytecode_op_counts(&compiled.bytecode);
+        let (instruction_count, charged_op_count) = bytecode_op_counts(&common::bytecode(&compiled));
 
-        actual_sizes.push((snapshot.name, compiled.bytecode.len(), instruction_count, charged_op_count));
+        actual_sizes.push((snapshot.name, common::bytecode(&compiled).len(), instruction_count, charged_op_count));
     }
 
     for (name, bytecode_len, instruction_count, charged_op_count) in &actual_sizes {
@@ -884,32 +899,32 @@ fn league_register_player_runtime_matches_expected_output_state() {
     let player_id_domain = b"LeaguePlayerId".to_vec();
 
     let player_template_ctor = vec![
-        hash_expr(league_template),
-        hash_expr(repeated_hash(0x44)),
-        hash_expr(fix.mux.hash),
-        hash_expr(routes_commitment),
-        hash_expr(repeated_hash(0x55)),
-        hash_expr(repeated_hash(0x77)),
-        Expr::int(0),
-        Expr::int(900),
-        Expr::int(1),
-        Expr::int(2),
-        Expr::int(3),
-        Expr::int(4),
+        hash_value(league_template),
+        hash_value(repeated_hash(0x44)),
+        hash_value(fix.mux.hash),
+        hash_value(routes_commitment),
+        hash_value(repeated_hash(0x55)),
+        hash_value(repeated_hash(0x77)),
+        ArtifactValue::Int(0),
+        ArtifactValue::Int(900),
+        ArtifactValue::Int(1),
+        ArtifactValue::Int(2),
+        ArtifactValue::Int(3),
+        ArtifactValue::Int(4),
     ];
     let player_template_contract = compile_cached(player_source(), &player_template_ctor);
-    let layout = player_template_contract.state_layout;
-    let player_prefix = player_template_contract.bytecode[..layout.start].to_vec();
-    let player_suffix = player_template_contract.bytecode[layout.start + layout.len..].to_vec();
-    let player_template = Hash::from_bytes(player_template_contract.template_hash());
+    let layout = common::state_layout(&player_template_contract);
+    let player_prefix = common::bytecode(&player_template_contract)[..layout.start].to_vec();
+    let player_suffix = common::bytecode(&player_template_contract)[layout.start + layout.len..].to_vec();
+    let player_template = Hash::from_bytes(common::template_hash(&player_template_contract));
 
     let league_ctor = vec![
-        hash_expr(league_template),
-        hash_expr(player_template),
-        hash_expr(fix.mux.hash),
-        hash_expr(routes_commitment),
-        Expr::int(base_rating),
-        hash_expr(admin),
+        hash_value(league_template),
+        hash_value(player_template),
+        hash_value(fix.mux.hash),
+        hash_value(routes_commitment),
+        ArtifactValue::Int(base_rating),
+        hash_value(admin),
     ];
     let league = compile_cached(league_source(), &league_ctor);
 
@@ -944,10 +959,10 @@ fn league_register_player_runtime_matches_expected_output_state() {
         &league,
         "register_player",
         vec![
-            Expr::bytes(vec![0u8; 65]),
-            Expr::bytes(owner.pubkey_bytes.clone()),
-            Expr::dynamic_bytes(player_prefix.clone()),
-            Expr::dynamic_bytes(player_suffix.clone()),
+            ArtifactValue::Bytes(vec![0u8; 65]),
+            ArtifactValue::Bytes(owner.pubkey_bytes.clone()),
+            ArtifactValue::Bytes(player_prefix.clone()),
+            ArtifactValue::Bytes(player_suffix.clone()),
         ],
     );
     let outputs = vec![covenant_output(&league, 0, covenant_id), covenant_output(&registered_player, 0, covenant_id)];
@@ -960,10 +975,10 @@ fn league_register_player_runtime_matches_expected_output_state() {
         &league,
         "register_player",
         vec![
-            Expr::bytes(sig),
-            Expr::bytes(owner.pubkey_bytes),
-            Expr::dynamic_bytes(player_prefix),
-            Expr::dynamic_bytes(player_suffix),
+            ArtifactValue::Bytes(sig),
+            ArtifactValue::Bytes(owner.pubkey_bytes),
+            ArtifactValue::Bytes(player_prefix),
+            ArtifactValue::Bytes(player_suffix),
         ],
     );
 
@@ -1001,10 +1016,10 @@ fn player_start_game_runtime_matches_expected_output_states() {
             losses: 0,
         },
     );
-    let player_layout = player_contract.state_layout;
-    let player_template = Hash::from_bytes(player_contract.template_hash());
+    let player_layout = common::state_layout(&player_contract);
+    let player_template = Hash::from_bytes(common::template_hash(&player_contract));
     let player_prefix_len = player_layout.start as i64;
-    let player_suffix_len = (player_contract.bytecode.len() - (player_layout.start + player_layout.len)) as i64;
+    let player_suffix_len = (common::bytecode(&player_contract).len() - (player_layout.start + player_layout.len)) as i64;
 
     let white_player = compile_player_state(
         player_source(),
@@ -1097,26 +1112,26 @@ fn player_start_game_runtime_matches_expected_output_states() {
         &white_player,
         "start_game",
         vec![
-            Expr::bytes(vec![0u8; 65]),
-            Expr::bytes(white.pubkey_bytes.clone()),
-            Expr::int(0),
-            Expr::int(player_prefix_len),
-            Expr::int(player_suffix_len),
-            Expr::bytes(route_templates.clone()),
-            Expr::int(DEFAULT_MOVE_TIMEOUT),
-            Expr::dynamic_bytes(fix.mux.prefix.clone()),
-            Expr::dynamic_bytes(fix.mux.suffix.clone()),
+            ArtifactValue::Bytes(vec![0u8; 65]),
+            ArtifactValue::Bytes(white.pubkey_bytes.clone()),
+            ArtifactValue::Int(0),
+            ArtifactValue::Int(player_prefix_len),
+            ArtifactValue::Int(player_suffix_len),
+            ArtifactValue::Bytes(route_templates.clone()),
+            ArtifactValue::Int(DEFAULT_MOVE_TIMEOUT),
+            ArtifactValue::Bytes(fix.mux.prefix.clone()),
+            ArtifactValue::Bytes(fix.mux.suffix.clone()),
         ],
     );
     let black_placeholder = entry_sigscript(
         &black_player,
         "delegate_start_game",
         vec![
-            Expr::bytes(vec![0u8; 65]),
-            Expr::bytes(black.pubkey_bytes.clone()),
-            Expr::int(DEFAULT_MOVE_TIMEOUT),
-            Expr::int(player_prefix_len),
-            Expr::int(player_suffix_len),
+            ArtifactValue::Bytes(vec![0u8; 65]),
+            ArtifactValue::Bytes(black.pubkey_bytes.clone()),
+            ArtifactValue::Int(DEFAULT_MOVE_TIMEOUT),
+            ArtifactValue::Int(player_prefix_len),
+            ArtifactValue::Int(player_suffix_len),
         ],
     );
 
@@ -1143,26 +1158,26 @@ fn player_start_game_runtime_matches_expected_output_states() {
         &white_player,
         "start_game",
         vec![
-            Expr::bytes(white_sig),
-            Expr::bytes(white.pubkey_bytes),
-            Expr::int(0),
-            Expr::int(player_prefix_len),
-            Expr::int(player_suffix_len),
-            Expr::bytes(route_templates),
-            Expr::int(DEFAULT_MOVE_TIMEOUT),
-            Expr::dynamic_bytes(fix.mux.prefix.clone()),
-            Expr::dynamic_bytes(fix.mux.suffix.clone()),
+            ArtifactValue::Bytes(white_sig),
+            ArtifactValue::Bytes(white.pubkey_bytes),
+            ArtifactValue::Int(0),
+            ArtifactValue::Int(player_prefix_len),
+            ArtifactValue::Int(player_suffix_len),
+            ArtifactValue::Bytes(route_templates),
+            ArtifactValue::Int(DEFAULT_MOVE_TIMEOUT),
+            ArtifactValue::Bytes(fix.mux.prefix.clone()),
+            ArtifactValue::Bytes(fix.mux.suffix.clone()),
         ],
     );
     tx.inputs[1].signature_script = entry_sigscript(
         &black_player,
         "delegate_start_game",
         vec![
-            Expr::bytes(black_sig),
-            Expr::bytes(black.pubkey_bytes),
-            Expr::int(DEFAULT_MOVE_TIMEOUT),
-            Expr::int(player_prefix_len),
-            Expr::int(player_suffix_len),
+            ArtifactValue::Bytes(black_sig),
+            ArtifactValue::Bytes(black.pubkey_bytes),
+            ArtifactValue::Int(DEFAULT_MOVE_TIMEOUT),
+            ArtifactValue::Int(player_prefix_len),
+            ArtifactValue::Int(player_suffix_len),
         ],
     );
 
@@ -1217,30 +1232,38 @@ fn player_rebalance_requires_a_standalone_covenant_input() {
             losses: 0,
         },
     );
-    let player_layout = player.state_layout;
+    let player_layout = common::state_layout(&player);
     let player_prefix_len = player_layout.start as i64;
-    let player_suffix_len = (player.bytecode.len() - player_layout.start - player_layout.len) as i64;
+    let player_suffix_len = (common::bytecode(&player).len() - player_layout.start - player_layout.len) as i64;
 
-    let placeholder = entry_sigscript(&player, "rebalance", vec![Expr::bytes(vec![0u8; 65]), Expr::bytes(owner.pubkey_bytes.clone())]);
+    let placeholder = entry_sigscript(
+        &player,
+        "rebalance",
+        vec![ArtifactValue::Bytes(vec![0u8; 65]), ArtifactValue::Bytes(owner.pubkey_bytes.clone())],
+    );
     let entries = vec![covenant_utxo(&player, covenant_id)];
     let outputs = vec![covenant_output(&player, 0, covenant_id)];
     let mut standalone_tx = Transaction::new(1, vec![tx_input(0, placeholder, 1)], outputs, 0, Default::default(), 0, vec![]);
     let signature = sign_tx_input_schnorr(&standalone_tx, &entries, 0, &owner);
     standalone_tx.inputs[0].signature_script =
-        entry_sigscript(&player, "rebalance", vec![Expr::bytes(signature), Expr::bytes(owner.pubkey_bytes.clone())]);
+        entry_sigscript(&player, "rebalance", vec![ArtifactValue::Bytes(signature), ArtifactValue::Bytes(owner.pubkey_bytes.clone())]);
     let standalone_result = execute_input_with_covenants(standalone_tx, entries, 0);
     assert!(standalone_result.is_ok(), "standalone player rebalance failed: {}", standalone_result.unwrap_err());
 
-    let placeholder = entry_sigscript(&player, "rebalance", vec![Expr::bytes(vec![0u8; 65]), Expr::bytes(owner.pubkey_bytes.clone())]);
+    let placeholder = entry_sigscript(
+        &player,
+        "rebalance",
+        vec![ArtifactValue::Bytes(vec![0u8; 65]), ArtifactValue::Bytes(owner.pubkey_bytes.clone())],
+    );
     let delegate_placeholder = entry_sigscript(
         &delegate,
         "delegate_start_game",
         vec![
-            Expr::bytes(vec![0u8; 65]),
-            Expr::bytes(delegate_owner.pubkey_bytes.clone()),
-            Expr::int(DEFAULT_MOVE_TIMEOUT),
-            Expr::int(player_prefix_len),
-            Expr::int(player_suffix_len),
+            ArtifactValue::Bytes(vec![0u8; 65]),
+            ArtifactValue::Bytes(delegate_owner.pubkey_bytes.clone()),
+            ArtifactValue::Int(DEFAULT_MOVE_TIMEOUT),
+            ArtifactValue::Int(player_prefix_len),
+            ArtifactValue::Int(player_suffix_len),
         ],
     );
     let entries = vec![covenant_utxo(&player, covenant_id), covenant_utxo(&delegate, covenant_id)];
@@ -1257,16 +1280,16 @@ fn player_rebalance_requires_a_standalone_covenant_input() {
     let signature = sign_tx_input_schnorr(&shared_tx, &entries, 0, &owner);
     let delegate_signature = sign_tx_input_schnorr(&shared_tx, &entries, 1, &delegate_owner);
     shared_tx.inputs[0].signature_script =
-        entry_sigscript(&player, "rebalance", vec![Expr::bytes(signature), Expr::bytes(owner.pubkey_bytes)]);
+        entry_sigscript(&player, "rebalance", vec![ArtifactValue::Bytes(signature), ArtifactValue::Bytes(owner.pubkey_bytes)]);
     shared_tx.inputs[1].signature_script = entry_sigscript(
         &delegate,
         "delegate_start_game",
         vec![
-            Expr::bytes(delegate_signature),
-            Expr::bytes(delegate_owner.pubkey_bytes),
-            Expr::int(DEFAULT_MOVE_TIMEOUT),
-            Expr::int(player_prefix_len),
-            Expr::int(player_suffix_len),
+            ArtifactValue::Bytes(delegate_signature),
+            ArtifactValue::Bytes(delegate_owner.pubkey_bytes),
+            ArtifactValue::Int(DEFAULT_MOVE_TIMEOUT),
+            ArtifactValue::Int(player_prefix_len),
+            ArtifactValue::Int(player_suffix_len),
         ],
     );
     let delegate_result = execute_input_with_covenants(shared_tx.clone(), entries.clone(), 1);
@@ -1318,29 +1341,37 @@ fn player_retire_requires_a_standalone_covenant_input() {
             losses: 0,
         },
     );
-    let player_layout = player.state_layout;
+    let player_layout = common::state_layout(&player);
     let player_prefix_len = player_layout.start as i64;
-    let player_suffix_len = (player.bytecode.len() - player_layout.start - player_layout.len) as i64;
+    let player_suffix_len = (common::bytecode(&player).len() - player_layout.start - player_layout.len) as i64;
 
-    let placeholder = entry_sigscript(&player, "retire", vec![Expr::bytes(vec![0u8; 65]), Expr::bytes(owner.pubkey_bytes.clone())]);
+    let placeholder = entry_sigscript(
+        &player,
+        "retire",
+        vec![ArtifactValue::Bytes(vec![0u8; 65]), ArtifactValue::Bytes(owner.pubkey_bytes.clone())],
+    );
     let entries = vec![covenant_utxo(&player, covenant_id)];
     let mut standalone_tx = Transaction::new(1, vec![tx_input(0, placeholder, 1)], vec![], 0, Default::default(), 0, vec![]);
     let signature = sign_tx_input_schnorr(&standalone_tx, &entries, 0, &owner);
     standalone_tx.inputs[0].signature_script =
-        entry_sigscript(&player, "retire", vec![Expr::bytes(signature), Expr::bytes(owner.pubkey_bytes.clone())]);
+        entry_sigscript(&player, "retire", vec![ArtifactValue::Bytes(signature), ArtifactValue::Bytes(owner.pubkey_bytes.clone())]);
     let standalone_result = execute_input_with_covenants(standalone_tx, entries, 0);
     assert!(standalone_result.is_ok(), "standalone player retirement failed: {}", standalone_result.unwrap_err());
 
-    let placeholder = entry_sigscript(&player, "retire", vec![Expr::bytes(vec![0u8; 65]), Expr::bytes(owner.pubkey_bytes.clone())]);
+    let placeholder = entry_sigscript(
+        &player,
+        "retire",
+        vec![ArtifactValue::Bytes(vec![0u8; 65]), ArtifactValue::Bytes(owner.pubkey_bytes.clone())],
+    );
     let delegate_placeholder = entry_sigscript(
         &delegate,
         "delegate_start_game",
         vec![
-            Expr::bytes(vec![0u8; 65]),
-            Expr::bytes(delegate_owner.pubkey_bytes.clone()),
-            Expr::int(DEFAULT_MOVE_TIMEOUT),
-            Expr::int(player_prefix_len),
-            Expr::int(player_suffix_len),
+            ArtifactValue::Bytes(vec![0u8; 65]),
+            ArtifactValue::Bytes(delegate_owner.pubkey_bytes.clone()),
+            ArtifactValue::Int(DEFAULT_MOVE_TIMEOUT),
+            ArtifactValue::Int(player_prefix_len),
+            ArtifactValue::Int(player_suffix_len),
         ],
     );
     let entries = vec![covenant_utxo(&player, covenant_id), covenant_utxo(&delegate, covenant_id)];
@@ -1356,16 +1387,16 @@ fn player_retire_requires_a_standalone_covenant_input() {
     let signature = sign_tx_input_schnorr(&shared_tx, &entries, 0, &owner);
     let delegate_signature = sign_tx_input_schnorr(&shared_tx, &entries, 1, &delegate_owner);
     shared_tx.inputs[0].signature_script =
-        entry_sigscript(&player, "retire", vec![Expr::bytes(signature), Expr::bytes(owner.pubkey_bytes)]);
+        entry_sigscript(&player, "retire", vec![ArtifactValue::Bytes(signature), ArtifactValue::Bytes(owner.pubkey_bytes)]);
     shared_tx.inputs[1].signature_script = entry_sigscript(
         &delegate,
         "delegate_start_game",
         vec![
-            Expr::bytes(delegate_signature),
-            Expr::bytes(delegate_owner.pubkey_bytes),
-            Expr::int(DEFAULT_MOVE_TIMEOUT),
-            Expr::int(player_prefix_len),
-            Expr::int(player_suffix_len),
+            ArtifactValue::Bytes(delegate_signature),
+            ArtifactValue::Bytes(delegate_owner.pubkey_bytes),
+            ArtifactValue::Int(DEFAULT_MOVE_TIMEOUT),
+            ArtifactValue::Int(player_prefix_len),
+            ArtifactValue::Int(player_suffix_len),
         ],
     );
     let delegate_result = execute_input_with_covenants(shared_tx.clone(), entries.clone(), 1);
@@ -1864,8 +1895,8 @@ fn settle_runtime_matches_expected_output_states() {
             losses: 0,
         },
     );
-    let player_layout = player_contract.state_layout;
-    let player_template = Hash::from_bytes(player_contract.template_hash());
+    let player_layout = common::state_layout(&player_contract);
+    let player_template = Hash::from_bytes(common::template_hash(&player_contract));
     let white_player = compile_player_state(
         player_source(),
         PlayerStateArgs {
@@ -1944,8 +1975,8 @@ fn settle_runtime_matches_expected_output_states() {
         &routed_settle,
         "settle",
         vec![
-            Expr::int(player_layout.start as i64),
-            Expr::int((player_contract.bytecode.len() - player_layout.start - player_layout.len) as i64),
+            ArtifactValue::Int(player_layout.start as i64),
+            ArtifactValue::Int((common::bytecode(&player_contract).len() - player_layout.start - player_layout.len) as i64),
         ],
     );
     let settle_prefix_len = fix.settle.prefix.len() as i64;
@@ -1954,16 +1985,21 @@ fn settle_runtime_matches_expected_output_states() {
         &white_player,
         "delegate_settle",
         vec![
-            Expr::int(settle_prefix_len),
-            Expr::int(settle_suffix_len),
-            hash_expr(fix.settle.hash),
-            Expr::bytes(route_templates.clone()),
+            ArtifactValue::Int(settle_prefix_len),
+            ArtifactValue::Int(settle_suffix_len),
+            hash_value(fix.settle.hash),
+            ArtifactValue::Bytes(route_templates.clone()),
         ],
     );
     let black_delegate_sigscript = entry_sigscript(
         &black_player,
         "delegate_settle",
-        vec![Expr::int(settle_prefix_len), Expr::int(settle_suffix_len), hash_expr(fix.settle.hash), Expr::bytes(route_templates)],
+        vec![
+            ArtifactValue::Int(settle_prefix_len),
+            ArtifactValue::Int(settle_suffix_len),
+            hash_value(fix.settle.hash),
+            ArtifactValue::Bytes(route_templates),
+        ],
     );
 
     let outputs = vec![

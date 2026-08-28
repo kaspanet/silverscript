@@ -12,11 +12,93 @@ use kaspa_txscript::opcodes::codes::OpTrue;
 use kaspa_txscript::script_builder::ScriptBuilder;
 use kaspa_txscript::{EngineCtx, EngineFlags, TxScriptEngine, pay_to_script_hash_script};
 use kaspa_txscript_errors::TxScriptError;
-use silverscript_lang::ast::Expr;
-use silverscript_lang::compiler::{CompiledContract, CovenantDeclCallOptions};
+use silverscript_abi::{
+    ArtifactValue, CodecError, CodecResult, SilAbiArtifact, SilContractArtifact, SilEntryArtifact, encode_contract_entry_sig_script,
+};
+use silverscript_lang::compiler::{
+    CompileOptions, CompiledStateLayout, CompilerError, CovenantDeclCallOptions, sil_abi_artifact_with_options,
+};
 
 pub const COV_A: Hash = Hash::from_bytes(*b"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
 pub const COV_B: Hash = Hash::from_bytes(*b"BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB");
+
+pub fn compile_contract(
+    source: &str,
+    constructor_args: &[ArtifactValue],
+    options: CompileOptions,
+) -> Result<SilAbiArtifact, CompilerError> {
+    sil_abi_artifact_with_options(source, constructor_args, options)
+}
+
+pub fn single_contract(artifact: &SilAbiArtifact) -> &SilContractArtifact {
+    let [contract] = artifact.contracts.as_slice() else {
+        panic!("expected exactly one contract, found {}", artifact.contracts.len());
+    };
+    contract
+}
+
+pub fn bytecode(artifact: &SilAbiArtifact) -> Vec<u8> {
+    single_contract(artifact).compiled.bytecode.clone()
+}
+
+pub fn state_layout(artifact: &SilAbiArtifact) -> CompiledStateLayout {
+    let span = single_contract(artifact).compiled.state_span;
+    CompiledStateLayout { start: span.offset, len: span.len }
+}
+
+pub fn entry_by_name<'a>(artifact: &'a SilAbiArtifact, name: &str) -> Option<&'a SilEntryArtifact> {
+    single_contract(artifact).entry(name)
+}
+
+pub fn template_hash(artifact: &SilAbiArtifact) -> [u8; 32] {
+    single_contract(artifact).compiled.template_hash
+}
+
+pub fn covenant_decl_entrypoint_name<'a>(artifact: &'a SilAbiArtifact, function_name: &str, is_leader: bool) -> Option<&'a str> {
+    let contract = single_contract(artifact);
+    let entry = contract.cov_decl_to_abi.get(function_name)?;
+    if is_leader || contract.delegate_entry_abi.is_none() {
+        Some(&entry.name)
+    } else {
+        contract.delegate_entry_abi.as_ref().map(|entry| entry.name.as_str())
+    }
+}
+
+pub fn build_sig_script_for_covenant_decl(
+    artifact: &SilAbiArtifact,
+    function_name: &str,
+    args: Vec<ArtifactValue>,
+    options: CovenantDeclCallOptions,
+) -> Result<Vec<u8>, CompilerError> {
+    let entrypoint = covenant_decl_entrypoint_name(artifact, function_name, options.is_leader)
+        .ok_or_else(|| CompilerError::Unsupported(format!("covenant declaration '{function_name}' not found")))?;
+    encode_entry_sig_script(artifact, entrypoint, &args).map_err(|err| CompilerError::Unsupported(err.to_string()))
+}
+
+/// Encodes an invocation for an artifact containing exactly one contract and
+/// exactly one public entrypoint.
+pub fn encode_single_entry_sig_script(artifact: &SilAbiArtifact, args: &[ArtifactValue]) -> CodecResult<Vec<u8>> {
+    let [contract] = artifact.contracts.as_slice() else {
+        return Err(CodecError::UnsupportedType(format!("expected exactly one contract, found {}", artifact.contracts.len())));
+    };
+    let [entry] = contract.entries.as_slice() else {
+        return Err(CodecError::UnsupportedType(format!(
+            "expected exactly one entry in contract `{}`, found {}",
+            contract.name,
+            contract.entries.len()
+        )));
+    };
+    encode_contract_entry_sig_script(artifact, &contract.name, &entry.name, args)
+}
+
+/// Encodes a named entry invocation for an artifact containing exactly one
+/// contract.
+pub fn encode_entry_sig_script(artifact: &SilAbiArtifact, entry_name: &str, args: &[ArtifactValue]) -> CodecResult<Vec<u8>> {
+    let [contract] = artifact.contracts.as_slice() else {
+        return Err(CodecError::UnsupportedType(format!("expected exactly one contract, found {}", artifact.contracts.len())));
+    };
+    encode_contract_entry_sig_script(artifact, &contract.name, entry_name, args)
+}
 
 pub fn push_redeem_script(bytecode: &[u8]) -> Vec<u8> {
     ScriptBuilder::with_flags(EngineFlags { covenants_enabled: true, ..Default::default() })
@@ -25,16 +107,15 @@ pub fn push_redeem_script(bytecode: &[u8]) -> Vec<u8> {
         .drain()
 }
 
-pub fn covenant_decl_sigscript(compiled: &CompiledContract<'_>, function_name: &str, args: Vec<Expr<'_>>, is_leader: bool) -> Vec<u8> {
-    let mut sigscript = compiled
-        .build_sig_script_for_covenant_decl(function_name, args, CovenantDeclCallOptions { is_leader })
+pub fn covenant_decl_sigscript(compiled: &SilAbiArtifact, function_name: &str, args: Vec<ArtifactValue>, is_leader: bool) -> Vec<u8> {
+    let mut sigscript = build_sig_script_for_covenant_decl(compiled, function_name, args, CovenantDeclCallOptions { is_leader })
         .expect("build covenant declaration sigscript");
-    sigscript.extend_from_slice(&push_redeem_script(&compiled.bytecode));
+    sigscript.extend_from_slice(&push_redeem_script(&bytecode(compiled)));
     sigscript
 }
 
-pub fn covenant_utxo(compiled: &CompiledContract<'_>, covenant_id: Hash) -> UtxoEntry {
-    UtxoEntry::new(1_500, pay_to_script_hash_script(&compiled.bytecode), 0, false, Some(covenant_id))
+pub fn covenant_utxo(compiled: &SilAbiArtifact, covenant_id: Hash) -> UtxoEntry {
+    UtxoEntry::new(1_500, pay_to_script_hash_script(&bytecode(compiled)), 0, false, Some(covenant_id))
 }
 
 pub fn plain_covenant_output(authorizing_input: u16, covenant_id: Hash) -> TransactionOutput {
@@ -81,18 +162,19 @@ pub fn tx_input(index: u32, signature_script: Vec<u8>) -> TransactionInput {
     )
 }
 
-pub fn covenant_output(compiled: &CompiledContract<'_>, authorizing_input: u16, covenant_id: Hash) -> TransactionOutput {
+pub fn covenant_output(compiled: &SilAbiArtifact, authorizing_input: u16, covenant_id: Hash) -> TransactionOutput {
     TransactionOutput {
         value: 1_000,
-        script_public_key: pay_to_script_hash_script(&compiled.bytecode),
+        script_public_key: pay_to_script_hash_script(&bytecode(compiled)),
         covenant: Some(CovenantBinding { authorizing_input, covenant_id }),
     }
 }
 
-pub fn compiled_template_parts_and_hash(compiled: &CompiledContract) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
-    let layout = compiled.state_layout;
-    let prefix = compiled.bytecode[..layout.start].to_vec();
-    let suffix = compiled.bytecode[layout.start + layout.len..].to_vec();
-    let template_hash = compiled.template_hash().to_vec();
+pub fn compiled_template_parts_and_hash(compiled: &SilAbiArtifact) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+    let layout = state_layout(compiled);
+    let bytecode = bytecode(compiled);
+    let prefix = bytecode[..layout.start].to_vec();
+    let suffix = bytecode[layout.start + layout.len..].to_vec();
+    let template_hash = template_hash(compiled).to_vec();
     (prefix, suffix, template_hash)
 }

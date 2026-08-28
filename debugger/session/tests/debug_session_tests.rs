@@ -82,9 +82,12 @@ where
     let flags = EngineFlags { covenants_enabled: true, ..Default::default() };
     let engine = debugger_session::session::DebugEngine::new(ctx, flags);
 
-    let entry = compiled.entry_by_name(function_name).ok_or_else(|| format!("function '{function_name}' not found"))?;
-
-    assert_eq!(entry.inputs.len(), function_args.len());
+    let entry = parsed_contract
+        .functions
+        .iter()
+        .find(|function| function.entrypoint && function.name == function_name)
+        .ok_or_else(|| format!("function '{function_name}' not found"))?;
+    assert_eq!(entry.params.len(), function_args.len());
 
     // Seed the stack with sigscript arguments, then execute the bytecode in debug mode.
     let sigscript = compiled.build_sig_script(function_name, function_args)?;
