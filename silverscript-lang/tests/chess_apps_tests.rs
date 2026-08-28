@@ -128,8 +128,9 @@ fn compile_cached(source: &'static str, ctor: &[ArtifactValue]) -> Arc<silverscr
         }
     }
 
-    let compiled =
-        Arc::new(compile_to_sil_abi_artifact_with_options(source, ctor, CompileOptions::default()).expect("compile chess contract succeeds"));
+    let compiled = Arc::new(
+        compile_to_sil_abi_artifact_with_options(source, ctor, CompileOptions::default()).expect("compile chess contract succeeds"),
+    );
     let mut cache = compiled_contract_cache().lock().expect("compile cache mutex poisoned");
     cache.insert(key, Arc::clone(&compiled));
     compiled

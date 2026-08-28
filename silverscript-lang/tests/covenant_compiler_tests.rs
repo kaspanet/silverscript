@@ -4,7 +4,8 @@ use kaspa_txscript::opcodes::codes::{OpAuthOutputCount, OpCovInputCount, OpCovIn
 use silverscript_abi::{ArtifactValue, SilAbiArtifact, TypeArtifact};
 use silverscript_lang::ast::Expr;
 use silverscript_lang::compiler::{
-    CompileOptions, compile_contract, generated_covenant_auth_entrypoint_name, compile_to_sil_abi_artifact, compile_to_sil_abi_artifact_with_options,
+    CompileOptions, compile_contract, compile_to_sil_abi_artifact, compile_to_sil_abi_artifact_with_options,
+    generated_covenant_auth_entrypoint_name,
 };
 
 use common::{build_sig_script_for_covenant_decl, bytecode, encode_entry_sig_script, single_contract};
@@ -62,8 +63,7 @@ fn lowers_cov_covenant_to_leader_and_delegate_entrypoints() {
         }
     "#;
 
-    let compiled =
-        compile_contract(source, &[Expr::int(2), Expr::int(4)], CompileOptions::default()).expect("compile succeeds");
+    let compiled = compile_contract(source, &[Expr::int(2), Expr::int(4)], CompileOptions::default()).expect("compile succeeds");
     let abi = compile_to_sil_abi_artifact(source, &[2.into(), 4.into()]).expect("portable ABI compiles");
     let artifact = single_contract(&abi);
     let abi_names: Vec<&str> = artifact.entries.iter().map(|entry| entry.name.as_str()).collect();
@@ -85,8 +85,7 @@ fn infers_cov_binding_from_from_greater_than_one_when_binding_omitted() {
         }
     "#;
 
-    let compiled =
-        compile_contract(source, &[Expr::int(2), Expr::int(4)], CompileOptions::default()).expect("compile succeeds");
+    let compiled = compile_contract(source, &[Expr::int(2), Expr::int(4)], CompileOptions::default()).expect("compile succeeds");
     let abi = compile_to_sil_abi_artifact(source, &[2.into(), 4.into()]).expect("portable ABI compiles");
     let artifact = single_contract(&abi);
     let abi_names: Vec<&str> = artifact.entries.iter().map(|entry| entry.name.as_str()).collect();
@@ -268,8 +267,8 @@ fn lowers_fanout_sugar_to_auth_with_to_bound() {
         }
     "#;
 
-    let compiled =
-        compile_to_sil_abi_artifact_with_options(source, &[ArtifactValue::Int(3)], CompileOptions::default()).expect("compile succeeds");
+    let compiled = compile_to_sil_abi_artifact_with_options(source, &[ArtifactValue::Int(3)], CompileOptions::default())
+        .expect("compile succeeds");
     let artifact = single_contract(&compiled);
     assert_eq!(artifact.entries[0].name, generated_covenant_auth_entrypoint_name("split"));
     assert!(bytecode(&compiled).contains(&OpAuthOutputCount));
@@ -301,8 +300,8 @@ fn rejects_singleton_sugar_with_from_or_to_arguments() {
         }
     "#;
 
-    let err =
-        compile_to_sil_abi_artifact_with_options(source, &[], CompileOptions::default()).expect_err("singleton sugar should reject from/to");
+    let err = compile_to_sil_abi_artifact_with_options(source, &[], CompileOptions::default())
+        .expect_err("singleton sugar should reject from/to");
     assert!(err.to_string().contains("covenant.singleton is sugar and does not accept 'from' or 'to' arguments"));
 }
 
@@ -317,7 +316,8 @@ fn rejects_auth_covenant_with_from_not_equal_one() {
         }
     "#;
 
-    let err = compile_to_sil_abi_artifact_with_options(source, &[], CompileOptions::default()).expect_err("auth binding must require from=1");
+    let err = compile_to_sil_abi_artifact_with_options(source, &[], CompileOptions::default())
+        .expect_err("auth binding must require from=1");
     assert!(err.to_string().contains("binding=auth requires from = 1"));
 }
 
@@ -332,8 +332,8 @@ fn rejects_cov_covenant_groups_multiple_for_now() {
         }
     "#;
 
-    let err =
-        compile_to_sil_abi_artifact_with_options(source, &[], CompileOptions::default()).expect_err("cov groups=multiple should be rejected");
+    let err = compile_to_sil_abi_artifact_with_options(source, &[], CompileOptions::default())
+        .expect_err("cov groups=multiple should be rejected");
     assert!(err.to_string().contains("binding=cov with groups=multiple is not supported yet"));
 }
 
@@ -515,8 +515,9 @@ fn rejects_termination_allowed_for_non_singleton() {
         }
     "#;
 
-    let err = compile_to_sil_abi_artifact_with_options(source, &[ArtifactValue::Int(3), ArtifactValue::Int(10)], CompileOptions::default())
-        .expect_err("termination=allowed should be singleton-only");
+    let err =
+        compile_to_sil_abi_artifact_with_options(source, &[ArtifactValue::Int(3), ArtifactValue::Int(10)], CompileOptions::default())
+            .expect_err("termination=allowed should be singleton-only");
     assert!(err.to_string().contains("termination is only supported for singleton covenants"));
 }
 
@@ -533,8 +534,9 @@ fn rejects_termination_disallowed_for_non_singleton() {
         }
     "#;
 
-    let err = compile_to_sil_abi_artifact_with_options(source, &[ArtifactValue::Int(3), ArtifactValue::Int(10)], CompileOptions::default())
-        .expect_err("termination arg should be singleton-only regardless of value");
+    let err =
+        compile_to_sil_abi_artifact_with_options(source, &[ArtifactValue::Int(3), ArtifactValue::Int(10)], CompileOptions::default())
+            .expect_err("termination arg should be singleton-only regardless of value");
     assert!(err.to_string().contains("termination is only supported for singleton covenants"));
 }
 
@@ -566,7 +568,8 @@ fn rejects_transition_mode_without_return_values() {
         }
     "#;
 
-    let err = compile_to_sil_abi_artifact_with_options(source, &[], CompileOptions::default()).expect_err("transition policy must return values");
+    let err = compile_to_sil_abi_artifact_with_options(source, &[], CompileOptions::default())
+        .expect_err("transition policy must return values");
     assert!(err.to_string().contains("transition mode policy functions must declare return values"));
 }
 
@@ -581,8 +584,8 @@ fn rejects_verification_mode_with_return_values() {
         }
     "#;
 
-    let err =
-        compile_to_sil_abi_artifact_with_options(source, &[], CompileOptions::default()).expect_err("verification policy must not return values");
+    let err = compile_to_sil_abi_artifact_with_options(source, &[], CompileOptions::default())
+        .expect_err("verification policy must not return values");
     assert!(err.to_string().contains("verification mode policy functions must not declare return values"));
 }
 
@@ -619,8 +622,9 @@ fn rejects_mixed_auth_and_cov_covenant_declarations() {
         }
     "#;
 
-    let err = compile_to_sil_abi_artifact_with_options(source, &[ArtifactValue::Int(2), ArtifactValue::Int(4)], CompileOptions::default())
-        .expect_err("auth-bound declarations must not coexist with generated delegates");
+    let err =
+        compile_to_sil_abi_artifact_with_options(source, &[ArtifactValue::Int(2), ArtifactValue::Int(4)], CompileOptions::default())
+            .expect_err("auth-bound declarations must not coexist with generated delegates");
     let message = err.to_string();
     assert!(message.contains("binding=cov"), "unexpected error: {message}");
     assert!(message.contains("merge"), "unexpected error: {message}");
@@ -644,8 +648,9 @@ fn rejects_mixed_inferred_auth_and_cov_covenant_declarations() {
         }
     "#;
 
-    let err = compile_to_sil_abi_artifact_with_options(source, &[ArtifactValue::Int(2), ArtifactValue::Int(4)], CompileOptions::default())
-        .expect_err("inferred auth and cov declarations must not coexist");
+    let err =
+        compile_to_sil_abi_artifact_with_options(source, &[ArtifactValue::Int(2), ArtifactValue::Int(4)], CompileOptions::default())
+            .expect_err("inferred auth and cov declarations must not coexist");
     assert!(err.to_string().contains("cannot use binding=auth"), "unexpected error: {err}");
 }
 
@@ -664,8 +669,9 @@ fn leader_contract_rejects_unacknowledged_manual_entrypoint() {
         }
     "#;
 
-    let err = compile_to_sil_abi_artifact_with_options(source, &[ArtifactValue::Int(2), ArtifactValue::Int(4)], CompileOptions::default())
-        .expect_err("manual entrypoints in leader contracts require acknowledgment");
+    let err =
+        compile_to_sil_abi_artifact_with_options(source, &[ArtifactValue::Int(2), ArtifactValue::Int(4)], CompileOptions::default())
+            .expect_err("manual entrypoints in leader contracts require acknowledgment");
     let message = err.to_string();
     assert!(message.contains("manual entrypoint 'recover'"), "unexpected error: {message}");
     assert!(message.contains("manual_entrypoint_in_leader_contract"), "unexpected error: {message}");
@@ -863,7 +869,8 @@ fn rejects_duplicate_delegate_bodies() {
         }
     "#;
 
-    let err = compile_to_sil_abi_artifact_with_options(source, &[], CompileOptions::default()).expect_err("duplicate delegate bodies must fail");
+    let err = compile_to_sil_abi_artifact_with_options(source, &[], CompileOptions::default())
+        .expect_err("duplicate delegate bodies must fail");
     assert!(err.to_string().contains("more than one #[covenant.delegate] body"), "unexpected error: {err}");
 }
 
@@ -876,7 +883,8 @@ fn rejects_delegate_body_without_cov_bound_declaration() {
         }
     "#;
 
-    let err = compile_to_sil_abi_artifact_with_options(source, &[], CompileOptions::default()).expect_err("unused delegate body must fail");
+    let err =
+        compile_to_sil_abi_artifact_with_options(source, &[], CompileOptions::default()).expect_err("unused delegate body must fail");
     assert!(err.to_string().contains("requires at least one binding=cov"), "unexpected error: {err}");
 }
 
@@ -892,8 +900,7 @@ fn delegate_and_leader_internal_policy_names_use_disjoint_namespaces() {
         }
     "#;
 
-    let compiled =
-        compile_contract(source, &[], CompileOptions::default()).expect("internal policy names do not collide");
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("internal policy names do not collide");
     assert!(compiled.ast.functions.iter().any(|function| function.name == "__covenant_policy_delegate_authorize"));
     assert!(compiled.ast.functions.iter().any(|function| function.name == "__covenant_delegate_policy_authorize"));
 }
@@ -914,7 +921,8 @@ fn rejects_direct_calls_to_the_delegate_body() {
         }
     "#;
 
-    let err = compile_to_sil_abi_artifact_with_options(source, &[], CompileOptions::default()).expect_err("delegate bodies are compiler hooks");
+    let err = compile_to_sil_abi_artifact_with_options(source, &[], CompileOptions::default())
+        .expect_err("delegate bodies are compiler hooks");
     let message = err.to_string();
     assert!(message.contains("covenant-annotated function 'authorizeDelegate' cannot be called directly"));
     assert!(message.contains("extract shared logic into an unannotated helper function"));
@@ -936,7 +944,8 @@ fn rejects_direct_calls_to_a_covenant_policy() {
         }
     "#;
 
-    let err = compile_to_sil_abi_artifact_with_options(source, &[], CompileOptions::default()).expect_err("covenant policies are compiler hooks");
+    let err = compile_to_sil_abi_artifact_with_options(source, &[], CompileOptions::default())
+        .expect_err("covenant policies are compiler hooks");
     let message = err.to_string();
     assert!(message.contains("covenant-annotated function 'transferPolicy' cannot be called directly"));
     assert!(message.contains("extract shared logic into an unannotated helper function"));
@@ -988,8 +997,8 @@ fn rejects_invalid_delegate_body_signatures() {
     ];
 
     for source in cases {
-        let err =
-            compile_to_sil_abi_artifact_with_options(source, &[], CompileOptions::default()).expect_err("invalid delegate signature must fail");
+        let err = compile_to_sil_abi_artifact_with_options(source, &[], CompileOptions::default())
+            .expect_err("invalid delegate signature must fail");
         assert!(err.to_string().contains("#[covenant.delegate]"), "unexpected error: {err}");
     }
 }
@@ -1009,8 +1018,8 @@ fn rejects_generated_public_name_collision() {
         }
     "#;
 
-    let err =
-        compile_to_sil_abi_artifact_with_options(source, &[], CompileOptions::default()).expect_err("generated public name collision must fail");
+    let err = compile_to_sil_abi_artifact_with_options(source, &[], CompileOptions::default())
+        .expect_err("generated public name collision must fail");
     assert!(err.to_string().contains("duplicate function name 'transfer'"), "unexpected error: {err}");
 }
 
@@ -1056,7 +1065,7 @@ fn rejects_per_leader_delegate_policy_selection() {
         }
     "#;
 
-    let err =
-        compile_to_sil_abi_artifact_with_options(source, &[], CompileOptions::default()).expect_err("leaders cannot select delegate policies");
+    let err = compile_to_sil_abi_artifact_with_options(source, &[], CompileOptions::default())
+        .expect_err("leaders cannot select delegate policies");
     assert!(err.to_string().contains("unknown covenant attribute argument 'delegate_policy'"), "unexpected error: {err}");
 }

@@ -308,7 +308,8 @@ fn compiles_for_loop_ctor_example_with_constructor_bounds() {
     let source = load_example_source("for_loop_ctor.sil");
 
     let constructor_args = [(0).into(), (4).into()];
-    let compiled = compile_to_sil_abi_artifact_with_options(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
+    let compiled =
+        compile_to_sil_abi_artifact_with_options(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
     let recipient0 = [5u8; 32];
     let recipient1 = [6u8; 32];
     let recipient2 = [7u8; 32];
@@ -370,7 +371,8 @@ fn compiles_return_loop_example_file_and_verifies() {
 fn compiles_r0_g16_example_and_verifies() {
     let source = load_example_source("r0_g16.sil");
     let (journal_hash, proof, image_id) = r0_groth16_fixture();
-    let compiled = compile_to_sil_abi_artifact_with_options(&source, &[image_id.into()], CompileOptions::default()).expect("compile succeeds");
+    let compiled =
+        compile_to_sil_abi_artifact_with_options(&source, &[image_id.into()], CompileOptions::default()).expect("compile succeeds");
     let sigscript =
         encode_entry_sig_script(&compiled, "verify", &[journal_hash.into(), ArtifactValue::Bytes(proof)]).expect("sigscript builds");
 
@@ -483,7 +485,8 @@ fn runs_everything_example_and_verifies() {
     let owner_pk = owner.x_only_public_key().0.serialize();
 
     let constructor_args = [7.into(), String::from("hello").into()];
-    let compiled = compile_to_sil_abi_artifact_with_options(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
+    let compiled =
+        compile_to_sil_abi_artifact_with_options(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
 
     let input = TransactionInput {
         previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([23u8; 32]), index: 0 },
@@ -537,7 +540,8 @@ fn runs_sum_series_example_with_multiple_inputs() {
 
     for (max_iterations, n, should_pass) in cases {
         let constructor_args = [max_iterations.into()];
-        let compiled = compile_to_sil_abi_artifact_with_options(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
+        let compiled =
+            compile_to_sil_abi_artifact_with_options(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
         let sigscript = encode_single_entry_sig_script(&compiled, &[n.into()]).expect("sigscript builds");
         let result = run_contract_with_tx(
             bytecode(&compiled).clone(),
@@ -566,7 +570,8 @@ fn runs_complex_assignments_example_and_verifies() {
 
     for (limit, n) in cases {
         let constructor_args = [limit.into()];
-        let compiled = compile_to_sil_abi_artifact_with_options(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
+        let compiled =
+            compile_to_sil_abi_artifact_with_options(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
         let sigscript = encode_single_entry_sig_script(&compiled, &[n.into()]).expect("sigscript builds");
         let result = run_contract_with_tx(
             bytecode(&compiled).clone(),
@@ -601,7 +606,8 @@ fn compiles_hodl_vault_example_and_verifies() {
     let oracle_sig = oracle.sign_schnorr(oracle_signed).as_ref().to_vec();
 
     let constructor_args = vec![owner_pk.to_vec().into(), oracle_pk.to_vec().into(), min_block.into(), price_target.into()];
-    let compiled = compile_to_sil_abi_artifact_with_options(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
+    let compiled =
+        compile_to_sil_abi_artifact_with_options(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
 
     let input = TransactionInput {
         previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([7u8; 32]), index: 0 },
@@ -664,7 +670,8 @@ fn compiles_mecenas_example_and_verifies() {
     let pledge = 2000i64;
     let constructor_args = vec![recipient.to_vec().into(), funder_hash.clone().into(), pledge.into()];
 
-    let compiled = compile_to_sil_abi_artifact_with_options(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
+    let compiled =
+        compile_to_sil_abi_artifact_with_options(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
 
     // Test receive() with changeValue > pledge + minerFee (else branch).
     let sigscript = encode_entry_sig_script(&compiled, "receive", &[]).expect("sigscript builds");
@@ -769,7 +776,8 @@ fn compiles_mecenas_locktime_example_and_verifies() {
         initial_block.to_le_bytes().to_vec().into(),
     ];
 
-    let compiled = compile_to_sil_abi_artifact_with_options(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
+    let compiled =
+        compile_to_sil_abi_artifact_with_options(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
     let passed_blocks = lock_time - initial_block;
     let pledge = passed_blocks as i64 * pledge_per_block;
 
@@ -874,7 +882,8 @@ fn compiles_p2pkh_example_and_verifies() {
     let pkh = blake2b_simd::Params::new().hash_length(32).to_state().update(pubkey_bytes.as_slice()).finalize().as_bytes().to_vec();
     let constructor_args = [pkh.clone().into()];
 
-    let compiled = compile_to_sil_abi_artifact_with_options(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
+    let compiled =
+        compile_to_sil_abi_artifact_with_options(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
 
     let input = TransactionInput {
         previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([5u8; 32]), index: 0 },
@@ -932,7 +941,8 @@ fn compiles_p2pkh_ecdsa_example_and_verifies() {
     let pkh = blake2b_simd::Params::new().hash_length(32).to_state().update(pubkey_bytes.as_slice()).finalize().as_bytes().to_vec();
     let constructor_args = [pkh.into()];
 
-    let compiled = compile_to_sil_abi_artifact_with_options(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
+    let compiled =
+        compile_to_sil_abi_artifact_with_options(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
 
     let input = TransactionInput {
         previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([5u8; 32]), index: 0 },
@@ -991,7 +1001,8 @@ fn compiles_transfer_with_timeout_and_verifies() {
     let timeout = kaspa_txscript::LOCK_TIME_THRESHOLD as i64;
     let constructor_args = vec![sender_pk.to_vec().into(), recipient_pk.to_vec().into(), timeout.into()];
 
-    let compiled = compile_to_sil_abi_artifact_with_options(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
+    let compiled =
+        compile_to_sil_abi_artifact_with_options(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
 
     let input = TransactionInput {
         previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([6u8; 32]), index: 0 },
@@ -1093,7 +1104,8 @@ fn compiles_covenant_escrow_example_and_verifies() {
     let seller = [11u8; 32];
     let constructor_args = vec![arbiter_hash.clone().into(), buyer.to_vec().into(), seller.to_vec().into()];
 
-    let compiled = compile_to_sil_abi_artifact_with_options(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
+    let compiled =
+        compile_to_sil_abi_artifact_with_options(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
 
     let input_value = 12_000u64;
     let output0_value = input_value - 1000;
@@ -1158,7 +1170,8 @@ fn compiles_covenant_last_will_and_verifies() {
     let hot_hash = blake2b_simd::Params::new().hash_length(32).to_state().update(hot_pk.as_slice()).finalize().as_bytes().to_vec();
 
     let constructor_args = vec![inheritor_hash.clone().into(), cold_hash.clone().into(), hot_hash.clone().into()];
-    let compiled = compile_to_sil_abi_artifact_with_options(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
+    let compiled =
+        compile_to_sil_abi_artifact_with_options(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
 
     let input = TransactionInput {
         previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([12u8; 32]), index: 0 },
@@ -1309,7 +1322,8 @@ fn compiles_covenant_mecenas_example_and_verifies() {
     let period = 10i64;
     let constructor_args = vec![recipient.to_vec().into(), funder_hash.clone().into(), pledge.into(), period.into()];
 
-    let compiled = compile_to_sil_abi_artifact_with_options(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
+    let compiled =
+        compile_to_sil_abi_artifact_with_options(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
 
     // Test receive() with changeValue > pledge + minerFee (else branch).
     let sigscript = encode_entry_sig_script(&compiled, "receive", &[]).expect("sigscript builds");
@@ -1407,18 +1421,30 @@ fn compiles_covenant_id_example_and_verifies() {
     let other_covenant_id = kaspa_consensus_core::Hash::from_bytes(*b"BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB");
 
     let execute_case = |out0_amount: i64, out1_amount: i64| {
-        let active_compiled =
-            compile_to_sil_abi_artifact_with_options(&source, &[max_ins.into(), max_outs.into(), 1_000i64.into()], CompileOptions::default())
-                .expect("compile succeeds");
-        let input1_compiled =
-            compile_to_sil_abi_artifact_with_options(&source, &[max_ins.into(), max_outs.into(), 600i64.into()], CompileOptions::default())
-                .expect("compile succeeds");
-        let output0_compiled =
-            compile_to_sil_abi_artifact_with_options(&source, &[max_ins.into(), max_outs.into(), out0_amount.into()], CompileOptions::default())
-                .expect("compile succeeds");
-        let output1_compiled =
-            compile_to_sil_abi_artifact_with_options(&source, &[max_ins.into(), max_outs.into(), out1_amount.into()], CompileOptions::default())
-                .expect("compile succeeds");
+        let active_compiled = compile_to_sil_abi_artifact_with_options(
+            &source,
+            &[max_ins.into(), max_outs.into(), 1_000i64.into()],
+            CompileOptions::default(),
+        )
+        .expect("compile succeeds");
+        let input1_compiled = compile_to_sil_abi_artifact_with_options(
+            &source,
+            &[max_ins.into(), max_outs.into(), 600i64.into()],
+            CompileOptions::default(),
+        )
+        .expect("compile succeeds");
+        let output0_compiled = compile_to_sil_abi_artifact_with_options(
+            &source,
+            &[max_ins.into(), max_outs.into(), out0_amount.into()],
+            CompileOptions::default(),
+        )
+        .expect("compile succeeds");
+        let output1_compiled = compile_to_sil_abi_artifact_with_options(
+            &source,
+            &[max_ins.into(), max_outs.into(), out1_amount.into()],
+            CompileOptions::default(),
+        )
+        .expect("compile succeeds");
 
         let mut active_sigscript =
             encode_entry_sig_script(&active_compiled, "main", &[ArtifactValue::Array(vec![out0_amount.into(), out1_amount.into()])])
@@ -1511,7 +1537,8 @@ fn compiles_bar_example_and_verifies() {
     let pkh = blake2b_simd::Params::new().hash_length(32).to_state().update(pubkey_bytes.as_slice()).finalize().as_bytes().to_vec();
     let constructor_args = [pkh.clone().into()];
 
-    let compiled = compile_to_sil_abi_artifact_with_options(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
+    let compiled =
+        compile_to_sil_abi_artifact_with_options(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
 
     let input = TransactionInput {
         previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([18u8; 32]), index: 0 },
@@ -1566,7 +1593,8 @@ fn compiles_foo_example_and_verifies() {
     let pkh = blake2b_simd::Params::new().hash_length(32).to_state().update(pubkey_bytes.as_slice()).finalize().as_bytes().to_vec();
     let constructor_args = [pkh.clone().into()];
 
-    let compiled = compile_to_sil_abi_artifact_with_options(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
+    let compiled =
+        compile_to_sil_abi_artifact_with_options(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
 
     let input = TransactionInput {
         previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([19u8; 32]), index: 0 },
@@ -1653,7 +1681,8 @@ fn compiles_p2pkh_invalid_example_and_fails() {
     let pkh = blake2b_simd::Params::new().hash_length(20).to_state().update(pubkey_bytes.as_slice()).finalize().as_bytes().to_vec();
     let constructor_args = [pkh.clone().into()];
 
-    let compiled = compile_to_sil_abi_artifact_with_options(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
+    let compiled =
+        compile_to_sil_abi_artifact_with_options(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
 
     let input = TransactionInput {
         previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([20u8; 32]), index: 0 },
@@ -1709,7 +1738,8 @@ fn compiles_sibling_introspection_example_and_verifies() {
     expected_locking_bytecode.extend_from_slice(&expected_script);
     let constructor_args = [expected_locking_bytecode.clone().into()];
 
-    let compiled = compile_to_sil_abi_artifact_with_options(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
+    let compiled =
+        compile_to_sil_abi_artifact_with_options(&source, &constructor_args, CompileOptions::default()).expect("compile succeeds");
     let sigscript = encode_entry_sig_script(&compiled, "spend", &[]).expect("sigscript builds");
     let input0 = TransactionInput {
         previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([21u8; 32]), index: 0 },
@@ -1773,7 +1803,8 @@ fn compiles_sibling_introspection_example_and_verifies() {
 fn compiles_many_assignments_example_under_500_bytes() {
     let source = load_example_source("many_assignments.sil");
 
-    let compiled = compile_to_sil_abi_artifact_with_options(&source, &[], CompileOptions::default()).expect("long example should compile");
+    let compiled =
+        compile_to_sil_abi_artifact_with_options(&source, &[], CompileOptions::default()).expect("long example should compile");
 
     // This example chains many assignments like `a_n = a_(n-1) * a_(n-1)`.
     // We check the final bytecode stays small to prove the compiler is not
