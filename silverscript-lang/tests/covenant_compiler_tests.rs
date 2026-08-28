@@ -1,6 +1,14 @@
+mod common;
+
 use kaspa_txscript::opcodes::codes::{OpAuthOutputCount, OpCovInputCount, OpCovInputIdx, OpCovOutputCount, OpInputCovenantId};
+use silverscript_abi::{ArtifactValue, SilAbiArtifact, TypeArtifact};
 use silverscript_lang::ast::Expr;
-use silverscript_lang::compiler::{CompileOptions, compile_contract, generated_covenant_auth_entrypoint_name};
+use silverscript_lang::compiler::{
+    CompileOptions, compile_contract, compile_to_sil_abi_artifact, compile_to_sil_abi_artifact_with_options,
+    generated_covenant_auth_entrypoint_name,
+};
+
+use common::{build_sig_script_for_covenant_decl, bytecode, encode_entry_sig_script, single_contract};
 
 #[test]
 fn lowers_auth_covenant_declaration_to_hidden_entrypoint_name() {
@@ -14,11 +22,13 @@ fn lowers_auth_covenant_declaration_to_hidden_entrypoint_name() {
     "#;
 
     let compiled = compile_contract(source, &[Expr::int(3)], CompileOptions::default()).expect("compile succeeds");
-    assert_eq!(compiled.abi.len(), 1);
-    assert_eq!(compiled.abi[0].name, generated_covenant_auth_entrypoint_name("spend"));
+    let abi = compile_to_sil_abi_artifact(source, &[3.into()]).expect("portable ABI compiles");
+    let artifact = single_contract(&abi);
+    assert_eq!(artifact.entries.len(), 1);
+    assert!(artifact.entries.contains_key(&generated_covenant_auth_entrypoint_name("spend")));
     assert!(compiled.ast.functions.iter().any(|f| f.name == "__covenant_policy_spend" && !f.entrypoint));
     assert!(compiled.ast.functions.iter().any(|f| f.name == generated_covenant_auth_entrypoint_name("spend") && f.entrypoint));
-    assert!(compiled.bytecode.contains(&OpAuthOutputCount));
+    assert!(compiled.bytecode.clone().contains(&OpAuthOutputCount));
 }
 
 #[test]
@@ -33,11 +43,13 @@ fn infers_auth_binding_from_from_equal_one_when_binding_omitted() {
     "#;
 
     let compiled = compile_contract(source, &[Expr::int(3)], CompileOptions::default()).expect("compile succeeds");
-    assert_eq!(compiled.abi.len(), 1);
-    assert_eq!(compiled.abi[0].name, generated_covenant_auth_entrypoint_name("spend"));
+    let abi = compile_to_sil_abi_artifact(source, &[3.into()]).expect("portable ABI compiles");
+    let artifact = single_contract(&abi);
+    assert_eq!(artifact.entries.len(), 1);
+    assert!(artifact.entries.contains_key(&generated_covenant_auth_entrypoint_name("spend")));
     assert!(compiled.ast.functions.iter().any(|f| f.name == "__covenant_policy_spend" && !f.entrypoint));
     assert!(compiled.ast.functions.iter().any(|f| f.name == generated_covenant_auth_entrypoint_name("spend") && f.entrypoint));
-    assert!(compiled.bytecode.contains(&OpAuthOutputCount));
+    assert!(compiled.bytecode.clone().contains(&OpAuthOutputCount));
 }
 
 #[test]
@@ -52,12 +64,14 @@ fn lowers_cov_covenant_to_leader_and_delegate_entrypoints() {
     "#;
 
     let compiled = compile_contract(source, &[Expr::int(2), Expr::int(4)], CompileOptions::default()).expect("compile succeeds");
-    let abi_names: Vec<&str> = compiled.abi.iter().map(|entry| entry.name.as_str()).collect();
-    assert_eq!(abi_names, vec!["__leader_transition_ok", "__delegate"]);
+    let abi = compile_to_sil_abi_artifact(source, &[2.into(), 4.into()]).expect("portable ABI compiles");
+    let artifact = single_contract(&abi);
+    let abi_names: Vec<&str> = artifact.entries.keys().map(String::as_str).collect();
+    assert_eq!(abi_names, vec!["__delegate", "__leader_transition_ok"]);
     assert!(compiled.ast.functions.iter().any(|f| f.name == "__covenant_policy_transition_ok" && !f.entrypoint));
-    assert!(compiled.bytecode.contains(&OpCovInputCount));
-    assert!(compiled.bytecode.contains(&OpCovOutputCount));
-    assert!(compiled.bytecode.contains(&OpCovInputIdx));
+    assert!(compiled.bytecode.clone().contains(&OpCovInputCount));
+    assert!(compiled.bytecode.clone().contains(&OpCovOutputCount));
+    assert!(compiled.bytecode.clone().contains(&OpCovInputIdx));
 }
 
 #[test]
@@ -72,12 +86,14 @@ fn infers_cov_binding_from_from_greater_than_one_when_binding_omitted() {
     "#;
 
     let compiled = compile_contract(source, &[Expr::int(2), Expr::int(4)], CompileOptions::default()).expect("compile succeeds");
-    let abi_names: Vec<&str> = compiled.abi.iter().map(|entry| entry.name.as_str()).collect();
-    assert_eq!(abi_names, vec!["__leader_transition_ok", "__delegate"]);
+    let abi = compile_to_sil_abi_artifact(source, &[2.into(), 4.into()]).expect("portable ABI compiles");
+    let artifact = single_contract(&abi);
+    let abi_names: Vec<&str> = artifact.entries.keys().map(String::as_str).collect();
+    assert_eq!(abi_names, vec!["__delegate", "__leader_transition_ok"]);
     assert!(compiled.ast.functions.iter().any(|f| f.name == "__covenant_policy_transition_ok" && !f.entrypoint));
-    assert!(compiled.bytecode.contains(&OpCovInputCount));
-    assert!(compiled.bytecode.contains(&OpCovOutputCount));
-    assert!(compiled.bytecode.contains(&OpCovInputIdx));
+    assert!(compiled.bytecode.clone().contains(&OpCovInputCount));
+    assert!(compiled.bytecode.clone().contains(&OpCovOutputCount));
+    assert!(compiled.bytecode.clone().contains(&OpCovInputIdx));
 }
 
 #[test]
@@ -93,7 +109,7 @@ fn rejects_cov_verification_without_prev_new_field_arrays() {
         }
     "#;
 
-    let err = compile_contract(source, &[], CompileOptions::default())
+    let err = compile_to_sil_abi_artifact_with_options(source, &[], CompileOptions::default())
         .expect_err("cov verification with state fields should require prev/new field arrays");
     assert!(err.to_string().contains("expects parameters '(State[] prev_states, State[] new_states, ...)'"));
 }
@@ -111,7 +127,7 @@ fn rejects_cov_transition_without_prev_field_arrays() {
         }
     "#;
 
-    let err = compile_contract(source, &[], CompileOptions::default())
+    let err = compile_to_sil_abi_artifact_with_options(source, &[], CompileOptions::default())
         .expect_err("cov transition with state fields should require prev-state field arrays");
     assert!(err.to_string().contains("expects parameters '(State[] prev_states, ...)'"));
 }
@@ -129,7 +145,7 @@ fn rejects_auth_verification_without_prev_new_state_shape() {
         }
     "#;
 
-    let err = compile_contract(source, &[], CompileOptions::default())
+    let err = compile_to_sil_abi_artifact_with_options(source, &[], CompileOptions::default())
         .expect_err("auth verification with state fields should require prev/new state params");
     assert!(err.to_string().contains("mode=verification with binding=auth"));
 }
@@ -147,7 +163,7 @@ fn rejects_auth_transition_without_prev_state_shape() {
         }
     "#;
 
-    let err = compile_contract(source, &[], CompileOptions::default())
+    let err = compile_to_sil_abi_artifact_with_options(source, &[], CompileOptions::default())
         .expect_err("auth transition with state fields should require prev-state params");
     assert!(err.to_string().contains("mode=transition with binding=auth"));
 }
@@ -163,7 +179,7 @@ fn rejects_auth_transition_when_contract_state_is_empty() {
         }
     "#;
 
-    let err = compile_contract(source, &[], CompileOptions::default())
+    let err = compile_to_sil_abi_artifact_with_options(source, &[], CompileOptions::default())
         .expect_err("auth transition should be unsupported when contract state is empty");
     assert!(err.to_string().contains("mode=tranisition is not supported when contract state is empty"));
 }
@@ -179,7 +195,7 @@ fn rejects_cov_transition_when_contract_state_is_empty() {
         }
     "#;
 
-    let err = compile_contract(source, &[], CompileOptions::default())
+    let err = compile_to_sil_abi_artifact_with_options(source, &[], CompileOptions::default())
         .expect_err("cov transition should be unsupported when contract state is empty");
     assert!(err.to_string().contains("mode=tranisition is not supported when contract state is empty"));
 }
@@ -198,7 +214,7 @@ fn rejects_old_per_field_covenant_state_syntax() {
         }
     "#;
 
-    let err = compile_contract(source, &[], CompileOptions::default())
+    let err = compile_to_sil_abi_artifact_with_options(source, &[], CompileOptions::default())
         .expect_err("old per-field covenant syntax should be rejected for stateful contracts");
     assert!(err.to_string().contains("expects parameters '(State prev_state, State[] new_states, ...)'"));
 }
@@ -216,7 +232,7 @@ fn rejects_canonical_one_to_one_auth_verification_with_scalar_new_state() {
         }
     "#;
 
-    let err = compile_contract(source, &[Expr::int(7)], CompileOptions::default())
+    let err = compile_to_sil_abi_artifact_with_options(source, &[ArtifactValue::Int(7)], CompileOptions::default())
         .expect_err("canonical one-to-one auth verification should require State[] new_states");
     assert!(err.to_string().contains(
         "mode=verification with binding=auth on function 'step' expects parameters '(State prev_state, State[] new_states, ...)'"
@@ -234,9 +250,10 @@ fn lowers_singleton_sugar_to_auth_one_to_one_defaults() {
         }
     "#;
 
-    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
-    assert_eq!(compiled.abi[0].name, generated_covenant_auth_entrypoint_name("spend"));
-    assert!(compiled.bytecode.contains(&OpAuthOutputCount));
+    let compiled = compile_to_sil_abi_artifact_with_options(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let artifact = single_contract(&compiled);
+    assert!(artifact.entries.contains_key(&generated_covenant_auth_entrypoint_name("spend")));
+    assert!(bytecode(&compiled).contains(&OpAuthOutputCount));
 }
 
 #[test]
@@ -250,9 +267,11 @@ fn lowers_fanout_sugar_to_auth_with_to_bound() {
         }
     "#;
 
-    let compiled = compile_contract(source, &[Expr::int(3)], CompileOptions::default()).expect("compile succeeds");
-    assert_eq!(compiled.abi[0].name, generated_covenant_auth_entrypoint_name("split"));
-    assert!(compiled.bytecode.contains(&OpAuthOutputCount));
+    let compiled = compile_to_sil_abi_artifact_with_options(source, &[ArtifactValue::Int(3)], CompileOptions::default())
+        .expect("compile succeeds");
+    let artifact = single_contract(&compiled);
+    assert!(artifact.entries.contains_key(&generated_covenant_auth_entrypoint_name("split")));
+    assert!(bytecode(&compiled).contains(&OpAuthOutputCount));
 }
 
 #[test]
@@ -266,7 +285,7 @@ fn rejects_fanout_sugar_without_to_argument() {
         }
     "#;
 
-    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("fanout sugar requires to");
+    let err = compile_to_sil_abi_artifact_with_options(source, &[], CompileOptions::default()).expect_err("fanout sugar requires to");
     assert!(err.to_string().contains("missing covenant attribute argument 'to'"));
 }
 
@@ -281,7 +300,8 @@ fn rejects_singleton_sugar_with_from_or_to_arguments() {
         }
     "#;
 
-    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("singleton sugar should reject from/to");
+    let err = compile_to_sil_abi_artifact_with_options(source, &[], CompileOptions::default())
+        .expect_err("singleton sugar should reject from/to");
     assert!(err.to_string().contains("covenant.singleton is sugar and does not accept 'from' or 'to' arguments"));
 }
 
@@ -296,7 +316,8 @@ fn rejects_auth_covenant_with_from_not_equal_one() {
         }
     "#;
 
-    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("auth binding must require from=1");
+    let err = compile_to_sil_abi_artifact_with_options(source, &[], CompileOptions::default())
+        .expect_err("auth binding must require from=1");
     assert!(err.to_string().contains("binding=auth requires from = 1"));
 }
 
@@ -311,7 +332,8 @@ fn rejects_cov_covenant_groups_multiple_for_now() {
         }
     "#;
 
-    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("cov groups=multiple should be rejected");
+    let err = compile_to_sil_abi_artifact_with_options(source, &[], CompileOptions::default())
+        .expect_err("cov groups=multiple should be rejected");
     assert!(err.to_string().contains("binding=cov with groups=multiple is not supported yet"));
 }
 
@@ -364,8 +386,12 @@ fn rejects_auth_transition_single_state_return_when_to_is_not_literal_one() {
         }
     "#;
 
-    let err = compile_contract(source, &[Expr::int(4), Expr::int(10), Expr::bytes(vec![7u8; 32])], CompileOptions::default())
-        .expect_err("auth transition returning one State must not accept dynamic to bounds");
+    let err = compile_to_sil_abi_artifact_with_options(
+        source,
+        &[ArtifactValue::Int(4), ArtifactValue::Int(10), ArtifactValue::Bytes(vec![7u8; 32])],
+        CompileOptions::default(),
+    )
+    .expect_err("auth transition returning one State must not accept dynamic to bounds");
     assert!(err.to_string().contains("may return a single State only when 'to' is the literal 1 or omitted"));
 }
 
@@ -383,7 +409,7 @@ fn rejects_auth_transition_single_state_return_when_to_is_constant_one() {
         }
     "#;
 
-    let err = compile_contract(source, &[Expr::int(3)], CompileOptions::default())
+    let err = compile_to_sil_abi_artifact_with_options(source, &[ArtifactValue::Int(3)], CompileOptions::default())
         .expect_err("auth transition returning one State should require literal to=1");
     assert!(err.to_string().contains("may return a single State only when 'to' is the literal 1 or omitted"));
 }
@@ -436,7 +462,7 @@ fn rejects_omitted_to_for_auth_transition_array_state_return() {
         }
     "#;
 
-    let err = compile_contract(source, &[Expr::int(3)], CompileOptions::default())
+    let err = compile_to_sil_abi_artifact_with_options(source, &[ArtifactValue::Int(3)], CompileOptions::default())
         .expect_err("omitted to should only infer literal 1 for single State returns");
     assert!(err.to_string().contains("missing covenant attribute argument 'to'"));
 }
@@ -454,7 +480,7 @@ fn rejects_singleton_transition_array_returns_without_termination_allowed() {
         }
     "#;
 
-    let err = compile_contract(source, &[Expr::int(3)], CompileOptions::default())
+    let err = compile_to_sil_abi_artifact_with_options(source, &[ArtifactValue::Int(3)], CompileOptions::default())
         .expect_err("singleton transition arrays should require termination=allowed");
     assert!(err.to_string().contains("arrays are not allowed unless termination=allowed"));
 }
@@ -489,8 +515,9 @@ fn rejects_termination_allowed_for_non_singleton() {
         }
     "#;
 
-    let err = compile_contract(source, &[Expr::int(3), Expr::int(10)], CompileOptions::default())
-        .expect_err("termination=allowed should be singleton-only");
+    let err =
+        compile_to_sil_abi_artifact_with_options(source, &[ArtifactValue::Int(3), ArtifactValue::Int(10)], CompileOptions::default())
+            .expect_err("termination=allowed should be singleton-only");
     assert!(err.to_string().contains("termination is only supported for singleton covenants"));
 }
 
@@ -507,8 +534,9 @@ fn rejects_termination_disallowed_for_non_singleton() {
         }
     "#;
 
-    let err = compile_contract(source, &[Expr::int(3), Expr::int(10)], CompileOptions::default())
-        .expect_err("termination arg should be singleton-only regardless of value");
+    let err =
+        compile_to_sil_abi_artifact_with_options(source, &[ArtifactValue::Int(3), ArtifactValue::Int(10)], CompileOptions::default())
+            .expect_err("termination arg should be singleton-only regardless of value");
     assert!(err.to_string().contains("termination is only supported for singleton covenants"));
 }
 
@@ -540,7 +568,8 @@ fn rejects_transition_mode_without_return_values() {
         }
     "#;
 
-    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("transition policy must return values");
+    let err = compile_to_sil_abi_artifact_with_options(source, &[], CompileOptions::default())
+        .expect_err("transition policy must return values");
     assert!(err.to_string().contains("transition mode policy functions must declare return values"));
 }
 
@@ -555,7 +584,8 @@ fn rejects_verification_mode_with_return_values() {
         }
     "#;
 
-    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("verification policy must not return values");
+    let err = compile_to_sil_abi_artifact_with_options(source, &[], CompileOptions::default())
+        .expect_err("verification policy must not return values");
     assert!(err.to_string().contains("verification mode policy functions must not declare return values"));
 }
 
@@ -570,10 +600,10 @@ fn auth_covenant_groups_single_injects_shared_count_check() {
         }
     "#;
 
-    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
-    assert!(compiled.bytecode.contains(&OpInputCovenantId));
-    assert!(compiled.bytecode.contains(&OpCovOutputCount));
-    assert!(compiled.bytecode.contains(&OpAuthOutputCount));
+    let compiled = compile_to_sil_abi_artifact_with_options(source, &[], CompileOptions::default()).expect("compile succeeds");
+    assert!(bytecode(&compiled).contains(&OpInputCovenantId));
+    assert!(bytecode(&compiled).contains(&OpCovOutputCount));
+    assert!(bytecode(&compiled).contains(&OpAuthOutputCount));
 }
 
 #[test]
@@ -592,8 +622,9 @@ fn rejects_mixed_auth_and_cov_covenant_declarations() {
         }
     "#;
 
-    let err = compile_contract(source, &[Expr::int(2), Expr::int(4)], CompileOptions::default())
-        .expect_err("auth-bound declarations must not coexist with generated delegates");
+    let err =
+        compile_to_sil_abi_artifact_with_options(source, &[ArtifactValue::Int(2), ArtifactValue::Int(4)], CompileOptions::default())
+            .expect_err("auth-bound declarations must not coexist with generated delegates");
     let message = err.to_string();
     assert!(message.contains("binding=cov"), "unexpected error: {message}");
     assert!(message.contains("merge"), "unexpected error: {message}");
@@ -617,8 +648,9 @@ fn rejects_mixed_inferred_auth_and_cov_covenant_declarations() {
         }
     "#;
 
-    let err = compile_contract(source, &[Expr::int(2), Expr::int(4)], CompileOptions::default())
-        .expect_err("inferred auth and cov declarations must not coexist");
+    let err =
+        compile_to_sil_abi_artifact_with_options(source, &[ArtifactValue::Int(2), ArtifactValue::Int(4)], CompileOptions::default())
+            .expect_err("inferred auth and cov declarations must not coexist");
     assert!(err.to_string().contains("cannot use binding=auth"), "unexpected error: {err}");
 }
 
@@ -637,8 +669,9 @@ fn leader_contract_rejects_unacknowledged_manual_entrypoint() {
         }
     "#;
 
-    let err = compile_contract(source, &[Expr::int(2), Expr::int(4)], CompileOptions::default())
-        .expect_err("manual entrypoints in leader contracts require acknowledgment");
+    let err =
+        compile_to_sil_abi_artifact_with_options(source, &[ArtifactValue::Int(2), ArtifactValue::Int(4)], CompileOptions::default())
+            .expect_err("manual entrypoints in leader contracts require acknowledgment");
     let message = err.to_string();
     assert!(message.contains("manual entrypoint 'recover'"), "unexpected error: {message}");
     assert!(message.contains("manual_entrypoint_in_leader_contract"), "unexpected error: {message}");
@@ -663,7 +696,9 @@ fn leader_contract_allows_acknowledged_manual_entrypoint() {
 
     let compiled = compile_contract(source, &[Expr::int(2), Expr::int(4)], CompileOptions::default())
         .expect("acknowledged manual entrypoint compiles");
-    assert!(compiled.entry_by_name("recover").is_some());
+    let abi = compile_to_sil_abi_artifact(source, &[2.into(), 4.into()]).expect("portable ABI compiles");
+    let artifact = single_contract(&abi);
+    assert!(artifact.entry("recover").is_some());
     let recover = compiled.ast.functions.iter().find(|function| function.name == "recover").expect("recover remains an entrypoint");
     assert!(recover.attributes.is_empty(), "allow acknowledgment must not survive lowering");
 }
@@ -684,22 +719,51 @@ fn allows_multiple_cov_covenant_declarations() {
         }
     "#;
 
-    let compiled = compile_contract(source, &[Expr::int(2), Expr::int(4)], CompileOptions::default())
+    let compiled = compile_to_sil_abi_artifact_with_options(source, &[2.into(), 4.into()], CompileOptions::default())
         .expect("multiple cov-bound declarations compile");
-    let abi_names: Vec<&str> = compiled.abi.iter().map(|entry| entry.name.as_str()).collect();
-    assert_eq!(abi_names, vec!["__leader_merge", "__leader_rebalance", "__delegate"]);
-    assert_eq!(compiled.cov_decl_to_abi.get("merge"), compiled.entry_by_name("__leader_merge"));
-    assert_eq!(compiled.cov_decl_to_abi.get("rebalance"), compiled.entry_by_name("__leader_rebalance"));
-    assert_eq!(compiled.delegate_entry_abi.as_ref(), compiled.entry_by_name("__delegate"));
+    let abi = compile_to_sil_abi_artifact(source, &[2.into(), 4.into()]).expect("portable ABI compiles");
+    let artifact = single_contract(&abi);
+    let abi_names: Vec<&str> = artifact.entries.keys().map(String::as_str).collect();
+    assert_eq!(abi_names, vec!["__delegate", "__leader_merge", "__leader_rebalance"]);
+    assert_eq!(artifact.cov_binding_leader_decl_entry("merge"), artifact.entry("__leader_merge"));
+    assert_eq!(artifact.cov_binding_leader_decl_entry("rebalance"), artifact.entry("__leader_rebalance"));
+    assert_eq!(artifact.delegate_entry_abi.as_deref(), Some("__delegate"));
 
-    let merge_delegate =
-        compiled.build_sig_script_for_covenant_decl("merge", vec![], Default::default()).expect("merge routes to the shared delegate");
-    let rebalance_delegate = compiled
-        .build_sig_script_for_covenant_decl("rebalance", vec![], Default::default())
+    let merge_delegate = build_sig_script_for_covenant_decl(&compiled, "merge", vec![], Default::default())
+        .expect("merge routes to the shared delegate");
+    let rebalance_delegate = build_sig_script_for_covenant_decl(&compiled, "rebalance", vec![], Default::default())
         .expect("rebalance routes to the shared delegate");
-    let shared_delegate = compiled.build_sig_script("__delegate", vec![]).expect("shared delegate sigscript builds");
+    let shared_delegate = encode_entry_sig_script(&compiled, "__delegate", &[]).expect("shared delegate sigscript builds");
     assert_eq!(merge_delegate, shared_delegate);
     assert_eq!(rebalance_delegate, shared_delegate);
+}
+
+#[test]
+fn portable_abi_preserves_covenant_declaration_and_delegate_entries() {
+    let source = r#"
+        contract Decls(int max_ins, int max_outs) {
+            #[covenant(binding = cov, from = max_ins, to = max_outs)]
+            function merge(int nonce) {
+                require(nonce >= 0);
+            }
+
+            #[covenant(binding = cov, from = max_ins, to = max_outs)]
+            function rebalance(int nonce) {
+                require(nonce >= 0);
+            }
+        }
+    "#;
+
+    let artifact = compile_to_sil_abi_artifact(source, &[2.into(), 4.into()]).expect("portable covenant ABI compiles");
+    let json = serde_json::to_string(&artifact).expect("portable covenant ABI serializes");
+    let decoded: SilAbiArtifact = serde_json::from_str(&json).expect("portable covenant ABI deserializes");
+    let contract = decoded.contract("Decls").expect("contract exists");
+
+    assert_eq!(contract.cov_decl_to_abi["merge"], "__leader_merge");
+    assert_eq!(contract.cov_decl_to_abi["rebalance"], "__leader_rebalance");
+    assert_eq!(contract.delegate_entry_abi.as_deref(), Some("__delegate"));
+    assert_eq!(contract.cov_binding_leader_decl_entry("merge"), contract.entry("__leader_merge"));
+    assert_eq!(contract.covenant_decl_entry("merge", false), contract.entry("__delegate"));
 }
 
 #[test]
@@ -735,30 +799,41 @@ fn lowers_kcc20_shaped_public_names_and_shared_delegate_body() {
         }
     "#;
 
-    let compiled = compile_contract(source, &[Expr::bytes(vec![7]), Expr::int(10)], CompileOptions::default())
+    let compiled = compile_to_sil_abi_artifact_with_options(source, &[vec![7u8].into(), 10.into()], CompileOptions::default())
         .expect("KCC20-shaped declaration compiles");
+    let abi_artifact = compile_to_sil_abi_artifact(source, &[vec![7u8].into(), 10.into()]).expect("portable ABI compiles");
+    let artifact = single_contract(&abi_artifact);
 
-    let abi = compiled
-        .abi
+    let abi = artifact
+        .entries
         .iter()
-        .map(|entry| (entry.name.as_str(), entry.inputs.iter().map(|input| input.type_name.as_str()).collect::<Vec<_>>()))
+        .map(|(name, entry)| (name.as_str(), entry.params.iter().map(|input| &input.ty).collect::<Vec<_>>()))
         .collect::<Vec<_>>();
-    assert_eq!(abi, vec![("transfer", vec!["State[]", "byte[]"]), ("transfer_delegator", vec!["byte[]"]),]);
+    assert_eq!(
+        abi,
+        vec![
+            (
+                "transfer",
+                vec![
+                    &TypeArtifact::DynamicArray { item: Box::new(TypeArtifact::Struct { name: "State".to_string() }) },
+                    &TypeArtifact::Bytes,
+                ],
+            ),
+            ("transfer_delegator", vec![&TypeArtifact::Bytes]),
+        ]
+    );
 
-    let transfer = compiled.entry_by_name("transfer").expect("public transfer exists");
+    let transfer = artifact.entry("transfer").expect("public transfer exists");
     let expected_hash = blake3::hash(b"transfer({byte[1],int}[],byte[])");
-    assert_eq!(transfer.dispatch_tag, expected_hash.as_bytes()[..4]);
+    assert_eq!(transfer.dispatch_tag.as_bytes(), &expected_hash.as_bytes()[..4]);
 
-    let delegate_args = vec![Expr::dynamic_bytes(vec![7])];
-    let routed = compiled
-        .build_sig_script_for_covenant_decl("transferPolicy", delegate_args.clone(), Default::default())
+    let delegate_args = vec![vec![7u8].into()];
+    let routed = build_sig_script_for_covenant_decl(&compiled, "transferPolicy", delegate_args.clone(), Default::default())
         .expect("declaration helper resolves the overridden delegate name");
-    let direct = compiled.build_sig_script("transfer_delegator", delegate_args).expect("public delegate sigscript builds");
+    let direct = encode_entry_sig_script(&compiled, "transfer_delegator", &delegate_args).expect("public delegate sigscript builds");
     assert_eq!(routed, direct);
-    assert_eq!(compiled.cov_decl_to_abi.get("transferPolicy"), compiled.entry_by_name("transfer"));
-    assert_eq!(compiled.delegate_entry_abi.as_ref(), compiled.entry_by_name("transfer_delegator"));
-    assert_eq!(compiled.covenant_decl_entrypoint_name("transferPolicy", true), Some("transfer"));
-    assert_eq!(compiled.covenant_decl_entrypoint_name("transferPolicy", false), Some("transfer_delegator"));
+    assert_eq!(artifact.cov_binding_leader_decl_entry("transferPolicy"), artifact.entry("transfer"));
+    assert_eq!(artifact.delegate_entry_abi.as_deref(), Some("transfer_delegator"));
 }
 
 #[test]
@@ -772,11 +847,11 @@ fn supports_public_name_override_for_auth_bound_declaration() {
         }
     "#;
 
-    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
-    assert_eq!(compiled.abi[0].name, "spend");
-    assert_eq!(compiled.cov_decl_to_abi.get("spendPolicy"), compiled.entry_by_name("spend"));
-    assert_eq!(compiled.delegate_entry_abi, None);
-    assert_eq!(compiled.covenant_decl_entrypoint_name("spendPolicy", false), Some("spend"));
+    let artifact = compile_to_sil_abi_artifact(source, &[]).expect("portable auth ABI compiles");
+    let contract = artifact.contract("Decls").expect("contract exists");
+    assert!(contract.entries.contains_key("spend"));
+    assert_eq!(contract.auth_decl_entry("spendPolicy"), contract.entry("spend"));
+    assert_eq!(contract.delegate_entry_abi, None);
 }
 
 #[test]
@@ -794,7 +869,8 @@ fn rejects_duplicate_delegate_bodies() {
         }
     "#;
 
-    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("duplicate delegate bodies must fail");
+    let err = compile_to_sil_abi_artifact_with_options(source, &[], CompileOptions::default())
+        .expect_err("duplicate delegate bodies must fail");
     assert!(err.to_string().contains("more than one #[covenant.delegate] body"), "unexpected error: {err}");
 }
 
@@ -807,7 +883,8 @@ fn rejects_delegate_body_without_cov_bound_declaration() {
         }
     "#;
 
-    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("unused delegate body must fail");
+    let err =
+        compile_to_sil_abi_artifact_with_options(source, &[], CompileOptions::default()).expect_err("unused delegate body must fail");
     assert!(err.to_string().contains("requires at least one binding=cov"), "unexpected error: {err}");
 }
 
@@ -844,7 +921,8 @@ fn rejects_direct_calls_to_the_delegate_body() {
         }
     "#;
 
-    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("delegate bodies are compiler hooks");
+    let err = compile_to_sil_abi_artifact_with_options(source, &[], CompileOptions::default())
+        .expect_err("delegate bodies are compiler hooks");
     let message = err.to_string();
     assert!(message.contains("covenant-annotated function 'authorizeDelegate' cannot be called directly"));
     assert!(message.contains("extract shared logic into an unannotated helper function"));
@@ -866,7 +944,8 @@ fn rejects_direct_calls_to_a_covenant_policy() {
         }
     "#;
 
-    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("covenant policies are compiler hooks");
+    let err = compile_to_sil_abi_artifact_with_options(source, &[], CompileOptions::default())
+        .expect_err("covenant policies are compiler hooks");
     let message = err.to_string();
     assert!(message.contains("covenant-annotated function 'transferPolicy' cannot be called directly"));
     assert!(message.contains("extract shared logic into an unannotated helper function"));
@@ -884,7 +963,7 @@ fn rejects_conflicting_shared_delegate_names() {
         }
     "#;
 
-    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("delegate names must agree");
+    let err = compile_to_sil_abi_artifact_with_options(source, &[], CompileOptions::default()).expect_err("delegate names must agree");
     assert!(err.to_string().contains("conflicting shared delegate entrypoint names"), "unexpected error: {err}");
 }
 
@@ -918,7 +997,8 @@ fn rejects_invalid_delegate_body_signatures() {
     ];
 
     for source in cases {
-        let err = compile_contract(source, &[], CompileOptions::default()).expect_err("invalid delegate signature must fail");
+        let err = compile_to_sil_abi_artifact_with_options(source, &[], CompileOptions::default())
+            .expect_err("invalid delegate signature must fail");
         assert!(err.to_string().contains("#[covenant.delegate]"), "unexpected error: {err}");
     }
 }
@@ -938,7 +1018,8 @@ fn rejects_generated_public_name_collision() {
         }
     "#;
 
-    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("generated public name collision must fail");
+    let err = compile_to_sil_abi_artifact_with_options(source, &[], CompileOptions::default())
+        .expect_err("generated public name collision must fail");
     assert!(err.to_string().contains("duplicate function name 'transfer'"), "unexpected error: {err}");
 }
 
@@ -964,7 +1045,7 @@ fn rejects_generated_public_name_collisions_with_helpers() {
     ];
 
     for source in cases {
-        let err = compile_contract(source, &[], CompileOptions::default())
+        let err = compile_to_sil_abi_artifact_with_options(source, &[], CompileOptions::default())
             .expect_err("generated public names must not collide with helper functions");
         assert!(err.to_string().contains("duplicate function name 'spend'"), "unexpected error: {err}");
     }
@@ -984,6 +1065,7 @@ fn rejects_per_leader_delegate_policy_selection() {
         }
     "#;
 
-    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("leaders cannot select delegate policies");
+    let err = compile_to_sil_abi_artifact_with_options(source, &[], CompileOptions::default())
+        .expect_err("leaders cannot select delegate policies");
     assert!(err.to_string().contains("unknown covenant attribute argument 'delegate_policy'"), "unexpected error: {err}");
 }

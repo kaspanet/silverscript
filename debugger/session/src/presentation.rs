@@ -137,10 +137,10 @@ pub fn format_failure_report(report: &FailureReport, format_var: &dyn Fn(&str, &
 
         out.push_str(&format!("{pad} |\n"));
 
-        if line_idx > 0 {
-            if let Some(prev) = source_lines.get(line_idx - 1) {
-                out.push_str(&format!("{:>w$} | {prev}\n", span.line - 1));
-            }
+        if line_idx > 0
+            && let Some(prev) = source_lines.get(line_idx - 1)
+        {
+            out.push_str(&format!("{:>w$} | {prev}\n", span.line - 1));
         }
 
         if let Some(line_text) = source_lines.get(line_idx) {

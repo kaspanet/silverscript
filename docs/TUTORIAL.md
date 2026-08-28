@@ -91,29 +91,27 @@ If your contract has constructor parameters, you can provide their values via a 
 silverc contract.sil --constructor-args args.json
 ```
 
-The `args.json` file should contain an array of constructor argument expressions. For example:
+The `args.json` file should contain an array of portable ABI values. For example:
 
 ```json
 [
-  {"kind": "byte[]", "data": [1, 2, 3, 4]},
-  {"kind": "int", "data": 12345}
+  {"kind": "bytes", "value": [1, 2, 3, 4]},
+  {"kind": "int", "value": 12345}
 ]
 ```
 
-The compiled JSON output includes:
-- `contract_name`: The name of the contract
-- `compiler_version`: The SilverScript compiler version that produced the artifact
-- `bytecode`: The compiled bytecode (as an array of bytes)
-- `ast`: The abstract syntax tree of the parsed contract
-- `abi`: An array of entries with their parameter types
+The output is a portable `SilAbiArtifact` JSON document containing:
+
+- `schema_version`: The portable ABI schema version
+- `states`: Struct definitions referenced by contract inputs and runtime state
+- `contracts`: The compiled contract, its entries, dispatch tags, script, template hash, and state span
 
 ### Programmatic Compilation
 
 You can also compile contracts programmatically using the SilverScript Rust library:
 
 ```rust
-use silverscript_lang::compiler::{compile_contract, CompileOptions};
-use silverscript_lang::ast::Expr;
+use silverscript_lang::compiler::sil_abi_artifact;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let source = r#"
@@ -127,16 +125,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     "#;
     
     // Constructor arguments (x = 100)
-    let constructor_args = vec![Expr::Int(100)];
-    
-    // Compile with default options
-    let options = CompileOptions::default();
-    let compiled = compile_contract(source, &constructor_args, options)?;
-    
-    println!("Contract name: {}", compiled.contract_name);
-    println!("Compiler version: {}", compiled.compiler_version);
-    println!("Bytecode length: {} bytes", compiled.bytecode.len());
-    println!("ABI: {:?}", compiled.abi);
+    let artifact = sil_abi_artifact(source, &[100.into()])?;
+    let (contract_name, contract) = artifact.contracts.get_key_value("MyContract").expect("contract exists");
+
+    println!("Contract name: {contract_name}");
+    println!("Bytecode length: {} bytes", contract.compiled.bytecode.len());
+    println!("Entries: {:?}", contract.entries);
     
     Ok(())
 }
@@ -147,7 +141,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 After compiling a contract, you can build signature scripts for its entries:
 
 ```rust
-use silverscript_lang::ast::Expr;
+use silverscript_abi::encode_contract_entry_sig_script;
+use silverscript_lang::compiler::sil_abi_artifact;
 
 let source = r#"
     pragma silverscript ^0.1.0;
@@ -167,31 +162,34 @@ let source = r#"
 let sender_pk = vec![3u8; 32];
 let recipient_pk = vec![4u8; 32];
 let timeout = 1640000000000i64;
-let compiled = compile_contract(
+let artifact = sil_abi_artifact(
     source,
-    &[sender_pk.into(), recipient_pk.into(), Expr::temporal(timeout)],
-    CompileOptions::default()
+    &[sender_pk.into(), recipient_pk.into(), timeout.into()],
 )?;
 
 // Build sigscript for multiple entrypoints
 let sig = vec![5u8; 65];
 
 // For the 'transfer' entrypoint
-let transfer_sigscript = compiled.build_sig_script(
+let transfer_sigscript = encode_contract_entry_sig_script(
+    &artifact,
+    "TransferWithTimeout",
     "transfer",
-    vec![sig.clone().into()]
+    &[sig.clone().into()],
 )?;
 // transfer_sigscript contains: <signature> <4-byte KCC-01 dispatch tag>
 
 // For the 'reclaim' entrypoint
-let reclaim_sigscript = compiled.build_sig_script(
+let reclaim_sigscript = encode_contract_entry_sig_script(
+    &artifact,
+    "TransferWithTimeout",
     "reclaim",
-    vec![sig.into()]
+    &[sig.into()],
 )?;
 // reclaim_sigscript contains: <signature> <4-byte KCC-01 dispatch tag>
 ```
 
-The `build_sig_script` method automatically:
+`encode_contract_entry_sig_script` automatically:
 - Validates argument count and types
 - Encodes arguments properly for the Kaspa script stack
 - Appends the KCC-01 function-signature dispatch tag

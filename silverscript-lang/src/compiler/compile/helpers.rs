@@ -1,10 +1,10 @@
 use super::*;
 use crate::compiler::covenant_declarations::CovenantDeclarationAbiNames;
 
-pub(super) struct BuiltAbi {
-    pub(super) function_abi_entries: Vec<FunctionAbiEntry>,
-    pub(super) cov_decl_to_abi: BTreeMap<String, FunctionAbiEntry>,
-    pub(super) delegate_entry_abi: Option<FunctionAbiEntry>,
+pub(super) struct EntrypointMetadata {
+    pub(super) dispatches: Vec<EntrypointDispatch>,
+    pub(super) covenant_entrypoints: BTreeMap<String, String>,
+    pub(super) delegate_entrypoint: Option<String>,
 }
 
 pub(super) fn compile_contract_fields<'i>(
@@ -98,67 +98,62 @@ fn write_dispatch_type_name<'i>(
     Ok(())
 }
 
-pub(super) fn build_abi<'i>(
+pub(super) fn build_entrypoint_metadata<'i>(
     contract: &ContractAst<'i>,
     constants: &HashMap<String, Expr<'i>>,
     structs: &StructRegistry,
     covenant_abi_names: &CovenantDeclarationAbiNames,
-) -> Result<BuiltAbi, CompilerError> {
+) -> Result<EntrypointMetadata, CompilerError> {
     let source_name_by_entrypoint = covenant_abi_names
         .entrypoints
         .iter()
         .map(|(source_name, entrypoint_name)| (entrypoint_name.as_str(), source_name.as_str()))
         .collect::<HashMap<_, _>>();
     let delegate_entrypoint = covenant_abi_names.delegate_entrypoint.as_deref();
-    let mut function_abi_entries = Vec::new();
-    let mut cov_decl_to_abi = BTreeMap::new();
-    let mut delegate_entry_abi = None;
+    let mut dispatches = Vec::new();
+    let mut covenant_entrypoints = BTreeMap::new();
+    let mut built_delegate_entrypoint = None;
 
     for func in contract.functions.iter().filter(|func| func.entrypoint) {
-        let input_specs = func
+        let signature_types = func
             .params
             .iter()
             .map(|param| {
                 let type_ref = resolve_abi_type_ref(&param.type_ref, constants, &func.name, &param.name)?;
-                let type_name = type_ref.type_name();
                 let mut signature_type = String::new();
                 write_dispatch_type_name(&type_ref, structs, constants, &mut signature_type)?;
-                Ok((FunctionInputAbi { name: param.name.clone(), type_name }, signature_type))
+                Ok(signature_type)
             })
             .collect::<Result<Vec<_>, CompilerError>>()?;
-        let (inputs, signature_types): (Vec<_>, Vec<_>) = input_specs.into_iter().unzip();
-
-        // dispatch tag creation
         let signature = format!("{}({})", func.name, signature_types.join(","));
         let hash = blake3::hash(signature.as_bytes());
-        let mut dispatch_tag = [0u8; 4];
+        let mut dispatch_tag = [0; 4];
         dispatch_tag.copy_from_slice(&hash.as_bytes()[..4]);
-
-        let entry = FunctionAbiEntry { name: func.name.clone(), inputs, dispatch_tag };
+        let entry = EntrypointDispatch { name: func.name.clone(), dispatch_tag };
 
         if let Some(source_name) = source_name_by_entrypoint.get(func.name.as_str()) {
-            cov_decl_to_abi.insert((*source_name).to_string(), entry.clone());
+            covenant_entrypoints.insert((*source_name).to_string(), func.name.clone());
         }
         if delegate_entrypoint == Some(func.name.as_str()) {
-            delegate_entry_abi = Some(entry.clone());
+            built_delegate_entrypoint = Some(func.name.clone());
         }
-        function_abi_entries.push(entry);
+        dispatches.push(entry);
     }
 
     if let Some((source_name, entrypoint_name)) =
-        covenant_abi_names.entrypoints.iter().find(|(source_name, _)| !cov_decl_to_abi.contains_key(*source_name))
+        covenant_abi_names.entrypoints.iter().find(|(source_name, _)| !covenant_entrypoints.contains_key(*source_name))
     {
         return Err(CompilerError::Unsupported(format!(
-            "generated covenant entrypoint '{entrypoint_name}' for declaration '{source_name}' is missing from the ABI"
+            "generated covenant entrypoint '{entrypoint_name}' for declaration '{source_name}' is missing from dispatch metadata"
         )));
     }
-    if let Some(entrypoint_name) = delegate_entrypoint.filter(|_| delegate_entry_abi.is_none()) {
+    if let Some(entrypoint_name) = delegate_entrypoint.filter(|_| built_delegate_entrypoint.is_none()) {
         return Err(CompilerError::Unsupported(format!(
-            "generated covenant delegate entrypoint '{entrypoint_name}' is missing from the ABI"
+            "generated covenant delegate entrypoint '{entrypoint_name}' is missing from dispatch metadata"
         )));
     }
 
-    Ok(BuiltAbi { function_abi_entries, cov_decl_to_abi, delegate_entry_abi })
+    Ok(EntrypointMetadata { dispatches, covenant_entrypoints, delegate_entrypoint: built_delegate_entrypoint })
 }
 
 pub(super) fn resolve_artifact_struct_type_refs<'i>(
@@ -275,20 +270,20 @@ pub(super) fn encode_value_with_constant_size<'i>(
         }
         _ => {
             // Handle fixed-size byte arrays like byte[N]
-            if let (Some(inner_type), Some(size)) = (type_ref.array_element_type(), array_type_size(type_ref, constants)?) {
-                if inner_type.is_byte() {
-                    let ExprKind::Array { values, .. } = &value.kind else {
-                        return Err(array_literal_encoding_error(value));
-                    };
-                    if values.len() != size {
-                        return Err(CompilerError::Unsupported("array literal element type mismatch".to_string()));
-                    }
-                    return values
-                        .iter()
-                        .map(|value| encode_value_with_constant_size(value, &inner_type, constants))
-                        .collect::<Result<Vec<_>, _>>()
-                        .map(|chunks| chunks.concat());
+            if let (Some(inner_type), Some(size)) = (type_ref.array_element_type(), array_type_size(type_ref, constants)?)
+                && inner_type.is_byte()
+            {
+                let ExprKind::Array { values, .. } = &value.kind else {
+                    return Err(array_literal_encoding_error(value));
+                };
+                if values.len() != size {
+                    return Err(CompilerError::Unsupported("array literal element type mismatch".to_string()));
                 }
+                return values
+                    .iter()
+                    .map(|value| encode_value_with_constant_size(value, &inner_type, constants))
+                    .collect::<Result<Vec<_>, _>>()
+                    .map(|chunks| chunks.concat());
             }
 
             // Handle nested fixed-size arrays with known element sizes.

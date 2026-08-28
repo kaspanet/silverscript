@@ -13,7 +13,9 @@ path = "src/main.rs"
 
 [dependencies]
 debugger-session = { path = "../session" }
-silverscript-lang = { path = "../../silverscript-lang" }
+silverscript-abi.workspace = true
+silverscript-debug-artifact.workspace = true
+silverscript-lang.workspace = true
 kaspa-consensus-core.workspace = true
 kaspa-txscript.workspace = true
 kaspa-txscript-errors.workspace = true

@@ -1,5 +1,6 @@
-use silverscript_lang::ast::{ArrayDim, Expr, TypeBase, TypeRef, parse_contract_ast};
-use silverscript_lang::compiler::{CompileOptions, compile_contract};
+use silverscript_abi::ArtifactValue;
+use silverscript_lang::ast::{ArrayDim, TypeBase, TypeRef, parse_contract_ast};
+use silverscript_lang::compiler::{CompileOptions, compile_to_sil_abi_artifact_with_options};
 
 #[test]
 fn tutorial_contract_examples_parse() {
@@ -32,13 +33,13 @@ fn tutorial_examples_compile() {
             .map(|param| dummy_value(&param.type_ref))
             .collect::<Result<Vec<_>, _>>()
             .unwrap_or_else(|err| panic!("tutorial example #{index} constructor arguments could not be generated: {err}"));
-        if let Err(err) = compile_contract(&source, &constructor_args, CompileOptions::default()) {
+        if let Err(err) = compile_to_sil_abi_artifact_with_options(&source, &constructor_args, CompileOptions::default()) {
             panic!("tutorial example #{index} failed to compile: {err}\n--- snippet ---\n{snippet}\n--- wrapped source ---\n{source}");
         }
     }
 }
 
-fn dummy_value(type_ref: &TypeRef) -> Result<Expr<'static>, String> {
+fn dummy_value(type_ref: &TypeRef) -> Result<ArtifactValue, String> {
     if type_ref.is_array() {
         let length = match type_ref.array_size() {
             Some(ArrayDim::Fixed(length)) => *length,
@@ -46,20 +47,23 @@ fn dummy_value(type_ref: &TypeRef) -> Result<Expr<'static>, String> {
             Some(ArrayDim::Constant(name)) => return Err(format!("array size constant '{name}' is unsupported in tutorial tests")),
             Some(ArrayDim::Inferred) | None => return Err(format!("cannot generate a value for {}", type_ref.type_name())),
         };
+        if type_ref.base == TypeBase::Byte && type_ref.array_dims.len() == 1 {
+            return Ok(vec![0u8; length].into());
+        }
         let element_type = type_ref.array_element_type().ok_or_else(|| format!("invalid array type {}", type_ref.type_name()))?;
         let values = (0..length).map(|_| dummy_value(&element_type)).collect::<Result<Vec<_>, _>>()?;
-        return Ok(Expr::array(type_ref.clone(), values));
+        return Ok(values.into());
     }
 
     Ok(match &type_ref.base {
-        TypeBase::Int => Expr::int(0),
-        TypeBase::Temporal => Expr::temporal(kaspa_txscript::LOCK_TIME_THRESHOLD as i64),
-        TypeBase::Bool => Expr::bool(false),
-        TypeBase::Byte => Expr::byte(0),
-        TypeBase::String => Expr::string(String::new()),
-        TypeBase::Pubkey => Expr::bytes(vec![0; 32]),
-        TypeBase::Sig => Expr::bytes(vec![0; 65]),
-        TypeBase::Datasig => Expr::bytes(vec![0; 64]),
+        TypeBase::Int => 0.into(),
+        TypeBase::Temporal => (kaspa_txscript::LOCK_TIME_THRESHOLD as i64).into(),
+        TypeBase::Bool => false.into(),
+        TypeBase::Byte => 0u8.into(),
+        TypeBase::String => String::new().into(),
+        TypeBase::Pubkey => vec![0u8; 32].into(),
+        TypeBase::Sig => vec![0u8; 65].into(),
+        TypeBase::Datasig => vec![0u8; 64].into(),
         TypeBase::Tuple(_) | TypeBase::Custom(_) => return Err(format!("cannot generate a value for {}", type_ref.type_name())),
     })
 }
@@ -238,3 +242,4 @@ fn indent(text: &str, spaces: usize) -> String {
     let padding = " ".repeat(spaces);
     text.lines().map(|line| if line.is_empty() { line.to_string() } else { format!("{padding}{line}") }).collect::<Vec<_>>().join("\n")
 }
+mod common;

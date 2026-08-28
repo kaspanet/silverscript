@@ -7,6 +7,8 @@ use kaspa_txscript::covenants::CovenantsContext;
 use kaspa_txscript::script_builder::ScriptBuilder;
 use kaspa_txscript::{DynOpcodeImplementation, EngineCtx, EngineFlags, TxScriptEngine, parse_script};
 use serde::{Deserialize, Serialize};
+use silverscript_debug_artifact::SilDebugArtifact;
+use thiserror::Error;
 
 use silverscript_lang::ast::{
     ContractAst, Expr, ExprKind, StateFieldExpr, TypeBase, TypeRef, UnarySuffixKind, parse_contract_ast, parse_expression_ast,
@@ -28,6 +30,16 @@ pub type DebugTx<'a> = PopulatedTransaction<'a>;
 pub type DebugReused = SigHashReusedValuesUnsync;
 pub type DebugOpcode<'a> = DynOpcodeImplementation<DebugTx<'a>, DebugReused>;
 pub type DebugEngine<'a> = TxScriptEngine<'a, DebugTx<'a>, DebugReused>;
+
+#[derive(Debug, Error)]
+pub enum DebugArtifactSessionError {
+    #[error("debug artifact has no contract '{0}'")]
+    MissingContract(String),
+    #[error("debug artifact has no debug information for contract '{0}'")]
+    MissingDebugInfo(String),
+    #[error(transparent)]
+    Script(#[from] kaspa_txscript_errors::TxScriptError),
+}
 
 #[derive(Clone, Copy)]
 pub struct ShadowTxContext<'a> {
@@ -196,6 +208,21 @@ type ShadowResolution<'i> = (ShadowBindings, EvalEnv<'i>, StackBindings, EvalTyp
 
 impl<'a, 'i> DebugSession<'a, 'i> {
     // --- Session construction + stepping ---
+
+    /// Creates a debug session from one contract in a debug artifact.
+    pub fn from_artifact(
+        sigscript: &[u8],
+        artifact: &'i SilDebugArtifact<'i>,
+        contract_name: &str,
+        engine: DebugEngine<'a>,
+    ) -> Result<Self, DebugArtifactSessionError> {
+        let contract =
+            artifact.contract(contract_name).ok_or_else(|| DebugArtifactSessionError::MissingContract(contract_name.to_string()))?;
+        let debug_info = artifact
+            .debug_info(contract_name)
+            .ok_or_else(|| DebugArtifactSessionError::MissingDebugInfo(contract_name.to_string()))?;
+        Ok(Self::full(sigscript, &contract.compiled.bytecode, &debug_info.source, Some(debug_info.clone()), engine)?)
+    }
 
     /// Creates a debug session simulating a full transaction spend.
     /// Executes sigscript first to seed the stack, then debugs the compiled bytecode.
@@ -412,11 +439,11 @@ impl<'a, 'i> DebugSession<'a, 'i> {
                 return Ok(None);
             }
             let offset = self.current_byte_offset();
-            if self.engine.is_executing() {
-                if let Some(index) = self.initial_step_index_for_offset(offset, None) {
-                    self.mark_step_executed(index);
-                    return Ok(Some(self.state()));
-                }
+            if self.engine.is_executing()
+                && let Some(index) = self.initial_step_index_for_offset(offset, None)
+            {
+                self.mark_step_executed(index);
+                return Ok(Some(self.state()));
             }
             if self.step_opcode()?.is_none() {
                 return Ok(None);
@@ -434,10 +461,10 @@ impl<'a, 'i> DebugSession<'a, 'i> {
             if self.step_into()?.is_none() {
                 return Ok(None);
             }
-            if let Some(step) = self.current_timeline_step() {
-                if self.step_hits_breakpoint(step) {
-                    return Ok(Some(self.state()));
-                }
+            if let Some(step) = self.current_timeline_step()
+                && self.step_hits_breakpoint(step)
+            {
+                return Ok(Some(self.state()));
             }
         }
     }
@@ -1309,18 +1336,16 @@ impl<'a, 'i> DebugSession<'a, 'i> {
     }
 
     fn steppable_step_index_for_offset(&self, offset: usize, min_sequence: Option<u32>) -> Option<usize> {
-        if let Some(index) = self.current_step_index {
-            if let Some(step) = self.step_at_order(index) {
-                if !self.is_post_inline_call_source(step) {
-                    if let Some(boundary_index) = self.find_steppable_step_index(|candidate| {
-                        candidate.bytecode_start == offset
-                            && step.bytecode_end == offset
-                            && min_sequence.is_none_or(|min_sequence| candidate.sequence >= min_sequence)
-                    }) {
-                        return Some(boundary_index);
-                    }
-                }
-            }
+        if let Some(index) = self.current_step_index
+            && let Some(step) = self.step_at_order(index)
+            && !self.is_post_inline_call_source(step)
+            && let Some(boundary_index) = self.find_steppable_step_index(|candidate| {
+                candidate.bytecode_start == offset
+                    && step.bytecode_end == offset
+                    && min_sequence.is_none_or(|min_sequence| candidate.sequence >= min_sequence)
+            })
+        {
+            return Some(boundary_index);
         }
 
         self.find_steppable_step_index(|step| {
@@ -1378,19 +1403,19 @@ impl<'a, 'i> DebugSession<'a, 'i> {
     fn next_steppable_step_index(&self, from: Option<usize>, predicate: impl Fn(&DebugStep<'i>) -> bool) -> Option<usize> {
         let start = from.map(|index| index.saturating_add(1)).unwrap_or(0);
         let min_sequence = from.and_then(|index| self.step_at_order(index).map(|step| step.sequence));
-        if let Some(index) = from {
-            if let Some(step) = self.step_at_order(index) {
-                if matches!(step.kind, StepKind::InlineCallEnter { .. }) {
-                    if let Some(index) = self.find_post_inline_source_after(step, min_sequence, true, &predicate) {
-                        return Some(index);
-                    }
-                }
+        if let Some(index) = from
+            && let Some(step) = self.step_at_order(index)
+        {
+            if matches!(step.kind, StepKind::InlineCallEnter { .. })
+                && let Some(index) = self.find_post_inline_source_after(step, min_sequence, true, &predicate)
+            {
+                return Some(index);
+            }
 
-                if matches!(step.kind, StepKind::InlineCallEnter { .. }) || self.is_post_inline_call_source(step) {
-                    if let Some(index) = self.find_post_inline_source_after(step, min_sequence, false, &predicate) {
-                        return Some(index);
-                    }
-                }
+            if (matches!(step.kind, StepKind::InlineCallEnter { .. }) || self.is_post_inline_call_source(step))
+                && let Some(index) = self.find_post_inline_source_after(step, min_sequence, false, &predicate)
+            {
+                return Some(index);
             }
         }
         for index in start..self.step_order.len() {
@@ -1873,10 +1898,10 @@ impl<'a, 'i> DebugSession<'a, 'i> {
 
 /// Decodes raw bytes into a typed debug value based on the type name.
 fn decode_value_by_type(type_name: &str, bytes: Vec<u8>) -> Result<DebugValue, String> {
-    if let Some(element_type) = type_name.strip_suffix("[]") {
-        if let Some(element_size) = fixed_array_element_size(element_type) {
-            return decode_known_width_array(type_name, bytes, element_type, element_size);
-        }
+    if let Some(element_type) = type_name.strip_suffix("[]")
+        && let Some(element_size) = fixed_array_element_size(element_type)
+    {
+        return decode_known_width_array(type_name, bytes, element_type, element_size);
     }
 
     match type_name {
@@ -1895,7 +1920,7 @@ fn decode_known_width_array(type_name: &str, bytes: Vec<u8>, element_type: &str,
     if element_size == 0 {
         return Err(format!("array element type '{type_name}' has zero width"));
     }
-    if bytes.len() % element_size != 0 {
+    if !bytes.len().is_multiple_of(element_size) {
         return Err(format!("encoded value for '{type_name}' has invalid length {}", bytes.len()));
     }
 

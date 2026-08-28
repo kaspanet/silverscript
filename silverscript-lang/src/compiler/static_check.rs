@@ -796,10 +796,10 @@ fn validate_require_age_daa_statement_shape<'i>(
     expr: &Expr<'i>,
 ) -> Result<(), CompilerError> {
     ctx.check_expr(expr, Some(&TypeRef { base: TypeBase::Int, array_dims: Vec::new() }))?;
-    if let Some(value) = eval_optional_const_int(expr, ctx.constants)? {
-        if !(0..(1_i64 << 32)).contains(&value) {
-            return Err(CompilerError::Unsupported(format!("this.ageDaa value must satisfy 0 <= value < 2^32, got {value}")));
-        }
+    if let Some(value) = eval_optional_const_int(expr, ctx.constants)?
+        && !(0..(1_i64 << 32)).contains(&value)
+    {
+        return Err(CompilerError::Unsupported(format!("this.ageDaa value must satisfy 0 <= value < 2^32, got {value}")));
     }
     Ok(())
 }

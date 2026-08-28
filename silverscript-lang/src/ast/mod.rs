@@ -1604,14 +1604,14 @@ fn parse_function_definition<'i>(pair: Pair<'i, Rule>) -> Result<FunctionAst<'i>
     let mut return_types = Vec::new();
     let mut returns_tuple = false;
     let mut return_type_spans = Vec::new();
-    if let Some(next) = inner.peek() {
-        if next.as_rule() == Rule::return_type_list {
-            let return_pair = inner.next().expect("checked");
-            returns_tuple = return_pair.as_str().trim_start_matches(':').trim_start().starts_with('(');
-            let (types, spans) = parse_return_type_list(return_pair)?;
-            return_types = types;
-            return_type_spans = spans;
-        }
+    if let Some(next) = inner.peek()
+        && next.as_rule() == Rule::return_type_list
+    {
+        let return_pair = inner.next().expect("checked");
+        returns_tuple = return_pair.as_str().trim_start_matches(':').trim_start().starts_with('(');
+        let (types, spans) = parse_return_type_list(return_pair)?;
+        return_types = types;
+        return_type_spans = spans;
     }
 
     let Identifier { name, span: name_span } = parse_identifier(name_pair)?;
@@ -2581,7 +2581,7 @@ fn parse_hex_literal<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError
 fn parse_hex_bytes(pair: &Pair<'_, Rule>) -> Result<Vec<u8>, CompilerError> {
     let raw = pair.as_str();
     let trimmed = raw.trim_start_matches("0x").trim_start_matches("0X");
-    let normalized = if trimmed.len() % 2 != 0 { format!("0{trimmed}") } else { trimmed.to_string() };
+    let normalized = if !trimmed.len().is_multiple_of(2) { format!("0{trimmed}") } else { trimmed.to_string() };
     (0..normalized.len())
         .step_by(2)
         .map(|i| u8::from_str_radix(&normalized[i..i + 2], 16))

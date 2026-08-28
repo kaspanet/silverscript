@@ -1,10 +1,10 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 
 use clap::Parser;
-use debugger_session::args::{parse_call_args, parse_call_args_with_prefix, parse_ctor_args, parse_hex_bytes, parse_state_value};
+use debugger_session::args::{parse_artifact_args, parse_ctor_args, parse_hex_bytes, parse_state_value};
 use debugger_session::covenant::{CovenantBinding as DebugCovenantBinding, ResolvedCovenantCallTarget, resolve_covenant_call_target};
 use debugger_session::session::{DebugEngine, DebugSession, DebugValue, ShadowTxContext, Variable, VariableOrigin};
 use debugger_session::test_runner::{
@@ -23,10 +23,10 @@ use kaspa_txscript::caches::Cache;
 use kaspa_txscript::covenants::CovenantsContext;
 use kaspa_txscript::script_builder::ScriptBuilder;
 use kaspa_txscript::{EngineCtx, EngineFlags, pay_to_script_hash_script};
-use silverscript_lang::ast::{
-    ContractAst, Expr, ExprKind, STATE_TYPE_NAME, StateFieldExpr, TypeBase, TypeRef, parse_contract_ast, parse_type_ref,
-};
-use silverscript_lang::compiler::{CompileOptions, CompiledContract, compile_contract, compile_contract_ast};
+use silverscript_abi::{ArtifactValue, SilContractArtifact, TypeArtifact, encode_contract_entry_sig_script};
+use silverscript_debug_artifact::{SilDebugArtifact, compile_contract as compile_debug_artifact};
+use silverscript_lang::ast::{ContractAst, Expr, ExprKind, STATE_TYPE_NAME, TypeBase, parse_contract_ast, parse_type_ref};
+use silverscript_lang::compiler::{CompileOptions, compile_contract_ast};
 
 const PROMPT: &str = "(sdb) ";
 
@@ -62,18 +62,21 @@ fn compile_bytecode_for_ctor_args(
         return Ok(bytecode.clone());
     }
     let ctor_args = parse_ctor_args(parsed_contract, raw_ctor_args)?;
-    let compiled = compile_contract(source, &ctor_args, CompileOptions { record_debug_infos: true, ..Default::default() })?;
-    cache.insert(raw_ctor_args.to_vec(), compiled.bytecode.clone());
-    Ok(compiled.bytecode)
+    let artifact_ctor_args = ctor_args.iter().map(expr_to_artifact_value).collect::<Result<Vec<_>, _>>()?;
+    let compiled = compile_debug_artifact(source, &artifact_ctor_args, CompileOptions::default())?;
+    let bytecode = compiled.contract(&parsed_contract.name).ok_or("compiled artifact has no contract")?.compiled.bytecode.clone();
+    cache.insert(raw_ctor_args.to_vec(), bytecode.clone());
+    Ok(bytecode)
 }
 
 fn compile_contract_for_raw_ctor_args<'i>(
     source: &'i str,
     parsed_contract: &ContractAst<'i>,
     raw_ctor_args: &[String],
-) -> Result<CompiledContract<'i>, Box<dyn std::error::Error>> {
+) -> Result<SilDebugArtifact<'i>, Box<dyn std::error::Error>> {
     let ctor_args = parse_ctor_args(parsed_contract, raw_ctor_args)?;
-    Ok(compile_contract(source, &ctor_args, CompileOptions { record_debug_infos: true, ..Default::default() })?)
+    let artifact_ctor_args = ctor_args.iter().map(expr_to_artifact_value).collect::<Result<Vec<_>, _>>()?;
+    Ok(compile_debug_artifact(source, &artifact_ctor_args, CompileOptions::default())?)
 }
 
 fn expr_to_debug_value(expr: &Expr<'_>) -> Result<DebugValue, String> {
@@ -116,116 +119,116 @@ fn expr_to_debug_value(expr: &Expr<'_>) -> Result<DebugValue, String> {
     }
 }
 
-fn debug_value_to_expr(value: &DebugValue, struct_name: Option<&str>) -> Option<Expr<'static>> {
-    Some(match value {
-        DebugValue::Int(value) => Expr::int(*value),
-        DebugValue::Temporal(value) => Expr::temporal(*value),
-        DebugValue::Bool(value) => Expr::new(ExprKind::Bool(*value), Default::default()),
-        DebugValue::Bytes(bytes) => Expr::bytes(bytes.clone()),
-        DebugValue::String(value) => Expr::new(ExprKind::String(value.clone()), Default::default()),
-        DebugValue::Array(values) => {
-            Expr::inferred_array(values.iter().map(|value| debug_value_to_expr(value, struct_name)).collect::<Option<Vec<_>>>()?)?
+fn expr_to_artifact_value(expr: &Expr<'_>) -> Result<ArtifactValue, String> {
+    match &expr.kind {
+        ExprKind::Int(value) | ExprKind::Temporal(value) | ExprKind::DateLiteral(value) => Ok(ArtifactValue::Int(*value)),
+        ExprKind::Bool(value) => Ok(ArtifactValue::Bool(*value)),
+        ExprKind::Byte(value) => Ok(ArtifactValue::Byte(*value)),
+        ExprKind::String(value) => Ok(ArtifactValue::Text(value.clone())),
+        ExprKind::Array { type_ref, values } if matches!(type_ref.base, TypeBase::Byte) && type_ref.array_dims.len() == 1 => {
+            let bytes = values
+                .iter()
+                .map(|value| match value.kind {
+                    ExprKind::Byte(byte) => Ok(byte),
+                    _ => Err(format!("{} contains a non-byte value", type_ref.type_name())),
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(ArtifactValue::Bytes(bytes))
         }
-        DebugValue::Object(fields) => Expr::new(
-            ExprKind::StructLiteral {
-                name: struct_name?.to_string(),
-                fields: fields
-                    .iter()
-                    .map(|(name, value)| {
-                        Some(StateFieldExpr {
-                            name: name.clone(),
-                            expr: debug_value_to_expr(value, None)?,
-                            span: Default::default(),
-                            name_span: Default::default(),
-                        })
-                    })
-                    .collect::<Option<Vec<_>>>()?,
-                name_span: Default::default(),
-            },
-            Default::default(),
-        ),
-        DebugValue::Unknown(_) => return None,
-    })
+        ExprKind::Array { values, .. } => {
+            Ok(ArtifactValue::Array(values.iter().map(expr_to_artifact_value).collect::<Result<Vec<_>, _>>()?))
+        }
+        ExprKind::StructLiteral { fields, .. } => Ok(ArtifactValue::Object(
+            fields
+                .iter()
+                .map(|field| Ok((field.name.clone(), expr_to_artifact_value(&field.expr)?)))
+                .collect::<Result<BTreeMap<_, _>, String>>()?,
+        )),
+        _ => Err("constructor argument is not a concrete artifact value".to_string()),
+    }
 }
 
-fn is_state_type(type_ref: &TypeRef) -> bool {
-    type_ref.is_custom() && matches!(&type_ref.base, TypeBase::Custom(name) if name == "State")
+fn debug_value_to_artifact_value(value: &DebugValue) -> Result<ArtifactValue, String> {
+    match value {
+        DebugValue::Int(value) | DebugValue::Temporal(value) => Ok(ArtifactValue::Int(*value)),
+        DebugValue::Bool(value) => Ok(ArtifactValue::Bool(*value)),
+        DebugValue::Bytes(bytes) => Ok(ArtifactValue::Bytes(bytes.clone())),
+        DebugValue::String(value) => Ok(ArtifactValue::Text(value.clone())),
+        DebugValue::Array(values) => {
+            Ok(ArtifactValue::Array(values.iter().map(debug_value_to_artifact_value).collect::<Result<Vec<_>, _>>()?))
+        }
+        DebugValue::Object(fields) => Ok(ArtifactValue::Object(
+            fields
+                .iter()
+                .map(|(name, value)| Ok((name.clone(), debug_value_to_artifact_value(value)?)))
+                .collect::<Result<_, String>>()?,
+        )),
+        DebugValue::Unknown(description) => Err(format!("cannot encode unknown debugger value '{description}'")),
+    }
 }
 
-fn is_state_array_type(type_ref: &TypeRef) -> bool {
-    matches!(&type_ref.base, TypeBase::Custom(name) if name == "State")
-        && type_ref.array_dims.len() == 1
-        && type_ref.is_dynamic_array()
+fn is_state_type(ty: &TypeArtifact) -> bool {
+    matches!(ty, TypeArtifact::Struct { name } if name == STATE_TYPE_NAME)
+}
+
+fn is_state_array_type(ty: &TypeArtifact) -> bool {
+    matches!(ty, TypeArtifact::DynamicArray { item } if is_state_type(item))
 }
 
 fn synthesized_covenant_prefix_args(
-    compiled: &CompiledContract<'_>,
+    contract: &SilContractArtifact,
     entrypoint_name: &str,
     target: &ResolvedCovenantCallTarget,
     output_states: Option<&[DebugValue]>,
-) -> Result<Vec<Expr<'static>>, Box<dyn std::error::Error>> {
+) -> Result<Vec<ArtifactValue>, Box<dyn std::error::Error>> {
     if target.binding == DebugCovenantBinding::Cov && entrypoint_name.starts_with("__delegate_") {
         return Ok(Vec::new());
     }
 
-    let function = compiled
-        .ast
-        .functions
-        .iter()
-        .find(|function| function.name == entrypoint_name)
-        .ok_or("generated covenant entrypoint not found")?;
-    let Some(first_param) = function.params.first() else {
+    let entry = contract.entry(entrypoint_name).ok_or("generated covenant entrypoint not found")?;
+    let Some(first_param) = entry.params.first() else {
         return Ok(Vec::new());
     };
 
     let states = output_states.ok_or("missing output states needed to synthesize covenant verification arguments")?;
-    if is_state_type(&first_param.type_ref) {
+    if is_state_type(&first_param.ty) {
         if states.len() != 1 {
             return Err(format!("expected exactly 1 output State for '{entrypoint_name}', got {}", states.len()).into());
         }
-        return Ok(vec![
-            debug_value_to_expr(&states[0], Some(STATE_TYPE_NAME)).ok_or("failed to materialize synthesized output State")?,
-        ]);
+        return Ok(vec![debug_value_to_artifact_value(&states[0])?]);
     }
-    if is_state_array_type(&first_param.type_ref) {
-        return Ok(vec![Expr::array(
-            first_param.type_ref.clone(),
-            states
-                .iter()
-                .map(|state| debug_value_to_expr(state, Some(STATE_TYPE_NAME)))
-                .collect::<Option<Vec<_>>>()
-                .ok_or("failed to materialize synthesized output State[]")?,
-        )]);
+    if is_state_array_type(&first_param.ty) {
+        return Ok(vec![ArtifactValue::Array(states.iter().map(debug_value_to_artifact_value).collect::<Result<Vec<_>, _>>()?)]);
     }
 
     Ok(Vec::new())
 }
 
 fn build_covenant_input_sigscript<'i>(
-    compiled: &CompiledContract<'i>,
+    compiled: &SilDebugArtifact<'i>,
     target: &ResolvedCovenantCallTarget,
     is_leader: bool,
     raw_args: &[String],
     output_states: Option<&[DebugValue]>,
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    if compiled.abi.contracts.len() != 1 {
+        return Err("debugger requires an artifact containing exactly one contract".into());
+    }
+    let (contract_name, contract) = compiled.abi.contracts.first_key_value().expect("contract count was checked");
     let entrypoint_name = target.generated_entrypoint_name_for(is_leader);
+    let entry = contract.entry(&entrypoint_name).ok_or("generated covenant entrypoint not found")?;
     let typed_args = if target.binding == DebugCovenantBinding::Cov && !is_leader {
-        parse_call_args(&compiled.ast, &entrypoint_name, raw_args)?
+        parse_artifact_args(&compiled.abi, contract, &entry.params, raw_args)?
     } else {
-        let function = compiled
-            .ast
-            .functions
-            .iter()
-            .find(|function| function.name == entrypoint_name)
-            .ok_or("generated covenant entrypoint not found")?;
-        if raw_args.len() == function.params.len() {
-            parse_call_args(&compiled.ast, &entrypoint_name, raw_args)?
+        if raw_args.len() == entry.params.len() {
+            parse_artifact_args(&compiled.abi, contract, &entry.params, raw_args)?
         } else {
-            let prefix_args = synthesized_covenant_prefix_args(compiled, &entrypoint_name, target, output_states)?;
-            parse_call_args_with_prefix(&compiled.ast, &entrypoint_name, prefix_args, raw_args)?
+            let mut args = synthesized_covenant_prefix_args(contract, &entrypoint_name, target, output_states)?;
+            args.extend(parse_artifact_args(&compiled.abi, contract, &entry.params[args.len()..], raw_args)?);
+            args
         }
     };
-    Ok(compiled.build_sig_script(&entrypoint_name, typed_args)?)
+    Ok(encode_contract_entry_sig_script(&compiled.abi, contract_name, &entrypoint_name, &typed_args)?)
 }
 
 fn resolve_state_for_ctor_args(
@@ -271,29 +274,31 @@ fn materialize_bytecode_for_explicit_state(
     raw_state: &str,
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let instance_args = parse_ctor_args(parsed_contract, raw_instance_args)?;
+    let artifact_instance_args = instance_args.iter().map(expr_to_artifact_value).collect::<Result<Vec<_>, _>>()?;
     let state = parse_state_value(parsed_contract, raw_state)?;
     let compile_opts = CompileOptions { record_debug_infos: true, ..Default::default() };
-    let base_compiled = compile_contract(source, &instance_args, compile_opts)?;
+    let base_compiled = compile_debug_artifact(source, &artifact_instance_args, compile_opts)?;
+    let base_contract = base_compiled.contract(&parsed_contract.name).ok_or("compiled artifact has no contract")?;
     let materialized_contract = contract_with_explicit_state(parsed_contract, &state)?;
     let materialized = compile_contract_ast(&materialized_contract, &instance_args, compile_opts)?;
 
-    let base_start = base_compiled.state_layout.start;
-    let base_end = base_start + base_compiled.state_layout.len;
+    let base_start = base_contract.compiled.state_span.offset;
+    let base_end = base_start + base_contract.compiled.state_span.len;
     let materialized_start = materialized.state_layout.start;
     let materialized_end = materialized_start + materialized.state_layout.len;
-    if base_compiled.state_layout.len != materialized.state_layout.len {
+    if base_contract.compiled.state_span.len != materialized.state_layout.len {
         return Err("explicit state changes encoded bytecode size; provide raw script_hex instead".into());
     }
-    if base_compiled.bytecode.len() < base_end || materialized.bytecode.len() < materialized_end {
+    if base_contract.compiled.bytecode.len() < base_end || materialized.bytecode.len() < materialized_end {
         return Err("state layout exceeds compiled bytecode length".into());
     }
-    if base_compiled.bytecode[..base_start] != materialized.bytecode[..materialized_start]
-        || base_compiled.bytecode[base_end..] != materialized.bytecode[materialized_end..]
+    if base_contract.compiled.bytecode[..base_start] != materialized.bytecode[..materialized_start]
+        || base_contract.compiled.bytecode[base_end..] != materialized.bytecode[materialized_end..]
     {
         return Err("explicit state changed non-state bytecode; provide raw script_hex instead".into());
     }
 
-    let mut bytecode = base_compiled.bytecode;
+    let mut bytecode = base_contract.compiled.bytecode.clone();
     bytecode[base_start..base_end].copy_from_slice(&materialized.bytecode[materialized_start..materialized_end]);
     Ok(bytecode)
 }
@@ -732,25 +737,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let ctor_args = parse_ctor_args(&parsed_contract, &raw_ctor_args)?;
+    let artifact_ctor_args = ctor_args.iter().map(expr_to_artifact_value).collect::<Result<Vec<_>, _>>()?;
     let compile_opts = CompileOptions { record_debug_infos: true, ..Default::default() };
-    let compiled = compile_contract(&source, &ctor_args, compile_opts)?;
-    let debug_info = compiled.debug_info.clone();
+    let compiled = compile_debug_artifact(&source, &artifact_ctor_args, compile_opts)?;
+    let contract_artifact = compiled.contract(&parsed_contract.name).ok_or("compiled artifact has no contract")?;
     let mut ctor_bytecode_cache = HashMap::<Vec<String>, Vec<u8>>::new();
     let mut ctor_state_cache = HashMap::<Vec<String>, DebugValue>::new();
     let mut explicit_state_cache = HashMap::<String, DebugValue>::new();
-    ctor_bytecode_cache.insert(raw_ctor_args.clone(), compiled.bytecode.clone());
+    ctor_bytecode_cache.insert(raw_ctor_args.clone(), contract_artifact.compiled.bytecode.clone());
     if !parsed_contract.fields.is_empty() {
         let root_state = resolve_state_for_ctor_args(&parsed_contract, &raw_ctor_args, &mut ctor_state_cache)?;
         ctor_state_cache.insert(raw_ctor_args.clone(), root_state);
     }
 
     let selected_name = if selected_name.is_empty() {
-        compiled.abi.first().map(|entry| entry.name.clone()).ok_or("contract has no functions")?
+        contract_artifact.entries.first_key_value().map(|(name, _)| name.clone()).ok_or("contract has no functions")?
     } else {
         selected_name
     };
 
-    let covenant_target = resolve_covenant_call_target(&parsed_contract, &compiled, &selected_name);
+    let covenant_target = resolve_covenant_call_target(&parsed_contract, contract_artifact, &selected_name);
     let covenant_binding = covenant_target.as_ref().map(|target| target.binding);
     let enable_covenant_session_mode = covenant_target.is_some();
 
@@ -882,6 +888,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
     let active_input_ctor_raw = tx.inputs[tx.active_input_index].constructor_args.clone().unwrap_or_else(|| raw_ctor_args.clone());
     let active_compiled = compile_contract_for_raw_ctor_args(&source, &parsed_contract, &active_input_ctor_raw)?;
+    let active_contract = active_compiled.contract(&parsed_contract.name).ok_or("compiled artifact has no contract")?;
     let active_is_cov_leader = companion_leader_index.map(|index| index == tx.active_input_index).unwrap_or(true);
     let active_sigscript = if let Some(target) = covenant_target.as_ref() {
         match target.binding {
@@ -897,8 +904,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             )?,
         }
     } else {
-        let typed_args = parse_call_args(&active_compiled.ast, &selected_name, &raw_args)?;
-        active_compiled.build_sig_script(&selected_name, typed_args)?
+        let entry = active_contract.entry(&selected_name).ok_or_else(|| format!("entry '{selected_name}' not found"))?;
+        let typed_args = parse_artifact_args(&active_compiled.abi, active_contract, &entry.params, &raw_args)?;
+        encode_contract_entry_sig_script(&active_compiled.abi, &parsed_contract.name, &selected_name, &typed_args)?
     };
 
     let mut tx_inputs = Vec::with_capacity(tx.inputs.len());
@@ -943,8 +951,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let active_utxo =
         populated_tx.utxo(tx.active_input_index).ok_or_else(|| format!("missing utxo entry for input {}", tx.active_input_index))?;
     let active_covenant_input_state = input_covenant_states.get(tx.active_input_index).cloned().flatten();
-    let active_lockscript =
-        input_redeem_scripts.get(tx.active_input_index).cloned().flatten().unwrap_or_else(|| compiled.bytecode.clone());
+    let active_lockscript = input_redeem_scripts
+        .get(tx.active_input_index)
+        .cloned()
+        .flatten()
+        .unwrap_or_else(|| active_contract.compiled.bytecode.clone());
     let covenant_input_states = active_utxo.covenant_id.and_then(|covenant_id| {
         let mut values = Vec::new();
         for (input_covenant_id, covenant_input_state) in input_covenant_ids.iter().zip(input_covenant_states.iter()) {
@@ -968,7 +979,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         utxo_entry: active_utxo,
         covenants_ctx: &cov_ctx,
     };
-    let mut session = DebugSession::full(&active_sigscript, &active_lockscript, &source, debug_info, engine)?
+    let active_debug_info = active_compiled.debug_info(&parsed_contract.name).cloned();
+    let mut session = DebugSession::full(&active_sigscript, &active_lockscript, &source, active_debug_info, engine)?
         .with_shadow_tx_context(shadow_tx_context);
     if enable_covenant_session_mode {
         session = session.with_covenant_mode(covenant_param_value, covenant_target);
@@ -997,7 +1009,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     } else {
-        println!("Stepping through {} bytes of bytecode", compiled.bytecode.len());
+        println!("Stepping through {} bytes of bytecode", contract_artifact.compiled.bytecode.len());
         session.run_to_first_executed_statement()?;
         let mut pending_console_output = session.take_console_output();
         let console_output = Vec::new();
@@ -1010,16 +1022,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use silverscript_lang::ast::ArrayDim;
 
     #[test]
     fn state_array_type_requires_one_dynamic_dimension() {
-        let state = || TypeBase::Custom("State".to_string());
+        let state = || TypeArtifact::Struct { name: STATE_TYPE_NAME.to_string() };
 
-        assert!(is_state_array_type(&TypeRef { base: state(), array_dims: vec![ArrayDim::Dynamic] }));
-        assert!(!is_state_array_type(&TypeRef { base: state(), array_dims: Vec::new() }));
-        assert!(!is_state_array_type(&TypeRef { base: state(), array_dims: vec![ArrayDim::Fixed(2)] }));
-        assert!(!is_state_array_type(&TypeRef { base: state(), array_dims: vec![ArrayDim::Dynamic, ArrayDim::Dynamic] }));
+        assert!(is_state_array_type(&TypeArtifact::DynamicArray { item: Box::new(state()) }));
+        assert!(!is_state_array_type(&state()));
+        assert!(!is_state_array_type(&TypeArtifact::FixedArray { item: Box::new(state()), len: 2 }));
+        assert!(!is_state_array_type(&TypeArtifact::DynamicArray {
+            item: Box::new(TypeArtifact::DynamicArray { item: Box::new(state()) }),
+        }));
     }
 
     #[test]

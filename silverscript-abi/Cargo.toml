@@ -1,0 +1,18 @@
+[package]
+name = "silverscript-abi"
+version = "0.1.0"
+edition = "2024"
+rust-version.workspace = true
+
+[dependencies]
+blake3 = { workspace = true }
+faster-hex = { workspace = true }
+kaspa-txscript = { workspace = true }
+serde = { workspace = true }
+serde_bytes = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+# Keep the Sil compiler test-only; production ABI code must not depend on it.
+silverscript-lang = { workspace = true }

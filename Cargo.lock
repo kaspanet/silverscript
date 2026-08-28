@@ -1063,6 +1063,8 @@ dependencies = [
  "kaspa-consensus-core",
  "kaspa-txscript",
  "kaspa-txscript-errors",
+ "silverscript-abi",
+ "silverscript-debug-artifact",
  "silverscript-lang",
 ]
 
@@ -1250,7 +1252,10 @@ dependencies = [
  "kaspa-txscript-errors",
  "serde",
  "serde_json",
+ "silverscript-abi",
+ "silverscript-debug-artifact",
  "silverscript-lang",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -3704,6 +3709,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde_bytes"
+version = "0.11.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a5d440709e79d88e51ac01c4b72fc6cb7314017bb7da9eeff678aa94c10e3ea8"
+dependencies = [
+ "serde",
+ "serde_core",
+]
+
+[[package]]
 name = "serde_core"
 version = "1.0.228"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3816,6 +3831,29 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 
 [[package]]
+name = "silverscript-abi"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "faster-hex 0.10.0",
+ "kaspa-txscript",
+ "serde",
+ "serde_bytes",
+ "serde_json",
+ "silverscript-lang",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "silverscript-debug-artifact"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "silverscript-abi",
+ "silverscript-lang",
+]
+
+[[package]]
 name = "silverscript-lang"
 version = "0.1.0"
 dependencies = [
@@ -3842,6 +3880,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "silverscript-abi",
  "thiserror 1.0.69",
  "tokio",
 ]

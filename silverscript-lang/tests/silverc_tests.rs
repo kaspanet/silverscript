@@ -12,8 +12,9 @@ use kaspa_txscript::caches::Cache;
 use kaspa_txscript::script_builder::ScriptBuilder;
 use kaspa_txscript::{EngineCtx, EngineFlags, TxScriptEngine};
 use rand::RngCore;
+use silverscript_abi::SilAbiArtifact;
 use silverscript_lang::ast::ContractAst;
-use silverscript_lang::compiler::{COMPILER_VERSION, CompiledContract, DispatchTag};
+use silverscript_lang::compiler::{COMPILER_VERSION, DispatchTag};
 
 fn contract_fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join("silverc-test-files").join(name)
@@ -80,13 +81,18 @@ fn silverc_defaults_output_path_and_empty_ctor_args() {
 
     let out_path = dir.join("basic.json");
     let json = fs::read_to_string(&out_path).expect("read output");
-    let artifact: serde_json::Value = serde_json::from_str(&json).expect("parse compiled artifact JSON");
-    assert!(artifact.get("cov_decl_to_abi").is_none());
-    assert!(artifact.get("delegate_entry_abi").is_none());
-    let compiled: CompiledContract = serde_json::from_str(&json).expect("parse compiled contract");
-    assert_eq!(compiled.contract_name, "Basic");
-    assert_eq!(compiled.compiler_version, COMPILER_VERSION);
-    assert_eq!(artifact["abi"][0]["dispatch_tag"], serde_json::json!(compiled.abi[0].dispatch_tag));
+    let json_value: serde_json::Value = serde_json::from_str(&json).expect("parse portable ABI artifact JSON");
+    let artifact: SilAbiArtifact = serde_json::from_str(&json).expect("parse portable ABI artifact");
+    artifact.verify().expect("portable ABI verifies");
+    assert_eq!(artifact.contracts.len(), 1);
+    assert!(artifact.contracts.contains_key("Basic"));
+    assert_eq!(json_value["compiler_version"], COMPILER_VERSION);
+    assert!(json_value["contracts"]["Basic"].get("cov_decl_to_abi").is_none());
+    assert!(json_value["contracts"]["Basic"].get("delegate_entry_abi").is_none());
+    assert_eq!(
+        json_value["contracts"]["Basic"]["entries"]["main"]["dispatch_tag"],
+        serde_json::json!(artifact.contract("Basic").unwrap().entry("main").unwrap().dispatch_tag)
+    );
 }
 
 #[test]
@@ -124,11 +130,12 @@ fn silverc_accepts_constructor_args_and_output_flag() {
     assert!(status.success());
 
     let json = fs::read_to_string(&out_path).expect("read output");
-    let compiled: CompiledContract = serde_json::from_str(&json).expect("parse compiled contract");
-    assert_eq!(compiled.contract_name, "WithCtor");
-    assert_eq!(compiled.compiler_version, COMPILER_VERSION);
-    let selector = compiled.entry_by_name("main").expect("entrypoint resolved").dispatch_tag;
-    assert!(run_bytecode_with_selector(compiled.bytecode, selector).is_ok());
+    let artifact: SilAbiArtifact = serde_json::from_str(&json).expect("parse portable ABI artifact");
+    artifact.verify().expect("portable ABI verifies");
+    let contract = artifact.contract("WithCtor").expect("contract resolved");
+    let selector = contract.entry("main").expect("entrypoint resolved").dispatch_tag.into_bytes();
+    let bytecode = contract.compiled.bytecode.clone();
+    assert!(run_bytecode_with_selector(bytecode, selector).is_ok());
 }
 
 #[test]

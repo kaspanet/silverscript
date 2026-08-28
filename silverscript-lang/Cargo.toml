@@ -30,6 +30,7 @@ serde_json = "1.0"
 clap = { version = "4.5.60", features = ["derive"] }
 faster-hex = "0.10"
 semver = "1.0"
+silverscript-abi = { path = "../silverscript-abi" }
 
 [dev-dependencies]
 kaspa-addresses.workspace = true

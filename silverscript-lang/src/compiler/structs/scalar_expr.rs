@@ -80,10 +80,10 @@ pub(super) fn lower_scalar_expr<'i>(
                 let left_type = scalar_struct_expr_type(left, scope, structs);
                 let right_type = scalar_struct_expr_type(right, scope, structs);
                 if let Some(expected_type) = left_type.as_ref().or(right_type.as_ref()) {
-                    if let Some((left, right)) = left_type.as_ref().zip(right_type.as_ref()) {
-                        if !type_refs_equal(left, right, lowerer.contract_constants)? {
-                            return Err(CompilerError::Unsupported("struct comparison requires matching types".to_string()));
-                        }
+                    if let Some((left, right)) = left_type.as_ref().zip(right_type.as_ref())
+                        && !type_refs_equal(left, right, lowerer.contract_constants)?
+                    {
+                        return Err(CompilerError::Unsupported("struct comparison requires matching types".to_string()));
                     }
                     let left_leaves = lower_struct_expr(left, expected_type, scope, lowerer)?;
                     let right_leaves = lower_struct_expr(right, expected_type, scope, lowerer)?;
