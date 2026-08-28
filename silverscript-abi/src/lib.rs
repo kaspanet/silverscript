@@ -25,6 +25,10 @@ use kaspa_txscript::{
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use thiserror::Error;
 
+mod json;
+
+pub use json::to_pretty_json;
+
 pub const SIL_ABI_SCHEMA_VERSION: u32 = 1;
 const TEMPLATE_PART_LENGTH_BYTES: usize = 8;
 
@@ -272,7 +276,10 @@ pub struct SilEntryArtifact {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CompiledContractArtifact {
+    /// Compiled contract bytes.
+    #[serde(with = "serde_bytes")]
     pub bytecode: Vec<u8>,
+    #[serde(with = "serde_bytes")]
     pub template_hash: [u8; 32],
     pub state_span: StateSpanArtifact,
 }
@@ -1636,6 +1643,23 @@ mod tests {
             serialized["contracts"]["Foo"]["compiled"]["template_hash"],
             serde_json::to_value([0u8; 32]).expect("template hash serializes")
         );
+    }
+
+    #[test]
+    fn pretty_json_wraps_byte_arrays_at_fixed_boundaries() {
+        let mut abi = tiny_sil_abi();
+        abi.contracts[0].compiled.bytecode = (0..=64).collect();
+
+        let json = to_pretty_json(&abi).expect("Sil ABI artifact serializes");
+        let lines = json.lines().collect::<Vec<_>>();
+        let bytecode_line = lines.iter().position(|line| line.trim() == r#""bytecode": ["#).expect("bytecode field exists");
+        assert_eq!(lines[bytecode_line + 1].split(", ").count(), 64);
+        assert_eq!(lines[bytecode_line + 2].trim(), "64");
+        assert_eq!(lines[bytecode_line + 3].trim(), "],");
+        assert!(lines.iter().any(|line| line.trim_start().starts_with(r#""template_hash": [0, 0, 0"#)));
+
+        let decoded: SilAbiArtifact = serde_json::from_str(&json).expect("Sil ABI artifact deserializes");
+        assert_eq!(decoded.contracts[0].compiled.bytecode, (0..=64).collect::<Vec<_>>());
     }
 
     #[test]
