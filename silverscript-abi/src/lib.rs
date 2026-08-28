@@ -502,7 +502,7 @@ pub fn encode_runtime_state_script(
     let mut builder = script_builder();
     for field in &runtime_state.fields {
         let value = values.get(&field.name).ok_or_else(|| CodecError::MissingField(field.name.clone()))?;
-        for (leaf_ty, leaf_value) in flatten_state_value(abi, &field.name, &field.ty, value)? {
+        for (leaf_ty, leaf_value) in flatten_sruct_value(abi, &field.name, &field.ty, value)? {
             let payload = encode_state_payload(&field.name, &leaf_ty, &leaf_value)?;
             builder.add_data_with_push_opcode(&payload)?;
         }
@@ -517,7 +517,7 @@ pub fn decode_runtime_state_script(
 ) -> CodecResult<BTreeMap<String, ArtifactValue>> {
     let pushes = parse_pushes(state_script)?;
     let field_leaf_types =
-        runtime_state.fields.iter().map(|field| flatten_state_types(abi, &field.ty)).collect::<CodecResult<Vec<_>>>()?;
+        runtime_state.fields.iter().map(|field| flatten_struct_types(abi, &field.ty)).collect::<CodecResult<Vec<_>>>()?;
     let expected_pushes = field_leaf_types.iter().map(Vec::len).sum::<usize>();
     if pushes.len() < expected_pushes {
         return Err(CodecError::InvalidPush(format!("expected {expected_pushes} state pushes, got {}", pushes.len())));
@@ -537,7 +537,7 @@ pub fn decode_runtime_state_script(
                 decode_state_payload(&field.name, leaf_ty, &payload)
             })
             .collect::<CodecResult<Vec<_>>>()?;
-        let (value, consumed) = reconstruct_state_value(abi, &field.name, &field.ty, &leaf_values)?;
+        let (value, consumed) = reconstruct_struct_value(abi, &field.name, &field.ty, &leaf_values)?;
         if consumed != leaf_values.len() {
             return Err(CodecError::UnsupportedType(format!("invalid flattened state layout for {}", field.name)));
         }
@@ -546,7 +546,7 @@ pub fn decode_runtime_state_script(
     Ok(values)
 }
 
-fn flatten_state_types(abi: &SilAbiArtifact, ty: &TypeArtifact) -> CodecResult<Vec<TypeArtifact>> {
+fn flatten_struct_types(abi: &SilAbiArtifact, ty: &TypeArtifact) -> CodecResult<Vec<TypeArtifact>> {
     fn flatten(abi: &SilAbiArtifact, ty: &TypeArtifact, visiting: &mut BTreeSet<String>) -> CodecResult<Vec<TypeArtifact>> {
         match ty {
             TypeArtifact::Struct { name } => {
@@ -563,18 +563,18 @@ fn flatten_state_types(abi: &SilAbiArtifact, ty: &TypeArtifact) -> CodecResult<V
             }
             TypeArtifact::FixedArray { item, len } => {
                 let item_leaves = flatten(abi, item, visiting)?;
-                if item_leaves.as_slice() == std::slice::from_ref(item.as_ref()) {
+                if is_single_state_leaf(item, &item_leaves) {
                     Ok(vec![ty.clone()])
                 } else {
-                    Ok(item_leaves.into_iter().map(|item| TypeArtifact::FixedArray { item: Box::new(item), len: *len }).collect())
+                    Ok(item_leaves.into_iter().map(|item| array_type(item, Some(*len))).collect())
                 }
             }
             TypeArtifact::DynamicArray { item } => {
                 let item_leaves = flatten(abi, item, visiting)?;
-                if item_leaves.as_slice() == std::slice::from_ref(item.as_ref()) {
+                if is_single_state_leaf(item, &item_leaves) {
                     Ok(vec![ty.clone()])
                 } else {
-                    Ok(item_leaves.into_iter().map(|item| TypeArtifact::DynamicArray { item: Box::new(item) }).collect())
+                    Ok(item_leaves.into_iter().map(|item| array_type(item, None)).collect())
                 }
             }
             _ => Ok(vec![ty.clone()]),
@@ -584,7 +584,7 @@ fn flatten_state_types(abi: &SilAbiArtifact, ty: &TypeArtifact) -> CodecResult<V
     flatten(abi, ty, &mut BTreeSet::new())
 }
 
-fn flatten_state_value(
+fn flatten_sruct_value(
     abi: &SilAbiArtifact,
     name: &str,
     ty: &TypeArtifact,
@@ -613,66 +613,81 @@ fn flatten_state_value(
                 visiting.remove(struct_name);
                 Ok(leaves)
             }
-            TypeArtifact::FixedArray { item, len } => flatten_state_array(abi, name, item, Some(*len), value, visiting),
-            TypeArtifact::DynamicArray { item } => flatten_state_array(abi, name, item, None, value, visiting),
+            TypeArtifact::FixedArray { item, len } => flatten_struct_array(abi, name, item, Some(*len), value, visiting),
+            TypeArtifact::DynamicArray { item } => flatten_struct_array(abi, name, item, None, value, visiting),
             _ => Ok(vec![(ty.clone(), value.clone())]),
         }
     }
 
-    fn flatten_state_array(
+    fn flatten_struct_array(
         abi: &SilAbiArtifact,
         name: &str,
         item: &TypeArtifact,
-        expected_len: Option<usize>,
+        fixed_len: Option<usize>,
         value: &ArtifactValue,
         visiting: &mut BTreeSet<String>,
     ) -> CodecResult<Vec<(TypeArtifact, ArtifactValue)>> {
-        let item_leaf_types = flatten_state_types(abi, item)?;
-
-        // A single unchanged leaf means the item type does not contain a struct.
-        if item_leaf_types.as_slice() == std::slice::from_ref(item) {
-            let ty = match expected_len {
-                Some(len) => TypeArtifact::FixedArray { item: Box::new(item.clone()), len },
-                None => TypeArtifact::DynamicArray { item: Box::new(item.clone()) },
-            };
-            return Ok(vec![(ty, value.clone())]);
+        let item_leaf_types = flatten_struct_types(abi, item)?;
+        if is_single_state_leaf(item, &item_leaf_types) {
+            return Ok(vec![(array_type(item.clone(), fixed_len), value.clone())]);
         }
 
         let values = expect_array(value)?;
-        if let Some(expected) = expected_len {
+        if let Some(expected) = fixed_len {
             require_len(name, expected, values.len())?;
         }
-        let mut grouped_values = vec![Vec::with_capacity(values.len()); item_leaf_types.len()];
-        for value in values {
-            let item_leaves = flatten(abi, name, item, value, visiting)?;
-            if item_leaves.len() != item_leaf_types.len() {
-                return Err(CodecError::UnsupportedType(format!("invalid flattened state layout for {name}")));
-            }
-            for ((expected_ty, values), (actual_ty, value)) in item_leaf_types.iter().zip(&mut grouped_values).zip(item_leaves) {
-                if expected_ty != &actual_ty {
-                    return Err(CodecError::UnsupportedType(format!("invalid flattened state layout for {name}")));
-                }
-                values.push(value);
-            }
-        }
+        let grouped_values = group_flattened_array_items(abi, name, item, values, &item_leaf_types, visiting)?;
 
         Ok(item_leaf_types
             .into_iter()
             .zip(grouped_values)
-            .map(|(item, values)| {
-                let ty = match expected_len {
-                    Some(len) => TypeArtifact::FixedArray { item: Box::new(item), len },
-                    None => TypeArtifact::DynamicArray { item: Box::new(item) },
-                };
-                (ty, ArtifactValue::Array(values))
-            })
+            .map(|(item, values)| (array_type(item, fixed_len), ArtifactValue::Array(values)))
             .collect())
+    }
+
+    fn group_flattened_array_items(
+        abi: &SilAbiArtifact,
+        name: &str,
+        item: &TypeArtifact,
+        values: &[ArtifactValue],
+        item_leaf_types: &[TypeArtifact],
+        visiting: &mut BTreeSet<String>,
+    ) -> CodecResult<Vec<Vec<ArtifactValue>>> {
+        let mut grouped_values = vec![Vec::with_capacity(values.len()); item_leaf_types.len()];
+        for value in values {
+            let item_leaves = flatten(abi, name, item, value, visiting)?;
+            if item_leaves.len() != item_leaf_types.len() {
+                return Err(invalid_flattened_state_layout(name));
+            }
+            for ((expected_ty, group), (actual_ty, value)) in item_leaf_types.iter().zip(&mut grouped_values).zip(item_leaves) {
+                if expected_ty != &actual_ty {
+                    return Err(invalid_flattened_state_layout(name));
+                }
+                group.push(value);
+            }
+        }
+        Ok(grouped_values)
     }
 
     flatten(abi, name, ty, value, &mut BTreeSet::new())
 }
 
-fn reconstruct_state_value(
+fn is_single_state_leaf(item: &TypeArtifact, item_leaf_types: &[TypeArtifact]) -> bool {
+    item_leaf_types == std::slice::from_ref(item)
+}
+
+fn array_type(item: TypeArtifact, fixed_len: Option<usize>) -> TypeArtifact {
+    match fixed_len {
+        Some(len) => TypeArtifact::FixedArray { item: Box::new(item), len },
+        None => TypeArtifact::DynamicArray { item: Box::new(item) },
+    }
+}
+
+fn invalid_flattened_state_layout(name: &str) -> CodecError {
+    CodecError::UnsupportedType(format!("invalid flattened state layout for {name}"))
+}
+
+fn reconstruct_struct_value(
     abi: &SilAbiArtifact,
     name: &str,
     ty: &TypeArtifact,
@@ -684,14 +699,14 @@ fn reconstruct_state_value(
             let mut fields = BTreeMap::new();
             let mut consumed = 0;
             for field in &structure.fields {
-                let (value, field_consumed) = reconstruct_state_value(abi, &field.name, &field.ty, &leaves[consumed..])?;
+                let (value, field_consumed) = reconstruct_struct_value(abi, &field.name, &field.ty, &leaves[consumed..])?;
                 consumed += field_consumed;
                 fields.insert(field.name.clone(), value);
             }
             Ok((ArtifactValue::Object(fields), consumed))
         }
-        TypeArtifact::FixedArray { item, len } => reconstruct_state_array(abi, name, item, Some(*len), leaves),
-        TypeArtifact::DynamicArray { item } => reconstruct_state_array(abi, name, item, None, leaves),
+        TypeArtifact::FixedArray { item, len } => reconstruct_struct_array(abi, name, item, Some(*len), leaves),
+        TypeArtifact::DynamicArray { item } => reconstruct_struct_array(abi, name, item, None, leaves),
         _ => leaves
             .first()
             .cloned()
@@ -700,14 +715,14 @@ fn reconstruct_state_value(
     }
 }
 
-fn reconstruct_state_array(
+fn reconstruct_struct_array(
     abi: &SilAbiArtifact,
     name: &str,
     item: &TypeArtifact,
     expected_len: Option<usize>,
     leaves: &[ArtifactValue],
 ) -> CodecResult<(ArtifactValue, usize)> {
-    let item_leaf_types = flatten_state_types(abi, item)?;
+    let item_leaf_types = flatten_struct_types(abi, item)?;
     if item_leaf_types.as_slice() == std::slice::from_ref(item) {
         return leaves
             .first()
@@ -734,7 +749,7 @@ fn reconstruct_state_array(
     let mut values = Vec::with_capacity(actual_len);
     for index in 0..actual_len {
         let item_leaves = arrays.iter().map(|array| array[index].clone()).collect::<Vec<_>>();
-        let (value, consumed) = reconstruct_state_value(abi, name, item, &item_leaves)?;
+        let (value, consumed) = reconstruct_struct_value(abi, name, item, &item_leaves)?;
         if consumed != item_leaves.len() {
             return Err(CodecError::UnsupportedType(format!("invalid flattened state layout for {name}")));
         }
