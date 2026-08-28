@@ -2,7 +2,7 @@
 name = "silverscript-abi"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.94.0"
+rust-version.workspace = true
 
 [dependencies]
 blake3 = { workspace = true }
