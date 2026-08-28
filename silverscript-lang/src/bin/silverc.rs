@@ -80,7 +80,7 @@ fn run() -> Result<(), String> {
 
     let artifact = compile_to_sil_abi_artifact(&source, &constructor_args).map_err(|err| format!("compile error: {err}"))?;
 
-    let json = serde_json::to_string_pretty(&artifact).map_err(|err| format!("failed to serialize output: {err}"))?;
+    let json = silverscript_abi::to_pretty_json(&artifact).map_err(|err| format!("failed to serialize output: {err}"))?;
     let target = resolve_output_target(&cli, &cli.src, false);
     emit_output(&json, target)?;
 
