@@ -22,9 +22,9 @@ use kaspa_txscript::{
 use silverscript_abi::{ArtifactValue, SilAbiArtifact, TypeArtifact};
 use silverscript_lang::ast::{ContractAst, Expr, ExprKind, Statement, format_contract_ast, parse_contract_ast, parse_type_ref};
 use silverscript_lang::compiler::{
-    COMPILER_VERSION, CompileOptions, CompiledContract, CompilerError, CovenantDeclCallOptions, DispatchTag, FunctionAbiEntry,
-    FunctionInputAbi, compile_contract as compile_internal_contract, compile_contract_ast, compile_debug_expr,
-    generated_covenant_auth_entrypoint_name, sil_abi_artifact, struct_object,
+    COMPILER_VERSION, CompileOptions, CompiledContract, CompilerError, CovenantDeclCallOptions, DispatchTag,
+    compile_contract as compile_internal_contract, compile_contract_ast, compile_debug_expr, generated_covenant_auth_entrypoint_name,
+    sil_abi_artifact, sil_abi_artifact_from_compiled, struct_object,
 };
 use silverscript_lang::debug_info::StepKind;
 use silverscript_lang::template::template_hash;
@@ -3012,21 +3012,10 @@ fn matrix_state_array_arg(values: Vec<(i64, Vec<u8>)>) -> ArtifactValue {
 fn replace_compiled_interface<'i>(
     compiled: &mut CompiledContract<'i>,
     source: &'i str,
-    entrypoint_name: &str,
-    inputs: &[(&str, &str)],
-    dispatch_tag: DispatchTag,
+    old_dispatch_tag: DispatchTag,
+    new_dispatch_tag: DispatchTag,
 ) {
-    let old_dispatch_tag = compiled.abi[0].dispatch_tag;
     compiled.ast = parse_contract_ast(source).expect("interface parses");
-    compiled.abi = vec![FunctionAbiEntry {
-        name: entrypoint_name.to_string(),
-        inputs: inputs
-            .iter()
-            .map(|(name, type_name)| FunctionInputAbi { name: (*name).to_string(), type_name: (*type_name).to_string() })
-            .collect(),
-        dispatch_tag,
-    }];
-    let new_dispatch_tag = compiled.abi[0].dispatch_tag;
     let tag_offset = compiled
         .bytecode
         .windows(old_dispatch_tag.len())
@@ -3786,9 +3775,11 @@ fn runtime_supports_regular_struct_array_entrypoint_arguments_with_struct_signat
     "#;
 
     let mut compiled = compile_internal_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let original_artifact = sil_abi_artifact(source, &[]).expect("original interface compiles");
+    let old_dispatch_tag = single_contract(&original_artifact).entry("main").expect("main entry exists").dispatch_tag.into_bytes();
     let interface_artifact = sil_abi_artifact(struct_signature_source, &[]).expect("struct interface compiles");
     let dispatch_tag = single_contract(&interface_artifact).entry("main").expect("main entry exists").dispatch_tag.into_bytes();
-    replace_compiled_interface(&mut compiled, struct_signature_source, "main", &[("x", "S[]")], dispatch_tag);
+    replace_compiled_interface(&mut compiled, struct_signature_source, old_dispatch_tag, dispatch_tag);
 
     let main_param_types: Vec<String> = compiled
         .ast
@@ -4233,9 +4224,11 @@ fn runtime_supports_regular_struct_array_non_entrypoint_arguments_with_struct_si
     "#;
 
     let mut compiled = compile_internal_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let original_artifact = sil_abi_artifact(source, &[]).expect("original interface compiles");
+    let old_dispatch_tag = single_contract(&original_artifact).entry("main").expect("main entry exists").dispatch_tag.into_bytes();
     let interface_artifact = sil_abi_artifact(struct_signature_source, &[]).expect("struct interface compiles");
     let dispatch_tag = single_contract(&interface_artifact).entry("main").expect("main entry exists").dispatch_tag.into_bytes();
-    replace_compiled_interface(&mut compiled, struct_signature_source, "main", &[("x", "S[]")], dispatch_tag);
+    replace_compiled_interface(&mut compiled, struct_signature_source, old_dispatch_tag, dispatch_tag);
 
     let main_param_types: Vec<String> = compiled
         .ast
@@ -7431,7 +7424,7 @@ fn dispatch_tag_hashes_exact_utf8_signature_bytes() {
 
         let compiled = compile_contract_ast(&contract, &[], CompileOptions::default()).expect("contract compiles");
         assert_eq!(&blake3::hash(utf8_signature).as_bytes()[..4], expected_tag);
-        assert_eq!(compiled.entry_by_name(name).expect("entrypoint exists").dispatch_tag, expected_tag);
+        assert_eq!(compiled.dispatch_tags.get(name).copied(), Some(expected_tag));
     }
 }
 
@@ -17172,13 +17165,15 @@ fn formatting_and_ast_round_trip_preserve_artifact() {
     let formatted = format_contract_ast(&ast);
     let reparsed = parse_contract_ast(&formatted).expect("formatted source parses");
     let from_ast = compile_contract_ast(&reparsed, &args, CompileOptions::default()).expect("public AST path compiles");
+    let from_ast_artifact = sil_abi_artifact_from_compiled(&from_ast, &args).expect("AST portable artifact builds");
     assert_eq!(bytecode(&original), from_ast.bytecode);
     let original_entries = &single_contract(&original).entries;
-    assert_eq!(original_entries.len(), from_ast.abi.len());
-    for (original_entry, ast_entry) in original_entries.iter().zip(&from_ast.abi) {
+    let ast_entries = &single_contract(&from_ast_artifact).entries;
+    assert_eq!(original_entries.len(), ast_entries.len());
+    for (original_entry, ast_entry) in original_entries.iter().zip(ast_entries) {
         assert_eq!(original_entry.name, ast_entry.name);
-        assert_eq!(original_entry.dispatch_tag.into_bytes(), ast_entry.dispatch_tag);
-        assert_eq!(original_entry.params.len(), ast_entry.inputs.len());
+        assert_eq!(original_entry.dispatch_tag, ast_entry.dispatch_tag);
+        assert_eq!(original_entry.params, ast_entry.params);
     }
     assert_eq!(state_layout(&original), from_ast.state_layout);
 }

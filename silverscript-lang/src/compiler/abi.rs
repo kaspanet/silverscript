@@ -169,9 +169,9 @@ fn contract_artifact_from_compiled<'i>(
         .iter()
         .filter(|function| function.entrypoint)
         .map(|function| {
-            let compiled_entry = compiled.entry_by_name(&function.name).ok_or_else(|| {
+            let dispatch_tag = compiled.dispatch_tags.get(&function.name).copied().ok_or_else(|| {
                 CompilerError::Unsupported(format!(
-                    "compiled contract '{}' has no ABI entry for function '{}'",
+                    "compiled contract '{}' has no dispatch tag for function '{}'",
                     compiled.contract_name, function.name
                 ))
             })?;
@@ -180,23 +180,23 @@ fn contract_artifact_from_compiled<'i>(
                 .iter()
                 .map(|param| Ok(ParamArtifact { name: param.name.clone(), ty: type_artifact(&param.type_ref, &constants)? }))
                 .collect::<Result<Vec<_>, CompilerError>>()?;
-            Ok(SilEntryArtifact { name: function.name.clone(), dispatch_tag: compiled_entry.dispatch_tag.into(), params })
+            Ok(SilEntryArtifact { name: function.name.clone(), dispatch_tag: dispatch_tag.into(), params })
         })
         .collect::<Result<Vec<_>, CompilerError>>()?;
-    let artifact_entry = |entry: &FunctionAbiEntry| {
-        entries.iter().find(|artifact| artifact.name == entry.name).cloned().ok_or_else(|| {
+    let artifact_entry = |entry_name: &str| {
+        entries.iter().find(|artifact| artifact.name == entry_name).cloned().ok_or_else(|| {
             CompilerError::Unsupported(format!(
                 "compiled contract '{}' has no portable ABI entry for generated function '{}'",
-                compiled.contract_name, entry.name
+                compiled.contract_name, entry_name
             ))
         })
     };
     let cov_decl_to_abi = compiled
-        .cov_decl_to_abi
+        .covenant_entrypoints
         .iter()
-        .map(|(name, entry)| Ok((name.clone(), artifact_entry(entry)?)))
+        .map(|(name, entrypoint)| Ok((name.clone(), artifact_entry(entrypoint)?)))
         .collect::<Result<_, CompilerError>>()?;
-    let delegate_entry_abi = compiled.delegate_entry_abi.as_ref().map(artifact_entry).transpose()?;
+    let delegate_entry_abi = compiled.delegate_entrypoint.as_deref().map(artifact_entry).transpose()?;
 
     let layout = compiled.state_layout;
     let state_end = checked_add(layout.start, layout.len)?;

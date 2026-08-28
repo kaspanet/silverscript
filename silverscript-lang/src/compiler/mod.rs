@@ -1,7 +1,5 @@
 use std::collections::{BTreeMap, HashMap};
 
-use kaspa_txscript::EngineFlags;
-use kaspa_txscript::script_builder::ScriptBuilder;
 use serde::{Deserialize, Serialize};
 
 use crate::ast::{
@@ -89,16 +87,9 @@ pub struct CompileOptions {
     pub record_debug_infos: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FunctionInputAbi {
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct EntrypointDispatch {
     pub name: String,
-    pub type_name: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FunctionAbiEntry {
-    pub name: String,
-    pub inputs: Vec<FunctionInputAbi>,
     pub dispatch_tag: DispatchTag,
 }
 
@@ -116,13 +107,13 @@ pub struct CompiledContract<'i> {
     pub compiler_version: String,
     pub bytecode: Vec<u8>,
     pub ast: ContractAst<'i>,
-    pub abi: Vec<FunctionAbiEntry>,
-    /// Public leader/auth ABI entries keyed by their pre-lowering covenant declaration names.
+    pub dispatch_tags: BTreeMap<String, DispatchTag>,
+    /// Generated leader/auth entrypoint names keyed by their pre-lowering covenant declaration names.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub cov_decl_to_abi: BTreeMap<String, FunctionAbiEntry>,
-    /// The shared delegate ABI entry generated for a cov-bound contract.
+    covenant_entrypoints: BTreeMap<String, String>,
+    /// The shared delegate entrypoint generated for a cov-bound contract.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub delegate_entry_abi: Option<FunctionAbiEntry>,
+    delegate_entrypoint: Option<String>,
     pub state_layout: CompiledStateLayout,
     pub debug_info: Option<DebugInfo<'i>>,
 }
@@ -212,261 +203,11 @@ pub fn struct_object<'i>(name: &str, fields: Vec<(&str, Expr<'i>)>) -> Expr<'i> 
 }
 
 impl<'i> CompiledContract<'i> {
-    pub fn entry_by_name(&self, name: &str) -> Option<&FunctionAbiEntry> {
-        self.abi.iter().find(|entry| entry.name == name)
-    }
-
     /// Calculate the canonical hash of this contract's state template.
     pub fn template_hash(&self) -> [u8; 32] {
         let state_end = self.state_layout.start + self.state_layout.len;
         crate::template::template_hash(&self.bytecode[..self.state_layout.start], &self.bytecode[state_end..])
     }
-
-    pub fn build_sig_script(&self, function_name: &str, args: Vec<Expr<'i>>) -> Result<Vec<u8>, CompilerError> {
-        let structs = build_struct_registry(&self.ast)?;
-        // ABI parameter types and artifact struct fields have already had
-        // constant array dimensions resolved to fixed dimensions during
-        // compilation, so argument validation does not need a constants map.
-        let constants = HashMap::new();
-        let function = self
-            .entry_by_name(function_name)
-            .ok_or_else(|| CompilerError::Unsupported(format!("function '{}' not found", function_name)))?;
-
-        if function.inputs.len() != args.len() {
-            return Err(CompilerError::Unsupported(format!(
-                "function '{}' expects {} arguments",
-                function_name,
-                function.inputs.len()
-            )));
-        }
-
-        let mut builder = ScriptBuilder::with_flags(EngineFlags { covenants_enabled: true, ..Default::default() });
-        for (input, arg) in function.inputs.iter().zip(args) {
-            let type_ref = parse_type_ref(&input.type_name)?;
-            push_typed_sigscript_arg(&mut builder, arg, &type_ref, &structs, &constants).map_err(|err| {
-                CompilerError::Unsupported(format!("function argument '{}' expects {} ({err})", input.name, input.type_name))
-            })?;
-        }
-
-        builder.add_data(&function.dispatch_tag)?;
-
-        Ok(builder.drain())
-    }
-
-    pub fn build_sig_script_for_covenant_decl(
-        &self,
-        function_name: &str,
-        args: Vec<Expr<'i>>,
-        options: CovenantDeclCallOptions,
-    ) -> Result<Vec<u8>, CompilerError> {
-        let entrypoint = self.covenant_decl_entrypoint_name(function_name, options.is_leader).ok_or_else(|| {
-            let metadata_hint = if self.cov_decl_to_abi.is_empty() {
-                "; the compiled artifact may use an outdated schema without covenant declaration ABI metadata"
-            } else {
-                ""
-            };
-            CompilerError::Unsupported(format!("covenant declaration '{function_name}' not found{metadata_hint}"))
-        })?;
-        self.build_sig_script(entrypoint, args)
-    }
-
-    /// Resolves a source covenant declaration to its final public ABI entrypoint.
-    /// For cov-bound declarations, `is_leader` selects the leader or shared
-    /// delegate wrapper. Auth-bound declarations resolve to the same wrapper in
-    /// either case.
-    pub fn covenant_decl_entrypoint_name(&self, function_name: &str, is_leader: bool) -> Option<&str> {
-        let entry = self.cov_decl_to_abi.get(function_name)?;
-        if is_leader || self.delegate_entry_abi.is_none() {
-            return Some(entry.name.as_str());
-        }
-
-        self.delegate_entry_abi.as_ref().map(|entry| entry.name.as_str())
-    }
-}
-
-fn push_typed_sigscript_arg<'i>(
-    builder: &mut ScriptBuilder,
-    arg: Expr<'i>,
-    type_ref: &TypeRef,
-    structs: &StructRegistry,
-    constants: &HashMap<String, Expr<'i>>,
-) -> Result<(), CompilerError> {
-    validate_sigscript_arg(&arg, type_ref, structs, constants)?;
-
-    if is_struct_array(type_ref, structs) {
-        return push_struct_array_sigscript_arg(builder, arg, type_ref, structs, constants);
-    }
-
-    if is_struct(type_ref, structs) {
-        return push_struct_sigscript_arg(builder, arg, structs, constants);
-    }
-
-    if type_ref.is_array() {
-        return push_array_sigscript_arg(builder, arg, type_ref, constants);
-    }
-
-    push_sigscript_non_array_arg(builder, arg)
-}
-
-fn validate_sigscript_arg<'i>(
-    arg: &Expr<'i>,
-    type_ref: &TypeRef,
-    structs: &StructRegistry,
-    constants: &HashMap<String, Expr<'i>>,
-) -> Result<(), CompilerError> {
-    // Signature-script construction receives already classified AST values.
-    // Unlike source-language checking, do not reinterpret an integer literal
-    // as a byte: callers must use Expr::byte so encoding retains byte semantics.
-    validate_explicit_sigscript_bytes(arg, type_ref)?;
-
-    let types = HashMap::new();
-    let functions = HashMap::new();
-    let type_context = type_check::TypeCheckContext { types: &types, structs, constants, functions: &functions, contract_fields: &[] };
-    type_check::check_expr(arg, Some(type_ref), &type_context)?;
-    Ok(())
-}
-
-fn validate_explicit_sigscript_bytes(arg: &Expr<'_>, type_ref: &TypeRef) -> Result<(), CompilerError> {
-    if !matches!(type_ref.base, TypeBase::Byte) {
-        return Ok(());
-    }
-
-    if type_ref.is_byte() {
-        return if matches!(arg.kind, ExprKind::Byte(_)) { Ok(()) } else { Err(CompilerError::TypeMismatch) };
-    }
-
-    if let (Some(element_type), ExprKind::Array { values, .. }) = (type_ref.array_element_type(), &arg.kind) {
-        for value in values {
-            validate_explicit_sigscript_bytes(value, &element_type)?;
-        }
-    }
-    Ok(())
-}
-
-fn push_struct_sigscript_arg<'i>(
-    builder: &mut ScriptBuilder,
-    arg: Expr<'i>,
-    structs: &StructRegistry,
-    constants: &HashMap<String, Expr<'i>>,
-) -> Result<(), CompilerError> {
-    let ExprKind::StructLiteral { name, fields, .. } = arg.kind else {
-        return Err(CompilerError::Unsupported("signature script struct arguments must be object literals".to_string()));
-    };
-    let item = structs.get(&name).ok_or_else(|| CompilerError::Unsupported(format!("unknown struct '{name}'")))?;
-    let mut provided = fields.into_iter().map(|field| (field.name, field.expr)).collect::<HashMap<_, _>>();
-
-    for field in &item.fields {
-        let value = provided
-            .remove(&field.name)
-            .ok_or_else(|| CompilerError::Unsupported(format!("struct field '{}' must be initialized", field.name)))?;
-        push_typed_sigscript_arg(builder, value, &field.type_ref, structs, constants)?;
-    }
-
-    if let Some(extra) = provided.keys().next() {
-        return Err(CompilerError::Unsupported(format!("unknown struct field '{}'", extra)));
-    }
-    Ok(())
-}
-
-fn push_struct_array_sigscript_arg<'i>(
-    builder: &mut ScriptBuilder,
-    arg: Expr<'i>,
-    type_ref: &TypeRef,
-    structs: &StructRegistry,
-    constants: &HashMap<String, Expr<'i>>,
-) -> Result<(), CompilerError> {
-    let element_type = type_ref
-        .array_element_type()
-        .ok_or_else(|| CompilerError::Unsupported("signature script struct array argument requires an array type".to_string()))?;
-    let struct_name = struct_name(&element_type, structs).ok_or_else(|| {
-        CompilerError::Unsupported("signature script struct array argument requires a struct element type".to_string())
-    })?;
-    let item = structs.get(struct_name).ok_or_else(|| CompilerError::Unsupported(format!("unknown struct '{struct_name}'")))?;
-    let dimension = type_ref
-        .array_size()
-        .cloned()
-        .ok_or_else(|| CompilerError::Unsupported("signature script struct array argument requires an array type".to_string()))?;
-    let ExprKind::Array { values, .. } = arg.kind else {
-        return Err(CompilerError::Unsupported("signature script struct array arguments must be array literals".to_string()));
-    };
-
-    let mut objects = Vec::with_capacity(values.len());
-    for value in values {
-        let ExprKind::StructLiteral { name, fields: entries, .. } = value.kind else {
-            return Err(CompilerError::Unsupported(
-                "signature script struct array arguments must contain object literals".to_string(),
-            ));
-        };
-        if name != struct_name {
-            return Err(CompilerError::Unsupported(format!("expected struct '{struct_name}', got '{name}'")));
-        }
-        objects.push(entries.into_iter().map(|entry| (entry.name, entry.expr)).collect::<HashMap<_, _>>());
-    }
-
-    for field in &item.fields {
-        let field_values = objects
-            .iter_mut()
-            .map(|fields| {
-                fields
-                    .remove(&field.name)
-                    .ok_or_else(|| CompilerError::Unsupported(format!("struct field '{}' must be initialized", field.name)))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let mut field_type = field.type_ref.clone();
-        field_type.array_dims.push(dimension.clone());
-        push_typed_sigscript_arg(builder, Expr::array(field_type.clone(), field_values), &field_type, structs, constants)?;
-    }
-
-    if let Some(extra) = objects.iter().find_map(|fields| fields.keys().next()) {
-        return Err(CompilerError::Unsupported(format!("unknown struct field '{}'", extra)));
-    }
-    Ok(())
-}
-
-fn push_array_sigscript_arg<'i>(
-    builder: &mut ScriptBuilder,
-    arg: Expr<'i>,
-    type_ref: &TypeRef,
-    constants: &HashMap<String, Expr<'i>>,
-) -> Result<(), CompilerError> {
-    match &arg.kind {
-        ExprKind::Array { values, .. } => {
-            let bytes = compile::encode_array_literal(values, type_ref, constants)?;
-            builder.add_data(&bytes)?;
-            Ok(())
-        }
-        _ => Err(CompilerError::Unsupported("signature script arguments must be literals".to_string())),
-    }
-}
-
-fn push_sigscript_non_array_arg<'i>(builder: &mut ScriptBuilder, arg: Expr<'i>) -> Result<(), CompilerError> {
-    match arg.kind {
-        ExprKind::Int(value) | ExprKind::Temporal(value) => {
-            builder.add_i64(value)?;
-        }
-        ExprKind::Bool(value) => {
-            builder.add_i64(if value { 1 } else { 0 })?;
-        }
-        ExprKind::String(value) => {
-            builder.add_data(value.as_bytes())?;
-        }
-        ExprKind::Byte(value) => {
-            builder.add_data(&[value])?;
-        }
-        // This is not intended for byte-arrays, but for pubkey, datasig, etc.
-        ExprKind::Array { values, .. } if values.iter().all(|value| matches!(&value.kind, ExprKind::Byte(_))) => {
-            let bytes: Vec<u8> =
-                values.iter().filter_map(|value| if let ExprKind::Byte(byte) = &value.kind { Some(*byte) } else { None }).collect();
-            builder.add_data(&bytes)?;
-        }
-        ExprKind::DateLiteral(value) => {
-            builder.add_i64(value)?;
-        }
-        _ => {
-            return Err(CompilerError::Unsupported("signature script arguments must be literals".to_string()));
-        }
-    }
-    Ok(())
 }
 
 fn binary_expr<'i>(op: BinaryOp, left: Expr<'i>, right: Expr<'i>) -> Expr<'i> {

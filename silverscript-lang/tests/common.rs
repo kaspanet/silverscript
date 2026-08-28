@@ -13,7 +13,8 @@ use kaspa_txscript::script_builder::ScriptBuilder;
 use kaspa_txscript::{EngineCtx, EngineFlags, TxScriptEngine, pay_to_script_hash_script};
 use kaspa_txscript_errors::TxScriptError;
 use silverscript_abi::{
-    ArtifactValue, CodecError, CodecResult, SilAbiArtifact, SilContractArtifact, SilEntryArtifact, encode_contract_entry_sig_script,
+    ArtifactValue, CodecError, CodecResult, SilAbiArtifact, SilContractArtifact, SilEntryArtifact,
+    encode_contract_covenant_decl_sig_script, encode_contract_entry_sig_script,
 };
 use silverscript_lang::compiler::{
     CompileOptions, CompiledStateLayout, CompilerError, CovenantDeclCallOptions, sil_abi_artifact_with_options,
@@ -54,25 +55,15 @@ pub fn template_hash(artifact: &SilAbiArtifact) -> [u8; 32] {
     single_contract(artifact).compiled.template_hash
 }
 
-pub fn covenant_decl_entrypoint_name<'a>(artifact: &'a SilAbiArtifact, function_name: &str, is_leader: bool) -> Option<&'a str> {
-    let contract = single_contract(artifact);
-    let entry = contract.cov_decl_to_abi.get(function_name)?;
-    if is_leader || contract.delegate_entry_abi.is_none() {
-        Some(&entry.name)
-    } else {
-        contract.delegate_entry_abi.as_ref().map(|entry| entry.name.as_str())
-    }
-}
-
 pub fn build_sig_script_for_covenant_decl(
     artifact: &SilAbiArtifact,
     function_name: &str,
     args: Vec<ArtifactValue>,
     options: CovenantDeclCallOptions,
 ) -> Result<Vec<u8>, CompilerError> {
-    let entrypoint = covenant_decl_entrypoint_name(artifact, function_name, options.is_leader)
-        .ok_or_else(|| CompilerError::Unsupported(format!("covenant declaration '{function_name}' not found")))?;
-    encode_entry_sig_script(artifact, entrypoint, &args).map_err(|err| CompilerError::Unsupported(err.to_string()))
+    let contract = single_contract(artifact);
+    encode_contract_covenant_decl_sig_script(artifact, &contract.name, function_name, options.is_leader, &args)
+        .map_err(|err| CompilerError::Unsupported(err.to_string()))
 }
 
 /// Encodes an invocation for an artifact containing exactly one contract and

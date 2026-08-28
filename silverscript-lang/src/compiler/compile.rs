@@ -78,9 +78,9 @@ pub(super) fn compile_contract_impl<'i>(
     let mut lowered_constants = flatten_constructor_args_env(&covenant_lowered_contract.params, constructor_args, &structs)?;
     lowered_constants.extend(lowered_contract.constants.iter().map(|constant| (constant.name.clone(), constant.expr.clone())));
 
-    let BuiltAbi { function_abi_entries, cov_decl_to_abi, delegate_entry_abi } =
-        build_abi(&covenant_lowered_contract, &constants, &structs, &covenant_abi_names)?;
-    if function_abi_entries.is_empty() {
+    let EntrypointMetadata { dispatches, covenant_entrypoints, delegate_entrypoint } =
+        build_entrypoint_metadata(&covenant_lowered_contract, &constants, &structs, &covenant_abi_names)?;
+    if dispatches.is_empty() {
         return Err(CompilerError::Unsupported("contract has no entries".to_string()));
     }
     let entrypoint_functions: Vec<&FunctionAst<'i>> = lowered_contract.functions.iter().filter(|func| func.entrypoint).collect();
@@ -89,7 +89,7 @@ pub(super) fn compile_contract_impl<'i>(
 
     // dispatch tag: verify no collisions and insert tags to global state
     let mut entrypoints_by_tag = HashMap::<DispatchTag, &str>::new();
-    for entrypoint in &function_abi_entries {
+    for entrypoint in &dispatches {
         let tag = entrypoint.dispatch_tag;
         if let Some(existing) = entrypoints_by_tag.insert(tag, entrypoint.name.as_str()) {
             return Err(CompilerError::EntrypointDispatchTagCollision { f1: existing.to_string(), f2: entrypoint.name.clone() });
@@ -107,7 +107,7 @@ pub(super) fn compile_contract_impl<'i>(
             &lowered_contract,
             &lowered_constants,
             bytecode_size,
-            &function_abi_entries,
+            &dispatches,
             &structs,
             &struct_array_param_groups,
             &mut debug_recorder,
@@ -118,9 +118,9 @@ pub(super) fn compile_contract_impl<'i>(
             return Ok(build_compiled_contract(
                 &lowered_contract,
                 &artifact_contract,
-                function_abi_entries.clone(),
-                &cov_decl_to_abi,
-                delegate_entry_abi.as_ref(),
+                &dispatches,
+                &covenant_entrypoints,
+                delegate_entrypoint.as_deref(),
                 bytecode,
                 state_layout,
                 debug_info,
@@ -132,9 +132,9 @@ pub(super) fn compile_contract_impl<'i>(
             return Ok(build_compiled_contract(
                 &lowered_contract,
                 &artifact_contract,
-                function_abi_entries.clone(),
-                &cov_decl_to_abi,
-                delegate_entry_abi.as_ref(),
+                &dispatches,
+                &covenant_entrypoints,
+                delegate_entrypoint.as_deref(),
                 bytecode,
                 state_layout,
                 debug_info,
@@ -250,7 +250,7 @@ fn compile_contract_bytecode_iteration<'i>(
     lowered_contract: &ContractAst<'i>,
     lowered_constants: &HashMap<String, Expr<'i>>,
     bytecode_size: Option<i64>,
-    function_abi_entries: &[FunctionAbiEntry],
+    dispatches: &[EntrypointDispatch],
     structs: &StructRegistry,
     struct_array_param_groups: &StructArrayParamGroups,
     debug_recorder: &mut DebugRecorder<'i>,
@@ -273,7 +273,7 @@ fn compile_contract_bytecode_iteration<'i>(
         bytecode_size,
         debug_recorder,
     )?;
-    let bytecode = build_contract_bytecode(debug_recorder, &state_push_bytecode, &compiled_entrypoints, function_abi_entries)?;
+    let bytecode = build_contract_bytecode(debug_recorder, &state_push_bytecode, &compiled_entrypoints, dispatches)?;
     let entrypoints = lowered_contract.functions.iter().filter(|function| function.entrypoint).collect::<Vec<_>>();
     validate_signature_script_limits(&bytecode, &entrypoints, lowered_constants)?;
     Ok((bytecode, state_layout))
@@ -313,7 +313,7 @@ fn build_contract_bytecode(
     debug_recorder: &mut DebugRecorder<'_>,
     state_push_bytecode: &[u8],
     compiled_entrypoints: &[(String, Vec<u8>)],
-    function_abi_entries: &[FunctionAbiEntry],
+    dispatches: &[EntrypointDispatch],
 ) -> Result<Vec<u8>, CompilerError> {
     let mut builder = script_builder();
     if !state_push_bytecode.is_empty() {
@@ -326,7 +326,7 @@ fn build_contract_bytecode(
     let total = compiled_entrypoints.len();
 
     let dispatch_tag_by_entry_name =
-        function_abi_entries.iter().map(|entry| (entry.name.as_str(), entry.dispatch_tag)).collect::<HashMap<_, _>>();
+        dispatches.iter().map(|entry| (entry.name.as_str(), entry.dispatch_tag)).collect::<HashMap<_, _>>();
 
     for (entrypoint_index, (name, bytecode)) in compiled_entrypoints.iter().enumerate() {
         let dispatch_tag = dispatch_tag_by_entry_name.get(name.as_str()).expect("compiled entrypoint must have an ABI entry");
@@ -353,9 +353,9 @@ fn build_contract_bytecode(
 fn build_compiled_contract<'i>(
     lowered_contract: &ContractAst<'i>,
     covenant_lowered_contract: &ContractAst<'i>,
-    function_abi_entries: Vec<FunctionAbiEntry>,
-    cov_decl_to_abi: &BTreeMap<String, FunctionAbiEntry>,
-    delegate_entry_abi: Option<&FunctionAbiEntry>,
+    dispatches: &[EntrypointDispatch],
+    covenant_entrypoints: &BTreeMap<String, String>,
+    delegate_entrypoint: Option<&str>,
     bytecode: Vec<u8>,
     state_layout: CompiledStateLayout,
     debug_info: Option<DebugInfo<'i>>,
@@ -365,9 +365,9 @@ fn build_compiled_contract<'i>(
         compiler_version: COMPILER_VERSION.to_string(),
         bytecode,
         ast: covenant_lowered_contract.clone(),
-        abi: function_abi_entries,
-        cov_decl_to_abi: cov_decl_to_abi.clone(),
-        delegate_entry_abi: delegate_entry_abi.cloned(),
+        dispatch_tags: dispatches.iter().map(|entry| (entry.name.clone(), entry.dispatch_tag)).collect(),
+        covenant_entrypoints: covenant_entrypoints.clone(),
+        delegate_entrypoint: delegate_entrypoint.map(str::to_string),
         state_layout,
         debug_info,
     }

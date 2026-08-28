@@ -245,6 +245,12 @@ impl SilContractArtifact {
     pub fn auth_decl_entry(&self, name: &str) -> Option<&SilEntryArtifact> {
         self.cov_decl_to_abi.get(name)
     }
+
+    /// Resolve a source covenant declaration to its public entrypoint.
+    pub fn covenant_decl_entry(&self, name: &str, is_leader: bool) -> Option<&SilEntryArtifact> {
+        let leader = self.cov_decl_to_abi.get(name)?;
+        if is_leader || self.delegate_entry_abi.is_none() { Some(leader) } else { self.delegate_entry_abi.as_ref() }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -462,6 +468,24 @@ pub fn encode_contract_entry_sig_script(
         .iter()
         .find(|entry| entry.name == entry_name)
         .ok_or_else(|| CodecError::UnknownEntry { contract: contract_name.to_string(), entry: entry_name.to_string() })?;
+    encode_entry_sig_script(abi, contract, entry, args)
+}
+
+pub fn encode_contract_covenant_decl_sig_script(
+    abi: &SilAbiArtifact,
+    contract_name: &str,
+    declaration_name: &str,
+    is_leader: bool,
+    args: &[ArtifactValue],
+) -> CodecResult<Vec<u8>> {
+    let contract = abi
+        .contracts
+        .iter()
+        .find(|contract| contract.name == contract_name)
+        .ok_or_else(|| CodecError::UnknownContract(contract_name.to_string()))?;
+    let entry = contract
+        .covenant_decl_entry(declaration_name, is_leader)
+        .ok_or_else(|| CodecError::UnknownEntry { contract: contract_name.to_string(), entry: declaration_name.to_string() })?;
     encode_entry_sig_script(abi, contract, entry, args)
 }
 
