@@ -7,6 +7,8 @@ use kaspa_txscript::covenants::CovenantsContext;
 use kaspa_txscript::script_builder::ScriptBuilder;
 use kaspa_txscript::{DynOpcodeImplementation, EngineCtx, EngineFlags, TxScriptEngine, parse_script};
 use serde::{Deserialize, Serialize};
+use silverscript_debug_artifact::SilDebugArtifact;
+use thiserror::Error;
 
 use silverscript_lang::ast::{
     ContractAst, Expr, ExprKind, StateFieldExpr, TypeBase, TypeRef, UnarySuffixKind, parse_contract_ast, parse_expression_ast,
@@ -28,6 +30,16 @@ pub type DebugTx<'a> = PopulatedTransaction<'a>;
 pub type DebugReused = SigHashReusedValuesUnsync;
 pub type DebugOpcode<'a> = DynOpcodeImplementation<DebugTx<'a>, DebugReused>;
 pub type DebugEngine<'a> = TxScriptEngine<'a, DebugTx<'a>, DebugReused>;
+
+#[derive(Debug, Error)]
+pub enum DebugArtifactSessionError {
+    #[error("debug artifact has no contract '{0}'")]
+    MissingContract(String),
+    #[error("debug artifact has no debug information for contract '{0}'")]
+    MissingDebugInfo(String),
+    #[error(transparent)]
+    Script(#[from] kaspa_txscript_errors::TxScriptError),
+}
 
 #[derive(Clone, Copy)]
 pub struct ShadowTxContext<'a> {
@@ -196,6 +208,21 @@ type ShadowResolution<'i> = (ShadowBindings, EvalEnv<'i>, StackBindings, EvalTyp
 
 impl<'a, 'i> DebugSession<'a, 'i> {
     // --- Session construction + stepping ---
+
+    /// Creates a debug session from one contract in a debug artifact.
+    pub fn from_artifact(
+        sigscript: &[u8],
+        artifact: &'i SilDebugArtifact<'i>,
+        contract_name: &str,
+        engine: DebugEngine<'a>,
+    ) -> Result<Self, DebugArtifactSessionError> {
+        let contract =
+            artifact.contract(contract_name).ok_or_else(|| DebugArtifactSessionError::MissingContract(contract_name.to_string()))?;
+        let debug_info = artifact
+            .debug_info(contract_name)
+            .ok_or_else(|| DebugArtifactSessionError::MissingDebugInfo(contract_name.to_string()))?;
+        Ok(Self::full(sigscript, &contract.compiled.bytecode, &debug_info.source, Some(debug_info.clone()), engine)?)
+    }
 
     /// Creates a debug session simulating a full transaction spend.
     /// Executes sigscript first to seed the stack, then debugs the compiled bytecode.

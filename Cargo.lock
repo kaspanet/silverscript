@@ -1063,6 +1063,8 @@ dependencies = [
  "kaspa-consensus-core",
  "kaspa-txscript",
  "kaspa-txscript-errors",
+ "silverscript-abi",
+ "silverscript-debug-artifact",
  "silverscript-lang",
 ]
 
@@ -1250,7 +1252,10 @@ dependencies = [
  "kaspa-txscript-errors",
  "serde",
  "serde_json",
+ "silverscript-abi",
+ "silverscript-debug-artifact",
  "silverscript-lang",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -3826,6 +3831,15 @@ dependencies = [
  "serde_json",
  "silverscript-lang",
  "thiserror 1.0.69",
+]
+
+[[package]]
+name = "silverscript-debug-artifact"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "silverscript-abi",
+ "silverscript-lang",
 ]
 
 [[package]]

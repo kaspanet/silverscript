@@ -1,0 +1,18 @@
+[package]
+name = "silverscript-debug-artifact"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "silverscript_debug_artifact"
+path = "src/lib.rs"
+
+[dependencies]
+serde.workspace = true
+silverscript-abi.workspace = true
+silverscript-lang.workspace = true
+

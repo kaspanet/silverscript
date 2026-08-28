@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::error::Error;
 
 use kaspa_consensus_core::Hash;
@@ -19,9 +19,35 @@ use debugger_session::{
     format_value,
     session::{DebugSession, DebugValue, ShadowTxContext},
 };
-use silverscript_lang::ast::{Expr, parse_contract_ast, parse_type_ref};
-use silverscript_lang::compiler::{CompileOptions, compile_contract, struct_object};
+use silverscript_abi::{ArtifactValue, SilContractArtifact, encode_contract_entry_sig_script};
+use silverscript_debug_artifact::{SilDebugArtifact, compile_contract};
+use silverscript_lang::ast::parse_contract_ast;
+use silverscript_lang::compiler::CompileOptions;
 use silverscript_lang::debug_info::StepKind;
+
+fn single_contract<'a>(artifact: &'a SilDebugArtifact<'_>) -> &'a SilContractArtifact {
+    let [contract] = artifact.abi.contracts.as_slice() else {
+        panic!("expected exactly one contract");
+    };
+    contract
+}
+
+fn bytecode<'a>(artifact: &'a SilDebugArtifact<'_>) -> &'a [u8] {
+    &single_contract(artifact).compiled.bytecode
+}
+
+fn encode_entry_sig_script(
+    artifact: &SilDebugArtifact<'_>,
+    entry_name: &str,
+    args: &[ArtifactValue],
+) -> Result<Vec<u8>, silverscript_abi::CodecError> {
+    let contract = single_contract(artifact);
+    encode_contract_entry_sig_script(&artifact.abi, &contract.name, entry_name, args)
+}
+
+fn artifact_object(fields: impl IntoIterator<Item = (&'static str, ArtifactValue)>) -> ArtifactValue {
+    fields.into_iter().map(|(name, value)| (name.to_string(), value)).collect::<BTreeMap<_, _>>().into()
+}
 
 const IF_STATEMENT_CONTRACT: &str = r#"pragma silverscript ^0.1.0;
 
@@ -47,21 +73,15 @@ fn with_session<F>(mut f: F) -> Result<(), Box<dyn Error>>
 where
     F: FnMut(&mut DebugSession<'_, '_>) -> Result<(), Box<dyn Error>>,
 {
-    with_session_for_source(
-        IF_STATEMENT_CONTRACT,
-        vec![Expr::int(3), Expr::int(10)],
-        "hello",
-        vec![Expr::int(5), Expr::int(5)],
-        &mut f,
-    )
+    with_session_for_source(IF_STATEMENT_CONTRACT, vec![3.into(), 10.into()], "hello", vec![5.into(), 5.into()], &mut f)
 }
 
 // Generic harness that compiles a contract and boots a debugger session for a selected function call.
 fn with_session_for_source<F>(
     source: &str,
-    ctor_args: Vec<Expr<'static>>,
+    ctor_args: Vec<ArtifactValue>,
     function_name: &str,
-    function_args: Vec<Expr<'static>>,
+    function_args: Vec<ArtifactValue>,
     mut f: F,
 ) -> Result<(), Box<dyn Error>>
 where
@@ -73,7 +93,6 @@ where
     // Compile with debug metadata enabled so line steps and variable updates are available.
     let compile_opts = CompileOptions { record_debug_infos: true, ..Default::default() };
     let compiled = compile_contract(source, &ctor_args, compile_opts)?;
-    let debug_info = compiled.debug_info.clone();
 
     let sig_cache = Cache::new(10_000);
     let reused_values = SigHashReusedValuesUnsync::new();
@@ -90,8 +109,8 @@ where
     assert_eq!(entry.params.len(), function_args.len());
 
     // Seed the stack with sigscript arguments, then execute the bytecode in debug mode.
-    let sigscript = compiled.build_sig_script(function_name, function_args)?;
-    let mut session = DebugSession::full(&sigscript, &compiled.bytecode, source, debug_info, engine)?;
+    let sigscript = encode_entry_sig_script(&compiled, function_name, &function_args)?;
+    let mut session = DebugSession::from_artifact(&sigscript, &compiled, &parsed_contract.name, engine)?;
 
     f(&mut session)
 }
@@ -125,7 +144,7 @@ contract ConsoleStep() {
 }
 "#;
 
-    with_session_for_source(source, vec![], "inspect", vec![Expr::int(2), Expr::int(3)], |session| {
+    with_session_for_source(source, vec![], "inspect", vec![2.into(), 3.into()], |session| {
         session.run_to_first_executed_statement()?;
         assert_eq!(session.take_console_output(), vec!["sum 5"]);
 
@@ -180,7 +199,7 @@ contract BP() {
 }
 "#;
 
-    with_session_for_source(source, vec![], "main", vec![Expr::int(1)], |session| {
+    with_session_for_source(source, vec![], "main", vec![1.into()], |session| {
         session.run_to_first_executed_statement()?;
         // Line 8 is inside a multiline `require(...)` span and should still be hit.
         assert!(session.add_breakpoint(8), "expected breakpoint line to be valid");
@@ -206,7 +225,7 @@ contract Shadow(int x) {
 }
 "#;
 
-    with_session_for_source(source, vec![Expr::int(7)], "main", vec![Expr::int(3)], |session| {
+    with_session_for_source(source, vec![7.into()], "main", vec![3.into()], |session| {
         session.run_to_first_executed_statement()?;
 
         // Function param `x` should shadow constructor constant `x` in visible debugger variables.
@@ -235,7 +254,7 @@ contract ShadowMath(int fee) {
 }
 "#;
 
-    with_session_for_source(source, vec![Expr::int(2)], "main", vec![Expr::int(3)], |session| {
+    with_session_for_source(source, vec![2.into()], "main", vec![3.into()], |session| {
         session.run_to_first_executed_statement()?;
 
         session.step_over()?;
@@ -266,7 +285,7 @@ contract FieldOffset(int c) {
 }
 "#;
 
-    with_session_for_source(source, vec![Expr::int(2)], "main", vec![Expr::int(5)], |session| {
+    with_session_for_source(source, vec![2.into()], "main", vec![5.into()], |session| {
         session.run_to_first_executed_statement()?;
 
         let a = session.variable_by_name("a")?;
@@ -292,7 +311,7 @@ contract FieldMath(int c) {
 }
 "#;
 
-    with_session_for_source(source, vec![Expr::int(2)], "main", vec![Expr::int(5)], |session| {
+    with_session_for_source(source, vec![2.into()], "main", vec![5.into()], |session| {
         session.run_to_first_executed_statement()?;
 
         for _ in 0..4 {
@@ -322,7 +341,7 @@ contract Virtuals() {
 }
 "#;
 
-    with_session_for_source(source, vec![], "main", vec![Expr::int(3)], |session| {
+    with_session_for_source(source, vec![], "main", vec![3.into()], |session| {
         session.run_to_first_executed_statement()?;
         let first = session.current_step().ok_or("missing first location")?;
         assert!(matches!(first.kind, StepKind::Source {}));
@@ -352,7 +371,7 @@ contract OpcodeCursor() {
 }
 "#;
 
-    with_session_for_source(source, vec![], "main", vec![Expr::int(3)], |session| {
+    with_session_for_source(source, vec![], "main", vec![3.into()], |session| {
         session.run_to_first_executed_statement()?;
         let start = session.current_span().ok_or("missing start span")?;
         assert_eq!(start.line, 5);
@@ -389,7 +408,7 @@ contract VirtualBp() {
 }
 "#;
 
-    with_session_for_source(source, vec![], "main", vec![Expr::int(3)], |session| {
+    with_session_for_source(source, vec![], "main", vec![3.into()], |session| {
         session.run_to_first_executed_statement()?;
         assert!(session.add_breakpoint(6), "line with assignment should be a valid breakpoint");
         let hit = session.continue_to_breakpoint()?;
@@ -413,7 +432,7 @@ contract LocalVars() {
 }
 "#;
 
-    with_session_for_source(source, vec![], "main", vec![Expr::int(3)], |session| {
+    with_session_for_source(source, vec![], "main", vec![3.into()], |session| {
         session.run_to_first_executed_statement()?;
         assert!(session.variable_by_name("x").is_err(), "x should not exist before its statement executes");
 
@@ -460,7 +479,7 @@ contract InlineCalls() {
 }
 "#;
 
-    with_session_for_source(source, vec![], "main", vec![Expr::int(3)], |session| {
+    with_session_for_source(source, vec![], "main", vec![3.into()], |session| {
         session.run_to_first_executed_statement()?;
         let start = session.current_step().ok_or("missing start step")?;
         assert_eq!(start.span.line, 10);
@@ -473,7 +492,7 @@ contract InlineCalls() {
         Ok(())
     })?;
 
-    with_session_for_source(source, vec![], "main", vec![Expr::int(3)], |session| {
+    with_session_for_source(source, vec![], "main", vec![3.into()], |session| {
         session.run_to_first_executed_statement()?;
         session.step_into()?;
         let mut in_callee = session.current_span().ok_or("missing span in callee")?;
@@ -513,7 +532,7 @@ contract Repeat() {
 }
 "#;
 
-    with_session_for_source(source, vec![], "main", vec![Expr::int(0)], |session| {
+    with_session_for_source(source, vec![], "main", vec![0.into()], |session| {
         session.run_to_first_executed_statement()?;
         let start = session.current_span().ok_or("missing start span")?;
         assert_eq!(start.line, 10, "first source step should be caller line, not callee internals");
@@ -539,7 +558,7 @@ contract Repeat() {
 }
 "#;
 
-    with_session_for_source(source, vec![], "main", vec![Expr::int(0)], |session| {
+    with_session_for_source(source, vec![], "main", vec![0.into()], |session| {
         session.run_to_first_executed_statement()?;
 
         let mut lines = vec![session.current_span().ok_or("missing initial span")?.line];
@@ -621,7 +640,7 @@ contract DebugPoC(int const) {
 }
 "#;
 
-    with_session_for_source(source, vec![Expr::int(0)], "main", vec![Expr::int(0), Expr::int(0)], |session| {
+    with_session_for_source(source, vec![0.into()], "main", vec![0.into(), 0.into()], |session| {
         session.run_to_first_executed_statement()?;
 
         let initial = session.current_step().ok_or("missing initial location")?;
@@ -667,7 +686,7 @@ contract InlineParams() {
 }
 "#;
 
-    with_session_for_source(source, vec![], "main", vec![Expr::int(4)], |session| {
+    with_session_for_source(source, vec![], "main", vec![4.into()], |session| {
         session.run_to_first_executed_statement()?;
 
         let mut saw_inline_param = false;
@@ -709,7 +728,7 @@ contract InlineEval() {
 }
 "#;
 
-    with_session_for_source(source, vec![], "main", vec![Expr::int(4)], |session| {
+    with_session_for_source(source, vec![], "main", vec![4.into()], |session| {
         session.run_to_first_executed_statement()?;
         assert!(session.add_breakpoint(6), "expected inline callee line to accept a breakpoint");
 
@@ -748,7 +767,7 @@ contract ScopeKinds(int init_amount) {
 }
 "#;
 
-    with_session_for_source(source, vec![Expr::int(7)], "main", vec![Expr::int(3)], |session| {
+    with_session_for_source(source, vec![7.into()], "main", vec![3.into()], |session| {
         session.run_to_first_executed_statement()?;
 
         let vars = session.list_variables()?;
@@ -786,23 +805,17 @@ contract StepVisibility(int init_amount) {
 }
 "#;
 
-    with_session_for_source(
-        source,
-        vec![Expr::int(7)],
-        "inspect",
-        vec![Expr::int(3), Expr::array(parse_type_ref("int[]")?, vec![Expr::int(4)])],
-        |session| {
-            session.run_to_first_executed_statement()?;
-            session.current_span().ok_or("missing starting span")?;
+    with_session_for_source(source, vec![7.into()], "inspect", vec![3.into(), ArtifactValue::Array(vec![4.into()])], |session| {
+        session.run_to_first_executed_statement()?;
+        session.current_span().ok_or("missing starting span")?;
 
-            session.step_over()?;
-            session.current_span().ok_or("missing span after step")?;
+        session.step_over()?;
+        session.current_span().ok_or("missing span after step")?;
 
-            let base = session.variable_by_name("base")?;
-            assert_eq!(format_value(&base.type_name, &base.value), "11");
-            Ok(())
-        },
-    )
+        let base = session.variable_by_name("base")?;
+        assert_eq!(format_value(&base.type_name, &base.value), "11");
+        Ok(())
+    })
 }
 
 #[test]
@@ -828,47 +841,41 @@ contract ShiftedBindings() {
 }
 "#;
 
-    with_session_for_source(
-        source,
-        vec![],
-        "inspect",
-        vec![Expr::int(3), Expr::array(parse_type_ref("int[]")?, vec![Expr::int(4), Expr::int(5)])],
-        |session| {
-            session.run_to_first_executed_statement()?;
+    with_session_for_source(source, vec![], "inspect", vec![3.into(), ArtifactValue::Array(vec![4.into(), 5.into()])], |session| {
+        session.run_to_first_executed_statement()?;
 
-            session.step_over()?;
-            let call_line = session.current_span().ok_or("missing inline-call span")?.line;
+        session.step_over()?;
+        let call_line = session.current_span().ok_or("missing inline-call span")?.line;
 
-            for _ in 0..6 {
-                if session.current_span().is_some_and(|span| span.line > call_line) {
-                    break;
-                }
-                if session.step_over()?.is_none() {
-                    break;
-                }
+        for _ in 0..6 {
+            if session.current_span().is_some_and(|span| span.line > call_line) {
+                break;
             }
+            if session.step_over()?.is_none() {
+                break;
+            }
+        }
 
-            let current_line = session.current_span().ok_or("missing post-call span")?.line;
-            assert!(current_line > call_line, "expected to step past inline call");
+        let current_line = session.current_span().ok_or("missing post-call span")?.line;
+        assert!(current_line > call_line, "expected to step past inline call");
 
-            let amount = session.variable_by_name("amount")?;
-            assert_eq!(format_value(&amount.type_name, &amount.value), "11");
+        let amount = session.variable_by_name("amount")?;
+        assert_eq!(format_value(&amount.type_name, &amount.value), "11");
 
-            let delta = session.variable_by_name("delta")?;
-            assert_eq!(format_value(&delta.type_name, &delta.value), "3");
+        let delta = session.variable_by_name("delta")?;
+        assert_eq!(format_value(&delta.type_name, &delta.value), "3");
 
-            let values = session.variable_by_name("values")?;
-            assert_eq!(format_value(&values.type_name, &values.value), "[4, 5]");
+        let values = session.variable_by_name("values")?;
+        assert_eq!(format_value(&values.type_name, &values.value), "[4, 5]");
 
-            let base = session.variable_by_name("base")?;
-            assert_eq!(format_value(&base.type_name, &base.value), "15");
+        let base = session.variable_by_name("base")?;
+        assert_eq!(format_value(&base.type_name, &base.value), "15");
 
-            let after = session.variable_by_name("after")?;
-            assert_eq!(format_value(&after.type_name, &after.value), "20");
+        let after = session.variable_by_name("after")?;
+        assert_eq!(format_value(&after.type_name, &after.value), "20");
 
-            Ok(())
-        },
-    )
+        Ok(())
+    })
 }
 
 #[test]
@@ -891,7 +898,7 @@ contract StructuredEvalState() {
         source,
         vec![],
         "inspect",
-        vec![struct_object("State", vec![("amount", Expr::int(5)), ("active", Expr::bool(true)), ("tag", Expr::bytes(vec![0xaa]))])],
+        vec![artifact_object([("amount", 5.into()), ("active", true.into()), ("tag", vec![0xaau8].into())])],
         |session| {
             session.run_to_first_executed_statement()?;
 
@@ -930,13 +937,10 @@ contract StructuredEvalStateArray() {
         source,
         vec![],
         "inspect",
-        vec![Expr::array(
-            parse_type_ref("State[]")?,
-            vec![
-                struct_object("State", vec![("amount", Expr::int(5)), ("active", Expr::bool(true)), ("tag", Expr::bytes(vec![0xaa]))]),
-                struct_object("State", vec![("amount", Expr::int(7)), ("active", Expr::bool(true)), ("tag", Expr::bytes(vec![0xaa]))]),
-            ],
-        )],
+        vec![ArtifactValue::Array(vec![
+            artifact_object([("amount", 5.into()), ("active", true.into()), ("tag", vec![0xaau8].into())]),
+            artifact_object([("amount", 7.into()), ("active", true.into()), ("tag", vec![0xaau8].into())]),
+        ])],
         |session| {
             session.run_to_first_executed_statement()?;
 
@@ -983,7 +987,7 @@ contract StructuredEvalPair() {
         source,
         vec![],
         "inspect",
-        vec![struct_object("Pair", vec![("amount", Expr::int(9)), ("code", Expr::bytes(vec![0x12, 0x34]))])],
+        vec![artifact_object([("amount", 9.into()), ("code", vec![0x12u8, 0x34].into())])],
         |session| {
             session.run_to_first_executed_statement()?;
 
@@ -1028,7 +1032,7 @@ contract InlineStructuredEval() {
         source,
         vec![],
         "inspect",
-        vec![struct_object("State", vec![("amount", Expr::int(5)), ("active", Expr::bool(true)), ("tag", Expr::bytes(vec![0xaa]))])],
+        vec![artifact_object([("amount", 5.into()), ("active", true.into()), ("tag", vec![0xaau8].into())])],
         |session| {
             session.run_to_first_executed_statement()?;
 
@@ -1079,16 +1083,15 @@ contract MissingStructuredSource() {
 "#;
 
     let compile_opts = CompileOptions { record_debug_infos: true, ..Default::default() };
-    let compiled = compile_contract(source, &[], compile_opts)?;
-    let mut debug_info = compiled.debug_info.clone().ok_or("missing debug info")?;
-    debug_info.source.clear();
+    let mut compiled = compile_contract(source, &[], compile_opts)?;
+    compiled.contract_debug_info.get_mut("MissingStructuredSource").ok_or("missing debug info")?.source.clear();
 
     let sig_cache = Cache::new(10_000);
     let reused_values = SigHashReusedValuesUnsync::new();
     let ctx = EngineCtx::new(&sig_cache).with_reused(&reused_values);
     let engine = debugger_session::session::DebugEngine::new(ctx, EngineFlags { covenants_enabled: true, ..Default::default() });
-    let sigscript = compiled.build_sig_script("inspect", vec![struct_object("State", vec![("amount", Expr::int(7))])])?;
-    let mut session = DebugSession::full(&sigscript, &compiled.bytecode, "", Some(debug_info), engine)?;
+    let sigscript = encode_entry_sig_script(&compiled, "inspect", &[artifact_object([("amount", 7.into())])])?;
+    let mut session = DebugSession::from_artifact(&sigscript, &compiled, "MissingStructuredSource", engine)?;
 
     session.run_to_first_executed_statement()?;
     let (type_name, value) = session.evaluate_expression("next.amount")?;
@@ -1119,7 +1122,7 @@ contract NestedArgs() {
 }
 "#;
 
-    with_session_for_source(source, vec![], "main", vec![Expr::int(0)], |session| {
+    with_session_for_source(source, vec![], "main", vec![0.into()], |session| {
         session.run_to_first_executed_statement()?;
         let start = session.current_step().ok_or("missing start step")?;
         assert_eq!(start.span.line, 15);
@@ -1639,8 +1642,7 @@ contract CovLocal() {
 
     let compile_opts = CompileOptions { record_debug_infos: true, ..Default::default() };
     let compiled = compile_contract(source, &[], compile_opts)?;
-    let debug_info = compiled.debug_info.clone();
-    let sigscript = compiled.build_sig_script("main", vec![])?;
+    let sigscript = encode_entry_sig_script(&compiled, "main", &[])?;
 
     let input = TransactionInput {
         previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([0x44u8; 32]), index: 0 },
@@ -1653,7 +1655,7 @@ contract CovLocal() {
 
     let covenant_id = Hash::from_bytes([0x11u8; 32]);
     let utxo_entry =
-        UtxoEntry::new(1000, ScriptPublicKey::new(0, compiled.bytecode.clone().into()), 0, tx.is_coinbase(), Some(covenant_id));
+        UtxoEntry::new(1000, ScriptPublicKey::new(0, bytecode(&compiled).to_vec().into()), 0, tx.is_coinbase(), Some(covenant_id));
     let populated_tx = PopulatedTransaction::new(&tx, vec![utxo_entry]);
     let cov_ctx = CovenantsContext::from_tx(&populated_tx)?;
 
@@ -1673,8 +1675,7 @@ contract CovLocal() {
     let shadow_ctx =
         ShadowTxContext { tx: &populated_tx, input: input_ref, input_index: 0, utxo_entry: utxo_ref, covenants_ctx: &cov_ctx };
 
-    let mut session =
-        DebugSession::full(&sigscript, &compiled.bytecode, source, debug_info, engine)?.with_shadow_tx_context(shadow_ctx);
+    let mut session = DebugSession::from_artifact(&sigscript, &compiled, "CovLocal", engine)?.with_shadow_tx_context(shadow_ctx);
     session.run_to_first_executed_statement()?;
 
     for _ in 0..4 {
@@ -1704,8 +1705,7 @@ contract CovEval() {
 
     let compile_opts = CompileOptions { record_debug_infos: true, ..Default::default() };
     let compiled = compile_contract(source, &[], compile_opts)?;
-    let debug_info = compiled.debug_info.clone();
-    let sigscript = compiled.build_sig_script("main", vec![])?;
+    let sigscript = encode_entry_sig_script(&compiled, "main", &[])?;
 
     let input = TransactionInput {
         previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([0x44u8; 32]), index: 0 },
@@ -1718,7 +1718,7 @@ contract CovEval() {
 
     let covenant_id = Hash::from_bytes([0x22u8; 32]);
     let utxo_entry =
-        UtxoEntry::new(1000, ScriptPublicKey::new(0, compiled.bytecode.clone().into()), 0, tx.is_coinbase(), Some(covenant_id));
+        UtxoEntry::new(1000, ScriptPublicKey::new(0, bytecode(&compiled).to_vec().into()), 0, tx.is_coinbase(), Some(covenant_id));
     let populated_tx = PopulatedTransaction::new(&tx, vec![utxo_entry]);
     let cov_ctx = CovenantsContext::from_tx(&populated_tx)?;
 
@@ -1739,8 +1739,7 @@ contract CovEval() {
     let shadow_ctx =
         ShadowTxContext { tx: &populated_tx, input: input_ref, input_index: 0, utxo_entry: utxo_ref, covenants_ctx: &cov_ctx };
 
-    let mut session =
-        DebugSession::full(&sigscript, &compiled.bytecode, source, debug_info, engine)?.with_shadow_tx_context(shadow_ctx);
+    let mut session = DebugSession::from_artifact(&sigscript, &compiled, "CovEval", engine)?.with_shadow_tx_context(shadow_ctx);
     session.run_to_first_executed_statement()?;
 
     let (type_name, value) = session.evaluate_expression("OpInputCovenantId(this.activeInputIndex)")?;
@@ -1777,7 +1776,8 @@ fn covenant_debugger_resolves_overridden_public_entrypoint_names() -> Result<(),
 
     let parsed = parse_contract_ast(source)?;
     let compiled = compile_contract(source, &[], CompileOptions::default())?;
-    let target = resolve_covenant_call_target(&parsed, &compiled, "transferPolicy").ok_or("missing covenant call target")?;
+    let target =
+        resolve_covenant_call_target(&parsed, single_contract(&compiled), "transferPolicy").ok_or("missing covenant call target")?;
 
     assert_eq!(target.generated_entrypoint_name, "transfer");
     assert_eq!(target.generated_entrypoint_name_for(true), "transfer");
@@ -1788,7 +1788,7 @@ fn covenant_debugger_resolves_overridden_public_entrypoint_names() -> Result<(),
     assert_eq!(delegate_body.source_name, "authorizeDelegate");
     assert_eq!(delegate_body.policy_function_name, "__covenant_delegate_policy_authorizeDelegate");
     assert_eq!(target.display_name_for(&delegate_body.policy_function_name), Some("authorizeDelegate"));
-    assert!(resolve_covenant_call_target(&parsed, &compiled, "authorizeDelegate").is_none());
+    assert!(resolve_covenant_call_target(&parsed, single_contract(&compiled), "authorizeDelegate").is_none());
     Ok(())
 }
 
@@ -1823,11 +1823,11 @@ contract Routed() {
     let parsed_contract = parse_contract_ast(source)?;
     let compile_opts = CompileOptions { record_debug_infos: true, ..Default::default() };
     let compiled = compile_contract(source, &[], compile_opts)?;
-    let target = resolve_covenant_call_target(&parsed_contract, &compiled, "transferPolicy").ok_or("missing covenant call target")?;
-    let delegate_sigscript =
-        compiled.build_sig_script(&target.generated_entrypoint_name_for(false), vec![Expr::dynamic_bytes(vec![7])])?;
+    let target = resolve_covenant_call_target(&parsed_contract, single_contract(&compiled), "transferPolicy")
+        .ok_or("missing covenant call target")?;
+    let delegate_sigscript = encode_entry_sig_script(&compiled, &target.generated_entrypoint_name_for(false), &[vec![7u8].into()])?;
     let mut input_sigscript = delegate_sigscript.clone();
-    input_sigscript.extend_from_slice(&push_redeem_script(&compiled.bytecode));
+    input_sigscript.extend_from_slice(&push_redeem_script(bytecode(&compiled)));
 
     let inputs = vec![
         TransactionInput {
@@ -1847,8 +1847,8 @@ contract Routed() {
     let tx = Transaction::new(1, inputs, vec![output], 0, Default::default(), 0, vec![]);
     let covenant_id = Hash::from_bytes([0x88u8; 32]);
     let utxos = vec![
-        UtxoEntry::new(1000, pay_to_script_hash_script(&compiled.bytecode), 0, tx.is_coinbase(), Some(covenant_id)),
-        UtxoEntry::new(1000, pay_to_script_hash_script(&compiled.bytecode), 0, tx.is_coinbase(), Some(covenant_id)),
+        UtxoEntry::new(1000, pay_to_script_hash_script(bytecode(&compiled)), 0, tx.is_coinbase(), Some(covenant_id)),
+        UtxoEntry::new(1000, pay_to_script_hash_script(bytecode(&compiled)), 0, tx.is_coinbase(), Some(covenant_id)),
     ];
     let populated_tx = PopulatedTransaction::new(&tx, utxos);
     let cov_ctx = CovenantsContext::from_tx(&populated_tx)?;
@@ -1868,7 +1868,7 @@ contract Routed() {
     );
     let shadow_ctx =
         ShadowTxContext { tx: &populated_tx, input: input_ref, input_index: 1, utxo_entry: utxo_ref, covenants_ctx: &cov_ctx };
-    let mut session = DebugSession::full(&delegate_sigscript, &compiled.bytecode, source, compiled.debug_info.clone(), engine)?
+    let mut session = DebugSession::from_artifact(&delegate_sigscript, &compiled, "Routed", engine)?
         .with_shadow_tx_context(shadow_ctx)
         .with_covenant_mode(None, Some(target));
 
@@ -1911,20 +1911,18 @@ contract CovDebugDemo(int initial_value) {
 
     let parsed_contract = parse_contract_ast(source)?;
     let compile_opts = CompileOptions { record_debug_infos: true, ..Default::default() };
-    let compiled0 = compile_contract(source, &[Expr::int(10)], compile_opts)?;
-    let compiled1 = compile_contract(source, &[Expr::int(20)], compile_opts)?;
-    let leader_args = vec![Expr::array(
-        parse_type_ref("State[]")?,
-        vec![struct_object("State", vec![("value", Expr::int(30))]), struct_object("State", vec![("value", Expr::int(40))])],
-    )];
-    let leader_target =
-        resolve_covenant_call_target(&parsed_contract, &compiled0, "rebalance").ok_or("missing covenant call target")?;
-    let leader_sigscript = compiled0.build_sig_script(&leader_target.generated_entrypoint_name, leader_args)?;
+    let compiled0 = compile_contract(source, &[10.into()], compile_opts)?;
+    let compiled1 = compile_contract(source, &[20.into()], compile_opts)?;
+    let leader_args =
+        vec![ArtifactValue::Array(vec![artifact_object([("value", 30.into())]), artifact_object([("value", 40.into())])])];
+    let leader_target = resolve_covenant_call_target(&parsed_contract, single_contract(&compiled0), "rebalance")
+        .ok_or("missing covenant call target")?;
+    let leader_sigscript = encode_entry_sig_script(&compiled0, &leader_target.generated_entrypoint_name, &leader_args)?;
     let mut leader_input_sigscript = leader_sigscript.clone();
-    leader_input_sigscript.extend_from_slice(&push_redeem_script(&compiled0.bytecode));
-    let delegate_sigscript = compiled1.build_sig_script(&leader_target.generated_entrypoint_name_for(false), vec![])?;
+    leader_input_sigscript.extend_from_slice(&push_redeem_script(bytecode(&compiled0)));
+    let delegate_sigscript = encode_entry_sig_script(&compiled1, &leader_target.generated_entrypoint_name_for(false), &[])?;
     let mut delegate_input_sigscript = delegate_sigscript.clone();
-    delegate_input_sigscript.extend_from_slice(&push_redeem_script(&compiled1.bytecode));
+    delegate_input_sigscript.extend_from_slice(&push_redeem_script(bytecode(&compiled1)));
 
     let covenant_id = Hash::from_bytes([0x33u8; 32]);
     let inputs = vec![
@@ -1941,25 +1939,25 @@ contract CovDebugDemo(int initial_value) {
             compute_commit: SigopCount(0).into(),
         },
     ];
-    let next0 = compile_contract(source, &[Expr::int(30)], compile_opts)?;
-    let next1 = compile_contract(source, &[Expr::int(40)], compile_opts)?;
+    let next0 = compile_contract(source, &[30.into()], compile_opts)?;
+    let next1 = compile_contract(source, &[40.into()], compile_opts)?;
     let outputs = vec![
         TransactionOutput {
             value: 1000,
-            script_public_key: pay_to_script_hash_script(&next0.bytecode),
+            script_public_key: pay_to_script_hash_script(bytecode(&next0)),
             covenant: Some(CovenantBinding { authorizing_input: 0, covenant_id }),
         },
         TransactionOutput {
             value: 1000,
-            script_public_key: pay_to_script_hash_script(&next1.bytecode),
+            script_public_key: pay_to_script_hash_script(bytecode(&next1)),
             covenant: Some(CovenantBinding { authorizing_input: 0, covenant_id }),
         },
     ];
     let tx = Transaction::new(1, inputs, outputs, 0, Default::default(), 0, vec![]);
 
     let utxos = vec![
-        UtxoEntry::new(1000, pay_to_script_hash_script(&compiled0.bytecode), 0, tx.is_coinbase(), Some(covenant_id)),
-        UtxoEntry::new(1000, pay_to_script_hash_script(&compiled1.bytecode), 0, tx.is_coinbase(), Some(covenant_id)),
+        UtxoEntry::new(1000, pay_to_script_hash_script(bytecode(&compiled0)), 0, tx.is_coinbase(), Some(covenant_id)),
+        UtxoEntry::new(1000, pay_to_script_hash_script(bytecode(&compiled1)), 0, tx.is_coinbase(), Some(covenant_id)),
     ];
     let populated_tx = PopulatedTransaction::new(&tx, utxos);
     let cov_ctx = CovenantsContext::from_tx(&populated_tx)?;
@@ -1981,7 +1979,7 @@ contract CovDebugDemo(int initial_value) {
     let shadow_ctx =
         ShadowTxContext { tx: &populated_tx, input: input_ref, input_index: 0, utxo_entry: utxo_ref, covenants_ctx: &cov_ctx };
 
-    let mut session = DebugSession::full(&leader_sigscript, &compiled0.bytecode, source, compiled0.debug_info.clone(), engine)?
+    let mut session = DebugSession::from_artifact(&leader_sigscript, &compiled0, "CovDebugDemo", engine)?
         .with_shadow_tx_context(shadow_ctx)
         .with_covenant_mode(Some(DebugValue::Array(vec![covenant_debug_value(10), covenant_debug_value(20)])), Some(leader_target));
 

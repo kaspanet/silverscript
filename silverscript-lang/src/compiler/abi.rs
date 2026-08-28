@@ -119,7 +119,15 @@ pub fn sil_abi_artifact_with_options(
     let contract = parse_contract_ast(source)?;
     let constructor_args = artifact_values_to_constructor_args(constructor_args, &contract)?;
     let compiled = compile_contract(source, &constructor_args, options)?;
-    let constants = artifact_constants(&compiled, &constructor_args);
+    sil_abi_artifact_from_compiled(&compiled, &constructor_args)
+}
+
+/// Builds a portable ABI artifact from an already compiled contract.
+pub fn sil_abi_artifact_from_compiled<'i>(
+    compiled: &CompiledContract<'i>,
+    constructor_args: &[Expr<'i>],
+) -> Result<SilAbiArtifact, CompilerError> {
+    let constants = artifact_constants(compiled, constructor_args);
     let states = compiled
         .ast
         .structs
@@ -133,11 +141,11 @@ pub fn sil_abi_artifact_with_options(
             Ok(StateArtifact { name: struct_.name.clone(), fields })
         })
         .collect::<Result<Vec<_>, CompilerError>>()?;
-    let contract = contract_artifact_from_compiled(&compiled, &constructor_args)?;
+    let contract = contract_artifact_from_compiled(compiled, constructor_args)?;
 
     Ok(SilAbiArtifact {
         schema_version: SIL_ABI_SCHEMA_VERSION,
-        compiler_version: compiled.compiler_version,
+        compiler_version: compiled.compiler_version.clone(),
         states,
         contracts: vec![contract],
     })

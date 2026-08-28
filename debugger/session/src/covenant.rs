@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
+use silverscript_abi::SilContractArtifact;
 use silverscript_lang::ast::{ContractAst, FunctionAst};
-use silverscript_lang::compiler::CompiledContract;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CovenantBinding {
@@ -74,14 +74,15 @@ impl ResolvedCovenantCallTarget {
 
 pub fn resolve_covenant_call_target<'i>(
     contract: &ContractAst<'i>,
-    compiled: &CompiledContract<'i>,
+    artifact: &SilContractArtifact,
     function_name: &str,
 ) -> Option<ResolvedCovenantCallTarget> {
     let function =
         contract.functions.iter().find(|function| function.name == function_name && is_covenant_source_function(function))?;
 
-    let generated_entrypoint_name = compiled.covenant_decl_entrypoint_name(function_name, true)?.to_string();
-    let nonleader_entrypoint_name = compiled.covenant_decl_entrypoint_name(function_name, false)?.to_string();
+    let generated_entrypoint_name = artifact.cov_decl_to_abi.get(function_name)?.name.clone();
+    let nonleader_entrypoint_name =
+        artifact.delegate_entry_abi.as_ref().map(|entry| entry.name.clone()).unwrap_or_else(|| generated_entrypoint_name.clone());
     let binding = if generated_entrypoint_name == nonleader_entrypoint_name { CovenantBinding::Auth } else { CovenantBinding::Cov };
     let delegate_entrypoint_name = (binding == CovenantBinding::Cov).then_some(nonleader_entrypoint_name);
     let delegate_body = (binding == CovenantBinding::Cov)

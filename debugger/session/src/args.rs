@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use serde_json::Value;
+use silverscript_abi::{ArtifactValue, ParamArtifact, SilAbiArtifact, SilContractArtifact, TypeArtifact};
 use silverscript_lang::ast::{ArrayDim, ContractAst, Expr, ExprKind, ParamAst, StateFieldExpr, TypeBase, TypeRef};
 use silverscript_lang::span;
 
@@ -269,6 +270,157 @@ pub fn parse_ctor_args(parsed_contract: &ContractAst<'_>, raw_ctor_args: &[Strin
         return Err(format!("constructor expects {} arguments, got {}", parsed_contract.params.len(), raw_ctor_args.len()));
     }
     parse_params(&parsed_contract.params, &shapes, raw_ctor_args)
+}
+
+fn artifact_struct_fields<'a>(
+    abi: &'a SilAbiArtifact,
+    contract: &'a SilContractArtifact,
+    name: &str,
+) -> Option<Vec<(&'a str, &'a TypeArtifact)>> {
+    if contract.runtime_state.source == name {
+        return Some(contract.runtime_state.fields.iter().map(|field| (field.name.as_str(), &field.ty)).collect());
+    }
+    abi.states
+        .iter()
+        .find(|state| state.name == name)
+        .map(|state| state.fields.iter().map(|field| (field.name.as_str(), &field.ty)).collect())
+}
+
+fn parse_artifact_json_value(
+    value: &Value,
+    ty: &TypeArtifact,
+    abi: &SilAbiArtifact,
+    contract: &SilContractArtifact,
+) -> Result<ArtifactValue, String> {
+    match ty {
+        TypeArtifact::Int | TypeArtifact::Temporal => match value {
+            Value::Number(value) => Ok(ArtifactValue::Int(value.as_i64().ok_or_else(|| "invalid int value".to_string())?)),
+            Value::String(value) => Ok(ArtifactValue::Int(parse_int_arg(value)?)),
+            _ => Err(format!("expected {}, got {value}", artifact_type_name(ty))),
+        },
+        TypeArtifact::Bool => match value {
+            Value::Bool(value) => Ok(ArtifactValue::Bool(*value)),
+            Value::String(value) if value == "true" || value == "false" => Ok(ArtifactValue::Bool(value == "true")),
+            _ => Err(format!("expected bool, got {value}")),
+        },
+        TypeArtifact::Byte => {
+            let raw = match value {
+                Value::Number(value) => value.to_string(),
+                Value::String(value) => value.clone(),
+                _ => return Err(format!("expected byte, got {value}")),
+            };
+            let bytes = parse_hex_bytes(&raw)?;
+            if let [byte] = bytes.as_slice() {
+                Ok(ArtifactValue::Byte(*byte))
+            } else {
+                Err(format!("byte expects 1 byte, got {}", bytes.len()))
+            }
+        }
+        TypeArtifact::Bytes | TypeArtifact::FixedBytes { .. } | TypeArtifact::Pubkey | TypeArtifact::Sig | TypeArtifact::Datasig => {
+            let Value::String(raw) = value else {
+                return Err(format!("expected {}, got {value}", artifact_type_name(ty)));
+            };
+            let bytes = parse_hex_bytes(raw)?;
+            if let Some(expected) = artifact_byte_len(ty)
+                && bytes.len() != expected
+            {
+                return Err(format!("{} expects {expected} bytes, got {}", artifact_type_name(ty), bytes.len()));
+            }
+            Ok(ArtifactValue::Bytes(bytes))
+        }
+        TypeArtifact::Text => match value {
+            Value::String(value) => Ok(ArtifactValue::Text(value.clone())),
+            _ => Err(format!("expected string, got {value}")),
+        },
+        TypeArtifact::FixedArray { item, len } => {
+            let Value::Array(values) = value else {
+                return Err(format!("expected {}, got {value}", artifact_type_name(ty)));
+            };
+            if values.len() != *len {
+                return Err(format!("{} expects {len} elements, got {}", artifact_type_name(ty), values.len()));
+            }
+            Ok(ArtifactValue::Array(
+                values.iter().map(|value| parse_artifact_json_value(value, item, abi, contract)).collect::<Result<Vec<_>, _>>()?,
+            ))
+        }
+        TypeArtifact::DynamicArray { item } => {
+            let Value::Array(values) = value else {
+                return Err(format!("expected {}, got {value}", artifact_type_name(ty)));
+            };
+            Ok(ArtifactValue::Array(
+                values.iter().map(|value| parse_artifact_json_value(value, item, abi, contract)).collect::<Result<Vec<_>, _>>()?,
+            ))
+        }
+        TypeArtifact::Struct { name } => {
+            let Value::Object(values) = value else {
+                return Err(format!("expected struct {name}, got {value}"));
+            };
+            let fields = artifact_struct_fields(abi, contract, name).ok_or_else(|| format!("unknown struct '{name}'"))?;
+            if let Some(extra) = values.keys().find(|field| !fields.iter().any(|(name, _)| name == &field.as_str())) {
+                return Err(format!("unknown struct field '{extra}'"));
+            }
+            Ok(ArtifactValue::Object(
+                fields
+                    .into_iter()
+                    .map(|(name, ty)| {
+                        let value = values.get(name).ok_or_else(|| format!("struct field '{name}' must be initialized"))?;
+                        Ok((name.to_string(), parse_artifact_json_value(value, ty, abi, contract)?))
+                    })
+                    .collect::<Result<_, String>>()?,
+            ))
+        }
+    }
+}
+
+fn artifact_byte_len(ty: &TypeArtifact) -> Option<usize> {
+    match ty {
+        TypeArtifact::FixedBytes { len } => Some(*len),
+        TypeArtifact::Pubkey => Some(32),
+        TypeArtifact::Sig => Some(65),
+        TypeArtifact::Datasig => Some(64),
+        _ => None,
+    }
+}
+
+fn artifact_type_name(ty: &TypeArtifact) -> String {
+    match ty {
+        TypeArtifact::Int => "int".to_string(),
+        TypeArtifact::Temporal => "temporal".to_string(),
+        TypeArtifact::Bool => "bool".to_string(),
+        TypeArtifact::Byte => "byte".to_string(),
+        TypeArtifact::Bytes => "byte[]".to_string(),
+        TypeArtifact::Text => "string".to_string(),
+        TypeArtifact::Pubkey => "pubkey".to_string(),
+        TypeArtifact::Sig => "sig".to_string(),
+        TypeArtifact::Datasig => "datasig".to_string(),
+        TypeArtifact::FixedBytes { len } => format!("byte[{len}]"),
+        TypeArtifact::FixedArray { item, len } => format!("{}[{len}]", artifact_type_name(item)),
+        TypeArtifact::DynamicArray { item } => format!("{}[]", artifact_type_name(item)),
+        TypeArtifact::Struct { name } => name.clone(),
+    }
+}
+
+pub fn parse_artifact_args(
+    abi: &SilAbiArtifact,
+    contract: &SilContractArtifact,
+    params: &[ParamArtifact],
+    raw_args: &[String],
+) -> Result<Vec<ArtifactValue>, String> {
+    if params.len() != raw_args.len() {
+        return Err(format!("function expects {} arguments, got {}", params.len(), raw_args.len()));
+    }
+    params
+        .iter()
+        .zip(raw_args)
+        .map(|(param, raw)| {
+            let value = if raw.starts_with('[') || raw.starts_with('{') {
+                serde_json::from_str(raw).map_err(|err| format!("invalid {} arg '{raw}': {err}", artifact_type_name(&param.ty)))?
+            } else {
+                Value::String(raw.clone())
+            };
+            parse_artifact_json_value(&value, &param.ty, abi, contract)
+        })
+        .collect()
 }
 
 pub fn parse_call_args(contract: &ContractAst<'_>, function_name: &str, raw_args: &[String]) -> Result<Vec<Expr<'static>>, String> {
