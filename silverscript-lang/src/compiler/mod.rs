@@ -30,7 +30,9 @@ mod type_check;
 mod type_system;
 mod validate_output_state;
 
-pub use abi::{artifact_value_to_expr, sil_abi_artifact, sil_abi_artifact_from_compiled, sil_abi_artifact_with_options};
+pub use abi::{
+    artifact_value_to_expr, compile_to_sil_abi_artifact, compile_to_sil_abi_artifact_with_options, sil_abi_artifact_from_compiled,
+};
 use compile::compile_contract_impl;
 pub use compile::compile_debug_expr;
 pub(crate) use compile::resolve_constant_references;

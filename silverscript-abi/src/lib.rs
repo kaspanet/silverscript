@@ -113,7 +113,7 @@ pub struct ArtifactVersionError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StateArtifact {
+pub struct StructArtifact {
     pub name: String,
     pub fields: Vec<FieldArtifact>,
 }
@@ -193,7 +193,7 @@ impl TypeArtifact {
 pub struct SilAbiArtifact {
     pub schema_version: u32,
     pub compiler_version: String,
-    pub states: Vec<StateArtifact>,
+    pub structs: Vec<StructArtifact>,
     pub contracts: Vec<SilContractArtifact>,
 }
 
@@ -555,11 +555,11 @@ pub fn decode_runtime_state_script(
 pub fn encode_struct_payload(
     abi: &SilAbiArtifact,
     contract: &SilContractArtifact,
-    state_name: &str,
+    struct_name: &str,
     values: &BTreeMap<String, ArtifactValue>,
 ) -> CodecResult<Vec<u8>> {
     let ctx = TypeContext::new(abi, contract);
-    encode_struct_fields_payload(ctx.state(state_name)?, values)
+    encode_struct_fields_payload(ctx.struct_by_name(struct_name)?, values)
 }
 
 pub fn decode_hex(hex: &str) -> CodecResult<Vec<u8>> {
@@ -651,15 +651,15 @@ fn entry_params(entry: &SilEntryArtifact) -> Vec<(&str, &TypeArtifact)> {
 }
 
 struct TypeContext<'a> {
-    states: BTreeMap<&'a str, &'a StateArtifact>,
-    runtime_state: StateArtifact,
+    structs: BTreeMap<&'a str, &'a StructArtifact>,
+    runtime_state: StructArtifact,
 }
 
 impl<'a> TypeContext<'a> {
     fn new(abi: &'a SilAbiArtifact, contract: &'a SilContractArtifact) -> Self {
         Self {
-            states: abi.states.iter().map(|state| (state.name.as_str(), state)).collect(),
-            runtime_state: StateArtifact {
+            structs: abi.structs.iter().map(|structure| (structure.name.as_str(), structure)).collect(),
+            runtime_state: StructArtifact {
                 name: "State".to_string(),
                 fields: contract
                     .runtime_state
@@ -671,11 +671,11 @@ impl<'a> TypeContext<'a> {
         }
     }
 
-    fn state(&self, name: &str) -> CodecResult<&StateArtifact> {
+    fn struct_by_name(&self, name: &str) -> CodecResult<&StructArtifact> {
         if name == "State" {
             return Ok(&self.runtime_state);
         }
-        self.states.get(name).copied().ok_or_else(|| CodecError::UnknownStruct(name.to_string()))
+        self.structs.get(name).copied().ok_or_else(|| CodecError::UnknownStruct(name.to_string()))
     }
 }
 
@@ -693,7 +693,7 @@ fn push_sig_arg(
     match ty {
         TypeArtifact::Struct { name: struct_name } => {
             let fields = object_fields(value)?;
-            push_struct_fields(builder, ctx, ctx.state(struct_name)?, fields)
+            push_struct_fields(builder, ctx, ctx.struct_by_name(struct_name)?, fields)
         }
         TypeArtifact::FixedArray { item, len } if matches!(item.as_ref(), TypeArtifact::Struct { .. }) => {
             push_struct_array_fields(builder, ctx, item, Some(*len), value)
@@ -735,11 +735,11 @@ fn push_sig_arg(
 fn push_struct_fields(
     builder: &mut ScriptBuilder,
     ctx: &TypeContext<'_>,
-    state: &StateArtifact,
+    structure: &StructArtifact,
     fields: &BTreeMap<String, ArtifactValue>,
 ) -> CodecResult<()> {
-    assert_no_extra_fields(fields, &state.fields)?;
-    for field in &state.fields {
+    assert_no_extra_fields(fields, &structure.fields)?;
+    for field in &structure.fields {
         let value = fields.get(&field.name).ok_or_else(|| CodecError::MissingField(field.name.clone()))?;
         push_sig_arg(builder, ctx, &field.name, &field.ty, value)?;
     }
@@ -756,7 +756,7 @@ fn push_struct_array_fields(
     let TypeArtifact::Struct { name } = item else {
         return Err(CodecError::UnsupportedType(type_name(item)));
     };
-    let state = ctx.state(name)?;
+    let structure = ctx.struct_by_name(name)?;
     let values = expect_array(value)?;
     if let Some(expected) = expected_len {
         require_len(name, expected, values.len())?;
@@ -765,11 +765,11 @@ fn push_struct_array_fields(
     let mut object_values = Vec::with_capacity(values.len());
     for value in values {
         let fields = object_fields(value)?;
-        assert_no_extra_fields(fields, &state.fields)?;
+        assert_no_extra_fields(fields, &structure.fields)?;
         object_values.push(fields);
     }
 
-    for field in &state.fields {
+    for field in &structure.fields {
         let mut field_values = Vec::with_capacity(object_values.len());
         for object in &object_values {
             field_values.push(object.get(&field.name).ok_or_else(|| CodecError::MissingField(field.name.clone()))?.clone());
@@ -794,10 +794,10 @@ fn encode_state_payload(name: &str, ty: &TypeArtifact, value: &ArtifactValue) ->
     }
 }
 
-fn encode_struct_fields_payload(state: &StateArtifact, fields: &BTreeMap<String, ArtifactValue>) -> CodecResult<Vec<u8>> {
-    assert_no_extra_fields(fields, &state.fields)?;
+fn encode_struct_fields_payload(structure: &StructArtifact, fields: &BTreeMap<String, ArtifactValue>) -> CodecResult<Vec<u8>> {
+    assert_no_extra_fields(fields, &structure.fields)?;
     let mut out = Vec::new();
-    for field in &state.fields {
+    for field in &structure.fields {
         let value = fields.get(&field.name).ok_or_else(|| CodecError::MissingField(field.name.clone()))?;
         out.extend(encode_state_payload(&field.name, &field.ty, value)?);
     }
@@ -1298,7 +1298,7 @@ mod tests {
     #[test]
     fn encodes_struct_payload_without_push_framing() {
         let mut abi = tiny_sil_abi();
-        abi.states.push(StateArtifact {
+        abi.structs.push(StructArtifact {
             name: "Memory".to_string(),
             fields: vec![
                 FieldArtifact { name: "hunger".to_string(), ty: TypeArtifact::Int },
@@ -1322,7 +1322,7 @@ mod tests {
         {
           "schema_version": 1,
           "compiler_version": "0.1.0",
-          "states": [
+          "structs": [
             {
               "name": "FooState",
               "fields": [{ "name": "count", "type": { "kind": "int" } }]
@@ -1424,7 +1424,7 @@ mod tests {
         SilAbiArtifact {
             schema_version: 1,
             compiler_version: "0.1.0".to_string(),
-            states: Vec::new(),
+            structs: Vec::new(),
             contracts: vec![SilContractArtifact {
                 name: "Foo".to_string(),
                 source_path: "sil/Foo.sil".to_string(),

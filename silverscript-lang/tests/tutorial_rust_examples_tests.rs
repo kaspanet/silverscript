@@ -1,6 +1,6 @@
 mod common;
 
-use silverscript_lang::compiler::sil_abi_artifact;
+use silverscript_lang::compiler::compile_to_sil_abi_artifact;
 
 use common::encode_entry_sig_script;
 
@@ -16,7 +16,7 @@ fn tutorial_rust_programmatic_compilation_example() {
         }
     "#;
 
-    let artifact = sil_abi_artifact(source, &[100.into()]).expect("programmatic compilation example should compile");
+    let artifact = compile_to_sil_abi_artifact(source, &[100.into()]).expect("programmatic compilation example should compile");
     let contract = artifact.contract("MyContract").expect("contract exists");
 
     assert!(!contract.compiled.bytecode.is_empty());
@@ -44,7 +44,7 @@ fn tutorial_rust_build_sigscript_multiple_entrypoints_example() {
     let sender_pk = vec![3u8; 32];
     let recipient_pk = vec![4u8; 32];
     let timeout = 1_640_000_000_000i64;
-    let artifact = sil_abi_artifact(source, &[sender_pk.into(), recipient_pk.into(), timeout.into()])
+    let artifact = compile_to_sil_abi_artifact(source, &[sender_pk.into(), recipient_pk.into(), timeout.into()])
         .expect("multi-entrypoint example should compile");
 
     let sig = vec![5u8; 65];

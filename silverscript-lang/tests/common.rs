@@ -17,7 +17,7 @@ use silverscript_abi::{
     encode_contract_covenant_decl_sig_script, encode_contract_entry_sig_script,
 };
 use silverscript_lang::compiler::{
-    CompileOptions, CompiledStateLayout, CompilerError, CovenantDeclCallOptions, sil_abi_artifact_with_options,
+    CompileOptions, CompiledStateLayout, CompilerError, CovenantDeclCallOptions, compile_to_sil_abi_artifact_with_options,
 };
 
 pub const COV_A: Hash = Hash::from_bytes(*b"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
@@ -28,7 +28,7 @@ pub fn compile_contract(
     constructor_args: &[ArtifactValue],
     options: CompileOptions,
 ) -> Result<SilAbiArtifact, CompilerError> {
-    sil_abi_artifact_with_options(source, constructor_args, options)
+    compile_to_sil_abi_artifact_with_options(source, constructor_args, options)
 }
 
 pub fn single_contract(artifact: &SilAbiArtifact) -> &SilContractArtifact {

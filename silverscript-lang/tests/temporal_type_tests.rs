@@ -8,7 +8,7 @@ use kaspa_consensus_core::tx::{
 use kaspa_txscript::caches::Cache;
 use kaspa_txscript::{EngineCtx, EngineFlags, TxScriptEngine};
 use silverscript_abi::ArtifactValue;
-use silverscript_lang::compiler::{CompileOptions, sil_abi_artifact_with_options};
+use silverscript_lang::compiler::{CompileOptions, compile_to_sil_abi_artifact_with_options};
 
 use common::{bytecode, encode_single_entry_sig_script};
 
@@ -55,7 +55,7 @@ fn temporal_supports_int_operations_with_temporal_operands() {
             }
         }
     "#;
-    let compiled = sil_abi_artifact_with_options(source, &[], CompileOptions::default()).expect("temporal operations compile");
+    let compiled = compile_to_sil_abi_artifact_with_options(source, &[], CompileOptions::default()).expect("temporal operations compile");
     execute(compiled, &[20.into(), 3.into()]);
 }
 
@@ -71,7 +71,7 @@ fn int_and_temporal_conversions_are_runtime_no_ops() {
             }
         }
     "#;
-    let compiled = sil_abi_artifact_with_options(source, &[], CompileOptions::default()).expect("explicit conversions compile");
+    let compiled = compile_to_sil_abi_artifact_with_options(source, &[], CompileOptions::default()).expect("explicit conversions compile");
     execute(compiled, &[1234.into(), 5678.into()]);
 }
 
@@ -88,7 +88,7 @@ fn temporal_fields_arrays_and_millisecond_units_round_trip() {
             }
         }
     "#;
-    let compiled = sil_abi_artifact_with_options(source, &[ArtifactValue::Int(1_000)], CompileOptions::default())
+    let compiled = compile_to_sil_abi_artifact_with_options(source, &[ArtifactValue::Int(1_000)], CompileOptions::default())
         .expect("temporal storage compiles");
     execute(compiled, &[3_000.into(), 3_000.into()]);
 }
@@ -105,7 +105,7 @@ fn temporal_array_entrypoint_arguments_round_trip() {
             }
         }
     "#;
-    let compiled = sil_abi_artifact_with_options(source, &[], CompileOptions::default()).expect("temporal array argument compiles");
+    let compiled = compile_to_sil_abi_artifact_with_options(source, &[], CompileOptions::default()).expect("temporal array argument compiles");
     let points = ArtifactValue::Array(vec![1_000.into(), 2_000.into(), 62_000.into()]);
     execute(compiled, &[points]);
 }
@@ -127,7 +127,7 @@ fn temporal_array_size_inference_and_append_execute() {
             }
         }
     "#;
-    let compiled = sil_abi_artifact_with_options(source, &[], CompileOptions::default()).expect("temporal array operations compile");
+    let compiled = compile_to_sil_abi_artifact_with_options(source, &[], CompileOptions::default()).expect("temporal array operations compile");
     execute(compiled, &[2_000.into()]);
 }
 
@@ -139,7 +139,7 @@ fn temporal_arrays_reject_int_elements_without_conversion() {
         "contract C() { entry main() { int[] values = temporal[]{temporal(1)}; } }",
     ] {
         assert!(
-            sil_abi_artifact_with_options(source, &[], CompileOptions::default()).is_err(),
+            compile_to_sil_abi_artifact_with_options(source, &[], CompileOptions::default()).is_err(),
             "mixed int/temporal array must be rejected: {source}"
         );
     }
@@ -158,7 +158,7 @@ fn int_and_temporal_require_explicit_conversion() {
         "contract C() { entry main() { require(this.age >= 1); } }",
     ] {
         assert!(
-            sil_abi_artifact_with_options(source, &[], CompileOptions::default()).is_err(),
+            compile_to_sil_abi_artifact_with_options(source, &[], CompileOptions::default()).is_err(),
             "mixed or obsolete temporal expression must be rejected: {source}"
         );
     }
@@ -172,22 +172,22 @@ fn known_relative_age_must_fit_u32() {
             entry main() { require(this.ageDaa >= TOO_OLD); }
         }
     "#;
-    let error = sil_abi_artifact_with_options(source, &[], CompileOptions::default()).expect_err("known 2^32 value must be rejected");
+    let error = compile_to_sil_abi_artifact_with_options(source, &[], CompileOptions::default()).expect_err("known 2^32 value must be rejected");
     assert!(error.to_string().contains("0 <= value < 2^32"), "unexpected error: {error}");
 
     let negative = "contract C() { entry main() { require(this.ageDaa >= -1); } }";
     let error =
-        sil_abi_artifact_with_options(negative, &[], CompileOptions::default()).expect_err("known negative age must be rejected");
+        compile_to_sil_abi_artifact_with_options(negative, &[], CompileOptions::default()).expect_err("known negative age must be rejected");
     assert!(error.to_string().contains("0 <= value < 2^32"), "unexpected error: {error}");
 
     let zero = "contract C() { entry main() { require(this.ageDaa >= 0); } }";
-    sil_abi_artifact_with_options(zero, &[], CompileOptions::default()).expect("zero remains valid");
+    compile_to_sil_abi_artifact_with_options(zero, &[], CompileOptions::default()).expect("zero remains valid");
 
     let max = "contract C() { entry main() { require(this.ageDaa >= 4294967295); } }";
-    sil_abi_artifact_with_options(max, &[], CompileOptions::default()).expect("2^32 - 1 remains valid");
+    compile_to_sil_abi_artifact_with_options(max, &[], CompileOptions::default()).expect("2^32 - 1 remains valid");
 
     let constructor_known = "contract C(int age) { entry main() { require(this.ageDaa >= age); } }";
-    let error = sil_abi_artifact_with_options(constructor_known, &[ArtifactValue::Int(1_i64 << 32)], CompileOptions::default())
+    let error = compile_to_sil_abi_artifact_with_options(constructor_known, &[ArtifactValue::Int(1_i64 << 32)], CompileOptions::default())
         .expect_err("known constructor age must be rejected");
     assert!(error.to_string().contains("0 <= value < 2^32"), "unexpected error: {error}");
 }

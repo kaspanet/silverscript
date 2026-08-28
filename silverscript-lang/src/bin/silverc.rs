@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use clap::Parser;
 use silverscript_abi::ArtifactValue;
 use silverscript_lang::ast::parse_contract_ast;
-use silverscript_lang::compiler::sil_abi_artifact;
+use silverscript_lang::compiler::compile_to_sil_abi_artifact;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -78,7 +78,7 @@ fn run() -> Result<(), String> {
         Vec::new()
     };
 
-    let artifact = sil_abi_artifact(&source, &constructor_args).map_err(|err| format!("compile error: {err}"))?;
+    let artifact = compile_to_sil_abi_artifact(&source, &constructor_args).map_err(|err| format!("compile error: {err}"))?;
 
     let json = serde_json::to_string_pretty(&artifact).map_err(|err| format!("failed to serialize output: {err}"))?;
     let target = resolve_output_target(&cli, &cli.src, false);

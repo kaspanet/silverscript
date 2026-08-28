@@ -1,6 +1,6 @@
 use silverscript_abi::ArtifactValue;
 use silverscript_lang::ast::{ArrayDim, TypeBase, TypeRef, parse_contract_ast};
-use silverscript_lang::compiler::{CompileOptions, sil_abi_artifact_with_options};
+use silverscript_lang::compiler::{CompileOptions, compile_to_sil_abi_artifact_with_options};
 
 #[test]
 fn tutorial_contract_examples_parse() {
@@ -33,7 +33,7 @@ fn tutorial_examples_compile() {
             .map(|param| dummy_value(&param.type_ref))
             .collect::<Result<Vec<_>, _>>()
             .unwrap_or_else(|err| panic!("tutorial example #{index} constructor arguments could not be generated: {err}"));
-        if let Err(err) = sil_abi_artifact_with_options(&source, &constructor_args, CompileOptions::default()) {
+        if let Err(err) = compile_to_sil_abi_artifact_with_options(&source, &constructor_args, CompileOptions::default()) {
             panic!("tutorial example #{index} failed to compile: {err}\n--- snippet ---\n{snippet}\n--- wrapped source ---\n{source}");
         }
     }

@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use silverscript_abi::{
     ArtifactValue, CompiledContractArtifact, FieldArtifact, ParamArtifact, RuntimeFieldArtifact, RuntimeStateArtifact,
-    SIL_ABI_SCHEMA_VERSION, SilAbiArtifact, SilContractArtifact, SilEntryArtifact, StateArtifact, StateSpanArtifact, TypeArtifact,
+    SIL_ABI_SCHEMA_VERSION, SilAbiArtifact, SilContractArtifact, SilEntryArtifact, StateSpanArtifact, StructArtifact, TypeArtifact,
     encode_hex,
 };
 
@@ -105,13 +105,13 @@ fn artifact_value_type_mismatch(value: &ArtifactValue, expected_type: &TypeRef) 
 }
 
 /// Compiles one SilverScript contract into a complete portable ABI artifact.
-pub fn sil_abi_artifact(source: &str, constructor_args: &[ArtifactValue]) -> Result<SilAbiArtifact, CompilerError> {
-    sil_abi_artifact_with_options(source, constructor_args, CompileOptions::default())
+pub fn compile_to_sil_abi_artifact(source: &str, constructor_args: &[ArtifactValue]) -> Result<SilAbiArtifact, CompilerError> {
+    compile_to_sil_abi_artifact_with_options(source, constructor_args, CompileOptions::default())
 }
 
 /// Compiles one SilverScript contract into a complete portable ABI artifact
 /// using the requested compiler options.
-pub fn sil_abi_artifact_with_options(
+pub fn compile_to_sil_abi_artifact_with_options(
     source: &str,
     constructor_args: &[ArtifactValue],
     options: CompileOptions,
@@ -138,7 +138,7 @@ pub fn sil_abi_artifact_from_compiled<'i>(
                 .iter()
                 .map(|field| Ok(FieldArtifact { name: field.name.clone(), ty: type_artifact(&field.type_ref, &constants)? }))
                 .collect::<Result<Vec<_>, CompilerError>>()?;
-            Ok(StateArtifact { name: struct_.name.clone(), fields })
+            Ok(StructArtifact { name: struct_.name.clone(), fields })
         })
         .collect::<Result<Vec<_>, CompilerError>>()?;
     let contract = contract_artifact_from_compiled(compiled, constructor_args)?;
@@ -146,7 +146,7 @@ pub fn sil_abi_artifact_from_compiled<'i>(
     Ok(SilAbiArtifact {
         schema_version: SIL_ABI_SCHEMA_VERSION,
         compiler_version: compiled.compiler_version.clone(),
-        states,
+        structs: states,
         contracts: vec![contract],
     })
 }

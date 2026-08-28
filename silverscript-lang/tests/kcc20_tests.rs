@@ -14,7 +14,7 @@ use kaspa_txscript::standard::multisig_redeem_script;
 use rand::{RngCore, thread_rng};
 use secp256k1::{Keypair, Secp256k1, SecretKey};
 use silverscript_abi::ArtifactValue;
-use silverscript_lang::compiler::{CompileOptions, sil_abi_artifact_with_options};
+use silverscript_lang::compiler::{CompileOptions, compile_to_sil_abi_artifact_with_options};
 use std::collections::BTreeMap;
 use std::fs;
 
@@ -107,7 +107,7 @@ fn compile_kcc20_state_full(
     max_cov_ins: i64,
     max_cov_outs: i64,
 ) -> silverscript_abi::SilAbiArtifact {
-    sil_abi_artifact_with_options(
+    compile_to_sil_abi_artifact_with_options(
         source,
         &[
             ArtifactValue::Bytes(owner),
@@ -920,7 +920,7 @@ fn kcc20_covenant_minter() {
         compiled_template_parts_and_hash(&kcc20_template_probe)
     };
     let compile_minter = |kcc20_covid: Hash, amount: i64, initialized: bool| {
-        sil_abi_artifact_with_options(
+        compile_to_sil_abi_artifact_with_options(
             &kcc20_minter_source,
             &[
                 ArtifactValue::Bytes(owner_bytes.clone()),             // owner

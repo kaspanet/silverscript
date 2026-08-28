@@ -17,7 +17,7 @@ use kaspa_consensus_core::tx::{
 };
 use kaspa_muhash::MuHash;
 use silverscript_abi::ArtifactValue;
-use silverscript_lang::compiler::{CompileOptions, sil_abi_artifact_with_options};
+use silverscript_lang::compiler::{CompileOptions, compile_to_sil_abi_artifact_with_options};
 
 use common::{bytecode, encode_entry_sig_script, encode_single_entry_sig_script};
 
@@ -61,11 +61,11 @@ async fn compiled_lock_domains_are_enforced_in_actual_consensus_blocks() {
     // Compile one contract for each lock domain. The tests below spend their
     // outputs in real consensus blocks rather than inspecting emitted opcodes.
     let age_source = "contract Age() { entry main(int age) { require(this.ageDaa >= age); } }";
-    let age = sil_abi_artifact_with_options(age_source, &[], CompileOptions::default()).expect("age contract compiles");
+    let age = compile_to_sil_abi_artifact_with_options(age_source, &[], CompileOptions::default()).expect("age contract compiles");
     let time_source = "contract TimeLock() { entry main(temporal timestamp) { require(tx.time >= timestamp); } }";
-    let time = sil_abi_artifact_with_options(time_source, &[], CompileOptions::default()).expect("time contract compiles");
+    let time = compile_to_sil_abi_artifact_with_options(time_source, &[], CompileOptions::default()).expect("time contract compiles");
     let daa_source = "contract DaaLock() { entry main(int daa) { require(tx.daa >= daa); } }";
-    let daa = sil_abi_artifact_with_options(daa_source, &[], CompileOptions::default()).expect("DAA contract compiles");
+    let daa = compile_to_sil_abi_artifact_with_options(daa_source, &[], CompileOptions::default()).expect("DAA contract compiles");
 
     let funding_outpoint = TransactionOutpoint::new(TransactionId::from_bytes([1; 32]), 0);
     let age_overflow_outpoint = TransactionOutpoint::new(TransactionId::from_bytes([2; 32]), 0);

@@ -7,7 +7,7 @@ use silverscript_abi::ArtifactValue;
 use silverscript_lang::ast::Expr;
 use silverscript_lang::compiler::{
     CompileOptions, CompiledContract, CovenantDeclCallOptions, compile_contract, generated_covenant_auth_entrypoint_name,
-    sil_abi_artifact_with_options,
+    compile_to_sil_abi_artifact_with_options,
 };
 
 mod common;
@@ -156,7 +156,7 @@ const AUTH_VERIFICATION_CARDINALITY_SOURCE: &str = r#"
 "#;
 
 fn compile_state(source: &'static str, value: i64) -> silverscript_abi::SilAbiArtifact {
-    sil_abi_artifact_with_options(source, &[ArtifactValue::Int(value)], CompileOptions::default()).expect("compile succeeds")
+    compile_to_sil_abi_artifact_with_options(source, &[ArtifactValue::Int(value)], CompileOptions::default()).expect("compile succeeds")
 }
 
 fn function_param_type_names(compiled: &CompiledContract<'_>, function_name: &str) -> Vec<String> {
@@ -181,7 +181,7 @@ fn state_arg(value: i64) -> ArtifactValue {
 }
 
 fn compile_kcc20_state(owner: u8, amount: i64) -> silverscript_abi::SilAbiArtifact {
-    sil_abi_artifact_with_options(
+    compile_to_sil_abi_artifact_with_options(
         KCC20_SHAPED_SOURCE,
         &[ArtifactValue::Bytes(vec![owner]), ArtifactValue::Int(amount)],
         CompileOptions::default(),

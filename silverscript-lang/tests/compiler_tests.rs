@@ -23,8 +23,8 @@ use silverscript_abi::{ArtifactValue, SilAbiArtifact, TypeArtifact};
 use silverscript_lang::ast::{ContractAst, Expr, ExprKind, Statement, format_contract_ast, parse_contract_ast, parse_type_ref};
 use silverscript_lang::compiler::{
     COMPILER_VERSION, CompileOptions, CompiledContract, CompilerError, CovenantDeclCallOptions, DispatchTag,
-    compile_contract as compile_internal_contract, compile_contract_ast, compile_debug_expr, generated_covenant_auth_entrypoint_name,
-    sil_abi_artifact, sil_abi_artifact_from_compiled, struct_object,
+    compile_contract as compile_internal_contract, compile_contract_ast, compile_debug_expr, compile_to_sil_abi_artifact,
+    generated_covenant_auth_entrypoint_name, sil_abi_artifact_from_compiled, struct_object,
 };
 use silverscript_lang::debug_info::StepKind;
 use silverscript_lang::template::template_hash;
@@ -81,7 +81,7 @@ fn artifact_with_options_preserves_compiled_output_and_state_layout() {
         }
     "#;
 
-    let default_artifact = sil_abi_artifact(source, &[7.into()]).expect("default artifact compiles");
+    let default_artifact = compile_to_sil_abi_artifact(source, &[7.into()]).expect("default artifact compiles");
     let default_contract = single_contract(&default_artifact);
     assert!(default_contract.compiled.state_span.len > 0, "stateful contracts should expose a non-empty state layout");
 
@@ -2828,7 +2828,7 @@ fn build_sig_script_appends_dispatch_tag_for_single_entrypoint() {
             }
         }
     "#;
-    let artifact = sil_abi_artifact(source, &[]).expect("compile succeeds");
+    let artifact = compile_to_sil_abi_artifact(source, &[]).expect("compile succeeds");
     let sigscript = encode_single_entry_sig_script(&artifact, &[1.into(), vec![2u8; 4].into()]).expect("sigscript builds");
     let dispatch_tag =
         artifact.contract("Single").and_then(|contract| contract.entry("spend")).expect("entrypoint resolved").dispatch_tag;
@@ -3775,9 +3775,9 @@ fn runtime_supports_regular_struct_array_entrypoint_arguments_with_struct_signat
     "#;
 
     let mut compiled = compile_internal_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
-    let original_artifact = sil_abi_artifact(source, &[]).expect("original interface compiles");
+    let original_artifact = compile_to_sil_abi_artifact(source, &[]).expect("original interface compiles");
     let old_dispatch_tag = single_contract(&original_artifact).entry("main").expect("main entry exists").dispatch_tag.into_bytes();
-    let interface_artifact = sil_abi_artifact(struct_signature_source, &[]).expect("struct interface compiles");
+    let interface_artifact = compile_to_sil_abi_artifact(struct_signature_source, &[]).expect("struct interface compiles");
     let dispatch_tag = single_contract(&interface_artifact).entry("main").expect("main entry exists").dispatch_tag.into_bytes();
     replace_compiled_interface(&mut compiled, struct_signature_source, old_dispatch_tag, dispatch_tag);
 
@@ -4224,9 +4224,9 @@ fn runtime_supports_regular_struct_array_non_entrypoint_arguments_with_struct_si
     "#;
 
     let mut compiled = compile_internal_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
-    let original_artifact = sil_abi_artifact(source, &[]).expect("original interface compiles");
+    let original_artifact = compile_to_sil_abi_artifact(source, &[]).expect("original interface compiles");
     let old_dispatch_tag = single_contract(&original_artifact).entry("main").expect("main entry exists").dispatch_tag.into_bytes();
-    let interface_artifact = sil_abi_artifact(struct_signature_source, &[]).expect("struct interface compiles");
+    let interface_artifact = compile_to_sil_abi_artifact(struct_signature_source, &[]).expect("struct interface compiles");
     let dispatch_tag = single_contract(&interface_artifact).entry("main").expect("main entry exists").dispatch_tag.into_bytes();
     replace_compiled_interface(&mut compiled, struct_signature_source, old_dispatch_tag, dispatch_tag);
 
@@ -7200,7 +7200,7 @@ fn dispatch_tag_and_argument_encoding_match_kcc1_vector() {
         }
     "#;
 
-    let artifact = sil_abi_artifact(source, &[]).expect("compile succeeds");
+    let artifact = compile_to_sil_abi_artifact(source, &[]).expect("compile succeeds");
     let contract = artifact.contract("Test").expect("contract exists");
     let step = contract.entry("step").expect("step entrypoint exists");
     assert_eq!(step.params[1].ty, TypeArtifact::FixedBytes { len: 4 });
@@ -7231,7 +7231,7 @@ fn record_dispatch_tag_matches_kcc1_structural_type_vector() {
         }
     "#;
 
-    let artifact = sil_abi_artifact(source, &[]).expect("compile succeeds");
+    let artifact = compile_to_sil_abi_artifact(source, &[]).expect("compile succeeds");
     let dispense =
         artifact.contract("CoffeeMachine").and_then(|contract| contract.entry("dispense")).expect("dispense entrypoint exists");
     assert_eq!(
@@ -7266,7 +7266,7 @@ fn nested_record_dispatch_tags_hash_structural_type_preimages() {
         }
     "#;
 
-    let artifact = sil_abi_artifact(source, &[]).expect("compile succeeds");
+    let artifact = compile_to_sil_abi_artifact(source, &[]).expect("compile succeeds");
     let contract = artifact.contract("Test").expect("contract exists");
     let vectors = [
         ("scalar", "scalar({{int,byte[3]},bool[2]})"),
@@ -7326,7 +7326,8 @@ fn silverscript_abi_encodes_and_runs_nested_struct_entry_arguments() {
     "#;
 
     let artifact_constructor_args = [7.into()];
-    let abi = sil_abi_artifact(source, &artifact_constructor_args).expect("source compiles to a complete portable ABI artifact");
+    let abi =
+        compile_to_sil_abi_artifact(source, &artifact_constructor_args).expect("source compiles to a complete portable ABI artifact");
     abi.verify().expect("portable ABI matches the compiled contract");
 
     let coordinates = |x, y| {
@@ -7393,7 +7394,7 @@ fn artifact_values_compile_nested_constructor_arguments() {
         ArtifactValue::Text("ready".to_string()),
     ];
 
-    let abi = sil_abi_artifact(source, &args).expect("portable ABI constructor values compile");
+    let abi = compile_to_sil_abi_artifact(source, &args).expect("portable ABI constructor values compile");
     abi.verify().expect("portable ABI verifies");
     let contract = abi.contract("ArtifactConstructors").expect("contract exists");
     let bytecode = contract.compiled.bytecode.clone();
@@ -17352,14 +17353,14 @@ fn artifact_sigscript_builder_supports_constructor_sized_struct_array_fields() {
             }
         }
     "#;
-    let artifact = sil_abi_artifact(source, &[3.into()]).expect("contract compiles");
+    let artifact = compile_to_sil_abi_artifact(source, &[3.into()]).expect("contract compiles");
     let input = &artifact.contract("C").and_then(|contract| contract.entry("main")).expect("entrypoint exists").params[0];
     assert_eq!(input.ty, TypeArtifact::DynamicArray { item: Box::new(TypeArtifact::Struct { name: "Item".to_string() }) });
-    assert_eq!(artifact.states[0].fields[0].ty, TypeArtifact::FixedBytes { len: 3 });
+    assert_eq!(artifact.structs[0].fields[0].ty, TypeArtifact::FixedBytes { len: 3 });
 
     let json = serde_json::to_string(&artifact).expect("portable artifact serializes");
     let artifact: SilAbiArtifact = serde_json::from_str(&json).expect("portable artifact deserializes");
-    assert_eq!(artifact.states[0].fields[0].ty, TypeArtifact::FixedBytes { len: 3 });
+    assert_eq!(artifact.structs[0].fields[0].ty, TypeArtifact::FixedBytes { len: 3 });
     let items =
         ArtifactValue::Array(vec![ArtifactValue::Object(BTreeMap::from([("data".to_string(), vec![0xaau8, 0xbb, 0xcc].into())]))]);
     let sigscript = encode_single_entry_sig_script(&artifact, &[items]).expect("resolved ABI encodes the valid argument");
@@ -17381,7 +17382,7 @@ fn artifact_sigscript_builder_rejects_wrong_constructor_sized_struct_fields() {
             }
         }
     "#;
-    let artifact = sil_abi_artifact(source, &[3.into()]).expect("contract compiles");
+    let artifact = compile_to_sil_abi_artifact(source, &[3.into()]).expect("contract compiles");
     let item = |data: Vec<u8>| ArtifactValue::Object(BTreeMap::from([("data".to_string(), ArtifactValue::from(data))]));
     encode_single_entry_sig_script(&artifact, &[item(vec![0xaa, 0xbb, 0xcc])])
         .expect("the valid constructor-sized struct argument encodes");

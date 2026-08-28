@@ -280,7 +280,7 @@ fn artifact_struct_fields<'a>(
     if contract.runtime_state.source == name {
         return Some(contract.runtime_state.fields.iter().map(|field| (field.name.as_str(), &field.ty)).collect());
     }
-    abi.states
+    abi.structs
         .iter()
         .find(|state| state.name == name)
         .map(|state| state.fields.iter().map(|field| (field.name.as_str(), &field.ty)).collect())
