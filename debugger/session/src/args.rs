@@ -19,7 +19,7 @@ pub fn parse_hex_bytes(raw: &str) -> Result<Vec<u8>, String> {
     if hex_str.is_empty() {
         return Ok(vec![]);
     }
-    let normalized = if hex_str.len() % 2 != 0 { format!("0{hex_str}") } else { hex_str.to_string() };
+    let normalized = if !hex_str.len().is_multiple_of(2) { format!("0{hex_str}") } else { hex_str.to_string() };
     if !normalized.chars().all(|ch| ch.is_ascii_hexdigit()) {
         return Err(format!("invalid hex bytes '{raw}'"));
     }

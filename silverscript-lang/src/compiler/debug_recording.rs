@@ -351,11 +351,9 @@ impl<'i> DebugRecorder<'i> {
             (active.start_statement_slot(stmt, bytecode_start), true)
         };
 
-        if is_new_slot {
-            if let Some(entrypoint) = active.active_entrypoint_mut() {
-                entrypoint.emit_inline_call_resumes(slot.statement_index, bytecode_start);
-                entrypoint.emit_inline_call_enters(slot.statement_index, bytecode_start);
-            }
+        if is_new_slot && let Some(entrypoint) = active.active_entrypoint_mut() {
+            entrypoint.emit_inline_call_resumes(slot.statement_index, bytecode_start);
+            entrypoint.emit_inline_call_enters(slot.statement_index, bytecode_start);
         }
         active.statement_debug_state_stack.push(slot);
     }

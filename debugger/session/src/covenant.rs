@@ -50,10 +50,10 @@ impl ResolvedCovenantCallTarget {
     }
 
     pub fn display_name_for(&self, function_name: &str) -> Option<&str> {
-        if let Some(body) = &self.delegate_body {
-            if body.policy_function_name == function_name {
-                return Some(body.source_name.as_str());
-            }
+        if let Some(body) = &self.delegate_body
+            && body.policy_function_name == function_name
+        {
+            return Some(body.source_name.as_str());
         }
         (self.policy_function_name == function_name || self.matches_generated_name(function_name)).then_some(self.source_name.as_str())
     }

@@ -694,13 +694,11 @@ contract InlineParams() {
         let mut saw_inline_param = false;
         for _ in 0..8 {
             let in_callee = session.call_stack().iter().any(|name| name == "add1");
-            if in_callee {
-                if let Ok(x) = session.variable_by_name("x") {
-                    let rendered = format_value(&x.type_name, &x.value);
-                    assert_eq!(rendered, "4", "inline param x should reflect caller-provided value");
-                    saw_inline_param = true;
-                    break;
-                }
+            if in_callee && let Ok(x) = session.variable_by_name("x") {
+                let rendered = format_value(&x.type_name, &x.value);
+                assert_eq!(rendered, "4", "inline param x should reflect caller-provided value");
+                saw_inline_param = true;
+                break;
             }
             if session.step_into()?.is_none() {
                 break;
@@ -1191,11 +1189,11 @@ contract LoopStepOver() {
 
         let mut saw_first_iteration = false;
         for _ in 0..8 {
-            if let Ok(i) = session.variable_by_name("i") {
-                if format_value(&i.type_name, &i.value) == "0" {
-                    saw_first_iteration = true;
-                    break;
-                }
+            if let Ok(i) = session.variable_by_name("i")
+                && format_value(&i.type_name, &i.value) == "0"
+            {
+                saw_first_iteration = true;
+                break;
             }
             session.step_over()?.ok_or("expected to reach first loop iteration")?;
         }
@@ -1208,11 +1206,11 @@ contract LoopStepOver() {
 
         let mut saw_second_iteration = false;
         for _ in 0..8 {
-            if let Ok(i) = session.variable_by_name("i") {
-                if format_value(&i.type_name, &i.value) == "1" {
-                    saw_second_iteration = true;
-                    break;
-                }
+            if let Ok(i) = session.variable_by_name("i")
+                && format_value(&i.type_name, &i.value) == "1"
+            {
+                saw_second_iteration = true;
+                break;
             }
             if session.step_over()?.is_none() {
                 break;

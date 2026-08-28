@@ -74,15 +74,15 @@ fn dummy_artifact_value_for_type(type_name: &str) -> ArtifactValue {
         return vec![0u8; size].into();
     }
     // Support byte[N] syntax
-    if let Some(bracket_pos) = type_name.find('[') {
-        if type_name.ends_with(']') {
-            let base_type = &type_name[..bracket_pos];
-            let size_str = &type_name[bracket_pos + 1..type_name.len() - 1];
-            if base_type == "byte" {
-                if let Ok(size) = size_str.parse::<usize>() {
-                    return vec![0u8; size].into();
-                }
-            }
+    if let Some(bracket_pos) = type_name.find('[')
+        && type_name.ends_with(']')
+    {
+        let base_type = &type_name[..bracket_pos];
+        let size_str = &type_name[bracket_pos + 1..type_name.len() - 1];
+        if base_type == "byte"
+            && let Ok(size) = size_str.parse::<usize>()
+        {
+            return vec![0u8; size].into();
         }
     }
     0i64.into()

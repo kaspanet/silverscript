@@ -270,20 +270,20 @@ pub(super) fn encode_value_with_constant_size<'i>(
         }
         _ => {
             // Handle fixed-size byte arrays like byte[N]
-            if let (Some(inner_type), Some(size)) = (type_ref.array_element_type(), array_type_size(type_ref, constants)?) {
-                if inner_type.is_byte() {
-                    let ExprKind::Array { values, .. } = &value.kind else {
-                        return Err(array_literal_encoding_error(value));
-                    };
-                    if values.len() != size {
-                        return Err(CompilerError::Unsupported("array literal element type mismatch".to_string()));
-                    }
-                    return values
-                        .iter()
-                        .map(|value| encode_value_with_constant_size(value, &inner_type, constants))
-                        .collect::<Result<Vec<_>, _>>()
-                        .map(|chunks| chunks.concat());
+            if let (Some(inner_type), Some(size)) = (type_ref.array_element_type(), array_type_size(type_ref, constants)?)
+                && inner_type.is_byte()
+            {
+                let ExprKind::Array { values, .. } = &value.kind else {
+                    return Err(array_literal_encoding_error(value));
+                };
+                if values.len() != size {
+                    return Err(CompilerError::Unsupported("array literal element type mismatch".to_string()));
                 }
+                return values
+                    .iter()
+                    .map(|value| encode_value_with_constant_size(value, &inner_type, constants))
+                    .collect::<Result<Vec<_>, _>>()
+                    .map(|chunks| chunks.concat());
             }
 
             // Handle nested fixed-size arrays with known element sizes.
