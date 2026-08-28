@@ -1,9 +1,8 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use silverscript_abi::{
     ArtifactValue, CompiledContractArtifact, FieldArtifact, ParamArtifact, RuntimeFieldArtifact, RuntimeStateArtifact,
     SIL_ABI_SCHEMA_VERSION, SilAbiArtifact, SilContractArtifact, SilEntryArtifact, StateSpanArtifact, StructArtifact, TypeArtifact,
-    encode_hex,
 };
 
 use super::*;
@@ -128,7 +127,7 @@ pub fn sil_abi_artifact_from_compiled<'i>(
     constructor_args: &[Expr<'i>],
 ) -> Result<SilAbiArtifact, CompilerError> {
     let constants = artifact_constants(compiled, constructor_args);
-    let states = compiled
+    let structs = compiled
         .ast
         .structs
         .iter()
@@ -138,16 +137,16 @@ pub fn sil_abi_artifact_from_compiled<'i>(
                 .iter()
                 .map(|field| Ok(FieldArtifact { name: field.name.clone(), ty: type_artifact(&field.type_ref, &constants)? }))
                 .collect::<Result<Vec<_>, CompilerError>>()?;
-            Ok(StructArtifact { name: struct_.name.clone(), fields })
+            Ok((struct_.name.clone(), StructArtifact { fields }))
         })
-        .collect::<Result<Vec<_>, CompilerError>>()?;
+        .collect::<Result<BTreeMap<_, _>, CompilerError>>()?;
     let contract = contract_artifact_from_compiled(compiled, constructor_args)?;
 
     Ok(SilAbiArtifact {
         schema_version: SIL_ABI_SCHEMA_VERSION,
         compiler_version: compiled.compiler_version.clone(),
-        structs: states,
-        contracts: vec![contract],
+        structs,
+        contracts: BTreeMap::from([(compiled.contract_name.clone(), contract)]),
     })
 }
 
@@ -180,11 +179,11 @@ fn contract_artifact_from_compiled<'i>(
                 .iter()
                 .map(|param| Ok(ParamArtifact { name: param.name.clone(), ty: type_artifact(&param.type_ref, &constants)? }))
                 .collect::<Result<Vec<_>, CompilerError>>()?;
-            Ok(SilEntryArtifact { name: function.name.clone(), dispatch_tag: dispatch_tag.into(), params })
+            Ok((function.name.clone(), SilEntryArtifact { dispatch_tag: dispatch_tag.into(), params }))
         })
-        .collect::<Result<Vec<_>, CompilerError>>()?;
+        .collect::<Result<BTreeMap<_, _>, CompilerError>>()?;
     let artifact_entry = |entry_name: &str| {
-        entries.iter().find(|artifact| artifact.name == entry_name).cloned().ok_or_else(|| {
+        entries.contains_key(entry_name).then(|| entry_name.to_string()).ok_or_else(|| {
             CompilerError::Unsupported(format!(
                 "compiled contract '{}' has no portable ABI entry for generated function '{}'",
                 compiled.contract_name, entry_name
@@ -212,7 +211,6 @@ fn contract_artifact_from_compiled<'i>(
 
     let template_hash = compiled.template_hash();
     Ok(SilContractArtifact {
-        name: compiled.contract_name.clone(),
         source_path: format!("sil/{}.sil", compiled.contract_name),
         runtime_state: RuntimeStateArtifact { source: STATE_TYPE_NAME.to_string(), fields: runtime_fields },
         entries,
@@ -220,9 +218,7 @@ fn contract_artifact_from_compiled<'i>(
         delegate_entry_abi,
         compiled: CompiledContractArtifact {
             bytecode: compiled.bytecode.clone(),
-            script_hex: encode_hex(&compiled.bytecode),
             template_hash,
-            template_hash_hex: encode_hex(&template_hash),
             state_span: StateSpanArtifact { offset: layout.start, len: layout.len },
         },
     })

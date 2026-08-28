@@ -111,7 +111,6 @@ The output is a portable `SilAbiArtifact` JSON document containing:
 You can also compile contracts programmatically using the SilverScript Rust library:
 
 ```rust
-use silverscript_abi::decode_hex;
 use silverscript_lang::compiler::sil_abi_artifact;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -127,10 +126,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     // Constructor arguments (x = 100)
     let artifact = sil_abi_artifact(source, &[100.into()])?;
-    let contract = artifact.contract("MyContract").expect("contract exists");
+    let (contract_name, contract) = artifact.contracts.get_key_value("MyContract").expect("contract exists");
 
-    println!("Contract name: {}", contract.name);
-    println!("Bytecode length: {} bytes", decode_hex(&contract.compiled.script_hex)?.len());
+    println!("Contract name: {contract_name}");
+    println!("Bytecode length: {} bytes", contract.compiled.bytecode.len());
     println!("Entries: {:?}", contract.entries);
     
     Ok(())

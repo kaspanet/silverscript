@@ -211,9 +211,10 @@ fn build_covenant_input_sigscript<'i>(
     raw_args: &[String],
     output_states: Option<&[DebugValue]>,
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    let [contract] = compiled.abi.contracts.as_slice() else {
+    if compiled.abi.contracts.len() != 1 {
         return Err("debugger requires an artifact containing exactly one contract".into());
-    };
+    }
+    let (contract_name, contract) = compiled.abi.contracts.first_key_value().expect("contract count was checked");
     let entrypoint_name = target.generated_entrypoint_name_for(is_leader);
     let entry = contract.entry(&entrypoint_name).ok_or("generated covenant entrypoint not found")?;
     let typed_args = if target.binding == DebugCovenantBinding::Cov && !is_leader {
@@ -227,7 +228,7 @@ fn build_covenant_input_sigscript<'i>(
             args
         }
     };
-    Ok(encode_contract_entry_sig_script(&compiled.abi, &contract.name, &entrypoint_name, &typed_args)?)
+    Ok(encode_contract_entry_sig_script(&compiled.abi, contract_name, &entrypoint_name, &typed_args)?)
 }
 
 fn resolve_state_for_ctor_args(
@@ -750,7 +751,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let selected_name = if selected_name.is_empty() {
-        contract_artifact.entries.first().map(|entry| entry.name.clone()).ok_or("contract has no functions")?
+        contract_artifact.entries.first_key_value().map(|(name, _)| name.clone()).ok_or("contract has no functions")?
     } else {
         selected_name
     };
@@ -905,7 +906,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         let entry = active_contract.entry(&selected_name).ok_or_else(|| format!("entry '{selected_name}' not found"))?;
         let typed_args = parse_artifact_args(&active_compiled.abi, active_contract, &entry.params, &raw_args)?;
-        encode_contract_entry_sig_script(&active_compiled.abi, &active_contract.name, &selected_name, &typed_args)?
+        encode_contract_entry_sig_script(&active_compiled.abi, &parsed_contract.name, &selected_name, &typed_args)?
     };
 
     let mut tx_inputs = Vec::with_capacity(tx.inputs.len());

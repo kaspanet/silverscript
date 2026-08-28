@@ -26,7 +26,7 @@ use silverscript_lang::compiler::CompileOptions;
 use silverscript_lang::debug_info::StepKind;
 
 fn single_contract<'a>(artifact: &'a SilDebugArtifact<'_>) -> &'a SilContractArtifact {
-    let [contract] = artifact.abi.contracts.as_slice() else {
+    let Some(contract) = artifact.abi.contracts.values().next().filter(|_| artifact.abi.contracts.len() == 1) else {
         panic!("expected exactly one contract");
     };
     contract
@@ -41,8 +41,10 @@ fn encode_entry_sig_script(
     entry_name: &str,
     args: &[ArtifactValue],
 ) -> Result<Vec<u8>, silverscript_abi::CodecError> {
-    let contract = single_contract(artifact);
-    encode_contract_entry_sig_script(&artifact.abi, &contract.name, entry_name, args)
+    let Some((contract_name, _)) = artifact.abi.contracts.first_key_value().filter(|_| artifact.abi.contracts.len() == 1) else {
+        panic!("expected exactly one contract");
+    };
+    encode_contract_entry_sig_script(&artifact.abi, contract_name, entry_name, args)
 }
 
 fn artifact_object(fields: impl IntoIterator<Item = (&'static str, ArtifactValue)>) -> ArtifactValue {

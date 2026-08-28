@@ -21,7 +21,7 @@ fn tutorial_rust_programmatic_compilation_example() {
 
     assert!(!contract.compiled.bytecode.is_empty());
     assert_eq!(contract.entries.len(), 1);
-    assert_eq!(contract.entries[0].name, "spend");
+    assert!(contract.entries.contains_key("spend"));
 }
 
 #[test]

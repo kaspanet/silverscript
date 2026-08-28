@@ -32,7 +32,7 @@ pub fn compile_contract(
 }
 
 pub fn single_contract(artifact: &SilAbiArtifact) -> &SilContractArtifact {
-    let [contract] = artifact.contracts.as_slice() else {
+    let Some(contract) = artifact.contracts.values().next().filter(|_| artifact.contracts.len() == 1) else {
         panic!("expected exactly one contract, found {}", artifact.contracts.len());
     };
     contract
@@ -61,34 +61,36 @@ pub fn build_sig_script_for_covenant_decl(
     args: Vec<ArtifactValue>,
     options: CovenantDeclCallOptions,
 ) -> Result<Vec<u8>, CompilerError> {
-    let contract = single_contract(artifact);
-    encode_contract_covenant_decl_sig_script(artifact, &contract.name, function_name, options.is_leader, &args)
+    let Some((contract_name, _)) = artifact.contracts.first_key_value().filter(|_| artifact.contracts.len() == 1) else {
+        return Err(CompilerError::Unsupported(format!("expected exactly one contract, found {}", artifact.contracts.len())));
+    };
+    encode_contract_covenant_decl_sig_script(artifact, contract_name, function_name, options.is_leader, &args)
         .map_err(|err| CompilerError::Unsupported(err.to_string()))
 }
 
 /// Encodes an invocation for an artifact containing exactly one contract and
 /// exactly one public entrypoint.
 pub fn encode_single_entry_sig_script(artifact: &SilAbiArtifact, args: &[ArtifactValue]) -> CodecResult<Vec<u8>> {
-    let [contract] = artifact.contracts.as_slice() else {
+    let Some((contract_name, contract)) = artifact.contracts.first_key_value().filter(|_| artifact.contracts.len() == 1) else {
         return Err(CodecError::UnsupportedType(format!("expected exactly one contract, found {}", artifact.contracts.len())));
     };
-    let [entry] = contract.entries.as_slice() else {
+    let Some((entry_name, _)) = contract.entries.first_key_value().filter(|_| contract.entries.len() == 1) else {
         return Err(CodecError::UnsupportedType(format!(
             "expected exactly one entry in contract `{}`, found {}",
-            contract.name,
+            contract_name,
             contract.entries.len()
         )));
     };
-    encode_contract_entry_sig_script(artifact, &contract.name, &entry.name, args)
+    encode_contract_entry_sig_script(artifact, contract_name, entry_name, args)
 }
 
 /// Encodes a named entry invocation for an artifact containing exactly one
 /// contract.
 pub fn encode_entry_sig_script(artifact: &SilAbiArtifact, entry_name: &str, args: &[ArtifactValue]) -> CodecResult<Vec<u8>> {
-    let [contract] = artifact.contracts.as_slice() else {
+    let Some((contract_name, _)) = artifact.contracts.first_key_value().filter(|_| artifact.contracts.len() == 1) else {
         return Err(CodecError::UnsupportedType(format!("expected exactly one contract, found {}", artifact.contracts.len())));
     };
-    encode_contract_entry_sig_script(artifact, &contract.name, entry_name, args)
+    encode_contract_entry_sig_script(artifact, contract_name, entry_name, args)
 }
 
 pub fn push_redeem_script(bytecode: &[u8]) -> Vec<u8> {

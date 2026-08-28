@@ -12,7 +12,7 @@ use kaspa_txscript::caches::Cache;
 use kaspa_txscript::script_builder::ScriptBuilder;
 use kaspa_txscript::{EngineCtx, EngineFlags, TxScriptEngine};
 use rand::RngCore;
-use silverscript_abi::{SilAbiArtifact, decode_hex};
+use silverscript_abi::SilAbiArtifact;
 use silverscript_lang::ast::ContractAst;
 use silverscript_lang::compiler::DispatchTag;
 
@@ -84,7 +84,7 @@ fn silverc_defaults_output_path_and_empty_ctor_args() {
     let artifact: SilAbiArtifact = serde_json::from_str(&json).expect("parse portable ABI artifact");
     artifact.verify().expect("portable ABI verifies");
     assert_eq!(artifact.contracts.len(), 1);
-    assert_eq!(artifact.contracts[0].name, "Basic");
+    assert!(artifact.contracts.contains_key("Basic"));
 }
 
 #[test]
@@ -126,8 +126,7 @@ fn silverc_accepts_constructor_args_and_output_flag() {
     artifact.verify().expect("portable ABI verifies");
     let contract = artifact.contract("WithCtor").expect("contract resolved");
     let selector = contract.entry("main").expect("entrypoint resolved").dispatch_tag.into_bytes();
-    let bytecode = decode_hex(&contract.compiled.script_hex).expect("compiled script decodes");
-    assert_eq!(contract.compiled.bytecode, bytecode);
+    let bytecode = contract.compiled.bytecode.clone();
     assert!(run_bytecode_with_selector(bytecode, selector).is_ok());
 }
 

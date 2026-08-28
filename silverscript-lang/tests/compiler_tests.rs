@@ -7035,7 +7035,8 @@ fn wrap_with_single_dispatch(compiled: &silverscript_abi::SilAbiArtifact, body: 
 }
 
 fn wrap_with_single_dispatch_and_state(compiled: &silverscript_abi::SilAbiArtifact, state: &[u8], body: &[u8]) -> Vec<u8> {
-    let [entrypoint] = single_contract(compiled).entries.as_slice() else {
+    let entries = &single_contract(compiled).entries;
+    let Some(entrypoint) = entries.values().next().filter(|_| entries.len() == 1) else {
         panic!("single-dispatch wrapper requires exactly one ABI entrypoint");
     };
     wrap_with_single_dispatch_tag(entrypoint.dispatch_tag.into_bytes(), state, body)
@@ -17193,12 +17194,7 @@ fn formatting_and_ast_round_trip_preserve_artifact() {
     assert_eq!(bytecode(&original), from_ast.bytecode);
     let original_entries = &single_contract(&original).entries;
     let ast_entries = &single_contract(&from_ast_artifact).entries;
-    assert_eq!(original_entries.len(), ast_entries.len());
-    for (original_entry, ast_entry) in original_entries.iter().zip(ast_entries) {
-        assert_eq!(original_entry.name, ast_entry.name);
-        assert_eq!(original_entry.dispatch_tag, ast_entry.dispatch_tag);
-        assert_eq!(original_entry.params, ast_entry.params);
-    }
+    assert_eq!(original_entries, ast_entries);
     assert_eq!(state_layout(&original), from_ast.state_layout);
 }
 
@@ -17379,11 +17375,11 @@ fn artifact_sigscript_builder_supports_constructor_sized_struct_array_fields() {
     let artifact = compile_to_sil_abi_artifact(source, &[3.into()]).expect("contract compiles");
     let input = &artifact.contract("C").and_then(|contract| contract.entry("main")).expect("entrypoint exists").params[0];
     assert_eq!(input.ty, TypeArtifact::DynamicArray { item: Box::new(TypeArtifact::Struct { name: "Item".to_string() }) });
-    assert_eq!(artifact.structs[0].fields[0].ty, TypeArtifact::FixedBytes { len: 3 });
+    assert_eq!(artifact.structs["Item"].fields[0].ty, TypeArtifact::FixedBytes { len: 3 });
 
     let json = serde_json::to_string(&artifact).expect("portable artifact serializes");
     let artifact: SilAbiArtifact = serde_json::from_str(&json).expect("portable artifact deserializes");
-    assert_eq!(artifact.structs[0].fields[0].ty, TypeArtifact::FixedBytes { len: 3 });
+    assert_eq!(artifact.structs["Item"].fields[0].ty, TypeArtifact::FixedBytes { len: 3 });
     let items =
         ArtifactValue::Array(vec![ArtifactValue::Object(BTreeMap::from([("data".to_string(), vec![0xaau8, 0xbb, 0xcc].into())]))]);
     let sigscript = encode_single_entry_sig_script(&artifact, &[items]).expect("resolved ABI encodes the valid argument");

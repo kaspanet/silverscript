@@ -25,7 +25,7 @@ fn lowers_auth_covenant_declaration_to_hidden_entrypoint_name() {
     let abi = compile_to_sil_abi_artifact(source, &[3.into()]).expect("portable ABI compiles");
     let artifact = single_contract(&abi);
     assert_eq!(artifact.entries.len(), 1);
-    assert_eq!(artifact.entries[0].name, generated_covenant_auth_entrypoint_name("spend"));
+    assert!(artifact.entries.contains_key(&generated_covenant_auth_entrypoint_name("spend")));
     assert!(compiled.ast.functions.iter().any(|f| f.name == "__covenant_policy_spend" && !f.entrypoint));
     assert!(compiled.ast.functions.iter().any(|f| f.name == generated_covenant_auth_entrypoint_name("spend") && f.entrypoint));
     assert!(compiled.bytecode.clone().contains(&OpAuthOutputCount));
@@ -46,7 +46,7 @@ fn infers_auth_binding_from_from_equal_one_when_binding_omitted() {
     let abi = compile_to_sil_abi_artifact(source, &[3.into()]).expect("portable ABI compiles");
     let artifact = single_contract(&abi);
     assert_eq!(artifact.entries.len(), 1);
-    assert_eq!(artifact.entries[0].name, generated_covenant_auth_entrypoint_name("spend"));
+    assert!(artifact.entries.contains_key(&generated_covenant_auth_entrypoint_name("spend")));
     assert!(compiled.ast.functions.iter().any(|f| f.name == "__covenant_policy_spend" && !f.entrypoint));
     assert!(compiled.ast.functions.iter().any(|f| f.name == generated_covenant_auth_entrypoint_name("spend") && f.entrypoint));
     assert!(compiled.bytecode.clone().contains(&OpAuthOutputCount));
@@ -66,8 +66,8 @@ fn lowers_cov_covenant_to_leader_and_delegate_entrypoints() {
     let compiled = compile_contract(source, &[Expr::int(2), Expr::int(4)], CompileOptions::default()).expect("compile succeeds");
     let abi = compile_to_sil_abi_artifact(source, &[2.into(), 4.into()]).expect("portable ABI compiles");
     let artifact = single_contract(&abi);
-    let abi_names: Vec<&str> = artifact.entries.iter().map(|entry| entry.name.as_str()).collect();
-    assert_eq!(abi_names, vec!["__leader_transition_ok", "__delegate"]);
+    let abi_names: Vec<&str> = artifact.entries.keys().map(String::as_str).collect();
+    assert_eq!(abi_names, vec!["__delegate", "__leader_transition_ok"]);
     assert!(compiled.ast.functions.iter().any(|f| f.name == "__covenant_policy_transition_ok" && !f.entrypoint));
     assert!(compiled.bytecode.clone().contains(&OpCovInputCount));
     assert!(compiled.bytecode.clone().contains(&OpCovOutputCount));
@@ -88,8 +88,8 @@ fn infers_cov_binding_from_from_greater_than_one_when_binding_omitted() {
     let compiled = compile_contract(source, &[Expr::int(2), Expr::int(4)], CompileOptions::default()).expect("compile succeeds");
     let abi = compile_to_sil_abi_artifact(source, &[2.into(), 4.into()]).expect("portable ABI compiles");
     let artifact = single_contract(&abi);
-    let abi_names: Vec<&str> = artifact.entries.iter().map(|entry| entry.name.as_str()).collect();
-    assert_eq!(abi_names, vec!["__leader_transition_ok", "__delegate"]);
+    let abi_names: Vec<&str> = artifact.entries.keys().map(String::as_str).collect();
+    assert_eq!(abi_names, vec!["__delegate", "__leader_transition_ok"]);
     assert!(compiled.ast.functions.iter().any(|f| f.name == "__covenant_policy_transition_ok" && !f.entrypoint));
     assert!(compiled.bytecode.clone().contains(&OpCovInputCount));
     assert!(compiled.bytecode.clone().contains(&OpCovOutputCount));
@@ -252,7 +252,7 @@ fn lowers_singleton_sugar_to_auth_one_to_one_defaults() {
 
     let compiled = compile_to_sil_abi_artifact_with_options(source, &[], CompileOptions::default()).expect("compile succeeds");
     let artifact = single_contract(&compiled);
-    assert_eq!(artifact.entries[0].name, generated_covenant_auth_entrypoint_name("spend"));
+    assert!(artifact.entries.contains_key(&generated_covenant_auth_entrypoint_name("spend")));
     assert!(bytecode(&compiled).contains(&OpAuthOutputCount));
 }
 
@@ -270,7 +270,7 @@ fn lowers_fanout_sugar_to_auth_with_to_bound() {
     let compiled = compile_to_sil_abi_artifact_with_options(source, &[ArtifactValue::Int(3)], CompileOptions::default())
         .expect("compile succeeds");
     let artifact = single_contract(&compiled);
-    assert_eq!(artifact.entries[0].name, generated_covenant_auth_entrypoint_name("split"));
+    assert!(artifact.entries.contains_key(&generated_covenant_auth_entrypoint_name("split")));
     assert!(bytecode(&compiled).contains(&OpAuthOutputCount));
 }
 
@@ -723,11 +723,11 @@ fn allows_multiple_cov_covenant_declarations() {
         .expect("multiple cov-bound declarations compile");
     let abi = compile_to_sil_abi_artifact(source, &[2.into(), 4.into()]).expect("portable ABI compiles");
     let artifact = single_contract(&abi);
-    let abi_names: Vec<&str> = artifact.entries.iter().map(|entry| entry.name.as_str()).collect();
-    assert_eq!(abi_names, vec!["__leader_merge", "__leader_rebalance", "__delegate"]);
+    let abi_names: Vec<&str> = artifact.entries.keys().map(String::as_str).collect();
+    assert_eq!(abi_names, vec!["__delegate", "__leader_merge", "__leader_rebalance"]);
     assert_eq!(artifact.cov_binding_leader_decl_entry("merge"), artifact.entry("__leader_merge"));
     assert_eq!(artifact.cov_binding_leader_decl_entry("rebalance"), artifact.entry("__leader_rebalance"));
-    assert_eq!(artifact.delegate_entry_abi.as_ref(), artifact.entry("__delegate"));
+    assert_eq!(artifact.delegate_entry_abi.as_deref(), Some("__delegate"));
 
     let merge_delegate = build_sig_script_for_covenant_decl(&compiled, "merge", vec![], Default::default())
         .expect("merge routes to the shared delegate");
@@ -759,11 +759,11 @@ fn portable_abi_preserves_covenant_declaration_and_delegate_entries() {
     let decoded: SilAbiArtifact = serde_json::from_str(&json).expect("portable covenant ABI deserializes");
     let contract = decoded.contract("Decls").expect("contract exists");
 
-    assert_eq!(contract.cov_decl_to_abi["merge"].name, "__leader_merge");
-    assert_eq!(contract.cov_decl_to_abi["rebalance"].name, "__leader_rebalance");
-    assert_eq!(contract.delegate_entry_abi.as_ref().expect("delegate entry exists").name, "__delegate");
-    assert_eq!(contract.cov_binding_leader_decl_entry("merge").expect("leader entry resolves").name, "__leader_merge");
-    assert_eq!(contract.delegate_entry_abi.as_ref().expect("delegate entry resolves").name, "__delegate");
+    assert_eq!(contract.cov_decl_to_abi["merge"], "__leader_merge");
+    assert_eq!(contract.cov_decl_to_abi["rebalance"], "__leader_rebalance");
+    assert_eq!(contract.delegate_entry_abi.as_deref(), Some("__delegate"));
+    assert_eq!(contract.cov_binding_leader_decl_entry("merge"), contract.entry("__leader_merge"));
+    assert_eq!(contract.covenant_decl_entry("merge", false), contract.entry("__delegate"));
 }
 
 #[test]
@@ -807,7 +807,7 @@ fn lowers_kcc20_shaped_public_names_and_shared_delegate_body() {
     let abi = artifact
         .entries
         .iter()
-        .map(|entry| (entry.name.as_str(), entry.params.iter().map(|input| &input.ty).collect::<Vec<_>>()))
+        .map(|(name, entry)| (name.as_str(), entry.params.iter().map(|input| &input.ty).collect::<Vec<_>>()))
         .collect::<Vec<_>>();
     assert_eq!(
         abi,
@@ -833,7 +833,7 @@ fn lowers_kcc20_shaped_public_names_and_shared_delegate_body() {
     let direct = encode_entry_sig_script(&compiled, "transfer_delegator", &delegate_args).expect("public delegate sigscript builds");
     assert_eq!(routed, direct);
     assert_eq!(artifact.cov_binding_leader_decl_entry("transferPolicy"), artifact.entry("transfer"));
-    assert_eq!(artifact.delegate_entry_abi.as_ref(), artifact.entry("transfer_delegator"));
+    assert_eq!(artifact.delegate_entry_abi.as_deref(), Some("transfer_delegator"));
 }
 
 #[test]
@@ -849,8 +849,8 @@ fn supports_public_name_override_for_auth_bound_declaration() {
 
     let artifact = compile_to_sil_abi_artifact(source, &[]).expect("portable auth ABI compiles");
     let contract = artifact.contract("Decls").expect("contract exists");
-    assert_eq!(contract.entries[0].name, "spend");
-    assert_eq!(contract.auth_decl_entry("spendPolicy").expect("auth entry resolves").name, "spend");
+    assert!(contract.entries.contains_key("spend"));
+    assert_eq!(contract.auth_decl_entry("spendPolicy"), contract.entry("spend"));
     assert_eq!(contract.delegate_entry_abi, None);
 }
 

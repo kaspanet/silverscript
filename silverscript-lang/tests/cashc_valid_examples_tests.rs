@@ -130,14 +130,14 @@ fn build_sigscript(args: &[ArgValue], dispatch_tag: DispatchTag) -> Vec<u8> {
 }
 
 fn dispatch_tag(artifact: &SilAbiArtifact, function_name: &str) -> DispatchTag {
-    let [contract] = artifact.contracts.as_slice() else {
+    let Some(contract) = artifact.contracts.values().next().filter(|_| artifact.contracts.len() == 1) else {
         panic!("expected one contract, found {}", artifact.contracts.len());
     };
     contract.entry(function_name).expect("entrypoint resolved").dispatch_tag.into_bytes()
 }
 
 fn bytecode(artifact: &SilAbiArtifact) -> &Vec<u8> {
-    let [contract] = artifact.contracts.as_slice() else {
+    let Some(contract) = artifact.contracts.values().next().filter(|_| artifact.contracts.len() == 1) else {
         panic!("expected one contract, found {}", artifact.contracts.len());
     };
     &contract.compiled.bytecode
