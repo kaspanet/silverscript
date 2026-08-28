@@ -10,7 +10,7 @@
 //! outer `argent-artifact` crate. Keep that boundary sharp so this ABI can be
 //! replaced by a native Silverscript portable artifact later.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use blake3::Hasher as Blake3Hasher;
 use kaspa_txscript::{
@@ -210,7 +210,7 @@ impl SilAbiArtifact {
     pub fn verify(&self) -> std::result::Result<(), SilAbiVerificationError> {
         self.check_schema_version()?;
         for contract in &self.contracts {
-            verify_compiled_contract(contract)?;
+            verify_compiled_contract(self, contract)?;
         }
         Ok(())
     }
@@ -574,7 +574,7 @@ pub fn encode_hex(bytes: &[u8]) -> String {
     String::from_utf8(out).expect("hex is always valid ascii")
 }
 
-fn verify_compiled_contract(contract: &SilContractArtifact) -> std::result::Result<(), SilAbiVerificationError> {
+fn verify_compiled_contract(abi: &SilAbiArtifact, contract: &SilContractArtifact) -> std::result::Result<(), SilAbiVerificationError> {
     let decode = |field, value| {
         decode_hex(value).map_err(|err| SilAbiVerificationError::InvalidCompiledHex {
             contract: contract.name.clone(),
@@ -611,7 +611,7 @@ fn verify_compiled_contract(contract: &SilContractArtifact) -> std::result::Resu
         });
     };
     for field in &contract.runtime_state.fields {
-        if fixed_payload_len(&field.ty).is_none() {
+        if !is_supported_runtime_state_type(abi, &field.ty) {
             return Err(SilAbiVerificationError::UnsupportedRuntimeStateType {
                 contract: contract.name.clone(),
                 field: field.name.clone(),
@@ -644,6 +644,30 @@ fn verify_compiled_contract(contract: &SilContractArtifact) -> std::result::Resu
         });
     }
     Ok(())
+}
+
+fn is_supported_runtime_state_type(abi: &SilAbiArtifact, ty: &TypeArtifact) -> bool {
+    fn is_supported(abi: &SilAbiArtifact, ty: &TypeArtifact, visiting: &mut BTreeSet<String>) -> bool {
+        match ty {
+            TypeArtifact::Struct { name } => {
+                if !visiting.insert(name.clone()) {
+                    // We don't support cyclic structs.
+                    return false;
+                }
+                let supported = abi
+                    .structs
+                    .iter()
+                    .find(|structure| structure.name == *name)
+                    .is_some_and(|structure| structure.fields.iter().all(|field| is_supported(abi, &field.ty, visiting)));
+                visiting.remove(name);
+                supported
+            }
+            TypeArtifact::FixedArray { item, .. } => is_supported(abi, item, visiting),
+            _ => fixed_payload_len(ty).is_some(),
+        }
+    }
+
+    is_supported(abi, ty, &mut BTreeSet::new())
 }
 
 fn entry_params(entry: &SilEntryArtifact) -> Vec<(&str, &TypeArtifact)> {
@@ -1236,6 +1260,35 @@ mod tests {
                 ty: "bytes".to_string(),
             })
         );
+    }
+
+    #[test]
+    fn validates_struct_runtime_state_types_recursively() {
+        let mut abi = tiny_sil_abi();
+        abi.structs = vec![
+            StructArtifact {
+                name: "Inner".to_string(),
+                fields: vec![FieldArtifact { name: "value".to_string(), ty: TypeArtifact::Byte }],
+            },
+            StructArtifact {
+                name: "Outer".to_string(),
+                fields: vec![
+                    FieldArtifact { name: "inner".to_string(), ty: TypeArtifact::Struct { name: "Inner".to_string() } },
+                    FieldArtifact {
+                        name: "values".to_string(),
+                        ty: TypeArtifact::FixedArray { item: Box::new(TypeArtifact::Int), len: 2 },
+                    },
+                ],
+            },
+        ];
+
+        assert!(is_supported_runtime_state_type(&abi, &TypeArtifact::Struct { name: "Outer".to_string() }));
+
+        abi.structs[0].fields[0].ty = TypeArtifact::Bytes;
+        assert!(!is_supported_runtime_state_type(&abi, &TypeArtifact::Struct { name: "Outer".to_string() }));
+
+        abi.structs[0].fields[0].ty = TypeArtifact::Struct { name: "Outer".to_string() };
+        assert!(!is_supported_runtime_state_type(&abi, &TypeArtifact::Struct { name: "Outer".to_string() }));
     }
 
     #[test]
