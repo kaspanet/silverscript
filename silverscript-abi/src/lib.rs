@@ -1648,7 +1648,7 @@ mod tests {
     #[test]
     fn pretty_json_wraps_byte_arrays_at_fixed_boundaries() {
         let mut abi = tiny_sil_abi();
-        abi.contracts[0].compiled.bytecode = (0..=64).collect();
+        abi.contracts.get_mut("Foo").unwrap().compiled.bytecode = (0..=64).collect();
 
         let json = to_pretty_json(&abi).expect("Sil ABI artifact serializes");
         let lines = json.lines().collect::<Vec<_>>();
@@ -1659,7 +1659,7 @@ mod tests {
         assert!(lines.iter().any(|line| line.trim_start().starts_with(r#""template_hash": [0, 0, 0"#)));
 
         let decoded: SilAbiArtifact = serde_json::from_str(&json).expect("Sil ABI artifact deserializes");
-        assert_eq!(decoded.contracts[0].compiled.bytecode, (0..=64).collect::<Vec<_>>());
+        assert_eq!(decoded.contracts["Foo"].compiled.bytecode, (0..=64).collect::<Vec<_>>());
     }
 
     #[test]
