@@ -293,28 +293,23 @@ fn parse_artifact_json_value(
     contract: &SilContractArtifact,
 ) -> Result<ArtifactValue, String> {
     match ty {
-        TypeArtifact::Int | TypeArtifact::Temporal => match value {
-            Value::Number(value) => Ok(ArtifactValue::Int(value.as_i64().ok_or_else(|| "invalid int value".to_string())?)),
-            Value::String(value) => Ok(ArtifactValue::Int(parse_int_arg(value)?)),
-            _ => Err(format!("expected {}, got {value}", artifact_type_name(ty))),
-        },
+        TypeArtifact::Int | TypeArtifact::Temporal => {
+            let Value::Number(value) = value else {
+                return Err(format!("expected {}, got {value}", artifact_type_name(ty)));
+            };
+            Ok(ArtifactValue::Int(value.as_i64().ok_or_else(|| "invalid int value".to_string())?))
+        }
         TypeArtifact::Bool => match value {
             Value::Bool(value) => Ok(ArtifactValue::Bool(*value)),
             Value::String(value) if value == "true" || value == "false" => Ok(ArtifactValue::Bool(value == "true")),
             _ => Err(format!("expected bool, got {value}")),
         },
         TypeArtifact::Byte => {
-            let raw = match value {
-                Value::Number(value) => value.to_string(),
-                Value::String(value) => value.clone(),
-                _ => return Err(format!("expected byte, got {value}")),
+            let Value::Number(value) = value else {
+                return Err(format!("expected byte, got {value}"));
             };
-            let bytes = parse_hex_bytes(&raw)?;
-            if let [byte] = bytes.as_slice() {
-                Ok(ArtifactValue::Byte(*byte))
-            } else {
-                Err(format!("byte expects 1 byte, got {}", bytes.len()))
-            }
+            let value = value.as_u64().ok_or_else(|| "invalid byte value".to_string())?;
+            u8::try_from(value).map(ArtifactValue::Byte).map_err(|_| format!("byte expects value in 0..=255, got {value}"))
         }
         TypeArtifact::Bytes | TypeArtifact::FixedBytes { .. } | TypeArtifact::Pubkey | TypeArtifact::Sig | TypeArtifact::Datasig => {
             let Value::String(raw) = value else {
@@ -372,6 +367,26 @@ fn parse_artifact_json_value(
     }
 }
 
+fn parse_raw_artifact_arg(
+    raw: &str,
+    ty: &TypeArtifact,
+    abi: &SilAbiArtifact,
+    contract: &SilContractArtifact,
+) -> Result<ArtifactValue, String> {
+    match ty {
+        TypeArtifact::Int | TypeArtifact::Temporal => parse_int_arg(raw).map(ArtifactValue::Int),
+        TypeArtifact::Byte => {
+            let bytes = parse_hex_bytes(raw)?;
+            if let [byte] = bytes.as_slice() {
+                Ok(ArtifactValue::Byte(*byte))
+            } else {
+                Err(format!("byte expects 1 byte, got {}", bytes.len()))
+            }
+        }
+        _ => parse_artifact_json_value(&Value::String(raw.to_string()), ty, abi, contract),
+    }
+}
+
 fn artifact_byte_len(ty: &TypeArtifact) -> Option<usize> {
     match ty {
         TypeArtifact::FixedBytes { len } => Some(*len),
@@ -413,12 +428,13 @@ pub fn parse_artifact_args(
         .iter()
         .zip(raw_args)
         .map(|(param, raw)| {
-            let value = if raw.starts_with('[') || raw.starts_with('{') {
-                serde_json::from_str(raw).map_err(|err| format!("invalid {} arg '{raw}': {err}", artifact_type_name(&param.ty)))?
+            if raw.starts_with('[') || raw.starts_with('{') {
+                let value = serde_json::from_str(raw)
+                    .map_err(|err| format!("invalid {} arg '{raw}': {err}", artifact_type_name(&param.ty)))?;
+                parse_artifact_json_value(&value, &param.ty, abi, contract)
             } else {
-                Value::String(raw.clone())
-            };
-            parse_artifact_json_value(&value, &param.ty, abi, contract)
+                parse_raw_artifact_arg(raw, &param.ty, abi, contract)
+            }
         })
         .collect()
 }
@@ -475,8 +491,10 @@ pub fn parse_state_value(contract: &ContractAst<'_>, raw_state: &str) -> Result<
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_call_args, parse_ctor_args, parse_state_value};
+    use super::{parse_artifact_args, parse_call_args, parse_ctor_args, parse_state_value};
+    use silverscript_abi::ArtifactValue;
     use silverscript_lang::ast::{ExprKind, parse_contract_ast};
+    use silverscript_lang::compiler::compile_to_sil_abi_artifact;
 
     fn debug_shapes_contract() -> silverscript_lang::ast::ContractAst<'static> {
         parse_contract_ast(
@@ -617,5 +635,49 @@ mod tests {
         assert!(fields.iter().any(|field| field.name == "amount"));
         assert!(fields.iter().any(|field| field.name == "active"));
         assert!(fields.iter().any(|field| field.name == "tag"));
+    }
+
+    #[test]
+    fn parses_json_byte_numbers_as_decimal_and_rejects_strings() {
+        let source = r#"
+            contract Demo() {
+                struct S {
+                    byte marker;
+                }
+
+                entry main(S value) {
+                    require(true);
+                }
+
+                entry scalar(byte marker) {
+                    require(true);
+                }
+            }
+        "#;
+        let abi = compile_to_sil_abi_artifact(source, &[]).expect("contract compiles");
+        let contract = abi.contract("Demo").expect("contract exists");
+        let params = &contract.entry("main").expect("entry exists").params;
+
+        let parse_marker = |raw: &str| -> Result<ArtifactValue, String> {
+            let values = parse_artifact_args(&abi, contract, params, &[raw.to_string()]).expect("structured byte argument parses");
+            let ArtifactValue::Object(fields) = &values[0] else {
+                panic!("expected struct argument");
+            };
+            Ok(fields.get("marker").cloned().expect("marker field exists"))
+        };
+
+        assert_eq!(parse_marker(r#"{"marker":10}"#).unwrap(), ArtifactValue::Byte(10));
+        assert_eq!(parse_marker(r#"{"marker":255}"#).unwrap(), ArtifactValue::Byte(255));
+        assert!(
+            parse_artifact_args(&abi, contract, params, &[r#"{"marker":"10"}"#.to_string()])
+                .expect_err("JSON byte strings are not numeric values")
+                .contains("expected byte")
+        );
+
+        let scalar_params = &contract.entry("scalar").expect("scalar entry exists").params;
+        assert_eq!(
+            parse_artifact_args(&abi, contract, scalar_params, &["10".to_string()]).expect("raw byte argument parses"),
+            vec![ArtifactValue::Byte(0x10)]
+        );
     }
 }
