@@ -125,7 +125,7 @@ fn expr_to_artifact_value(expr: &Expr<'_>) -> Result<ArtifactValue, String> {
         ExprKind::Bool(value) => Ok(ArtifactValue::Bool(*value)),
         ExprKind::Byte(value) => Ok(ArtifactValue::Byte(*value)),
         ExprKind::String(value) => Ok(ArtifactValue::Text(value.clone())),
-        ExprKind::Array { type_ref, values } if matches!(type_ref.base, TypeBase::Byte) && type_ref.array_dims.len() == 1 => {
+        ExprKind::Array { type_ref, values, .. } if matches!(type_ref.base, TypeBase::Byte) && type_ref.array_dims.len() == 1 => {
             let bytes = values
                 .iter()
                 .map(|value| match value.kind {

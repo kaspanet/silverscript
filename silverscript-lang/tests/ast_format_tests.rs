@@ -1,5 +1,5 @@
 use silverscript_lang::ast::{Expr, Span, format_contract_ast, parse_contract_ast};
-use silverscript_lang::compiler::{CompileOptions, compile_contract, compile_contract_ast};
+use silverscript_lang::compiler::{CompileOptions, compile_contract, compile_contract_ast, sil_abi_artifact_from_compiled};
 
 fn assert_compiled_formatted_contract_preserves_ast(source: &str, options: CompileOptions) {
     let ast = parse_contract_ast(source).expect("parse succeeds");
@@ -199,16 +199,12 @@ fn formats_function_attributes_and_preserves_compilation() {
     let direct = compile_contract_ast(&ast, &args, CompileOptions::default()).expect("direct AST compiles");
     let round_tripped =
         compile_contract_ast(&reparsed, &args, CompileOptions::default()).expect("formatted and reparsed AST compiles");
-    assert_eq!(from_source.bytecode, direct.bytecode);
-    assert_eq!(from_source.abi, direct.abi);
-    assert_eq!(from_source.cov_decl_to_abi, direct.cov_decl_to_abi);
-    assert_eq!(from_source.delegate_entry_abi, direct.delegate_entry_abi);
-    assert_eq!(from_source.state_layout, direct.state_layout);
-    assert_eq!(direct.bytecode, round_tripped.bytecode);
-    assert_eq!(direct.abi, round_tripped.abi);
-    assert_eq!(direct.cov_decl_to_abi, round_tripped.cov_decl_to_abi);
-    assert_eq!(direct.delegate_entry_abi, round_tripped.delegate_entry_abi);
-    assert_eq!(direct.state_layout, round_tripped.state_layout);
+    let from_source_artifact = sil_abi_artifact_from_compiled(&from_source, &args).expect("source artifact builds");
+    let direct_artifact = sil_abi_artifact_from_compiled(&direct, &args).expect("direct AST artifact builds");
+    let round_tripped_artifact =
+        sil_abi_artifact_from_compiled(&round_tripped, &args).expect("formatted and reparsed AST artifact builds");
+    assert_eq!(from_source_artifact, direct_artifact);
+    assert_eq!(direct_artifact, round_tripped_artifact);
 }
 
 #[test]
@@ -265,7 +261,8 @@ fn synthetic_items_preserve_ast_vector_order_after_formatting() {
     let direct = compile_contract_ast(&ast, &[], CompileOptions::default()).expect("direct mixed-source AST compiles");
     let round_tripped =
         compile_contract_ast(&reparsed, &[], CompileOptions::default()).expect("formatted and reparsed mixed-source AST compiles");
-    assert_eq!(direct.bytecode, round_tripped.bytecode);
-    assert_eq!(direct.abi, round_tripped.abi);
-    assert_eq!(direct.state_layout, round_tripped.state_layout);
+    let direct_artifact = sil_abi_artifact_from_compiled(&direct, &[]).expect("direct mixed-source AST artifact builds");
+    let round_tripped_artifact =
+        sil_abi_artifact_from_compiled(&round_tripped, &[]).expect("formatted and reparsed mixed-source AST artifact builds");
+    assert_eq!(direct_artifact, round_tripped_artifact);
 }
