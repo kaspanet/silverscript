@@ -5,7 +5,8 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use kaspa_addresses::{Address, Prefix, Version};
 use kaspa_consensus_core::Hash;
 use kaspa_consensus_core::config::params::MAINNET_PARAMS;
-use kaspa_consensus_core::hashing::sighash::SigHashReusedValuesUnsync;
+use kaspa_consensus_core::hashing::sighash::{SigHashReusedValuesUnsync, calc_ecdsa_signature_hash};
+use kaspa_consensus_core::hashing::sighash_type::SIG_HASH_ALL;
 use kaspa_consensus_core::subnets::SubnetworkId;
 use kaspa_consensus_core::tx::{
     CovenantBinding, PopulatedTransaction, ScriptPublicKey, Transaction, TransactionId, TransactionInput, TransactionOutpoint,
@@ -20,7 +21,9 @@ use kaspa_txscript::{
     pay_to_script_hash_signature_script_with_flags, script_to_str, serialize_i64,
 };
 use silverscript_abi::{ArtifactValue, SilAbiArtifact, TypeArtifact};
-use silverscript_lang::ast::{ContractAst, Expr, ExprKind, Statement, format_contract_ast, parse_contract_ast, parse_type_ref};
+use silverscript_lang::ast::{
+    ContractAst, DATASIG_BYTE_LEN, Expr, ExprKind, SIG_BYTE_LEN, Statement, format_contract_ast, parse_contract_ast, parse_type_ref,
+};
 use silverscript_lang::compiler::{
     COMPILER_VERSION, CompileOptions, CompiledContract, CompilerError, CovenantDeclCallOptions, DispatchTag,
     compile_contract as compile_internal_contract, compile_contract_ast, compile_debug_expr, compile_to_sil_abi_artifact,
@@ -10390,6 +10393,47 @@ fn check_sig_ecdsa_lowers_to_matching_opcode() {
 }
 
 #[test]
+fn check_sig_ecdsa_executes_ecdsa_signature_verification() {
+    let source = r#"
+        contract ECDSA() {
+            entry main(sig signature, byte[33] publicKey) {
+                require(checkSigEcdsa(signature, publicKey));
+            }
+        }
+    "#;
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let keypair = secp256k1::Keypair::from_seckey_slice(secp256k1::SECP256K1, &[9u8; 32]).unwrap();
+    let public_key = keypair.public_key().serialize().to_vec();
+
+    let input =
+        TransactionInput::new(TransactionOutpoint { transaction_id: TransactionId::from_bytes([1u8; 32]), index: 0 }, vec![], 0, 1);
+    let output = TransactionOutput {
+        value: 1000,
+        script_public_key: ScriptPublicKey::new(0, bytecode(&compiled).clone().into()),
+        covenant: None,
+    };
+    let mut tx = Transaction::new(1, vec![input], vec![output.clone()], 0, Default::default(), 0, vec![]);
+    let utxo_entry = UtxoEntry::new(output.value, output.script_public_key, 0, tx.is_coinbase(), None);
+    let reused_values = SigHashReusedValuesUnsync::new();
+    let populated_tx = PopulatedTransaction::new(&tx, vec![utxo_entry.clone()]);
+    let signature_hash = calc_ecdsa_signature_hash(&populated_tx, 0, SIG_HASH_ALL, &reused_values);
+    let message = secp256k1::Message::from_digest(signature_hash.into());
+    let mut valid_signature = keypair.secret_key().sign_ecdsa(message).serialize_compact().to_vec();
+    valid_signature.push(SIG_HASH_ALL.to_u8());
+    assert_eq!(valid_signature.len(), SIG_BYTE_LEN);
+
+    let mut run = |signature: Vec<u8>| {
+        tx.inputs[0].signature_script =
+            encode_entry_sig_script(&compiled, "main", &[signature.into(), public_key.clone().into()]).expect("sigscript builds");
+        execute_input(tx.clone(), vec![utxo_entry.clone()], 0)
+    };
+
+    assert!(run(valid_signature.clone()).is_ok(), "valid ECDSA transaction signature should pass");
+    valid_signature[0] ^= 0x01;
+    assert!(run(valid_signature).is_err(), "forged ECDSA transaction signature should fail");
+}
+
+#[test]
 fn checksigfromstack_lowers_to_matching_opcode() {
     let source = r#"
         contract DataSig(datasig signature, byte[32] digest, pubkey publicKey) {
@@ -11315,6 +11359,7 @@ fn check_msg_sig_ecdsa_executes_ecdsa_signature_verification() {
     let digest = Hash::from_bytes([5u8; 32]);
     let message = secp256k1::Message::from_digest(digest.into());
     let valid_signature = keypair.secret_key().sign_ecdsa(message).serialize_compact().to_vec();
+    assert_eq!(valid_signature.len(), DATASIG_BYTE_LEN);
 
     let run = |signature: Vec<u8>| {
         let compiled = compile_contract(
