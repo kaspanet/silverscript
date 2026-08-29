@@ -106,6 +106,88 @@ pub(super) fn templated_input_bytecode_size_expr<'i>(
     ))
 }
 
+/// Pins the push framing of a foreign input's state region.
+///
+/// State fields are decoded at offsets fixed at compile time, which is only
+/// meaningful if every field is encoded with the canonical push header the
+/// state encoder emits. The script engine also accepts non-minimal push
+/// encodings, so without this guard a foreign input can widen one field's
+/// header and narrow another's, keep the region's total length identical, and
+/// move every later field read onto bytes of its own choosing.
+///
+/// Requiring each field's header to equal `data_prefix(payload_len)` at its
+/// constant offset forces the whole region to be canonically framed: the first
+/// header sits at the region start, and each header it pins determines its own
+/// payload width and therefore the offset of the next header.
+///
+/// The state region is read once and kept on the stack, so the guard costs one
+/// sigscript introspection per call site plus one comparison per field:
+///
+///   region = input_sigscript[state_region_start .. state_region_end]
+///   for each field:
+///     require(region[field_header_start .. field_header_end] == data_prefix(payload_len))
+fn emit_state_framing_guard(
+    input_idx: &Expr<'_>,
+    state_start_offset_expr: &Expr<'_>,
+    layout_field_types: &[TypeRef],
+    bytecode_size_expr: &Expr<'_>,
+    env: &ExprEnv<'_, '_>,
+    emitter: &mut ScriptEmitter<'_>,
+) -> Result<(), CompilerError> {
+    let int_type = scalar_type(TypeBase::Int);
+    let region_len = encoded_state_len_for_layout_field_types(layout_field_types, env.contract_constants)?;
+
+    // region_start = input_sigscript_len(idx) - bytecode_size + state_start_offset
+    compile_expr(input_idx, Some(&int_type), env, emitter)?;
+    emitter.emit_op(OpDup, 1)?;
+    emitter.emit_op(OpTxInputScriptSigLen, 0)?;
+    compile_expr(bytecode_size_expr, Some(&int_type), env, emitter)?;
+    emitter.emit_op(OpSub, -1)?;
+    compile_expr(state_start_offset_expr, Some(&int_type), env, emitter)?;
+    emitter.emit_op(OpAdd, -1)?;
+
+    emitter.emit_op(OpDup, 1)?;
+    emitter.push_int(region_len as i64)?;
+    emitter.emit_op(OpAdd, -1)?;
+    emitter.emit_op(OpTxInputScriptSigSubstr, -2)?;
+
+    let mut field_chunk_offset = 0usize;
+    for field_type in layout_field_types {
+        let payload_len = fixed_state_payload_len(field_type, env.contract_constants)?;
+        let expected_prefix = data_prefix(payload_len)?;
+        let header_end = checked_add(field_chunk_offset, expected_prefix.len())?;
+
+        emitter.emit_op(OpDup, 1)?;
+        emitter.push_int(field_chunk_offset as i64)?;
+        emitter.push_int(header_end as i64)?;
+        emitter.emit_op(OpSubstr, -2)?;
+        emitter.push_data(&expected_prefix)?;
+        emitter.emit_op(OpEqualVerify, -2)?;
+
+        field_chunk_offset = checked_add(header_end, payload_len)?;
+    }
+    emitter.emit_op(OpDrop, -1)?;
+
+    Ok(())
+}
+
+/// Builds the expression environment and emitter for [`emit_state_framing_guard`].
+pub(super) fn compile_state_framing_guard(
+    input_idx: &Expr<'_>,
+    state_start_offset_expr: &Expr<'_>,
+    layout_field_types: &[TypeRef],
+    bytecode_size_expr: &Expr<'_>,
+    stack_bindings: &StackBindings,
+    types: &TypeMap,
+    builder: &mut ScriptBuilder,
+    bytecode_size: Option<i64>,
+    contract_constants: &HashMap<String, Expr<'_>>,
+) -> Result<(), CompilerError> {
+    let env = ExprEnv { constants: contract_constants, stack_bindings, types, bytecode_size, contract_constants };
+    let mut emitter = ScriptEmitter::new(builder, 0);
+    emit_state_framing_guard(input_idx, state_start_offset_expr, layout_field_types, bytecode_size_expr, &env, &mut emitter)
+}
+
 pub(super) fn read_input_state_field_expr<'i>(
     input_idx: &Expr<'i>,
     field_type: &TypeRef,
@@ -163,6 +245,13 @@ pub(super) fn cast_read_input_state_expr<'i>(substr: Expr<'i>, type_ref: &TypeRe
 ///
 ///   expected_input_spk = ScriptPubKeyP2SHFromRedeemScript(actual_redeem_script)
 ///   require input_script_pubkey(input_idx) == expected_input_spk
+///
+///   for each field: require the field's push header at its constant offset
+///                   equals the header the state encoder emits for its width
+///
+/// The template hash and the P2SH commitment authenticate the foreign script's
+/// code and its total length; the framing guard is what makes the constant
+/// offsets the field reads use meaningful. See [`emit_state_framing_guard`].
 ///
 /// The field-value reads are built separately by the statement compiler using
 /// the same flattened layout and byte offsets.
@@ -231,6 +320,9 @@ pub(super) fn compile_read_input_state_with_template_validation(
     compile_expr(&template_expr, Some(&dynamic_bytes), &env, &mut emitter)?;
     emitter.emit_op(OpBlake3, 0)?;
     emitter.emit_op(OpEqualVerify, -2)?;
+
+    // The state region starts `template_prefix_len` bytes into the redeem script.
+    emit_state_framing_guard(input_idx, template_prefix_len, layout_field_types, &bytecode_size_expr, &env, &mut emitter)?;
 
     Ok(())
 }

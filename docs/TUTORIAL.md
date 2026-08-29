@@ -1286,6 +1286,7 @@ Input-side note:
 - `readInputState(...)` is appropriate when the surrounding covenant domain guarantees a single allowed contract/layout for the foreign input.
 - `readInputStateWithTemplate(...)` is appropriate when multiple templates may share a covenant domain; it additionally validates the foreign input's template hash and checks that the claimed redeem-script bytes match the foreign input's P2SH `scriptPubKey`.
 - Without those surrounding guarantees, plain `readInputState(...)` would also need extra correlation checks between the foreign input and the inspected part of its sigscript.
+- Both decoders read each field at an offset fixed at compile time, and the compiler emits a check — one comparison per field — that the region is framed the way the state encoder writes it, with the canonical push header for each field's width. Without it, since the script engine accepts non-minimal push encodings, a foreign input could widen one field's header and narrow another's, leave the region's total length unchanged, and move every later field read onto bytes it chose. The check makes the offsets meaningful; it does not by itself tie the region to the right script, which is still what the guarantees above are for.
 
 ### Covenant Examples
 

@@ -9509,9 +9509,13 @@ fn compiles_read_input_state_to_expected_script() {
         .drain();
 
     let asm = script_to_str(&bytecode(&compiled)).expect("stringifies");
-    assert_eq!(asm.matches("OpTxInputScriptSigSubstr").count(), 2, "should read two state fields");
+    // Two field reads, plus the single state-region read the framing guard uses
+    // to pin each field's push header at its constant offset.
+    assert_eq!(asm.matches("OpTxInputScriptSigSubstr").count(), 3, "should read two state fields behind one region read");
     assert_eq!(asm.matches("OpGreaterThan").count(), 1, "should compare x numerically");
-    assert_eq!(asm.matches("OpEqual").count(), 2, "should compare y bytewise in addition to dispatch");
+    let equal_verify_count = asm.matches("OpEqualVerify").count();
+    assert_eq!(equal_verify_count, 2, "the framing guard should pin one push header per state field");
+    assert_eq!(asm.matches("OpEqual").count() - equal_verify_count, 2, "should compare y bytewise in addition to dispatch");
     assert!(
         bytecode(&compiled).ends_with(&[OpDrop, OpDrop, OpTrue, OpElse, OpReturn, OpEndIf]),
         "expected stack cleanup for active state before the dispatch epilogue"

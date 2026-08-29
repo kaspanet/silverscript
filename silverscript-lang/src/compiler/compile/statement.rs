@@ -571,6 +571,19 @@ fn compile_read_input_state_statement<'i>(
             let state_start_offset = checked_sub(state_end, total_state_len)?;
 
             let input_idx = args[0].clone();
+            let layout_field_types = contract_fields.iter().map(|field| field.type_ref.clone()).collect::<Vec<_>>();
+            compile_state_framing_guard(
+                &input_idx,
+                &Expr::int(state_start_offset as i64),
+                &layout_field_types,
+                &Expr::int(bytecode_size_value),
+                ctx.stack_bindings,
+                ctx.types,
+                ctx.builder,
+                ctx.bytecode_size,
+                ctx.contract_constants,
+            )?;
+
             let mut field_chunk_offset = 0usize;
             for field in contract_fields {
                 let binding = bindings_by_field.get(field.name.as_str()).ok_or_else(|| {

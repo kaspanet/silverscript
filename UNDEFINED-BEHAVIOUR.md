@@ -288,6 +288,11 @@ signature script contains the expected contract and state layout. Template
 prefix and suffix lengths must be non-negative, must describe ranges within
 the actual script, and must not overflow while offsets are calculated.
 
+How the selected state region is framed is not part of that precondition. The
+compiler emits a check that each field carries the canonical push header for
+its width, so a region framed any other way fails validation rather than
+producing an unspecified field value.
+
 ```sil
 entry main(int inputIndex) {
     require(inputIndex >= 0);
