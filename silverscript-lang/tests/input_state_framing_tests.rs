@@ -75,6 +75,32 @@ fn lengthened_state_region() -> Vec<u8> {
     region
 }
 
+/// A region one byte longer, laid out so that the SHIFTED reads a longer script
+/// produces still land on canonical-looking push headers.
+///
+/// The plain reader places its window at `sigscript_len(idx) - this.bytecodeSize`,
+/// the READER's own constant. One extra byte in the foreign script therefore
+/// moves every read one byte later, and the framing guard checks its headers at
+/// the shifted offsets — where the bytes belong to the forger. Paying one byte
+/// of padding buys both header positions:
+///
+/// ```text
+/// byte:      0     1     2      3     4..36
+/// value:     00    01    flag   20    key
+///            pad   ^hdr  ^flag  ^hdr  ^key      (^ = where the shifted read looks)
+/// ```
+///
+/// So the guard sees `OpData1` and `OpData32` exactly where it requires them,
+/// and the reader takes `flag` and `key` from bytes the forger chose.
+const SLID_FLAG: u8 = 0x5a;
+const SLID_KEY_BYTE: u8 = 0xc3;
+
+fn window_sliding_region() -> Vec<u8> {
+    let mut region = vec![0x00, 0x01, SLID_FLAG, 0x20];
+    region.extend_from_slice(&[SLID_KEY_BYTE; 32]);
+    region
+}
+
 /// What a reader using canonical offsets takes out of `region`: the byte at
 /// index 1, and the 32 bytes at indices 3..35.
 fn read_at_canonical_offsets(region: &[u8]) -> (u8, [u8; 32]) {
@@ -332,6 +358,41 @@ fn plain_read_rejects_length_preserving_reframe() {
 /// `readInputState` is also legal as a struct-valued expression, which is the
 /// form the covenant declaration lowering generates. That path builds the same
 /// constant-offset reads and needs the same guard.
+/// A LONGER foreign script slides the plain reader's window, and the framing
+/// guard follows it onto bytes the forger chose.
+///
+/// The guard pins each field's push header at the offset the read uses. It does
+/// not pin where those offsets are MEASURED FROM: `readInputState` anchors its
+/// window on `this.bytecodeSize`, which describes the reader, not the script it
+/// is reading. A foreign script one byte longer shifts every read by one, and
+/// the guard then validates framing against the shifted bytes — which the forger
+/// supplies. One byte of padding is the whole cost.
+///
+/// The templated decoder is not exposed to this. It requires the window's P2SH to
+/// equal the foreign input's own scriptPubKey, and a scriptPubKey commits to the
+/// WHOLE redeem script — so a longer script cannot present a shorter window and
+/// still match. The plain decoder makes no such check, and that is the difference
+/// this test exists to close.
+#[test]
+fn plain_read_rejects_a_longer_foreign_script() {
+    let region = window_sliding_region();
+    assert_eq!(region.len(), honest_state_region().len() + 1, "one byte longer — which is what slides the window");
+
+    // The shifted read is the canonical read one byte later, so applying the
+    // canonical offsets to `region[1..]` is exactly what the reader will see.
+    assert_eq!(
+        read_at_canonical_offsets(&region[1..]),
+        (SLID_FLAG, [SLID_KEY_BYTE; 32]),
+        "the shifted window really does land on the forger's values"
+    );
+
+    let result = run_plain_reader(&region, (SLID_FLAG, [SLID_KEY_BYTE; 32]));
+    assert!(
+        result.is_err(),
+        "a foreign script longer than the reader's own template must not be decoded, however its region is framed: {result:?}"
+    );
+}
+
 fn run_expression_position_reader(region: &[u8], observed: (u8, [u8; 32])) -> Result<(), kaspa_txscript_errors::TxScriptError> {
     let reader_source = r#"
         contract Peer(byte initFlag, byte[32] initKey) {
