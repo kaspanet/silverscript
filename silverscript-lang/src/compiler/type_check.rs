@@ -46,7 +46,7 @@ pub(super) fn check_expr<'i>(
         ExprKind::Byte(_) => scalar_type(TypeBase::Byte),
         ExprKind::String(_) => scalar_type(TypeBase::String),
         ExprKind::Identifier(name) => ctx.types.get(name).cloned().ok_or_else(|| CompilerError::UndefinedIdentifier(name.clone()))?,
-        ExprKind::Array { type_ref, values } => check_typed_array_literal(values, type_ref, expected, ctx)?,
+        ExprKind::Array { type_ref, values, .. } => check_typed_array_literal(values, type_ref, expected, ctx)?,
         ExprKind::Call { name, args, .. } => check_call(name, args, expected, ctx)?
             .ok_or_else(|| CompilerError::Unsupported(format!("function '{name}' does not return a value")))?,
         ExprKind::New { name, args, .. } => check_constructor(name, args, ctx)?,

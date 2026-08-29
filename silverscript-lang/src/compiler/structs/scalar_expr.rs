@@ -125,10 +125,11 @@ pub(super) fn lower_scalar_expr<'i>(
             },
             span,
         )),
-        ExprKind::Array { type_ref, values } => Ok(Expr::new(
+        ExprKind::Array { type_ref, values, type_span } => Ok(Expr::new(
             ExprKind::Array {
                 type_ref: type_ref.clone(),
                 values: values.iter().map(|value| lower_scalar_expr(value, scope, lowerer)).collect::<Result<Vec<_>, _>>()?,
+                type_span: *type_span,
             },
             span,
         )),

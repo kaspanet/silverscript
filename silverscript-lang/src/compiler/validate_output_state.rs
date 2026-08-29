@@ -227,7 +227,7 @@ fn lower_statement<'i>(
                 name_span: *name_span,
             }])
         }
-        Statement::StateFunctionCallAssign { target_struct, bindings, name, args, span, name_span } => {
+        Statement::StateFunctionCallAssign { target_struct, bindings, name, args, span, target_struct_span, name_span } => {
             for binding in bindings {
                 scope.vars.insert(binding.name.clone(), binding.type_ref.clone());
             }
@@ -237,10 +237,11 @@ fn lower_statement<'i>(
                 name: name.clone(),
                 args: args.clone(),
                 span: *span,
+                target_struct_span: *target_struct_span,
                 name_span: *name_span,
             }])
         }
-        Statement::StructDestructure { struct_name, bindings, expr, span } => {
+        Statement::StructDestructure { struct_name, bindings, expr, span, struct_name_span } => {
             for binding in bindings {
                 scope.vars.insert(binding.name.clone(), binding.type_ref.clone());
             }
@@ -249,6 +250,7 @@ fn lower_statement<'i>(
                 bindings: bindings.clone(),
                 expr: expr.clone(),
                 span: *span,
+                struct_name_span: *struct_name_span,
             }])
         }
         Statement::Block { body, span } => {

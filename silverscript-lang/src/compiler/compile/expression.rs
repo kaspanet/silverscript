@@ -53,7 +53,7 @@ fn compile_expr_with_context<'i>(
         ExprKind::Int(value) | ExprKind::Temporal(value) => compile_int_expr(ctx, *value, expected_type),
         ExprKind::Bool(value) => compile_bool_expr(ctx, *value),
         ExprKind::Byte(byte) => compile_byte_expr(ctx, *byte),
-        ExprKind::Array { type_ref, values } => compile_array_expr(ctx, values, Some(type_ref)),
+        ExprKind::Array { type_ref, values, .. } => compile_array_expr(ctx, values, Some(type_ref)),
         ExprKind::StructLiteral { .. } => compile_state_object_expr(),
         ExprKind::FieldAccess { .. } => compile_field_access_expr(),
         ExprKind::String(value) => compile_string_expr(ctx, value),

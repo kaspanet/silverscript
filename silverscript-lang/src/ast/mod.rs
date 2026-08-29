@@ -8,7 +8,7 @@ use crate::checked_arithmetic::{checked_mul, checked_pow};
 use crate::errors::CompilerError;
 use crate::parser::{
     Rule, parse_expression as parse_expression_rule, parse_function as parse_function_rule, parse_source_file,
-    parse_type_name as parse_type_name_rule,
+    parse_statement as parse_statement_rule, parse_type_name as parse_type_name_rule,
 };
 pub use crate::span::{Span, SpanUtils};
 
@@ -444,6 +444,8 @@ pub enum Statement<'i> {
         #[serde(skip_deserializing)]
         span: Span<'i>,
         #[serde(skip_deserializing)]
+        target_struct_span: Span<'i>,
+        #[serde(skip_deserializing)]
         name_span: Span<'i>,
     },
     StructDestructure {
@@ -452,6 +454,8 @@ pub enum Statement<'i> {
         expr: Expr<'i>,
         #[serde(skip_deserializing)]
         span: Span<'i>,
+        #[serde(skip_deserializing)]
+        struct_name_span: Span<'i>,
     },
     Assign {
         name: String,
@@ -621,7 +625,7 @@ impl<'i> Expr<'i> {
         if matches!(type_ref.array_dims.last(), Some(ArrayDim::Inferred)) {
             *type_ref.array_dims.last_mut().unwrap() = ArrayDim::Fixed(values.len());
         }
-        Self::new(ExprKind::Array { type_ref, values }, Span::default())
+        Self::new(ExprKind::Array { type_ref, values, type_span: Span::default() }, Span::default())
     }
 
     pub fn inferred_array(values: Vec<Expr<'i>>) -> Option<Self> {
@@ -726,6 +730,8 @@ pub enum ExprKind<'i> {
     Array {
         type_ref: TypeRef,
         values: Vec<Expr<'i>>,
+        #[serde(skip_deserializing)]
+        type_span: Span<'i>,
     },
     Call {
         name: String,
@@ -960,6 +966,10 @@ impl SourceFormatter {
     }
 
     fn write_function(&mut self, function: &FunctionAst<'_>) {
+        for attribute in &function.attributes {
+            self.line(&format_function_attribute(attribute));
+        }
+
         let mut signature = String::new();
         if function.entrypoint {
             signature.push_str("entry ");
@@ -1108,10 +1118,12 @@ impl SourceFormatter {
 }
 
 fn ordered_contract_items<'a, 'i>(contract: &'a ContractAst<'i>) -> Vec<ContractItemRef<'a, 'i>> {
-    let has_real_spans = contract.structs.iter().any(|item| !item.span.is_empty())
-        || contract.fields.iter().any(|field| !field.span.is_empty())
-        || contract.constants.iter().any(|constant| !constant.span.is_empty())
-        || contract.functions.iter().any(|function| !function.span.is_empty());
+    // Require all items to be spanned: sorting a mixed AST would move synthetic
+    // zero-span items before parsed items and could change semantic vector order.
+    let all_spanned = contract.structs.iter().all(|item| !item.span.is_empty())
+        && contract.fields.iter().all(|field| !field.span.is_empty())
+        && contract.constants.iter().all(|constant| !constant.span.is_empty())
+        && contract.functions.iter().all(|function| !function.span.is_empty());
 
     let mut items =
         Vec::with_capacity(contract.structs.len() + contract.fields.len() + contract.constants.len() + contract.functions.len());
@@ -1128,11 +1140,21 @@ fn ordered_contract_items<'a, 'i>(contract: &'a ContractAst<'i>) -> Vec<Contract
         items.push((function.span.start(), ContractItemRef::Function(function)));
     }
 
-    if has_real_spans {
+    if all_spanned {
         items.sort_by_key(|(start, _)| *start);
     }
 
     items.into_iter().map(|(_, item)| item).collect()
+}
+
+fn format_function_attribute(attribute: &FunctionAttributeAst<'_>) -> String {
+    let path = attribute.path.join(".");
+    if attribute.args.is_empty() {
+        return format!("#[{path}]");
+    }
+
+    let args = attribute.args.iter().map(|arg| format!("{} = {}", arg.name, format_expr(&arg.expr))).collect::<Vec<_>>().join(", ");
+    format!("#[{path}({args})]")
 }
 
 fn format_params(params: &[ParamAst<'_>]) -> String {
@@ -1169,7 +1191,7 @@ fn format_expr_with_prec(expr: &Expr<'_>, parent_prec: u8, right_child: bool) ->
         ExprKind::String(value) => format_string_literal(value),
         ExprKind::DateLiteral(value) => format!("temporal({value})"),
         ExprKind::Identifier(value) => value.clone(),
-        ExprKind::Array { type_ref, values } => format_array(type_ref, values),
+        ExprKind::Array { type_ref, values, .. } => format_array(type_ref, values),
         ExprKind::Call { name, args, .. } => {
             if let (Some(type_ref), [source]) = (as_cast_type(name), args.as_slice()) {
                 format!("{} as {}", format_expr_with_prec(source, PREC_POSTFIX, false), type_ref.type_name())
@@ -1487,6 +1509,14 @@ pub fn parse_function_ast<'i>(source: &'i str) -> Result<FunctionAst<'i>, Compil
         .find(|pair| pair.as_rule() == Rule::function_definition)
         .ok_or_else(|| CompilerError::Unsupported("no function definition".to_string()))?;
     parse_function_definition(function_pair)
+}
+
+/// Parses exactly one standalone statement.
+pub fn parse_statement_ast<'i>(source: &'i str) -> Result<Statement<'i>, CompilerError> {
+    let mut pairs = parse_statement_rule(source)?;
+    let source_pair = pairs.next().ok_or_else(|| CompilerError::Unsupported("empty statement source".to_string()))?;
+    let statement_pair = source_pair.into_inner().next().ok_or_else(|| CompilerError::Unsupported("no statement".to_string()))?;
+    parse_statement(statement_pair)
 }
 
 pub fn parse_expression_ast<'i>(source: &'i str) -> Result<Expr<'i>, CompilerError> {
@@ -1837,7 +1867,7 @@ fn parse_statement<'i>(pair: Pair<'i, Rule>) -> Result<Statement<'i>, CompilerEr
             let struct_pair = inner
                 .next()
                 .ok_or_else(|| CompilerError::Unsupported("missing destructuring struct name".to_string()).with_span(&span))?;
-            let Identifier { name: target_struct, .. } = parse_identifier(struct_pair)?;
+            let Identifier { name: target_struct, span: target_struct_span } = parse_identifier(struct_pair)?;
             let mut bindings = Vec::new();
             while let Some(p) = inner.peek() {
                 if p.as_rule() != Rule::state_typed_binding {
@@ -1850,14 +1880,14 @@ fn parse_statement<'i>(pair: Pair<'i, Rule>) -> Result<Statement<'i>, CompilerEr
                 inner.next().ok_or_else(|| CompilerError::Unsupported("missing function call".to_string()).with_span(&span))?;
             let (Identifier { name, span: name_span }, args) =
                 parse_function_call_parts(call_pair).map_err(|err| err.with_span(&span))?;
-            Ok(Statement::StateFunctionCallAssign { target_struct, bindings, name, args, span, name_span })
+            Ok(Statement::StateFunctionCallAssign { target_struct, bindings, name, args, span, target_struct_span, name_span })
         }
         Rule::struct_destructure_assignment => {
             let mut inner = pair.into_inner();
             let struct_pair = inner
                 .next()
                 .ok_or_else(|| CompilerError::Unsupported("missing destructuring struct name".to_string()).with_span(&span))?;
-            let Identifier { name: struct_name, .. } = parse_identifier(struct_pair)?;
+            let Identifier { name: struct_name, span: struct_name_span } = parse_identifier(struct_pair)?;
             let mut bindings = Vec::new();
             while let Some(p) = inner.peek() {
                 if p.as_rule() != Rule::state_typed_binding {
@@ -1870,7 +1900,7 @@ fn parse_statement<'i>(pair: Pair<'i, Rule>) -> Result<Statement<'i>, CompilerEr
                 .next()
                 .ok_or_else(|| CompilerError::Unsupported("missing destructuring expression".to_string()).with_span(&span))?;
             let expr = parse_expression(expr_pair).map_err(|err| err.with_span(&span))?;
-            Ok(Statement::StructDestructure { struct_name, bindings, expr, span })
+            Ok(Statement::StructDestructure { struct_name, bindings, expr, span, struct_name_span })
         }
         Rule::call_statement => {
             let mut inner = pair.into_inner();
@@ -2159,15 +2189,16 @@ fn parse_unary<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {
 fn parse_postfix<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {
     let mut inner = pair.into_inner();
     let primary = inner.next().ok_or_else(|| CompilerError::Unsupported("missing primary in postfix".to_string()))?;
+    let mut source_span = Span::from(primary.as_span());
     let mut expr = parse_primary(primary)?;
     for postfix in inner {
         let postfix_span = Span::from(postfix.as_span());
+        let span = source_span.join(&postfix_span);
         match postfix.as_rule() {
             Rule::split_call => {
                 let mut split_inner = postfix.into_inner();
                 let index_expr = split_inner.next().ok_or_else(|| CompilerError::Unsupported("missing split index".to_string()))?;
                 let index = Box::new(parse_expression(index_expr)?);
-                let span = expr.span.join(&postfix_span);
                 expr = Expr::new(ExprKind::Split { source: Box::new(expr), index, part: SplitPart::Left, span: postfix_span }, span);
             }
             Rule::slice_call => {
@@ -2176,7 +2207,6 @@ fn parse_postfix<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {
                 let end_expr = slice_inner.next().ok_or_else(|| CompilerError::Unsupported("missing slice end".to_string()))?;
                 let start = Box::new(parse_expression(start_expr)?);
                 let end = Box::new(parse_expression(end_expr)?);
-                let span = expr.span.join(&postfix_span);
                 expr = Expr::new(ExprKind::Slice { source: Box::new(expr), start, end, span: postfix_span }, span);
             }
             Rule::append_call => {
@@ -2189,14 +2219,12 @@ fn parse_postfix<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {
                         CompilerError::Unsupported("append requires at least one expression".to_string()).with_span(&postfix_span)
                     );
                 }
-                let span = expr.span.join(&postfix_span);
                 expr = Expr::new(ExprKind::Append { source: Box::new(expr), args, span: postfix_span }, span);
             }
             Rule::tuple_index => {
                 let mut index_inner = postfix.into_inner();
                 let index_pair = index_inner.next().ok_or_else(|| CompilerError::Unsupported("missing tuple index".to_string()))?;
                 let index_expr = parse_expression(index_pair)?;
-                let span = expr.span.join(&postfix_span);
                 if matches!(&expr.kind, ExprKind::Split { .. }) {
                     return Err(CompilerError::Unsupported("split() results must be accessed with .0 or .1".to_string())
                         .with_span(&postfix_span));
@@ -2208,7 +2236,6 @@ fn parse_postfix<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {
                     ".length" => UnarySuffixKind::Length,
                     other => return Err(CompilerError::Unsupported(format!("unknown unary suffix '{other}'"))),
                 };
-                let span = expr.span.join(&postfix_span);
                 expr = Expr::new(ExprKind::UnarySuffix { source: Box::new(expr), kind, span: postfix_span }, span);
             }
             Rule::tuple_field_access => {
@@ -2216,7 +2243,6 @@ fn parse_postfix<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {
                 let index = raw
                     .parse::<usize>()
                     .map_err(|_| CompilerError::Unsupported(format!("invalid tuple field index '{raw}'")).with_span(&postfix_span))?;
-                let span = expr.span.join(&postfix_span);
                 if let ExprKind::Split { source, index: split_index, span: split_span, .. } = &expr.kind {
                     let part = match index {
                         0 => SplitPart::Left,
@@ -2246,7 +2272,6 @@ fn parse_postfix<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {
                 let field_pair =
                     postfix.into_inner().next().ok_or_else(|| CompilerError::Unsupported("missing field access name".to_string()))?;
                 let Identifier { name: field, span: field_span } = parse_identifier(field_pair)?;
-                let span = expr.span.join(&postfix_span);
                 expr = Expr::new(ExprKind::FieldAccess { source: Box::new(expr), field, field_span }, span);
             }
             Rule::as_cast => {
@@ -2254,13 +2279,13 @@ fn parse_postfix<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {
                 let type_pair = cast_inner.next().ok_or_else(|| CompilerError::Unsupported("missing type after 'as'".to_string()))?;
                 let type_span = Span::from(type_pair.as_span());
                 let type_ref = parse_type_name_pair(type_pair)?;
-                let span = expr.span.join(&postfix_span);
                 expr = Expr::new(ExprKind::Call { name: as_cast_call_name(&type_ref), args: vec![expr], name_span: type_span }, span);
             }
             _ => {
                 return Err(CompilerError::Unsupported("postfix operators are not supported".to_string()));
             }
         }
+        source_span = span;
     }
     Ok(expr)
 }
@@ -2418,6 +2443,7 @@ fn parse_typed_array<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError
     let span = Span::from(pair.as_span());
     let mut inner = pair.into_inner();
     let type_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing array literal type".to_string()))?;
+    let type_span = Span::from(type_pair.as_span());
     let mut type_ref = parse_type_name_pair(type_pair)?;
     let mut values = Vec::new();
     for expr_pair in inner {
@@ -2434,7 +2460,7 @@ fn parse_typed_array<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError
         }
         ArrayDim::Fixed(_) => {}
     }
-    Ok(Expr::new(ExprKind::Array { type_ref, values }, span))
+    Ok(Expr::new(ExprKind::Array { type_ref, values, type_span }, span))
 }
 
 fn parse_function_call_parts<'i>(pair: Pair<'i, Rule>) -> Result<(Identifier<'i>, Vec<Expr<'i>>), CompilerError> {
@@ -2511,7 +2537,7 @@ fn parse_cast<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {
             if matches!(type_ref.array_size(), Some(ArrayDim::Inferred)) {
                 type_ref.array_dims[0] = ArrayDim::Fixed(values.len());
             }
-            return Ok(Expr::new(ExprKind::Array { type_ref, values }, span));
+            return Ok(Expr::new(ExprKind::Array { type_ref, values, type_span }, span));
         }
         if let Some(expected_len) = cast_type.base.fixed_byte_sequence_len() {
             if values.len() != expected_len {
@@ -2525,6 +2551,7 @@ fn parse_cast<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {
                 ExprKind::Array {
                     type_ref: TypeRef { base: TypeBase::Byte, array_dims: vec![ArrayDim::Fixed(expected_len)] },
                     values,
+                    type_span: Span::default(),
                 },
                 byte_span,
             );
@@ -2710,14 +2737,17 @@ where
 {
     let mut inner = pair.into_inner();
     let first = inner.next().ok_or_else(|| CompilerError::Unsupported("missing infix operand".to_string()))?;
+    let mut source_span = Span::from(first.as_span());
     let mut expr = parse_operand(first)?;
 
     while let Some(op_pair) = inner.next() {
         let rhs = inner.next().ok_or_else(|| CompilerError::Unsupported("missing infix rhs".to_string()))?;
         let op = map_op(op_pair)?;
+        let rhs_span = Span::from(rhs.as_span());
         let rhs_expr = parse_operand(rhs)?;
-        let span = expr.span.join(&rhs_expr.span);
+        let span = source_span.join(&rhs_span);
         expr = Expr::new(ExprKind::Binary { op, left: Box::new(expr), right: Box::new(rhs_expr) }, span);
+        source_span = span;
     }
 
     Ok(expr)

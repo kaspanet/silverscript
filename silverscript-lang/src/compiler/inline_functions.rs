@@ -205,7 +205,7 @@ impl<'i, 'd> Inliner<'i, 'd> {
                     );
                 }
             }
-            Statement::StateFunctionCallAssign { target_struct, bindings, name, args, span, name_span } => {
+            Statement::StateFunctionCallAssign { target_struct, bindings, name, args, span, target_struct_span, name_span } => {
                 let (prelude, renamed_args) = self.lower_exprs(args, scope, visited_functions)?;
                 lowered.extend(prelude);
                 let renamed_bindings = bindings
@@ -223,11 +223,12 @@ impl<'i, 'd> Inliner<'i, 'd> {
                         name: name.clone(),
                         args: renamed_args,
                         span: *span,
+                        target_struct_span: *target_struct_span,
                         name_span: *name_span,
                     },
                 );
             }
-            Statement::StructDestructure { struct_name, bindings, expr, span } => {
+            Statement::StructDestructure { struct_name, bindings, expr, span, struct_name_span } => {
                 let (prelude, renamed_expr) = self.lower_expr(expr, scope, visited_functions)?;
                 lowered.extend(prelude);
                 let renamed_bindings = bindings
@@ -244,6 +245,7 @@ impl<'i, 'd> Inliner<'i, 'd> {
                         bindings: renamed_bindings,
                         expr: renamed_expr,
                         span: *span,
+                        struct_name_span: *struct_name_span,
                     },
                 );
             }
@@ -506,9 +508,9 @@ impl<'i, 'd> Inliner<'i, 'd> {
             ExprKind::String(value) => Ok((Vec::new(), Expr::new(ExprKind::String(value.clone()), span))),
             ExprKind::DateLiteral(value) => Ok((Vec::new(), Expr::new(ExprKind::DateLiteral(*value), span))),
             ExprKind::Identifier(name) => Ok((Vec::new(), Expr::new(ExprKind::Identifier(self.rename_name(name, scope)), span))),
-            ExprKind::Array { type_ref, values } => {
+            ExprKind::Array { type_ref, values, type_span } => {
                 let (prelude, values) = self.lower_exprs(values, scope, visited_functions)?;
-                Ok((prelude, Expr::new(ExprKind::Array { type_ref: type_ref.clone(), values }, span)))
+                Ok((prelude, Expr::new(ExprKind::Array { type_ref: type_ref.clone(), values, type_span: *type_span }, span)))
             }
             ExprKind::Call { name, args, name_span } => {
                 let (mut prelude, args) = self.lower_exprs(args, scope, visited_functions)?;

@@ -217,9 +217,11 @@ impl<'i> DebugRecorder<'i> {
         let span = expr.span;
         let kind = match expr.kind {
             ExprKind::Identifier(name) => ExprKind::Identifier(self.visible_name(&name)),
-            ExprKind::Array { type_ref, values } => {
-                ExprKind::Array { type_ref, values: values.into_iter().map(|value| self.rewrite_debug_expr(value)).collect() }
-            }
+            ExprKind::Array { type_ref, values, type_span } => ExprKind::Array {
+                type_ref,
+                values: values.into_iter().map(|value| self.rewrite_debug_expr(value)).collect(),
+                type_span,
+            },
             ExprKind::Call { name, args, name_span } => {
                 ExprKind::Call { name, args: args.into_iter().map(|arg| self.rewrite_debug_expr(arg)).collect(), name_span }
             }
@@ -522,12 +524,13 @@ fn rewrite_debug_expr_with_function<'i>(
 
     let kind = match expr.kind {
         ExprKind::Identifier(name) => ExprKind::Identifier(visible_name(&name)),
-        ExprKind::Array { type_ref, values } => ExprKind::Array {
+        ExprKind::Array { type_ref, values, type_span } => ExprKind::Array {
             type_ref,
             values: values
                 .into_iter()
                 .map(|value| rewrite_debug_expr_with_function(value, function_name, visible_names_by_function))
                 .collect(),
+            type_span,
         },
         ExprKind::Call { name, args, name_span } => ExprKind::Call {
             name,

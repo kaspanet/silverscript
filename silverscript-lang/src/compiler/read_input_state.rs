@@ -156,21 +156,23 @@ fn lower_statement<'i>(statement: &Statement<'i>, context: &mut LoweringContext)
             span: *span,
             name_span: *name_span,
         },
-        Statement::StateFunctionCallAssign { target_struct, bindings, name, args, span, name_span } => {
+        Statement::StateFunctionCallAssign { target_struct, bindings, name, args, span, target_struct_span, name_span } => {
             Statement::StateFunctionCallAssign {
                 target_struct: target_struct.clone(),
                 bindings: bindings.clone(),
                 name: name.clone(),
                 args: lower_call_args(args, &mut prefix, context),
                 span: *span,
+                target_struct_span: *target_struct_span,
                 name_span: *name_span,
             }
         }
-        Statement::StructDestructure { struct_name, bindings, expr, span } => Statement::StructDestructure {
+        Statement::StructDestructure { struct_name, bindings, expr, span, struct_name_span } => Statement::StructDestructure {
             struct_name: struct_name.clone(),
             bindings: bindings.clone(),
             expr: lower_expr(expr, &mut prefix, context),
             span: *span,
+            struct_name_span: *struct_name_span,
         },
         Statement::Assign { name, expr, span, name_span } => {
             Statement::Assign { name: name.clone(), expr: lower_expr(expr, &mut prefix, context), span: *span, name_span: *name_span }
@@ -255,9 +257,10 @@ fn lower_call_arg<'i>(arg: &Expr<'i>, prefix: &mut Vec<Statement<'i>>, context: 
 
 fn lower_expr<'i>(expr: &Expr<'i>, prefix: &mut Vec<Statement<'i>>, context: &mut LoweringContext) -> Expr<'i> {
     let kind = match &expr.kind {
-        ExprKind::Array { type_ref, values } => ExprKind::Array {
+        ExprKind::Array { type_ref, values, type_span } => ExprKind::Array {
             type_ref: type_ref.clone(),
             values: values.iter().map(|value| lower_expr(value, prefix, context)).collect(),
+            type_span: *type_span,
         },
         ExprKind::Call { name, args, name_span } => {
             ExprKind::Call { name: name.clone(), args: lower_call_args(args, prefix, context), name_span: *name_span }

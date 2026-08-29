@@ -1,5 +1,7 @@
-use silverscript_lang::ast::visit::{AstVisitorMut, NameKind, visit_function_mut};
-use silverscript_lang::ast::{ExprKind, Statement, parse_contract_ast, parse_function_ast};
+use silverscript_lang::ast::visit::{AstVisitorMut, NameKind, visit_contract_mut, visit_function_mut};
+use silverscript_lang::ast::{
+    ExprKind, FunctionAst, Statement, TypeBase, parse_contract_ast, parse_expression_ast, parse_function_ast, parse_statement_ast,
+};
 use silverscript_lang::span::Span;
 
 fn assert_span_text(source: &str, actual: &str, expected: &str) {
@@ -19,6 +21,26 @@ struct NameOccurrence {
 #[derive(Default)]
 struct NameOccurrenceCollector {
     occurrences: Vec<NameOccurrence>,
+}
+
+struct SpanResetter;
+
+#[derive(Debug, PartialEq, Eq)]
+struct TypeOccurrence {
+    type_name: String,
+    base_name: String,
+    span_prefix: String,
+}
+
+#[derive(Default)]
+struct TypeOccurrenceCollector {
+    occurrences: Vec<TypeOccurrence>,
+}
+
+#[derive(Default)]
+struct SyntheticMetadataCollector {
+    type_names: Vec<(String, bool)>,
+    attribute_path_segments: Vec<(String, bool)>,
 }
 
 impl<'i> AstVisitorMut<'i> for NameOccurrenceCollector {
@@ -61,6 +83,285 @@ fn parses_standalone_functions_and_visits_name_spans() {
             NameOccurrence { name: "total".to_string(), kind: NameKind::IdentifierExpr, source: "total".to_string() },
         ]
     );
+}
+
+#[test]
+fn parses_standalone_statements_with_original_source_spans() {
+    let source = "  /* before */ value = (signed(value) + signed(step)) as byte; // after\n";
+    let statement = parse_statement_ast(source).expect("standalone statement should parse");
+
+    let Statement::Assign { name, expr, span, name_span } = statement else {
+        panic!("expected an assignment");
+    };
+    assert_eq!(name, "value");
+    assert_eq!(span.as_str(), "value = (signed(value) + signed(step)) as byte;");
+    assert_eq!(name_span.as_str(), "value");
+    assert_eq!(expr.span.as_str(), "(signed(value) + signed(step)) as byte");
+    assert_eq!(span.get_input(), source);
+    assert_eq!(name_span.get_input(), source);
+    assert_eq!(expr.span.get_input(), source);
+}
+
+#[test]
+fn parses_supported_standalone_statement_shapes() {
+    let sources = [
+        "int value = 1;",
+        "CounterState { value: int current } = readInputState(0);",
+        "{ int value = 1; value = 2; }",
+        "if (ready) { value = 1; } else value = 2;",
+    ];
+
+    for source in sources {
+        parse_statement_ast(source).unwrap_or_else(|err| panic!("`{source}` should parse as one statement: {err}"));
+    }
+}
+
+#[test]
+fn rejects_incomplete_or_multiple_standalone_statements() {
+    for source in ["", "value = 1", "value = 1; other = 2;", "value + 1"] {
+        assert!(parse_statement_ast(source).is_err(), "`{source}` must not parse as exactly one statement");
+    }
+}
+
+impl<'i> AstVisitorMut<'i> for SpanResetter {
+    fn visit_span(&mut self, span: &mut Span<'i>) {
+        *span = Span::default();
+    }
+}
+
+impl<'i> AstVisitorMut<'i> for TypeOccurrenceCollector {
+    fn visit_type(&mut self, type_ref: &silverscript_lang::ast::TypeRef, span: Span<'i>) {
+        let TypeBase::Custom(base_name) = &type_ref.base else {
+            panic!("fixture only contains custom type sites");
+        };
+        let span_prefix = span
+            .get_input()
+            .get(span.start()..span.start() + base_name.len())
+            .expect("custom type name should fit within the source")
+            .to_string();
+        self.occurrences.push(TypeOccurrence { type_name: type_ref.type_name(), base_name: base_name.to_string(), span_prefix });
+    }
+
+    fn visit_span(&mut self, span: &mut Span<'i>) {
+        *span = Span::default();
+    }
+}
+
+impl<'i> AstVisitorMut<'i> for SyntheticMetadataCollector {
+    fn visit_name(&mut self, name: &mut String, kind: NameKind, span: Span<'i>) {
+        if kind == NameKind::AttributePathSegment {
+            self.attribute_path_segments.push((name.clone(), span == Span::default()));
+        }
+    }
+
+    fn visit_type(&mut self, type_ref: &silverscript_lang::ast::TypeRef, span: Span<'i>) {
+        self.type_names.push((type_ref.type_name(), span == Span::default()));
+    }
+}
+
+#[test]
+fn visits_deserialized_function_metadata_without_source_spans() {
+    let source = "#[covenant.singleton] function inspect() : (LeftResult, RightResult) {}";
+    let function = parse_function_ast(source).expect("function metadata fixture should parse");
+    let serialized = serde_json::to_string(&function).expect("function AST should serialize");
+    let mut function: FunctionAst<'_> = serde_json::from_str(&serialized).expect("function AST should deserialize");
+    let mut collector = SyntheticMetadataCollector::default();
+
+    visit_function_mut(&mut collector, &mut function);
+
+    assert_eq!(
+        collector.type_names,
+        [("LeftResult", true), ("RightResult", true)].map(|(name, synthetic)| (name.to_string(), synthetic))
+    );
+    assert_eq!(
+        collector.attribute_path_segments,
+        [("covenant", true), ("singleton", true)].map(|(name, synthetic)| (name.to_string(), synthetic))
+    );
+}
+
+#[test]
+fn composed_expression_spans_remain_syntactically_complete() {
+    let sources = [
+        "(signed(next_status) + signed(increment)) as byte",
+        "(value).field",
+        "(values)[index]",
+        "(values)[index].length",
+        "(value).length",
+        "(left + right) * factor",
+        "left + (right * factor)",
+    ];
+
+    for source in sources {
+        let expr = parse_expression_ast(source).unwrap_or_else(|err| panic!("`{source}` should parse: {err}"));
+        assert_eq!(expr.span.as_str(), source, "composite expression span should be valid and complete");
+    }
+}
+
+#[test]
+fn redundant_parentheses_do_not_widen_identifier_name_spans() {
+    let mut expr = parse_expression_ast("((value))").expect("parenthesized identifier should parse");
+    let mut collector = NameOccurrenceCollector::default();
+    collector.visit_expr(&mut expr);
+
+    assert_eq!(expr.span.as_str(), "value");
+    assert_eq!(
+        collector.occurrences,
+        vec![NameOccurrence { name: "value".to_string(), kind: NameKind::IdentifierExpr, source: "value".to_string() }]
+    );
+}
+
+#[test]
+fn exposes_exact_spans_for_struct_types_and_typed_arrays() {
+    let source = r#"function inspect() {
+        CounterState   {value: int current} = readInputState(0);
+        CounterState   {value: int copy} = current_state;
+        CounterState[] values = CounterState[]   {CounterState {value: 1}};
+    }"#;
+    let mut function = parse_function_ast(source).expect("standalone function should parse");
+
+    let Statement::StateFunctionCallAssign { target_struct, target_struct_span, .. } = &function.body[0] else {
+        panic!("expected a state function call assignment");
+    };
+    assert_eq!(target_struct, "CounterState");
+    assert_eq!(target_struct_span.as_str(), "CounterState");
+
+    let Statement::StructDestructure { struct_name, struct_name_span, .. } = &function.body[1] else {
+        panic!("expected a struct destructure assignment");
+    };
+    assert_eq!(struct_name, "CounterState");
+    assert_eq!(struct_name_span.as_str(), "CounterState");
+
+    let Statement::VariableDefinition { expr: Some(expr), .. } = &function.body[2] else {
+        panic!("expected a variable definition with an initializer");
+    };
+    let ExprKind::Array { type_span, .. } = &expr.kind else {
+        panic!("expected a typed array expression");
+    };
+    assert_eq!(type_span.as_str(), "CounterState[]");
+
+    visit_function_mut(&mut SpanResetter, &mut function);
+    let Statement::StateFunctionCallAssign { target_struct_span, .. } = &function.body[0] else {
+        unreachable!("statement shape was already checked");
+    };
+    let Statement::StructDestructure { struct_name_span, .. } = &function.body[1] else {
+        unreachable!("statement shape was already checked");
+    };
+    let Statement::VariableDefinition { expr: Some(expr), .. } = &function.body[2] else {
+        unreachable!("statement shape was already checked");
+    };
+    let ExprKind::Array { type_span, .. } = &expr.kind else {
+        unreachable!("expression shape was already checked");
+    };
+    assert!(target_struct_span.as_str().is_empty());
+    assert!(struct_name_span.as_str().is_empty());
+    assert!(type_span.as_str().is_empty());
+}
+
+#[test]
+fn type_spans_start_at_the_base_type_after_leading_trivia() {
+    let source = r#"function inspect(
+        /* before scalar */ ScalarType /* before name */ scalar,
+        /* before array */ ArrayType /* before suffix */ [] /* before name */ values
+    ) {}"#;
+    let function = parse_function_ast(source).expect("type-span fixture should parse");
+
+    for param in &function.params {
+        let TypeBase::Custom(name) = &param.type_ref.base else {
+            panic!("fixture should use custom types");
+        };
+        let start = param.type_span.start();
+        let authored_name = source.get(start..start + name.len()).expect("type name should fit within its source");
+
+        assert_eq!(authored_name, name);
+    }
+}
+
+#[test]
+fn contract_traversal_classifies_struct_names() {
+    let source = "contract Container() { struct Item { int value; } }";
+    let mut contract = parse_contract_ast(source).expect("struct-name fixture should parse");
+    let mut collector = NameOccurrenceCollector::default();
+
+    visit_contract_mut(&mut collector, &mut contract);
+
+    assert_eq!(
+        collector.occurrences,
+        [("Container", NameKind::Contract), ("Item", NameKind::Struct), ("value", NameKind::StructField),]
+            .into_iter()
+            .map(|(name, kind)| NameOccurrence { name: name.to_string(), kind, source: name.to_string() })
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn visits_every_classified_type_site_before_mutating_its_span() {
+    let source = r#"contract Inspect(/* leading */ ContractParam /* separator */ ctor) {
+        struct Wrapper {
+            StructFieldType field;
+        }
+
+        ContractFieldType stored = ContractFieldCtor { count: 0 };
+        ConstantType constant initial = ConstantCtor { count: 0 };
+
+        function inspect(FunctionParam param) : ReturnType {
+            NestedResult nested = wrap(
+                flag
+                    ? OuterCtor { items: NestedArray[]{ InnerCtor { count: 1 } } }
+                    : FallbackCtor { count: 0 }
+            );
+            VariableType local = VariableCtor { count: 1 };
+            TupleLeft left, TupleRight right = pair();
+            (CallBinding output) = identity(local);
+            StateOwner { count: StateBinding from_call } = readInputState(0);
+            DestructureOwner { count: DestructureBinding copy } = local;
+            DeclaredArray[] values = LiteralArray[]{ ArrayElementCtor { count: 1 } };
+            return(local);
+        }
+    }"#;
+    let mut contract = parse_contract_ast(source).expect("type-site fixture should parse");
+    let mut collector = TypeOccurrenceCollector::default();
+
+    visit_contract_mut(&mut collector, &mut contract);
+
+    let expected = [
+        ("ContractParam", "ContractParam", "ContractParam"),
+        ("StructFieldType", "StructFieldType", "StructFieldType"),
+        ("ContractFieldType", "ContractFieldType", "ContractFieldType"),
+        ("ContractFieldCtor", "ContractFieldCtor", "ContractFieldCtor"),
+        ("ConstantType", "ConstantType", "ConstantType"),
+        ("ConstantCtor", "ConstantCtor", "ConstantCtor"),
+        ("ReturnType", "ReturnType", "ReturnType"),
+        ("FunctionParam", "FunctionParam", "FunctionParam"),
+        ("NestedResult", "NestedResult", "NestedResult"),
+        ("OuterCtor", "OuterCtor", "OuterCtor"),
+        ("NestedArray[]", "NestedArray", "NestedArray"),
+        ("InnerCtor", "InnerCtor", "InnerCtor"),
+        ("FallbackCtor", "FallbackCtor", "FallbackCtor"),
+        ("VariableType", "VariableType", "VariableType"),
+        ("VariableCtor", "VariableCtor", "VariableCtor"),
+        ("TupleLeft", "TupleLeft", "TupleLeft"),
+        ("TupleRight", "TupleRight", "TupleRight"),
+        ("CallBinding", "CallBinding", "CallBinding"),
+        ("StateOwner", "StateOwner", "StateOwner"),
+        ("StateBinding", "StateBinding", "StateBinding"),
+        ("DestructureOwner", "DestructureOwner", "DestructureOwner"),
+        ("DestructureBinding", "DestructureBinding", "DestructureBinding"),
+        ("DeclaredArray[]", "DeclaredArray", "DeclaredArray"),
+        ("LiteralArray[]", "LiteralArray", "LiteralArray"),
+        ("ArrayElementCtor", "ArrayElementCtor", "ArrayElementCtor"),
+    ];
+    assert_eq!(
+        collector.occurrences,
+        expected
+            .into_iter()
+            .map(|(type_name, base_name, span_prefix)| TypeOccurrence {
+                type_name: type_name.to_string(),
+                base_name: base_name.to_string(),
+                span_prefix: span_prefix.to_string(),
+            })
+            .collect::<Vec<_>>()
+    );
+    assert!(contract.structs[0].fields[0].type_span.as_str().is_empty(), "contract traversal must visit struct-field spans");
 }
 
 #[test]

@@ -37,6 +37,7 @@ pub(super) fn lower_variable_definition<'i>(
             name: builtin_name.clone(),
             args: args.iter().map(|arg| lower_scalar_expr(arg, scope, lowerer)).collect::<Result<Vec<_>, _>>()?,
             span: *span,
+            target_struct_span: *type_span,
             name_span: *name_span,
         }]);
     }

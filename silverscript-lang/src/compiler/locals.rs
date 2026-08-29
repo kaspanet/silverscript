@@ -104,7 +104,7 @@ fn lower_statements<'i>(
                     name_span: *name_span,
                 });
             }
-            Statement::StateFunctionCallAssign { target_struct, bindings, name, args, span, name_span } => {
+            Statement::StateFunctionCallAssign { target_struct, bindings, name, args, span, target_struct_span, name_span } => {
                 for binding in bindings {
                     local_aliases.remove(&binding.name);
                 }
@@ -114,10 +114,11 @@ fn lower_statements<'i>(
                     name: name.clone(),
                     args: args.iter().map(|arg| substitute_expr(arg, &local_aliases)).collect::<Result<Vec<_>, _>>()?,
                     span: *span,
+                    target_struct_span: *target_struct_span,
                     name_span: *name_span,
                 });
             }
-            Statement::StructDestructure { struct_name, bindings, expr, span } => {
+            Statement::StructDestructure { struct_name, bindings, expr, span, struct_name_span } => {
                 for binding in bindings {
                     local_aliases.remove(&binding.name);
                 }
@@ -126,6 +127,7 @@ fn lower_statements<'i>(
                     bindings: bindings.clone(),
                     expr: substitute_expr(expr, &local_aliases)?,
                     span: *span,
+                    struct_name_span: *struct_name_span,
                 });
             }
             Statement::Assign { name, expr, span, name_span } => {
@@ -215,11 +217,11 @@ fn coerce_expr_for_declared_type<'i>(expr: Expr<'i>, type_ref: &TypeRef) -> Resu
         return Ok(Expr::new(ExprKind::Byte(byte_value), expr.span));
     }
     if let Some(element_type) = type_ref.array_element_type()
-        && let ExprKind::Array { values, .. } = expr.kind
+        && let ExprKind::Array { values, type_span, .. } = expr.kind
     {
         let values =
             values.into_iter().map(|value| coerce_expr_for_declared_type(value, &element_type)).collect::<Result<Vec<_>, _>>()?;
-        return Ok(Expr::new(ExprKind::Array { type_ref: type_ref.clone(), values }, expr.span));
+        return Ok(Expr::new(ExprKind::Array { type_ref: type_ref.clone(), values, type_span }, expr.span));
     }
     Ok(expr)
 }
@@ -245,10 +247,11 @@ fn substitute_expr<'i>(expr: &Expr<'i>, aliases: &HashMap<String, Expr<'i>>) -> 
             },
             span,
         ),
-        ExprKind::Array { type_ref, values } => Expr::new(
+        ExprKind::Array { type_ref, values, type_span } => Expr::new(
             ExprKind::Array {
                 type_ref,
                 values: values.iter().map(|value| substitute_expr(value, aliases)).collect::<Result<Vec<_>, _>>()?,
+                type_span,
             },
             span,
         ),
