@@ -9,7 +9,7 @@ contract Contract(
         datasig oracleMsgSig,
         sig oracleTxSig,
     ) {
-        byte[] oracleMessage = byte[]('Spend') + (12 as byte[8]);
+        byte[] oracleMessage = byte[]("Spend") + (12 as byte[8]);
         require(checkMsgSig(
             oracleMsgSig,
             sha256(oracleMessage),

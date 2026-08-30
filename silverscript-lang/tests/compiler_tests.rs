@@ -411,6 +411,22 @@ fn portable_abi_verifies_struct_contract_field_state_layout() {
 }
 
 #[test]
+fn portable_abi_verifies_and_executes_dynamic_string_state() {
+    let source = r#"
+        contract VariableState(string initial) {
+            string stored = initial;
+            entry main() { require(stored == "hello"); }
+        }
+    "#;
+
+    let abi = compile_to_sil_abi_artifact(source, &["hello".into()]).expect("dynamic string state compiles");
+    abi.verify().expect("compiler output with dynamic string state verifies");
+    let sigscript = encode_single_entry_sig_script(&abi, &[]).expect("sigscript builds");
+
+    run_bytecode_with_sigscript(bytecode(&abi), sigscript).expect("verified dynamic string state executes");
+}
+
+#[test]
 fn constructor_arguments_are_concrete_values_not_runtime_introspection() {
     let source = r#"
         contract RuntimeConstructor(int expected_lock_time) {
@@ -7550,6 +7566,25 @@ fn compiles_contract_constants_and_verifies() {
 
     assert_eq!(bytecode(&compiled), expected);
     assert!(run_bytecode_with_dispatch_tag(bytecode(&compiled), dispatch_tag).is_ok());
+}
+
+#[test]
+fn runtime_string_constant_preserves_literal_backslash_before_quote() {
+    let source = r#"
+        contract Escapes() {
+            string constant VALUE = "\\\"";
+
+            entry main() {
+                require(VALUE.length == 2);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let sigscript = encode_single_entry_sig_script(&compiled, &[]).expect("sigscript builds");
+
+    run_bytecode_with_sigscript(bytecode(&compiled), sigscript)
+        .expect("a literal backslash followed by a quote remains two bytes at runtime");
 }
 
 #[test]
