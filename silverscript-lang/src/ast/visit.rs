@@ -1,6 +1,6 @@
 use super::{
     ConstantAst, ContractAst, ContractFieldAst, Expr, ExprKind, FunctionAst, FunctionAttributeArgAst, FunctionAttributeAst, ParamAst,
-    Statement, StructAst, StructBindingAst, StructFieldAst, TypeBase, TypeRef,
+    Statement, StructAst, StructBindingAst, StructFieldAst, TypeBase, TypeRef, as_cast_type,
 };
 use crate::span::Span;
 
@@ -391,7 +391,18 @@ pub fn walk_expr_mut<'i, V: AstVisitorMut<'i> + ?Sized>(visitor: &mut V, expr: &
                 visitor.visit_expr(item);
             }
         }
-        ExprKind::Call { name, args, name_span } | ExprKind::New { name, args, name_span } => {
+        ExprKind::Call { name, args, name_span } => {
+            if let Some(type_ref) = as_cast_type(name) {
+                visit_type_ref(visitor, &type_ref, *name_span);
+            } else {
+                visitor.visit_name(name, NameKind::CallTarget, *name_span);
+            }
+            visitor.visit_span(name_span);
+            for arg in args {
+                visitor.visit_expr(arg);
+            }
+        }
+        ExprKind::New { name, args, name_span } => {
             visitor.visit_name(name, NameKind::CallTarget, *name_span);
             visitor.visit_span(name_span);
             for arg in args {

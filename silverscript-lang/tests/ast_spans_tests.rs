@@ -38,6 +38,11 @@ struct TypeOccurrenceCollector {
 }
 
 #[derive(Default)]
+struct TypeSourceCollector {
+    occurrences: Vec<(String, String)>,
+}
+
+#[derive(Default)]
 struct SyntheticMetadataCollector {
     type_names: Vec<(String, bool)>,
     attribute_path_segments: Vec<(String, bool)>,
@@ -147,6 +152,16 @@ impl<'i> AstVisitorMut<'i> for TypeOccurrenceCollector {
     }
 }
 
+impl<'i> AstVisitorMut<'i> for TypeSourceCollector {
+    fn visit_type(&mut self, type_ref: &silverscript_lang::ast::TypeRef, span: Span<'i>) {
+        self.occurrences.push((type_ref.type_name(), span.as_str().to_string()));
+    }
+
+    fn visit_span(&mut self, span: &mut Span<'i>) {
+        *span = Span::default();
+    }
+}
+
 impl<'i> AstVisitorMut<'i> for SyntheticMetadataCollector {
     fn visit_name(&mut self, name: &mut String, kind: NameKind, span: Span<'i>) {
         if kind == NameKind::AttributePathSegment {
@@ -195,6 +210,21 @@ fn composed_expression_spans_remain_syntactically_complete() {
         let expr = parse_expression_ast(source).unwrap_or_else(|err| panic!("`{source}` should parse: {err}"));
         assert_eq!(expr.span.as_str(), source, "composite expression span should be valid and complete");
     }
+}
+
+#[test]
+fn visits_as_cast_targets_as_types_before_mutating_their_spans() {
+    let source = "value as CounterState[]";
+    let mut expr = parse_expression_ast(source).expect("as-cast expression should parse");
+    let mut collector = TypeSourceCollector::default();
+
+    collector.visit_expr(&mut expr);
+
+    assert_eq!(collector.occurrences, vec![("CounterState[]".to_string(), "CounterState[]".to_string())]);
+    let ExprKind::Call { name_span, .. } = expr.kind else {
+        panic!("as cast should use the internal call representation");
+    };
+    assert!(name_span.as_str().is_empty(), "the stored cast type span must still be visited independently");
 }
 
 #[test]
