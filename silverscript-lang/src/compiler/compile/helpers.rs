@@ -16,27 +16,29 @@ pub(super) fn compile_contract_fields<'i>(
     let mut field_types = HashMap::new();
     let mut builder = script_builder();
     let stack_bindings = StackBindings::default();
+    let mut current_constants = base_constants.clone();
 
     for field in fields {
         let mut resolve_visiting = HashSet::new();
-        let resolved = resolve_constant_references(field.expr.clone(), base_constants, &mut resolve_visiting)?;
+        let resolved = resolve_constant_references(field.expr.clone(), &current_constants, &mut resolve_visiting)?;
 
-        if fixed_type_size(&field.type_ref, base_constants)?.is_some() {
-            let encoded = encode_value_with_constant_size(&resolved, &field.type_ref, base_constants)?;
+        if fixed_type_size(&field.type_ref, &current_constants)?.is_some() {
+            let encoded = encode_value_with_constant_size(&resolved, &field.type_ref, &current_constants)?;
             builder.add_data_with_push_opcode(&encoded)?;
         } else {
             let env = ExprEnv {
-                constants: base_constants,
+                constants: &current_constants,
                 stack_bindings: &stack_bindings,
                 types: &field_types,
                 bytecode_size,
-                contract_constants: base_constants,
+                contract_constants: &current_constants,
             };
             let mut emitter = ScriptEmitter::new(&mut builder, 0);
             compile_expr(&resolved, Some(&field.type_ref), &env, &mut emitter)?;
         }
 
-        field_values.insert(field.name.clone(), resolved);
+        field_values.insert(field.name.clone(), resolved.clone());
+        current_constants.insert(field.name.clone(), resolved);
         field_types.insert(field.name.clone(), field.type_ref.clone());
     }
 
