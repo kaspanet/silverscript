@@ -17822,3 +17822,74 @@ fn signature_script_builder_requires_explicit_byte_values() {
         encode_entry_sig_script(&compiled, "array", &[ArtifactValue::Bytes(vec![1])]).expect("explicit byte elements build");
     run_bytecode_with_sigscript(bytecode(&compiled), sigscript).expect("the explicit byte-array invocation executes");
 }
+
+#[test]
+fn contract_field_initializer_accepts_a_reference_to_an_earlier_field() {
+    let source = r#"
+        contract PriorFieldReference(int initial) {
+            int amount = initial;
+            int mirrored = amount;
+
+            entry main() {
+                require(mirrored == amount);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[42.into()], CompileOptions::default());
+    assert!(compiled.is_ok(), "contract with prior field reference should compile successfully: {:?}", compiled.err());
+}
+
+#[test]
+fn contract_field_initializer_rejects_forward_and_undefined_references() {
+    let source_forward = r#"
+        contract ForwardFieldReference(int initial) {
+            int mirrored = amount;
+            int amount = initial;
+
+            entry main() {
+                require(mirrored == amount);
+            }
+        }
+    "#;
+    let err_forward = compile_contract(source_forward, &[42.into()], CompileOptions::default()).expect_err("forward reference should fail");
+    assert!(
+        err_forward.to_string().contains("UndefinedIdentifier") || err_forward.to_string().contains("undefined"),
+        "unexpected error: {err_forward}"
+    );
+
+    let source_undefined = r#"
+        contract UndefinedFieldReference(int initial) {
+            int amount = undefined_var;
+
+            entry main() {
+                require(amount == initial);
+            }
+        }
+    "#;
+    let err_undefined = compile_contract(source_undefined, &[42.into()], CompileOptions::default()).expect_err("undefined reference should fail");
+    assert!(
+        err_undefined.to_string().contains("UndefinedIdentifier") || err_undefined.to_string().contains("undefined"),
+        "unexpected error: {err_undefined}"
+    );
+}
+
+#[test]
+fn contract_field_initializer_rejects_cyclic_references() {
+    let source_cyclic = r#"
+        contract CyclicFieldReference(int initial) {
+            int amount = mirrored;
+            int mirrored = amount;
+
+            entry main() {
+                require(amount == initial);
+            }
+        }
+    "#;
+    let err_cyclic = compile_contract(source_cyclic, &[42.into()], CompileOptions::default()).expect_err("cyclic reference should fail");
+    assert!(
+        err_cyclic.to_string().contains("UndefinedIdentifier") || err_cyclic.to_string().contains("undefined"),
+        "unexpected error: {err_cyclic}"
+    );
+}
+
