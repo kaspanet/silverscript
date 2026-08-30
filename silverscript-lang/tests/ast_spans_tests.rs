@@ -40,6 +40,7 @@ struct TypeOccurrenceCollector {
 #[derive(Default)]
 struct TypeSourceCollector {
     occurrences: Vec<(String, String)>,
+    call_targets: Vec<String>,
 }
 
 #[derive(Default)]
@@ -153,6 +154,12 @@ impl<'i> AstVisitorMut<'i> for TypeOccurrenceCollector {
 }
 
 impl<'i> AstVisitorMut<'i> for TypeSourceCollector {
+    fn visit_name(&mut self, name: &mut String, kind: NameKind, _span: Span<'i>) {
+        if kind == NameKind::CallTarget {
+            self.call_targets.push(name.clone());
+        }
+    }
+
     fn visit_type(&mut self, type_ref: &silverscript_lang::ast::TypeRef, span: Span<'i>) {
         self.occurrences.push((type_ref.type_name(), span.as_str().to_string()));
     }
@@ -221,6 +228,7 @@ fn visits_as_cast_targets_as_types_before_mutating_their_spans() {
     collector.visit_expr(&mut expr);
 
     assert_eq!(collector.occurrences, vec![("CounterState[]".to_string(), "CounterState[]".to_string())]);
+    assert!(collector.call_targets.is_empty(), "the internal cast name must not be exposed as a call target");
     let ExprKind::Call { name_span, .. } = expr.kind else {
         panic!("as cast should use the internal call representation");
     };
