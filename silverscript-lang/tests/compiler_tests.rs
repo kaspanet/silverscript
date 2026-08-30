@@ -9509,12 +9509,16 @@ fn compiles_read_input_state_to_expected_script() {
         .drain();
 
     let asm = script_to_str(&bytecode(&compiled)).expect("stringifies");
-    // Two field reads, plus the single state-region read the framing guard uses
-    // to pin each field's push header at its constant offset.
-    assert_eq!(asm.matches("OpTxInputScriptSigSubstr").count(), 3, "should read two state fields behind one region read");
+    // Two field reads, the single state-region read the framing guard uses to pin each field's
+    // push header, and the window read whose P2SH is compared against the input's scriptPubKey.
+    assert_eq!(
+        asm.matches("OpTxInputScriptSigSubstr").count(),
+        4,
+        "should read two state fields behind a region read and a window read"
+    );
     assert_eq!(asm.matches("OpGreaterThan").count(), 1, "should compare x numerically");
     let equal_verify_count = asm.matches("OpEqualVerify").count();
-    assert_eq!(equal_verify_count, 2, "the framing guard should pin one push header per state field");
+    assert_eq!(equal_verify_count, 3, "one push header pinned per state field, plus the scriptPubKey binding");
     assert_eq!(asm.matches("OpEqual").count() - equal_verify_count, 2, "should compare y bytewise in addition to dispatch");
     assert!(
         bytecode(&compiled).ends_with(&[OpDrop, OpDrop, OpTrue, OpElse, OpReturn, OpEndIf]),
@@ -9552,7 +9556,9 @@ fn runs_read_input_state() {
     };
     let tx = Transaction::new(1, vec![input0.clone(), input1], vec![output.clone()], 0, Default::default(), 0, vec![]);
     let utxo0 = UtxoEntry::new(output.value, output.script_public_key.clone(), 0, tx.is_coinbase(), None);
-    let utxo1 = UtxoEntry::new(1000, ScriptPublicKey::new(0, vec![OpTrue].into()), 0, tx.is_coinbase(), None);
+    // The read input's own UTXO must commit to the script it presents — the plain decoder now
+    // requires it, as the templated one always has.
+    let utxo1 = UtxoEntry::new(1000, pay_to_script_hash_script(&bytecode(&input1_compiled)), 0, tx.is_coinbase(), None);
     let result = execute_input(tx, vec![utxo0, utxo1], 0);
     assert!(result.is_ok(), "readInputState runtime failed: {}", result.unwrap_err());
 }
@@ -9587,7 +9593,9 @@ fn runs_read_input_state_into_state_variable() {
     };
     let tx = Transaction::new(1, vec![input0.clone(), input1], vec![output.clone()], 0, Default::default(), 0, vec![]);
     let utxo0 = UtxoEntry::new(output.value, output.script_public_key.clone(), 0, tx.is_coinbase(), None);
-    let utxo1 = UtxoEntry::new(1000, ScriptPublicKey::new(0, vec![OpTrue].into()), 0, tx.is_coinbase(), None);
+    // The read input's own UTXO must commit to the script it presents — the plain decoder now
+    // requires it, as the templated one always has.
+    let utxo1 = UtxoEntry::new(1000, pay_to_script_hash_script(&bytecode(&input1_compiled)), 0, tx.is_coinbase(), None);
     let result = execute_input(tx, vec![utxo0, utxo1], 0);
     assert!(result.is_ok(), "readInputState runtime failed: {}", result.unwrap_err());
 }
@@ -9624,7 +9632,9 @@ fn runs_read_input_state_as_internal_function_argument() {
     };
     let tx = Transaction::new(1, vec![input0, input1], vec![output.clone()], 0, Default::default(), 0, vec![]);
     let utxo0 = UtxoEntry::new(output.value, output.script_public_key.clone(), 0, tx.is_coinbase(), None);
-    let utxo1 = UtxoEntry::new(1000, ScriptPublicKey::new(0, vec![OpTrue].into()), 0, tx.is_coinbase(), None);
+    // The read input's own UTXO must commit to the script it presents — the plain decoder now
+    // requires it, as the templated one always has.
+    let utxo1 = UtxoEntry::new(1000, pay_to_script_hash_script(&bytecode(&input1_compiled)), 0, tx.is_coinbase(), None);
 
     let result = execute_input(tx, vec![utxo0, utxo1], 0);
     assert!(result.is_ok(), "readInputState call argument failed at runtime: {}", result.unwrap_err());

@@ -1793,7 +1793,12 @@ fn covenant_debugger_resolves_overridden_public_entrypoint_names() -> Result<(),
 }
 
 fn push_redeem_script(bytecode: &[u8]) -> Vec<u8> {
-    ScriptBuilder::new().add_data(bytecode).expect("push redeem script").drain()
+    // Explicit push, as a real P2SH signature script uses: `add_data` caps an element at the
+    // 520-byte standard limit, which a covenant redeem is free to exceed.
+    ScriptBuilder::with_flags(EngineFlags { covenants_enabled: true, ..Default::default() })
+        .add_data_with_push_opcode(bytecode)
+        .expect("push redeem script")
+        .drain()
 }
 
 #[test]

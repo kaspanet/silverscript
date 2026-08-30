@@ -155,7 +155,12 @@ fn bytecode_with_return_checks(bytecode: Vec<u8>, expected: &[i64]) -> Vec<u8> {
 }
 
 fn sigscript_push_bytecode(bytecode: &[u8]) -> Vec<u8> {
-    ScriptBuilder::new().add_data(bytecode).unwrap().drain()
+    // Explicit push, as a real P2SH signature script uses: `add_data` caps an element at the
+    // 520-byte standard limit, which a covenant redeem is free to exceed.
+    ScriptBuilder::with_flags(EngineFlags { covenants_enabled: true, ..Default::default() })
+        .add_data_with_push_opcode(bytecode)
+        .unwrap()
+        .drain()
 }
 
 fn r0_groth16_fixture() -> (Vec<u8>, Vec<u8>, Vec<u8>) {

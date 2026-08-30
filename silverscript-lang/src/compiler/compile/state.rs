@@ -171,6 +171,50 @@ fn emit_state_framing_guard(
     Ok(())
 }
 
+/// Binds a plain `readInputState` window to the foreign input's own scriptPubKey.
+///
+/// The window is placed at `sigscript_len(idx) - this.bytecodeSize`, which describes the READER
+/// and not the script being read. Nothing else in the plain decoder constrains the foreign
+/// script's length, so a longer one shifts every field read — and the framing guard, which pins
+/// headers at those offsets, simply follows the window onto bytes the forger chose. Pinning the
+/// framing of a window whose position is unconstrained proves nothing.
+///
+/// Requiring `P2SH(window) == input_script_pubkey(idx)` fixes the position, because a
+/// scriptPubKey commits to the WHOLE redeem script: if the foreign script were longer, the window
+/// would be a proper suffix of it, and the P2SH of a suffix is not the P2SH of the script. So the
+/// foreign script is exactly `bytecodeSize` bytes and is the one its own UTXO committed to.
+///
+/// This is the check `readInputStateWithTemplate` already makes, which is why only the plain
+/// decoder needed it.
+pub(super) fn compile_input_script_binding(
+    input_idx: &Expr<'_>,
+    bytecode_size_expr: &Expr<'_>,
+    stack_bindings: &StackBindings,
+    types: &TypeMap,
+    builder: &mut ScriptBuilder,
+    bytecode_size: Option<i64>,
+    contract_constants: &HashMap<String, Expr<'_>>,
+) -> Result<(), CompilerError> {
+    let base = input_sigscript_base_expr(input_idx, bytecode_size_expr.clone());
+    let end = binary_expr(BinaryOp::Add, base.clone(), bytecode_size_expr.clone());
+    let redeem = input_sigscript_substr_expr(input_idx, base, end);
+    let expected_spk = Expr::new(
+        ExprKind::New { name: "ScriptPubKeyP2SHFromRedeemScript".to_string(), args: vec![redeem], name_span: span::Span::default() },
+        span::Span::default(),
+    );
+
+    let env = ExprEnv { constants: contract_constants, stack_bindings, types, bytecode_size, contract_constants };
+    let mut emitter = ScriptEmitter::new(builder, 0);
+    let dynamic_bytes = byte_array_type(ArrayDim::Dynamic);
+    let p2sh_script_type = constructor_return_type("ScriptPubKeyP2SHFromRedeemScript").expect("known constructor type");
+
+    compile_expr(&input_script_pubkey_expr(input_idx), Some(&dynamic_bytes), &env, &mut emitter)?;
+    compile_expr(&expected_spk, Some(&p2sh_script_type), &env, &mut emitter)?;
+    emitter.emit_op(OpEqualVerify, -2)?;
+
+    Ok(())
+}
+
 /// Builds the expression environment and emitter for [`emit_state_framing_guard`].
 pub(super) fn compile_state_framing_guard(
     input_idx: &Expr<'_>,

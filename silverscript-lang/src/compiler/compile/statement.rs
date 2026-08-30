@@ -571,6 +571,19 @@ fn compile_read_input_state_statement<'i>(
             let state_start_offset = checked_sub(state_end, total_state_len)?;
 
             let input_idx = args[0].clone();
+            // Fix WHERE the reads are measured from before pinning what they land on: the guard
+            // below pins each field's header at a constant offset, and those offsets are only
+            // meaningful once the window itself cannot move.
+            compile_input_script_binding(
+                &input_idx,
+                &Expr::int(bytecode_size_value),
+                ctx.stack_bindings,
+                ctx.types,
+                ctx.builder,
+                ctx.bytecode_size,
+                ctx.contract_constants,
+            )?;
+
             let layout_field_types = contract_fields.iter().map(|field| field.type_ref.clone()).collect::<Vec<_>>();
             compile_state_framing_guard(
                 &input_idx,

@@ -457,6 +457,18 @@ fn expression_position_read_accepts_canonical_framing() {
     assert!(result.is_ok(), "canonical framing must still be readable: {}", result.unwrap_err());
 }
 
+/// The window binding reaches expression position too.
+///
+/// `validateOutputState(0, readInputState(1))` lowers through the same statement path as a
+/// destructuring read, so it inherits the scriptPubKey binding rather than needing its own. Left
+/// untested that would be an assumption about the lowering; here it is a fact about the emitted
+/// script.
+#[test]
+fn expression_position_read_rejects_a_longer_foreign_script() {
+    let result = run_expression_position_reader(&window_sliding_region(), (SLID_FLAG, [SLID_KEY_BYTE; 32]));
+    assert!(result.is_err(), "expression position must refuse a longer foreign script as well: {result:?}");
+}
+
 #[test]
 fn expression_position_read_rejects_length_preserving_reframe() {
     let reframed = reframed_state_region();
