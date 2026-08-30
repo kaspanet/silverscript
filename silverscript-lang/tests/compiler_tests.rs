@@ -7553,6 +7553,25 @@ fn compiles_contract_constants_and_verifies() {
 }
 
 #[test]
+fn runtime_string_constant_preserves_literal_backslash_before_quote() {
+    let source = r#"
+        contract Escapes() {
+            string constant VALUE = "\\\"";
+
+            entry main() {
+                require(VALUE.length == 2);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let sigscript = encode_single_entry_sig_script(&compiled, &[]).expect("sigscript builds");
+
+    run_bytecode_with_sigscript(bytecode(&compiled), sigscript)
+        .expect("a literal backslash followed by a quote remains two bytes at runtime");
+}
+
+#[test]
 fn compiles_contract_fields_as_script_prolog() {
     let source = r#"
         contract C() {

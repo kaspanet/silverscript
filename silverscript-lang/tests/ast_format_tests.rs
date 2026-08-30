@@ -1,4 +1,4 @@
-use silverscript_lang::ast::{Expr, Span, format_contract_ast, parse_contract_ast};
+use silverscript_lang::ast::{Expr, ExprKind, Span, format_contract_ast, parse_contract_ast, parse_expression_ast};
 use silverscript_lang::compiler::{CompileOptions, compile_contract, compile_contract_ast, sil_abi_artifact_from_compiled};
 
 fn assert_compiled_formatted_contract_preserves_ast(source: &str, options: CompileOptions) {
@@ -9,6 +9,81 @@ fn assert_compiled_formatted_contract_preserves_ast(source: &str, options: Compi
     assert_eq!(
         serde_json::to_value(&compiled.ast).expect("serialize compiled ast"),
         serde_json::to_value(&ast).expect("serialize original ast")
+    );
+}
+
+fn parsed_string(source: &str) -> String {
+    match parse_expression_ast(source).expect("string expression parses").kind {
+        ExprKind::String(value) => value,
+        kind => panic!("expected string expression, got {kind:?}"),
+    }
+}
+
+#[test]
+fn rejects_single_quoted_string_literals() {
+    for source in ["'text'", r#"'It\'s working'"#] {
+        assert!(parse_expression_ast(source).is_err(), "single-quoted string should fail: {source}");
+    }
+}
+
+#[test]
+fn documented_newline_escape_decodes_to_one_byte() {
+    let value = parsed_string(r#""\n""#);
+    assert_eq!(value.as_bytes(), &[0x0a]);
+}
+
+#[test]
+fn string_parser_decodes_complete_json_escape_matrix() {
+    let value = parsed_string(r#""\b\f\n\r\t\\\/\"\u0041\u00df\u6771\uD834\uDD1E""#);
+    assert_eq!(value, "\u{8}\u{c}\n\r\t\\/\"Aß東𝄞");
+    assert_eq!(parsed_string(r#""ends\\""#), "ends\\");
+}
+
+#[test]
+fn string_parser_rejects_malformed_json_escapes() {
+    for source in [r#""\x41""#, r#""\u12""#, r#""\uD800""#] {
+        assert!(parse_expression_ast(source).is_err(), "malformed escape should fail: {source}");
+    }
+}
+
+#[test]
+fn string_formatter_round_trips_decoded_escapes() {
+    let source = r#"
+        contract Escapes() {
+            entry main() {
+                string value = "line\n\t\"quoted\"\\end\\";
+                require(value.length > 0, "message\r\n");
+            }
+        }
+    "#;
+    let ast = parse_contract_ast(source).expect("escaped contract parses");
+    let formatted = format_contract_ast(&ast);
+    let reparsed = parse_contract_ast(&formatted).expect("formatted escaped contract reparses");
+
+    assert!(formatted.contains(r#"\n\t\"quoted\"\\end\\"#));
+    assert_eq!(format_contract_ast(&reparsed), formatted);
+}
+
+#[test]
+fn formatted_string_preserves_a_literal_backslash_before_quote() {
+    let source = r#"
+        contract Escapes() {
+            string constant VALUE = "\\\"";
+
+            entry main() {
+                require(VALUE.length == 2);
+            }
+        }
+    "#;
+    let ast = parse_contract_ast(source).expect("source parses");
+    let formatted = format_contract_ast(&ast);
+    let reparsed = parse_contract_ast(&formatted).expect("formatted source parses");
+
+    let ExprKind::String(original) = &ast.constants[0].expr.kind else { panic!("original constant must be a string") };
+    let ExprKind::String(round_tripped) = &reparsed.constants[0].expr.kind else { panic!("reparsed constant must be a string") };
+    assert_eq!(
+        round_tripped, original,
+        "formatting must not consume a literal backslash before a quote; formatted source:\n{formatted}"
     );
 }
 

@@ -639,10 +639,9 @@ bool f = false;
 
 ```javascript
 string s1 = "Hello World";
-string s2 = 'Single quotes work too';
 string escaped = "Line 1\nLine 2\tTabbed";
 string quote = "He said \"Hello\"";
-string apostrophe = 'It\'s working';
+string apostrophe = "It's working";
 ```
 
 **Hex Literals:**

@@ -7,7 +7,7 @@ contract Test(int x) {
         require(myOtherVariable > x);
 
         string x1 = "Hello \n \\ ' ''  \" World";
-        string x2 = 'Hello \n \\ " " \' World';
+        string x2 = "Hello \n \\ \" \" ' World";
         require(sha256(byte[](x1)) == sha256(byte[](x2)));
     }
 }

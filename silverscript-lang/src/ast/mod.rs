@@ -1280,13 +1280,7 @@ fn format_state_object(fields: &[StateFieldExpr<'_>]) -> String {
 }
 
 fn format_string_literal(value: &str) -> String {
-    if !value.contains('"') {
-        return format!("\"{value}\"");
-    }
-    if !value.contains('\'') {
-        return format!("'{value}'");
-    }
-    format!("\"{}\"", value.replace('"', "\\\""))
+    serde_json::to_string(value).expect("serializing a Rust string as a JSON string cannot fail")
 }
 
 const PREC_POSTFIX: u8 = 11;
@@ -2672,13 +2666,9 @@ fn parse_date_literal<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerErro
 fn parse_string_literal<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {
     let span = Span::from(pair.as_span());
     let raw = pair.as_str();
-    let unquoted = if (raw.starts_with('"') && raw.ends_with('"')) || (raw.starts_with('\'') && raw.ends_with('\'')) {
-        &raw[1..raw.len() - 1]
-    } else {
-        raw
-    };
-    let unescaped = unquoted.replace("\\\"", "\"").replace("\\'", "'");
-    Ok(Expr::new(ExprKind::String(unescaped), span))
+    let value =
+        serde_json::from_str::<String>(raw).map_err(|err| CompilerError::InvalidLiteral(format!("invalid string literal: {err}")))?;
+    Ok(Expr::new(ExprKind::String(value), span))
 }
 
 fn parse_introspection<'i>(raw: &str, span: Span<'i>) -> Result<Expr<'i>, CompilerError> {

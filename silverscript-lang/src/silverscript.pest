@@ -168,7 +168,9 @@ ExponentPart = { ("e" | "E") ~ NumberPart }
 
 
 
-StringLiteral = @{ "\"" ~ ("\\\"" | !("\"" | "\r" | "\n") ~ ANY)* ~ "\"" | "'" ~ ("\\'" | !("'" | "\r" | "\n") ~ ANY)* ~ "'" }
+StringLiteral = @{
+    "\"" ~ (("\\" ~ !("\r" | "\n") ~ ANY) | !("\"" | "\r" | "\n") ~ ANY)* ~ "\""
+}
 
 DateLiteral = { "date(" ~ StringLiteral ~ ")" }
 
