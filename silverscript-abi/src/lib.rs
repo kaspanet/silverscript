@@ -312,8 +312,6 @@ pub enum SilAbiVerificationError {
     Version(#[from] ArtifactVersionError),
     #[error("contract `{contract}` has state span offset {offset} length {len}, but its compiled script has {script_len} bytes")]
     InvalidStateSpan { contract: String, offset: usize, len: usize, script_len: usize },
-    #[error("contract `{contract}` runtime state field `{field}` has unsupported type `{ty}`")]
-    UnsupportedRuntimeStateType { contract: String, field: String, ty: String },
     #[error("contract `{contract}` state span does not encode its runtime state: {message}")]
     InvalidRuntimeStateEncoding { contract: String, message: String },
     #[error("contract `{contract}` state span is not canonically encoded")]
@@ -825,15 +823,6 @@ fn verify_compiled_contract(
             script_len: script.len(),
         });
     };
-    for field in &contract.runtime_state.fields {
-        if !is_supported_runtime_state_type(abi, &field.ty) {
-            return Err(SilAbiVerificationError::UnsupportedRuntimeStateType {
-                contract: contract_name.to_string(),
-                field: field.name.clone(),
-                ty: type_name(&field.ty),
-            });
-        }
-    }
     let state_values = decode_runtime_state_script(abi, &contract.runtime_state, state_script).map_err(|err| {
         SilAbiVerificationError::InvalidRuntimeStateEncoding { contract: contract_name.to_string(), message: err.to_string() }
     })?;
@@ -852,29 +841,6 @@ fn verify_compiled_contract(
         });
     }
     Ok(())
-}
-
-fn is_supported_runtime_state_type(abi: &SilAbiArtifact, ty: &TypeArtifact) -> bool {
-    fn is_supported(abi: &SilAbiArtifact, ty: &TypeArtifact, visiting: &mut BTreeSet<String>) -> bool {
-        match ty {
-            TypeArtifact::Struct { name } => {
-                if !visiting.insert(name.clone()) {
-                    // We don't support cyclic structs.
-                    return false;
-                }
-                let supported = abi
-                    .structs
-                    .get(name)
-                    .is_some_and(|structure| structure.fields.iter().all(|field| is_supported(abi, &field.ty, visiting)));
-                visiting.remove(name);
-                supported
-            }
-            TypeArtifact::FixedArray { item, .. } => is_supported(abi, item, visiting),
-            _ => fixed_payload_len(ty).is_some(),
-        }
-    }
-
-    is_supported(abi, ty, &mut BTreeSet::new())
 }
 
 fn entry_params(entry: &SilEntryArtifact) -> Vec<(&str, &TypeArtifact)> {
@@ -1457,7 +1423,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_noncanonical_and_variable_runtime_state_encodings() {
+    fn rejects_noncanonical_runtime_state_encodings() {
         let mut abi = tiny_sil_abi();
         let contract = abi.contracts.get_mut("Foo").unwrap();
         contract.runtime_state.fields = vec![RuntimeFieldArtifact { name: "value".to_string(), ty: TypeArtifact::Byte }];
@@ -1468,47 +1434,57 @@ mod tests {
         contract.compiled.template_hash = template_hash(&prefix, &suffix);
         contract.compiled.state_span = StateSpanArtifact { offset: prefix.len(), len: state.len() };
         assert_eq!(abi.verify(), Err(SilAbiVerificationError::NonCanonicalRuntimeStateEncoding { contract: "Foo".to_string() }));
-
-        abi.contracts.get_mut("Foo").unwrap().runtime_state.fields[0].ty = TypeArtifact::Bytes;
-        assert_eq!(
-            abi.verify(),
-            Err(SilAbiVerificationError::UnsupportedRuntimeStateType {
-                contract: "Foo".to_string(),
-                field: "value".to_string(),
-                ty: "bytes".to_string(),
-            })
-        );
     }
 
     #[test]
-    fn validates_struct_runtime_state_types_recursively() {
+    fn accepts_canonical_variable_width_runtime_state_encodings() {
         let mut abi = tiny_sil_abi();
-        abi.structs = BTreeMap::from([
-            (
-                "Inner".to_string(),
-                StructArtifact { fields: vec![FieldArtifact { name: "value".to_string(), ty: TypeArtifact::Byte }] },
-            ),
-            (
-                "Outer".to_string(),
-                StructArtifact {
-                    fields: vec![
-                        FieldArtifact { name: "inner".to_string(), ty: TypeArtifact::Struct { name: "Inner".to_string() } },
-                        FieldArtifact {
-                            name: "values".to_string(),
-                            ty: TypeArtifact::FixedArray { item: Box::new(TypeArtifact::Int), len: 2 },
-                        },
-                    ],
+        let runtime_state = RuntimeStateArtifact {
+            source: "VariableState".to_string(),
+            fields: vec![
+                RuntimeFieldArtifact { name: "text".to_string(), ty: TypeArtifact::Text },
+                RuntimeFieldArtifact { name: "bytes".to_string(), ty: TypeArtifact::Bytes },
+                RuntimeFieldArtifact {
+                    name: "numbers".to_string(),
+                    ty: TypeArtifact::DynamicArray { item: Box::new(TypeArtifact::Int) },
                 },
-            ),
+            ],
+        };
+        let values = BTreeMap::from([
+            ("text".to_string(), ArtifactValue::Text("hello".to_string())),
+            ("bytes".to_string(), ArtifactValue::Bytes(vec![1, 2, 3])),
+            ("numbers".to_string(), ArtifactValue::Array(vec![ArtifactValue::Int(7), ArtifactValue::Int(-8)])),
         ]);
+        let state = encode_runtime_state_script(&abi, &runtime_state, &values).expect("variable-width state encodes");
+        let prefix = [0xaa];
+        let suffix = [0xbb];
 
-        assert!(is_supported_runtime_state_type(&abi, &TypeArtifact::Struct { name: "Outer".to_string() }));
+        let contract = abi.contracts.get_mut("Foo").unwrap();
+        contract.runtime_state = runtime_state;
+        contract.compiled.bytecode = [prefix.as_slice(), state.as_slice(), suffix.as_slice()].concat();
+        contract.compiled.template_hash = template_hash(&prefix, &suffix);
+        contract.compiled.state_span = StateSpanArtifact { offset: prefix.len(), len: state.len() };
 
-        abi.structs.get_mut("Inner").unwrap().fields[0].ty = TypeArtifact::Bytes;
-        assert!(!is_supported_runtime_state_type(&abi, &TypeArtifact::Struct { name: "Outer".to_string() }));
+        abi.verify().expect("canonical variable-width runtime state verifies");
+    }
 
-        abi.structs.get_mut("Inner").unwrap().fields[0].ty = TypeArtifact::Struct { name: "Outer".to_string() };
-        assert!(!is_supported_runtime_state_type(&abi, &TypeArtifact::Struct { name: "Outer".to_string() }));
+    #[test]
+    fn rejects_cyclic_runtime_state_types_during_decoding() {
+        let mut abi = tiny_sil_abi();
+        abi.structs.insert(
+            "Cycle".to_string(),
+            StructArtifact {
+                fields: vec![FieldArtifact { name: "next".to_string(), ty: TypeArtifact::Struct { name: "Cycle".to_string() } }],
+            },
+        );
+        abi.contracts.get_mut("Foo").unwrap().runtime_state.fields =
+            vec![RuntimeFieldArtifact { name: "cycle".to_string(), ty: TypeArtifact::Struct { name: "Cycle".to_string() } }];
+
+        assert!(matches!(
+            abi.verify(),
+            Err(SilAbiVerificationError::InvalidRuntimeStateEncoding { ref contract, ref message })
+                if contract == "Foo" && message.contains("cyclic struct Cycle")
+        ));
     }
 
     #[test]
