@@ -192,6 +192,12 @@ pub(super) fn static_check_contract<'i>(
 
     let structs = build_struct_registry(contract)?;
     for item in &contract.structs {
+        for field in &item.fields {
+            if field.type_ref.is_inferred_array() {
+                return Err(CompilerError::Unsupported("struct fields cannot have inferred array sizes".to_string())
+                    .with_span(&field.type_span));
+            }
+        }
         if item.fields.is_empty() {
             return Err(CompilerError::Unsupported(format!("struct '{}' must contain at least one field", item.name))
                 .with_span(&item.name_span));
@@ -412,6 +418,10 @@ fn validate_function_signatures<'i>(
             }
         }
         for param in &function.params {
+            if param.type_ref.is_inferred_array() {
+                return Err(CompilerError::Unsupported("function parameters cannot have inferred array sizes".to_string())
+                    .with_span(&param.type_span));
+            }
             ensure_known_type(&param.type_ref, structs, "function parameter").map_err(|err| err.with_span(&param.type_span))?;
             ensure_array_elements_have_known_size(&param.type_ref, structs, constants, &param.type_ref.type_name())?;
         }

@@ -7486,16 +7486,68 @@ fn rejects_colliding_kcc1_dispatch_tags() {
 }
 
 #[test]
-fn rejects_noncanonical_inferred_array_type_in_entrypoint_abi() {
+fn rejects_inferred_array_sizes_in_function_parameters() {
+    for type_name in ["byte[_]", "byte[_][2]", "byte[2][_]"] {
+        for declaration in ["entry", "function"] {
+            let source = format!(
+                "contract Test() {{
+                    {declaration} step({type_name} data) {{ require(true); }}
+                    entry other() {{ require(true); }}
+                }}"
+            );
+            let err = compile_contract(&source, &[], CompileOptions::default())
+                .expect_err("function parameters must not have inferred array sizes");
+            assert!(
+                matches!(
+                    err.root(),
+                    CompilerError::Unsupported(message) if message == "function parameters cannot have inferred array sizes"
+                ),
+                "unexpected error: {err}"
+            );
+        }
+    }
+}
+
+#[test]
+fn rejects_inferred_array_sizes_in_unused_struct_fields() {
+    for type_name in ["byte[_]", "byte[_][2]", "byte[2][_]"] {
+        let source = format!(
+            "contract Test() {{
+                struct Unused {{ {type_name} data; }}
+                entry main() {{ require(true); }}
+            }}"
+        );
+        let err = compile_contract(&source, &[], CompileOptions::default())
+            .expect_err("struct fields must not have inferred array sizes even when the struct is unused");
+        assert!(
+            matches!(
+                err.root(),
+                CompilerError::Unsupported(message) if message == "struct fields cannot have inferred array sizes"
+            ),
+            "unexpected error: {err}"
+        );
+    }
+}
+
+#[test]
+fn rejects_inferred_array_sizes_in_struct_fields() {
     let source = r#"
-        contract Test() {
-            entry step(byte[_] data) { require(true); }
-            entry other() { require(true); }
+        contract NestedInferredParam() {
+            struct NestedInferred {
+                byte[_] data;
+            }
+
+            entry main(NestedInferred value) {
+                require(true);
+            }
         }
     "#;
 
-    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("entrypoint ABI types must be canonical");
-    assert!(matches!(err, CompilerError::NonCanonicalEntrypointParameter { .. }));
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("struct fields must not have inferred array sizes");
+    assert!(matches!(
+        err.root(),
+        CompilerError::Unsupported(message) if message == "struct fields cannot have inferred array sizes"
+    ));
 }
 
 #[test]
@@ -17817,6 +17869,40 @@ fn compiler_rejects_fixed_abi_payloads_that_cannot_fit_a_signature_script() {
         }
         other => panic!("unexpected error: {other}"),
     }
+}
+
+#[test]
+fn dynamic_abi_encoder_rejects_consensus_oversized_signature_script() {
+    let source = r#"
+        contract DynamicArgument() {
+            entry main(byte[] payload) {
+                require(payload.length >= 0);
+            }
+        }
+    "#;
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("dynamic entrypoint compiles");
+    let maximum = MAINNET_PARAMS.new_max_signature_script_len;
+    let err = encode_entry_sig_script(&compiled, "main", &[ArtifactValue::Bytes(vec![0; maximum])])
+        .expect_err("the complete P2SH signature script must fit the consensus limit");
+    assert!(matches!(err, silverscript_abi::CodecError::SignatureScriptTooLarge { actual, maximum: limit }
+        if actual > maximum && limit == maximum));
+
+    // Above 65535 bytes, the payload's push prefix occupies five bytes.
+    let probe_size = 65536;
+    let probe =
+        encode_entry_sig_script(&compiled, "main", &[ArtifactValue::Bytes(vec![0; probe_size])]).expect("a smaller payload encodes");
+    let redeem_push = common::push_redeem_script(&bytecode(&compiled));
+    let payload_size = maximum - (probe.len() - probe_size) - redeem_push.len();
+    assert!(payload_size >= probe_size);
+    let mut signature_script = encode_entry_sig_script(&compiled, "main", &[ArtifactValue::Bytes(vec![0; payload_size])])
+        .expect("a signature script exactly at the limit encodes");
+    signature_script.extend_from_slice(&redeem_push);
+    assert_eq!(signature_script.len(), maximum);
+
+    let err = encode_entry_sig_script(&compiled, "main", &[ArtifactValue::Bytes(vec![0; payload_size + 1])])
+        .expect_err("a signature script one byte over the limit must be rejected");
+    assert!(matches!(err, silverscript_abi::CodecError::SignatureScriptTooLarge { actual, maximum: limit }
+        if actual == maximum + 1 && limit == maximum));
 }
 
 #[test]

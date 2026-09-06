@@ -30,6 +30,7 @@ mod json;
 pub use json::to_pretty_json;
 
 pub const SIL_ABI_SCHEMA_VERSION: u32 = 1;
+pub const MAX_SIGNATURE_SCRIPT_LEN: usize = 250_000;
 const TEMPLATE_PART_LENGTH_BYTES: usize = 8;
 
 /// A Sil entrypoint's fixed-width signature dispatch tag.
@@ -426,6 +427,8 @@ pub enum CodecError {
     InvalidHex(#[from] faster_hex::Error),
     #[error("script builder error: {0}")]
     ScriptBuilder(#[from] ScriptBuilderError),
+    #[error("signature script is {actual} bytes, exceeding the consensus limit of {maximum}")]
+    SignatureScriptTooLarge { actual: usize, maximum: usize },
     #[error("invalid push-only script: {0}")]
     InvalidPush(String),
     #[error("state script has {len} trailing bytes at offset {offset}")]
@@ -490,6 +493,15 @@ pub fn encode_entry_sig_script(
         push_sig_arg(&mut builder, &ctx, name, ty, value)?;
     }
     builder.add_data(entry.dispatch_tag.as_bytes())?;
+    // The caller appends the redeem script, so include its push encoding in the size check.
+    let actual = builder
+        .script()
+        .len()
+        .checked_add(ScriptBuilder::canonical_data_size(&contract.compiled.bytecode))
+        .ok_or_else(|| CodecError::InvalidPush("signature script length overflow".to_string()))?;
+    if actual > MAX_SIGNATURE_SCRIPT_LEN {
+        return Err(CodecError::SignatureScriptTooLarge { actual, maximum: MAX_SIGNATURE_SCRIPT_LEN });
+    }
     Ok(builder.drain())
 }
 
@@ -1281,6 +1293,11 @@ fn type_name(ty: &TypeArtifact) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn abi_signature_script_limit_matches_consensus() {
+        assert_eq!(MAX_SIGNATURE_SCRIPT_LEN, kaspa_consensus_core::config::params::MAINNET_PARAMS.new_max_signature_script_len);
+    }
 
     #[test]
     fn artifact_values_support_ergonomic_from_conversions() {

@@ -344,6 +344,11 @@ impl TypeRef {
         !self.array_dims.is_empty()
     }
 
+    /// Returns whether any array dimension has an inferred length.
+    pub fn is_inferred_array(&self) -> bool {
+        self.array_dims.contains(&ArrayDim::Inferred)
+    }
+
     /// Returns whether the outermost array dimension has a runtime-defined length.
     pub fn is_dynamic_array(&self) -> bool {
         matches!(self.array_size(), Some(ArrayDim::Dynamic))
