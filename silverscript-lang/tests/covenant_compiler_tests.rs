@@ -11,6 +11,28 @@ use silverscript_lang::compiler::{
 use common::{build_sig_script_for_covenant_decl, bytecode, encode_entry_sig_script, single_contract};
 
 #[test]
+fn rejects_stateless_singleton_declaration() {
+    let source = r#"
+        contract Stateless() {
+            #[covenant.singleton]
+            function continue_contract() {
+                require(true);
+            }
+        }
+    "#;
+    let err = compile_to_sil_abi_artifact_with_options(source, &[], CompileOptions::default())
+        .expect_err("a singleton declaration requires contract state");
+    assert!(
+        matches!(
+            err.root(),
+            silverscript_lang::errors::CompilerError::Unsupported(message)
+                if message.contains("requires") && message.contains("at least one state field")
+        ),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
 fn lowers_auth_covenant_declaration_to_hidden_entrypoint_name() {
     let source = r#"
         contract Decls(int max_outs) {

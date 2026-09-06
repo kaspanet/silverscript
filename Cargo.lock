@@ -3836,6 +3836,7 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "faster-hex 0.10.0",
+ "kaspa-consensus-core",
  "kaspa-txscript",
  "serde",
  "serde_bytes",
