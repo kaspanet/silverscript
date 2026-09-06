@@ -17752,18 +17752,48 @@ fn compiler_rejects_entry_abis_that_cannot_fit_the_unlocking_stack() {
         )
     }
 
-    compile_contract(&source_with_params(242), &[], CompileOptions::default())
-        .expect("242 arguments, the dispatch tag, and the redeem script fit the 244-item stack limit");
+    let compiled = compile_contract(&source_with_params(241), &[], CompileOptions::default())
+        .expect("241 arguments and three dispatcher tags fit the 244-item stack limit");
+    let sigscript = encode_entry_sig_script(&compiled, "main", &vec![ArtifactValue::Int(0); 241]).expect("arguments encode");
+    run_bytecode_with_sigscript(bytecode(&compiled), sigscript).expect("the boundary invocation executes");
 
     let err = compile_contract(&source_with_params(243), &[], CompileOptions::default())
         .expect_err("243 arguments plus the dispatch tag and redeem script must be rejected");
     match err.root() {
         CompilerError::EntrypointStackTooLarge { function, actual, maximum } => {
             assert_eq!(function, "main");
-            assert_eq!(*actual, 245);
+            assert_eq!(*actual, 246);
             assert_eq!(*maximum, 244);
         }
         other => panic!("unexpected error: {other}"),
+    }
+}
+
+#[test]
+fn entrypoint_dispatch_stack_limit_includes_state_fields() {
+    for field_count in [0, 1, 3] {
+        let fields = (0..field_count).map(|index| format!("int state{index} = 0;")).collect::<Vec<_>>().join("\n");
+        for param_count in [241 - field_count, 242 - field_count] {
+            let params = (0..param_count).map(|index| format!("int p{index}")).collect::<Vec<_>>().join(", ");
+            let source = format!(
+                "contract StatefulStackBoundary() {{ {fields}
+                    entry first({params}) {{ require(true); }}
+                    entry second({params}) {{ require(true); }}
+                }}"
+            );
+            let result = compile_contract(&source, &[], CompileOptions::default());
+            if param_count + field_count == 241 {
+                let compiled = result.expect("arguments, state, and dispatcher tags fit the stack limit");
+                for entry in ["first", "second"] {
+                    let sigscript = encode_entry_sig_script(&compiled, entry, &vec![ArtifactValue::Int(0); param_count])
+                        .expect("arguments encode");
+                    run_bytecode_with_sigscript(bytecode(&compiled), sigscript).expect("the boundary invocation executes");
+                }
+            } else {
+                let err = result.expect_err("state fields must count toward the dispatcher stack peak");
+                assert!(matches!(err.root(), CompilerError::EntrypointStackTooLarge { actual: 245, maximum: 244, .. }));
+            }
+        }
     }
 }
 
