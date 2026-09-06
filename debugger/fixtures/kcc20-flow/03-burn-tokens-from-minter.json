@@ -1,0 +1,71 @@
+{
+  "name": "KCC20 flow 03 - burn tokens from minter branch",
+  "type": "silverscript",
+  "request": "launch",
+  "scriptPath": "silverscript-lang/tests/examples/kcc20.sil",
+  "function": "transfer",
+  "constructorArgs": [
+    "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    900,
+    2,
+    true,
+    2,
+    2
+  ],
+  "args": [
+    [
+      {
+        "ownerIdentifier": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "identifierType": 2,
+        "amount": 500,
+        "isMinter": true
+      }
+    ],
+    [],
+    [0]
+  ],
+  "tx": {
+    "active_input_index": 0,
+    "inputs": [
+      {
+        "utxo_value": 1000,
+        "covenant_id": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "constructor_args": [
+          "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          900,
+          2,
+          true,
+          2,
+          2
+        ],
+        "state": {
+          "ownerIdentifier": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "identifierType": 2,
+          "amount": 900,
+          "isMinter": true
+        }
+      }
+    ],
+    "outputs": [
+      {
+        "value": 1000,
+        "covenant_id": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "authorizing_input": 0,
+        "constructor_args": [
+          "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          500,
+          2,
+          true,
+          2,
+          2
+        ],
+        "state": {
+          "ownerIdentifier": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "identifierType": 2,
+          "amount": 500,
+          "isMinter": true
+        }
+      }
+    ]
+  }
+}

@@ -486,6 +486,20 @@ pub fn parse_state_value(contract: &ContractAst<'_>, raw_state: &str) -> Result<
     parse_struct_arg(&entries, "State", &declared_fields, &shapes)
 }
 
+pub fn values_to_args(values: &[Value]) -> Result<Vec<String>, String> {
+    values.iter().map(value_to_arg).collect()
+}
+
+fn value_to_arg(value: &Value) -> Result<String, String> {
+    match value {
+        Value::String(raw) => Ok(raw.clone()),
+        Value::Number(raw) => Ok(raw.to_string()),
+        Value::Bool(raw) => Ok(raw.to_string()),
+        Value::Null => Ok("null".to_string()),
+        Value::Array(_) | Value::Object(_) => serde_json::to_string(value).map_err(|err| format!("invalid arg value: {err}")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{parse_artifact_args, parse_call_args, parse_ctor_args, parse_state_value};
