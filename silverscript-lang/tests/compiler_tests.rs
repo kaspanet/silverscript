@@ -6573,6 +6573,35 @@ fn limits_for_loop_max_iterations_to_ten_thousand() {
 }
 
 #[test]
+fn counts_nested_and_sibling_for_loop_iterations() {
+    let cases = [
+        ("for (i, 0, 1, 100) { for (j, 0, 1, 99) { require(true); } }", true),
+        ("for (i, 0, 1, 100) { for (j, 0, 1, 100) { require(true); } }", false),
+        ("for (i, 0, 1, 10) { for (j, 0, 1, 10) { for (k, 0, 1, 99) { require(true); } } }", false),
+        ("for (i, 0, 1, 5000) { require(true); } for (j, 0, 1, 5000) { require(true); }", true),
+        ("for (i, 0, 1, 5000) { require(true); } for (j, 0, 1, 5001) { require(true); }", false),
+        ("for (i, 0, 1, 100) { { for (j, 0, 1, 100) { require(true); } } }", false),
+        (
+            "for (i, 0, 1, 100) { if (flag) { for (j, 0, 1, 50) { require(true); } }
+                else { for (k, 0, 1, 50) { require(true); } } }",
+            false,
+        ),
+        ("for (i, 0, 0, 0) { for (j, 0, 1, 10000) { require(true); } }", true),
+        ("for (i, start, end, 100) { for (j, start, end, 100) { require(true); } }", false),
+    ];
+    for (body, accepted) in cases {
+        let source = format!("contract Loops() {{ entry main(bool flag, int start, int end) {{ {body} }} }}");
+        let result = compile_contract(&source, &[], CompileOptions::default());
+        if accepted {
+            result.unwrap_or_else(|err| panic!("expected loop budget to fit for {body}: {err}"));
+        } else {
+            let err = result.expect_err("combined loop iterations must fit the budget");
+            assert!(err.to_string().contains("total for loop iterations per function must not exceed 10000"), "{body}: {err}");
+        }
+    }
+}
+
+#[test]
 fn rejects_constant_for_loop_range_above_max_iterations() {
     let source = r#"
         contract Loops() {

@@ -3,6 +3,58 @@ use super::*;
 use semver::{Comparator, Op, Version, VersionReq};
 use std::collections::{HashMap, HashSet};
 
+const MAX_FOR_LOOP_ITERATIONS: i64 = 10_000;
+
+fn validate_for_loop_iterations<'i>(contract: &ContractAst<'i>, constants: &HashMap<String, Expr<'i>>) -> Result<(), CompilerError> {
+    for function in &contract.functions {
+        count_for_loop_iterations(&function.body, constants)?;
+    }
+    Ok(())
+}
+
+fn count_for_loop_iterations<'i>(statements: &[Statement<'i>], constants: &HashMap<String, Expr<'i>>) -> Result<i64, CompilerError> {
+    let mut total = 0;
+    for statement in statements {
+        let iterations = match statement {
+            Statement::For { max_iterations, body, .. } => {
+                let maximum = match eval_const_int(max_iterations, constants) {
+                    Ok(value) => value,
+                    Err(CompilerError::NonConstantInteger(_)) => {
+                        return Err(CompilerError::Unsupported("for loop max iterations must be a compile-time integer".to_string()));
+                    }
+                    Err(err) => return Err(err),
+                };
+                if maximum < 0 {
+                    return Err(CompilerError::Unsupported(
+                        "for loop max iterations must be a non-negative compile-time integer".to_string(),
+                    ));
+                }
+                if maximum > MAX_FOR_LOOP_ITERATIONS {
+                    return Err(CompilerError::Unsupported(format!(
+                        "for loop max iterations must not exceed {MAX_FOR_LOOP_ITERATIONS}"
+                    )));
+                }
+                // Each outer iteration also executes all iterations in the body.
+                checked_mul(maximum, checked_add(1, count_for_loop_iterations(body, constants)?)?)?
+            }
+            Statement::Block { body, .. } => count_for_loop_iterations(body, constants)?,
+            Statement::If { then_branch, else_branch, .. } => checked_add(
+                count_for_loop_iterations(then_branch, constants)?,
+                count_for_loop_iterations(else_branch.as_deref().unwrap_or_default(), constants)?,
+            )?,
+            _ => 0,
+        };
+        total = checked_add(total, iterations)?;
+        if total > MAX_FOR_LOOP_ITERATIONS {
+            return Err(CompilerError::Unsupported(format!(
+                "total for loop iterations per function must not exceed {MAX_FOR_LOOP_ITERATIONS}"
+            ))
+            .with_span(&statement.span()));
+        }
+    }
+    Ok(total)
+}
+
 pub(super) fn validate_declaration_names(contract: &ContractAst<'_>) -> Result<(), CompilerError> {
     let mut function_names = HashSet::new();
     for function in &contract.functions {
@@ -223,6 +275,7 @@ pub(super) fn static_check_contract<'i>(
     validate_constant_initializers(contract, &structs, &constants)?;
     validate_contract_field_initializers(contract, &structs, &constants)?;
     validate_function_signatures(contract, &structs, &constants, options)?;
+    validate_for_loop_iterations(contract, &constants)?;
 
     for (param, value) in contract.params.iter().zip(constructor_args.iter()) {
         let param_type_name = param.type_ref.type_name();
