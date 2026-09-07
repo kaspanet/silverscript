@@ -1,5 +1,7 @@
-use silverscript_lang::ast::{Expr, ExprKind, Statement, parse_contract_ast, parse_type_ref};
+use silverscript_lang::ast::visit::AstVisitorMut;
+use silverscript_lang::ast::{BinaryOp, Expr, ExprKind, Statement, parse_contract_ast, parse_expression_ast, parse_type_ref};
 use silverscript_lang::parser::parse_source_file;
+use silverscript_lang::span::Span;
 
 #[test]
 fn parses_minimal_contract() {
@@ -588,4 +590,131 @@ fn parses_tuple_variable_declaration_without_parentheses_as_tuple_assignment_syn
     "#;
 
     assert!(parse_contract_ast(input).is_ok());
+}
+
+// Regression for https://github.com/kaspanet/silverscript/issues/239.
+// Run in a subprocess because a Rust stack overflow aborts the process instead of
+// unwinding; a thread alone would also abort the parent test runner.
+#[test]
+fn ast_construction_fits_in_one_mib_stack() {
+    const CHILD_ENV: &str = "SILVERSCRIPT_PARSER_STACK_REGRESSION_CHILD";
+    if std::env::var_os(CHILD_ENV).is_some() {
+        std::thread::Builder::new()
+            .name("parser-with-one-mib-stack".into())
+            .stack_size(1024 * 1024)
+            .spawn(|| {
+                let source = r#"
+                    pragma silverscript ^0.1.0;
+                    contract ParserStackRepro(byte[32] init_pairs) {
+                        byte[32] pairs = init_pairs;
+
+                        entry reproduce(byte[384] records, int count) {
+                            State next_state = State {
+                                pairs: blake3(byte[](byte[](records) + ((count) as byte[8]))),
+                            };
+                        }
+                    }
+                "#;
+                parse_contract_ast(source).expect("the issue 239 expression should parse on a 1 MiB stack");
+            })
+            .expect("spawn parser thread")
+            .join()
+            .expect("parser thread should complete without panicking");
+        return;
+    }
+
+    let output = std::process::Command::new(std::env::current_exe().expect("locate test executable"))
+        .args(["--exact", "ast_construction_fits_in_one_mib_stack", "--nocapture"])
+        .env(CHILD_ENV, "1")
+        .output()
+        .expect("run parser stack regression in a subprocess");
+    assert!(
+        output.status.success(),
+        "AST construction on a 1 MiB stack failed with {}.\nstdout:\n{}\nstderr:\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
+// Parentheses change source spans, so compare expression structure after clearing them.
+fn parse_expression_without_spans(source: &str) -> Expr<'_> {
+    struct ClearSpans;
+    impl<'i> AstVisitorMut<'i> for ClearSpans {
+        fn visit_span(&mut self, span: &mut Span<'i>) {
+            *span = Span::default();
+        }
+    }
+    let mut expr = parse_expression_ast(source).expect("expression should parse");
+    ClearSpans.visit_expr(&mut expr);
+    expr
+}
+
+#[test]
+fn redundant_parentheses_preserve_complex_expression_asts() {
+    let cases = [
+        (
+            "a || b && c | d ^ e & f == g < h + i * j",
+            "((a)) || (((b)) && (((c)) | (((d)) ^ (((e)) & (((f)) == (((g)) < (((h)) + (((i)) * ((j))))))))))",
+        ),
+        ("a - b - c", "((((a)) - ((b))) - ((c)))"),
+        ("a / b % c", "((((a)) / ((b))) % ((c)))"),
+        ("!ready || -amount < limit", "((!((ready))) || (((-((amount)))) < ((limit))))"),
+        ("a ? b : c ? d : e", "(((a)) ? ((b)) : (((c)) ? ((d)) : ((e))))"),
+        (
+            "blake3(byte[](byte[](records) + (count as byte[8])))",
+            "blake3(((byte[](((byte[](((records)))) + ((((count)) as byte[8])))))))",
+        ),
+        (
+            "State { pairs: blake3(byte[](records)), count: count + 1 }",
+            "((State { pairs: ((blake3(((byte[](((records)))))))), count: (((count)) + ((1))) }))",
+        ),
+        ("records[start + 1].slice(0, limit).length", "((((records))[(((start)) + ((1)))]).slice(((0)), ((limit)))).length"),
+        ("int[3]{a + b, f(c), ready ? d : e}", "((int[3]{(((a)) + ((b))), ((f(((c))))), (((ready)) ? ((d)) : ((e)))}))"),
+    ];
+    for (plain, parenthesized) in cases {
+        let expected = parse_expression_without_spans(plain);
+        for depth in [0, 1, 4, 8] {
+            let source = format!("{}{parenthesized}{}", "(".repeat(depth), ")".repeat(depth));
+            let actual = parse_expression_without_spans(&source);
+            assert_eq!(actual, expected, "parentheses must preserve the AST: {source}");
+        }
+    }
+}
+
+fn binary_expr<'i>(op: BinaryOp, left: Expr<'i>, right: Expr<'i>) -> Expr<'i> {
+    Expr::new(ExprKind::Binary { op, left: Box::new(left), right: Box::new(right) }, Span::default())
+}
+
+#[test]
+fn parentheses_preserve_explicit_operator_grouping() {
+    let a = Expr::identifier("a");
+    let b = Expr::identifier("b");
+    let c = Expr::identifier("c");
+    let cases = [
+        ("((((a)) + ((b)))) * (((c)))", binary_expr(BinaryOp::Mul, binary_expr(BinaryOp::Add, a.clone(), b.clone()), c.clone())),
+        ("(((a))) + ((((b)) * ((c))))", binary_expr(BinaryOp::Add, a.clone(), binary_expr(BinaryOp::Mul, b.clone(), c.clone()))),
+        ("(((a))) - ((((b)) - ((c))))", binary_expr(BinaryOp::Sub, a.clone(), binary_expr(BinaryOp::Sub, b.clone(), c.clone()))),
+        ("((((a)) - ((b)))) - (((c)))", binary_expr(BinaryOp::Sub, binary_expr(BinaryOp::Sub, a, b), c)),
+    ];
+    for (source, expected) in cases {
+        assert_eq!(parse_expression_without_spans(source), expected, "incorrect grouping: {source}");
+    }
+}
+
+#[test]
+fn parenthesized_calls_and_casts_retain_their_ast_nodes() {
+    let source = "(((blake3(((byte[](((byte[](((records)))) + ((((count)) as byte[8]))))))))))";
+    let expected = Expr::call(
+        "blake3",
+        vec![Expr::call(
+            "byte[]",
+            vec![binary_expr(
+                BinaryOp::Add,
+                Expr::call("byte[]", vec![Expr::identifier("records")]),
+                Expr::call("__as_cast_byte[8]", vec![Expr::identifier("count")]),
+            )],
+        )],
+    );
+    assert_eq!(parse_expression_without_spans(source), expected);
 }

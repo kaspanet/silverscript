@@ -2097,7 +2097,39 @@ fn parse_state_typed_binding<'i>(pair: Pair<'i, Rule>) -> Result<StructBindingAs
     Ok(StructBindingAst { field_name, type_ref, name, span, field_span, type_span, name_span })
 }
 
-fn parse_expression<'i>(pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {
+fn parse_expression<'i>(mut pair: Pair<'i, Rule>) -> Result<Expr<'i>, CompilerError> {
+    // These grammar rules only forward their operand when they have one child.
+    // Skip them in this frame instead of recursing through every precedence level
+    // again for each nested argument or parenthesized expression. Calls, casts,
+    // and other meaningful single-child nodes must still build their AST nodes.
+    while matches!(
+        pair.as_rule(),
+        Rule::expression
+            | Rule::conditional
+            | Rule::logical_or
+            | Rule::logical_and
+            | Rule::bit_or
+            | Rule::bit_xor
+            | Rule::bit_and
+            | Rule::equality
+            | Rule::comparison
+            | Rule::term
+            | Rule::factor
+            | Rule::unary
+            | Rule::postfix
+            | Rule::primary
+            | Rule::parenthesized
+    ) {
+        let mut inner = pair.clone().into_inner();
+        let Some(child) = inner.next() else {
+            break;
+        };
+        if inner.next().is_some() {
+            break;
+        }
+        pair = child;
+    }
+
     match pair.as_rule() {
         Rule::expression => parse_expression(single_inner(pair)?),
         Rule::conditional => parse_conditional(pair),
