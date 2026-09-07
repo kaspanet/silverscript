@@ -18,6 +18,7 @@ mod const_eval;
 mod emitter;
 mod expression;
 mod helpers;
+mod stack_analysis;
 mod state;
 mod statement;
 
@@ -150,7 +151,9 @@ fn validate_entrypoint_stack_limits(entrypoints: &[&FunctionAst<'_>], state_fiel
     for entrypoint in entrypoints {
         // After the dispatcher duplicates the caller's tag and pushes the expected
         // tag, the stack contains every flattened argument, every flattened state
-        // field, two copies of the caller's tag, and the expected tag.
+        // field, two copies of the caller's tag, and the expected tag. This bounds
+        // every dispatcher path without interpreting its bytecode. State initializer
+        // expressions and entrypoint bodies are checked separately for temporaries.
         let dispatch_stack_items = checked_add(checked_add(entrypoint.params.len(), state_field_count)?, 3)?;
         if dispatch_stack_items > MAX_STACK_SIZE {
             return Err(CompilerError::EntrypointStackTooLarge {
@@ -277,6 +280,12 @@ fn compile_contract_bytecode_iteration<'i>(
     let bytecode = build_contract_bytecode(debug_recorder, &state_push_bytecode, &compiled_entrypoints, dispatches)?;
     let entrypoints = lowered_contract.functions.iter().filter(|function| function.entrypoint).collect::<Vec<_>>();
     validate_signature_script_limits(&bytecode, &entrypoints, lowered_constants)?;
+    stack_analysis::validate_bytecode_stack_limits(
+        &compiled_entrypoints,
+        &entrypoints,
+        lowered_contract.fields.len(),
+        &state_push_bytecode,
+    )?;
     Ok((bytecode, state_layout))
 }
 

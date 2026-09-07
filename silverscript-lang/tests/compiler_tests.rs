@@ -17967,3 +17967,149 @@ fn signature_script_builder_requires_explicit_byte_values() {
         encode_entry_sig_script(&compiled, "array", &[ArtifactValue::Bytes(vec![1])]).expect("explicit byte elements build");
     run_bytecode_with_sigscript(bytecode(&compiled), sigscript).expect("the explicit byte-array invocation executes");
 }
+
+#[test]
+fn local_stack_limit_counts_parameters_and_state_fields() {
+    for (param_count, field_count) in [(0, 0), (1, 2)] {
+        let params = (0..param_count).map(|index| format!("int p{index}")).collect::<Vec<_>>().join(", ");
+        let fields = (0..field_count).map(|index| format!("int state{index} = 0;")).collect::<String>();
+        for total_bindings in [244, 245] {
+            let locals = (0..total_bindings - param_count - field_count)
+                .map(|index| format!("int local{index} = {index};"))
+                .collect::<String>();
+            // No expression after the locals: this tests the binding limit without
+            // extra operand-stack requirements. Entrypoint cleanup only drops values.
+            let source = format!("contract Boundary() {{ {fields} entry main({params}) {{ {locals} }} }}");
+            let result = compile_contract(&source, &[], CompileOptions::default());
+            if total_bindings == 244 {
+                let compiled = result.expect("244 live bindings fit at depths 0 through 243");
+                let sigscript =
+                    encode_entry_sig_script(&compiled, "main", &vec![ArtifactValue::Int(0); param_count]).expect("arguments encode");
+                run_bytecode_with_sigscript(bytecode(&compiled), sigscript).expect("exactly 244 bindings execute successfully");
+            } else {
+                let error = result.expect_err("the variable that creates depth 244 must be rejected");
+                assert!(
+                    matches!(error.root(), CompilerError::VariableStackTooLarge { actual: 245, maximum: 244, .. }),
+                    "unexpected error: {error}"
+                );
+                let span = error.span().expect("the error identifies the overflowing declaration");
+                assert!(source[span.start..span.end].contains(&format!("local{}", total_bindings - param_count - field_count - 1)));
+            }
+        }
+    }
+}
+
+#[test]
+fn local_stack_limit_reuses_slots_after_block_cleanup() {
+    let locals = (0..243).map(|index| format!("int local{index} = {index};")).collect::<String>();
+    let source = format!("contract Reuse() {{ entry main() {{ int outer = 0; {{ {locals} }} {{ {locals} }} }} }}");
+    let compiled = compile_contract(&source, &[], CompileOptions::default()).expect("block locals do not accumulate across scopes");
+    let sigscript = encode_entry_sig_script(&compiled, "main", &[]).expect("arguments encode");
+    run_bytecode_with_sigscript(bytecode(&compiled), sigscript).expect("both blocks reach 244 bindings and release their slots");
+}
+
+#[test]
+fn bytecode_stack_limit_checks_expression_temporaries() {
+    for (count, expression, should_pass) in [
+        (242, "require(local241 == 241);", true),
+        (243, "require(local242 == 242);", false),
+        (244, "require(local243 == 243);", false),
+        (243, "int last = local242 + 1;", false),
+        // Assignment needs a transient index to remove the previous value.
+        (243, "local0 = 7;", false),
+        (242, "local0 = 7;", true),
+        // A deep read pushes a PICK index even before it makes a copy.
+        (244, "require(local0 == 0);", false),
+    ] {
+        let locals = (0..count).map(|index| format!("int local{index} = {index};")).collect::<String>();
+        let source = format!("contract Temporaries() {{ entry main() {{ {locals} {expression} }} }}");
+        let result = compile_contract(&source, &[], CompileOptions::default());
+        if should_pass {
+            let compiled = result.expect("peak fits the consensus limit");
+            let sigscript = encode_entry_sig_script(&compiled, "main", &[]).unwrap();
+            run_bytecode_with_sigscript(bytecode(&compiled), sigscript).expect("boundary invocation executes");
+        } else {
+            let error = result.expect_err("temporary operand exceeds the consensus limit");
+            assert!(
+                matches!(error.root(), CompilerError::BytecodeStackTooLarge {
+                function, actual: 245, maximum: 244, ..
+            } if function == "main"),
+                "{error}"
+            );
+        }
+    }
+}
+
+#[test]
+fn bytecode_stack_limit_checks_both_branches_and_reuses_their_slots() {
+    for (count, should_pass) in [(241, true), (242, false)] {
+        let locals = (0..count).map(|index| format!("int local{index} = {index};")).collect::<String>();
+        let body = format!("{locals} require(local{} == {});", count - 1, count - 1);
+        for then_body in [true, false] {
+            let (left, right) = if then_body { (body.as_str(), "") } else { ("", body.as_str()) };
+            // The bool binding remains live in the branch, adding one item.
+            let source = format!("contract Branches() {{ entry main(bool flag) {{ if (flag) {{ {left} }} else {{ {right} }} }} }}");
+            let result = compile_contract(&source, &[], CompileOptions::default());
+            if should_pass {
+                let compiled = result.expect("branch peak is exactly 244");
+                for flag in [true, false] {
+                    let sigscript = encode_entry_sig_script(&compiled, "main", &[ArtifactValue::Bool(flag)]).unwrap();
+                    run_bytecode_with_sigscript(bytecode(&compiled), sigscript).expect("both paths execute");
+                }
+            } else {
+                assert!(matches!(result.unwrap_err().root(), CompilerError::BytecodeStackTooLarge { .. }));
+            }
+        }
+    }
+    let locals = (0..243).map(|index| format!("int local{index} = {index};")).collect::<String>();
+    let source = format!("contract ReuseBranches() {{ entry main(bool flag) {{ if (flag) {{ {locals} }} else {{ {locals} }} }} }}");
+    let compiled = compile_contract(&source, &[], CompileOptions::default()).expect("each branch independently fits 244 items");
+    for flag in [true, false] {
+        let sigscript = encode_entry_sig_script(&compiled, "main", &[ArtifactValue::Bool(flag)]).unwrap();
+        run_bytecode_with_sigscript(bytecode(&compiled), sigscript).expect("both branch paths execute");
+    }
+}
+
+#[test]
+fn bytecode_stack_limit_analyzes_entrypoint_dispatch_separately() {
+    let locals = (0..244).map(|index| format!("int local{index} = {index};")).collect::<String>();
+    let source = format!(
+        r#"
+        contract Dispatch() {{
+            entry many(int a, int b, int c) {{ require(a + b == c); }}
+            entry boundary() {{ {locals} }}
+            entry one(int a) {{ require(a == 7); }}
+        }}
+    "#
+    );
+    let compiled = compile_contract(&source, &[], CompileOptions::default()).expect("entrypoints have independent initial stacks");
+    for (entry, args) in [
+        ("many", vec![ArtifactValue::Int(2), ArtifactValue::Int(3), ArtifactValue::Int(5)]),
+        ("boundary", vec![]),
+        ("one", vec![ArtifactValue::Int(7)]),
+    ] {
+        let sigscript = encode_entry_sig_script(&compiled, entry, &args).unwrap();
+        run_bytecode_with_sigscript(bytecode(&compiled), sigscript).expect("each dispatch path executes");
+    }
+}
+
+#[test]
+fn state_initializer_stack_limit_checks_dynamic_expression_temporaries() {
+    let params = (0..240).map(|index| format!("int p{index}")).collect::<Vec<_>>().join(", ");
+    for terms in [3, 4] {
+        let mut initializer = "byte[]{0x01}".to_string();
+        for _ in 1..terms {
+            initializer = format!("byte[]{{0x01}} + ({initializer})");
+        }
+        let source = format!("contract Initializer() {{ byte[] state = {initializer}; entry main({params}) {{}} }}");
+        let result = compile_contract(&source, &[], CompileOptions::default());
+        if terms == 3 {
+            let compiled = result.expect("initializer peak fits 244 items including arguments and the saved tag");
+            let sigscript = encode_entry_sig_script(&compiled, "main", &vec![ArtifactValue::Int(0); 240]).unwrap();
+            run_bytecode_with_sigscript(bytecode(&compiled), sigscript).expect("boundary initializer executes");
+        } else {
+            let error = result.expect_err("initializer temporaries overflow even though dispatch fits");
+            assert!(matches!(error.root(), CompilerError::BytecodeStackTooLarge { actual: 245, maximum: 244, .. }), "{error}");
+        }
+    }
+}
