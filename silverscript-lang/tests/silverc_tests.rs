@@ -83,7 +83,7 @@ fn silverc_defaults_output_path_and_empty_ctor_args() {
     let json = fs::read_to_string(&out_path).expect("read output");
     let json_value: serde_json::Value = serde_json::from_str(&json).expect("parse portable ABI artifact JSON");
     let artifact: SilAbiArtifact = serde_json::from_str(&json).expect("parse portable ABI artifact");
-    artifact.verify().expect("portable ABI verifies");
+    artifact.check_consistency().expect("portable ABI verifies");
     assert_eq!(artifact.contracts.len(), 1);
     assert!(artifact.contracts.contains_key("Basic"));
     assert_eq!(json_value["compiler_version"], COMPILER_VERSION);
@@ -131,7 +131,7 @@ fn silverc_accepts_constructor_args_and_output_flag() {
 
     let json = fs::read_to_string(&out_path).expect("read output");
     let artifact: SilAbiArtifact = serde_json::from_str(&json).expect("parse portable ABI artifact");
-    artifact.verify().expect("portable ABI verifies");
+    artifact.check_consistency().expect("portable ABI verifies");
     let contract = artifact.contract("WithCtor").expect("contract resolved");
     let selector = contract.entry("main").expect("entrypoint resolved").dispatch_tag.into_bytes();
     let bytecode = contract.compiled.bytecode.clone();

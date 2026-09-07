@@ -210,8 +210,18 @@ impl SilAbiArtifact {
         }
     }
 
-    /// Verify each compiled script, runtime-state span, and template hash.
-    pub fn verify(&self) -> std::result::Result<(), SilAbiVerificationError> {
+    /// Verifies the complete portable Argent artifact.
+    ///
+    /// Verification checks consistency between the artifact's schema, ABI,
+    /// template plan, compiled frames, and declared identity. It assumes the
+    /// artifact was produced by supported Argent and Silverscript compilers and
+    /// may rely on their representation invariants.
+    ///
+    /// This method does not prove that the embedded bytecode was generated from
+    /// the recorded source or make an attacker-supplied artifact trustworthy.
+    /// Consumers must obtain the artifact from a trusted build or compare its
+    /// computed identity with a separately trusted identity.
+    pub fn check_consistency(&self) -> std::result::Result<(), SilAbiVerificationError> {
         self.check_schema_version()?;
         for (contract_name, contract) in &self.contracts {
             verify_compiled_contract(self, contract_name, contract)?;
@@ -1359,18 +1369,18 @@ mod tests {
         contract.compiled.template_hash = template_hash(&prefix, &suffix);
         contract.compiled.state_span = StateSpanArtifact { offset: prefix.len(), len: state.len() };
 
-        abi.verify().expect("compiled template matches its contract script");
+        abi.check_consistency().expect("compiled template matches its contract script");
 
         abi.contracts.get_mut("Foo").unwrap().compiled.template_hash = [0; 32];
         assert!(matches!(
-            abi.verify(),
+            abi.check_consistency(),
             Err(SilAbiVerificationError::TemplateHashMismatch { ref contract, .. }) if contract == "Foo"
         ));
 
         abi.contracts.get_mut("Foo").unwrap().compiled.template_hash = template_hash(&prefix, &suffix);
         abi.contracts.get_mut("Foo").unwrap().compiled.bytecode = [&[0xff], state.as_slice(), suffix.as_slice()].concat();
         assert!(matches!(
-            abi.verify(),
+            abi.check_consistency(),
             Err(SilAbiVerificationError::TemplateHashMismatch { ref contract, .. }) if contract == "Foo"
         ));
     }
@@ -1390,7 +1400,7 @@ mod tests {
         let step_tag = abi.contracts["Foo"].entries["step"].dispatch_tag;
         abi.contracts.get_mut("Foo").unwrap().entries.get_mut("other").unwrap().dispatch_tag = step_tag;
         assert!(matches!(
-            abi.verify(),
+            abi.check_consistency(),
             Err(SilAbiVerificationError::DispatchTagCollision { ref contract, ref first, ref second, .. })
                 if contract == "Foo" && first == "other" && second == "step"
         ));
@@ -1402,7 +1412,7 @@ mod tests {
         abi.contracts.get_mut("Foo").unwrap().cov_decl_to_abi.insert("spend".to_string(), "missing".to_string());
 
         assert_eq!(
-            abi.verify(),
+            abi.check_consistency(),
             Err(SilAbiVerificationError::UnknownEntryReference { contract: "Foo".to_string(), entry: "missing".to_string() })
         );
     }
@@ -1426,7 +1436,7 @@ mod tests {
         contract.compiled.state_span = StateSpanArtifact { offset: 0, len: prefix.len() + state.len() };
         contract.compiled.template_hash = template_hash(&[], &suffix);
         assert!(matches!(
-            abi.verify(),
+            abi.check_consistency(),
             Err(SilAbiVerificationError::InvalidRuntimeStateEncoding { ref contract, .. }) if contract == "Foo"
         ));
 
@@ -1434,7 +1444,7 @@ mod tests {
         contract.compiled.state_span = StateSpanArtifact { offset: prefix.len(), len: state.len() - 1 };
         contract.compiled.template_hash = template_hash(&prefix, &[state[state.len() - 1], suffix[0]]);
         assert!(matches!(
-            abi.verify(),
+            abi.check_consistency(),
             Err(SilAbiVerificationError::InvalidRuntimeStateEncoding { ref contract, .. }) if contract == "Foo"
         ));
     }
@@ -1450,7 +1460,10 @@ mod tests {
         contract.compiled.bytecode = [prefix.as_slice(), state.as_slice(), suffix.as_slice()].concat();
         contract.compiled.template_hash = template_hash(&prefix, &suffix);
         contract.compiled.state_span = StateSpanArtifact { offset: prefix.len(), len: state.len() };
-        assert_eq!(abi.verify(), Err(SilAbiVerificationError::NonCanonicalRuntimeStateEncoding { contract: "Foo".to_string() }));
+        assert_eq!(
+            abi.check_consistency(),
+            Err(SilAbiVerificationError::NonCanonicalRuntimeStateEncoding { contract: "Foo".to_string() })
+        );
     }
 
     #[test]
@@ -1482,7 +1495,7 @@ mod tests {
         contract.compiled.template_hash = template_hash(&prefix, &suffix);
         contract.compiled.state_span = StateSpanArtifact { offset: prefix.len(), len: state.len() };
 
-        abi.verify().expect("canonical variable-width runtime state verifies");
+        abi.check_consistency().expect("canonical variable-width runtime state verifies");
     }
 
     #[test]
@@ -1498,7 +1511,7 @@ mod tests {
             vec![RuntimeFieldArtifact { name: "cycle".to_string(), ty: TypeArtifact::Struct { name: "Cycle".to_string() } }];
 
         assert!(matches!(
-            abi.verify(),
+            abi.check_consistency(),
             Err(SilAbiVerificationError::InvalidRuntimeStateEncoding { ref contract, ref message })
                 if contract == "Foo" && message.contains("cyclic struct Cycle")
         ));
