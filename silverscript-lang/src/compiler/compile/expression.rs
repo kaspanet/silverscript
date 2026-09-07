@@ -1,5 +1,10 @@
+use std::iter::once;
+
 use super::*;
 use crate::compiler::builtin_types::constructor_parameters;
+use kaspa_txscript::opcodes::{OP_DATA_MAX_VAL, OP_DATA_MIN_VAL};
+use kaspa_txscript::script_builder::ScriptBuilderError;
+use kaspa_txscript::{max_script_element_size, max_scripts_size};
 
 mod builtin;
 
@@ -705,17 +710,78 @@ fn byte_sequence_cast_size<'i>(
     })
 }
 
+/// Size of a payload and its explicit push-data prefix, following ScriptBuilder.
+fn explicit_push_encoded_size(data_len: usize) -> Result<usize, CompilerError> {
+    // TODO: Remove this copy once rusty-kaspa exposes ScriptBuilder::explicit_push_encoded_size publicly.
+    let prefix_len = if data_len <= OP_DATA_MAX_VAL as usize {
+        1
+    } else if data_len <= u8::MAX as usize {
+        2
+    } else if data_len <= u16::MAX as usize {
+        3
+    } else {
+        5
+    };
+    checked_add(data_len, prefix_len)
+}
+
 pub(super) fn data_prefix(data_len: usize) -> Result<Vec<u8>, CompilerError> {
-    let dummy_data = vec![0u8; data_len];
-    let mut builder = script_builder();
-    builder.add_data_with_push_opcode(&dummy_data)?;
-    let bytecode = builder.drain();
-    Ok(bytecode[..bytecode.len() - data_len].to_vec())
+    let encoded_size = explicit_push_encoded_size(data_len)?;
+    // Match the covenant-enabled script builder's validation order without allocating the payload.
+    let script_limit = max_scripts_size(true);
+    if encoded_size > script_limit {
+        return Err(ScriptBuilderError::DataRejected(encoded_size, script_limit).into());
+    }
+    let element_limit = max_script_element_size(true);
+    if data_len > element_limit {
+        return Err(ScriptBuilderError::ElementExceedsMaxSize(data_len, element_limit).into());
+    }
+
+    let mut prefix = Vec::new();
+    if data_len <= OP_DATA_MAX_VAL as usize {
+        prefix.push((OP_DATA_MIN_VAL - 1) + data_len as u8);
+    } else if data_len <= u8::MAX as usize {
+        prefix.extend(once(OpPushData1).chain(once(data_len as u8)));
+    } else if data_len <= u16::MAX as usize {
+        prefix.extend(once(OpPushData2).chain((data_len as u16).to_le_bytes()));
+    } else {
+        prefix.extend(once(OpPushData4).chain((data_len as u32).to_le_bytes()));
+    }
+    Ok(prefix)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn data_prefix_matches_builder_encoding_and_size_errors() {
+        let limit = max_scripts_size(true);
+        for data_len in [0, 1, 74, 75, 76, 254, 255, 256, 65534, 65535, 65536, limit - 5, limit - 4, limit, limit + 1] {
+            let mut builder = script_builder();
+            let data = vec![0; data_len];
+            let expected =
+                builder.add_data_with_push_opcode(&data).map(|builder| builder.script()[..builder.script().len() - data_len].to_vec());
+            match (data_prefix(data_len), expected) {
+                (Ok(actual), Ok(expected)) => assert_eq!(actual, expected, "length {data_len}"),
+                (Err(CompilerError::ScriptBuild(actual)), Err(expected)) => assert_eq!(actual, expected, "length {data_len}"),
+                (actual, expected) => panic!("length {data_len}: got {actual:?}, expected {expected:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn data_prefix_rejects_huge_lengths() {
+        let huge = usize::MAX / 2;
+        assert!(matches!(data_prefix(huge), Err(CompilerError::ScriptBuild(ScriptBuilderError::DataRejected(_, _)))));
+        assert!(matches!(data_prefix(usize::MAX), Err(CompilerError::ArithmeticOverflow(_))));
+    }
+
+    #[test]
+    fn data_prefix_encodes_pushdata4() {
+        assert_eq!(data_prefix(65536).unwrap(), vec![OpPushData4, 0x00, 0x00, 0x01, 0x00]);
+        assert_eq!(data_prefix(0x12345).unwrap(), vec![OpPushData4, 0x45, 0x23, 0x01, 0x00]);
+    }
 
     #[test]
     fn data_prefix_encodes_small_pushes() {

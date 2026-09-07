@@ -15,7 +15,7 @@ use kaspa_consensus_core::tx::{
 use kaspa_txscript::caches::Cache;
 use kaspa_txscript::covenants::CovenantsContext;
 use kaspa_txscript::opcodes::codes::*;
-use kaspa_txscript::script_builder::ScriptBuilder;
+use kaspa_txscript::script_builder::{ScriptBuilder, ScriptBuilderError};
 use kaspa_txscript::{
     EngineCtx, EngineFlags, SeqCommitAccessor, TxScriptEngine, parse_script, pay_to_address_script, pay_to_script_hash_script,
     pay_to_script_hash_signature_script_with_flags, script_to_str, serialize_i64,
@@ -18112,4 +18112,25 @@ fn state_initializer_stack_limit_checks_dynamic_expression_temporaries() {
             assert!(matches!(error.root(), CompilerError::BytecodeStackTooLarge { actual: 245, maximum: 244, .. }), "{error}");
         }
     }
+}
+
+#[test]
+fn large_template_layout_returns_size_error_without_panicking() {
+    let source = r#"
+        contract C() {
+            struct Huge { byte[9223372036854775808] payload; }
+            entry main(byte[32] hash) {
+                Huge state = readInputStateWithTemplate(0, 0, 0, hash);
+                require(true);
+            }
+        }
+    "#;
+    // Computing a push prefix must not allocate the declared payload size.
+    let result = catch_unwind(AssertUnwindSafe(|| compile_contract(source, &[], CompileOptions::default())))
+        .expect("oversized layout must not panic");
+    let error = result.expect_err("oversized layout must be rejected");
+    assert!(
+        matches!(error.root(), CompilerError::ScriptBuild(ScriptBuilderError::DataRejected(actual, maximum)) if actual > maximum),
+        "unexpected error: {error}"
+    );
 }
