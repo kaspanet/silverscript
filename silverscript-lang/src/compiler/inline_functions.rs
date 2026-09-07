@@ -400,7 +400,6 @@ impl<'i, 'd> Inliner<'i, 'd> {
         let mut local_scope = HashMap::new();
         let mut lowered = Vec::new();
         self.debug_recorder.begin_inline_source_call(&function.name, SourceSpan::from(span));
-        visited_functions.insert(function.name.clone());
         for (param, arg) in function.params.iter().zip(args.iter()) {
             let fresh = self.bind_fresh_visible_name(&param.name, &mut local_scope);
             let (prelude, renamed_arg) = self.lower_expr(arg, caller_scope, visited_functions)?;
@@ -421,6 +420,10 @@ impl<'i, 'd> Inliner<'i, 'd> {
             );
         }
 
+        // Arguments run in the caller before this function becomes active. Keep caller functions
+        // in the set so recursion through an argument is still rejected, then guard the callee's
+        // body and return expressions until this call finishes.
+        visited_functions.insert(function.name.clone());
         let (callee_body, return_exprs) = match function.body.split_last() {
             Some((Statement::Return { exprs, .. }, body)) => (body, Some(exprs.as_slice())),
             Some((_last, _body)) => (function.body.as_slice(), None),

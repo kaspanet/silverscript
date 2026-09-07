@@ -11092,6 +11092,86 @@ fn discarded_helper_return_expressions_are_evaluated_and_dropped() {
 }
 
 #[test]
+fn nested_nonrecursive_helper_calls_execute_in_all_call_forms() {
+    let source = r#"
+        contract NestedCalls() {
+            function increment(int value) : int {
+                require(value >= 0);
+                return value + 1;
+            }
+
+            function pair(int value) : (int, int) {
+                return(value, value + 1);
+            }
+
+            entry main() {
+                increment(increment(increment(1)));
+                require(increment(increment(1)) == 3);
+                (int value) = increment(increment(1));
+                require(value == 3);
+                (int first, int second) = pair(pair(1).1);
+                require(first == 2);
+                require(second == 3);
+                require(pair(pair(1).1).1 == 3);
+                pair(pair(1).0);
+            }
+        }
+    "#;
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("finite nested calls compile");
+    let dispatch_tag = dispatch_tag_for(&compiled, "main");
+    run_bytecode_with_dispatch_tag(bytecode(&compiled), dispatch_tag).expect("finite nested calls execute with correct results");
+}
+
+#[test]
+fn discarded_nested_calls_evaluate_inner_and_outer_bodies() {
+    for argument in [0, 1, 2] {
+        let source = format!(
+            r#"
+                contract NestedCalls() {{
+                    function decrement(int value) : int {{
+                        require(value > 0);
+                        return value - 1;
+                    }}
+                    entry main() {{
+                        decrement(decrement({argument}));
+                        require(true);
+                    }}
+                }}
+            "#
+        );
+        let compiled = compile_contract(&source, &[], CompileOptions::default()).expect("finite nested calls compile");
+        let dispatch_tag = dispatch_tag_for(&compiled, "main");
+        let result = run_bytecode_with_dispatch_tag(bytecode(&compiled), dispatch_tag);
+        assert_eq!(result.is_ok(), argument == 2, "argument {argument}: {result:?}");
+    }
+}
+
+#[test]
+fn rejects_recursive_calls_in_bodies_returns_and_arguments() {
+    let bodies = [
+        "recur(value); return value;",
+        "return recur(value);",
+        "return identity(recur(value));",
+        "identity(recur(value)); return value;",
+        "return other(value);",
+    ];
+    for body in bodies {
+        let source = format!(
+            r#"
+                contract RecursiveCalls() {{
+                    function identity(int value) : int {{ return value; }}
+                    function other(int value) : int {{ return recur(value); }}
+                    function recur(int value) : int {{ {body} }}
+                    entry main() {{ recur(1); require(true); }}
+                }}
+            "#
+        );
+        let error = compile_contract(&source, &[], CompileOptions::default()).expect_err("actual recursion must be rejected");
+        assert!(error.to_string().contains("recursive function call: recur"), "body {body}: {error}");
+    }
+}
+
+#[test]
 fn discarded_nested_helper_return_expression_is_evaluated() {
     let source = r#"
         contract NestedDiscardedHelperReturn() {
