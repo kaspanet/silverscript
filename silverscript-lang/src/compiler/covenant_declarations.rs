@@ -95,7 +95,7 @@ pub(super) fn lower_covenant_declarations<'i>(
         }
 
         let declaration = parse_covenant_declaration(function, constants)?;
-        validate_covenant_policy_state_shape(function, &declaration, &contract.fields)?;
+        validate_covenant_policy_state_shape(function, &declaration, &contract.name, &contract.fields)?;
 
         let policy_name = generated_covenant_policy_name(&function.name);
 
@@ -478,12 +478,13 @@ fn parse_attr_ident_arg<'i>(name: &str, value: Option<&Expr<'i>>) -> Result<Stri
 fn validate_covenant_policy_state_shape<'i>(
     policy: &FunctionAst<'i>,
     declaration: &CovenantDeclaration<'i>,
+    contract_name: &str,
     contract_fields: &[ContractFieldAst<'i>],
 ) -> Result<(), CompilerError> {
     if contract_fields.is_empty() {
         return Err(CompilerError::Unsupported(format!(
             "covenant declaration on function '{}' requires contract '{}' to declare at least one state field",
-            policy.name, policy.name
+            policy.name, contract_name
         )));
     }
 

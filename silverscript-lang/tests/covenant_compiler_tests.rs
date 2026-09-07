@@ -26,7 +26,7 @@ fn rejects_stateless_singleton_declaration() {
         matches!(
             err.root(),
             silverscript_lang::errors::CompilerError::Unsupported(message)
-                if message.contains("requires") && message.contains("at least one state field")
+                if message == "covenant declaration on function 'continue_contract' requires contract 'Stateless' to declare at least one state field"
         ),
         "unexpected error: {err}"
     );
