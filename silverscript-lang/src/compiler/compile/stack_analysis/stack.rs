@@ -58,12 +58,11 @@ impl Stack {
 
     /// Pop a known nonnegative integer used as a stack index or argument count.
     pub(super) fn pop_count(&mut self, at: &Location<'_>) -> Result<usize, CompilerError> {
-        if let Value::Bytes(bytes) = self.pop(at)? {
-            if let Ok(number) = deserialize_i64(&bytes, false) {
-                if let Ok(count) = usize::try_from(number) {
-                    return Ok(count);
-                }
-            }
+        if let Value::Bytes(bytes) = self.pop(at)?
+            && let Ok(number) = deserialize_i64(&bytes, false)
+            && let Ok(count) = usize::try_from(number)
+        {
+            return Ok(count);
         }
         Err(at.error("stack index or argument count is not a known nonnegative integer"))
     }
