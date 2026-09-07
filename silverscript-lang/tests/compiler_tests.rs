@@ -17,8 +17,9 @@ use kaspa_txscript::covenants::CovenantsContext;
 use kaspa_txscript::opcodes::codes::*;
 use kaspa_txscript::script_builder::{ScriptBuilder, ScriptBuilderError};
 use kaspa_txscript::{
-    EngineCtx, EngineFlags, SeqCommitAccessor, TxScriptEngine, parse_script, pay_to_address_script, pay_to_script_hash_script,
-    pay_to_script_hash_signature_script_with_flags, script_to_str, serialize_i64,
+    EngineCtx, EngineFlags, SeqCommitAccessor, TxScriptEngine, max_ops_per_script, max_script_element_size, max_scripts_size,
+    parse_script, pay_to_address_script, pay_to_script_hash_script, pay_to_script_hash_signature_script_with_flags, script_to_str,
+    serialize_i64,
 };
 use silverscript_abi::{ArtifactValue, SilAbiArtifact, TypeArtifact};
 use silverscript_lang::ast::{
@@ -17902,6 +17903,87 @@ fn compiler_rejects_redeem_scripts_above_the_signature_script_limit() {
         }
         other => panic!("unexpected error: {other}"),
     }
+}
+
+#[test]
+fn redeem_script_limit_prevents_exceeding_the_txscript_script_size_limit() {
+    let signature_script_limit = MAINNET_PARAMS.new_max_signature_script_len;
+    assert!(signature_script_limit < max_scripts_size(true));
+
+    let source = r#"
+        contract OversizedScript() {
+            entry main(int start, int end) {
+                for (i, start, end, 10000) {
+                    require(i >= start);
+                    require(i <= end);
+                    require(i != start - 1);
+                }
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default())
+        .expect_err("compilation must fail before a redeem script can reach the txscript script-size limit");
+    assert!(
+        matches!(err.root(), CompilerError::RedeemScriptTooLarge { actual, maximum }
+            if *actual > *maximum && *maximum == signature_script_limit),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn redeem_script_limit_prevents_exceeding_the_txscript_opcode_limit() {
+    let signature_script_limit = MAINNET_PARAMS.new_max_signature_script_len;
+    let opcode_limit = usize::try_from(max_ops_per_script(true)).expect("covenant opcode limit is non-negative");
+    // Every counted opcode occupies at least one byte, so the tighter redeem-script
+    // byte limit makes the opcode limit unreachable.
+    assert!(signature_script_limit < opcode_limit);
+
+    let source = r#"
+        contract ExcessiveOperations() {
+            entry main(int start, int end) {
+                for (i, start, end, 10000) {
+                    require(i >= start);
+                    require(i <= end);
+                    require(i != start - 1);
+                }
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default())
+        .expect_err("compilation must fail before a redeem script can contain too many opcodes");
+    assert!(
+        matches!(err.root(), CompilerError::RedeemScriptTooLarge { actual, maximum }
+            if *actual > *maximum && *maximum == signature_script_limit),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn compiler_rejects_statically_oversized_runtime_stack_elements() {
+    let element_limit = max_script_element_size(true);
+    assert_eq!(element_limit, 1_000_000);
+
+    let source = r#"
+        contract OversizedElement() {
+            entry main(byte[200000] data) {
+                byte[] expanded = data + data + data + data + data + data;
+                require(expanded.length == 1200000);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default())
+        .expect_err("a statically known runtime stack element above the txscript limit must be rejected");
+    assert!(
+        matches!(
+            err.root(),
+            CompilerError::ScriptBuild(ScriptBuilderError::ElementExceedsMaxSize(actual, maximum))
+                if *actual == 1_200_000 && *maximum == element_limit
+        ),
+        "unexpected error: {err}"
+    );
 }
 
 #[test]

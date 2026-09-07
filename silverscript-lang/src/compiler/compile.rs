@@ -7,10 +7,12 @@ use super::static_check::{static_check_contract, validate_constructor_argument, 
 use super::ternary::lower_ternaries;
 use super::*;
 use kaspa_consensus_core::config::params::MAINNET_PARAMS;
+use kaspa_consensus_core::hashing::sighash::SigHashReusedValuesUnsync;
+use kaspa_consensus_core::tx::PopulatedTransaction;
 use kaspa_txscript::opcodes::codes::*;
 use kaspa_txscript::script_builder::ScriptBuilder;
 use kaspa_txscript::serialize_i64;
-use kaspa_txscript::{EngineFlags, MAX_STACK_SIZE};
+use kaspa_txscript::{EngineFlags, MAX_STACK_SIZE, NO_COST_OPCODE, max_ops_per_script, max_scripts_size, parse_script};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 mod analysis;
@@ -166,6 +168,33 @@ fn validate_entrypoint_stack_limits(entrypoints: &[&FunctionAst<'_>], state_fiel
     Ok(())
 }
 
+fn validate_txscript_bytecode_limits(bytecode: &[u8]) -> Result<(), CompilerError> {
+    let maximum_operations = usize::try_from(max_ops_per_script(true))
+        .map_err(|_| CompilerError::BytecodeLimitAnalysis("negative opcode limit".to_string()))?;
+    validate_txscript_bytecode_limits_with(bytecode, max_scripts_size(true), maximum_operations)
+}
+
+fn validate_txscript_bytecode_limits_with(
+    bytecode: &[u8],
+    maximum_size: usize,
+    maximum_operations: usize,
+) -> Result<(), CompilerError> {
+    let mut operations = 0usize;
+    for opcode in parse_script::<PopulatedTransaction<'_>, SigHashReusedValuesUnsync>(bytecode) {
+        let opcode = opcode.map_err(|err| CompilerError::BytecodeLimitAnalysis(err.to_string()))?;
+        if opcode.value() > NO_COST_OPCODE {
+            operations = checked_add(operations, 1)?;
+        }
+    }
+    if operations > maximum_operations {
+        return Err(CompilerError::BytecodeTooManyOperations { actual: operations, maximum: maximum_operations });
+    }
+    if bytecode.len() > maximum_size {
+        return Err(CompilerError::BytecodeTooLarge { actual: bytecode.len(), maximum: maximum_size });
+    }
+    Ok(())
+}
+
 fn validate_signature_script_limits<'i>(
     bytecode: &[u8],
     entrypoints: &[&FunctionAst<'i>],
@@ -279,6 +308,7 @@ fn compile_contract_bytecode_iteration<'i>(
     )?;
     let bytecode = build_contract_bytecode(debug_recorder, &state_push_bytecode, &compiled_entrypoints, dispatches)?;
     let entrypoints = lowered_contract.functions.iter().filter(|function| function.entrypoint).collect::<Vec<_>>();
+    validate_txscript_bytecode_limits(&bytecode)?;
     validate_signature_script_limits(&bytecode, &entrypoints, lowered_constants)?;
     stack_analysis::validate_bytecode_stack_limits(
         &compiled_entrypoints,
@@ -404,6 +434,19 @@ pub fn compile_debug_expr<'i>(
 #[cfg(test)]
 mod signature_script_limit_tests {
     use super::*;
+
+    #[test]
+    fn explicit_txscript_bytecode_limits_reject_size_and_opcode_overflows() {
+        let opcode_error =
+            validate_txscript_bytecode_limits_with(&[OpNop; 4], 10, 3).expect_err("four counted opcodes must exceed a limit of three");
+        assert!(matches!(opcode_error, CompilerError::BytecodeTooManyOperations { actual: 4, maximum: 3 }));
+
+        let size_error = validate_txscript_bytecode_limits_with(&[Op0; 4], 3, 3)
+            .expect_err("four push opcodes must exceed a three-byte script limit");
+        assert!(matches!(size_error, CompilerError::BytecodeTooLarge { actual: 4, maximum: 3 }));
+
+        validate_txscript_bytecode_limits_with(&[OpNop; 3], 3, 3).expect("both limits are inclusive at their boundary");
+    }
 
     #[test]
     fn conservative_argument_sizes_use_maximum_scalar_widths_and_one_dynamic_element() {
