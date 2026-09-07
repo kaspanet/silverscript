@@ -366,8 +366,10 @@ fn write_covenant_distinct_delegate_args_fixture() -> (std::path::PathBuf, std::
         r#"pragma silverscript ^0.1.0;
 
 contract CovDistinctDelegateArgs() {
+    byte dummy = 0x00;
+
     #[covenant(binding = cov, from = 2, to = 2)]
-    function transfer(int amount, bool allowed) {
+    function transfer(State[] prev_states, State[] new_states, int amount, bool allowed) {
         require(amount >= 0);
         require(allowed);
     }

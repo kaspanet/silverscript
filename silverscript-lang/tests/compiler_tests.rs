@@ -15,7 +15,7 @@ use kaspa_consensus_core::tx::{
 use kaspa_txscript::caches::Cache;
 use kaspa_txscript::covenants::CovenantsContext;
 use kaspa_txscript::opcodes::codes::*;
-use kaspa_txscript::script_builder::ScriptBuilder;
+use kaspa_txscript::script_builder::{ScriptBuilder, ScriptBuilderError};
 use kaspa_txscript::{
     EngineCtx, EngineFlags, SeqCommitAccessor, TxScriptEngine, parse_script, pay_to_address_script, pay_to_script_hash_script,
     pay_to_script_hash_signature_script_with_flags, script_to_str, serialize_i64,
@@ -6573,6 +6573,35 @@ fn limits_for_loop_max_iterations_to_ten_thousand() {
 }
 
 #[test]
+fn counts_nested_and_sibling_for_loop_iterations() {
+    let cases = [
+        ("for (i, 0, 1, 100) { for (j, 0, 1, 99) { require(true); } }", true),
+        ("for (i, 0, 1, 100) { for (j, 0, 1, 100) { require(true); } }", false),
+        ("for (i, 0, 1, 10) { for (j, 0, 1, 10) { for (k, 0, 1, 99) { require(true); } } }", false),
+        ("for (i, 0, 1, 5000) { require(true); } for (j, 0, 1, 5000) { require(true); }", true),
+        ("for (i, 0, 1, 5000) { require(true); } for (j, 0, 1, 5001) { require(true); }", false),
+        ("for (i, 0, 1, 100) { { for (j, 0, 1, 100) { require(true); } } }", false),
+        (
+            "for (i, 0, 1, 100) { if (flag) { for (j, 0, 1, 50) { require(true); } }
+                else { for (k, 0, 1, 50) { require(true); } } }",
+            false,
+        ),
+        ("for (i, 0, 0, 0) { for (j, 0, 1, 10000) { require(true); } }", true),
+        ("for (i, start, end, 100) { for (j, start, end, 100) { require(true); } }", false),
+    ];
+    for (body, accepted) in cases {
+        let source = format!("contract Loops() {{ entry main(bool flag, int start, int end) {{ {body} }} }}");
+        let result = compile_contract(&source, &[], CompileOptions::default());
+        if accepted {
+            result.unwrap_or_else(|err| panic!("expected loop budget to fit for {body}: {err}"));
+        } else {
+            let err = result.expect_err("combined loop iterations must fit the budget");
+            assert!(err.to_string().contains("total for loop iterations per function must not exceed 10000"), "{body}: {err}");
+        }
+    }
+}
+
+#[test]
 fn rejects_constant_for_loop_range_above_max_iterations() {
     let source = r#"
         contract Loops() {
@@ -7486,16 +7515,68 @@ fn rejects_colliding_kcc1_dispatch_tags() {
 }
 
 #[test]
-fn rejects_noncanonical_inferred_array_type_in_entrypoint_abi() {
+fn rejects_inferred_array_sizes_in_function_parameters() {
+    for type_name in ["byte[_]", "byte[_][2]", "byte[2][_]"] {
+        for declaration in ["entry", "function"] {
+            let source = format!(
+                "contract Test() {{
+                    {declaration} step({type_name} data) {{ require(true); }}
+                    entry other() {{ require(true); }}
+                }}"
+            );
+            let err = compile_contract(&source, &[], CompileOptions::default())
+                .expect_err("function parameters must not have inferred array sizes");
+            assert!(
+                matches!(
+                    err.root(),
+                    CompilerError::Unsupported(message) if message == "function parameters cannot have inferred array sizes"
+                ),
+                "unexpected error: {err}"
+            );
+        }
+    }
+}
+
+#[test]
+fn rejects_inferred_array_sizes_in_unused_struct_fields() {
+    for type_name in ["byte[_]", "byte[_][2]", "byte[2][_]"] {
+        let source = format!(
+            "contract Test() {{
+                struct Unused {{ {type_name} data; }}
+                entry main() {{ require(true); }}
+            }}"
+        );
+        let err = compile_contract(&source, &[], CompileOptions::default())
+            .expect_err("struct fields must not have inferred array sizes even when the struct is unused");
+        assert!(
+            matches!(
+                err.root(),
+                CompilerError::Unsupported(message) if message == "struct fields cannot have inferred array sizes"
+            ),
+            "unexpected error: {err}"
+        );
+    }
+}
+
+#[test]
+fn rejects_inferred_array_sizes_in_struct_fields() {
     let source = r#"
-        contract Test() {
-            entry step(byte[_] data) { require(true); }
-            entry other() { require(true); }
+        contract NestedInferredParam() {
+            struct NestedInferred {
+                byte[_] data;
+            }
+
+            entry main(NestedInferred value) {
+                require(true);
+            }
         }
     "#;
 
-    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("entrypoint ABI types must be canonical");
-    assert!(matches!(err, CompilerError::NonCanonicalEntrypointParameter { .. }));
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("struct fields must not have inferred array sizes");
+    assert!(matches!(
+        err.root(),
+        CompilerError::Unsupported(message) if message == "struct fields cannot have inferred array sizes"
+    ));
 }
 
 #[test]
@@ -11008,6 +11089,86 @@ fn discarded_helper_return_expressions_are_evaluated_and_dropped() {
     let asm = script_to_str(&bytecode(&compiled)).expect("script should stringify");
     assert_eq!(asm.matches("OpSHA256").count(), 2, "both return expressions must be evaluated: {asm}");
     assert_eq!(asm.matches("OpDrop").count(), 3, "both discarded return values plus the dispatch tag must be dropped: {asm}");
+}
+
+#[test]
+fn nested_nonrecursive_helper_calls_execute_in_all_call_forms() {
+    let source = r#"
+        contract NestedCalls() {
+            function increment(int value) : int {
+                require(value >= 0);
+                return value + 1;
+            }
+
+            function pair(int value) : (int, int) {
+                return(value, value + 1);
+            }
+
+            entry main() {
+                increment(increment(increment(1)));
+                require(increment(increment(1)) == 3);
+                (int value) = increment(increment(1));
+                require(value == 3);
+                (int first, int second) = pair(pair(1).1);
+                require(first == 2);
+                require(second == 3);
+                require(pair(pair(1).1).1 == 3);
+                pair(pair(1).0);
+            }
+        }
+    "#;
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("finite nested calls compile");
+    let dispatch_tag = dispatch_tag_for(&compiled, "main");
+    run_bytecode_with_dispatch_tag(bytecode(&compiled), dispatch_tag).expect("finite nested calls execute with correct results");
+}
+
+#[test]
+fn discarded_nested_calls_evaluate_inner_and_outer_bodies() {
+    for argument in [0, 1, 2] {
+        let source = format!(
+            r#"
+                contract NestedCalls() {{
+                    function decrement(int value) : int {{
+                        require(value > 0);
+                        return value - 1;
+                    }}
+                    entry main() {{
+                        decrement(decrement({argument}));
+                        require(true);
+                    }}
+                }}
+            "#
+        );
+        let compiled = compile_contract(&source, &[], CompileOptions::default()).expect("finite nested calls compile");
+        let dispatch_tag = dispatch_tag_for(&compiled, "main");
+        let result = run_bytecode_with_dispatch_tag(bytecode(&compiled), dispatch_tag);
+        assert_eq!(result.is_ok(), argument == 2, "argument {argument}: {result:?}");
+    }
+}
+
+#[test]
+fn rejects_recursive_calls_in_bodies_returns_and_arguments() {
+    let bodies = [
+        "recur(value); return value;",
+        "return recur(value);",
+        "return identity(recur(value));",
+        "identity(recur(value)); return value;",
+        "return other(value);",
+    ];
+    for body in bodies {
+        let source = format!(
+            r#"
+                contract RecursiveCalls() {{
+                    function identity(int value) : int {{ return value; }}
+                    function other(int value) : int {{ return recur(value); }}
+                    function recur(int value) : int {{ {body} }}
+                    entry main() {{ recur(1); require(true); }}
+                }}
+            "#
+        );
+        let error = compile_contract(&source, &[], CompileOptions::default()).expect_err("actual recursion must be rejected");
+        assert!(error.to_string().contains("recursive function call: recur"), "body {body}: {error}");
+    }
 }
 
 #[test]
@@ -17752,18 +17913,48 @@ fn compiler_rejects_entry_abis_that_cannot_fit_the_unlocking_stack() {
         )
     }
 
-    compile_contract(&source_with_params(242), &[], CompileOptions::default())
-        .expect("242 arguments, the dispatch tag, and the redeem script fit the 244-item stack limit");
+    let compiled = compile_contract(&source_with_params(241), &[], CompileOptions::default())
+        .expect("241 arguments and three dispatcher tags fit the 244-item stack limit");
+    let sigscript = encode_entry_sig_script(&compiled, "main", &vec![ArtifactValue::Int(0); 241]).expect("arguments encode");
+    run_bytecode_with_sigscript(bytecode(&compiled), sigscript).expect("the boundary invocation executes");
 
     let err = compile_contract(&source_with_params(243), &[], CompileOptions::default())
         .expect_err("243 arguments plus the dispatch tag and redeem script must be rejected");
     match err.root() {
         CompilerError::EntrypointStackTooLarge { function, actual, maximum } => {
             assert_eq!(function, "main");
-            assert_eq!(*actual, 245);
+            assert_eq!(*actual, 246);
             assert_eq!(*maximum, 244);
         }
         other => panic!("unexpected error: {other}"),
+    }
+}
+
+#[test]
+fn entrypoint_dispatch_stack_limit_includes_state_fields() {
+    for field_count in [0, 1, 3] {
+        let fields = (0..field_count).map(|index| format!("int state{index} = 0;")).collect::<Vec<_>>().join("\n");
+        for param_count in [241 - field_count, 242 - field_count] {
+            let params = (0..param_count).map(|index| format!("int p{index}")).collect::<Vec<_>>().join(", ");
+            let source = format!(
+                "contract StatefulStackBoundary() {{ {fields}
+                    entry first({params}) {{ require(true); }}
+                    entry second({params}) {{ require(true); }}
+                }}"
+            );
+            let result = compile_contract(&source, &[], CompileOptions::default());
+            if param_count + field_count == 241 {
+                let compiled = result.expect("arguments, state, and dispatcher tags fit the stack limit");
+                for entry in ["first", "second"] {
+                    let sigscript = encode_entry_sig_script(&compiled, entry, &vec![ArtifactValue::Int(0); param_count])
+                        .expect("arguments encode");
+                    run_bytecode_with_sigscript(bytecode(&compiled), sigscript).expect("the boundary invocation executes");
+                }
+            } else {
+                let err = result.expect_err("state fields must count toward the dispatcher stack peak");
+                assert!(matches!(err.root(), CompilerError::EntrypointStackTooLarge { actual: 245, maximum: 244, .. }));
+            }
+        }
     }
 }
 
@@ -17787,6 +17978,40 @@ fn compiler_rejects_fixed_abi_payloads_that_cannot_fit_a_signature_script() {
         }
         other => panic!("unexpected error: {other}"),
     }
+}
+
+#[test]
+fn dynamic_abi_encoder_rejects_consensus_oversized_signature_script() {
+    let source = r#"
+        contract DynamicArgument() {
+            entry main(byte[] payload) {
+                require(payload.length >= 0);
+            }
+        }
+    "#;
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("dynamic entrypoint compiles");
+    let maximum = MAINNET_PARAMS.new_max_signature_script_len;
+    let err = encode_entry_sig_script(&compiled, "main", &[ArtifactValue::Bytes(vec![0; maximum])])
+        .expect_err("the complete P2SH signature script must fit the consensus limit");
+    assert!(matches!(err, silverscript_abi::CodecError::SignatureScriptTooLarge { actual, maximum: limit }
+        if actual > maximum && limit == maximum));
+
+    // Above 65535 bytes, the payload's push prefix occupies five bytes.
+    let probe_size = 65536;
+    let probe =
+        encode_entry_sig_script(&compiled, "main", &[ArtifactValue::Bytes(vec![0; probe_size])]).expect("a smaller payload encodes");
+    let redeem_push = common::push_redeem_script(&bytecode(&compiled));
+    let payload_size = maximum - (probe.len() - probe_size) - redeem_push.len();
+    assert!(payload_size >= probe_size);
+    let mut signature_script = encode_entry_sig_script(&compiled, "main", &[ArtifactValue::Bytes(vec![0; payload_size])])
+        .expect("a signature script exactly at the limit encodes");
+    signature_script.extend_from_slice(&redeem_push);
+    assert_eq!(signature_script.len(), maximum);
+
+    let err = encode_entry_sig_script(&compiled, "main", &[ArtifactValue::Bytes(vec![0; payload_size + 1])])
+        .expect_err("a signature script one byte over the limit must be rejected");
+    assert!(matches!(err, silverscript_abi::CodecError::SignatureScriptTooLarge { actual, maximum: limit }
+        if actual == maximum + 1 && limit == maximum));
 }
 
 #[test]
@@ -17821,4 +18046,171 @@ fn signature_script_builder_requires_explicit_byte_values() {
     let sigscript =
         encode_entry_sig_script(&compiled, "array", &[ArtifactValue::Bytes(vec![1])]).expect("explicit byte elements build");
     run_bytecode_with_sigscript(bytecode(&compiled), sigscript).expect("the explicit byte-array invocation executes");
+}
+
+#[test]
+fn local_stack_limit_counts_parameters_and_state_fields() {
+    for (param_count, field_count) in [(0, 0), (1, 2)] {
+        let params = (0..param_count).map(|index| format!("int p{index}")).collect::<Vec<_>>().join(", ");
+        let fields = (0..field_count).map(|index| format!("int state{index} = 0;")).collect::<String>();
+        for total_bindings in [244, 245] {
+            let locals = (0..total_bindings - param_count - field_count)
+                .map(|index| format!("int local{index} = {index};"))
+                .collect::<String>();
+            // No expression after the locals: this tests the binding limit without
+            // extra operand-stack requirements. Entrypoint cleanup only drops values.
+            let source = format!("contract Boundary() {{ {fields} entry main({params}) {{ {locals} }} }}");
+            let result = compile_contract(&source, &[], CompileOptions::default());
+            if total_bindings == 244 {
+                let compiled = result.expect("244 live bindings fit at depths 0 through 243");
+                let sigscript =
+                    encode_entry_sig_script(&compiled, "main", &vec![ArtifactValue::Int(0); param_count]).expect("arguments encode");
+                run_bytecode_with_sigscript(bytecode(&compiled), sigscript).expect("exactly 244 bindings execute successfully");
+            } else {
+                let error = result.expect_err("the variable that creates depth 244 must be rejected");
+                assert!(
+                    matches!(error.root(), CompilerError::VariableStackTooLarge { actual: 245, maximum: 244, .. }),
+                    "unexpected error: {error}"
+                );
+                let span = error.span().expect("the error identifies the overflowing declaration");
+                assert!(source[span.start..span.end].contains(&format!("local{}", total_bindings - param_count - field_count - 1)));
+            }
+        }
+    }
+}
+
+#[test]
+fn local_stack_limit_reuses_slots_after_block_cleanup() {
+    let locals = (0..243).map(|index| format!("int local{index} = {index};")).collect::<String>();
+    let source = format!("contract Reuse() {{ entry main() {{ int outer = 0; {{ {locals} }} {{ {locals} }} }} }}");
+    let compiled = compile_contract(&source, &[], CompileOptions::default()).expect("block locals do not accumulate across scopes");
+    let sigscript = encode_entry_sig_script(&compiled, "main", &[]).expect("arguments encode");
+    run_bytecode_with_sigscript(bytecode(&compiled), sigscript).expect("both blocks reach 244 bindings and release their slots");
+}
+
+#[test]
+fn bytecode_stack_limit_checks_expression_temporaries() {
+    for (count, expression, should_pass) in [
+        (242, "require(local241 == 241);", true),
+        (243, "require(local242 == 242);", false),
+        (244, "require(local243 == 243);", false),
+        (243, "int last = local242 + 1;", false),
+        // Assignment needs a transient index to remove the previous value.
+        (243, "local0 = 7;", false),
+        (242, "local0 = 7;", true),
+        // A deep read pushes a PICK index even before it makes a copy.
+        (244, "require(local0 == 0);", false),
+    ] {
+        let locals = (0..count).map(|index| format!("int local{index} = {index};")).collect::<String>();
+        let source = format!("contract Temporaries() {{ entry main() {{ {locals} {expression} }} }}");
+        let result = compile_contract(&source, &[], CompileOptions::default());
+        if should_pass {
+            let compiled = result.expect("peak fits the consensus limit");
+            let sigscript = encode_entry_sig_script(&compiled, "main", &[]).unwrap();
+            run_bytecode_with_sigscript(bytecode(&compiled), sigscript).expect("boundary invocation executes");
+        } else {
+            let error = result.expect_err("temporary operand exceeds the consensus limit");
+            assert!(
+                matches!(error.root(), CompilerError::BytecodeStackTooLarge {
+                function, actual: 245, maximum: 244, ..
+            } if function == "main"),
+                "{error}"
+            );
+        }
+    }
+}
+
+#[test]
+fn bytecode_stack_limit_checks_both_branches_and_reuses_their_slots() {
+    for (count, should_pass) in [(241, true), (242, false)] {
+        let locals = (0..count).map(|index| format!("int local{index} = {index};")).collect::<String>();
+        let body = format!("{locals} require(local{} == {});", count - 1, count - 1);
+        for then_body in [true, false] {
+            let (left, right) = if then_body { (body.as_str(), "") } else { ("", body.as_str()) };
+            // The bool binding remains live in the branch, adding one item.
+            let source = format!("contract Branches() {{ entry main(bool flag) {{ if (flag) {{ {left} }} else {{ {right} }} }} }}");
+            let result = compile_contract(&source, &[], CompileOptions::default());
+            if should_pass {
+                let compiled = result.expect("branch peak is exactly 244");
+                for flag in [true, false] {
+                    let sigscript = encode_entry_sig_script(&compiled, "main", &[ArtifactValue::Bool(flag)]).unwrap();
+                    run_bytecode_with_sigscript(bytecode(&compiled), sigscript).expect("both paths execute");
+                }
+            } else {
+                assert!(matches!(result.unwrap_err().root(), CompilerError::BytecodeStackTooLarge { .. }));
+            }
+        }
+    }
+    let locals = (0..243).map(|index| format!("int local{index} = {index};")).collect::<String>();
+    let source = format!("contract ReuseBranches() {{ entry main(bool flag) {{ if (flag) {{ {locals} }} else {{ {locals} }} }} }}");
+    let compiled = compile_contract(&source, &[], CompileOptions::default()).expect("each branch independently fits 244 items");
+    for flag in [true, false] {
+        let sigscript = encode_entry_sig_script(&compiled, "main", &[ArtifactValue::Bool(flag)]).unwrap();
+        run_bytecode_with_sigscript(bytecode(&compiled), sigscript).expect("both branch paths execute");
+    }
+}
+
+#[test]
+fn bytecode_stack_limit_analyzes_entrypoint_dispatch_separately() {
+    let locals = (0..244).map(|index| format!("int local{index} = {index};")).collect::<String>();
+    let source = format!(
+        r#"
+        contract Dispatch() {{
+            entry many(int a, int b, int c) {{ require(a + b == c); }}
+            entry boundary() {{ {locals} }}
+            entry one(int a) {{ require(a == 7); }}
+        }}
+    "#
+    );
+    let compiled = compile_contract(&source, &[], CompileOptions::default()).expect("entrypoints have independent initial stacks");
+    for (entry, args) in [
+        ("many", vec![ArtifactValue::Int(2), ArtifactValue::Int(3), ArtifactValue::Int(5)]),
+        ("boundary", vec![]),
+        ("one", vec![ArtifactValue::Int(7)]),
+    ] {
+        let sigscript = encode_entry_sig_script(&compiled, entry, &args).unwrap();
+        run_bytecode_with_sigscript(bytecode(&compiled), sigscript).expect("each dispatch path executes");
+    }
+}
+
+#[test]
+fn state_initializer_stack_limit_checks_dynamic_expression_temporaries() {
+    let params = (0..240).map(|index| format!("int p{index}")).collect::<Vec<_>>().join(", ");
+    for terms in [3, 4] {
+        let mut initializer = "byte[]{0x01}".to_string();
+        for _ in 1..terms {
+            initializer = format!("byte[]{{0x01}} + ({initializer})");
+        }
+        let source = format!("contract Initializer() {{ byte[] state = {initializer}; entry main({params}) {{}} }}");
+        let result = compile_contract(&source, &[], CompileOptions::default());
+        if terms == 3 {
+            let compiled = result.expect("initializer peak fits 244 items including arguments and the saved tag");
+            let sigscript = encode_entry_sig_script(&compiled, "main", &vec![ArtifactValue::Int(0); 240]).unwrap();
+            run_bytecode_with_sigscript(bytecode(&compiled), sigscript).expect("boundary initializer executes");
+        } else {
+            let error = result.expect_err("initializer temporaries overflow even though dispatch fits");
+            assert!(matches!(error.root(), CompilerError::BytecodeStackTooLarge { actual: 245, maximum: 244, .. }), "{error}");
+        }
+    }
+}
+
+#[test]
+fn large_template_layout_returns_size_error_without_panicking() {
+    let source = r#"
+        contract C() {
+            struct Huge { byte[9223372036854775808] payload; }
+            entry main(byte[32] hash) {
+                Huge state = readInputStateWithTemplate(0, 0, 0, hash);
+                require(true);
+            }
+        }
+    "#;
+    // Computing a push prefix must not allocate the declared payload size.
+    let result = catch_unwind(AssertUnwindSafe(|| compile_contract(source, &[], CompileOptions::default())))
+        .expect("oversized layout must not panic");
+    let error = result.expect_err("oversized layout must be rejected");
+    assert!(
+        matches!(error.root(), CompilerError::ScriptBuild(ScriptBuilderError::DataRejected(actual, maximum)) if actual > maximum),
+        "unexpected error: {error}"
+    );
 }

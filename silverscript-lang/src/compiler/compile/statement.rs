@@ -333,6 +333,17 @@ fn compile_stack_variable_definition<'i>(
         return Err(CompilerError::Unsupported(format!("variable '{}' is already defined", name)));
     }
 
+    // Depth is zero-based: 244 bindings occupy depths 0..=243. Adding
+    // another would place the deepest binding at the invalid depth 244.
+    let binding_count = checked_add(ctx.stack_bindings.len(), 1)?;
+    if binding_count > MAX_STACK_SIZE {
+        return Err(CompilerError::VariableStackTooLarge {
+            variable: name.to_string(),
+            actual: binding_count,
+            maximum: MAX_STACK_SIZE,
+        });
+    }
+
     ctx.types.insert(name.to_string(), type_ref.clone());
     ctx.compile_expr(&expr, Some(&type_ref))?;
     ctx.stack_bindings.push_binding(name);

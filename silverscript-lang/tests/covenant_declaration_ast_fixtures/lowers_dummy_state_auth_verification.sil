@@ -1,0 +1,32 @@
+contract Decls(int max_outs) {
+    byte dummy = 0x00;
+
+    #[covenant(binding = auth, from = 1, to = max_outs, mode = verification)]
+    function check(State prev_state, State[] new_states, int nonce) {
+        require(nonce >= 0);
+    }
+}
+
+// --- lowered ---
+
+contract Decls(int max_outs) {
+    byte dummy = 0x00;
+
+    function covenant_policy_check(State prev_state, State[] new_states, int nonce) {
+        require(nonce >= 0);
+    }
+
+    entry check(State[] new_states, int nonce) {
+        int auth_out_count = OpAuthOutputCount(this.activeInputIndex);
+
+        State prev_state = State { dummy: dummy };
+        covenant_policy_check(prev_state, new_states, nonce);
+        require(auth_out_count <= max_outs);
+        require(auth_out_count == new_states.length);
+
+        for(cov_k, 0, auth_out_count, max_outs) {
+            int cov_out_idx = OpAuthOutputIdx(this.activeInputIndex, cov_k);
+            validateOutputState(cov_out_idx, new_states[cov_k]);
+        }
+    }
+}

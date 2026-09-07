@@ -14,5 +14,6 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
+kaspa-consensus-core = { workspace = true }
 # Keep the Sil compiler test-only; production ABI code must not depend on it.
 silverscript-lang = { workspace = true }

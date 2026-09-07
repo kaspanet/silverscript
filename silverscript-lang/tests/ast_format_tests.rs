@@ -252,8 +252,10 @@ fn compiled_formatted_contract_preserves_exact_ast_with_state_and_return() {
 #[test]
 fn formats_function_attributes_and_preserves_compilation() {
     let source = r#"contract Decls(int max_outs) {
+    byte dummy = 0;
+
     #[covenant(binding = auth, from = 1, to = max_outs, mode = verification)]
-    function spend(int amount) {
+    function spend(State prev_state, State[] new_states, int amount) {
         require(amount >= 0);
     }
 }

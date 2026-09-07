@@ -1,6 +1,8 @@
 contract Decls(int max_ins, int max_outs) {
+    byte dummy = 0x00;
+
     #[covenant(binding = cov, from = max_ins, to = max_outs, mode = verification)]
-    function check(int nonce) {
+    function check(State[] prev_states, State[] new_states, int nonce) {
         require(nonce >= 0);
     }
 }
@@ -8,11 +10,13 @@ contract Decls(int max_ins, int max_outs) {
 // --- lowered ---
 
 contract Decls(int max_ins, int max_outs) {
-    function covenant_policy_check(int nonce) {
+    byte dummy = 0x00;
+
+    function covenant_policy_check(State[] prev_states, State[] new_states, int nonce) {
         require(nonce >= 0);
     }
 
-    entry leader_check(int nonce) {
+    entry leader_check(State[] new_states, int nonce) {
         byte[32] cov_id = OpInputCovenantId(this.activeInputIndex);
 
         require(OpCovInputIdx(cov_id, 0) == this.activeInputIndex);
@@ -21,8 +25,20 @@ contract Decls(int max_ins, int max_outs) {
         require(cov_in_count <= max_ins);
 
         int cov_out_count = OpCovOutputCount(cov_id);
-        covenant_policy_check(nonce);
+        State[] prev_states;
+
+        for(cov_in_k, 0, cov_in_count, max_ins) {
+            prev_states = prev_states.append(readInputState(OpCovInputIdx(cov_id, cov_in_k)));
+        }
+
+        covenant_policy_check(prev_states, new_states, nonce);
         require(cov_out_count <= max_outs);
+        require(cov_out_count == new_states.length);
+
+        for(cov_k, 0, cov_out_count, max_outs) {
+            int cov_out_idx = OpCovOutputIdx(cov_id, cov_k);
+            validateOutputState(cov_out_idx, new_states[cov_k]);
+        }
     }
 
     entry delegate() {

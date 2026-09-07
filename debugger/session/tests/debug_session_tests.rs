@@ -1756,6 +1756,8 @@ fn covenant_debug_value(value: i64) -> DebugValue {
 fn covenant_debugger_resolves_overridden_public_entrypoint_names() -> Result<(), Box<dyn Error>> {
     let source = r#"
         contract Routed() {
+            byte dummy = 0x00;
+
             #[covenant(
                 binding = cov,
                 from = 2,
@@ -1763,7 +1765,7 @@ fn covenant_debugger_resolves_overridden_public_entrypoint_names() -> Result<(),
                 name = transfer,
                 delegate_name = transfer_delegator
             )]
-            function transferPolicy(int amount) {
+            function transferPolicy(State[] prev_states, State[] new_states, int amount) {
                 require(amount >= 0);
             }
 
@@ -1801,6 +1803,8 @@ fn debug_session_displays_source_name_inside_covenant_delegate_body() -> Result<
     let source = r#"pragma silverscript ^0.1.0;
 
 contract Routed() {
+    byte dummy = 0x00;
+
     #[covenant(
         binding = cov,
         from = 2,
@@ -1808,7 +1812,7 @@ contract Routed() {
         name = transfer,
         delegate_name = transfer_delegator
     )]
-    function transferPolicy(int amount) {
+    function transferPolicy(State[] prev_states, State[] new_states, int amount) {
         require(amount >= 0);
     }
 
@@ -1886,7 +1890,7 @@ contract Routed() {
     }
     assert_eq!(session.current_function_name().as_deref(), Some("authorizeDelegate"));
     assert_eq!(session.call_stack().last().map(String::as_str), Some("authorizeDelegate"));
-    assert_eq!(session.current_span().map(|span| span.line), Some(18), "visited steps: {visited:?}");
+    assert_eq!(session.current_span().map(|span| span.line), Some(20), "visited steps: {visited:?}");
     Ok(())
 }
 

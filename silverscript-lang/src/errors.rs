@@ -34,8 +34,16 @@ pub enum CompilerError {
     EntrypointDispatchTagCollision { f1: String, f2: String },
     #[error("compiled redeem script is {actual} bytes, exceeding the {maximum}-byte signature-script limit")]
     RedeemScriptTooLarge { actual: usize, maximum: usize },
-    #[error("entrypoint '{function}' requires {actual} initial stack items, exceeding the consensus limit of {maximum}")]
+    #[error("entrypoint '{function}' requires {actual} stack items during dispatch, exceeding the consensus limit of {maximum}")]
     EntrypointStackTooLarge { function: String, actual: usize, maximum: usize },
+    #[error("variable '{variable}' requires {actual} live stack bindings, exceeding the consensus limit of {maximum}")]
+    VariableStackTooLarge { variable: String, actual: usize, maximum: usize },
+    #[error(
+        "entrypoint '{function}' reaches {actual} combined stack items at bytecode fragment offset {offset}, exceeding the consensus limit of {maximum}"
+    )]
+    BytecodeStackTooLarge { function: String, offset: usize, actual: usize, maximum: usize },
+    #[error("cannot verify stack usage for entrypoint '{function}' at bytecode fragment offset {offset}: {message}")]
+    BytecodeStackAnalysis { function: String, offset: usize, message: String },
     #[error(
         "entrypoint '{function}' has a conservative signature-script size estimate of {estimated} bytes, exceeding the consensus limit of {maximum}"
     )]

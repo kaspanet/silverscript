@@ -119,8 +119,7 @@ pub(super) fn lower_covenant_declarations<'i>(
                 let leader_name =
                     declaration.entrypoint_name.clone().unwrap_or_else(|| generated_covenant_leader_entrypoint_name(&function.name));
                 covenant_entrypoints.insert(function.name.clone(), leader_name.clone());
-                let mut leader_wrapper =
-                    build_cov_leader_wrapper(&policy, &policy_name, declaration.clone(), leader_name, &contract.fields)?;
+                let mut leader_wrapper = build_cov_leader_wrapper(&policy, &policy_name, declaration.clone(), leader_name)?;
                 leader_wrapper.params = preserved_entrypoint_params(function, declaration.clone(), true, &contract.fields);
                 lowered.push(leader_wrapper);
 
@@ -472,7 +471,10 @@ fn validate_covenant_policy_state_shape<'i>(
     contract_fields: &[ContractFieldAst<'i>],
 ) -> Result<(), CompilerError> {
     if contract_fields.is_empty() {
-        return Ok(());
+        return Err(CompilerError::Unsupported(format!(
+            "covenant declaration on function '{}' requires contract '{}' to declare at least one state field",
+            policy.name, policy.name
+        )));
     }
 
     match (declaration.binding, declaration.mode) {
@@ -587,7 +589,7 @@ fn build_auth_wrapper<'i>(
     contract_fields: &[ContractFieldAst<'i>],
 ) -> Result<FunctionAst<'i>, CompilerError> {
     let mut body = Vec::new();
-    let mut entrypoint_params = policy.params.clone();
+    let entrypoint_params = policy.params.iter().skip(1).cloned().collect();
 
     let active_input = active_input_index_expr();
     let auth_out_count_name = "__auth_out_count";
@@ -609,110 +611,86 @@ fn build_auth_wrapper<'i>(
         )));
     }
 
-    if !contract_fields.is_empty() {
-        match declaration.mode {
-            CovenantMode::Verification => {
-                entrypoint_params = policy.params.iter().skip(1).cloned().collect();
-                let prev_state_name = &policy.params[0].name;
-                body.push(var_def_statement(state_type(), prev_state_name, state_object_expr_from_contract_fields(contract_fields)));
-                body.push(call_statement(policy_name, policy.params.iter().map(|param| identifier_expr(&param.name)).collect()));
-                if declaration.singleton && declaration.termination != CovenantTermination::Allowed {
-                    let new_state_name = &policy.params[1].name;
-                    body.push(require_statement(binary_expr(BinaryOp::Eq, identifier_expr(auth_out_count_name), Expr::int(1))));
-                    let out_idx_name = "__cov_out_idx";
-                    body.push(var_def_statement(
-                        int_type(),
-                        out_idx_name,
-                        Expr::call("OpAuthOutputIdx", vec![active_input.clone(), Expr::int(0)]),
-                    ));
-                    body.push(call_statement(
-                        "validateOutputState",
-                        vec![identifier_expr(out_idx_name), identifier_expr(new_state_name)],
-                    ));
-                } else {
-                    let new_states_name = &policy.params[1].name;
-                    body.push(require_statement(binary_expr(
-                        BinaryOp::Le,
-                        identifier_expr(auth_out_count_name),
-                        declaration.to_expr.clone(),
-                    )));
-                    body.push(require_statement(binary_expr(
-                        BinaryOp::Eq,
-                        identifier_expr(auth_out_count_name),
-                        length_expr(identifier_expr(new_states_name)),
-                    )));
-                    append_auth_output_state_array_checks_from_state_array(
-                        &mut body,
-                        &active_input,
-                        auth_out_count_name,
-                        declaration.to_expr.clone(),
-                        new_states_name,
-                    );
-                }
-            }
-            CovenantMode::Transition => {
-                entrypoint_params = policy.params.iter().skip(1).cloned().collect();
-                let prev_state_name = &policy.params[0].name;
-                body.push(var_def_statement(state_type(), prev_state_name, state_object_expr_from_contract_fields(contract_fields)));
-                let call_args = policy.params.iter().map(|param| identifier_expr(&param.name)).collect();
-                if is_state_type(&policy.return_types[0]) {
-                    let next_state_name = "__cov_new_state";
-                    body.push(function_call_assign_statement(
-                        vec![typed_binding(state_type(), next_state_name)],
-                        policy_name,
-                        call_args,
-                    ));
-                    body.push(require_statement(binary_expr(BinaryOp::Eq, identifier_expr(auth_out_count_name), Expr::int(1))));
-                    let out_idx_name = "__cov_out_idx";
-                    body.push(var_def_statement(
-                        int_type(),
-                        out_idx_name,
-                        Expr::call("OpAuthOutputIdx", vec![active_input.clone(), Expr::int(0)]),
-                    ));
-                    body.push(call_statement(
-                        "validateOutputState",
-                        vec![identifier_expr(out_idx_name), identifier_expr(next_state_name)],
-                    ));
-                } else {
-                    let next_states_name = "__cov_new_states";
-                    body.push(function_call_assign_statement(
-                        vec![typed_binding(state_array_type(), next_states_name)],
-                        policy_name,
-                        call_args,
-                    ));
-                    body.push(require_statement(binary_expr(
-                        BinaryOp::Le,
-                        identifier_expr(auth_out_count_name),
-                        declaration.to_expr.clone(),
-                    )));
-                    body.push(require_statement(binary_expr(
-                        BinaryOp::Eq,
-                        identifier_expr(auth_out_count_name),
-                        length_expr(identifier_expr(next_states_name)),
-                    )));
-                    append_auth_output_state_array_checks_from_state_array(
-                        &mut body,
-                        &active_input,
-                        auth_out_count_name,
-                        declaration.to_expr.clone(),
-                        next_states_name,
-                    );
-                }
+    match declaration.mode {
+        CovenantMode::Verification => {
+            let prev_state_name = &policy.params[0].name;
+            body.push(var_def_statement(state_type(), prev_state_name, state_object_expr_from_contract_fields(contract_fields)));
+            body.push(call_statement(policy_name, policy.params.iter().map(|param| identifier_expr(&param.name)).collect()));
+            if declaration.singleton && declaration.termination != CovenantTermination::Allowed {
+                let new_state_name = &policy.params[1].name;
+                body.push(require_statement(binary_expr(BinaryOp::Eq, identifier_expr(auth_out_count_name), Expr::int(1))));
+                let out_idx_name = "__cov_out_idx";
+                body.push(var_def_statement(
+                    int_type(),
+                    out_idx_name,
+                    Expr::call("OpAuthOutputIdx", vec![active_input.clone(), Expr::int(0)]),
+                ));
+                body.push(call_statement("validateOutputState", vec![identifier_expr(out_idx_name), identifier_expr(new_state_name)]));
+            } else {
+                let new_states_name = &policy.params[1].name;
+                body.push(require_statement(binary_expr(
+                    BinaryOp::Le,
+                    identifier_expr(auth_out_count_name),
+                    declaration.to_expr.clone(),
+                )));
+                body.push(require_statement(binary_expr(
+                    BinaryOp::Eq,
+                    identifier_expr(auth_out_count_name),
+                    length_expr(identifier_expr(new_states_name)),
+                )));
+                append_auth_output_state_array_checks_from_state_array(
+                    &mut body,
+                    &active_input,
+                    auth_out_count_name,
+                    declaration.to_expr.clone(),
+                    new_states_name,
+                );
             }
         }
-    } else {
-        let call_args: Vec<Expr<'i>> = policy.params.iter().map(|param| identifier_expr(&param.name)).collect();
-
-        match declaration.mode {
-            CovenantMode::Verification => {
-                body.push(call_statement(policy_name, call_args));
-            }
-            CovenantMode::Transition => {
-                return Err(CompilerError::Unsupported("mode=tranisition is not supported when contract state is empty".to_string()));
+        CovenantMode::Transition => {
+            let prev_state_name = &policy.params[0].name;
+            body.push(var_def_statement(state_type(), prev_state_name, state_object_expr_from_contract_fields(contract_fields)));
+            let call_args = policy.params.iter().map(|param| identifier_expr(&param.name)).collect();
+            if is_state_type(&policy.return_types[0]) {
+                let next_state_name = "__cov_new_state";
+                body.push(function_call_assign_statement(vec![typed_binding(state_type(), next_state_name)], policy_name, call_args));
+                body.push(require_statement(binary_expr(BinaryOp::Eq, identifier_expr(auth_out_count_name), Expr::int(1))));
+                let out_idx_name = "__cov_out_idx";
+                body.push(var_def_statement(
+                    int_type(),
+                    out_idx_name,
+                    Expr::call("OpAuthOutputIdx", vec![active_input.clone(), Expr::int(0)]),
+                ));
+                body.push(call_statement(
+                    "validateOutputState",
+                    vec![identifier_expr(out_idx_name), identifier_expr(next_state_name)],
+                ));
+            } else {
+                let next_states_name = "__cov_new_states";
+                body.push(function_call_assign_statement(
+                    vec![typed_binding(state_array_type(), next_states_name)],
+                    policy_name,
+                    call_args,
+                ));
+                body.push(require_statement(binary_expr(
+                    BinaryOp::Le,
+                    identifier_expr(auth_out_count_name),
+                    declaration.to_expr.clone(),
+                )));
+                body.push(require_statement(binary_expr(
+                    BinaryOp::Eq,
+                    identifier_expr(auth_out_count_name),
+                    length_expr(identifier_expr(next_states_name)),
+                )));
+                append_auth_output_state_array_checks_from_state_array(
+                    &mut body,
+                    &active_input,
+                    auth_out_count_name,
+                    declaration.to_expr.clone(),
+                    next_states_name,
+                );
             }
         }
-
-        body.push(require_statement(binary_expr(BinaryOp::Le, identifier_expr(auth_out_count_name), declaration.to_expr.clone())));
     }
 
     Ok(generated_entrypoint(policy, entrypoint_name, entrypoint_params, body))
@@ -723,10 +701,9 @@ fn build_cov_leader_wrapper<'i>(
     policy_name: &str,
     declaration: CovenantDeclaration<'i>,
     entrypoint_name: String,
-    contract_fields: &[ContractFieldAst<'i>],
 ) -> Result<FunctionAst<'i>, CompilerError> {
     let mut body = Vec::new();
-    let mut leader_params = policy.params.clone();
+    let leader_params = policy.params.iter().skip(1).cloned().collect();
 
     let active_input = active_input_index_expr();
     let cov_id_name = "__cov_id";
@@ -742,104 +719,80 @@ fn build_cov_leader_wrapper<'i>(
     let out_count_name = "__cov_out_count";
     body.push(var_def_statement(int_type(), out_count_name, Expr::call("OpCovOutputCount", vec![identifier_expr(cov_id_name)])));
 
-    if !contract_fields.is_empty() {
-        match declaration.mode {
-            CovenantMode::Verification => {
-                leader_params = policy.params.iter().skip(1).cloned().collect();
-                let prev_states_name = &policy.params[0].name;
-                let new_states_name = &policy.params[1].name;
-                append_cov_input_state_reads_into_state_array(
-                    &mut body,
-                    cov_id_name,
-                    in_count_name,
-                    declaration.from_expr.clone(),
-                    prev_states_name,
-                );
-                body.push(call_statement(policy_name, policy.params.iter().map(|param| identifier_expr(&param.name)).collect()));
+    match declaration.mode {
+        CovenantMode::Verification => {
+            let prev_states_name = &policy.params[0].name;
+            let new_states_name = &policy.params[1].name;
+            append_cov_input_state_reads_into_state_array(
+                &mut body,
+                cov_id_name,
+                in_count_name,
+                declaration.from_expr.clone(),
+                prev_states_name,
+            );
+            body.push(call_statement(policy_name, policy.params.iter().map(|param| identifier_expr(&param.name)).collect()));
+            body.push(require_statement(binary_expr(BinaryOp::Le, identifier_expr(out_count_name), declaration.to_expr.clone())));
+            body.push(require_statement(binary_expr(
+                BinaryOp::Eq,
+                identifier_expr(out_count_name),
+                length_expr(identifier_expr(new_states_name)),
+            )));
+            append_cov_output_state_array_checks_from_state_array(
+                &mut body,
+                cov_id_name,
+                out_count_name,
+                declaration.to_expr.clone(),
+                new_states_name,
+            );
+        }
+        CovenantMode::Transition => {
+            let prev_states_name = &policy.params[0].name;
+            append_cov_input_state_reads_into_state_array(
+                &mut body,
+                cov_id_name,
+                in_count_name,
+                declaration.from_expr.clone(),
+                prev_states_name,
+            );
+            let call_args = policy.params.iter().map(|param| identifier_expr(&param.name)).collect();
+            if is_state_type(&policy.return_types[0]) {
+                let next_state_name = "__cov_new_state";
+                body.push(function_call_assign_statement(vec![typed_binding(state_type(), next_state_name)], policy_name, call_args));
+                body.push(require_statement(binary_expr(BinaryOp::Eq, identifier_expr(out_count_name), Expr::int(1))));
+                let out_idx_name = "__cov_out_idx";
+                body.push(var_def_statement(
+                    int_type(),
+                    out_idx_name,
+                    Expr::call("OpCovOutputIdx", vec![identifier_expr(cov_id_name), Expr::int(0)]),
+                ));
+                body.push(call_statement(
+                    "validateOutputState",
+                    vec![identifier_expr(out_idx_name), identifier_expr(next_state_name)],
+                ));
+            } else {
+                let next_states_name = "__cov_new_states";
+                body.push(function_call_assign_statement(
+                    vec![typed_binding(state_array_type(), next_states_name)],
+                    policy_name,
+                    call_args,
+                ));
                 body.push(require_statement(binary_expr(BinaryOp::Le, identifier_expr(out_count_name), declaration.to_expr.clone())));
                 body.push(require_statement(binary_expr(
                     BinaryOp::Eq,
                     identifier_expr(out_count_name),
-                    length_expr(identifier_expr(new_states_name)),
+                    length_expr(identifier_expr(next_states_name)),
                 )));
                 append_cov_output_state_array_checks_from_state_array(
                     &mut body,
                     cov_id_name,
                     out_count_name,
                     declaration.to_expr.clone(),
-                    new_states_name,
+                    next_states_name,
                 );
             }
-            CovenantMode::Transition => {
-                leader_params = policy.params.iter().skip(1).cloned().collect();
-                let prev_states_name = &policy.params[0].name;
-                append_cov_input_state_reads_into_state_array(
-                    &mut body,
-                    cov_id_name,
-                    in_count_name,
-                    declaration.from_expr.clone(),
-                    prev_states_name,
-                );
-                let call_args = policy.params.iter().map(|param| identifier_expr(&param.name)).collect();
-                if is_state_type(&policy.return_types[0]) {
-                    let next_state_name = "__cov_new_state";
-                    body.push(function_call_assign_statement(
-                        vec![typed_binding(state_type(), next_state_name)],
-                        policy_name,
-                        call_args,
-                    ));
-                    body.push(require_statement(binary_expr(BinaryOp::Eq, identifier_expr(out_count_name), Expr::int(1))));
-                    let out_idx_name = "__cov_out_idx";
-                    body.push(var_def_statement(
-                        int_type(),
-                        out_idx_name,
-                        Expr::call("OpCovOutputIdx", vec![identifier_expr(cov_id_name), Expr::int(0)]),
-                    ));
-                    body.push(call_statement(
-                        "validateOutputState",
-                        vec![identifier_expr(out_idx_name), identifier_expr(next_state_name)],
-                    ));
-                } else {
-                    let next_states_name = "__cov_new_states";
-                    body.push(function_call_assign_statement(
-                        vec![typed_binding(state_array_type(), next_states_name)],
-                        policy_name,
-                        call_args,
-                    ));
-                    body.push(require_statement(binary_expr(
-                        BinaryOp::Le,
-                        identifier_expr(out_count_name),
-                        declaration.to_expr.clone(),
-                    )));
-                    body.push(require_statement(binary_expr(
-                        BinaryOp::Eq,
-                        identifier_expr(out_count_name),
-                        length_expr(identifier_expr(next_states_name)),
-                    )));
-                    append_cov_output_state_array_checks_from_state_array(
-                        &mut body,
-                        cov_id_name,
-                        out_count_name,
-                        declaration.to_expr.clone(),
-                        next_states_name,
-                    );
-                }
-            }
         }
-    } else {
-        let call_args = policy.params.iter().map(|param| identifier_expr(&param.name)).collect();
-
-        match declaration.mode {
-            CovenantMode::Verification => {
-                body.push(call_statement(policy_name, call_args));
-            }
-            CovenantMode::Transition => {
-                return Err(CompilerError::Unsupported("mode=tranisition is not supported when contract state is empty".to_string()));
-            }
-        }
-
-        body.push(require_statement(binary_expr(BinaryOp::Le, identifier_expr(out_count_name), declaration.to_expr.clone())));
     }
+
     Ok(generated_entrypoint(policy, entrypoint_name, leader_params, body))
 }
 

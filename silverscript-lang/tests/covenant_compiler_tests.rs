@@ -11,11 +11,35 @@ use silverscript_lang::compiler::{
 use common::{build_sig_script_for_covenant_decl, bytecode, encode_entry_sig_script, single_contract};
 
 #[test]
+fn rejects_stateless_singleton_declaration() {
+    let source = r#"
+        contract Stateless() {
+            #[covenant.singleton]
+            function continue_contract() {
+                require(true);
+            }
+        }
+    "#;
+    let err = compile_to_sil_abi_artifact_with_options(source, &[], CompileOptions::default())
+        .expect_err("a singleton declaration requires contract state");
+    assert!(
+        matches!(
+            err.root(),
+            silverscript_lang::errors::CompilerError::Unsupported(message)
+                if message.contains("requires") && message.contains("at least one state field")
+        ),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
 fn lowers_auth_covenant_declaration_to_hidden_entrypoint_name() {
     let source = r#"
         contract Decls(int max_outs) {
+            byte dummy = 0x00;
+
             #[covenant(binding = auth, from = 1, to = max_outs, mode = verification)]
-            function spend(int amount) {
+            function spend(State prev_state, State[] new_states, int amount) {
                 require(amount >= 0);
             }
         }
@@ -35,8 +59,10 @@ fn lowers_auth_covenant_declaration_to_hidden_entrypoint_name() {
 fn infers_auth_binding_from_from_equal_one_when_binding_omitted() {
     let source = r#"
         contract Decls(int max_outs) {
+            byte dummy = 0x00;
+
             #[covenant(from = 1, to = max_outs)]
-            function spend(int amount) {
+            function spend(State prev_state, State[] new_states, int amount) {
                 require(amount >= 0);
             }
         }
@@ -56,8 +82,10 @@ fn infers_auth_binding_from_from_equal_one_when_binding_omitted() {
 fn lowers_cov_covenant_to_leader_and_delegate_entrypoints() {
     let source = r#"
         contract Decls(int max_ins, int max_outs) {
+            byte dummy = 0x00;
+
             #[covenant(binding = cov, from = max_ins, to = max_outs, mode = verification)]
-            function transition_ok(int nonce) {
+            function transition_ok(State[] prev_states, State[] new_states, int nonce) {
                 require(nonce >= 0);
             }
         }
@@ -78,8 +106,10 @@ fn lowers_cov_covenant_to_leader_and_delegate_entrypoints() {
 fn infers_cov_binding_from_from_greater_than_one_when_binding_omitted() {
     let source = r#"
         contract Decls(int max_ins, int max_outs) {
+            byte dummy = 0x00;
+
             #[covenant(from = max_ins, to = max_outs)]
-            function transition_ok(int nonce) {
+            function transition_ok(State[] prev_states, State[] new_states, int nonce) {
                 require(nonce >= 0);
             }
         }
@@ -181,7 +211,7 @@ fn rejects_auth_transition_when_contract_state_is_empty() {
 
     let err = compile_to_sil_abi_artifact_with_options(source, &[], CompileOptions::default())
         .expect_err("auth transition should be unsupported when contract state is empty");
-    assert!(err.to_string().contains("mode=tranisition is not supported when contract state is empty"));
+    assert!(err.to_string().contains("at least one state field"));
 }
 
 #[test]
@@ -197,7 +227,7 @@ fn rejects_cov_transition_when_contract_state_is_empty() {
 
     let err = compile_to_sil_abi_artifact_with_options(source, &[], CompileOptions::default())
         .expect_err("cov transition should be unsupported when contract state is empty");
-    assert!(err.to_string().contains("mode=tranisition is not supported when contract state is empty"));
+    assert!(err.to_string().contains("at least one state field"));
 }
 
 #[test]
@@ -243,8 +273,10 @@ fn rejects_canonical_one_to_one_auth_verification_with_scalar_new_state() {
 fn lowers_singleton_sugar_to_auth_one_to_one_defaults() {
     let source = r#"
         contract Decls() {
+            byte dummy = 0x00;
+
             #[covenant.singleton]
-            function spend(int amount) {
+            function spend(State prev_state, State new_state, int amount) {
                 require(amount >= 0);
             }
         }
@@ -260,8 +292,10 @@ fn lowers_singleton_sugar_to_auth_one_to_one_defaults() {
 fn lowers_fanout_sugar_to_auth_with_to_bound() {
     let source = r#"
         contract Decls(int max_outs) {
+            byte dummy = 0x00;
+
             #[covenant.fanout(to = max_outs)]
-            function split(int amount) {
+            function split(State prev_state, State[] new_states, int amount) {
                 require(amount >= 0);
             }
         }
@@ -341,8 +375,10 @@ fn rejects_cov_covenant_groups_multiple_for_now() {
 fn infers_verification_mode_when_mode_omitted_and_no_returns() {
     let source = r#"
         contract Decls() {
+            byte dummy = 0x00;
+
             #[covenant(from = 1, to = 2)]
-            function check(int x) {
+            function check(State prev_state, State[] new_states, int x) {
                 require(x >= 0);
             }
         }
@@ -593,8 +629,10 @@ fn rejects_verification_mode_with_return_values() {
 fn auth_covenant_groups_single_injects_shared_count_check() {
     let source = r#"
         contract Decls() {
+            byte dummy = 0x00;
+
             #[covenant(binding = auth, from = 1, to = 4, mode = verification, groups = single)]
-            function spend() {
+            function spend(State prev_state, State[] new_states) {
                 require(true);
             }
         }
@@ -610,13 +648,15 @@ fn auth_covenant_groups_single_injects_shared_count_check() {
 fn rejects_mixed_auth_and_cov_covenant_declarations() {
     let source = r#"
         contract Decls(int max_ins, int max_outs) {
+            byte dummy = 0x00;
+
             #[covenant(binding = cov, from = max_ins, to = max_outs)]
-            function merge(int nonce) {
+            function merge(State[] prev_states, State[] new_states, int nonce) {
                 require(nonce >= 0);
             }
 
             #[covenant(binding = auth, from = 1, to = max_outs)]
-            function split(int nonce) {
+            function split(State prev_state, State[] new_states, int nonce) {
                 require(nonce >= 0);
             }
         }
@@ -636,13 +676,15 @@ fn rejects_mixed_auth_and_cov_covenant_declarations() {
 fn rejects_mixed_inferred_auth_and_cov_covenant_declarations() {
     let source = r#"
         contract Decls(int max_ins, int max_outs) {
+            byte dummy = 0x00;
+
             #[covenant(from = max_ins, to = max_outs)]
-            function merge(int nonce) {
+            function merge(State[] prev_states, State[] new_states, int nonce) {
                 require(nonce >= 0);
             }
 
             #[covenant(from = 1, to = max_outs)]
-            function split(int nonce) {
+            function split(State prev_state, State[] new_states, int nonce) {
                 require(nonce >= 0);
             }
         }
@@ -658,8 +700,10 @@ fn rejects_mixed_inferred_auth_and_cov_covenant_declarations() {
 fn leader_contract_rejects_unacknowledged_manual_entrypoint() {
     let source = r#"
         contract Decls(int max_ins, int max_outs) {
+            byte dummy = 0x00;
+
             #[covenant(binding = cov, from = max_ins, to = max_outs)]
-            function merge(int nonce) {
+            function merge(State[] prev_states, State[] new_states, int nonce) {
                 require(nonce >= 0);
             }
 
@@ -681,8 +725,10 @@ fn leader_contract_rejects_unacknowledged_manual_entrypoint() {
 fn leader_contract_allows_acknowledged_manual_entrypoint() {
     let source = r#"
         contract Decls(int max_ins, int max_outs) {
+            byte dummy = 0x00;
+
             #[covenant(binding = cov, from = max_ins, to = max_outs)]
-            function merge(int nonce) {
+            function merge(State[] prev_states, State[] new_states, int nonce) {
                 require(nonce >= 0);
             }
 
@@ -707,13 +753,15 @@ fn leader_contract_allows_acknowledged_manual_entrypoint() {
 fn allows_multiple_cov_covenant_declarations() {
     let source = r#"
         contract Decls(int max_ins, int max_outs) {
+            byte dummy = 0x00;
+
             #[covenant(binding = cov, from = max_ins, to = max_outs)]
-            function merge(int nonce) {
+            function merge(State[] prev_states, State[] new_states, int nonce) {
                 require(nonce >= 0);
             }
 
             #[covenant(binding = cov, from = max_ins, to = max_outs)]
-            function rebalance(int nonce) {
+            function rebalance(State[] prev_states, State[] new_states, int nonce) {
                 require(nonce >= 0);
             }
         }
@@ -742,13 +790,15 @@ fn allows_multiple_cov_covenant_declarations() {
 fn portable_abi_preserves_covenant_declaration_and_delegate_entries() {
     let source = r#"
         contract Decls(int max_ins, int max_outs) {
+            byte dummy = 0x00;
+
             #[covenant(binding = cov, from = max_ins, to = max_outs)]
-            function merge(int nonce) {
+            function merge(State[] prev_states, State[] new_states, int nonce) {
                 require(nonce >= 0);
             }
 
             #[covenant(binding = cov, from = max_ins, to = max_outs)]
-            function rebalance(int nonce) {
+            function rebalance(State[] prev_states, State[] new_states, int nonce) {
                 require(nonce >= 0);
             }
         }
@@ -840,8 +890,10 @@ fn lowers_kcc20_shaped_public_names_and_shared_delegate_body() {
 fn supports_public_name_override_for_auth_bound_declaration() {
     let source = r#"
         contract Decls() {
+            byte dummy = 0x00;
+
             #[covenant.singleton(name = spend)]
-            function spendPolicy(int amount) {
+            function spendPolicy(State prev_state, State new_state, int amount) {
                 require(amount >= 0);
             }
         }
@@ -858,8 +910,10 @@ fn supports_public_name_override_for_auth_bound_declaration() {
 fn rejects_duplicate_delegate_bodies() {
     let source = r#"
         contract Decls() {
+            byte dummy = 0x00;
+
             #[covenant(binding = cov, from = 2, to = 2)]
-            function merge(int nonce) { require(nonce >= 0); }
+            function merge(State[] prev_states, State[] new_states, int nonce) { require(nonce >= 0); }
 
             #[covenant.delegate]
             function authorizeA(byte[] witness) { require(witness.length >= 0); }
@@ -892,8 +946,10 @@ fn rejects_delegate_body_without_cov_bound_declaration() {
 fn delegate_and_leader_internal_policy_names_use_disjoint_namespaces() {
     let source = r#"
         contract Decls() {
+            byte dummy = 0x00;
+
             #[covenant(binding = cov, from = 2, to = 2)]
-            function delegate_authorize(int nonce) { require(nonce >= 0); }
+            function delegate_authorize(State[] prev_states, State[] new_states, int nonce) { require(nonce >= 0); }
 
             #[covenant.delegate]
             function authorize(byte[] witness) { require(witness.length >= 0); }
@@ -955,11 +1011,13 @@ fn rejects_direct_calls_to_a_covenant_policy() {
 fn rejects_conflicting_shared_delegate_names() {
     let source = r#"
         contract Decls() {
+            byte dummy = 0x00;
+
             #[covenant(binding = cov, from = 2, to = 2, delegate_name = merge_delegator)]
-            function merge(int nonce) { require(nonce >= 0); }
+            function merge(State[] prev_states, State[] new_states, int nonce) { require(nonce >= 0); }
 
             #[covenant(binding = cov, from = 2, to = 2, delegate_name = rebalance_delegator)]
-            function rebalance(int nonce) { require(nonce >= 0); }
+            function rebalance(State[] prev_states, State[] new_states, int nonce) { require(nonce >= 0); }
         }
     "#;
 
@@ -972,24 +1030,30 @@ fn rejects_invalid_delegate_body_signatures() {
     let cases = [
         r#"
             contract Decls() {
+                byte dummy = 0x00;
+
                 #[covenant(binding = cov, from = 2, to = 2)]
-                function merge(int nonce) { require(nonce >= 0); }
+                function merge(State[] prev_states, State[] new_states, int nonce) { require(nonce >= 0); }
                 #[covenant.delegate]
                 entry authorize(byte[] witness) { require(witness.length >= 0); }
             }
         "#,
         r#"
             contract Decls() {
+                byte dummy = 0x00;
+
                 #[covenant(binding = cov, from = 2, to = 2)]
-                function merge(int nonce) { require(nonce >= 0); }
+                function merge(State[] prev_states, State[] new_states, int nonce) { require(nonce >= 0); }
                 #[covenant.delegate]
                 function authorize(byte[] witness) : (int) { return(witness.length); }
             }
         "#,
         r#"
             contract Decls() {
+                byte dummy = 0x00;
+
                 #[covenant(binding = cov, from = 2, to = 2)]
-                function merge(int nonce) { require(nonce >= 0); }
+                function merge(State[] prev_states, State[] new_states, int nonce) { require(nonce >= 0); }
                 #[covenant.delegate(name = delegated)]
                 function authorize(byte[] witness) { require(witness.length >= 0); }
             }
@@ -1007,8 +1071,10 @@ fn rejects_invalid_delegate_body_signatures() {
 fn rejects_generated_public_name_collision() {
     let source = r#"
         contract Decls() {
+            byte dummy = 0x00;
+
             #[covenant(binding = cov, from = 2, to = 2, name = transfer)]
-            function transferPolicy(int nonce) { require(nonce >= 0); }
+            function transferPolicy(State[] prev_states, State[] new_states, int nonce) { require(nonce >= 0); }
 
             #[covenant.allow(rule = manual_entrypoint_in_leader_contract)]
             entry transfer() {
@@ -1028,18 +1094,22 @@ fn rejects_generated_public_name_collisions_with_helpers() {
     let cases = [
         r#"
             contract Decls() {
+                byte dummy = 0x00;
+
                 function spend() {}
 
                 #[covenant.singleton(name = spend)]
-                function transfer(int nonce) { require(nonce >= 0); }
+                function transfer(State prev_state, State new_state, int nonce) { require(nonce >= 0); }
             }
         "#,
         r#"
             contract Decls() {
+                byte dummy = 0x00;
+
                 function spend() {}
 
                 #[covenant(binding = cov, from = 2, to = 2, delegate_name = spend)]
-                function transfer(int nonce) { require(nonce >= 0); }
+                function transfer(State[] prev_states, State[] new_states, int nonce) { require(nonce >= 0); }
             }
         "#,
     ];

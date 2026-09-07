@@ -18,6 +18,7 @@ mod const_eval;
 mod emitter;
 mod expression;
 mod helpers;
+mod stack_analysis;
 mod state;
 mod statement;
 
@@ -84,7 +85,7 @@ pub(super) fn compile_contract_impl<'i>(
         return Err(CompilerError::Unsupported("contract has no entries".to_string()));
     }
     let entrypoint_functions: Vec<&FunctionAst<'i>> = lowered_contract.functions.iter().filter(|func| func.entrypoint).collect();
-    validate_entrypoint_stack_limits(&entrypoint_functions)?;
+    validate_entrypoint_stack_limits(&entrypoint_functions, lowered_contract.fields.len())?;
     let artifact_contract = resolve_artifact_struct_type_refs(&covenant_lowered_contract, &constants)?;
 
     // dispatch tag: verify no collisions and insert tags to global state
@@ -146,15 +147,18 @@ pub(super) fn compile_contract_impl<'i>(
     Err(CompilerError::Unsupported("bytecode size did not stabilize".to_string()))
 }
 
-fn validate_entrypoint_stack_limits(entrypoints: &[&FunctionAst<'_>]) -> Result<(), CompilerError> {
+fn validate_entrypoint_stack_limits(entrypoints: &[&FunctionAst<'_>], state_field_count: usize) -> Result<(), CompilerError> {
     for entrypoint in entrypoints {
-        // At the end of P2SH signature-script execution, the stack contains
-        // every flattened argument, the dispatch tag, and the redeem script.
-        let initial_stack_items = checked_add(entrypoint.params.len(), 2)?;
-        if initial_stack_items > MAX_STACK_SIZE {
+        // After the dispatcher duplicates the caller's tag and pushes the expected
+        // tag, the stack contains every flattened argument, every flattened state
+        // field, two copies of the caller's tag, and the expected tag. This bounds
+        // every dispatcher path without interpreting its bytecode. State initializer
+        // expressions and entrypoint bodies are checked separately for temporaries.
+        let dispatch_stack_items = checked_add(checked_add(entrypoint.params.len(), state_field_count)?, 3)?;
+        if dispatch_stack_items > MAX_STACK_SIZE {
             return Err(CompilerError::EntrypointStackTooLarge {
                 function: entrypoint.name.clone(),
-                actual: initial_stack_items,
+                actual: dispatch_stack_items,
                 maximum: MAX_STACK_SIZE,
             });
         }
@@ -276,6 +280,12 @@ fn compile_contract_bytecode_iteration<'i>(
     let bytecode = build_contract_bytecode(debug_recorder, &state_push_bytecode, &compiled_entrypoints, dispatches)?;
     let entrypoints = lowered_contract.functions.iter().filter(|function| function.entrypoint).collect::<Vec<_>>();
     validate_signature_script_limits(&bytecode, &entrypoints, lowered_constants)?;
+    stack_analysis::validate_bytecode_stack_limits(
+        &compiled_entrypoints,
+        &entrypoints,
+        lowered_contract.fields.len(),
+        &state_push_bytecode,
+    )?;
     Ok((bytecode, state_layout))
 }
 
