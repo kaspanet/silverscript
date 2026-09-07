@@ -10,37 +10,64 @@ pub(super) struct EntrypointMetadata {
 pub(super) fn compile_contract_fields<'i>(
     fields: &[ContractFieldAst<'i>],
     base_constants: &HashMap<String, Expr<'i>>,
-    bytecode_size: Option<i64>,
 ) -> Result<(HashMap<String, Expr<'i>>, Vec<u8>), CompilerError> {
     let mut field_values = HashMap::new();
-    let mut field_types = HashMap::new();
+    let mut constants = base_constants.clone();
     let mut builder = script_builder();
-    let stack_bindings = StackBindings::default();
 
     for field in fields {
         let mut resolve_visiting = HashSet::new();
-        let resolved = resolve_constant_references(field.expr.clone(), base_constants, &mut resolve_visiting)?;
-
-        if fixed_type_size(&field.type_ref, base_constants)?.is_some() {
-            let encoded = encode_value_with_constant_size(&resolved, &field.type_ref, base_constants)?;
-            builder.add_data_with_push_opcode(&encoded)?;
-        } else {
-            let env = ExprEnv {
-                constants: base_constants,
-                stack_bindings: &stack_bindings,
-                types: &field_types,
-                bytecode_size,
-                contract_constants: base_constants,
-            };
-            let mut emitter = ScriptEmitter::new(&mut builder, 0);
-            compile_expr(&resolved, Some(&field.type_ref), &env, &mut emitter)?;
-        }
-
+        let resolved = resolve_constant_references(field.expr.clone(), &constants, &mut resolve_visiting)?;
+        let encoded = encode_constant_state_value(&resolved, &field.type_ref, &constants).map_err(|err| {
+            match err {
+                CompilerError::RuntimeEvaluationRequired => {
+                    CompilerError::Unsupported(format!("contract field '{}' initializer must be a constant expression", field.name))
+                }
+                other => other,
+            }
+            .with_span(&field.expr.span)
+        })?;
+        builder.add_data_with_push_opcode(&encoded)?;
+        constants.insert(field.name.clone(), resolved.clone());
         field_values.insert(field.name.clone(), resolved);
-        field_types.insert(field.name.clone(), field.type_ref.clone());
     }
 
     Ok((field_values, builder.drain()))
+}
+
+fn encode_constant_state_value<'i>(
+    value: &Expr<'i>,
+    type_ref: &TypeRef,
+    constants: &HashMap<String, Expr<'i>>,
+) -> Result<Vec<u8>, CompilerError> {
+    let mut value = value;
+    while let ExprKind::Call { name, args, .. } = &value.kind {
+        if !parse_type_ref(name).is_ok_and(|type_ref| !matches!(type_ref.base, TypeBase::Custom(_))) || args.len() != 1 {
+            break;
+        }
+        value = &args[0];
+    }
+
+    if type_ref.is_string() {
+        return match &value.kind {
+            ExprKind::String(value) => Ok(value.as_bytes().to_vec()),
+            _ => Err(CompilerError::RuntimeEvaluationRequired),
+        };
+    }
+
+    if type_ref.is_array() {
+        if let ExprKind::String(value) = &value.kind
+            && type_ref.array_element_type().is_some_and(|element| element.is_byte())
+        {
+            return Ok(value.as_bytes().to_vec());
+        }
+        let ExprKind::Array { values, .. } = &value.kind else {
+            return Err(CompilerError::RuntimeEvaluationRequired);
+        };
+        return encode_array_literal(values, type_ref, constants);
+    }
+
+    encode_value_with_constant_size(value, type_ref, constants)
 }
 
 pub(super) fn infer_expr_type<'i>(
@@ -229,9 +256,10 @@ pub(super) fn encode_value_with_constant_size<'i>(
     };
     match (&type_ref.base, type_ref.array_dims.as_slice()) {
         (TypeBase::Int | TypeBase::Temporal, []) => {
-            let number = match &value.kind {
-                ExprKind::Int(number) | ExprKind::Temporal(number) | ExprKind::DateLiteral(number) => *number,
-                _ => return Err(array_literal_encoding_error(value)),
+            let number = match eval_const_int(value, constants) {
+                Ok(number) => number,
+                Err(CompilerError::NonConstantInteger(_)) => return Err(array_literal_encoding_error(value)),
+                Err(err) => return Err(err),
             };
             serialize_i64(number, Some(8usize))
                 .map(|bytes| bytes.to_vec())

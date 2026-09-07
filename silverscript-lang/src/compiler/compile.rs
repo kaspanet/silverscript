@@ -3,7 +3,7 @@ use super::covenant_declarations::lower_covenant_declarations;
 use super::infer_array::lower_inferred_array_sizes;
 use super::inline_functions::lower_inline_functions;
 use super::stack_bindings::StackBindings;
-use super::static_check::{static_check_contract, validate_concrete_constructor_argument, validate_declaration_names};
+use super::static_check::{static_check_contract, validate_constructor_argument, validate_declaration_names};
 use super::ternary::lower_ternaries;
 use super::*;
 use kaspa_consensus_core::config::params::MAINNET_PARAMS;
@@ -43,13 +43,13 @@ pub(super) fn compile_contract_impl<'i>(
     source: Option<&'i str>,
 ) -> Result<CompiledContract<'i>, CompilerError> {
     validate_declaration_names(contract)?;
-    // Constructor arguments enter the constant environment below, so reject
-    // evaluatable expression forms before any inference or lowering can use them.
+    // Constructor arguments enter the constant environment below. Validate
+    // their expression shape before inference or lowering can treat them as constants.
     if contract.params.len() != constructor_args.len() {
         return Err(CompilerError::Unsupported("constructor argument count mismatch".to_string()));
     }
     for (param, value) in contract.params.iter().zip(constructor_args) {
-        validate_concrete_constructor_argument(param, value)?;
+        validate_constructor_argument(param, value)?;
     }
 
     let mut constants: HashMap<String, Expr<'i>> =
@@ -259,7 +259,7 @@ fn compile_contract_bytecode_iteration<'i>(
     struct_array_param_groups: &StructArrayParamGroups,
     debug_recorder: &mut DebugRecorder<'i>,
 ) -> Result<(Vec<u8>, CompiledStateLayout), CompilerError> {
-    let (_contract_fields, state_push_bytecode) = compile_contract_fields(&lowered_contract.fields, lowered_constants, bytecode_size)?;
+    let (_contract_fields, state_push_bytecode) = compile_contract_fields(&lowered_contract.fields, lowered_constants)?;
 
     let state_start: usize = if state_push_bytecode.is_empty() {
         0
