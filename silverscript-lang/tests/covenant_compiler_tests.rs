@@ -127,6 +127,25 @@ fn infers_cov_binding_from_from_greater_than_one_when_binding_omitted() {
 }
 
 #[test]
+fn rejects_covenant_bounds_above_the_iteration_limit() {
+    let source = r#"
+        contract Decls(int max_ins, int max_outs) {
+            byte dummy = 0x00;
+
+            #[covenant(binding = cov, from = max_ins, to = max_outs, mode = verification)]
+            function transition_ok(State[] prev_states, State[] new_states) {}
+        }
+    "#;
+
+    for (args, bound) in [([10_001, 1], "from"), ([2, 10_001], "to")] {
+        let args = args.map(Expr::int);
+        let err = compile_contract(source, &args, CompileOptions::default())
+            .expect_err("generated covenant loops must respect the compiler iteration limit");
+        assert!(err.to_string().contains(&format!("covenant '{bound}' must not exceed 10000")), "unexpected error: {err}");
+    }
+}
+
+#[test]
 fn rejects_cov_verification_without_prev_new_field_arrays() {
     let source = r#"
         contract Decls() {

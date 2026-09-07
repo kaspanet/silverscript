@@ -3,7 +3,7 @@ use super::*;
 use semver::{Comparator, Op, Version, VersionReq};
 use std::collections::{HashMap, HashSet};
 
-const MAX_FOR_LOOP_ITERATIONS: i64 = 10_000;
+pub(super) const MAX_FOR_LOOP_ITERATIONS: i64 = 10_000;
 
 fn validate_for_loop_iterations<'i>(contract: &ContractAst<'i>, constants: &HashMap<String, Expr<'i>>) -> Result<(), CompilerError> {
     for function in &contract.functions {
